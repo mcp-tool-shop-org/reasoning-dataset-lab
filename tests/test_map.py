@@ -588,3 +588,111 @@ def test_map_read_oserror(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
         load_map_yaml(f)
     assert exc_info.value.code == "MAP_READ_ERROR"
 
+
+@pytest.mark.parametrize(
+    "unknown_wf",
+    ["not_in_role_set_registry", "custom_shortcut", "T10.exact_read_as_floor"],
+)
+def test_refuses_unregistered_wrong_family_ids(unknown_wf: str) -> None:
+    data = _valid_base_map()
+    data["axes"]["wrong_family"].append(unknown_wf)
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    err = exc_info.value
+    assert err.exit_code == EXIT_REFUSED
+    assert err.code == "MAP_UNKNOWN_WRONG_FAMILY"
+
+
+def test_allows_none_in_wrong_family_axis() -> None:
+    data = _valid_base_map()
+    data["axes"]["wrong_family"].append("none")
+    assert validate_map(data).target_total == 60
+
+
+def test_refuses_null_bypasses_in_map() -> None:
+    # 1. splits: null
+    data = _valid_base_map()
+    data["splits"] = None
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    assert exc_info.value.code == "MAP_INVALID_SPLITS"
+
+    # 2. canon: null
+    data = _valid_base_map()
+    data["canon"] = None
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    assert exc_info.value.code == "MAP_INVALID_CANON"
+
+    # 3. reason: null when capacity > 0
+    data = _valid_base_map()
+    assert data["cells"][0]["capacity"] > 0
+    data["cells"][0]["reason"] = None
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    assert exc_info.value.code == "MAP_INVALID_CELL_REASON"
+
+    # 4. acceptance.unanimity_rate: null on proved map and on judged map
+    data = _valid_base_map()
+    data["acceptance"]["unanimity_rate"] = None
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    assert exc_info.value.code in ("MAP_UNANIMITY_ON_PROVED_KIND", "MAP_INVALID_ACCEPTANCE")
+
+    data = _valid_base_map()
+    data["axes"]["kind"] = ["A"]
+    for c in data["cells"]:
+        c["kind"] = "A"
+    data["acceptance"]["unanimity_rate"] = None
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    assert exc_info.value.code == "MAP_INVALID_ACCEPTANCE"
+
+    # 5. shares[].min_share: null and max_share: null
+    data = _valid_base_map()
+    data["shares"] = [{"axis": "domain", "min_distinct": 2, "min_share": None}]
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    assert exc_info.value.code == "MAP_INVALID_SHARE_RULE"
+
+    data = _valid_base_map()
+    data["shares"] = [{"axis": "domain", "min_distinct": 2, "max_share": None}]
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    assert exc_info.value.code == "MAP_INVALID_SHARE_RULE"
+
+    # 6. acceptance.critic_agreement.min: null
+    data = _valid_base_map()
+    data["acceptance"]["critic_agreement"] = {"min": None}
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    assert exc_info.value.code == "MAP_INVALID_ACCEPTANCE"
+
+    # 7. canon with empty canon_id key
+    data = _valid_base_map()
+    data["canon"] = {"   ": {"state": "frozen", "sha256": "a" * 64}}
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    assert exc_info.value.code == "MAP_INVALID_CANON"
+
+
+@pytest.mark.parametrize(
+    "bad_sha",
+    [
+        "Z" * 64,
+        "A" * 64,
+        "0123456789abcdef" * 3 + "0123456789abcdeg",
+        None,
+        123,
+    ],
+)
+def test_refuses_non_hex_canon_sha256(bad_sha: object) -> None:
+    data = _valid_base_map()
+    data["canon"] = {"trait:T10": {"state": "frozen", "sha256": bad_sha}}
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    err = exc_info.value
+    assert err.exit_code == EXIT_REFUSED
+    assert err.code == "MAP_INVALID_CANON_SHA256"
+
+

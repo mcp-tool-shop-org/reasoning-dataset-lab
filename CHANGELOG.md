@@ -4,6 +4,14 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-10-24
+
+### Fixed
+
+- Validate `axes.wrong_family` values against `role-set`'s registered shortcut IDs (`exact_read_as_floor`, `exact_read_as_ceiling`, `floor_read_as_exact`, `ceiling_read_as_exact`, and `none`, pinned to `role_set/generate/shortcuts.py:21-29@4033ebd`), refusing unknown values with `MAP_UNKNOWN_WRONG_FAMILY` while keeping `MAP_SHORTHAND_WRONG_FAMILY` for the four shorthand aliases.
+- Close `null` and type bypasses across `map.yaml` (`splits`, `canon`, `cells[].reason` when `capacity > 0`, `shares[].min_share`, `shares[].max_share`, `acceptance.unanimity_rate`) and the five project files (`project.json` `display_name`/`version`, `lanes.json` `default_lane` and `lanes[].kind`, `rubric.json` `plugin`), and require all `sha256` fields in `map.yaml` `canon` and `rubric.json` `pins` to match `^[0-9a-f]{64}$`.
+- Make `compute_config_fingerprint` cross-platform stable across Windows (`CRLF`) and Linux (`LF`) checkouts by stripping any leading UTF-8 BOM and normalizing `CRLF`/`CR` line endings to `LF` (`\n`) before hashing project, map, and canon files.
+
 ## [0.1.0] - 2026-10-24
 
 ### Added
