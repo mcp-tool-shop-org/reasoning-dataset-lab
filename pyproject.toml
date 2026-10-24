@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reasoning-dataset-lab"
+version = "0.1.0"
+description = "Map-first dataset lab for proven reasoning puzzles, verification items, and composed dataset parts."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = [
+    "pyyaml==6.0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "coverage==7.16.2",
+    "pytest==9.0.3",
+    "pytest-cov==7.0.0",
+]
+
+[project.scripts]
+rdlab = "reasoning_dataset_lab.cli:main"
+
+[dependency-groups]
+dev = [
+    "coverage==7.16.2",
+    "pytest==9.0.3",
+    "pytest-cov==7.0.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reasoning_dataset_lab"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--cov=reasoning_dataset_lab --cov-report=term-missing --cov-fail-under=90"
+
+[tool.coverage.run]
+source = ["reasoning_dataset_lab"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]

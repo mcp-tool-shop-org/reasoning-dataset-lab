@@ -1,0 +1,3117 @@
+{
+  "boundaries": [
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
+          "hash": "41a952e92de42ecbc722818031798694afeabbbc5e2831351e1ba99e5ec37a5b",
+          "path": ".github/workflows/ci.yml"
+        }
+      ],
+      "globs": [
+        ".github/**"
+      ],
+      "importConfidence": "full",
+      "name": ".github",
+      "origin": "authored",
+      "role": "config",
+      "testedBy": 0,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
+          "hash": "9e22f326bd882319b5dd803de446768dc185566f43d0c53a4a3f0561629fd8bd",
+          "path": "examples/t10-pilot-a.map.yaml"
+        }
+      ],
+      "globs": [
+        "examples/**"
+      ],
+      "importConfidence": "full",
+      "name": "examples",
+      "origin": "authored",
+      "role": "data",
+      "testedBy": 0,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
+          "hash": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
+          "path": ".gitattributes"
+        },
+        {
+          "hash": "42ed94fd2244cb58d996e2f201f4abf86862a8762125c2d425f97e09e016156b",
+          "path": ".gitignore"
+        },
+        {
+          "hash": "bbe7f988ad9e1591c1c4c019ec7bcf72a812d21b07647111ab978a36fa61cff6",
+          "path": "CHANGELOG.md"
+        },
+        {
+          "hash": "367e5141e4f5884e5791c4021f33a9faa958840a5decf44e1b273a87aad1c459",
+          "path": "LICENSE"
+        },
+        {
+          "hash": "e5fb1faf252b0a68acc2203af36a3c2436bf9c6103c03dccf6d8a721f5d7d706",
+          "path": "README.md"
+        },
+        {
+          "hash": "b136a68580708b4f506b1414afa9098d4ea4142b1ebe79530977e697c42d2f29",
+          "path": "SECURITY.md"
+        },
+        {
+          "hash": "d4c37e03247445272fcfdff5e3065cbc391b307b672b0837b565f7993731d9c1",
+          "path": "pyproject.toml"
+        },
+        {
+          "hash": "92800e9356331d1efe996eda722f918ad7b05db852a95d11a64909fc0b08a4bd",
+          "path": "uv.lock"
+        }
+      ],
+      "globs": [
+        "*"
+      ],
+      "importConfidence": "full",
+      "name": "root",
+      "origin": "authored",
+      "role": "config",
+      "testedBy": 0,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 1,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [
+        "src/reasoning_dataset_lab/cli.py"
+      ],
+      "externals": 0,
+      "files": [
+        {
+          "hash": "d29171a2976eaceab0bf7806a4eeaf378182e212534951b19e1e25292dd486d1",
+          "path": "src/reasoning_dataset_lab/__init__.py"
+        },
+        {
+          "entry": "main",
+          "entryRule": 0,
+          "exports": [
+            "main",
+            "run_cli"
+          ],
+          "failurePaths": [
+            {
+              "in": "error",
+              "kind": "raise",
+              "line": 26
+            },
+            {
+              "in": "run_cli",
+              "kind": "raise",
+              "line": 92
+            },
+            {
+              "in": "run_cli",
+              "kind": "raise",
+              "line": 103
+            },
+            {
+              "in": "run_cli",
+              "kind": "raise",
+              "line": 116
+            },
+            {
+              "in": "run_cli",
+              "kind": "except",
+              "line": 121
+            },
+            {
+              "in": "main",
+              "kind": "raise",
+              "line": 127
+            }
+          ],
+          "hash": "c0642bb18013c1d879f9ac8f7c815a22c26eb7942d7afa5e8bd175e33e9e1cc3",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/__init__.py",
+            "src/reasoning_dataset_lab/config.py",
+            "src/reasoning_dataset_lab/errors.py",
+            "src/reasoning_dataset_lab/map.py"
+          ],
+          "path": "src/reasoning_dataset_lab/cli.py",
+          "sequences": [
+            {
+              "calls": [
+                {
+                  "branch": "args.map_command != \"check\"",
+                  "line": 92,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "args.command == \"map\"",
+                  "line": 97,
+                  "name": "check_map_file",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  }
+                },
+                {
+                  "branch": "args.project_command != \"fingerprint\"",
+                  "line": 103,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "args.command == \"project\"",
+                  "line": 108,
+                  "name": "compute_config_fingerprint",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/config.py"
+                  }
+                },
+                {
+                  "line": 116,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "run_cli"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "args.map_command != \"check\"",
+                  "line": 92,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "run_cli"
+                },
+                {
+                  "branch": "args.command == \"map\"",
+                  "inner": [
+                    {
+                      "line": 158,
+                      "name": "exists",
+                      "target": null,
+                      "via": "load_map_yaml"
+                    },
+                    {
+                      "line": 158,
+                      "name": "is_file",
+                      "target": null,
+                      "via": "load_map_yaml"
+                    },
+                    {
+                      "branch": "not path.exists() or not path.is_file()",
+                      "line": 159,
+                      "name": "usage_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "load_map_yaml"
+                    },
+                    {
+                      "line": 165,
+                      "name": "read_text",
+                      "target": null,
+                      "via": "load_map_yaml"
+                    },
+                    {
+                      "line": 167,
+                      "name": "usage_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "load_map_yaml"
+                    },
+                    {
+                      "line": 176,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "load_map_yaml"
+                    },
+                    {
+                      "branch": "not isinstance(parsed, dict)",
+                      "line": 183,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "load_map_yaml"
+                    },
+                    {
+                      "branch": "not isinstance(map_data, dict)",
+                      "line": 643,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "validate_map"
+                    },
+                    {
+                      "branch": "unknown",
+                      "line": 133,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "_check_unknown_keys"
+                    },
+                    {
+                      "branch": "missing",
+                      "line": 653,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "validate_map"
+                    },
+                    {
+                      "branch": "not _is_int(map_version) or map_version < 1",
+                      "line": 661,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "validate_map"
+                    },
+                    {
+                      "branch": "not isinstance(dataset, str) or not dataset.strip()",
+                      "line": 669,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "validate_map"
+                    }
+                  ],
+                  "innerTruncated": true,
+                  "line": 97,
+                  "name": "check_map_file",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  },
+                  "via": "run_cli"
+                },
+                {
+                  "branch": "args.project_command != \"fingerprint\"",
+                  "line": 103,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "run_cli"
+                },
+                {
+                  "branch": "args.command == \"project\"",
+                  "inner": [
+                    {
+                      "line": 275,
+                      "name": "exists",
+                      "target": null
+                    },
+                    {
+                      "line": 275,
+                      "name": "is_dir",
+                      "target": null
+                    },
+                    {
+                      "branch": "not project_root.exists() or not project_root.is_dir()",
+                      "line": 276,
+                      "name": "usage_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      }
+                    },
+                    {
+                      "branch": "not resolved_map.is_file()",
+                      "line": 287,
+                      "name": "usage_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      }
+                    },
+                    {
+                      "line": 293,
+                      "name": "load_map_yaml",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/map.py"
+                      }
+                    },
+                    {
+                      "line": 294,
+                      "name": "validate_map",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/map.py"
+                      }
+                    },
+                    {
+                      "line": 296,
+                      "name": "usage_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      }
+                    },
+                    {
+                      "line": 32,
+                      "name": "read_text",
+                      "target": null,
+                      "via": "_read_json_object"
+                    },
+                    {
+                      "line": 34,
+                      "name": "usage_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "_read_json_object"
+                    },
+                    {
+                      "line": 43,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "_read_json_object"
+                    },
+                    {
+                      "branch": "not isinstance(parsed, dict)",
+                      "line": 53,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "_read_json_object"
+                    },
+                    {
+                      "branch": "\"name\" in data and (not isinstance(data[\"name\"], str) or no…",
+                      "line": 72,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "load_project_meta"
+                    }
+                  ],
+                  "innerTruncated": true,
+                  "line": 108,
+                  "name": "compute_config_fingerprint",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/config.py"
+                  },
+                  "via": "run_cli"
+                },
+                {
+                  "line": 116,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "run_cli"
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": true,
+              "isDefaultExport": false,
+              "name": "main"
+            }
+          ]
+        },
+        {
+          "entry": "compute_config_fingerprint",
+          "entryRule": 4,
+          "exports": [
+            "compute_config_fingerprint",
+            "derive_lanes_from_map",
+            "load_constitution",
+            "load_lanes",
+            "load_project_config",
+            "load_project_meta",
+            "load_rubric",
+            "load_terminology"
+          ],
+          "failurePaths": [
+            {
+              "in": "_read_json_object",
+              "kind": "except",
+              "line": 33
+            },
+            {
+              "in": "_read_json_object",
+              "kind": "raise",
+              "line": 34
+            },
+            {
+              "in": "_read_json_object",
+              "kind": "except",
+              "line": 42
+            },
+            {
+              "in": "_read_json_object",
+              "kind": "raise",
+              "line": 43
+            },
+            {
+              "in": "_read_json_object",
+              "kind": "raise",
+              "line": 53
+            },
+            {
+              "in": "load_project_meta",
+              "kind": "raise",
+              "line": 72
+            },
+            {
+              "in": "load_constitution",
+              "kind": "raise",
+              "line": 92
+            },
+            {
+              "in": "load_terminology",
+              "kind": "raise",
+              "line": 107
+            },
+            {
+              "in": "derive_lanes_from_map",
+              "kind": "raise",
+              "line": 121
+            },
+            {
+              "in": "load_lanes",
+              "kind": "raise",
+              "line": 155
+            },
+            {
+              "in": "load_lanes",
+              "kind": "raise",
+              "line": 163
+            },
+            {
+              "in": "load_lanes",
+              "kind": "raise",
+              "line": 169
+            },
+            {
+              "in": "load_lanes",
+              "kind": "raise",
+              "line": 179
+            },
+            {
+              "in": "load_rubric",
+              "kind": "raise",
+              "line": 196
+            },
+            {
+              "in": "load_rubric",
+              "kind": "raise",
+              "line": 202
+            },
+            {
+              "in": "load_project_config",
+              "kind": "raise",
+              "line": 220
+            },
+            {
+              "in": "load_project_config",
+              "kind": "raise",
+              "line": 232
+            },
+            {
+              "in": "compute_config_fingerprint",
+              "kind": "raise",
+              "line": 276
+            },
+            {
+              "in": "compute_config_fingerprint",
+              "kind": "raise",
+              "line": 287
+            },
+            {
+              "in": "compute_config_fingerprint",
+              "kind": "raise",
+              "line": 296
+            },
+            {
+              "in": "compute_config_fingerprint",
+              "kind": "raise",
+              "line": 331
+            }
+          ],
+          "hash": "7d4bbb0cca1d1a1a62cb38869b63857ae5bdf2f7ebbbdf11bc5781ae50f01345",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/errors.py",
+            "src/reasoning_dataset_lab/map.py"
+          ],
+          "path": "src/reasoning_dataset_lab/config.py",
+          "sequences": [
+            {
+              "calls": [
+                {
+                  "line": 32,
+                  "name": "read_text",
+                  "target": null
+                },
+                {
+                  "line": 34,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 43,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 53,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_read_json_object"
+            },
+            {
+              "calls": [
+                {
+                  "line": 32,
+                  "name": "read_text",
+                  "target": null,
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 34,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 43,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 53,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "\"name\" in data and (not isinstance(data[\"name\"], str) or no…",
+                  "line": 72,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "load_project_meta"
+            },
+            {
+              "calls": [
+                {
+                  "line": 32,
+                  "name": "read_text",
+                  "target": null,
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 34,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 43,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 53,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "\"rules\" not in data or not isinstance(data[\"rules\"], list)",
+                  "line": 92,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "load_constitution"
+            },
+            {
+              "calls": [
+                {
+                  "line": 32,
+                  "name": "read_text",
+                  "target": null,
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 34,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 43,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 53,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "\"traits\" in data and not isinstance(data[\"traits\"], dict)",
+                  "line": 107,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "load_terminology"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "not isinstance(axes, dict) or not isinstance(axes.get(\"kind…",
+                  "line": 121,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "derive_lanes_from_map"
+            },
+            {
+              "calls": [
+                {
+                  "line": 143,
+                  "name": "load_map_yaml",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  }
+                },
+                {
+                  "line": 144,
+                  "name": "validate_map",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  }
+                },
+                {
+                  "branch": "map_data is not None",
+                  "line": 121,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "derive_lanes_from_map"
+                },
+                {
+                  "line": 32,
+                  "name": "read_text",
+                  "target": null,
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 34,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 43,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 53,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "not isinstance(lanes, list)",
+                  "line": 155,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(lane, dict) or not isinstance(lane.get(\"id\")…",
+                  "line": 163,
+                  "name": "refused_error",
+                  "over": "enumerate(lanes)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "\"id_patterns\" in lane",
+                  "line": 169,
+                  "name": "refused_error",
+                  "over": "enumerate(lanes)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "lane_ids != expected_kinds",
+                  "line": 179,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "load_lanes"
+            },
+            {
+              "calls": [
+                {
+                  "line": 32,
+                  "name": "read_text",
+                  "target": null,
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 34,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 43,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 53,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "\"plugin\" in data and data[\"plugin\"] is not None and ( not i…",
+                  "line": 196,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "\"pins\" in data and not isinstance(data[\"pins\"], dict)",
+                  "line": 202,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "load_rubric"
+            },
+            {
+              "calls": [
+                {
+                  "line": 219,
+                  "name": "exists",
+                  "target": null
+                },
+                {
+                  "line": 219,
+                  "name": "is_dir",
+                  "target": null
+                },
+                {
+                  "branch": "not project_root.exists() or not project_root.is_dir()",
+                  "line": 220,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 229,
+                  "name": "load_map_yaml",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  }
+                },
+                {
+                  "line": 230,
+                  "name": "validate_map",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  }
+                },
+                {
+                  "line": 232,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 32,
+                  "name": "read_text",
+                  "target": null,
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 34,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 43,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 53,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "\"name\" in data and (not isinstance(data[\"name\"], str) or no…",
+                  "line": 72,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_project_meta"
+                },
+                {
+                  "branch": "\"rules\" not in data or not isinstance(data[\"rules\"], list)",
+                  "line": 92,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_constitution"
+                },
+                {
+                  "branch": "\"traits\" in data and not isinstance(data[\"traits\"], dict)",
+                  "line": 107,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_terminology"
+                },
+                {
+                  "line": 143,
+                  "name": "load_map_yaml",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "line": 144,
+                  "name": "validate_map",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "branch": "map_data is not None",
+                  "line": 121,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "derive_lanes_from_map"
+                },
+                {
+                  "branch": "not isinstance(lanes, list)",
+                  "line": 155,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "branch": "not isinstance(lane, dict) or not isinstance(lane.get(\"id\")…",
+                  "line": 163,
+                  "name": "refused_error",
+                  "over": "enumerate(lanes)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "branch": "\"id_patterns\" in lane",
+                  "line": 169,
+                  "name": "refused_error",
+                  "over": "enumerate(lanes)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "branch": "lane_ids != expected_kinds",
+                  "line": 179,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "branch": "\"plugin\" in data and data[\"plugin\"] is not None and ( not i…",
+                  "line": 196,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_rubric"
+                },
+                {
+                  "branch": "\"pins\" in data and not isinstance(data[\"pins\"], dict)",
+                  "line": 202,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_rubric"
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "load_project_config"
+            },
+            {
+              "calls": [
+                {
+                  "line": 275,
+                  "name": "exists",
+                  "target": null
+                },
+                {
+                  "line": 275,
+                  "name": "is_dir",
+                  "target": null
+                },
+                {
+                  "branch": "not project_root.exists() or not project_root.is_dir()",
+                  "line": 276,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not resolved_map.is_file()",
+                  "line": 287,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 293,
+                  "name": "load_map_yaml",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  }
+                },
+                {
+                  "line": 294,
+                  "name": "validate_map",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  }
+                },
+                {
+                  "line": 296,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 32,
+                  "name": "read_text",
+                  "target": null,
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 34,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "line": 43,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 53,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_read_json_object"
+                },
+                {
+                  "branch": "\"name\" in data and (not isinstance(data[\"name\"], str) or no…",
+                  "line": 72,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_project_meta"
+                },
+                {
+                  "branch": "\"rules\" not in data or not isinstance(data[\"rules\"], list)",
+                  "line": 92,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_constitution"
+                },
+                {
+                  "branch": "\"traits\" in data and not isinstance(data[\"traits\"], dict)",
+                  "line": 107,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_terminology"
+                },
+                {
+                  "line": 143,
+                  "name": "load_map_yaml",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "line": 144,
+                  "name": "validate_map",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "branch": "map_data is not None",
+                  "line": 121,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "derive_lanes_from_map"
+                },
+                {
+                  "branch": "not isinstance(lanes, list)",
+                  "line": 155,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "branch": "not isinstance(lane, dict) or not isinstance(lane.get(\"id\")…",
+                  "line": 163,
+                  "name": "refused_error",
+                  "over": "enumerate(lanes)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "branch": "\"id_patterns\" in lane",
+                  "line": 169,
+                  "name": "refused_error",
+                  "over": "enumerate(lanes)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "branch": "lane_ids != expected_kinds",
+                  "line": 179,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_lanes"
+                },
+                {
+                  "branch": "\"plugin\" in data and data[\"plugin\"] is not None and ( not i…",
+                  "line": 196,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_rubric"
+                },
+                {
+                  "branch": "\"pins\" in data and not isinstance(data[\"pins\"], dict)",
+                  "line": 202,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_rubric"
+                },
+                {
+                  "line": 324,
+                  "name": "canonical_map_bytes",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "compute_config_fingerprint",
+              "truncated": true
+            }
+          ]
+        },
+        {
+          "exports": [
+            "refused_error",
+            "usage_error"
+          ],
+          "hash": "4da0e0bfedeb75beceecb69903295adc14cc52bcf0cfe251a43c51ece36e69f8",
+          "path": "src/reasoning_dataset_lab/errors.py"
+        },
+        {
+          "entry": "check_map_file",
+          "entryRule": 4,
+          "exports": [
+            "canonical_map_bytes",
+            "canonical_map_sha256",
+            "check_map_file",
+            "load_map_yaml",
+            "validate_map"
+          ],
+          "failurePaths": [
+            {
+              "in": "_check_unknown_keys",
+              "kind": "raise",
+              "line": 133
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "raise",
+              "line": 159
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "except",
+              "line": 166
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "raise",
+              "line": 167
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "except",
+              "line": 175
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "raise",
+              "line": 176
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "raise",
+              "line": 183
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 193
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 199
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 208
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 214
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 223
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 230
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 236
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 252
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 271
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 281
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 288
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 298
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 306
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 312
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 324
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 333
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 341
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 350
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 365
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 373
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 382
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 391
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 399
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 407
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 416
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 426
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 433
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 439
+            },
+            {
+              "in": "_validate_variety",
+              "kind": "raise",
+              "line": 448
+            },
+            {
+              "in": "_validate_variety",
+              "kind": "raise",
+              "line": 456
+            },
+            {
+              "in": "_normalize_kind_list",
+              "kind": "raise",
+              "line": 472
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 481
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 489
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 496
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 505
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 512
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 519
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 531
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 536
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 543
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 551
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 557
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 566
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 573
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 579
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 588
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 595
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 601
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 607
+            },
+            {
+              "in": "_validate_splits",
+              "kind": "raise",
+              "line": 616
+            },
+            {
+              "in": "_validate_splits",
+              "kind": "raise",
+              "line": 626
+            },
+            {
+              "in": "_validate_splits",
+              "kind": "raise",
+              "line": 633
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 643
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 653
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 661
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 669
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 693
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 700
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 707
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 714
+            }
+          ],
+          "hash": "999bff52f0bc2040c06ccf99f6c759d08c2a132d67f040c1d6944b392398fb9a",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/errors.py"
+          ],
+          "path": "src/reasoning_dataset_lab/map.py",
+          "sequences": [
+            {
+              "calls": [
+                {
+                  "branch": "unknown",
+                  "line": 133,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_check_unknown_keys"
+            },
+            {
+              "calls": [
+                {
+                  "line": 158,
+                  "name": "exists",
+                  "target": null
+                },
+                {
+                  "line": 158,
+                  "name": "is_file",
+                  "target": null
+                },
+                {
+                  "branch": "not path.exists() or not path.is_file()",
+                  "line": 159,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 165,
+                  "name": "read_text",
+                  "target": null
+                },
+                {
+                  "line": 167,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 176,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 183,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "load_map_yaml"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "not isinstance(axes, dict) or not axes",
+                  "line": 193,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "\"kind\" not in axes",
+                  "line": 199,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(axis_name, str) or not axis_name.strip()",
+                  "line": 208,
+                  "name": "refused_error",
+                  "over": "axes.items()",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(values, list) or not values",
+                  "line": 214,
+                  "name": "refused_error",
+                  "over": "axes.items()",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(val, str) or not val.strip()",
+                  "line": 223,
+                  "name": "refused_error",
+                  "over": "values",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "axis_name == \"wrong_family\" and val in FORBIDDEN_WRONG_FAMI…",
+                  "line": 230,
+                  "name": "refused_error",
+                  "over": "values",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "val in seen",
+                  "line": 236,
+                  "name": "refused_error",
+                  "over": "values",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_validate_axes"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "not isinstance(cells, list) or not cells",
+                  "line": 252,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(cell, dict)",
+                  "line": 271,
+                  "name": "refused_error",
+                  "over": "enumerate(cells)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "unknown",
+                  "line": 133,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_check_unknown_keys"
+                },
+                {
+                  "branch": "axis_name not in cell",
+                  "line": 281,
+                  "name": "refused_error",
+                  "over": "axis_names",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(val, str) or val not in axes[axis_name]",
+                  "line": 288,
+                  "name": "refused_error",
+                  "over": "axis_names",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "coord_tuple in seen_coords",
+                  "line": 298,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "\"target\" not in cell or not _is_int(cell[\"target\"]) or cell…",
+                  "line": 306,
+                  "name": "refused_error",
+                  "over": "enumerate(cells)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "\"capacity\" not in cell or not _is_int(cell[\"capacity\"]) or …",
+                  "line": 312,
+                  "name": "refused_error",
+                  "over": "enumerate(cells)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(reason, str) or not reason.strip()",
+                  "line": 324,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(cell[\"reason\"], str) or not cell[\"reason\"].s…",
+                  "line": 333,
+                  "name": "refused_error",
+                  "over": "enumerate(cells)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "target > capacity",
+                  "line": 341,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(refs, list) or not all(isinstance(r, str) an…",
+                  "line": 350,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_validate_cells"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "not isinstance(shares, list)",
+                  "line": 365,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(rule, dict)",
+                  "line": 373,
+                  "name": "refused_error",
+                  "over": "enumerate(shares)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "unknown",
+                  "line": 133,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_check_unknown_keys"
+                },
+                {
+                  "branch": "not isinstance(axis, str) or not axis.strip()",
+                  "line": 382,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(vals, list) or not vals or not all(isinstanc…",
+                  "line": 391,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "bad_vals",
+                  "line": 399,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not has_constraint",
+                  "line": 407,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not _is_int(md) or md < 1",
+                  "line": 416,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not _is_number(min_share) or not (0.0 <= float(min_share) <…",
+                  "line": 426,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not _is_number(max_share) or not (0.0 <= float(max_share) <…",
+                  "line": 433,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "min_share is not None and max_share is not None and float(m…",
+                  "line": 439,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_validate_shares"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "not isinstance(variety, dict) or not variety",
+                  "line": 448,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "unknown",
+                  "line": 133,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_check_unknown_keys"
+                },
+                {
+                  "branch": "not _is_number(val) or not (0.0 < float(val) <= 1.0)",
+                  "line": 456,
+                  "name": "refused_error",
+                  "over": "variety.items()",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_validate_variety"
+            },
+            {
+              "calls": [
+                {
+                  "line": 472,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_normalize_kind_list"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "not isinstance(acceptance, dict) or not acceptance",
+                  "line": 481,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "unknown",
+                  "line": 133,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_check_unknown_keys"
+                },
+                {
+                  "branch": "\"min_pass_rate_per_class\" not in acceptance",
+                  "line": 489,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not _is_number(mprc) or not (0.0 <= float(mprc) <= 1.0)",
+                  "line": 496,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(kpr, dict)",
+                  "line": 505,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "\"kind\" not in kpr or \"min\" not in kpr",
+                  "line": 512,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 472,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_normalize_kind_list"
+                },
+                {
+                  "branch": "not _is_number(kpr[\"min\"]) or not (0.0 <= float(kpr[\"min\"])…",
+                  "line": 519,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "proved_in_axes",
+                  "line": 531,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(ur, dict)",
+                  "line": 536,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "\"kind\" not in ur or \"min\" not in ur",
+                  "line": 543,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "non_judged",
+                  "line": 551,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not _is_number(ur[\"min\"]) or not (0.0 <= float(ur[\"min\"]) <…",
+                  "line": 557,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(ca, dict) or not ca",
+                  "line": 566,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "\"report_only\" in ca and not isinstance(ca[\"report_only\"], b…",
+                  "line": 573,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "\"min\" in ca and (not _is_number(ca[\"min\"]) or not (0.0 <= f…",
+                  "line": 579,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(hs, dict)",
+                  "line": 588,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "\"size\" not in hs or \"max_defects\" not in hs",
+                  "line": 595,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not _is_int(hs[\"size\"]) or hs[\"size\"] < 1",
+                  "line": 601,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not _is_int(hs[\"max_defects\"]) or hs[\"max_defects\"] < 0",
+                  "line": 607,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_validate_acceptance"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "not isinstance(splits, dict) or not splits",
+                  "line": 616,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "unknown",
+                  "line": 133,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_check_unknown_keys"
+                },
+                {
+                  "branch": "not _is_int(count) or count < 0",
+                  "line": 626,
+                  "name": "refused_error",
+                  "over": "splits.items()",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "split_sum != target_total",
+                  "line": 633,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_validate_splits"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "not isinstance(map_data, dict)",
+                  "line": 643,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "unknown",
+                  "line": 133,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_check_unknown_keys"
+                },
+                {
+                  "branch": "missing",
+                  "line": 653,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not _is_int(map_version) or map_version < 1",
+                  "line": 661,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(dataset, str) or not dataset.strip()",
+                  "line": 669,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(axes, dict) or not axes",
+                  "line": 193,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "\"kind\" not in axes",
+                  "line": 199,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "not isinstance(axis_name, str) or not axis_name.strip()",
+                  "line": 208,
+                  "name": "refused_error",
+                  "over": "axes.items()",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "not isinstance(values, list) or not values",
+                  "line": 214,
+                  "name": "refused_error",
+                  "over": "axes.items()",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "not isinstance(val, str) or not val.strip()",
+                  "line": 223,
+                  "name": "refused_error",
+                  "over": "values",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "axis_name == \"wrong_family\" and val in FORBIDDEN_WRONG_FAMI…",
+                  "line": 230,
+                  "name": "refused_error",
+                  "over": "values",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "val in seen",
+                  "line": 236,
+                  "name": "refused_error",
+                  "over": "values",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "not isinstance(cells, list) or not cells",
+                  "line": 252,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "not isinstance(cell, dict)",
+                  "line": 271,
+                  "name": "refused_error",
+                  "over": "enumerate(cells)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "axis_name not in cell",
+                  "line": 281,
+                  "name": "refused_error",
+                  "over": "axis_names",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "not isinstance(val, str) or val not in axes[axis_name]",
+                  "line": 288,
+                  "name": "refused_error",
+                  "over": "axis_names",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "coord_tuple in seen_coords",
+                  "line": 298,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "\"target\" not in cell or not _is_int(cell[\"target\"]) or cell…",
+                  "line": 306,
+                  "name": "refused_error",
+                  "over": "enumerate(cells)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "\"capacity\" not in cell or not _is_int(cell[\"capacity\"]) or …",
+                  "line": 312,
+                  "name": "refused_error",
+                  "over": "enumerate(cells)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "not isinstance(reason, str) or not reason.strip()",
+                  "line": 324,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "not isinstance(cell[\"reason\"], str) or not cell[\"reason\"].s…",
+                  "line": 333,
+                  "name": "refused_error",
+                  "over": "enumerate(cells)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "target > capacity",
+                  "line": 341,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "not isinstance(refs, list) or not all(isinstance(r, str) an…",
+                  "line": 350,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "not isinstance(shares, list)",
+                  "line": 365,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_shares"
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "validate_map",
+              "truncated": true
+            },
+            {
+              "calls": [
+                {
+                  "line": 158,
+                  "name": "exists",
+                  "target": null,
+                  "via": "load_map_yaml"
+                },
+                {
+                  "line": 158,
+                  "name": "is_file",
+                  "target": null,
+                  "via": "load_map_yaml"
+                },
+                {
+                  "branch": "not path.exists() or not path.is_file()",
+                  "line": 159,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_map_yaml"
+                },
+                {
+                  "line": 165,
+                  "name": "read_text",
+                  "target": null,
+                  "via": "load_map_yaml"
+                },
+                {
+                  "line": 167,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_map_yaml"
+                },
+                {
+                  "line": 176,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_map_yaml"
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 183,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_map_yaml"
+                },
+                {
+                  "branch": "not isinstance(map_data, dict)",
+                  "line": 643,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "validate_map"
+                },
+                {
+                  "branch": "unknown",
+                  "line": 133,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_check_unknown_keys"
+                },
+                {
+                  "branch": "missing",
+                  "line": 653,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "validate_map"
+                },
+                {
+                  "branch": "not _is_int(map_version) or map_version < 1",
+                  "line": 661,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "validate_map"
+                },
+                {
+                  "branch": "not isinstance(dataset, str) or not dataset.strip()",
+                  "line": 669,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "validate_map"
+                },
+                {
+                  "branch": "not isinstance(axes, dict) or not axes",
+                  "line": 193,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "\"kind\" not in axes",
+                  "line": 199,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "not isinstance(axis_name, str) or not axis_name.strip()",
+                  "line": 208,
+                  "name": "refused_error",
+                  "over": "axes.items()",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "not isinstance(values, list) or not values",
+                  "line": 214,
+                  "name": "refused_error",
+                  "over": "axes.items()",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "not isinstance(val, str) or not val.strip()",
+                  "line": 223,
+                  "name": "refused_error",
+                  "over": "values",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "axis_name == \"wrong_family\" and val in FORBIDDEN_WRONG_FAMI…",
+                  "line": 230,
+                  "name": "refused_error",
+                  "over": "values",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "val in seen",
+                  "line": 236,
+                  "name": "refused_error",
+                  "over": "values",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_axes"
+                },
+                {
+                  "branch": "not isinstance(cells, list) or not cells",
+                  "line": 252,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "not isinstance(cell, dict)",
+                  "line": 271,
+                  "name": "refused_error",
+                  "over": "enumerate(cells)",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "axis_name not in cell",
+                  "line": 281,
+                  "name": "refused_error",
+                  "over": "axis_names",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "not isinstance(val, str) or val not in axes[axis_name]",
+                  "line": 288,
+                  "name": "refused_error",
+                  "over": "axis_names",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                },
+                {
+                  "branch": "coord_tuple in seen_coords",
+                  "line": 298,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_cells"
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "check_map_file",
+              "truncated": true
+            }
+          ]
+        }
+      ],
+      "globs": [
+        "src/**"
+      ],
+      "importConfidence": "full",
+      "name": "src",
+      "origin": "authored",
+      "outsidePlaces": [
+        {
+          "reads": 5,
+          "where": [
+            "caller"
+          ],
+          "writes": 0
+        }
+      ],
+      "outsideReads": 5,
+      "role": "code",
+      "testRunners": [
+        "pytest"
+      ],
+      "testedBy": 3,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
+          "exports": [
+            "test_cli_main_raises_system_exit",
+            "test_cli_map_check_passes_on_example",
+            "test_cli_map_check_refuses_target_exceeding_capacity",
+            "test_cli_project_fingerprint",
+            "test_cli_usage_errors"
+          ],
+          "hash": "a945cb5ede14ade553d20f8a6dfd0b6b7a1f1f567774a01dbcce6e7ddbe88e6b",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/cli.py",
+            "src/reasoning_dataset_lab/errors.py"
+          ],
+          "path": "tests/test_cli.py",
+          "testFramework": "pytest"
+        },
+        {
+          "exports": [
+            "test_default_loaders_when_files_absent",
+            "test_fingerprint_stability_and_byte_sensitivity",
+            "test_full_project_config_loads_cleanly",
+            "test_lanes_derived_from_map_kind_axis",
+            "test_loader_refusals_and_usage_errors"
+          ],
+          "hash": "76943ae5fd9d7cfe1d0f348b113a413d2484fb1f510f970870c17ae2f5f3be63",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/config.py",
+            "src/reasoning_dataset_lab/errors.py",
+            "src/reasoning_dataset_lab/map.py"
+          ],
+          "path": "tests/test_config.py",
+          "testFramework": "pytest"
+        },
+        {
+          "exports": [
+            "test_allows_unanimity_rate_on_judged_kinds",
+            "test_canonical_map_sha256_sorted_keys_and_lf",
+            "test_example_t10_pilot_a_map_passes",
+            "test_map_cell_validations",
+            "test_map_file_errors",
+            "test_map_read_oserror",
+            "test_map_shares_variety_acceptance_splits_and_canon_validations",
+            "test_map_top_level_and_axis_validations",
+            "test_refuses_scalar_unanimity_rate_when_proved_kind_present",
+            "test_refuses_shorthand_wrong_family_aliases",
+            "test_refuses_target_exceeds_capacity",
+            "test_refuses_target_exceeds_zero_capacity",
+            "test_refuses_unanimity_rate_on_proved_kind",
+            "test_refuses_unknown_keys_at_every_level",
+            "test_refuses_zero_capacity_without_reason"
+          ],
+          "hash": "45131fd731ade0354affe6e1b514f01d8af0db95c2308d103fc814509bcd6c3b",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/errors.py",
+            "src/reasoning_dataset_lab/map.py"
+          ],
+          "path": "tests/test_map.py",
+          "testFramework": "pytest"
+        }
+      ],
+      "globs": [
+        "tests/**"
+      ],
+      "importConfidence": "full",
+      "name": "tests",
+      "origin": "authored",
+      "role": "test",
+      "testRunners": [
+        "pytest"
+      ],
+      "testedBy": 0,
+      "unresolvedSites": 0
+    }
+  ],
+  "doors": [
+    {
+      "checksCount": 0,
+      "commands": [
+        {
+          "dir": "",
+          "job": "test",
+          "programs": [
+            "python"
+          ],
+          "step": "Install dependencies"
+        },
+        {
+          "dir": "",
+          "job": "test",
+          "programs": [
+            "python"
+          ],
+          "step": "Run pytest with coverage (floor 90%)"
+        },
+        {
+          "dir": "",
+          "job": "test",
+          "programs": [
+            "rdlab"
+          ],
+          "step": "Validate example map"
+        },
+        {
+          "dir": "",
+          "job": "test",
+          "programs": [
+            "npx"
+          ],
+          "step": "Atlas check"
+        }
+      ],
+      "elsewhere": [],
+      "file": ".github/workflows/ci.yml",
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "test",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "3.12",
+                  "range": ">=3.12.0 <3.13.0-0"
+                }
+              ],
+              "step": "1",
+              "uses": "actions/setup-python",
+              "version": "3.12"
+            },
+            {
+              "ranges": [
+                {
+                  "from": "22",
+                  "range": ">=22.0.0 <23.0.0-0"
+                }
+              ],
+              "step": "5",
+              "uses": "actions/setup-node",
+              "version": "22"
+            }
+          ]
+        }
+      ],
+      "landings": [],
+      "mentions": [
+        {
+          "job": "test",
+          "path": "examples/t10-pilot-a.map.yaml"
+        }
+      ],
+      "name": "ci",
+      "permissions": [
+        "contents:read"
+      ],
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "src",
+          "depth": 0,
+          "files": 5
+        },
+        {
+          "boundary": "tests",
+          "depth": 0,
+          "files": 3
+        }
+      ],
+      "readers": [],
+      "runs": [
+        {
+          "job": "test",
+          "path": "src/reasoning_dataset_lab/cli.py",
+          "runKind": "executes"
+        },
+        {
+          "directory": true,
+          "job": "test",
+          "matched": true,
+          "path": "tests/",
+          "runKind": "executes",
+          "via": "pytest pyproject.toml"
+        }
+      ],
+      "runsCount": 2,
+      "secrets": [],
+      "sends": {
+        "deploysPages": false,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "tests": [
+        {
+          "config": "pyproject.toml",
+          "coverage": true,
+          "files": 3,
+          "job": "test",
+          "runner": "pytest",
+          "step": "Run pytest with coverage (floor 90%)"
+        }
+      ],
+      "triggers": [
+        {
+          "event": "pull_request"
+        },
+        {
+          "branches": [
+            "main"
+          ],
+          "event": "push",
+          "paths": [
+            ".github/workflows/**",
+            "atlas/**",
+            "examples/**",
+            "pyproject.toml",
+            "src/**",
+            "tests/**",
+            "uv.lock"
+          ]
+        },
+        {
+          "event": "workflow_dispatch"
+        }
+      ],
+      "uses": [
+        "actions/checkout",
+        "actions/setup-node",
+        "actions/setup-python"
+      ],
+      "usesWorkflowToken": false
+    },
+    {
+      "checksCount": 0,
+      "commands": [],
+      "elsewhere": [],
+      "file": "pyproject.toml",
+      "kind": "command",
+      "landings": [],
+      "mentions": [],
+      "name": "rdlab",
+      "permissions": [],
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "src",
+          "depth": 0,
+          "files": 5
+        }
+      ],
+      "readers": [],
+      "runs": [
+        {
+          "path": "src/reasoning_dataset_lab/cli.py",
+          "runKind": "executes"
+        }
+      ],
+      "runsCount": 1,
+      "secrets": [],
+      "sends": {
+        "deploysPages": false,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "triggers": [],
+      "uses": [],
+      "usesWorkflowToken": false
+    }
+  ],
+  "edges": [
+    {
+      "from": "tests",
+      "fromTests": true,
+      "kind": "file",
+      "to": "src"
+    }
+  ],
+  "engine": "1.24.0",
+  "generatedFrom": {
+    "commit": "c25cff9b23b399dc59885c4acb581076ae33ab71",
+    "tracked": 18
+  },
+  "landings": [
+    {
+      "readers": [
+        {
+          "by": "pyproject.toml",
+          "call": "configuration",
+          "confidence": "config"
+        }
+      ],
+      "target": "README.md",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": ".github/workflows/ci.yml",
+          "confidence": "config"
+        },
+        {
+          "by": "README.md",
+          "call": "--map",
+          "confidence": "text"
+        }
+      ],
+      "target": "examples/t10-pilot-a.map.yaml",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "pyproject.toml",
+          "call": "configuration",
+          "confidence": "config"
+        }
+      ],
+      "target": "src/reasoning_dataset_lab",
+      "writers": []
+    }
+  ],
+  "overlaps": [],
+  "submodules": [],
+  "symlinks": [],
+  "testFiles": 3,
+  "unassigned": []
+}

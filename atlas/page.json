@@ -1,0 +1,138 @@
+{
+  "authored": [
+    ".github/",
+    "examples/",
+    "root"
+  ],
+  "breaks": [
+    {
+      "doors": 2,
+      "importedBy": [],
+      "importedByTests": [
+        "tests"
+      ],
+      "kind": "part",
+      "name": "src",
+      "partLabel": "src"
+    }
+  ],
+  "changes": {
+    "first": true
+  },
+  "changesTogether": [],
+  "changesTogetherNote": [
+    "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
+  ],
+  "changesTogetherWithTests": 0,
+  "commit": "c25cff9b23b399dc59885c4acb581076ae33ab71",
+  "defaultBranch": "main",
+  "derived": "5 parts, mostly Python (8 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
+  "doors": [
+    {
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
+      "file": ".github/workflows/ci.yml",
+      "id": ".github/workflows/ci.yml",
+      "landings": [],
+      "name": "ci",
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "src",
+          "depth": 0,
+          "files": 5
+        },
+        {
+          "boundary": "tests",
+          "depth": 0,
+          "files": 3
+        }
+      ],
+      "runs": [
+        "src/reasoning_dataset_lab/cli.py",
+        "tests/"
+      ],
+      "runsCount": 2,
+      "runsMore": 0,
+      "sends": [],
+      "stages": [],
+      "triggers": [
+        "on a pull request",
+        "on a push to main touching 7 paths",
+        "or by hand"
+      ]
+    },
+    {
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
+      "file": "pyproject.toml",
+      "id": "pyproject.toml#rdlab",
+      "kind": "command",
+      "landings": [],
+      "name": "rdlab",
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "src",
+          "depth": 0,
+          "files": 5
+        }
+      ],
+      "runs": [
+        "src/reasoning_dataset_lab/cli.py"
+      ],
+      "runsCount": 1,
+      "runsMore": 0,
+      "sends": [],
+      "stages": [],
+      "triggers": []
+    }
+  ],
+  "duplicates": [],
+  "duplicatesLead": null,
+  "duplicatesNote": [],
+  "edges": [],
+  "engine": "1.24.0",
+  "generated": [],
+  "generatedAt": "2026-10-24T22:23:46.979Z",
+  "limits": [
+    "1 read uses a path built at run time and is not named here.",
+    "5 reads go to a path their caller passes, not to this repository.",
+    "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions."
+  ],
+  "mainDoor": ".github/workflows/ci.yml",
+  "partLabels": {
+    ".github": ".github",
+    "examples": "examples",
+    "root": "the repository root",
+    "src": "src",
+    "tests": "tests"
+  },
+  "parts": 5,
+  "readers": [],
+  "repo": "mcp-tool-shop-org/reasoning-dataset-lab",
+  "sequences": [],
+  "startDoor": ".github/workflows/ci.yml",
+  "startHere": [
+    ".github/workflows/ci.yml",
+    "src/reasoning_dataset_lab/cli.py",
+    "src/reasoning_dataset_lab/errors.py",
+    "src/reasoning_dataset_lab/map.py",
+    "src/reasoning_dataset_lab/config.py"
+  ],
+  "summary": "reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints.",
+  "summaryFrom": "person",
+  "testFiles": 3,
+  "testedBy": {
+    "src": 3
+  },
+  "unnamedWrites": 0,
+  "unread": [],
+  "unreadFiles": 0,
+  "unreadNote": [],
+  "untested": [],
+  "untestedNote": [],
+  "written": 0
+}

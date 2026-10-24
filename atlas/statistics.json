@@ -1,0 +1,239 @@
+{
+  "authorship": {
+    "parts": [],
+    "places": []
+  },
+  "boundaries": [
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": true,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": ".github",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": true,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "examples",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": true,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "root",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": true,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": [
+          "tests"
+        ]
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "src",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": true,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
+      "name": "tests",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    }
+  ],
+  "churn": {
+    "definition": "commits is how many commits in the window touch the file, including merges and commits dropped from coupling. lines is added plus deleted in those commits.",
+    "files": [
+      {
+        "commits": 1,
+        "lines": 1,
+        "path": ".gitattributes"
+      },
+      {
+        "commits": 1,
+        "lines": 49,
+        "path": ".github/workflows/ci.yml"
+      },
+      {
+        "commits": 1,
+        "lines": 14,
+        "path": ".gitignore"
+      },
+      {
+        "commits": 1,
+        "lines": 14,
+        "path": "CHANGELOG.md"
+      },
+      {
+        "commits": 1,
+        "lines": 21,
+        "path": "LICENSE"
+      },
+      {
+        "commits": 1,
+        "lines": 43,
+        "path": "README.md"
+      },
+      {
+        "commits": 1,
+        "lines": 22,
+        "path": "SECURITY.md"
+      },
+      {
+        "commits": 1,
+        "lines": 22,
+        "path": "atlas/boundaries.yaml"
+      },
+      {
+        "commits": 1,
+        "lines": 56,
+        "path": "examples/t10-pilot-a.map.yaml"
+      },
+      {
+        "commits": 1,
+        "lines": 49,
+        "path": "pyproject.toml"
+      },
+      {
+        "commits": 1,
+        "lines": 7,
+        "path": "src/reasoning_dataset_lab/__init__.py"
+      },
+      {
+        "commits": 1,
+        "lines": 131,
+        "path": "src/reasoning_dataset_lab/cli.py"
+      },
+      {
+        "commits": 1,
+        "lines": 349,
+        "path": "src/reasoning_dataset_lab/config.py"
+      },
+      {
+        "commits": 1,
+        "lines": 49,
+        "path": "src/reasoning_dataset_lab/errors.py"
+      },
+      {
+        "commits": 1,
+        "lines": 736,
+        "path": "src/reasoning_dataset_lab/map.py"
+      },
+      {
+        "commits": 1,
+        "lines": 81,
+        "path": "tests/test_cli.py"
+      },
+      {
+        "commits": 1,
+        "lines": 307,
+        "path": "tests/test_config.py"
+      },
+      {
+        "commits": 1,
+        "lines": 590,
+        "path": "tests/test_map.py"
+      },
+      {
+        "commits": 1,
+        "lines": 261,
+        "path": "uv.lock"
+      }
+    ]
+  },
+  "confidence": {
+    "level": "low",
+    "reason": "fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions"
+  },
+  "generatedAt": "2026-10-24T22:23:46.979Z",
+  "generatedFrom": {
+    "commit": "c25cff9b23b399dc59885c4acb581076ae33ab71"
+  },
+  "pairs": [],
+  "parameters": {
+    "appliedChangesetLimit": 4.75,
+    "changeset": 50,
+    "changesetFraction": 0.25,
+    "cohesionDrop": 0.2,
+    "couplingPopulation": "source",
+    "fallenShared": 3,
+    "floor": "fallen",
+    "floorHeld": false,
+    "floorTrigger": "both",
+    "headDate": "2026-10-24T18:23:43-04:00",
+    "inScopeFiles": 19,
+    "pinnedStart": null,
+    "priorFloor": null,
+    "qualifyingCommits": 0,
+    "qualifyingMinimum": 30,
+    "revisions": 5,
+    "shared": 10,
+    "sharedFloorUsed": 3,
+    "since": "2026-04-27T22:23:43.000Z",
+    "sourceExtensions": [
+      ".js",
+      ".mjs",
+      ".cjs",
+      ".jsx",
+      ".ts",
+      ".tsx",
+      ".mts",
+      ".cts",
+      ".py",
+      ".rs",
+      ".gd"
+    ],
+    "sourceFileReach": 20,
+    "sourceFileRise": 25,
+    "sourceFilesReachingStrongFloor": 0,
+    "strength": 0.5,
+    "windowDays": 180
+  },
+  "strengthDefinition": "strength is the shared qualifying commits divided by either. either is the number of qualifying commits that touch either file."
+}

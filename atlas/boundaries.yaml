@@ -1,0 +1,22 @@
+summary: "reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints."
+boundaries:
+  - name: .github
+    globs:
+      - .github/**
+    role: config
+  - name: examples
+    globs:
+      - examples/**
+    role: data
+  - name: src
+    globs:
+      - src/**
+    role: code
+  - name: tests
+    globs:
+      - tests/**
+    role: test
+  - name: root
+    globs:
+      - "*"
+    role: config
