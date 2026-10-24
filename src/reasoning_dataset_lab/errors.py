@@ -16,7 +16,7 @@ EXIT_REFUSED = 1
 EXIT_USAGE = 2
 
 
-@dataclass(frozen=True)
+@dataclass
 class RdlabError(Exception):
     """Structured error carrying {code, message, hint} and a CLI exit code."""
 

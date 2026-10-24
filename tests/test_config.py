@@ -305,3 +305,90 @@ def test_loader_refusals_and_usage_errors(tmp_path: Path) -> None:
             load_lanes(empty_proj)
         assert exc_info.value.code == "CONFIG_READ_ERROR"
 
+
+def test_fingerprint_crlf_lf_and_bom_cross_platform_stability(tmp_path: Path) -> None:
+    proj_lf = tmp_path / "proj_lf"
+    proj_crlf = tmp_path / "proj_crlf"
+    proj_bom = tmp_path / "proj_bom"
+    proj_lf.mkdir()
+    proj_crlf.mkdir()
+    proj_bom.mkdir()
+    _populate_full_project(proj_lf)
+    _populate_full_project(proj_crlf)
+    _populate_full_project(proj_bom)
+
+    rel_files = [*FIVE_PROJECT_FILES, "map.yaml", "canon/trait/T10.yaml"]
+    for rel in rel_files:
+        raw = (proj_lf / rel).read_bytes()
+        lf_bytes = raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+        crlf_bytes = lf_bytes.replace(b"\n", b"\r\n")
+        (proj_lf / rel).write_bytes(lf_bytes)
+        (proj_crlf / rel).write_bytes(crlf_bytes)
+        (proj_bom / rel).write_bytes(b"\xef\xbb\xbf" + crlf_bytes)
+
+    fp_lf = compute_config_fingerprint(proj_lf)
+    fp_crlf = compute_config_fingerprint(proj_crlf)
+    assert fp_lf == fp_crlf
+    fp_bom = compute_config_fingerprint(proj_bom)
+    assert fp_lf == fp_bom
+
+    # Any real content change in any file still changes the fingerprint
+    for rel in rel_files:
+        target = proj_crlf / rel
+        saved = target.read_bytes()
+        try:
+            target.write_bytes(saved + b"\r\n")
+            assert compute_config_fingerprint(proj_crlf) != fp_lf
+        finally:
+            target.write_bytes(saved)
+        assert compute_config_fingerprint(proj_crlf) == fp_lf
+
+
+def test_refuses_config_null_bypasses_and_non_hex_rubric_sha256(tmp_path: Path) -> None:
+    # project.json null/empty display_name or version
+    (tmp_path / "project.json").write_text('{"name": "ok", "display_name": null}', encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_info:
+        load_project_meta(tmp_path)
+    assert exc_info.value.code == "CONFIG_INVALID_PROJECT"
+
+    (tmp_path / "project.json").write_text('{"name": "ok", "version": null}', encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_info:
+        load_project_meta(tmp_path)
+    assert exc_info.value.code == "CONFIG_INVALID_PROJECT"
+    (tmp_path / "project.json").unlink()
+
+    # lanes.json null default_lane or invalid lane kind
+    (tmp_path / "lanes.json").write_text(
+        '{"default_lane": null, "lanes": [{"id": "B", "kind": "B"}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_info:
+        load_lanes(tmp_path)
+    assert exc_info.value.code == "CONFIG_INVALID_LANES"
+
+    (tmp_path / "lanes.json").write_text(
+        '{"default_lane": "B", "lanes": [{"id": "B", "kind": null}]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_info:
+        load_lanes(tmp_path)
+    assert exc_info.value.code == "CONFIG_INVALID_LANES"
+    (tmp_path / "lanes.json").unlink()
+
+    # rubric.json null plugin or non-hex sha256 in pins
+    (tmp_path / "rubric.json").write_text('{"plugin": null, "pins": {}}', encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_info:
+        load_rubric(tmp_path)
+    assert exc_info.value.code == "CONFIG_INVALID_RUBRIC"
+
+    for bad_sha in ("Z" * 64, "A" * 64, "short", None, 123):
+        (tmp_path / "rubric.json").write_text(
+            json.dumps({"plugin": "aspire_si_gates", "pins": {"sha256": bad_sha}}),
+            encoding="utf-8",
+        )
+        with pytest.raises(RdlabError) as exc_info:
+            load_rubric(tmp_path)
+        assert exc_info.value.code == "CONFIG_INVALID_RUBRIC_SHA256"
+    (tmp_path / "rubric.json").unlink()
+
+

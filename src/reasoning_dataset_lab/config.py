@@ -16,7 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from reasoning_dataset_lab.errors import refused_error, usage_error
-from reasoning_dataset_lab.map import canonical_map_bytes, load_map_yaml, validate_map
+from reasoning_dataset_lab.map import (
+    canonical_map_bytes,
+    is_valid_sha256,
+    load_map_yaml,
+    validate_map,
+)
 
 FIVE_PROJECT_FILES: tuple[str, ...] = (
     "project.json",
@@ -26,10 +31,19 @@ FIVE_PROJECT_FILES: tuple[str, ...] = (
     "rubric.json",
 )
 
+UTF8_BOM: bytes = b"\xef\xbb\xbf"
+
+
+def normalize_text_bytes(raw: bytes) -> bytes:
+    """Strip a leading UTF-8 BOM and normalize CRLF/CR line endings to LF."""
+    if raw.startswith(UTF8_BOM):
+        raw = raw[len(UTF8_BOM) :]
+    return raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
 
 def _read_json_object(path: Path, *, allow_list_as_rules: bool = False) -> dict[str, Any]:
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise usage_error(
             "CONFIG_READ_ERROR",
@@ -68,12 +82,13 @@ def load_project_meta(project_root: Path) -> dict[str, Any]:
             "version": "0.1.0",
         }
     data = _read_json_object(path)
-    if "name" in data and (not isinstance(data["name"], str) or not data["name"].strip()):
-        raise refused_error(
-            "CONFIG_INVALID_PROJECT",
-            "project.json 'name' must be a non-empty string.",
-            "Set a non-empty string for 'name' in project.json.",
-        )
+    for str_key in ("name", "display_name", "version"):
+        if str_key in data and (not isinstance(data[str_key], str) or not data[str_key].strip()):
+            raise refused_error(
+                "CONFIG_INVALID_PROJECT",
+                f"project.json '{str_key}' must be a non-empty string.",
+                f"Set a non-empty string for '{str_key}' in project.json.",
+            )
     return {
         "name": data.get("name", "unknown"),
         "display_name": data.get("display_name", data.get("name", "Unknown Project")),
@@ -150,6 +165,14 @@ def load_lanes(project_root: Path, map_data: dict[str, Any] | None = None) -> di
         return {"default_lane": "default", "source": "map.axes.kind", "lanes": []}
 
     data = _read_json_object(path)
+    if "default_lane" in data and (
+        not isinstance(data["default_lane"], str) or not data["default_lane"].strip()
+    ):
+        raise refused_error(
+            "CONFIG_INVALID_LANES",
+            "lanes.json 'default_lane' must be a non-empty string.",
+            "Set a non-empty string for 'default_lane' in lanes.json.",
+        )
     lanes = data.get("lanes")
     if not isinstance(lanes, list):
         raise refused_error(
@@ -171,6 +194,16 @@ def load_lanes(project_root: Path, map_data: dict[str, Any] | None = None) -> di
                 f"lanes.json lanes[{idx}] ('{lane['id']}') uses 'id_patterns', which is forbidden by v0.3 ruling 9.",
                 "Remove 'id_patterns'; lanes are derived from map.yaml's 'kind' axis, not filename regexes.",
             )
+        if "kind" in lane and (
+            not isinstance(lane["kind"], str)
+            or not lane["kind"].strip()
+            or lane["kind"] != lane["id"]
+        ):
+            raise refused_error(
+                "CONFIG_INVALID_LANES",
+                f"lanes.json lanes[{idx}] ('{lane['id']}') has invalid 'kind' {lane['kind']!r}; must match lane 'id'.",
+                f"Set 'kind' to '{lane['id']}' or omit it.",
+            )
         lane_ids.append(lane["id"])
 
     if map_data is not None:
@@ -190,13 +223,13 @@ def load_rubric(project_root: Path) -> dict[str, Any]:
     if not path.exists():
         return {"plugin": None, "pins": {}}
     data = _read_json_object(path)
-    if "plugin" in data and data["plugin"] is not None and (
+    if "plugin" in data and (
         not isinstance(data["plugin"], str) or not data["plugin"].strip()
     ):
         raise refused_error(
             "CONFIG_INVALID_RUBRIC",
-            "rubric.json 'plugin' must be a non-empty string or null.",
-            'Set "plugin" in rubric.json (e.g. "aspire_si_gates").',
+            "rubric.json 'plugin' must be a non-empty string.",
+            'Set a non-empty string for "plugin" in rubric.json (e.g. "aspire_si_gates").',
         )
     if "pins" in data and not isinstance(data["pins"], dict):
         raise refused_error(
@@ -204,6 +237,13 @@ def load_rubric(project_root: Path) -> dict[str, Any]:
             "rubric.json 'pins' must be a mapping.",
             'Format "pins" as an object (e.g. {"commit": "...", "sha256": "..."}).',
         )
+    for pin_key, pin_val in data.get("pins", {}).items():
+        if (pin_key == "sha256" or pin_key.endswith("_sha256")) and not is_valid_sha256(pin_val):
+            raise refused_error(
+                "CONFIG_INVALID_RUBRIC_SHA256",
+                f"rubric.json pins[{pin_key!r}] must be a 64-character lowercase hex SHA-256 string.",
+                "Pin a 64-character lowercase hex SHA-256 digest (^[0-9a-f]{64}$).",
+            )
     return {
         "plugin": data.get("plugin"),
         "pins": data.get("pins", {}),
@@ -289,7 +329,7 @@ def compute_config_fingerprint(
                 f"Map path is not a file: {resolved_map}",
                 "Provide a valid path to a map.yaml file.",
             )
-        map_raw_bytes = resolved_map.read_bytes()
+        map_raw_bytes = normalize_text_bytes(resolved_map.read_bytes())
         map_data = load_map_yaml(resolved_map)
         validate_map(map_data)
     elif map_path is not None:
@@ -313,7 +353,7 @@ def compute_config_fingerprint(
     for filename in FIVE_PROJECT_FILES:
         file_path = project_root / filename
         if file_path.exists():
-            raw_bytes = file_path.read_bytes()
+            raw_bytes = normalize_text_bytes(file_path.read_bytes())
             _update_framed(hasher, f"config:{filename}:raw", raw_bytes)
         else:
             _update_framed(hasher, f"config:{filename}:derived", _canonical_json_bytes(loaded[filename]))
@@ -342,7 +382,7 @@ def compute_config_fingerprint(
         _update_framed(hasher, "canon:count", str(len(canon_files)).encode("utf-8"))
         for cfile in canon_files:
             rel_posix = cfile.relative_to(resolved_canon).as_posix()
-            _update_framed(hasher, f"canon:file:{rel_posix}", cfile.read_bytes())
+            _update_framed(hasher, f"canon:file:{rel_posix}", normalize_text_bytes(cfile.read_bytes()))
     else:
         _update_framed(hasher, "canon:absent", b"")
 

@@ -17,15 +17,33 @@
     }
   ],
   "changes": {
-    "first": true
+    "fileCounts": {
+      "added": 0,
+      "changed": 10,
+      "moved": 0,
+      "parts": 3,
+      "removed": 0
+    },
+    "items": [
+      {
+        "kind": "counts",
+        "sentence": "Nothing structural changed since 2026-10-24; 10 files changed content.",
+        "subjects": []
+      }
+    ],
+    "since": {
+      "commit": "c25cff9b23b399dc59885c4acb581076ae33ab71",
+      "generatedAt": "2026-10-24T22:23:46.979Z"
+    },
+    "unchanged": true
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "c25cff9b23b399dc59885c4acb581076ae33ab71",
-  "defaultBranch": "main",
+  "commit": "00690ce3656e7f0fe10b8a23b00d34d60dbd64ea",
+  "defaultBranch": "fix/scaffold-review-dt",
   "derived": "5 parts, mostly Python (8 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
     {
@@ -96,11 +114,11 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-24T22:23:46.979Z",
+  "generatedAt": "2026-10-24T23:33:47.948Z",
   "limits": [
     "1 read uses a path built at run time and is not named here.",
     "5 reads go to a path their caller passes, not to this repository.",
-    "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions."
+    "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
   "partLabels": {

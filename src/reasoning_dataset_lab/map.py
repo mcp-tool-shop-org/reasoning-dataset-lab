@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -86,6 +87,28 @@ FORBIDDEN_WRONG_FAMILY_ALIASES: dict[str, str] = {
     "floor_as_exact": "floor_read_as_exact",
     "ceiling_as_exact": "ceiling_read_as_exact",
 }
+
+# Design v0.3 build note 3:
+# Every wrong_family axis value must match role-set's shortcut-registry name
+# (or "none" for cells without a shortcut wrong-family).
+# Source: role_set/generate/shortcuts.py:21-29@4033ebd (registered_shortcut_ids).
+WRONG_FAMILY_REGISTRY_SOURCE: str = "role_set/generate/shortcuts.py:21-29@4033ebd"
+ALLOWED_WRONG_FAMILY_IDS: frozenset[str] = frozenset(
+    {
+        "exact_read_as_floor",
+        "exact_read_as_ceiling",
+        "floor_read_as_exact",
+        "ceiling_read_as_exact",
+        "none",
+    }
+)
+
+SHA256_RE: re.Pattern[str] = re.compile(r"^[0-9a-f]{64}$")
+
+
+def is_valid_sha256(value: Any) -> bool:
+    """Return True if value is a 64-character lowercase hex SHA-256 string."""
+    return isinstance(value, str) and bool(SHA256_RE.match(value))
 
 
 @dataclass(frozen=True)
@@ -162,7 +185,7 @@ def load_map_yaml(path: Path) -> dict[str, Any]:
             "Provide a valid path to an existing map.yaml file.",
         )
     try:
-        raw_text = path.read_text(encoding="utf-8")
+        raw_text = path.read_text(encoding="utf-8-sig")
     except OSError as exc:
         raise usage_error(
             "MAP_READ_ERROR",
@@ -231,6 +254,13 @@ def _validate_axes(axes: Any) -> dict[str, list[str]]:
                     "MAP_SHORTHAND_WRONG_FAMILY",
                     f"Axis 'wrong_family' uses shorthand alias '{val}', which is forbidden in map.yaml.",
                     f"Use the exact role-set shortcut-registry name '{canonical}'.",
+                )
+            if axis_name == "wrong_family" and val not in ALLOWED_WRONG_FAMILY_IDS:
+                raise refused_error(
+                    "MAP_UNKNOWN_WRONG_FAMILY",
+                    f"Axis 'wrong_family' contains unregistered value '{val}'.",
+                    f"Use an exact role-set shortcut-registry name ({WRONG_FAMILY_REGISTRY_SOURCE}): "
+                    f"{', '.join(sorted(ALLOWED_WRONG_FAMILY_IDS))}.",
                 )
             if val in seen:
                 raise refused_error(
@@ -328,7 +358,7 @@ def _validate_cells(
                 )
             cells_zero_capacity += 1
         else:
-            if "reason" in cell and cell["reason"] is not None:
+            if "reason" in cell:
                 if not isinstance(cell["reason"], str) or not cell["reason"].strip():
                     raise refused_error(
                         "MAP_INVALID_CELL_REASON",
@@ -419,26 +449,30 @@ def _validate_shares(shares: Any, axes: dict[str, list[str]]) -> None:
                     "Set 'min_distinct' to a positive integer.",
                 )
 
-        min_share = rule.get("min_share")
-        max_share = rule.get("max_share")
-        if min_share is not None:
+        if "min_share" in rule:
+            min_share = rule["min_share"]
             if not _is_number(min_share) or not (0.0 <= float(min_share) <= 1.0):
                 raise refused_error(
                     "MAP_INVALID_SHARE_RULE",
                     f"{context}.min_share must be a number between 0.0 and 1.0.",
                     "Set 'min_share' to a float in [0.0, 1.0].",
                 )
-        if max_share is not None:
+        if "max_share" in rule:
+            max_share = rule["max_share"]
             if not _is_number(max_share) or not (0.0 <= float(max_share) <= 1.0):
                 raise refused_error(
                     "MAP_INVALID_SHARE_RULE",
                     f"{context}.max_share must be a number between 0.0 and 1.0.",
                     "Set 'max_share' to a float in [0.0, 1.0].",
                 )
-        if min_share is not None and max_share is not None and float(min_share) > float(max_share):
+        if (
+            "min_share" in rule
+            and "max_share" in rule
+            and float(rule["min_share"]) > float(rule["max_share"])
+        ):
             raise refused_error(
                 "MAP_INVALID_SHARE_RULE",
-                f"{context} has min_share ({min_share}) > max_share ({max_share}).",
+                f"{context} has min_share ({rule['min_share']}) > max_share ({rule['max_share']}).",
                 "Ensure min_share <= max_share.",
             )
 
@@ -522,17 +556,18 @@ def _validate_acceptance(acceptance: Any, axes: dict[str, list[str]]) -> None:
                 "Set acceptance.key_proof_rate.min to a float in [0.0, 1.0].",
             )
 
-    if "unanimity_rate" in acceptance and acceptance["unanimity_rate"] is not None:
+    if "unanimity_rate" in acceptance:
         ur = acceptance["unanimity_rate"]
         if not isinstance(ur, dict):
             # If someone passes a scalar unanimity_rate when proved kinds are in the map, refuse as proved kind
-            proved_in_axes = [k for k in axes.get("kind", []) if k not in JUDGED_KINDS]
-            if proved_in_axes:
-                raise refused_error(
-                    "MAP_UNANIMITY_ON_PROVED_KIND",
-                    f"acceptance.unanimity_rate cannot apply to proved kind(s): {', '.join(proved_in_axes)}.",
-                    f"Scope unanimity_rate to judged kinds only ({', '.join(sorted(JUDGED_KINDS))}) or remove it for proved-only maps.",
-                )
+            if _is_number(ur):
+                proved_in_axes = [k for k in axes.get("kind", []) if k not in JUDGED_KINDS]
+                if proved_in_axes:
+                    raise refused_error(
+                        "MAP_UNANIMITY_ON_PROVED_KIND",
+                        f"acceptance.unanimity_rate cannot apply to proved kind(s): {', '.join(proved_in_axes)}.",
+                        f"Scope unanimity_rate to judged kinds only ({', '.join(sorted(JUDGED_KINDS))}) or remove it for proved-only maps.",
+                    )
             raise refused_error(
                 "MAP_INVALID_ACCEPTANCE",
                 "acceptance.unanimity_rate must be a mapping {kind, min}.",
@@ -684,10 +719,10 @@ def validate_map(map_data: dict[str, Any]) -> MapCheckResult:
     _validate_variety(map_data["variety"])
     _validate_acceptance(map_data["acceptance"], axes)
 
-    if "splits" in map_data and map_data["splits"] is not None:
+    if "splits" in map_data:
         _validate_splits(map_data["splits"], target_total)
 
-    if "canon" in map_data and map_data["canon"] is not None:
+    if "canon" in map_data:
         canon_block = map_data["canon"]
         if not isinstance(canon_block, dict):
             raise refused_error(
@@ -696,10 +731,10 @@ def validate_map(map_data: dict[str, Any]) -> MapCheckResult:
                 "Format each canon entry with state ('draft' or 'frozen') and sha256.",
             )
         for cid, cmeta in canon_block.items():
-            if not isinstance(cmeta, dict):
+            if not isinstance(cid, str) or not cid.strip() or not isinstance(cmeta, dict):
                 raise refused_error(
                     "MAP_INVALID_CANON",
-                    f"canon[{cid!r}] must be a mapping.",
+                    f"canon[{cid!r}] must have a non-empty string key and mapping value.",
                     "Provide {'state': 'draft'|'frozen', 'sha256': '...'}.",
                 )
             _check_unknown_keys(cmeta, frozenset({"state", "sha256"}), f"canon[{cid!r}]")
@@ -710,11 +745,11 @@ def validate_map(map_data: dict[str, Any]) -> MapCheckResult:
                     "Canon has two states in v0.3: 'draft' and 'frozen'.",
                 )
             sha = cmeta.get("sha256")
-            if not isinstance(sha, str) or len(sha) != 64:
+            if not is_valid_sha256(sha):
                 raise refused_error(
                     "MAP_INVALID_CANON_SHA256",
-                    f"canon[{cid!r}].sha256 must be a 64-character hex string.",
-                    "Pin the 64-character SHA-256 hex digest of the canon file.",
+                    f"canon[{cid!r}].sha256 must be a 64-character lowercase hex string.",
+                    "Pin the 64-character lowercase hex SHA-256 digest (^[0-9a-f]{64}$) of the canon file.",
                 )
 
     sha256_hex = canonical_map_sha256(map_data)

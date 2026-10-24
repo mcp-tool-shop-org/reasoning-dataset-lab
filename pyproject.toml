@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "reasoning-dataset-lab"
-version = "0.1.0"
+version = "0.1.1"
 description = "Map-first dataset lab for proven reasoning puzzles, verification items, and composed dataset parts."
 readme = "README.md"
 requires-python = ">=3.12"

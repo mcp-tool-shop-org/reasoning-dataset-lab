@@ -106,8 +106,8 @@
         "path": ".gitignore"
       },
       {
-        "commits": 1,
-        "lines": 14,
+        "commits": 2,
+        "lines": 22,
         "path": "CHANGELOG.md"
       },
       {
@@ -116,8 +116,8 @@
         "path": "LICENSE"
       },
       {
-        "commits": 1,
-        "lines": 43,
+        "commits": 2,
+        "lines": 45,
         "path": "README.md"
       },
       {
@@ -127,8 +127,28 @@
       },
       {
         "commits": 1,
+        "lines": 74,
+        "path": "atlas/README.md"
+      },
+      {
+        "commits": 1,
         "lines": 22,
         "path": "atlas/boundaries.yaml"
+      },
+      {
+        "commits": 1,
+        "lines": 138,
+        "path": "atlas/page.json"
+      },
+      {
+        "commits": 1,
+        "lines": 239,
+        "path": "atlas/statistics.json"
+      },
+      {
+        "commits": 1,
+        "lines": 3117,
+        "path": "atlas/structure.json"
       },
       {
         "commits": 1,
@@ -136,13 +156,13 @@
         "path": "examples/t10-pilot-a.map.yaml"
       },
       {
-        "commits": 1,
-        "lines": 49,
+        "commits": 2,
+        "lines": 51,
         "path": "pyproject.toml"
       },
       {
-        "commits": 1,
-        "lines": 7,
+        "commits": 2,
+        "lines": 9,
         "path": "src/reasoning_dataset_lab/__init__.py"
       },
       {
@@ -151,18 +171,18 @@
         "path": "src/reasoning_dataset_lab/cli.py"
       },
       {
-        "commits": 1,
-        "lines": 349,
+        "commits": 2,
+        "lines": 417,
         "path": "src/reasoning_dataset_lab/config.py"
       },
       {
-        "commits": 1,
-        "lines": 49,
+        "commits": 2,
+        "lines": 51,
         "path": "src/reasoning_dataset_lab/errors.py"
       },
       {
-        "commits": 1,
-        "lines": 736,
+        "commits": 2,
+        "lines": 817,
         "path": "src/reasoning_dataset_lab/map.py"
       },
       {
@@ -171,33 +191,33 @@
         "path": "tests/test_cli.py"
       },
       {
-        "commits": 1,
-        "lines": 307,
+        "commits": 2,
+        "lines": 394,
         "path": "tests/test_config.py"
       },
       {
-        "commits": 1,
-        "lines": 590,
+        "commits": 2,
+        "lines": 698,
         "path": "tests/test_map.py"
       },
       {
-        "commits": 1,
-        "lines": 261,
+        "commits": 2,
+        "lines": 263,
         "path": "uv.lock"
       }
     ]
   },
   "confidence": {
     "level": "low",
-    "reason": "fewer than 30 qualifying commits in the window, and fewer than 20 source files reach 10 revisions"
+    "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-24T22:23:46.979Z",
+  "generatedAt": "2026-10-24T23:33:47.948Z",
   "generatedFrom": {
-    "commit": "c25cff9b23b399dc59885c4acb581076ae33ab71"
+    "commit": "00690ce3656e7f0fe10b8a23b00d34d60dbd64ea"
   },
   "pairs": [],
   "parameters": {
-    "appliedChangesetLimit": 4.75,
+    "appliedChangesetLimit": 5.75,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -206,16 +226,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-24T18:23:43-04:00",
-    "inScopeFiles": 19,
+    "headDate": "2026-10-24T19:33:37-04:00",
+    "inScopeFiles": 23,
     "pinnedStart": null,
-    "priorFloor": null,
+    "priorFloor": "fallen",
     "qualifyingCommits": 0,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-27T22:23:43.000Z",
+    "since": "2026-04-27T23:33:37.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
