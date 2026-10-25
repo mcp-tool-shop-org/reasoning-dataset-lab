@@ -1231,3 +1231,169 @@ def test_the_schemas_only_take_dates_as_licence_read_dates(tmp_path, monkeypatch
     assert schema_check.validate(report, "report") == []
     report["licence_registry"]["read_dates"]["bare-index"] = "001"
     assert schema_check.validate(report, "report")
+
+
+# ── residual sealed-store channels: each rule has Argon's poisoning example as a refusal test ──────────────
+
+
+def _class_buckets(i: int, entry: dict, size: int = 64) -> str:
+    """A class-frequency bucket digest: the same value for every entry of a class (or a few for a larger class)."""
+
+    group = {"supported": "d", "unsupported": "e", "cannot_tell": "f"}[entry["key"]]
+    return group * size
+
+
+def _poison_trace_buckets(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["proof"]["trace_sha256"] = _class_buckets(i, entry)
+
+
+def _poison_word_prompt_buckets(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["writer_call_records"][1]["prompt_sha256"] = _class_buckets(i, entry)
+
+
+def _poison_render_prompt_per_class(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["writer_call_records"][0]["prompt_sha256"] = _class_buckets(i, entry)
+
+
+def _poison_non_hex_prompt(inputs):
+    inputs["entries"][0]["writer_call_records"][1]["prompt_sha256"] = "not-a-digest"
+
+
+def _poison_call_limit(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["writer_call_records"][0]["num_predict"] = 1000 + i // 3
+
+
+def _poison_reader_call_field(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["reader_call_records"][1]["num_predict_source"] = f"src-{i // 3}"
+
+
+def _poison_domain_per_triad(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["domain"] = f"turbines-{i // 3:03d}"
+
+
+def _poison_duplicate_table(inputs):
+    for entry in inputs["entries"]:
+        entry["table_id"] = inputs["entries"][0]["table_id"]
+
+
+def _poison_prover_version(inputs):
+    for entry in inputs["entries"]:
+        entry["proof"]["version"] = "9.9.9"
+
+
+def _poison_read_date_keys(inputs):
+    inputs["registry"]["read_dates"].update({f"{i:03d}": f"2026-01-0{1 + i % 3}" for i in range(1, 151)})
+
+
+def _recompute_reader_prompts(entry: dict) -> None:
+    """What a careful attacker does so the reader prompt digests still match the text they changed."""
+
+    from reasoning_dataset_lab.pilot_b.ollama import _canonical_prompt_sha256, build_reader_read_messages
+    from reasoning_dataset_lab.pilot_b.unanimity import build_blind_read_prompt
+
+    sha = _canonical_prompt_sha256(
+        build_reader_read_messages(
+            build_blind_read_prompt(
+                triad_id=entry["triad_id"],
+                claim_id="",
+                closure=entry["closure"],
+                material=entry["material"],
+                claim_text=entry["claim_text"],
+            )
+        )
+    )
+    for record in entry["reader_call_records"]:
+        record["prompt_sha256"] = sha
+
+
+def _poison_whitespace_watermark(inputs):
+    marks = {"supported": "", "unsupported": "  ", "cannot_tell": "   "}
+    for entry in inputs["entries"]:
+        head, _, rest = entry["claim_text"].partition(" ")
+        entry["claim_text"] = head + " " + marks[entry["key"]] + rest
+        _recompute_reader_prompts(entry)
+
+
+def _poison_material_whitespace(inputs):
+    for entry in inputs["entries"]:
+        entry["material"] = entry["material"].replace(" ", "  ", 1)
+        _recompute_reader_prompts(entry)
+
+
+def _poison_equal_claims(inputs):
+    group = inputs["entries"][:3]
+    for entry in group:
+        entry["claim_text"] = group[0]["claim_text"]
+        _recompute_reader_prompts(entry)
+
+
+@pytest.mark.parametrize(
+    "poison",
+    [
+        _poison_trace_buckets,
+        _poison_word_prompt_buckets,
+        _poison_render_prompt_per_class,
+        _poison_non_hex_prompt,
+        _poison_call_limit,
+        _poison_reader_call_field,
+        _poison_domain_per_triad,
+        _poison_duplicate_table,
+        _poison_prover_version,
+        _poison_read_date_keys,
+        _poison_whitespace_watermark,
+        _poison_material_whitespace,
+        _poison_equal_claims,
+    ],
+    ids=lambda f: f.__name__.removeprefix("_poison_"),
+)
+def test_residual_sealed_store_channels_are_refused(tmp_path, monkeypatch, poison):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "t3-" + poison.__name__)
+    _poison_the_sealed_store(part_dir, keys_path, poison)
+    with pytest.raises(RdlabError) as caught:
+        freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert caught.value.code == "PILOT_B_SEALED_INPUT_INVALID"
+
+
+def test_the_report_coverage_must_be_the_catalogues_domains_with_the_builds_counts(tmp_path, monkeypatch):
+    out, _result = _stub_build(tmp_path, monkeypatch, "t3-coverage")
+    part_dir, keys_path = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl"
+
+    def bare_indices(report):
+        report["coverage"]["by_domain"].update({f"{i:03d}": {"built": i % 3, "target": 1} for i in range(1, 151)})
+
+    def wrong_count(report):
+        domain = next(iter(report["coverage"]["by_domain"]))
+        report["coverage"]["by_domain"][domain]["built"] += 3
+
+    for mutate in (bare_indices, wrong_count):
+        report_path = _rewrite_report(out, mutate)
+        assert _verify_code(part_dir, keys_path, extra_public_files=[report_path]) == "PILOT_B_SEALED_RENDER_MISMATCH"
+
+
+def test_the_domain_catalogue_is_read_through_its_api_not_copied():
+    source = (Path(__file__).resolve().parents[1] / "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py").read_text(
+        encoding="utf-8"
+    )
+    assert "DOMAIN_CATALOGUE" in source
+    for name in ("turbines", "relays", "vessels", "furnaces", "pumps"):
+        assert f'"{name}"' not in source
+
+
+@pytest.mark.parametrize("triads", [10, 30])
+def test_honest_builds_at_realistic_sizes_pass_the_residual_channel_rules(tmp_path, monkeypatch, triads):
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr("reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport", transport)
+    for seed in (1, 2):
+        out = tmp_path / f"t3-ok-{triads}-{seed}"
+        run_pilot_b_build(output_dir=out, triad_count=triads, stub_mode=True, seed=seed, num_predict=256)
+        from reasoning_dataset_lab.pilot_b.waves_and_sealing import part_status
+
+        part, keys = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl"
+        verify_sealed_part(part_dir=part, keys_sealed_path=keys, extra_public_files=[out / "reports" / "pilot_b_report.json"])
+        assert part_status(part, keys) == "frozen"

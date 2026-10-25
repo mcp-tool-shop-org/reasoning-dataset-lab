@@ -1023,6 +1023,11 @@ def _is_rate(value: Any) -> bool:
 def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
     """Hold the render inputs to an honest build's shape and value domains."""
 
+    from reasoning_dataset_lab.pilot_b.fact_tables import (
+        DOMAIN_CATALOGUE,
+        PILOT_B_PROVER_NAME,
+        PILOT_B_PROVER_VERSION,
+    )
     from reasoning_dataset_lab.pilot_b.ollama import _canonical_prompt_sha256, build_reader_read_messages
     from reasoning_dataset_lab.pilot_b.unanimity import build_blind_read_prompt
 
@@ -1040,6 +1045,15 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
         isinstance(k, str) and isinstance(v, str) and _DATE.match(v) for k, v in dates.items()
     ):
         raise _invalid_inputs("the licence read dates are not dates")
+    licence_ids = {
+        role["model"][field]
+        for role in (inputs["writer"], *inputs["readers"])
+        if isinstance(role, Mapping) and isinstance(role.get("model"), Mapping)
+        for field in ("licence_id", "bundled_licence_id")
+        if role["model"].get(field)
+    }
+    if not set(dates) <= licence_ids:
+        raise _invalid_inputs("the licence read dates name something other than the models' licences")
     for role in (inputs["writer"], *inputs["readers"]):
         if not isinstance(role, Mapping) or set(role) != {"adapter_class", "model", "max_num_ctx"}:
             raise _invalid_inputs("a model role's fields")
@@ -1080,8 +1094,15 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
             if not all(isinstance(d, Mapping) and set(d) <= _DIST_KEYS for d in metrics.values()):
                 raise _invalid_inputs("a call distribution")
 
+    catalogue = {str(d["domain"]) for d in DOMAIN_CATALOGUE}
     seen_triads: set[str] = set()
+    seen_tables: set[str] = set()
+    seen_traces: set[str] = set()
+    render_prompts: set[str] = set()
+    word_prompts: set[str] = set()
+    constant_calls: dict[tuple[str, int], tuple[Any, ...]] = {}
     prover_version: set[tuple[Any, Any]] = set()
+    hex64 = re.compile(r"[0-9a-f]{64}")
     for start in range(0, len(entries), 3):
         group = entries[start : start + 3]
         if not all(isinstance(e, Mapping) and set(e) == _ENTRY_KEYS for e in group):
@@ -1091,7 +1112,23 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
         common = {(e["triad_id"], e["table_id"], e["domain"], e["closure"], e["material"]) for e in group}
         if len(common) != 1:
             raise _invalid_inputs("the entries of a triad differ in their shared fields")
-        triad_id, _table, domain, closure, material = next(iter(common))
+        triad_id, table_id, domain, closure, material = next(iter(common))
+        if domain not in catalogue:
+            raise _invalid_inputs("a triad's domain is not in the domain catalogue")
+        if table_id in seen_tables:
+            raise _invalid_inputs("two triads share a table")
+        seen_tables.add(table_id)
+        if len({e["claim_text"] for e in group}) != 3:
+            raise _invalid_inputs("the three claims of a triad are not distinct")
+        if "\n".join(" ".join(line.split()) for line in material.splitlines()) != material:
+            raise _invalid_inputs("a triad's material has irregular whitespace")
+        triad_render = {e["writer_call_records"][0].get("prompt_sha256") for e in group}
+        if len(triad_render) != 1:
+            raise _invalid_inputs("the table render prompt is not shared by the triad")
+        render_prompt = next(iter(triad_render))
+        if not isinstance(render_prompt, str) or not hex64.fullmatch(render_prompt) or render_prompt in render_prompts:
+            raise _invalid_inputs("the table render prompt is not a digest that is unique to the triad")
+        render_prompts.add(render_prompt)
         if triad_id in seen_triads:
             raise _invalid_inputs("a triad appears twice")
         seen_triads.add(triad_id)
@@ -1099,14 +1136,27 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
             raise _invalid_inputs("a triad's closure, domain or material")
         for entry in group:
             claim = entry["claim_text"]
-            if not isinstance(claim, str) or not claim or claim != claim.strip():
-                raise _invalid_inputs("a claim is empty or has leading or trailing whitespace")
+            if not isinstance(claim, str) or not claim or " ".join(claim.split()) != claim:
+                raise _invalid_inputs("a claim is empty or has irregular whitespace")
             proof = entry["proof"]
             if not isinstance(proof, Mapping) or proof.get("key") != entry["key"]:
                 raise _invalid_inputs("a proof does not belong to its entry's class")
             if not isinstance(proof.get("trace_sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", proof["trace_sha256"]):
                 raise _invalid_inputs("a proof trace digest")
             prover_version.add((proof.get("prover"), proof.get("version")))
+            if proof["trace_sha256"] in seen_traces:
+                raise _invalid_inputs("two proofs share a trace digest")
+            seen_traces.add(proof["trace_sha256"])
+            word_prompt = entry["writer_call_records"][1].get("prompt_sha256")
+            if not isinstance(word_prompt, str) or not hex64.fullmatch(word_prompt) or word_prompt in word_prompts:
+                raise _invalid_inputs("a claim-wording prompt is not a digest that is unique to the entry")
+            word_prompts.add(word_prompt)
+            for slot, record in enumerate((*entry["writer_call_records"], *entry["reader_call_records"])):
+                fields = tuple(
+                    record.get(f) for f in ("model", "digest", "max_num_ctx", "num_predict", "num_predict_source", "think")
+                )
+                if constant_calls.setdefault((("w", "r")[slot >= 2], slot), fields) != fields:
+                    raise _invalid_inputs("a call's model, digest or limits vary between entries")
             if [r.get("operation") for r in entry["writer_call_records"]] != ["render_material", "word_claim"]:
                 raise _invalid_inputs("a claim's writer calls are not the table render and the claim wording")
             readers_calls = entry["reader_call_records"]
@@ -1121,8 +1171,18 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
             )
             if any(r.get("prompt_sha256") != expected for r in readers_calls):
                 raise _invalid_inputs("a reader's prompt is not the blind prompt for the claim and material shown")
-    if len(prover_version) > 1:
-        raise _invalid_inputs("the prover or its version differs between entries")
+    if prover_version and prover_version != {(PILOT_B_PROVER_NAME, PILOT_B_PROVER_VERSION)}:
+        raise _invalid_inputs("the prover or its version is not the one this code pins")
+    for slot, role in ((2, inputs["readers"][0]), (3, inputs["readers"][1])):
+        fields = constant_calls.get(("r", slot))
+        if fields is not None and (fields[1] != role["model"]["digest"] or fields[2] != role["max_num_ctx"]):
+            raise _invalid_inputs("a reader's calls do not match the reader recorded")
+    writer_fields = [constant_calls.get(("w", slot)) for slot in (0, 1)]
+    for fields in writer_fields:
+        if fields is not None and (
+            fields[1] != inputs["writer"]["model"]["digest"] or fields[2] != inputs["writer"]["max_num_ctx"]
+        ):
+            raise _invalid_inputs("the writer's calls do not match the writer recorded")
 
 
 def _check_sealed_rows(inputs: Mapping[str, Any], keys_rows: Sequence[Mapping[str, Any]], metrics_rows: Sequence[Mapping[str, Any]]) -> None:
@@ -1866,6 +1926,25 @@ def _verify_known_leaks(part_dir: Path, keys_sealed_path: Path, extra_public_fil
     _check_part_shapes(part_dir, extra_public_files, key_ids)
 
 
+def _check_report_coverage(report: Mapping[str, Any], inputs: Mapping[str, Any]) -> None:
+    """The report's per-domain coverage must be the catalogue's domains with the counts the inputs give."""
+
+    from reasoning_dataset_lab.pilot_b.fact_tables import DOMAIN_CATALOGUE
+
+    catalogue = {str(d["domain"]) for d in DOMAIN_CATALOGUE}
+    by_domain = (report.get("coverage") or {}).get("by_domain")
+    if not isinstance(by_domain, Mapping) or not set(by_domain) <= catalogue:
+        raise _render_mismatch("pilot_b_report.json", "its coverage names something other than the domain catalogue")
+    built: dict[str, int] = {}
+    for entry in inputs["entries"]:
+        built[entry["domain"]] = built.get(entry["domain"], 0) + 1
+    for domain, counts in by_domain.items():
+        if counts.get("built") != built.get(domain, 0) or counts.get("target", 0) < counts.get("built", 0):
+            raise _render_mismatch("pilot_b_report.json", f"its coverage for '{domain}' differs from the build")
+    if {d for d, n in built.items() if n} - set(by_domain):
+        raise _render_mismatch("pilot_b_report.json", "its coverage leaves out a domain that was built")
+
+
 def _render_mismatch(label: str, detail: str) -> Any:
     return refused_error(
         "PILOT_B_SEALED_RENDER_MISMATCH",
@@ -1941,6 +2020,7 @@ def _verify_render(part_dir: Path, keys_sealed_path: Path, extra_public_files: S
         for field, value in shared.items():
             if _normalise(report.get(field)) != _normalise(value):
                 raise _render_mismatch(extra.name, f"'{field}' differs from part.json")
+        _check_report_coverage(report, inputs)
         text = extra.read_text(encoding="utf-8")
         public_ids = [str(r["id"]) for r in _jsonl_rows(part_dir / "items.jsonl")] + [
             str(r["triad_id"]) for r in _jsonl_rows(part_dir / "items.jsonl")
