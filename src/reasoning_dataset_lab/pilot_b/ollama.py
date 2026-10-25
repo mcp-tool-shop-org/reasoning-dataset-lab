@@ -35,7 +35,13 @@ from reasoning_dataset_lab.pilot_b.rendering import (
     check_rendered_material,
     check_worded_claim,
 )
-from reasoning_dataset_lab.pilot_b.unanimity import ModelIdentity
+from reasoning_dataset_lab.pilot_b.unanimity import (
+    ALLOWED_READER_VERDICTS,
+    BlindReadPrompt,
+    BlindReadResult,
+    ModelIdentity,
+    ReaderVerdict,
+)
 
 DEFAULT_OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
 LOOPBACK_HOST: str = "127.0.0.1"
@@ -451,3 +457,192 @@ class OllamaWriterAdapter:
         )
         self._unload_records.append(rec)
         return rec
+
+
+def parse_reader_verdict(raw_text: str) -> ReaderVerdict:
+    """Strictly parse a reader answer into `supported`, `unsupported`, `cannot_tell`, or `ambiguous`.
+
+    Anything outside those exact four labels (or a JSON object `{"verdict": "<label>"}` with no
+    conflicting text) counts as `ambiguous`.
+    """
+    cleaned = raw_text.strip()
+    if not cleaned:
+        return "ambiguous"
+    lowered = cleaned.lower()
+    if lowered in ALLOWED_READER_VERDICTS:
+        return lowered  # type: ignore[return-value]
+    if cleaned.startswith("{") and cleaned.endswith("}"):
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            return "ambiguous"
+        if isinstance(parsed, dict) and set(parsed.keys()) <= {"verdict", "reasoning"}:
+            v = parsed.get("verdict")
+            if isinstance(v, str) and v.strip().lower() in ALLOWED_READER_VERDICTS:
+                return v.strip().lower()  # type: ignore[return-value]
+    return "ambiguous"
+
+
+class OllamaBlindReaderAdapter:
+    """Real loopback Ollama blind-reader adapter implementing `BlindReaderAdapter` (Card gk Part B)."""
+
+    is_fake: ClassVar[bool] = False
+
+    def __init__(
+        self,
+        model: ModelIdentity | PinnedModelSpec,
+        *,
+        base_url: str = DEFAULT_OLLAMA_BASE_URL,
+        thinking_token_cap: int = DEFAULT_THINKING_TOKEN_CAP,
+        http_transport: OllamaHttpTransport | None = None,
+    ) -> None:
+        if thinking_token_cap < 1:
+            raise refused_error(
+                "PILOT_B_INVALID_THINKING_CAP",
+                f"thinking_token_cap must be >= 1, got {thinking_token_cap}.",
+                "Pass a positive integer thinking_token_cap.",
+            )
+        self._base_url = require_loopback_ollama_url(base_url)
+        self._model = _resolve_model_identity(model)
+        self._thinking_token_cap = thinking_token_cap
+        self._transport: OllamaHttpTransport = (
+            http_transport if http_transport is not None else default_ollama_http_transport
+        )
+        self._verified_local_digest = False
+        self._call_records: list[OllamaCallRecord] = []
+        self._unload_records: list[OllamaUnloadRecord] = []
+
+    @property
+    def model(self) -> ModelIdentity:
+        return self._model
+
+    @property
+    def ollama_tag(self) -> str:
+        return self._model.name
+
+    @property
+    def manifest_digest(self) -> str:
+        return self._model.digest
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @property
+    def thinking_token_cap(self) -> int:
+        return self._thinking_token_cap
+
+    @property
+    def call_records(self) -> tuple[OllamaCallRecord, ...]:
+        return tuple(self._call_records)
+
+    @property
+    def last_call_record(self) -> OllamaCallRecord | None:
+        return self._call_records[-1] if self._call_records else None
+
+    @property
+    def unload_records(self) -> tuple[OllamaUnloadRecord, ...]:
+        return tuple(self._unload_records)
+
+    def _ensure_verified(self) -> None:
+        if not self._verified_local_digest:
+            verify_local_ollama_model_digest(
+                base_url=self._base_url,
+                ollama_tag=self.ollama_tag,
+                expected_digest=self.manifest_digest,
+                http_transport=self._transport,
+            )
+            self._verified_local_digest = True
+
+    def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
+        """Send only `prompt` (material + one claim, never the key) to `POST /api/chat` and parse the verdict."""
+        self._ensure_verified()
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a blind verification reader. Given only the Material and a single Claim, "
+                    "reply with exactly one token: supported, unsupported, cannot_tell, or ambiguous."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt.user_message,
+            },
+        ]
+        prompt_sha = _canonical_prompt_sha256(messages)
+        chat_url = f"{self._base_url}/api/chat"
+        payload: dict[str, Any] = {
+            "model": self.ollama_tag,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": 0,
+                "thinking_token_cap": self._thinking_token_cap,
+            },
+        }
+        t0 = time.perf_counter()
+        resp = self._transport("POST", chat_url, payload)
+        wall_s = max(0.0, time.perf_counter() - t0)
+
+        msg = resp.get("message")
+        if not isinstance(msg, dict):
+            msg = {}
+        raw_text = str(msg.get("content") or "").strip()
+        thinking_text = str(msg.get("thinking") or "")
+        eval_tokens, thinking_tokens = _extract_token_counts(resp, raw_text, thinking_text)
+
+        record = OllamaCallRecord(
+            model=self.ollama_tag,
+            digest=self.manifest_digest,
+            operation="read_claim",
+            target_id=prompt.claim_id,
+            prompt_sha256=prompt_sha,
+            eval_tokens=eval_tokens,
+            thinking_tokens=thinking_tokens,
+            thinking_token_cap=self._thinking_token_cap,
+            wall_time_s=wall_s,
+        )
+        self._call_records.append(record)
+
+        if thinking_tokens > self._thinking_token_cap:
+            raise refused_error(
+                "PILOT_B_THINKING_CAP_EXCEEDED",
+                f"Reader '{self.ollama_tag}' call on '{prompt.claim_id}' used {thinking_tokens} thinking tokens, "
+                f"exceeding thinking_token_cap={self._thinking_token_cap}.",
+                "Lower model thinking budget or increase thinking_token_cap.",
+            )
+
+        verdict = parse_reader_verdict(raw_text)
+        return BlindReadResult(
+            claim_id=prompt.claim_id,
+            reader=self._model,
+            verdict=verdict,
+            thinking_tokens=thinking_tokens,
+            completion_tokens=eval_tokens,
+            seconds=wall_s,
+            raw_text=raw_text,
+            prompt_sha256=prompt_sha,
+        )
+
+    def unload_model(self) -> OllamaUnloadRecord:
+        """Unload the reader model from VRAM after a wave using `keep_alive: 0`."""
+        chat_url = f"{self._base_url}/api/chat"
+        payload: dict[str, Any] = {
+            "model": self.ollama_tag,
+            "messages": [],
+            "keep_alive": 0,
+            "stream": False,
+        }
+        t0 = time.perf_counter()
+        self._transport("POST", chat_url, payload)
+        wall_s = max(0.0, time.perf_counter() - t0)
+        rec = OllamaUnloadRecord(
+            model=self.ollama_tag,
+            digest=self.manifest_digest,
+            keep_alive=0,
+            wall_time_s=wall_s,
+        )
+        self._unload_records.append(rec)
+        return rec
+

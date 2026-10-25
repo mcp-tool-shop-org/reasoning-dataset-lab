@@ -104,6 +104,8 @@ class BlindReadResult:
     thinking_tokens: int = 16
     completion_tokens: int = 8
     seconds: float = 0.01
+    raw_text: str = ""
+    prompt_sha256: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -111,6 +113,8 @@ class BlindReadResult:
             "by": f"model:{self.reader.name}@{self.reader.digest}",
             "family": self.reader.normalized_family,
             "verdict": self.verdict,
+            "raw_text": self.raw_text if self.raw_text else self.verdict,
+            "prompt_sha256": self.prompt_sha256,
             "thinking_tokens": self.thinking_tokens,
             "completion_tokens": self.completion_tokens,
             "seconds": self.seconds,
@@ -165,15 +169,15 @@ class TriadGateEvaluation:
     failure_reasons: tuple[str, ...]
 
     def to_review_queue_record(self) -> dict[str, object]:
+        evals_dict = {k: v.to_dict() for k, v in self.claim_evals.items()}
         return {
             "triad_id": self.worded.triad.triad_id,
             "table_id": self.worded.triad.table.table_id,
             "closure": self.worded.triad.table.closure,
             "material": self.worded.material,
             "worded_claims": dict(self.worded.worded_claims),
-            "claim_evaluations": {
-                k: v.to_dict() for k, v in self.claim_evals.items()
-            },
+            "claim_evaluations": evals_dict,
+            "claims": evals_dict,
             "failure_reasons": list(self.failure_reasons),
         }
 
