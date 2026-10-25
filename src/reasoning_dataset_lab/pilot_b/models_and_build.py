@@ -34,29 +34,29 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
 )
 import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 from reasoning_dataset_lab.pilot_b.ollama import (
-    CALIBRATION_CAP_MARGIN_TOKENS,
+    CALIBRATION_NUM_PREDICT_MARGIN_TOKENS,
     DEFAULT_CALIBRATION_NUM_CTX,
     DEFAULT_CALIBRATION_NUM_PREDICT,
     DEFAULT_CALIBRATION_TABLES,
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_ROLE_MAX_NUM_CTX,
-    DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
+    DOCUMENTED_DEFAULT_NUM_PREDICT,
     NUM_CTX_MARGIN_TOKENS,
     NUM_CTX_STEP_TOKENS,
     PILOT_B_OPERATIONS,
     PROMPT_TOKEN_ESTIMATE_RULE,
+    NumPredictConfig,
+    NumPredictSource,
     OllamaBlindReaderAdapter,
     OllamaOperation,
     OllamaWriterAdapter,
-    ThinkingCapConfig,
-    ThinkingCapSource,
     build_reader_read_messages,
     build_writer_render_messages,
     build_writer_word_messages,
-    coerce_thinking_cap_config,
+    coerce_num_predict_config,
     format_reference_claim,
     format_reference_material,
-    resolve_thinking_cap_config,
+    resolve_num_predict_config,
     run_ollama_calibration_calls,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
@@ -69,7 +69,7 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
     validate_chain_families,
 )
 from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
-    DEFAULT_THINKING_TOKEN_CAP,
+    DEFAULT_NUM_PREDICT,
     PilotBWaveRunResult,
     freeze_sealed_part,
     run_pilot_b_waves,
@@ -705,7 +705,7 @@ def build_pilot_b_report(
 
     wave_dicts = [w.to_dict() for w in wave_result.wave_metrics]
     total_calls = sum(w.calls for w in wave_result.wave_metrics)
-    total_thinking = sum(w.thinking_tokens_total for w in wave_result.wave_metrics)
+    total_thinking = sum(w.thinking_words_total for w in wave_result.wave_metrics)
     total_completion = sum(w.completion_tokens_total for w in wave_result.wave_metrics)
     total_seconds = round(sum(w.seconds_total for w in wave_result.wave_metrics), 4)
 
@@ -715,7 +715,7 @@ def build_pilot_b_report(
         "target_items": 150,
         "scale_factor": scale,
         "estimated_calls": int(round(total_calls * scale)),
-        "estimated_thinking_tokens": int(round(total_thinking * scale)),
+        "estimated_thinking_words": int(round(total_thinking * scale)),
         "estimated_completion_tokens": int(round(total_completion * scale)),
         "estimated_seconds_stub_rate": round(total_seconds * scale, 4),
     }
@@ -757,14 +757,14 @@ def build_pilot_b_report(
         "key_proof_rate": key_proof_rate,
         "gate_pass_rate_per_class": dict(wave_result.pass_rate_per_class),
         "triad_pass_rate": wave_result.triad_pass_rate,
-        "thinking_token_cap": wave_result.thinking_token_cap,
-        "thinking_token_cap_source": wave_result.thinking_token_cap_source,
-        "thinking_cap_config": (
-            wave_result.thinking_cap_config.to_dict()
-            if wave_result.thinking_cap_config is not None
+        "num_predict": wave_result.num_predict,
+        "num_predict_source": wave_result.num_predict_source,
+        "num_predict_config": (
+            wave_result.num_predict_config.to_dict()
+            if wave_result.num_predict_config is not None
             else {
-                "default_cap": wave_result.thinking_token_cap,
-                "source": wave_result.thinking_token_cap_source,
+                "default_num_predict": wave_result.num_predict,
+                "source": wave_result.num_predict_source,
                 "by_operation": {},
                 "sources_by_operation": {},
             }
@@ -805,7 +805,7 @@ def build_pilot_b_report(
         "waves": wave_dicts,
         "totals": {
             "calls": total_calls,
-            "thinking_tokens": total_thinking,
+            "thinking_words": total_thinking,
             "completion_tokens": total_completion,
             "eval_tokens": total_completion,
             "seconds": total_seconds,
@@ -823,9 +823,9 @@ def run_pilot_b_build(
     stub_mode: bool = False,
     seed: int = 1,
     shuffle_seed: int = 42,
-    thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
-    thinking_cap_source: ThinkingCapSource | None = None,
-    thinking_cap_by_operation: Mapping[str, int | None] | None = None,
+    num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
+    num_predict_source: NumPredictSource | None = None,
+    num_predict_by_operation: Mapping[str, int | None] | None = None,
     config_path: Path | None = None,
     environ: Mapping[str, str] | None = None,
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
@@ -843,34 +843,34 @@ def run_pilot_b_build(
             "Pass a positive integer number of triads (e.g. --stub 10 or 50).",
         )
 
-    if isinstance(thinking_token_cap, (ThinkingCapConfig, Mapping)):
-        cap_config = coerce_thinking_cap_config(
-            thinking_token_cap, source=thinking_cap_source
+    if isinstance(num_predict, (NumPredictConfig, Mapping)):
+        np_config = coerce_num_predict_config(
+            num_predict, source=num_predict_source
         )
     elif (
         config_path is not None
         or environ is not None
-        or thinking_cap_by_operation is not None
-        or thinking_token_cap is None
+        or num_predict_by_operation is not None
+        or num_predict is None
     ):
-        cap_config = resolve_thinking_cap_config(
-            cli_cap=thinking_token_cap if isinstance(thinking_token_cap, int) else None,
-            cli_by_operation=thinking_cap_by_operation,
+        np_config = resolve_num_predict_config(
+            cli_num_predict=num_predict if isinstance(num_predict, int) else None,
+            cli_by_operation=num_predict_by_operation,
             config_path=config_path,
             env=environ,
         )
     else:
-        inferred_src: ThinkingCapSource = (
-            thinking_cap_source
-            if thinking_cap_source is not None
+        inferred_src: NumPredictSource = (
+            num_predict_source
+            if num_predict_source is not None
             else (
                 "cli"
-                if int(thinking_token_cap) != DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP
+                if int(num_predict) != DOCUMENTED_DEFAULT_NUM_PREDICT
                 else "default"
             )
         )
-        cap_config = coerce_thinking_cap_config(
-            int(thinking_token_cap), source=inferred_src
+        np_config = coerce_num_predict_config(
+            int(num_predict), source=inferred_src
         )
 
     pins = resolve_pilot_b_model_pins(
@@ -943,17 +943,19 @@ def run_pilot_b_build(
     active_writer = OllamaWriterAdapter(
         model=writer_id,
         base_url=ollama_base_url,
-        thinking_token_cap=cap_config,
+        num_predict=np_config,
     )
     active_r1 = OllamaBlindReaderAdapter(
         model=r1_id,
         base_url=ollama_base_url,
-        thinking_token_cap=cap_config,
+        num_predict=np_config,
+        role="reader_1",
     )
     active_r2 = OllamaBlindReaderAdapter(
         model=r2_id,
         base_url=ollama_base_url,
-        thinking_token_cap=cap_config,
+        num_predict=np_config,
+        role="reader_2",
     )
 
     if not (
@@ -978,7 +980,7 @@ def run_pilot_b_build(
         reader_1=active_r1,
         reader_2=active_r2,
         review_queue_path=review_queue_path,
-        thinking_token_cap=cap_config,
+        num_predict=np_config,
         min_pass_rate_per_class=min_pass_rate_per_class,
     )
 
@@ -1047,7 +1049,7 @@ def run_pilot_b_calibration(
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
     think: Any = True,
 ) -> dict[str, Any]:
-    """Run `rdlab pilot-b calibrate` (Card gp Part C): measure thinking tokens, write `calibration.json`, seal nothing."""
+    """Run `rdlab pilot-b calibrate` (Card gs ruling 4): measure eval_count and thinking_words, write `calibration.json`, seal nothing."""
     if think is not True:
         raise refused_error(
             "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN",
@@ -1153,14 +1155,20 @@ def run_pilot_b_calibration(
         http_transport=ollama_mod.default_ollama_http_transport,
     )
 
-    thinking_vals = [int(r["thinking_tokens"]) for r in rows]
+    eval_vals = [int(r.get("eval_count", r["eval_tokens"])) for r in rows]
     count_val = len(rows)
-    min_val = min(thinking_vals) if thinking_vals else 0
-    median_val = int(round(statistics.median(thinking_vals))) if thinking_vals else 0
-    p95_val = _nearest_rank_p95(thinking_vals)
-    max_val = max(thinking_vals) if thinking_vals else 0
+    min_val = min(eval_vals) if eval_vals else 0
+    median_val = int(round(statistics.median(eval_vals))) if eval_vals else 0
+    p95_val = _nearest_rank_p95(eval_vals)
+    max_val = max(eval_vals) if eval_vals else 0
     length_stops = sum(1 for r in rows if r["done_reason"] == "length")
-    suggested_cap = p95_val + CALIBRATION_CAP_MARGIN_TOKENS
+    suggested_num_predict = p95_val + CALIBRATION_NUM_PREDICT_MARGIN_TOKENS
+
+    thinking_words_vals = [int(r["thinking_words"]) for r in rows]
+    tw_min_val = min(thinking_words_vals) if thinking_words_vals else 0
+    tw_median_val = int(round(statistics.median(thinking_words_vals))) if thinking_words_vals else 0
+    tw_p95_val = _nearest_rank_p95(thinking_words_vals)
+    tw_max_val = max(thinking_words_vals) if thinking_words_vals else 0
 
     calibration_payload: dict[str, Any] = {
         "operation": operation,
@@ -1178,13 +1186,27 @@ def run_pilot_b_calibration(
         "median": median_val,
         "p95": p95_val,
         "max": max_val,
+        "eval_count": {
+            "count": count_val,
+            "min": min_val,
+            "median": median_val,
+            "p95": p95_val,
+            "max": max_val,
+        },
+        "thinking_words": {
+            "count": count_val,
+            "min": tw_min_val,
+            "median": tw_median_val,
+            "p95": tw_p95_val,
+            "max": tw_max_val,
+        },
         "length_stops": length_stops,
-        "margin_constant": "CALIBRATION_CAP_MARGIN_TOKENS",
-        "margin_tokens": CALIBRATION_CAP_MARGIN_TOKENS,
-        "suggested_thinking_cap": suggested_cap,
-        "suggested_cap_summary": (
-            f"Suggested thinking cap for {operation}: {suggested_cap} "
-            f"(p95={p95_val} + CALIBRATION_CAP_MARGIN_TOKENS={CALIBRATION_CAP_MARGIN_TOKENS})"
+        "margin_constant": "CALIBRATION_NUM_PREDICT_MARGIN_TOKENS",
+        "margin_tokens": CALIBRATION_NUM_PREDICT_MARGIN_TOKENS,
+        "suggested_num_predict": suggested_num_predict,
+        "suggested_num_predict_summary": (
+            f"Suggested total num_predict for {operation}: {suggested_num_predict} "
+            f"(p95={p95_val} + CALIBRATION_NUM_PREDICT_MARGIN_TOKENS={CALIBRATION_NUM_PREDICT_MARGIN_TOKENS})"
         ),
         "unloaded": unload_rec.to_dict(),
         "calls": rows,

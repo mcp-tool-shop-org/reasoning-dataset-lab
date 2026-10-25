@@ -71,7 +71,7 @@
           "path": "LICENSE"
         },
         {
-          "hash": "7795f1709bce851339460d62121c8e9b9a52f3cfa960998f1d03210f8769032f",
+          "hash": "0e26e82971fab4a4a78647e720ae2860e66106117467b674b7b3d5e9e1440800",
           "path": "README.md"
         },
         {
@@ -130,30 +130,30 @@
             {
               "in": "run_cli",
               "kind": "raise",
-              "line": 297
+              "line": 318
             },
             {
               "in": "run_cli",
               "kind": "raise",
-              "line": 308
+              "line": 329
             },
             {
               "in": "run_cli",
               "kind": "raise",
-              "line": 360
+              "line": 383
             },
             {
               "in": "run_cli",
               "kind": "except",
-              "line": 365
+              "line": 388
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 371
+              "line": 394
             }
           ],
-          "hash": "a795725738beea9dcfb3c0ef2634666d0c3f1d50286d25038e35472b96b26bbd",
+          "hash": "76704add47efe05302def121dd1e7c1e76ad848860bc1ec9602bb81e3d806c09",
           "importsFiles": [
             "src/reasoning_dataset_lab/__init__.py",
             "src/reasoning_dataset_lab/config.py",
@@ -167,7 +167,7 @@
             {
               "calls": [
                 {
-                  "line": 208,
+                  "line": 229,
                   "name": "PILOT_B_OPERATIONS",
                   "passed": true,
                   "target": {
@@ -175,7 +175,7 @@
                   }
                 },
                 {
-                  "line": 215,
+                  "line": 236,
                   "name": "DEFAULT_CALIBRATION_TABLES",
                   "passed": true,
                   "target": {
@@ -183,7 +183,7 @@
                   }
                 },
                 {
-                  "line": 222,
+                  "line": 243,
                   "name": "DEFAULT_CALIBRATION_NUM_PREDICT",
                   "passed": true,
                   "target": {
@@ -191,7 +191,7 @@
                   }
                 },
                 {
-                  "line": 229,
+                  "line": 250,
                   "name": "DEFAULT_CALIBRATION_NUM_CTX",
                   "passed": true,
                   "target": {
@@ -208,7 +208,7 @@
               "calls": [
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 208,
+                  "line": 229,
                   "name": "PILOT_B_OPERATIONS",
                   "passed": true,
                   "target": {
@@ -218,7 +218,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 215,
+                  "line": 236,
                   "name": "DEFAULT_CALIBRATION_TABLES",
                   "passed": true,
                   "target": {
@@ -228,7 +228,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 222,
+                  "line": 243,
                   "name": "DEFAULT_CALIBRATION_NUM_PREDICT",
                   "passed": true,
                   "target": {
@@ -238,7 +238,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 229,
+                  "line": 250,
                   "name": "DEFAULT_CALIBRATION_NUM_CTX",
                   "passed": true,
                   "target": {
@@ -248,7 +248,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 278,
+                  "line": 299,
                   "name": "run_pilot_b_calibration",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -256,7 +256,7 @@
                 },
                 {
                   "branch": "args.map_command != \"check\"",
-                  "line": 297,
+                  "line": 318,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -264,7 +264,7 @@
                 },
                 {
                   "branch": "args.command == \"map\"",
-                  "line": 302,
+                  "line": 323,
                   "name": "check_map_file",
                   "target": {
                     "file": "src/reasoning_dataset_lab/map.py"
@@ -272,7 +272,7 @@
                 },
                 {
                   "branch": "args.project_command != \"fingerprint\"",
-                  "line": 308,
+                  "line": 329,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -280,7 +280,7 @@
                 },
                 {
                   "branch": "args.command == \"project\"",
-                  "line": 313,
+                  "line": 334,
                   "name": "compute_config_fingerprint",
                   "target": {
                     "file": "src/reasoning_dataset_lab/config.py"
@@ -288,7 +288,7 @@
                 },
                 {
                   "branch": "args.verify_live",
-                  "line": 323,
+                  "line": 344,
                   "name": "verify_live_ollama_models",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -296,7 +296,7 @@
                 },
                 {
                   "branch": "args.command == \"models\"",
-                  "line": 331,
+                  "line": 352,
                   "name": "values",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -304,14 +304,14 @@
                 },
                 {
                   "branch": "args.command == \"pilot-b\"",
-                  "line": 345,
+                  "line": 368,
                   "name": "run_pilot_b_build",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
                   }
                 },
                 {
-                  "line": 360,
+                  "line": 383,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -327,7 +327,7 @@
               "calls": [
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 208,
+                  "line": 229,
                   "name": "PILOT_B_OPERATIONS",
                   "passed": true,
                   "target": {
@@ -337,7 +337,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 215,
+                  "line": 236,
                   "name": "DEFAULT_CALIBRATION_TABLES",
                   "passed": true,
                   "target": {
@@ -347,7 +347,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 222,
+                  "line": 243,
                   "name": "DEFAULT_CALIBRATION_NUM_PREDICT",
                   "passed": true,
                   "target": {
@@ -357,7 +357,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 229,
+                  "line": 250,
                   "name": "DEFAULT_CALIBRATION_NUM_CTX",
                   "passed": true,
                   "target": {
@@ -370,7 +370,7 @@
                   "inner": [
                     {
                       "branch": "think is not True",
-                      "line": 1052,
+                      "line": 1054,
                       "name": "refused_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -378,7 +378,7 @@
                     },
                     {
                       "branch": "operation not in PILOT_B_OPERATIONS",
-                      "line": 1060,
+                      "line": 1062,
                       "name": "PILOT_B_OPERATIONS",
                       "passed": true,
                       "target": {
@@ -387,7 +387,7 @@
                     },
                     {
                       "branch": "operation not in PILOT_B_OPERATIONS",
-                      "line": 1058,
+                      "line": 1060,
                       "name": "usage_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -395,7 +395,7 @@
                     },
                     {
                       "branch": "tables_count < 1",
-                      "line": 1064,
+                      "line": 1066,
                       "name": "usage_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -403,7 +403,7 @@
                     },
                     {
                       "branch": "num_predict < 1",
-                      "line": 1070,
+                      "line": 1072,
                       "name": "usage_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -411,7 +411,7 @@
                     },
                     {
                       "branch": "num_ctx < NUM_CTX_STEP_TOKENS",
-                      "line": 1076,
+                      "line": 1078,
                       "name": "usage_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -467,7 +467,7 @@
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 278,
+                  "line": 299,
                   "name": "run_pilot_b_calibration",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -476,7 +476,7 @@
                 },
                 {
                   "branch": "args.map_command != \"check\"",
-                  "line": 297,
+                  "line": 318,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -585,7 +585,7 @@
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 302,
+                  "line": 323,
                   "name": "check_map_file",
                   "target": {
                     "file": "src/reasoning_dataset_lab/map.py"
@@ -594,7 +594,7 @@
                 },
                 {
                   "branch": "args.project_command != \"fingerprint\"",
-                  "line": 308,
+                  "line": 329,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -694,7 +694,7 @@
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 313,
+                  "line": 334,
                   "name": "compute_config_fingerprint",
                   "target": {
                     "file": "src/reasoning_dataset_lab/config.py"
@@ -806,7 +806,7 @@
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 323,
+                  "line": 344,
                   "name": "verify_live_ollama_models",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -815,7 +815,7 @@
                 },
                 {
                   "branch": "args.command == \"models\"",
-                  "line": 331,
+                  "line": 352,
                   "name": "values",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -835,21 +835,21 @@
                     },
                     {
                       "line": 847,
-                      "name": "coerce_thinking_cap_config",
+                      "name": "coerce_num_predict_config",
                       "target": {
                         "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
                       }
                     },
                     {
                       "line": 856,
-                      "name": "resolve_thinking_cap_config",
+                      "name": "resolve_num_predict_config",
                       "target": {
                         "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
                       }
                     },
                     {
                       "line": 872,
-                      "name": "coerce_thinking_cap_config",
+                      "name": "coerce_num_predict_config",
                       "target": {
                         "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
                       }
@@ -918,7 +918,7 @@
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 345,
+                  "line": 368,
                   "name": "run_pilot_b_build",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -926,7 +926,7 @@
                   "via": "run_cli"
                 },
                 {
-                  "line": 360,
+                  "line": 383,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3869,45 +3869,45 @@
             {
               "in": "run_pilot_b_build",
               "kind": "raise",
-              "line": 967
+              "line": 969
             },
             {
               "in": "run_pilot_b_calibration",
               "kind": "raise",
-              "line": 1052
+              "line": 1054
             },
             {
               "in": "run_pilot_b_calibration",
               "kind": "raise",
-              "line": 1058
+              "line": 1060
             },
             {
               "in": "run_pilot_b_calibration",
               "kind": "raise",
-              "line": 1064
+              "line": 1066
             },
             {
               "in": "run_pilot_b_calibration",
               "kind": "raise",
-              "line": 1070
+              "line": 1072
             },
             {
               "in": "run_pilot_b_calibration",
               "kind": "raise",
-              "line": 1076
+              "line": 1078
             },
             {
               "in": "run_pilot_b_calibration",
               "kind": "raise",
-              "line": 1094
+              "line": 1096
             },
             {
               "in": "run_pilot_b_calibration",
               "kind": "raise",
-              "line": 1102
+              "line": 1104
             }
           ],
-          "hash": "5050916c26fc007d7f3cd630c3e58e9100c97a91b8e342607a0d9c73b63b0d5f",
+          "hash": "5465dca9194f75622e2d9d3ae4b2c94bd31d698afe7386d39ad5ec26c1bec35d",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/map.py",
@@ -4272,21 +4272,21 @@
                 },
                 {
                   "line": 847,
-                  "name": "coerce_thinking_cap_config",
+                  "name": "coerce_num_predict_config",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
                   }
                 },
                 {
                   "line": 856,
-                  "name": "resolve_thinking_cap_config",
+                  "name": "resolve_num_predict_config",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
                   }
                 },
                 {
                   "line": 872,
-                  "name": "coerce_thinking_cap_config",
+                  "name": "coerce_num_predict_config",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
                   }
@@ -4462,7 +4462,7 @@
               "calls": [
                 {
                   "branch": "think is not True",
-                  "line": 1052,
+                  "line": 1054,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4470,7 +4470,7 @@
                 },
                 {
                   "branch": "operation not in PILOT_B_OPERATIONS",
-                  "line": 1060,
+                  "line": 1062,
                   "name": "PILOT_B_OPERATIONS",
                   "passed": true,
                   "target": {
@@ -4479,7 +4479,7 @@
                 },
                 {
                   "branch": "operation not in PILOT_B_OPERATIONS",
-                  "line": 1058,
+                  "line": 1060,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4487,7 +4487,7 @@
                 },
                 {
                   "branch": "tables_count < 1",
-                  "line": 1064,
+                  "line": 1066,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4495,7 +4495,7 @@
                 },
                 {
                   "branch": "num_predict < 1",
-                  "line": 1070,
+                  "line": 1072,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4503,7 +4503,7 @@
                 },
                 {
                   "branch": "num_ctx < NUM_CTX_STEP_TOKENS",
-                  "line": 1076,
+                  "line": 1078,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4637,13 +4637,13 @@
                   "via": "validate_models_against_licence_registry"
                 },
                 {
-                  "line": 1089,
+                  "line": 1091,
                   "name": "read_bytes",
                   "target": null
                 },
                 {
                   "branch": "selected_role != \"writer\"",
-                  "line": 1094,
+                  "line": 1096,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4651,7 +4651,7 @@
                 },
                 {
                   "branch": "selected_role not in (\"reader_1\", \"reader_2\")",
-                  "line": 1102,
+                  "line": 1104,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4667,13 +4667,13 @@
           ]
         },
         {
-          "entry": "resolve_thinking_cap_config",
+          "entry": "resolve_num_predict_config",
           "entryRule": 4,
           "exports": [
             "build_reader_read_messages",
             "build_writer_render_messages",
             "build_writer_word_messages",
-            "coerce_thinking_cap_config",
+            "coerce_num_predict_config",
             "compute_num_ctx",
             "default_ollama_http_transport",
             "estimate_prompt_tokens",
@@ -4681,7 +4681,7 @@
             "format_reference_material",
             "parse_reader_verdict",
             "require_loopback_ollama_url",
-            "resolve_thinking_cap_config",
+            "resolve_num_predict_config",
             "round_up_num_ctx",
             "run_ollama_calibration_calls",
             "verify_local_ollama_model_digest"
@@ -4690,145 +4690,145 @@
             {
               "in": "round_up_num_ctx",
               "kind": "raise",
-              "line": 112
+              "line": 148
             },
             {
-              "in": "_validate_positive_cap",
+              "in": "_validate_positive_num_predict",
               "kind": "raise",
-              "line": 136
+              "line": 191
             },
             {
-              "in": "_validate_positive_cap",
+              "in": "_validate_positive_num_predict",
               "kind": "except",
-              "line": 144
+              "line": 199
             },
             {
-              "in": "_validate_positive_cap",
+              "in": "_validate_positive_num_predict",
               "kind": "raise",
-              "line": 145
+              "line": 200
             },
             {
-              "in": "_validate_positive_cap",
+              "in": "_validate_positive_num_predict",
               "kind": "raise",
-              "line": 153
+              "line": 208
             },
             {
-              "in": "_validate_positive_cap",
+              "in": "_validate_positive_num_predict",
               "kind": "raise",
-              "line": 159
+              "line": 214
             },
             {
-              "in": "resolve_thinking_cap_config",
+              "in": "resolve_num_predict_config",
               "kind": "raise",
-              "line": 259
+              "line": 408
             },
             {
-              "in": "resolve_thinking_cap_config",
+              "in": "resolve_num_predict_config",
               "kind": "except",
-              "line": 266
+              "line": 415
             },
             {
-              "in": "resolve_thinking_cap_config",
+              "in": "resolve_num_predict_config",
               "kind": "raise",
-              "line": 267
+              "line": 416
             },
             {
-              "in": "resolve_thinking_cap_config",
+              "in": "resolve_num_predict_config",
               "kind": "raise",
-              "line": 273
+              "line": 422
             },
             {
               "in": "require_loopback_ollama_url",
               "kind": "raise",
-              "line": 445
+              "line": 617
             },
             {
               "in": "default_ollama_http_transport",
               "kind": "except",
-              "line": 474
+              "line": 646
             },
             {
               "in": "default_ollama_http_transport",
               "kind": "raise",
-              "line": 475
+              "line": 647
             },
             {
               "in": "default_ollama_http_transport",
               "kind": "except",
-              "line": 483
+              "line": 655
             },
             {
               "in": "default_ollama_http_transport",
               "kind": "raise",
-              "line": 484
+              "line": 656
             },
             {
               "in": "default_ollama_http_transport",
               "kind": "raise",
-              "line": 491
+              "line": 663
             },
             {
               "in": "verify_local_ollama_model_digest",
               "kind": "raise",
-              "line": 600
+              "line": 770
             },
             {
               "in": "verify_local_ollama_model_digest",
               "kind": "raise",
-              "line": 609
+              "line": 779
             },
             {
               "in": "__init__",
               "kind": "raise",
-              "line": 771
+              "line": 950
             },
             {
               "in": "_chat",
               "kind": "raise",
-              "line": 890
+              "line": 1067
             },
             {
               "in": "_chat",
               "kind": "raise",
-              "line": 945
+              "line": 1121
             },
             {
               "in": "parse_reader_verdict",
               "kind": "except",
-              "line": 1012
+              "line": 1188
             },
             {
               "in": "__init__",
               "kind": "raise",
-              "line": 1052
+              "line": 1235
             },
             {
               "in": "_chat",
               "kind": "raise",
-              "line": 1163
+              "line": 1352
             },
             {
               "in": "run_ollama_calibration_calls",
               "kind": "raise",
-              "line": 1281
+              "line": 1469
             },
             {
               "in": "run_ollama_calibration_calls",
               "kind": "raise",
-              "line": 1287
+              "line": 1475
             },
             {
               "in": "run_ollama_calibration_calls",
               "kind": "raise",
-              "line": 1293
+              "line": 1481
             },
             {
               "in": "run_ollama_calibration_calls",
               "kind": "raise",
-              "line": 1299
+              "line": 1487
             }
           ],
-          "hash": "b12800454f70da5ae4ba13fb4d2cb8ca0926ab2330ce580ea1d1b2ce57d29bc2",
+          "hash": "79f283642ab3ac6b5a10910c9f50758e0564601616ac1331b2eb950c2edd4b41",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
@@ -4842,14 +4842,14 @@
               "calls": [
                 {
                   "branch": "isinstance(raw_val, bool)",
-                  "line": 136,
+                  "line": 191,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 145,
+                  "line": 200,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4857,7 +4857,7 @@
                 },
                 {
                   "branch": "val < 1",
-                  "line": 159,
+                  "line": 214,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4867,61 +4867,95 @@
               "exported": false,
               "invokedAtTopLevel": false,
               "isDefaultExport": false,
-              "name": "_validate_positive_cap"
+              "name": "_validate_positive_num_predict"
             },
             {
               "calls": [
                 {
                   "branch": "isinstance(raw_val, bool)",
-                  "line": 136,
+                  "line": 191,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   },
-                  "via": "_validate_positive_cap"
+                  "via": "_validate_positive_num_predict"
                 },
                 {
-                  "line": 145,
+                  "line": 200,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   },
-                  "via": "_validate_positive_cap"
+                  "via": "_validate_positive_num_predict"
                 },
                 {
                   "branch": "val < 1",
-                  "line": 159,
+                  "line": 214,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   },
-                  "via": "_validate_positive_cap"
+                  "via": "_validate_positive_num_predict"
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_populate_op_dict_from_mapping"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "isinstance(raw_val, bool)",
+                  "line": 191,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_positive_num_predict"
                 },
                 {
-                  "line": 258,
+                  "line": 200,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_positive_num_predict"
+                },
+                {
+                  "branch": "val < 1",
+                  "line": 214,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_positive_num_predict"
+                },
+                {
+                  "line": 407,
                   "name": "exists",
                   "target": null
                 },
                 {
-                  "line": 258,
+                  "line": 407,
                   "name": "is_file",
                   "target": null
                 },
                 {
                   "branch": "not config_path.exists() or not config_path.is_file()",
-                  "line": 259,
+                  "line": 408,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 265,
+                  "line": 414,
                   "name": "read_text",
                   "target": null
                 },
                 {
-                  "line": 267,
+                  "line": 416,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4929,7 +4963,7 @@
                 },
                 {
                   "branch": "not isinstance(raw_cfg, Mapping)",
-                  "line": 273,
+                  "line": 422,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4939,69 +4973,69 @@
               "exported": true,
               "invokedAtTopLevel": false,
               "isDefaultExport": false,
-              "name": "resolve_thinking_cap_config"
+              "name": "resolve_num_predict_config"
             },
             {
               "calls": [
                 {
-                  "branch": "thinking_token_cap is None",
-                  "line": 136,
+                  "branch": "num_predict is None",
+                  "line": 191,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   },
-                  "via": "_validate_positive_cap"
+                  "via": "_validate_positive_num_predict"
                 },
                 {
-                  "branch": "thinking_token_cap is None",
-                  "line": 258,
+                  "branch": "num_predict is None",
+                  "line": 407,
                   "name": "exists",
                   "target": null,
-                  "via": "resolve_thinking_cap_config"
+                  "via": "resolve_num_predict_config"
                 },
                 {
-                  "branch": "thinking_token_cap is None",
-                  "line": 258,
+                  "branch": "num_predict is None",
+                  "line": 407,
                   "name": "is_file",
                   "target": null,
-                  "via": "resolve_thinking_cap_config"
+                  "via": "resolve_num_predict_config"
                 },
                 {
-                  "branch": "thinking_token_cap is None",
-                  "line": 259,
+                  "branch": "num_predict is None",
+                  "line": 408,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   },
-                  "via": "resolve_thinking_cap_config"
+                  "via": "resolve_num_predict_config"
                 },
                 {
-                  "branch": "thinking_token_cap is None",
-                  "line": 265,
+                  "branch": "num_predict is None",
+                  "line": 414,
                   "name": "read_text",
                   "target": null,
-                  "via": "resolve_thinking_cap_config"
+                  "via": "resolve_num_predict_config"
                 },
                 {
-                  "branch": "thinking_token_cap is None",
-                  "line": 267,
+                  "branch": "num_predict is None",
+                  "line": 416,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   },
-                  "via": "resolve_thinking_cap_config"
+                  "via": "resolve_num_predict_config"
                 }
               ],
               "exported": true,
               "invokedAtTopLevel": false,
               "isDefaultExport": false,
-              "name": "coerce_thinking_cap_config"
+              "name": "coerce_num_predict_config"
             },
             {
               "calls": [
                 {
                   "branch": "parsed.scheme != \"http\" or parsed.hostname != LOOPBACK_HOST…",
-                  "line": 445,
+                  "line": 617,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5017,7 +5051,7 @@
               "calls": [
                 {
                   "branch": "parsed.scheme != \"http\" or parsed.hostname != LOOPBACK_HOST…",
-                  "line": 445,
+                  "line": 617,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5025,7 +5059,7 @@
                   "via": "require_loopback_ollama_url"
                 },
                 {
-                  "line": 475,
+                  "line": 647,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5033,7 +5067,7 @@
                 },
                 {
                   "branch": "not isinstance(parsed, dict)",
-                  "line": 491,
+                  "line": 663,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5048,7 +5082,7 @@
             {
               "calls": [
                 {
-                  "line": 562,
+                  "line": 732,
                   "name": "ModelIdentity",
                   "passed": true,
                   "target": {
@@ -5056,7 +5090,7 @@
                   }
                 },
                 {
-                  "line": 564,
+                  "line": 734,
                   "name": "to_model_identity",
                   "target": null
                 }
@@ -5070,7 +5104,7 @@
               "calls": [
                 {
                   "branch": "parsed.scheme != \"http\" or parsed.hostname != LOOPBACK_HOST…",
-                  "line": 445,
+                  "line": 617,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5079,7 +5113,7 @@
                 },
                 {
                   "branch": "entry is None",
-                  "line": 600,
+                  "line": 770,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5087,7 +5121,7 @@
                 },
                 {
                   "branch": "got_digest != norm_expected",
-                  "line": 609,
+                  "line": 779,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5102,7 +5136,7 @@
             {
               "calls": [
                 {
-                  "line": 620,
+                  "line": 790,
                   "name": "to_dict",
                   "target": null
                 }
@@ -5116,7 +5150,7 @@
               "calls": [
                 {
                   "branch": "think is not True",
-                  "line": 1281,
+                  "line": 1469,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5124,7 +5158,7 @@
                 },
                 {
                   "branch": "operation not in PILOT_B_OPERATIONS",
-                  "line": 1287,
+                  "line": 1475,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5132,7 +5166,7 @@
                 },
                 {
                   "branch": "num_predict < 1",
-                  "line": 1293,
+                  "line": 1481,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5140,7 +5174,7 @@
                 },
                 {
                   "branch": "num_ctx < NUM_CTX_STEP_TOKENS",
-                  "line": 1299,
+                  "line": 1487,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5148,7 +5182,7 @@
                 },
                 {
                   "branch": "parsed.scheme != \"http\" or parsed.hostname != LOOPBACK_HOST…",
-                  "line": 445,
+                  "line": 617,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5156,7 +5190,7 @@
                   "via": "require_loopback_ollama_url"
                 },
                 {
-                  "line": 562,
+                  "line": 732,
                   "name": "ModelIdentity",
                   "passed": true,
                   "target": {
@@ -5165,14 +5199,14 @@
                   "via": "_resolve_model_identity"
                 },
                 {
-                  "line": 564,
+                  "line": 734,
                   "name": "to_model_identity",
                   "target": null,
                   "via": "_resolve_model_identity"
                 },
                 {
                   "branch": "entry is None",
-                  "line": 600,
+                  "line": 770,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5181,7 +5215,7 @@
                 },
                 {
                   "branch": "got_digest != norm_expected",
-                  "line": 609,
+                  "line": 779,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -5375,7 +5409,7 @@
               "line": 435
             }
           ],
-          "hash": "34893f7dbd88e1b3c7faacd30d85be4e4c7245505bdc48cbd6780057b3380036",
+          "hash": "f2e378c407c00b2178ad6f64765d09622734c77196b3e7172fad12dfcefab88a",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
@@ -5404,75 +5438,75 @@
             {
               "in": "run_pilot_b_waves",
               "kind": "except",
-              "line": 380
+              "line": 392
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "raise",
-              "line": 385
+              "line": 397
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "except",
-              "line": 462
+              "line": 474
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "raise",
-              "line": 467
+              "line": 479
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "except",
-              "line": 567
+              "line": 579
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "raise",
-              "line": 569
+              "line": 581
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "except",
-              "line": 607
+              "line": 619
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "raise",
-              "line": 609
+              "line": 621
             },
             {
               "in": "write_sealed_part",
               "kind": "raise",
-              "line": 775
+              "line": 787
             },
             {
               "in": "_scan_object_for_forbidden_keys",
               "kind": "raise",
-              "line": 1090
+              "line": 1102
             },
             {
               "in": "verify_sealed_part",
               "kind": "raise",
-              "line": 1120
+              "line": 1132
             },
             {
               "in": "verify_sealed_part",
               "kind": "raise",
-              "line": 1126
+              "line": 1138
             },
             {
               "in": "verify_sealed_part",
               "kind": "raise",
-              "line": 1134
+              "line": 1146
             },
             {
               "in": "verify_sealed_part",
               "kind": "raise",
-              "line": 1192
+              "line": 1204
             }
           ],
-          "hash": "a5c1da0bc2033cba3e6d70e510e8b54693b20962b773d6e2fc858aebc29bd7bf",
+          "hash": "dcc2db8e9338fd0788e50bb9db4ed2425a851023b6198f83d92700fabb74b822",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/ollama.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -5526,7 +5560,7 @@
       "externals": 2,
       "files": [
         {
-          "hash": "8a40b315a35a37b1a857d221dbee7ec5fd94f61a4947677f766419098c77205e",
+          "hash": "9dba296499548ae221c9e33e782b91f8055da3c56b2394a525770ee557add4f5",
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
             "src/reasoning_dataset_lab/pilot_b/rendering.py",
@@ -5625,15 +5659,19 @@
             "test_fix2_run_pilot_b_build_has_no_adapter_or_transport_params_and_refuses_subclasses_or_custom_transport_at_seal",
             "test_gp_part_a_num_ctx_present_in_every_request_body_and_recorded",
             "test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued",
-            "test_gp_part_b_thinking_cap_precedence_and_source_recorded",
             "test_gp_part_c_calibrate_seals_nothing",
-            "test_gp_part_c_calibrate_writes_stats_and_never_sends_think_false",
+            "test_gs_calibrate_suggests_total_num_predict_and_reports_eval_count_and_thinking_words",
+            "test_gs_defaults_are_4096_6144_2048",
+            "test_gs_no_request_or_record_carries_thinking_cap_or_answer_budget",
+            "test_gs_num_predict_config_precedence_and_validation_branches",
+            "test_gs_request_num_predict_equals_configured_total_per_operation_with_source_recorded",
+            "test_gs_thinking_words_is_recorded_and_nothing_gates_on_it",
             "test_part_a_refused_rendering_routes_triad_to_review_queue_without_retry",
             "test_part_a_writer_adapter_success_and_call_records",
+            "test_part_a_writer_num_predict_passed_recorded_and_length_stop_refused",
             "test_part_a_writer_refuses_digest_mismatch_with_pull_hint",
             "test_part_a_writer_refuses_missing_tag_with_pull_hint_and_never_pulls",
             "test_part_a_writer_refuses_non_loopback_url",
-            "test_part_a_writer_thinking_cap_passed_recorded_and_exceeded_refused",
             "test_part_b_malformed_reader_answer_counts_as_ambiguous_and_keeps_raw_text",
             "test_part_b_reader_adapter_success_and_strict_parsing",
             "test_part_b_reader_refuses_non_loopback_missing_tag_and_digest_mismatch",
@@ -5641,7 +5679,7 @@
             "test_part_c_run_pilot_b_build_uses_real_ollama_adapters_in_stub_and_non_stub_and_unloads_after_each_wave",
             "test_part_d_ollama_transport_verdict_parsing_and_properties"
           ],
-          "hash": "4ec97d4d84b5c5cbcf6a055950b061637892f9ff88b59a384a4d6d5f76b82d8f",
+          "hash": "0912f6b9ce57e2e36019351fedb34df6a67c4454955918cdfb8e31338cb5485e",
           "importOrder": [
             "tests/pilot_b_fakes.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -5747,10 +5785,10 @@
             "test_freeze_refuses_key_bearing_field_or_per_item_key_association_in_part",
             "test_part_d_wave_tracker_and_sealing_edge_cases",
             "test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store",
-            "test_single_model_waves_order_and_thinking_cap_recorded",
-            "test_thinking_token_cap_exceeded_is_recorded_as_post_hoc_metric"
+            "test_single_model_waves_order_and_num_predict_recorded",
+            "test_thinking_words_recorded_as_informational_metric"
           ],
-          "hash": "d28700a06ad04c18379d53e62887d355dfefba8d5b5bcb2b720ef7a59239f76f",
+          "hash": "b5fe8038844a14c866a95984251c955cb51cf2e90f577894ccdc1284b81ba98d",
           "importOrder": [
             "tests/pilot_b_fakes.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -5787,7 +5825,7 @@
             "test_stub_build_10_triads_end_to_end_and_build_report_fields",
             "test_verify_live_checks_manifest_digests_and_refuses_drift"
           ],
-          "hash": "b1a727f765c4054d3956a4f9c9a024dbf7fe2ff2d87e3b19316c2fac5f93a41a",
+          "hash": "329c147e1d096ffab092a7e8b76b86f211e557d5a5712aa6173b665532612063",
           "importsFiles": [
             "src/reasoning_dataset_lab/cli.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -5802,7 +5840,7 @@
             "check_lab_requires_python_subset_of_role_set",
             "test_lab_requires_python_matches_role_set_and_allows_no_refused_python"
           ],
-          "hash": "d8490d0f8f589b820b47819c32f1237ea2f54a9dbadffe0a5eee4ea9b578899f",
+          "hash": "e5e84a7f04a5493783d316c033c64a2607eb443a186d840b6030805f3dae3f2f",
           "path": "tests/test_pilot_b_part_f.py"
         },
         {
@@ -6070,8 +6108,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "7ad36a116387947ad963728e7450003a8ef92f00",
-    "tracked": 38
+    "commit": "1cff8235280e0ebbc866536dffe5da19794f3988",
+    "tracked": 39
   },
   "landings": [
     {
@@ -6080,9 +6118,33 @@
           "by": "pyproject.toml",
           "call": "configuration",
           "confidence": "config"
+        },
+        {
+          "by": "tests/test_pilot_b_ollama_adapters.py",
+          "call": "read_text",
+          "confidence": "ast",
+          "fromTests": true
         }
       ],
       "target": "README.md",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_pilot_b_ollama_adapters.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        },
+        {
+          "by": "tests/test_pilot_b_ollama_adapters.py",
+          "call": "read_text",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "docs/calibration-2026-10-25.md",
       "writers": []
     },
     {
@@ -6116,5 +6178,10 @@
   "submodules": [],
   "symlinks": [],
   "testFiles": 13,
-  "unassigned": []
+  "unassigned": [
+    {
+      "hash": "b723e3bbe117fa8b59103d1c698175b858ee54eeaa0d94f67f610faaed401b6d",
+      "path": "docs/calibration-2026-10-25.md"
+    }
+  ]
 }

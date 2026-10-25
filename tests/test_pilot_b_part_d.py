@@ -51,14 +51,14 @@ def _setup_models() -> tuple[ModelIdentity, ModelIdentity, ModelIdentity]:
     return writer_id, r1_id, r2_id
 
 
-def test_single_model_waves_order_and_thinking_cap_recorded(tmp_path: Path) -> None:
+def test_single_model_waves_order_and_num_predict_recorded(tmp_path: Path) -> None:
     writer_id, r1_id, r2_id = _setup_models()
     tables = generate_fact_tables(n=4, seed=1)
     triads = [build_contrast_triad(t, seed=idx + 1) for idx, t in enumerate(tables)]
 
     writer = DeterministicWriterAdapter()
-    r1 = UnanimousReaderFake(model=r1_id, thinking_tokens=32, completion_tokens=8)
-    r2 = UnanimousReaderFake(model=r2_id, thinking_tokens=28, completion_tokens=6)
+    r1 = UnanimousReaderFake(model=r1_id, thinking_words=32, completion_tokens=8)
+    r2 = UnanimousReaderFake(model=r2_id, thinking_words=28, completion_tokens=6)
 
     wave_res = run_pilot_b_waves(
         triads=triads,
@@ -66,7 +66,7 @@ def test_single_model_waves_order_and_thinking_cap_recorded(tmp_path: Path) -> N
         writer_adapter=writer,
         reader_1=r1,
         reader_2=r2,
-        thinking_token_cap=256,
+        num_predict=256,
         review_queue_path=tmp_path / "review_queue.jsonl",
     )
 
@@ -77,10 +77,10 @@ def test_single_model_waves_order_and_thinking_cap_recorded(tmp_path: Path) -> N
         "reader_1",
         "reader_2",
     ]
-    assert wave_res.thinking_token_cap == 256
+    assert wave_res.num_predict == 256
     for w in wave_res.wave_metrics:
-        assert w.thinking_token_cap == 256
-        assert w.max_thinking_tokens_observed <= 256
+        assert w.num_predict == 256
+        assert w.max_thinking_words_observed <= 256
 
     # Check non-interleaved wave order from the call log
     phases = [entry.wave_name for entry in wave_res.call_log]
@@ -92,7 +92,7 @@ def test_single_model_waves_order_and_thinking_cap_recorded(tmp_path: Path) -> N
     assert compressed == ["render", "word", "reader_1", "reader_2"]
 
 
-def test_thinking_token_cap_exceeded_is_recorded_as_post_hoc_metric(
+def test_thinking_words_recorded_as_informational_metric(
     tmp_path: Path,
 ) -> None:
     writer_id, r1_id, r2_id = _setup_models()
@@ -100,9 +100,8 @@ def test_thinking_token_cap_exceeded_is_recorded_as_post_hoc_metric(
     triads = [build_contrast_triad(t, seed=idx + 1) for idx, t in enumerate(tables)]
 
     writer = DeterministicWriterAdapter()
-    # Reader 1 emits 512 thinking tokens when the cap is 128 -> post-hoc count is recorded as a metric, not a build-killing raise
-    r1_over = UnanimousReaderFake(model=r1_id, thinking_tokens=512, completion_tokens=8)
-    r2 = UnanimousReaderFake(model=r2_id, thinking_tokens=32, completion_tokens=6)
+    r1_over = UnanimousReaderFake(model=r1_id, thinking_words=512, completion_tokens=8)
+    r2 = UnanimousReaderFake(model=r2_id, thinking_words=32, completion_tokens=6)
 
     wave_res = run_pilot_b_waves(
         triads=triads,
@@ -110,12 +109,12 @@ def test_thinking_token_cap_exceeded_is_recorded_as_post_hoc_metric(
         writer_adapter=writer,
         reader_1=r1_over,
         reader_2=r2,
-        thinking_token_cap=128,
+        num_predict=128,
         review_queue_path=tmp_path / "review_queue.jsonl",
     )
     r1_wave = next(w for w in wave_res.wave_metrics if w.wave_name == "reader_1")
-    assert r1_wave.thinking_token_cap == 128
-    assert r1_wave.max_thinking_tokens_observed == 512
+    assert r1_wave.num_predict == 128
+    assert r1_wave.max_thinking_words_observed == 512
 
 
 def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
@@ -132,15 +131,15 @@ def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
     )
     writer = OllamaWriterAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
-        thinking_token_cap=256,
+        num_predict=256,
     )
     r1 = OllamaBlindReaderAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
-        thinking_token_cap=256,
+        num_predict=256,
     )
     r2 = OllamaBlindReaderAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
-        thinking_token_cap=256,
+        num_predict=256,
     )
 
     wave_res = run_pilot_b_waves(
@@ -149,7 +148,7 @@ def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
         writer_adapter=writer,
         reader_1=r1,
         reader_2=r2,
-        thinking_token_cap=256,
+        num_predict=256,
         review_queue_path=tmp_path / "review_queue.jsonl",
     )
 
@@ -167,7 +166,7 @@ def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
     freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
 
     assert sealed_meta["shuffle_seed"] == 42
-    assert sealed_meta["thinking_token_cap"] == 256
+    assert sealed_meta["num_predict"] == 256
     assert keys_path.exists()
 
     # Verify items.jsonl has no key/verdict/label/answer and is shuffled across positions
@@ -217,17 +216,17 @@ def test_freeze_refuses_key_bearing_field_or_per_item_key_association_in_part(
         writer_model=writer_id,
         writer_adapter=OllamaWriterAdapter(
             model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
-            thinking_token_cap=256,
+            num_predict=256,
         ),
         reader_1=OllamaBlindReaderAdapter(
             model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
-            thinking_token_cap=256,
+            num_predict=256,
         ),
         reader_2=OllamaBlindReaderAdapter(
             model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
-            thinking_token_cap=256,
+            num_predict=256,
         ),
-        thinking_token_cap=256,
+        num_predict=256,
         review_queue_path=tmp_path / "review_queue.jsonl",
     )
 
@@ -280,18 +279,18 @@ def test_freeze_refuses_key_bearing_field_or_per_item_key_association_in_part(
 
 
 def test_part_d_wave_tracker_and_sealing_edge_cases(tmp_path: Path) -> None:
-    # Invalid thinking cap
-    with pytest.raises(RdlabError) as exc_cap:
-        WaveCallTracker(thinking_token_cap=0)
-    assert exc_cap.value.code == "PILOT_B_INVALID_THINKING_CAP"
+    # Invalid num_predict
+    with pytest.raises(RdlabError) as exc_np:
+        WaveCallTracker(num_predict=0)
+    assert exc_np.value.code == "PILOT_B_INVALID_NUM_PREDICT"
 
-    tracker = WaveCallTracker(thinking_token_cap=64)
-    assert tracker.thinking_token_cap == 64
+    tracker = WaveCallTracker(num_predict=64)
+    assert tracker.num_predict == 64
     tracker.record(
         wave_name="render",
         model_name="m1",
         target_id="t1",
-        thinking_tokens=10,
+        thinking_words=10,
         completion_tokens=10,
         seconds=0.01,
     )
@@ -303,7 +302,7 @@ def test_part_d_wave_tracker_and_sealing_edge_cases(tmp_path: Path) -> None:
             wave_name="reader_1",
             model_name="m2",
             target_id="t1",
-            thinking_tokens=10,
+            thinking_words=10,
             completion_tokens=10,
             seconds=0.01,
         )
@@ -314,7 +313,7 @@ def test_part_d_wave_tracker_and_sealing_edge_cases(tmp_path: Path) -> None:
         wave_name="word",
         model_name="m1",
         target_id="t1-c1",
-        thinking_tokens=10,
+        thinking_words=10,
         completion_tokens=10,
         seconds=0.01,
     )
@@ -323,7 +322,7 @@ def test_part_d_wave_tracker_and_sealing_edge_cases(tmp_path: Path) -> None:
             wave_name="render",
             model_name="m1",
             target_id="t2",
-            thinking_tokens=10,
+            thinking_words=10,
             completion_tokens=10,
             seconds=0.01,
         )

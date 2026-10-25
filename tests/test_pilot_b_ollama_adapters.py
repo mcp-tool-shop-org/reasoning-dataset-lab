@@ -202,7 +202,7 @@ def test_part_a_writer_adapter_success_and_call_records(
     adapter = OllamaWriterAdapter(
         model=writer_pin,
         base_url="http://127.0.0.1:11434",
-        thinking_token_cap=256,
+        num_predict=256,
     )
     assert isinstance(adapter, PilotBWriterAdapter)
     assert adapter.is_fake is False
@@ -235,8 +235,8 @@ def test_part_a_writer_adapter_success_and_call_records(
     assert rec0.digest == writer_pin.manifest_digest
     assert len(rec0.prompt_sha256) == 64
     assert rec0.eval_tokens == 35
-    assert rec0.thinking_tokens == 20
-    assert rec0.thinking_token_cap == 256
+    assert rec0.thinking_words == 20
+    assert rec0.num_predict == 256
     assert rec0.wall_time_s >= 0.0
 
 
@@ -322,18 +322,15 @@ def test_part_a_writer_refuses_digest_mismatch_with_pull_hint(
     assert len(requests) == 1
 
 
-def test_part_a_writer_thinking_cap_passed_recorded_and_exceeded_refused(
+def test_part_a_writer_num_predict_passed_recorded_and_length_stop_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from reasoning_dataset_lab.pilot_b.ollama import (
-        RENDER_ANSWER_BUDGET,
-        OllamaWriterAdapter,
-    )
+    from reasoning_dataset_lab.pilot_b.ollama import OllamaWriterAdapter
 
     writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
     table = build_sample_fact_table(seed=1, closure="open")
 
-    # 1. Post-hoc thinking_tokens > thinking_token_cap with done_reason='stop' is recorded as a metric, not a build-killing raise
+    # 1. Post-hoc thinking_words > num_predict with done_reason='stop' is recorded as a metric, not a build-killing raise
     transport_metric, requests_metric = build_mock_ollama_http_transport(
         thinking_tokens_per_call=300
     )
@@ -343,12 +340,12 @@ def test_part_a_writer_thinking_cap_passed_recorded_and_exceeded_refused(
     )
     adapter_metric = OllamaWriterAdapter(
         model=writer_pin,
-        thinking_token_cap=128,
+        num_predict=128,
     )
     adapter_metric.render_material(table)
-    assert adapter_metric.call_records[0].thinking_tokens == 300
-    assert adapter_metric.call_records[0].num_predict == 128 + RENDER_ANSWER_BUDGET
-    assert requests_metric[1][2]["options"]["num_predict"] == 128 + RENDER_ANSWER_BUDGET
+    assert adapter_metric.call_records[0].thinking_words == 300
+    assert adapter_metric.call_records[0].num_predict == 128
+    assert requests_metric[1][2]["options"]["num_predict"] == 128
 
     # 2. done_reason='length' is refused by the writer with PILOT_B_OLLAMA_LENGTH_STOP
     transport_len, _ = build_mock_ollama_http_transport(
@@ -360,7 +357,7 @@ def test_part_a_writer_thinking_cap_passed_recorded_and_exceeded_refused(
     )
     adapter_len = OllamaWriterAdapter(
         model=writer_pin,
-        thinking_token_cap=128,
+        num_predict=128,
     )
     with pytest.raises(RdlabError) as exc_info:
         adapter_len.render_material(table)
@@ -447,7 +444,7 @@ def test_part_b_reader_adapter_success_and_strict_parsing(
     reader = OllamaBlindReaderAdapter(
         model=r1_pin,
         base_url="http://127.0.0.1:11434",
-        thinking_token_cap=256,
+        num_predict=256,
     )
     assert isinstance(reader, BlindReaderAdapter)
     assert reader.is_fake is False
@@ -475,7 +472,7 @@ def test_part_b_reader_adapter_success_and_strict_parsing(
     res = reader.read_claim(prompt)
     assert res.verdict == "supported"
     assert res.raw_text == "supported"
-    assert res.thinking_tokens == 14
+    assert res.thinking_words == 14
     assert res.completion_tokens == 4
     assert len(res.prompt_sha256) == 64
 
@@ -663,7 +660,7 @@ def test_part_c_run_pilot_b_build_uses_real_ollama_adapters_in_stub_and_non_stub
             for wcall in prow["writer"]["call_records"]:
                 assert len(wcall["prompt_sha256"]) == 64
                 assert wcall["eval_tokens"] == 22
-                assert wcall["thinking_tokens"] == 16
+                assert wcall["thinking_words"] == 16
                 assert "wall_time_s" in wcall
             j0 = prow["judgments"][0]
             assert j0["reader_adapters"] == [
@@ -674,7 +671,7 @@ def test_part_c_run_pilot_b_build_uses_real_ollama_adapters_in_stub_and_non_stub
             for rcall in j0["call_records"]:
                 assert len(rcall["prompt_sha256"]) == 64
                 assert rcall["eval_tokens"] == 22
-                assert rcall["thinking_tokens"] == 16
+                assert rcall["thinking_words"] == 16
                 assert "wall_time_s" in rcall
 
         # Check report has per-wave wall time, token totals, adapter names, and unloaded flag
@@ -689,7 +686,7 @@ def test_part_c_run_pilot_b_build_uses_real_ollama_adapters_in_stub_and_non_stub
             assert w["unloaded"] is True
             assert "wall_time_s_total" in w
             assert w["eval_tokens_total"] > 0
-            assert w["thinking_tokens_total"] > 0
+            assert w["thinking_words_total"] > 0
 
 
 def test_part_c_fakes_moved_to_tests_and_cannot_produce_sealed_output(
@@ -758,18 +755,18 @@ def test_part_d_ollama_transport_verdict_parsing_and_properties(
     assert parse_reader_verdict('{"verdict": "maybe"}') == "ambiguous"
     assert parse_reader_verdict('{"verdict": "supported", "extra": 1}') == "ambiguous"
 
-    # 2. Invalid thinking_token_cap < 1
-    with pytest.raises(RdlabError) as exc_w_cap:
+    # 2. Invalid num_predict < 1
+    with pytest.raises(RdlabError) as exc_w_np:
         OllamaWriterAdapter(
-            DEFAULT_PILOT_B_MODEL_PINS["writer"], thinking_token_cap=0
+            DEFAULT_PILOT_B_MODEL_PINS["writer"], num_predict=0
         )
-    assert exc_w_cap.value.code == "PILOT_B_INVALID_THINKING_CAP"
+    assert exc_w_np.value.code == "PILOT_B_INVALID_NUM_PREDICT"
 
-    with pytest.raises(RdlabError) as exc_r_cap:
+    with pytest.raises(RdlabError) as exc_r_np:
         OllamaBlindReaderAdapter(
-            DEFAULT_PILOT_B_MODEL_PINS["reader_1"], thinking_token_cap=0
+            DEFAULT_PILOT_B_MODEL_PINS["reader_1"], num_predict=0
         )
-    assert exc_r_cap.value.code == "PILOT_B_INVALID_THINKING_CAP"
+    assert exc_r_np.value.code == "PILOT_B_INVALID_NUM_PREDICT"
 
     # 3. Properties and unload_records
     transport, _ = build_mock_ollama_http_transport()
@@ -779,14 +776,14 @@ def test_part_d_ollama_transport_verdict_parsing_and_properties(
     )
     w_id = DEFAULT_PILOT_B_MODEL_PINS["writer"].to_model_identity()
     r_id = DEFAULT_PILOT_B_MODEL_PINS["reader_1"].to_model_identity()
-    writer = OllamaWriterAdapter(w_id, thinking_token_cap=128)
-    reader = OllamaBlindReaderAdapter(r_id, thinking_token_cap=128)
+    writer = OllamaWriterAdapter(w_id, num_predict=128)
+    reader = OllamaBlindReaderAdapter(r_id, num_predict=128)
 
     assert writer.model == w_id
     assert writer.base_url == "http://127.0.0.1:11434"
-    assert writer.thinking_token_cap == 128
+    assert writer.num_predict == 128
     assert reader.base_url == "http://127.0.0.1:11434"
-    assert reader.thinking_token_cap == 128
+    assert reader.num_predict == 128
 
     table = build_sample_fact_table(seed=1)
     writer.render_material(table)
@@ -853,11 +850,8 @@ def test_part_d_ollama_transport_verdict_parsing_and_properties(
 def test_fix1_request_body_has_top_level_think_and_num_predict_and_no_thinking_token_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Card gn FIX 1: request body carries top-level `think` and `options.num_predict = thinking_token_cap + answer_budget`, and no `thinking_token_cap` key."""
+    """Card gn FIX 1 + Card gs: request body carries top-level `think` and `options.num_predict = configured total`, and no `thinking_token_cap` key."""
     from reasoning_dataset_lab.pilot_b.ollama import (
-        READ_ANSWER_BUDGET,
-        RENDER_ANSWER_BUDGET,
-        WORD_ANSWER_BUDGET,
         OllamaBlindReaderAdapter,
         OllamaWriterAdapter,
     )
@@ -876,13 +870,12 @@ def test_fix1_request_body_has_top_level_think_and_num_predict_and_no_thinking_t
     assert writer_pin.think is True
     assert reader_pin.think is True
 
-    writer = OllamaWriterAdapter(model=writer_pin, thinking_token_cap=256)
-    reader = OllamaBlindReaderAdapter(model=reader_pin, thinking_token_cap=256)
+    writer = OllamaWriterAdapter(model=writer_pin, num_predict=256)
+    reader = OllamaBlindReaderAdapter(model=reader_pin, num_predict=256)
 
     table = build_sample_fact_table(seed=1, closure="open")
     triad = build_contrast_triad(table, seed=1)
 
-    # Even though thinking_tokens_per_call=512 > thinking_token_cap=256, post-hoc count is recorded as a metric, not a build-killing raise
     material = writer.render_material(table)
     worded_sup = writer.word_claim(table, triad.claims["supported"])
     prompt = build_blind_read_prompt(
@@ -895,7 +888,7 @@ def test_fix1_request_body_has_top_level_think_and_num_predict_and_no_thinking_t
     read_res = reader.read_claim(prompt)
     assert read_res.verdict == "supported"
     assert read_res.done_reason == "stop"
-    assert read_res.thinking_tokens == 512
+    assert read_res.thinking_words == 512
 
     chat_bodies = [
         body for method, url, body in requests if method == "POST" and url.endswith("/api/chat")
@@ -908,16 +901,12 @@ def test_fix1_request_body_has_top_level_think_and_num_predict_and_no_thinking_t
         assert "thinking_token_cap" not in body
         assert "thinking_token_cap" not in body["options"]
         assert body["options"]["temperature"] == 0
-        assert "num_predict" in body["options"]
-
-    assert chat_bodies[0]["options"]["num_predict"] == 256 + RENDER_ANSWER_BUDGET
-    assert chat_bodies[1]["options"]["num_predict"] == 256 + WORD_ANSWER_BUDGET
-    assert chat_bodies[2]["options"]["num_predict"] == 256 + READ_ANSWER_BUDGET
+        assert body["options"]["num_predict"] == 256
 
     assert writer.call_records[0].done_reason == "stop"
     assert writer.call_records[0].think is True
-    assert writer.call_records[0].num_predict == 256 + RENDER_ANSWER_BUDGET
-    assert writer.call_records[0].thinking_tokens == 512
+    assert writer.call_records[0].num_predict == 256
+    assert writer.call_records[0].thinking_words == 512
 
 
 def test_fix1_done_reason_length_routes_triad_to_review_queue_without_aborting_build(
@@ -932,8 +921,6 @@ def test_fix1_done_reason_length_routes_triad_to_review_queue_without_aborting_b
     tables = generate_fact_tables(n=4, seed=1)
     triads = [build_contrast_triad(t, seed=1 + idx) for idx, t in enumerate(tables)]
 
-    # Triad 1's table_id triggers done_reason='length' on writer render_material;
-    # Triad 2's supported claim wording triggers done_reason='length' on reader_1 read_claim
     word_helper = DeterministicWriterAdapter()
     triad_2_sup_text = word_helper.word_claim(triads[2].table, triads[2].claims["supported"])
 
@@ -946,13 +933,13 @@ def test_fix1_done_reason_length_routes_triad_to_review_queue_without_aborting_b
     )
 
     writer = OllamaWriterAdapter(
-        model=DEFAULT_PILOT_B_MODEL_PINS["writer"], thinking_token_cap=256
+        model=DEFAULT_PILOT_B_MODEL_PINS["writer"], num_predict=256
     )
     r1 = OllamaBlindReaderAdapter(
-        model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"], thinking_token_cap=256
+        model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"], num_predict=256
     )
     r2 = OllamaBlindReaderAdapter(
-        model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"], thinking_token_cap=256
+        model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"], num_predict=256
     )
 
     rq_path = tmp_path / "review_queue.jsonl"
@@ -963,7 +950,7 @@ def test_fix1_done_reason_length_routes_triad_to_review_queue_without_aborting_b
         reader_1=r1,
         reader_2=r2,
         review_queue_path=rq_path,
-        thinking_token_cap=256,
+        num_predict=256,
         min_pass_rate_per_class=0.50,
     )
 
@@ -1120,7 +1107,7 @@ def test_fix2_run_pilot_b_build_has_no_adapter_or_transport_params_and_refuses_s
 def test_gp_part_a_num_ctx_present_in_every_request_body_and_recorded(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Card gp Part A/D: `options.num_ctx` is present in every `/api/chat` completion request body and recorded in call records, provenance, and the build report."""
+    """Card gp Part A/D + Card gs: `options.num_ctx` is present in every `/api/chat` completion request body and recorded in call records, provenance, and the build report."""
     transport, requests = build_mock_ollama_http_transport()
     monkeypatch.setattr(
         "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
@@ -1156,11 +1143,11 @@ def test_gp_part_a_num_ctx_present_in_every_request_body_and_recorded(
     assert "num_ctx_policy" in report
     assert report["num_ctx_policy"]["max_num_ctx_by_role"] == {
         "writer": 8192,
-        "reader_1": 2048,
+        "reader_1": 7168,
         "reader_2": 8192,
     }
     for wave in report["waves"]:
-        assert wave["max_num_ctx"] in (2048, 8192)
+        assert wave["max_num_ctx"] in (7168, 8192)
         assert wave["max_num_ctx_observed"] >= 1024
 
     prov_lines = [
@@ -1178,7 +1165,7 @@ def test_gp_part_a_num_ctx_present_in_every_request_body_and_recorded(
             assert w_rec.get("max_num_ctx") == 8192
         for r_rec in prov["judgments"][0]["call_records"]:
             assert isinstance(r_rec.get("num_ctx"), int) and r_rec["num_ctx"] >= 1024
-            assert r_rec.get("max_num_ctx") in (2048, 8192)
+            assert r_rec.get("max_num_ctx") in (7168, 8192)
 
 
 def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
@@ -1199,10 +1186,10 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
     tables = generate_fact_tables(n=2, seed=1)
     triads = [build_contrast_triad(t, seed=1 + idx) for idx, t in enumerate(tables)]
 
-    # Direct writer call with thinking_token_cap=8192 requires num_ctx >= 9216 > writer default max_num_ctx=8192
+    # Direct writer call with num_predict=8192 requires num_ctx >= 9216 > writer default max_num_ctx=8192
     over_writer = OllamaWriterAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
-        thinking_token_cap=8192,
+        num_predict=8192,
     )
     with pytest.raises(RdlabError) as exc_over:
         over_writer.render_material(triads[0].table)
@@ -1214,19 +1201,19 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
         if m == "POST" and u.endswith("/api/chat") and isinstance(b, dict) and b.get("messages")
     ]
 
-    # In run_pilot_b_waves, when reader_1 (default max_num_ctx=2048) is given a thinking cap of 2048,
-    # its needed num_ctx >= 3072 exceeds max_num_ctx=2048 -> refused and queued in review_queue.jsonl
+    # In run_pilot_b_waves, when reader_1 (default max_num_ctx=7168) is given num_predict=7168,
+    # its needed num_ctx >= 8192 exceeds max_num_ctx=7168 -> refused and queued in review_queue.jsonl
     writer_ok = OllamaWriterAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
-        thinking_token_cap=256,
+        num_predict=256,
     )
     r1_over = OllamaBlindReaderAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
-        thinking_token_cap=2048,
+        num_predict=7168,
     )
     r2_ok = OllamaBlindReaderAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
-        thinking_token_cap=256,
+        num_predict=256,
     )
     rq_path = tmp_path / "review_queue.jsonl"
     wave_res = run_pilot_b_waves(
@@ -1236,7 +1223,7 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
         reader_1=r1_over,
         reader_2=r2_ok,
         review_queue_path=rq_path,
-        thinking_token_cap=256,
+        num_predict=256,
         min_pass_rate_per_class=0.0,
     )
     assert len(wave_res.kept_triads) == 0
@@ -1253,11 +1240,11 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
     # Also test writer render_material and word_claim and reader_2 overflow handling in run_pilot_b_waves
     r1_ok = OllamaBlindReaderAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
-        thinking_token_cap=256,
+        num_predict=256,
     )
     w_over_render = OllamaWriterAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
-        thinking_token_cap={"render_material": 8192, "word_claim": 256, "read_claim": 256},
+        num_predict={"render_material": 8192, "word_claim": 256, "read_claim": 256},
     )
     wave_w_render = run_pilot_b_waves(
         triads=triads[:1],
@@ -1273,7 +1260,7 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
 
     w_over_word = OllamaWriterAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
-        thinking_token_cap={"render_material": 256, "word_claim": 8192, "read_claim": 256},
+        num_predict={"render_material": 256, "word_claim": 8192, "read_claim": 256},
     )
     wave_w_word = run_pilot_b_waves(
         triads=triads[:1],
@@ -1289,7 +1276,7 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
 
     r2_over = OllamaBlindReaderAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
-        thinking_token_cap=8192,
+        num_predict=8192,
     )
     wave_r2_over = run_pilot_b_waves(
         triads=triads[:1],
@@ -1301,215 +1288,6 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
         min_pass_rate_per_class=0.0,
     )
     assert len(wave_r2_over.failed_triads) == 1
-
-
-def test_gp_part_b_thinking_cap_precedence_and_source_recorded(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Card gp Part B/D: the thinking cap follows precedence CLI > config/env > default, can be set per operation, and records both the value used and its source (`cli` / `config` / `default`) in the report and provenance."""
-    transport, _ = build_mock_ollama_http_transport()
-    monkeypatch.setattr(
-        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
-        transport,
-    )
-
-    # 1. Default source when neither CLI nor config/env is provided
-    monkeypatch.delenv("RDLAB_THINKING_CAP", raising=False)
-    monkeypatch.delenv("RDLAB_THINKING_CAP_RENDER_MATERIAL", raising=False)
-    monkeypatch.delenv("RDLAB_THINKING_CAP_WORD_CLAIM", raising=False)
-    monkeypatch.delenv("RDLAB_THINKING_CAP_READ_CLAIM", raising=False)
-
-    out_default = tmp_path / "build_default_cap"
-    res_default = run_pilot_b_build(
-        output_dir=out_default,
-        triad_count=1,
-        stub_mode=True,
-    )
-    rep_def = res_default["report"]
-    assert rep_def["thinking_token_cap"] == 256
-    assert rep_def["thinking_token_cap_source"] == "default"
-    assert rep_def["thinking_cap_config"]["by_operation"] == {
-        "render_material": {"value": 256, "source": "default"},
-        "word_claim": {"value": 256, "source": "default"},
-        "read_claim": {"value": 256, "source": "default"},
-    }
-
-    # 2. Config file + env source (per-operation in config file, overridden by CLI for render_material)
-    cfg_path = tmp_path / "pilot_b_config.json"
-    cfg_path.write_text(
-        json.dumps(
-            {
-                "thinking_token_cap": {
-                    "render_material": 1024,
-                    "word_claim": 384,
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    reg_path = tmp_path / "registry.json"
-    reg_path.write_text(
-        json.dumps(build_fixture_licence_registry()),
-        encoding="utf-8",
-    )
-
-    from reasoning_dataset_lab.cli import run_cli
-
-    out_mixed = tmp_path / "build_mixed_cap"
-    rc = run_cli(
-        [
-            "pilot-b",
-            "--stub",
-            "1",
-            "--config",
-            str(cfg_path),
-            "--thinking-cap-render-material",
-            "2048",
-            "--licence-registry",
-            str(reg_path),
-            "--output-dir",
-            str(out_mixed),
-        ]
-    )
-    assert rc == 0
-    rep_mixed = json.loads(
-        (out_mixed / "reports" / "pilot_b_report.json").read_text(encoding="utf-8")
-    )
-    assert rep_mixed["thinking_cap_config"]["by_operation"] == {
-        "render_material": {"value": 2048, "source": "cli"},
-        "word_claim": {"value": 384, "source": "config"},
-        "read_claim": {"value": 256, "source": "default"},
-    }
-    prov_mixed = json.loads(
-        (out_mixed / "part_pilot_b_sealed" / "provenance.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()[0]
-    )
-    assert prov_mixed["writer"]["thinking_cap_config"]["by_operation"] == {
-        "render_material": {"value": 2048, "source": "cli"},
-        "word_claim": {"value": 384, "source": "config"},
-        "read_claim": {"value": 256, "source": "default"},
-    }
-
-    # 3. Environment variable config tier + CLI global override
-    from reasoning_dataset_lab.pilot_b.ollama import resolve_thinking_cap_config
-
-    env_cfg = resolve_thinking_cap_config(
-        env={
-            "RDLAB_THINKING_CAP": "512",
-            "RDLAB_THINKING_CAP_READ_CLAIM": "640",
-        }
-    )
-    assert env_cfg.source == "config"
-    assert env_cfg.cap_for("render_material") == 512
-    assert env_cfg.cap_for("read_claim") == 640
-    assert env_cfg.source_for("read_claim") == "config"
-
-    cli_override_cfg = resolve_thinking_cap_config(
-        cli_cap=768,
-        env={"RDLAB_THINKING_CAP": "512"},
-    )
-    assert cli_override_cfg.source == "cli"
-    assert cli_override_cfg.cap_for("render_material") == 768
-    assert cli_override_cfg.source_for("render_material") == "cli"
-
-
-def test_gp_part_c_calibrate_writes_stats_and_never_sends_think_false(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """Card gp Part C/D: `rdlab pilot-b calibrate` writes `calibration.json` with per-call rows and stats, prints suggested cap of p95 + named margin, unloads with `keep_alive: 0`, and never sends `think: false`."""
-    from reasoning_dataset_lab.cli import run_cli
-
-    transport, requests = build_mock_ollama_http_transport(
-        thinking_tokens_per_call=1400,
-        eval_tokens_per_call=120,
-    )
-    monkeypatch.setattr(
-        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
-        transport,
-    )
-
-    reg_path = tmp_path / "registry.json"
-    reg_path.write_text(
-        json.dumps(build_fixture_licence_registry()),
-        encoding="utf-8",
-    )
-    cal_dir = tmp_path / "cal_out"
-
-    rc = run_cli(
-        [
-            "pilot-b",
-            "calibrate",
-            "--operation",
-            "render_material",
-            "--tables",
-            "3",
-            "--num-predict",
-            "4096",
-            "--num-ctx",
-            "8192",
-            "--licence-registry",
-            str(reg_path),
-            "--output-dir",
-            str(cal_dir),
-        ]
-    )
-    assert rc == 0
-    stdout_text = capsys.readouterr().out
-    assert "CALIBRATION_CAP_MARGIN_TOKENS" in stdout_text
-
-    cal_file = cal_dir / "calibration.json"
-    assert cal_file.is_file()
-    cal_data = json.loads(cal_file.read_text(encoding="utf-8"))
-    assert cal_data["operation"] == "render_material"
-    assert cal_data["think"] is True
-    assert cal_data["count"] == 3
-    assert cal_data["min"] == 1400
-    assert cal_data["median"] == 1400
-    assert cal_data["p95"] == 1400
-    assert cal_data["max"] == 1400
-    assert cal_data["length_stops"] == 0
-    assert cal_data["suggested_thinking_cap"] == 1400 + cal_data["margin_tokens"]
-    assert len(cal_data["calls"]) == 3
-    for row in cal_data["calls"]:
-        assert row["thinking_tokens"] == 1400
-        assert row["eval_tokens"] == 120
-        assert row["done_reason"] == "stop"
-        assert row["num_ctx"] == 8192
-        assert isinstance(row["wall_time_s"], float)
-        assert row["think"] is True
-
-    # Verify every /api/chat completion call had think: True and options.num_ctx == 8192,
-    # and the model was unloaded at the end with keep_alive: 0
-    chat_calls = [
-        b
-        for m, u, b in requests
-        if m == "POST" and u.endswith("/api/chat") and isinstance(b, dict)
-    ]
-    completion_calls = [b for b in chat_calls if b.get("messages")]
-    unload_calls = [b for b in chat_calls if b.get("messages") == [] and b.get("keep_alive") == 0]
-    assert len(completion_calls) == 3
-    assert len(unload_calls) == 1
-    for b in completion_calls:
-        assert b["think"] is True
-        assert b["options"]["num_predict"] == 4096
-        assert b["options"]["num_ctx"] == 8192
-
-    # Verify there is no CLI flag to turn thinking off
-    rc_bad = run_cli(
-        [
-            "pilot-b",
-            "calibrate",
-            "--operation",
-            "render_material",
-            "--no-think",
-            "--licence-registry",
-            str(reg_path),
-            "--output-dir",
-            str(cal_dir),
-        ]
-    )
-    assert rc_bad == 2
 
 
 def test_gp_part_c_calibrate_seals_nothing(
@@ -1583,6 +1361,489 @@ def test_gp_part_c_calibrate_seals_nothing(
             think=False,
         )
     assert exc_think_off.value.code == "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN"
+
+
+def test_gs_num_predict_config_precedence_and_validation_branches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gs: NumPredictConfig coercion, env/config precedence, and validation error branches."""
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        NumPredictConfig,
+        coerce_num_predict_config,
+        resolve_num_predict_config,
+    )
+
+    # 1. Environment variable config tier + CLI global override
+    env_cfg = resolve_num_predict_config(
+        env={
+            "RDLAB_NUM_PREDICT": "2048",
+            "RDLAB_READ_NUM_PREDICT": "4096",
+            "RDLAB_READER_2_NUM_PREDICT": "1536",
+        }
+    )
+    assert isinstance(env_cfg, NumPredictConfig)
+    assert env_cfg.source == "config"
+    assert env_cfg.num_predict_for("render_material") == 2048
+    assert env_cfg.num_predict_for("read_claim", role="reader_1") == 4096
+    assert env_cfg.num_predict_for("read_claim", role="reader_2") == 1536
+    assert env_cfg.source_for("read_claim", role="reader_2") == "config"
+
+    cli_override_cfg = resolve_num_predict_config(
+        cli_num_predict=3072,
+        env={"RDLAB_NUM_PREDICT": "2048"},
+    )
+    assert cli_override_cfg.source == "cli"
+    assert cli_override_cfg.num_predict_for("render_material") == 3072
+    assert cli_override_cfg.source_for("render_material") == "cli"
+    assert cli_override_cfg.effective_num_predict == 3072
+
+    # 2. Coercion and validation branches
+    coerced_int = coerce_num_predict_config(300, source="cli")
+    assert coerced_int.num_predict_for("word_claim") == 300
+    assert coerced_int.source_for("word_claim") == "cli"
+    coerced_def = coerce_num_predict_config(300, source="default")
+    assert coerced_def.num_predict_for("word_claim") == 300
+    assert coerced_def.source_for("word_claim") == "default"
+    coerced_cfg = coerce_num_predict_config(300, source="config")
+    assert coerced_cfg.num_predict_for("word_claim") == 300
+    assert coerced_cfg.source_for("word_claim") == "config"
+    assert coerce_num_predict_config(coerced_int) is coerced_int
+
+    coerced_map = coerce_num_predict_config(
+        {
+            "render_material": 3500,
+            "word_claim": 400,
+            "read_claim_reader_1": 5500,
+            "read_claim_reader_2": 1800,
+        }
+    )
+    assert coerced_map.num_predict_for("render_material") == 3500
+    assert coerced_map.source_for("render_material") == "config"
+    assert coerced_map.num_predict_for("word_claim") == 400
+    assert coerced_map.num_predict_for("read_claim", role="reader_1") == 5500
+    assert coerced_map.num_predict_for("read_claim", role="reader_2") == 1800
+
+    coerced_cli_map = coerce_num_predict_config(
+        {
+            "default": 500,
+            "render_material": 3500,
+        },
+        source="cli",
+    )
+    assert coerced_cli_map.num_predict_for("render_material") == 3500
+    assert coerced_cli_map.num_predict_for("word_claim") == 500
+    assert coerced_cli_map.source_for("word_claim") == "cli"
+
+    def_map_cfg = resolve_num_predict_config(
+        default_num_predict={
+            "render_material": 3600,
+            "word_claim": 380,
+            "read_claim_reader_1": 5800,
+            "read_claim_reader_2": 1900,
+        }
+    )
+    assert def_map_cfg.num_predict_for("render_material") == 3600
+    assert def_map_cfg.num_predict_for("word_claim") == 380
+    assert def_map_cfg.num_predict_for("read_claim", role="reader_1") == 5800
+    assert def_map_cfg.num_predict_for("read_claim", role="reader_2") == 1900
+    def_int_cfg = resolve_num_predict_config(default_num_predict=2500)
+    assert def_int_cfg.num_predict_for("render_material") == 2500
+
+    pb_nested_cfg = resolve_num_predict_config(
+        config_data={"pilot_b": {"num_predict": {"default": 1800, "word_claim": 420}}}
+    )
+    assert pb_nested_cfg.num_predict_for("render_material") == 1800
+    assert pb_nested_cfg.num_predict_for("word_claim") == 420
+
+    with pytest.raises(RdlabError) as exc_bool:
+        coerce_num_predict_config(True)  # type: ignore[arg-type]
+    assert exc_bool.value.code == "PILOT_B_INVALID_NUM_PREDICT"
+
+    with pytest.raises(RdlabError) as exc_type:
+        coerce_num_predict_config(3.14)  # type: ignore[arg-type]
+    assert exc_type.value.code == "PILOT_B_INVALID_NUM_PREDICT"
+
+    with pytest.raises(RdlabError) as exc_zero:
+        coerce_num_predict_config(0)
+    assert exc_zero.value.code == "PILOT_B_INVALID_NUM_PREDICT"
+
+    with pytest.raises(RdlabError) as exc_bad_str:
+        resolve_num_predict_config(env={"RDLAB_NUM_PREDICT": "not-an-int"})
+    assert exc_bad_str.value.code == "PILOT_B_INVALID_NUM_PREDICT"
+
+    with pytest.raises(RdlabError) as exc_missing_cfg:
+        resolve_num_predict_config(config_path=tmp_path / "does_not_exist.json")
+    assert exc_missing_cfg.value.code == "PILOT_B_CONFIG_NOT_FOUND"
+
+    bad_json_path = tmp_path / "bad.json"
+    bad_json_path.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_bad_json:
+        resolve_num_predict_config(config_path=bad_json_path)
+    assert exc_bad_json.value.code == "PILOT_B_INVALID_CONFIG_JSON"
+
+    list_json_path = tmp_path / "list.json"
+    list_json_path.write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_bad_shape:
+        resolve_num_predict_config(config_path=list_json_path)
+    assert exc_bad_shape.value.code == "PILOT_B_INVALID_CONFIG_SHAPE"
+
+
+def test_gs_request_num_predict_equals_configured_total_per_operation_with_source_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gs Acceptance 1: the request `num_predict` equals the configured total per operation, with the source (`cli` / `config` / `default`) recorded."""
+    from reasoning_dataset_lab.cli import run_cli
+
+    transport, requests = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    for k in (
+        "RDLAB_NUM_PREDICT",
+        "RDLAB_RENDER_NUM_PREDICT",
+        "RDLAB_WORD_NUM_PREDICT",
+        "RDLAB_READ_NUM_PREDICT",
+        "RDLAB_READER_1_NUM_PREDICT",
+        "RDLAB_READER_2_NUM_PREDICT",
+        "RDLAB_NUM_PREDICT_RENDER_MATERIAL",
+        "RDLAB_NUM_PREDICT_WORD_CLAIM",
+        "RDLAB_NUM_PREDICT_READ_CLAIM",
+        "RDLAB_NUM_PREDICT_READER_1",
+        "RDLAB_NUM_PREDICT_READER_2",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    cfg_path = tmp_path / "gs_config.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "num_predict": {
+                    "word_claim": 512,
+                    "read_claim_reader_1": 5000,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry()),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "gs_configured_totals"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "--stub",
+            "1",
+            "--config",
+            str(cfg_path),
+            "--render-num-predict",
+            "3500",
+            "--licence-registry",
+            str(reg_path),
+            "--output-dir",
+            str(out_dir),
+        ]
+    )
+    assert rc == 0
+
+    rep = json.loads(
+        (out_dir / "reports" / "pilot_b_report.json").read_text(encoding="utf-8")
+    )
+    by_op = rep["num_predict_config"]["by_operation"]
+    assert by_op["render_material"] == {"value": 3500, "source": "cli"}
+    assert by_op["word_claim"] == {"value": 512, "source": "config"}
+    assert by_op["read_claim_reader_1"] == {"value": 5000, "source": "config"}
+    assert by_op["read_claim_reader_2"] == {"value": 2048, "source": "default"}
+
+    prov_row = json.loads(
+        (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    w_calls = {r["operation"]: r for r in prov_row["writer"]["call_records"]}
+    assert w_calls["render_material"]["num_predict"] == 3500
+    assert w_calls["render_material"]["num_predict_source"] == "cli"
+    assert w_calls["word_claim"]["num_predict"] == 512
+    assert w_calls["word_claim"]["num_predict_source"] == "config"
+
+    r_calls = {r["model"]: r for r in prov_row["judgments"][0]["call_records"]}
+    assert r_calls["nemotron-3.5-lightning:30b"]["num_predict"] == 5000
+    assert r_calls["nemotron-3.5-lightning:30b"]["num_predict_source"] == "config"
+    assert r_calls["granite4.2:8b"]["num_predict"] == 2048
+    assert r_calls["granite4.2:8b"]["num_predict_source"] == "default"
+
+    chat_num_predicts = [
+        b["options"]["num_predict"]
+        for m, u, b in requests
+        if m == "POST"
+        and u.endswith("/api/chat")
+        and isinstance(b, dict)
+        and b.get("messages")
+    ]
+    assert set(chat_num_predicts) == {3500, 512, 5000, 2048}
+
+
+def test_gs_no_request_or_record_carries_thinking_cap_or_answer_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gs Acceptance 2: no request or record carries a thinking cap or answer budget."""
+    transport, requests = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    out_dir = tmp_path / "gs_no_split_controls"
+    res = run_pilot_b_build(
+        output_dir=out_dir,
+        triad_count=1,
+        stub_mode=True,
+    )
+    forbidden_keys = {
+        "thinking_token_cap",
+        "thinking_token_cap_source",
+        "thinking_cap_config",
+        "answer_budget",
+        "answer_budget_source",
+        "answer_budget_config",
+        "thinking_tokens",
+        "thinking_tokens_total",
+        "max_thinking_tokens_observed",
+        "estimated_thinking_tokens",
+    }
+
+    def _assert_no_forbidden_keys(obj: object) -> None:
+        if isinstance(obj, dict):
+            overlap = forbidden_keys.intersection(obj.keys())
+            assert not overlap, f"Found forbidden split keys {overlap} in {obj}"
+            for v in obj.values():
+                _assert_no_forbidden_keys(v)
+        elif isinstance(obj, list):
+            for elem in obj:
+                _assert_no_forbidden_keys(elem)
+
+    for m, u, b in requests:
+        if m == "POST" and u.endswith("/api/chat") and isinstance(b, dict):
+            _assert_no_forbidden_keys(b)
+
+    _assert_no_forbidden_keys(res["report"])
+    _assert_no_forbidden_keys(res["part"])
+    for raw_line in (
+        (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ):
+        if raw_line.strip():
+            _assert_no_forbidden_keys(json.loads(raw_line))
+
+
+def test_gs_thinking_words_is_recorded_and_nothing_gates_on_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gs Acceptance 3: `thinking_words` is recorded as words for information only and nothing gates on it."""
+    transport, _ = build_mock_ollama_http_transport(
+        thinking_tokens_per_call=9999,
+        eval_tokens_per_call=48,
+    )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    out_dir = tmp_path / "gs_thinking_words"
+    res = run_pilot_b_build(
+        output_dir=out_dir,
+        triad_count=1,
+        stub_mode=True,
+        num_predict=1024,
+    )
+    rep = res["report"]
+    assert rep["triads_kept"] == 1
+    assert rep["totals"]["thinking_words"] == 9999 * (1 + 3 + 3 + 3)
+    assert rep["full_build_estimate_50_triads"]["estimated_thinking_words"] > 0
+    for w in rep["waves"]:
+        assert w["thinking_words_total"] > 0
+        assert w["max_thinking_words_observed"] == 9999
+
+    prov_row = json.loads(
+        (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    for wcall in prov_row["writer"]["call_records"]:
+        assert wcall["thinking_words"] == 9999
+    for rcall in prov_row["judgments"][0]["call_records"]:
+        assert rcall["thinking_words"] == 9999
+
+
+def test_gs_defaults_are_4096_6144_2048(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gs Acceptance 4: defaults are render 4,096 (max_num_ctx 8,192), reader_1 Nemotron 6,144 (max_num_ctx 7,168), reader_2 Granite 2,048 (max_num_ctx 8,192), and word_claim 352."""
+    import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
+
+    transport, requests = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    for k in (
+        "RDLAB_NUM_PREDICT",
+        "RDLAB_RENDER_NUM_PREDICT",
+        "RDLAB_WORD_NUM_PREDICT",
+        "RDLAB_READ_NUM_PREDICT",
+        "RDLAB_READER_1_NUM_PREDICT",
+        "RDLAB_READER_2_NUM_PREDICT",
+        "RDLAB_NUM_PREDICT_RENDER_MATERIAL",
+        "RDLAB_NUM_PREDICT_WORD_CLAIM",
+        "RDLAB_NUM_PREDICT_READ_CLAIM",
+        "RDLAB_NUM_PREDICT_READER_1",
+        "RDLAB_NUM_PREDICT_READER_2",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    out_dir = tmp_path / "gs_defaults"
+    res = run_pilot_b_build(
+        output_dir=out_dir,
+        triad_count=1,
+        stub_mode=True,
+    )
+    rep = res["report"]
+    by_op = rep["num_predict_config"]["by_operation"]
+    assert by_op["render_material"] == {"value": 4096, "source": "default"}
+    assert by_op["word_claim"] == {"value": 352, "source": "default"}
+    assert by_op["read_claim_reader_1"] == {"value": 6144, "source": "default"}
+    assert by_op["read_claim_reader_2"] == {"value": 2048, "source": "default"}
+    assert rep["num_ctx_policy"]["max_num_ctx_by_role"] == {
+        "writer": 8192,
+        "reader_1": 7168,
+        "reader_2": 8192,
+    }
+
+    chat_num_predicts = [
+        b["options"]["num_predict"]
+        for m, u, b in requests
+        if m == "POST"
+        and u.endswith("/api/chat")
+        and isinstance(b, dict)
+        and b.get("messages")
+    ]
+    assert set(chat_num_predicts) == {4096, 352, 6144, 2048}
+
+    doc_text = ollama_mod.__doc__ or ""
+    assert "3,462" in doc_text
+    assert "3,086" in doc_text
+    assert "3,434" in doc_text
+    assert "1,239" in doc_text
+    assert "docs/calibration-2026-10-25.md" in doc_text
+
+    repo_root = Path(__file__).resolve().parent.parent
+    readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
+    assert "3,462" in readme_text
+    assert "3,086" in readme_text
+    assert "3,434" in readme_text
+    assert "1,239" in readme_text
+    assert "30,000" in readme_text
+    assert "27.4 GB" in readme_text
+    assert "docs/calibration-2026-10-25.md" in readme_text
+
+    cal_doc_text = (repo_root / "docs" / "calibration-2026-10-25.md").read_text(
+        encoding="utf-8"
+    )
+    for expected in (
+        "2026-10-25",
+        "a7eb95c5",
+        "e6905fff",
+        "f586c02f",
+        "provisional until the next stub's per-call p95",
+        "2,095 / 2,306 / 3,462",
+        "25,229 MiB",
+        "1,138.5",
+        "3,086",
+        "3,434",
+        "27,355 MiB",
+        "30,000 MiB",
+        "1,239",
+        "8,825 MiB",
+        "thinking_words",
+    ):
+        assert expected in cal_doc_text
+
+
+def test_gs_calibrate_suggests_total_num_predict_and_reports_eval_count_and_thinking_words(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Card gs Acceptance 5: `calibrate` reports `eval_count` stats (min, median, p95, max), length stops and `thinking_words`, and suggests a total `num_predict` of p95 plus a named margin (with no cap suggestion)."""
+    from reasoning_dataset_lab.cli import run_cli
+
+    transport, _ = build_mock_ollama_http_transport(
+        thinking_tokens_per_call=850,
+        eval_tokens_per_call=2400,
+    )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry()),
+        encoding="utf-8",
+    )
+    cal_dir = tmp_path / "gs_cal_out"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "calibrate",
+            "--operation",
+            "render_material",
+            "--tables",
+            "3",
+            "--num-predict",
+            "4096",
+            "--num-ctx",
+            "8192",
+            "--licence-registry",
+            str(reg_path),
+            "--output-dir",
+            str(cal_dir),
+        ]
+    )
+    assert rc == 0
+    stdout_text = capsys.readouterr().out
+    assert "CALIBRATION_NUM_PREDICT_MARGIN_TOKENS" in stdout_text
+    assert "suggested_thinking_cap" not in stdout_text
+    assert "suggested_answer_budget" not in stdout_text
+
+    cal_data = json.loads((cal_dir / "calibration.json").read_text(encoding="utf-8"))
+    assert cal_data["min"] == 2400
+    assert cal_data["median"] == 2400
+    assert cal_data["p95"] == 2400
+    assert cal_data["max"] == 2400
+    assert cal_data["eval_count"] == {
+        "count": 3,
+        "min": 2400,
+        "median": 2400,
+        "p95": 2400,
+        "max": 2400,
+    }
+    assert cal_data["thinking_words"] == {
+        "count": 3,
+        "min": 850,
+        "median": 850,
+        "p95": 850,
+        "max": 850,
+    }
+    assert cal_data["suggested_num_predict"] == 2400 + cal_data["margin_tokens"]
+    assert "suggested_thinking_cap" not in cal_data
+    assert "suggested_answer_budget" not in cal_data
+    for row in cal_data["calls"]:
+        assert row["eval_count"] == 2400
+        assert row["thinking_words"] == 850
+        assert "thinking_tokens" not in row
+        assert "answer_tokens" not in row
+
+
 
 
 

@@ -141,39 +141,60 @@ def _build_parser() -> _StructuredArgumentParser:
         help="Seed for shuffling sealed triad items (default: 42).",
     )
     pb_parser.add_argument(
-        "--thinking-cap",
-        dest="thinking_cap",
+        "--num-predict",
+        dest="num_predict",
         type=int,
         default=None,
-        help="Per-call thinking token cap override (precedence: CLI > config/env > default 256).",
+        help="Per-call total options.num_predict override (precedence: CLI > config/env > default).",
     )
     pb_parser.add_argument(
-        "--thinking-cap-render-material",
-        dest="thinking_cap_render_material",
+        "--render-num-predict",
+        "--num-predict-render-material",
+        dest="render_num_predict",
         type=int,
         default=None,
-        help="Optional CLI thinking token cap override for render_material.",
+        help="Optional CLI total num_predict override for render_material.",
     )
     pb_parser.add_argument(
-        "--thinking-cap-word-claim",
-        dest="thinking_cap_word_claim",
+        "--word-num-predict",
+        "--num-predict-word-claim",
+        dest="word_num_predict",
         type=int,
         default=None,
-        help="Optional CLI thinking token cap override for word_claim.",
+        help="Optional CLI total num_predict override for word_claim.",
     )
     pb_parser.add_argument(
-        "--thinking-cap-read-claim",
-        dest="thinking_cap_read_claim",
+        "--read-num-predict",
+        "--num-predict-read-claim",
+        dest="read_num_predict",
         type=int,
         default=None,
-        help="Optional CLI thinking token cap override for read_claim.",
+        help="Optional CLI total num_predict override for read_claim (both readers unless reader-specific flag is set).",
+    )
+    pb_parser.add_argument(
+        "--reader-1-num-predict",
+        "--num-predict-reader-1",
+        "--read-reader-1-num-predict",
+        dest="reader_1_num_predict",
+        type=int,
+        default=None,
+        help="Optional CLI total num_predict override for read_claim on reader_1.",
+    )
+    pb_parser.add_argument(
+        "--reader-2-num-predict",
+        "--num-predict-reader-2",
+        "--read-reader-2-num-predict",
+        dest="reader_2_num_predict",
+        type=int,
+        default=None,
+        help="Optional CLI total num_predict override for read_claim on reader_2.",
     )
     pb_parser.add_argument(
         "--config",
         dest="config_path",
         type=Path,
         default=None,
-        help="Optional JSON config file for Pilot B settings (e.g. thinking_token_cap).",
+        help="Optional JSON config file for Pilot B settings (e.g. num_predict).",
     )
     pb_parser.add_argument(
         "--licence-registry",
@@ -197,7 +218,7 @@ def _build_pilot_b_calibrate_parser() -> _StructuredArgumentParser:
     cal_parser = _StructuredArgumentParser(
         prog="rdlab pilot-b calibrate",
         description=(
-            "Run a Pilot B thinking-token calibration measurement for a single operation "
+            "Run a Pilot B eval_count and thinking_words calibration measurement for a single operation "
             "(think: true only; writes calibration.json and seals nothing)."
         ),
     )
@@ -337,10 +358,12 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
         if args.command == "pilot-b":
             triad_count = args.stub_count if args.stub_count is not None else 50
             stub_mode = args.stub_count is not None
-            op_caps = {
-                "render_material": args.thinking_cap_render_material,
-                "word_claim": args.thinking_cap_word_claim,
-                "read_claim": args.thinking_cap_read_claim,
+            op_num_predict = {
+                "render_material": args.render_num_predict,
+                "word_claim": args.word_num_predict,
+                "read_claim": args.read_num_predict,
+                "read_claim_reader_1": args.reader_1_num_predict,
+                "read_claim_reader_2": args.reader_2_num_predict,
             }
             build_res = run_pilot_b_build(
                 output_dir=args.output_dir,
@@ -348,8 +371,8 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 stub_mode=stub_mode,
                 seed=args.seed,
                 shuffle_seed=args.shuffle_seed,
-                thinking_token_cap=args.thinking_cap,
-                thinking_cap_by_operation=op_caps,
+                num_predict=args.num_predict,
+                num_predict_by_operation=op_num_predict,
                 config_path=args.config_path,
                 licence_registry_path=args.licence_registry,
                 ollama_base_url=args.ollama_url,
