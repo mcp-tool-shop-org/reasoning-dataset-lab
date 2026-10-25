@@ -81,7 +81,14 @@ def test_licence_check_passes_with_fixture_registry_and_refuses_missing_or_barre
     assert exc_barred.value.code == "PILOT_B_LICENCE_BARRED"
 
 
-def test_verify_live_checks_manifest_digests_and_refuses_drift() -> None:
+def test_verify_live_checks_manifest_digests_and_refuses_drift(
+    tmp_path: Path,
+) -> None:
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2), encoding="utf-8"
+    )
+
     def _fake_fetch(tag: str) -> tuple[bytes, dict[str, str]]:
         for pin in DEFAULT_PILOT_B_MODEL_PINS.values():
             if pin.ollama_tag == tag:
@@ -98,6 +105,7 @@ def test_verify_live_checks_manifest_digests_and_refuses_drift() -> None:
                 b'{"schemaVersion":2,"layers":[]}',
                 {},
             ),
+            licence_registry_path=reg_path,
         )
     assert exc_drift.value.code == "PILOT_B_LIVE_DIGEST_MISMATCH"
 
@@ -182,13 +190,20 @@ def test_part_e_additional_model_and_licence_error_branches(tmp_path: Path) -> N
         resolve_pilot_b_model_pins,
     )
 
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2), encoding="utf-8"
+    )
+
     # Configurable licence_id overrides
     pins = resolve_pilot_b_model_pins(
         {"writer": "qwen3.6-35b-a3b-licence", "reader_2": "granite-4.2-8b-hf-card"}
     )
     assert pins["writer"].licence_id == "qwen3.6-35b-a3b-licence"
     assert pins["reader_2"].licence_id == "granite-4.2-8b-hf-card"
-    validate_models_against_licence_registry(list(pins.values()))
+    validate_models_against_licence_registry(
+        list(pins.values()), registry_path=reg_path
+    )
 
     with pytest.raises(RdlabError) as exc_empty_lic:
         resolve_pilot_b_model_pins({"writer": "   "})
@@ -221,9 +236,10 @@ def test_part_e_additional_model_and_licence_error_branches(tmp_path: Path) -> N
         manifest_digest="not-a-sha",
         model_layer_digest="not-a-sha",
         licence_id="apache-2.0",
+        bundled_licence_id="apache-2.0",
     )
     with pytest.raises(RdlabError) as exc_dig:
-        validate_models_against_licence_registry([bad_spec])
+        validate_models_against_licence_registry([bad_spec], registry_path=reg_path)
     assert exc_dig.value.code == "PILOT_B_INVALID_MODEL_DIGEST"
 
     # Live manifest invalid JSON and layer digest mismatch
@@ -231,6 +247,7 @@ def test_part_e_additional_model_and_licence_error_branches(tmp_path: Path) -> N
         verify_live_ollama_models(
             models=[bad_digest_spec],
             fetch_manifest=lambda _tag: (b"not-json", {}),
+            licence_registry_path=reg_path,
         )
     assert exc_inv_man.value.code == "PILOT_B_LIVE_INVALID_MANIFEST"
 
@@ -255,11 +272,13 @@ def test_part_e_additional_model_and_licence_error_branches(tmp_path: Path) -> N
         manifest_digest=fake_man_sha,
         model_layer_digest="1" * 64,
         licence_id="apache-2.0",
+        bundled_licence_id="apache-2.0",
     )
     with pytest.raises(RdlabError) as exc_layer:
         verify_live_ollama_models(
             models=[spec_matching_man_wrong_layer],
             fetch_manifest=lambda _tag: (fake_manifest, {}),
+            licence_registry_path=reg_path,
         )
     assert exc_layer.value.code == "PILOT_B_LIVE_LAYER_DIGEST_MISMATCH"
 
@@ -272,10 +291,12 @@ def test_part_e_additional_model_and_licence_error_branches(tmp_path: Path) -> N
         manifest_digest=fake_man_sha,
         model_layer_digest="0" * 64,
         licence_id="apache-2.0",
+        bundled_licence_id="apache-2.0",
     )
     live_ok = verify_live_ollama_models(
         models=[spec_matching_both],
         fetch_manifest=lambda _tag: (fake_manifest, {}),
+        licence_registry_path=reg_path,
     )
     assert live_ok["status"] == "PASS"
 
@@ -289,6 +310,11 @@ def test_fix3_verify_live_pins_licence_layer_digest_source_match_and_provenance(
     tmp_path: Path,
 ) -> None:
     """Card gc Fix 3: --verify-live checks licence_layer_digest, reports source_match, and writes licence_layer_digest into item provenance."""
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2), encoding="utf-8"
+    )
+
     # 1. Every default pinned model has a valid 64-hex licence_layer_digest and source_match
     expected_lic_digests = {
         "writer": "5f3a3c817e78f5b8a4ad2d2c458a3e4b2cce470d6c12642c4eeb12cb8a9bf51d",
@@ -331,6 +357,7 @@ def test_fix3_verify_live_pins_licence_layer_digest_source_match_and_provenance(
         model_layer_digest=writer_pin.model_layer_digest,
         licence_layer_digest=writer_pin.licence_layer_digest,
         licence_id=writer_pin.licence_id,
+        bundled_licence_id=writer_pin.bundled_licence_id,
         source_match=writer_pin.source_match,
         source_match_reason=writer_pin.source_match_reason,
     )
@@ -338,6 +365,7 @@ def test_fix3_verify_live_pins_licence_layer_digest_source_match_and_provenance(
         verify_live_ollama_models(
             models=[spec_wrong_lic_layer],
             fetch_manifest=lambda _tag: (fake_manifest, {}),
+            licence_registry_path=reg_path,
         )
     assert exc_lic_mismatch.value.code == "PILOT_B_LIVE_LICENCE_DIGEST_MISMATCH"
 
@@ -371,12 +399,14 @@ def test_fix3_verify_live_pins_licence_layer_digest_source_match_and_provenance(
         model_layer_digest=writer_pin.model_layer_digest,
         licence_layer_digest=writer_pin.licence_layer_digest,
         licence_id=writer_pin.licence_id,
+        bundled_licence_id=writer_pin.bundled_licence_id,
         source_match=writer_pin.source_match,
         source_match_reason=writer_pin.source_match_reason,
     )
     live_res = verify_live_ollama_models(
         models=[spec_ok],
         fetch_manifest=lambda _tag: (fake_manifest_ok, {}),
+        licence_registry_path=reg_path,
     )
     assert live_res["status"] == "PASS"
     model_entry = live_res["models"][0]
@@ -419,6 +449,11 @@ def test_fix4_default_specific_licence_ids_and_configurability(
     """Card gc Fix 4: Default to qwen3.6-35b-a3b-licence, openmdw-1.1, and granite-4.2-8b-hf-card while keeping them configurable."""
     from reasoning_dataset_lab.pilot_b.models_and_build import resolve_pilot_b_model_pins
 
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2), encoding="utf-8"
+    )
+
     assert (
         DEFAULT_PILOT_B_MODEL_PINS["writer"].licence_id == "qwen3.6-35b-a3b-licence"
     )
@@ -431,7 +466,9 @@ def test_fix4_default_specific_licence_ids_and_configurability(
     assert resolved_default["writer"].licence_id == "qwen3.6-35b-a3b-licence"
     assert resolved_default["reader_1"].licence_id == "openmdw-1.1"
     assert resolved_default["reader_2"].licence_id == "granite-4.2-8b-hf-card"
-    validate_models_against_licence_registry(list(resolved_default.values()))
+    validate_models_against_licence_registry(
+        list(resolved_default.values()), registry_path=reg_path
+    )
 
     # Configurable overrides still work by role or by ollama_tag
     overridden = resolve_pilot_b_model_pins(
@@ -440,7 +477,9 @@ def test_fix4_default_specific_licence_ids_and_configurability(
     assert overridden["writer"].licence_id == "apache-2.0"
     assert overridden["reader_1"].licence_id == "openmdw-1.1"
     assert overridden["reader_2"].licence_id == "apache-2.0"
-    validate_models_against_licence_registry(list(overridden.values()))
+    validate_models_against_licence_registry(
+        list(overridden.values()), registry_path=reg_path
+    )
 
     # Verify build provenance records the specific default licence_ids
     out_dir = tmp_path / "fix4_default_lics"
@@ -466,6 +505,11 @@ def test_fix_gg_bundled_licence_id_and_reader_source_match_reasons(
 ) -> None:
     """Card gg: bundled_licence_id on PinnedModelSpec, ModelIdentity, --verify-live, and provenance, plus reader_source_match_reasons."""
     from reasoning_dataset_lab.pilot_b.models_and_build import resolve_pilot_b_model_pins
+
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2), encoding="utf-8"
+    )
 
     # 1. Default PinnedModelSpec and ModelIdentity carry bundled_licence_id
     writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
@@ -494,7 +538,9 @@ def test_fix_gg_bundled_licence_id_and_reader_source_match_reasons(
     assert overridden["reader_1"].bundled_licence_id == "openmdw-1.1"
     assert overridden["reader_2"].bundled_licence_id == "apache-2.0"
     assert overridden["writer"].bundled_licence_id == "qwen3.6-35b-a3b-licence"
-    validate_models_against_licence_registry(list(overridden.values()))
+    validate_models_against_licence_registry(
+        list(overridden.values()), registry_path=reg_path
+    )
 
     with pytest.raises(RdlabError) as exc_empty_bundled:
         resolve_pilot_b_model_pins(bundled_licence_id_overrides={"reader_1": "   "})
@@ -535,6 +581,7 @@ def test_fix_gg_bundled_licence_id_and_reader_source_match_reasons(
     live_res = verify_live_ollama_models(
         models=[r1_test_spec],
         fetch_manifest=lambda _tag: (fake_manifest, {}),
+        licence_registry_path=reg_path,
     )
     assert live_res["models"][0]["licence_id"] == "openmdw-1.1"
     assert live_res["models"][0]["bundled_licence_id"] == "nvidia-open-model-license"
@@ -572,6 +619,116 @@ def test_fix_gg_bundled_licence_id_and_reader_source_match_reasons(
             r1_pin.source_match_reason,
             r2_pin.source_match_reason,
         ]
+
+
+def test_fix_gi_licence_registry_required_and_provenance_sha256(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Card gi: non-stub build, --verify-live, and library validation require a registry file; --stub without registry works; report and provenance record registry path, sha256, and entry read_dates."""
+    import hashlib
+
+    # 1. Non-stub build with no registry is refused (library and CLI)
+    with pytest.raises(RdlabError) as exc_no_reg:
+        run_pilot_b_build(
+            output_dir=tmp_path / "non_stub_no_reg",
+            triad_count=2,
+            stub_mode=False,
+        )
+    assert exc_no_reg.value.code == "PILOT_B_LICENCE_REGISTRY_REQUIRED"
+
+    cli_code_no_reg = run_cli(
+        ["pilot-b", "--output-dir", str(tmp_path / "cli_non_stub_no_reg")]
+    )
+    assert cli_code_no_reg == 1
+    err_no_reg = json.loads(capsys.readouterr().err)
+    assert err_no_reg["code"] == "PILOT_B_LICENCE_REGISTRY_REQUIRED"
+
+    # Library validate_models_against_licence_registry and verify_live_ollama_models without a registry are also refused
+    with pytest.raises(RdlabError) as exc_val_no_reg:
+        validate_models_against_licence_registry(
+            list(DEFAULT_PILOT_B_MODEL_PINS.values())
+        )
+    assert exc_val_no_reg.value.code == "PILOT_B_LICENCE_REGISTRY_REQUIRED"
+
+    with pytest.raises(RdlabError) as exc_live_no_reg:
+        verify_live_ollama_models(
+            models=[DEFAULT_PILOT_B_MODEL_PINS["writer"]],
+            fetch_manifest=lambda _tag: (b"{}", {}),
+        )
+    assert exc_live_no_reg.value.code == "PILOT_B_LICENCE_REGISTRY_REQUIRED"
+
+    cli_live_no_reg = run_cli(["models", "--verify-live"])
+    assert cli_live_no_reg == 1
+    err_live_no_reg = json.loads(capsys.readouterr().err)
+    assert err_live_no_reg["code"] == "PILOT_B_LICENCE_REGISTRY_REQUIRED"
+
+    # 2. --stub without a registry still works
+    stub_out = tmp_path / "stub_no_reg"
+    stub_res = run_pilot_b_build(
+        output_dir=stub_out,
+        triad_count=2,
+        stub_mode=True,
+    )
+    assert stub_res["status"] == "ok"
+    assert len(stub_res["report"]["licence_registry_sha256"]) == 64
+
+    cli_stub_ok = run_cli(
+        ["pilot-b", "--stub", "2", "--output-dir", str(tmp_path / "cli_stub_no_reg")]
+    )
+    assert cli_stub_ok == 0
+    _ = capsys.readouterr()
+
+    # 3. With a real registry file on disk, non-stub build records registry path as given, sha256, and read_dates in report and provenance
+    reg_dir = tmp_path / "licences"
+    reg_dir.mkdir(parents=True, exist_ok=True)
+    reg_path = reg_dir / "registry.json"
+    reg_bytes = (
+        json.dumps(build_fixture_licence_registry(), indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    reg_path.write_bytes(reg_bytes)
+    expected_reg_sha = hashlib.sha256(reg_bytes).hexdigest()
+
+    real_out = tmp_path / "non_stub_with_reg"
+    real_res = run_pilot_b_build(
+        output_dir=real_out,
+        triad_count=2,
+        stub_mode=False,
+        licence_registry_path=reg_path,
+    )
+    report = real_res["report"]
+    assert report["stub_mode"] is False
+    assert report["licence_registry_path"] == str(reg_path)
+    assert report["licence_registry_sha256"] == expected_reg_sha
+    assert report["licence_registry"]["path"] == str(reg_path)
+    assert report["licence_registry"]["sha256"] == expected_reg_sha
+    expected_read_dates = {
+        "qwen3.6-35b-a3b-licence": "2026-10-25",
+        "openmdw-1.1": "2026-10-16",
+        "nvidia-open-model-license": "2026-10-16",
+        "granite-4.2-8b-hf-card": "2026-10-25",
+    }
+    assert report["licence_registry"]["read_dates"] == expected_read_dates
+
+    prov_lines = [
+        json.loads(line)
+        for line in (real_out / "part_pilot_b_sealed" / "provenance.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert len(prov_lines) == 6
+    for prow in prov_lines:
+        assert prow["licence_registry_path"] == str(reg_path)
+        assert prow["licence_registry_sha256"] == expected_reg_sha
+        assert prow["licence_registry"]["path"] == str(reg_path)
+        assert prow["licence_registry"]["sha256"] == expected_reg_sha
+        assert prow["licence_registry"]["read_dates"] == expected_read_dates
+        assert prow["writer"]["licence_read_date"] == "2026-10-25"
+        assert prow["writer"]["bundled_licence_read_date"] == "2026-10-25"
+        j0 = prow["judgments"][0]
+        assert j0["reader_licence_read_dates"] == ["2026-10-16", "2026-10-25"]
+        assert j0["reader_bundled_licence_read_dates"] == ["2026-10-16", "2026-10-25"]
+
 
 
 

@@ -98,10 +98,10 @@ def _build_parser() -> _StructuredArgumentParser:
         dest="licence_registry",
         type=Path,
         default=None,
-        help="Optional path to licences/registry.json.",
+        help="Path to licences/registry.json (required with --verify-live).",
     )
 
-    # rdlab pilot-b [--stub N] [--output-dir <dir>]
+    # rdlab pilot-b [--stub N] [--output-dir <dir>] --licence-registry <path>
     pb_parser = subparsers.add_parser(
         "pilot-b",
         help="Build the Pilot B T10 critic test set (or run a --stub N timing & gate calibration run).",
@@ -145,7 +145,7 @@ def _build_parser() -> _StructuredArgumentParser:
         dest="licence_registry",
         type=Path,
         default=None,
-        help="Optional path to licences/registry.json.",
+        help="Path to licences/registry.json (required for non-stub builds).",
     )
 
     return parser

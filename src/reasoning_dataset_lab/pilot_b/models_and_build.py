@@ -61,7 +61,7 @@ class PinnedModelSpec:
     manifest_digest: str
     model_layer_digest: str
     licence_id: str
-    bundled_licence_id: str = "apache-2.0"
+    bundled_licence_id: str = ""
     licence_layer_digest: str = "0" * 64
     source_match: SourceMatchStatus = "unconfirmed"
     source_match_reason: str = ""
@@ -92,13 +92,20 @@ class PinnedModelSpec:
     def with_bundled_licence_id(self, new_bundled_licence_id: str) -> PinnedModelSpec:
         return self.with_licence_id(self.licence_id, new_bundled_licence_id)
 
-    def to_model_identity(self) -> ModelIdentity:
+    def to_model_identity(
+        self,
+        *,
+        licence_read_date: str = "",
+        bundled_licence_read_date: str = "",
+    ) -> ModelIdentity:
         return ModelIdentity(
             name=self.ollama_tag,
             family=self.family,
             digest=self.manifest_digest,
             licence_id=self.licence_id,
             bundled_licence_id=self.bundled_licence_id,
+            licence_read_date=licence_read_date,
+            bundled_licence_read_date=bundled_licence_read_date,
             licence_layer_digest=self.licence_layer_digest,
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
@@ -208,7 +215,11 @@ def resolve_pilot_b_model_pins(
 
 
 def build_fixture_licence_registry() -> dict[str, Any]:
-    """Build an in-memory fixture registry matching rnd's licences/registry.json schema_version 1 format."""
+    """Build an in-memory fixture registry for unit tests and `--stub` runs only.
+
+    Non-stub Pilot B builds, `rdlab models --verify-live`, and `validate_models_against_licence_registry`
+    require an explicit `--licence-registry <path>` file and can never reach this fixture.
+    """
     return {
         "schema_version": 1,
         "entries": [
@@ -351,13 +362,18 @@ def validate_models_against_licence_registry(
     registry_path: Path | None = None,
     registry_entries: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, str]]:
-    """Verify every chain model has a valid pin and an entry in the licence registry that permits training and evaluation."""
+    """Verify every chain model has a valid pin and an entry in the licence registry that permits training and evaluation.
+
+    Requires an explicit `registry_path` (or `registry_entries` for unit tests / `--stub`); never falls back to the fixture.
+    """
     if registry_entries is None:
-        if registry_path is not None:
-            entries_map: Mapping[str, dict[str, Any]] = load_licence_registry(registry_path)
-        else:
-            fixture = build_fixture_licence_registry()
-            entries_map = {str(e["id"]): e for e in fixture["entries"]}
+        if registry_path is None:
+            raise refused_error(
+                "PILOT_B_LICENCE_REGISTRY_REQUIRED",
+                "A licence registry file (--licence-registry <path>) is required for non-stub Pilot B runs and live model verification.",
+                "Pass --licence-registry <path> pointing to rnd's licences/registry.json.",
+            )
+        entries_map: Mapping[str, dict[str, Any]] = load_licence_registry(registry_path)
     else:
         entries_map = registry_entries
 
@@ -380,13 +396,6 @@ def validate_models_against_licence_registry(
                 f"licence_id '{spec.licence_id}', which is not in the licence registry.",
                 "Add the model's entry to rnd licences/registry.json before running the build.",
             )
-        if not spec.bundled_licence_id or spec.bundled_licence_id not in entries_map:
-            raise refused_error(
-                "PILOT_B_LICENCE_NOT_IN_REGISTRY",
-                f"Chain member '{spec.display_name}' ({spec.ollama_tag}, role={spec.role}) references "
-                f"bundled_licence_id '{spec.bundled_licence_id}', which is not in the licence registry.",
-                "Add the bundled licence entry to rnd licences/registry.json before running the build.",
-            )
         entry = entries_map[spec.licence_id]
         uses = entry.get("uses", {})
         if not isinstance(uses, dict):
@@ -404,13 +413,25 @@ def validate_models_against_licence_registry(
                 f"bars training ({training_verdict!r}) or evaluation ({eval_verdict!r}).",
                 "Use only models whose licence registry entry permits training and evaluation.",
             )
+        if not spec.bundled_licence_id or spec.bundled_licence_id not in entries_map:
+            raise refused_error(
+                "PILOT_B_LICENCE_NOT_IN_REGISTRY",
+                f"Chain member '{spec.display_name}' ({spec.ollama_tag}, role={spec.role}) references "
+                f"bundled_licence_id '{spec.bundled_licence_id}', which is not in the licence registry.",
+                "Add the bundled licence entry to rnd licences/registry.json before running the build.",
+            )
+        bundled_entry = entries_map[spec.bundled_licence_id]
+        gov_read_date = str(entry.get("read_date", "")).strip()
+        bundled_read_date = str(bundled_entry.get("read_date", "")).strip()
         verified.append(
             {
                 "role": spec.role,
                 "display_name": spec.display_name,
                 "ollama_tag": spec.ollama_tag,
                 "licence_id": spec.licence_id,
+                "licence_read_date": gov_read_date,
                 "bundled_licence_id": spec.bundled_licence_id,
+                "bundled_licence_read_date": bundled_read_date,
                 "training": training_verdict,
                 "evaluation": eval_verdict,
             }
@@ -451,13 +472,21 @@ def verify_live_ollama_models(
     fetch_manifest: Callable[[str], tuple[bytes, dict[str, str]]] | None = None,
     licence_registry_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Verify every pinned model's Ollama tag, manifest digest, and model layer digest against the live Ollama registry."""
+    """Verify every pinned model's Ollama tag, manifest digest, and model layer digest against the live Ollama registry.
+
+    Requires `licence_registry_path` (`--licence-registry <path>`); never falls back to the fixture.
+    """
     specs = (
         list(models)
         if models is not None
         else list(DEFAULT_PILOT_B_MODEL_PINS.values())
     )
-    validate_models_against_licence_registry(specs, registry_path=licence_registry_path)
+    verified_lics = validate_models_against_licence_registry(
+        specs, registry_path=licence_registry_path
+    )
+    assert licence_registry_path is not None
+    reg_sha256 = hashlib.sha256(licence_registry_path.read_bytes()).hexdigest()
+    verified_by_role = {v["role"]: v for v in verified_lics}
 
     fetcher = fetch_manifest if fetch_manifest is not None else _default_fetch_ollama_manifest
     results: list[dict[str, Any]] = []
@@ -518,6 +547,7 @@ def verify_live_ollama_models(
                 "Update the pinned licence_layer_digest after reviewing the upstream licence layer change.",
             )
 
+        v_info = verified_by_role.get(spec.role, {})
         results.append(
             {
                 "role": spec.role,
@@ -525,7 +555,9 @@ def verify_live_ollama_models(
                 "family": spec.family,
                 "ollama_tag": spec.ollama_tag,
                 "licence_id": spec.licence_id,
+                "licence_read_date": v_info.get("licence_read_date", ""),
                 "bundled_licence_id": spec.bundled_licence_id,
+                "bundled_licence_read_date": v_info.get("bundled_licence_read_date", ""),
                 "pinned_manifest_digest": spec.manifest_digest,
                 "live_manifest_digest": live_manifest_sha256,
                 "pinned_model_layer_digest": spec.model_layer_digest,
@@ -543,6 +575,8 @@ def verify_live_ollama_models(
     return {
         "status": "PASS",
         "registry": OLLAMA_REGISTRY_BASE_URL,
+        "licence_registry_path": str(licence_registry_path),
+        "licence_registry_sha256": reg_sha256,
         "models_checked": len(results),
         "models": results,
     }
@@ -584,6 +618,7 @@ def build_pilot_b_report(
     wave_result: PilotBWaveRunResult,
     stub_mode: bool,
     sample_seed: int = 42,
+    licence_registry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct the Pilot B build report (§6, Part E): coverage, key-proof rate 1.0, gate pass rate per class, and sample of 20."""
     items_path = part_dir / "items.jsonl"
@@ -632,12 +667,24 @@ def build_pilot_b_report(
     }
 
     sample_block = draw_human_sample(items, sample_size=20, seed=sample_seed)
+    reg_meta: dict[str, Any] = (
+        dict(licence_registry)
+        if licence_registry is not None
+        else {
+            "path": "",
+            "sha256": "0" * 64,
+            "read_dates": {},
+        }
+    )
 
     return {
         "dataset": "verifier-t10-pilot-b",
         "part_id": part_dir.name,
         "split": "sealed",
         "stub_mode": stub_mode,
+        "licence_registry_path": str(reg_meta.get("path", "")),
+        "licence_registry_sha256": str(reg_meta.get("sha256", "")),
+        "licence_registry": reg_meta,
         "triads_requested": triads_requested,
         "triads_kept": triads_kept,
         "triads_failed": len(wave_result.failed_triads),
@@ -673,7 +720,7 @@ def run_pilot_b_build(
     *,
     output_dir: Path,
     triad_count: int = 50,
-    stub_mode: bool = True,
+    stub_mode: bool = False,
     seed: int = 1,
     shuffle_seed: int = 42,
     thinking_token_cap: int = DEFAULT_THINKING_TOKEN_CAP,
@@ -694,14 +741,60 @@ def run_pilot_b_build(
         licence_id_overrides=licence_id_overrides,
         bundled_licence_id_overrides=bundled_licence_id_overrides,
     )
-    validate_models_against_licence_registry(
-        list(pins.values()),
-        registry_path=licence_registry_path,
-    )
 
-    writer_id = pins["writer"].to_model_identity()
-    r1_id = pins["reader_1"].to_model_identity()
-    r2_id = pins["reader_2"].to_model_identity()
+    if licence_registry_path is not None:
+        entries_map = load_licence_registry(licence_registry_path)
+        reg_path_str = str(licence_registry_path)
+        reg_sha256 = hashlib.sha256(licence_registry_path.read_bytes()).hexdigest()
+        validate_models_against_licence_registry(
+            list(pins.values()),
+            registry_entries=entries_map,
+        )
+    elif stub_mode:
+        fixture = build_fixture_licence_registry()
+        entries_map = {str(e["id"]): e for e in fixture["entries"]}
+        reg_path_str = "fixture:build_fixture_licence_registry"
+        reg_sha256 = hashlib.sha256(
+            json.dumps(fixture, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        validate_models_against_licence_registry(
+            list(pins.values()),
+            registry_entries=entries_map,
+        )
+    else:
+        # Non-stub build with no registry path must refuse (never fall back to fixture)
+        validate_models_against_licence_registry(
+            list(pins.values()),
+            registry_path=None,
+        )
+        raise AssertionError("Unreachable")  # pragma: no cover
+
+    read_dates_by_id: dict[str, str] = {}
+    for spec in pins.values():
+        for lid in (spec.licence_id, spec.bundled_licence_id):
+            if lid not in read_dates_by_id:
+                read_dates_by_id[lid] = str(
+                    entries_map[lid].get("read_date", "")
+                ).strip()
+
+    licence_registry_meta: dict[str, Any] = {
+        "path": reg_path_str,
+        "sha256": reg_sha256,
+        "read_dates": read_dates_by_id,
+    }
+
+    writer_id = pins["writer"].to_model_identity(
+        licence_read_date=read_dates_by_id[pins["writer"].licence_id],
+        bundled_licence_read_date=read_dates_by_id[pins["writer"].bundled_licence_id],
+    )
+    r1_id = pins["reader_1"].to_model_identity(
+        licence_read_date=read_dates_by_id[pins["reader_1"].licence_id],
+        bundled_licence_read_date=read_dates_by_id[pins["reader_1"].bundled_licence_id],
+    )
+    r2_id = pins["reader_2"].to_model_identity(
+        licence_read_date=read_dates_by_id[pins["reader_2"].licence_id],
+        bundled_licence_read_date=read_dates_by_id[pins["reader_2"].bundled_licence_id],
+    )
     validate_chain_families(writer_id, r1_id, r2_id)
 
     tables = generate_fact_tables(n=triad_count, seed=seed)
@@ -738,6 +831,7 @@ def run_pilot_b_build(
         map_sha256=map_sha,
         wave_result=wave_res,
         shuffle_seed=shuffle_seed,
+        licence_registry=licence_registry_meta,
     )
     frozen_meta = freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
 
@@ -747,6 +841,7 @@ def run_pilot_b_build(
         wave_result=wave_res,
         stub_mode=stub_mode,
         sample_seed=shuffle_seed,
+        licence_registry=licence_registry_meta,
     )
     report_path = output_dir / "reports" / "pilot_b_report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)

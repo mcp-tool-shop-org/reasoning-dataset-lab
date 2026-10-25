@@ -45,8 +45,10 @@ class ModelIdentity:
     name: str
     family: str
     digest: str
-    licence_id: str = "apache-2.0"
-    bundled_licence_id: str = "apache-2.0"
+    licence_id: str = ""
+    bundled_licence_id: str = ""
+    licence_read_date: str = ""
+    bundled_licence_read_date: str = ""
     licence_layer_digest: str = "0" * 64
     source_match: SourceMatchStatus = "unconfirmed"
     source_match_reason: str = ""
@@ -62,6 +64,8 @@ class ModelIdentity:
             "digest": self.digest,
             "licence_id": self.licence_id,
             "bundled_licence_id": self.bundled_licence_id,
+            "licence_read_date": self.licence_read_date,
+            "bundled_licence_read_date": self.bundled_licence_read_date,
             "licence_layer_digest": self.licence_layer_digest,
             "source_match": self.source_match,
             "source_match_reason": self.source_match_reason,

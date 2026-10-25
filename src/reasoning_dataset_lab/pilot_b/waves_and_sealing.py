@@ -388,10 +388,34 @@ def write_sealed_part(
     map_sha256: str,
     wave_result: PilotBWaveRunResult,
     shuffle_seed: int,
+    licence_registry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write a sealed Pilot B part directory with shuffled items, aggregate-only judgment provenance, and external keys.sealed.jsonl."""
     part_dir.mkdir(parents=True, exist_ok=True)
     keys_sealed_path.parent.mkdir(parents=True, exist_ok=True)
+
+    default_read_dates: dict[str, str] = {}
+    for m in (
+        wave_result.writer_model,
+        wave_result.reader_1_model,
+        wave_result.reader_2_model,
+    ):
+        if m.licence_id:
+            default_read_dates.setdefault(m.licence_id, m.licence_read_date)
+        if m.bundled_licence_id:
+            default_read_dates.setdefault(
+                m.bundled_licence_id, m.bundled_licence_read_date
+            )
+
+    reg_meta: dict[str, Any] = (
+        dict(licence_registry)
+        if licence_registry is not None
+        else {
+            "path": "",
+            "sha256": "0" * 64,
+            "read_dates": default_read_dates,
+        }
+    )
 
     # Collect raw unshuffled items from kept triads
     raw_entries: list[dict[str, Any]] = []
@@ -459,6 +483,9 @@ def write_sealed_part(
                 "sha256": map_sha256,
                 "cell": f"T10/D/{entry['domain']}",
             },
+            "licence_registry_path": str(reg_meta.get("path", "")),
+            "licence_registry_sha256": str(reg_meta.get("sha256", "")),
+            "licence_registry": reg_meta,
             "proof_basis": "proved",
             "key_basis": "construction",
             "proof": {
@@ -471,7 +498,9 @@ def write_sealed_part(
                 "family": wave_result.writer_model.normalized_family,
                 "digest": wave_result.writer_model.digest,
                 "licence_id": wave_result.writer_model.licence_id,
+                "licence_read_date": wave_result.writer_model.licence_read_date,
                 "bundled_licence_id": wave_result.writer_model.bundled_licence_id,
+                "bundled_licence_read_date": wave_result.writer_model.bundled_licence_read_date,
                 "licence_layer_digest": wave_result.writer_model.licence_layer_digest,
                 "source_match": wave_result.writer_model.source_match,
                 "source_match_reason": wave_result.writer_model.source_match_reason,
@@ -505,9 +534,17 @@ def write_sealed_part(
                         wave_result.reader_1_model.licence_id,
                         wave_result.reader_2_model.licence_id,
                     ],
+                    "reader_licence_read_dates": [
+                        wave_result.reader_1_model.licence_read_date,
+                        wave_result.reader_2_model.licence_read_date,
+                    ],
                     "reader_bundled_licence_ids": [
                         wave_result.reader_1_model.bundled_licence_id,
                         wave_result.reader_2_model.bundled_licence_id,
+                    ],
+                    "reader_bundled_licence_read_dates": [
+                        wave_result.reader_1_model.bundled_licence_read_date,
+                        wave_result.reader_2_model.bundled_licence_read_date,
                     ],
                     "reader_licence_layer_digests": [
                         wave_result.reader_1_model.licence_layer_digest,
