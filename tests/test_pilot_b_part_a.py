@@ -453,3 +453,253 @@ def test_part_a_serialization_and_error_guards() -> None:
         build_contrast_triad(empty_table)
     assert exc_emp.value.code == "PILOT_B_EMPTY_TABLE"
 
+
+def test_fix1_review_table_op_aware_unsupported_supported_and_cannot_tell() -> None:
+    """Card gc Fix 1: R&D review table on seed 3 (fact: Tanker Orion cargo holds = 21)."""
+    table = build_sample_fact_table(seed=3, closure="open")
+    triad = build_contrast_triad(table, seed=3)
+    orion_fact = next(
+        f for f in table.facts if f.entity == "Tanker Orion" and f.attribute == "cargo holds"
+    )
+    assert orion_fact.fact_type == "number"
+    assert orion_fact.op == "="
+    assert orion_fact.value == 21
+
+    # 1. Claims at_most 31, at_least 11, and not 31 are TRUE when fact is '= 21', so they MUST be refused as unsupported
+    for bad_op, bad_val in (("at_most", 31), ("at_least", 11), ("not", 31)):
+        claim_bad = ProvedClaim(
+            claim_id=f"c-{bad_op}",
+            table_id=table.table_id,
+            key="unsupported",
+            fact_id=orion_fact.fact_id,
+            entity=orion_fact.entity,
+            attribute=orion_fact.attribute,
+            fact_type="number",
+            claimed_value=bad_val,
+            unit=orion_fact.unit,
+            op=bad_op,  # type: ignore[arg-type]
+            proof=triad.claims["unsupported"].proof,
+        )
+        with pytest.raises(RdlabError) as exc_info:
+            prove_claim_against_table(table, claim_bad)
+        assert exc_info.value.code == "PILOT_B_UNSUPPORTED_OP_UNDECIDABLE"
+
+    # 2. A fact op of 'at_least' with claim '= 31' is undecidable, so it MUST be refused as unsupported
+    at_least_fact = AtomicFact(
+        fact_id=orion_fact.fact_id,
+        line=orion_fact.line,
+        entity=orion_fact.entity,
+        attribute=orion_fact.attribute,
+        fact_type="number",
+        value=21,
+        unit=orion_fact.unit,
+        op="at_least",
+    )
+    table_at_least = FactTable(
+        table_id=table.table_id,
+        domain=table.domain,
+        closure=table.closure,
+        entities=table.entities,
+        facts=tuple(
+            at_least_fact if f.fact_id == orion_fact.fact_id else f for f in table.facts
+        ),
+        open_attributes=table.open_attributes,
+    )
+    claim_eq_31 = ProvedClaim(
+        claim_id="c-eq-31",
+        table_id=table.table_id,
+        key="unsupported",
+        fact_id=orion_fact.fact_id,
+        entity=orion_fact.entity,
+        attribute=orion_fact.attribute,
+        fact_type="number",
+        claimed_value=31,
+        unit=orion_fact.unit,
+        op="=",
+        proof=triad.claims["unsupported"].proof,
+    )
+    with pytest.raises(RdlabError) as exc_fact_op:
+        prove_claim_against_table(table_at_least, claim_eq_31)
+    assert exc_fact_op.value.code == "PILOT_B_UNSUPPORTED_OP_UNDECIDABLE"
+
+    # 3. The claim '= 31' on fact '= 21' stays proved unsupported
+    proved_eq_31 = prove_claim_against_table(table, claim_eq_31)
+    assert proved_eq_31.key == "unsupported"
+    assert proved_eq_31.disjoint is True
+
+    # 4. Same op guard on supported and cannot_tell where missing
+    bad_sup_op = ProvedClaim(
+        claim_id="c-sup-bad-op",
+        table_id=table_at_least.table_id,
+        key="supported",
+        fact_id=at_least_fact.fact_id,
+        entity=at_least_fact.entity,
+        attribute=at_least_fact.attribute,
+        fact_type="number",
+        claimed_value=21,
+        unit=at_least_fact.unit,
+        op="at_least",
+        proof=triad.claims["supported"].proof,
+    )
+    with pytest.raises(RdlabError) as exc_sup_op:
+        prove_claim_against_table(table_at_least, bad_sup_op)
+    assert exc_sup_op.value.code == "PILOT_B_SUPPORTED_OP_UNDECIDABLE"
+
+    int_fact = next(f for f in table.facts if f.fact_type == "interval")
+    lo, hi = int_fact.value  # type: ignore[misc]
+    bad_ct_op = ProvedClaim(
+        claim_id="c-ct-bad-op",
+        table_id=table.table_id,
+        key="cannot_tell",
+        fact_id=int_fact.fact_id,
+        entity=int_fact.entity,
+        attribute=int_fact.attribute,
+        fact_type="number",
+        claimed_value=(lo + hi) // 2,
+        unit=int_fact.unit,
+        op="at_most",
+        proof=triad.claims["cannot_tell"].proof,
+    )
+    with pytest.raises(RdlabError) as exc_ct_op:
+        prove_claim_against_table(table, bad_ct_op)
+    assert exc_ct_op.value.code == "PILOT_B_CANNOT_TELL_OP_UNDECIDABLE"
+
+
+@pytest.mark.parametrize(
+    "fact_type",
+    ["number", "date", "interval", "state", "attribute"],
+)
+def test_fix1_property_all_fact_op_x_claim_op_pairs_match_brute_force_verdict(
+    fact_type: str,
+) -> None:
+    """Card gc Fix 1: Property test over every FactOp x claim-op pair per fact type."""
+    from reasoning_dataset_lab.pilot_b.fact_tables import (
+        ALL_FACT_OPS,
+        PROVEN_OP_PAIRS_BY_KEY,
+        brute_force_check_claim_against_table,
+    )
+
+    table = build_sample_fact_table(seed=3, closure="open")
+    triad = build_contrast_triad(table, seed=3)
+    base_fact = next(f for f in table.facts if f.fact_type == fact_type)
+
+    sample_claim_values: list[tuple[str, object]] = []
+    if fact_type == "number":
+        assert isinstance(base_fact.value, int)
+        v = base_fact.value
+        sample_claim_values = [("number", v), ("number", v + 10), ("number", v - 10)]
+    elif fact_type == "date":
+        sample_claim_values = [("date", base_fact.value), ("date", "25 April")]
+    elif fact_type == "interval":
+        assert isinstance(base_fact.value, tuple)
+        lo, hi = base_fact.value
+        sample_claim_values = [
+            ("interval", (lo, hi)),
+            ("interval", (hi + 5, hi + 15)),
+            ("number", (lo + hi) // 2),
+            ("number", hi + 10),
+        ]
+    elif fact_type == "state":
+        sample_claim_values = [("state", base_fact.value), ("state", "docked")]
+    else:
+        sample_claim_values = [("attribute", base_fact.value), ("attribute", "epoxy")]
+
+    for f_op in ALL_FACT_OPS:
+        f_val = (15, 25) if (f_op == "between" and not isinstance(base_fact.value, tuple)) else base_fact.value
+        mod_fact = AtomicFact(
+            fact_id=base_fact.fact_id,
+            line=base_fact.line,
+            entity=base_fact.entity,
+            attribute=base_fact.attribute,
+            fact_type=base_fact.fact_type,
+            value=f_val,  # type: ignore[arg-type]
+            unit=base_fact.unit,
+            op=f_op,
+        )
+        mod_table = FactTable(
+            table_id=table.table_id,
+            domain=table.domain,
+            closure=table.closure,
+            entities=table.entities,
+            facts=tuple(
+                mod_fact if f.fact_id == base_fact.fact_id else f for f in table.facts
+            ),
+            open_attributes=table.open_attributes,
+        )
+        for c_op in ALL_FACT_OPS:
+            for c_type, c_val in sample_claim_values:
+                for key in ("supported", "unsupported", "cannot_tell"):
+                    candidate = ProvedClaim(
+                        claim_id=f"prop-{fact_type}-{f_op}-{c_op}-{key}",
+                        table_id=mod_table.table_id,
+                        key=key,  # type: ignore[arg-type]
+                        fact_id=mod_fact.fact_id,
+                        entity=mod_fact.entity,
+                        attribute=mod_fact.attribute,
+                        fact_type=c_type,  # type: ignore[arg-type]
+                        claimed_value=c_val,  # type: ignore[arg-type]
+                        unit=mod_fact.unit,
+                        op=c_op,
+                        proof=triad.claims["supported"].proof,
+                    )
+                    allowed_tuples = PROVEN_OP_PAIRS_BY_KEY[key]
+                    op_tuple = (mod_fact.fact_type, f_op, c_type, c_op)
+                    if op_tuple not in allowed_tuples:
+                        with pytest.raises(RdlabError):
+                            prove_claim_against_table(mod_table, candidate)
+                    else:
+                        try:
+                            proof = prove_claim_against_table(mod_table, candidate)
+                        except RdlabError:
+                            continue
+                        bf_verdict = brute_force_check_claim_against_table(
+                            mod_table, candidate
+                        )
+                        assert proof.key == key
+                        assert bf_verdict == key
+
+
+def test_fix1_generator_never_emits_unproven_op_pair_and_refuses_unsound_table() -> None:
+    """Card gc Fix 1: Generator refuses to emit claims whose op pair isn't on the proven list."""
+    from reasoning_dataset_lab.pilot_b.fact_tables import PROVEN_OP_PAIRS_BY_KEY
+
+    for seed in range(1, 31):
+        table = build_sample_fact_table(seed=seed)
+        triad = build_contrast_triad(table, seed=seed)
+        for key, claim in triad.claims.items():
+            if claim.fact_id is not None:
+                fact = table.get_fact(claim.fact_id)
+                assert (
+                    fact.fact_type,
+                    fact.op,
+                    claim.fact_type,
+                    claim.op,
+                ) in PROVEN_OP_PAIRS_BY_KEY[key]
+            else:
+                assert key == "cannot_tell"
+                assert claim.op == "="
+
+    # If a table contains only unprovable op facts (e.g. op='at_least'), build_contrast_triad refuses rather than guessing
+    bad_fact = AtomicFact(
+        fact_id="f-bad-op",
+        line=1,
+        entity="Tanker Orion",
+        attribute="cargo holds",
+        fact_type="number",
+        value=21,
+        unit="holds",
+        op="at_least",
+    )
+    bad_table = FactTable(
+        table_id="t-bad-op",
+        domain="vessels",
+        closure="open",
+        entities=("Tanker Orion",),
+        facts=(bad_fact,),
+        open_attributes=(("registry port", "Rotterdam"),),
+    )
+    with pytest.raises(RdlabError) as exc_gen:
+        build_contrast_triad(bad_table, seed=1)
+    assert exc_gen.value.code == "PILOT_B_NO_PROVABLE_FACT_FOR_TRIAD"
+
+

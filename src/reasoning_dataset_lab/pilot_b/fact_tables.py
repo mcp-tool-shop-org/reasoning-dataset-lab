@@ -21,6 +21,37 @@ ProofMethod = Literal[
 FactOp = Literal["=", "between", "at_least", "at_most", "not"]
 FactValue = int | str | tuple[int, int]
 
+ALL_FACT_OPS: tuple[FactOp, ...] = ("=", "between", "at_least", "at_most", "not")
+
+# Proven (fact_type, fact.op, claim.fact_type, claim.op) combinations for each VerdictKey.
+# Any op pair outside this whitelist is refused rather than guessed.
+PROVEN_OP_PAIRS_BY_KEY: dict[VerdictKey, frozenset[tuple[FactType, FactOp, FactType, FactOp]]] = {
+    "supported": frozenset(
+        {
+            ("number", "=", "number", "="),
+            ("date", "=", "date", "="),
+            ("state", "=", "state", "="),
+            ("attribute", "=", "attribute", "="),
+            ("interval", "between", "interval", "between"),
+        }
+    ),
+    "unsupported": frozenset(
+        {
+            ("number", "=", "number", "="),
+            ("date", "=", "date", "="),
+            ("state", "=", "state", "="),
+            ("attribute", "=", "attribute", "="),
+            ("interval", "between", "interval", "="),
+            ("interval", "between", "number", "="),
+        }
+    ),
+    "cannot_tell": frozenset(
+        {
+            ("interval", "between", "number", "="),
+        }
+    ),
+}
+
 PILOT_B_PROVER_NAME: str = "reasoning_dataset_lab.pilot_b.fact_tables"
 PILOT_B_PROVER_VERSION: str = "0.3.0"
 
@@ -320,6 +351,196 @@ def mutate_fact_value(fact: AtomicFact, step: int = 1) -> FactValue:
     return f"uncoated-{cur_attr}"
 
 
+def _normalize_str_value(val: str) -> str:
+    return " ".join(val.strip().lower().split())
+
+
+def _is_valid_type_op_value(fact_type: FactType, op: FactOp, val: FactValue) -> bool:
+    if fact_type == "interval":
+        if op not in ("=", "between"):
+            return False
+        if not (isinstance(val, tuple) and len(val) == 2):
+            return False
+        return (
+            isinstance(val[0], int)
+            and not isinstance(val[0], bool)
+            and isinstance(val[1], int)
+            and not isinstance(val[1], bool)
+            and val[0] <= val[1]
+        )
+    if fact_type == "number":
+        if op == "between":
+            if not (isinstance(val, tuple) and len(val) == 2):
+                return False
+            return (
+                isinstance(val[0], int)
+                and not isinstance(val[0], bool)
+                and isinstance(val[1], int)
+                and not isinstance(val[1], bool)
+                and val[0] <= val[1]
+            )
+        return isinstance(val, int) and not isinstance(val, bool)
+    if fact_type in ("date", "state", "attribute"):
+        if op not in ("=", "not"):
+            return False
+        return isinstance(val, str) and bool(_normalize_str_value(val))
+    return False
+
+
+def _enumerate_finite_world_domain(
+    table: FactTable,
+    fact: AtomicFact,
+    claim: ProvedClaim,
+) -> tuple[int | str, ...]:
+    """Enumerate a finite domain of world values around fact and claim (Publisher's ruling, Card gc Fix 1)."""
+    if fact.fact_type in ("number", "interval"):
+        points: list[int] = []
+        if isinstance(fact.value, tuple) and len(fact.value) == 2:
+            points.extend([int(fact.value[0]), int(fact.value[1])])
+        elif isinstance(fact.value, int) and not isinstance(fact.value, bool):
+            points.append(fact.value)
+        if isinstance(claim.claimed_value, tuple) and len(claim.claimed_value) == 2:
+            points.extend([int(claim.claimed_value[0]), int(claim.claimed_value[1])])
+        elif isinstance(claim.claimed_value, int) and not isinstance(claim.claimed_value, bool):
+            points.append(claim.claimed_value)
+        lo = (min(points) if points else 0) - 5
+        hi = (max(points) if points else 10) + 5
+        return tuple(range(lo, hi + 1))
+
+    if fact.fact_type == "date":
+        assert isinstance(fact.value, str)
+        parts = fact.value.strip().split()
+        month = parts[1] if len(parts) >= 2 else "January"
+        days: list[str] = [f"{d} {month}" for d in range(1, 32)]
+        if isinstance(claim.claimed_value, str):
+            norm_c = _normalize_str_value(claim.claimed_value)
+            if norm_c and all(_normalize_str_value(d) != norm_c for d in days):
+                days.append(claim.claimed_value.strip())
+        return tuple(days)
+
+    # State and attribute: the domain's catalogue values (plus fact/claim values if custom)
+    cat_vals: list[str] = []
+    for spec in DOMAIN_CATALOGUE:
+        if str(spec["domain"]) == table.domain:
+            if fact.fact_type == "state":
+                _, states = spec["state_attr"]  # type: ignore[misc]
+                cat_vals.extend(str(s) for s in states)
+            else:
+                _, attrs = spec["attr_spec"]  # type: ignore[misc]
+                cat_vals.extend(str(a) for a in attrs)
+            break
+    for extra in (fact.value, claim.claimed_value):
+        if isinstance(extra, str):
+            norm_e = _normalize_str_value(extra)
+            if norm_e and all(_normalize_str_value(v) != norm_e for v in cat_vals):
+                cat_vals.append(extra.strip())
+    return tuple(cat_vals)
+
+
+def _world_value_satisfies(
+    world_val: int | str,
+    op: FactOp,
+    target_val: FactValue,
+) -> bool:
+    """Evaluate whether a single atomic world value satisfies (op, target_val)."""
+    if isinstance(world_val, int) and not isinstance(world_val, bool):
+        if op == "=":
+            if isinstance(target_val, int) and not isinstance(target_val, bool):
+                return world_val == target_val
+            if isinstance(target_val, tuple) and len(target_val) == 2:
+                return int(target_val[0]) <= world_val <= int(target_val[1])
+            return False
+        if op == "between":
+            if isinstance(target_val, tuple) and len(target_val) == 2:
+                return int(target_val[0]) <= world_val <= int(target_val[1])
+            return False
+        if op == "at_least":
+            return (
+                isinstance(target_val, int)
+                and not isinstance(target_val, bool)
+                and world_val >= target_val
+            )
+        if op == "at_most":
+            return (
+                isinstance(target_val, int)
+                and not isinstance(target_val, bool)
+                and world_val <= target_val
+            )
+        if op == "not":
+            if isinstance(target_val, int) and not isinstance(target_val, bool):
+                return world_val != target_val
+            if isinstance(target_val, tuple) and len(target_val) == 2:
+                return not (int(target_val[0]) <= world_val <= int(target_val[1]))
+            return False
+        return False
+
+    if isinstance(world_val, str) and isinstance(target_val, str):
+        norm_w = _normalize_str_value(world_val)
+        norm_t = _normalize_str_value(target_val)
+        if op == "=":
+            return norm_w == norm_t
+        if op == "not":
+            return norm_w != norm_t
+    return False
+
+
+def brute_force_check_claim_against_table(
+    table: FactTable,
+    claim: ProvedClaim,
+) -> VerdictKey:
+    """Second, independent brute-force check over a finite domain around the fact (Publisher's ruling, Card gc Fix 1)."""
+    if claim.fact_id is None:
+        if table.closure == "open":
+            return "cannot_tell"
+        raise refused_error(
+            "PILOT_B_BRUTE_FORCE_MISMATCH",
+            f"Claim '{claim.claim_id}' has no fact_id on closure={table.closure!r}.",
+            "Bind fact-based claims to a fact_id or use closure='open' for unmentioned attributes.",
+        )
+
+    fact = table.get_fact(claim.fact_id)
+    if not _is_valid_type_op_value(fact.fact_type, fact.op, fact.value) or not _is_valid_type_op_value(
+        claim.fact_type, claim.op, claim.claimed_value
+    ):
+        raise refused_error(
+            "PILOT_B_BRUTE_FORCE_MISMATCH",
+            f"Claim '{claim.claim_id}' or fact '{fact.fact_id}' has incompatible type/op/value.",
+            "Use a valid (fact_type, op, value) combination.",
+        )
+
+    domain_values = _enumerate_finite_world_domain(table, fact, claim)
+    consistent_worlds = [
+        w for w in domain_values if _world_value_satisfies(w, fact.op, fact.value)
+    ]
+    if not consistent_worlds:
+        raise refused_error(
+            "PILOT_B_BRUTE_FORCE_MISMATCH",
+            f"Fact '{fact.fact_id}' has no consistent world values in finite domain.",
+            "Ensure fact values and interval bounds are non-empty.",
+        )
+
+    # Special case: when both fact and claim are interval ranges with op '=' or 'between',
+    # a claimed interval [c_lo, c_hi] is supported iff every world w in fact's interval satisfies w in [c_lo, c_hi],
+    # unsupported iff no world w in fact's interval satisfies w in [c_lo, c_hi], and cannot_tell otherwise.
+    outcomes = [
+        _world_value_satisfies(w, claim.op, claim.claimed_value)
+        for w in consistent_worlds
+    ]
+    if all(outcomes):
+        # If the claim is an interval restatement, also require exact interval bounds match for supported
+        if (
+            claim.fact_type == "interval"
+            and isinstance(fact.value, tuple)
+            and isinstance(claim.claimed_value, tuple)
+            and fact.value != claim.claimed_value
+        ):
+            return "cannot_tell"
+        return "supported"
+    if not any(outcomes):
+        return "unsupported"
+    return "cannot_tell"
+
+
 def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProof:
     """Verify and construct a ClaimProof for claim against table, or raise RdlabError."""
     if claim.table_id != table.table_id:
@@ -344,6 +565,18 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
             )
         fact = table.get_fact(claim.fact_id)
         if (
+            fact.fact_type,
+            fact.op,
+            claim.fact_type,
+            claim.op,
+        ) not in PROVEN_OP_PAIRS_BY_KEY["supported"]:
+            raise refused_error(
+                "PILOT_B_SUPPORTED_OP_UNDECIDABLE",
+                f"Supported claim '{claim.claim_id}' uses unproven op pair "
+                f"fact=({fact.fact_type}, {fact.op!r}) -> claim=({claim.fact_type}, {claim.op!r}).",
+                "Supported claims require fact.op == '=' (or 'between' for interval facts) and matching claim op/type.",
+            )
+        if (
             fact.entity != claim.entity
             or fact.attribute != claim.attribute
             or fact.fact_type != claim.fact_type
@@ -355,10 +588,17 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
                 f"Supported claim '{claim.claim_id}' does not restate fact '{fact.fact_id}'.",
                 "Ensure supported claim matches entity, attribute, fact_type, op, and value of the table fact.",
             )
+        bf_verdict = brute_force_check_claim_against_table(table, claim)
+        if bf_verdict != "supported":
+            raise refused_error(
+                "PILOT_B_BRUTE_FORCE_MISMATCH",
+                f"Brute-force check returned {bf_verdict!r} for supported claim '{claim.claim_id}'.",
+                "Ensure the claim is true in every world consistent with the fact.",
+            )
         trace = (
             f"table:{table.table_id}:closure={table.closure}",
             f"fact:{fact.fact_id}:line={fact.line}:{fact.entity}.{fact.attribute}={_serialize_value(fact.value)}",
-            f"claim:{claim.claim_id}:restates={fact.fact_id}:verdict=supported",
+            f"claim:{claim.claim_id}:restates={fact.fact_id}:brute_force={bf_verdict}:verdict=supported",
         )
         return ClaimProof(
             key="supported",
@@ -388,6 +628,18 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
                 f"Unsupported claim '{claim.claim_id}' must target the same entity and attribute as '{fact.fact_id}'.",
                 "Keep entity and attribute identical to the mutated fact.",
             )
+        if (
+            fact.fact_type,
+            fact.op,
+            claim.fact_type,
+            claim.op,
+        ) not in PROVEN_OP_PAIRS_BY_KEY["unsupported"]:
+            raise refused_error(
+                "PILOT_B_UNSUPPORTED_OP_UNDECIDABLE",
+                f"Unsupported claim '{claim.claim_id}' has unproven op/type pair: "
+                f"fact=({fact.fact_type}, {fact.op!r}), claim=({claim.fact_type}, {claim.op!r}).",
+                "Require claim.op == '=' and fact.op in ('=', 'between') with matching fact type.",
+            )
         if not is_disjoint_value(fact.fact_type, fact.value, claim.claimed_value):
             raise refused_error(
                 "PILOT_B_MUTATION_NOT_DISJOINT",
@@ -395,10 +647,17 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
                 f"fact '{fact.fact_id}' value {fact.value!r} (type={fact.fact_type}).",
                 "Apply a typed mutation whose value is provably disjoint from the table fact.",
             )
+        bf_verdict = brute_force_check_claim_against_table(table, claim)
+        if bf_verdict != "unsupported":
+            raise refused_error(
+                "PILOT_B_BRUTE_FORCE_MISMATCH",
+                f"Brute-force check returned {bf_verdict!r} for unsupported claim '{claim.claim_id}'.",
+                "Ensure the claim is false in every world consistent with the fact.",
+            )
         trace = (
             f"table:{table.table_id}:closure={table.closure}",
             f"fact:{fact.fact_id}:line={fact.line}:{fact.entity}.{fact.attribute}={_serialize_value(fact.value)}",
-            f"mutation:{claim.claim_id}:claimed={_serialize_value(claim.claimed_value)}:disjoint=True:verdict=unsupported",
+            f"mutation:{claim.claim_id}:claimed={_serialize_value(claim.claimed_value)}:disjoint=True:brute_force={bf_verdict}:verdict=unsupported",
         )
         return ClaimProof(
             key="unsupported",
@@ -423,6 +682,24 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
                     f"Cannot_tell claim '{claim.claim_id}' refines non-interval fact '{fact.fact_id}' ({fact.fact_type}).",
                     "Fact-refinement cannot_tell claims must refine a non-degenerate interval fact to an interior value.",
                 )
+            if (
+                fact.fact_type,
+                fact.op,
+                claim.fact_type,
+                claim.op,
+            ) not in PROVEN_OP_PAIRS_BY_KEY["cannot_tell"]:
+                raise refused_error(
+                    "PILOT_B_CANNOT_TELL_OP_UNDECIDABLE",
+                    f"Cannot_tell claim '{claim.claim_id}' has unproven op/type pair: "
+                    f"fact=({fact.fact_type}, {fact.op!r}), claim=({claim.fact_type}, {claim.op!r}).",
+                    "Interval refinement cannot_tell requires fact=('interval', 'between') and claim=('number', '=').",
+                )
+            if fact.entity != claim.entity or fact.attribute != claim.attribute:
+                raise refused_error(
+                    "PILOT_B_CANNOT_TELL_TARGET_MISMATCH",
+                    f"Cannot_tell claim '{claim.claim_id}' must target the same entity and attribute as '{fact.fact_id}'.",
+                    "Keep entity and attribute identical to the refined interval fact.",
+                )
             lo, hi = int(fact.value[0]), int(fact.value[1])
             if (
                 not isinstance(claim.claimed_value, int)
@@ -436,11 +713,18 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
                     f"of interval [{lo}, {hi}] with a distinct alternative in [{lo}, {hi}].",
                     "Pick an interior integer v in [lo, hi] where lo < hi so both v and a witness w != v satisfy [lo, hi].",
                 )
+            bf_verdict = brute_force_check_claim_against_table(table, claim)
+            if bf_verdict != "cannot_tell":
+                raise refused_error(
+                    "PILOT_B_BRUTE_FORCE_MISMATCH",
+                    f"Brute-force check returned {bf_verdict!r} for cannot_tell claim '{claim.claim_id}'.",
+                    "Ensure the claim is satisfied in some consistent worlds and falsified in others.",
+                )
             witness_alt = lo if claim.claimed_value != lo else hi
             trace = (
                 f"table:{table.table_id}:closure={table.closure}",
                 f"fact:{fact.fact_id}:line={fact.line}:interval=[{lo},{hi}]",
-                f"refine:{claim.claim_id}:interior={claim.claimed_value}:witness_aff={claim.claimed_value}:witness_neg={witness_alt}:verdict=cannot_tell",
+                f"refine:{claim.claim_id}:interior={claim.claimed_value}:witness_aff={claim.claimed_value}:witness_neg={witness_alt}:brute_force={bf_verdict}:verdict=cannot_tell",
             )
             return ClaimProof(
                 key="cannot_tell",
@@ -457,6 +741,12 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
             )
 
         # Open-world attribute query on an entity named in the material
+        if claim.op != "=":
+            raise refused_error(
+                "PILOT_B_CANNOT_TELL_OP_UNDECIDABLE",
+                f"Open-world cannot_tell claim '{claim.claim_id}' must use claim.op == '=', got {claim.op!r}.",
+                "Use op='=' for open-world unmentioned-attribute claims.",
+            )
         stated_attrs = {
             (f.entity.lower(), f.attribute.lower()) for f in table.facts
         } | {("", f.attribute.lower()) for f in table.facts}
@@ -475,10 +765,17 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
                 f"Cannot_tell claim '{claim.claim_id}' asks unmentioned attribute '{claim.attribute}' on a closure='closed' table.",
                 "Unmentioned-attribute cannot_tell claims are valid only when table.closure == 'open'.",
             )
+        bf_verdict = brute_force_check_claim_against_table(table, claim)
+        if bf_verdict != "cannot_tell":
+            raise refused_error(
+                "PILOT_B_BRUTE_FORCE_MISMATCH",
+                f"Brute-force check returned {bf_verdict!r} for open-world cannot_tell claim '{claim.claim_id}'.",
+                "Ensure open-world unmentioned attribute claim checks out as cannot_tell.",
+            )
         trace = (
             f"table:{table.table_id}:closure=open",
             f"entity:{claim.entity}:named_in_table=True",
-            f"open_attribute:{claim.attribute}:claimed={_serialize_value(claim.claimed_value)}:unstated=True:verdict=cannot_tell",
+            f"open_attribute:{claim.attribute}:claimed={_serialize_value(claim.claimed_value)}:unstated=True:brute_force={bf_verdict}:verdict=cannot_tell",
         )
         return ClaimProof(
             key="cannot_tell",
@@ -641,10 +938,40 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
             "Provide at least one AtomicFact in the table.",
         )
 
-    non_interval_facts = [f for f in table.facts if f.fact_type != "interval"]
-    sup_pool = non_interval_facts if non_interval_facts else list(table.facts)
-    sup_fact = sup_pool[abs(seed) % len(sup_pool)]
-    unsup_fact = sup_pool[(abs(seed) + 1) % len(sup_pool)]
+    provable_sup_facts = [
+        f
+        for f in table.facts
+        if f.fact_type != "interval"
+        and (f.fact_type, f.op, f.fact_type, f.op) in PROVEN_OP_PAIRS_BY_KEY["supported"]
+    ]
+    if not provable_sup_facts:
+        provable_sup_facts = [
+            f
+            for f in table.facts
+            if (f.fact_type, f.op, f.fact_type, f.op) in PROVEN_OP_PAIRS_BY_KEY["supported"]
+        ]
+    provable_unsup_facts = [
+        f
+        for f in table.facts
+        if f.fact_type != "interval"
+        and (f.fact_type, f.op, f.fact_type, "=") in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
+    ]
+    if not provable_unsup_facts:
+        provable_unsup_facts = [
+            f
+            for f in table.facts
+            if (f.fact_type, f.op, f.fact_type, "=") in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
+        ]
+
+    if not provable_sup_facts or not provable_unsup_facts:
+        raise refused_error(
+            "PILOT_B_NO_PROVABLE_FACT_FOR_TRIAD",
+            f"FactTable '{table.table_id}' has no facts on the proven op-pair list for supported/unsupported claims.",
+            "Include facts with proven ops ('=' for number/date/state/attribute or 'between' for interval).",
+        )
+
+    sup_fact = provable_sup_facts[abs(seed) % len(provable_sup_facts)]
+    unsup_fact = provable_unsup_facts[(abs(seed) + 1) % len(provable_unsup_facts)]
 
     # 1. Supported claim: restates sup_fact
     sup_dummy_proof = ClaimProof(
@@ -688,7 +1015,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         proof=sup_proof,
     )
 
-    # 2. Unsupported claim: applies a provably disjoint typed mutation to unsup_fact
+    # 2. Unsupported claim: applies a provably disjoint typed mutation to unsup_fact with op='='
     mutated_val = mutate_fact_value(unsup_fact, step=abs(seed) + 1)
     unsup_claim_draft = ProvedClaim(
         claim_id=f"{table.table_id}-unsup",
@@ -700,7 +1027,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         fact_type=unsup_fact.fact_type,
         claimed_value=mutated_val,
         unit=unsup_fact.unit,
-        op=unsup_fact.op,
+        op="=",
         proof=sup_dummy_proof,
     )
     unsup_proof = prove_claim_against_table(table, unsup_claim_draft)
@@ -714,14 +1041,19 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         fact_type=unsup_fact.fact_type,
         claimed_value=mutated_val,
         unit=unsup_fact.unit,
-        op=unsup_fact.op,
+        op="=",
         proof=unsup_proof,
     )
 
     # 3. Cannot_tell claim:
     # - On closed tables (or odd seeds on open tables when interval exists): refine interval to interior value
     # - On open tables when open_attributes exist and seed selects open attribute: ask open attribute of named entity
-    interval_facts = [f for f in table.facts if f.fact_type == "interval"]
+    interval_facts = [
+        f
+        for f in table.facts
+        if f.fact_type == "interval"
+        and (f.fact_type, f.op, "number", "=") in PROVEN_OP_PAIRS_BY_KEY["cannot_tell"]
+    ]
     use_open_attr = (
         table.closure == "open"
         and bool(table.open_attributes)
