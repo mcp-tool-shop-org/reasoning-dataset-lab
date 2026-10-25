@@ -1142,15 +1142,28 @@ def verify_triad_against_table(table: FactTable, triad: ProvedTriad) -> None:
 _OPEN_NON_INT_6: tuple[str, ...] = ("A1", "A2", "A3", "A0", "S0", "D0")
 _CLOSED_BASE_3: tuple[str, ...] = ("N0", "N1", "N2")
 
-_LINE_ORDER_8: tuple[tuple[int, int, int, int, int], ...] = (
+_ENT_PERMS_6: tuple[tuple[int, int, int], ...] = (
+    (0, 1, 2),
+    (0, 2, 1),
+    (1, 0, 2),
+    (1, 2, 0),
+    (2, 0, 1),
+    (2, 1, 0),
+)
+
+_LINE_ORDER_12: tuple[tuple[int, int, int, int, int], ...] = (
     (0, 1, 2, 3, 4),
-    (1, 0, 2, 3, 4),
     (0, 2, 1, 3, 4),
+    (1, 0, 2, 3, 4),
     (1, 2, 0, 3, 4),
     (2, 0, 1, 3, 4),
     (2, 1, 0, 3, 4),
-    (3, 0, 4, 1, 2),
-    (3, 1, 4, 0, 2),
+    (0, 1, 2, 4, 3),
+    (0, 2, 1, 4, 3),
+    (1, 0, 2, 4, 3),
+    (1, 2, 0, 4, 3),
+    (2, 0, 1, 4, 3),
+    (2, 1, 0, 4, 3),
 )
 
 _CLAIM_ORDER_PERMS: tuple[tuple[VerdictKey, VerdictKey, VerdictKey], ...] = (
@@ -1249,10 +1262,55 @@ def _plan_visit_roles(
             "permute_lines": False,
             "homogeneous": False,
             "line_specs": line_specs,
+            "key_entities": (0, 1, 2),
         }
 
     m = (visit // 2) % 10
     p_rank = _parity_domain_rank(spec_idx, secret, closure)
+    table_seq = visit * len(DOMAIN_CATALOGUE) + ((spec_idx - visit) % len(DOMAIN_CATALOGUE))
+    b50 = table_seq // 50
+    pos_50 = table_seq % 50
+    head_counts_6 = (3, 2, 2, 1, 1, 1)
+    tail_counts_6 = (8, 6, 6, 7, 7, 6)
+    if secret is None:
+        ent_perm_idx = (table_seq + visit) % len(_ENT_PERMS_6)
+        ord_perm_6 = (table_seq + (spec_idx // 2)) % len(_ENT_PERMS_6)
+    else:
+        shift = (0, 0, 0, 1)[b50 % 4]
+        active_counts = head_counts_6 if pos_50 < 10 else tail_counts_6
+        active_pos = pos_50 if pos_50 < 10 else (pos_50 - 10)
+        part_tag = "head10" if pos_50 < 10 else "tail40"
+
+        ent_sigma_idx = _secret_int(secret, 0, "ent_sigma") % 6
+        ent_base_sigma = _ENT_PERMS_6[ent_sigma_idx]
+        ent_sigma = tuple(ent_base_sigma[(i + shift) % 3] for i in range(3))
+        ent_block: list[int] = []
+        for p_i, cnt in enumerate(active_counts):
+            raw_p = _ENT_PERMS_6[p_i]
+            relabeled_p = (ent_sigma[raw_p[0]], ent_sigma[raw_p[1]], ent_sigma[raw_p[2]])
+            ent_block.extend([_ENT_PERMS_6.index(relabeled_p)] * cnt)
+        random.Random(f"rdlab-ent-b50-v1:{secret}:{b50}:{part_tag}").shuffle(ent_block)
+        ent_perm_idx = ent_block[active_pos]
+
+        ord_sigma_idx = _secret_int(secret, 0, "ord_sigma") % 6
+        ord_base_sigma = _ENT_PERMS_6[ord_sigma_idx]
+        ord_sigma = tuple(ord_base_sigma[(i + shift) % 3] for i in range(3))
+        ord_block: list[int] = []
+        for p_i, cnt in enumerate(active_counts):
+            raw_p = _ENT_PERMS_6[p_i]
+            relabeled_p = (ord_sigma[raw_p[0]], ord_sigma[raw_p[1]], ord_sigma[raw_p[2]])
+            ord_block.extend([_ENT_PERMS_6.index(relabeled_p)] * cnt)
+        random.Random(f"rdlab-ord-b50-v1:{secret}:{b50}:{part_tag}").shuffle(ord_block)
+        ord_perm_6 = ord_block[active_pos]
+
+    e_sup, e_unsup, e_ct = _ENT_PERMS_6[ent_perm_idx]
+
+    fill_perm_idx = (
+        (table_seq + spec_idx + 1) % len(_ENT_PERMS_6)
+        if secret is None
+        else (_secret_int(secret, table_seq, f"fill_ent:{closure}") % len(_ENT_PERMS_6))
+    )
+    e_fill0, e_fill1, _ = _ENT_PERMS_6[fill_perm_idx]
 
     if closure == "open":
         m_n2 = (0, 1, 1, 2, 3)[p_rank]
@@ -1279,21 +1337,21 @@ def _plan_visit_roles(
         if target_role == "N2":
             interval_role = "N2"
             raw_specs: list[tuple[str, int, bool, int]] = [
-                ("N2", 0, True, 0),
-                ("N2", 1, True, 1),
-                ("N0", 2, False, 0),
-                ("D0", 2, False, 0),
-                ("A0", 0, False, 0),
+                ("N2", e_sup, True, 0),
+                ("N2", e_unsup, True, 1),
+                ("N0", e_ct, False, 0),
+                ("D0", e_fill0, False, 0),
+                ("A0", e_fill1, False, 0),
             ]
         else:
             interval_role = "N2"
             filler_3 = "A0" if target_role not in ("A0", "A1", "A2", "A3") else "D0"
             raw_specs = [
-                (target_role, 0, False, 0),
-                (target_role, 1, False, 1),
-                ("N2", 2, True, 0),
-                ("N0" if (visit + spec_idx) % 2 == 0 else "N1", 2, False, 0),
-                (filler_3, 0, False, 0),
+                (target_role, e_sup, False, 0),
+                (target_role, e_unsup, False, 1),
+                ("N2", e_ct, True, 0),
+                ("N0" if (visit + spec_idx) % 2 == 0 else "N1", e_fill0, False, 0),
+                (filler_3, e_fill1, False, 0),
             ]
     else:
         target_role = _CLOSED_BASE_3[(p_rank + m) % 3]
@@ -1304,19 +1362,20 @@ def _plan_visit_roles(
         interval_role = target_role
         open_r = ("A1", "A2", "A3")
         raw_specs = [
-            (target_role, 0, False, 0),
-            (target_role, 1, False, 1),
-            (target_role, 2, True, 0),
-            ("D0", (visit + spec_idx) % 3, False, 0),
-            ("S0" if (visit + spec_idx) % 2 == 0 else "A0", (visit + spec_idx + 1) % 3, False, 0),
+            (target_role, e_sup, False, 0),
+            (target_role, e_unsup, False, 1),
+            (target_role, e_ct, True, 0),
+            ("D0", e_fill0, False, 0),
+            ("S0" if (visit + spec_idx) % 2 == 0 else "A0", e_fill1, False, 0),
         ]
 
-    ord_idx = (
-        visit
-        + (spec_idx // 2)
-        + (_secret_int(secret, visit, f"line_ord:{closure}") % len(_LINE_ORDER_8))
-    ) % len(_LINE_ORDER_8)
-    perm_5 = _LINE_ORDER_8[ord_idx]
+    tail_bit = (
+        (table_seq % 2)
+        if secret is None
+        else (_secret_int(secret, table_seq, f"line_tail:{closure}") % 2)
+    )
+    ord_idx = ord_perm_6 + 6 * tail_bit
+    perm_5 = _LINE_ORDER_12[ord_idx]
     ordered_specs = tuple(raw_specs[i] for i in perm_5)
     stated_roles = tuple(s[0] for s in ordered_specs)
 
@@ -1331,6 +1390,7 @@ def _plan_visit_roles(
         "permute_lines": True,
         "homogeneous": True,
         "line_specs": ordered_specs,
+        "key_entities": (e_sup, e_unsup, e_ct),
     }
 
 
@@ -1351,7 +1411,7 @@ def build_sample_fact_table(
     ent_list = list(all_entities)
     if secret is not None:
         random.Random(f"rdlab-dom-ents-v2:{secret}:{spec_idx}").shuffle(ent_list)
-    entities: tuple[str, ...] = tuple(
+    cands: tuple[str, ...] = tuple(
         ent_list[(visit + i) % len(ent_list)] for i in range(3)
     )
     resolved_closure: ClosureTag = (
@@ -1361,6 +1421,12 @@ def build_sample_fact_table(
     )
 
     plan = _plan_visit_roles(spec_idx, visit, resolved_closure, secret=secret)
+    e_sup_p, e_unsup_p, e_ct_p = plan["key_entities"]  # type: ignore[misc]
+    ent_slots = ["", "", ""]
+    ent_slots[e_sup_p] = cands[0]
+    ent_slots[e_unsup_p] = cands[1]
+    ent_slots[e_ct_p] = cands[2]
+    entities: tuple[str, ...] = (ent_slots[0], ent_slots[1], ent_slots[2])
     role_map = _domain_role_map(spec)
 
     if secret is None:
@@ -1562,6 +1628,7 @@ def build_contrast_triad(
     ct_role_target = str(plan["ct_role"])
     ct_attr_target = role_map[ct_role_target][0]
     unsup_mode = str(plan["unsup_mode"])
+    e_sup_idx, e_unsup_idx, e_ct_idx = plan["key_entities"]  # type: ignore[misc]
 
     fact_by_attr = {f.attribute: f for f in table.facts}
     unsup_claim_fact_type: FactType | None = None
@@ -1578,7 +1645,7 @@ def build_contrast_triad(
             (
                 f
                 for f in provable_sup_facts
-                if f.entity == table.entities[0]
+                if f.entity == table.entities[e_sup_idx % len(table.entities)]
                 and f.attribute == sup_attr_target
                 and (table.closure == "open" or f.fact_type != "interval")
             ),
@@ -1592,7 +1659,7 @@ def build_contrast_triad(
             (
                 f
                 for f in provable_unsup_facts
-                if f.entity == table.entities[1]
+                if f.entity == table.entities[e_unsup_idx % len(table.entities)]
                 and f.attribute == unsup_attr_target
                 and (table.closure == "open" or f.fact_type != "interval")
             ),
@@ -1746,10 +1813,18 @@ def build_contrast_triad(
             oa_idx = (visit + (visit // 3) + d_idx) % len(table.open_attributes)
         open_attr, open_val = table.open_attributes[oa_idx]
         target_entity = (
-            table.entities[2]
+            table.entities[e_ct_idx % len(table.entities)]
             if len(table.entities) > 2
             else table.entities[(visit + d_idx + 1) % len(table.entities)]
         )
+        stated_for_open = {
+            f.entity.lower() for f in table.facts if f.attribute.lower() == open_attr.lower()
+        }
+        if target_entity.lower() in stated_for_open:
+            target_entity = next(
+                (ent for ent in table.entities if ent.lower() not in stated_for_open),
+                target_entity,
+            )
 
         int_attr_name, int_unit_str = spec["interval_attr"]  # type: ignore[misc]
         m_btw_open = re.match(r"^(\d+)\s+and\s+(\d+)$", str(open_val).strip())

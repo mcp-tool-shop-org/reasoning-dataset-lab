@@ -334,6 +334,9 @@ def _evaluate_shortcut_baseline(
         "role",
         "length_bucket",
         "closure",
+        "entity_material_rank",
+        "entity_first_in_material",
+        "entity_mentioned",
     ]
 
     if n_triads < min_triads or not rows:
@@ -367,6 +370,9 @@ def _evaluate_shortcut_baseline(
             f"role:{r['role']}",
             f"length_bucket:{r['length_bucket']}",
             f"closure:{r['table'].closure}",
+            f"entity_material_rank:{r['entity_material_rank']}",
+            f"entity_first_in_material:{r['entity_first_in_material']}",
+            f"entity_mentioned:{r['entity_mentioned']}",
         )
         cat_tokens_per_row.append(toks)
         vocab_set.update(toks)
@@ -396,6 +402,8 @@ def _evaluate_shortcut_baseline(
     def _run_cv(
         groups: list[list[tuple[tuple[tuple[int, float], ...], int]]],
         cv_rng: random.Random,
+        *,
+        shuffle_labels: bool = False,
     ) -> tuple[float, float]:
         claim_hits = 0
         claim_total = 0
@@ -416,12 +424,20 @@ def _evaluate_shortcut_baseline(
                 test_set = set(fold_lists[f_idx])
                 if not test_set or len(test_set) == n_g:
                     continue
-                train_pairs = [
-                    pair
-                    for g_idx, g in enumerate(shuffled_groups)
-                    if g_idx not in test_set
-                    for pair in g
-                ]
+                train_pairs: list[tuple[tuple[tuple[int, float], ...], int]] = []
+                for g_idx, g in enumerate(shuffled_groups):
+                    if g_idx in test_set:
+                        continue
+                    if shuffle_labels:
+                        if len(g) == 3:
+                            perm_y = cv_rng.sample([0, 1, 2], 3)
+                            for i, (x_i, _) in enumerate(g):
+                                train_pairs.append((x_i, perm_y[i]))
+                        else:
+                            for x_i, _ in g:
+                                train_pairs.append((x_i, cv_rng.randrange(3)))
+                    else:
+                        train_pairs.extend(g)
                 n_train = float(len(train_pairs))
                 reg_scale = l2_reg / n_train
                 w0 = [0.0] * dim
@@ -510,15 +526,7 @@ def _evaluate_shortcut_baseline(
 
     rng = random.Random(seed * 1000 + n_triads)
     acc_raw, whole_triad_raw = _run_cv(triad_groups, rng)
-
-    null_groups: list[list[tuple[tuple[tuple[int, float], ...], int]]] = []
-    for g in triad_groups:
-        if len(g) == 3:
-            perm_y = rng.sample([0, 1, 2], 3)
-            null_groups.append([(x_i, perm_y[i]) for i, (x_i, _) in enumerate(g)])
-        else:
-            null_groups.append([(x_i, rng.randrange(3)) for x_i, _ in g])
-    null_acc_raw, _ = _run_cv(null_groups, rng)
+    null_acc_raw, _ = _run_cv(triad_groups, rng, shuffle_labels=True)
 
     acc = round(acc_raw, 3)
     whole_triad_acc = round(whole_triad_raw, 3)
@@ -621,6 +629,7 @@ def _evaluate_variety_from_records(
         triad_items[tid].append((idx, it, key))
 
     tables_by_tid: dict[str, ReconstructedTable] = {}
+    material_entities_by_tid: dict[str, tuple[str, ...]] = {}
     parsed_claims_by_idx: dict[int, ParsedClaim] = {}
     claim_pos_by_idx: dict[int, str] = {}
     role_by_idx: dict[int, str] = {}
@@ -654,6 +663,7 @@ def _evaluate_variety_from_records(
             if ftype == "interval" and attr:
                 interval_attr_name = attr
 
+        material_entities_by_tid[tid] = tuple(entities_seen)
         for ent in dom_spec["entities"]:
             if ent not in entities_seen:
                 entities_seen.append(str(ent))
@@ -750,10 +760,14 @@ def _evaluate_variety_from_records(
         key = keys_by_idx[idx]
         tid = str(it.get("triad_id", f"triad-{idx // 3 + 1:03d}"))
         table = tables_by_tid[tid]
+        mat_ents = material_entities_by_tid[tid]
         claim = parsed_claims_by_idx[idx]
         claim_text = str(it.get("claim", ""))
         masker = build_amendment1_masker(table, claim)
         frame = masker(claim_text)
+        ent_mentioned = bool(claim.entity and claim.entity in mat_ents)
+        ent_rank = str(mat_ents.index(claim.entity)) if ent_mentioned else "absent"
+        ent_first = bool(mat_ents and mat_ents[0] == claim.entity)
         rows.append(
             {
                 "id": item_id,
@@ -770,6 +784,9 @@ def _evaluate_variety_from_records(
                 "entity": claim.entity,
                 "claim_position": claim_pos_by_idx[idx],
                 "length_bucket": _claim_length_bucket(claim_text),
+                "entity_material_rank": ent_rank,
+                "entity_first_in_material": ent_first,
+                "entity_mentioned": ent_mentioned,
                 "stated_pair_order": stated_pair_by_idx[idx],
                 "a_filled": "<a>" in frame,
             }

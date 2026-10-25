@@ -490,27 +490,29 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
         ("cannot_tell", "supported", "unsupported"),
         ("cannot_tell", "unsupported", "supported"),
     )
+    spread_ents = ("Unit Alpha", "Unit Beta", "Unit Gamma")
     spread_items: list[dict[str, str]] = []
     for idx in range(12):
         tid = f"T10-D-turbines-spread-{idx + 1:03d}-triad"
         k0, k1, k2 = perms_6[idx % 6]
+        e_triad = spread_ents[idx % 3]
         if idx < 4:
             claims_3 = (
-                f"The output capacity of Unit Alpha is {42 + idx} megawatts.",
-                f"The output capacity of Unit Beta is {54 + idx} megawatts.",
-                f"The output capacity of Unit Gamma is {66 + idx} megawatts.",
+                f"The output capacity of {e_triad} is {42 + idx} megawatts.",
+                f"The output capacity of {e_triad} is {54 + idx} megawatts.",
+                f"The output capacity of {e_triad} is {66 + idx} megawatts.",
             )
         elif idx < 8:
             claims_3 = (
-                "The grid status of Unit Alpha is standby.",
-                "The grid status of Unit Beta is active.",
-                "The grid status of Unit Gamma is offline.",
+                f"The grid status of {e_triad} is standby.",
+                f"The grid status of {e_triad} is active.",
+                f"The grid status of {e_triad} is offline.",
             )
         else:
             claims_3 = (
-                "The lubricant grade of Unit Alpha is synthetic.",
-                "The lubricant grade of Unit Beta is mineral.",
-                "The lubricant grade of Unit Gamma is ester.",
+                f"The lubricant grade of {e_triad} is synthetic.",
+                f"The lubricant grade of {e_triad} is mineral.",
+                f"The lubricant grade of {e_triad} is ester.",
             )
         triad_rows = [
             {
@@ -892,6 +894,17 @@ def test_hw_triad_shortcut_probe_and_classifier_on_secret_seeded_builds_n50_and_
         for k_u in ("number_attr", "measure_attr", "interval_attr"):
             units_set.add(str(spec[k_u][1]).lower())
 
+    def _material_order(table) -> list[str]:
+        order: list[str] = []
+        for f in sorted(table.facts, key=lambda x: x.line):
+            sent = format_atomic_sentence(
+                f.entity, f.attribute, f.fact_type, f.value, f.unit, f.op
+            )
+            for e in table.entities:
+                if e in sent and e not in order:
+                    order.append(e)
+        return order
+
     def _probe_features(table, claim) -> list[str]:
         text = format_atomic_sentence(
             claim.entity, claim.attribute, claim.fact_type, claim.claimed_value, claim.unit, claim.op
@@ -910,15 +923,25 @@ def test_hw_triad_shortcut_probe_and_classifier_on_secret_seeded_builds_n50_and_
             frame = "is_v_u"
         else:
             frame = "is_v"
+        mat_order = _material_order(table)
         return [
             f"role:{role}",
             f"frame:{frame}",
             f"len:{length}",
             f"unit:{int(has_unit)}",
             f"closure:{table.closure}",
+            f"first_in_material:{mat_order[:1] == [claim.entity]}",
+            f"rank_in_material:{mat_order.index(claim.entity) if claim.entity in mat_order else 'absent'}",
+            f"mentioned:{claim.entity in mat_order}",
         ]
 
-    def _run_nb_triad_cv(triad_data, rng: random.Random, n_folds: int = 5, repeats: int = 5):
+    def _run_nb_triad_cv(
+        triad_data,
+        rng: random.Random,
+        n_folds: int = 5,
+        repeats: int = 5,
+        shuffle_labels: bool = False,
+    ):
         claim_hits = claim_total = triad_hits = triad_total = 0
         for _ in range(repeats):
             order = list(range(len(triad_data)))
@@ -926,12 +949,20 @@ def test_hw_triad_shortcut_probe_and_classifier_on_secret_seeded_builds_n50_and_
             folds = [order[f::n_folds] for f in range(n_folds)]
             for f in range(n_folds):
                 test_idx = set(folds[f])
+                train_triads = [
+                    triad_data[idx_t]
+                    for idx_t in range(len(triad_data))
+                    if idx_t not in test_idx
+                ]
+                if shuffle_labels:
+                    train_triads = [
+                        list(zip([c[0] for c in tr], rng.sample(list(keys), 3)))
+                        for tr in train_triads
+                    ]
                 class_n = collections.Counter()
                 feat_n = {k: collections.Counter() for k in keys}
                 vocab: set[str] = set()
-                for idx_t, tr in enumerate(triad_data):
-                    if idx_t in test_idx:
-                        continue
+                for tr in train_triads:
                     for feats, k in tr:
                         class_n[k] += 1
                         for ft in feats:
@@ -986,11 +1017,14 @@ def test_hw_triad_shortcut_probe_and_classifier_on_secret_seeded_builds_n50_and_
                             feature_counts[ft][k] += 1
 
             acc, triad_acc = _run_nb_triad_cv(triad_data, rng)
-            shuffled = [
-                [(feats, k) for (feats, _), k in zip(tr, rng.sample(list(keys), 3))]
+            null_acc, _ = _run_nb_triad_cv(triad_data, rng, shuffle_labels=True)
+
+            first_only_data = [
+                [([f for f in feats if f.startswith("first_in_material:")], k) for feats, k in tr]
                 for tr in triad_data
             ]
-            null_acc, _ = _run_nb_triad_cv(shuffled, rng)
+            first_acc, _ = _run_nb_triad_cv(first_only_data, rng)
+            first_null, _ = _run_nb_triad_cv(first_only_data, rng, shuffle_labels=True)
 
             assert 0.233 <= acc <= 0.433, (
                 f"n={n} seed={seed}: probe claim accuracy {acc:.3f} outside [0.233, 0.433]"
@@ -1000,6 +1034,9 @@ def test_hw_triad_shortcut_probe_and_classifier_on_secret_seeded_builds_n50_and_
             )
             assert 0.233 <= null_acc <= 0.433, (
                 f"n={n} seed={seed}: probe null accuracy {null_acc:.3f} outside [0.233, 0.433]"
+            )
+            assert abs(first_acc - first_null) <= 0.05, (
+                f"n={n} seed={seed}: first_in_material {first_acc:.3f} vs null {first_null:.3f} exceeds +-0.05"
             )
 
     for n, seed, triads in triads_by_run:
@@ -1043,7 +1080,7 @@ def test_hw_fix_t2_below_chance_accuracy_is_instrument_error_not_pass(
                     "domain": "turbines",
                     "closure": "open",
                     "material": base_mat,
-                    "claim": "Unit Alpha has 15 rotor blades.",
+                    "claim": f"Unit Alpha has {15 + idx} rotor blades.",
                     "key": "supported",
                 },
                 {
@@ -1051,7 +1088,7 @@ def test_hw_fix_t2_below_chance_accuracy_is_instrument_error_not_pass(
                     "domain": "turbines",
                     "closure": "open",
                     "material": base_mat,
-                    "claim": "Unit Beta has 18 rotor blades.",
+                    "claim": f"Unit Alpha has {35 + idx} rotor blades.",
                     "key": "unsupported",
                 },
                 {
@@ -1059,7 +1096,7 @@ def test_hw_fix_t2_below_chance_accuracy_is_instrument_error_not_pass(
                     "domain": "turbines",
                     "closure": "open",
                     "material": base_mat,
-                    "claim": "Unit Gamma has 21 rotor blades.",
+                    "claim": f"Unit Alpha has {55 + idx} rotor blades.",
                     "key": "cannot_tell",
                 },
             ]
@@ -1082,6 +1119,91 @@ def test_hw_fix_t2_below_chance_accuracy_is_instrument_error_not_pass(
     assert rep["shortcut_baseline"]["accuracy"] < rep["shortcut_baseline"]["min_accuracy"]
     assert rep["shortcut_baseline"]["status"] == "instrument_error"
     assert rep["gate_status"] == "fail"
+
+
+def test_synthetic_entity_order_bound_build_fails_variety_gate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A synthetic build that binds keys to entity order in the material (while all 7 marginal public features and stated-pair order are balanced) must fail the variety gate."""
+    from reasoning_dataset_lab.pilot_b.variety import evaluate_build_variety
+
+    ents = ["Unit Alpha", "Unit Beta", "Unit Gamma"]
+    vals = ["synthetic", "mineral", "ester"]
+    items: list[dict[str, str]] = []
+    for idx in range(12):
+        tid = f"T10-D-turbines-entord-{idx + 1:03d}-triad"
+        rot = idx % 3
+        e_first = ents[rot]
+        e_second = ents[(rot + 1) % 3]
+        e_third = ents[(rot + 2) % 3]
+        mat = (
+            f"1. {e_first} has 15 rotor blades.\n"
+            f"2. The inspection date of {e_first} is 7 February.\n"
+            f"3. The output capacity of {e_second} is between 40 and 70 megawatts.\n"
+            f"4. The grid status of {e_second} is standby.\n"
+            f"5. The casing alloy of {e_third} is steel."
+        )
+        triad_rows = [
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": mat,
+                "claim": f"The lubricant grade of {e_first} is {vals[idx % 3]}.",
+                "key": "supported",
+            },
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": mat,
+                "claim": f"The lubricant grade of {e_second} is {vals[(idx + 1) % 3]}.",
+                "key": "unsupported",
+            },
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": mat,
+                "claim": f"The lubricant grade of {e_third} is {vals[(idx + 2) % 3]}.",
+                "key": "cannot_tell",
+            },
+        ]
+        pos_rot = (idx // 3) % 3
+        items.extend(triad_rows[pos_rot:] + triad_rows[:pos_rot])
+
+    bdir = tmp_path / "entity_order_leak"
+    _write_synthetic_build(bdir, items, write_sealed_keys=True)
+
+    rep = evaluate_build_variety(bdir)
+    for feat_name in (
+        "frame",
+        "role",
+        "attribute",
+        "entity",
+        "domain",
+        "claim_position",
+        "length_bucket",
+    ):
+        assert rep["feature_leaks"][feat_name] == [], (
+            feat_name,
+            rep["feature_leaks"][feat_name],
+        )
+    assert rep["stated_pair_leak"] == []
+    assert rep["shortcut_baseline"]["status"] == "fail"
+    assert (
+        rep["shortcut_baseline"]["accuracy"]
+        > rep["shortcut_baseline"]["max_accuracy"]
+    )
+    assert rep["gate_status"] == "fail"
+    assert set(rep["shortcut_baseline"]["features"]) >= {
+        "entity_material_rank",
+        "entity_first_in_material",
+        "entity_mentioned",
+    }
+    assert run_cli(["variety", str(bdir), "--json"]) == 1
+    capsys.readouterr()
+
 
 
 
