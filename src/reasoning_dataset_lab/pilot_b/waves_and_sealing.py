@@ -26,6 +26,10 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     verify_triad_against_table,
 )
 from reasoning_dataset_lab.pilot_b.ollama import (
+    DEFAULT_ROLE_MAX_NUM_CTX,
+    NUM_CTX_MARGIN_TOKENS,
+    NUM_CTX_STEP_TOKENS,
+    PROMPT_TOKEN_ESTIMATE_RULE,
     OllamaBlindReaderAdapter,
     OllamaWriterAdapter,
 )
@@ -80,6 +84,7 @@ class WaveCallEntry:
     thinking_tokens: int
     completion_tokens: int
     seconds: float
+    num_ctx: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -89,6 +94,7 @@ class WaveCallEntry:
             "thinking_tokens": self.thinking_tokens,
             "completion_tokens": self.completion_tokens,
             "seconds": self.seconds,
+            "num_ctx": self.num_ctx,
         }
 
 
@@ -108,6 +114,8 @@ class WaveMetric:
     seconds_total: float
     adapter: str = ""
     unloaded: bool = False
+    max_num_ctx: int = 0
+    max_num_ctx_observed: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -125,6 +133,8 @@ class WaveMetric:
             "seconds_total": round(self.seconds_total, 4),
             "wall_time_s_total": round(self.seconds_total, 4),
             "unloaded": self.unloaded,
+            "max_num_ctx": self.max_num_ctx,
+            "max_num_ctx_observed": self.max_num_ctx_observed,
         }
 
 
@@ -185,6 +195,7 @@ class WaveCallTracker:
         thinking_tokens: int,
         completion_tokens: int,
         seconds: float,
+        num_ctx: int = 0,
     ) -> None:
         if self._seen_waves and self._seen_waves[-1] != wave_name:
             if wave_name in self._seen_waves:
@@ -214,6 +225,7 @@ class WaveCallTracker:
                 thinking_tokens=thinking_tokens,
                 completion_tokens=completion_tokens,
                 seconds=seconds,
+                num_ctx=num_ctx,
             )
         )
 
@@ -224,8 +236,10 @@ class WaveCallTracker:
         *,
         adapter: str = "",
         unloaded: bool = False,
+        max_num_ctx: int = 0,
     ) -> WaveMetric:
         wave_calls = [e for e in self._entries if e.wave_name == wave_name]
+        resolved_max_ctx = max_num_ctx if max_num_ctx > 0 else model.max_num_ctx
         return WaveMetric(
             wave_name=wave_name,
             model_name=model.name,
@@ -241,6 +255,8 @@ class WaveCallTracker:
             seconds_total=round(sum(e.seconds for e in wave_calls), 4),
             adapter=adapter,
             unloaded=unloaded,
+            max_num_ctx=resolved_max_ctx,
+            max_num_ctx_observed=max((e.num_ctx for e in wave_calls), default=0),
         )
 
 
@@ -335,7 +351,7 @@ def run_pilot_b_waves(
         except RdlabError as err:
             if not (
                 err.code.startswith("PILOT_B_RENDER_")
-                or err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+                or err.code in ("PILOT_B_OLLAMA_LENGTH_STOP", "PILOT_B_NUM_CTX_EXCEEDS_MAX")
             ):
                 raise
             last_rec = getattr(writer_adapter, "last_call_record", None)
@@ -355,12 +371,14 @@ def run_pilot_b_waves(
                     else max(16, len(raw_out.split()))
                 ),
                 seconds=last_rec.wall_time_s if last_rec is not None else 0.02,
+                num_ctx=last_rec.num_ctx if last_rec is not None else 0,
             )
-            reason_prefix = (
-                "length_stop"
-                if err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
-                else "rendering_check"
-            )
+            if err.code == "PILOT_B_OLLAMA_LENGTH_STOP":
+                reason_prefix = "length_stop"
+            elif err.code == "PILOT_B_NUM_CTX_EXCEEDS_MAX":
+                reason_prefix = "num_ctx_exceeded"
+            else:
+                reason_prefix = "rendering_check"
             render_failed_evals.append(
                 _build_render_failed_eval(
                     t,
@@ -383,6 +401,7 @@ def run_pilot_b_waves(
             else max(16, len(mat.split()))
         )
         est_seconds = last_rec.wall_time_s if last_rec is not None else 0.02
+        est_num_ctx = last_rec.num_ctx if last_rec is not None else 0
         tracker.record(
             wave_name="render",
             model_name=writer_model.name,
@@ -390,6 +409,7 @@ def run_pilot_b_waves(
             thinking_tokens=est_thinking,
             completion_tokens=est_completion,
             seconds=est_seconds,
+            num_ctx=est_num_ctx,
         )
         rendered_materials[t.triad_id] = mat
 
@@ -413,7 +433,7 @@ def run_pilot_b_waves(
             except RdlabError as err:
                 if not (
                     err.code.startswith("PILOT_B_RENDER_")
-                    or err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+                    or err.code in ("PILOT_B_OLLAMA_LENGTH_STOP", "PILOT_B_NUM_CTX_EXCEEDS_MAX")
                 ):
                     raise
                 last_rec = getattr(writer_adapter, "last_call_record", None)
@@ -433,13 +453,15 @@ def run_pilot_b_waves(
                         else max(8, len(raw_out.split()))
                     ),
                     seconds=last_rec.wall_time_s if last_rec is not None else 0.01,
+                    num_ctx=last_rec.num_ctx if last_rec is not None else 0,
                 )
                 w_claims[key] = raw_out
-                reason_prefix = (
-                    "length_stop"
-                    if err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
-                    else "wording_check"
-                )
+                if err.code == "PILOT_B_OLLAMA_LENGTH_STOP":
+                    reason_prefix = "length_stop"
+                elif err.code == "PILOT_B_NUM_CTX_EXCEEDS_MAX":
+                    reason_prefix = "num_ctx_exceeded"
+                else:
+                    reason_prefix = "wording_check"
                 word_failed_reason = f"{reason_prefix} ({err.code}): {err.message}"
                 break
 
@@ -455,6 +477,7 @@ def run_pilot_b_waves(
                 else max(8, len(w_text.split()))
             )
             est_seconds = last_rec.wall_time_s if last_rec is not None else 0.01
+            est_num_ctx = last_rec.num_ctx if last_rec is not None else 0
             tracker.record(
                 wave_name="word",
                 model_name=writer_model.name,
@@ -462,6 +485,7 @@ def run_pilot_b_waves(
                 thinking_tokens=est_thinking,
                 completion_tokens=est_completion,
                 seconds=est_seconds,
+                num_ctx=est_num_ctx,
             )
             w_claims[key] = w_text
 
@@ -509,7 +533,24 @@ def run_pilot_b_waves(
     for t_prompts in prompts_by_triad:
         r1_map: dict[VerdictKey, BlindReadResult] = {}
         for key in VERDICT_CLASSES:
-            res1 = reader_1.read_claim(t_prompts[key])
+            try:
+                res1 = reader_1.read_claim(t_prompts[key])
+            except RdlabError as err:
+                if err.code != "PILOT_B_NUM_CTX_EXCEEDS_MAX":
+                    raise
+                last_r1 = getattr(reader_1, "last_call_record", None)
+                res1 = BlindReadResult(
+                    claim_id=t_prompts[key].claim_id,
+                    reader=reader_1.model,
+                    verdict="ambiguous",
+                    thinking_tokens=0,
+                    completion_tokens=0,
+                    seconds=0.0,
+                    raw_text="",
+                    prompt_sha256=last_r1.prompt_sha256 if last_r1 is not None else "",
+                    done_reason="max_num_ctx_exceeded",
+                    num_ctx=last_r1.num_ctx if last_r1 is not None else 0,
+                )
             tracker.record(
                 wave_name="reader_1",
                 model_name=reader_1.model.name,
@@ -517,6 +558,7 @@ def run_pilot_b_waves(
                 thinking_tokens=res1.thinking_tokens,
                 completion_tokens=res1.completion_tokens,
                 seconds=res1.seconds,
+                num_ctx=res1.num_ctx,
             )
             r1_map[key] = res1
         reads_1_list.append(r1_map)
@@ -531,7 +573,24 @@ def run_pilot_b_waves(
     for t_prompts in prompts_by_triad:
         r2_map: dict[VerdictKey, BlindReadResult] = {}
         for key in VERDICT_CLASSES:
-            res2 = reader_2.read_claim(t_prompts[key])
+            try:
+                res2 = reader_2.read_claim(t_prompts[key])
+            except RdlabError as err:
+                if err.code != "PILOT_B_NUM_CTX_EXCEEDS_MAX":
+                    raise
+                last_r2 = getattr(reader_2, "last_call_record", None)
+                res2 = BlindReadResult(
+                    claim_id=t_prompts[key].claim_id,
+                    reader=reader_2.model,
+                    verdict="ambiguous",
+                    thinking_tokens=0,
+                    completion_tokens=0,
+                    seconds=0.0,
+                    raw_text="",
+                    prompt_sha256=last_r2.prompt_sha256 if last_r2 is not None else "",
+                    done_reason="max_num_ctx_exceeded",
+                    num_ctx=last_r2.num_ctx if last_r2 is not None else 0,
+                )
             tracker.record(
                 wave_name="reader_2",
                 model_name=reader_2.model.name,
@@ -539,6 +598,7 @@ def run_pilot_b_waves(
                 thinking_tokens=res2.thinking_tokens,
                 completion_tokens=res2.completion_tokens,
                 seconds=res2.seconds,
+                num_ctx=res2.num_ctx,
             )
             r2_map[key] = res2
         reads_2_list.append(r2_map)
@@ -591,18 +651,22 @@ def run_pilot_b_waves(
         for rec in getattr(reader_2, "call_records", ())
     }
 
+    w_max_ctx = int(getattr(writer_adapter, "max_num_ctx", writer_model.max_num_ctx))
+    r1_max_ctx = int(getattr(reader_1, "max_num_ctx", reader_1.model.max_num_ctx))
+    r2_max_ctx = int(getattr(reader_2, "max_num_ctx", reader_2.model.max_num_ctx))
+
     wave_metrics = (
         tracker.summarize_wave(
-            "render", writer_model, adapter=w_cls, unloaded=render_unloaded
+            "render", writer_model, adapter=w_cls, unloaded=render_unloaded, max_num_ctx=w_max_ctx
         ),
         tracker.summarize_wave(
-            "word", writer_model, adapter=w_cls, unloaded=word_unloaded
+            "word", writer_model, adapter=w_cls, unloaded=word_unloaded, max_num_ctx=w_max_ctx
         ),
         tracker.summarize_wave(
-            "reader_1", reader_1.model, adapter=r1_cls, unloaded=r1_unloaded
+            "reader_1", reader_1.model, adapter=r1_cls, unloaded=r1_unloaded, max_num_ctx=r1_max_ctx
         ),
         tracker.summarize_wave(
-            "reader_2", reader_2.model, adapter=r2_cls, unloaded=r2_unloaded
+            "reader_2", reader_2.model, adapter=r2_cls, unloaded=r2_unloaded, max_num_ctx=r2_max_ctx
         ),
     )
 
@@ -801,6 +865,13 @@ def write_sealed_part(
                 "source_match_reason": wave_result.writer_model.source_match_reason,
                 "messages_sha256": msg_sha,
                 "thinking_token_cap": wave_result.thinking_token_cap,
+                "max_num_ctx": int(
+                    getattr(
+                        wave_result.writer_adapter,
+                        "max_num_ctx",
+                        wave_result.writer_model.max_num_ctx,
+                    )
+                ),
                 "call_records": entry["writer_call_records"],
             },
             "checks": [
@@ -857,6 +928,22 @@ def write_sealed_part(
                     "reader_source_match_reasons": [
                         wave_result.reader_1_model.source_match_reason,
                         wave_result.reader_2_model.source_match_reason,
+                    ],
+                    "reader_max_num_ctx": [
+                        int(
+                            getattr(
+                                wave_result.reader_1_adapter,
+                                "max_num_ctx",
+                                wave_result.reader_1_model.max_num_ctx,
+                            )
+                        ),
+                        int(
+                            getattr(
+                                wave_result.reader_2_adapter,
+                                "max_num_ctx",
+                                wave_result.reader_2_model.max_num_ctx,
+                            )
+                        ),
                     ],
                     "call_records": entry["reader_call_records"],
                     "agrees_all_readers": True,

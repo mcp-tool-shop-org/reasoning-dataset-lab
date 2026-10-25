@@ -21,7 +21,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
@@ -67,6 +67,49 @@ OPERATION_ANSWER_BUDGETS: dict[OllamaOperation, int] = {
     "word_claim": WORD_ANSWER_BUDGET,
     "read_claim": READ_ANSWER_BUDGET,
 }
+
+# Explicit num_ctx calculation and per-role ceilings (Card gp Part A):
+# options.num_ctx = round_up(prompt_tokens_estimate + num_predict + margin, 1024)
+PROMPT_TOKEN_ESTIMATE_RULE: str = "ceil(utf8_bytes / 3)"
+NUM_CTX_MARGIN_TOKENS: int = 256
+NUM_CTX_STEP_TOKENS: int = 1024
+
+# Per-role max_num_ctx defaults planned so weights + KV stay at or below 26.0 GB (GPU-jobs rule):
+# - writer (qwen3.6:35b, weights 22.6 GB, 3.4 GB under 26.0 GB): 8192
+# - reader_1 (nemotron-3.5-lightning:30b, weights 25.4 GB, ~0.6 GB under 26.0 GB): 2048
+# - reader_2 (granite4.2:8b, weights 5.3 GB, 20.7 GB under 26.0 GB): 8192
+DEFAULT_ROLE_MAX_NUM_CTX: dict[str, int] = {
+    "writer": 8192,
+    "reader_1": 2048,
+    "reader_2": 8192,
+}
+
+
+def estimate_prompt_tokens(messages: Sequence[Mapping[str, str]]) -> int:
+    """Conservatively estimate prompt tokens using the named rule `ceil(utf8_bytes / 3)`."""
+    utf8_bytes = sum(
+        len(str(m.get("role", "")).encode("utf-8"))
+        + len(str(m.get("content", "")).encode("utf-8"))
+        for m in messages
+    )
+    return max(1, (utf8_bytes + 2) // 3)
+
+
+def round_up_num_ctx(needed_tokens: int, step: int = NUM_CTX_STEP_TOKENS) -> int:
+    """Round `needed_tokens` up to the next multiple of `step` (default 1024)."""
+    if step < 1:
+        raise ValueError(f"step must be >= 1, got {step}")
+    return max(step, ((max(1, needed_tokens) + step - 1) // step) * step)
+
+
+def compute_num_ctx(
+    prompt_tokens_estimate: int,
+    num_predict: int,
+    margin: int = NUM_CTX_MARGIN_TOKENS,
+    step: int = NUM_CTX_STEP_TOKENS,
+) -> int:
+    """Compute `options.num_ctx = round_up(prompt_tokens_estimate + num_predict + margin, 1024)`."""
+    return round_up_num_ctx(prompt_tokens_estimate + num_predict + margin, step=step)
 
 
 def require_loopback_ollama_url(url: str) -> str:
@@ -136,7 +179,7 @@ def default_ollama_http_transport(
 
 @dataclass(frozen=True)
 class OllamaCallRecord:
-    """Per-call audit record for an Ollama writer or blind-reader invocation (Card gk Part A/B/C & Card gn)."""
+    """Per-call audit record for an Ollama writer or blind-reader invocation (Card gk Part A/B/C, Card gn, Card gp)."""
 
     model: str
     digest: str
@@ -149,6 +192,9 @@ class OllamaCallRecord:
     wall_time_s: float
     think: ThinkSetting = True
     num_predict: int = 0
+    num_ctx: int = 0
+    max_num_ctx: int = 0
+    prompt_tokens_estimate: int = 0
     done_reason: str = "stop"
 
     def to_dict(self, *, include_target_id: bool = True) -> dict[str, object]:
@@ -157,8 +203,11 @@ class OllamaCallRecord:
             "digest": self.digest,
             "operation": self.operation,
             "prompt_sha256": self.prompt_sha256,
+            "prompt_tokens_estimate": self.prompt_tokens_estimate,
             "think": self.think,
             "num_predict": self.num_predict,
+            "num_ctx": self.num_ctx,
+            "max_num_ctx": self.max_num_ctx,
             "done_reason": self.done_reason,
             "eval_tokens": self.eval_tokens,
             "thinking_tokens": self.thinking_tokens,
@@ -264,7 +313,7 @@ def _extract_token_counts(
 
 
 class OllamaWriterAdapter:
-    """Real loopback Ollama writer adapter implementing `PilotBWriterAdapter` (Card gk Part A)."""
+    """Real loopback Ollama writer adapter implementing `PilotBWriterAdapter` (Card gk Part A & Card gp Part A)."""
 
     is_fake: ClassVar[bool] = False
 
@@ -274,6 +323,7 @@ class OllamaWriterAdapter:
         *,
         base_url: str = DEFAULT_OLLAMA_BASE_URL,
         thinking_token_cap: int = DEFAULT_THINKING_TOKEN_CAP,
+        max_num_ctx: int | None = None,
         http_transport: OllamaHttpTransport | None = None,
     ) -> None:
         if thinking_token_cap < 1:
@@ -284,6 +334,18 @@ class OllamaWriterAdapter:
             )
         self._base_url = require_loopback_ollama_url(base_url)
         self._model = _resolve_model_identity(model)
+        resolved_max_ctx = (
+            max_num_ctx
+            if max_num_ctx is not None
+            else (self._model.max_num_ctx or DEFAULT_ROLE_MAX_NUM_CTX["writer"])
+        )
+        if resolved_max_ctx < NUM_CTX_STEP_TOKENS:
+            raise refused_error(
+                "PILOT_B_INVALID_MAX_NUM_CTX",
+                f"max_num_ctx must be >= {NUM_CTX_STEP_TOKENS}, got {resolved_max_ctx}.",
+                f"Configure a positive max_num_ctx >= {NUM_CTX_STEP_TOKENS}.",
+            )
+        self._max_num_ctx = resolved_max_ctx
         self._think: ThinkSetting = self._model.think
         self._thinking_token_cap = thinking_token_cap
         self._transport: OllamaHttpTransport = (
@@ -317,6 +379,10 @@ class OllamaWriterAdapter:
     @property
     def thinking_token_cap(self) -> int:
         return self._thinking_token_cap
+
+    @property
+    def max_num_ctx(self) -> int:
+        return self._max_num_ctx
 
     @property
     def http_transport(self) -> OllamaHttpTransport:
@@ -357,8 +423,45 @@ class OllamaWriterAdapter:
     ) -> str:
         self._ensure_verified()
         prompt_sha = _canonical_prompt_sha256(messages)
-        chat_url = f"{self._base_url}/api/chat"
+        prompt_tokens_estimate = estimate_prompt_tokens(messages)
         num_predict = self._thinking_token_cap + OPERATION_ANSWER_BUDGETS[operation]
+        num_ctx = compute_num_ctx(
+            prompt_tokens_estimate,
+            num_predict,
+            margin=NUM_CTX_MARGIN_TOKENS,
+            step=NUM_CTX_STEP_TOKENS,
+        )
+        if num_ctx > self._max_num_ctx:
+            self._call_records.append(
+                OllamaCallRecord(
+                    model=self.ollama_tag,
+                    digest=self.manifest_digest,
+                    operation=operation,
+                    target_id=target_id,
+                    prompt_sha256=prompt_sha,
+                    eval_tokens=0,
+                    thinking_tokens=0,
+                    thinking_token_cap=self._thinking_token_cap,
+                    wall_time_s=0.0,
+                    think=self._think,
+                    num_predict=num_predict,
+                    num_ctx=num_ctx,
+                    max_num_ctx=self._max_num_ctx,
+                    prompt_tokens_estimate=prompt_tokens_estimate,
+                    done_reason="max_num_ctx_exceeded",
+                )
+            )
+            self._last_raw_output = ""
+            raise refused_error(
+                "PILOT_B_NUM_CTX_EXCEEDS_MAX",
+                f"Writer call '{target_id}' ({operation}) requires num_ctx={num_ctx} "
+                f"(prompt_tokens_estimate={prompt_tokens_estimate} + num_predict={num_predict} + "
+                f"margin={NUM_CTX_MARGIN_TOKENS}), which exceeds max_num_ctx={self._max_num_ctx} "
+                f"for '{self.ollama_tag}'.",
+                "Reduce thinking_token_cap or prompt size, or configure a higher max_num_ctx if VRAM permits.",
+            )
+
+        chat_url = f"{self._base_url}/api/chat"
         payload: dict[str, Any] = {
             "model": self.ollama_tag,
             "messages": messages,
@@ -367,6 +470,7 @@ class OllamaWriterAdapter:
             "options": {
                 "temperature": 0,
                 "num_predict": num_predict,
+                "num_ctx": num_ctx,
             },
         }
         t0 = time.perf_counter()
@@ -393,6 +497,9 @@ class OllamaWriterAdapter:
             wall_time_s=wall_s,
             think=self._think,
             num_predict=num_predict,
+            num_ctx=num_ctx,
+            max_num_ctx=self._max_num_ctx,
+            prompt_tokens_estimate=prompt_tokens_estimate,
             done_reason=done_reason,
         )
         self._call_records.append(record)
@@ -522,7 +629,7 @@ def parse_reader_verdict(raw_text: str) -> ReaderVerdict:
 
 
 class OllamaBlindReaderAdapter:
-    """Real loopback Ollama blind-reader adapter implementing `BlindReaderAdapter` (Card gk Part B)."""
+    """Real loopback Ollama blind-reader adapter implementing `BlindReaderAdapter` (Card gk Part B & Card gp Part A)."""
 
     is_fake: ClassVar[bool] = False
 
@@ -532,6 +639,7 @@ class OllamaBlindReaderAdapter:
         *,
         base_url: str = DEFAULT_OLLAMA_BASE_URL,
         thinking_token_cap: int = DEFAULT_THINKING_TOKEN_CAP,
+        max_num_ctx: int | None = None,
         http_transport: OllamaHttpTransport | None = None,
     ) -> None:
         if thinking_token_cap < 1:
@@ -542,6 +650,23 @@ class OllamaBlindReaderAdapter:
             )
         self._base_url = require_loopback_ollama_url(base_url)
         self._model = _resolve_model_identity(model)
+        default_role_max = (
+            DEFAULT_ROLE_MAX_NUM_CTX["reader_1"]
+            if self._model.normalized_family == "nemotron"
+            else DEFAULT_ROLE_MAX_NUM_CTX["reader_2"]
+        )
+        resolved_max_ctx = (
+            max_num_ctx
+            if max_num_ctx is not None
+            else (self._model.max_num_ctx or default_role_max)
+        )
+        if resolved_max_ctx < NUM_CTX_STEP_TOKENS:
+            raise refused_error(
+                "PILOT_B_INVALID_MAX_NUM_CTX",
+                f"max_num_ctx must be >= {NUM_CTX_STEP_TOKENS}, got {resolved_max_ctx}.",
+                f"Configure a positive max_num_ctx >= {NUM_CTX_STEP_TOKENS}.",
+            )
+        self._max_num_ctx = resolved_max_ctx
         self._think: ThinkSetting = self._model.think
         self._thinking_token_cap = thinking_token_cap
         self._transport: OllamaHttpTransport = (
@@ -576,6 +701,10 @@ class OllamaBlindReaderAdapter:
         return self._thinking_token_cap
 
     @property
+    def max_num_ctx(self) -> int:
+        return self._max_num_ctx
+
+    @property
     def http_transport(self) -> OllamaHttpTransport:
         return self._transport
 
@@ -601,25 +730,51 @@ class OllamaBlindReaderAdapter:
             )
             self._verified_local_digest = True
 
-    def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
-        """Send only `prompt` (material + one claim, never the key) to `POST /api/chat` and parse the verdict."""
+    def _chat(
+        self,
+        *,
+        target_id: str,
+        messages: list[dict[str, str]],
+    ) -> tuple[str, OllamaCallRecord]:
         self._ensure_verified()
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a blind verification reader. Given only the Material and a single Claim, "
-                    "reply with exactly one token: supported, unsupported, cannot_tell, or ambiguous."
-                ),
-            },
-            {
-                "role": "user",
-                "content": prompt.user_message,
-            },
-        ]
         prompt_sha = _canonical_prompt_sha256(messages)
-        chat_url = f"{self._base_url}/api/chat"
+        prompt_tokens_estimate = estimate_prompt_tokens(messages)
         num_predict = self._thinking_token_cap + READ_ANSWER_BUDGET
+        num_ctx = compute_num_ctx(
+            prompt_tokens_estimate,
+            num_predict,
+            margin=NUM_CTX_MARGIN_TOKENS,
+            step=NUM_CTX_STEP_TOKENS,
+        )
+        if num_ctx > self._max_num_ctx:
+            record = OllamaCallRecord(
+                model=self.ollama_tag,
+                digest=self.manifest_digest,
+                operation="read_claim",
+                target_id=target_id,
+                prompt_sha256=prompt_sha,
+                eval_tokens=0,
+                thinking_tokens=0,
+                thinking_token_cap=self._thinking_token_cap,
+                wall_time_s=0.0,
+                think=self._think,
+                num_predict=num_predict,
+                num_ctx=num_ctx,
+                max_num_ctx=self._max_num_ctx,
+                prompt_tokens_estimate=prompt_tokens_estimate,
+                done_reason="max_num_ctx_exceeded",
+            )
+            self._call_records.append(record)
+            raise refused_error(
+                "PILOT_B_NUM_CTX_EXCEEDS_MAX",
+                f"Reader call '{target_id}' (read_claim) requires num_ctx={num_ctx} "
+                f"(prompt_tokens_estimate={prompt_tokens_estimate} + num_predict={num_predict} + "
+                f"margin={NUM_CTX_MARGIN_TOKENS}), which exceeds max_num_ctx={self._max_num_ctx} "
+                f"for '{self.ollama_tag}'.",
+                "Reduce thinking_token_cap or prompt size, or configure a higher max_num_ctx if VRAM permits.",
+            )
+
+        chat_url = f"{self._base_url}/api/chat"
         payload: dict[str, Any] = {
             "model": self.ollama_tag,
             "messages": messages,
@@ -628,6 +783,7 @@ class OllamaBlindReaderAdapter:
             "options": {
                 "temperature": 0,
                 "num_predict": num_predict,
+                "num_ctx": num_ctx,
             },
         }
         t0 = time.perf_counter()
@@ -646,7 +802,7 @@ class OllamaBlindReaderAdapter:
             model=self.ollama_tag,
             digest=self.manifest_digest,
             operation="read_claim",
-            target_id=prompt.claim_id,
+            target_id=target_id,
             prompt_sha256=prompt_sha,
             eval_tokens=eval_tokens,
             thinking_tokens=thinking_tokens,
@@ -654,23 +810,47 @@ class OllamaBlindReaderAdapter:
             wall_time_s=wall_s,
             think=self._think,
             num_predict=num_predict,
+            num_ctx=num_ctx,
+            max_num_ctx=self._max_num_ctx,
+            prompt_tokens_estimate=prompt_tokens_estimate,
             done_reason=done_reason,
         )
         self._call_records.append(record)
+        return raw_text, record
 
+    def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
+        """Send only `prompt` (material + one claim, never the key) to `POST /api/chat` and parse the verdict."""
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a blind verification reader. Given only the Material and a single Claim, "
+                    "reply with exactly one token: supported, unsupported, cannot_tell, or ambiguous."
+                ),
+            },
+            {
+                "role": "user",
+                "content": prompt.user_message,
+            },
+        ]
+        raw_text, record = self._chat(
+            target_id=prompt.claim_id,
+            messages=messages,
+        )
         verdict: ReaderVerdict = (
-            "ambiguous" if done_reason == "length" else parse_reader_verdict(raw_text)
+            "ambiguous" if record.done_reason == "length" else parse_reader_verdict(raw_text)
         )
         return BlindReadResult(
             claim_id=prompt.claim_id,
             reader=self._model,
             verdict=verdict,
-            thinking_tokens=thinking_tokens,
-            completion_tokens=eval_tokens,
-            seconds=wall_s,
+            thinking_tokens=record.thinking_tokens,
+            completion_tokens=record.eval_tokens,
+            seconds=record.wall_time_s,
             raw_text=raw_text,
-            prompt_sha256=prompt_sha,
-            done_reason=done_reason,
+            prompt_sha256=record.prompt_sha256,
+            done_reason=record.done_reason,
+            num_ctx=record.num_ctx,
         )
 
     def unload_model(self) -> OllamaUnloadRecord:

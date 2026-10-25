@@ -33,6 +33,10 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
 import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 from reasoning_dataset_lab.pilot_b.ollama import (
     DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_ROLE_MAX_NUM_CTX,
+    NUM_CTX_MARGIN_TOKENS,
+    NUM_CTX_STEP_TOKENS,
+    PROMPT_TOKEN_ESTIMATE_RULE,
     OllamaBlindReaderAdapter,
     OllamaWriterAdapter,
 )
@@ -71,11 +75,14 @@ class PinnedModelSpec:
     source_match: SourceMatchStatus = "unconfirmed"
     source_match_reason: str = ""
     think: ThinkSetting = True
+    max_num_ctx: int = 8192
 
     def with_licence_id(
         self,
         new_licence_id: str,
         new_bundled_licence_id: str | None = None,
+        *,
+        new_max_num_ctx: int | None = None,
     ) -> PinnedModelSpec:
         return PinnedModelSpec(
             role=self.role,
@@ -94,6 +101,7 @@ class PinnedModelSpec:
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
             think=self.think,
+            max_num_ctx=new_max_num_ctx if new_max_num_ctx is not None else self.max_num_ctx,
         )
 
     def with_bundled_licence_id(self, new_bundled_licence_id: str) -> PinnedModelSpec:
@@ -117,6 +125,7 @@ class PinnedModelSpec:
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
             think=self.think,
+            max_num_ctx=self.max_num_ctx,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -133,6 +142,7 @@ class PinnedModelSpec:
             "source_match": self.source_match,
             "source_match_reason": self.source_match_reason,
             "think": self.think,
+            "max_num_ctx": self.max_num_ctx,
         }
 
 
@@ -158,6 +168,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
             "and config names 'qwen35moe' (35.5B Q4_K_M), without a cryptographic HF "
             "Qwen/Qwen3.6-35B-A3B commit/weights hash in the registry manifest."
         ),
+        max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["writer"],
     ),
     "reader_1": PinnedModelSpec(
         role="reader_1",
@@ -174,6 +185,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
             "Ollama manifest layer 'from' is 'nemotron3.5:30b-a3b-q4_K_M' and bundles "
             "NVIDIA licence layer 215a3316... without an HF commit/weights hash in the manifest."
         ),
+        max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["reader_1"],
     ),
     "reader_2": PinnedModelSpec(
         role="reader_2",
@@ -190,6 +202,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
             "Ollama manifest layer 'from' is a local runner blob path without an HF "
             "ibm-granite/granite-4.2-8b commit/weights hash in the registry manifest."
         ),
+        max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["reader_2"],
     ),
 }
 
@@ -197,10 +210,12 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
 def resolve_pilot_b_model_pins(
     licence_id_overrides: Mapping[str, str] | None = None,
     bundled_licence_id_overrides: Mapping[str, str] | None = None,
+    max_num_ctx_overrides: Mapping[str, int] | None = None,
 ) -> dict[str, PinnedModelSpec]:
-    """Return the three pinned Pilot B models with optional configurable licence_id and bundled_licence_id overrides."""
+    """Return the three pinned Pilot B models with optional configurable licence_id, bundled_licence_id, and max_num_ctx overrides."""
     overrides = dict(licence_id_overrides or {})
     bundled_overrides = dict(bundled_licence_id_overrides or {})
+    ctx_overrides = dict(max_num_ctx_overrides or {})
     out: dict[str, PinnedModelSpec] = {}
     for role, spec in DEFAULT_PILOT_B_MODEL_PINS.items():
         lic_id = overrides.get(role, overrides.get(spec.ollama_tag, spec.licence_id))
@@ -219,7 +234,16 @@ def resolve_pilot_b_model_pins(
                 f"Model '{spec.ollama_tag}' ({role}) has an empty bundled_licence_id.",
                 "Configure a non-empty registry bundled_licence_id for every model in the chain.",
             )
-        out[role] = spec.with_licence_id(lic_id.strip(), bundled_id.strip())
+        max_ctx = int(ctx_overrides.get(role, ctx_overrides.get(spec.ollama_tag, spec.max_num_ctx)))
+        if max_ctx < NUM_CTX_STEP_TOKENS:
+            raise refused_error(
+                "PILOT_B_INVALID_MAX_NUM_CTX",
+                f"Model '{spec.ollama_tag}' ({role}) has invalid max_num_ctx={max_ctx} (< {NUM_CTX_STEP_TOKENS}).",
+                f"Configure max_num_ctx >= {NUM_CTX_STEP_TOKENS}.",
+            )
+        out[role] = spec.with_licence_id(
+            lic_id.strip(), bundled_id.strip(), new_max_num_ctx=max_ctx
+        )
     return out
 
 
@@ -713,6 +737,34 @@ def build_pilot_b_report(
         "gate_pass_rate_per_class": dict(wave_result.pass_rate_per_class),
         "triad_pass_rate": wave_result.triad_pass_rate,
         "thinking_token_cap": wave_result.thinking_token_cap,
+        "num_ctx_policy": {
+            "prompt_token_estimate_rule": PROMPT_TOKEN_ESTIMATE_RULE,
+            "margin_tokens": NUM_CTX_MARGIN_TOKENS,
+            "step_tokens": NUM_CTX_STEP_TOKENS,
+            "max_num_ctx_by_role": {
+                "writer": int(
+                    getattr(
+                        wave_result.writer_adapter,
+                        "max_num_ctx",
+                        wave_result.writer_model.max_num_ctx,
+                    )
+                ),
+                "reader_1": int(
+                    getattr(
+                        wave_result.reader_1_adapter,
+                        "max_num_ctx",
+                        wave_result.reader_1_model.max_num_ctx,
+                    )
+                ),
+                "reader_2": int(
+                    getattr(
+                        wave_result.reader_2_adapter,
+                        "max_num_ctx",
+                        wave_result.reader_2_model.max_num_ctx,
+                    )
+                ),
+            },
+        },
         "adapters": {
             "writer": wave_result.writer_adapter_class,
             "reader_1": wave_result.reader_1_adapter_class,
@@ -744,6 +796,7 @@ def run_pilot_b_build(
     licence_registry_path: Path | None = None,
     licence_id_overrides: Mapping[str, str] | None = None,
     bundled_licence_id_overrides: Mapping[str, str] | None = None,
+    max_num_ctx_overrides: Mapping[str, int] | None = None,
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
 ) -> dict[str, Any]:
     """Run an end-to-end Pilot B build (or `--stub N` run), seal and freeze the part, and write the build report."""
@@ -757,6 +810,7 @@ def run_pilot_b_build(
     pins = resolve_pilot_b_model_pins(
         licence_id_overrides=licence_id_overrides,
         bundled_licence_id_overrides=bundled_licence_id_overrides,
+        max_num_ctx_overrides=max_num_ctx_overrides,
     )
 
     if licence_registry_path is not None:
