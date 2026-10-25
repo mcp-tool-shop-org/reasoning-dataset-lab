@@ -59,6 +59,11 @@ from reasoning_dataset_lab.pilot_b.ollama import (
     resolve_num_predict_config,
     run_ollama_calibration_calls,
 )
+from reasoning_dataset_lab.pilot_b.rendering import (
+    NUMBERED_LINE_RE,
+    StyleIssue,
+    style_lint,
+)
 from reasoning_dataset_lab.pilot_b.unanimity import (
     DEFAULT_MIN_PASS_RATE_PER_CLASS,
     VERDICT_CLASSES,
@@ -721,6 +726,45 @@ def build_pilot_b_report(
     }
 
     sample_block = draw_human_sample(items, sample_size=20, seed=sample_seed)
+    style_examples: list[dict[str, str]] = []
+    style_issue_count = 0
+    sentences_checked = 0
+    for ev in wave_result.kept_triads:
+        for raw_line in ev.worded.material.splitlines():
+            stripped = raw_line.strip()
+            if not stripped or stripped.lower().startswith("material"):
+                continue
+            m_num = NUMBERED_LINE_RE.match(stripped)
+            sent = m_num.group(2).strip() if m_num is not None else stripped
+            if not sent:
+                continue
+            sentences_checked += 1
+            for iss in style_lint(sent):
+                style_issue_count += 1
+                if len(style_examples) < 10:
+                    style_examples.append(dict(iss))
+        for claim_key in ("supported", "unsupported", "cannot_tell"):
+            claim_sent = ev.worded.worded_claims.get(claim_key, "").strip()
+            if not claim_sent:
+                continue
+            sentences_checked += 1
+            for iss in style_lint(claim_sent):
+                style_issue_count += 1
+                if len(style_examples) < 10:
+                    style_examples.append(dict(iss))
+
+    style_rate_per_sentence = (
+        round(style_issue_count / sentences_checked, 4)
+        if sentences_checked > 0
+        else 0.0
+    )
+    style_issues_block: dict[str, Any] = {
+        "count": style_issue_count,
+        "sentences_checked": sentences_checked,
+        "rate_per_sentence": style_rate_per_sentence,
+        "rate": style_rate_per_sentence,
+        "examples": style_examples,
+    }
     reg_meta: dict[str, Any] = (
         dict(licence_registry)
         if licence_registry is not None
@@ -812,6 +856,7 @@ def build_pilot_b_report(
             "wall_time_s": total_seconds,
         },
         "full_build_estimate_50_triads": full_estimate,
+        "style_issues": style_issues_block,
         "human_sample": sample_block,
     }
 

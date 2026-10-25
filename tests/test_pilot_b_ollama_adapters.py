@@ -1856,6 +1856,77 @@ def test_gs_calibrate_suggests_total_num_predict_and_reports_eval_count_and_thin
         assert "answer_tokens" not in row
 
 
+def test_gw_prompts_and_report_style_issues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gw Part C: writer system prompts include style rules and build report carries style_issues (reported, not a gate)."""
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        build_writer_render_messages,
+        build_writer_word_messages,
+    )
+
+    t1 = build_sample_fact_table(seed=1, closure="open")
+    tr1 = build_contrast_triad(t1, seed=1)
+    r_sys = build_writer_render_messages(t1)[0]["content"]
+    w_sys = build_writer_word_messages(tr1.claims["supported"])[0]["content"]
+    for sys_prompt in (r_sys, w_sys):
+        assert "natural, grammatical English" in sys_prompt
+        assert "The <attribute> of <entity> is <value>" in sys_prompt
+        assert "<Entity> has <n> <unit>" in sys_prompt
+        assert "subject-verb agreement" in sys_prompt
+        assert "equals" in sys_prompt
+        assert "36 holds" in sys_prompt
+
+    # 1. Clean build report has 0 style_issues
+    transport_clean, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport_clean,
+    )
+    out_clean = tmp_path / "gw_clean"
+    res_clean = run_pilot_b_build(
+        output_dir=out_clean,
+        triad_count=1,
+        stub_mode=True,
+    )
+    si_clean = res_clean["report"]["style_issues"]
+    assert si_clean["count"] == 0
+    assert si_clean["sentences_checked"] == 8
+    assert si_clean["rate_per_sentence"] == 0.0
+    assert si_clean["examples"] == []
+
+    # 2. Stilted material is kept (not a gate) and reported in style_issues (capped at <= 10 examples)
+    t2 = build_sample_fact_table(seed=2, closure="closed")
+    stilted_lines = [
+        f"1. {t2.facts[0].entity} {t2.facts[0].attribute} equal {t2.facts[0].value} {t2.facts[0].unit}.",
+        f"2. {t2.facts[1].entity} {t2.facts[1].attribute} equals {t2.facts[1].value}.",
+        f"3. The {t2.facts[2].attribute} of {t2.facts[2].entity} is between {t2.facts[2].value[0]} and {t2.facts[2].value[1]} {t2.facts[2].unit}.",
+        f"4. {t2.facts[3].entity} {t2.facts[3].attribute} equals {t2.facts[3].value}.",
+        f"5. The {t2.facts[4].attribute} of {t2.facts[4].entity} equals {t2.facts[4].value}.",
+    ]
+    transport_stilted, _ = build_mock_ollama_http_transport(
+        bad_render_table_ids={t2.table_id: "\n".join(stilted_lines)}
+    )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport_stilted,
+    )
+    out_stilted = tmp_path / "gw_stilted"
+    res_stilted = run_pilot_b_build(
+        output_dir=out_stilted,
+        triad_count=2,
+        stub_mode=True,
+    )
+    rep_stilted = res_stilted["report"]
+    assert rep_stilted["triads_kept"] == 2
+    si_stilted = rep_stilted["style_issues"]
+    assert si_stilted["count"] > 0
+    assert si_stilted["sentences_checked"] == 16
+    assert si_stilted["rate_per_sentence"] == round(si_stilted["count"] / 16, 4)
+    assert 1 <= len(si_stilted["examples"]) <= 10
+
+
+
 
 
 

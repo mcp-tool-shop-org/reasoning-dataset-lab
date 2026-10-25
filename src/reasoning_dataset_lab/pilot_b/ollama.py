@@ -53,8 +53,10 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     ProvedClaim,
 )
 from reasoning_dataset_lab.pilot_b.rendering import (
+    StyleIssue,
     check_rendered_material,
     check_worded_claim,
+    style_lint,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
     ALLOWED_READER_VERDICTS,
@@ -794,8 +796,12 @@ def build_writer_render_messages(table: FactTable) -> list[dict[str, str]]:
             "role": "system",
             "content": (
                 "You are the Pilot B writer. Render each fact in the formal FactTable into one numbered "
-                "sentence per line ('1. ...', '2. ...'), preserving exact entities, attributes, numbers, "
-                "dates, intervals, polarity, and quantifier direction. Introduce no extra numbers or proper nouns."
+                "sentence per line ('1. ...', '2. ...') in natural, grammatical English, preserving exact "
+                "entities, attributes, numbers, dates, intervals, polarity, and quantifier direction. "
+                "Introduce no extra numbers or proper nouns. Use 'The <attribute> of <entity> is <value>' "
+                "or '<Entity> has <n> <unit>', keep subject-verb agreement for plural attributes, never use "
+                "'equals' or 'is equal to' for an exact value, and do not repeat a unit-noun (never '36 holds' "
+                "after 'cargo holds')."
             ),
         },
         {
@@ -828,9 +834,12 @@ def build_writer_word_messages(claim: ProvedClaim) -> list[dict[str, str]]:
         {
             "role": "system",
             "content": (
-                "You are the Pilot B writer. Word the formal claim into a single declarative English sentence "
-                "preserving its exact entity, attribute, value, unit, polarity, and quantifier direction. "
-                "Introduce no unlisted numbers or proper nouns."
+                "You are the Pilot B writer. Word the formal claim into a single declarative sentence in "
+                "natural, grammatical English, preserving its exact entity, attribute, value, unit, "
+                "polarity, and quantifier direction. Introduce no unlisted numbers or proper nouns. Use "
+                "'The <attribute> of <entity> is <value>' or '<Entity> has <n> <unit>', keep subject-verb "
+                "agreement for plural attributes, never use 'equals' or 'is equal to' for an exact value, "
+                "and do not repeat a unit-noun (never '36 holds' after 'cargo holds')."
             ),
         },
         {

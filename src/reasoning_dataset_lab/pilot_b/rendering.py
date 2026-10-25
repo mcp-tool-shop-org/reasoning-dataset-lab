@@ -478,6 +478,128 @@ def format_atomic_sentence(
     if op == "not":
         return f"The {attribute} of {entity} is not {value}{unit_suffix}."
     if fact_type == "number":
+        if unit and attribute.lower().endswith(unit.lower()):
+            return f"{entity} has {value} {attribute}."
         return f"{entity} has {value}{unit_suffix} of {attribute}."
     return f"The {attribute} of {entity} is {value}{unit_suffix}."
+
+
+STYLE_EQUALS_RE: re.Pattern[str] = re.compile(
+    r"\b(?:equals?|is\s+equal\s+to|equal\s+to)\b",
+    re.IGNORECASE,
+)
+STYLE_BARE_ENTITY_ATTR_RE: re.Pattern[str] = re.compile(
+    r"^(?!The\b)(?:[A-Z][a-zA-Z0-9-]*\s+)+(?:[a-z][a-zA-Z0-9-]*\s+)+(?:is|are|equals?)\b"
+)
+STYLE_THE_ATTR_OF_ENTITY_IS_RE: re.Pattern[str] = re.compile(
+    r"^The\s+(?P<attr>[a-zA-Z][a-zA-Z0-9\s-]*?)\s+of\s+(?:[A-Z][a-zA-Z0-9-]*\s*)+\s*is\b"
+)
+STYLE_NUM_UNIT_RE: re.Pattern[str] = re.compile(
+    r"\b\d+(?:\.\d+)?\s+(?P<unit>[a-z]{3,})\b"
+)
+_STYLE_NON_UNIT_WORDS: frozenset[str] = frozenset(
+    {
+        "and",
+        "or",
+        "to",
+        "of",
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "with",
+        "from",
+        "between",
+        "least",
+        "most",
+        "than",
+    }
+)
+
+
+class StyleIssue(dict[str, str]):
+    """Deterministic style lint issue (reported in `pilot_b_report.json`, never a gate)."""
+
+    def __init__(self, kind: str, sentence: str, detail: str) -> None:
+        super().__init__(kind=kind, sentence=sentence, detail=detail)
+
+    @property
+    def kind(self) -> str:
+        return self["kind"]
+
+    @property
+    def sentence(self) -> str:
+        return self["sentence"]
+
+    @property
+    def detail(self) -> str:
+        return self["detail"]
+
+
+def style_lint(text: str) -> list[StyleIssue]:
+    """Deterministically flag stilted rendering patterns (reported in the build report, not a gate)."""
+    issues: list[StyleIssue] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.lower().startswith("material"):
+            continue
+        m_num = NUMBERED_LINE_RE.match(stripped)
+        sent = m_num.group(2).strip() if m_num is not None else stripped
+        if not sent:
+            continue
+
+        if STYLE_EQUALS_RE.search(sent) is not None:
+            issues.append(
+                StyleIssue(
+                    kind="equals",
+                    sentence=sent,
+                    detail="Uses 'equals' or 'equal to' instead of natural English phrasing.",
+                )
+            )
+
+        if STYLE_BARE_ENTITY_ATTR_RE.search(sent) is not None:
+            issues.append(
+                StyleIssue(
+                    kind="missing_article_of",
+                    sentence=sent,
+                    detail="Starts with '<Entity> <attribute> is/equals' without 'The <attribute> of <Entity>'.",
+                )
+            )
+
+        m_pl = STYLE_THE_ATTR_OF_ENTITY_IS_RE.search(sent)
+        if m_pl is not None:
+            attr_words = m_pl.group("attr").strip().split()
+            if attr_words:
+                head_noun = attr_words[-1].lower()
+                if head_noun.endswith("s") and not head_noun.endswith(
+                    ("ss", "us", "is")
+                ):
+                    issues.append(
+                        StyleIssue(
+                            kind="plural_is_agreement",
+                            sentence=sent,
+                            detail=f"Plural attribute '{m_pl.group('attr')}' is followed by singular 'is'.",
+                        )
+                    )
+
+        for m_u in STYLE_NUM_UNIT_RE.finditer(sent):
+            unit_word = m_u.group("unit").lower()
+            if unit_word in _STYLE_NON_UNIT_WORDS:
+                continue
+            occurrences = len(
+                re.findall(r"\b" + re.escape(unit_word) + r"\b", sent, re.IGNORECASE)
+            )
+            if occurrences >= 2:
+                issues.append(
+                    StyleIssue(
+                        kind="duplicated_unit_noun",
+                        sentence=sent,
+                        detail=f"Unit noun '{unit_word}' is duplicated in the sentence.",
+                    )
+                )
+                break
+
+    return issues
+
 

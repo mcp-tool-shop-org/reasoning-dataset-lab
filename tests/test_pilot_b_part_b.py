@@ -363,3 +363,34 @@ def test_worded_claim_allows_catalogue_and_claimed_value_case_insensitively_and_
         assert exc_noun.value.code == "PILOT_B_RENDER_UNGROUNDED_PROPER_NOUN"
 
 
+def test_style_lint_flags_quoted_defects_and_passes_clean_lines() -> None:
+    """Card gw Part C: style_lint flags each quoted defect line and passes the clean lines."""
+    from reasoning_dataset_lab.pilot_b.rendering import style_lint
+
+    defect_lines = [
+        ("Relay North backup cells equal 18 cells.", {"equals", "missing_article_of", "duplicated_unit_noun"}),
+        ("Relay North calibration date equals 12 March.", {"equals", "missing_article_of"}),
+        ("Relay East breaker state equals locked.", {"equals", "missing_article_of"}),
+        ("The switching latency of Relay South equals 55 milliseconds.", {"equals"}),
+        ("Tanker Orion cargo holds is 36 holds.", {"missing_article_of", "duplicated_unit_noun"}),
+        ("Tanker Orion departure date is 16 September.", {"missing_article_of"}),
+        ("The impeller stages of Pump Delta is 27 stages.", {"plural_is_agreement", "duplicated_unit_noun"}),
+    ]
+    for line, expected_kinds in defect_lines:
+        issues = style_lint(line)
+        assert issues, f"Expected style_lint to flag {line!r}"
+        got_kinds = {iss.kind for iss in issues}
+        assert expected_kinds.issubset(got_kinds), f"Expected {expected_kinds} in {got_kinds} for {line!r}"
+        for iss in issues:
+            assert iss.sentence == line
+            assert iss.detail
+
+    clean_lines = [
+        "Kiln One has 24 heating zones.",
+        "The service date of Kiln One is 22 May.",
+    ]
+    for clean in clean_lines:
+        assert style_lint(clean) == []
+
+
+

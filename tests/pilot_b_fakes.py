@@ -189,7 +189,7 @@ class UnanimousReaderFake:
             return "supported"
 
         m_claim_num = re.match(
-            r"^(?:The\s+(.+?)\s+of\s+(.+?)\s+is\s+(\d+)|(.+?)\s+has\s+(\d+)(?:\s+\w+)?\s+of\s+(.+?))\.$",
+            r"^(?:The\s+(.+?)\s+of\s+(.+?)\s+is\s+(\d+)|(.+?)\s+has\s+(\d+)(?:(?:\s+\w+)?\s+of\s+(.+?)|\s+(.+?)))\.$",
             claim_clean,
             re.IGNORECASE,
         )
@@ -201,7 +201,7 @@ class UnanimousReaderFake:
             else:
                 c_ent = m_claim_num.group(4).strip().lower()
                 c_val = int(m_claim_num.group(5))
-                c_attr = m_claim_num.group(6).strip().lower()
+                c_attr = (m_claim_num.group(6) or m_claim_num.group(7) or "").strip().lower()
             for ln in mat_lines:
                 m_int = re.search(
                     r"The\s+(.+?)\s+of\s+(.+?)\s+is\s+between\s+(\d+)\s+and\s+(\d+)",
@@ -225,8 +225,14 @@ class UnanimousReaderFake:
         if m_claim_gen:
             c_attr = m_claim_gen.group(1).strip().lower()
             c_ent = m_claim_gen.group(2).strip().lower()
+            c_val_str = m_claim_gen.group(3).strip().lower()
             for ln in mat_lines:
                 if c_ent in ln.lower() and c_attr in ln.lower():
+                    if (
+                        "between" not in ln.lower()
+                        and re.search(r"\b" + re.escape(c_val_str) + r"\b", ln, re.IGNORECASE)
+                    ):
+                        return "supported"
                     return "unsupported"
             if prompt.closure == "open":
                 return "cannot_tell"
@@ -234,6 +240,11 @@ class UnanimousReaderFake:
         if m_claim_num:
             for ln in mat_lines:
                 if c_ent in ln.lower() and c_attr in ln.lower():
+                    if (
+                        "between" not in ln.lower()
+                        and re.search(r"\b" + str(c_val) + r"\b", ln)
+                    ):
+                        return "supported"
                     return "unsupported"
 
         return "cannot_tell"
