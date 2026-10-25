@@ -6,28 +6,93 @@
           "additionalProperties": false,
           "properties": {
             "by_operation": {
-              "additionalProperties": {
-                "additionalProperties": false,
-                "properties": {
-                  "source": {
-                    "type": "string"
+              "additionalProperties": false,
+              "properties": {
+                "read_claim_reader_1": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
                   },
-                  "value": {
-                    "type": "integer"
-                  }
+                  "required": [
+                    "source",
+                    "value"
+                  ],
+                  "type": "object"
                 },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
+                "read_claim_reader_2": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "render_material": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "word_claim": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "value"
+                  ],
+                  "type": "object"
+                }
               },
+              "required": [],
               "type": "object"
             },
             "documented_defaults_by_operation": {
-              "additionalProperties": {
-                "type": "integer"
+              "additionalProperties": false,
+              "properties": {
+                "read_claim_reader_1": {
+                  "type": "integer"
+                },
+                "read_claim_reader_2": {
+                  "type": "integer"
+                },
+                "render_material": {
+                  "type": "integer"
+                },
+                "word_claim": {
+                  "type": "integer"
+                }
               },
+              "required": [],
               "type": "object"
             },
             "source": {
@@ -81,6 +146,7 @@
         },
         "read_dates": {
           "additionalProperties": {
+            "pattern": "^(\\d{4}-\\d{2}-\\d{2})?$",
             "type": "string"
           },
           "type": "object"
