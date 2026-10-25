@@ -34,17 +34,21 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
 )
 import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 from reasoning_dataset_lab.pilot_b.ollama import (
+    CALIBRATION_ANSWER_BUDGET_MARGIN_TOKENS,
     CALIBRATION_CAP_MARGIN_TOKENS,
     DEFAULT_CALIBRATION_NUM_CTX,
     DEFAULT_CALIBRATION_NUM_PREDICT,
     DEFAULT_CALIBRATION_TABLES,
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_ROLE_MAX_NUM_CTX,
+    DOCUMENTED_DEFAULT_ANSWER_BUDGET,
     DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
     NUM_CTX_MARGIN_TOKENS,
     NUM_CTX_STEP_TOKENS,
     PILOT_B_OPERATIONS,
     PROMPT_TOKEN_ESTIMATE_RULE,
+    AnswerBudgetConfig,
+    AnswerBudgetSource,
     OllamaBlindReaderAdapter,
     OllamaOperation,
     OllamaWriterAdapter,
@@ -53,9 +57,11 @@ from reasoning_dataset_lab.pilot_b.ollama import (
     build_reader_read_messages,
     build_writer_render_messages,
     build_writer_word_messages,
+    coerce_answer_budget_config,
     coerce_thinking_cap_config,
     format_reference_claim,
     format_reference_material,
+    resolve_answer_budget_config,
     resolve_thinking_cap_config,
     run_ollama_calibration_calls,
 )
@@ -769,6 +775,18 @@ def build_pilot_b_report(
                 "sources_by_operation": {},
             }
         ),
+        "answer_budget": wave_result.answer_budget,
+        "answer_budget_source": wave_result.answer_budget_source,
+        "answer_budget_config": (
+            wave_result.answer_budget_config.to_dict()
+            if wave_result.answer_budget_config is not None
+            else {
+                "default_budget": wave_result.answer_budget,
+                "source": wave_result.answer_budget_source,
+                "by_operation": {},
+                "sources_by_operation": {},
+            }
+        ),
         "num_ctx_policy": {
             "prompt_token_estimate_rule": PROMPT_TOKEN_ESTIMATE_RULE,
             "margin_tokens": NUM_CTX_MARGIN_TOKENS,
@@ -826,6 +844,9 @@ def run_pilot_b_build(
     thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
     thinking_cap_source: ThinkingCapSource | None = None,
     thinking_cap_by_operation: Mapping[str, int | None] | None = None,
+    answer_budget: int | AnswerBudgetConfig | Mapping[str, Any] | None = None,
+    answer_budget_source: AnswerBudgetSource | None = None,
+    answer_budget_by_operation: Mapping[str, int | None] | None = None,
     config_path: Path | None = None,
     environ: Mapping[str, str] | None = None,
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
@@ -871,6 +892,36 @@ def run_pilot_b_build(
         )
         cap_config = coerce_thinking_cap_config(
             int(thinking_token_cap), source=inferred_src
+        )
+
+    if isinstance(answer_budget, (AnswerBudgetConfig, Mapping)):
+        budget_config = coerce_answer_budget_config(
+            answer_budget, source=answer_budget_source
+        )
+    elif (
+        config_path is not None
+        or environ is not None
+        or answer_budget_by_operation is not None
+        or answer_budget is None
+    ):
+        budget_config = resolve_answer_budget_config(
+            cli_budget=answer_budget if isinstance(answer_budget, int) else None,
+            cli_by_operation=answer_budget_by_operation,
+            config_path=config_path,
+            env=environ,
+        )
+    else:
+        inferred_budget_src: AnswerBudgetSource = (
+            answer_budget_source
+            if answer_budget_source is not None
+            else (
+                "cli"
+                if int(answer_budget) != DOCUMENTED_DEFAULT_ANSWER_BUDGET
+                else "default"
+            )
+        )
+        budget_config = coerce_answer_budget_config(
+            int(answer_budget), source=inferred_budget_src
         )
 
     pins = resolve_pilot_b_model_pins(
@@ -944,16 +995,19 @@ def run_pilot_b_build(
         model=writer_id,
         base_url=ollama_base_url,
         thinking_token_cap=cap_config,
+        answer_budget=budget_config,
     )
     active_r1 = OllamaBlindReaderAdapter(
         model=r1_id,
         base_url=ollama_base_url,
         thinking_token_cap=cap_config,
+        answer_budget=budget_config,
     )
     active_r2 = OllamaBlindReaderAdapter(
         model=r2_id,
         base_url=ollama_base_url,
         thinking_token_cap=cap_config,
+        answer_budget=budget_config,
     )
 
     if not (
@@ -979,6 +1033,7 @@ def run_pilot_b_build(
         reader_2=active_r2,
         review_queue_path=review_queue_path,
         thinking_token_cap=cap_config,
+        answer_budget=budget_config,
         min_pass_rate_per_class=min_pass_rate_per_class,
     )
 
@@ -1162,6 +1217,21 @@ def run_pilot_b_calibration(
     length_stops = sum(1 for r in rows if r["done_reason"] == "length")
     suggested_cap = p95_val + CALIBRATION_CAP_MARGIN_TOKENS
 
+    answer_vals = [
+        int(
+            r.get(
+                "answer_tokens",
+                max(0, int(r["eval_tokens"]) - int(r["thinking_tokens"])),
+            )
+        )
+        for r in rows
+    ]
+    answer_min_val = min(answer_vals) if answer_vals else 0
+    answer_median_val = int(round(statistics.median(answer_vals))) if answer_vals else 0
+    answer_p95_val = _nearest_rank_p95(answer_vals)
+    answer_max_val = max(answer_vals) if answer_vals else 0
+    suggested_answer_budget = answer_p95_val + CALIBRATION_ANSWER_BUDGET_MARGIN_TOKENS
+
     calibration_payload: dict[str, Any] = {
         "operation": operation,
         "role": selected_role,
@@ -1178,6 +1248,17 @@ def run_pilot_b_calibration(
         "median": median_val,
         "p95": p95_val,
         "max": max_val,
+        "answer_tokens": {
+            "count": count_val,
+            "min": answer_min_val,
+            "median": answer_median_val,
+            "p95": answer_p95_val,
+            "max": answer_max_val,
+        },
+        "answer_min": answer_min_val,
+        "answer_median": answer_median_val,
+        "answer_p95": answer_p95_val,
+        "answer_max": answer_max_val,
         "length_stops": length_stops,
         "margin_constant": "CALIBRATION_CAP_MARGIN_TOKENS",
         "margin_tokens": CALIBRATION_CAP_MARGIN_TOKENS,
@@ -1185,6 +1266,13 @@ def run_pilot_b_calibration(
         "suggested_cap_summary": (
             f"Suggested thinking cap for {operation}: {suggested_cap} "
             f"(p95={p95_val} + CALIBRATION_CAP_MARGIN_TOKENS={CALIBRATION_CAP_MARGIN_TOKENS})"
+        ),
+        "answer_budget_margin_constant": "CALIBRATION_ANSWER_BUDGET_MARGIN_TOKENS",
+        "answer_budget_margin_tokens": CALIBRATION_ANSWER_BUDGET_MARGIN_TOKENS,
+        "suggested_answer_budget": suggested_answer_budget,
+        "suggested_answer_budget_summary": (
+            f"Suggested answer budget for {operation}: {suggested_answer_budget} "
+            f"(p95={answer_p95_val} + CALIBRATION_ANSWER_BUDGET_MARGIN_TOKENS={CALIBRATION_ANSWER_BUDGET_MARGIN_TOKENS})"
         ),
         "unloaded": unload_rec.to_dict(),
         "calls": rows,

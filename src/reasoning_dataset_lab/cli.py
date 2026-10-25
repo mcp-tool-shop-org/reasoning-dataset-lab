@@ -145,10 +145,11 @@ def _build_parser() -> _StructuredArgumentParser:
         dest="thinking_cap",
         type=int,
         default=None,
-        help="Per-call thinking token cap override (precedence: CLI > config/env > default 256).",
+        help="Per-call thinking token cap override (precedence: CLI > config/env > default).",
     )
     pb_parser.add_argument(
         "--thinking-cap-render-material",
+        "--render-thinking-cap",
         dest="thinking_cap_render_material",
         type=int,
         default=None,
@@ -156,6 +157,7 @@ def _build_parser() -> _StructuredArgumentParser:
     )
     pb_parser.add_argument(
         "--thinking-cap-word-claim",
+        "--word-thinking-cap",
         dest="thinking_cap_word_claim",
         type=int,
         default=None,
@@ -163,10 +165,42 @@ def _build_parser() -> _StructuredArgumentParser:
     )
     pb_parser.add_argument(
         "--thinking-cap-read-claim",
+        "--read-thinking-cap",
         dest="thinking_cap_read_claim",
         type=int,
         default=None,
         help="Optional CLI thinking token cap override for read_claim.",
+    )
+    pb_parser.add_argument(
+        "--answer-budget",
+        dest="answer_budget",
+        type=int,
+        default=None,
+        help="Per-call answer token budget override (precedence: CLI > config/env > default).",
+    )
+    pb_parser.add_argument(
+        "--render-answer-budget",
+        "--answer-budget-render-material",
+        dest="render_answer_budget",
+        type=int,
+        default=None,
+        help="Optional CLI answer token budget override for render_material.",
+    )
+    pb_parser.add_argument(
+        "--word-answer-budget",
+        "--answer-budget-word-claim",
+        dest="word_answer_budget",
+        type=int,
+        default=None,
+        help="Optional CLI answer token budget override for word_claim.",
+    )
+    pb_parser.add_argument(
+        "--read-answer-budget",
+        "--answer-budget-read-claim",
+        dest="read_answer_budget",
+        type=int,
+        default=None,
+        help="Optional CLI answer token budget override for read_claim.",
     )
     pb_parser.add_argument(
         "--config",
@@ -342,6 +376,11 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 "word_claim": args.thinking_cap_word_claim,
                 "read_claim": args.thinking_cap_read_claim,
             }
+            op_budgets = {
+                "render_material": args.render_answer_budget,
+                "word_claim": args.word_answer_budget,
+                "read_claim": args.read_answer_budget,
+            }
             build_res = run_pilot_b_build(
                 output_dir=args.output_dir,
                 triad_count=triad_count,
@@ -350,6 +389,8 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 shuffle_seed=args.shuffle_seed,
                 thinking_token_cap=args.thinking_cap,
                 thinking_cap_by_operation=op_caps,
+                answer_budget=args.answer_budget,
+                answer_budget_by_operation=op_budgets,
                 config_path=args.config_path,
                 licence_registry_path=args.licence_registry,
                 ollama_base_url=args.ollama_url,

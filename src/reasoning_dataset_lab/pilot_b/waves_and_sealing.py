@@ -27,15 +27,19 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
 )
 from reasoning_dataset_lab.pilot_b.ollama import (
     DEFAULT_ROLE_MAX_NUM_CTX,
+    DOCUMENTED_DEFAULT_ANSWER_BUDGET,
     DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
     NUM_CTX_MARGIN_TOKENS,
     NUM_CTX_STEP_TOKENS,
     PROMPT_TOKEN_ESTIMATE_RULE,
+    AnswerBudgetConfig,
+    AnswerBudgetSource,
     OllamaBlindReaderAdapter,
     OllamaOperation,
     OllamaWriterAdapter,
     ThinkingCapConfig,
     ThinkingCapSource,
+    coerce_answer_budget_config,
     coerce_thinking_cap_config,
 )
 from reasoning_dataset_lab.pilot_b.rendering import (
@@ -129,6 +133,8 @@ class WaveMetric:
     max_num_ctx: int = 0
     max_num_ctx_observed: int = 0
     thinking_token_cap_source: ThinkingCapSource = "default"
+    answer_budget: int = DOCUMENTED_DEFAULT_ANSWER_BUDGET
+    answer_budget_source: AnswerBudgetSource = "default"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -140,6 +146,8 @@ class WaveMetric:
             "calls": self.calls,
             "thinking_token_cap": self.thinking_token_cap,
             "thinking_token_cap_source": self.thinking_token_cap_source,
+            "answer_budget": self.answer_budget,
+            "answer_budget_source": self.answer_budget_source,
             "thinking_tokens_total": self.thinking_tokens_total,
             "max_thinking_tokens_observed": self.max_thinking_tokens_observed,
             "completion_tokens_total": self.completion_tokens_total,
@@ -178,6 +186,9 @@ class PilotBWaveRunResult:
     reader_2_call_records: Mapping[str, dict[str, object]] | None = None
     thinking_token_cap_source: ThinkingCapSource = "default"
     thinking_cap_config: ThinkingCapConfig | None = None
+    answer_budget: int = DOCUMENTED_DEFAULT_ANSWER_BUDGET
+    answer_budget_source: AnswerBudgetSource = "default"
+    answer_budget_config: AnswerBudgetConfig | None = None
 
 
 class WaveCallTracker:
@@ -188,11 +199,17 @@ class WaveCallTracker:
         thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
         *,
         thinking_cap_source: ThinkingCapSource | None = None,
+        answer_budget: int | AnswerBudgetConfig | Mapping[str, Any] | None = None,
+        answer_budget_source: AnswerBudgetSource | None = None,
     ) -> None:
         self._cap_config = coerce_thinking_cap_config(
             thinking_token_cap, source=thinking_cap_source
         )
         self._cap = self._cap_config.effective_cap
+        self._budget_config = coerce_answer_budget_config(
+            answer_budget, source=answer_budget_source
+        )
+        self._budget = self._budget_config.effective_budget
         self._entries: list[WaveCallEntry] = []
         self._seen_waves: list[WaveName] = []
 
@@ -203,6 +220,14 @@ class WaveCallTracker:
     @property
     def thinking_cap_config(self) -> ThinkingCapConfig:
         return self._cap_config
+
+    @property
+    def answer_budget(self) -> int:
+        return self._budget
+
+    @property
+    def answer_budget_config(self) -> AnswerBudgetConfig:
+        return self._budget_config
 
     @property
     def entries(self) -> tuple[WaveCallEntry, ...]:
@@ -271,6 +296,8 @@ class WaveCallTracker:
             calls=len(wave_calls),
             thinking_token_cap=self._cap_config.cap_for(op),
             thinking_token_cap_source=self._cap_config.source_for(op),
+            answer_budget=self._budget_config.budget_for(op),
+            answer_budget_source=self._budget_config.source_for(op),
             thinking_tokens_total=sum(e.thinking_tokens for e in wave_calls),
             max_thinking_tokens_observed=max(
                 (e.thinking_tokens for e in wave_calls), default=0
@@ -294,6 +321,8 @@ def run_pilot_b_waves(
     review_queue_path: Path,
     thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
     thinking_cap_source: ThinkingCapSource | None = None,
+    answer_budget: int | AnswerBudgetConfig | Mapping[str, Any] | None = None,
+    answer_budget_source: AnswerBudgetSource | None = None,
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
 ) -> PilotBWaveRunResult:
     """Execute Pilot B in 4 strict single-model waves: render -> word -> reader_1 -> reader_2."""
@@ -305,7 +334,19 @@ def run_pilot_b_waves(
         thinking_token_cap, source=thinking_cap_source
     )
     effective_cap = cap_config.effective_cap
-    tracker = WaveCallTracker(thinking_token_cap=cap_config)
+    if answer_budget is not None:
+        budget_config = coerce_answer_budget_config(
+            answer_budget, source=answer_budget_source
+        )
+    elif isinstance(getattr(writer_adapter, "answer_budget_config", None), AnswerBudgetConfig):
+        budget_config = getattr(writer_adapter, "answer_budget_config")
+    else:
+        budget_config = coerce_answer_budget_config(None, source=answer_budget_source)
+    effective_budget = budget_config.effective_budget
+    tracker = WaveCallTracker(
+        thinking_token_cap=cap_config,
+        answer_budget=budget_config,
+    )
 
     # Wave 1: render material for all tables (writer model)
     rendered_materials: dict[str, str] = {}
@@ -738,6 +779,9 @@ def run_pilot_b_waves(
         reader_2_call_records=r2_call_map,
         thinking_token_cap_source=cap_config.source,
         thinking_cap_config=cap_config,
+        answer_budget=effective_budget,
+        answer_budget_source=budget_config.source,
+        answer_budget_config=budget_config,
     )
 
 
@@ -923,6 +967,18 @@ def write_sealed_part(
                         "sources_by_operation": {},
                     }
                 ),
+                "answer_budget": wave_result.answer_budget,
+                "answer_budget_source": wave_result.answer_budget_source,
+                "answer_budget_config": (
+                    wave_result.answer_budget_config.to_dict()
+                    if wave_result.answer_budget_config is not None
+                    else {
+                        "default_budget": wave_result.answer_budget,
+                        "source": wave_result.answer_budget_source,
+                        "by_operation": {},
+                        "sources_by_operation": {},
+                    }
+                ),
                 "max_num_ctx": int(
                     getattr(
                         wave_result.writer_adapter,
@@ -1048,6 +1104,18 @@ def write_sealed_part(
             else {
                 "default_cap": wave_result.thinking_token_cap,
                 "source": wave_result.thinking_token_cap_source,
+                "by_operation": {},
+                "sources_by_operation": {},
+            }
+        ),
+        "answer_budget": wave_result.answer_budget,
+        "answer_budget_source": wave_result.answer_budget_source,
+        "answer_budget_config": (
+            wave_result.answer_budget_config.to_dict()
+            if wave_result.answer_budget_config is not None
+            else {
+                "default_budget": wave_result.answer_budget,
+                "source": wave_result.answer_budget_source,
                 "by_operation": {},
                 "sources_by_operation": {},
             }
