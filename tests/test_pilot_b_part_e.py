@@ -17,6 +17,7 @@ from reasoning_dataset_lab.pilot_b.models_and_build import (
     validate_models_against_licence_registry,
     verify_live_ollama_models,
 )
+from test_pilot_b_ollama_adapters import build_mock_ollama_http_transport
 
 
 def test_default_pilot_b_model_pins_have_three_distinct_families_and_digests() -> None:
@@ -113,6 +114,7 @@ def test_verify_live_checks_manifest_digests_and_refuses_drift(
 def test_stub_build_10_triads_end_to_end_and_build_report_fields(
     tmp_path: Path,
 ) -> None:
+    transport, _ = build_mock_ollama_http_transport()
     out_dir = tmp_path / "pilot_b_stub_run"
     result = run_pilot_b_build(
         output_dir=out_dir,
@@ -121,6 +123,7 @@ def test_stub_build_10_triads_end_to_end_and_build_report_fields(
         seed=1,
         shuffle_seed=42,
         thinking_token_cap=256,
+        http_transport=transport,
     )
 
     report = result["report"]
@@ -164,8 +167,13 @@ def test_stub_build_10_triads_end_to_end_and_build_report_fields(
 
 
 def test_cli_models_verify_live_and_pilot_b_stub(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
     out_dir = tmp_path / "cli_stub_out"
     code = run_cli(["pilot-b", "--stub", "10", "--output-dir", str(out_dir)])
     assert code == 0
@@ -416,8 +424,11 @@ def test_fix3_verify_live_pins_licence_layer_digest_source_match_and_provenance(
     assert "source_match_reason" in model_entry
 
     # 4. Item provenance records licence_layer_digest and source_match
+    transport, _ = build_mock_ollama_http_transport()
     out_dir = tmp_path / "fix3_prov_check"
-    run_pilot_b_build(output_dir=out_dir, triad_count=4, stub_mode=True)
+    run_pilot_b_build(
+        output_dir=out_dir, triad_count=4, stub_mode=True, http_transport=transport
+    )
     prov_lines = [
         json.loads(line)
         for line in (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
@@ -482,8 +493,11 @@ def test_fix4_default_specific_licence_ids_and_configurability(
     )
 
     # Verify build provenance records the specific default licence_ids
+    transport, _ = build_mock_ollama_http_transport()
     out_dir = tmp_path / "fix4_default_lics"
-    run_pilot_b_build(output_dir=out_dir, triad_count=2, stub_mode=True)
+    run_pilot_b_build(
+        output_dir=out_dir, triad_count=2, stub_mode=True, http_transport=transport
+    )
     prov_lines = [
         json.loads(line)
         for line in (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
@@ -588,8 +602,11 @@ def test_fix_gg_bundled_licence_id_and_reader_source_match_reasons(
 
     # 4. Provenance rows carry writer.licence_id + writer.bundled_licence_id,
     #    and reader judgments carry reader_licence_ids, reader_bundled_licence_ids, and reader_source_match_reasons
+    transport, _ = build_mock_ollama_http_transport()
     out_dir = tmp_path / "fix_gg_prov"
-    run_pilot_b_build(output_dir=out_dir, triad_count=2, stub_mode=True)
+    run_pilot_b_build(
+        output_dir=out_dir, triad_count=2, stub_mode=True, http_transport=transport
+    )
     prov_lines = [
         json.loads(line)
         for line in (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
@@ -622,10 +639,16 @@ def test_fix_gg_bundled_licence_id_and_reader_source_match_reasons(
 
 
 def test_fix_gi_licence_registry_required_and_provenance_sha256(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Card gi: non-stub build, --verify-live, and library validation require a registry file; --stub without registry works; report and provenance record registry path, sha256, and entry read_dates."""
     import hashlib
+
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
 
     # 1. Non-stub build with no registry is refused (library and CLI)
     with pytest.raises(RdlabError) as exc_no_reg:
@@ -633,6 +656,7 @@ def test_fix_gi_licence_registry_required_and_provenance_sha256(
             output_dir=tmp_path / "non_stub_no_reg",
             triad_count=2,
             stub_mode=False,
+            http_transport=transport,
         )
     assert exc_no_reg.value.code == "PILOT_B_LICENCE_REGISTRY_REQUIRED"
 
@@ -668,6 +692,7 @@ def test_fix_gi_licence_registry_required_and_provenance_sha256(
         output_dir=stub_out,
         triad_count=2,
         stub_mode=True,
+        http_transport=transport,
     )
     assert stub_res["status"] == "ok"
     assert len(stub_res["report"]["licence_registry_sha256"]) == 64
@@ -694,6 +719,7 @@ def test_fix_gi_licence_registry_required_and_provenance_sha256(
         triad_count=2,
         stub_mode=False,
         licence_registry_path=reg_path,
+        http_transport=transport,
     )
     report = real_res["report"]
     assert report["stub_mode"] is False

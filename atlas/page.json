@@ -18,8 +18,8 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 16,
-      "changed": 6,
+      "added": 2,
+      "changed": 14,
       "moved": 0,
       "parts": 3,
       "removed": 0
@@ -27,34 +27,39 @@
     "items": [
       {
         "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/cli.py, `main` gained a step, `verify_live_ollama_models`, before `values`.",
+        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `verify_live_ollama_models` gained a step, `refused_error`, before `exists`.",
         "subjects": [
-          "src/reasoning_dataset_lab/cli.py"
+          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
         ]
       },
       {
         "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/cli.py, `main` gained a step, `values`, before `run_pilot_b_build`.",
+        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `verify_live_ollama_models` lost a step, `refused_error`.",
         "subjects": [
-          "src/reasoning_dataset_lab/cli.py"
+          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
         ]
       },
       {
         "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/cli.py, `main` gained a step, `run_pilot_b_build`, before `usage_error`.",
+        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `refused_error`, before `exists`.",
         "subjects": [
-          "src/reasoning_dataset_lab/cli.py"
+          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
         ]
+      },
+      {
+        "kind": "sequence",
+        "sentence": "And 5 more changes to the order of work.",
+        "subjects": []
       },
       {
         "kind": "counts",
-        "sentence": "16 files added and 6 changed content, across 3 parts.",
+        "sentence": "2 files added and 14 changed content, across 3 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "c3a33e6cb3bc1409d06bdcc6d57517b9ea589106",
-      "generatedAt": "2026-10-25T01:17:51.577Z"
+      "commit": "65f76637c978cd487f8208a10aa87c866133d41d",
+      "generatedAt": "2026-10-25T05:42:49.880Z"
     },
     "unchanged": false
   },
@@ -63,9 +68,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "65f76637c978cd487f8208a10aa87c866133d41d",
+  "commit": "482311fc8c26ffbf54cfea24eeeb852a2ae0170c",
   "defaultBranch": "main",
-  "derived": "5 parts, mostly Python (24 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
+  "derived": "5 parts, mostly Python (26 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -80,12 +85,12 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 12
+          "files": 13
         },
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 10
+          "files": 11
         }
       ],
       "runs": [
@@ -116,7 +121,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 10
+          "files": 11
         }
       ],
       "runs": [
@@ -135,11 +140,11 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-25T05:42:49.880Z",
+  "generatedAt": "2026-10-25T08:47:42.410Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "2 reads use paths built at run time and are not named here.",
-    "7 writes and 12 reads go to a path their caller passes, not to this repository.",
+    "7 writes and 14 reads go to a path their caller passes, not to this repository.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
@@ -165,7 +170,7 @@
   ],
   "summary": "reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints.",
   "summaryFrom": "person",
-  "testFiles": 10,
+  "testFiles": 11,
   "testedBy": {
     "src": 10
   },

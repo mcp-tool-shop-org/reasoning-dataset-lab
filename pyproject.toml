@@ -40,7 +40,7 @@ packages = ["src/reasoning_dataset_lab"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
 addopts = "--cov=reasoning_dataset_lab --cov-report=term-missing --cov-fail-under=90"
 
 [tool.coverage.run]

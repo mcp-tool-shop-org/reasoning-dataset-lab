@@ -7,13 +7,18 @@ from pathlib import Path
 
 import pytest
 
+from pilot_b_fakes import DeterministicWriterAdapter, UnanimousReaderFake
 from reasoning_dataset_lab.errors import RdlabError
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     build_contrast_triad,
     generate_fact_tables,
 )
-from reasoning_dataset_lab.pilot_b.rendering import DeterministicWriterAdapter
-from reasoning_dataset_lab.pilot_b.unanimity import ModelIdentity, UnanimousReaderFake
+from reasoning_dataset_lab.pilot_b.models_and_build import DEFAULT_PILOT_B_MODEL_PINS
+from reasoning_dataset_lab.pilot_b.ollama import (
+    OllamaBlindReaderAdapter,
+    OllamaWriterAdapter,
+)
+from reasoning_dataset_lab.pilot_b.unanimity import ModelIdentity
 from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
     WaveCallTracker,
     freeze_sealed_part,
@@ -21,6 +26,7 @@ from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
     verify_sealed_part,
     write_sealed_part,
 )
+from test_pilot_b_ollama_adapters import build_mock_ollama_http_transport
 
 
 def _setup_models() -> tuple[ModelIdentity, ModelIdentity, ModelIdentity]:
@@ -116,9 +122,22 @@ def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
     tables = generate_fact_tables(n=6, seed=10)
     triads = [build_contrast_triad(t, seed=10 + idx) for idx, t in enumerate(tables)]
 
-    writer = DeterministicWriterAdapter()
-    r1 = UnanimousReaderFake(model=r1_id)
-    r2 = UnanimousReaderFake(model=r2_id)
+    transport, _ = build_mock_ollama_http_transport()
+    writer = OllamaWriterAdapter(
+        model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
+        thinking_token_cap=256,
+        http_transport=transport,
+    )
+    r1 = OllamaBlindReaderAdapter(
+        model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
+        thinking_token_cap=256,
+        http_transport=transport,
+    )
+    r2 = OllamaBlindReaderAdapter(
+        model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
+        thinking_token_cap=256,
+        http_transport=transport,
+    )
 
     wave_res = run_pilot_b_waves(
         triads=triads,
@@ -184,12 +203,25 @@ def test_freeze_refuses_key_bearing_field_or_per_item_key_association_in_part(
     tables = generate_fact_tables(n=4, seed=20)
     triads = [build_contrast_triad(t, seed=20 + idx) for idx, t in enumerate(tables)]
 
+    transport, _ = build_mock_ollama_http_transport()
     wave_res = run_pilot_b_waves(
         triads=triads,
         writer_model=writer_id,
-        writer_adapter=DeterministicWriterAdapter(),
-        reader_1=UnanimousReaderFake(model=r1_id),
-        reader_2=UnanimousReaderFake(model=r2_id),
+        writer_adapter=OllamaWriterAdapter(
+            model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
+            thinking_token_cap=256,
+            http_transport=transport,
+        ),
+        reader_1=OllamaBlindReaderAdapter(
+            model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
+            thinking_token_cap=256,
+            http_transport=transport,
+        ),
+        reader_2=OllamaBlindReaderAdapter(
+            model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
+            thinking_token_cap=256,
+            http_transport=transport,
+        ),
         thinking_token_cap=256,
         review_queue_path=tmp_path / "review_queue.jsonl",
     )

@@ -11,12 +11,14 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     build_contrast_triad,
     build_sample_fact_table,
 )
-from reasoning_dataset_lab.pilot_b.rendering import (
+from pilot_b_fakes import (
     DeterministicWriterAdapter,
     FlippedBoundWriterFake,
     RelationalSwapWriterFake,
     UnlistedNumberWriterFake,
     UnlistedProperNounWriterFake,
+)
+from reasoning_dataset_lab.pilot_b.rendering import (
     WordedTriad,
     check_rendered_material,
     check_worded_claim,

@@ -34,21 +34,32 @@ Computes the SHA-256 fingerprint across the five project files (`project.json`, 
 
 ### Verify Pilot B models and run a Pilot B build
 
+Pilot B runs the real pinned model chain (`qwen3.6:35b` writer, `nemotron-3.5-lightning:30b` and `granite4.2:8b` blind readers) via local loopback Ollama (`http://127.0.0.1:11434` by default; non-loopback URLs are refused per interlock #140) in four single-model waves (`render`, `word`, `reader_1`, `reader_2`), unloading each model from VRAM (`keep_alive: 0`) after its wave:
+
+- **Real models only, no auto-pull:** Both `OllamaWriterAdapter` and `OllamaBlindReaderAdapter` check local model presence and `manifest_digest` via `GET /api/tags` before the first `/api/chat` call and never auto-pull. If a pinned tag is missing or its digest does not match, the build refuses with a structured error (`PILOT_B_OLLAMA_MODEL_MISSING` or `PILOT_B_OLLAMA_DIGEST_MISMATCH`) whose `hint` names `ollama pull <tag>`. Deterministic/adversarial fakes live only in `tests/pilot_b_fakes.py` (`is_fake = True`) and are refused by the sealed-part writer (`PILOT_B_FAKE_ADAPTER_SEAL_REFUSED`).
+- **`--stub N` is a real-model run:** `rdlab pilot-b --stub 10` runs `10` triads (`30` items) through the real pinned Ollama writer and blind-reader models to measure per-wave wall time and token usage and re-estimate the full 50-triad build.
+- **GPU grant required:** Any live `rdlab pilot-b` run (both `--stub N` and full builds) executes real local model inference on Ollama and requires an active Publisher GPU grant before running.
+
 ```bash
 # Inspect pinned Pilot B models
 rdlab models
 
+# Pull pinned models manually before running (rdlab never auto-pulls)
+ollama pull qwen3.6:35b
+ollama pull nemotron-3.5-lightning:30b
+ollama pull granite4.2:8b
+
 # Verify live Ollama manifests and licence-layer digests against a real licence registry (--licence-registry is required)
 rdlab models --verify-live --licence-registry /path/to/licences/registry.json
 
-# Run a calibration stub build (uses in-memory fixture registry only when --licence-registry is omitted)
+# Run a 10-triad calibration stub on the real models (requires Publisher GPU grant; uses fixture registry only when --licence-registry is omitted)
 rdlab pilot-b --stub 10 --output-dir build/pilot_b_stub
 
-# Run a non-stub Pilot B build (--licence-registry is required; never falls back to a fixture)
+# Run a non-stub Pilot B build on the real models (requires Publisher GPU grant and --licence-registry)
 rdlab pilot-b --licence-registry /path/to/licences/registry.json --output-dir build/pilot_b
 ```
 
-Non-stub `rdlab pilot-b` builds and `rdlab models --verify-live` require `--licence-registry <path>` pointing to the real `licences/registry.json` file; omitting it refuses the run with `PILOT_B_LICENCE_REGISTRY_REQUIRED`. Both the build report (`pilot_b_report.json`) and item provenance (`provenance.jsonl`) record the registry path as given, its SHA-256 digest, and the `read_date` of each licence entry used by the model chain.
+Non-stub `rdlab pilot-b` builds and `rdlab models --verify-live` require `--licence-registry <path>` pointing to the real `licences/registry.json` file; omitting it refuses the run with `PILOT_B_LICENCE_REGISTRY_REQUIRED`. Both the build report (`pilot_b_report.json`) and item provenance (`provenance.jsonl`) record the registry path as given, its SHA-256 digest, the `read_date` of each licence entry used by the model chain, each adapter's class name, and per-call Ollama audit records (`model`, `digest`, `prompt_sha256`, `eval_tokens`, `thinking_tokens`, `wall_time_s`).
 
 ## Status
 
