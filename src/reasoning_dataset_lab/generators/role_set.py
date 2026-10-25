@@ -13,6 +13,7 @@ from role_set.generate import recipes, render, select, shortcuts, t10_variety
 
 from reasoning_dataset_lab.errors import refused_error
 from reasoning_dataset_lab.generators.base import (
+    ADAPTER_TRACE_SOURCE_MODEL_SUMMARY,
     BuiltItem,
     CanonRef,
     ItemMessage,
@@ -317,16 +318,18 @@ class RoleSetGenerator:
             },
         )
 
-        trace_steps: list[str] = [
+        adapter_trace_steps: list[str] = [
             f"line_{fact['line']}:{json.dumps(fact['rule'], separators=(',', ':'))}"
             for fact in built.model["facts"]
         ]
-        trace_steps.append(f"claim:{json.dumps(built.model['claim'], separators=(',', ':'))}")
-        trace_steps.append(
+        adapter_trace_steps.append(
+            f"claim:{json.dumps(built.model['claim'], separators=(',', ':'))}"
+        )
+        adapter_trace_steps.append(
             f"checked:answer={checked.answer}:solutions={checked.solutions}:stop_at={checked.stop_at}"
         )
-        trace_tuple = tuple(trace_steps)
-        trace_sha256 = hash_canonical_json(list(trace_tuple))
+        adapter_trace_tuple = tuple(adapter_trace_steps)
+        adapter_trace_sha256 = hash_canonical_json(list(adapter_trace_tuple))
 
         readings: dict[str, str] = {
             name: str(info.get("answer", ""))
@@ -363,11 +366,13 @@ class RoleSetGenerator:
             key_basis="construction",
             method="solver",
             solver="role_set.puzzle",
-            version=str(gen_rec["solver"]),
+            version=str(gen_rec["solver"]["sha256"]),
             key=checked.answer,
+            solutions=checked.solutions,
             question={"mode": "claim", "text": q_text},
-            trace=trace_tuple,
-            trace_sha256=trace_sha256,
+            adapter_trace_source=ADAPTER_TRACE_SOURCE_MODEL_SUMMARY,
+            adapter_trace=adapter_trace_tuple,
+            adapter_trace_sha256=adapter_trace_sha256,
             readings=readings,
             clues=clues_tuple,
             glosses=gloss_tuple,

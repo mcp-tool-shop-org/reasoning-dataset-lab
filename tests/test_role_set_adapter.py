@@ -24,7 +24,7 @@ from reasoning_dataset_lab.generators.role_set import (
     RoleSetGenerator,
     validate_shortcut_join,
 )
-from reasoning_dataset_lab.map import load_map_yaml
+from reasoning_dataset_lab.map import is_valid_sha256, load_map_yaml
 
 EXAMPLE_MAP = Path(__file__).resolve().parents[1] / "examples" / "t10-pilot-a.map.yaml"
 
@@ -97,8 +97,20 @@ def test_pilot_a_map_builds_all_12_buildable_cells_and_refuses_zero_capacity() -
 
         assert proof.method == "solver"
         assert proof.solver == "role_set.puzzle"
-        assert len(proof.trace) >= 2
-        assert len(proof.trace_sha256) == 64
+        assert is_valid_sha256(proof.version)
+        assert proof.solutions >= 1
+        assert proof.adapter_trace_source == "rdlab.adapter_model_summary"
+        assert len(proof.adapter_trace) >= 2
+        assert is_valid_sha256(proof.adapter_trace_sha256)
+        proof_dict = proof.to_dict()
+        assert "trace" not in proof_dict
+        assert "trace_sha256" not in proof_dict
+        assert "solver_trace" not in proof_dict
+        assert proof_dict["adapter_trace_source"] == "rdlab.adapter_model_summary"
+        assert proof_dict["adapter_trace"] == list(proof.adapter_trace)
+        assert proof_dict["adapter_trace_sha256"] == proof.adapter_trace_sha256
+        assert proof_dict["version"] == proof.version
+        assert proof_dict["solutions"] == proof.solutions
 
         shortcut_key = f"{cell.trait}.{cell.wrong_family}"
         assert shortcut_key in proof.readings
@@ -122,6 +134,49 @@ def test_pilot_a_map_builds_all_12_buildable_cells_and_refuses_zero_capacity() -
             gen.plan(cell, canon_refs, n=1, seed=42)
         assert exc_info.value.exit_code == EXIT_REFUSED
         assert exc_info.value.code == "CAPACITY_EXCEEDED"
+
+
+def test_role_set_adapter_trace_fields_and_no_trace_or_solver_trace() -> None:
+    map_data = load_map_yaml(EXAMPLE_MAP)
+    first_cell = MapCell.from_dict(map_data["cells"][0])
+    canon_refs = _canon_for_cell(first_cell)
+
+    gen = RoleSetGenerator()
+    slots = gen.plan(first_cell, canon_refs, n=1, seed=100)
+    _, proof, _ = gen.build(slots[0])
+
+    assert proof.adapter_trace_source == "rdlab.adapter_model_summary"
+    assert len(proof.adapter_trace) >= 2
+    assert is_valid_sha256(proof.adapter_trace_sha256)
+    assert not hasattr(proof, "trace")
+    assert not hasattr(proof, "trace_sha256")
+    assert not hasattr(proof, "solver_trace")
+    proof_dict = proof.to_dict()
+    assert "trace" not in proof_dict
+    assert "trace_sha256" not in proof_dict
+    assert "solver_trace" not in proof_dict
+    assert proof_dict["adapter_trace_source"] == "rdlab.adapter_model_summary"
+    assert proof_dict["adapter_trace"] == list(proof.adapter_trace)
+    assert proof_dict["adapter_trace_sha256"] == proof.adapter_trace_sha256
+
+
+def test_role_set_proof_version_is_solver_sha256_and_solutions_recorded() -> None:
+    map_data = load_map_yaml(EXAMPLE_MAP)
+    first_cell = MapCell.from_dict(map_data["cells"][0])
+    canon_refs = _canon_for_cell(first_cell)
+
+    gen = RoleSetGenerator()
+    slots = gen.plan(first_cell, canon_refs, n=1, seed=100)
+    _, proof, _ = gen.build(slots[0])
+
+    assert is_valid_sha256(proof.version)
+    assert not proof.version.startswith("{")
+    assert proof.method == "solver"
+    assert proof.solver == "role_set.puzzle"
+    assert proof.solutions >= 1
+    proof_dict = proof.to_dict()
+    assert proof_dict["version"] == proof.version
+    assert proof_dict["solutions"] == proof.solutions
 
 
 def test_role_set_generator_multi_slot_determinism_and_refusals() -> None:

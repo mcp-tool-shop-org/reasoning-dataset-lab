@@ -16,6 +16,7 @@ from reasoning_dataset_lab.generators.base import (
     ReceiptRecord,
     SlotSpec,
 )
+from reasoning_dataset_lab.map import is_valid_sha256
 
 
 def _sample_cell(capacity: int = 5, target: int = 2) -> MapCell:
@@ -104,10 +105,20 @@ def test_mock_generator_plan_and_build_deterministic() -> None:
     assert item.proof_basis == "proved"
     assert item.key_basis == "construction"
     assert item.key == proof.key == receipt.answer
-    assert len(proof.trace_sha256) == 64
-    assert len(receipt.messages_sha256) == 64
+    assert proof.solutions == 1
+    assert proof.adapter_trace_source == "rdlab.adapter_model_summary"
+    assert len(proof.adapter_trace) >= 2
+    assert is_valid_sha256(proof.adapter_trace_sha256)
+    assert is_valid_sha256(receipt.messages_sha256)
     assert item.to_dict()["id"] == item.id
-    assert proof.to_dict()["trace_sha256"] == proof.trace_sha256
+    proof_dict = proof.to_dict()
+    assert "trace" not in proof_dict
+    assert "trace_sha256" not in proof_dict
+    assert "solver_trace" not in proof_dict
+    assert proof_dict["adapter_trace_source"] == "rdlab.adapter_model_summary"
+    assert proof_dict["adapter_trace"] == list(proof.adapter_trace)
+    assert proof_dict["adapter_trace_sha256"] == proof.adapter_trace_sha256
+    assert proof_dict["solutions"] == 1
     assert receipt.to_dict()["generator_name"] == "mock"
 
 

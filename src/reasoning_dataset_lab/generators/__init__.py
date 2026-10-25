@@ -1,6 +1,7 @@
 """Generator interfaces and adapters for reasoning-dataset-lab."""
 
 from reasoning_dataset_lab.generators.base import (
+    ADAPTER_TRACE_SOURCE_MODEL_SUMMARY,
     BuiltItem,
     CanonRef,
     Generator,
@@ -26,6 +27,7 @@ from reasoning_dataset_lab.generators.role_set import (
 )
 
 __all__ = [
+    "ADAPTER_TRACE_SOURCE_MODEL_SUMMARY",
     "ASPIRE_SI_GATES_COMMIT",
     "ASPIRE_SI_GATES_FULL_SHA",
     "ASPIRE_SI_GATES_SHA256",

@@ -13,6 +13,7 @@ from reasoning_dataset_lab.errors import refused_error
 ProofBasis = Literal["proved", "judged"]
 KeyBasis = Literal["construction", "source"]
 SlotMetadataValue = str | int | float | bool
+ADAPTER_TRACE_SOURCE_MODEL_SUMMARY: str = "rdlab.adapter_model_summary"
 
 
 @dataclass(frozen=True)
@@ -236,9 +237,11 @@ class ProofRecord:
     solver: str
     version: str
     key: str
+    solutions: int
     question: Mapping[str, str | int]
-    trace: tuple[str, ...]
-    trace_sha256: str
+    adapter_trace_source: str
+    adapter_trace: tuple[str, ...]
+    adapter_trace_sha256: str
     readings: Mapping[str, str]
     clues: tuple[Mapping[str, object], ...]
     glosses: tuple[str, ...]
@@ -255,9 +258,11 @@ class ProofRecord:
             "solver": self.solver,
             "version": self.version,
             "key": self.key,
+            "solutions": self.solutions,
             "question": dict(self.question),
-            "trace": list(self.trace),
-            "trace_sha256": self.trace_sha256,
+            "adapter_trace_source": self.adapter_trace_source,
+            "adapter_trace": list(self.adapter_trace),
+            "adapter_trace_sha256": self.adapter_trace_sha256,
             "readings": dict(self.readings),
             "clues": [dict(clue) for clue in self.clues],
             "glosses": list(self.glosses),
@@ -398,11 +403,11 @@ class MockGenerator:
             {"role": "assistant", "thinking": thinking_text, "content": reply_text},
         )
         messages_sha256 = hash_canonical_json([dict(m) for m in messages])
-        trace = (
+        adapter_trace = (
             f"clue_0:{slot.cell.wrong_family}:seed={slot.seed}",
             f"answer:{key}",
         )
-        trace_sha256 = hash_canonical_json(list(trace))
+        adapter_trace_sha256 = hash_canonical_json(list(adapter_trace))
         structure = str(slot.metadata.get("structure", "interval_bound"))
 
         item = ItemRecord(
@@ -431,9 +436,11 @@ class MockGenerator:
             solver="mock.solver",
             version="0.2.0",
             key=key,
+            solutions=1,
             question={"mode": "claim", "text": "Does the claim hold?"},
-            trace=trace,
-            trace_sha256=trace_sha256,
+            adapter_trace_source=ADAPTER_TRACE_SOURCE_MODEL_SUMMARY,
+            adapter_trace=adapter_trace,
+            adapter_trace_sha256=adapter_trace_sha256,
             readings=readings,
             clues=({"form": "count", "op": "="},),
             glosses=("1. Mock setting", "2. Mock clue"),
