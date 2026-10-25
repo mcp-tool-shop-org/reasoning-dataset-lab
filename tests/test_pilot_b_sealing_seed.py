@@ -46,11 +46,13 @@ TOLERANCE = 0.2  # 90 items: the standard deviation of a chance guess is about 0
 SECRET_SEED = 18_446_744_073_709_551_629  # a little over 64 bits
 
 
-def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, triads: int = TRIADS, **seal_kwargs):
+def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, triads: int = TRIADS, mutate_wave=None, wrap_transport=None, **seal_kwargs):
     writer_id, _r1, _r2 = _setup_models()
     tables = generate_fact_tables(n=triads, seed=10)
     triads = [build_contrast_triad(t, seed=10 + idx) for idx, t in enumerate(tables)]
     transport, _ = build_mock_ollama_http_transport()
+    if wrap_transport is not None:
+        transport = wrap_transport(transport)
     monkeypatch.setattr("reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport", transport)
     wave_res = run_pilot_b_waves(
         triads=triads,
@@ -61,6 +63,8 @@ def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, triads: i
         num_predict=256,
         review_queue_path=tmp_path / f"{name}-review_queue.jsonl",
     )
+    if mutate_wave is not None:
+        mutate_wave(wave_res)
     part_dir = tmp_path / f"{name}-part"
     keys_path = tmp_path / f"{name}-private" / "keys.sealed.jsonl"
     write_sealed_part(
@@ -1030,7 +1034,7 @@ def test_the_renderer_is_the_only_writer(tmp_path, monkeypatch):
     assert ws._render_json_doc({"é": 1}) == b'{\n  "\\u00e9": 1\n}\n'
 
 
-# ── hs: per-build secret variation in generated tables ───────────────────────────────────────────────
+# ── per-build secret variation in generated tables ───────────────────────────────────────────────────
 
 
 def default_table_probe(part_dir: Path) -> dict[str, str]:
@@ -1114,11 +1118,11 @@ def test_verify_refuses_table_secret_in_public_files_or_missing_from_store(tmp_p
     store = _sealed_store(keys_path)
     secret_val = store["table_secret"]
 
-    report = tmp_path / "leak_report.json"
+    report = tmp_path / "extra_report.json"
     report.write_text(json.dumps({"note": str(secret_val)}), encoding="utf-8")
     assert _verify_code(part_dir, keys_path, extra_public_files=[report]) == "PILOT_B_SEALED_SEED_IN_PUBLIC_FILE"
 
-    report_hex = tmp_path / "leak_report_hex.json"
+    report_hex = tmp_path / "extra_report_hex.json"
     report_hex.write_text(json.dumps({"note": hex(secret_val)[2:]}), encoding="utf-8")
     assert _verify_code(part_dir, keys_path, extra_public_files=[report_hex]) == "PILOT_B_SEALED_SEED_IN_PUBLIC_FILE"
 
@@ -1126,4 +1130,466 @@ def test_verify_refuses_table_secret_in_public_files_or_missing_from_store(tmp_p
     bad_store.pop("table_secret", None)
     _write_store(keys_path, bad_store)
     assert _verify_code(part_dir, keys_path) == "PILOT_B_WEAK_TABLE_SECRET"
+
+
+# ── the render inputs are held to an honest build's shape; the report is cross-checked; the maps are closed ──
+
+
+def _poison_the_sealed_store(part_dir: Path, keys_path: Path, mutate) -> None:
+    """What an attacker with write access to the sealed store can do: change the render inputs, then re-render
+    every sealed and public file from them, so that every byte-for-byte comparison would still pass."""
+
+    from reasoning_dataset_lab.pilot_b import waves_and_sealing as ws
+
+    store = _sealed_store(keys_path)
+    inputs_path = keys_path.parent / "render_inputs.sealed.json"
+    inputs = json.loads(inputs_path.read_text(encoding="utf-8"))
+    mutate(inputs)
+    inputs_path.write_bytes(ws._render_json_doc(inputs))
+    rendered = ws._render_part(inputs, store["shuffle_seed"], bytes.fromhex(store["commitment_key"]))
+    keys_path.write_bytes(rendered["keys.sealed.jsonl"])
+    (keys_path.parent / "call_metrics.sealed.jsonl").write_bytes(rendered["call_metrics.sealed.jsonl"])
+    for name in ("items.jsonl", "provenance.jsonl", "part.json", "checksums.txt"):
+        (part_dir / name).write_bytes(rendered[name])
+
+
+def _poison_claims(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["claim_text"] += " " * (i % 3)
+
+
+def _poison_proof_version(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["proof"]["version"] = f"0.3.{i // 3:03d}"
+
+
+def _poison_prover(inputs):
+    inputs["entries"][4]["proof"]["prover"] = "other"
+
+
+def _poison_triad_shape(inputs):
+    del inputs["entries"][5]
+
+
+def _poison_class_order(inputs):
+    inputs["entries"][0], inputs["entries"][1] = inputs["entries"][1], inputs["entries"][0]
+
+
+def _poison_shared_material(inputs):
+    inputs["entries"][1]["material"] += " "
+
+
+def _poison_reader_prompt(inputs):
+    inputs["entries"][0]["reader_call_records"][0]["prompt_sha256"] = "0" * 64
+
+
+def _poison_extra_input(inputs):
+    inputs["note"] = "x"
+
+
+def _poison_pass_rate(inputs):
+    inputs["pass_rate_per_class"]["supported"] = 2.0
+
+
+def _poison_waves(inputs):
+    inputs["waves"].reverse()
+
+
+def _poison_dates(inputs):
+    inputs["registry"]["read_dates"]["bare-index"] = "001"
+
+
+def _poison_distribution_role(inputs):
+    inputs["call_distributions"]["extra"] = {}
+
+
+def _poison_operation(inputs):
+    inputs["num_predict_config"]["by_operation"]["extra_op"] = {"source": "x", "value": 1}
+
+
+@pytest.mark.parametrize(
+    "poison",
+    [
+        _poison_claims,
+        _poison_proof_version,
+        _poison_prover,
+        _poison_triad_shape,
+        _poison_class_order,
+        _poison_shared_material,
+        _poison_reader_prompt,
+        _poison_extra_input,
+        _poison_pass_rate,
+        _poison_waves,
+        _poison_dates,
+        _poison_distribution_role,
+        _poison_operation,
+    ],
+    ids=lambda f: f.__name__.removeprefix("_poison_"),
+)
+def test_a_poisoned_sealed_store_cannot_be_frozen(tmp_path, monkeypatch, poison):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "inv-" + poison.__name__)
+    _poison_the_sealed_store(part_dir, keys_path, poison)
+    with pytest.raises(RdlabError) as caught:
+        freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert caught.value.code in {
+        "PILOT_B_SEALED_INPUT_INVALID",
+        "PILOT_B_SEALED_CONTENT_LEAK",
+        "PILOT_B_SEALED_SCHEMA_MISMATCH",
+    }
+
+
+def test_poisoned_inputs_are_refused_at_write_time_too(tmp_path, monkeypatch):
+    def poison(wave_res):
+        wave_res.kept_triads[0].worded.worded_claims["supported"] += "  "
+
+    with pytest.raises(RdlabError) as caught:
+        _build(tmp_path, monkeypatch, "inv-write", shuffle_seed=SECRET_SEED, mutate_wave=poison)
+    assert caught.value.code == "PILOT_B_SEALED_INPUT_INVALID"
+
+
+def test_an_honest_build_passes_the_input_checks_at_any_size(tmp_path, monkeypatch):
+    from reasoning_dataset_lab.pilot_b import waves_and_sealing as ws
+
+    for triads in (1, 2, 5):
+        part_dir, keys_path = _build(tmp_path, monkeypatch, f"inv-ok{triads}", triads=triads, shuffle_seed=SECRET_SEED)
+        inputs = json.loads((keys_path.parent / "render_inputs.sealed.json").read_text(encoding="utf-8"))
+        ws._check_render_inputs(inputs)
+
+
+def test_a_value_held_by_two_classes_only_is_refused_by_name(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "inv-two")
+    truth = _true_keys(keys_path)
+    seen = {"u": 0}
+
+    def bucket(row):
+        key = truth[row["id"]]
+        if key == "supported":
+            row["writer"]["model"] = "m-A"
+        elif key == "cannot_tell":
+            row["writer"]["model"] = "m-B"
+        else:
+            seen["u"] += 1
+            row["writer"]["model"] = "m-" + "AB"[seen["u"] % 2]
+
+    _edit_provenance(part_dir, bucket)
+    _rewrite_checksums(part_dir)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_CONTENT_LEAK"
+
+
+def _rewrite_report(out: Path, mutate) -> Path:
+    from reasoning_dataset_lab.pilot_b.waves_and_sealing import write_public_report
+
+    keys_path = out / "sealed_store" / "keys.sealed.jsonl"
+    report_path = out / "reports" / "pilot_b_report.json"
+    report = json.loads((out / "sealed_store" / "report.sealed.json").read_text(encoding="utf-8"))["report"]
+    mutate(report)
+    write_public_report(report_path, keys_path, report)
+    return report_path
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r["licence_registry"]["read_dates"].update({str(i): "2026-01-01" for i in range(1, 12)}),
+        lambda r: r["licence_registry"]["read_dates"].update({"openmdw-1.1": "2020-01-01"}),
+        lambda r: r["licence_registry"].update(path="elsewhere"),
+    ],
+    ids=["bare-indices", "another-date", "another-path"],
+)
+def test_a_poisoned_report_in_the_sealed_store_is_cross_checked_against_the_inputs(tmp_path, monkeypatch, mutate):
+    out, _result = _stub_build(tmp_path, monkeypatch, "inv-report")
+    part_dir, keys_path = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl"
+    report_path = _rewrite_report(out, mutate)
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report_path]) == "PILOT_B_SEALED_RENDER_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("mutate", "schema"),
+    [
+        (lambda d: d["num_predict_config"]["by_operation"].update(extra_op={"source": "x", "value": 1}), "part"),
+        (lambda d: d["num_predict_config"]["documented_defaults_by_operation"].update(extra_op=1), "part"),
+        (lambda d: d["call_distributions"].update(extra_role={}), "part"),
+        (lambda d: d["call_distributions"]["writer"].update(extra_op={}), "part"),
+    ],
+    ids=["by-operation", "defaults", "role", "operation"],
+)
+def test_the_schema_maps_are_closed(tmp_path, monkeypatch, mutate, schema):
+    from reasoning_dataset_lab.pilot_b import schema_check
+
+    part_dir, _keys_path = _fresh(tmp_path, monkeypatch, "inv-schema")
+    doc = json.loads((part_dir / "part.json").read_text(encoding="utf-8"))
+    assert schema_check.validate(doc, schema) == []
+    mutate(doc)
+    assert schema_check.validate(doc, schema)
+
+
+def test_the_schemas_only_take_dates_as_licence_read_dates(tmp_path, monkeypatch):
+    from reasoning_dataset_lab.pilot_b import schema_check
+
+    out, _result = _stub_build(tmp_path, monkeypatch, "inv-dates")
+    report = json.loads((out / "reports" / "pilot_b_report.json").read_text(encoding="utf-8"))
+    assert schema_check.validate(report, "report") == []
+    report["licence_registry"]["read_dates"]["bare-index"] = "001"
+    assert schema_check.validate(report, "report")
+
+
+# ── residual sealed-store channels: each rule has Argon's poisoning example as a refusal test ──────────────
+
+
+def _class_buckets(i: int, entry: dict, size: int = 64) -> str:
+    """A class-frequency bucket digest: the same value for every entry of a class (or a few for a larger class)."""
+
+    group = {"supported": "d", "unsupported": "e", "cannot_tell": "f"}[entry["key"]]
+    return group * size
+
+
+def _poison_trace_buckets(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["proof"]["trace_sha256"] = _class_buckets(i, entry)
+
+
+def _poison_word_prompt_buckets(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["writer_call_records"][1]["prompt_sha256"] = _class_buckets(i, entry)
+
+
+def _poison_render_prompt_per_class(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["writer_call_records"][0]["prompt_sha256"] = _class_buckets(i, entry)
+
+
+def _poison_non_hex_prompt(inputs):
+    inputs["entries"][0]["writer_call_records"][1]["prompt_sha256"] = "not-a-digest"
+
+
+def _poison_call_limit(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["writer_call_records"][0]["num_predict"] = 1000 + i // 3
+
+
+def _poison_reader_call_field(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["reader_call_records"][1]["num_predict_source"] = f"src-{i // 3}"
+
+
+def _poison_domain_per_triad(inputs):
+    for i, entry in enumerate(inputs["entries"]):
+        entry["domain"] = f"turbines-{i // 3:03d}"
+
+
+def _poison_duplicate_table(inputs):
+    for entry in inputs["entries"]:
+        entry["table_id"] = inputs["entries"][0]["table_id"]
+
+
+def _poison_prover_version(inputs):
+    for entry in inputs["entries"]:
+        entry["proof"]["version"] = "9.9.9"
+
+
+def _poison_read_date_keys(inputs):
+    inputs["registry"]["read_dates"].update({f"{i:03d}": f"2026-01-0{1 + i % 3}" for i in range(1, 151)})
+
+
+def _recompute_reader_prompts(entry: dict) -> None:
+    """What a careful attacker does so the reader prompt digests still match the text they changed."""
+
+    from reasoning_dataset_lab.pilot_b.ollama import _canonical_prompt_sha256, build_reader_read_messages
+    from reasoning_dataset_lab.pilot_b.unanimity import build_blind_read_prompt
+
+    sha = _canonical_prompt_sha256(
+        build_reader_read_messages(
+            build_blind_read_prompt(
+                triad_id=entry["triad_id"],
+                claim_id="",
+                closure=entry["closure"],
+                material=entry["material"],
+                claim_text=entry["claim_text"],
+            )
+        )
+    )
+    for record in entry["reader_call_records"]:
+        record["prompt_sha256"] = sha
+
+
+def _poison_whitespace_watermark(inputs):
+    marks = {"supported": "", "unsupported": "  ", "cannot_tell": "   "}
+    for entry in inputs["entries"]:
+        head, _, rest = entry["claim_text"].partition(" ")
+        entry["claim_text"] = head + " " + marks[entry["key"]] + rest
+        _recompute_reader_prompts(entry)
+
+
+def _poison_material_whitespace(inputs):
+    for entry in inputs["entries"]:
+        entry["material"] = entry["material"].replace(" ", "  ", 1)
+        _recompute_reader_prompts(entry)
+
+
+def _poison_equal_claims(inputs):
+    group = inputs["entries"][:3]
+    for entry in group:
+        entry["claim_text"] = group[0]["claim_text"]
+        _recompute_reader_prompts(entry)
+
+
+@pytest.mark.parametrize(
+    "poison",
+    [
+        _poison_trace_buckets,
+        _poison_word_prompt_buckets,
+        _poison_render_prompt_per_class,
+        _poison_non_hex_prompt,
+        _poison_call_limit,
+        _poison_reader_call_field,
+        _poison_domain_per_triad,
+        _poison_duplicate_table,
+        _poison_prover_version,
+        _poison_read_date_keys,
+        _poison_whitespace_watermark,
+        _poison_material_whitespace,
+        _poison_equal_claims,
+    ],
+    ids=lambda f: f.__name__.removeprefix("_poison_"),
+)
+def test_residual_sealed_store_channels_are_refused(tmp_path, monkeypatch, poison):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "t3-" + poison.__name__)
+    _poison_the_sealed_store(part_dir, keys_path, poison)
+    with pytest.raises(RdlabError) as caught:
+        freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert caught.value.code == "PILOT_B_SEALED_INPUT_INVALID"
+
+
+def test_the_report_coverage_must_be_the_catalogues_domains_with_the_builds_counts(tmp_path, monkeypatch):
+    out, _result = _stub_build(tmp_path, monkeypatch, "t3-coverage")
+    part_dir, keys_path = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl"
+
+    def bare_indices(report):
+        report["coverage"]["by_domain"].update({f"{i:03d}": {"built": i % 3, "target": 1} for i in range(1, 151)})
+
+    def wrong_count(report):
+        domain = next(iter(report["coverage"]["by_domain"]))
+        report["coverage"]["by_domain"][domain]["built"] += 3
+
+    for mutate in (bare_indices, wrong_count):
+        report_path = _rewrite_report(out, mutate)
+        assert _verify_code(part_dir, keys_path, extra_public_files=[report_path]) == "PILOT_B_SEALED_RENDER_MISMATCH"
+
+
+def test_the_domain_catalogue_is_read_through_its_api_not_copied():
+    source = (Path(__file__).resolve().parents[1] / "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py").read_text(
+        encoding="utf-8"
+    )
+    assert "DOMAIN_CATALOGUE" in source
+    for name in ("turbines", "relays", "vessels", "furnaces", "pumps"):
+        assert f'"{name}"' not in source
+
+
+@pytest.mark.parametrize("triads", [10, 30])
+def test_honest_builds_at_realistic_sizes_pass_the_residual_channel_rules(tmp_path, monkeypatch, triads):
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr("reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport", transport)
+    for seed in (1, 2):
+        out = tmp_path / f"t3-ok-{triads}-{seed}"
+        run_pilot_b_build(output_dir=out, triad_count=triads, stub_mode=True, seed=seed, num_predict=256)
+        from reasoning_dataset_lab.pilot_b.waves_and_sealing import part_status
+
+        part, keys = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl"
+        verify_sealed_part(part_dir=part, keys_sealed_path=keys, extra_public_files=[out / "reports" / "pilot_b_report.json"])
+        assert part_status(part, keys) == "frozen"
+
+
+# ── the model of each call is the recorded model; coverage targets add up; writer whitespace is regular ───
+
+
+def _poison_writer_model(inputs):
+    for entry in inputs["entries"]:
+        for record in entry["writer_call_records"]:
+            record["model"] = "spoofed-render-model:99b"
+
+
+def _poison_reader_model(inputs):
+    for entry in inputs["entries"]:
+        entry["reader_call_records"][1]["model"] = "spoofed-reader:1b"
+
+
+@pytest.mark.parametrize("poison", [_poison_writer_model, _poison_reader_model], ids=lambda f: f.__name__[8:])
+def test_a_call_made_by_another_model_than_the_recorded_one_is_refused(tmp_path, monkeypatch, poison):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "t4-" + poison.__name__)
+    _poison_the_sealed_store(part_dir, keys_path, poison)
+    with pytest.raises(RdlabError) as caught:
+        freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert caught.value.code == "PILOT_B_SEALED_INPUT_INVALID"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda c: c.update(target=999_999_999),
+        lambda c: c.update(target=c["built"] + 1),
+        lambda c: c.update(built=True),
+        lambda c: c.update(target=float(c["target"])),
+        lambda c: c.update(built=c["built"] + 3, target=c["target"] + 3),
+    ],
+    ids=["huge-target", "target-not-a-multiple-of-3", "boolean-built", "float-target", "sum-differs"],
+)
+def test_the_report_coverage_numbers_must_add_up(tmp_path, monkeypatch, mutate):
+    out, _result = _stub_build(tmp_path, monkeypatch, "t4-cov")
+    part_dir, keys_path = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl"
+
+    def poison(report):
+        domain = next(iter(report["coverage"]["by_domain"]))
+        mutate(report["coverage"]["by_domain"][domain])
+
+    report_path = _rewrite_report(out, poison)
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report_path]) in {
+        "PILOT_B_SEALED_RENDER_MISMATCH",
+        "PILOT_B_SEALED_SCHEMA_MISMATCH",
+    }
+
+
+def test_the_coverage_check_itself_refuses_a_coverage_entry_that_is_not_a_mapping():
+    from reasoning_dataset_lab.pilot_b.waves_and_sealing import _check_report_coverage
+
+    inputs = {"entries": [], "triads_kept": 0, "triads_failed": 0}
+    with pytest.raises(RdlabError) as caught:
+        _check_report_coverage({"coverage": {"by_domain": {"turbines": 7}}}, inputs)
+    assert caught.value.code == "PILOT_B_SEALED_RENDER_MISMATCH"
+
+
+def _irregular_whitespace(transport):
+    """A writer that doubles every space and ends lines with CRLF, as a model can."""
+
+    def wrapped(method, url, body=None):
+        reply = transport(method, url, body)
+        messages = (body or {}).get("messages") or []
+        user = str(messages[-1].get("content") or "") if messages else ""
+        if method == "POST" and ("FACTS_JSON:" in user or "CLAIM_JSON:" in user):
+            text = reply["message"]["content"].replace(" ", "  ").replace("\n", "\r\n")
+            reply = {**reply, "message": {**reply["message"], "content": text + ("\r\n" if "FACTS_JSON:" in user else "")}}
+        return reply
+
+    return wrapped
+
+
+def test_a_writer_that_emits_irregular_whitespace_still_seals(tmp_path, monkeypatch):
+    part_dir, keys_path = _build(
+        tmp_path, monkeypatch, "t4-ws", triads=4, shuffle_seed=SECRET_SEED, wrap_transport=_irregular_whitespace
+    )
+    verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)["frozen"] is True
+    for row in _jsonl(part_dir / "items.jsonl"):
+        for text in (row["material"], row["claim"]):
+            assert "  " not in text and "\r" not in text
+        assert not row["material"].endswith("\n")
+
+
+def test_sealing_store_closed_shape_requires_table_secret_and_refuses_unknown_keys(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "t4-store-shape")
+    store = _sealed_store(keys_path)
+    assert "table_secret" in store
+
+    extra_store = dict(store, extra_field="unexpected")
+    _write_store(keys_path, extra_store)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_STORE_INVALID"
 
