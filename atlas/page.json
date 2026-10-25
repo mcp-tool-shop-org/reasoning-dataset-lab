@@ -18,46 +18,31 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 1,
-      "changed": 0,
+      "added": 0,
+      "changed": 8,
       "moved": 0,
-      "parts": 0,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "docs/calibration-2026-10-25.md is now read by tests/test_pilot_b_ollama_adapters.py.",
-        "subjects": [
-          "docs/calibration-2026-10-25.md",
-          "tests/test_pilot_b_ollama_adapters.py"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "docs/calibration-2026-10-25.md is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "docs/calibration-2026-10-25.md"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "1 file added.",
+        "sentence": "Nothing structural changed since 2026-10-25; 8 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "cb279c47da39777b0fd3a74444fc4293507519a7",
-      "generatedAt": "2026-10-25T13:03:33.990Z"
+      "commit": "1cff8235280e0ebbc866536dffe5da19794f3988",
+      "generatedAt": "2026-10-25T13:06:33.504Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "1cff8235280e0ebbc866536dffe5da19794f3988",
+  "commit": "9c217a25681980f1c3b529f5dde98eca0bc4da13",
   "defaultBranch": "main",
   "derived": "5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
@@ -129,7 +114,7 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-25T13:06:33.504Z",
+  "generatedAt": "2026-10-25T13:53:57.692Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "2 reads use paths built at run time and are not named here.",

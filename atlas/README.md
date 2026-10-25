@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-25 from commit 1cff823 by Atlas 1.24.0.
+Mapped at 2026-10-25 from commit 9c217a2 by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,11 +8,9 @@ reasoning-dataset-lab validates dataset maps, loads the five-file project config
 
 5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
 
-## What changed since 2026-10-25 (cb279c4)
+## What changed since 2026-10-25 (1cff823)
 
-- docs/calibration-2026-10-25.md is now read by tests/test_pilot_b_ollama_adapters.py.
-- docs/calibration-2026-10-25.md is new and belongs to no part, so atlas check fails on it against the previous map.
-- 1 file added.
+Nothing structural changed since 2026-10-25; 8 files changed content.
 
 ## What comes in
 
