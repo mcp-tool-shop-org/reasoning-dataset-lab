@@ -20,6 +20,7 @@ from reasoning_dataset_lab.map import (
     canonical_map_bytes,
     is_valid_sha256,
     load_map_yaml,
+    validate_canon_dir,
     validate_map,
 )
 
@@ -375,14 +376,10 @@ def compute_config_fingerprint(
         )
 
     if resolved_canon.exists() and resolved_canon.is_dir():
-        canon_files = sorted(
-            (p for p in resolved_canon.rglob("*") if p.is_file()),
-            key=lambda p: p.relative_to(resolved_canon).as_posix(),
-        )
-        _update_framed(hasher, "canon:count", str(len(canon_files)).encode("utf-8"))
-        for cfile in canon_files:
-            rel_posix = cfile.relative_to(resolved_canon).as_posix()
-            _update_framed(hasher, f"canon:file:{rel_posix}", normalize_text_bytes(cfile.read_bytes()))
+        validated_canon = validate_canon_dir(resolved_canon)
+        _update_framed(hasher, "canon:count", str(len(validated_canon)).encode("utf-8"))
+        for rel_posix, norm_bytes in validated_canon:
+            _update_framed(hasher, f"canon:file:{rel_posix}", norm_bytes)
     else:
         _update_framed(hasher, "canon:absent", b"")
 

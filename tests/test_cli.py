@@ -79,3 +79,56 @@ def test_cli_main_raises_system_exit(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main()
     assert exc_info.value.code == EXIT_CLEAN
+
+
+def test_cli_refuses_binary_non_utf8_and_bad_extension_in_canon(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    map_copy = tmp_path / "map.yaml"
+    map_copy.write_text(EXAMPLE_MAP_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    canon_dir = tmp_path / "canon" / "trait"
+    canon_dir.mkdir(parents=True)
+
+    # 1. NUL byte in .yaml canon file -> refused with exit code 1 by both map check and project fingerprint
+    canon_file = canon_dir / "t10.yaml"
+    canon_file.write_bytes(b"id: trait:T10\x00binary")
+
+    assert run_cli(["map", "check", str(map_copy)]) == EXIT_REFUSED
+    err_map = json.loads(capsys.readouterr().err)
+    assert err_map["code"] == "CANON_BINARY_FILE"
+
+    assert run_cli(["project", "fingerprint", str(tmp_path)]) == EXIT_REFUSED
+    err_fp = json.loads(capsys.readouterr().err)
+    assert err_fp["code"] == "CANON_BINARY_FILE"
+
+    # 2. Invalid UTF-8 bytes in .yaml canon file -> refused with exit code 1 (no UnicodeDecodeError escape)
+    canon_file.write_bytes(b"\xff\xfe\xfd")
+    assert run_cli(["map", "check", str(map_copy)]) == EXIT_REFUSED
+    err_utf8_map = json.loads(capsys.readouterr().err)
+    assert err_utf8_map["code"] == "CANON_INVALID_UTF8"
+
+    assert run_cli(["project", "fingerprint", str(tmp_path)]) == EXIT_REFUSED
+    err_utf8_fp = json.loads(capsys.readouterr().err)
+    assert err_utf8_fp["code"] == "CANON_INVALID_UTF8"
+
+    # 3. Disallowed extension (.bin) in canon/ -> refused with exit code 1
+    canon_file.unlink()
+    bad_ext = canon_dir / "t10.bin"
+    bad_ext.write_text("plain text but wrong extension\n", encoding="utf-8")
+    assert run_cli(["map", "check", str(map_copy)]) == EXIT_REFUSED
+    err_ext_map = json.loads(capsys.readouterr().err)
+    assert err_ext_map["code"] == "CANON_INVALID_EXTENSION"
+
+    assert run_cli(["project", "fingerprint", str(tmp_path)]) == EXIT_REFUSED
+    err_ext_fp = json.loads(capsys.readouterr().err)
+    assert err_ext_fp["code"] == "CANON_INVALID_EXTENSION"
+
+    # 4. Valid UTF-8 text canon files (.yaml, .yml, .json, .txt, .md) pass both commands
+    bad_ext.unlink()
+    (canon_dir / "t10.yaml").write_text("id: trait:T10\n", encoding="utf-8")
+    (canon_dir / "notes.md").write_text("# Notes\n", encoding="utf-8")
+    assert run_cli(["map", "check", str(map_copy)]) == EXIT_CLEAN
+    capsys.readouterr()
+    assert run_cli(["project", "fingerprint", str(tmp_path)]) == EXIT_CLEAN
+    capsys.readouterr()

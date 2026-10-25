@@ -1,0 +1,51 @@
+"""Generator interfaces and adapters for reasoning-dataset-lab."""
+
+from reasoning_dataset_lab.generators.base import (
+    ADAPTER_TRACE_SOURCE_MODEL_SUMMARY,
+    BuiltItem,
+    CanonRef,
+    Generator,
+    ItemMessage,
+    ItemRecord,
+    MapCell,
+    MockGenerator,
+    PinRecord,
+    ProofRecord,
+    ReceiptRecord,
+    SlotMetadataValue,
+    SlotSpec,
+    WriterRecord,
+)
+from reasoning_dataset_lab.generators.role_set import (
+    ASPIRE_SI_GATES_COMMIT,
+    ASPIRE_SI_GATES_FULL_SHA,
+    ASPIRE_SI_GATES_SHA256,
+    ROLE_SET_COMMIT,
+    ROLE_SET_FULL_SHA,
+    RoleSetGenerator,
+    validate_shortcut_join,
+)
+
+__all__ = [
+    "ADAPTER_TRACE_SOURCE_MODEL_SUMMARY",
+    "ASPIRE_SI_GATES_COMMIT",
+    "ASPIRE_SI_GATES_FULL_SHA",
+    "ASPIRE_SI_GATES_SHA256",
+    "BuiltItem",
+    "CanonRef",
+    "Generator",
+    "ItemMessage",
+    "ItemRecord",
+    "MapCell",
+    "MockGenerator",
+    "PinRecord",
+    "ProofRecord",
+    "ROLE_SET_COMMIT",
+    "ROLE_SET_FULL_SHA",
+    "ReceiptRecord",
+    "RoleSetGenerator",
+    "SlotMetadataValue",
+    "SlotSpec",
+    "WriterRecord",
+    "validate_shortcut_join",
+]

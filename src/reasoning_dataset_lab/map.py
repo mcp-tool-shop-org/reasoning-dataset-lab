@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from role_set.generate.shortcuts import REGISTRY as ROLE_SET_SHORTCUT_REGISTRY
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error, usage_error
 
@@ -88,22 +89,20 @@ FORBIDDEN_WRONG_FAMILY_ALIASES: dict[str, str] = {
     "ceiling_as_exact": "ceiling_read_as_exact",
 }
 
-# Design v0.3 build note 3:
+# Design v0.3 build note 3 & dx Fix #1:
 # Every wrong_family axis value must match role-set's shortcut-registry name
-# (or "none" for cells without a shortcut wrong-family).
-# Source: role_set/generate/shortcuts.py:21-29@4033ebd (registered_shortcut_ids).
-WRONG_FAMILY_REGISTRY_SOURCE: str = "role_set/generate/shortcuts.py:21-29@4033ebd"
+# (or "none" for cells without a shortcut wrong-family), and each cell joins
+# f"{trait}.{wrong_family}" against REGISTRY when wrong_family != "none".
+# Source: src/role_set/generate/shortcuts.py:21-29@2b26840 (REGISTRY).
+WRONG_FAMILY_REGISTRY_SOURCE: str = "src/role_set/generate/shortcuts.py:21-29@2b26840 (REGISTRY)"
 ALLOWED_WRONG_FAMILY_IDS: frozenset[str] = frozenset(
-    {
-        "exact_read_as_floor",
-        "exact_read_as_ceiling",
-        "floor_read_as_exact",
-        "ceiling_read_as_exact",
-        "none",
-    }
+    {key.split(".", 1)[1] for key in ROLE_SET_SHORTCUT_REGISTRY} | {"none"}
 )
 
 SHA256_RE: re.Pattern[str] = re.compile(r"^[0-9a-f]{64}$")
+ALLOWED_CANON_EXTENSIONS: frozenset[str] = frozenset(
+    {".yaml", ".yml", ".json", ".txt", ".md"}
+)
 
 
 def is_valid_sha256(value: Any) -> bool:
@@ -331,6 +330,20 @@ def _validate_cells(
                 "Ensure each combination of axis coordinates appears at most once in 'cells'.",
             )
         seen_coords.add(coord_tuple)
+
+        if "trait" in cell and "wrong_family" in cell:
+            cell_trait = str(cell["trait"])
+            cell_wf = str(cell["wrong_family"])
+            if cell_wf != "none":
+                joined_shortcut = f"{cell_trait}.{cell_wf}"
+                if joined_shortcut not in ROLE_SET_SHORTCUT_REGISTRY:
+                    registered = ", ".join(sorted(ROLE_SET_SHORTCUT_REGISTRY.keys()))
+                    raise refused_error(
+                        "MAP_UNREGISTERED_TRAIT_WRONG_FAMILY",
+                        f"Cell '{cell_label}' ({context}) joins trait and wrong_family to "
+                        f"'{joined_shortcut}', which is not in REGISTRY ({WRONG_FAMILY_REGISTRY_SOURCE}).",
+                        f"Use a (trait, wrong_family) pair registered in REGISTRY ({registered}) or 'none'.",
+                    )
 
         if "target" not in cell or not _is_int(cell["target"]) or cell["target"] < 0:
             raise refused_error(
@@ -765,7 +778,58 @@ def validate_map(map_data: dict[str, Any]) -> MapCheckResult:
     )
 
 
-def check_map_file(path: Path) -> MapCheckResult:
-    """Load and validate a map.yaml file from disk."""
+def validate_canon_file(path: Path, rel_posix: str) -> bytes:
+    """Validate that a canon file is a UTF-8 text file with an allowed extension and no NUL bytes.
+
+    Returns normalized UTF-8 bytes (BOM stripped, CRLF/CR normalized to LF).
+    """
+    ext = path.suffix.lower()
+    if ext not in ALLOWED_CANON_EXTENSIONS:
+        allowed_str = ", ".join(sorted(ALLOWED_CANON_EXTENSIONS))
+        raise refused_error(
+            "CANON_INVALID_EXTENSION",
+            f"Canon file '{rel_posix}' has disallowed extension {path.suffix!r}.",
+            f"Canon is text only; use one of: {allowed_str}.",
+        )
+    raw_bytes = path.read_bytes()
+    if b"\x00" in raw_bytes:
+        raise refused_error(
+            "CANON_BINARY_FILE",
+            f"Canon file '{rel_posix}' contains NUL bytes and appears to be binary.",
+            "Canon is text only; remove binary files from canon/.",
+        )
+    try:
+        text = raw_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise refused_error(
+            "CANON_INVALID_UTF8",
+            f"Canon file '{rel_posix}' is not valid UTF-8 text: {exc}.",
+            "Encode all canon files as valid UTF-8 text.",
+        ) from exc
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    return normalized.encode("utf-8")
+
+
+def validate_canon_dir(canon_dir: Path) -> list[tuple[str, bytes]]:
+    """Validate all files under canon_dir in sorted POSIX relative path order."""
+    canon_files = sorted(
+        (p for p in canon_dir.rglob("*") if p.is_file()),
+        key=lambda p: p.relative_to(canon_dir).as_posix(),
+    )
+    validated: list[tuple[str, bytes]] = []
+    for cfile in canon_files:
+        rel_posix = cfile.relative_to(canon_dir).as_posix()
+        validated.append((rel_posix, validate_canon_file(cfile, rel_posix)))
+    return validated
+
+
+def check_map_file(path: Path, canon_dir: Path | None = None) -> MapCheckResult:
+    """Load and validate a map.yaml file from disk (and adjacent canon/ directory if present)."""
     data = load_map_yaml(path)
-    return validate_map(data)
+    result = validate_map(data)
+    resolved_canon = canon_dir if canon_dir is not None else (path.parent / "canon")
+    if resolved_canon.exists() and resolved_canon.is_dir():
+        validate_canon_dir(resolved_canon)
+    return result

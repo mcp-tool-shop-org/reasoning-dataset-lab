@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-24 from commit 00690ce by Atlas 1.24.0.
+Mapped at 2026-10-25 from commit c3a33e6 by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,9 +8,9 @@ reasoning-dataset-lab validates dataset maps, loads the five-file project config
 
 5 parts, mostly Python (8 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
 
-## What changed since 2026-10-24 (c25cff9)
+## What changed since 2026-10-24 (00690ce)
 
-Nothing structural changed since 2026-10-24; 10 files changed content.
+Nothing structural changed since 2026-10-24; 9 files changed content.
 
 ## What comes in
 
@@ -67,8 +67,7 @@ Read those in order to follow one pull request end to end.
 
 ## What this map cannot see
 
-- 1 read uses a path built at run time and is not named here.
-- 5 reads go to a path their caller passes, not to this repository.
+- 6 reads go to a path their caller passes, not to this repository.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.
