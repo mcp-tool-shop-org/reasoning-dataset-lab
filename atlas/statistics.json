@@ -67,7 +67,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "src",
-      "qualifyingSourceCommits": 4,
+      "qualifyingSourceCommits": 3,
       "rebaseline": null
     },
     {
@@ -83,7 +83,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 1,
+      "qualifyingSourceCommits": 0,
       "rebaseline": null
     }
   ],
@@ -127,7 +127,7 @@
       },
       {
         "commits": 5,
-        "lines": 125,
+        "lines": 121,
         "path": "atlas/README.md"
       },
       {
@@ -137,17 +137,17 @@
       },
       {
         "commits": 5,
-        "lines": 286,
+        "lines": 294,
         "path": "atlas/page.json"
       },
       {
         "commits": 5,
-        "lines": 593,
+        "lines": 615,
         "path": "atlas/statistics.json"
       },
       {
         "commits": 5,
-        "lines": 6976,
+        "lines": 7069,
         "path": "atlas/structure.json"
       },
       {
@@ -166,8 +166,8 @@
         "path": "src/reasoning_dataset_lab/__init__.py"
       },
       {
-        "commits": 3,
-        "lines": 240,
+        "commits": 5,
+        "lines": 381,
         "path": "src/reasoning_dataset_lab/cli.py"
       },
       {
@@ -211,13 +211,13 @@
         "path": "src/reasoning_dataset_lab/pilot_b/fact_tables.py"
       },
       {
-        "commits": 3,
-        "lines": 941,
+        "commits": 5,
+        "lines": 1233,
         "path": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
       },
       {
         "commits": 4,
-        "lines": 754,
+        "lines": 1614,
         "path": "src/reasoning_dataset_lab/pilot_b/ollama.py"
       },
       {
@@ -226,13 +226,13 @@
         "path": "src/reasoning_dataset_lab/pilot_b/rendering.py"
       },
       {
-        "commits": 4,
-        "lines": 825,
+        "commits": 3,
+        "lines": 845,
         "path": "src/reasoning_dataset_lab/pilot_b/unanimity.py"
       },
       {
         "commits": 4,
-        "lines": 1095,
+        "lines": 1346,
         "path": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py"
       },
       {
@@ -261,8 +261,8 @@
         "path": "tests/test_map.py"
       },
       {
-        "commits": 2,
-        "lines": 972,
+        "commits": 1,
+        "lines": 1121,
         "path": "tests/test_pilot_b_ollama_adapters.py"
       },
       {
@@ -281,13 +281,13 @@
         "path": "tests/test_pilot_b_part_c.py"
       },
       {
-        "commits": 3,
-        "lines": 389,
+        "commits": 2,
+        "lines": 395,
         "path": "tests/test_pilot_b_part_d.py"
       },
       {
         "commits": 2,
-        "lines": 771,
+        "lines": 779,
         "path": "tests/test_pilot_b_part_e.py"
       },
       {
@@ -311,9 +311,9 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-25T09:39:05.703Z",
+  "generatedAt": "2026-10-25T11:45:18.476Z",
   "generatedFrom": {
-    "commit": "6e2867b64ae7bd9970fbbd0c9f1c8c7de1d03b56"
+    "commit": "7ad36a116387947ad963728e7450003a8ef92f00"
   },
   "pairs": [],
   "parameters": {
@@ -326,16 +326,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-25T05:32:16-04:00",
+    "headDate": "2026-10-25T07:43:40-04:00",
     "inScopeFiles": 43,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 4,
+    "qualifyingCommits": 3,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-28T09:32:16.000Z",
+    "since": "2026-04-28T11:43:40.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
