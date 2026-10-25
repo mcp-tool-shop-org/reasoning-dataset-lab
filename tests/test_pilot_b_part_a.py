@@ -859,8 +859,7 @@ def test_hh_fix3_pre_gate_50_triads_point_value_with_unit_spread_and_no_leak(
         keys_rows = []
         for tr in triads:
             mat = writer.render_material(tr.table)
-            for key in ("supported", "unsupported", "cannot_tell"):
-                c = tr.claims[key]
+            for key, c in tr.claims.items():
                 items_rows.append(
                     {
                         "id": c.claim_id,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -649,13 +650,15 @@ def mutate_fact_value(fact: AtomicFact, step: int = 1) -> FactValue:
     attr_low = fact.attribute.strip().lower()
     for match_attr in (True, False):
         for spec in DOMAIN_CATALOGUE:
-            a_name, vals = spec["attr_spec"]  # type: ignore[misc]
-            if match_attr and str(a_name).strip().lower() != attr_low:
-                continue
-            if cur_attr in [v.lower() for v in vals]:
-                cands = [str(cand) for cand in vals if str(cand).lower() != cur_attr]
-                if cands:
-                    return cands[(offset - 1) % len(cands)]
+            attr_entries: list[tuple[str, tuple[str, ...]]] = [spec["attr_spec"]]  # type: ignore[list-item]
+            attr_entries.extend(spec["open_attrs"])  # type: ignore[arg-type]
+            for a_name, vals in attr_entries:
+                if match_attr and str(a_name).strip().lower() != attr_low:
+                    continue
+                if cur_attr in [v.lower() for v in vals]:
+                    cands = [str(cand) for cand in vals if str(cand).lower() != cur_attr]
+                    if cands:
+                        return cands[(offset - 1) % len(cands)]
     return f"uncoated-{cur_attr}"
 
 
@@ -735,7 +738,14 @@ def _enumerate_finite_world_domain(
                 cat_vals.extend(str(s) for s in states)
             else:
                 _, attrs = spec["attr_spec"]  # type: ignore[misc]
-                cat_vals.extend(str(a) for a in attrs)
+                matched_oa = False
+                for oa_name, oa_vals in spec["open_attrs"]:  # type: ignore[misc]
+                    if str(oa_name).strip().lower() == fact.attribute.strip().lower():
+                        cat_vals.extend(str(v) for v in oa_vals)
+                        matched_oa = True
+                        break
+                if not matched_oa:
+                    cat_vals.extend(str(a) for a in attrs)
             break
     for extra in (fact.value, claim.claimed_value):
         if isinstance(extra, str):
@@ -1132,8 +1142,226 @@ def verify_triad_against_table(table: FactTable, triad: ProvedTriad) -> None:
             )
 
 
-def build_sample_fact_table(seed: int = 1, closure: ClosureTag | None = None) -> FactTable:
-    """Build a deterministic FactTable covering all 5 atomic fact types."""
+_OPEN_SCHEDULE_9: tuple[tuple[str, str, str, str], ...] = (
+    ("A1", "A2", "A3", "default"),
+    ("A2", "A3", "N2", "default"),
+    ("A3", "S0", "D0", "default"),
+    ("S0", "D0", "A0", "default"),
+    ("D0", "A0", "A1", "default"),
+    ("N2", "N0", "A2", "default"),
+    ("N0", "N1", "S0", "default"),
+    ("N1", "N2", "D0", "interval"),
+    ("A0", "A1", "S0", "default"),
+)
+
+_CLOSED_SCHEDULE_9: tuple[tuple[str, str, str, str], ...] = (
+    ("A2", "A1", "N1", "default"),
+    ("A3", "A2", "N0", "default"),
+    ("S0", "A3", "N2", "default"),
+    ("D0", "S0", "N1", "default"),
+    ("A0", "D0", "N0", "default"),
+    ("N0", "A0", "N2", "default"),
+    ("N2", "N0", "N1", "default"),
+    ("N1", "N2", "N0", "number"),
+    ("A1", "N1", "N2", "default"),
+)
+
+_CLAIM_ORDER_PERMS: tuple[tuple[VerdictKey, VerdictKey, VerdictKey], ...] = (
+    ("supported", "unsupported", "cannot_tell"),
+    ("supported", "cannot_tell", "unsupported"),
+    ("unsupported", "supported", "cannot_tell"),
+    ("unsupported", "cannot_tell", "supported"),
+    ("cannot_tell", "supported", "unsupported"),
+    ("cannot_tell", "unsupported", "supported"),
+)
+
+
+def _secret_int(secret: int | None, seed: int, tag: str) -> int:
+    if secret is None:
+        return 0
+    digest = hashlib.sha256(f"rdlab-table-secret-v1:{secret}:{seed}:{tag}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def _domain_role_map(spec: dict[str, object]) -> dict[str, tuple[str, str | None, tuple[str, ...]]]:
+    num_attr, num_unit = spec["number_attr"]  # type: ignore[misc]
+    meas_attr, meas_unit = spec["measure_attr"]  # type: ignore[misc]
+    date_attr = str(spec["date_attr"])
+    int_attr, int_unit = spec["interval_attr"]  # type: ignore[misc]
+    state_attr, state_vals = spec["state_attr"]  # type: ignore[misc]
+    attr_name, attr_vals = spec["attr_spec"]  # type: ignore[misc]
+    open_list = spec["open_attrs"]  # type: ignore[index]
+    oa0_name, oa0_vals = open_list[0]  # type: ignore[misc]
+    oa1_name, oa1_vals = open_list[1]  # type: ignore[misc]
+    oa2_name, oa2_vals = open_list[2]  # type: ignore[misc]
+    return {
+        "N0": (str(num_attr), str(num_unit), ()),
+        "N1": (str(meas_attr), str(meas_unit), ()),
+        "N2": (str(int_attr), str(int_unit), ()),
+        "D0": (date_attr, None, ()),
+        "S0": (str(state_attr), None, tuple(str(v) for v in state_vals)),
+        "A0": (str(attr_name), None, tuple(str(v) for v in attr_vals)),
+        "A1": (str(oa0_name), None, tuple(str(v) for v in oa0_vals)),
+        "A2": (str(oa1_name), None, tuple(str(v) for v in oa1_vals)),
+        "A3": (str(oa2_name), None, tuple(str(v) for v in oa2_vals)),
+    }
+
+
+def _plan_visit_roles(
+    spec_idx: int,
+    visit: int,
+    closure: ClosureTag,
+    secret: int | None = None,
+) -> dict[str, object]:
+    """Return the deterministic role assignment for a (domain, visit, closure) table and triad."""
+    if visit == 0 and secret is None:
+        if spec_idx in (0, 1, 2, 3, 4):
+            l1 = "N1" if spec_idx in (0, 1, 3) else "N0"
+            stated = (l1, "D0", "N2", "S0", "A0")
+            open_r = ("A1", "A2", "A3")
+            interval_role = "N2"
+            if spec_idx == 0:
+                sup_r, unsup_r, ct_r, u_mode = l1, "N2", ("A1" if closure == "open" else "N2"), "number"
+            elif spec_idx == 1:
+                sup_r, unsup_r, ct_r, u_mode = l1, "D0", ("A2" if closure == "open" else "N2"), "default"
+            elif spec_idx == 2:
+                sup_r, unsup_r, ct_r, u_mode = "D0", l1, ("A3" if closure == "open" else "N2"), "default"
+            elif spec_idx == 3:
+                sup_r, unsup_r, ct_r, u_mode = "S0", l1, ("A1" if closure == "open" else "N2"), "default"
+            else:
+                sup_r, unsup_r, ct_r, u_mode = l1, "A0", ("A2" if closure == "open" else "N2"), "default"
+        elif spec_idx == 5:
+            stated = ("N2", "D0", "N1", "S0", "A1")
+            open_r = ("A0", "A2", "A3")
+            interval_role = "N1"
+            sup_r, unsup_r, ct_r, u_mode = "N2", "A1", ("A0" if closure == "open" else "N1"), "default"
+        elif spec_idx == 6:
+            stated = ("N1", "S0", "N2", "D0", "A1")
+            open_r = ("A0", "A2", "A3")
+            interval_role = "N2"
+            sup_r, unsup_r, ct_r, u_mode = "A1", "S0", ("A0" if closure == "open" else "N2"), "default"
+        elif spec_idx == 7:
+            stated = ("N0", "D0", "N1", "S0", "A1")
+            open_r = ("A0", "A2", "A3")
+            interval_role = "N1"
+            sup_r, unsup_r, ct_r, u_mode = "A1", "D0", ("A2" if closure == "open" else "N1"), "default"
+        elif spec_idx == 8:
+            stated = ("N0", "A0", "N2", "S0", "A1")
+            open_r = ("D0", "A2", "A3")
+            interval_role = "N2"
+            sup_r, unsup_r, ct_r, u_mode = "A0", "A1", ("D0" if closure == "open" else "N2"), "default"
+        else:
+            stated = ("N0", "D0", "N2", "S0", "A0")
+            open_r = ("A1", "A2", "A3")
+            interval_role = "N2"
+            sup_r, unsup_r, ct_r, u_mode = "D0", "A0", ("A1" if closure == "open" else "N2"), "default"
+        return {
+            "stated_roles": stated,
+            "open_roles": open_r,
+            "interval_role": interval_role,
+            "sup_role": sup_r,
+            "unsup_role": unsup_r,
+            "ct_role": ct_r,
+            "unsup_mode": u_mode,
+            "permute_lines": False,
+        }
+
+    k_pair = (visit // 2) % 10
+    if secret is not None:
+        k_pair = (k_pair + (_secret_int(secret, spec_idx * 100 + visit, "k") % 10)) % 10
+
+    if closure == "open":
+        if k_pair == 0:
+            sup_r, unsup_r, ct_r, u_mode = ("A3", "S0", "A0", "default")
+        else:
+            sched_idx = ((k_pair - 1) + spec_idx) % 9
+            sup_r, unsup_r, ct_r, u_mode = _OPEN_SCHEDULE_9[sched_idx]
+        other_open = [
+            r
+            for r in ("A1", "A2", "A3", "A0", "S0", "D0")
+            if r not in (sup_r, unsup_r, ct_r)
+        ][:2]
+        oa_idx = (visit + spec_idx) % 3
+        open_list = list(other_open)
+        open_list.insert(oa_idx, ct_r)
+        open_r = (open_list[0], open_list[1], open_list[2])
+
+        if sup_r == "N2" or (unsup_r == "N2" and u_mode in ("interval", "number")):
+            interval_role = "N2"
+        elif "N2" != ct_r and "N2" not in (sup_r, unsup_r):
+            interval_role = "N2"
+        elif "N1" != ct_r and "N1" not in (sup_r, unsup_r):
+            interval_role = "N1"
+        else:
+            interval_role = "N0"
+    else:
+        if k_pair == 0:
+            sup_r, unsup_r, ct_r, u_mode = ("D0", "A2", "N0", "default")
+        else:
+            sched_idx = ((k_pair - 1) + spec_idx + 4) % 9
+            sup_r, unsup_r, ct_r, u_mode = _CLOSED_SCHEDULE_9[sched_idx]
+        interval_role = ct_r
+        open_cands = [
+            r
+            for r in ("A1", "A2", "A3", "A0", "S0", "D0")
+            if r not in (sup_r, unsup_r, ct_r)
+        ]
+        open_r = (open_cands[0], open_cands[1], open_cands[2])
+
+    stated_list: list[str] = []
+    for r in (sup_r, unsup_r, interval_role):
+        if r not in stated_list:
+            stated_list.append(r)
+
+    # Prefer D0 and a second numeric role first so material sentences stay balanced across frames
+    preferred_fill = ["D0", "N0", "N1", "N2", "S0", "A0", "A1", "A2", "A3"]
+    for r in preferred_fill:
+        if len(stated_list) >= 5:
+            break
+        if r in stated_list or r in open_r:
+            continue
+        if closure == "open" and r == ct_r:
+            continue
+        stated_list.append(r)
+    for r in ("S0", "A0", "A1", "A2", "A3", "D0", "N0", "N1", "N2"):
+        if len(stated_list) >= 5:
+            break
+        if r not in stated_list and (closure != "open" or r != ct_r):
+            stated_list.append(r)
+
+    # Ensure at least one 'attribute'-type role (A0, A1, A2, A3) is in stated_list
+    if not any(r in ("A0", "A1", "A2", "A3") for r in stated_list):
+        for r in ("A0", "A1", "A2", "A3"):
+            if r not in open_r and r != ct_r:
+                for replace_idx in range(len(stated_list) - 1, -1, -1):
+                    cand = stated_list[replace_idx]
+                    if cand not in (sup_r, unsup_r, interval_role):
+                        stated_list[replace_idx] = r
+                        break
+                break
+
+    rng = random.Random(f"rdlab-line-order-v1:{spec_idx}:{visit}:{closure}:{secret or 0}")
+    rng.shuffle(stated_list)
+
+    return {
+        "stated_roles": tuple(stated_list[:5]),
+        "open_roles": open_r,
+        "interval_role": interval_role,
+        "sup_role": sup_r,
+        "unsup_role": unsup_r,
+        "ct_role": ct_r,
+        "unsup_mode": u_mode,
+        "permute_lines": True,
+    }
+
+
+def build_sample_fact_table(
+    seed: int = 1,
+    closure: ClosureTag | None = None,
+    *,
+    secret: int | None = None,
+) -> FactTable:
+    """Build a deterministic FactTable covering typed atomic facts."""
     n_dom = len(DOMAIN_CATALOGUE)
     s = max(0, abs(seed) - 1)
     visit = s // n_dom
@@ -1141,108 +1369,142 @@ def build_sample_fact_table(seed: int = 1, closure: ClosureTag | None = None) ->
     spec = DOMAIN_CATALOGUE[spec_idx]
     domain = str(spec["domain"])
     all_entities: tuple[str, ...] = tuple(spec["entities"])  # type: ignore[arg-type]
+    ent_shift = _secret_int(secret, seed, "ent") % len(all_entities)
     entities: tuple[str, ...] = tuple(
-        all_entities[(visit + i) % len(all_entities)] for i in range(3)
+        all_entities[(visit + ent_shift + i) % len(all_entities)] for i in range(3)
     )
     resolved_closure: ClosureTag = (
         closure
         if closure is not None
-        else ("open" if (s + (visit // 2)) % 2 == 0 else "closed")
+        else ("open" if s % 2 == 0 else "closed")
     )
 
-    slot_phase = (spec_idx + visit) % 5
-    if slot_phase in (0, 1, 3):
-        num_attr, num_unit = spec["measure_attr"]  # type: ignore[misc]
+    plan = _plan_visit_roles(spec_idx, visit, resolved_closure, secret=secret)
+    role_map = _domain_role_map(spec)
+
+    if secret is None:
+        num_val = 12 + ((abs(seed) * 3 + visit * 7) % 47)
+        num_val_alt = 15 + ((abs(seed) * 7 + visit * 5 + spec_idx * 3) % 53)
+        day_val = ((abs(seed) * 5 + visit * 3) % 26) + 2
+        month_val = MONTH_NAMES[(abs(seed) + visit * 2) % len(MONTH_NAMES)]
+        int_lo = 40 + ((abs(seed) * 4 + visit * 6) % 36)
+        int_hi = int_lo + 10 + ((abs(seed) + visit) % 6) * 2
     else:
-        num_attr, num_unit = spec["number_attr"]  # type: ignore[misc]
-    date_attr = str(spec["date_attr"])
-    int_attr, int_unit = spec["interval_attr"]  # type: ignore[misc]
-    state_attr, state_vals = spec["state_attr"]  # type: ignore[misc]
-    attr_name, attr_vals = spec["attr_spec"]  # type: ignore[misc]
-    raw_open_attrs: tuple[tuple[str, object], ...] = tuple(spec["open_attrs"])  # type: ignore[arg-type]
-    open_attrs = tuple(
-        (
-            str(oa_name),
-            str(oa_vals[visit % len(oa_vals)])
-            if isinstance(oa_vals, tuple)
-            else str(oa_vals),
-        )
-        for oa_name, oa_vals in raw_open_attrs
-    )
-
-    num_val = 12 + ((abs(seed) * 3 + visit * 7) % 47)
-    day_val = ((abs(seed) * 5 + visit * 3) % 26) + 2
-    month_val = MONTH_NAMES[(abs(seed) + visit * 2) % len(MONTH_NAMES)]
+        num_val = 12 + (_secret_int(secret, seed, "num") % 969)
+        num_val_alt = 12 + (_secret_int(secret, seed, "num_alt") % 969)
+        day_val = (_secret_int(secret, seed, "day") % 26) + 2
+        month_val = MONTH_NAMES[_secret_int(secret, seed, "month") % len(MONTH_NAMES)]
+        int_lo = 40 + (_secret_int(secret, seed, "int_lo") % 881)
+        int_hi = int_lo + 10 + (_secret_int(secret, seed, "int_span") % 41) * 2
     date_val = f"{day_val} {month_val}"
-    int_lo = 40 + ((abs(seed) * 4 + visit * 6) % 36)
-    int_hi = int_lo + 10 + ((abs(seed) + visit) % 6) * 2
-    state_val = str(state_vals[(abs(seed) + visit) % len(state_vals)])
-    attr_val = str(attr_vals[(abs(seed) + 1 + visit) % len(attr_vals)])
+
+    def _role_value(r_key: str, *, for_open: bool = False, num_idx: int = 0) -> FactValue:
+        _, _, vals = role_map[r_key]
+        sec_off = _secret_int(secret, seed, f"val:{r_key}")
+        if r_key in ("N0", "N1", "N2"):
+            if for_open and r_key == "N2":
+                c_lo = int_lo + 2 + ((visit + spec_idx) % 4)
+                c_hi = c_lo + 8 + ((visit + spec_idx) % 5) * 2
+                return f"{c_lo} and {c_hi}"
+            return num_val if num_idx == 0 else num_val_alt
+        if r_key == "D0":
+            if for_open:
+                o_day = ((day_val + 5 + visit) % 26) + 2
+                o_mon = MONTH_NAMES[( abs(seed) + visit * 3 + 4 + (sec_off % 12)) % len(MONTH_NAMES)]
+                return f"{o_day} {o_mon}"
+            return date_val
+        b5 = (0, 1, 3, 2)[(visit // 5) % 4]
+        if r_key == "S0":
+            return str(vals[(abs(seed) + visit + b5 + sec_off) % len(vals)])
+        if r_key == "A0":
+            return str(vals[(abs(seed) + 1 + visit + b5 + sec_off) % len(vals)])
+        b5_open = (0, 1, 2, 2)[(visit // 5) % 4]
+        return str(vals[(visit + b5_open + sec_off) % len(vals)])
+
+    stated_roles: tuple[str, ...] = plan["stated_roles"]  # type: ignore[assignment]
+    open_roles: tuple[str, ...] = plan["open_roles"]  # type: ignore[assignment]
+    interval_role = str(plan["interval_role"])
+    permute_lines = bool(plan["permute_lines"])
+
+    open_attrs = tuple(
+        (role_map[r_key][0], str(_role_value(r_key, for_open=True)))
+        for r_key in open_roles
+    )
 
     table_id = f"T10-D-{domain}-{seed:03d}"
-    facts = (
-        AtomicFact(
-            fact_id=f"{table_id}-f1",
-            line=1,
-            entity=entities[0],
-            attribute=str(num_attr),
-            fact_type="number",
-            value=num_val,
-            unit=str(num_unit),
-            op="=",
-        ),
-        AtomicFact(
-            fact_id=f"{table_id}-f2",
-            line=2,
-            entity=entities[0],
-            attribute=date_attr,
-            fact_type="date",
-            value=date_val,
-            unit=None,
-            op="=",
-        ),
-        AtomicFact(
-            fact_id=f"{table_id}-f3",
-            line=3,
-            entity=entities[1],
-            attribute=str(int_attr),
-            fact_type="interval",
-            value=(int_lo, int_hi),
-            unit=str(int_unit),
-            op="between",
-        ),
-        AtomicFact(
-            fact_id=f"{table_id}-f4",
-            line=4,
-            entity=entities[2],
-            attribute=str(state_attr),
-            fact_type="state",
-            value=state_val,
-            unit=None,
-            op="=",
-        ),
-        AtomicFact(
-            fact_id=f"{table_id}-f5",
-            line=5,
-            entity=entities[1],
-            attribute=str(attr_name),
-            fact_type="attribute",
-            value=attr_val,
-            unit=None,
-            op="=",
-        ),
-    )
+    default_line_entities = (entities[0], entities[0], entities[1], entities[2], entities[1])
+    facts_list: list[AtomicFact] = []
+    num_seen = 0
+    for idx_line, r_key in enumerate(stated_roles):
+        line_no = idx_line + 1
+        attr_str, unit_str, _ = role_map[r_key]
+        if not permute_lines:
+            ent_str = default_line_entities[idx_line]
+        elif r_key == plan["sup_role"]:
+            ent_str = entities[0]
+        elif r_key == plan["unsup_role"]:
+            ent_str = entities[1]
+        elif r_key == plan["ct_role"]:
+            ent_str = entities[2]
+        else:
+            ent_str = entities[(idx_line + visit + spec_idx) % len(entities)]
+
+        if r_key == interval_role:
+            f_type: FactType = "interval"
+            f_val: FactValue = (int_lo, int_hi)
+            f_unit: str | None = unit_str
+            f_op: FactOp = "between"
+        elif r_key in ("N0", "N1", "N2"):
+            f_type = "number"
+            f_val = _role_value(r_key, num_idx=num_seen)
+            num_seen += 1
+            f_unit = unit_str
+            f_op = "="
+        elif r_key == "D0":
+            f_type = "date"
+            f_val = _role_value(r_key)
+            f_unit = None
+            f_op = "="
+        elif r_key == "S0":
+            f_type = "state"
+            f_val = _role_value(r_key)
+            f_unit = None
+            f_op = "="
+        else:
+            f_type = "attribute"
+            f_val = _role_value(r_key)
+            f_unit = None
+            f_op = "="
+
+        facts_list.append(
+            AtomicFact(
+                fact_id=f"{table_id}-f{line_no}",
+                line=line_no,
+                entity=ent_str,
+                attribute=attr_str,
+                fact_type=f_type,
+                value=f_val,
+                unit=f_unit,
+                op=f_op,
+            )
+        )
+
     return FactTable(
         table_id=table_id,
         domain=domain,
         closure=resolved_closure,
         entities=entities,
-        facts=facts,
+        facts=tuple(facts_list),
         open_attributes=open_attrs,
     )
 
 
-def generate_fact_tables(n: int, seed: int = 1) -> list[FactTable]:
+def generate_fact_tables(
+    n: int,
+    seed: int = 1,
+    *,
+    secret: int | None = None,
+) -> list[FactTable]:
     """Generate n deterministic FactTables alternating open and closed world closure without fixed seed parity."""
     if n < 0:
         raise refused_error(
@@ -1254,13 +1516,17 @@ def generate_fact_tables(n: int, seed: int = 1) -> list[FactTable]:
     tables: list[FactTable] = []
     for idx in range(n):
         item_seed = seed + idx
-        block = idx // n_dom
-        closure: ClosureTag = "open" if (idx + (block // 2)) % 2 == 0 else "closed"
-        tables.append(build_sample_fact_table(seed=item_seed, closure=closure))
+        closure: ClosureTag = "open" if idx % 2 == 0 else "closed"
+        tables.append(build_sample_fact_table(seed=item_seed, closure=closure, secret=secret))
     return tables
 
 
-def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
+def build_contrast_triad(
+    table: FactTable,
+    seed: int = 1,
+    *,
+    secret: int | None = None,
+) -> ProvedTriad:
     """Build a ProvedTriad (supported, unsupported, cannot_tell) from a FactTable with proved keys."""
     if not table.facts:
         raise refused_error(
@@ -1272,27 +1538,14 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     provable_sup_facts = [
         f
         for f in table.facts
-        if f.fact_type != "interval"
-        and (f.fact_type, f.op, f.fact_type, f.op) in PROVEN_OP_PAIRS_BY_KEY["supported"]
+        if (f.fact_type, f.op, f.fact_type, f.op) in PROVEN_OP_PAIRS_BY_KEY["supported"]
     ]
-    if not provable_sup_facts:
-        provable_sup_facts = [
-            f
-            for f in table.facts
-            if (f.fact_type, f.op, f.fact_type, f.op) in PROVEN_OP_PAIRS_BY_KEY["supported"]
-        ]
     provable_unsup_facts = [
         f
         for f in table.facts
-        if f.fact_type != "interval"
-        and (f.fact_type, f.op, f.fact_type, "=") in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
+        if (f.fact_type, f.op, f.fact_type, "=") in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
+        or (f.fact_type, f.op, "number", "=") in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
     ]
-    if not provable_unsup_facts:
-        provable_unsup_facts = [
-            f
-            for f in table.facts
-            if (f.fact_type, f.op, f.fact_type, "=") in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
-        ]
 
     if not provable_sup_facts or not provable_unsup_facts:
         raise refused_error(
@@ -1312,43 +1565,51 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         ),
         (s + visit) % n_dom,
     )
-    slot_phase = (d_idx + visit) % 5
+    spec = DOMAIN_CATALOGUE[d_idx]
+    role_map = _domain_role_map(spec)
+    plan = _plan_visit_roles(d_idx, visit, table.closure, secret=secret)
+    sup_attr_target = role_map[str(plan["sup_role"])][0]
+    unsup_attr_target = role_map[str(plan["unsup_role"])][0]
+    ct_role_target = str(plan["ct_role"])
+    ct_attr_target = role_map[ct_role_target][0]
+    unsup_mode = str(plan["unsup_mode"])
+
+    fact_by_attr = {f.attribute: f for f in table.facts}
     unsup_claim_fact_type: FactType | None = None
     unsup_mutated_override: FactValue | None = None
+
+    mut_step = (
+        (visit + 1)
+        if secret is None
+        else (1 + (_secret_int(secret, seed, "mut") % 80))
+    )
+
     if (
         len(table.facts) == 5
-        and len(provable_sup_facts) == 4
-        and len(provable_unsup_facts) == 4
-        and table.facts[2].fact_type == "interval"
-        and isinstance(table.facts[2].value, tuple)
-        and (table.facts[2].fact_type, table.facts[2].op, "number", "=")
-        in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
+        and sup_attr_target in fact_by_attr
+        and unsup_attr_target in fact_by_attr
+        and fact_by_attr[sup_attr_target] in provable_sup_facts
+        and fact_by_attr[unsup_attr_target] in provable_unsup_facts
     ):
-        f1, f2, f3, f4, f5 = table.facts
-        if slot_phase == 0:
-            sup_fact = f1
-            unsup_fact = f3
-            unsup_claim_fact_type = "number"
-            assert isinstance(f3.value, tuple)
-            unsup_mutated_override = int(f3.value[1]) + visit + 6
-        elif slot_phase == 1:
-            sup_fact = f1
-            unsup_fact = f2
-        elif slot_phase == 2:
-            sup_fact = f2
-            unsup_fact = f1
-        elif slot_phase == 3:
-            sup_fact = f4
-            unsup_fact = f1
-        else:
-            sup_fact = f1
-            unsup_fact = f5
-    elif len(provable_sup_facts) == 4 and len(provable_unsup_facts) == 4:
-        sup_fact = provable_sup_facts[SLOT_SCHEDULES[d_idx % 4][visit % 5]]
-        unsup_fact = provable_unsup_facts[SLOT_SCHEDULES[(d_idx + 2) % 4][visit % 5]]
+        sup_fact = fact_by_attr[sup_attr_target]
+        unsup_fact = fact_by_attr[unsup_attr_target]
+        if unsup_fact.fact_type == "interval" and isinstance(unsup_fact.value, tuple):
+            if unsup_mode == "number":
+                unsup_claim_fact_type = "number"
+                unsup_mutated_override = int(unsup_fact.value[1]) + mut_step + 5
+            else:
+                unsup_claim_fact_type = "interval"
     else:
-        sup_fact = provable_sup_facts[abs(seed) % len(provable_sup_facts)]
-        unsup_fact = provable_unsup_facts[(abs(seed) + 1) % len(provable_unsup_facts)]
+        non_int_sup = [f for f in provable_sup_facts if f.fact_type != "interval"] or provable_sup_facts
+        non_int_unsup = [f for f in provable_unsup_facts if f.fact_type != "interval"] or provable_unsup_facts
+        if len(non_int_sup) == 4 and len(non_int_unsup) == 4:
+            sup_fact = non_int_sup[SLOT_SCHEDULES[d_idx % 4][visit % 5]]
+            unsup_fact = non_int_unsup[SLOT_SCHEDULES[(d_idx + 2) % 4][visit % 5]]
+        else:
+            sup_fact = non_int_sup[abs(seed) % len(non_int_sup)]
+            unsup_fact = non_int_unsup[(abs(seed) + 1) % len(non_int_unsup)]
+            if unsup_fact.fact_type == "interval" and isinstance(unsup_fact.value, tuple):
+                unsup_claim_fact_type = "interval"
 
     # Opaque claim ids (Card gc Fix 2): short hash of table_id, seed, and post-shuffle position (never -sup, -unsup, -ct)
     slot_keys: list[VerdictKey] = ["supported", "unsupported", "cannot_tell"]
@@ -1407,7 +1668,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     mutated_val = (
         unsup_mutated_override
         if unsup_mutated_override is not None
-        else mutate_fact_value(unsup_fact, step=visit + 1)
+        else mutate_fact_value(unsup_fact, step=mut_step)
     )
     resolved_unsup_type: FactType = (
         unsup_claim_fact_type
@@ -1453,16 +1714,39 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     ]
     use_open_attr = table.closure == "open" and bool(table.open_attributes)
     if use_open_attr:
-        if d_idx == 0:
+        oa_names = [a for a, _ in table.open_attributes]
+        if ct_attr_target in oa_names:
+            oa_idx = oa_names.index(ct_attr_target)
+        elif d_idx == 0 and visit == 0:
             oa_idx = 0
         else:
             oa_idx = (visit + (visit // 3) + d_idx) % len(table.open_attributes)
         open_attr, open_val = table.open_attributes[oa_idx]
         target_entity = (
-            table.entities[1]
-            if len(table.entities) > 1
-            else table.entities[abs(seed) % len(table.entities)]
+            table.entities[2]
+            if len(table.entities) > 2
+            else table.entities[(visit + d_idx + 1) % len(table.entities)]
         )
+
+        int_attr_name, int_unit_str = spec["interval_attr"]  # type: ignore[misc]
+        m_btw_open = re.match(r"^(\d+)\s+and\s+(\d+)$", str(open_val).strip())
+        if open_attr == str(int_attr_name) and m_btw_open is not None:
+            ct_fact_type: FactType = "interval"
+            ct_val: FactValue = (int(m_btw_open.group(1)), int(m_btw_open.group(2)))
+            ct_unit: str | None = str(int_unit_str)
+        elif open_attr == str(spec["date_attr"]):
+            ct_fact_type = "date"
+            ct_val = open_val
+            ct_unit = None
+        elif open_attr == str(spec["state_attr"][0]):  # type: ignore[index]
+            ct_fact_type = "state"
+            ct_val = open_val
+            ct_unit = None
+        else:
+            ct_fact_type = "attribute"
+            ct_val = open_val
+            ct_unit = None
+
         ct_claim_draft = ProvedClaim(
             claim_id=opaque_claim_ids["cannot_tell"],
             table_id=table.table_id,
@@ -1470,9 +1754,9 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
             fact_id=None,
             entity=target_entity,
             attribute=open_attr,
-            fact_type="attribute",
-            claimed_value=open_val,
-            unit=None,
+            fact_type=ct_fact_type,
+            claimed_value=ct_val,
+            unit=ct_unit,
             op="=",
             proof=sup_dummy_proof,
         )
@@ -1483,12 +1767,16 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
                 f"Closed FactTable '{table.table_id}' has no interval fact to refine for cannot_tell.",
                 "Include an interval fact in closed tables or use closure='open' with open_attributes.",
             )
-        int_fact = interval_facts[abs(seed) % len(interval_facts)]
+        int_fact = next(
+            (f for f in interval_facts if f.attribute == ct_attr_target),
+            interval_facts[abs(seed) % len(interval_facts)],
+        )
         assert isinstance(int_fact.value, tuple)
         lo, hi = int(int_fact.value[0]), int(int_fact.value[1])
         if hi - lo >= 2:
             span = hi - lo - 1
-            interior_val = lo + 1 + ((visit * 3 + d_idx + abs(seed)) % span)
+            sec_int_off = _secret_int(secret, seed, "interior")
+            interior_val = lo + 1 + ((visit * 3 + d_idx + abs(seed) + sec_int_off) % span)
         else:
             interior_val = (lo + hi) // 2
         ct_claim_draft = ProvedClaim(
@@ -1520,14 +1808,19 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         proof=ct_proof,
     )
 
+    claims_by_key: dict[VerdictKey, ProvedClaim] = {
+        "supported": sup_claim,
+        "unsupported": unsup_claim,
+        "cannot_tell": ct_claim,
+    }
+    perm_idx = (s + (visit // 2) + (_secret_int(secret, seed, "perm") % 6)) % 6
+    perm = _CLAIM_ORDER_PERMS[perm_idx]
+    ordered_claims: dict[VerdictKey, ProvedClaim] = {k: claims_by_key[k] for k in perm}
+
     triad = ProvedTriad(
         triad_id=f"{table.table_id}-triad",
         table=table,
-        claims={
-            "supported": sup_claim,
-            "unsupported": unsup_claim,
-            "cannot_tell": ct_claim,
-        },
+        claims=ordered_claims,
         seed=seed,
     )
     verify_triad_against_table(table, triad)

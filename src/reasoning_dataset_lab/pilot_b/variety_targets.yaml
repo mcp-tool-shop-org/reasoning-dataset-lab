@@ -19,6 +19,13 @@ build_50:
     entities_min: 25
     domains_min: 8
     proof_method_share_max: 0.65
+  shortcut_baseline:
+    chance: 0.333333
+    margin: 0.10
+    max_accuracy: 0.433333
+    min_triads_for_cv: 10
+    folds: 5
+    l2_reg: 1.0
 
 stub_10:
   per_class:
@@ -38,3 +45,10 @@ stub_10:
     entities_min: 8
     domains_min: 5
     proof_method_share_max: 0.65
+  shortcut_baseline:
+    chance: 0.333333
+    margin: 0.10
+    max_accuracy: 0.433333
+    min_triads_for_cv: 10
+    folds: 5
+    l2_reg: 1.0

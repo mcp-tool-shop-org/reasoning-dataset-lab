@@ -505,59 +505,370 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
         "1. The shaft speed of Unit Alpha is 15 rpm.\n"
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 40 and 70 megawatts.\n"
-        "4. The grid status of Unit Gamma is standby.\n"
+        "4. The grid status of Unit Beta is standby.\n"
         "5. The casing alloy of Unit Beta is steel."
     )
+    perms_6 = (
+        ("supported", "unsupported", "cannot_tell"),
+        ("supported", "cannot_tell", "unsupported"),
+        ("unsupported", "supported", "cannot_tell"),
+        ("unsupported", "cannot_tell", "supported"),
+        ("cannot_tell", "supported", "unsupported"),
+        ("cannot_tell", "unsupported", "supported"),
+    )
     spread_items: list[dict[str, str]] = []
-    for idx in range(1, 13):
-        tid = f"T10-D-turbines-spread-{idx:03d}-triad"
-        if idx <= 4:
-            sup_c = "The shaft speed of Unit Alpha is 15 rpm."
-            unsup_c = "The casing alloy of Unit Beta is titanium."
-            ct_c = "The lubricant grade of Unit Beta is synthetic."
-        elif idx <= 8:
-            sup_c = "The grid status of Unit Gamma is standby."
-            unsup_c = f"The output capacity of Unit Beta is {75 + idx} megawatts."
-            ct_c = "The lubricant grade of Unit Beta is synthetic."
-        else:
-            sup_c = "The grid status of Unit Gamma is standby."
-            unsup_c = "The casing alloy of Unit Beta is titanium."
-            ct_c = f"The output capacity of Unit Beta is {41 + idx} megawatts."
-        spread_items.extend(
-            [
-                {
-                    "triad_id": tid,
-                    "domain": "turbines",
-                    "closure": "open",
-                    "material": spread_mat,
-                    "claim": sup_c,
-                    "key": "supported",
-                },
-                {
-                    "triad_id": tid,
-                    "domain": "turbines",
-                    "closure": "open",
-                    "material": spread_mat,
-                    "claim": unsup_c,
-                    "key": "unsupported",
-                },
-                {
-                    "triad_id": tid,
-                    "domain": "turbines",
-                    "closure": "open",
-                    "material": spread_mat,
-                    "claim": ct_c,
-                    "key": "cannot_tell",
-                },
-            ]
-        )
+    for idx in range(12):
+        tid = f"T10-D-turbines-spread-{idx + 1:03d}-triad"
+        k0, k1, k2 = perms_6[idx % 6]
+        triad_rows = [
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": spread_mat,
+                "claim": f"The output capacity of Unit Beta is {42 + idx} megawatts.",
+                "key": k0,
+            },
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": spread_mat,
+                "claim": "The grid status of Unit Beta is standby.",
+                "key": k1,
+            },
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": spread_mat,
+                "claim": "The lubricant grade of Unit Beta is synthetic.",
+                "key": k2,
+            },
+        ]
+        spread_items.extend(triad_rows)
 
     spread_dir = tmp_path / "spread_build_12"
     _write_synthetic_build(spread_dir, spread_items, write_sealed_keys=True)
 
     rep_spread = evaluate_build_variety(spread_dir)
     assert rep_spread["leak"] == []
+    assert rep_spread["gate_status"] == "pass"
 
     rc_spread = run_cli(["variety", str(spread_dir), "--json"])
     assert rc_spread == 0
     capsys.readouterr()
+
+
+def test_hs_part_b_200_pregate_triads_roles_attributes_frames_and_positions_balanced() -> None:
+    """Card hs Parts B & C: On 200 generated triads (600 claims), all roles, all 90 catalogue attributes, and all surface frames appear under all 3 keys with <= 0.60 key share, key-proof rate is 1.0, and the shortcut baseline classifier stays near chance."""
+    from reasoning_dataset_lab.pilot_b.fact_tables import (
+        DOMAIN_CATALOGUE,
+        brute_force_check_claim_against_table,
+        prove_claim_against_table,
+    )
+    from reasoning_dataset_lab.pilot_b.variety import evaluate_pregate_variety
+
+    tables = generate_fact_tables(n=200, seed=1)
+    triads = [build_contrast_triad(t, seed=idx + 1) for idx, t in enumerate(tables)]
+    assert len(triads) == 200
+
+    # 1. Key-proof rate is 1.0 across all 600 claims
+    proved_ok = 0
+    attr_keys: dict[str, set[str]] = {}
+    slot_deltas: dict[int, int] = {}
+    for tr in triads:
+        line_by_attr = {f.attribute: f.line for f in tr.table.facts}
+        sup_c = tr.claims["supported"]
+        unsup_c = tr.claims["unsupported"]
+        if sup_c.attribute in line_by_attr and unsup_c.attribute in line_by_attr:
+            delta = (line_by_attr[unsup_c.attribute] - line_by_attr[sup_c.attribute]) % 5
+            slot_deltas[delta] = slot_deltas.get(delta, 0) + 1
+        for k, c in tr.claims.items():
+            p = prove_claim_against_table(tr.table, c)
+            bf = brute_force_check_claim_against_table(tr.table, c)
+            assert p.key == k
+            assert bf == k
+            proved_ok += 1
+            attr_keys.setdefault(c.attribute, set()).add(k)
+    assert proved_ok == 600
+
+    # 2. All 90 attribute names in DOMAIN_CATALOGUE appear under all 3 keys
+    all_catalogue_attrs: set[str] = set()
+    for spec in DOMAIN_CATALOGUE:
+        all_catalogue_attrs.add(str(spec["number_attr"][0]))
+        all_catalogue_attrs.add(str(spec["measure_attr"][0]))
+        all_catalogue_attrs.add(str(spec["date_attr"]))
+        all_catalogue_attrs.add(str(spec["interval_attr"][0]))
+        all_catalogue_attrs.add(str(spec["state_attr"][0]))
+        all_catalogue_attrs.add(str(spec["attr_spec"][0]))
+        for oa, _ in spec["open_attrs"]:
+            all_catalogue_attrs.add(str(oa))
+    assert len(all_catalogue_attrs) == 90
+    for attr_name in sorted(all_catalogue_attrs):
+        assert attr_keys.get(attr_name) == {"supported", "unsupported", "cannot_tell"}, (
+            f"Attribute {attr_name!r} keys: {attr_keys.get(attr_name)}"
+        )
+
+    # 3. Stated-fact pair choice is not a fixed (i, i+1) pattern
+    assert len(slot_deltas) >= 3
+    assert max(slot_deltas.values()) / sum(slot_deltas.values()) <= 0.60
+
+    # 4. Pre-gate variety report passes all 7 public feature checks and shortcut baseline
+    rep = evaluate_pregate_variety(triads)
+    assert rep["gate_status"] == "pass", rep
+    assert rep["leak"] == []
+    for feat_name in ("frame", "role", "attribute", "entity", "domain", "claim_position", "length_bucket"):
+        assert feat_name in rep["feature_leaks"], feat_name
+        assert rep["feature_leaks"][feat_name] == [], (feat_name, rep["feature_leaks"][feat_name])
+
+    # Every role appears under all 3 keys with top_key_share <= 0.60
+    role_summary = rep["feature_shares"]["role"]
+    assert set(role_summary.keys()) == {"number", "date", "interval", "state", "spec", "open"}
+    for role_name, info in role_summary.items():
+        assert set(info["by_key"].keys()) == {"supported", "unsupported", "cannot_tell"}, (role_name, info)
+        assert info["top_key_share"] <= 0.60, (role_name, info)
+
+    # Every masked surface frame appears under all 3 keys with top_key_share <= 0.60
+    frame_summary = rep["feature_shares"]["frame"]
+    expected_frames = {
+        "the <a> of <e> is <v>.",
+        "the <a> of <e> is <v> <u>.",
+        "<e> has <v> <a>.",
+        "the <a> of <e> is between <v> and <v> <u>.",
+    }
+    assert expected_frames <= set(frame_summary.keys())
+    for fr in expected_frames:
+        info = frame_summary[fr]
+        assert set(info["by_key"].keys()) == {"supported", "unsupported", "cannot_tell"}, (fr, info)
+        assert info["top_key_share"] <= 0.60, (fr, info)
+
+    # Shortcut baseline classifier accuracy stays within chance + margin
+    sb = rep["shortcut_baseline"]
+    assert sb["status"] == "pass", sb
+    assert sb["accuracy"] <= sb["max_accuracy"], sb
+
+
+def test_hs_part_c_synthetic_shortcut_builds_fail_variety_gate(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Card hs Part C: Synthetic builds reproducing each public-feature shortcut (role -> key, attribute -> key, claim_position -> key, stated-fact pair pattern, entity -> key, domain -> key, length_bucket -> key) fail rdlab variety (exit 1)."""
+    from reasoning_dataset_lab.pilot_b.variety import evaluate_build_variety
+
+    base_mat = (
+        "1. Unit Alpha has 15 rotor blades.\n"
+        "2. The inspection date of Unit Alpha is 7 February.\n"
+        "3. The output capacity of Unit Beta is between 40 and 70 megawatts.\n"
+        "4. The grid status of Unit Gamma is standby.\n"
+        "5. The casing alloy of Unit Beta is steel."
+    )
+
+    # 1. Role -> key shortcut (role='open' always cannot_tell, role='state' always supported, role='spec' always unsupported)
+    role_leak_items: list[dict[str, str]] = []
+    for idx in range(1, 13):
+        tid = f"T10-D-turbines-role-{idx:03d}-triad"
+        triad_rows = [
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": base_mat,
+                "claim": "The grid status of Unit Gamma is standby.",
+                "key": "supported",
+            },
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": base_mat,
+                "claim": "The casing alloy of Unit Beta is titanium.",
+                "key": "unsupported",
+            },
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": base_mat,
+                "claim": "The lubricant grade of Unit Beta is synthetic.",
+                "key": "cannot_tell",
+            },
+        ]
+        # Rotate claim positions so claim_position itself does not leak
+        rot = idx % 3
+        role_leak_items.extend(triad_rows[rot:] + triad_rows[:rot])
+
+    role_dir = tmp_path / "role_leak"
+    _write_synthetic_build(role_dir, role_leak_items, write_sealed_keys=True)
+    assert run_cli(["variety", str(role_dir), "--json"]) == 1
+    capsys.readouterr()
+    rep_role = evaluate_build_variety(role_dir)
+    assert rep_role["gate_status"] == "fail"
+    assert len(rep_role["feature_leaks"]["role"]) >= 1
+    assert len(rep_role["feature_leaks"]["attribute"]) >= 1
+
+    # 2. Claim position -> key shortcut (position 0 is always supported, 1 always unsupported, 2 always cannot_tell, while roles/attributes/frames are balanced across keys)
+    pos_leak_items: list[dict[str, str]] = []
+    three_claims = [
+        "The lubricant grade of Unit Beta is synthetic.",
+        "The bearing type of Unit Beta is magnetic.",
+        "The cooling mode of Unit Beta is air.",
+    ]
+    for idx in range(1, 13):
+        tid = f"T10-D-turbines-pos-{idx:03d}-triad"
+        rot = idx % 3
+        c_sup = three_claims[rot]
+        c_unsup = three_claims[(rot + 1) % 3]
+        c_ct = three_claims[(rot + 2) % 3]
+        pos_leak_items.extend(
+            [
+                {
+                    "triad_id": tid,
+                    "domain": "turbines",
+                    "closure": "open",
+                    "material": base_mat,
+                    "claim": c_sup,
+                    "key": "supported",
+                },
+                {
+                    "triad_id": tid,
+                    "domain": "turbines",
+                    "closure": "open",
+                    "material": base_mat,
+                    "claim": c_unsup,
+                    "key": "unsupported",
+                },
+                {
+                    "triad_id": tid,
+                    "domain": "turbines",
+                    "closure": "open",
+                    "material": base_mat,
+                    "claim": c_ct,
+                    "key": "cannot_tell",
+                },
+            ]
+        )
+    pos_dir = tmp_path / "pos_leak"
+    _write_synthetic_build(pos_dir, pos_leak_items, write_sealed_keys=True)
+    rep_pos = evaluate_build_variety(pos_dir)
+    assert rep_pos["gate_status"] == "fail"
+    assert len(rep_pos["feature_leaks"]["claim_position"]) == 3
+    assert run_cli(["variety", str(pos_dir), "--json"]) == 1
+    capsys.readouterr()
+
+    # 3. Stated-fact pair pattern (supported is always line i, unsupported is always line i+1, cannot_tell is always line i+3, while marginal role/attribute/frame/entity/position shares are 1/3 each)
+    pair_leak_items: list[dict[str, str]] = []
+    for idx in range(1, 16):
+        tid = f"T10-D-turbines-pair-{idx:03d}-triad"
+        rot = idx % 3
+        pair_mat = (
+            f"1. {three_claims[rot]}\n"
+            f"2. {three_claims[(rot + 1) % 3]}\n"
+            "3. The grid status of Unit Gamma is standby.\n"
+            f"4. {three_claims[(rot + 2) % 3]}\n"
+            "5. The casing alloy of Unit Beta is steel."
+        )
+        rows = [
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": pair_mat,
+                "claim": three_claims[rot],
+                "key": "supported",
+            },
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": pair_mat,
+                "claim": three_claims[(rot + 1) % 3],
+                "key": "unsupported",
+            },
+            {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": pair_mat,
+                "claim": three_claims[(rot + 2) % 3],
+                "key": "cannot_tell",
+            },
+        ]
+        p_rot = (idx // 3) % 3
+        pair_leak_items.extend(rows[p_rot:] + rows[:p_rot])
+    pair_dir = tmp_path / "pair_leak"
+    _write_synthetic_build(pair_dir, pair_leak_items, write_sealed_keys=True)
+    rep_pair = evaluate_build_variety(pair_dir)
+    assert rep_pair["gate_status"] == "fail"
+    assert len(rep_pair["stated_pair_leak"]) == 2
+    assert run_cli(["variety", str(pair_dir), "--json"]) == 1
+    capsys.readouterr()
+
+    # 4. Multi-feature surface shortcut where every single feature has top_key_share <= 0.60 (8/15 = 0.533), yet the surface-only logistic regression baseline (with no material) beats chance + margin and fails the gate
+    combo_items: list[dict[str, str]] = []
+    # 15 triads across 3 attributes x 3 entities x 3 positions, each marginal at 8/15 = 0.533 <= 0.60
+    attr_sents = [
+        ("lubricant grade", "synthetic"),
+        ("bearing type", "magnetic"),
+        ("cooling mode", "air"),
+    ]
+    ents = ["Unit Alpha", "Unit Beta", "Unit Gamma"]
+    # For each triad idx in 0..14:
+    # - idx in 0..4: attr and ent match key, pos is shifted by +1 (attr: +5, ent: +5, pos_shift1: +5)
+    # - idx in 5..9: attr and pos match key, ent is shifted by +1 (attr: +3/+2, pos: +5, ent_shift1: +5)
+    # - idx in 10..14: ent and pos match key, attr is shifted by +1 (ent: +3, pos: +3, attr_shift1: +5)
+    # Wait: to keep every marginal <= 8/15 (0.533):
+    # - idx 0..2 (3 triads): attr=k, ent=k, pos=(k+1)%3
+    # - idx 3..7 (5 triads): attr=k, ent=(k+1)%3, pos=k
+    # - idx 8..12 (5 triads): attr=(k+1)%3, ent=k, pos=k
+    # - idx 13..14 (2 triads): attr=(k+2)%3, ent=(k+2)%3, pos=(k+2)%3
+    # Marginal counts for each k:
+    # - attr=k: 3 + 5 = 8/15 (0.533 <= 0.60), (k+1): 5/15, (k+2): 2/15
+    # - ent=k:  3 + 5 = 8/15 (0.533 <= 0.60), (k+1): 5/15, (k+2): 2/15
+    # - pos=k:  5 + 5 = 10/15 -> to keep pos <= 8/15 too, swap idx 11..12 to pos=(k+2)%3, attr=k ( wait: then attr=10/15).
+    # Instead, use 4 features (attr, ent, domain, pos), each matching k on 8/15 triads!
+    doms = ["turbines", "turbines", "turbines"]
+    # Even simpler with 3 features (attr, ent, pos) over 15 triads:
+    # - 4 triads (idx % 4 == 0, 4 triads: 0, 4, 8, 12): attr=k, ent=k, pos=(k+1)%3
+    # - 4 triads (idx % 4 == 1, 4 triads: 1, 5, 9, 13): attr=k, ent=(k+1)%3, pos=k
+    # - 4 triads (idx % 4 == 2, 4 triads: 2, 6, 10, 14): attr=(k+1)%3, ent=k, pos=k
+    # - 3 triads (idx % 4 == 3, 3 triads: 3, 7, 11): attr=(k+2)%3, ent=(k+2)%3, pos=(k+2)%3
+    # Marginal counts for attr=k, ent=k, pos=k: each is 4 + 4 = 8/15 = 0.533 <= 0.60!
+    # And on 12 of 15 triads (80%), 2 of the 3 features equal k!
+    keys_tuple = ("supported", "unsupported", "cannot_tell")
+    for idx in range(15):
+        tid = f"T10-D-turbines-combo-{idx + 1:03d}-triad"
+        mode = idx % 4
+        by_pos: dict[int, dict[str, str]] = {}
+        for k_i, k_name in enumerate(keys_tuple):
+            if mode == 0:
+                a_i, e_i, p_i = k_i, k_i, (k_i + 1) % 3
+            elif mode == 1:
+                a_i, e_i, p_i = k_i, (k_i + 1) % 3, k_i
+            elif mode == 2:
+                a_i, e_i, p_i = (k_i + 1) % 3, k_i, k_i
+            else:
+                a_i, e_i, p_i = (k_i + 2) % 3, (k_i + 2) % 3, (k_i + 2) % 3
+            a_name, a_val = attr_sents[a_i]
+            e_name = ents[e_i]
+            by_pos[p_i] = {
+                "triad_id": tid,
+                "domain": "turbines",
+                "closure": "open",
+                "material": base_mat,
+                "claim": f"The {a_name} of {e_name} is {a_val}.",
+                "key": k_name,
+            }
+        combo_items.extend([by_pos[0], by_pos[1], by_pos[2]])
+
+    combo_dir = tmp_path / "combo_leak"
+    _write_synthetic_build(combo_dir, combo_items, write_sealed_keys=True)
+    rep_combo = evaluate_build_variety(combo_dir)
+    for feat_name in ("frame", "role", "attribute", "entity", "domain", "claim_position", "length_bucket"):
+        assert rep_combo["feature_leaks"][feat_name] == [], (feat_name, rep_combo["feature_leaks"][feat_name])
+    assert rep_combo["stated_pair_leak"] == []
+    assert rep_combo["shortcut_baseline"]["status"] == "fail"
+    assert rep_combo["shortcut_baseline"]["accuracy"] > rep_combo["shortcut_baseline"]["max_accuracy"]
+    assert rep_combo["gate_status"] == "fail"
+    assert run_cli(["variety", str(combo_dir), "--json"]) == 1
+    capsys.readouterr()
+

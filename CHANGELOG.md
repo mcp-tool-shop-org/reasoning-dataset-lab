@@ -9,6 +9,7 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 ### Changed
 
 - sealing: the per-build seed is kept in the sealed store.
+- generator: per-build secret variation in table values; variety: shortcut checks on public features and surface-feature baseline gate.
 
 ## [0.3.0] - 2026-10-25
 

@@ -145,10 +145,17 @@ def _build_parser() -> _StructuredArgumentParser:
         help="Seed for shuffling sealed triad items. Default: a fresh secret seed per build, kept in the sealed store.",
     )
     pb_parser.add_argument(
+        "--table-secret",
+        dest="table_secret",
+        type=int,
+        default=None,
+        help="Test only: explicit secret for table variation (requires --allow-weak-seed).",
+    )
+    pb_parser.add_argument(
         "--allow-weak-seed",
         dest="allow_weak_test_seed",
         action="store_true",
-        help="Test only: accept a --shuffle-seed of fewer than 64 bits.",
+        help="Test only: accept a --shuffle-seed of fewer than 64 bits or an explicit --table-secret.",
     )
     pb_parser.add_argument(
         "--num-predict",
@@ -412,6 +419,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 stub_mode=stub_mode,
                 seed=args.seed,
                 shuffle_seed=args.shuffle_seed,
+                table_secret=args.table_secret,
                 allow_weak_test_seed=args.allow_weak_test_seed,
                 num_predict=args.num_predict,
                 num_predict_by_operation=op_num_predict,
@@ -432,7 +440,11 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(var_rep, indent=2))
             else:
                 print(format_variety_report_text(var_rep))
-            return EXIT_REFUSED if var_rep.get("leak") else EXIT_CLEAN
+            return (
+                EXIT_REFUSED
+                if var_rep.get("gate_status") == "fail" or var_rep.get("leak")
+                else EXIT_CLEAN
+            )
 
         raise usage_error(
             "CLI_USAGE_ERROR",

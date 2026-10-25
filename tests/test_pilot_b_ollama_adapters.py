@@ -1916,13 +1916,18 @@ def test_gw_prompts_and_report_style_issues(
     assert si_clean["examples"] == []
 
     # 2. Stilted material is kept (not a gate) and reported in style_issues (capped at <= 10 examples)
-    t2 = build_sample_fact_table(seed=2, closure="closed")
+    t2 = build_sample_fact_table(seed=2, closure="closed", secret=1)
     stilted_lines = [
-        f"1. {t2.facts[0].entity} {t2.facts[0].attribute} equal {t2.facts[0].value} {t2.facts[0].unit}.",
-        f"2. {t2.facts[1].entity} {t2.facts[1].attribute} equals {t2.facts[1].value}.",
-        f"3. The {t2.facts[2].attribute} of {t2.facts[2].entity} is between {t2.facts[2].value[0]} and {t2.facts[2].value[1]} {t2.facts[2].unit}.",
-        f"4. {t2.facts[3].entity} {t2.facts[3].attribute} equals {t2.facts[3].value}.",
-        f"5. The {t2.facts[4].attribute} of {t2.facts[4].entity} equals {t2.facts[4].value}.",
+        (
+            f"{f.line}. The {f.attribute} of {f.entity} is between {f.value[0]} and {f.value[1]} {f.unit}."
+            if f.op == "between" and isinstance(f.value, tuple)
+            else (
+                f"{f.line}. {f.entity} {f.attribute} equal {f.value} {f.unit}."
+                if f.unit
+                else f"{f.line}. {f.entity} {f.attribute} equals {f.value}."
+            )
+        )
+        for f in t2.facts
     ]
     transport_stilted, _ = build_mock_ollama_http_transport(
         bad_render_table_ids={t2.table_id: "\n".join(stilted_lines)}
@@ -1936,6 +1941,8 @@ def test_gw_prompts_and_report_style_issues(
         output_dir=out_stilted,
         triad_count=2,
         stub_mode=True,
+        table_secret=1,
+        allow_weak_test_seed=True,
     )
     rep_stilted = res_stilted["report"]
     assert rep_stilted["triads_kept"] == 2

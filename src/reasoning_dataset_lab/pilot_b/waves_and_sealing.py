@@ -87,6 +87,7 @@ FORBIDDEN_SEALED_FIELD_NAMES: frozenset[str] = frozenset(
         "key_contradicted",
         "target_verdict",
         "shuffle_seed",
+        "table_secret",
         "commitment_key",
     }
 )
@@ -818,6 +819,7 @@ def _render_lines(lines: Sequence[str]) -> bytes:
 
 
 MIN_SHUFFLE_SEED_BITS = 64
+MIN_TABLE_SECRET_BITS = 64
 
 
 def _triad_handle(key: bytes, triad_id: str) -> str:
@@ -954,7 +956,12 @@ def _render_inputs(
 
 
 def _render_part(
-    inputs: Mapping[str, Any], shuffle_seed: int, commitment_key: bytes, *, frozen: bool = False
+    inputs: Mapping[str, Any],
+    shuffle_seed: int,
+    commitment_key: bytes,
+    *,
+    frozen: bool = False,
+    test_only: bool | None = None,
 ) -> dict[str, bytes]:
     """Render every file of a part from its inputs, the seed and the key: the public files, the sealed keys and the
     sealed call metrics. The same call serves the writer, freeze and verify."""
@@ -1096,7 +1103,11 @@ def _render_part(
     items_bytes = _render_lines(items_lines)
     prov_bytes = _render_lines(prov_lines)
     keys_bytes = _render_lines(key_lines)
-    test_only = shuffle_seed.bit_length() < MIN_SHUFFLE_SEED_BITS
+    is_test_only = (
+        shuffle_seed.bit_length() < MIN_SHUFFLE_SEED_BITS
+        if test_only is None
+        else (bool(test_only) or shuffle_seed.bit_length() < MIN_SHUFFLE_SEED_BITS)
+    )
     meta: dict[str, Any] = {
         "part_id": part_id,
         "split": "sealed",
@@ -1117,9 +1128,9 @@ def _render_part(
         },
         "waves": inputs["waves"],
     }
-    if test_only:
+    if is_test_only:
         meta["test_only"] = True
-    if frozen and not test_only:
+    if frozen and not is_test_only:
         # the seal covers the rendered items, provenance and the part's own content
         meta["frozen"] = True
         meta["frozen_mac"] = _part_mac(items_bytes, prov_bytes, meta, commitment_key)
@@ -1158,14 +1169,16 @@ def write_sealed_part(
     map_sha256: str,
     wave_result: PilotBWaveRunResult,
     shuffle_seed: int | None = None,
+    table_secret: int | None = None,
+    _generated_table_secret: int | None = None,
     licence_registry: Mapping[str, Any] | None = None,
     allow_weak_test_seed: bool = False,
 ) -> dict[str, Any]:
     """Write a sealed Pilot B part directory with shuffled items, aggregate-only judgment provenance, and external keys.sealed.jsonl.
 
-    The shuffle seed is drawn per build from ``secrets`` unless one is given (a reproducible re-seal), and it is
-    kept only in the sealed store, in ``sealing.sealed.json`` beside the keys. It is never written to a public
-    file of the part. The sealed store also holds every input the public files are rendered from
+    The shuffle seed and table secret are drawn per build from ``secrets`` unless given (a reproducible test build),
+    and they are kept only in the sealed store, in ``sealing.sealed.json`` beside the keys. They are never written to
+    a public file of the part. The sealed store also holds every input the public files are rendered from
     (``render_inputs.sealed.json``): ``verify_sealed_part`` re-renders them and requires a byte-for-byte match.
     """
     w = wave_result.writer_adapter
@@ -1188,7 +1201,7 @@ def write_sealed_part(
         )
 
     if shuffle_seed is None:
-        shuffle_seed = secrets.randbits(128)
+        shuffle_seed = secrets.randbits(128) | (1 << 127)
     elif not isinstance(shuffle_seed, int) or isinstance(shuffle_seed, bool) or shuffle_seed <= 0:
         raise refused_error(
             "PILOT_B_WEAK_SHUFFLE_SEED",
@@ -1201,6 +1214,41 @@ def write_sealed_part(
             f"A given shuffle seed must have at least {MIN_SHUFFLE_SEED_BITS} bits; a small seed can be searched for.",
             "Omit the seed for a fresh one per build, or pass a large one; small seeds are for tests only.",
         )
+
+    explicit_table_secret = table_secret is not None
+    if table_secret is None:
+        resolved_table_secret = (
+            _generated_table_secret
+            if _generated_table_secret is not None
+            else (secrets.randbits(128) | (1 << 127))
+        )
+    else:
+        resolved_table_secret = table_secret
+
+    if (
+        not isinstance(resolved_table_secret, int)
+        or isinstance(resolved_table_secret, bool)
+        or resolved_table_secret <= 0
+    ):
+        raise refused_error(
+            "PILOT_B_WEAK_TABLE_SECRET",
+            "A given table secret must be a positive integer.",
+            "Omit the table secret for a fresh one per build, or pass a positive integer with allow_weak_test_seed=True for tests.",
+        )
+    if (
+        explicit_table_secret or resolved_table_secret.bit_length() < MIN_TABLE_SECRET_BITS
+    ) and not allow_weak_test_seed:
+        raise refused_error(
+            "PILOT_B_WEAK_TABLE_SECRET",
+            f"An explicit or small table secret requires allow_weak_test_seed=True (minimum {MIN_TABLE_SECRET_BITS} bits).",
+            "Omit table_secret for a fresh per-build secret, or pass allow_weak_test_seed=True for test-only builds.",
+        )
+
+    is_test_only = (
+        shuffle_seed.bit_length() < MIN_SHUFFLE_SEED_BITS
+        or explicit_table_secret
+        or resolved_table_secret.bit_length() < MIN_TABLE_SECRET_BITS
+    )
     # The commitment key is its own random secret, never derived from the seed.
     commitment_key = secrets.token_bytes(32)
 
@@ -1214,7 +1262,7 @@ def write_sealed_part(
         wave_result=wave_result,
         licence_registry=licence_registry,
     )
-    rendered = _render_part(inputs, shuffle_seed, commitment_key)
+    rendered = _render_part(inputs, shuffle_seed, commitment_key, test_only=is_test_only)
 
     store_dir = keys_sealed_path.parent
     (store_dir / SEALING_STORE_NAME).write_bytes(
@@ -1222,8 +1270,9 @@ def write_sealed_part(
             {
                 "part_id": part_id,
                 "shuffle_seed": shuffle_seed,
+                "table_secret": resolved_table_secret,
                 "commitment_key": commitment_key.hex(),
-                **({"test_only": True} if shuffle_seed.bit_length() < MIN_SHUFFLE_SEED_BITS else {}),
+                **({"test_only": True} if is_test_only else {}),
             }
         )
     )
@@ -1500,6 +1549,19 @@ def _validated_store(keys_sealed_path: Path) -> dict[str, Any]:
             f"The sealed store holds a shuffle seed of fewer than {MIN_SHUFFLE_SEED_BITS} bits and is not marked test-only.",
             "Rebuild the part with a fresh seed.",
         )
+    table_secret = store.get("table_secret")
+    if not isinstance(table_secret, int) or isinstance(table_secret, bool) or table_secret <= 0:
+        raise refused_error(
+            "PILOT_B_WEAK_TABLE_SECRET",
+            "The sealed store holds no positive integer table secret.",
+            "Rebuild the part with write_sealed_part.",
+        )
+    if table_secret.bit_length() < MIN_TABLE_SECRET_BITS and store.get("test_only") is not True:
+        raise refused_error(
+            "PILOT_B_WEAK_TABLE_SECRET",
+            f"The sealed store holds a table secret of fewer than {MIN_TABLE_SECRET_BITS} bits and is not marked test-only.",
+            "Rebuild the part with a fresh table secret.",
+        )
     commitment_key = store.get("commitment_key")
     if not isinstance(commitment_key, str) or not _HEX64.match(commitment_key):
         raise refused_error(
@@ -1618,9 +1680,12 @@ def _verify_known_leaks(part_dir: Path, keys_sealed_path: Path, extra_public_fil
 
     # Every value the sealed store holds, which no public file may carry (compared case-insensitively)
     seed = int(store["shuffle_seed"])
+    table_secret = int(store["table_secret"])
     sealed_values: list[str] = [store["commitment_key"]]
     if seed >= 10**11:
         sealed_values += [str(seed), hex(seed)[2:]]
+    if table_secret >= 10**11:
+        sealed_values += [str(table_secret), hex(table_secret)[2:]]
     for key_row in keys_rows:
         sealed_values.append(str(key_row.get("triad_id", "")))
         trace = (key_row.get("proof") or {}).get("trace_sha256")
@@ -1727,7 +1792,13 @@ def _verify_render(part_dir: Path, keys_sealed_path: Path, extra_public_files: S
                 "part.json says frozen, but its seal does not match the part.",
                 "Only freeze_sealed_part marks a part frozen; rebuild or re-freeze it.",
             )
-    rendered = _render_part(inputs, seed, commitment_key, frozen=frozen)
+    rendered = _render_part(
+        inputs,
+        seed,
+        commitment_key,
+        frozen=frozen,
+        test_only=bool(store.get("test_only")),
+    )
     for name in _PART_FILES:
         if (part_dir / name).read_bytes() != rendered[name]:
             raise _render_mismatch(name, "the bytes differ")
@@ -1805,7 +1876,13 @@ def freeze_sealed_part(
     verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_sealed_path, extra_public_files=extra_public_files)
     store = _validated_store(keys_sealed_path)
     inputs = json.loads((keys_sealed_path.parent / RENDER_INPUTS_NAME).read_text(encoding="utf-8"))
-    rendered = _render_part(inputs, int(store["shuffle_seed"]), bytes.fromhex(store["commitment_key"]), frozen=True)
+    rendered = _render_part(
+        inputs,
+        int(store["shuffle_seed"]),
+        bytes.fromhex(store["commitment_key"]),
+        frozen=True,
+        test_only=bool(store.get("test_only")),
+    )
     for name in ("part.json", "checksums.txt"):
         (part_dir / name).write_bytes(rendered[name])
     return json.loads(rendered["part.json"])

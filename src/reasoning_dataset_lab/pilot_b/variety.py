@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import collections
 import json
+import math
 import random
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -25,10 +26,21 @@ from reasoning_dataset_lab.errors import refused_error, usage_error
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     DOMAIN_CATALOGUE,
     MONTH_NAMES,
+    ProvedTriad,
 )
+from reasoning_dataset_lab.pilot_b.rendering import format_atomic_sentence
 
 VARIETY_TARGETS_PATH: Path = Path(__file__).with_name("variety_targets.yaml")
 VARIETY_CLASSES: tuple[str, ...] = ("supported", "unsupported", "cannot_tell")
+PUBLIC_VARIETY_FEATURES: tuple[str, ...] = (
+    "frame",
+    "role",
+    "attribute",
+    "entity",
+    "domain",
+    "claim_position",
+    "length_bucket",
+)
 
 _NUM_RE = re.compile(r"\b\d+(?:\.\d+)?\b")
 _MON_RE = re.compile(r"\b(" + "|".join(MONTH_NAMES) + r")\b", re.IGNORECASE)
@@ -122,6 +134,7 @@ def build_amendment1_masker(
         add(oa_val, "<V>")
     if claim is not None:
         add(claim.attribute, "<A>")
+        add(claim.unit, "<U>")
         if isinstance(claim.claimed_value, (tuple, list)):
             for elem in claim.claimed_value:
                 add(elem, "<V>")
@@ -164,9 +177,41 @@ def _domain_attr_specs(dom_spec: Mapping[str, Any]) -> list[tuple[str, str, str 
     if "measure_attr" in dom_spec:
         meas_attr, meas_unit = dom_spec["measure_attr"]
         specs.append((str(meas_attr), "number", str(meas_unit)))
+    seen_names = {s[0] for s in specs}
     for oa_name, _ in dom_spec["open_attrs"]:
-        specs.append((str(oa_name), "attribute", None))
+        if str(oa_name) not in seen_names:
+            specs.append((str(oa_name), "attribute", None))
+            seen_names.add(str(oa_name))
     return specs
+
+
+def _attribute_role(attr_name: str, dom_spec: Mapping[str, Any]) -> str:
+    """Return the catalogue role ('number', 'date', 'interval', 'state', 'spec', 'open') for an attribute."""
+    a = attr_name.lower()
+    num_name = str(dom_spec["number_attr"][0]).lower()
+    meas_name = str(dom_spec.get("measure_attr", ("", ""))[0]).lower()
+    if a in (num_name, meas_name) and a:
+        return "number"
+    if a == str(dom_spec["date_attr"]).lower():
+        return "date"
+    if a == str(dom_spec["interval_attr"][0]).lower():
+        return "interval"
+    if a == str(dom_spec["state_attr"][0]).lower():
+        return "state"
+    if a == str(dom_spec["attr_spec"][0]).lower():
+        return "spec"
+    return "open"
+
+
+def _claim_length_bucket(text: str) -> str:
+    """Bucket a claim sentence by word count."""
+    words = [w for w in text.strip().split() if w]
+    n_words = len(words)
+    if n_words <= 6:
+        return "short_le_6w"
+    if n_words <= 8:
+        return "medium_7_8w"
+    return "long_ge_9w"
 
 
 def _domain_value_candidates(dom_spec: Mapping[str, Any]) -> list[str]:
@@ -175,7 +220,9 @@ def _domain_value_candidates(dom_spec: Mapping[str, Any]) -> list[str]:
     _, attr_vals = dom_spec["attr_spec"]
     out: list[str] = [str(v) for v in state_vals] + [str(v) for v in attr_vals]
     for _, oa_vals in dom_spec["open_attrs"]:
-        out.extend(str(v) for v in oa_vals)
+        for v in oa_vals:
+            if not isinstance(v, (tuple, list)):
+                out.append(str(v))
     return out
 
 
@@ -241,6 +288,8 @@ def _parse_sentence_against_domain(
             if m_num:
                 raw_num = m_num.group(0)
                 val_found = int(raw_num) if raw_num.isdigit() else float(raw_num)
+                if fact_type == "interval":
+                    fact_type = "number"
             else:
                 candidates = _domain_value_candidates(dom_spec)
                 for cval in sorted(set(candidates), key=len, reverse=True):
@@ -253,6 +302,165 @@ def _parse_sentence_against_domain(
                         break
 
     return ent_found, attr_found, fact_type, val_found, unit_found
+
+
+def _evaluate_shortcut_baseline(
+    rows: list[dict[str, Any]],
+    n_triads: int,
+    active_targets: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Fit a deterministic L2-regularized multinomial logistic regression on public features using 5-fold triad-grouped CV."""
+    sb_targets = active_targets.get("shortcut_baseline", {})
+    chance = float(sb_targets.get("chance", 1.0 / 3.0))
+    margin = float(sb_targets.get("margin", 0.10))
+    max_acc = float(sb_targets.get("max_accuracy", chance + margin))
+    min_triads = int(sb_targets.get("min_triads_for_cv", 10))
+    folds = int(sb_targets.get("folds", 5))
+    l2_reg = float(sb_targets.get("l2_reg", 1.0))
+
+    feature_names = [
+        "frame",
+        "role",
+        "attribute",
+        "entity",
+        "domain",
+        "closure",
+        "claim_position",
+        "length_bucket",
+    ]
+
+    if n_triads < min_triads or not rows:
+        return {
+            "model": "multinomial_logistic_regression_l2",
+            "features": feature_names,
+            "split": f"{folds}_fold_triad_grouped_cv",
+            "chance": round(chance, 3),
+            "margin": round(margin, 3),
+            "max_accuracy": round(max_acc, 3),
+            "accuracy": None,
+            "evaluated_claims": len(rows),
+            "status": "pass",
+        }
+
+    cat_tokens_per_row: list[tuple[str, ...]] = []
+    vocab_set: set[str] = set()
+    for r in rows:
+        toks = (
+            f"frame:{r['frame']}",
+            f"role:{r['role']}",
+            f"attribute:{r['attribute']}",
+            f"entity:{r['entity']}",
+            f"domain:{r['domain']}",
+            f"closure:{r['table'].closure}",
+            f"claim_position:{r['claim_position']}",
+            f"length_bucket:{r['length_bucket']}",
+        )
+        cat_tokens_per_row.append(toks)
+        vocab_set.update(toks)
+
+    vocab_list = sorted(vocab_set)
+    tok_to_idx = {t: i for i, t in enumerate(vocab_list)}
+    bias_idx = len(vocab_list)
+    dim = bias_idx + 1
+
+    sparse_x: list[tuple[tuple[int, float], ...]] = []
+    y_labels: list[int] = []
+    label_map = {c: idx for idx, c in enumerate(VARIETY_CLASSES)}
+    for r, toks in zip(rows, cat_tokens_per_row):
+        feats: list[tuple[int, float]] = [(tok_to_idx[t], 1.0) for t in toks]
+        feats.append((bias_idx, 1.0))
+        sparse_x.append(tuple(feats))
+        y_labels.append(label_map[str(r["key"])])
+
+    triad_order: list[str] = []
+    seen_tids: set[str] = set()
+    for r in rows:
+        tid = str(r["triad_id"])
+        if tid not in seen_tids:
+            seen_tids.add(tid)
+            triad_order.append(tid)
+    triad_fold = {tid: (idx % folds) for idx, tid in enumerate(triad_order)}
+
+    correct = 0
+    n_epochs = 80
+    lr = 0.5
+    for fold_idx in range(folds):
+        train_indices = [
+            i for i, r in enumerate(rows) if triad_fold[str(r["triad_id"])] != fold_idx
+        ]
+        test_indices = [
+            i for i, r in enumerate(rows) if triad_fold[str(r["triad_id"])] == fold_idx
+        ]
+        if not train_indices or not test_indices:
+            continue
+        n_train = float(len(train_indices))
+        reg_scale = l2_reg / n_train
+        w0 = [0.0] * dim
+        w1 = [0.0] * dim
+        w2 = [0.0] * dim
+
+        for _ in range(n_epochs):
+            g0 = [reg_scale * v for v in w0]
+            g1 = [reg_scale * v for v in w1]
+            g2 = [reg_scale * v for v in w2]
+            g0[bias_idx] = 0.0
+            g1[bias_idx] = 0.0
+            g2[bias_idx] = 0.0
+
+            for i in train_indices:
+                x_i = sparse_x[i]
+                y_i = y_labels[i]
+                s0 = 0.0
+                s1 = 0.0
+                s2 = 0.0
+                for f_idx, f_val in x_i:
+                    s0 += w0[f_idx] * f_val
+                    s1 += w1[f_idx] * f_val
+                    s2 += w2[f_idx] * f_val
+                m_s = s0 if (s0 >= s1 and s0 >= s2) else (s1 if s1 >= s2 else s2)
+                e0 = math.exp(s0 - m_s)
+                e1 = math.exp(s1 - m_s)
+                e2 = math.exp(s2 - m_s)
+                z = e0 + e1 + e2
+                d0 = (e0 / z - (1.0 if y_i == 0 else 0.0)) / n_train
+                d1 = (e1 / z - (1.0 if y_i == 1 else 0.0)) / n_train
+                d2 = (e2 / z - (1.0 if y_i == 2 else 0.0)) / n_train
+                for f_idx, f_val in x_i:
+                    g0[f_idx] += d0 * f_val
+                    g1[f_idx] += d1 * f_val
+                    g2[f_idx] += d2 * f_val
+
+            for j in range(dim):
+                w0[j] -= lr * g0[j]
+                w1[j] -= lr * g1[j]
+                w2[j] -= lr * g2[j]
+
+        for i in test_indices:
+            x_i = sparse_x[i]
+            s0 = 0.0
+            s1 = 0.0
+            s2 = 0.0
+            for f_idx, f_val in x_i:
+                s0 += w0[f_idx] * f_val
+                s1 += w1[f_idx] * f_val
+                s2 += w2[f_idx] * f_val
+            pred = 0 if (s0 >= s1 and s0 >= s2) else (1 if s1 >= s2 else 2)
+            if pred == y_labels[i]:
+                correct += 1
+
+    acc = round(correct / len(rows), 3)
+    status = "pass" if acc <= round(max_acc, 3) else "fail"
+    return {
+        "model": "multinomial_logistic_regression_l2",
+        "features": feature_names,
+        "split": f"{folds}_fold_triad_grouped_cv",
+        "chance": round(chance, 3),
+        "margin": round(margin, 3),
+        "max_accuracy": round(max_acc, 3),
+        "accuracy": acc,
+        "evaluated_claims": len(rows),
+        "status": status,
+    }
 
 
 def _resolve_build_files(build_dir: Path) -> tuple[Path, Path | None]:
@@ -281,35 +489,19 @@ def _resolve_build_files(build_dir: Path) -> tuple[Path, Path | None]:
     return items_path, keys_path
 
 
-def evaluate_build_variety(
-    build_dir: Path,
+def _evaluate_variety_from_records(
+    items: list[dict[str, Any]],
+    sealed_keys: Mapping[str, dict[str, Any]],
     *,
+    build_dir_str: str,
+    items_path_str: str,
+    audit_out_root: Path | None = None,
     audit_sample: int | None = None,
     seed: int = 1,
     targets_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Compute the deterministic §11c (Amendment 1) variety report for `<build-dir>`."""
-    items_path, keys_path = _resolve_build_files(Path(build_dir))
+    """Core §11c + Part C variety and shortcut-gate evaluation over parsed item and key records."""
     targets_all = load_variety_targets(targets_path)
-
-    items = [
-        json.loads(line)
-        for line in items_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    if not items:
-        raise usage_error(
-            "PILOT_B_VARIETY_EMPTY_ITEMS",
-            f"No items found in '{items_path}'.",
-            "Provide a non-empty Pilot B items.jsonl.",
-        )
-
-    sealed_keys: dict[str, dict[str, Any]] = {}
-    if keys_path is not None:
-        for line in keys_path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                row = json.loads(line)
-                sealed_keys[str(row["id"])] = row
 
     cat_by_domain: dict[str, Mapping[str, Any]] = {
         str(d["domain"]): d for d in DOMAIN_CATALOGUE
@@ -336,6 +528,9 @@ def evaluate_build_variety(
 
     tables_by_tid: dict[str, ReconstructedTable] = {}
     parsed_claims_by_idx: dict[int, ParsedClaim] = {}
+    claim_pos_by_idx: dict[int, str] = {}
+    role_by_idx: dict[int, str] = {}
+    stated_pair_by_idx: dict[int, float] = {}
 
     for tid, group in triad_items.items():
         first_it = group[0][1]
@@ -372,19 +567,40 @@ def evaluate_build_variety(
         open_attrs: list[tuple[str, Any]] = []
         for oa_name, oa_vals in dom_spec["open_attrs"]:
             for oa_val in oa_vals:
-                pair = (str(oa_name), oa_val)
-                if pair not in open_attrs:
-                    open_attrs.append(pair)
+                if not isinstance(oa_val, (tuple, list)):
+                    pair = (str(oa_name), oa_val)
+                    if pair not in open_attrs:
+                        open_attrs.append(pair)
 
-        for idx, it, key in group:
+        line_idx_by_item: dict[int, int | None] = {}
+        for pos_in_triad, (idx, it, key) in enumerate(group):
+            claim_pos_by_idx[idx] = str(pos_in_triad)
             c_ent, c_attr, c_ftype, c_val, c_unit = _parse_sentence_against_domain(
                 str(it.get("claim", "")), dom_spec
             )
+            role_by_idx[idx] = _attribute_role(c_attr, dom_spec)
+            matched_line: int | None = None
+            for f_i, f_obj in enumerate(facts):
+                if (
+                    f_obj.attribute.lower() == c_attr.lower()
+                    and f_obj.entity.lower() == c_ent.lower()
+                ):
+                    matched_line = f_i
+                    break
+            if matched_line is None and c_attr:
+                for f_i, f_obj in enumerate(facts):
+                    if f_obj.attribute.lower() == c_attr.lower():
+                        matched_line = f_i
+                        break
+            line_idx_by_item[idx] = matched_line
+
             item_id = str(it.get("id", ""))
             if item_id in sealed_keys and isinstance(sealed_keys[item_id].get("proof"), dict):
                 proof_method = str(sealed_keys[item_id]["proof"].get("method", ""))
             elif key == "cannot_tell":
-                if c_attr and c_attr == interval_attr_name:
+                if c_attr and c_attr == interval_attr_name and closure == "closed":
+                    proof_method = "interval_interior_refinement"
+                elif c_attr and c_attr == interval_attr_name and matched_line is not None:
                     proof_method = "interval_interior_refinement"
                 else:
                     proof_method = "open_excerpt_unmentioned_attribute"
@@ -393,7 +609,12 @@ def evaluate_build_variety(
             else:
                 proof_method = "direct_fact_contradiction"
 
-            if key == "cannot_tell" and proof_method == "open_excerpt_unmentioned_attribute" and c_attr:
+            if (
+                key == "cannot_tell"
+                and proof_method == "open_excerpt_unmentioned_attribute"
+                and c_attr
+                and not isinstance(c_val, (tuple, list))
+            ):
                 pair = (c_attr, c_val)
                 if pair not in open_attrs:
                     open_attrs.append(pair)
@@ -406,6 +627,21 @@ def evaluate_build_variety(
                 unit=c_unit,
                 proof_method=proof_method,
             )
+
+        m_lines = len(facts)
+        for idx, _, _ in group:
+            l_i = line_idx_by_item[idx]
+            if l_i is not None and m_lines >= 2:
+                other_lines = {
+                    o_l
+                    for o_idx, o_l in line_idx_by_item.items()
+                    if o_idx != idx and o_l is not None and o_l != l_i
+                }
+                has_next = 1.0 if ((l_i + 1) % m_lines) in other_lines else 0.0
+                has_prev = 1.0 if ((l_i - 1) % m_lines) in other_lines else 0.0
+                stated_pair_by_idx[idx] = has_next - has_prev
+            else:
+                stated_pair_by_idx[idx] = 0.0
 
         table_id = tid[:-6] if tid.endswith("-triad") else tid
         tables_by_tid[tid] = ReconstructedTable(
@@ -424,8 +660,9 @@ def evaluate_build_variety(
         tid = str(it.get("triad_id", f"triad-{idx // 3 + 1:03d}"))
         table = tables_by_tid[tid]
         claim = parsed_claims_by_idx[idx]
+        claim_text = str(it.get("claim", ""))
         masker = build_amendment1_masker(table, claim)
-        frame = masker(str(it.get("claim", "")))
+        frame = masker(claim_text)
         rows.append(
             {
                 "id": item_id,
@@ -437,6 +674,12 @@ def evaluate_build_variety(
                 "table": table,
                 "claim": claim,
                 "frame": frame,
+                "role": role_by_idx[idx],
+                "attribute": claim.attribute.lower(),
+                "entity": claim.entity,
+                "claim_position": claim_pos_by_idx[idx],
+                "length_bucket": _claim_length_bucket(claim_text),
+                "stated_pair_order": stated_pair_by_idx[idx],
                 "a_filled": "<a>" in frame,
             }
         )
@@ -502,29 +745,91 @@ def evaluate_build_variety(
             "status": status,
         }
 
-    # Frame-to-key leak across all claims
-    fc: dict[str, collections.Counter[str]] = collections.defaultdict(collections.Counter)
-    for r in rows:
-        fc[r["frame"]][r["key"]] += 1
+    # Public feature-to-key share and leak checks across all 7 public features (Part C)
     min_leak_claims = int(per_class_targets["frame_to_key_leak_min_claims"])
     max_leak_share = float(per_class_targets["frame_to_key_leak_max_share"])
+    feature_shares_out: dict[str, dict[str, dict[str, Any]]] = {}
+    feature_leaks_out: dict[str, list[dict[str, Any]]] = {}
     frame_to_key_out: list[dict[str, Any]] = []
-    leak_out: list[dict[str, Any]] = []
-    for frame_str, key_cnt in fc.items():
-        total_for_frame = sum(key_cnt.values())
-        if total_for_frame >= min_leak_claims:
+
+    for feat_name in PUBLIC_VARIETY_FEATURES:
+        feat_counter: dict[str, collections.Counter[str]] = collections.defaultdict(
+            collections.Counter
+        )
+        for r in rows:
+            val_str = str(r.get(feat_name, ""))
+            if val_str:
+                feat_counter[val_str][r["key"]] += 1
+
+        shares_for_feat: dict[str, dict[str, Any]] = {}
+        leaks_for_feat: list[dict[str, Any]] = []
+        for val_str, key_cnt in feat_counter.items():
+            total_for_val = sum(key_cnt.values())
             top_k, top_k_n = key_cnt.most_common(1)[0]
-            top_k_share = round(top_k_n / total_for_frame, 3)
-            entry = {
-                "frame": frame_str,
-                "claims": total_for_frame,
+            top_k_share = round(top_k_n / total_for_val, 3)
+            summary_entry = {
+                "claims": total_for_val,
                 "top_key": top_k,
                 "top_key_share": top_k_share,
                 "by_key": dict(key_cnt),
             }
-            frame_to_key_out.append(entry)
+            shares_for_feat[val_str] = summary_entry
+            if total_for_val >= min_leak_claims:
+                leak_entry = {
+                    feat_name: val_str,
+                    "claims": total_for_val,
+                    "top_key": top_k,
+                    "top_key_share": top_k_share,
+                    "by_key": dict(key_cnt),
+                }
+                if feat_name == "frame":
+                    frame_to_key_out.append(leak_entry)
+                if top_k_share > max_leak_share:
+                    leaks_for_feat.append(leak_entry)
+
+        feature_shares_out[feat_name] = shares_for_feat
+        feature_leaks_out[feat_name] = leaks_for_feat
+
+    leak_out = feature_leaks_out["frame"]
+
+    # Stated-fact adjacent line-pair order check (catches fixed (i, i+1) stated-fact pair patterns)
+    pair_counter: dict[str, collections.Counter[str]] = collections.defaultdict(
+        collections.Counter
+    )
+    for r in rows:
+        p_ord = float(r.get("stated_pair_order", 0.0))
+        if p_ord > 0.0:
+            pair_counter["adjacent_first"][r["key"]] += 1
+        elif p_ord < 0.0:
+            pair_counter["adjacent_second"][r["key"]] += 1
+    stated_pair_leak_out: list[dict[str, Any]] = []
+    for p_label, key_cnt in pair_counter.items():
+        total_p = sum(key_cnt.values())
+        if total_p >= min_leak_claims:
+            top_k, top_k_n = key_cnt.most_common(1)[0]
+            top_k_share = round(top_k_n / total_p, 3)
             if top_k_share > max_leak_share:
-                leak_out.append(entry)
+                stated_pair_leak_out.append(
+                    {
+                        "stated_pair_order": p_label,
+                        "claims": total_p,
+                        "top_key": top_k,
+                        "top_key_share": top_k_share,
+                        "by_key": dict(key_cnt),
+                    }
+                )
+
+    shortcut_baseline_out = _evaluate_shortcut_baseline(rows, n_triads, active_targets)
+    any_feature_leak = any(bool(v) for v in feature_leaks_out.values())
+    gate_status = (
+        "fail"
+        if (
+            any_feature_leak
+            or bool(stated_pair_leak_out)
+            or shortcut_baseline_out["status"] == "fail"
+        )
+        else "pass"
+    )
 
     # Materials: each triad's material counted once (in first-seen triad order from items.jsonl)
     mats_by_tid: dict[str, str] = {}
@@ -587,8 +892,8 @@ def evaluate_build_variety(
     }
 
     report: dict[str, Any] = {
-        "build_dir": str(Path(build_dir)),
-        "items_path": str(items_path),
+        "build_dir": build_dir_str,
+        "items_path": items_path_str,
         "target_profile": profile_name,
         "targets": active_targets,
         "class_counts": {c: len(per_class[c]) for c in VARIETY_CLASSES},
@@ -598,11 +903,16 @@ def evaluate_build_variety(
         "leak": leak_out,
         "leak_status": "fail" if leak_out else "pass",
         "frame_to_key": frame_to_key_out,
+        "feature_shares": feature_shares_out,
+        "feature_leaks": feature_leaks_out,
+        "stated_pair_leak": stated_pair_leak_out,
+        "shortcut_baseline": shortcut_baseline_out,
+        "gate_status": gate_status,
         "materials": materials_out,
         "cannot_tell": cannot_tell_out,
     }
 
-    if audit_sample is not None:
+    if audit_sample is not None and audit_out_root is not None:
         if audit_sample < 1:
             raise usage_error(
                 "PILOT_B_INVALID_AUDIT_SAMPLE",
@@ -627,8 +937,7 @@ def evaluate_build_variety(
                 for r in sampled_rows
             ],
         }
-        out_root = items_path.parent if Path(build_dir).is_file() else Path(build_dir)
-        audit_out_path = out_root / "variety_audit_sample.json"
+        audit_out_path = audit_out_root / "variety_audit_sample.json"
         audit_out_path.write_text(
             json.dumps(audit_payload, indent=2) + "\n",
             encoding="utf-8",
@@ -640,6 +949,112 @@ def evaluate_build_variety(
         }
 
     return report
+
+
+def evaluate_build_variety(
+    build_dir: Path,
+    *,
+    audit_sample: int | None = None,
+    seed: int = 1,
+    targets_path: Path | None = None,
+) -> dict[str, Any]:
+    """Compute the deterministic §11c (Amendment 1) variety report for `<build-dir>`."""
+    items_path, keys_path = _resolve_build_files(Path(build_dir))
+
+    items = [
+        json.loads(line)
+        for line in items_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if not items:
+        raise usage_error(
+            "PILOT_B_VARIETY_EMPTY_ITEMS",
+            f"No items found in '{items_path}'.",
+            "Provide a non-empty Pilot B items.jsonl.",
+        )
+
+    sealed_keys: dict[str, dict[str, Any]] = {}
+    if keys_path is not None:
+        for line in keys_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                sealed_keys[str(row["id"])] = row
+
+    out_root = items_path.parent if Path(build_dir).is_file() else Path(build_dir)
+    return _evaluate_variety_from_records(
+        items,
+        sealed_keys,
+        build_dir_str=str(Path(build_dir)),
+        items_path_str=str(items_path),
+        audit_out_root=out_root,
+        audit_sample=audit_sample,
+        seed=seed,
+        targets_path=targets_path,
+    )
+
+
+def evaluate_pregate_variety(
+    triads: Sequence[ProvedTriad],
+    *,
+    seed: int = 1,
+    targets_path: Path | None = None,
+) -> dict[str, Any]:
+    """Evaluate §11c variety and Part C public-feature shortcut checks directly on pre-gate ProvedTriads."""
+    if not triads:
+        raise usage_error(
+            "PILOT_B_VARIETY_EMPTY_ITEMS",
+            "No triads provided to evaluate_pregate_variety.",
+            "Pass a non-empty sequence of ProvedTriads.",
+        )
+    items: list[dict[str, Any]] = []
+    sealed_keys: dict[str, dict[str, Any]] = {}
+    for tr in triads:
+        mat_lines: list[str] = []
+        for fact in sorted(tr.table.facts, key=lambda f: f.line):
+            sent = format_atomic_sentence(
+                entity=fact.entity,
+                attribute=fact.attribute,
+                fact_type=fact.fact_type,
+                value=fact.value,
+                unit=fact.unit,
+                op=fact.op,
+            )
+            mat_lines.append(f"{fact.line}. {sent}")
+        mat = "\n".join(mat_lines)
+        for key, claim in tr.claims.items():
+            claim_sent = format_atomic_sentence(
+                entity=claim.entity,
+                attribute=claim.attribute,
+                fact_type=claim.fact_type,
+                value=claim.claimed_value,
+                unit=claim.unit,
+                op=claim.op,
+            )
+            items.append(
+                {
+                    "id": claim.claim_id,
+                    "triad_id": tr.triad_id,
+                    "domain": tr.table.domain,
+                    "closure": tr.table.closure,
+                    "material": mat,
+                    "claim": claim_sent,
+                }
+            )
+            sealed_keys[claim.claim_id] = {
+                "id": claim.claim_id,
+                "key": key,
+                "proof": {"method": claim.proof.method},
+            }
+    return _evaluate_variety_from_records(
+        items,
+        sealed_keys,
+        build_dir_str="<pregate>",
+        items_path_str="<pregate>",
+        audit_out_root=None,
+        audit_sample=None,
+        seed=seed,
+        targets_path=targets_path,
+    )
 
 
 def format_variety_report_text(report: Mapping[str, Any]) -> str:
@@ -666,6 +1081,14 @@ def format_variety_report_text(report: Mapping[str, Any]) -> str:
     lines.append(
         f"Frame-to-key leak: status={report['leak_status']}, leaking_frames={len(report['leak'])}"
     )
+    if "shortcut_baseline" in report:
+        sb = report["shortcut_baseline"]
+        acc_str = f"{sb['accuracy']:.3f}" if sb.get("accuracy") is not None else "n/a"
+        lines.append(
+            f"Shortcut baseline ({sb['model']}): accuracy={acc_str}, max={sb['max_accuracy']:.3f}, status={sb['status']}"
+        )
+    if "gate_status" in report:
+        lines.append(f"Variety gate status: {report['gate_status']}")
     ct_info = report["cannot_tell"]
     lines.append(
         f"cannot_tell diversity: open_attributes={ct_info['n_distinct_open_attributes']}, "

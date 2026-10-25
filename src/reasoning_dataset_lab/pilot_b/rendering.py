@@ -153,7 +153,10 @@ def _catalogue_values_for_attribute(table: FactTable, attribute: str) -> tuple[s
             for pair in open_entry:
                 if isinstance(pair, tuple) and len(pair) == 2:
                     if str(pair[0]).strip().lower() == attr_lower:
-                        values.append(str(pair[1]))
+                        if isinstance(pair[1], tuple):
+                            values.extend(str(v) for v in pair[1])
+                        else:
+                            values.append(str(pair[1]))
     return tuple(values)
 
 
