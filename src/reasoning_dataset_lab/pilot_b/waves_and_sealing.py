@@ -93,6 +93,8 @@ FORBIDDEN_SEALED_FIELD_NAMES: frozenset[str] = frozenset(
 
 SEALING_STORE_NAME = "sealing.sealed.json"
 CALL_METRICS_NAME = "call_metrics.sealed.jsonl"
+RENDER_INPUTS_NAME = "render_inputs.sealed.json"
+REPORT_NAME = "report.sealed.json"
 
 # Per-call measurements that can vary with an item: they live in the sealed store, and the public part carries
 # whole-build distributions only.
@@ -777,8 +779,42 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+# ── the one renderer ────────────────────────────────────────────────────────────────────────────────────────────
+#
+# Every public file of a sealed part (and the build report) is the output of the functions below, and verify
+# re-renders each of them from the sealed store and requires a byte-for-byte match. The rules are properties of
+# this renderer: sorted keys, fixed separators, one escaping policy (ASCII, \uXXXX in lower case), "\n" only, no
+# trailing whitespace, no -0 and no NaN, and floats from one formatter (Python's shortest repr).
+
+
+def _normalise(obj: Any) -> Any:
+    """The JSON form of a value: plain dicts and lists, ``0.0`` for ``-0.0``, and no NaN or infinity."""
+
+    if isinstance(obj, Mapping):
+        return {str(k): _normalise(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_normalise(v) for v in obj]
+    if isinstance(obj, float):
+        if obj != obj or obj in (float("inf"), float("-inf")):
+            raise refused_error(
+                "PILOT_B_SEALED_RENDER_MISMATCH", "A non-finite number cannot be rendered.", "Remove it from the part."
+            )
+        return 0.0 if obj == 0 else obj
+    return obj
+
+
 def _canonical_json_line(obj: object) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(_normalise(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False)
+
+
+def _render_json_doc(obj: object) -> bytes:
+    return (json.dumps(_normalise(obj), indent=2, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n").encode(
+        "ascii"
+    )
+
+
+def _render_lines(lines: Sequence[str]) -> bytes:
+    return ("\n".join(lines) + ("\n" if lines else "")).encode("ascii")
 
 
 MIN_SHUFFLE_SEED_BITS = 64
@@ -794,6 +830,323 @@ def _commit(key: bytes, kind: str, value: str) -> str:
     """A keyed commitment to a hash, so the public provenance carries no plain digest of per-item material."""
 
     return hmac.new(key, f"{kind}:{value}".encode(), hashlib.sha256).hexdigest()
+
+
+_MODEL_FIELDS: tuple[str, ...] = (
+    "name",
+    "normalized_family",
+    "digest",
+    "licence_id",
+    "licence_read_date",
+    "bundled_licence_id",
+    "bundled_licence_read_date",
+    "licence_layer_digest",
+    "source_match",
+    "source_match_reason",
+)
+
+
+def _render_inputs(
+    *,
+    part_id: str,
+    map_version: int,
+    map_sha256: str,
+    wave_result: PilotBWaveRunResult,
+    licence_registry: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Everything the public files of a part are rendered from. It is kept in the sealed store."""
+
+    w_calls = dict(wave_result.writer_call_records or {})
+    r1_calls = dict(wave_result.reader_1_call_records or {})
+    r2_calls = dict(wave_result.reader_2_call_records or {})
+
+    default_read_dates: dict[str, str] = {}
+    for m in (wave_result.writer_model, wave_result.reader_1_model, wave_result.reader_2_model):
+        if m.licence_id:
+            default_read_dates.setdefault(m.licence_id, m.licence_read_date)
+        if m.bundled_licence_id:
+            default_read_dates.setdefault(m.bundled_licence_id, m.bundled_licence_read_date)
+    reg_meta: dict[str, Any] = (
+        dict(licence_registry)
+        if licence_registry is not None
+        else {"path": "", "sha256": "0" * 64, "read_dates": default_read_dates}
+    )
+
+    kept_targets: set[str] = set()
+    for ev in wave_result.kept_triads:
+        kept_targets.add(ev.worded.triad.table.table_id)
+        kept_targets.update(claim.claim_id for claim in ev.worded.triad.claims.values())
+
+    entries: list[dict[str, Any]] = []
+    for ev in wave_result.kept_triads:
+        wt = ev.worded
+        table = wt.triad.table
+        for key in VERDICT_CLASSES:
+            claim = wt.triad.claims[key]
+            claim_ev = ev.claim_evals[key]
+            w_recs: list[dict[str, object]] = []
+            if table.table_id in w_calls:
+                w_recs.append(dict(w_calls[table.table_id]))
+            if claim.claim_id in w_calls:
+                w_recs.append(dict(w_calls[claim.claim_id]))
+            r_recs: list[dict[str, object]] = []
+            if claim.claim_id in r1_calls:
+                r_recs.append(dict(r1_calls[claim.claim_id]))
+            if claim.claim_id in r2_calls:
+                r_recs.append(dict(r2_calls[claim.claim_id]))
+            entries.append(
+                {
+                    "triad_id": wt.triad.triad_id,
+                    "table_id": table.table_id,
+                    "domain": table.domain,
+                    "closure": table.closure,
+                    "material": wt.material,
+                    "claim_text": wt.worded_claims[key],
+                    "key": key,
+                    "proof": claim.proof.to_dict(),
+                    "read_1": claim_ev.read_1.to_dict(),
+                    "read_2": claim_ev.read_2.to_dict(),
+                    "writer_call_records": w_recs,
+                    "reader_call_records": r_recs,
+                }
+            )
+
+    def role(adapter_class: str, model: Any, adapter: Any) -> dict[str, Any]:
+        return {
+            "adapter_class": adapter_class,
+            "model": {name: getattr(model, name) for name in _MODEL_FIELDS},
+            "max_num_ctx": int(getattr(adapter, "max_num_ctx", model.max_num_ctx)),
+        }
+
+    inputs = {
+        "part_id": part_id,
+        "map_version": map_version,
+        "map_sha256": map_sha256,
+        "registry": reg_meta,
+        "writer": role(wave_result.writer_adapter_class, wave_result.writer_model, wave_result.writer_adapter),
+        "readers": [
+            role(wave_result.reader_1_adapter_class, wave_result.reader_1_model, wave_result.reader_1_adapter),
+            role(wave_result.reader_2_adapter_class, wave_result.reader_2_model, wave_result.reader_2_adapter),
+        ],
+        "num_predict": wave_result.num_predict,
+        "num_predict_source": wave_result.num_predict_source,
+        "num_predict_config": (
+            wave_result.num_predict_config.to_dict()
+            if wave_result.num_predict_config is not None
+            else {
+                "default_num_predict": wave_result.num_predict,
+                "source": wave_result.num_predict_source,
+                "by_operation": {},
+                "sources_by_operation": {},
+            }
+        ),
+        "waves": [w.to_dict() for w in wave_result.wave_metrics],
+        "pass_rate_per_class": dict(wave_result.pass_rate_per_class),
+        "triad_pass_rate": wave_result.triad_pass_rate,
+        "triads_kept": len(wave_result.kept_triads),
+        "triads_failed": len(wave_result.failed_triads),
+        "call_distributions": _call_distributions(
+            {"writer": w_calls, "reader_1": r1_calls, "reader_2": r2_calls}, kept_targets
+        ),
+        "entries": entries,
+    }
+    return _normalise(inputs)
+
+
+def _render_part(
+    inputs: Mapping[str, Any], shuffle_seed: int, commitment_key: bytes, *, frozen: bool = False
+) -> dict[str, bytes]:
+    """Render every file of a part from its inputs, the seed and the key: the public files, the sealed keys and the
+    sealed call metrics. The same call serves the writer, freeze and verify."""
+
+    part_id = inputs["part_id"]
+    entries = inputs["entries"]
+    registry = inputs["registry"]
+    writer = inputs["writer"]
+    readers = inputs["readers"]
+
+    # Shuffle items with the seed so triad position cannot hint at the key (§2.1)
+    order = list(range(len(entries)))
+    random.Random(shuffle_seed).shuffle(order)
+
+    items_lines: list[str] = []
+    prov_lines: list[str] = []
+    key_lines: list[str] = []
+    metric_lines: list[str] = []
+    for out_idx, orig_idx in enumerate(order, start=1):
+        entry = entries[orig_idx]
+        item_id = f"{part_id}-item-{out_idx:03d}"
+        user_turn = f"Material ({entry['closure']}):\n{entry['material']}\n\nClaim: {entry['claim_text']}"
+        msg_obj = [{"role": "user", "content": user_turn}]
+        msg_sha = _sha256_bytes(_canonical_json_line(msg_obj).encode("ascii"))
+        handle = _triad_handle(commitment_key, entry["triad_id"])
+
+        items_lines.append(
+            _canonical_json_line(
+                {
+                    "id": item_id,
+                    "triad_id": handle,
+                    "trait": "T10",
+                    "kind": "D",
+                    "domain": entry["domain"],
+                    "closure": entry["closure"],
+                    "proof_basis": "proved",
+                    "key_basis": "construction",
+                    "material": entry["material"],
+                    "claim": entry["claim_text"],
+                    "messages": msg_obj,
+                }
+            )
+        )
+        m = writer["model"]
+        prov_lines.append(
+            _canonical_json_line(
+                {
+                    "id": item_id,
+                    "map": {
+                        "version": inputs["map_version"],
+                        "sha256": inputs["map_sha256"],
+                        "cell": f"T10/D/{entry['domain']}",
+                    },
+                    "licence_registry_path": str(registry.get("path", "")),
+                    "licence_registry_sha256": str(registry.get("sha256", "")),
+                    "licence_registry": registry,
+                    "proof_basis": "proved",
+                    "key_basis": "construction",
+                    "proof": {
+                        "prover": entry["proof"]["prover"],
+                        "version": entry["proof"]["version"],
+                        "trace_commitment": _commit(commitment_key, "trace", entry["proof"]["trace_sha256"]),
+                    },
+                    "writer": {
+                        "adapter": writer["adapter_class"],
+                        "model": m["name"],
+                        "family": m["normalized_family"],
+                        "digest": m["digest"],
+                        "licence_id": m["licence_id"],
+                        "licence_read_date": m["licence_read_date"],
+                        "bundled_licence_id": m["bundled_licence_id"],
+                        "bundled_licence_read_date": m["bundled_licence_read_date"],
+                        "licence_layer_digest": m["licence_layer_digest"],
+                        "source_match": m["source_match"],
+                        "source_match_reason": m["source_match_reason"],
+                        "messages_sha256": msg_sha,
+                        "num_predict": inputs["num_predict"],
+                        "num_predict_source": inputs["num_predict_source"],
+                        "num_predict_config": inputs["num_predict_config"],
+                        "max_num_ctx": writer["max_num_ctx"],
+                        "call_records": [
+                            _public_call_record(commitment_key, rec, writer=True)
+                            for rec in entry["writer_call_records"]
+                        ],
+                    },
+                    "checks": [
+                        {"name": "pilot_b.rendering_check", "version": "0.3.0", "result": "pass"},
+                        {"name": "pilot_b.unanimity_gate", "version": "0.3.0", "result": "pass"},
+                    ],
+                    "judgments": [
+                        {
+                            "kind": "blind_read_unanimity_aggregate",
+                            "reader_adapters": [r["adapter_class"] for r in readers],
+                            "readers": [f"model:{r['model']['name']}@{r['model']['digest']}" for r in readers],
+                            "families": [r["model"]["normalized_family"] for r in readers],
+                            "reader_licence_ids": [r["model"]["licence_id"] for r in readers],
+                            "reader_licence_read_dates": [r["model"]["licence_read_date"] for r in readers],
+                            "reader_bundled_licence_ids": [r["model"]["bundled_licence_id"] for r in readers],
+                            "reader_bundled_licence_read_dates": [
+                                r["model"]["bundled_licence_read_date"] for r in readers
+                            ],
+                            "reader_licence_layer_digests": [r["model"]["licence_layer_digest"] for r in readers],
+                            "reader_source_matches": [r["model"]["source_match"] for r in readers],
+                            "reader_source_match_reasons": [r["model"]["source_match_reason"] for r in readers],
+                            "reader_max_num_ctx": [r["max_num_ctx"] for r in readers],
+                            "call_records": [
+                                _public_call_record(commitment_key, rec, writer=False)
+                                for rec in entry["reader_call_records"]
+                            ],
+                            "agrees_all_readers": True,
+                            "ambiguous_count": 0,
+                        }
+                    ],
+                }
+            )
+        )
+        key_lines.append(
+            _canonical_json_line(
+                {
+                    "id": item_id,
+                    "triad_id": entry["triad_id"],
+                    "triad_handle": handle,
+                    "key": entry["key"],
+                    "proof": entry["proof"],
+                    "blind_reads": [entry["read_1"], entry["read_2"]],
+                }
+            )
+        )
+        metric_lines.append(
+            _canonical_json_line(
+                {
+                    "id": item_id,
+                    "writer": _sealed_call_metrics(entry["writer_call_records"]),
+                    "readers": _sealed_call_metrics(entry["reader_call_records"]),
+                }
+            )
+        )
+
+    items_bytes = _render_lines(items_lines)
+    prov_bytes = _render_lines(prov_lines)
+    keys_bytes = _render_lines(key_lines)
+    test_only = shuffle_seed.bit_length() < MIN_SHUFFLE_SEED_BITS
+    meta: dict[str, Any] = {
+        "part_id": part_id,
+        "split": "sealed",
+        "frozen": False,
+        "map_version": inputs["map_version"],
+        "map_sha256": inputs["map_sha256"],
+        "num_predict": inputs["num_predict"],
+        "num_predict_source": inputs["num_predict_source"],
+        "num_predict_config": inputs["num_predict_config"],
+        "items_count": len(items_lines),
+        "triads_kept": inputs["triads_kept"],
+        "triads_failed": inputs["triads_failed"],
+        "keys_sealed_sha256": _sha256_bytes(keys_bytes),
+        "call_distributions": inputs["call_distributions"],
+        "judgment_aggregates": {
+            "pass_rate_per_class": inputs["pass_rate_per_class"],
+            "triad_pass_rate": inputs["triad_pass_rate"],
+        },
+        "waves": inputs["waves"],
+    }
+    if test_only:
+        meta["test_only"] = True
+    if frozen and not test_only:
+        # the seal covers the rendered items, provenance and the part's own content
+        meta["frozen"] = True
+        meta["frozen_mac"] = _part_mac(items_bytes, prov_bytes, meta, commitment_key)
+    part_bytes = _render_json_doc(meta)
+    checksums = [
+        f"{_sha256_bytes(data)}  {name}"
+        for name, data in sorted({"items.jsonl": items_bytes, "part.json": part_bytes, "provenance.jsonl": prov_bytes}.items())
+    ]
+    return {
+        "items.jsonl": items_bytes,
+        "provenance.jsonl": prov_bytes,
+        "part.json": part_bytes,
+        "checksums.txt": _render_lines(checksums),
+        "keys.sealed.jsonl": keys_bytes,
+        CALL_METRICS_NAME: _render_lines(metric_lines),
+    }
+
+
+def _part_mac(items_bytes: bytes, prov_bytes: bytes, meta: Mapping[str, Any], commitment_key: bytes) -> str:
+    """The seal: an HMAC under the sealed commitment key over the rendered items, provenance and part content
+    (without the seal and the frozen mark). Nothing a public file says about itself stands in for it."""
+
+    content = {k: v for k, v in meta.items() if k not in ("frozen", "frozen_mac")}
+    body = _canonical_json_line(
+        {"items": _sha256_bytes(items_bytes), "provenance": _sha256_bytes(prov_bytes), "part": content}
+    )
+    return _commit(commitment_key, "frozen", body)
 
 
 def write_sealed_part(
@@ -812,8 +1165,8 @@ def write_sealed_part(
 
     The shuffle seed is drawn per build from ``secrets`` unless one is given (a reproducible re-seal), and it is
     kept only in the sealed store, in ``sealing.sealed.json`` beside the keys. It is never written to a public
-    file of the part. The hashes in the public provenance that could be matched against a rebuilt triad
-    (the proof trace and the writer's claim prompt) are published as keyed commitments.
+    file of the part. The sealed store also holds every input the public files are rendered from
+    (``render_inputs.sealed.json``): ``verify_sealed_part`` re-renders them and requires a byte-for-byte match.
     """
     w = wave_result.writer_adapter
     r1 = wave_result.reader_1_adapter
@@ -854,332 +1207,41 @@ def write_sealed_part(
     part_dir.mkdir(parents=True, exist_ok=True)
     keys_sealed_path.parent.mkdir(parents=True, exist_ok=True)
 
-    w_calls_by_target = dict(wave_result.writer_call_records or {})
-    r1_calls_by_target = dict(wave_result.reader_1_call_records or {})
-    r2_calls_by_target = dict(wave_result.reader_2_call_records or {})
-
-    default_read_dates: dict[str, str] = {}
-    for m in (
-        wave_result.writer_model,
-        wave_result.reader_1_model,
-        wave_result.reader_2_model,
-    ):
-        if m.licence_id:
-            default_read_dates.setdefault(m.licence_id, m.licence_read_date)
-        if m.bundled_licence_id:
-            default_read_dates.setdefault(
-                m.bundled_licence_id, m.bundled_licence_read_date
-            )
-
-    reg_meta: dict[str, Any] = (
-        dict(licence_registry)
-        if licence_registry is not None
-        else {
-            "path": "",
-            "sha256": "0" * 64,
-            "read_dates": default_read_dates,
-        }
+    inputs = _render_inputs(
+        part_id=part_id,
+        map_version=map_version,
+        map_sha256=map_sha256,
+        wave_result=wave_result,
+        licence_registry=licence_registry,
     )
+    rendered = _render_part(inputs, shuffle_seed, commitment_key)
 
-    kept_targets: set[str] = set()
-    for ev in wave_result.kept_triads:
-        kept_targets.add(ev.worded.triad.table.table_id)
-        kept_targets.update(claim.claim_id for claim in ev.worded.triad.claims.values())
-
-    # Collect raw unshuffled items from kept triads
-    raw_entries: list[dict[str, Any]] = []
-    for ev in wave_result.kept_triads:
-        wt = ev.worded
-        table = wt.triad.table
-        for key in VERDICT_CLASSES:
-            claim = wt.triad.claims[key]
-            claim_ev = ev.claim_evals[key]
-            w_recs: list[dict[str, object]] = []
-            if table.table_id in w_calls_by_target:
-                w_recs.append(dict(w_calls_by_target[table.table_id]))
-            if claim.claim_id in w_calls_by_target:
-                w_recs.append(dict(w_calls_by_target[claim.claim_id]))
-            r_recs: list[dict[str, object]] = []
-            if claim.claim_id in r1_calls_by_target:
-                r_recs.append(dict(r1_calls_by_target[claim.claim_id]))
-            if claim.claim_id in r2_calls_by_target:
-                r_recs.append(dict(r2_calls_by_target[claim.claim_id]))
-            raw_entries.append(
-                {
-                    "triad_id": wt.triad.triad_id,
-                    "table_id": table.table_id,
-                    "domain": table.domain,
-                    "closure": table.closure,
-                    "material": wt.material,
-                    "claim_text": wt.worded_claims[key],
-                    "key": key,
-                    "proof": claim.proof.to_dict(),
-                    "read_1": claim_ev.read_1.to_dict(),
-                    "read_2": claim_ev.read_2.to_dict(),
-                    "writer_call_records": w_recs,
-                    "reader_call_records": r_recs,
-                }
-            )
-
-    # Shuffle items with recorded shuffle_seed so triad position cannot hint at the key (§2.1)
-    rng = random.Random(shuffle_seed)
-    shuffled_indices = list(range(len(raw_entries)))
-    rng.shuffle(shuffled_indices)
-
-    items_lines: list[str] = []
-    prov_lines: list[str] = []
-    sealed_key_lines: list[str] = []
-    metric_lines: list[str] = []
-
-    for out_idx, orig_idx in enumerate(shuffled_indices, start=1):
-        entry = raw_entries[orig_idx]
-        item_id = f"{part_id}-item-{out_idx:03d}"
-        user_turn = (
-            f"Material ({entry['closure']}):\n{entry['material']}\n\n"
-            f"Claim: {entry['claim_text']}"
-        )
-        msg_obj = [{"role": "user", "content": user_turn}]
-        msg_sha = _sha256_bytes(_canonical_json_line(msg_obj).encode("utf-8"))
-
-        # Public items.jsonl carries NO key, verdict, label, or answer (§7, §11 B.4)
-        item_row = {
-            "id": item_id,
-            "triad_id": _triad_handle(commitment_key, entry["triad_id"]),
-            "trait": "T10",
-            "kind": "D",
-            "domain": entry["domain"],
-            "closure": entry["closure"],
-            "proof_basis": "proved",
-            "key_basis": "construction",
-            "material": entry["material"],
-            "claim": entry["claim_text"],
-            "messages": msg_obj,
-        }
-        items_lines.append(_canonical_json_line(item_row))
-
-        # Public provenance.jsonl carries judgment outcomes ONLY as constant aggregates (§2.1, ruling 5a)
-        prov_row = {
-            "id": item_id,
-            "map": {
-                "version": map_version,
-                "sha256": map_sha256,
-                "cell": f"T10/D/{entry['domain']}",
-            },
-            "licence_registry_path": str(reg_meta.get("path", "")),
-            "licence_registry_sha256": str(reg_meta.get("sha256", "")),
-            "licence_registry": reg_meta,
-            "proof_basis": "proved",
-            "key_basis": "construction",
-            "proof": {
-                "prover": entry["proof"]["prover"],
-                "version": entry["proof"]["version"],
-                "trace_commitment": _commit(commitment_key, "trace", entry["proof"]["trace_sha256"]),
-            },
-            "writer": {
-                "adapter": wave_result.writer_adapter_class,
-                "model": wave_result.writer_model.name,
-                "family": wave_result.writer_model.normalized_family,
-                "digest": wave_result.writer_model.digest,
-                "licence_id": wave_result.writer_model.licence_id,
-                "licence_read_date": wave_result.writer_model.licence_read_date,
-                "bundled_licence_id": wave_result.writer_model.bundled_licence_id,
-                "bundled_licence_read_date": wave_result.writer_model.bundled_licence_read_date,
-                "licence_layer_digest": wave_result.writer_model.licence_layer_digest,
-                "source_match": wave_result.writer_model.source_match,
-                "source_match_reason": wave_result.writer_model.source_match_reason,
-                "messages_sha256": msg_sha,
-                "num_predict": wave_result.num_predict,
-                "num_predict_source": wave_result.num_predict_source,
-                "num_predict_config": (
-                    wave_result.num_predict_config.to_dict()
-                    if wave_result.num_predict_config is not None
-                    else {
-                        "default_num_predict": wave_result.num_predict,
-                        "source": wave_result.num_predict_source,
-                        "by_operation": {},
-                        "sources_by_operation": {},
-                    }
-                ),
-                "max_num_ctx": int(
-                    getattr(
-                        wave_result.writer_adapter,
-                        "max_num_ctx",
-                        wave_result.writer_model.max_num_ctx,
-                    )
-                ),
-                "call_records": [
-                    _public_call_record(commitment_key, rec, writer=True) for rec in entry["writer_call_records"]
-                ],
-            },
-            "checks": [
-                {
-                    "name": "pilot_b.rendering_check",
-                    "version": "0.3.0",
-                    "result": "pass",
-                },
-                {
-                    "name": "pilot_b.unanimity_gate",
-                    "version": "0.3.0",
-                    "result": "pass",
-                },
-            ],
-            "judgments": [
-                {
-                    "kind": "blind_read_unanimity_aggregate",
-                    "reader_adapters": [
-                        wave_result.reader_1_adapter_class,
-                        wave_result.reader_2_adapter_class,
-                    ],
-                    "readers": [
-                        f"model:{wave_result.reader_1_model.name}@{wave_result.reader_1_model.digest}",
-                        f"model:{wave_result.reader_2_model.name}@{wave_result.reader_2_model.digest}",
-                    ],
-                    "families": [
-                        wave_result.reader_1_model.normalized_family,
-                        wave_result.reader_2_model.normalized_family,
-                    ],
-                    "reader_licence_ids": [
-                        wave_result.reader_1_model.licence_id,
-                        wave_result.reader_2_model.licence_id,
-                    ],
-                    "reader_licence_read_dates": [
-                        wave_result.reader_1_model.licence_read_date,
-                        wave_result.reader_2_model.licence_read_date,
-                    ],
-                    "reader_bundled_licence_ids": [
-                        wave_result.reader_1_model.bundled_licence_id,
-                        wave_result.reader_2_model.bundled_licence_id,
-                    ],
-                    "reader_bundled_licence_read_dates": [
-                        wave_result.reader_1_model.bundled_licence_read_date,
-                        wave_result.reader_2_model.bundled_licence_read_date,
-                    ],
-                    "reader_licence_layer_digests": [
-                        wave_result.reader_1_model.licence_layer_digest,
-                        wave_result.reader_2_model.licence_layer_digest,
-                    ],
-                    "reader_source_matches": [
-                        wave_result.reader_1_model.source_match,
-                        wave_result.reader_2_model.source_match,
-                    ],
-                    "reader_source_match_reasons": [
-                        wave_result.reader_1_model.source_match_reason,
-                        wave_result.reader_2_model.source_match_reason,
-                    ],
-                    "reader_max_num_ctx": [
-                        int(
-                            getattr(
-                                wave_result.reader_1_adapter,
-                                "max_num_ctx",
-                                wave_result.reader_1_model.max_num_ctx,
-                            )
-                        ),
-                        int(
-                            getattr(
-                                wave_result.reader_2_adapter,
-                                "max_num_ctx",
-                                wave_result.reader_2_model.max_num_ctx,
-                            )
-                        ),
-                    ],
-                    "call_records": [
-                        _public_call_record(commitment_key, rec, writer=False) for rec in entry["reader_call_records"]
-                    ],
-                    "agrees_all_readers": True,
-                    "ambiguous_count": 0,
-                }
-            ],
-        }
-        prov_lines.append(_canonical_json_line(prov_row))
-
-        # Sealed keys store holds the item_id -> key, proof method, and per-reader verdicts
-        sealed_row = {
-            "id": item_id,
-            "triad_id": entry["triad_id"],
-            "triad_handle": _triad_handle(commitment_key, entry["triad_id"]),
-            "key": entry["key"],
-            "proof": entry["proof"],
-            "blind_reads": [entry["read_1"], entry["read_2"]],
-        }
-        sealed_key_lines.append(_canonical_json_line(sealed_row))
-        metric_lines.append(
-            _canonical_json_line(
-                {
-                    "id": item_id,
-                    "writer": _sealed_call_metrics(entry["writer_call_records"]),
-                    "readers": _sealed_call_metrics(entry["reader_call_records"]),
-                }
-            )
-        )
-
-    items_bytes = ("\n".join(items_lines) + ("\n" if items_lines else "")).encode("utf-8")
-    prov_bytes = ("\n".join(prov_lines) + ("\n" if prov_lines else "")).encode("utf-8")
-    sealed_bytes = (
-        "\n".join(sealed_key_lines) + ("\n" if sealed_key_lines else "")
-    ).encode("utf-8")
-
-    (part_dir / "items.jsonl").write_bytes(items_bytes)
-    (part_dir / "provenance.jsonl").write_bytes(prov_bytes)
-    keys_sealed_path.write_bytes(sealed_bytes)
-    (keys_sealed_path.parent / CALL_METRICS_NAME).write_text(
-        "\n".join(metric_lines) + ("\n" if metric_lines else ""), encoding="utf-8"
-    )
-    (keys_sealed_path.parent / SEALING_STORE_NAME).write_text(
-        json.dumps(
+    store_dir = keys_sealed_path.parent
+    (store_dir / SEALING_STORE_NAME).write_bytes(
+        _render_json_doc(
             {
                 "part_id": part_id,
                 "shuffle_seed": shuffle_seed,
                 "commitment_key": commitment_key.hex(),
                 **({"test_only": True} if shuffle_seed.bit_length() < MIN_SHUFFLE_SEED_BITS else {}),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    keys_sealed_sha256 = _sha256_bytes(sealed_bytes)
-
-    part_meta: dict[str, Any] = {
-        "part_id": part_id,
-        "split": "sealed",
-        "frozen": False,
-        "map_version": map_version,
-        "map_sha256": map_sha256,
-        "num_predict": wave_result.num_predict,
-        "num_predict_source": wave_result.num_predict_source,
-        "num_predict_config": (
-            wave_result.num_predict_config.to_dict()
-            if wave_result.num_predict_config is not None
-            else {
-                "default_num_predict": wave_result.num_predict,
-                "source": wave_result.num_predict_source,
-                "by_operation": {},
-                "sources_by_operation": {},
             }
-        ),
-        "items_count": len(items_lines),
-        "triads_kept": len(wave_result.kept_triads),
-        "triads_failed": len(wave_result.failed_triads),
-        "keys_sealed_sha256": keys_sealed_sha256,
-        "call_distributions": _call_distributions(
-            {"writer": w_calls_by_target, "reader_1": r1_calls_by_target, "reader_2": r2_calls_by_target},
-            kept_targets,
-        ),
-        "judgment_aggregates": {
-            "pass_rate_per_class": dict(wave_result.pass_rate_per_class),
-            "triad_pass_rate": wave_result.triad_pass_rate,
-        },
-        "waves": [w.to_dict() for w in wave_result.wave_metrics],
-    }
-    part_json_bytes = (
-        json.dumps(part_meta, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
-    ).encode("utf-8")
-    (part_dir / "part.json").write_bytes(part_json_bytes)
+        )
+    )
+    (store_dir / RENDER_INPUTS_NAME).write_bytes(_render_json_doc(inputs))
+    keys_sealed_path.write_bytes(rendered["keys.sealed.jsonl"])
+    (store_dir / CALL_METRICS_NAME).write_bytes(rendered[CALL_METRICS_NAME])
+    for name in _PART_FILES:
+        (part_dir / name).write_bytes(rendered[name])
+    return json.loads(rendered["part.json"])
 
-    _write_checksums(part_dir)
-    return part_meta
+
+def write_public_report(report_path: Path, keys_sealed_path: Path, report: Mapping[str, Any]) -> None:
+    """Write the build report: its content is kept in the sealed store, and the public file is its rendering."""
+
+    keys_sealed_path.parent.mkdir(parents=True, exist_ok=True)
+    (keys_sealed_path.parent / REPORT_NAME).write_bytes(_render_json_doc({"report": report}))
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_bytes(_render_json_doc(report))
 
 
 def _commit_prompt(key: bytes, record: Mapping[str, Any]) -> dict[str, Any]:
@@ -1242,17 +1304,6 @@ def _call_distributions(
             for op, metrics in sorted(by_operation.items())
         }
     return out
-
-
-def _write_checksums(part_dir: Path) -> dict[str, str]:
-    checksums: dict[str, str] = {}
-    for filename in ("items.jsonl", "provenance.jsonl", "part.json"):
-        fpath = part_dir / filename
-        if fpath.exists():
-            checksums[filename] = _sha256_bytes(fpath.read_bytes())
-    lines = [f"{sha}  {name}" for name, sha in sorted(checksums.items())]
-    (part_dir / "checksums.txt").write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
-    return checksums
 
 
 def _scan_object_for_forbidden_keys(obj: object, path_label: str) -> None:
@@ -1462,23 +1513,6 @@ def _validated_store(keys_sealed_path: Path) -> dict[str, Any]:
 _PART_FILES: tuple[str, ...] = ("checksums.txt", "items.jsonl", "part.json", "provenance.jsonl")
 
 
-def _part_mac(part_dir: Path, commitment_key: bytes) -> str:
-    """The seal: an HMAC under the sealed commitment key over the part's items, provenance and part.json (without
-    its own frozen, seal and test-only marks). Nothing a public file says about itself stands in for it."""
-
-    meta = json.loads((part_dir / "part.json").read_text(encoding="utf-8"))
-    for name in ("frozen", "frozen_mac", "test_only"):
-        meta.pop(name, None)
-    body = _canonical_json_line(
-        {
-            "items": _sha256_bytes((part_dir / "items.jsonl").read_bytes()),
-            "provenance": _sha256_bytes((part_dir / "provenance.jsonl").read_bytes()),
-            "part": meta,
-        }
-    )
-    return _commit(commitment_key, "frozen", body)
-
-
 def _schema_errors(label: str, errors: list[str]) -> None:
     if errors:
         raise refused_error(
@@ -1529,12 +1563,10 @@ def _check_part_shapes(part_dir: Path, extra_public_files: Sequence[Path], key_i
         _schema_errors(extra.name, schema_check.validate(json.loads(extra.read_text(encoding="utf-8")), "report"))
 
 
-def verify_sealed_part(
-    part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path] = ()
-) -> None:
-    """Verify that no public file (the part's files and any extra ones, such as the report) holds a sealed value, a
-    forbidden field, or a per-item value that lines up with the keys, and that every public digest is the exact one
-    the sealed store gives (ruling 5a)."""
+def _verify_known_leaks(part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path] = ()) -> None:
+    """The early stage of verification: named refusals for the leaks we know of (a sealed value in a public file, a
+    forbidden field, a field that lines up with the keys, a digest that is not the sealed store's). The re-render in
+    ``_verify_render`` is the authority; these give a specific reason first."""
     if not part_dir.exists() or not part_dir.is_dir():
         raise refused_error(
             "PILOT_B_PART_DIR_NOT_FOUND",
@@ -1652,41 +1684,131 @@ def verify_sealed_part(
                 "A part written with a test-only seed is marked frozen.",
                 "A test-only part is never releasable; rebuild it with a fresh seed.",
             )
-        mac = part_meta.get("frozen_mac")
-        expected_mac = _part_mac(part_dir, bytes.fromhex(store["commitment_key"]))
-        if not isinstance(mac, str) or not hmac.compare_digest(mac, expected_mac):
+    _check_part_shapes(part_dir, extra_public_files, key_ids)
+
+
+def _render_mismatch(label: str, detail: str) -> Any:
+    return refused_error(
+        "PILOT_B_SEALED_RENDER_MISMATCH",
+        f"Public file '{label}' is not the byte-exact rendering the sealed store gives: {detail}",
+        "A part must be exactly what write_sealed_part renders; rebuild it, or restore the file.",
+    )
+
+
+def _verify_render(part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path]) -> None:
+    """The authority: re-render every public file from the sealed store and require a byte-for-byte match."""
+
+    store = _validated_store(keys_sealed_path)
+    store_dir = keys_sealed_path.parent
+    inputs_path = store_dir / RENDER_INPUTS_NAME
+    if not inputs_path.is_file():
+        raise refused_error(
+            "PILOT_B_SEALED_STORE_MISSING",
+            f"The sealed store file '{RENDER_INPUTS_NAME}' was not found beside the keys.",
+            "Write the part with write_sealed_part, which creates it, before verifying or freezing.",
+        )
+    inputs = json.loads(inputs_path.read_text(encoding="utf-8"))
+    commitment_key = bytes.fromhex(store["commitment_key"])
+    seed = int(store["shuffle_seed"])
+
+    actual_meta = json.loads((part_dir / "part.json").read_text(encoding="utf-8"))
+    frozen = actual_meta.get("frozen") is True
+    if frozen:
+        claimed = actual_meta.get("frozen_mac")
+        expected = _part_mac(
+            (part_dir / "items.jsonl").read_bytes(),
+            (part_dir / "provenance.jsonl").read_bytes(),
+            actual_meta,
+            commitment_key,
+        )
+        if not isinstance(claimed, str) or not hmac.compare_digest(claimed, expected):
             raise refused_error(
                 "PILOT_B_SEALED_FROZEN_MISMATCH",
                 "part.json says frozen, but its seal does not match the part.",
                 "Only freeze_sealed_part marks a part frozen; rebuild or re-freeze it.",
             )
-    _check_part_shapes(part_dir, extra_public_files, key_ids)
+    rendered = _render_part(inputs, seed, commitment_key, frozen=frozen)
+    for name in _PART_FILES:
+        if (part_dir / name).read_bytes() != rendered[name]:
+            raise _render_mismatch(name, "the bytes differ")
+    if keys_sealed_path.read_bytes() != rendered["keys.sealed.jsonl"]:
+        raise _render_mismatch("keys.sealed.jsonl", "the bytes differ")
+    if (store_dir / CALL_METRICS_NAME).read_bytes() != rendered[CALL_METRICS_NAME]:
+        raise _render_mismatch(CALL_METRICS_NAME, "the bytes differ")
+
+    for extra in extra_public_files:
+        extra = Path(extra)
+        report_store = store_dir / REPORT_NAME
+        if not report_store.is_file():
+            raise _render_mismatch(extra.name, "the sealed store holds no report to render it from")
+        report = json.loads(report_store.read_text(encoding="utf-8"))["report"]
+        if extra.read_bytes() != _render_json_doc(report):
+            raise _render_mismatch(extra.name, "the bytes differ")
+        shared = {
+            "part_id": actual_meta["part_id"],
+            "items_total": actual_meta["items_count"],
+            "triads_kept": actual_meta["triads_kept"],
+            "triads_failed": actual_meta["triads_failed"],
+            "triad_pass_rate": actual_meta["judgment_aggregates"]["triad_pass_rate"],
+            "gate_pass_rate_per_class": actual_meta["judgment_aggregates"]["pass_rate_per_class"],
+            "num_predict": actual_meta["num_predict"],
+            "num_predict_source": actual_meta["num_predict_source"],
+            "num_predict_config": actual_meta["num_predict_config"],
+            "waves": actual_meta["waves"],
+        }
+        for field, value in shared.items():
+            if _normalise(report.get(field)) != _normalise(value):
+                raise _render_mismatch(extra.name, f"'{field}' differs from part.json")
+        text = extra.read_text(encoding="utf-8")
+        public_ids = [str(r["id"]) for r in _jsonl_rows(part_dir / "items.jsonl")] + [
+            str(r["triad_id"]) for r in _jsonl_rows(part_dir / "items.jsonl")
+        ]
+        if any(i in text for i in public_ids):
+            raise _render_mismatch(extra.name, "it names an item or a triad of the part")
+
+
+def verify_sealed_part(
+    part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path] = ()
+) -> None:
+    """Verify a sealed part against the sealed store: every public file must be a byte-exact honest rendering.
+
+    Threat model. Honest builds leak nothing about keys or positions (this is checked by probes in the tests).
+    verify's job is to refuse any public file that is not a byte-exact honest rendering from the sealed store, so a
+    tampered or buggy build cannot be frozen. Without the sealed store a part is unverifiable (``part_status``).
+
+    Two stages. First, named refusals for the leaks we know of (``_verify_known_leaks``); a file that cannot even be
+    read as the writer's output counts as a mismatch. Then ``_verify_render`` regenerates every public file (part.json,
+    items.jsonl, provenance.jsonl, checksums.txt, and each extra file such as the report) from the sealed store and
+    compares the bytes. Any signal an honest render does not produce fails there, including ones nobody listed.
+    """
+    try:
+        _verify_known_leaks(part_dir, keys_sealed_path, extra_public_files)
+    except RdlabError:
+        raise
+    except Exception as exc:
+        raise _render_mismatch("a public file", f"it could not be read as the writer's output ({exc!r})") from exc
+    try:
+        _verify_render(part_dir, keys_sealed_path, extra_public_files)
+    except RdlabError:
+        raise
+    except Exception as exc:
+        raise _render_mismatch("a public file", f"it could not be re-rendered ({exc!r})") from exc
 
 
 def freeze_sealed_part(
     part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path] = ()
 ) -> dict[str, Any]:
-    """Run all sealed-part checks, mark part.json frozen=True, and update checksums.txt.
+    """Verify the part, then mark it frozen by rendering it again with its seal.
 
     A part written with a test-only seed is verified but never marked frozen: it is not releasable.
     """
     verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_sealed_path, extra_public_files=extra_public_files)
-    store = json.loads((keys_sealed_path.parent / SEALING_STORE_NAME).read_text(encoding="utf-8"))
-    part_json_path = part_dir / "part.json"
-    part_meta: dict[str, Any] = json.loads(part_json_path.read_text(encoding="utf-8"))
-    if store.get("test_only") is True:
-        part_meta["frozen"] = False
-        part_meta["test_only"] = True
-    else:
-        part_meta["frozen"] = True
-        part_meta["frozen_mac"] = _part_mac(part_dir, bytes.fromhex(store["commitment_key"]))
-    part_json_path.write_bytes(
-        (json.dumps(part_meta, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode(
-            "utf-8"
-        )
-    )
-    _write_checksums(part_dir)
-    return part_meta
+    store = _validated_store(keys_sealed_path)
+    inputs = json.loads((keys_sealed_path.parent / RENDER_INPUTS_NAME).read_text(encoding="utf-8"))
+    rendered = _render_part(inputs, int(store["shuffle_seed"]), bytes.fromhex(store["commitment_key"]), frozen=True)
+    for name in ("part.json", "checksums.txt"):
+        (part_dir / name).write_bytes(rendered[name])
+    return json.loads(rendered["part.json"])
 
 
 def part_status(part_dir: Path, keys_sealed_path: Path | None = None) -> str:

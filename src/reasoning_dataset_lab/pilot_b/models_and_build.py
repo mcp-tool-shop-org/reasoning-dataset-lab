@@ -79,6 +79,7 @@ from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
     PilotBWaveRunResult,
     freeze_sealed_part,
     run_pilot_b_waves,
+    write_public_report,
     write_sealed_part,
 )
 
@@ -1083,11 +1084,7 @@ def run_pilot_b_build(
         json.dumps(hand_audit_sample, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     report_path = output_dir / "reports" / "pilot_b_report.json"
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    write_public_report(report_path, keys_path, report)
     # the report is public too: freeze verifies it with the part
     frozen_meta = freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path, extra_public_files=[report_path])
 

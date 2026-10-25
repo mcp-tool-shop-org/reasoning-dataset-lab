@@ -836,3 +836,195 @@ def test_the_wheel_ships_the_schema_files():
 
     names = {p.name for p in resources.files("reasoning_dataset_lab.pilot_b").joinpath("schemas").iterdir()}
     assert names >= {"part.schema.json", "item.schema.json", "provenance.schema.json", "report.schema.json"}
+
+
+# ── verify = re-render and diff: any public file that is not the honest rendering is refused ─────────────
+
+
+def _refused(part_dir: Path, keys_path: Path, extra=()) -> str:
+    with pytest.raises(RdlabError) as caught:
+        freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path, extra_public_files=list(extra))
+    return caught.value.code
+
+
+def _rewrite_lines(path: Path, lines: list[str], eol: str = "\n") -> None:
+    path.write_bytes((eol.join(lines) + eol).encode("utf-8"))
+
+
+def _fresh_unfrozen(tmp_path, monkeypatch, name):
+    return _fresh(tmp_path, monkeypatch, name)
+
+
+def test_a_fabricated_triad_handle_that_looks_like_a_handle_is_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh_unfrozen(tmp_path, monkeypatch, "a1")
+    truth = _true_keys(keys_path)
+    classes = {"supported": 0, "unsupported": 1, "cannot_tell": 2}
+    rows = _jsonl(part_dir / "items.jsonl")
+    for pos, row in enumerate(rows):
+        row["triad_id"] = f"triad-{pos:08x}{classes[truth[row['id']]]:08x}"
+    _write_rows(part_dir / "items.jsonl", rows)
+    _rewrite_checksums(part_dir)
+    assert _refused(part_dir, keys_path)
+
+
+def test_trailing_spaces_in_a_claim_are_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh_unfrozen(tmp_path, monkeypatch, "a2")
+    truth = _true_keys(keys_path)
+    rows = _jsonl(part_dir / "items.jsonl")
+    spaces = {"supported": 0, "unsupported": 1, "cannot_tell": 2}
+    for row in rows:
+        row["claim"] += " " * spaces[truth[row["id"]]]
+    _write_rows(part_dir / "items.jsonl", rows)
+    _rewrite_checksums(part_dir)
+    assert _refused(part_dir, keys_path)
+
+
+def test_config_strings_that_vary_across_rows_are_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh_unfrozen(tmp_path, monkeypatch, "a3")
+    truth = _true_keys(keys_path)
+    seen = {"u": 0}
+    shared: set[str] = set()
+
+    def vary(row):
+        key = truth[row["id"]]
+        # one shared two-class bucket and unique one-class buckets, so no value is a pure class partition
+        if len(shared) < 2 and key not in shared:
+            shared.add(key)
+            row["proof"]["version"] = "shared"
+        else:
+            row["proof"]["version"] = f"{key}:{row['id']}"
+        # two-class exclusion buckets: A never holds cannot_tell, B never holds supported; unsupported alternates
+        if key == "supported":
+            bucket = "A"
+        elif key == "cannot_tell":
+            bucket = "B"
+        else:
+            seen["u"] += 1
+            bucket = "AB"[seen["u"] % 2]
+        row["writer"]["model"] = "m-" + bucket
+
+    _edit_provenance(part_dir, vary)
+    _rewrite_checksums(part_dir)
+    assert _refused(part_dir, keys_path)
+
+
+def test_a_config_string_that_encodes_the_pre_shuffle_triad_index_is_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh_unfrozen(tmp_path, monkeypatch, "a4")
+    inputs = json.loads((keys_path.parent / "render_inputs.sealed.json").read_text(encoding="utf-8"))
+    order = list(dict.fromkeys(e["triad_id"] for e in inputs["entries"]))
+    triad_of = {r["id"]: order.index(r["triad_id"]) for r in _jsonl(keys_path)}
+    # one value per triad, shared by its three items: it spans every class, so only its meaning gives it away
+    _edit_provenance(part_dir, lambda row: row["proof"].update(version=f"0.3.{triad_of[row['id']]:03d}"))
+    _rewrite_checksums(part_dir)
+    assert _refused(part_dir, keys_path)
+
+
+def test_an_open_map_in_the_report_carrying_item_keys_is_refused(tmp_path, monkeypatch):
+    out, _result = _stub_build(tmp_path, monkeypatch, "a5")
+    part_dir, keys_path, report = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl", out / "reports" / "pilot_b_report.json"
+    truth = _true_keys(keys_path)
+    _edit_json(report, lambda d: d["licence_registry"]["read_dates"].update(dict(list(truth.items())[:5])))
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report])
+
+
+def test_json_spelling_variants_are_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh_unfrozen(tmp_path, monkeypatch, "a6")
+    text = (part_dir / "provenance.jsonl").read_text(encoding="utf-8")
+    (part_dir / "provenance.jsonl").write_text(text.replace('"ambiguous_count":0', '"ambiguous_count":-0', 1), encoding="utf-8")
+    _rewrite_checksums(part_dir)
+    assert _refused(part_dir, keys_path)
+    part2, keys2 = _fresh_unfrozen(tmp_path, monkeypatch, "a6b")
+    text = (part2 / "provenance.jsonl").read_text(encoding="utf-8")
+    (part2 / "provenance.jsonl").write_text(text.replace('"proved"', '"prov\\u0065d"', 1), encoding="utf-8")
+    _rewrite_checksums(part2)
+    assert _refused(part2, keys2)
+
+
+def test_whitespace_key_order_and_line_endings_are_refused(tmp_path, monkeypatch):
+    for variant, name in enumerate(("spaces", "order", "crlf", "ls")):
+        part_dir, keys_path = _fresh_unfrozen(tmp_path, monkeypatch, f"a7{name}")
+        rows = _jsonl(part_dir / "items.jsonl")
+        if name == "spaces":
+            lines = [json.dumps(r, sort_keys=True, separators=(",", ":")) + " " * (i % 3) for i, r in enumerate(rows)]
+            _rewrite_lines(part_dir / "items.jsonl", lines)
+        elif name == "order":
+            lines = [json.dumps(dict(reversed(list(r.items()))), separators=(",", ":")) for r in rows]
+            _rewrite_lines(part_dir / "items.jsonl", lines)
+        elif name == "crlf":
+            lines = [json.dumps(r, sort_keys=True, separators=(",", ":")) for r in rows]
+            _rewrite_lines(part_dir / "items.jsonl", lines, eol="\r\n")
+        else:
+            lines = [json.dumps(r, sort_keys=True, separators=(",", ":")) for r in rows]
+            (part_dir / "items.jsonl").write_bytes((" ".join(lines) + "\n").encode("utf-8"))
+        _rewrite_checksums(part_dir)
+        assert _refused(part_dir, keys_path), name
+
+
+def test_digits_appended_to_a_frozen_part_json_number_are_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh_unfrozen(tmp_path, monkeypatch, "a8")
+    freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    text = (part_dir / "part.json").read_text(encoding="utf-8")
+    assert '"triad_pass_rate": 1.0' in text
+    (part_dir / "part.json").write_text(text.replace('"triad_pass_rate": 1.0', '"triad_pass_rate": 1.00000000000000000000120', 1), encoding="utf-8")
+    _rewrite_checksums(part_dir)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_RENDER_MISMATCH"
+
+
+def test_checksums_with_crlf_endings_are_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh_unfrozen(tmp_path, monkeypatch, "a9")
+    text = (part_dir / "checksums.txt").read_bytes().replace(b"\n", b"\r\n")
+    (part_dir / "checksums.txt").write_bytes(text)
+    assert _refused(part_dir, keys_path)
+
+
+def test_a_report_edited_after_freezing_is_refused(tmp_path, monkeypatch):
+    out, _result = _stub_build(tmp_path, monkeypatch, "a10")
+    part_dir, keys_path, report = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl", out / "reports" / "pilot_b_report.json"
+    _edit_json(report, lambda d: d.update(items_total=999999))
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report])
+
+
+def test_an_unfrozen_part_with_a_made_up_seal_or_test_mark_is_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh_unfrozen(tmp_path, monkeypatch, "a11")
+    _edit_json(part_dir / "part.json", lambda d: d.update(frozen_mac="0123456789abcdef" * 4, test_only=True))
+    _rewrite_checksums(part_dir)
+    assert _verify_code(part_dir, keys_path)
+
+
+@pytest.mark.parametrize("triads", [1, 2, 3, 5])
+@pytest.mark.parametrize("seed", [1, 2])
+def test_honest_builds_verify_and_any_single_byte_change_to_a_public_file_is_refused(tmp_path, monkeypatch, triads, seed):
+    import random as _random
+
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr("reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport", transport)
+    out = tmp_path / f"prop-{triads}-{seed}"
+    run_pilot_b_build(output_dir=out, triad_count=triads, stub_mode=True, seed=seed, num_predict=256)
+    part_dir, keys_path = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl"
+    report = out / "reports" / "pilot_b_report.json"
+    verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path, extra_public_files=[report])
+    rng = _random.Random(20261025 + triads * 10 + seed)
+    for path in (part_dir / "items.jsonl", part_dir / "provenance.jsonl", part_dir / "part.json", part_dir / "checksums.txt", report):
+        original = path.read_bytes()
+        positions = {0, len(original) - 1, *(rng.randrange(len(original)) for _ in range(14))}
+        for pos in sorted(positions):
+            mutated = bytearray(original)
+            mutated[pos] = (mutated[pos] + 1) % 256
+            path.write_bytes(bytes(mutated))
+            with pytest.raises(RdlabError):
+                verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path, extra_public_files=[report])
+        path.write_bytes(original)
+    verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path, extra_public_files=[report])
+
+
+def test_the_renderer_is_the_only_writer(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh_unfrozen(tmp_path, monkeypatch, "r1")
+    from reasoning_dataset_lab.pilot_b import waves_and_sealing as ws
+
+    store = _sealed_store(keys_path)
+    inputs = json.loads((keys_path.parent / "render_inputs.sealed.json").read_text(encoding="utf-8"))
+    rendered = ws._render_part(inputs, store["shuffle_seed"], bytes.fromhex(store["commitment_key"]))
+    for name in ("items.jsonl", "provenance.jsonl", "part.json", "checksums.txt"):
+        assert (part_dir / name).read_bytes() == rendered[name]
+    assert ws._canonical_json_line({"a": -0.0}) == '{"a":0.0}'
+    assert ws._render_json_doc({"é": 1}) == b'{\n  "\\u00e9": 1\n}\n'
