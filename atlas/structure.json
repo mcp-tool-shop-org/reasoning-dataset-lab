@@ -6108,8 +6108,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "cb279c47da39777b0fd3a74444fc4293507519a7",
-    "tracked": 38
+    "commit": "1cff8235280e0ebbc866536dffe5da19794f3988",
+    "tracked": 39
   },
   "landings": [
     {
@@ -6127,6 +6127,24 @@
         }
       ],
       "target": "README.md",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_pilot_b_ollama_adapters.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        },
+        {
+          "by": "tests/test_pilot_b_ollama_adapters.py",
+          "call": "read_text",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "docs/calibration-2026-10-25.md",
       "writers": []
     },
     {
@@ -6160,5 +6178,10 @@
   "submodules": [],
   "symlinks": [],
   "testFiles": 13,
-  "unassigned": []
+  "unassigned": [
+    {
+      "hash": "b723e3bbe117fa8b59103d1c698175b858ee54eeaa0d94f67f610faaed401b6d",
+      "path": "docs/calibration-2026-10-25.md"
+    }
+  ]
 }

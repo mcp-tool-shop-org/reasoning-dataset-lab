@@ -67,7 +67,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "src",
-      "qualifyingSourceCommits": 2,
+      "qualifyingSourceCommits": 4,
       "rebaseline": null
     },
     {
@@ -83,7 +83,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 1,
+      "qualifyingSourceCommits": 3,
       "rebaseline": null
     }
   ],
@@ -116,8 +116,8 @@
         "path": "LICENSE"
       },
       {
-        "commits": 7,
-        "lines": 179,
+        "commits": 8,
+        "lines": 191,
         "path": "README.md"
       },
       {
@@ -126,8 +126,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 8,
-        "lines": 169,
+        "commits": 9,
+        "lines": 179,
         "path": "atlas/README.md"
       },
       {
@@ -136,19 +136,24 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 8,
-        "lines": 406,
+        "commits": 9,
+        "lines": 446,
         "path": "atlas/page.json"
       },
       {
-        "commits": 8,
-        "lines": 745,
+        "commits": 9,
+        "lines": 809,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 8,
-        "lines": 10468,
+        "commits": 9,
+        "lines": 10614,
         "path": "atlas/structure.json"
+      },
+      {
+        "commits": 1,
+        "lines": 52,
+        "path": "docs/calibration-2026-10-25.md"
       },
       {
         "commits": 1,
@@ -216,8 +221,8 @@
         "path": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
       },
       {
-        "commits": 5,
-        "lines": 3156,
+        "commits": 6,
+        "lines": 3174,
         "path": "src/reasoning_dataset_lab/pilot_b/ollama.py"
       },
       {
@@ -261,8 +266,8 @@
         "path": "tests/test_map.py"
       },
       {
-        "commits": 4,
-        "lines": 2910,
+        "commits": 5,
+        "lines": 2939,
         "path": "tests/test_pilot_b_ollama_adapters.py"
       },
       {
@@ -291,8 +296,8 @@
         "path": "tests/test_pilot_b_part_e.py"
       },
       {
-        "commits": 1,
-        "lines": 66,
+        "commits": 2,
+        "lines": 74,
         "path": "tests/test_pilot_b_part_f.py"
       },
       {
@@ -311,13 +316,13 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-25T13:03:33.990Z",
+  "generatedAt": "2026-10-25T13:06:33.504Z",
   "generatedFrom": {
-    "commit": "cb279c47da39777b0fd3a74444fc4293507519a7"
+    "commit": "1cff8235280e0ebbc866536dffe5da19794f3988"
   },
   "pairs": [],
   "parameters": {
-    "appliedChangesetLimit": 10.75,
+    "appliedChangesetLimit": 11,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -326,16 +331,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-25T08:56:51-04:00",
-    "inScopeFiles": 43,
+    "headDate": "2026-10-25T09:04:32-04:00",
+    "inScopeFiles": 44,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 3,
+    "qualifyingCommits": 5,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-28T12:56:51.000Z",
+    "since": "2026-04-28T13:04:32.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

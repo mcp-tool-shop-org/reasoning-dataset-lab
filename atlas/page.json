@@ -18,31 +18,46 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 0,
-      "changed": 4,
+      "added": 1,
+      "changed": 0,
       "moved": 0,
-      "parts": 3,
+      "parts": 0,
       "removed": 0
     },
     "items": [
       {
+        "kind": "landing",
+        "sentence": "docs/calibration-2026-10-25.md is now read by tests/test_pilot_b_ollama_adapters.py.",
+        "subjects": [
+          "docs/calibration-2026-10-25.md",
+          "tests/test_pilot_b_ollama_adapters.py"
+        ]
+      },
+      {
+        "kind": "unassigned",
+        "sentence": "docs/calibration-2026-10-25.md is new and belongs to no part, so atlas check fails on it against the previous map.",
+        "subjects": [
+          "docs/calibration-2026-10-25.md"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-10-25; 4 files changed content.",
+        "sentence": "1 file added.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "76c967d148d1615a826e1ff7215e885289b8272f",
-      "generatedAt": "2026-10-25T12:55:57.198Z"
+      "commit": "cb279c47da39777b0fd3a74444fc4293507519a7",
+      "generatedAt": "2026-10-25T13:03:33.990Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "cb279c47da39777b0fd3a74444fc4293507519a7",
+  "commit": "1cff8235280e0ebbc866536dffe5da19794f3988",
   "defaultBranch": "main",
   "derived": "5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
@@ -114,11 +129,12 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-25T13:03:33.990Z",
+  "generatedAt": "2026-10-25T13:06:33.504Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "2 reads use paths built at run time and are not named here.",
     "8 writes and 16 reads go to a path their caller passes, not to this repository.",
+    "1 file belongs to no part: docs/calibration-2026-10-25.md.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
