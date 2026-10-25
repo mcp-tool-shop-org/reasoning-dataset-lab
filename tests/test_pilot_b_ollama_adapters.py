@@ -1326,10 +1326,10 @@ def test_gp_part_b_thinking_cap_precedence_and_source_recorded(
         stub_mode=True,
     )
     rep_def = res_default["report"]
-    assert rep_def["thinking_token_cap"] == 256
+    assert rep_def["thinking_token_cap"] == 2048
     assert rep_def["thinking_token_cap_source"] == "default"
     assert rep_def["thinking_cap_config"]["by_operation"] == {
-        "render_material": {"value": 256, "source": "default"},
+        "render_material": {"value": 2048, "source": "default"},
         "word_claim": {"value": 256, "source": "default"},
         "read_claim": {"value": 256, "source": "default"},
     }
@@ -1583,6 +1583,414 @@ def test_gp_part_c_calibrate_seals_nothing(
             think=False,
         )
     assert exc_think_off.value.code == "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN"
+
+
+def test_gr_part_a_answer_budget_precedence_and_source_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gr Part A/C: answer budgets follow precedence CLI > config/env > default, can be set per operation, and record both the value used and its source (`cli` / `config` / `default`) in every OllamaCallRecord, provenance, and the report."""
+    from reasoning_dataset_lab.cli import run_cli
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        AnswerBudgetConfig,
+        coerce_answer_budget_config,
+        resolve_answer_budget_config,
+    )
+
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    for k in (
+        "RDLAB_ANSWER_BUDGET",
+        "RDLAB_RENDER_ANSWER_BUDGET",
+        "RDLAB_WORD_ANSWER_BUDGET",
+        "RDLAB_READ_ANSWER_BUDGET",
+        "RDLAB_ANSWER_BUDGET_RENDER_MATERIAL",
+        "RDLAB_ANSWER_BUDGET_WORD_CLAIM",
+        "RDLAB_ANSWER_BUDGET_READ_CLAIM",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    # 1. Default source
+    out_def = tmp_path / "gr_default_budget"
+    res_def = run_pilot_b_build(
+        output_dir=out_def,
+        triad_count=1,
+        stub_mode=True,
+    )
+    rep_def = res_def["report"]
+    assert rep_def["answer_budget_source"] == "default"
+    assert rep_def["answer_budget_config"]["by_operation"] == {
+        "render_material": {"value": 1792, "source": "default"},
+        "word_claim": {"value": 96, "source": "default"},
+        "read_claim": {"value": 32, "source": "default"},
+    }
+    prov_def = json.loads(
+        (out_def / "part_pilot_b_sealed" / "provenance.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    assert prov_def["writer"]["answer_budget_source"] == "default"
+    assert prov_def["writer"]["call_records"][0]["answer_budget_source"] == "default"
+    assert prov_def["judgments"][0]["call_records"][0]["answer_budget_source"] == "default"
+
+    # 2. Mixed precedence: CLI (`--render-answer-budget`) > config (`word_claim`) > default (`read_claim`)
+    cfg_path = tmp_path / "gr_config.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "answer_budget": {
+                    "render_material": 1200,
+                    "word_claim": 160,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry()),
+        encoding="utf-8",
+    )
+    out_mixed = tmp_path / "gr_mixed_budget"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "--stub",
+            "1",
+            "--config",
+            str(cfg_path),
+            "--render-answer-budget",
+            "1536",
+            "--licence-registry",
+            str(reg_path),
+            "--output-dir",
+            str(out_mixed),
+        ]
+    )
+    assert rc == 0
+    rep_mixed = json.loads(
+        (out_mixed / "reports" / "pilot_b_report.json").read_text(encoding="utf-8")
+    )
+    assert rep_mixed["answer_budget_config"]["by_operation"] == {
+        "render_material": {"value": 1536, "source": "cli"},
+        "word_claim": {"value": 160, "source": "config"},
+        "read_claim": {"value": 32, "source": "default"},
+    }
+    prov_mixed = json.loads(
+        (out_mixed / "part_pilot_b_sealed" / "provenance.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    assert prov_mixed["writer"]["answer_budget_config"]["by_operation"] == {
+        "render_material": {"value": 1536, "source": "cli"},
+        "word_claim": {"value": 160, "source": "config"},
+        "read_claim": {"value": 32, "source": "default"},
+    }
+    w_calls = {r["operation"]: r for r in prov_mixed["writer"]["call_records"]}
+    assert w_calls["render_material"]["answer_budget"] == 1536
+    assert w_calls["render_material"]["answer_budget_source"] == "cli"
+    assert w_calls["word_claim"]["answer_budget"] == 160
+    assert w_calls["word_claim"]["answer_budget_source"] == "config"
+    for r_call in prov_mixed["judgments"][0]["call_records"]:
+        assert r_call["answer_budget"] == 32
+        assert r_call["answer_budget_source"] == "default"
+
+    # 3. Environment variable config tier + CLI global override + coercion / validation branches
+    env_cfg = resolve_answer_budget_config(
+        env={
+            "RDLAB_ANSWER_BUDGET": "200",
+            "RDLAB_READ_ANSWER_BUDGET": "64",
+        }
+    )
+    assert isinstance(env_cfg, AnswerBudgetConfig)
+    assert env_cfg.source == "config"
+    assert env_cfg.budget_for("render_material") == 200
+    assert env_cfg.budget_for("read_claim") == 64
+    assert env_cfg.source_for("read_claim") == "config"
+
+    cli_override_cfg = resolve_answer_budget_config(
+        cli_budget=500,
+        env={"RDLAB_ANSWER_BUDGET": "200"},
+    )
+    assert cli_override_cfg.source == "cli"
+    assert cli_override_cfg.budget_for("render_material") == 500
+    assert cli_override_cfg.source_for("render_material") == "cli"
+    assert cli_override_cfg.effective_budget == 500
+
+    # Test coercion and validation branches
+    coerced_int = coerce_answer_budget_config(300, source="cli")
+    assert coerced_int.budget_for("word_claim") == 300
+    assert coerced_int.source_for("word_claim") == "cli"
+    coerced_def = coerce_answer_budget_config(300, source="default")
+    assert coerced_def.budget_for("word_claim") == 300
+    assert coerced_def.source_for("word_claim") == "default"
+    coerced_cfg = coerce_answer_budget_config(300, source="config")
+    assert coerced_cfg.budget_for("word_claim") == 300
+    assert coerced_cfg.source_for("word_claim") == "config"
+    assert coerce_answer_budget_config(coerced_int) is coerced_int
+
+    coerced_map = coerce_answer_budget_config(
+        {
+            "render_material": 1600,
+            "word_claim": 120,
+            "read_claim": 40,
+        }
+    )
+    assert coerced_map.budget_for("render_material") == 1600
+    assert coerced_map.source_for("render_material") == "config"
+    assert coerced_map.budget_for("word_claim") == 120
+    assert coerced_map.source_for("word_claim") == "config"
+    assert coerced_map.budget_for("read_claim") == 40
+
+    coerced_cli_map = coerce_answer_budget_config(
+        {
+            "default": 500,
+            "render_material": 1600,
+        },
+        source="cli",
+    )
+    assert coerced_cli_map.budget_for("render_material") == 1600
+    assert coerced_cli_map.budget_for("word_claim") == 500
+    assert coerced_cli_map.source_for("word_claim") == "cli"
+
+    def_map_cfg = resolve_answer_budget_config(
+        default_budget={"render_material": 1800, "word_claim": 100, "read_claim": 36}
+    )
+    assert def_map_cfg.budget_for("render_material") == 1800
+    assert def_map_cfg.budget_for("word_claim") == 100
+    assert def_map_cfg.budget_for("read_claim") == 36
+    def_int_cfg = resolve_answer_budget_config(default_budget=250)
+    assert def_int_cfg.budget_for("render_material") == 250
+
+    pb_nested_cfg = resolve_answer_budget_config(
+        config_data={"pilot_b": {"answer_budget": {"default": 180, "word_claim": 110}}}
+    )
+    assert pb_nested_cfg.budget_for("render_material") == 180
+    assert pb_nested_cfg.budget_for("word_claim") == 110
+
+    with pytest.raises(RdlabError) as exc_bool:
+        coerce_answer_budget_config(True)  # type: ignore[arg-type]
+    assert exc_bool.value.code == "PILOT_B_INVALID_ANSWER_BUDGET"
+
+    with pytest.raises(RdlabError) as exc_type:
+        coerce_answer_budget_config(3.14)  # type: ignore[arg-type]
+    assert exc_type.value.code == "PILOT_B_INVALID_ANSWER_BUDGET"
+
+    with pytest.raises(RdlabError) as exc_zero:
+        coerce_answer_budget_config(0)
+    assert exc_zero.value.code == "PILOT_B_INVALID_ANSWER_BUDGET"
+
+    with pytest.raises(RdlabError) as exc_bad_str:
+        resolve_answer_budget_config(env={"RDLAB_ANSWER_BUDGET": "not-an-int"})
+    assert exc_bad_str.value.code == "PILOT_B_INVALID_ANSWER_BUDGET"
+
+    with pytest.raises(RdlabError) as exc_missing_cfg:
+        resolve_answer_budget_config(config_path=tmp_path / "does_not_exist.json")
+    assert exc_missing_cfg.value.code == "PILOT_B_CONFIG_NOT_FOUND"
+
+    bad_json_path = tmp_path / "bad.json"
+    bad_json_path.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_bad_json:
+        resolve_answer_budget_config(config_path=bad_json_path)
+    assert exc_bad_json.value.code == "PILOT_B_INVALID_CONFIG_JSON"
+
+    list_json_path = tmp_path / "list.json"
+    list_json_path.write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_bad_shape:
+        resolve_answer_budget_config(config_path=list_json_path)
+    assert exc_bad_shape.value.code == "PILOT_B_INVALID_CONFIG_SHAPE"
+
+
+def test_gr_part_a_num_predict_equals_cap_plus_budget_per_operation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gr Part A/C: `options.num_predict` equals the configured thinking cap plus the configured answer budget per operation (`render_material`, `word_claim`, `read_claim`)."""
+    from reasoning_dataset_lab.cli import run_cli
+
+    transport, requests = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry()),
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "gr_num_predict_test"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "--stub",
+            "1",
+            "--thinking-cap-render-material",
+            "1500",
+            "--thinking-cap-word-claim",
+            "300",
+            "--thinking-cap-read-claim",
+            "200",
+            "--render-answer-budget",
+            "1100",
+            "--word-answer-budget",
+            "140",
+            "--read-answer-budget",
+            "48",
+            "--licence-registry",
+            str(reg_path),
+            "--output-dir",
+            str(out_dir),
+        ]
+    )
+    assert rc == 0
+
+    prov_row = json.loads(
+        (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    w_calls = {r["operation"]: r for r in prov_row["writer"]["call_records"]}
+    assert w_calls["render_material"]["thinking_token_cap"] == 1500
+    assert w_calls["render_material"]["answer_budget"] == 1100
+    assert w_calls["render_material"]["num_predict"] == 1500 + 1100
+
+    assert w_calls["word_claim"]["thinking_token_cap"] == 300
+    assert w_calls["word_claim"]["answer_budget"] == 140
+    assert w_calls["word_claim"]["num_predict"] == 300 + 140
+
+    for r_call in prov_row["judgments"][0]["call_records"]:
+        assert r_call["thinking_token_cap"] == 200
+        assert r_call["answer_budget"] == 48
+        assert r_call["num_predict"] == 200 + 48
+
+    chat_num_predicts = [
+        b["options"]["num_predict"]
+        for m, u, b in requests
+        if m == "POST"
+        and u.endswith("/api/chat")
+        and isinstance(b, dict)
+        and b.get("messages")
+    ]
+    assert set(chat_num_predicts) == {2600, 440, 248}
+
+
+def test_gr_part_a_calibrate_reports_answer_token_stats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Card gr Part A/C: `calibrate` reports measured answer tokens (`eval - thinking`) per call: min, median, p95, max, and prints a suggested answer budget (p95 + named margin) beside the suggested cap."""
+    from reasoning_dataset_lab.cli import run_cli
+
+    transport, _ = build_mock_ollama_http_transport(
+        thinking_tokens_per_call=1200,
+        eval_tokens_per_call=2250,
+    )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry()),
+        encoding="utf-8",
+    )
+    cal_dir = tmp_path / "gr_cal_out"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "calibrate",
+            "--operation",
+            "render_material",
+            "--tables",
+            "3",
+            "--num-predict",
+            "4096",
+            "--num-ctx",
+            "8192",
+            "--licence-registry",
+            str(reg_path),
+            "--output-dir",
+            str(cal_dir),
+        ]
+    )
+    assert rc == 0
+    stdout_text = capsys.readouterr().out
+    assert "CALIBRATION_CAP_MARGIN_TOKENS" in stdout_text
+    assert "CALIBRATION_ANSWER_BUDGET_MARGIN_TOKENS" in stdout_text
+
+    cal_data = json.loads((cal_dir / "calibration.json").read_text(encoding="utf-8"))
+    for row in cal_data["calls"]:
+        assert row["answer_tokens"] == 2250 - 1200
+    assert cal_data["answer_tokens"]["min"] == 1050
+    assert cal_data["answer_tokens"]["median"] == 1050
+    assert cal_data["answer_tokens"]["p95"] == 1050
+    assert cal_data["answer_tokens"]["max"] == 1050
+    assert (
+        cal_data["suggested_answer_budget"]
+        == 1050 + cal_data["answer_budget_margin_tokens"]
+    )
+    assert "Suggested answer budget" in cal_data["suggested_answer_budget_summary"]
+
+
+def test_gr_part_b_provisional_render_defaults_in_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gr Part B/C: provisional render defaults are in effect (render cap 2,048, render answer budget 1,792, writer max_num_ctx 8,192; word/read defaults unchanged) and marked PROVISIONAL (n = 3, 2026-10-25) in docstring and README."""
+    import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
+
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    for k in (
+        "RDLAB_THINKING_CAP",
+        "RDLAB_THINKING_CAP_RENDER_MATERIAL",
+        "RDLAB_THINKING_CAP_WORD_CLAIM",
+        "RDLAB_THINKING_CAP_READ_CLAIM",
+        "RDLAB_ANSWER_BUDGET",
+        "RDLAB_RENDER_ANSWER_BUDGET",
+        "RDLAB_WORD_ANSWER_BUDGET",
+        "RDLAB_READ_ANSWER_BUDGET",
+        "RDLAB_ANSWER_BUDGET_RENDER_MATERIAL",
+        "RDLAB_ANSWER_BUDGET_WORD_CLAIM",
+        "RDLAB_ANSWER_BUDGET_READ_CLAIM",
+    ):
+        monkeypatch.delenv(k, raising=False)
+
+    out_dir = tmp_path / "gr_provisional_defaults"
+    res = run_pilot_b_build(
+        output_dir=out_dir,
+        triad_count=1,
+        stub_mode=True,
+    )
+    rep = res["report"]
+    assert rep["thinking_cap_config"]["by_operation"] == {
+        "render_material": {"value": 2048, "source": "default"},
+        "word_claim": {"value": 256, "source": "default"},
+        "read_claim": {"value": 256, "source": "default"},
+    }
+    assert rep["answer_budget_config"]["by_operation"] == {
+        "render_material": {"value": 1792, "source": "default"},
+        "word_claim": {"value": 96, "source": "default"},
+        "read_claim": {"value": 32, "source": "default"},
+    }
+    assert rep["num_ctx_policy"]["max_num_ctx_by_role"]["writer"] == 8192
+
+    doc_text = ollama_mod.__doc__ or ""
+    assert "PROVISIONAL (n = 3, 2026-10-25)" in doc_text
+    assert "1,144 / 1,234 / 1,945" in doc_text
+    assert "951 / 1,072 / 1,517" in doc_text
+    assert "25,229 MiB" in doc_text
+
+    readme_text = (Path(__file__).resolve().parent.parent / "README.md").read_text(
+        encoding="utf-8"
+    )
+    assert "PROVISIONAL (n = 3, 2026-10-25)" in readme_text
+    assert "1,144 / 1,234 / 1,945" in readme_text
+    assert "951 / 1,072 / 1,517" in readme_text
+    assert "25,229 MiB" in readme_text
+
 
 
 

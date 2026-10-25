@@ -19,47 +19,55 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 7,
+      "changed": 6,
       "moved": 0,
       "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/cli.py, `main` gained a step, `run_pilot_b_calibration`, before `usage_error`.",
+        "kind": "landing",
+        "sentence": "README.md is now also read by tests/test_pilot_b_ollama_adapters.py.",
         "subjects": [
-          "src/reasoning_dataset_lab/cli.py"
+          "README.md",
+          "tests/test_pilot_b_ollama_adapters.py"
         ]
       },
       {
         "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_thinking_cap_config`, before `resolve_thinking_cap_config`.",
-        "subjects": [
-          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `resolve_thinking_cap_config`, before `coerce_thinking_cap_config`.",
+        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_answer_budget_config`, before `resolve_answer_budget_config`.",
         "subjects": [
           "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
         ]
       },
       {
         "kind": "sequence",
-        "sentence": "And 6 more changes to the order of work.",
+        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `resolve_answer_budget_config`, before `coerce_answer_budget_config`.",
+        "subjects": [
+          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
+        ]
+      },
+      {
+        "kind": "sequence",
+        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_answer_budget_config`, before `refused_error`.",
+        "subjects": [
+          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
+        ]
+      },
+      {
+        "kind": "sequence",
+        "sentence": "And 3 more changes to the order of work.",
         "subjects": []
       },
       {
         "kind": "counts",
-        "sentence": "7 files changed content, across 3 parts.",
+        "sentence": "6 files changed content, across 3 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "6e2867b64ae7bd9970fbbd0c9f1c8c7de1d03b56",
-      "generatedAt": "2026-10-25T09:39:05.703Z"
+      "commit": "7ad36a116387947ad963728e7450003a8ef92f00",
+      "generatedAt": "2026-10-25T11:45:18.476Z"
     },
     "unchanged": false
   },
@@ -68,7 +76,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "7ad36a116387947ad963728e7450003a8ef92f00",
+  "commit": "04563d8c1fad6a12e35bc3663ef65fb3ea08f95a",
   "defaultBranch": "main",
   "derived": "5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
@@ -140,11 +148,11 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-25T11:45:18.476Z",
+  "generatedAt": "2026-10-25T12:25:08.458Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "2 reads use paths built at run time and are not named here.",
-    "8 writes and 16 reads go to a path their caller passes, not to this repository.",
+    "8 writes and 17 reads go to a path their caller passes, not to this repository.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
