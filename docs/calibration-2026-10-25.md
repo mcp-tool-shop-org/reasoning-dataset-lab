@@ -22,23 +22,30 @@ This document records the empirical calibration measurements that the Pilot B pr
 
 ## Measured Calibration Numbers
 
-- **Render (`render_material`, writer `qwen3.6:35b`, digest `a7eb95c5`):**
-  - `eval_count`: `2,095 / 2,306 / 3,462` (`n = 3`, min `2,095`, median `2,306`, p95 `3,462`, max `3,462`, `0` length stops at `num_predict 4,096`).
-  - `thinking_words` (informational): `1,144 / 1,234 / 1,945`.
-  - Peak VRAM: `25,229 MiB` at `num_ctx 8,192`.
-  - Provisional defaults: `num_predict = 4,096`, `max_num_ctx = 8,192`.
-- **Nemotron read (`read_claim` on `reader_1`, `nemotron-3.5-lightning:30b`, digest `e6905fff`):**
-  - `eval_count`: median `1,138.5`, `p95` `3,086`, `max` `3,434` (`n = 20`, min `384`), `0` length stops at `num_predict 8,192`; plus one earlier call cut off at `4,096` (`n = 9`, `1` length stop at `4,096`, `8` stops with max `2,213`).
-  - `thinking_words` (informational): `283` to `2,598` (`n = 20` at `num_predict 8,192`, median `862.5`, p95 `2,286`, max `2,598`).
-  - Peak VRAM: `27,355 MiB` (`27.4 GB`) at `num_ctx 9,216` (runs under the recorded exception to the 26 GB plan rule: alone on the card, halt at `30,000 MiB`).
-  - Provisional defaults: `num_predict = 6,144`, `max_num_ctx = 7,168`.
-- **Granite read (`read_claim` on `reader_2`, `granite4.2:8b`, digest `f586c02f`):**
-  - `eval_count`: max about `1,239` (`n = 9`, `0` length stops at `num_predict 4,096`).
-  - `thinking_words` (informational): min `213`, median `330`, p95 `919`, max `919` (`n = 9`).
-  - Peak VRAM: `8,825 MiB` (model release / process peak; steady-state `6,467 MiB` at `num_ctx 8,192`).
-  - Provisional defaults: `num_predict = 2,048`, `max_num_ctx = 8,192`.
-- **Word claim (`word_claim`, writer `qwen3.6:35b`, digest `a7eb95c5`):**
-  - Keeps the current total `num_predict = 352` until measured.
+All figures below are copied from the raw per-call records of the 2026-10-25 runs. `eval_count` is Ollama's count of
+all generated tokens (thinking plus answer); `thinking_words` is a word count, for information only.
+
+- **Render** (`render_material`, writer `qwen3.6:35b`, digest `a7eb95c5`), 3 tables, `num_predict` 4,096,
+  `num_ctx` 8,192:
+  - `eval_count` 2,095 / 2,306 / 3,462 (n = 3); 0 length stops.
+  - `thinking_words` 1,144 / 1,234 / 1,945.
+  - Peak VRAM 25,229 MiB.
+  - Provisional default `num_predict` 4,096, `max_num_ctx` 8,192.
+- **Nemotron read** (`read_claim`, reader_1 `nemotron-3.5-lightning:30b`, digest `e6905fff`):
+  - Run 1, 9 reads, `num_predict` 4,096, `num_ctx` 5,120: `eval_count` 330, 348, 499, 579, 884, 1,266, 1,884, 2,160,
+    and 4,096 (one length stop). Peak VRAM 27,333 MiB.
+  - Run 2, 20 reads, `num_predict` 8,192, `num_ctx` 9,216: `eval_count` min 297, median 1,138.5, p95 3,086, max 3,434;
+    0 length stops. `thinking_words` min 173, median 731, p95 1,881, max 2,356. Peak VRAM 27,355 MiB.
+  - Nemotron runs under a recorded exception to the 26 GB plan rule: alone on the card, with a halt at 30,000 MiB.
+  - Provisional default `num_predict` 6,144, `max_num_ctx` 7,168.
+- **Granite read** (`read_claim`, reader_2 `granite4.2:8b`, digest `f586c02f`), 9 reads, `num_predict` 4,096,
+  `num_ctx` 5,120:
+  - `eval_count` min 154, median 340, max 1,239; 0 length stops.
+  - `thinking_words` min 100, median 221, max 857.
+  - Peak VRAM 8,825 MiB.
+  - Provisional default `num_predict` 2,048, `max_num_ctx` 8,192.
+- **Word claim** (`word_claim`, writer `qwen3.6:35b`): not yet measured; the total `num_predict` stays at 352 until it
+  is.
 
 ## Provisional Default Summary
 
