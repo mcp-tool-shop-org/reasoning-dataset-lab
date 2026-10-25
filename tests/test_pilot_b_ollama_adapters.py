@@ -1142,12 +1142,12 @@ def test_gp_part_a_num_ctx_present_in_every_request_body_and_recorded(
     report = res["report"]
     assert "num_ctx_policy" in report
     assert report["num_ctx_policy"]["max_num_ctx_by_role"] == {
-        "writer": 8192,
+        "writer": 9216,
         "reader_1": 7168,
         "reader_2": 8192,
     }
     for wave in report["waves"]:
-        assert wave["max_num_ctx"] in (7168, 8192)
+        assert wave["max_num_ctx"] in (7168, 8192, 9216)
         assert wave["max_num_ctx_observed"] >= 1024
 
     prov_lines = [
@@ -1159,10 +1159,10 @@ def test_gp_part_a_num_ctx_present_in_every_request_body_and_recorded(
     ]
     assert len(prov_lines) == 6
     for prov in prov_lines:
-        assert prov["writer"]["max_num_ctx"] == 8192
+        assert prov["writer"]["max_num_ctx"] == 9216
         for w_rec in prov["writer"]["call_records"]:
             assert isinstance(w_rec.get("num_ctx"), int) and w_rec["num_ctx"] >= 1024
-            assert w_rec.get("max_num_ctx") == 8192
+            assert w_rec.get("max_num_ctx") == 9216
         for r_rec in prov["judgments"][0]["call_records"]:
             assert isinstance(r_rec.get("num_ctx"), int) and r_rec["num_ctx"] >= 1024
             assert r_rec.get("max_num_ctx") in (7168, 8192)
@@ -1186,10 +1186,10 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
     tables = generate_fact_tables(n=2, seed=1)
     triads = [build_contrast_triad(t, seed=1 + idx) for idx, t in enumerate(tables)]
 
-    # Direct writer call with num_predict=8192 requires num_ctx >= 9216 > writer default max_num_ctx=8192
+    # Direct writer call with num_predict=9216 requires num_ctx >= 10240 > writer default max_num_ctx=9216
     over_writer = OllamaWriterAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
-        num_predict=8192,
+        num_predict=9216,
     )
     with pytest.raises(RdlabError) as exc_over:
         over_writer.render_material(triads[0].table)
@@ -1244,7 +1244,7 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
     )
     w_over_render = OllamaWriterAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
-        num_predict={"render_material": 8192, "word_claim": 256, "read_claim": 256},
+        num_predict={"render_material": 9216, "word_claim": 256, "read_claim": 256},
     )
     wave_w_render = run_pilot_b_waves(
         triads=triads[:1],
@@ -1260,7 +1260,7 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
 
     w_over_word = OllamaWriterAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
-        num_predict={"render_material": 256, "word_claim": 8192, "read_claim": 256},
+        num_predict={"render_material": 256, "word_claim": 9216, "read_claim": 256},
     )
     wave_w_word = run_pilot_b_waves(
         triads=triads[:1],
@@ -1711,12 +1711,12 @@ def test_gs_defaults_are_4096_6144_2048(
     )
     rep = res["report"]
     by_op = rep["num_predict_config"]["by_operation"]
-    assert by_op["render_material"] == {"value": 4096, "source": "default"}
-    assert by_op["word_claim"] == {"value": 4255, "source": "default"}
+    assert by_op["render_material"] == {"value": 8192, "source": "default"}
+    assert by_op["word_claim"] == {"value": 6144, "source": "default"}
     assert by_op["read_claim_reader_1"] == {"value": 6144, "source": "default"}
     assert by_op["read_claim_reader_2"] == {"value": 2560, "source": "default"}
     assert rep["num_ctx_policy"]["max_num_ctx_by_role"] == {
-        "writer": 8192,
+        "writer": 9216,
         "reader_1": 7168,
         "reader_2": 8192,
     }
@@ -1729,7 +1729,7 @@ def test_gs_defaults_are_4096_6144_2048(
         and isinstance(b, dict)
         and b.get("messages")
     ]
-    assert set(chat_num_predicts) == {4096, 4255, 6144, 2560}
+    assert set(chat_num_predicts) == {8192, 6144, 2560}
 
     doc_text = ollama_mod.__doc__ or ""
     assert "3,462" in doc_text
@@ -1871,8 +1871,7 @@ def test_gw_prompts_and_report_style_issues(
     w_sys = build_writer_word_messages(tr1.claims["supported"])[0]["content"]
     for sys_prompt in (r_sys, w_sys):
         assert "natural, grammatical English" in sys_prompt
-        assert "The <attribute> of <entity> is <value>" in sys_prompt
-        assert "<Entity> has <n> <unit>" in sys_prompt
+        assert "varied, natural phrasing" in sys_prompt
         assert "subject-verb agreement" in sys_prompt
         assert "equals" in sys_prompt
         assert "36 holds" in sys_prompt
@@ -1924,6 +1923,98 @@ def test_gw_prompts_and_report_style_issues(
     assert si_stilted["sentences_checked"] == 16
     assert si_stilted["rate_per_sentence"] == round(si_stilted["count"] / 16, 4)
     assert 1 <= len(si_stilted["examples"]) <= 10
+
+
+def test_he_part_b_writer_prompt_drops_named_templates_and_key_blind_phrasing_cue() -> None:
+    """Card he Part B: writer prompt keeps grammar rules, drops named templates, asks for varied natural phrasing, and adds a key-blind phrasing cue derived only from claim.claim_id."""
+    from dataclasses import replace
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        build_writer_render_messages,
+        build_writer_word_messages,
+    )
+
+    t1 = build_sample_fact_table(seed=1, closure="open")
+    tr1 = build_contrast_triad(t1, seed=1)
+    base_claim = tr1.claims["supported"]
+
+    r_msgs = build_writer_render_messages(t1)
+    w_msgs = build_writer_word_messages(base_claim)
+    for sys_prompt in (r_msgs[0]["content"], w_msgs[0]["content"]):
+        assert "natural, grammatical English" in sys_prompt
+        assert "varied" in sys_prompt.lower()
+        assert "subject-verb agreement" in sys_prompt
+        assert "equals" in sys_prompt
+        assert "36 holds" in sys_prompt
+        assert "The <attribute> of <entity> is <value>" not in sys_prompt
+        assert "<Entity> has <n> <unit>" not in sys_prompt
+
+    # Same claim_id with different keys ('supported', 'unsupported', 'cannot_tell') gives the exact same cue & messages
+    c_sup = replace(base_claim, claim_id="T10-D-turbines-001-c-a1b2c3d4", key="supported")
+    c_unsup = replace(base_claim, claim_id="T10-D-turbines-001-c-a1b2c3d4", key="unsupported")
+    c_ct = replace(base_claim, claim_id="T10-D-turbines-001-c-a1b2c3d4", key="cannot_tell")
+
+    msgs_sup = build_writer_word_messages(c_sup)
+    msgs_unsup = build_writer_word_messages(c_unsup)
+    msgs_ct = build_writer_word_messages(c_ct)
+    assert msgs_sup == msgs_unsup == msgs_ct
+    assert "PHRASING_CUE:" in msgs_sup[1]["content"]
+
+    # Varying the opaque claim_id hash cycles through all 4 distinct phrasing cues
+    cues_seen: set[str] = set()
+    for suffix in ("00000000", "00000001", "00000002", "00000003"):
+        c_var = replace(base_claim, claim_id=f"T10-D-turbines-001-c-{suffix}")
+        user_content = build_writer_word_messages(c_var)[1]["content"]
+        cue_line = next(
+            ln for ln in user_content.splitlines() if ln.startswith("PHRASING_CUE:")
+        )
+        cues_seen.add(cue_line)
+    assert len(cues_seen) == 4
+
+
+def test_he_part_d_defaults_8192_6144_and_writer_max_num_ctx_9216(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card he Part D: render_material default num_predict is 8,192, word_claim default is 6,144, writer max_num_ctx allows num_ctx 9,216, and calibration provenance is documented."""
+    import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        DEFAULT_RENDER_MAX_NUM_CTX,
+        DEFAULT_ROLE_MAX_NUM_CTX,
+        DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT,
+        DOCUMENTED_DEFAULT_WORD_NUM_PREDICT,
+        OllamaWriterAdapter,
+    )
+
+    assert DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT == 8192
+    assert DOCUMENTED_DEFAULT_WORD_NUM_PREDICT == 6144
+    assert DEFAULT_RENDER_MAX_NUM_CTX == 9216
+    assert DEFAULT_ROLE_MAX_NUM_CTX["writer"] == 9216
+    assert DEFAULT_PILOT_B_MODEL_PINS["writer"].max_num_ctx == 9216
+
+    transport, requests = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    writer = OllamaWriterAdapter(model=DEFAULT_PILOT_B_MODEL_PINS["writer"])
+    t1 = build_sample_fact_table(seed=1, closure="open")
+    tr1 = build_contrast_triad(t1, seed=1)
+    writer.render_material(t1)
+    writer.word_claim(t1, tr1.claims["supported"])
+
+    assert writer.call_records[0].num_predict == 8192
+    assert writer.call_records[0].num_ctx == 9216
+    assert writer.call_records[0].max_num_ctx == 9216
+    assert writer.call_records[1].num_predict == 6144
+    assert writer.call_records[1].num_ctx == 7168
+    assert writer.call_records[1].max_num_ctx == 9216
+
+    provenance_str = "Qwen VRAM check 2026-10-25: peak 25,445 MiB at num_ctx 9,216 (render) and 25,399 MiB at 7,168 (word); halt line 26,000 MiB"
+    assert provenance_str in (ollama_mod.__doc__ or "")
+    repo_root = Path(__file__).resolve().parent.parent
+    cal_doc = (repo_root / "docs" / "calibration-2026-10-25.md").read_text(encoding="utf-8")
+    assert provenance_str in cal_doc
+
+
 
 
 

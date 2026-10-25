@@ -74,54 +74,343 @@ MONTH_NAMES: tuple[str, ...] = (
 DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
     {
         "domain": "turbines",
-        "entities": ("Unit Alpha", "Unit Beta", "Unit Gamma"),
+        "entities": (
+            "Unit Alpha",
+            "Unit Beta",
+            "Unit Gamma",
+            "Unit Delta",
+            "Unit Epsilon",
+        ),
         "number_attr": ("rotor blades", "blades"),
         "date_attr": "inspection date",
         "interval_attr": ("output capacity", "megawatts"),
-        "state_attr": ("grid status", ("online", "standby", "offline")),
-        "attr_spec": ("casing alloy", ("titanium", "inconel", "steel")),
-        "open_attrs": (("cooling medium", "helium"), ("lubricant grade", "synthetic")),
+        "state_attr": (
+            "grid status",
+            ("online", "standby", "offline", "synchronizing", "isolated"),
+        ),
+        "attr_spec": (
+            "casing alloy",
+            ("titanium", "inconel", "steel", "nickel", "cobalt"),
+        ),
+        "open_attrs": (
+            ("cooling medium", ("helium", "nitrogen", "hydrogen", "water", "air")),
+            (
+                "lubricant grade",
+                ("synthetic", "mineral", "ester", "polyol", "silicone"),
+            ),
+            (
+                "governor mode",
+                ("droop", "isochronous", "manual", "remote", "cascade"),
+            ),
+        ),
     },
     {
         "domain": "relays",
-        "entities": ("Relay North", "Relay South", "Relay East"),
+        "entities": (
+            "Relay North",
+            "Relay South",
+            "Relay East",
+            "Relay West",
+            "Relay Central",
+        ),
         "number_attr": ("backup cells", "cells"),
         "date_attr": "calibration date",
         "interval_attr": ("switching latency", "milliseconds"),
-        "state_attr": ("breaker state", ("armed", "bypassed", "locked")),
-        "attr_spec": ("contact plating", ("silver", "gold", "palladium")),
-        "open_attrs": (("enclosure rating", "waterproof"), ("mount style", "rack")),
+        "state_attr": (
+            "breaker state",
+            ("armed", "bypassed", "locked", "tripped", "reset"),
+        ),
+        "attr_spec": (
+            "contact plating",
+            ("silver", "gold", "palladium", "rhodium", "platinum"),
+        ),
+        "open_attrs": (
+            (
+                "enclosure rating",
+                ("waterproof", "dustproof", "weatherproof", "sealed", "vented"),
+            ),
+            ("mount style", ("rack", "panel", "rail", "flush", "surface")),
+            ("coil voltage", ("low", "medium", "high", "nominal", "auxiliary")),
+        ),
     },
     {
         "domain": "vessels",
-        "entities": ("Tanker Orion", "Tanker Vega", "Tanker Sirius"),
+        "entities": (
+            "Tanker Orion",
+            "Tanker Vega",
+            "Tanker Sirius",
+            "Tanker Rigel",
+            "Tanker Altair",
+        ),
         "number_attr": ("cargo holds", "holds"),
         "date_attr": "departure date",
         "interval_attr": ("draft depth", "meters"),
-        "state_attr": ("berth status", ("docked", "anchored", "underway")),
-        "attr_spec": ("hull coating", ("epoxy", "silicone", "copper")),
-        "open_attrs": (("registry port", "Rotterdam"), ("ice class", "polar")),
+        "state_attr": (
+            "berth status",
+            ("docked", "anchored", "underway", "moored", "ballasted"),
+        ),
+        "attr_spec": (
+            "hull coating",
+            ("epoxy", "silicone", "copper", "zinc", "polyurethane"),
+        ),
+        "open_attrs": (
+            (
+                "registry port",
+                ("Rotterdam", "Hamburg", "Antwerp", "Bergen", "Gothenburg"),
+            ),
+            ("ice class", ("polar", "baltic", "arctic", "reinforced", "standard")),
+            (
+                "propulsion type",
+                ("diesel", "steam", "hybrid", "electric", "geared"),
+            ),
+        ),
     },
     {
         "domain": "furnaces",
-        "entities": ("Kiln One", "Kiln Two", "Kiln Three"),
+        "entities": (
+            "Kiln One",
+            "Kiln Two",
+            "Kiln Three",
+            "Kiln Four",
+            "Kiln Five",
+        ),
         "number_attr": ("heating zones", "zones"),
         "date_attr": "service date",
         "interval_attr": ("operating temperature", "degrees"),
-        "state_attr": ("damper state", ("sealed", "vented", "purging")),
-        "attr_spec": ("lining brick", ("alumina", "magnesia", "zirconia")),
-        "open_attrs": (("purge gas", "argon"), ("thermocouple type", "platinum")),
+        "state_attr": (
+            "damper state",
+            ("sealed", "vented", "purging", "throttled", "damped"),
+        ),
+        "attr_spec": (
+            "lining brick",
+            ("alumina", "magnesia", "zirconia", "silica", "chromite"),
+        ),
+        "open_attrs": (
+            ("purge gas", ("argon", "nitrogen", "helium", "forming", "inert")),
+            (
+                "thermocouple type",
+                ("platinum", "chromel", "alumel", "tungsten", "nickel"),
+            ),
+            ("hearth drive", ("roller", "walking", "pusher", "rotary", "car")),
+        ),
+    },
+    {
+        "domain": "reactors",
+        "entities": (
+            "Reactor Alpha",
+            "Reactor Beta",
+            "Reactor Gamma",
+            "Reactor Delta",
+            "Reactor Epsilon",
+        ),
+        "number_attr": ("control rods", "rods"),
+        "date_attr": "refuel date",
+        "interval_attr": ("core pressure", "kilopascals"),
+        "state_attr": (
+            "loop state",
+            ("circulating", "banked", "cooldown", "pressurized", "drained"),
+        ),
+        "attr_spec": (
+            "cladding metal",
+            ("zirconium", "stainless", "niobium", "molybdenum", "tantalum"),
+        ),
+        "open_attrs": (
+            (
+                "moderator type",
+                ("graphite", "heavywater", "lightwater", "beryllium", "paraffin"),
+            ),
+            (
+                "shielding material",
+                ("concrete", "lead", "boron", "cadmium", "tungsten"),
+            ),
+            (
+                "coolant loop",
+                ("primary", "secondary", "auxiliary", "emergency", "residual"),
+            ),
+        ),
+    },
+    {
+        "domain": "compressors",
+        "entities": (
+            "Compressor North",
+            "Compressor South",
+            "Compressor East",
+            "Compressor West",
+            "Compressor Central",
+        ),
+        "number_attr": ("piston cylinders", "cylinders"),
+        "date_attr": "alignment date",
+        "interval_attr": ("suction flow", "liters"),
+        "state_attr": (
+            "intake state",
+            ("loaded", "unloaded", "idling", "choked", "bleeding"),
+        ),
+        "attr_spec": (
+            "rotor coating",
+            ("fluoropolymer", "ceramic", "carbide", "nitride", "anodized"),
+        ),
+        "open_attrs": (
+            (
+                "intercooler medium",
+                ("glycol", "brine", "water", "air", "oil"),
+            ),
+            (
+                "shaft seal",
+                ("labyrinth", "mechanical", "carbon", "lip", "drygas"),
+            ),
+            (
+                "unloader mechanism",
+                ("pneumatic", "hydraulic", "solenoid", "spring", "manual"),
+            ),
+        ),
+    },
+    {
+        "domain": "transformers",
+        "entities": (
+            "Bank One",
+            "Bank Two",
+            "Bank Three",
+            "Bank Four",
+            "Bank Five",
+        ),
+        "number_attr": ("cooling fins", "fins"),
+        "date_attr": "testing date",
+        "interval_attr": ("winding load", "amperes"),
+        "state_attr": (
+            "tap state",
+            ("nominal", "boosted", "bucked", "grounded", "floating"),
+        ),
+        "attr_spec": (
+            "core steel",
+            ("silicon", "amorphous", "ferrite", "laminated", "oriented"),
+        ),
+        "open_attrs": (
+            (
+                "dielectric fluid",
+                ("mineral", "silicone", "ester", "paraffinic", "naphthenic"),
+            ),
+            (
+                "bushing material",
+                ("porcelain", "polymer", "epoxy", "resin", "ceramic"),
+            ),
+            (
+                "vector group",
+                ("delta", "star", "zigzag", "autotransformer", "grounded"),
+            ),
+        ),
+    },
+    {
+        "domain": "boilers",
+        "entities": (
+            "Boiler Alpha",
+            "Boiler Beta",
+            "Boiler Gamma",
+            "Boiler Delta",
+            "Boiler Epsilon",
+        ),
+        "number_attr": ("burner nozzles", "nozzles"),
+        "date_attr": "cleaning date",
+        "interval_attr": ("steam output", "tonnes"),
+        "state_attr": (
+            "flue state",
+            ("drafting", "banked", "dampered", "scavenging", "firing"),
+        ),
+        "attr_spec": (
+            "tube alloy",
+            ("carbon", "chromoly", "austenitic", "duplex", "ferritic"),
+        ),
+        "open_attrs": (
+            (
+                "feedwater treatment",
+                ("deaerated", "demineralized", "softened", "condensate", "alkaline"),
+            ),
+            (
+                "sootblower medium",
+                ("steam", "air", "water", "acoustic", "sonic"),
+            ),
+            (
+                "draft arrangement",
+                ("forced", "induced", "balanced", "natural", "pressurized"),
+            ),
+        ),
+    },
+    {
+        "domain": "chillers",
+        "entities": (
+            "Chiller North",
+            "Chiller South",
+            "Chiller East",
+            "Chiller West",
+            "Chiller Central",
+        ),
+        "number_attr": ("evaporator tubes", "tubes"),
+        "date_attr": "charging date",
+        "interval_attr": ("coolant flow", "gallons"),
+        "state_attr": (
+            "circuit state",
+            ("chilling", "defrosting", "pumping", "subcooling", "idle"),
+        ),
+        "attr_spec": (
+            "brazing filler",
+            ("copper", "silver", "nickel", "bronze", "phosphorus"),
+        ),
+        "open_attrs": (
+            (
+                "refrigerant blend",
+                ("ammonia", "propane", "halocarbon", "hydrofluoro", "isobutane"),
+            ),
+            (
+                "expansion valve",
+                ("electronic", "thermostatic", "orifice", "float", "capillary"),
+            ),
+            (
+                "condenser cooling",
+                ("evaporative", "watercooled", "aircooled", "glycol", "hybrid"),
+            ),
+        ),
     },
     {
         "domain": "pumps",
-        "entities": ("Pump Delta", "Pump Epsilon", "Pump Zeta"),
+        "entities": (
+            "Pump Delta",
+            "Pump Epsilon",
+            "Pump Zeta",
+            "Pump Eta",
+            "Pump Theta",
+        ),
         "number_attr": ("impeller stages", "stages"),
         "date_attr": "overhaul date",
         "interval_attr": ("discharge pressure", "bars"),
-        "state_attr": ("valve state", ("open", "throttled", "closed")),
-        "attr_spec": ("seal material", ("viton", "teflon", "nitrile")),
-        "open_attrs": (("drive coupling", "magnetic"), ("bearing type", "ceramic")),
+        "state_attr": (
+            "valve state",
+            ("open", "throttled", "closed", "primed", "bypassed"),
+        ),
+        "attr_spec": (
+            "seal material",
+            ("viton", "teflon", "nitrile", "graphite", "kalrez"),
+        ),
+        "open_attrs": (
+            (
+                "drive coupling",
+                ("magnetic", "flexible", "rigid", "fluid", "splined"),
+            ),
+            (
+                "bearing type",
+                ("ceramic", "roller", "sleeve", "hydrostatic", "ball"),
+            ),
+            (
+                "casing mount",
+                ("foot", "centerline", "flange", "pedestal", "vertical"),
+            ),
+        ),
     },
+)
+
+SLOT_SCHEDULES: tuple[tuple[int, int, int, int, int], ...] = (
+    (0, 2, 1, 3, 2),
+    (1, 3, 2, 0, 2),
+    (2, 0, 2, 1, 3),
+    (3, 2, 0, 2, 1),
 )
 
 
@@ -334,21 +623,29 @@ def mutate_fact_value(fact: AtomicFact, step: int = 1) -> FactValue:
     if fact.fact_type == "state":
         assert isinstance(fact.value, str)
         cur = fact.value.strip().lower()
-        for spec in DOMAIN_CATALOGUE:
-            _, states = spec["state_attr"]  # type: ignore[misc]
-            if cur in [s.lower() for s in states]:
-                for cand in states:
-                    if cand.lower() != cur:
-                        return str(cand)
+        attr_low = fact.attribute.strip().lower()
+        for match_attr in (True, False):
+            for spec in DOMAIN_CATALOGUE:
+                s_attr, states = spec["state_attr"]  # type: ignore[misc]
+                if match_attr and str(s_attr).strip().lower() != attr_low:
+                    continue
+                if cur in [s.lower() for s in states]:
+                    cands = [str(cand) for cand in states if str(cand).lower() != cur]
+                    if cands:
+                        return cands[(offset - 1) % len(cands)]
         return f"non-{cur}"
     assert isinstance(fact.value, str)
     cur_attr = fact.value.strip().lower()
-    for spec in DOMAIN_CATALOGUE:
-        _, vals = spec["attr_spec"]  # type: ignore[misc]
-        if cur_attr in [v.lower() for v in vals]:
-            for cand in vals:
-                if cand.lower() != cur_attr:
-                    return str(cand)
+    attr_low = fact.attribute.strip().lower()
+    for match_attr in (True, False):
+        for spec in DOMAIN_CATALOGUE:
+            a_name, vals = spec["attr_spec"]  # type: ignore[misc]
+            if match_attr and str(a_name).strip().lower() != attr_low:
+                continue
+            if cur_attr in [v.lower() for v in vals]:
+                cands = [str(cand) for cand in vals if str(cand).lower() != cur_attr]
+                if cands:
+                    return cands[(offset - 1) % len(cands)]
     return f"uncoated-{cur_attr}"
 
 
@@ -827,12 +1124,20 @@ def verify_triad_against_table(table: FactTable, triad: ProvedTriad) -> None:
 
 def build_sample_fact_table(seed: int = 1, closure: ClosureTag | None = None) -> FactTable:
     """Build a deterministic FactTable covering all 5 atomic fact types."""
-    spec_idx = (abs(seed) - 1) % len(DOMAIN_CATALOGUE)
+    n_dom = len(DOMAIN_CATALOGUE)
+    s = max(0, abs(seed) - 1)
+    visit = s // n_dom
+    spec_idx = (s + visit) % n_dom
     spec = DOMAIN_CATALOGUE[spec_idx]
     domain = str(spec["domain"])
-    entities: tuple[str, ...] = tuple(spec["entities"])  # type: ignore[arg-type]
+    all_entities: tuple[str, ...] = tuple(spec["entities"])  # type: ignore[arg-type]
+    entities: tuple[str, ...] = tuple(
+        all_entities[(visit + i) % len(all_entities)] for i in range(3)
+    )
     resolved_closure: ClosureTag = (
-        closure if closure is not None else ("open" if abs(seed) % 2 == 1 else "closed")
+        closure
+        if closure is not None
+        else ("open" if (s + (visit // 2)) % 2 == 0 else "closed")
     )
 
     num_attr, num_unit = spec["number_attr"]  # type: ignore[misc]
@@ -840,16 +1145,25 @@ def build_sample_fact_table(seed: int = 1, closure: ClosureTag | None = None) ->
     int_attr, int_unit = spec["interval_attr"]  # type: ignore[misc]
     state_attr, state_vals = spec["state_attr"]  # type: ignore[misc]
     attr_name, attr_vals = spec["attr_spec"]  # type: ignore[misc]
-    open_attrs: tuple[tuple[str, str], ...] = tuple(spec["open_attrs"])  # type: ignore[arg-type]
+    raw_open_attrs: tuple[tuple[str, object], ...] = tuple(spec["open_attrs"])  # type: ignore[arg-type]
+    open_attrs = tuple(
+        (
+            str(oa_name),
+            str(oa_vals[visit % len(oa_vals)])
+            if isinstance(oa_vals, tuple)
+            else str(oa_vals),
+        )
+        for oa_name, oa_vals in raw_open_attrs
+    )
 
-    num_val = 12 + (abs(seed) * 3) % 25
-    day_val = ((abs(seed) * 5) % 26) + 2
-    month_val = MONTH_NAMES[abs(seed) % len(MONTH_NAMES)]
+    num_val = 12 + ((abs(seed) * 3 + visit * 7) % 47)
+    day_val = ((abs(seed) * 5 + visit * 3) % 26) + 2
+    month_val = MONTH_NAMES[(abs(seed) + visit * 2) % len(MONTH_NAMES)]
     date_val = f"{day_val} {month_val}"
-    int_lo = 40 + (abs(seed) * 4) % 30
-    int_hi = int_lo + 10 + (abs(seed) % 6) * 2
-    state_val = str(state_vals[abs(seed) % len(state_vals)])
-    attr_val = str(attr_vals[(abs(seed) + 1) % len(attr_vals)])
+    int_lo = 40 + ((abs(seed) * 4 + visit * 6) % 36)
+    int_hi = int_lo + 10 + ((abs(seed) + visit) % 6) * 2
+    state_val = str(state_vals[(abs(seed) + visit) % len(state_vals)])
+    attr_val = str(attr_vals[(abs(seed) + 1 + visit) % len(attr_vals)])
 
     table_id = f"T10-D-{domain}-{seed:03d}"
     facts = (
@@ -915,17 +1229,19 @@ def build_sample_fact_table(seed: int = 1, closure: ClosureTag | None = None) ->
 
 
 def generate_fact_tables(n: int, seed: int = 1) -> list[FactTable]:
-    """Generate n deterministic FactTables alternating open and closed world closure."""
+    """Generate n deterministic FactTables alternating open and closed world closure without fixed seed parity."""
     if n < 0:
         raise refused_error(
             "PILOT_B_INVALID_TABLE_COUNT",
             f"Table count n must be >= 0, got {n}.",
             "Pass a non-negative integer n.",
         )
+    n_dom = len(DOMAIN_CATALOGUE)
     tables: list[FactTable] = []
     for idx in range(n):
         item_seed = seed + idx
-        closure: ClosureTag = "open" if idx % 2 == 0 else "closed"
+        block = idx // n_dom
+        closure: ClosureTag = "open" if (idx + (block // 2)) % 2 == 0 else "closed"
         tables.append(build_sample_fact_table(seed=item_seed, closure=closure))
     return tables
 
@@ -971,8 +1287,23 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
             "Include facts with proven ops ('=' for number/date/state/attribute or 'between' for interval).",
         )
 
-    sup_fact = provable_sup_facts[abs(seed) % len(provable_sup_facts)]
-    unsup_fact = provable_unsup_facts[(abs(seed) + 1) % len(provable_unsup_facts)]
+    n_dom = len(DOMAIN_CATALOGUE)
+    s = max(0, abs(seed) - 1)
+    visit = s // n_dom
+    d_idx = next(
+        (
+            i
+            for i, sp in enumerate(DOMAIN_CATALOGUE)
+            if str(sp["domain"]) == table.domain
+        ),
+        (s + visit) % n_dom,
+    )
+    if len(provable_sup_facts) == 4 and len(provable_unsup_facts) == 4:
+        sup_fact = provable_sup_facts[SLOT_SCHEDULES[d_idx % 4][visit % 5]]
+        unsup_fact = provable_unsup_facts[SLOT_SCHEDULES[(d_idx + 2) % 4][visit % 5]]
+    else:
+        sup_fact = provable_sup_facts[abs(seed) % len(provable_sup_facts)]
+        unsup_fact = provable_unsup_facts[(abs(seed) + 1) % len(provable_unsup_facts)]
 
     # Opaque claim ids (Card gc Fix 2): short hash of table_id, seed, and post-shuffle position (never -sup, -unsup, -ct)
     slot_keys: list[VerdictKey] = ["supported", "unsupported", "cannot_tell"]
@@ -1028,7 +1359,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     )
 
     # 2. Unsupported claim: applies a provably disjoint typed mutation to unsup_fact with op='='
-    mutated_val = mutate_fact_value(unsup_fact, step=abs(seed) + 1)
+    mutated_val = mutate_fact_value(unsup_fact, step=visit + 1)
     unsup_claim_draft = ProvedClaim(
         claim_id=opaque_claim_ids["unsupported"],
         table_id=table.table_id,
@@ -1058,22 +1389,26 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     )
 
     # 3. Cannot_tell claim:
-    # - On closed tables (or odd seeds on open tables when interval exists): refine interval to interior value
-    # - On open tables when open_attributes exist and seed selects open attribute: ask open attribute of named entity
+    # - On closed tables (or when no open_attributes exist): refine interval to a visit-varying interior value
+    # - On open tables when open_attributes exist: ask open attribute of named entity
     interval_facts = [
         f
         for f in table.facts
         if f.fact_type == "interval"
         and (f.fact_type, f.op, "number", "=") in PROVEN_OP_PAIRS_BY_KEY["cannot_tell"]
     ]
-    use_open_attr = (
-        table.closure == "open"
-        and bool(table.open_attributes)
-        and (abs(seed) % 2 == 1 or not interval_facts)
-    )
+    use_open_attr = table.closure == "open" and bool(table.open_attributes)
     if use_open_attr:
-        open_attr, open_val = table.open_attributes[abs(seed) % len(table.open_attributes)]
-        target_entity = table.entities[abs(seed) % len(table.entities)]
+        if d_idx == 0:
+            oa_idx = 0
+        else:
+            oa_idx = (visit + (visit // 3) + d_idx) % len(table.open_attributes)
+        open_attr, open_val = table.open_attributes[oa_idx]
+        target_entity = (
+            table.entities[1]
+            if len(table.entities) > 1
+            else table.entities[abs(seed) % len(table.entities)]
+        )
         ct_claim_draft = ProvedClaim(
             claim_id=opaque_claim_ids["cannot_tell"],
             table_id=table.table_id,
@@ -1097,7 +1432,11 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         int_fact = interval_facts[abs(seed) % len(interval_facts)]
         assert isinstance(int_fact.value, tuple)
         lo, hi = int(int_fact.value[0]), int(int_fact.value[1])
-        interior_val = (lo + hi) // 2
+        if hi - lo >= 2:
+            span = hi - lo - 1
+            interior_val = lo + 1 + ((visit * 3 + d_idx + abs(seed)) % span)
+        else:
+            interior_val = (lo + hi) // 2
         ct_claim_draft = ProvedClaim(
             claim_id=opaque_claim_ids["cannot_tell"],
             table_id=table.table_id,

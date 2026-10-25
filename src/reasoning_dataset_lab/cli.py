@@ -29,6 +29,10 @@ from reasoning_dataset_lab.pilot_b.ollama import (
     DEFAULT_CALIBRATION_TABLES,
     PILOT_B_OPERATIONS,
 )
+from reasoning_dataset_lab.pilot_b.variety import (
+    evaluate_build_variety,
+    format_variety_report_text,
+)
 
 
 class _StructuredArgumentParser(argparse.ArgumentParser):
@@ -211,6 +215,37 @@ def _build_parser() -> _StructuredArgumentParser:
         help="Loopback Ollama HTTP endpoint (default: http://127.0.0.1:11434).",
     )
 
+    # rdlab variety <build-dir> [--json] [--audit-sample N --seed S]
+    var_parser = subparsers.add_parser(
+        "variety",
+        help="Compute the deterministic DESIGN.md §11c (Amendment 1) variety report for a Pilot B build.",
+    )
+    var_parser.add_argument(
+        "build_dir",
+        type=Path,
+        help="Pilot B build directory (containing part_pilot_b_sealed/items.jsonl) or direct path to items.jsonl.",
+    )
+    var_parser.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="Output the variety report as JSON.",
+    )
+    var_parser.add_argument(
+        "--audit-sample",
+        dest="audit_sample",
+        type=int,
+        default=None,
+        help="Sample N claims deterministically and write them with their computed frames to variety_audit_sample.json.",
+    )
+    var_parser.add_argument(
+        "--seed",
+        dest="seed",
+        type=int,
+        default=1,
+        help="Random seed for --audit-sample (default: 1).",
+    )
+
     return parser
 
 
@@ -378,6 +413,18 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 ollama_base_url=args.ollama_url,
             )
             print(json.dumps(build_res, indent=2))
+            return EXIT_CLEAN
+
+        if args.command == "variety":
+            var_rep = evaluate_build_variety(
+                args.build_dir,
+                audit_sample=args.audit_sample,
+                seed=args.seed,
+            )
+            if args.json_output:
+                print(json.dumps(var_rep, indent=2))
+            else:
+                print(format_variety_report_text(var_rep))
             return EXIT_CLEAN
 
         raise usage_error(

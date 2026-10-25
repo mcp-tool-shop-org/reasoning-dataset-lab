@@ -538,6 +538,10 @@ def _has_bare_entity_attribute_verb(words: list[str]) -> bool:
     if idx == 0:
         return False
     attr_start = idx
+    if words[attr_start - 1].endswith(("'s", "\u2019s", "s'")):
+        return False
+    if attr_start < len(words) and words[attr_start].lower() in {"the", "a", "an"}:
+        return False
     stop_verbs = {"is", "are", "equal", "equals", "has", "have"}
     while (
         idx < len(words)
@@ -570,7 +574,7 @@ def _find_plural_attr_before_of_is(words: list[str]) -> str | None:
     if lower_words[ent_end] != "is":
         return None
     head_noun = attr_words[-1].lower()
-    if head_noun.endswith("s") and not head_noun.endswith(("ss", "us", "is")):
+    if head_noun.endswith("s") and not head_noun.endswith(("ss", "us", "is", "as")):
         return " ".join(attr_words)
     return None
 

@@ -61,6 +61,9 @@ all generated tokens (thinking plus answer); `thinking_words` is a word count, f
 
   Peak VRAM: Qwen 25,157 MiB, Nemotron 27,185 MiB (recorded exception), Granite 8,242 MiB.
 - **Granite read** default raised from 2,048 to 2,560, because its max of 1,877 was 92% of 2,048.
+- **50-triad build and Qwen VRAM check (2026-10-25):**
+  - Qwen VRAM check 2026-10-25: peak 25,445 MiB at num_ctx 9,216 (render) and 25,399 MiB at 7,168 (word); halt line 26,000 MiB.
+  - `render_material` default `num_predict` set to `8,192` and `word_claim` default `num_predict` set to `6,144`, with writer `max_num_ctx` raised to `9,216` (`round_up(prompt_est + 8192 + 256, 1024)`).
 
 ## Provisional Default Summary
 
@@ -68,7 +71,7 @@ All defaults below are **provisional until the next stub's per-call p95** of `ev
 
 | Operation / Role | Model (`digest`) | Default `num_predict` | Default `max_num_ctx` |
 | :--- | :--- | ---: | ---: |
-| `render_material` (`writer`) | `qwen3.6:35b` (`a7eb95c5`) | `4,096` | `8,192` |
-| `word_claim` (`writer`) | `qwen3.6:35b` (`a7eb95c5`) | `4,255` | `8,192` |
+| `render_material` (`writer`) | `qwen3.6:35b` (`a7eb95c5`) | `8,192` | `9,216` |
+| `word_claim` (`writer`) | `qwen3.6:35b` (`a7eb95c5`) | `6,144` | `9,216` |
 | `read_claim` (`reader_1`) | `nemotron-3.5-lightning:30b` (`e6905fff`) | `6,144` | `7,168` |
 | `read_claim` (`reader_2`) | `granite4.2:8b` (`f586c02f`) | `2,560` | `8,192` |

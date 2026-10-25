@@ -703,3 +703,136 @@ def test_fix1_generator_never_emits_unproven_op_pair_and_refuses_unsound_table()
     assert exc_gen.value.code == "PILOT_B_NO_PROVABLE_FACT_FOR_TRIAD"
 
 
+def test_he_part_a_1_no_duplicate_cannot_tell_period_30_fixed_and_all_open_attr_indices_reachable() -> None:
+    """Card he Part A Test 1: Over generate_fact_tables(50, seed=1) and its triads: no two cannot-tell claims are equal; triad i and triad i+30 differ; every open attribute index is reachable."""
+    from reasoning_dataset_lab.pilot_b.fact_tables import DOMAIN_CATALOGUE
+    from reasoning_dataset_lab.pilot_b.rendering import format_atomic_sentence
+
+    tables = generate_fact_tables(50, seed=1)
+    triads = [build_contrast_triad(t, seed=1 + i) for i, t in enumerate(tables)]
+
+    ct_sigs = [
+        (
+            tr.claims["cannot_tell"].entity,
+            tr.claims["cannot_tell"].attribute,
+            tr.claims["cannot_tell"].claimed_value,
+        )
+        for tr in triads
+    ]
+    assert len(set(ct_sigs)) == 50
+
+    for i in range(20):
+        c_i = triads[i].claims["cannot_tell"]
+        c_i30 = triads[i + 30].claims["cannot_tell"]
+        assert (c_i.entity, c_i.attribute, c_i.claimed_value) != (
+            c_i30.entity,
+            c_i30.attribute,
+            c_i30.claimed_value,
+        )
+
+    reached_open_indices: set[int] = set()
+    for tr in triads:
+        ct = tr.claims["cannot_tell"]
+        if ct.proof.method == "open_excerpt_unmentioned_attribute":
+            attr_names = [a for a, _ in tr.table.open_attributes]
+            assert len(attr_names) == 3
+            reached_open_indices.add(attr_names.index(ct.attribute))
+    assert reached_open_indices == {0, 1, 2}
+
+    all_claim_texts = [
+        format_atomic_sentence(
+            entity=c.entity,
+            attribute=c.attribute,
+            fact_type=c.fact_type,
+            value=c.claimed_value,
+            unit=c.unit,
+            op=c.op,
+        ).lower()
+        for tr in triads
+        for c in tr.claims.values()
+    ]
+    assert len(set(all_claim_texts)) == 150
+
+    assert len(DOMAIN_CATALOGUE) == 10
+    for spec in DOMAIN_CATALOGUE:
+        assert len(spec["entities"]) == 5  # type: ignore[arg-type]
+        _, state_vals = spec["state_attr"]  # type: ignore[misc]
+        _, attr_vals = spec["attr_spec"]  # type: ignore[misc]
+        assert len(state_vals) == 5
+        assert len(attr_vals) == 5
+        open_attrs = spec["open_attrs"]  # type: ignore[index]
+        assert len(open_attrs) == 3  # type: ignore[arg-type]
+        for _, open_vals in open_attrs:  # type: ignore[misc]
+            assert isinstance(open_vals, tuple) and len(open_vals) >= 3
+
+
+def test_he_part_a_2_key_proof_rate_1_0_on_200_generated_triads() -> None:
+    """Card he Part A Test 2: The key-proof rate is 1.0 on 200 generated triads."""
+    tables = generate_fact_tables(200, seed=1)
+    triads = [build_contrast_triad(t, seed=1 + i) for i, t in enumerate(tables)]
+    assert len(triads) == 200
+    assert len({t.domain for t in tables}) == 10
+    assert len({e for t in tables for e in t.entities}) == 50
+
+    proved_claims = 0
+    total_claims = 0
+    for t, tr in zip(tables, triads):
+        verify_triad_against_table(t, tr)
+        for key in ("supported", "unsupported", "cannot_tell"):
+            c = tr.claims[key]
+            total_claims += 1
+            proof = prove_claim_against_table(t, c)
+            if proof.key == key and proof.trace_sha256 == c.proof.trace_sha256:
+                proved_claims += 1
+    assert total_claims == 600
+    assert proved_claims / total_claims == 1.0
+
+
+def test_he_part_a_3_pre_gate_counts_on_50_build_meet_11c_cannot_tell_rows(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Card he Part A Test 3: Pre-gate counts on a 50-build meet §11c's cannot_tell rows. Print the counts in the test output."""
+    from collections import Counter, defaultdict
+
+    tables = generate_fact_tables(50, seed=1)
+    triads = [build_contrast_triad(t, seed=1 + i) for i, t in enumerate(tables)]
+    ct_claims = [tr.claims["cannot_tell"] for tr in triads]
+
+    attr_counts: Counter[str] = Counter()
+    attr_values: defaultdict[str, set[str]] = defaultdict(set)
+    open_only_attrs: set[str] = set()
+    method_counts: Counter[str] = Counter()
+    for c in ct_claims:
+        attr_counts[c.attribute] += 1
+        attr_values[c.attribute].add(str(c.claimed_value))
+        method_counts[c.proof.method] += 1
+        if c.proof.method == "open_excerpt_unmentioned_attribute":
+            open_only_attrs.add(c.attribute)
+
+    distinct_entities = len({c.entity for c in ct_claims})
+    distinct_domains = len({t.domain for t in tables})
+    values_per_attr_ge3 = {
+        a: len(attr_values[a]) for a, cnt in attr_counts.items() if cnt >= 3
+    }
+    method_shares = {m: round(cnt / len(ct_claims), 3) for m, cnt in method_counts.items()}
+
+    summary = {
+        "n_distinct_open_attributes_all_ct": len(attr_counts),
+        "n_distinct_open_excerpt_attributes": len(open_only_attrs),
+        "values_per_open_attribute_ge3": values_per_attr_ge3,
+        "distinct_entities": distinct_entities,
+        "distinct_domains": distinct_domains,
+        "proof_method_shares": method_shares,
+    }
+    with capsys.disabled():
+        print(f"\n[Part A Test 3 Pre-gate 50-build cannot_tell counts]: {summary}")
+
+    assert len(attr_counts) >= 15
+    assert len(open_only_attrs) >= 15
+    assert all(v >= 2 for v in values_per_attr_ge3.values())
+    assert distinct_entities >= 25
+    assert distinct_domains >= 8
+    assert all(share <= 0.65 for share in method_shares.values())
+
+
+

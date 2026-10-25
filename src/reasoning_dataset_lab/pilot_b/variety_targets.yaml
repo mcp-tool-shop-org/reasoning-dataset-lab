@@ -1,0 +1,40 @@
+# DESIGN.md §11c Pilot B Variety Targets (with Amendment 1)
+# Pre-registered thresholds for the 50-triad build and 10-triad stub.
+
+build_50:
+  per_class:
+    distinct_frames_min: 6
+    top_frame_share_max: 0.40
+    duplicate_claims_max: 0
+    frame_to_key_leak_min_claims: 5
+    frame_to_key_leak_max_share: 0.60
+    paraphrase_unmasked_share_max: 0.10
+  materials:
+    distinct_frames_min: 10
+    top_frame_share_max: 0.35
+  cannot_tell:
+    open_attributes_min: 15
+    values_per_open_attribute_min_uses: 3
+    values_per_open_attribute_min: 2
+    entities_min: 25
+    domains_min: 8
+    proof_method_share_max: 0.65
+
+stub_10:
+  per_class:
+    distinct_frames_min: 4
+    top_frame_share_max: 0.50
+    duplicate_claims_max: 0
+    frame_to_key_leak_min_claims: 3
+    frame_to_key_leak_max_share: 0.60
+    paraphrase_unmasked_share_max: 0.10
+  materials:
+    distinct_frames_min: 6
+    top_frame_share_max: 0.45
+  cannot_tell:
+    open_attributes_min: 6
+    values_per_open_attribute_min_uses: 3
+    values_per_open_attribute_min: 2
+    entities_min: 8
+    domains_min: 5
+    proof_method_share_max: 0.65

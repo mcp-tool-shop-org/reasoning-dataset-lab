@@ -508,4 +508,33 @@ def test_style_lint_flags_quoted_defects_and_passes_clean_lines() -> None:
         assert style_lint(clean) == []
 
 
+def test_he_part_c_style_lint_passes_possessive_fronted_and_purge_gas_and_flags_existing_defects() -> None:
+    """Card he Part C: style_lint passes possessive, fronted, and 'purge gas ... is' frames while flagging all existing defect sentences."""
+    from reasoning_dataset_lab.pilot_b.rendering import style_lint
+
+    newly_valid_sentences = [
+        "Pump Zeta's valve state is open.",
+        "For Unit Alpha, the inspection date is 7 February.",
+        "The purge gas of Kiln One is argon.",
+    ]
+    for sent in newly_valid_sentences:
+        assert style_lint(sent) == [], f"Expected 0 style_lint flags for {sent!r}"
+
+    defect_lines = [
+        ("Relay North backup cells equal 18 cells.", {"equals", "missing_article_of", "duplicated_unit_noun"}),
+        ("Relay North calibration date equals 12 March.", {"equals", "missing_article_of"}),
+        ("Relay East breaker state equals locked.", {"equals", "missing_article_of"}),
+        ("The switching latency of Relay South equals 55 milliseconds.", {"equals"}),
+        ("Tanker Orion cargo holds is 36 holds.", {"missing_article_of", "duplicated_unit_noun"}),
+        ("Tanker Orion departure date is 16 September.", {"missing_article_of"}),
+        ("The impeller stages of Pump Delta is 27 stages.", {"plural_is_agreement", "duplicated_unit_noun"}),
+    ]
+    for line, expected_kinds in defect_lines:
+        issues = style_lint(line)
+        assert issues, f"Expected style_lint to flag {line!r}"
+        got_kinds = {iss.kind for iss in issues}
+        assert expected_kinds.issubset(got_kinds), f"Expected {expected_kinds} in {got_kinds} for {line!r}"
+
+
+
 
