@@ -36,6 +36,7 @@ DEFAULT_MIN_PASS_RATE_PER_CLASS: float = 0.50
 
 
 SourceMatchStatus = Literal["confirmed", "unconfirmed"]
+ThinkSetting = bool | Literal["low", "medium", "high", "max"]
 
 
 @dataclass(frozen=True)
@@ -52,12 +53,13 @@ class ModelIdentity:
     licence_layer_digest: str = "0" * 64
     source_match: SourceMatchStatus = "unconfirmed"
     source_match_reason: str = ""
+    think: ThinkSetting = True
 
     @property
     def normalized_family(self) -> str:
         return self.family.strip().lower()
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "family": self.family,
@@ -69,6 +71,7 @@ class ModelIdentity:
             "licence_layer_digest": self.licence_layer_digest,
             "source_match": self.source_match,
             "source_match_reason": self.source_match_reason,
+            "think": self.think,
         }
 
 
@@ -106,6 +109,7 @@ class BlindReadResult:
     seconds: float = 0.01
     raw_text: str = ""
     prompt_sha256: str = ""
+    done_reason: str = "stop"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -115,6 +119,7 @@ class BlindReadResult:
             "verdict": self.verdict,
             "raw_text": self.raw_text if self.raw_text else self.verdict,
             "prompt_sha256": self.prompt_sha256,
+            "done_reason": self.done_reason,
             "thinking_tokens": self.thinking_tokens,
             "completion_tokens": self.completion_tokens,
             "seconds": self.seconds,
@@ -299,18 +304,34 @@ def evaluate_claim_unanimity(
                 "Reader verdict must be 'supported', 'unsupported', 'cannot_tell', or 'ambiguous'.",
             )
 
-    agrees_1 = read_1.verdict == key and read_1.verdict != "ambiguous"
-    agrees_2 = read_2.verdict == key and read_2.verdict != "ambiguous"
+    agrees_1 = (
+        read_1.done_reason != "length"
+        and read_1.verdict == key
+        and read_1.verdict != "ambiguous"
+    )
+    agrees_2 = (
+        read_2.done_reason != "length"
+        and read_2.verdict == key
+        and read_2.verdict != "ambiguous"
+    )
     passed = agrees_1 and agrees_2
 
     reasons: list[str] = []
-    if read_1.verdict == "ambiguous":
+    if read_1.done_reason == "length":
+        reasons.append(
+            f"reader_1 ({read_1.reader.name}) stopped with done_reason='length' on '{claim_id}'"
+        )
+    elif read_1.verdict == "ambiguous":
         reasons.append(f"reader_1 ({read_1.reader.name}) marked '{claim_id}' ambiguous")
     elif not agrees_1:
         reasons.append(
             f"reader_1 ({read_1.reader.name}) verdict '{read_1.verdict}' != key '{key}' on '{claim_id}'"
         )
-    if read_2.verdict == "ambiguous":
+    if read_2.done_reason == "length":
+        reasons.append(
+            f"reader_2 ({read_2.reader.name}) stopped with done_reason='length' on '{claim_id}'"
+        )
+    elif read_2.verdict == "ambiguous":
         reasons.append(f"reader_2 ({read_2.reader.name}) marked '{claim_id}' ambiguous")
     elif not agrees_2:
         reasons.append(

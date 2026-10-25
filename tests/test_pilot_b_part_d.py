@@ -92,27 +92,30 @@ def test_single_model_waves_order_and_thinking_cap_recorded(tmp_path: Path) -> N
     assert compressed == ["render", "word", "reader_1", "reader_2"]
 
 
-def test_thinking_token_cap_exceeded_is_refused(tmp_path: Path) -> None:
+def test_thinking_token_cap_exceeded_is_recorded_as_post_hoc_metric(
+    tmp_path: Path,
+) -> None:
     writer_id, r1_id, r2_id = _setup_models()
     tables = generate_fact_tables(n=2, seed=1)
     triads = [build_contrast_triad(t, seed=idx + 1) for idx, t in enumerate(tables)]
 
     writer = DeterministicWriterAdapter()
-    # Reader 1 emits 512 thinking tokens when the cap is 128
+    # Reader 1 emits 512 thinking tokens when the cap is 128 -> post-hoc count is recorded as a metric, not a build-killing raise
     r1_over = UnanimousReaderFake(model=r1_id, thinking_tokens=512, completion_tokens=8)
     r2 = UnanimousReaderFake(model=r2_id, thinking_tokens=32, completion_tokens=6)
 
-    with pytest.raises(RdlabError) as exc_cap:
-        run_pilot_b_waves(
-            triads=triads,
-            writer_model=writer_id,
-            writer_adapter=writer,
-            reader_1=r1_over,
-            reader_2=r2,
-            thinking_token_cap=128,
-            review_queue_path=tmp_path / "review_queue.jsonl",
-        )
-    assert exc_cap.value.code == "PILOT_B_THINKING_CAP_EXCEEDED"
+    wave_res = run_pilot_b_waves(
+        triads=triads,
+        writer_model=writer_id,
+        writer_adapter=writer,
+        reader_1=r1_over,
+        reader_2=r2,
+        thinking_token_cap=128,
+        review_queue_path=tmp_path / "review_queue.jsonl",
+    )
+    r1_wave = next(w for w in wave_res.wave_metrics if w.wave_name == "reader_1")
+    assert r1_wave.thinking_token_cap == 128
+    assert r1_wave.max_thinking_tokens_observed == 512
 
 
 def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(

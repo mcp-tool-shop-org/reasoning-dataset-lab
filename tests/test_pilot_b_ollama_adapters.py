@@ -48,6 +48,7 @@ def build_mock_ollama_http_transport(
     eval_tokens_per_call: int = 18,
     malformed_reader_claims: dict[str, str] | None = None,
     bad_render_table_ids: dict[str, str] | None = None,
+    length_stop_needles: set[str] | None = None,
 ) -> tuple[Any, list[tuple[str, str, dict[str, Any] | None]]]:
     """Build a deterministic mocked HTTP transport for loopback Ollama (/api/tags and /api/chat)."""
     recorded_requests: list[tuple[str, str, dict[str, Any] | None]] = []
@@ -63,6 +64,7 @@ def build_mock_ollama_http_transport(
     models_list = tags_override if tags_override is not None else default_models
     malformed_map = dict(malformed_reader_claims or {})
     bad_render_map = dict(bad_render_table_ids or {})
+    length_needles = set(length_stop_needles or set())
 
     def _derive_verdict_from_user_message(user_msg: str) -> str:
         # Parse closure, Material lines, and Claim from user_message
@@ -157,6 +159,11 @@ def build_mock_ollama_http_transport(
                 else:
                     content = _derive_verdict_from_user_message(user_content)
 
+            done_reason = (
+                "length"
+                if any(needle in user_content for needle in length_needles)
+                else "stop"
+            )
             thinking_str = " ".join(f"t{i}" for i in range(thinking_tokens_per_call))
             return {
                 "model": model_name,
@@ -166,7 +173,7 @@ def build_mock_ollama_http_transport(
                     "thinking": thinking_str,
                 },
                 "done": True,
-                "done_reason": "stop",
+                "done_reason": done_reason,
                 "prompt_eval_count": 40,
                 "eval_count": eval_tokens_per_call,
                 "thinking_tokens": thinking_tokens_per_call,
@@ -211,9 +218,11 @@ def test_part_a_writer_adapter_success_and_call_records() -> None:
         assert chat_url == "http://127.0.0.1:11434/api/chat"
         assert chat_body is not None
         assert chat_body["model"] == "qwen3.6:35b"
+        assert chat_body["think"] is True
         assert chat_body["stream"] is False
         assert chat_body["options"]["temperature"] == 0
-        assert chat_body["options"]["thinking_token_cap"] == 256
+        assert "thinking_token_cap" not in chat_body["options"]
+        assert "num_predict" in chat_body["options"]
 
     assert len(adapter.call_records) == 2
     rec0 = adapter.call_records[0]
@@ -292,20 +301,41 @@ def test_part_a_writer_refuses_digest_mismatch_with_pull_hint() -> None:
 
 
 def test_part_a_writer_thinking_cap_passed_recorded_and_exceeded_refused() -> None:
-    from reasoning_dataset_lab.pilot_b.ollama import OllamaWriterAdapter
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        RENDER_ANSWER_BUDGET,
+        OllamaWriterAdapter,
+    )
 
     writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
-    transport, _ = build_mock_ollama_http_transport(thinking_tokens_per_call=300)
-    adapter = OllamaWriterAdapter(
-        model=writer_pin,
-        thinking_token_cap=128,
-        http_transport=transport,
-    )
     table = build_sample_fact_table(seed=1, closure="open")
 
+    # 1. Post-hoc thinking_tokens > thinking_token_cap with done_reason='stop' is recorded as a metric, not a build-killing raise
+    transport_metric, requests_metric = build_mock_ollama_http_transport(
+        thinking_tokens_per_call=300
+    )
+    adapter_metric = OllamaWriterAdapter(
+        model=writer_pin,
+        thinking_token_cap=128,
+        http_transport=transport_metric,
+    )
+    adapter_metric.render_material(table)
+    assert adapter_metric.call_records[0].thinking_tokens == 300
+    assert adapter_metric.call_records[0].num_predict == 128 + RENDER_ANSWER_BUDGET
+    assert requests_metric[1][2]["options"]["num_predict"] == 128 + RENDER_ANSWER_BUDGET
+
+    # 2. done_reason='length' is refused by the writer with PILOT_B_OLLAMA_LENGTH_STOP
+    transport_len, _ = build_mock_ollama_http_transport(
+        length_stop_needles={table.table_id}
+    )
+    adapter_len = OllamaWriterAdapter(
+        model=writer_pin,
+        thinking_token_cap=128,
+        http_transport=transport_len,
+    )
     with pytest.raises(RdlabError) as exc_info:
-        adapter.render_material(table)
-    assert exc_info.value.code == "PILOT_B_THINKING_CAP_EXCEEDED"
+        adapter_len.render_material(table)
+    assert exc_info.value.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+    assert adapter_len.call_records[0].done_reason == "length"
 
 
 def test_part_a_refused_rendering_routes_triad_to_review_queue_without_retry(
@@ -779,4 +809,144 @@ def test_part_d_ollama_transport_verdict_parsing_and_properties(
     with pytest.raises(RdlabError) as exc_http_err:
         default_ollama_http_transport("GET", "http://127.0.0.1:11434/api/tags", None)
     assert exc_http_err.value.code == "PILOT_B_OLLAMA_HTTP_ERROR"
+
+
+def test_fix1_request_body_has_top_level_think_and_num_predict_and_no_thinking_token_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card gn FIX 1: request body carries top-level `think` and `options.num_predict = thinking_token_cap + answer_budget`, and no `thinking_token_cap` key."""
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        READ_ANSWER_BUDGET,
+        RENDER_ANSWER_BUDGET,
+        WORD_ANSWER_BUDGET,
+        OllamaBlindReaderAdapter,
+        OllamaWriterAdapter,
+    )
+
+    transport, requests = build_mock_ollama_http_transport(
+        thinking_tokens_per_call=512,
+        eval_tokens_per_call=20,
+    )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+
+    writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
+    reader_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_1"]
+    assert writer_pin.think is True
+    assert reader_pin.think is True
+
+    writer = OllamaWriterAdapter(model=writer_pin, thinking_token_cap=256)
+    reader = OllamaBlindReaderAdapter(model=reader_pin, thinking_token_cap=256)
+
+    table = build_sample_fact_table(seed=1, closure="open")
+    triad = build_contrast_triad(table, seed=1)
+
+    # Even though thinking_tokens_per_call=512 > thinking_token_cap=256, post-hoc count is recorded as a metric, not a build-killing raise
+    material = writer.render_material(table)
+    worded_sup = writer.word_claim(table, triad.claims["supported"])
+    prompt = build_blind_read_prompt(
+        triad_id=triad.triad_id,
+        claim_id=triad.claims["supported"].claim_id,
+        closure=table.closure,
+        material=material,
+        claim_text=worded_sup,
+    )
+    read_res = reader.read_claim(prompt)
+    assert read_res.verdict == "supported"
+    assert read_res.done_reason == "stop"
+    assert read_res.thinking_tokens == 512
+
+    chat_bodies = [
+        body for method, url, body in requests if method == "POST" and url.endswith("/api/chat")
+    ]
+    assert len(chat_bodies) == 3
+
+    for body in chat_bodies:
+        assert isinstance(body, dict)
+        assert body["think"] is True
+        assert "thinking_token_cap" not in body
+        assert "thinking_token_cap" not in body["options"]
+        assert body["options"]["temperature"] == 0
+        assert "num_predict" in body["options"]
+
+    assert chat_bodies[0]["options"]["num_predict"] == 256 + RENDER_ANSWER_BUDGET
+    assert chat_bodies[1]["options"]["num_predict"] == 256 + WORD_ANSWER_BUDGET
+    assert chat_bodies[2]["options"]["num_predict"] == 256 + READ_ANSWER_BUDGET
+
+    assert writer.call_records[0].done_reason == "stop"
+    assert writer.call_records[0].think is True
+    assert writer.call_records[0].num_predict == 256 + RENDER_ANSWER_BUDGET
+    assert writer.call_records[0].thinking_tokens == 512
+
+
+def test_fix1_done_reason_length_routes_triad_to_review_queue_without_aborting_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gn FIX 1: a `done_reason: 'length'` response on writer or reader sends the triad to review_queue.jsonl with its reason and never aborts the build or silently passes."""
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        OllamaBlindReaderAdapter,
+        OllamaWriterAdapter,
+    )
+
+    tables = generate_fact_tables(n=4, seed=1)
+    triads = [build_contrast_triad(t, seed=1 + idx) for idx, t in enumerate(tables)]
+
+    # Triad 1's table_id triggers done_reason='length' on writer render_material;
+    # Triad 2's supported claim wording triggers done_reason='length' on reader_1 read_claim
+    word_helper = DeterministicWriterAdapter()
+    triad_2_sup_text = word_helper.word_claim(triads[2].table, triads[2].claims["supported"])
+
+    transport, _ = build_mock_ollama_http_transport(
+        length_stop_needles={triads[1].table.table_id, triad_2_sup_text},
+    )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+
+    writer = OllamaWriterAdapter(
+        model=DEFAULT_PILOT_B_MODEL_PINS["writer"], thinking_token_cap=256
+    )
+    r1 = OllamaBlindReaderAdapter(
+        model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"], thinking_token_cap=256
+    )
+    r2 = OllamaBlindReaderAdapter(
+        model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"], thinking_token_cap=256
+    )
+
+    rq_path = tmp_path / "review_queue.jsonl"
+    wave_res = run_pilot_b_waves(
+        triads=triads,
+        writer_model=writer.model,
+        writer_adapter=writer,
+        reader_1=r1,
+        reader_2=r2,
+        review_queue_path=rq_path,
+        thinking_token_cap=256,
+        min_pass_rate_per_class=0.50,
+    )
+
+    assert [ev.worded.triad.triad_id for ev in wave_res.kept_triads] == [
+        triads[0].triad_id,
+        triads[3].triad_id,
+    ]
+    assert [ev.worded.triad.triad_id for ev in wave_res.failed_triads] == [
+        triads[1].triad_id,
+        triads[2].triad_id,
+    ]
+
+    rq_rows = [
+        json.loads(line)
+        for line in rq_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rq_rows) == 2
+    assert rq_rows[0]["triad_id"] == triads[1].triad_id
+    assert any("length" in r for r in rq_rows[0]["failure_reasons"])
+    assert rq_rows[1]["triad_id"] == triads[2].triad_id
+    assert any("length" in r for r in rq_rows[1]["failure_reasons"])
+
+
 

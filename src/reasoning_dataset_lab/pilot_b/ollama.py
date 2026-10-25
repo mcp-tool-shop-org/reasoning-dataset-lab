@@ -1,4 +1,4 @@
-"""Part A: Real loopback Ollama writer adapter for Pilot B (Card gk Part A).
+"""Part A: Real loopback Ollama writer adapter for Pilot B (Card gk Part A & Card gn).
 
 Relies on the official Ollama HTTP API (`https://github.com/ollama/ollama/blob/main/docs/api.md`):
 - `GET /api/tags` (`https://github.com/ollama/ollama/blob/main/docs/api.md#list-local-models`):
@@ -6,9 +6,10 @@ Relies on the official Ollama HTTP API (`https://github.com/ollama/ollama/blob/m
   digest equals the pinned `manifest_digest` before the first chat call. Never pulls (`/api/pull`
   is never called).
 - `POST /api/chat` (`https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion`):
-  sends `model` (pinned `ollama_tag`), `messages`, `stream: false`, and `options: {"temperature": 0,
-  "thinking_token_cap": <cap>}`; reads `message.content`, `message.thinking`, `eval_count`, and
-  `thinking_tokens` / `thinking_eval_count`.
+  sends `model` (pinned `ollama_tag`), `messages`, top-level `think` (`docs/api.md:499`), `stream: false`,
+  and `options: {"temperature": 0, "num_predict": <cap + answer_budget>}` (`docs/api.md:393`, `:513`);
+  reads `message.content`, `message.thinking` (`docs/api.md:505`), `done_reason` (`docs/api.md:658`),
+  `eval_count`, and `thinking_tokens` / `thinking_eval_count`.
 - `POST /api/chat` with `keep_alive: 0` (`https://github.com/ollama/ollama/blob/main/docs/api.md#unload-a-model`):
   unloads the model from VRAM after each wave.
 """
@@ -40,6 +41,7 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
     BlindReadResult,
     ModelIdentity,
     ReaderVerdict,
+    ThinkSetting,
 )
 
 if TYPE_CHECKING:
@@ -51,6 +53,20 @@ DEFAULT_THINKING_TOKEN_CAP: int = 256
 
 OllamaOperation = Literal["render_material", "word_claim", "read_claim"]
 OllamaHttpTransport = Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
+
+# Named answer token budgets per operation (Card gn FIX 1: options.num_predict = thinking_token_cap + answer_budget)
+RENDER_ANSWER_BUDGET: int = 256
+WORD_ANSWER_BUDGET: int = 96
+READ_ANSWER_BUDGET: int = 32
+RENDER_MATERIAL_ANSWER_BUDGET: int = RENDER_ANSWER_BUDGET
+WORD_CLAIM_ANSWER_BUDGET: int = WORD_ANSWER_BUDGET
+READ_CLAIM_ANSWER_BUDGET: int = READ_ANSWER_BUDGET
+
+OPERATION_ANSWER_BUDGETS: dict[OllamaOperation, int] = {
+    "render_material": RENDER_ANSWER_BUDGET,
+    "word_claim": WORD_ANSWER_BUDGET,
+    "read_claim": READ_ANSWER_BUDGET,
+}
 
 
 def require_loopback_ollama_url(url: str) -> str:
@@ -120,7 +136,7 @@ def default_ollama_http_transport(
 
 @dataclass(frozen=True)
 class OllamaCallRecord:
-    """Per-call audit record for an Ollama writer or blind-reader invocation (Card gk Part A/B/C)."""
+    """Per-call audit record for an Ollama writer or blind-reader invocation (Card gk Part A/B/C & Card gn)."""
 
     model: str
     digest: str
@@ -131,6 +147,9 @@ class OllamaCallRecord:
     thinking_tokens: int
     thinking_token_cap: int
     wall_time_s: float
+    think: ThinkSetting = True
+    num_predict: int = 0
+    done_reason: str = "stop"
 
     def to_dict(self, *, include_target_id: bool = True) -> dict[str, object]:
         out: dict[str, object] = {
@@ -138,9 +157,11 @@ class OllamaCallRecord:
             "digest": self.digest,
             "operation": self.operation,
             "prompt_sha256": self.prompt_sha256,
+            "think": self.think,
+            "num_predict": self.num_predict,
+            "done_reason": self.done_reason,
             "eval_tokens": self.eval_tokens,
             "thinking_tokens": self.thinking_tokens,
-            "thinking_token_cap": self.thinking_token_cap,
             "wall_time_s": round(self.wall_time_s, 6),
         }
         if include_target_id:
@@ -263,6 +284,7 @@ class OllamaWriterAdapter:
             )
         self._base_url = require_loopback_ollama_url(base_url)
         self._model = _resolve_model_identity(model)
+        self._think: ThinkSetting = self._model.think
         self._thinking_token_cap = thinking_token_cap
         self._transport: OllamaHttpTransport = (
             http_transport if http_transport is not None else default_ollama_http_transport
@@ -289,8 +311,16 @@ class OllamaWriterAdapter:
         return self._base_url
 
     @property
+    def think(self) -> ThinkSetting:
+        return self._think
+
+    @property
     def thinking_token_cap(self) -> int:
         return self._thinking_token_cap
+
+    @property
+    def http_transport(self) -> OllamaHttpTransport:
+        return self._transport
 
     @property
     def call_records(self) -> tuple[OllamaCallRecord, ...]:
@@ -328,13 +358,15 @@ class OllamaWriterAdapter:
         self._ensure_verified()
         prompt_sha = _canonical_prompt_sha256(messages)
         chat_url = f"{self._base_url}/api/chat"
+        num_predict = self._thinking_token_cap + OPERATION_ANSWER_BUDGETS[operation]
         payload: dict[str, Any] = {
             "model": self.ollama_tag,
             "messages": messages,
+            "think": self._think,
             "stream": False,
             "options": {
                 "temperature": 0,
-                "thinking_token_cap": self._thinking_token_cap,
+                "num_predict": num_predict,
             },
         }
         t0 = time.perf_counter()
@@ -346,6 +378,7 @@ class OllamaWriterAdapter:
             msg = {}
         content = str(msg.get("content") or "").strip()
         thinking_text = str(msg.get("thinking") or "")
+        done_reason = str(resp.get("done_reason") or "stop").strip()
         eval_tokens, thinking_tokens = _extract_token_counts(resp, content, thinking_text)
 
         record = OllamaCallRecord(
@@ -358,16 +391,19 @@ class OllamaWriterAdapter:
             thinking_tokens=thinking_tokens,
             thinking_token_cap=self._thinking_token_cap,
             wall_time_s=wall_s,
+            think=self._think,
+            num_predict=num_predict,
+            done_reason=done_reason,
         )
         self._call_records.append(record)
         self._last_raw_output = content
 
-        if thinking_tokens > self._thinking_token_cap:
+        if done_reason == "length":
             raise refused_error(
-                "PILOT_B_THINKING_CAP_EXCEEDED",
-                f"Writer call '{target_id}' ({operation}) used {thinking_tokens} thinking tokens, "
-                f"exceeding thinking_token_cap={self._thinking_token_cap}.",
-                "Lower model thinking budget or increase thinking_token_cap.",
+                "PILOT_B_OLLAMA_LENGTH_STOP",
+                f"Writer call '{target_id}' ({operation}) stopped with done_reason='length' "
+                f"(num_predict={num_predict}).",
+                "Increase thinking_token_cap or answer_budget.",
             )
         return content
 
@@ -506,6 +542,7 @@ class OllamaBlindReaderAdapter:
             )
         self._base_url = require_loopback_ollama_url(base_url)
         self._model = _resolve_model_identity(model)
+        self._think: ThinkSetting = self._model.think
         self._thinking_token_cap = thinking_token_cap
         self._transport: OllamaHttpTransport = (
             http_transport if http_transport is not None else default_ollama_http_transport
@@ -531,8 +568,16 @@ class OllamaBlindReaderAdapter:
         return self._base_url
 
     @property
+    def think(self) -> ThinkSetting:
+        return self._think
+
+    @property
     def thinking_token_cap(self) -> int:
         return self._thinking_token_cap
+
+    @property
+    def http_transport(self) -> OllamaHttpTransport:
+        return self._transport
 
     @property
     def call_records(self) -> tuple[OllamaCallRecord, ...]:
@@ -574,13 +619,15 @@ class OllamaBlindReaderAdapter:
         ]
         prompt_sha = _canonical_prompt_sha256(messages)
         chat_url = f"{self._base_url}/api/chat"
+        num_predict = self._thinking_token_cap + READ_ANSWER_BUDGET
         payload: dict[str, Any] = {
             "model": self.ollama_tag,
             "messages": messages,
+            "think": self._think,
             "stream": False,
             "options": {
                 "temperature": 0,
-                "thinking_token_cap": self._thinking_token_cap,
+                "num_predict": num_predict,
             },
         }
         t0 = time.perf_counter()
@@ -592,6 +639,7 @@ class OllamaBlindReaderAdapter:
             msg = {}
         raw_text = str(msg.get("content") or "").strip()
         thinking_text = str(msg.get("thinking") or "")
+        done_reason = str(resp.get("done_reason") or "stop").strip()
         eval_tokens, thinking_tokens = _extract_token_counts(resp, raw_text, thinking_text)
 
         record = OllamaCallRecord(
@@ -604,18 +652,15 @@ class OllamaBlindReaderAdapter:
             thinking_tokens=thinking_tokens,
             thinking_token_cap=self._thinking_token_cap,
             wall_time_s=wall_s,
+            think=self._think,
+            num_predict=num_predict,
+            done_reason=done_reason,
         )
         self._call_records.append(record)
 
-        if thinking_tokens > self._thinking_token_cap:
-            raise refused_error(
-                "PILOT_B_THINKING_CAP_EXCEEDED",
-                f"Reader '{self.ollama_tag}' call on '{prompt.claim_id}' used {thinking_tokens} thinking tokens, "
-                f"exceeding thinking_token_cap={self._thinking_token_cap}.",
-                "Lower model thinking budget or increase thinking_token_cap.",
-            )
-
-        verdict = parse_reader_verdict(raw_text)
+        verdict: ReaderVerdict = (
+            "ambiguous" if done_reason == "length" else parse_reader_verdict(raw_text)
+        )
         return BlindReadResult(
             claim_id=prompt.claim_id,
             reader=self._model,
@@ -625,6 +670,7 @@ class OllamaBlindReaderAdapter:
             seconds=wall_s,
             raw_text=raw_text,
             prompt_sha256=prompt_sha,
+            done_reason=done_reason,
         )
 
     def unload_model(self) -> OllamaUnloadRecord:

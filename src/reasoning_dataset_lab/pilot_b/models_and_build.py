@@ -42,6 +42,7 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
     BlindReaderAdapter,
     ModelIdentity,
     SourceMatchStatus,
+    ThinkSetting,
     validate_chain_families,
 )
 from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
@@ -71,6 +72,7 @@ class PinnedModelSpec:
     licence_layer_digest: str = "0" * 64
     source_match: SourceMatchStatus = "unconfirmed"
     source_match_reason: str = ""
+    think: ThinkSetting = True
 
     def with_licence_id(
         self,
@@ -93,6 +95,7 @@ class PinnedModelSpec:
             licence_layer_digest=self.licence_layer_digest,
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
+            think=self.think,
         )
 
     def with_bundled_licence_id(self, new_bundled_licence_id: str) -> PinnedModelSpec:
@@ -115,9 +118,10 @@ class PinnedModelSpec:
             licence_layer_digest=self.licence_layer_digest,
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
+            think=self.think,
         )
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "role": self.role,
             "display_name": self.display_name,
@@ -130,6 +134,7 @@ class PinnedModelSpec:
             "bundled_licence_id": self.bundled_licence_id,
             "source_match": self.source_match,
             "source_match_reason": self.source_match_reason,
+            "think": self.think,
         }
 
 

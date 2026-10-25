@@ -198,14 +198,6 @@ class WaveCallTracker:
         if not self._seen_waves or self._seen_waves[-1] != wave_name:
             self._seen_waves.append(wave_name)
 
-        if thinking_tokens > self._cap:
-            raise refused_error(
-                "PILOT_B_THINKING_CAP_EXCEEDED",
-                f"Call '{target_id}' in wave '{wave_name}' used {thinking_tokens} thinking tokens, "
-                f"exceeding thinking_token_cap={self._cap}.",
-                "Enforce the per-call thinking token cap on the model adapter.",
-            )
-
         self._entries.append(
             WaveCallEntry(
                 wave_name=wave_name,
@@ -333,7 +325,10 @@ def run_pilot_b_waves(
             mat = writer_adapter.render_material(t.table)
             check_rendered_material(t.table, mat)
         except RdlabError as err:
-            if not err.code.startswith("PILOT_B_RENDER_"):
+            if not (
+                err.code.startswith("PILOT_B_RENDER_")
+                or err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+            ):
                 raise
             last_rec = getattr(writer_adapter, "last_call_record", None)
             raw_out = str(getattr(writer_adapter, "last_raw_output", ""))
@@ -353,12 +348,17 @@ def run_pilot_b_waves(
                 ),
                 seconds=last_rec.wall_time_s if last_rec is not None else 0.02,
             )
+            reason_prefix = (
+                "length_stop"
+                if err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+                else "rendering_check"
+            )
             render_failed_evals.append(
                 _build_render_failed_eval(
                     t,
                     raw_out,
                     {},
-                    f"rendering_check ({err.code}): {err.message}",
+                    f"{reason_prefix} ({err.code}): {err.message}",
                 )
             )
             continue
@@ -403,7 +403,10 @@ def run_pilot_b_waves(
                 w_text = writer_adapter.word_claim(t.table, claim)
                 check_worded_claim(t.table, claim, w_text)
             except RdlabError as err:
-                if not err.code.startswith("PILOT_B_RENDER_"):
+                if not (
+                    err.code.startswith("PILOT_B_RENDER_")
+                    or err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+                ):
                     raise
                 last_rec = getattr(writer_adapter, "last_call_record", None)
                 raw_out = str(getattr(writer_adapter, "last_raw_output", ""))
@@ -424,7 +427,12 @@ def run_pilot_b_waves(
                     seconds=last_rec.wall_time_s if last_rec is not None else 0.01,
                 )
                 w_claims[key] = raw_out
-                word_failed_reason = f"wording_check ({err.code}): {err.message}"
+                reason_prefix = (
+                    "length_stop"
+                    if err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+                    else "wording_check"
+                )
+                word_failed_reason = f"{reason_prefix} ({err.code}): {err.message}"
                 break
 
             last_rec = getattr(writer_adapter, "last_call_record", None)
