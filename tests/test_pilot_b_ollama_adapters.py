@@ -1556,7 +1556,7 @@ def test_gs_request_num_predict_equals_configured_total_per_operation_with_sourc
     assert by_op["render_material"] == {"value": 3500, "source": "cli"}
     assert by_op["word_claim"] == {"value": 512, "source": "config"}
     assert by_op["read_claim_reader_1"] == {"value": 5000, "source": "config"}
-    assert by_op["read_claim_reader_2"] == {"value": 2048, "source": "default"}
+    assert by_op["read_claim_reader_2"] == {"value": 2560, "source": "default"}
 
     prov_row = json.loads(
         (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
@@ -1572,7 +1572,7 @@ def test_gs_request_num_predict_equals_configured_total_per_operation_with_sourc
     r_calls = {r["model"]: r for r in prov_row["judgments"][0]["call_records"]}
     assert r_calls["nemotron-3.5-lightning:30b"]["num_predict"] == 5000
     assert r_calls["nemotron-3.5-lightning:30b"]["num_predict_source"] == "config"
-    assert r_calls["granite4.2:8b"]["num_predict"] == 2048
+    assert r_calls["granite4.2:8b"]["num_predict"] == 2560
     assert r_calls["granite4.2:8b"]["num_predict_source"] == "default"
 
     chat_num_predicts = [
@@ -1583,7 +1583,7 @@ def test_gs_request_num_predict_equals_configured_total_per_operation_with_sourc
         and isinstance(b, dict)
         and b.get("messages")
     ]
-    assert set(chat_num_predicts) == {3500, 512, 5000, 2048}
+    assert set(chat_num_predicts) == {3500, 512, 5000, 2560}
 
 
 def test_gs_no_request_or_record_carries_thinking_cap_or_answer_budget(
@@ -1680,7 +1680,7 @@ def test_gs_thinking_words_is_recorded_and_nothing_gates_on_it(
 def test_gs_defaults_are_4096_6144_2048(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Card gs Acceptance 4: defaults are render 4,096 (max_num_ctx 8,192), reader_1 Nemotron 6,144 (max_num_ctx 7,168), reader_2 Granite 2,048 (max_num_ctx 8,192), and word_claim 352."""
+    """Card gs Acceptance 4 & Card gw Part A: defaults are render 4,096 (max_num_ctx 8,192), word_claim 4,255 (max_num_ctx 8,192), reader_1 Nemotron 6,144 (max_num_ctx 7,168), and reader_2 Granite 2,560 (max_num_ctx 8,192)."""
     import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 
     transport, requests = build_mock_ollama_http_transport()
@@ -1712,9 +1712,9 @@ def test_gs_defaults_are_4096_6144_2048(
     rep = res["report"]
     by_op = rep["num_predict_config"]["by_operation"]
     assert by_op["render_material"] == {"value": 4096, "source": "default"}
-    assert by_op["word_claim"] == {"value": 352, "source": "default"}
+    assert by_op["word_claim"] == {"value": 4255, "source": "default"}
     assert by_op["read_claim_reader_1"] == {"value": 6144, "source": "default"}
-    assert by_op["read_claim_reader_2"] == {"value": 2048, "source": "default"}
+    assert by_op["read_claim_reader_2"] == {"value": 2560, "source": "default"}
     assert rep["num_ctx_policy"]["max_num_ctx_by_role"] == {
         "writer": 8192,
         "reader_1": 7168,
@@ -1729,23 +1729,31 @@ def test_gs_defaults_are_4096_6144_2048(
         and isinstance(b, dict)
         and b.get("messages")
     ]
-    assert set(chat_num_predicts) == {4096, 352, 6144, 2048}
+    assert set(chat_num_predicts) == {4096, 4255, 6144, 2560}
 
     doc_text = ollama_mod.__doc__ or ""
     assert "3,462" in doc_text
+    assert "3,743" in doc_text
+    assert "4,255" in doc_text
     assert "3,086" in doc_text
     assert "3,434" in doc_text
     assert "1,239" in doc_text
+    assert "1,877" in doc_text
+    assert "2,560" in doc_text
     assert "docs/calibration-2026-10-25.md" in doc_text
 
     repo_root = Path(__file__).resolve().parent.parent
     readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
     assert "3,462" in readme_text
+    assert "3,743" in readme_text
+    assert "4,255" in readme_text
     assert "3,086" in readme_text
     assert "3,434" in readme_text
     assert "1,239" in readme_text
+    assert "1,877" in readme_text
+    assert "2,560" in readme_text
     assert "30,000" in readme_text
-    assert "27.4 GB" in readme_text
+    assert "27,355 MiB" in readme_text
     assert "docs/calibration-2026-10-25.md" in readme_text
 
     cal_doc_text = (repo_root / "docs" / "calibration-2026-10-25.md").read_text(
@@ -1767,6 +1775,10 @@ def test_gs_defaults_are_4096_6144_2048(
         "1,239",
         "8,825 MiB",
         "thinking_words",
+        "4,255",
+        "3,743",
+        "2,560",
+        "1,877",
     ):
         assert expected in cal_doc_text
 
