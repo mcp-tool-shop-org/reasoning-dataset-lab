@@ -1067,11 +1067,8 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
             )
         stated_attrs = {
             (f.entity.lower(), f.attribute.lower()) for f in table.facts
-        } | {("", f.attribute.lower()) for f in table.facts}
-        if (claim.entity.lower(), claim.attribute.lower()) in stated_attrs or (
-            "",
-            claim.attribute.lower(),
-        ) in stated_attrs:
+        }
+        if (claim.entity.lower(), claim.attribute.lower()) in stated_attrs:
             raise refused_error(
                 "PILOT_B_CANNOT_TELL_DECIDABLE",
                 f"Cannot_tell claim '{claim.claim_id}' asks attribute '{claim.attribute}' which is already stated in table '{table.table_id}'.",
@@ -1142,28 +1139,18 @@ def verify_triad_against_table(table: FactTable, triad: ProvedTriad) -> None:
             )
 
 
-_OPEN_SCHEDULE_9: tuple[tuple[str, str, str, str], ...] = (
-    ("A1", "A2", "A3", "default"),
-    ("A2", "A3", "N2", "default"),
-    ("A3", "S0", "D0", "default"),
-    ("S0", "D0", "A0", "default"),
-    ("D0", "A0", "A1", "default"),
-    ("N2", "N0", "A2", "default"),
-    ("N0", "N1", "S0", "default"),
-    ("N1", "N2", "D0", "interval"),
-    ("A0", "A1", "S0", "default"),
-)
+_OPEN_NON_INT_6: tuple[str, ...] = ("A1", "A2", "A3", "A0", "S0", "D0")
+_CLOSED_BASE_3: tuple[str, ...] = ("N0", "N1", "N2")
 
-_CLOSED_SCHEDULE_9: tuple[tuple[str, str, str, str], ...] = (
-    ("A2", "A1", "N1", "default"),
-    ("A3", "A2", "N0", "default"),
-    ("S0", "A3", "N2", "default"),
-    ("D0", "S0", "N1", "default"),
-    ("A0", "D0", "N0", "default"),
-    ("N0", "A0", "N2", "default"),
-    ("N2", "N0", "N1", "default"),
-    ("N1", "N2", "N0", "number"),
-    ("A1", "N1", "N2", "default"),
+_LINE_ORDER_8: tuple[tuple[int, int, int, int, int], ...] = (
+    (0, 1, 2, 3, 4),
+    (1, 0, 2, 3, 4),
+    (0, 2, 1, 3, 4),
+    (1, 2, 0, 3, 4),
+    (2, 0, 1, 3, 4),
+    (2, 1, 0, 3, 4),
+    (3, 0, 4, 1, 2),
+    (3, 1, 4, 0, 2),
 )
 
 _CLAIM_ORDER_PERMS: tuple[tuple[VerdictKey, VerdictKey, VerdictKey], ...] = (
@@ -1207,6 +1194,17 @@ def _domain_role_map(spec: dict[str, object]) -> dict[str, tuple[str, str | None
     }
 
 
+def _parity_domain_rank(spec_idx: int, secret: int | None, tag: str) -> int:
+    """Return a 0..4 rank for spec_idx within its parity group [0,2,4,6,8] or [1,3,5,7,9]."""
+    base_rank = (spec_idx // 2) % 5
+    if secret is None:
+        return base_rank
+    parity = spec_idx % 2
+    order = list(range(5))
+    random.Random(f"rdlab-dom-parity-v2:{secret}:{parity}:{tag}").shuffle(order)
+    return order[base_rank]
+
+
 def _plan_visit_roles(
     spec_idx: int,
     visit: int,
@@ -1214,47 +1212,32 @@ def _plan_visit_roles(
     secret: int | None = None,
 ) -> dict[str, object]:
     """Return the deterministic role assignment for a (domain, visit, closure) table and triad."""
-    if visit == 0 and secret is None:
-        if spec_idx in (0, 1, 2, 3, 4):
-            l1 = "N1" if spec_idx in (0, 1, 3) else "N0"
-            stated = (l1, "D0", "N2", "S0", "A0")
+    if visit == 0 and secret is None and spec_idx in (0, 2, 7, 9):
+        if spec_idx == 0:
+            stated = ("N1", "D0", "N2", "S0", "A0")
             open_r = ("A1", "A2", "A3")
             interval_role = "N2"
-            if spec_idx == 0:
-                sup_r, unsup_r, ct_r, u_mode = l1, "N2", ("A1" if closure == "open" else "N2"), "number"
-            elif spec_idx == 1:
-                sup_r, unsup_r, ct_r, u_mode = l1, "D0", ("A2" if closure == "open" else "N2"), "default"
-            elif spec_idx == 2:
-                sup_r, unsup_r, ct_r, u_mode = "D0", l1, ("A3" if closure == "open" else "N2"), "default"
-            elif spec_idx == 3:
-                sup_r, unsup_r, ct_r, u_mode = "S0", l1, ("A1" if closure == "open" else "N2"), "default"
-            else:
-                sup_r, unsup_r, ct_r, u_mode = l1, "A0", ("A2" if closure == "open" else "N2"), "default"
-        elif spec_idx == 5:
-            stated = ("N2", "D0", "N1", "S0", "A1")
-            open_r = ("A0", "A2", "A3")
-            interval_role = "N1"
-            sup_r, unsup_r, ct_r, u_mode = "N2", "A1", ("A0" if closure == "open" else "N1"), "default"
-        elif spec_idx == 6:
-            stated = ("N1", "S0", "N2", "D0", "A1")
-            open_r = ("A0", "A2", "A3")
+            sup_r, unsup_r, ct_r, u_mode = "N1", "N2", ("A1" if closure == "open" else "N2"), "number"
+        elif spec_idx == 2:
+            stated = ("N0", "D0", "N2", "S0", "A0")
+            open_r = ("A1", "A2", "A3")
             interval_role = "N2"
-            sup_r, unsup_r, ct_r, u_mode = "A1", "S0", ("A0" if closure == "open" else "N2"), "default"
+            sup_r, unsup_r, ct_r, u_mode = "D0", "N0", ("A3" if closure == "open" else "N2"), "default"
         elif spec_idx == 7:
             stated = ("N0", "D0", "N1", "S0", "A1")
             open_r = ("A0", "A2", "A3")
             interval_role = "N1"
             sup_r, unsup_r, ct_r, u_mode = "A1", "D0", ("A2" if closure == "open" else "N1"), "default"
-        elif spec_idx == 8:
-            stated = ("N0", "A0", "N2", "S0", "A1")
-            open_r = ("D0", "A2", "A3")
-            interval_role = "N2"
-            sup_r, unsup_r, ct_r, u_mode = "A0", "A1", ("D0" if closure == "open" else "N2"), "default"
         else:
             stated = ("N0", "D0", "N2", "S0", "A0")
             open_r = ("A1", "A2", "A3")
             interval_role = "N2"
             sup_r, unsup_r, ct_r, u_mode = "D0", "A0", ("A1" if closure == "open" else "N2"), "default"
+        default_ents = (0, 0, 1, 2, 1)
+        line_specs = tuple(
+            (r_k, default_ents[idx_l], r_k == interval_role, 0)
+            for idx_l, r_k in enumerate(stated)
+        )
         return {
             "stated_roles": stated,
             "open_roles": open_r,
@@ -1264,87 +1247,81 @@ def _plan_visit_roles(
             "ct_role": ct_r,
             "unsup_mode": u_mode,
             "permute_lines": False,
+            "homogeneous": False,
+            "line_specs": line_specs,
         }
 
-    k_pair = (visit // 2) % 10
-    if secret is not None:
-        k_pair = (k_pair + (_secret_int(secret, spec_idx * 100 + visit, "k") % 10)) % 10
+    m = (visit // 2) % 10
+    p_rank = _parity_domain_rank(spec_idx, secret, closure)
 
     if closure == "open":
-        if k_pair == 0:
-            sup_r, unsup_r, ct_r, u_mode = ("A3", "S0", "A0", "default")
+        m_n2 = (0, 1, 1, 2, 3)[p_rank]
+        if m < 7:
+            if m == m_n2:
+                target_role = "N2"
+            else:
+                non_int_step = m if m < m_n2 else (m - 1)
+                target_role = _OPEN_NON_INT_6[(p_rank + non_int_step) % 6]
         else:
-            sched_idx = ((k_pair - 1) + spec_idx) % 9
-            sup_r, unsup_r, ct_r, u_mode = _OPEN_SCHEDULE_9[sched_idx]
-        other_open = [
-            r
-            for r in ("A1", "A2", "A3", "A0", "S0", "D0")
-            if r not in (sup_r, unsup_r, ct_r)
-        ][:2]
-        oa_idx = (visit + spec_idx) % 3
+            target_role = ("A1", "A2", "A3")[(p_rank + (m - 7)) % 3]
+
+        sup_r = target_role
+        unsup_r = target_role
+        ct_r = target_role
+        u_mode = "interval" if target_role == "N2" else "default"
+
+        other_open = [r for r in ("A1", "A2", "A3", "A0") if r != target_role][:2]
+        oa_idx = ((visit // 2) + (spec_idx // 2)) % 3
         open_list = list(other_open)
-        open_list.insert(oa_idx, ct_r)
+        open_list.insert(oa_idx, target_role)
         open_r = (open_list[0], open_list[1], open_list[2])
 
-        if sup_r == "N2" or (unsup_r == "N2" and u_mode in ("interval", "number")):
+        if target_role == "N2":
             interval_role = "N2"
-        elif "N2" != ct_r and "N2" not in (sup_r, unsup_r):
-            interval_role = "N2"
-        elif "N1" != ct_r and "N1" not in (sup_r, unsup_r):
-            interval_role = "N1"
+            raw_specs: list[tuple[str, int, bool, int]] = [
+                ("N2", 0, True, 0),
+                ("N2", 1, True, 1),
+                ("N0", 2, False, 0),
+                ("D0", 2, False, 0),
+                ("A0", 0, False, 0),
+            ]
         else:
-            interval_role = "N0"
+            interval_role = "N2"
+            filler_3 = "A0" if target_role not in ("A0", "A1", "A2", "A3") else "D0"
+            raw_specs = [
+                (target_role, 0, False, 0),
+                (target_role, 1, False, 1),
+                ("N2", 2, True, 0),
+                ("N0" if (visit + spec_idx) % 2 == 0 else "N1", 2, False, 0),
+                (filler_3, 0, False, 0),
+            ]
     else:
-        if k_pair == 0:
-            sup_r, unsup_r, ct_r, u_mode = ("D0", "A2", "N0", "default")
-        else:
-            sched_idx = ((k_pair - 1) + spec_idx + 4) % 9
-            sup_r, unsup_r, ct_r, u_mode = _CLOSED_SCHEDULE_9[sched_idx]
-        interval_role = ct_r
-        open_cands = [
-            r
-            for r in ("A1", "A2", "A3", "A0", "S0", "D0")
-            if r not in (sup_r, unsup_r, ct_r)
+        target_role = _CLOSED_BASE_3[(p_rank + m) % 3]
+        sup_r = target_role
+        unsup_r = target_role
+        ct_r = target_role
+        u_mode = "default"
+        interval_role = target_role
+        open_r = ("A1", "A2", "A3")
+        raw_specs = [
+            (target_role, 0, False, 0),
+            (target_role, 1, False, 1),
+            (target_role, 2, True, 0),
+            ("D0", (visit + spec_idx) % 3, False, 0),
+            ("S0" if (visit + spec_idx) % 2 == 0 else "A0", (visit + spec_idx + 1) % 3, False, 0),
         ]
-        open_r = (open_cands[0], open_cands[1], open_cands[2])
 
-    stated_list: list[str] = []
-    for r in (sup_r, unsup_r, interval_role):
-        if r not in stated_list:
-            stated_list.append(r)
-
-    # Prefer D0 and a second numeric role first so material sentences stay balanced across frames
-    preferred_fill = ["D0", "N0", "N1", "N2", "S0", "A0", "A1", "A2", "A3"]
-    for r in preferred_fill:
-        if len(stated_list) >= 5:
-            break
-        if r in stated_list or r in open_r:
-            continue
-        if closure == "open" and r == ct_r:
-            continue
-        stated_list.append(r)
-    for r in ("S0", "A0", "A1", "A2", "A3", "D0", "N0", "N1", "N2"):
-        if len(stated_list) >= 5:
-            break
-        if r not in stated_list and (closure != "open" or r != ct_r):
-            stated_list.append(r)
-
-    # Ensure at least one 'attribute'-type role (A0, A1, A2, A3) is in stated_list
-    if not any(r in ("A0", "A1", "A2", "A3") for r in stated_list):
-        for r in ("A0", "A1", "A2", "A3"):
-            if r not in open_r and r != ct_r:
-                for replace_idx in range(len(stated_list) - 1, -1, -1):
-                    cand = stated_list[replace_idx]
-                    if cand not in (sup_r, unsup_r, interval_role):
-                        stated_list[replace_idx] = r
-                        break
-                break
-
-    rng = random.Random(f"rdlab-line-order-v1:{spec_idx}:{visit}:{closure}:{secret or 0}")
-    rng.shuffle(stated_list)
+    ord_idx = (
+        visit
+        + (spec_idx // 2)
+        + (_secret_int(secret, visit, f"line_ord:{closure}") % len(_LINE_ORDER_8))
+    ) % len(_LINE_ORDER_8)
+    perm_5 = _LINE_ORDER_8[ord_idx]
+    ordered_specs = tuple(raw_specs[i] for i in perm_5)
+    stated_roles = tuple(s[0] for s in ordered_specs)
 
     return {
-        "stated_roles": tuple(stated_list[:5]),
+        "stated_roles": stated_roles,
         "open_roles": open_r,
         "interval_role": interval_role,
         "sup_role": sup_r,
@@ -1352,6 +1329,8 @@ def _plan_visit_roles(
         "ct_role": ct_r,
         "unsup_mode": u_mode,
         "permute_lines": True,
+        "homogeneous": True,
+        "line_specs": ordered_specs,
     }
 
 
@@ -1369,9 +1348,11 @@ def build_sample_fact_table(
     spec = DOMAIN_CATALOGUE[spec_idx]
     domain = str(spec["domain"])
     all_entities: tuple[str, ...] = tuple(spec["entities"])  # type: ignore[arg-type]
-    ent_shift = _secret_int(secret, seed, "ent") % len(all_entities)
+    ent_list = list(all_entities)
+    if secret is not None:
+        random.Random(f"rdlab-dom-ents-v2:{secret}:{spec_idx}").shuffle(ent_list)
     entities: tuple[str, ...] = tuple(
-        all_entities[(visit + ent_shift + i) % len(all_entities)] for i in range(3)
+        ent_list[(visit + i) % len(ent_list)] for i in range(3)
     )
     resolved_closure: ClosureTag = (
         closure
@@ -1383,11 +1364,16 @@ def build_sample_fact_table(
     role_map = _domain_role_map(spec)
 
     if secret is None:
-        num_val = 12 + ((abs(seed) * 3 + visit * 7) % 47)
-        num_val_alt = 15 + ((abs(seed) * 7 + visit * 5 + spec_idx * 3) % 53)
+        if visit == 0:
+            num_val = 12 + ((abs(seed) * 3 + visit * 7) % 47)
+            num_val_alt = 15 + ((abs(seed) * 7 + visit * 5 + spec_idx * 3) % 53)
+            int_lo = 40 + ((abs(seed) * 4 + visit * 6) % 36)
+        else:
+            num_val = 65 + ((abs(seed) * 11 + visit * 29) % 401)
+            num_val_alt = 70 + ((abs(seed) * 17 + visit * 31 + spec_idx * 7) % 409)
+            int_lo = 80 + ((abs(seed) * 13 + visit * 23) % 360)
         day_val = ((abs(seed) * 5 + visit * 3) % 26) + 2
         month_val = MONTH_NAMES[(abs(seed) + visit * 2) % len(MONTH_NAMES)]
-        int_lo = 40 + ((abs(seed) * 4 + visit * 6) % 36)
         int_hi = int_lo + 10 + ((abs(seed) + visit) % 6) * 2
     else:
         num_val = 12 + (_secret_int(secret, seed, "num") % 969)
@@ -1396,35 +1382,51 @@ def build_sample_fact_table(
         month_val = MONTH_NAMES[_secret_int(secret, seed, "month") % len(MONTH_NAMES)]
         int_lo = 40 + (_secret_int(secret, seed, "int_lo") % 881)
         int_hi = int_lo + 10 + (_secret_int(secret, seed, "int_span") % 41) * 2
-    date_val = f"{day_val} {month_val}"
 
-    def _role_value(r_key: str, *, for_open: bool = False, num_idx: int = 0) -> FactValue:
+    if resolved_closure == "closed" and bool(plan.get("homogeneous")):
+        m_step = (visit // 2) % 3
+        if m_step == 1:
+            num_val = int_lo
+        elif m_step == 2:
+            num_val = int_hi
+    if num_val_alt == num_val:
+        num_val_alt = num_val + 3
+
+    date_val = f"{day_val} {month_val}"
+    date_val_alt = f"{((day_val + 3) % 26) + 2} {month_val}"
+
+    def _role_value(r_key: str, *, for_open: bool = False, val_slot: int = 0) -> FactValue:
         _, _, vals = role_map[r_key]
         sec_off = _secret_int(secret, seed, f"val:{r_key}")
         if r_key in ("N0", "N1", "N2"):
             if for_open and r_key == "N2":
-                c_lo = int_lo + 2 + ((visit + spec_idx) % 4)
-                c_hi = c_lo + 8 + ((visit + spec_idx) % 5) * 2
-                return f"{c_lo} and {c_hi}"
-            return num_val if num_idx == 0 else num_val_alt
+                return f"{int_lo} and {int_hi + 12}"
+            return num_val if val_slot == 0 else num_val_alt
         if r_key == "D0":
             if for_open:
-                o_day = ((day_val + 5 + visit) % 26) + 2
-                o_mon = MONTH_NAMES[( abs(seed) + visit * 3 + 4 + (sec_off % 12)) % len(MONTH_NAMES)]
+                o_day = ((day_val + 7 + visit) % 26) + 2
+                o_mon = MONTH_NAMES[(abs(seed) + visit * 3 + 4 + (sec_off % 12)) % len(MONTH_NAMES)]
                 return f"{o_day} {o_mon}"
-            return date_val
+            return date_val if val_slot == 0 else date_val_alt
         b5 = (0, 1, 3, 2)[(visit // 5) % 4]
         if r_key == "S0":
-            return str(vals[(abs(seed) + visit + b5 + sec_off) % len(vals)])
+            base_idx = abs(seed) + visit + b5 + sec_off + val_slot
+            if for_open:
+                base_idx += 2 + (visit // 2)
+            return str(vals[base_idx % len(vals)])
         if r_key == "A0":
-            return str(vals[(abs(seed) + 1 + visit + b5 + sec_off) % len(vals)])
+            base_idx = abs(seed) + 1 + visit + b5 + sec_off + val_slot
+            if for_open:
+                base_idx += 2 + (visit // 2)
+            return str(vals[base_idx % len(vals)])
         b5_open = (0, 1, 2, 2)[(visit // 5) % 4]
-        return str(vals[(visit + b5_open + sec_off) % len(vals)])
+        base_idx = visit + spec_idx + b5_open + sec_off + val_slot
+        if for_open:
+            base_idx += 2 + (visit // 2)
+        return str(vals[base_idx % len(vals)])
 
-    stated_roles: tuple[str, ...] = plan["stated_roles"]  # type: ignore[assignment]
     open_roles: tuple[str, ...] = plan["open_roles"]  # type: ignore[assignment]
-    interval_role = str(plan["interval_role"])
-    permute_lines = bool(plan["permute_lines"])
+    line_specs: tuple[tuple[str, int, bool, int], ...] = plan["line_specs"]  # type: ignore[assignment]
 
     open_attrs = tuple(
         (role_map[r_key][0], str(_role_value(r_key, for_open=True)))
@@ -1432,47 +1434,35 @@ def build_sample_fact_table(
     )
 
     table_id = f"T10-D-{domain}-{seed:03d}"
-    default_line_entities = (entities[0], entities[0], entities[1], entities[2], entities[1])
     facts_list: list[AtomicFact] = []
-    num_seen = 0
-    for idx_line, r_key in enumerate(stated_roles):
+    for idx_line, (r_key, ent_idx, is_interval, val_slot) in enumerate(line_specs):
         line_no = idx_line + 1
         attr_str, unit_str, _ = role_map[r_key]
-        if not permute_lines:
-            ent_str = default_line_entities[idx_line]
-        elif r_key == plan["sup_role"]:
-            ent_str = entities[0]
-        elif r_key == plan["unsup_role"]:
-            ent_str = entities[1]
-        elif r_key == plan["ct_role"]:
-            ent_str = entities[2]
-        else:
-            ent_str = entities[(idx_line + visit + spec_idx) % len(entities)]
+        ent_str = entities[ent_idx % len(entities)]
 
-        if r_key == interval_role:
+        if is_interval:
             f_type: FactType = "interval"
-            f_val: FactValue = (int_lo, int_hi)
+            f_val: FactValue = (int_lo, int_hi) if val_slot == 0 else (int_lo, int_hi + 6)
             f_unit: str | None = unit_str
             f_op: FactOp = "between"
         elif r_key in ("N0", "N1", "N2"):
             f_type = "number"
-            f_val = _role_value(r_key, num_idx=num_seen)
-            num_seen += 1
+            f_val = _role_value(r_key, val_slot=val_slot)
             f_unit = unit_str
             f_op = "="
         elif r_key == "D0":
             f_type = "date"
-            f_val = _role_value(r_key)
+            f_val = _role_value(r_key, val_slot=val_slot)
             f_unit = None
             f_op = "="
         elif r_key == "S0":
             f_type = "state"
-            f_val = _role_value(r_key)
+            f_val = _role_value(r_key, val_slot=val_slot)
             f_unit = None
             f_op = "="
         else:
             f_type = "attribute"
-            f_val = _role_value(r_key)
+            f_val = _role_value(r_key, val_slot=val_slot)
             f_unit = None
             f_op = "="
 
@@ -1512,7 +1502,6 @@ def generate_fact_tables(
             f"Table count n must be >= 0, got {n}.",
             "Pass a non-negative integer n.",
         )
-    n_dom = len(DOMAIN_CATALOGUE)
     tables: list[FactTable] = []
     for idx in range(n):
         item_seed = seed + idx
@@ -1584,7 +1573,41 @@ def build_contrast_triad(
         else (1 + (_secret_int(secret, seed, "mut") % 80))
     )
 
-    if (
+    sup_ent_cand = (
+        next(
+            (
+                f
+                for f in provable_sup_facts
+                if f.entity == table.entities[0]
+                and f.attribute == sup_attr_target
+                and (table.closure == "open" or f.fact_type != "interval")
+            ),
+            None,
+        )
+        if len(table.entities) >= 2
+        else None
+    )
+    unsup_ent_cand = (
+        next(
+            (
+                f
+                for f in provable_unsup_facts
+                if f.entity == table.entities[1]
+                and f.attribute == unsup_attr_target
+                and (table.closure == "open" or f.fact_type != "interval")
+            ),
+            None,
+        )
+        if len(table.entities) >= 2
+        else None
+    )
+
+    if sup_ent_cand is not None and unsup_ent_cand is not None:
+        sup_fact = sup_ent_cand
+        unsup_fact = unsup_ent_cand
+        if unsup_fact.fact_type == "interval" and isinstance(unsup_fact.value, tuple):
+            unsup_claim_fact_type = "interval"
+    elif (
         len(table.facts) == 5
         and sup_attr_target in fact_by_attr
         and unsup_attr_target in fact_by_attr

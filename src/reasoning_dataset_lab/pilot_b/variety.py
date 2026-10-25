@@ -11,6 +11,7 @@ This command is a deterministic diagnostic report; it exits non-zero when a fram
 from __future__ import annotations
 
 import collections
+import itertools
 import json
 import math
 import random
@@ -308,36 +309,52 @@ def _evaluate_shortcut_baseline(
     rows: list[dict[str, Any]],
     n_triads: int,
     active_targets: Mapping[str, Any],
+    *,
+    seed: int = 1,
 ) -> dict[str, Any]:
-    """Fit a deterministic L2-regularized multinomial logistic regression on public features using 5-fold triad-grouped CV."""
+    """Fit an L2-regularized multinomial logistic regression with triad-level best-permutation assignment over repeated random triad-grouped folds."""
     sb_targets = active_targets.get("shortcut_baseline", {})
     chance = float(sb_targets.get("chance", 1.0 / 3.0))
+    whole_triad_chance = float(sb_targets.get("whole_triad_chance", 1.0 / 6.0))
     margin = float(sb_targets.get("margin", 0.10))
+    min_acc = float(sb_targets.get("min_accuracy", chance - margin))
     max_acc = float(sb_targets.get("max_accuracy", chance + margin))
+    max_whole_triad_acc = float(
+        sb_targets.get("max_whole_triad_accuracy", whole_triad_chance + margin)
+    )
     min_triads = int(sb_targets.get("min_triads_for_cv", 10))
     folds = int(sb_targets.get("folds", 5))
+    repeats = int(sb_targets.get("repeats", 5))
     l2_reg = float(sb_targets.get("l2_reg", 1.0))
+    n_epochs = 80
+    lr = 0.5
 
     feature_names = [
         "frame",
         "role",
-        "attribute",
-        "entity",
-        "domain",
-        "closure",
-        "claim_position",
         "length_bucket",
+        "closure",
     ]
 
     if n_triads < min_triads or not rows:
         return {
-            "model": "multinomial_logistic_regression_l2",
+            "model": "triad_assignment_logistic_regression_l2",
             "features": feature_names,
-            "split": f"{folds}_fold_triad_grouped_cv",
+            "split": f"{folds}_fold_x_{repeats}_repeat_random_triad_grouped_cv",
+            "lr": lr,
+            "n_epochs": n_epochs,
+            "l2_reg": l2_reg,
+            "folds": folds,
+            "repeats": repeats,
             "chance": round(chance, 3),
+            "whole_triad_chance": round(whole_triad_chance, 3),
             "margin": round(margin, 3),
+            "min_accuracy": round(min_acc, 3),
             "max_accuracy": round(max_acc, 3),
+            "max_whole_triad_accuracy": round(max_whole_triad_acc, 3),
             "accuracy": None,
+            "whole_triad_accuracy": None,
+            "null_accuracy": None,
             "evaluated_claims": len(rows),
             "status": "pass",
         }
@@ -348,12 +365,8 @@ def _evaluate_shortcut_baseline(
         toks = (
             f"frame:{r['frame']}",
             f"role:{r['role']}",
-            f"attribute:{r['attribute']}",
-            f"entity:{r['entity']}",
-            f"domain:{r['domain']}",
-            f"closure:{r['table'].closure}",
-            f"claim_position:{r['claim_position']}",
             f"length_bucket:{r['length_bucket']}",
+            f"closure:{r['table'].closure}",
         )
         cat_tokens_per_row.append(toks)
         vocab_set.update(toks)
@@ -363,101 +376,182 @@ def _evaluate_shortcut_baseline(
     bias_idx = len(vocab_list)
     dim = bias_idx + 1
 
-    sparse_x: list[tuple[tuple[int, float], ...]] = []
-    y_labels: list[int] = []
     label_map = {c: idx for idx, c in enumerate(VARIETY_CLASSES)}
+    triads_by_id: dict[str, list[tuple[tuple[tuple[int, float], ...], int]]] = (
+        collections.defaultdict(list)
+    )
+    triad_order: list[str] = []
     for r, toks in zip(rows, cat_tokens_per_row):
         feats: list[tuple[int, float]] = [(tok_to_idx[t], 1.0) for t in toks]
         feats.append((bias_idx, 1.0))
-        sparse_x.append(tuple(feats))
-        y_labels.append(label_map[str(r["key"])])
-
-    triad_order: list[str] = []
-    seen_tids: set[str] = set()
-    for r in rows:
+        y_lbl = label_map[str(r["key"])]
         tid = str(r["triad_id"])
-        if tid not in seen_tids:
-            seen_tids.add(tid)
+        if tid not in triads_by_id:
             triad_order.append(tid)
-    triad_fold = {tid: (idx % folds) for idx, tid in enumerate(triad_order)}
+        triads_by_id[tid].append((tuple(feats), y_lbl))
 
-    correct = 0
-    n_epochs = 80
-    lr = 0.5
-    for fold_idx in range(folds):
-        train_indices = [
-            i for i, r in enumerate(rows) if triad_fold[str(r["triad_id"])] != fold_idx
-        ]
-        test_indices = [
-            i for i, r in enumerate(rows) if triad_fold[str(r["triad_id"])] == fold_idx
-        ]
-        if not train_indices or not test_indices:
-            continue
-        n_train = float(len(train_indices))
-        reg_scale = l2_reg / n_train
-        w0 = [0.0] * dim
-        w1 = [0.0] * dim
-        w2 = [0.0] * dim
+    triad_groups = [triads_by_id[tid] for tid in triad_order]
+    perms_3 = tuple(itertools.permutations((0, 1, 2)))
 
-        for _ in range(n_epochs):
-            g0 = [reg_scale * v for v in w0]
-            g1 = [reg_scale * v for v in w1]
-            g2 = [reg_scale * v for v in w2]
-            g0[bias_idx] = 0.0
-            g1[bias_idx] = 0.0
-            g2[bias_idx] = 0.0
+    def _run_cv(
+        groups: list[list[tuple[tuple[tuple[int, float], ...], int]]],
+        cv_rng: random.Random,
+    ) -> tuple[float, float]:
+        claim_hits = 0
+        claim_total = 0
+        triad_hits = 0
+        triad_total = 0
+        n_g = len(groups)
+        for _ in range(repeats):
+            shuffled_groups: list[list[tuple[tuple[tuple[int, float], ...], int]]] = []
+            for g in groups:
+                g_copy = list(g)
+                cv_rng.shuffle(g_copy)
+                shuffled_groups.append(g_copy)
+            order = list(range(n_g))
+            cv_rng.shuffle(order)
+            fold_lists = [order[f::folds] for f in range(folds)]
 
-            for i in train_indices:
-                x_i = sparse_x[i]
-                y_i = y_labels[i]
-                s0 = 0.0
-                s1 = 0.0
-                s2 = 0.0
-                for f_idx, f_val in x_i:
-                    s0 += w0[f_idx] * f_val
-                    s1 += w1[f_idx] * f_val
-                    s2 += w2[f_idx] * f_val
-                m_s = s0 if (s0 >= s1 and s0 >= s2) else (s1 if s1 >= s2 else s2)
-                e0 = math.exp(s0 - m_s)
-                e1 = math.exp(s1 - m_s)
-                e2 = math.exp(s2 - m_s)
-                z = e0 + e1 + e2
-                d0 = (e0 / z - (1.0 if y_i == 0 else 0.0)) / n_train
-                d1 = (e1 / z - (1.0 if y_i == 1 else 0.0)) / n_train
-                d2 = (e2 / z - (1.0 if y_i == 2 else 0.0)) / n_train
-                for f_idx, f_val in x_i:
-                    g0[f_idx] += d0 * f_val
-                    g1[f_idx] += d1 * f_val
-                    g2[f_idx] += d2 * f_val
+            for f_idx in range(folds):
+                test_set = set(fold_lists[f_idx])
+                if not test_set or len(test_set) == n_g:
+                    continue
+                train_pairs = [
+                    pair
+                    for g_idx, g in enumerate(shuffled_groups)
+                    if g_idx not in test_set
+                    for pair in g
+                ]
+                n_train = float(len(train_pairs))
+                reg_scale = l2_reg / n_train
+                w0 = [0.0] * dim
+                w1 = [0.0] * dim
+                w2 = [0.0] * dim
 
-            for j in range(dim):
-                w0[j] -= lr * g0[j]
-                w1[j] -= lr * g1[j]
-                w2[j] -= lr * g2[j]
+                for _ in range(n_epochs):
+                    g0 = [reg_scale * v for v in w0]
+                    g1 = [reg_scale * v for v in w1]
+                    g2 = [reg_scale * v for v in w2]
+                    g0[bias_idx] = 0.0
+                    g1[bias_idx] = 0.0
+                    g2[bias_idx] = 0.0
 
-        for i in test_indices:
-            x_i = sparse_x[i]
-            s0 = 0.0
-            s1 = 0.0
-            s2 = 0.0
-            for f_idx, f_val in x_i:
-                s0 += w0[f_idx] * f_val
-                s1 += w1[f_idx] * f_val
-                s2 += w2[f_idx] * f_val
-            pred = 0 if (s0 >= s1 and s0 >= s2) else (1 if s1 >= s2 else 2)
-            if pred == y_labels[i]:
-                correct += 1
+                    for x_i, y_i in train_pairs:
+                        s0 = 0.0
+                        s1 = 0.0
+                        s2 = 0.0
+                        for feat_idx, feat_val in x_i:
+                            s0 += w0[feat_idx] * feat_val
+                            s1 += w1[feat_idx] * feat_val
+                            s2 += w2[feat_idx] * feat_val
+                        m_s = s0 if (s0 >= s1 and s0 >= s2) else (s1 if s1 >= s2 else s2)
+                        e0 = math.exp(s0 - m_s)
+                        e1 = math.exp(s1 - m_s)
+                        e2 = math.exp(s2 - m_s)
+                        z = e0 + e1 + e2
+                        d0 = (e0 / z - (1.0 if y_i == 0 else 0.0)) / n_train
+                        d1 = (e1 / z - (1.0 if y_i == 1 else 0.0)) / n_train
+                        d2 = (e2 / z - (1.0 if y_i == 2 else 0.0)) / n_train
+                        for feat_idx, feat_val in x_i:
+                            g0[feat_idx] += d0 * feat_val
+                            g1[feat_idx] += d1 * feat_val
+                            g2[feat_idx] += d2 * feat_val
 
-    acc = round(correct / len(rows), 3)
-    status = "pass" if acc <= round(max_acc, 3) else "fail"
+                    for j in range(dim):
+                        w0[j] -= lr * g0[j]
+                        w1[j] -= lr * g1[j]
+                        w2[j] -= lr * g2[j]
+
+                for g_idx in fold_lists[f_idx]:
+                    test_g = shuffled_groups[g_idx]
+                    scores: list[tuple[float, float, float]] = []
+                    for x_i, _ in test_g:
+                        s0 = 0.0
+                        s1 = 0.0
+                        s2 = 0.0
+                        for feat_idx, feat_val in x_i:
+                            s0 += w0[feat_idx] * feat_val
+                            s1 += w1[feat_idx] * feat_val
+                            s2 += w2[feat_idx] * feat_val
+                        scores.append((s0, s1, s2))
+
+                    if len(test_g) == 3:
+                        best_perm = max(
+                            perms_3,
+                            key=lambda p: (
+                                scores[0][p[0]] + scores[1][p[1]] + scores[2][p[2]]
+                            ),
+                        )
+                        hits = sum(
+                            1 for i in range(3) if best_perm[i] == test_g[i][1]
+                        )
+                        claim_hits += hits
+                        claim_total += 3
+                        triad_hits += int(hits == 3)
+                        triad_total += 1
+                    else:
+                        hits = 0
+                        for sc, (_, y_true) in zip(scores, test_g):
+                            pred = (
+                                0
+                                if (sc[0] >= sc[1] and sc[0] >= sc[2])
+                                else (1 if sc[1] >= sc[2] else 2)
+                            )
+                            if pred == y_true:
+                                hits += 1
+                        claim_hits += hits
+                        claim_total += len(test_g)
+                        triad_hits += int(hits == len(test_g))
+                        triad_total += 1
+
+        c_acc = claim_hits / claim_total if claim_total else 0.0
+        t_acc = triad_hits / triad_total if triad_total else 0.0
+        return c_acc, t_acc
+
+    rng = random.Random(seed * 1000 + n_triads)
+    acc_raw, whole_triad_raw = _run_cv(triad_groups, rng)
+
+    null_groups: list[list[tuple[tuple[tuple[int, float], ...], int]]] = []
+    for g in triad_groups:
+        if len(g) == 3:
+            perm_y = rng.sample([0, 1, 2], 3)
+            null_groups.append([(x_i, perm_y[i]) for i, (x_i, _) in enumerate(g)])
+        else:
+            null_groups.append([(x_i, rng.randrange(3)) for x_i, _ in g])
+    null_acc_raw, _ = _run_cv(null_groups, rng)
+
+    acc = round(acc_raw, 3)
+    whole_triad_acc = round(whole_triad_raw, 3)
+    null_acc = round(null_acc_raw, 3)
+    min_acc_r = round(min_acc, 3)
+    max_acc_r = round(max_acc, 3)
+    max_wt_r = round(max_whole_triad_acc, 3)
+
+    if acc > max_acc_r or whole_triad_acc > max_wt_r:
+        status = "fail"
+    elif acc < min_acc_r:
+        status = "instrument_error"
+    else:
+        status = "pass"
+
     return {
-        "model": "multinomial_logistic_regression_l2",
+        "model": "triad_assignment_logistic_regression_l2",
         "features": feature_names,
-        "split": f"{folds}_fold_triad_grouped_cv",
+        "split": f"{folds}_fold_x_{repeats}_repeat_random_triad_grouped_cv",
+        "lr": lr,
+        "n_epochs": n_epochs,
+        "l2_reg": l2_reg,
+        "folds": folds,
+        "repeats": repeats,
         "chance": round(chance, 3),
+        "whole_triad_chance": round(whole_triad_chance, 3),
         "margin": round(margin, 3),
-        "max_accuracy": round(max_acc, 3),
+        "min_accuracy": min_acc_r,
+        "max_accuracy": max_acc_r,
+        "max_whole_triad_accuracy": max_wt_r,
         "accuracy": acc,
+        "whole_triad_accuracy": whole_triad_acc,
+        "null_accuracy": null_acc,
         "evaluated_claims": len(rows),
         "status": status,
     }
@@ -587,20 +681,17 @@ def _evaluate_variety_from_records(
                 ):
                     matched_line = f_i
                     break
-            if matched_line is None and c_attr:
-                for f_i, f_obj in enumerate(facts):
-                    if f_obj.attribute.lower() == c_attr.lower():
-                        matched_line = f_i
-                        break
             line_idx_by_item[idx] = matched_line
 
             item_id = str(it.get("id", ""))
             if item_id in sealed_keys and isinstance(sealed_keys[item_id].get("proof"), dict):
                 proof_method = str(sealed_keys[item_id]["proof"].get("method", ""))
             elif key == "cannot_tell":
-                if c_attr and c_attr == interval_attr_name and closure == "closed":
-                    proof_method = "interval_interior_refinement"
-                elif c_attr and c_attr == interval_attr_name and matched_line is not None:
+                if closure == "closed" or (
+                    matched_line is not None
+                    and facts[matched_line].fact_type == "interval"
+                    and c_ftype == "number"
+                ):
                     proof_method = "interval_interior_refinement"
                 else:
                     proof_method = "open_excerpt_unmentioned_attribute"
@@ -819,14 +910,16 @@ def _evaluate_variety_from_records(
                     }
                 )
 
-    shortcut_baseline_out = _evaluate_shortcut_baseline(rows, n_triads, active_targets)
+    shortcut_baseline_out = _evaluate_shortcut_baseline(
+        rows, n_triads, active_targets, seed=seed
+    )
     any_feature_leak = any(bool(v) for v in feature_leaks_out.values())
     gate_status = (
         "fail"
         if (
             any_feature_leak
             or bool(stated_pair_leak_out)
-            or shortcut_baseline_out["status"] == "fail"
+            or shortcut_baseline_out["status"] != "pass"
         )
         else "pass"
     )

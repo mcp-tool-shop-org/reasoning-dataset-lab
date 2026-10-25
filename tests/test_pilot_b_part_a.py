@@ -708,8 +708,9 @@ def test_he_part_a_1_no_duplicate_cannot_tell_period_30_fixed_and_all_open_attr_
     from reasoning_dataset_lab.pilot_b.fact_tables import DOMAIN_CATALOGUE
     from reasoning_dataset_lab.pilot_b.rendering import format_atomic_sentence
 
-    tables = generate_fact_tables(50, seed=1)
-    triads = [build_contrast_triad(t, seed=1 + i) for i, t in enumerate(tables)]
+    secret = (1 << 127) + 20261025
+    tables = generate_fact_tables(50, seed=1, secret=secret)
+    triads = [build_contrast_triad(t, seed=1 + i, secret=secret) for i, t in enumerate(tables)]
 
     ct_sigs = [
         (
@@ -768,8 +769,9 @@ def test_he_part_a_1_no_duplicate_cannot_tell_period_30_fixed_and_all_open_attr_
 
 def test_he_part_a_2_key_proof_rate_1_0_on_200_generated_triads() -> None:
     """Card he Part A Test 2: The key-proof rate is 1.0 on 200 generated triads."""
-    tables = generate_fact_tables(200, seed=1)
-    triads = [build_contrast_triad(t, seed=1 + i) for i, t in enumerate(tables)]
+    secret = (1 << 127) + 20261025
+    tables = generate_fact_tables(200, seed=1, secret=secret)
+    triads = [build_contrast_triad(t, seed=1 + i, secret=secret) for i, t in enumerate(tables)]
     assert len(triads) == 200
     assert len({t.domain for t in tables}) == 10
     assert len({e for t in tables for e in t.entities}) == 50
@@ -794,8 +796,9 @@ def test_he_part_a_3_pre_gate_counts_on_50_build_meet_11c_cannot_tell_rows(
     """Card he Part A Test 3: Pre-gate counts on a 50-build meet §11c's cannot_tell rows. Print the counts in the test output."""
     from collections import Counter, defaultdict
 
-    tables = generate_fact_tables(50, seed=1)
-    triads = [build_contrast_triad(t, seed=1 + i) for i, t in enumerate(tables)]
+    secret = (1 << 127) + 20261025
+    tables = generate_fact_tables(50, seed=1, secret=secret)
+    triads = [build_contrast_triad(t, seed=1 + i, secret=secret) for i, t in enumerate(tables)]
     ct_claims = [tr.claims["cannot_tell"] for tr in triads]
 
     attr_counts: Counter[str] = Counter()
@@ -846,9 +849,10 @@ def test_hh_fix3_pre_gate_50_triads_point_value_with_unit_spread_and_no_leak(
 
     writer = DeterministicWriterAdapter()
 
+    secret = (1 << 127) + 20261025
     for n_triads, label in ((50, "build_50"), (10, "stub_10")):
-        tables = generate_fact_tables(n_triads, seed=1)
-        triads = [build_contrast_triad(t, seed=1 + i) for i, t in enumerate(tables)]
+        tables = generate_fact_tables(n_triads, seed=1, secret=secret)
+        triads = [build_contrast_triad(t, seed=1 + i, secret=secret) for i, t in enumerate(tables)]
         bdir = tmp_path / f"pre_gate_{label}"
         part_dir = bdir / "part_pilot_b_sealed"
         sealed_dir = bdir / "sealed_store"

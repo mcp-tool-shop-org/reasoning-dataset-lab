@@ -208,14 +208,25 @@ class UnanimousReaderFake:
                     ln,
                     re.IGNORECASE,
                 )
+                m_int_has = re.search(
+                    r"^(.+?)\s+has\s+between\s+(\d+)\s+and\s+(\d+)\s+(.+?)\.$",
+                    ln,
+                    re.IGNORECASE,
+                )
                 if m_int:
                     f_attr = m_int.group(1).strip().lower()
                     f_ent = m_int.group(2).strip().lower()
                     lo, hi = int(m_int.group(3)), int(m_int.group(4))
-                    if f_attr == c_attr and f_ent == c_ent:
-                        if lo <= c_val <= hi and lo < hi:
-                            return "cannot_tell"
-                        return "unsupported"
+                elif m_int_has:
+                    f_ent = m_int_has.group(1).strip().lower()
+                    lo, hi = int(m_int_has.group(2)), int(m_int_has.group(3))
+                    f_attr = m_int_has.group(4).strip().lower()
+                else:
+                    continue
+                if f_attr == c_attr and f_ent == c_ent:
+                    if lo <= c_val <= hi and lo < hi:
+                        return "cannot_tell"
+                    return "unsupported"
 
         m_claim_gen = re.match(
             r"^The\s+(.+?)\s+of\s+(.+?)\s+is\s+(.+?)\.$",

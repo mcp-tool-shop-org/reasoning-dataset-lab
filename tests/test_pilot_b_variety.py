@@ -274,8 +274,9 @@ def test_he_part_e_2_synthetic_build_matches_hand_computation(
     fixture_repo_dir = Path(__file__).resolve().parent / "fixtures" / "pilot_b_build_50"
     assert not fixture_repo_dir.exists()
 
-    tables = generate_fact_tables(5, seed=1)
-    triads = [build_contrast_triad(t, seed=1 + i) for i, t in enumerate(tables)]
+    secret = (1 << 127) + 20261025
+    tables = generate_fact_tables(5, seed=1, secret=secret)
+    triads = [build_contrast_triad(t, seed=1 + i, secret=secret) for i, t in enumerate(tables)]
     writer = DeterministicWriterAdapter()
 
     raw_items: list[dict[str, str]] = []
@@ -301,55 +302,28 @@ def test_he_part_e_2_synthetic_build_matches_hand_computation(
 
     rep = evaluate_build_variety(build_dir)
 
-    # Hand computation on seeds 1..5 (slot_phase = 0, 1, 2, 3, 4):
-    # supported: 2 claims in 'the <a> of <e> is <v> <u>.' (seeds 1, 2), 2 in 'the <a> of <e> is <v>.' (seeds 3, 4), 1 in '<e> has <v> <a>.' (seed 5)
-    assert rep["classes"]["supported"] == {
+    # Hand computation on seeds 1..5 with homogeneous triads (all three keys share each triad's frame):
+    # 1 claim in 'the <a> of <e> is between <v> and <v> <u>.' (seed 1),
+    # 1 in 'the <a> of <e> is <v> <u>.' (seed 2),
+    # 2 in 'the <a> of <e> is <v>.' (seeds 3, 5),
+    # 1 in '<e> has <v> <a>.' (seed 4).
+    expected_class_summary = {
         "claims": 5,
-        "distinct_frames": 3,
+        "distinct_frames": 4,
         "top_frame_share": 0.4,
-        "top_frame": "the <a> of <e> is <v> <u>.",
-        "unmasked_count": 0,
-        "unmasked_share": 0.0,
-        "status": "fail",
-    }
-    # unsupported: 2 claims in 'the <a> of <e> is <v> <u>.' (seeds 1, 4), 2 in 'the <a> of <e> is <v>.' (seeds 2, 5), 1 in '<e> has <v> <a>.' (seed 3)
-    assert rep["classes"]["unsupported"] == {
-        "claims": 5,
-        "distinct_frames": 3,
-        "top_frame_share": 0.4,
-        "top_frame": "the <a> of <e> is <v> <u>.",
-        "unmasked_count": 0,
-        "unmasked_share": 0.0,
-        "status": "fail",
-    }
-    # cannot_tell: seeds 1, 3, 5 are open ('the <a> of <e> is <v>.', 3 claims); seeds 2, 4 are closed ('the <a> of <e> is <v> <u>.', 2 claims)
-    assert rep["classes"]["cannot_tell"] == {
-        "claims": 5,
-        "distinct_frames": 2,
-        "top_frame_share": 0.6,
         "top_frame": "the <a> of <e> is <v>.",
         "unmasked_count": 0,
         "unmasked_share": 0.0,
-        "status": "fail",
+        "status": "pass",
     }
-    # Frame-to-key across all 15 claims:
-    # - 'the <a> of <e> is <v>.': 2 sup + 2 unsup + 3 ct = 7 claims (top_key_share = 3/7 = 0.429 <= 0.60)
-    # - 'the <a> of <e> is <v> <u>.': 2 sup + 2 unsup + 2 ct = 6 claims (top_key_share = 2/6 = 0.333 <= 0.60)
-    # - '<e> has <v> <a>.': 1 sup + 1 unsup = 2 claims (< 3 min_claims)
+    assert rep["classes"]["supported"] == expected_class_summary
+    assert rep["classes"]["unsupported"] == expected_class_summary
+    assert rep["classes"]["cannot_tell"] == expected_class_summary
     assert rep["leak"] == []
-    # Materials across 25 sentences (5 triads x 5 lines):
-    # - 'the <a> of <e> is <v>.': 11 sentences (f4 + f5 on all 5 seeds, plus f2 on seed 3) -> 11/25 = 0.44
-    # - 'the <a> of <e> is between <n> and <n> <u>.': 5 sentences (f3 on all 5 seeds)
-    # - 'the <a> of <e> is <n> <d>.': 3 sentences (f2 on seeds 1, 2, 4)
-    # - 'the <a> of <e> is <v> <u>.': 2 sentences (f1 on seeds 1, 2)
-    # - '<e> has <n> <a>.': 1 sentence (f1 on seed 3)
-    # - 'the <a> of <e> is <n> <u>.': 1 sentence (f1 on seed 4)
-    # - '<e> has <v> <a>.': 1 sentence (f1 on seed 5)
-    # - 'the <a> of <e> is <v> <d>.': 1 sentence (f2 on seed 5 where day_val == num_val == 27)
     assert rep["materials"] == {
         "sentences": 25,
-        "distinct_frames": 8,
-        "top_frame_share": 0.44,
+        "distinct_frames": 10,
+        "top_frame_share": 0.32,
         "top_frame": "the <a> of <e> is <v>.",
         "status": "pass",
     }
@@ -520,13 +494,31 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
     for idx in range(12):
         tid = f"T10-D-turbines-spread-{idx + 1:03d}-triad"
         k0, k1, k2 = perms_6[idx % 6]
+        if idx < 4:
+            claims_3 = (
+                f"The output capacity of Unit Alpha is {42 + idx} megawatts.",
+                f"The output capacity of Unit Beta is {54 + idx} megawatts.",
+                f"The output capacity of Unit Gamma is {66 + idx} megawatts.",
+            )
+        elif idx < 8:
+            claims_3 = (
+                "The grid status of Unit Alpha is standby.",
+                "The grid status of Unit Beta is active.",
+                "The grid status of Unit Gamma is offline.",
+            )
+        else:
+            claims_3 = (
+                "The lubricant grade of Unit Alpha is synthetic.",
+                "The lubricant grade of Unit Beta is mineral.",
+                "The lubricant grade of Unit Gamma is ester.",
+            )
         triad_rows = [
             {
                 "triad_id": tid,
                 "domain": "turbines",
                 "closure": "open",
                 "material": spread_mat,
-                "claim": f"The output capacity of Unit Beta is {42 + idx} megawatts.",
+                "claim": claims_3[0],
                 "key": k0,
             },
             {
@@ -534,7 +526,7 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
                 "domain": "turbines",
                 "closure": "open",
                 "material": spread_mat,
-                "claim": "The grid status of Unit Beta is standby.",
+                "claim": claims_3[1],
                 "key": k1,
             },
             {
@@ -542,7 +534,7 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
                 "domain": "turbines",
                 "closure": "open",
                 "material": spread_mat,
-                "claim": "The lubricant grade of Unit Beta is synthetic.",
+                "claim": claims_3[2],
                 "key": k2,
             },
         ]
@@ -561,29 +553,43 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
 
 
 def test_hs_part_b_200_pregate_triads_roles_attributes_frames_and_positions_balanced() -> None:
-    """Card hs Parts B & C: On 200 generated triads (600 claims), all roles, all 90 catalogue attributes, and all surface frames appear under all 3 keys with <= 0.60 key share, key-proof rate is 1.0, and the shortcut baseline classifier stays near chance."""
+    """Card hs Parts B & C + Card hw FIX-T1/T3: On 200 secret-seeded triads (600 claims), each triad's three claims share the same role and frame, all roles/attributes/frames appear under all 3 keys with <= 0.60 key share, key-proof rate is 1.0, and the shortcut baseline stays near chance."""
     from reasoning_dataset_lab.pilot_b.fact_tables import (
         DOMAIN_CATALOGUE,
         brute_force_check_claim_against_table,
         prove_claim_against_table,
     )
-    from reasoning_dataset_lab.pilot_b.variety import evaluate_pregate_variety
+    from reasoning_dataset_lab.pilot_b.rendering import format_atomic_sentence
+    from reasoning_dataset_lab.pilot_b.variety import (
+        _attribute_role,
+        _claim_length_bucket,
+        evaluate_pregate_variety,
+    )
 
-    tables = generate_fact_tables(n=200, seed=1)
-    triads = [build_contrast_triad(t, seed=idx + 1) for idx, t in enumerate(tables)]
+    secret = (1 << 127) + 20261025
+    tables = generate_fact_tables(n=200, seed=1, secret=secret)
+    triads = [
+        build_contrast_triad(t, seed=idx + 1, secret=secret)
+        for idx, t in enumerate(tables)
+    ]
     assert len(triads) == 200
 
-    # 1. Key-proof rate is 1.0 across all 600 claims
+    cat_by_domain = {str(d["domain"]): d for d in DOMAIN_CATALOGUE}
+
+    # 1. Key-proof rate is 1.0 across all 600 claims, and each triad's 3 claims share role and length bucket
     proved_ok = 0
     attr_keys: dict[str, set[str]] = {}
     slot_deltas: dict[int, int] = {}
     for tr in triads:
-        line_by_attr = {f.attribute: f.line for f in tr.table.facts}
+        line_by_fact_id = {f.fact_id: f.line for f in tr.table.facts}
         sup_c = tr.claims["supported"]
         unsup_c = tr.claims["unsupported"]
-        if sup_c.attribute in line_by_attr and unsup_c.attribute in line_by_attr:
-            delta = (line_by_attr[unsup_c.attribute] - line_by_attr[sup_c.attribute]) % 5
+        if sup_c.fact_id in line_by_fact_id and unsup_c.fact_id in line_by_fact_id:
+            delta = (line_by_fact_id[unsup_c.fact_id] - line_by_fact_id[sup_c.fact_id]) % 5
             slot_deltas[delta] = slot_deltas.get(delta, 0) + 1
+        dom_spec = cat_by_domain[tr.table.domain]
+        triad_roles: set[str] = set()
+        triad_len_buckets: set[str] = set()
         for k, c in tr.claims.items():
             p = prove_claim_against_table(tr.table, c)
             bf = brute_force_check_claim_against_table(tr.table, c)
@@ -591,6 +597,15 @@ def test_hs_part_b_200_pregate_triads_roles_attributes_frames_and_positions_bala
             assert bf == k
             proved_ok += 1
             attr_keys.setdefault(c.attribute, set()).add(k)
+            sent = format_atomic_sentence(
+                c.entity, c.attribute, c.fact_type, c.claimed_value, c.unit, c.op
+            )
+            triad_roles.add(_attribute_role(c.attribute, dom_spec))
+            triad_len_buckets.add(_claim_length_bucket(sent))
+        assert len(triad_roles) == 1, f"Triad {tr.triad_id} mixed roles: {triad_roles}"
+        assert len(triad_len_buckets) == 1, (
+            f"Triad {tr.triad_id} mixed length buckets: {triad_len_buckets}"
+        )
     assert proved_ok == 600
 
     # 2. All 90 attribute names in DOMAIN_CATALOGUE appear under all 3 keys
@@ -643,16 +658,18 @@ def test_hs_part_b_200_pregate_triads_roles_attributes_frames_and_positions_bala
         assert set(info["by_key"].keys()) == {"supported", "unsupported", "cannot_tell"}, (fr, info)
         assert info["top_key_share"] <= 0.60, (fr, info)
 
-    # Shortcut baseline classifier accuracy stays within chance + margin
+    # Shortcut baseline classifier accuracy stays within two-sided [min_accuracy, max_accuracy]
     sb = rep["shortcut_baseline"]
     assert sb["status"] == "pass", sb
-    assert sb["accuracy"] <= sb["max_accuracy"], sb
+    assert sb["min_accuracy"] <= sb["accuracy"] <= sb["max_accuracy"], sb
+    assert sb["whole_triad_accuracy"] <= sb["max_whole_triad_accuracy"], sb
+    assert sb["min_accuracy"] <= sb["null_accuracy"] <= sb["max_accuracy"], sb
 
 
 def test_hs_part_c_synthetic_shortcut_builds_fail_variety_gate(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Card hs Part C: Synthetic builds reproducing each public-feature shortcut (role -> key, attribute -> key, claim_position -> key, stated-fact pair pattern, entity -> key, domain -> key, length_bucket -> key) fail rdlab variety (exit 1)."""
+    """Card hs Part C + Card hw FIX-T2: Synthetic builds reproducing each public-feature shortcut (role -> key, attribute -> key, claim_position -> key, stated-fact pair pattern, triad-level surface shortcut, and below-chance anti-learning instrument_error) fail rdlab variety (exit 1)."""
     from reasoning_dataset_lab.pilot_b.variety import evaluate_build_variety
 
     base_mat = (
@@ -803,59 +820,35 @@ def test_hs_part_c_synthetic_shortcut_builds_fail_variety_gate(
     assert run_cli(["variety", str(pair_dir), "--json"]) == 1
     capsys.readouterr()
 
-    # 4. Multi-feature surface shortcut where every single feature has top_key_share <= 0.60 (8/15 = 0.533), yet the surface-only logistic regression baseline (with no material) beats chance + margin and fails the gate
+    # 4. Within-triad surface shortcut where every single feature has top_key_share <= 0.60 (8/15 = 0.533), yet the triad-level permutation classifier beats chance + margin and fails the gate
     combo_items: list[dict[str, str]] = []
-    # 15 triads across 3 attributes x 3 entities x 3 positions, each marginal at 8/15 = 0.533 <= 0.60
-    attr_sents = [
-        ("lubricant grade", "synthetic"),
-        ("bearing type", "magnetic"),
-        ("cooling mode", "air"),
-    ]
     ents = ["Unit Alpha", "Unit Beta", "Unit Gamma"]
-    # For each triad idx in 0..14:
-    # - idx in 0..4: attr and ent match key, pos is shifted by +1 (attr: +5, ent: +5, pos_shift1: +5)
-    # - idx in 5..9: attr and pos match key, ent is shifted by +1 (attr: +3/+2, pos: +5, ent_shift1: +5)
-    # - idx in 10..14: ent and pos match key, attr is shifted by +1 (ent: +3, pos: +3, attr_shift1: +5)
-    # Wait: to keep every marginal <= 8/15 (0.533):
-    # - idx 0..2 (3 triads): attr=k, ent=k, pos=(k+1)%3
-    # - idx 3..7 (5 triads): attr=k, ent=(k+1)%3, pos=k
-    # - idx 8..12 (5 triads): attr=(k+1)%3, ent=k, pos=k
-    # - idx 13..14 (2 triads): attr=(k+2)%3, ent=(k+2)%3, pos=(k+2)%3
-    # Marginal counts for each k:
-    # - attr=k: 3 + 5 = 8/15 (0.533 <= 0.60), (k+1): 5/15, (k+2): 2/15
-    # - ent=k:  3 + 5 = 8/15 (0.533 <= 0.60), (k+1): 5/15, (k+2): 2/15
-    # - pos=k:  5 + 5 = 10/15 -> to keep pos <= 8/15 too, swap idx 11..12 to pos=(k+2)%3, attr=k ( wait: then attr=10/15).
-    # Instead, use 4 features (attr, ent, domain, pos), each matching k on 8/15 triads!
-    doms = ["turbines", "turbines", "turbines"]
-    # Even simpler with 3 features (attr, ent, pos) over 15 triads:
-    # - 4 triads (idx % 4 == 0, 4 triads: 0, 4, 8, 12): attr=k, ent=k, pos=(k+1)%3
-    # - 4 triads (idx % 4 == 1, 4 triads: 1, 5, 9, 13): attr=k, ent=(k+1)%3, pos=k
-    # - 4 triads (idx % 4 == 2, 4 triads: 2, 6, 10, 14): attr=(k+1)%3, ent=k, pos=k
-    # - 3 triads (idx % 4 == 3, 3 triads: 3, 7, 11): attr=(k+2)%3, ent=(k+2)%3, pos=(k+2)%3
-    # Marginal counts for attr=k, ent=k, pos=k: each is 4 + 4 = 8/15 = 0.533 <= 0.60!
-    # And on 12 of 15 triads (80%), 2 of the 3 features equal k!
     keys_tuple = ("supported", "unsupported", "cannot_tell")
     for idx in range(15):
         tid = f"T10-D-turbines-combo-{idx + 1:03d}-triad"
-        mode = idx % 4
+        if idx < 8:
+            prof_for_key = (0, 1, 2)
+        elif idx < 12:
+            prof_for_key = (2, 0, 1)
+        else:
+            prof_for_key = (1, 2, 0)
         by_pos: dict[int, dict[str, str]] = {}
         for k_i, k_name in enumerate(keys_tuple):
-            if mode == 0:
-                a_i, e_i, p_i = k_i, k_i, (k_i + 1) % 3
-            elif mode == 1:
-                a_i, e_i, p_i = k_i, (k_i + 1) % 3, k_i
-            elif mode == 2:
-                a_i, e_i, p_i = (k_i + 1) % 3, k_i, k_i
+            prof = prof_for_key[k_i]
+            e_name = ents[(k_i + idx) % 3]
+            p_i = (k_i + (idx // 3)) % 3
+            if prof == 0:
+                claim_str = f"{e_name} has {15 + idx} rotor blades."
+            elif prof == 1:
+                claim_str = f"The grid status of {e_name} is standby."
             else:
-                a_i, e_i, p_i = (k_i + 2) % 3, (k_i + 2) % 3, (k_i + 2) % 3
-            a_name, a_val = attr_sents[a_i]
-            e_name = ents[e_i]
+                claim_str = f"The output capacity of {e_name} is between 40 and 70 megawatts."
             by_pos[p_i] = {
                 "triad_id": tid,
                 "domain": "turbines",
                 "closure": "open",
                 "material": base_mat,
-                "claim": f"The {a_name} of {e_name} is {a_val}.",
+                "claim": claim_str,
                 "key": k_name,
             }
         combo_items.extend([by_pos[0], by_pos[1], by_pos[2]])
@@ -871,4 +864,224 @@ def test_hs_part_c_synthetic_shortcut_builds_fail_variety_gate(
     assert rep_combo["gate_status"] == "fail"
     assert run_cli(["variety", str(combo_dir), "--json"]) == 1
     capsys.readouterr()
+
+
+def test_hw_triad_shortcut_probe_and_classifier_on_secret_seeded_builds_n50_and_n200_three_seeds() -> None:
+    """Card hw FIX-T1, FIX-T2, FIX-T3: Run the triad-level Naive Bayes permutation probe and the FIX-T2 variety classifier on secret-seeded builds at n=50 and n=200 over seeds 1, 101, 1001."""
+    import collections
+    import itertools
+    import math
+    import random
+
+    from reasoning_dataset_lab.pilot_b.fact_tables import DOMAIN_CATALOGUE
+    from reasoning_dataset_lab.pilot_b.rendering import format_atomic_sentence
+    from reasoning_dataset_lab.pilot_b.variety import evaluate_pregate_variety
+
+    keys = ("supported", "unsupported", "cannot_tell")
+    roles_map: dict[str, str] = {}
+    units_set: set[str] = set()
+    for spec in DOMAIN_CATALOGUE:
+        roles_map[str(spec["number_attr"][0])] = "number"
+        roles_map[str(spec["measure_attr"][0])] = "number"
+        roles_map[str(spec["date_attr"])] = "date"
+        roles_map[str(spec["interval_attr"][0])] = "interval"
+        roles_map[str(spec["state_attr"][0])] = "state"
+        roles_map[str(spec["attr_spec"][0])] = "spec"
+        for oa, _ in spec["open_attrs"]:
+            roles_map[str(oa)] = "open"
+        for k_u in ("number_attr", "measure_attr", "interval_attr"):
+            units_set.add(str(spec[k_u][1]).lower())
+
+    def _probe_features(table, claim) -> list[str]:
+        text = format_atomic_sentence(
+            claim.entity, claim.attribute, claim.fact_type, claim.claimed_value, claim.unit, claim.op
+        )
+        words = text.rstrip(".").split()
+        n_w = len(words)
+        length = "short" if n_w <= 6 else ("medium" if n_w <= 8 else "long")
+        role = roles_map.get(claim.attribute, "unknown")
+        has_unit = any(w.lower() in units_set for w in words)
+        low = text.lower()
+        if " has " in low:
+            frame = "has"
+        elif " is between " in low:
+            frame = "between"
+        elif has_unit:
+            frame = "is_v_u"
+        else:
+            frame = "is_v"
+        return [
+            f"role:{role}",
+            f"frame:{frame}",
+            f"len:{length}",
+            f"unit:{int(has_unit)}",
+            f"closure:{table.closure}",
+        ]
+
+    def _run_nb_triad_cv(triad_data, rng: random.Random, n_folds: int = 5, repeats: int = 5):
+        claim_hits = claim_total = triad_hits = triad_total = 0
+        for _ in range(repeats):
+            order = list(range(len(triad_data)))
+            rng.shuffle(order)
+            folds = [order[f::n_folds] for f in range(n_folds)]
+            for f in range(n_folds):
+                test_idx = set(folds[f])
+                class_n = collections.Counter()
+                feat_n = {k: collections.Counter() for k in keys}
+                vocab: set[str] = set()
+                for idx_t, tr in enumerate(triad_data):
+                    if idx_t in test_idx:
+                        continue
+                    for feats, k in tr:
+                        class_n[k] += 1
+                        for ft in feats:
+                            feat_n[k][ft] += 1
+                            vocab.add(ft)
+                total = sum(class_n.values())
+
+                def logp(feats: list[str], k: str) -> float:
+                    s = math.log((class_n[k] + 1) / (total + 3))
+                    denom = class_n[k] + 2
+                    for ft in feats:
+                        s += math.log((feat_n[k][ft] + 1) / denom)
+                    return s
+
+                for idx_t in test_idx:
+                    tr = triad_data[idx_t]
+                    best_perm = max(
+                        itertools.permutations(keys),
+                        key=lambda p: sum(logp(c[0], p[i]) for i, c in enumerate(tr)),
+                    )
+                    hits = sum(1 for i, c in enumerate(tr) if best_perm[i] == c[1])
+                    claim_hits += hits
+                    claim_total += 3
+                    triad_hits += int(hits == 3)
+                    triad_total += 1
+        return claim_hits / claim_total, triad_hits / triad_total
+
+    feature_counts: dict[str, collections.Counter[str]] = collections.defaultdict(
+        collections.Counter
+    )
+    triads_by_run: list[tuple[int, int, list]] = []
+
+    for n in (50, 200):
+        for seed in (1, 101, 1001):
+            secret = random.Random(f"hw-secret:{n}:{seed}").getrandbits(128) | (1 << 127)
+            tables = generate_fact_tables(n=n, seed=seed, secret=secret)
+            triads = [
+                build_contrast_triad(t, seed=seed + idx, secret=secret)
+                for idx, t in enumerate(tables)
+            ]
+            triads_by_run.append((n, seed, triads))
+
+            rng = random.Random(seed * 1000 + n)
+            triad_data = []
+            for t, tr in zip(tables, triads):
+                items_tr = [(_probe_features(t, c), k) for k, c in tr.claims.items()]
+                rng.shuffle(items_tr)
+                triad_data.append(items_tr)
+                if n == 200:
+                    for feats, k in items_tr:
+                        for ft in feats:
+                            feature_counts[ft][k] += 1
+
+            acc, triad_acc = _run_nb_triad_cv(triad_data, rng)
+            shuffled = [
+                [(feats, k) for (feats, _), k in zip(tr, rng.sample(list(keys), 3))]
+                for tr in triad_data
+            ]
+            null_acc, _ = _run_nb_triad_cv(shuffled, rng)
+
+            assert 0.233 <= acc <= 0.433, (
+                f"n={n} seed={seed}: probe claim accuracy {acc:.3f} outside [0.233, 0.433]"
+            )
+            assert triad_acc <= 0.267, (
+                f"n={n} seed={seed}: probe whole-triad accuracy {triad_acc:.3f} > 0.267"
+            )
+            assert 0.233 <= null_acc <= 0.433, (
+                f"n={n} seed={seed}: probe null accuracy {null_acc:.3f} outside [0.233, 0.433]"
+            )
+
+    for n, seed, triads in triads_by_run:
+        rep = evaluate_pregate_variety(triads, seed=seed)
+        sb = rep["shortcut_baseline"]
+        assert sb["status"] == "pass", f"n={n} seed={seed}: {sb}"
+        assert 0.233 <= sb["accuracy"] <= 0.433, f"n={n} seed={seed}: {sb}"
+        assert sb["whole_triad_accuracy"] <= 0.267, f"n={n} seed={seed}: {sb}"
+        assert 0.233 <= sb["null_accuracy"] <= 0.433, f"n={n} seed={seed}: {sb}"
+        assert rep["gate_status"] == "pass", f"n={n} seed={seed}: {rep}"
+
+    # Per-feature key shares over the 600 secret-seeded triads must all be <= 0.60
+    for ft, cnt in feature_counts.items():
+        top_share = cnt.most_common(1)[0][1] / sum(cnt.values())
+        assert top_share <= 0.60, f"Feature {ft!r} share {top_share:.3f} > 0.60: {cnt}"
+
+
+def test_hw_fix_t2_below_chance_accuracy_is_instrument_error_not_pass(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Card hw FIX-T2: The shortcut baseline bound is two-sided; accuracy < chance - margin is treated as an instrument_error (and gate_status='fail'), never a pass."""
+    from reasoning_dataset_lab.pilot_b.variety import (
+        evaluate_build_variety,
+        load_variety_targets,
+    )
+
+    base_mat = (
+        "1. Unit Alpha has 15 rotor blades.\n"
+        "2. The inspection date of Unit Alpha is 7 February.\n"
+        "3. The output capacity of Unit Beta is between 40 and 70 megawatts.\n"
+        "4. The grid status of Unit Gamma is standby.\n"
+        "5. The casing alloy of Unit Beta is steel."
+    )
+    items: list[dict[str, str]] = []
+    for idx in range(10):
+        tid = f"T10-D-turbines-anti-{idx + 1:03d}-triad"
+        items.extend(
+            [
+                {
+                    "triad_id": tid,
+                    "domain": "turbines",
+                    "closure": "open",
+                    "material": base_mat,
+                    "claim": "Unit Alpha has 15 rotor blades.",
+                    "key": "supported",
+                },
+                {
+                    "triad_id": tid,
+                    "domain": "turbines",
+                    "closure": "open",
+                    "material": base_mat,
+                    "claim": "Unit Beta has 18 rotor blades.",
+                    "key": "unsupported",
+                },
+                {
+                    "triad_id": tid,
+                    "domain": "turbines",
+                    "closure": "open",
+                    "material": base_mat,
+                    "claim": "Unit Gamma has 21 rotor blades.",
+                    "key": "cannot_tell",
+                },
+            ]
+        )
+
+    bdir = tmp_path / "inst_err_build"
+    _write_synthetic_build(bdir, items, write_sealed_keys=True)
+
+    # Override targets so chance is 0.60, margin is 0.10 -> min_accuracy = 0.50 (while true accuracy is ~0.333 < 0.50)
+    targets = load_variety_targets()
+    targets["stub_10"]["shortcut_baseline"]["chance"] = 0.60
+    targets["stub_10"]["shortcut_baseline"]["margin"] = 0.10
+    targets["stub_10"]["shortcut_baseline"]["max_accuracy"] = 0.70
+    custom_targets = tmp_path / "custom_targets.yaml"
+    import yaml
+
+    custom_targets.write_text(yaml.safe_dump(targets), encoding="utf-8")
+
+    rep = evaluate_build_variety(bdir, targets_path=custom_targets)
+    assert rep["shortcut_baseline"]["accuracy"] < rep["shortcut_baseline"]["min_accuracy"]
+    assert rep["shortcut_baseline"]["status"] == "instrument_error"
+    assert rep["gate_status"] == "fail"
+
+
 

@@ -469,6 +469,8 @@ def format_atomic_sentence(
     unit_suffix = f" {unit}" if unit else ""
     if op == "between" or isinstance(value, tuple):
         assert isinstance(value, tuple)
+        if unit and attribute.lower().endswith(unit.lower()):
+            return f"{entity} has between {value[0]} and {value[1]} {attribute}."
         return (
             f"The {attribute} of {entity} is between {value[0]} and {value[1]}{unit_suffix}."
         )
