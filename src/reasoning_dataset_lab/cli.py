@@ -17,6 +17,11 @@ from reasoning_dataset_lab import __version__
 from reasoning_dataset_lab.config import compute_config_fingerprint
 from reasoning_dataset_lab.errors import EXIT_CLEAN, RdlabError, usage_error
 from reasoning_dataset_lab.map import check_map_file
+from reasoning_dataset_lab.pilot_b.models_and_build import (
+    DEFAULT_PILOT_B_MODEL_PINS,
+    run_pilot_b_build,
+    verify_live_ollama_models,
+)
 
 
 class _StructuredArgumentParser(argparse.ArgumentParser):
@@ -78,6 +83,71 @@ def _build_parser() -> _StructuredArgumentParser:
         help="Optional explicit path to canon directory.",
     )
 
+    # rdlab models [--verify-live] [--licence-registry <path>]
+    models_parser = subparsers.add_parser(
+        "models",
+        help="Inspect pinned Pilot B models and verify live Ollama registry manifests.",
+    )
+    models_parser.add_argument(
+        "--verify-live",
+        action="store_true",
+        help="Verify every pinned model tag and manifest digest against the live Ollama registry.",
+    )
+    models_parser.add_argument(
+        "--licence-registry",
+        dest="licence_registry",
+        type=Path,
+        default=None,
+        help="Optional path to licences/registry.json.",
+    )
+
+    # rdlab pilot-b [--stub N] [--output-dir <dir>]
+    pb_parser = subparsers.add_parser(
+        "pilot-b",
+        help="Build the Pilot B T10 critic test set (or run a --stub N timing & gate calibration run).",
+    )
+    pb_parser.add_argument(
+        "--stub",
+        dest="stub_count",
+        type=int,
+        default=None,
+        help="Build N triads end to end in stub mode with per-wave timing and token counts.",
+    )
+    pb_parser.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        type=Path,
+        default=Path("build/pilot_b"),
+        help="Output directory for the Pilot B part, sealed keys, and report.",
+    )
+    pb_parser.add_argument(
+        "--seed",
+        type=int,
+        default=1,
+        help="Base generation seed (default: 1).",
+    )
+    pb_parser.add_argument(
+        "--shuffle-seed",
+        dest="shuffle_seed",
+        type=int,
+        default=42,
+        help="Seed for shuffling sealed triad items (default: 42).",
+    )
+    pb_parser.add_argument(
+        "--thinking-cap",
+        dest="thinking_cap",
+        type=int,
+        default=256,
+        help="Per-call thinking token cap (default: 256).",
+    )
+    pb_parser.add_argument(
+        "--licence-registry",
+        dest="licence_registry",
+        type=Path,
+        default=None,
+        help="Optional path to licences/registry.json.",
+    )
+
     return parser
 
 
@@ -111,6 +181,37 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 canon_dir=args.canon_dir,
             )
             print(fp)
+            return EXIT_CLEAN
+
+        if args.command == "models":
+            if args.verify_live:
+                live_res = verify_live_ollama_models(
+                    licence_registry_path=args.licence_registry
+                )
+                print(json.dumps(live_res, indent=2))
+                return EXIT_CLEAN
+            pins_out = {
+                "status": "ok",
+                "models": [
+                    spec.to_dict() for spec in DEFAULT_PILOT_B_MODEL_PINS.values()
+                ],
+            }
+            print(json.dumps(pins_out, indent=2))
+            return EXIT_CLEAN
+
+        if args.command == "pilot-b":
+            triad_count = args.stub_count if args.stub_count is not None else 50
+            stub_mode = args.stub_count is not None
+            build_res = run_pilot_b_build(
+                output_dir=args.output_dir,
+                triad_count=triad_count,
+                stub_mode=stub_mode,
+                seed=args.seed,
+                shuffle_seed=args.shuffle_seed,
+                thinking_token_cap=args.thinking_cap,
+                licence_registry_path=args.licence_registry,
+            )
+            print(json.dumps(build_res, indent=2))
             return EXIT_CLEAN
 
         raise usage_error(
