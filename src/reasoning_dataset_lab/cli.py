@@ -15,7 +15,7 @@ from typing import NoReturn, Sequence
 
 from reasoning_dataset_lab import __version__
 from reasoning_dataset_lab.config import compute_config_fingerprint
-from reasoning_dataset_lab.errors import EXIT_CLEAN, RdlabError, usage_error
+from reasoning_dataset_lab.errors import EXIT_CLEAN, EXIT_REFUSED, RdlabError, usage_error
 from reasoning_dataset_lab.map import check_map_file
 from reasoning_dataset_lab.pilot_b.models_and_build import (
     DEFAULT_PILOT_B_MODEL_PINS,
@@ -425,7 +425,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 print(json.dumps(var_rep, indent=2))
             else:
                 print(format_variety_report_text(var_rep))
-            return EXIT_CLEAN
+            return EXIT_REFUSED if var_rep.get("leak") else EXIT_CLEAN
 
         raise usage_error(
             "CLI_USAGE_ERROR",

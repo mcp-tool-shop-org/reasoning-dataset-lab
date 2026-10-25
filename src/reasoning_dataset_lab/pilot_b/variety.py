@@ -5,7 +5,7 @@ duplicate-claim counts, frame-to-key leak check, paraphrase guard (`"unreliable"
 class has no `<a>` token in its masked frame), seeded `--audit-sample N --seed S` frame dump, and the
 five `cannot_tell` diversity metrics, compared against the committed `variety_targets.yaml`.
 
-This command is a deterministic diagnostic report, not a build-halting gate.
+This command is a deterministic diagnostic report; it exits non-zero when a frame-to-key leak is detected.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Any
 
 import yaml
 
-from reasoning_dataset_lab.errors import usage_error
+from reasoning_dataset_lab.errors import refused_error, usage_error
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     DOMAIN_CATALOGUE,
     MONTH_NAMES,
@@ -161,6 +161,9 @@ def _domain_attr_specs(dom_spec: Mapping[str, Any]) -> list[tuple[str, str, str 
         (str(state_attr), "state", None),
         (str(attr_name), "attribute", None),
     ]
+    if "measure_attr" in dom_spec:
+        meas_attr, meas_unit = dom_spec["measure_attr"]
+        specs.append((str(meas_attr), "number", str(meas_unit)))
     for oa_name, _ in dom_spec["open_attrs"]:
         specs.append((str(oa_name), "attribute", None))
     return specs
@@ -252,8 +255,8 @@ def _parse_sentence_against_domain(
     return ent_found, attr_found, fact_type, val_found, unit_found
 
 
-def _resolve_build_files(build_dir: Path) -> tuple[Path, Path | None, int]:
-    """Locate `items.jsonl`, optional `keys.sealed.jsonl`, and `shuffle_seed` from `<build-dir>`."""
+def _resolve_build_files(build_dir: Path) -> tuple[Path, Path | None]:
+    """Locate `items.jsonl` and optional `keys.sealed.jsonl` from `<build-dir>`."""
     if build_dir.is_file() and build_dir.name.endswith(".jsonl"):
         items_path = build_dir
         root_dir = build_dir.parent.parent if build_dir.parent.name == "part_pilot_b_sealed" else build_dir.parent
@@ -275,17 +278,7 @@ def _resolve_build_files(build_dir: Path) -> tuple[Path, Path | None, int]:
     keys_cand = root_dir / "sealed_store" / "keys.sealed.jsonl"
     keys_path = keys_cand if keys_cand.is_file() else None
 
-    shuffle_seed = 42
-    part_json_cand = items_path.parent / "part.json"
-    if part_json_cand.is_file():
-        try:
-            part_meta = json.loads(part_json_cand.read_text(encoding="utf-8"))
-            if isinstance(part_meta, dict) and isinstance(part_meta.get("shuffle_seed"), int):
-                shuffle_seed = int(part_meta["shuffle_seed"])
-        except (OSError, ValueError):
-            pass
-
-    return items_path, keys_path, shuffle_seed
+    return items_path, keys_path
 
 
 def evaluate_build_variety(
@@ -296,7 +289,7 @@ def evaluate_build_variety(
     targets_path: Path | None = None,
 ) -> dict[str, Any]:
     """Compute the deterministic §11c (Amendment 1) variety report for `<build-dir>`."""
-    items_path, keys_path, shuffle_seed = _resolve_build_files(Path(build_dir))
+    items_path, keys_path = _resolve_build_files(Path(build_dir))
     targets_all = load_variety_targets(targets_path)
 
     items = [
@@ -318,25 +311,26 @@ def evaluate_build_variety(
                 row = json.loads(line)
                 sealed_keys[str(row["id"])] = row
 
-    # Recover per-item key in the absence of keys.sealed.jsonl via write_sealed_part's shuffle_seed permutation
-    shuffled_indices = list(range(len(items)))
-    random.Random(shuffle_seed).shuffle(shuffled_indices)
-
     cat_by_domain: dict[str, Mapping[str, Any]] = {
         str(d["domain"]): d for d in DOMAIN_CATALOGUE
     }
 
     # First pass: group items by triad_id and parse material sentences
     triad_items: dict[str, list[tuple[int, dict[str, Any], str]]] = collections.defaultdict(list)
+    keys_by_idx: dict[int, str] = {}
     for idx, it in enumerate(items):
         item_id = str(it.get("id", f"item-{idx + 1:03d}"))
-        if item_id in sealed_keys:
+        if item_id in sealed_keys and sealed_keys[item_id].get("key") in VARIETY_CLASSES:
             key = str(sealed_keys[item_id]["key"])
         elif it.get("key") in VARIETY_CLASSES:
             key = str(it["key"])
         else:
-            orig_idx = shuffled_indices[idx]
-            key = VARIETY_CLASSES[orig_idx % 3]
+            raise refused_error(
+                "PILOT_B_VARIETY_MISSING_SEALED_KEYS",
+                "variety needs the build's sealed keys",
+                "Provide sealed_store/keys.sealed.jsonl or an unsealed fixture carrying item 'key' fields.",
+            )
+        keys_by_idx[idx] = key
         tid = str(it.get("triad_id", f"triad-{idx // 3 + 1:03d}"))
         triad_items[tid].append((idx, it, key))
 
@@ -426,13 +420,7 @@ def evaluate_build_variety(
     rows: list[dict[str, Any]] = []
     for idx, it in enumerate(items):
         item_id = str(it.get("id", f"item-{idx + 1:03d}"))
-        if item_id in sealed_keys:
-            key = str(sealed_keys[item_id]["key"])
-        elif it.get("key") in VARIETY_CLASSES:
-            key = str(it["key"])
-        else:
-            orig_idx = shuffled_indices[idx]
-            key = VARIETY_CLASSES[orig_idx % 3]
+        key = keys_by_idx[idx]
         tid = str(it.get("triad_id", f"triad-{idx // 3 + 1:03d}"))
         table = tables_by_tid[tid]
         claim = parsed_claims_by_idx[idx]
@@ -519,20 +507,24 @@ def evaluate_build_variety(
     for r in rows:
         fc[r["frame"]][r["key"]] += 1
     min_leak_claims = int(per_class_targets["frame_to_key_leak_min_claims"])
+    max_leak_share = float(per_class_targets["frame_to_key_leak_max_share"])
+    frame_to_key_out: list[dict[str, Any]] = []
     leak_out: list[dict[str, Any]] = []
     for frame_str, key_cnt in fc.items():
         total_for_frame = sum(key_cnt.values())
         if total_for_frame >= min_leak_claims:
             top_k, top_k_n = key_cnt.most_common(1)[0]
-            leak_out.append(
-                {
-                    "frame": frame_str,
-                    "claims": total_for_frame,
-                    "top_key": top_k,
-                    "top_key_share": round(top_k_n / total_for_frame, 3),
-                    "by_key": dict(key_cnt),
-                }
-            )
+            top_k_share = round(top_k_n / total_for_frame, 3)
+            entry = {
+                "frame": frame_str,
+                "claims": total_for_frame,
+                "top_key": top_k,
+                "top_key_share": top_k_share,
+                "by_key": dict(key_cnt),
+            }
+            frame_to_key_out.append(entry)
+            if top_k_share > max_leak_share:
+                leak_out.append(entry)
 
     # Materials: each triad's material counted once (in first-seen triad order from items.jsonl)
     mats_by_tid: dict[str, str] = {}
@@ -604,6 +596,8 @@ def evaluate_build_variety(
         "classes": classes_out,
         "duplicates": duplicates_out,
         "leak": leak_out,
+        "leak_status": "fail" if leak_out else "pass",
+        "frame_to_key": frame_to_key_out,
         "materials": materials_out,
         "cannot_tell": cannot_tell_out,
     }
@@ -668,6 +662,9 @@ def format_variety_report_text(report: Mapping[str, Any]) -> str:
     lines.append(
         f"Materials: sentences={m_info['sentences']}, distinct_frames={m_info['distinct_frames']}, "
         f"top_frame_share={m_info['top_frame_share']:.3f}, status={m_info['status']}"
+    )
+    lines.append(
+        f"Frame-to-key leak: status={report['leak_status']}, leaking_frames={len(report['leak'])}"
     )
     ct_info = report["cannot_tell"]
     lines.append(

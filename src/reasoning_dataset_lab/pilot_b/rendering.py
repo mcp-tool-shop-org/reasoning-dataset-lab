@@ -475,10 +475,8 @@ def format_atomic_sentence(
         return f"The {attribute} of {entity} is at most {value}{unit_suffix}."
     if op == "not":
         return f"The {attribute} of {entity} is not {value}{unit_suffix}."
-    if fact_type == "number":
-        if unit and attribute.lower().endswith(unit.lower()):
-            return f"{entity} has {value} {attribute}."
-        return f"{entity} has {value}{unit_suffix} of {attribute}."
+    if fact_type == "number" and unit and attribute.lower().endswith(unit.lower()):
+        return f"{entity} has {value} {attribute}."
     return f"The {attribute} of {entity} is {value}{unit_suffix}."
 
 

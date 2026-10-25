@@ -835,4 +835,75 @@ def test_he_part_a_3_pre_gate_counts_on_50_build_meet_11c_cannot_tell_rows(
     assert all(share <= 0.65 for share in method_shares.values())
 
 
+def test_hh_fix3_pre_gate_50_triads_point_value_with_unit_spread_and_no_leak(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Card hh Fix 3 (FIX-L1): On the 50-triad pre-gate set (and 10-triad stub), supported and unsupported claims are also generated in the point-value-with-unit frame ('the <a> of <e> is <v> <u>.'), so no frame with >= 5 claims (stub >= 3) has > 0.60 of one key and rdlab variety passes with leak == []."""
+    import json
+    from pilot_b_fakes import DeterministicWriterAdapter
+    from reasoning_dataset_lab.cli import run_cli
+    from reasoning_dataset_lab.pilot_b.variety import evaluate_build_variety
+
+    writer = DeterministicWriterAdapter()
+
+    for n_triads, label in ((50, "build_50"), (10, "stub_10")):
+        tables = generate_fact_tables(n_triads, seed=1)
+        triads = [build_contrast_triad(t, seed=1 + i) for i, t in enumerate(tables)]
+        bdir = tmp_path / f"pre_gate_{label}"
+        part_dir = bdir / "part_pilot_b_sealed"
+        sealed_dir = bdir / "sealed_store"
+        part_dir.mkdir(parents=True)
+        sealed_dir.mkdir(parents=True)
+
+        items_rows = []
+        keys_rows = []
+        for tr in triads:
+            mat = writer.render_material(tr.table)
+            for key in ("supported", "unsupported", "cannot_tell"):
+                c = tr.claims[key]
+                items_rows.append(
+                    {
+                        "id": c.claim_id,
+                        "triad_id": tr.triad_id,
+                        "domain": tr.table.domain,
+                        "closure": tr.table.closure,
+                        "material": mat,
+                        "claim": writer.word_claim(tr.table, c),
+                    }
+                )
+                keys_rows.append(
+                    {
+                        "id": c.claim_id,
+                        "triad_id": tr.triad_id,
+                        "key": key,
+                        "proof": {"method": c.proof.method},
+                    }
+                )
+        (part_dir / "items.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in items_rows) + "\n", encoding="utf-8"
+        )
+        (sealed_dir / "keys.sealed.jsonl").write_text(
+            "\n".join(json.dumps(r) for r in keys_rows) + "\n", encoding="utf-8"
+        )
+
+        rep = evaluate_build_variety(bdir)
+        ftk = {entry["frame"]: entry for entry in rep.get("frame_to_key", rep["leak"])}
+        with capsys.disabled():
+            print(f"\n[Card hh Fix 3 pre-gate {label} frame-to-key]: {json.dumps(list(ftk.values()))}")
+
+        assert "the <a> of <e> is <v> <u>." in ftk
+        pvu_entry = ftk["the <a> of <e> is <v> <u>."]
+        assert pvu_entry["by_key"].get("supported", 0) > 0
+        assert pvu_entry["by_key"].get("unsupported", 0) > 0
+        assert pvu_entry["by_key"].get("cannot_tell", 0) > 0
+        for entry in ftk.values():
+            assert entry["top_key_share"] <= 0.60
+        assert rep["leak"] == []
+
+        rc = run_cli(["variety", str(bdir), "--json"])
+        assert rc == 0
+        capsys.readouterr()
+
+
+
 

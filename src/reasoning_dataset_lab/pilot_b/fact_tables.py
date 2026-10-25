@@ -82,6 +82,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             "Unit Epsilon",
         ),
         "number_attr": ("rotor blades", "blades"),
+        "measure_attr": ("shaft speed", "rpm"),
         "date_attr": "inspection date",
         "interval_attr": ("output capacity", "megawatts"),
         "state_attr": (
@@ -114,6 +115,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             "Relay Central",
         ),
         "number_attr": ("backup cells", "cells"),
+        "measure_attr": ("coil resistance", "ohms"),
         "date_attr": "calibration date",
         "interval_attr": ("switching latency", "milliseconds"),
         "state_attr": (
@@ -143,6 +145,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             "Tanker Altair",
         ),
         "number_attr": ("cargo holds", "holds"),
+        "measure_attr": ("ballast capacity", "tonnes"),
         "date_attr": "departure date",
         "interval_attr": ("draft depth", "meters"),
         "state_attr": (
@@ -175,6 +178,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             "Kiln Five",
         ),
         "number_attr": ("heating zones", "zones"),
+        "measure_attr": ("exhaust flow", "liters"),
         "date_attr": "service date",
         "interval_attr": ("operating temperature", "degrees"),
         "state_attr": (
@@ -204,6 +208,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             "Reactor Epsilon",
         ),
         "number_attr": ("control rods", "rods"),
+        "measure_attr": ("rod travel", "millimeters"),
         "date_attr": "refuel date",
         "interval_attr": ("core pressure", "kilopascals"),
         "state_attr": (
@@ -239,6 +244,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             "Compressor Central",
         ),
         "number_attr": ("piston cylinders", "cylinders"),
+        "measure_attr": ("stage ratio", "bars"),
         "date_attr": "alignment date",
         "interval_attr": ("suction flow", "liters"),
         "state_attr": (
@@ -274,6 +280,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             "Bank Five",
         ),
         "number_attr": ("cooling fins", "fins"),
+        "measure_attr": ("oil volume", "gallons"),
         "date_attr": "testing date",
         "interval_attr": ("winding load", "amperes"),
         "state_attr": (
@@ -309,6 +316,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             "Boiler Epsilon",
         ),
         "number_attr": ("burner nozzles", "nozzles"),
+        "measure_attr": ("feed pressure", "kilopascals"),
         "date_attr": "cleaning date",
         "interval_attr": ("steam output", "tonnes"),
         "state_attr": (
@@ -344,6 +352,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             "Chiller Central",
         ),
         "number_attr": ("evaporator tubes", "tubes"),
+        "measure_attr": ("compressor load", "kilowatts"),
         "date_attr": "charging date",
         "interval_attr": ("coolant flow", "gallons"),
         "state_attr": (
@@ -379,6 +388,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             "Pump Theta",
         ),
         "number_attr": ("impeller stages", "stages"),
+        "measure_attr": ("impeller diameter", "millimeters"),
         "date_attr": "overhaul date",
         "interval_attr": ("discharge pressure", "bars"),
         "state_attr": (
@@ -1140,7 +1150,11 @@ def build_sample_fact_table(seed: int = 1, closure: ClosureTag | None = None) ->
         else ("open" if (s + (visit // 2)) % 2 == 0 else "closed")
     )
 
-    num_attr, num_unit = spec["number_attr"]  # type: ignore[misc]
+    slot_phase = (spec_idx + visit) % 5
+    if slot_phase in (0, 1, 3):
+        num_attr, num_unit = spec["measure_attr"]  # type: ignore[misc]
+    else:
+        num_attr, num_unit = spec["number_attr"]  # type: ignore[misc]
     date_attr = str(spec["date_attr"])
     int_attr, int_unit = spec["interval_attr"]  # type: ignore[misc]
     state_attr, state_vals = spec["state_attr"]  # type: ignore[misc]
@@ -1298,7 +1312,38 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         ),
         (s + visit) % n_dom,
     )
-    if len(provable_sup_facts) == 4 and len(provable_unsup_facts) == 4:
+    slot_phase = (d_idx + visit) % 5
+    unsup_claim_fact_type: FactType | None = None
+    unsup_mutated_override: FactValue | None = None
+    if (
+        len(table.facts) == 5
+        and len(provable_sup_facts) == 4
+        and len(provable_unsup_facts) == 4
+        and table.facts[2].fact_type == "interval"
+        and isinstance(table.facts[2].value, tuple)
+        and (table.facts[2].fact_type, table.facts[2].op, "number", "=")
+        in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
+    ):
+        f1, f2, f3, f4, f5 = table.facts
+        if slot_phase == 0:
+            sup_fact = f1
+            unsup_fact = f3
+            unsup_claim_fact_type = "number"
+            assert isinstance(f3.value, tuple)
+            unsup_mutated_override = int(f3.value[1]) + visit + 6
+        elif slot_phase == 1:
+            sup_fact = f1
+            unsup_fact = f2
+        elif slot_phase == 2:
+            sup_fact = f2
+            unsup_fact = f1
+        elif slot_phase == 3:
+            sup_fact = f4
+            unsup_fact = f1
+        else:
+            sup_fact = f1
+            unsup_fact = f5
+    elif len(provable_sup_facts) == 4 and len(provable_unsup_facts) == 4:
         sup_fact = provable_sup_facts[SLOT_SCHEDULES[d_idx % 4][visit % 5]]
         unsup_fact = provable_unsup_facts[SLOT_SCHEDULES[(d_idx + 2) % 4][visit % 5]]
     else:
@@ -1359,7 +1404,16 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     )
 
     # 2. Unsupported claim: applies a provably disjoint typed mutation to unsup_fact with op='='
-    mutated_val = mutate_fact_value(unsup_fact, step=visit + 1)
+    mutated_val = (
+        unsup_mutated_override
+        if unsup_mutated_override is not None
+        else mutate_fact_value(unsup_fact, step=visit + 1)
+    )
+    resolved_unsup_type: FactType = (
+        unsup_claim_fact_type
+        if unsup_claim_fact_type is not None
+        else unsup_fact.fact_type
+    )
     unsup_claim_draft = ProvedClaim(
         claim_id=opaque_claim_ids["unsupported"],
         table_id=table.table_id,
@@ -1367,7 +1421,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         fact_id=unsup_fact.fact_id,
         entity=unsup_fact.entity,
         attribute=unsup_fact.attribute,
-        fact_type=unsup_fact.fact_type,
+        fact_type=resolved_unsup_type,
         claimed_value=mutated_val,
         unit=unsup_fact.unit,
         op="=",
@@ -1381,7 +1435,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         fact_id=unsup_fact.fact_id,
         entity=unsup_fact.entity,
         attribute=unsup_fact.attribute,
-        fact_type=unsup_fact.fact_type,
+        fact_type=resolved_unsup_type,
         claimed_value=mutated_val,
         unit=unsup_fact.unit,
         op="=",

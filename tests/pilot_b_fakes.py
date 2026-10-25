@@ -189,7 +189,7 @@ class UnanimousReaderFake:
             return "supported"
 
         m_claim_num = re.match(
-            r"^(?:The\s+(.+?)\s+of\s+(.+?)\s+is\s+(\d+)|(.+?)\s+has\s+(\d+)(?:(?:\s+\w+)?\s+of\s+(.+?)|\s+(.+?)))\.$",
+            r"^(?:The\s+(.+?)\s+of\s+(.+?)\s+is\s+(\d+)(?:\s+[a-zA-Z]+)?|(.+?)\s+has\s+(\d+)(?:(?:\s+\w+)?\s+of\s+(.+?)|\s+(.+?)))\.$",
             claim_clean,
             re.IGNORECASE,
         )
