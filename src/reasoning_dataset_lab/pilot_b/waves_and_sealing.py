@@ -101,10 +101,13 @@ class WaveMetric:
     max_thinking_tokens_observed: int
     completion_tokens_total: int
     seconds_total: float
+    adapter: str = ""
+    unloaded: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
             "wave_name": self.wave_name,
+            "adapter": self.adapter,
             "model_name": self.model_name,
             "model_family": self.model_family,
             "model_digest": self.model_digest,
@@ -113,7 +116,10 @@ class WaveMetric:
             "thinking_tokens_total": self.thinking_tokens_total,
             "max_thinking_tokens_observed": self.max_thinking_tokens_observed,
             "completion_tokens_total": self.completion_tokens_total,
+            "eval_tokens_total": self.completion_tokens_total,
             "seconds_total": round(self.seconds_total, 4),
+            "wall_time_s_total": round(self.seconds_total, 4),
+            "unloaded": self.unloaded,
         }
 
 
@@ -131,6 +137,13 @@ class PilotBWaveRunResult:
     failed_triads: tuple[TriadGateEvaluation, ...]
     pass_rate_per_class: dict[VerdictKey, float]
     triad_pass_rate: float
+    writer_adapter_class: str = "OllamaWriterAdapter"
+    reader_1_adapter_class: str = "OllamaBlindReaderAdapter"
+    reader_2_adapter_class: str = "OllamaBlindReaderAdapter"
+    has_fake_adapter: bool = False
+    writer_call_records: Mapping[str, dict[str, object]] | None = None
+    reader_1_call_records: Mapping[str, dict[str, object]] | None = None
+    reader_2_call_records: Mapping[str, dict[str, object]] | None = None
 
 
 class WaveCallTracker:
@@ -204,7 +217,14 @@ class WaveCallTracker:
             )
         )
 
-    def summarize_wave(self, wave_name: WaveName, model: ModelIdentity) -> WaveMetric:
+    def summarize_wave(
+        self,
+        wave_name: WaveName,
+        model: ModelIdentity,
+        *,
+        adapter: str = "",
+        unloaded: bool = False,
+    ) -> WaveMetric:
         wave_calls = [e for e in self._entries if e.wave_name == wave_name]
         return WaveMetric(
             wave_name=wave_name,
@@ -219,6 +239,8 @@ class WaveCallTracker:
             ),
             completion_tokens_total=sum(e.completion_tokens for e in wave_calls),
             seconds_total=round(sum(e.seconds for e in wave_calls), 4),
+            adapter=adapter,
+            unloaded=unloaded,
         )
 
 
@@ -363,6 +385,11 @@ def run_pilot_b_waves(
         )
         rendered_materials[t.triad_id] = mat
 
+    render_unloaded = False
+    if callable(getattr(writer_adapter, "unload_model", None)):
+        writer_adapter.unload_model()  # type: ignore[attr-defined]
+        render_unloaded = True
+
     # Wave 2: word all claims across all triads that passed Wave 1 (writer model)
     worded_triads: list[WordedTriad] = []
     for t in triads:
@@ -441,6 +468,11 @@ def run_pilot_b_waves(
             )
         )
 
+    word_unloaded = False
+    if callable(getattr(writer_adapter, "unload_model", None)):
+        writer_adapter.unload_model()  # type: ignore[attr-defined]
+        word_unloaded = True
+
     # Prepare blind-read prompts for all triads (key-free)
     prompts_by_triad: list[dict[VerdictKey, BlindReadPrompt]] = []
     for wt in worded_triads:
@@ -473,6 +505,11 @@ def run_pilot_b_waves(
             r1_map[key] = res1
         reads_1_list.append(r1_map)
 
+    r1_unloaded = False
+    if callable(getattr(reader_1, "unload_model", None)):
+        reader_1.unload_model()  # type: ignore[attr-defined]
+        r1_unloaded = True
+
     # Wave 4: reader_2 over all claims
     reads_2_list: list[dict[VerdictKey, BlindReadResult]] = []
     for t_prompts in prompts_by_triad:
@@ -489,6 +526,11 @@ def run_pilot_b_waves(
             )
             r2_map[key] = res2
         reads_2_list.append(r2_map)
+
+    r2_unloaded = False
+    if callable(getattr(reader_2, "unload_model", None)):
+        reader_2.unload_model()  # type: ignore[attr-defined]
+        r2_unloaded = True
 
     # Evaluate unanimity per triad
     evaluations: list[TriadGateEvaluation] = list(render_failed_evals)
@@ -508,11 +550,40 @@ def run_pilot_b_waves(
     )
     triad_rate = round(len(kept) / len(evaluations), 4) if evaluations else 0.0
 
+    w_cls = type(writer_adapter).__name__
+    r1_cls = type(reader_1).__name__
+    r2_cls = type(reader_2).__name__
+    has_fake = any(
+        bool(getattr(a, "is_fake", False))
+        for a in (writer_adapter, reader_1, reader_2)
+    )
+
+    w_call_map: dict[str, dict[str, object]] = {
+        rec.target_id: rec.to_dict(include_target_id=False)
+        for rec in getattr(writer_adapter, "call_records", ())
+    }
+    r1_call_map: dict[str, dict[str, object]] = {
+        rec.target_id: rec.to_dict(include_target_id=False)
+        for rec in getattr(reader_1, "call_records", ())
+    }
+    r2_call_map: dict[str, dict[str, object]] = {
+        rec.target_id: rec.to_dict(include_target_id=False)
+        for rec in getattr(reader_2, "call_records", ())
+    }
+
     wave_metrics = (
-        tracker.summarize_wave("render", writer_model),
-        tracker.summarize_wave("word", writer_model),
-        tracker.summarize_wave("reader_1", reader_1.model),
-        tracker.summarize_wave("reader_2", reader_2.model),
+        tracker.summarize_wave(
+            "render", writer_model, adapter=w_cls, unloaded=render_unloaded
+        ),
+        tracker.summarize_wave(
+            "word", writer_model, adapter=w_cls, unloaded=word_unloaded
+        ),
+        tracker.summarize_wave(
+            "reader_1", reader_1.model, adapter=r1_cls, unloaded=r1_unloaded
+        ),
+        tracker.summarize_wave(
+            "reader_2", reader_2.model, adapter=r2_cls, unloaded=r2_unloaded
+        ),
     )
 
     return PilotBWaveRunResult(
@@ -526,6 +597,13 @@ def run_pilot_b_waves(
         failed_triads=tuple(failed),
         pass_rate_per_class=rates,
         triad_pass_rate=triad_rate,
+        writer_adapter_class=w_cls,
+        reader_1_adapter_class=r1_cls,
+        reader_2_adapter_class=r2_cls,
+        has_fake_adapter=has_fake,
+        writer_call_records=w_call_map,
+        reader_1_call_records=r1_call_map,
+        reader_2_call_records=r2_call_map,
     )
 
 
@@ -549,8 +627,21 @@ def write_sealed_part(
     licence_registry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write a sealed Pilot B part directory with shuffled items, aggregate-only judgment provenance, and external keys.sealed.jsonl."""
+    if wave_result.has_fake_adapter:
+        raise refused_error(
+            "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED",
+            f"Refused to seal Pilot B part '{part_id}' because a fake adapter was used "
+            f"(writer={wave_result.writer_adapter_class}, reader_1={wave_result.reader_1_adapter_class}, "
+            f"reader_2={wave_result.reader_2_adapter_class}).",
+            "Run Pilot B waves with real OllamaWriterAdapter and OllamaBlindReaderAdapter instances.",
+        )
+
     part_dir.mkdir(parents=True, exist_ok=True)
     keys_sealed_path.parent.mkdir(parents=True, exist_ok=True)
+
+    w_calls_by_target = dict(wave_result.writer_call_records or {})
+    r1_calls_by_target = dict(wave_result.reader_1_call_records or {})
+    r2_calls_by_target = dict(wave_result.reader_2_call_records or {})
 
     default_read_dates: dict[str, str] = {}
     for m in (
@@ -583,6 +674,16 @@ def write_sealed_part(
         for key in VERDICT_CLASSES:
             claim = wt.triad.claims[key]
             claim_ev = ev.claim_evals[key]
+            w_recs: list[dict[str, object]] = []
+            if table.table_id in w_calls_by_target:
+                w_recs.append(dict(w_calls_by_target[table.table_id]))
+            if claim.claim_id in w_calls_by_target:
+                w_recs.append(dict(w_calls_by_target[claim.claim_id]))
+            r_recs: list[dict[str, object]] = []
+            if claim.claim_id in r1_calls_by_target:
+                r_recs.append(dict(r1_calls_by_target[claim.claim_id]))
+            if claim.claim_id in r2_calls_by_target:
+                r_recs.append(dict(r2_calls_by_target[claim.claim_id]))
             raw_entries.append(
                 {
                     "triad_id": wt.triad.triad_id,
@@ -595,6 +696,8 @@ def write_sealed_part(
                     "proof": claim.proof.to_dict(),
                     "read_1": claim_ev.read_1.to_dict(),
                     "read_2": claim_ev.read_2.to_dict(),
+                    "writer_call_records": w_recs,
+                    "reader_call_records": r_recs,
                 }
             )
 
@@ -652,6 +755,7 @@ def write_sealed_part(
                 "trace_sha256": entry["proof"]["trace_sha256"],
             },
             "writer": {
+                "adapter": wave_result.writer_adapter_class,
                 "model": wave_result.writer_model.name,
                 "family": wave_result.writer_model.normalized_family,
                 "digest": wave_result.writer_model.digest,
@@ -664,6 +768,7 @@ def write_sealed_part(
                 "source_match_reason": wave_result.writer_model.source_match_reason,
                 "messages_sha256": msg_sha,
                 "thinking_token_cap": wave_result.thinking_token_cap,
+                "call_records": entry["writer_call_records"],
             },
             "checks": [
                 {
@@ -680,6 +785,10 @@ def write_sealed_part(
             "judgments": [
                 {
                     "kind": "blind_read_unanimity_aggregate",
+                    "reader_adapters": [
+                        wave_result.reader_1_adapter_class,
+                        wave_result.reader_2_adapter_class,
+                    ],
                     "readers": [
                         f"model:{wave_result.reader_1_model.name}@{wave_result.reader_1_model.digest}",
                         f"model:{wave_result.reader_2_model.name}@{wave_result.reader_2_model.digest}",
@@ -716,6 +825,7 @@ def write_sealed_part(
                         wave_result.reader_1_model.source_match_reason,
                         wave_result.reader_2_model.source_match_reason,
                     ],
+                    "call_records": entry["reader_call_records"],
                     "agrees_all_readers": True,
                     "ambiguous_count": 0,
                 }

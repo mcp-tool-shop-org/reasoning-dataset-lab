@@ -22,15 +22,14 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
-from reasoning_dataset_lab.errors import RdlabError, refused_error
+from reasoning_dataset_lab.errors import refused_error
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     FactTable,
     ProvedClaim,
 )
-from reasoning_dataset_lab.pilot_b.models_and_build import PinnedModelSpec
 from reasoning_dataset_lab.pilot_b.rendering import (
     check_rendered_material,
     check_worded_claim,
@@ -42,6 +41,9 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
     ModelIdentity,
     ReaderVerdict,
 )
+
+if TYPE_CHECKING:
+    from reasoning_dataset_lab.pilot_b.models_and_build import PinnedModelSpec
 
 DEFAULT_OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
 LOOPBACK_HOST: str = "127.0.0.1"
@@ -165,9 +167,9 @@ class OllamaUnloadRecord:
 
 
 def _resolve_model_identity(model: ModelIdentity | PinnedModelSpec) -> ModelIdentity:
-    if isinstance(model, PinnedModelSpec):
-        return model.to_model_identity()
-    return model
+    if isinstance(model, ModelIdentity):
+        return model
+    return model.to_model_identity()
 
 
 def _canonical_prompt_sha256(messages: list[dict[str, str]]) -> str:

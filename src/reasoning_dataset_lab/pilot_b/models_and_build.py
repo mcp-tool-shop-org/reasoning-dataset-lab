@@ -30,12 +30,18 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     build_contrast_triad,
     generate_fact_tables,
 )
-from reasoning_dataset_lab.pilot_b.rendering import DeterministicWriterAdapter
+from reasoning_dataset_lab.pilot_b.ollama import (
+    DEFAULT_OLLAMA_BASE_URL,
+    OllamaBlindReaderAdapter,
+    OllamaHttpTransport,
+    OllamaWriterAdapter,
+)
+from reasoning_dataset_lab.pilot_b.rendering import PilotBWriterAdapter
 from reasoning_dataset_lab.pilot_b.unanimity import (
     DEFAULT_MIN_PASS_RATE_PER_CLASS,
+    BlindReaderAdapter,
     ModelIdentity,
     SourceMatchStatus,
-    UnanimousReaderFake,
     validate_chain_families,
 )
 from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
@@ -704,12 +710,19 @@ def build_pilot_b_report(
         "gate_pass_rate_per_class": dict(wave_result.pass_rate_per_class),
         "triad_pass_rate": wave_result.triad_pass_rate,
         "thinking_token_cap": wave_result.thinking_token_cap,
+        "adapters": {
+            "writer": wave_result.writer_adapter_class,
+            "reader_1": wave_result.reader_1_adapter_class,
+            "reader_2": wave_result.reader_2_adapter_class,
+        },
         "waves": wave_dicts,
         "totals": {
             "calls": total_calls,
             "thinking_tokens": total_thinking,
             "completion_tokens": total_completion,
+            "eval_tokens": total_completion,
             "seconds": total_seconds,
+            "wall_time_s": total_seconds,
         },
         "full_build_estimate_50_triads": full_estimate,
         "human_sample": sample_block,
@@ -728,6 +741,11 @@ def run_pilot_b_build(
     licence_registry_path: Path | None = None,
     licence_id_overrides: Mapping[str, str] | None = None,
     bundled_licence_id_overrides: Mapping[str, str] | None = None,
+    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    http_transport: OllamaHttpTransport | None = None,
+    writer_adapter: PilotBWriterAdapter | None = None,
+    reader_1: BlindReaderAdapter | None = None,
+    reader_2: BlindReaderAdapter | None = None,
 ) -> dict[str, Any]:
     """Run an end-to-end Pilot B build (or `--stub N` run), seal and freeze the part, and write the build report."""
     if triad_count < 1:
@@ -803,17 +821,54 @@ def run_pilot_b_build(
         for idx, table in enumerate(tables)
     ]
 
-    writer_adapter = DeterministicWriterAdapter()
-    reader_1 = UnanimousReaderFake(model=r1_id, thinking_tokens=28, completion_tokens=6)
-    reader_2 = UnanimousReaderFake(model=r2_id, thinking_tokens=24, completion_tokens=6)
+    active_writer: PilotBWriterAdapter = (
+        writer_adapter
+        if writer_adapter is not None
+        else OllamaWriterAdapter(
+            model=writer_id,
+            base_url=ollama_base_url,
+            thinking_token_cap=thinking_token_cap,
+            http_transport=http_transport,
+        )
+    )
+    active_r1: BlindReaderAdapter = (
+        reader_1
+        if reader_1 is not None
+        else OllamaBlindReaderAdapter(
+            model=r1_id,
+            base_url=ollama_base_url,
+            thinking_token_cap=thinking_token_cap,
+            http_transport=http_transport,
+        )
+    )
+    active_r2: BlindReaderAdapter = (
+        reader_2
+        if reader_2 is not None
+        else OllamaBlindReaderAdapter(
+            model=r2_id,
+            base_url=ollama_base_url,
+            thinking_token_cap=thinking_token_cap,
+            http_transport=http_transport,
+        )
+    )
+
+    if any(
+        bool(getattr(adapter, "is_fake", False))
+        for adapter in (active_writer, active_r1, active_r2)
+    ):
+        raise refused_error(
+            "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED",
+            "Refused to run Pilot B build or seal output with a fake writer or reader adapter.",
+            "Use real OllamaWriterAdapter and OllamaBlindReaderAdapter instances backed by loopback Ollama.",
+        )
 
     review_queue_path = output_dir / "review_queue.jsonl"
     wave_res = run_pilot_b_waves(
         triads=triads,
         writer_model=writer_id,
-        writer_adapter=writer_adapter,
-        reader_1=reader_1,
-        reader_2=reader_2,
+        writer_adapter=active_writer,
+        reader_1=active_r1,
+        reader_2=active_r2,
         review_queue_path=review_queue_path,
         thinking_token_cap=thinking_token_cap,
         min_pass_rate_per_class=min_pass_rate_per_class,
