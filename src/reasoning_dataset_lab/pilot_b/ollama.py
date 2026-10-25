@@ -18,19 +18,17 @@ Publisher rulings (Card gs, 2026-10-25 — replaces the withdrawn thinking/answe
    value and its source recorded. No separate thinking cap and no answer budget as controls.
 2. **Thinking is recorded as `thinking_words`** (word count of `message.thinking`), for information only;
    nothing gates on it.
-3. **Provisional defaults** (until the next stub's per-call p95 of `eval_count`):
+3. **Provisional defaults** (until the next stub's per-call p95 of `eval_count`; see `docs/calibration-2026-10-25.md`):
    - `render_material` (writer, `qwen3.6:35b`): `num_predict = 4,096`, `max_num_ctx = 8,192`.
-     Source: `E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-render/FINDINGS.md` and
-     `E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-read/FINDINGS.md` — render `eval_count`
+     Source: `docs/calibration-2026-10-25.md` — render `eval_count`
      max `3,462` (`n = 3`: `2,095 / 2,306 / 3,462`; peak VRAM `25,229 MiB`–`25,309 MiB` at `num_ctx 8,192`).
    - `read_claim` on `reader_1` (`nemotron-3.5-lightning:30b`): `num_predict = 6,144`, `max_num_ctx = 7,168`.
-     Source: `E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-nemotron/FINDINGS.md` and
-     `E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-read/FINDINGS.md` — Nemotron `eval_count`
+     Source: `docs/calibration-2026-10-25.md` — Nemotron `eval_count`
      p95 `3,086` and max `3,434` (`n = 20`), plus one earlier call cut off at `4,096` (`n = 9`). Runs under
      the Publisher's recorded exception to the 26 GB plan rule (alone on the card, halt at `30,000 MiB`;
      measured peak `27.4 GB` / `27,355 MiB` at `num_ctx 9,216`).
    - `read_claim` on `reader_2` (`granite4.2:8b`): `num_predict = 2,048`, `max_num_ctx = 8,192`.
-     Source: `E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-read/FINDINGS.md` — Granite
+     Source: `docs/calibration-2026-10-25.md` — Granite
      `eval_count` max about `1,239` (`n = 9`; peak VRAM `8,825 MiB` at `num_ctx 5,120`).
    - `word_claim` (writer, `qwen3.6:35b`): kept at the current total `num_predict = 352` until measured.
 """
@@ -94,11 +92,11 @@ NUM_PREDICT_OPERATION_KEYS: tuple[NumPredictOperationKey, ...] = (
 NumPredictSource = Literal["cli", "config", "default"]
 OllamaHttpTransport = Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
 
-# Recorded total num_predict defaults per operation (Card gs Ruling 3 — provisional until the next stub's p95 of eval_count):
-# - render_material (qwen3.6:35b): 4,096 (eval_count max 3,462, n = 3; E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-render/FINDINGS.md)
+# Recorded total num_predict defaults per operation (Card gs Ruling 3 — provisional until the next stub's p95 of eval_count; see docs/calibration-2026-10-25.md):
+# - render_material (qwen3.6:35b): 4,096 (eval_count max 3,462, n = 3; docs/calibration-2026-10-25.md)
 # - word_claim (qwen3.6:35b): 352 (kept at the current total until measured)
-# - read_claim_reader_1 (nemotron-3.5-lightning:30b): 6,144 (eval_count p95 3,086, max 3,434, n = 20, plus one earlier call cut off at 4,096; E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-nemotron/FINDINGS.md)
-# - read_claim_reader_2 (granite4.2:8b): 2,048 (eval_count max ~1,239, n = 9; E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-read/FINDINGS.md)
+# - read_claim_reader_1 (nemotron-3.5-lightning:30b): 6,144 (eval_count p95 3,086, max 3,434, n = 20, plus one earlier call cut off at 4,096; docs/calibration-2026-10-25.md)
+# - read_claim_reader_2 (granite4.2:8b): 2,048 (eval_count max ~1,239, n = 9; docs/calibration-2026-10-25.md)
 DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT: int = 4096
 DOCUMENTED_DEFAULT_WORD_NUM_PREDICT: int = 352
 DOCUMENTED_DEFAULT_READ_READER_1_NUM_PREDICT: int = 6144

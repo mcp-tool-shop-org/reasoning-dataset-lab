@@ -18,9 +18,11 @@ def _load_requires_python_from_pyproject(path: Path) -> str:
 
 
 def _load_role_set_requires_python() -> str:
-    local_role_set_pyproject = Path("E:/AI/role-set/pyproject.toml")
-    if local_role_set_pyproject.exists():
-        return _load_requires_python_from_pyproject(local_role_set_pyproject)
+    sibling_role_set_pyproject = (
+        Path(__file__).resolve().parents[2] / "role-set" / "pyproject.toml"
+    )
+    if sibling_role_set_pyproject.exists():
+        return _load_requires_python_from_pyproject(sibling_role_set_pyproject)
     meta_req = importlib.metadata.metadata("role-set").get("Requires-Python")
     assert isinstance(meta_req, str) and meta_req.strip(), "Missing Requires-Python on role-set"
     return meta_req.strip()

@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-25 from commit 76c967d by Atlas 1.24.0.
+Mapped at 2026-10-25 from commit cb279c4 by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,13 +8,9 @@ reasoning-dataset-lab validates dataset maps, loads the five-file project config
 
 5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
 
-## What changed since 2026-10-25 (04563d8)
+## What changed since 2026-10-25 (76c967d)
 
-- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_num_predict_config`, before `resolve_num_predict_config`.
-- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `resolve_num_predict_config`, before `coerce_num_predict_config`.
-- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_num_predict_config`, before `refused_error`.
-- And 9 more changes to the order of work.
-- 10 files changed content, across 3 parts.
+Nothing structural changed since 2026-10-25; 4 files changed content.
 
 ## What comes in
 

@@ -1736,16 +1736,39 @@ def test_gs_defaults_are_4096_6144_2048(
     assert "3,086" in doc_text
     assert "3,434" in doc_text
     assert "1,239" in doc_text
+    assert "docs/calibration-2026-10-25.md" in doc_text
 
-    readme_text = (Path(__file__).resolve().parent.parent / "README.md").read_text(
-        encoding="utf-8"
-    )
+    repo_root = Path(__file__).resolve().parent.parent
+    readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
     assert "3,462" in readme_text
     assert "3,086" in readme_text
     assert "3,434" in readme_text
     assert "1,239" in readme_text
     assert "30,000" in readme_text
     assert "27.4 GB" in readme_text
+    assert "docs/calibration-2026-10-25.md" in readme_text
+
+    cal_doc_text = (repo_root / "docs" / "calibration-2026-10-25.md").read_text(
+        encoding="utf-8"
+    )
+    for expected in (
+        "2026-10-25",
+        "a7eb95c5",
+        "e6905fff",
+        "f586c02f",
+        "provisional until the next stub's per-call p95",
+        "2,095 / 2,306 / 3,462",
+        "25,229 MiB",
+        "1,138.5",
+        "3,086",
+        "3,434",
+        "27,355 MiB",
+        "30,000 MiB",
+        "1,239",
+        "8,825 MiB",
+        "thinking_words",
+    ):
+        assert expected in cal_doc_text
 
 
 def test_gs_calibrate_suggests_total_num_predict_and_reports_eval_count_and_thinking_words(

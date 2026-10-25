@@ -19,56 +19,30 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 10,
+      "changed": 4,
       "moved": 0,
       "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_num_predict_config`, before `resolve_num_predict_config`.",
-        "subjects": [
-          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `resolve_num_predict_config`, before `coerce_num_predict_config`.",
-        "subjects": [
-          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_num_predict_config`, before `refused_error`.",
-        "subjects": [
-          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "And 9 more changes to the order of work.",
-        "subjects": []
-      },
-      {
         "kind": "counts",
-        "sentence": "10 files changed content, across 3 parts.",
+        "sentence": "Nothing structural changed since 2026-10-25; 4 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "04563d8c1fad6a12e35bc3663ef65fb3ea08f95a",
-      "generatedAt": "2026-10-25T12:25:08.458Z"
+      "commit": "76c967d148d1615a826e1ff7215e885289b8272f",
+      "generatedAt": "2026-10-25T12:55:57.198Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "76c967d148d1615a826e1ff7215e885289b8272f",
+  "commit": "cb279c47da39777b0fd3a74444fc4293507519a7",
   "defaultBranch": "main",
   "derived": "5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
@@ -140,7 +114,7 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-25T12:55:57.198Z",
+  "generatedAt": "2026-10-25T13:03:33.990Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "2 reads use paths built at run time and are not named here.",
