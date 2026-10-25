@@ -11,8 +11,10 @@ provenance carries judgment outcomes only as aggregates (§2.1).
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import random
+import secrets
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -82,8 +84,12 @@ FORBIDDEN_SEALED_FIELD_NAMES: frozenset[str] = frozenset(
         "gold_label",
         "key_contradicted",
         "target_verdict",
+        "shuffle_seed",
+        "commitment_key",
     }
 )
+
+SEALING_STORE_NAME = "sealing.sealed.json"
 
 
 @dataclass(frozen=True)
@@ -761,6 +767,18 @@ def _canonical_json_line(obj: object) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def _commitment_key(shuffle_seed: int) -> bytes:
+    """The key for the hash commitments in the public files, derived from the per-build seed."""
+
+    return hashlib.sha256(f"rdlab-sealing-commitment-v1:{shuffle_seed}".encode()).digest()
+
+
+def _commit(key: bytes, kind: str, value: str) -> str:
+    """A keyed commitment to a hash, so the public provenance carries no plain digest of per-item material."""
+
+    return hmac.new(key, f"{kind}:{value}".encode(), hashlib.sha256).hexdigest()
+
+
 def write_sealed_part(
     *,
     part_dir: Path,
@@ -769,10 +787,19 @@ def write_sealed_part(
     map_version: int,
     map_sha256: str,
     wave_result: PilotBWaveRunResult,
-    shuffle_seed: int,
+    shuffle_seed: int | None = None,
     licence_registry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Write a sealed Pilot B part directory with shuffled items, aggregate-only judgment provenance, and external keys.sealed.jsonl."""
+    """Write a sealed Pilot B part directory with shuffled items, aggregate-only judgment provenance, and external keys.sealed.jsonl.
+
+    The shuffle seed is drawn per build from ``secrets`` unless one is given (a reproducible re-seal), and it is
+    kept only in the sealed store, in ``sealing.sealed.json`` beside the keys. It is never written to a public
+    file of the part. The hashes in the public provenance that could be matched against a rebuilt triad
+    (the proof trace and the writer's claim prompt) are published as keyed commitments.
+    """
+    if shuffle_seed is None:
+        shuffle_seed = secrets.randbits(128)
+    commitment_key = _commitment_key(shuffle_seed)
     w = wave_result.writer_adapter
     r1 = wave_result.reader_1_adapter
     r2 = wave_result.reader_2_adapter
@@ -908,7 +935,7 @@ def write_sealed_part(
             "proof": {
                 "prover": entry["proof"]["prover"],
                 "version": entry["proof"]["version"],
-                "trace_sha256": entry["proof"]["trace_sha256"],
+                "trace_commitment": _commit(commitment_key, "trace", entry["proof"]["trace_sha256"]),
             },
             "writer": {
                 "adapter": wave_result.writer_adapter_class,
@@ -942,7 +969,7 @@ def write_sealed_part(
                         wave_result.writer_model.max_num_ctx,
                     )
                 ),
-                "call_records": entry["writer_call_records"],
+                "call_records": [_commit_prompt(commitment_key, rec) for rec in entry["writer_call_records"]],
             },
             "checks": [
                 {
@@ -1042,6 +1069,19 @@ def write_sealed_part(
     (part_dir / "items.jsonl").write_bytes(items_bytes)
     (part_dir / "provenance.jsonl").write_bytes(prov_bytes)
     keys_sealed_path.write_bytes(sealed_bytes)
+    (keys_sealed_path.parent / SEALING_STORE_NAME).write_text(
+        json.dumps(
+            {
+                "part_id": part_id,
+                "shuffle_seed": shuffle_seed,
+                "commitment_key": commitment_key.hex(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     keys_sealed_sha256 = _sha256_bytes(sealed_bytes)
 
@@ -1051,7 +1091,6 @@ def write_sealed_part(
         "frozen": False,
         "map_version": map_version,
         "map_sha256": map_sha256,
-        "shuffle_seed": shuffle_seed,
         "num_predict": wave_result.num_predict,
         "num_predict_source": wave_result.num_predict_source,
         "num_predict_config": (
@@ -1081,6 +1120,13 @@ def write_sealed_part(
 
     _write_checksums(part_dir)
     return part_meta
+
+
+def _commit_prompt(key: bytes, record: Mapping[str, Any]) -> dict[str, Any]:
+    out = dict(record)
+    if "prompt_sha256" in out:
+        out["prompt_commitment"] = _commit(key, "prompt", str(out.pop("prompt_sha256")))
+    return out
 
 
 def _write_checksums(part_dir: Path) -> dict[str, str]:
@@ -1121,7 +1167,9 @@ def _flatten_scalar_fields(
         if isinstance(v, Mapping):
             out.update(_flatten_scalar_fields(v, full_key))
         elif isinstance(v, (str, int, float, bool)) or v is None:
-            if not full_key.endswith("sha256"):
+            # Digests and keyed commitments are unique per item by construction. A plain digest is exempt here
+            # only because the public part must not carry one that can be rebuilt (write_sealed_part commits them).
+            if not full_key.endswith(("sha256", "commitment")):
                 out[full_key] = json.dumps(v, sort_keys=True)
     return out
 
@@ -1148,6 +1196,28 @@ def verify_sealed_part(part_dir: Path, keys_sealed_path: Path) -> None:
             f"keys.sealed.jsonl was found inside public part directory '{part_dir}'.",
             "Store keys.sealed.jsonl outside the public part directory.",
         )
+
+    # The per-build seed lives in the sealed store, and no public file carries it
+    store_path = keys_sealed_path.parent / SEALING_STORE_NAME
+    if store_path.is_file():
+        store = json.loads(store_path.read_text(encoding="utf-8"))
+        # A short seed given for a reproducible test would match unrelated numbers, so only a secrets-grade
+        # value (12 or more digits) and the commitment key are searched for.
+        secrets_in_store = [
+            str(store[name])
+            for name in ("shuffle_seed", "commitment_key")
+            if name in store and len(str(store[name])) >= 12
+        ]
+        for public in sorted(part_dir.iterdir()):
+            if not public.is_file():
+                continue
+            text = public.read_text(encoding="utf-8")
+            if any(value in text for value in secrets_in_store):
+                raise refused_error(
+                    "PILOT_B_SEALED_SEED_IN_PUBLIC_FILE",
+                    f"Sealed part file '{public.name}' contains a value that belongs to the sealed store.",
+                    "Keep the per-build seed only in the sealed store.",
+                )
 
     # Load sealed keys map: item_id -> key
     item_to_key: dict[str, str] = {}

@@ -658,7 +658,8 @@ def test_part_c_run_pilot_b_build_uses_real_ollama_adapters_in_stub_and_non_stub
             assert prow["writer"]["adapter"] == "OllamaWriterAdapter"
             assert len(prow["writer"]["call_records"]) == 2
             for wcall in prow["writer"]["call_records"]:
-                assert len(wcall["prompt_sha256"]) == 64
+                assert len(wcall["prompt_commitment"]) == 64
+                assert "prompt_sha256" not in wcall
                 assert wcall["eval_tokens"] == 22
                 assert wcall["thinking_words"] == 16
                 assert "wall_time_s" in wcall

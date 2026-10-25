@@ -18,6 +18,7 @@ import hashlib
 import json
 import math
 import random
+import secrets
 import statistics
 import urllib.error
 import urllib.request
@@ -867,7 +868,7 @@ def run_pilot_b_build(
     triad_count: int = 50,
     stub_mode: bool = False,
     seed: int = 1,
-    shuffle_seed: int = 42,
+    shuffle_seed: int | None = None,
     num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
     num_predict_source: NumPredictSource | None = None,
     num_predict_by_operation: Mapping[str, int | None] | None = None,
@@ -1050,7 +1051,7 @@ def run_pilot_b_build(
         triads_requested=triad_count,
         wave_result=wave_res,
         stub_mode=stub_mode,
-        sample_seed=shuffle_seed,
+        sample_seed=secrets.randbits(32),
         licence_registry=licence_registry_meta,
     )
     report_path = output_dir / "reports" / "pilot_b_report.json"

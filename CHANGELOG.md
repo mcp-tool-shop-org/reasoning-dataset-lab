@@ -4,6 +4,12 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- sealing: the per-build seed is kept in the sealed store.
+
 ## [0.3.0] - 2026-10-25
 
 ### Added

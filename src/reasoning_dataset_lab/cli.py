@@ -137,8 +137,8 @@ def _build_parser() -> _StructuredArgumentParser:
         "--shuffle-seed",
         dest="shuffle_seed",
         type=int,
-        default=42,
-        help="Seed for shuffling sealed triad items (default: 42).",
+        default=None,
+        help="Seed for shuffling sealed triad items. Default: a fresh secret seed per build, kept in the sealed store.",
     )
     pb_parser.add_argument(
         "--num-predict",

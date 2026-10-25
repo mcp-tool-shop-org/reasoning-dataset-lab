@@ -165,7 +165,10 @@ def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
     )
     freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
 
-    assert sealed_meta["shuffle_seed"] == 42
+    # the seed given for a reproducible re-seal is kept in the sealed store, not in the public part
+    assert "shuffle_seed" not in sealed_meta
+    store = json.loads((keys_path.parent / "sealing.sealed.json").read_text(encoding="utf-8"))
+    assert store["shuffle_seed"] == 42
     assert sealed_meta["num_predict"] == 256
     assert keys_path.exists()
 
