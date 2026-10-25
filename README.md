@@ -32,6 +32,24 @@ rdlab project fingerprint . --map examples/t10-pilot-a.map.yaml
 
 Computes the SHA-256 fingerprint across the five project files (`project.json`, `constitution.json`, `terminology.json`, `lanes.json`, `rubric.json`), the map, and `canon/` in fixed order.
 
+### Verify Pilot B models and run a Pilot B build
+
+```bash
+# Inspect pinned Pilot B models
+rdlab models
+
+# Verify live Ollama manifests and licence-layer digests against a real licence registry (--licence-registry is required)
+rdlab models --verify-live --licence-registry /path/to/licences/registry.json
+
+# Run a calibration stub build (uses in-memory fixture registry only when --licence-registry is omitted)
+rdlab pilot-b --stub 10 --output-dir build/pilot_b_stub
+
+# Run a non-stub Pilot B build (--licence-registry is required; never falls back to a fixture)
+rdlab pilot-b --licence-registry /path/to/licences/registry.json --output-dir build/pilot_b
+```
+
+Non-stub `rdlab pilot-b` builds and `rdlab models --verify-live` require `--licence-registry <path>` pointing to the real `licences/registry.json` file; omitting it refuses the run with `PILOT_B_LICENCE_REGISTRY_REQUIRED`. Both the build report (`pilot_b_report.json`) and item provenance (`provenance.jsonl`) record the registry path as given, its SHA-256 digest, and the `read_date` of each licence entry used by the model chain.
+
 ## Status
 
 **Current state:** `0.1.1` scaffold (`map.yaml` schema, `rdlab map check`, `examples/t10-pilot-a.map.yaml`, the five project file loaders, and `rdlab project fingerprint`). Pilot A and Pilot B follow in subsequent pull requests.

@@ -4,6 +4,21 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-25
+
+### Added
+
+- Pilot B builder (`reasoning_dataset_lab.pilot_b`):
+  - **Part A (`fact_tables.py`):** Typed atomic fact tables (`number`, `date`, `interval`, `state`, `attribute`) with `closure` tags (`open` or `closed`), contrast triad construction (`supported`, `unsupported`, `cannot_tell`), and code-proved keys (`fact_restatement`, `disjoint_mutation`, `interval_interior_refinement`, `open_excerpt_unmentioned_attribute`).
+  - **Part B (`rendering.py`):** Writer adapter protocol, deterministic writer and adversarial fakes (`FlippedBoundWriterFake`, `RelationalSwapWriterFake`, `UnlistedNumberWriterFake`, `UnlistedProperNounWriterFake`), sentence-level fact binding, polarity and quantifier direction checks (`at least` vs `at most`, negation, `only`, `between`), ungrounded number/proper-noun refusals, and structural token whitelisting (`DESIGN.md` ruling 8a, §11 step 3, §2.4).
+  - **Part C (`unanimity.py`):** Blind-reader adapter protocol, key-free blind-read prompts, two-family unanimity gate, whole-triad pass/fail routing to `review_queue.jsonl`, hard refusal on same-family self-verification, reader family collision, Muse-Glimmer, and Argon/Gemini, and `min_pass_rate_per_class: 0.50` build halt (`DESIGN.md` ruling 2, ruling 8c, §6).
+  - **Part D (`waves_and_sealing.py`):** Single-model wave runner (`render`, `word`, `reader_1`, `reader_2`) enforcing non-interleaved wave execution and per-call thinking token caps (`ruling 8b`), seeded item shuffling, aggregate-only judgment provenance (`§2.1`), external `keys.sealed.jsonl`, and content-based plus field-name sealing verification (`ruling 5a`).
+  - **Part E (`models_and_build.py` and CLI):** Pinned Ollama tags and manifest/layer digests for `qwen3.6:35b`, `nemotron-3.5-lightning:30b`, and `granite4.2:8b` with configurable `licence_id` checked against `licences/registry.json`, `rdlab models --verify-live`, `rdlab pilot-b --stub N`, and the Pilot B build report (`coverage`, `key_proof_rate: 1.0`, `gate_pass_rate_per_class`, per-wave timing/tokens, 50-triad full-build estimate, and 20-item human sample).
+
+### Changed
+
+- **Part F (`pyproject.toml`):** Narrow `requires-python` to `">=3.12,<3.13"` to match `role-set` at its pinned commit `2b26840`, with a regression test verifying that the lab never allows a Python version that `role-set` refuses.
+
 ## [0.2.0] - 2026-10-24
 
 ### Added
