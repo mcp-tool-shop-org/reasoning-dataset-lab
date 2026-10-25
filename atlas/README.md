@@ -1,20 +1,16 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-25 from commit 482311f by Atlas 1.24.0.
+Mapped at 2026-10-25 from commit 6e2867b by Atlas 1.24.0.
 
 ## What this is
 
 reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints. (written by a person)
 
-5 parts, mostly Python (26 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
+5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
 
-## What changed since 2026-10-25 (65f7663)
+## What changed since 2026-10-25 (482311f)
 
-- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `verify_live_ollama_models` gained a step, `refused_error`, before `exists`.
-- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `verify_live_ollama_models` lost a step, `refused_error`.
-- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `refused_error`, before `exists`.
-- And 5 more changes to the order of work.
-- 2 files added and 14 changed content, across 3 parts.
+Nothing structural changed since 2026-10-25; 2 files added and 6 changed content.
 
 ## What comes in
 

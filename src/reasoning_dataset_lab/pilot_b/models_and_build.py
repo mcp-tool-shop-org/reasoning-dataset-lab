@@ -30,16 +30,14 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     build_contrast_triad,
     generate_fact_tables,
 )
+import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 from reasoning_dataset_lab.pilot_b.ollama import (
     DEFAULT_OLLAMA_BASE_URL,
     OllamaBlindReaderAdapter,
-    OllamaHttpTransport,
     OllamaWriterAdapter,
 )
-from reasoning_dataset_lab.pilot_b.rendering import PilotBWriterAdapter
 from reasoning_dataset_lab.pilot_b.unanimity import (
     DEFAULT_MIN_PASS_RATE_PER_CLASS,
-    BlindReaderAdapter,
     ModelIdentity,
     SourceMatchStatus,
     ThinkSetting,
@@ -747,10 +745,6 @@ def run_pilot_b_build(
     licence_id_overrides: Mapping[str, str] | None = None,
     bundled_licence_id_overrides: Mapping[str, str] | None = None,
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
-    http_transport: OllamaHttpTransport | None = None,
-    writer_adapter: PilotBWriterAdapter | None = None,
-    reader_1: BlindReaderAdapter | None = None,
-    reader_2: BlindReaderAdapter | None = None,
 ) -> dict[str, Any]:
     """Run an end-to-end Pilot B build (or `--stub N` run), seal and freeze the part, and write the build report."""
     if triad_count < 1:
@@ -826,44 +820,33 @@ def run_pilot_b_build(
         for idx, table in enumerate(tables)
     ]
 
-    active_writer: PilotBWriterAdapter = (
-        writer_adapter
-        if writer_adapter is not None
-        else OllamaWriterAdapter(
-            model=writer_id,
-            base_url=ollama_base_url,
-            thinking_token_cap=thinking_token_cap,
-            http_transport=http_transport,
-        )
+    active_writer = OllamaWriterAdapter(
+        model=writer_id,
+        base_url=ollama_base_url,
+        thinking_token_cap=thinking_token_cap,
     )
-    active_r1: BlindReaderAdapter = (
-        reader_1
-        if reader_1 is not None
-        else OllamaBlindReaderAdapter(
-            model=r1_id,
-            base_url=ollama_base_url,
-            thinking_token_cap=thinking_token_cap,
-            http_transport=http_transport,
-        )
+    active_r1 = OllamaBlindReaderAdapter(
+        model=r1_id,
+        base_url=ollama_base_url,
+        thinking_token_cap=thinking_token_cap,
     )
-    active_r2: BlindReaderAdapter = (
-        reader_2
-        if reader_2 is not None
-        else OllamaBlindReaderAdapter(
-            model=r2_id,
-            base_url=ollama_base_url,
-            thinking_token_cap=thinking_token_cap,
-            http_transport=http_transport,
-        )
+    active_r2 = OllamaBlindReaderAdapter(
+        model=r2_id,
+        base_url=ollama_base_url,
+        thinking_token_cap=thinking_token_cap,
     )
 
-    if any(
-        bool(getattr(adapter, "is_fake", False))
-        for adapter in (active_writer, active_r1, active_r2)
+    if not (
+        type(active_writer) is OllamaWriterAdapter
+        and type(active_r1) is OllamaBlindReaderAdapter
+        and type(active_r2) is OllamaBlindReaderAdapter
+        and active_writer.http_transport is ollama_mod.default_ollama_http_transport
+        and active_r1.http_transport is ollama_mod.default_ollama_http_transport
+        and active_r2.http_transport is ollama_mod.default_ollama_http_transport
     ):
         raise refused_error(
             "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED",
-            "Refused to run Pilot B build or seal output with a fake writer or reader adapter.",
+            "Refused to run Pilot B build or seal output without exact OllamaWriterAdapter and OllamaBlindReaderAdapter over default_ollama_http_transport.",
             "Use real OllamaWriterAdapter and OllamaBlindReaderAdapter instances backed by loopback Ollama.",
         )
 

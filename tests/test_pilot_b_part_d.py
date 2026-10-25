@@ -119,27 +119,28 @@ def test_thinking_token_cap_exceeded_is_recorded_as_post_hoc_metric(
 
 
 def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     writer_id, r1_id, r2_id = _setup_models()
     tables = generate_fact_tables(n=6, seed=10)
     triads = [build_contrast_triad(t, seed=10 + idx) for idx, t in enumerate(tables)]
 
     transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
     writer = OllamaWriterAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
         thinking_token_cap=256,
-        http_transport=transport,
     )
     r1 = OllamaBlindReaderAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
         thinking_token_cap=256,
-        http_transport=transport,
     )
     r2 = OllamaBlindReaderAdapter(
         model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
         thinking_token_cap=256,
-        http_transport=transport,
     )
 
     wave_res = run_pilot_b_waves(
@@ -200,30 +201,31 @@ def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
 
 
 def test_freeze_refuses_key_bearing_field_or_per_item_key_association_in_part(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     writer_id, r1_id, r2_id = _setup_models()
     tables = generate_fact_tables(n=4, seed=20)
     triads = [build_contrast_triad(t, seed=20 + idx) for idx, t in enumerate(tables)]
 
     transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
     wave_res = run_pilot_b_waves(
         triads=triads,
         writer_model=writer_id,
         writer_adapter=OllamaWriterAdapter(
             model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
             thinking_token_cap=256,
-            http_transport=transport,
         ),
         reader_1=OllamaBlindReaderAdapter(
             model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
             thinking_token_cap=256,
-            http_transport=transport,
         ),
         reader_2=OllamaBlindReaderAdapter(
             model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
             thinking_token_cap=256,
-            http_transport=transport,
         ),
         thinking_token_cap=256,
         review_queue_path=tmp_path / "review_queue.jsonl",

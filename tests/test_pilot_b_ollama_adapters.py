@@ -185,7 +185,9 @@ def build_mock_ollama_http_transport(
     return transport, recorded_requests
 
 
-def test_part_a_writer_adapter_success_and_call_records() -> None:
+def test_part_a_writer_adapter_success_and_call_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from reasoning_dataset_lab.pilot_b.ollama import OllamaWriterAdapter
 
     writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
@@ -193,11 +195,14 @@ def test_part_a_writer_adapter_success_and_call_records() -> None:
         thinking_tokens_per_call=20,
         eval_tokens_per_call=35,
     )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
     adapter = OllamaWriterAdapter(
         model=writer_pin,
         base_url="http://127.0.0.1:11434",
         thinking_token_cap=256,
-        http_transport=transport,
     )
     assert isinstance(adapter, PilotBWriterAdapter)
     assert adapter.is_fake is False
@@ -235,11 +240,17 @@ def test_part_a_writer_adapter_success_and_call_records() -> None:
     assert rec0.wall_time_s >= 0.0
 
 
-def test_part_a_writer_refuses_non_loopback_url() -> None:
+def test_part_a_writer_refuses_non_loopback_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from reasoning_dataset_lab.pilot_b.ollama import OllamaWriterAdapter
 
     writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
     transport, requests = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
 
     for bad_url in (
         "http://example.com:11434",
@@ -252,19 +263,24 @@ def test_part_a_writer_refuses_non_loopback_url() -> None:
             OllamaWriterAdapter(
                 model=writer_pin,
                 base_url=bad_url,
-                http_transport=transport,
             )
         assert exc_info.value.code == "PILOT_B_NON_LOOPBACK_URL"
 
     assert requests == []
 
 
-def test_part_a_writer_refuses_missing_tag_with_pull_hint_and_never_pulls() -> None:
+def test_part_a_writer_refuses_missing_tag_with_pull_hint_and_never_pulls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from reasoning_dataset_lab.pilot_b.ollama import OllamaWriterAdapter
 
     writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
     transport, requests = build_mock_ollama_http_transport(tags_override=[])
-    adapter = OllamaWriterAdapter(model=writer_pin, http_transport=transport)
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    adapter = OllamaWriterAdapter(model=writer_pin)
     table = build_sample_fact_table(seed=1, closure="open")
 
     with pytest.raises(RdlabError) as exc_info:
@@ -276,7 +292,9 @@ def test_part_a_writer_refuses_missing_tag_with_pull_hint_and_never_pulls() -> N
     assert requests[0][1].endswith("/api/tags")
 
 
-def test_part_a_writer_refuses_digest_mismatch_with_pull_hint() -> None:
+def test_part_a_writer_refuses_digest_mismatch_with_pull_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from reasoning_dataset_lab.pilot_b.ollama import OllamaWriterAdapter
 
     writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
@@ -289,7 +307,11 @@ def test_part_a_writer_refuses_digest_mismatch_with_pull_hint() -> None:
             }
         ]
     )
-    adapter = OllamaWriterAdapter(model=writer_pin, http_transport=transport)
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    adapter = OllamaWriterAdapter(model=writer_pin)
     table = build_sample_fact_table(seed=1, closure="open")
 
     with pytest.raises(RdlabError) as exc_info:
@@ -300,7 +322,9 @@ def test_part_a_writer_refuses_digest_mismatch_with_pull_hint() -> None:
     assert len(requests) == 1
 
 
-def test_part_a_writer_thinking_cap_passed_recorded_and_exceeded_refused() -> None:
+def test_part_a_writer_thinking_cap_passed_recorded_and_exceeded_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from reasoning_dataset_lab.pilot_b.ollama import (
         RENDER_ANSWER_BUDGET,
         OllamaWriterAdapter,
@@ -313,10 +337,13 @@ def test_part_a_writer_thinking_cap_passed_recorded_and_exceeded_refused() -> No
     transport_metric, requests_metric = build_mock_ollama_http_transport(
         thinking_tokens_per_call=300
     )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport_metric,
+    )
     adapter_metric = OllamaWriterAdapter(
         model=writer_pin,
         thinking_token_cap=128,
-        http_transport=transport_metric,
     )
     adapter_metric.render_material(table)
     assert adapter_metric.call_records[0].thinking_tokens == 300
@@ -327,10 +354,13 @@ def test_part_a_writer_thinking_cap_passed_recorded_and_exceeded_refused() -> No
     transport_len, _ = build_mock_ollama_http_transport(
         length_stop_needles={table.table_id}
     )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport_len,
+    )
     adapter_len = OllamaWriterAdapter(
         model=writer_pin,
         thinking_token_cap=128,
-        http_transport=transport_len,
     )
     with pytest.raises(RdlabError) as exc_info:
         adapter_len.render_material(table)
@@ -339,7 +369,7 @@ def test_part_a_writer_thinking_cap_passed_recorded_and_exceeded_refused() -> No
 
 
 def test_part_a_refused_rendering_routes_triad_to_review_queue_without_retry(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from reasoning_dataset_lab.pilot_b.ollama import OllamaWriterAdapter
 
@@ -356,12 +386,16 @@ def test_part_a_refused_rendering_routes_triad_to_review_queue_without_retry(
     transport, _ = build_mock_ollama_http_transport(
         bad_render_table_ids={bad_table.table_id: corrupted_mat}
     )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
 
     w_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
     r1_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_1"]
     r2_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_2"]
 
-    writer = OllamaWriterAdapter(model=w_pin, http_transport=transport)
+    writer = OllamaWriterAdapter(model=w_pin)
     reader_1 = UnanimousReaderFake(model=r1_pin.to_model_identity())
     reader_2 = UnanimousReaderFake(model=r2_pin.to_model_identity())
 
@@ -396,7 +430,9 @@ def test_part_a_refused_rendering_routes_triad_to_review_queue_without_retry(
     )
 
 
-def test_part_b_reader_adapter_success_and_strict_parsing() -> None:
+def test_part_b_reader_adapter_success_and_strict_parsing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from reasoning_dataset_lab.pilot_b.ollama import OllamaBlindReaderAdapter
 
     r1_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_1"]
@@ -404,11 +440,14 @@ def test_part_b_reader_adapter_success_and_strict_parsing() -> None:
         thinking_tokens_per_call=14,
         eval_tokens_per_call=4,
     )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
     reader = OllamaBlindReaderAdapter(
         model=r1_pin,
         base_url="http://127.0.0.1:11434",
         thinking_token_cap=256,
-        http_transport=transport,
     )
     assert isinstance(reader, BlindReaderAdapter)
     assert reader.is_fake is False
@@ -451,7 +490,7 @@ def test_part_b_reader_adapter_success_and_strict_parsing() -> None:
 
 
 def test_part_b_malformed_reader_answer_counts_as_ambiguous_and_keeps_raw_text(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from reasoning_dataset_lab.pilot_b.ollama import (
         OllamaBlindReaderAdapter,
@@ -474,14 +513,18 @@ def test_part_b_malformed_reader_answer_counts_as_ambiguous_and_keeps_raw_text(
     transport, _ = build_mock_ollama_http_transport(
         malformed_reader_claims={f"Claim: {malformed_claim_sentence}": malformed_raw}
     )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
 
     w_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
     r1_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_1"]
     r2_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_2"]
 
-    writer = OllamaWriterAdapter(model=w_pin, http_transport=transport)
-    reader_1 = OllamaBlindReaderAdapter(model=r1_pin, http_transport=transport)
-    reader_2 = OllamaBlindReaderAdapter(model=r2_pin, http_transport=transport)
+    writer = OllamaWriterAdapter(model=w_pin)
+    reader_1 = OllamaBlindReaderAdapter(model=r1_pin)
+    reader_2 = OllamaBlindReaderAdapter(model=r2_pin)
 
     rq_path = tmp_path / "review_queue.jsonl"
     wave_res = run_pilot_b_waves(
@@ -509,17 +552,22 @@ def test_part_b_malformed_reader_answer_counts_as_ambiguous_and_keeps_raw_text(
     assert rq_rows[0]["claims"]["supported"]["read_1"]["raw_text"] == malformed_raw
 
 
-def test_part_b_reader_refuses_non_loopback_missing_tag_and_digest_mismatch() -> None:
+def test_part_b_reader_refuses_non_loopback_missing_tag_and_digest_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from reasoning_dataset_lab.pilot_b.ollama import OllamaBlindReaderAdapter
 
     r1_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_1"]
     transport_empty, _ = build_mock_ollama_http_transport(tags_override=[])
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport_empty,
+    )
 
     with pytest.raises(RdlabError) as exc_url:
         OllamaBlindReaderAdapter(
             model=r1_pin,
             base_url="http://10.0.0.2:11434",
-            http_transport=transport_empty,
         )
     assert exc_url.value.code == "PILOT_B_NON_LOOPBACK_URL"
 
@@ -531,9 +579,7 @@ def test_part_b_reader_refuses_non_loopback_missing_tag_and_digest_mismatch() ->
         claim_text="Unit Alpha has 12 blades of rotor blades.",
         user_message="Material (open):\n1. Unit Alpha has 12 blades of rotor blades.\n\nClaim: Unit Alpha has 12 blades of rotor blades.",
     )
-    reader_missing = OllamaBlindReaderAdapter(
-        model=r1_pin, http_transport=transport_empty
-    )
+    reader_missing = OllamaBlindReaderAdapter(model=r1_pin)
     with pytest.raises(RdlabError) as exc_miss:
         reader_missing.read_claim(prompt)
     assert exc_miss.value.code == "PILOT_B_OLLAMA_MODEL_MISSING"
@@ -548,9 +594,11 @@ def test_part_b_reader_refuses_non_loopback_missing_tag_and_digest_mismatch() ->
             }
         ]
     )
-    reader_mismatch = OllamaBlindReaderAdapter(
-        model=r1_pin, http_transport=transport_mismatch
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport_mismatch,
     )
+    reader_mismatch = OllamaBlindReaderAdapter(model=r1_pin)
     with pytest.raises(RdlabError) as exc_dig:
         reader_mismatch.read_claim(prompt)
     assert exc_dig.value.code == "PILOT_B_OLLAMA_DIGEST_MISMATCH"
@@ -558,7 +606,7 @@ def test_part_b_reader_refuses_non_loopback_missing_tag_and_digest_mismatch() ->
 
 
 def test_part_c_run_pilot_b_build_uses_real_ollama_adapters_in_stub_and_non_stub_and_unloads_after_each_wave(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     reg_path = tmp_path / "registry.json"
     reg_path.write_text(
@@ -570,13 +618,16 @@ def test_part_c_run_pilot_b_build_uses_real_ollama_adapters_in_stub_and_non_stub
             thinking_tokens_per_call=16,
             eval_tokens_per_call=22,
         )
+        monkeypatch.setattr(
+            "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+            transport,
+        )
         out_dir = tmp_path / f"build_stub_{stub_flag}"
         res = run_pilot_b_build(
             output_dir=out_dir,
             triad_count=2,
             stub_mode=stub_flag,
             licence_registry_path=reg_path,
-            http_transport=transport,
         )
         assert res["status"] == "ok"
 
@@ -653,23 +704,7 @@ def test_part_c_fakes_moved_to_tests_and_cannot_produce_sealed_output(
     assert DeterministicWriterAdapter.is_fake is True
     assert UnanimousReaderFake.is_fake is True
 
-    # Attempting to run_pilot_b_build with a fake writer or fake reader refuses to seal
-    reg_path = tmp_path / "registry.json"
-    reg_path.write_text(
-        json.dumps(build_fixture_licence_registry(), indent=2), encoding="utf-8"
-    )
-    with pytest.raises(RdlabError) as exc_build_fake:
-        run_pilot_b_build(
-            output_dir=tmp_path / "fake_build",
-            triad_count=2,
-            stub_mode=True,
-            licence_registry_path=reg_path,
-            writer_adapter=DeterministicWriterAdapter(),
-        )
-    assert exc_build_fake.value.code == "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED"
-    assert not (tmp_path / "fake_build" / "sealed_store" / "keys.sealed.jsonl").exists()
-
-    # Attempting to call write_sealed_part on a wave result produced with fakes also refuses
+    # Attempting to call write_sealed_part on a wave result produced with fakes refuses to seal
     w_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"].to_model_identity()
     r1_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_1"].to_model_identity()
     r2_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_2"].to_model_identity()
@@ -738,10 +773,14 @@ def test_part_d_ollama_transport_verdict_parsing_and_properties(
 
     # 3. Properties and unload_records
     transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
     w_id = DEFAULT_PILOT_B_MODEL_PINS["writer"].to_model_identity()
     r_id = DEFAULT_PILOT_B_MODEL_PINS["reader_1"].to_model_identity()
-    writer = OllamaWriterAdapter(w_id, thinking_token_cap=128, http_transport=transport)
-    reader = OllamaBlindReaderAdapter(r_id, thinking_token_cap=128, http_transport=transport)
+    writer = OllamaWriterAdapter(w_id, thinking_token_cap=128)
+    reader = OllamaBlindReaderAdapter(r_id, thinking_token_cap=128)
 
     assert writer.model == w_id
     assert writer.base_url == "http://127.0.0.1:11434"
@@ -947,6 +986,136 @@ def test_fix1_done_reason_length_routes_triad_to_review_queue_without_aborting_b
     assert any("length" in r for r in rq_rows[0]["failure_reasons"])
     assert rq_rows[1]["triad_id"] == triads[2].triad_id
     assert any("length" in r for r in rq_rows[1]["failure_reasons"])
+
+
+def test_fix2_run_pilot_b_build_has_no_adapter_or_transport_params_and_refuses_subclasses_or_custom_transport_at_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gn FIX 2: `run_pilot_b_build` has no adapter or transport parameters, and a subclass of a real adapter or a real adapter given another transport is refused at seal."""
+    import inspect
+
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        OllamaBlindReaderAdapter,
+        OllamaWriterAdapter,
+    )
+
+    # 1. `run_pilot_b_build` has no adapter or transport parameters
+    sig = inspect.signature(run_pilot_b_build)
+    for forbidden_param in ("writer_adapter", "reader_1", "reader_2", "http_transport"):
+        assert forbidden_param not in sig.parameters, (
+            f"run_pilot_b_build must not expose {forbidden_param!r}"
+        )
+
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+
+    tables = generate_fact_tables(n=2, seed=1)
+    triads = [build_contrast_triad(t, seed=1 + idx) for idx, t in enumerate(tables)]
+    w_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
+    r1_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_1"]
+    r2_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_2"]
+
+    # 2. Subclass of OllamaWriterAdapter is refused at seal
+    class SubWriterAdapter(OllamaWriterAdapter):
+        pass
+
+    wave_sub_w = run_pilot_b_waves(
+        triads=triads,
+        writer_model=w_pin.to_model_identity(),
+        writer_adapter=SubWriterAdapter(model=w_pin),
+        reader_1=OllamaBlindReaderAdapter(model=r1_pin),
+        reader_2=OllamaBlindReaderAdapter(model=r2_pin),
+        review_queue_path=tmp_path / "rq_sub_w.jsonl",
+    )
+    with pytest.raises(RdlabError) as exc_sub_w:
+        write_sealed_part(
+            part_dir=tmp_path / "part_sub_w",
+            keys_sealed_path=tmp_path / "keys_sub_w" / "keys.sealed.jsonl",
+            part_id="part_sub_w",
+            map_version=1,
+            map_sha256="a" * 64,
+            wave_result=wave_sub_w,
+            shuffle_seed=42,
+        )
+    assert exc_sub_w.value.code == "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED"
+
+    # 3. Subclass of OllamaBlindReaderAdapter is refused at seal
+    class SubReaderAdapter(OllamaBlindReaderAdapter):
+        pass
+
+    wave_sub_r = run_pilot_b_waves(
+        triads=triads,
+        writer_model=w_pin.to_model_identity(),
+        writer_adapter=OllamaWriterAdapter(model=w_pin),
+        reader_1=SubReaderAdapter(model=r1_pin),
+        reader_2=OllamaBlindReaderAdapter(model=r2_pin),
+        review_queue_path=tmp_path / "rq_sub_r.jsonl",
+    )
+    with pytest.raises(RdlabError) as exc_sub_r:
+        write_sealed_part(
+            part_dir=tmp_path / "part_sub_r",
+            keys_sealed_path=tmp_path / "keys_sub_r" / "keys.sealed.jsonl",
+            part_id="part_sub_r",
+            map_version=1,
+            map_sha256="a" * 64,
+            wave_result=wave_sub_r,
+            shuffle_seed=42,
+        )
+    assert exc_sub_r.value.code == "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED"
+
+    # 4. Real adapter given another transport (not default_ollama_http_transport) is refused at seal
+    other_transport, _ = build_mock_ollama_http_transport()
+    wave_other_t = run_pilot_b_waves(
+        triads=triads,
+        writer_model=w_pin.to_model_identity(),
+        writer_adapter=OllamaWriterAdapter(model=w_pin, http_transport=other_transport),
+        reader_1=OllamaBlindReaderAdapter(model=r1_pin),
+        reader_2=OllamaBlindReaderAdapter(model=r2_pin),
+        review_queue_path=tmp_path / "rq_other_t.jsonl",
+    )
+    with pytest.raises(RdlabError) as exc_other_t:
+        write_sealed_part(
+            part_dir=tmp_path / "part_other_t",
+            keys_sealed_path=tmp_path / "keys_other_t" / "keys.sealed.jsonl",
+            part_id="part_other_t",
+            map_version=1,
+            map_sha256="a" * 64,
+            wave_result=wave_other_t,
+            shuffle_seed=42,
+        )
+    assert exc_other_t.value.code == "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED"
+
+    # 5. Duck-typed adapter without an `is_fake` attribute at all is refused at seal
+    class DuckWriterWithoutIsFake:
+        def render_material(self, table: FactTable) -> str:
+            return DeterministicWriterAdapter().render_material(table)
+
+        def word_claim(self, table: FactTable, claim: ProvedClaim) -> str:
+            return DeterministicWriterAdapter().word_claim(table, claim)
+
+    wave_duck = run_pilot_b_waves(
+        triads=triads,
+        writer_model=w_pin.to_model_identity(),
+        writer_adapter=DuckWriterWithoutIsFake(),
+        reader_1=OllamaBlindReaderAdapter(model=r1_pin),
+        reader_2=OllamaBlindReaderAdapter(model=r2_pin),
+        review_queue_path=tmp_path / "rq_duck.jsonl",
+    )
+    with pytest.raises(RdlabError) as exc_duck:
+        write_sealed_part(
+            part_dir=tmp_path / "part_duck",
+            keys_sealed_path=tmp_path / "keys_duck" / "keys.sealed.jsonl",
+            part_id="part_duck",
+            map_version=1,
+            map_sha256="a" * 64,
+            wave_result=wave_duck,
+            shuffle_seed=42,
+        )
+    assert exc_duck.value.code == "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED"
+
 
 
 

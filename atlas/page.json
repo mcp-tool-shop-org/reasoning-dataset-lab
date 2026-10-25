@@ -19,58 +19,32 @@
   "changes": {
     "fileCounts": {
       "added": 2,
-      "changed": 14,
+      "changed": 6,
       "moved": 0,
-      "parts": 3,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
-        "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `verify_live_ollama_models` gained a step, `refused_error`, before `exists`.",
-        "subjects": [
-          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `verify_live_ollama_models` lost a step, `refused_error`.",
-        "subjects": [
-          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `refused_error`, before `exists`.",
-        "subjects": [
-          "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
-        ]
-      },
-      {
-        "kind": "sequence",
-        "sentence": "And 5 more changes to the order of work.",
-        "subjects": []
-      },
-      {
         "kind": "counts",
-        "sentence": "2 files added and 14 changed content, across 3 parts.",
+        "sentence": "Nothing structural changed since 2026-10-25; 2 files added and 6 changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "65f76637c978cd487f8208a10aa87c866133d41d",
-      "generatedAt": "2026-10-25T05:42:49.880Z"
+      "commit": "482311fc8c26ffbf54cfea24eeeb852a2ae0170c",
+      "generatedAt": "2026-10-25T08:47:42.410Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "482311fc8c26ffbf54cfea24eeeb852a2ae0170c",
+  "commit": "6e2867b64ae7bd9970fbbd0c9f1c8c7de1d03b56",
   "defaultBranch": "main",
-  "derived": "5 parts, mostly Python (26 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
+  "derived": "5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -90,7 +64,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 11
+          "files": 13
         }
       ],
       "runs": [
@@ -140,7 +114,7 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-25T08:47:42.410Z",
+  "generatedAt": "2026-10-25T09:39:05.703Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "2 reads use paths built at run time and are not named here.",
@@ -170,9 +144,9 @@
   ],
   "summary": "reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints.",
   "summaryFrom": "person",
-  "testFiles": 11,
+  "testFiles": 13,
   "testedBy": {
-    "src": 10
+    "src": 12
   },
   "unnamedWrites": 0,
   "unread": [],

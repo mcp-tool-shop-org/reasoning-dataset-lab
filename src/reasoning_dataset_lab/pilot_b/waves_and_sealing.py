@@ -18,11 +18,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 from reasoning_dataset_lab.errors import RdlabError, refused_error
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     ProvedTriad,
     VerdictKey,
     verify_triad_against_table,
+)
+from reasoning_dataset_lab.pilot_b.ollama import (
+    OllamaBlindReaderAdapter,
+    OllamaWriterAdapter,
 )
 from reasoning_dataset_lab.pilot_b.rendering import (
     PilotBWriterAdapter,
@@ -141,6 +146,9 @@ class PilotBWaveRunResult:
     reader_1_adapter_class: str = "OllamaBlindReaderAdapter"
     reader_2_adapter_class: str = "OllamaBlindReaderAdapter"
     has_fake_adapter: bool = False
+    writer_adapter: object = None
+    reader_1_adapter: object = None
+    reader_2_adapter: object = None
     writer_call_records: Mapping[str, dict[str, object]] | None = None
     reader_1_call_records: Mapping[str, dict[str, object]] | None = None
     reader_2_call_records: Mapping[str, dict[str, object]] | None = None
@@ -561,9 +569,13 @@ def run_pilot_b_waves(
     w_cls = type(writer_adapter).__name__
     r1_cls = type(reader_1).__name__
     r2_cls = type(reader_2).__name__
-    has_fake = any(
-        bool(getattr(a, "is_fake", False))
-        for a in (writer_adapter, reader_1, reader_2)
+    has_fake = not (
+        type(writer_adapter) is OllamaWriterAdapter
+        and type(reader_1) is OllamaBlindReaderAdapter
+        and type(reader_2) is OllamaBlindReaderAdapter
+        and writer_adapter.http_transport is ollama_mod.default_ollama_http_transport
+        and reader_1.http_transport is ollama_mod.default_ollama_http_transport
+        and reader_2.http_transport is ollama_mod.default_ollama_http_transport
     )
 
     w_call_map: dict[str, dict[str, object]] = {
@@ -609,6 +621,9 @@ def run_pilot_b_waves(
         reader_1_adapter_class=r1_cls,
         reader_2_adapter_class=r2_cls,
         has_fake_adapter=has_fake,
+        writer_adapter=writer_adapter,
+        reader_1_adapter=reader_1,
+        reader_2_adapter=reader_2,
         writer_call_records=w_call_map,
         reader_1_call_records=r1_call_map,
         reader_2_call_records=r2_call_map,
@@ -635,13 +650,23 @@ def write_sealed_part(
     licence_registry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write a sealed Pilot B part directory with shuffled items, aggregate-only judgment provenance, and external keys.sealed.jsonl."""
-    if wave_result.has_fake_adapter:
+    w = wave_result.writer_adapter
+    r1 = wave_result.reader_1_adapter
+    r2 = wave_result.reader_2_adapter
+    if wave_result.has_fake_adapter or not (
+        type(w) is OllamaWriterAdapter
+        and type(r1) is OllamaBlindReaderAdapter
+        and type(r2) is OllamaBlindReaderAdapter
+        and w.http_transport is ollama_mod.default_ollama_http_transport
+        and r1.http_transport is ollama_mod.default_ollama_http_transport
+        and r2.http_transport is ollama_mod.default_ollama_http_transport
+    ):
         raise refused_error(
             "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED",
-            f"Refused to seal Pilot B part '{part_id}' because a fake adapter was used "
+            f"Refused to seal Pilot B part '{part_id}' because adapters or transports are not allow-listed "
             f"(writer={wave_result.writer_adapter_class}, reader_1={wave_result.reader_1_adapter_class}, "
             f"reader_2={wave_result.reader_2_adapter_class}).",
-            "Run Pilot B waves with real OllamaWriterAdapter and OllamaBlindReaderAdapter instances.",
+            "Run Pilot B waves with exact OllamaWriterAdapter and OllamaBlindReaderAdapter instances using default_ollama_http_transport.",
         )
 
     part_dir.mkdir(parents=True, exist_ok=True)
