@@ -126,6 +126,7 @@ def test_stub_build_10_triads_end_to_end_and_build_report_fields(
         stub_mode=True,
         seed=1,
         shuffle_seed=42,
+        allow_weak_test_seed=True,
         num_predict=256,
     )
 

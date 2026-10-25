@@ -671,6 +671,39 @@ def draw_human_sample(
     }
 
 
+def style_review(items: Sequence[Mapping[str, Any]]) -> tuple[int, int, list[dict[str, str]]]:
+    """Style-lint the public items in their public (shuffled) order: each triad's material once, at its first
+    item, and every claim. Returns ``(issue_count, sentences_checked, first ten issues)``."""
+
+    examples: list[dict[str, str]] = []
+    count = 0
+    checked = 0
+    seen: set[str] = set()
+    for item in items:
+        sentences: list[str] = []
+        triad = str(item.get("triad_id"))
+        if triad not in seen:
+            seen.add(triad)
+            for raw_line in str(item.get("material", "")).splitlines():
+                stripped = raw_line.strip()
+                if not stripped or stripped.lower().startswith("material"):
+                    continue
+                m_num = NUMBERED_LINE_RE.match(stripped)
+                sent = m_num.group(2).strip() if m_num is not None else stripped
+                if sent:
+                    sentences.append(sent)
+        claim = str(item.get("claim", "")).strip()
+        if claim:
+            sentences.append(claim)
+        for sent in sentences:
+            checked += 1
+            for iss in style_lint(sent):
+                count += 1
+                if len(examples) < 10:
+                    examples.append(dict(iss))
+    return count, checked, examples
+
+
 def build_pilot_b_report(
     *,
     part_dir: Path,
@@ -727,32 +760,7 @@ def build_pilot_b_report(
     }
 
     sample_block = draw_human_sample(items, sample_size=20, seed=sample_seed)
-    style_examples: list[dict[str, str]] = []
-    style_issue_count = 0
-    sentences_checked = 0
-    for ev in wave_result.kept_triads:
-        for raw_line in ev.worded.material.splitlines():
-            stripped = raw_line.strip()
-            if not stripped or stripped.lower().startswith("material"):
-                continue
-            m_num = NUMBERED_LINE_RE.match(stripped)
-            sent = m_num.group(2).strip() if m_num is not None else stripped
-            if not sent:
-                continue
-            sentences_checked += 1
-            for iss in style_lint(sent):
-                style_issue_count += 1
-                if len(style_examples) < 10:
-                    style_examples.append(dict(iss))
-        for claim_key in ("supported", "unsupported", "cannot_tell"):
-            claim_sent = ev.worded.worded_claims.get(claim_key, "").strip()
-            if not claim_sent:
-                continue
-            sentences_checked += 1
-            for iss in style_lint(claim_sent):
-                style_issue_count += 1
-                if len(style_examples) < 10:
-                    style_examples.append(dict(iss))
+    style_issue_count, sentences_checked, style_examples = style_review(items)
 
     style_rate_per_sentence = (
         round(style_issue_count / sentences_checked, 4)
@@ -869,6 +877,7 @@ def run_pilot_b_build(
     stub_mode: bool = False,
     seed: int = 1,
     shuffle_seed: int | None = None,
+    allow_weak_test_seed: bool = False,
     num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
     num_predict_source: NumPredictSource | None = None,
     num_predict_by_operation: Mapping[str, int | None] | None = None,
@@ -1043,8 +1052,8 @@ def run_pilot_b_build(
         wave_result=wave_res,
         shuffle_seed=shuffle_seed,
         licence_registry=licence_registry_meta,
+        allow_weak_test_seed=allow_weak_test_seed,
     )
-    frozen_meta = freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
 
     report = build_pilot_b_report(
         part_dir=part_dir,
@@ -1060,6 +1069,8 @@ def run_pilot_b_build(
         json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+    # the report is public too: freeze verifies it with the part
+    frozen_meta = freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path, extra_public_files=[report_path])
 
     return {
         "status": "ok",

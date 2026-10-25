@@ -43,7 +43,7 @@ from test_pilot_b_part_d import _setup_models
 TRIADS = 30
 CHANCE = 1 / 3
 TOLERANCE = 0.2  # 90 items: the standard deviation of a chance guess is about 0.05, so 0.2 is four of them
-SECRET_SEED = 7_654_321_987_654_321
+SECRET_SEED = 18_446_744_073_709_551_629  # a little over 64 bits
 
 
 def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, **seal_kwargs):
@@ -181,7 +181,8 @@ def test_the_seed_is_kept_in_the_sealed_store(sealed):
 def test_a_reproducible_reseal_with_the_same_seed_gives_the_same_order(tmp_path, monkeypatch):
     a_dir, a_keys = _build(tmp_path, monkeypatch, "r1", shuffle_seed=SECRET_SEED)
     b_dir, b_keys = _build(tmp_path, monkeypatch, "r2", shuffle_seed=SECRET_SEED)
-    assert [r["triad_id"] for r in _jsonl(a_dir / "items.jsonl")] == [r["triad_id"] for r in _jsonl(b_dir / "items.jsonl")]
+    # the same seed gives the same order (the sealed rows are in public order); the commitment key is new each time
+    assert [r["triad_id"] for r in _jsonl(a_keys)] == [r["triad_id"] for r in _jsonl(b_keys)]
     assert _true_keys(a_keys) == _true_keys(b_keys)
 
 
@@ -245,7 +246,150 @@ def test_per_item_measurements_are_in_the_sealed_store_and_the_part_has_distribu
     assert all("eval_tokens" in call for row in rows for call in (*row["writer"], *row["readers"]))
     meta = json.loads((part_dir / "part.json").read_text(encoding="utf-8"))
     distributions = meta["call_distributions"]
-    assert distributions
+    assert set(distributions) == {"writer", "reader_1", "reader_2"}
     for per_operation in distributions.values():
-        assert set(per_operation["eval_tokens"]) >= {"n", "min", "median", "p95", "max"}
+        assert per_operation
+        for metrics in per_operation.values():
+            assert set(metrics["eval_tokens"]) >= {"n", "min", "median", "p95", "max"}
     assert "-item-" not in json.dumps(distributions)
+
+
+# ── hj: stricter verify, an independent commitment key, no per-call context size, report order ──────
+
+
+def _fresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> tuple[Path, Path]:
+    return _build(tmp_path, monkeypatch, name, shuffle_seed=SECRET_SEED)
+
+
+def _edit_provenance(part_dir: Path, mutate) -> None:
+    rows = _jsonl(part_dir / "provenance.jsonl")
+    for row in rows:
+        mutate(row)
+    (part_dir / "provenance.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+
+def _verify_code(part_dir: Path, keys_path: Path, **kwargs) -> str:
+    with pytest.raises(RdlabError) as caught:
+        verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path, **kwargs)
+    return caught.value.code
+
+
+def test_verify_looks_inside_json_lists(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "lists")
+    truth = _true_keys(keys_path)
+    _edit_provenance(part_dir, lambda r: r["judgments"][0].update(panel_class=truth[r["id"]]))
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_CONTENT_LEAK"
+
+
+def test_verify_does_not_exempt_a_field_by_its_name_alone(tmp_path, monkeypatch):
+    import hashlib
+
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "names")
+    truth = _true_keys(keys_path)
+
+    def add(row):
+        row["key_sha256"] = hashlib.sha256(truth[row["id"]].encode()).hexdigest()
+        row["verdict_commitment"] = truth[row["id"]]
+
+    _edit_provenance(part_dir, add)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_CONTENT_LEAK"
+
+
+def test_verify_finds_sealed_store_values_in_any_case_and_any_public_file(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "values")
+    store = json.loads((keys_path.parent / "sealing.sealed.json").read_text(encoding="utf-8"))
+    part_json = part_dir / "part.json"
+    meta = json.loads(part_json.read_text(encoding="utf-8"))
+    meta["note"] = store["commitment_key"].upper()
+    part_json.write_text(json.dumps(meta), encoding="utf-8")
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_SEED_IN_PUBLIC_FILE"
+
+
+def test_verify_finds_a_real_triad_id_from_the_sealed_keys(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "triads")
+    real = {r["id"]: r["triad_id"] for r in _jsonl(keys_path)}
+    _edit_provenance(part_dir, lambda r: r.update(source_group=real[r["id"]]))
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_SEED_IN_PUBLIC_FILE"
+
+
+def test_verify_requires_the_sealed_store_file_and_a_matching_keys_digest(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "store")
+    meta = json.loads((part_dir / "part.json").read_text(encoding="utf-8"))
+    meta["keys_sealed_sha256"] = "0" * 64
+    (part_dir / "part.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_KEYS_MISMATCH"
+    (keys_path.parent / "sealing.sealed.json").unlink()
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_STORE_MISSING"
+
+
+def test_verify_also_checks_the_report_it_is_given(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "report")
+    report = tmp_path / "pilot_b_report.json"
+    report.write_text(json.dumps({"note": str(SECRET_SEED)}), encoding="utf-8")
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report]) == "PILOT_B_SEALED_SEED_IN_PUBLIC_FILE"
+
+
+def test_a_small_given_seed_is_refused_unless_marked_test_only(tmp_path, monkeypatch):
+    with pytest.raises(RdlabError) as caught:
+        _build(tmp_path, monkeypatch, "weak", shuffle_seed=42)
+    assert caught.value.code == "PILOT_B_WEAK_SHUFFLE_SEED"
+    _build(tmp_path, monkeypatch, "weak-ok", shuffle_seed=42, allow_weak_test_seed=True)
+
+
+def test_the_commitment_key_is_independent_of_the_seed(tmp_path, monkeypatch):
+    import hashlib
+
+    a_dir, a_keys = _fresh(tmp_path, monkeypatch, "k1")
+    b_dir, b_keys = _fresh(tmp_path, monkeypatch, "k2")
+    store_a = json.loads((a_keys.parent / "sealing.sealed.json").read_text(encoding="utf-8"))
+    store_b = json.loads((b_keys.parent / "sealing.sealed.json").read_text(encoding="utf-8"))
+    assert store_a["shuffle_seed"] == store_b["shuffle_seed"] == SECRET_SEED
+    assert store_a["commitment_key"] != store_b["commitment_key"]
+    derived = hashlib.sha256(f"rdlab-sealing-commitment-v1:{SECRET_SEED}".encode()).hexdigest()
+    assert store_a["commitment_key"] != derived
+    assert {r["triad_id"] for r in _jsonl(a_dir / "items.jsonl")}.isdisjoint(
+        {r["triad_id"] for r in _jsonl(b_dir / "items.jsonl")}
+    )
+
+
+def test_per_call_context_size_is_kept_out_of_the_public_part(sealed):
+    part_dir, keys_path = sealed
+    assert '"num_ctx":' not in (part_dir / "provenance.jsonl").read_text(encoding="utf-8")
+    rows = _jsonl(keys_path.parent / "call_metrics.sealed.jsonl")
+    assert all("num_ctx" in call for row in rows for call in (*row["writer"], *row["readers"]))
+
+
+def test_call_distributions_leave_out_failed_triads_and_keep_the_readers_apart():
+    from reasoning_dataset_lab.pilot_b.waves_and_sealing import _call_distributions
+
+    def rec(op, tokens):
+        return {"operation": op, "eval_tokens": tokens, "wall_time_s": 1.0}
+
+    by_role = {
+        "writer": {"kept-claim": rec("word_claim", 10), "failed-claim": rec("word_claim", 9999)},
+        "reader_1": {"kept-claim": rec("read_claim", 20), "failed-claim": rec("read_claim", 9999)},
+        "reader_2": {"kept-claim": rec("read_claim", 30), "failed-claim": rec("read_claim", 9999)},
+    }
+    out = _call_distributions(by_role, kept_targets={"kept-claim"})
+    assert set(out) == {"writer", "reader_1", "reader_2"}
+    assert out["writer"]["word_claim"]["eval_tokens"]["max"] == 10
+    assert out["reader_1"]["read_claim"]["eval_tokens"]["max"] == 20
+    assert out["reader_2"]["read_claim"]["eval_tokens"]["max"] == 30
+
+
+def test_the_report_style_examples_follow_the_shuffled_item_order():
+    from reasoning_dataset_lab.pilot_b.models_and_build import style_review
+
+    items = [
+        {"triad_id": "triad-a", "material": "1. Mira holds two crates.", "claim": "Beta equals two."},
+        {"triad_id": "triad-b", "material": "1. Mira holds two crates.", "claim": "Alpha equals one."},
+        {"triad_id": "triad-a", "material": "1. Mira holds two crates.", "claim": "Gamma equals three."},
+    ]
+    count, checked, examples = style_review(items)
+    assert [e["sentence"] for e in examples if "equals" in e["sentence"]] == [
+        "Beta equals two.",
+        "Alpha equals one.",
+        "Gamma equals three.",
+    ]
+    assert checked == 2 + 3  # each triad's material once (first encounter), every claim
+    assert count == len(examples)

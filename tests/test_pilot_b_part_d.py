@@ -162,6 +162,7 @@ def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
         map_sha256="a" * 64,
         wave_result=wave_res,
         shuffle_seed=42,
+        allow_weak_test_seed=True,
     )
     freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
 
@@ -243,6 +244,7 @@ def test_freeze_refuses_key_bearing_field_or_per_item_key_association_in_part(
         map_sha256="b" * 64,
         wave_result=wave_res,
         shuffle_seed=99,
+        allow_weak_test_seed=True,
     )
 
     # 1. Inject a key-bearing field name ('verdict') into provenance.jsonl -> refused
