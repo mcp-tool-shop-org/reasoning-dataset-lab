@@ -384,7 +384,7 @@ class MockGenerator:
                     canon_refs=canon_tuple,
                     index=idx,
                     seed=slot_seed,
-                    metadata={"structure": "interval_bound", "question": "claim"},
+                    metadata={"structure": "falsifier_first", "question": "claim"},
                 )
             )
         return slots
@@ -408,7 +408,7 @@ class MockGenerator:
             f"answer:{key}",
         )
         adapter_trace_sha256 = hash_canonical_json(list(adapter_trace))
-        structure = str(slot.metadata.get("structure", "interval_bound"))
+        structure = str(slot.metadata.get("structure", "falsifier_first"))
 
         item = ItemRecord(
             id=slot.slot_id,

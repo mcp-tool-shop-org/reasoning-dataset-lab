@@ -160,6 +160,13 @@ class RoleSetGenerator:
         )
 
         for cand_idx, v_cell in ordered_candidates:
+            shape = recipes.t10_shape(
+                pack_dict,
+                int(v_cell["n"]),
+                random.Random(0),
+                "claim",
+            )
+            structure = shape.structure
             for probe in range(1, self._max_probes_per_cell + 1):
                 candidate_seed = (abs(seed) + 1) * 1000 + cand_idx * 37 + probe
                 built = recipes.build_t10(
@@ -172,7 +179,7 @@ class RoleSetGenerator:
                     built,
                     recipe="t10",
                     pack=pack_dict,
-                    structure="interval_bound",
+                    structure=structure,
                 )
                 if shortcut_id in select.differing(rec):
                     slot_idx = len(slots)
@@ -190,7 +197,7 @@ class RoleSetGenerator:
                             seed=candidate_seed,
                             metadata={
                                 "question": "claim",
-                                "structure": "interval_bound",
+                                "structure": structure,
                                 "cell_index": cand_idx,
                                 "shortcut_id": shortcut_id,
                             },
@@ -228,7 +235,13 @@ class RoleSetGenerator:
             )
         v_cell = pack_cells[cell_index]
         pack_dict = recipes.PACKS[slot.cell.domain]
-        structure = str(slot.metadata.get("structure", "interval_bound"))
+        shape = recipes.t10_shape(
+            pack_dict,
+            int(v_cell["n"]),
+            random.Random(slot.seed),
+            "claim",
+        )
+        structure = str(slot.metadata.get("structure", shape.structure))
 
         built = recipes.build_t10(
             slot.cell.domain,

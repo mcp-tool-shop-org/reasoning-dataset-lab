@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from role_set import puzzle_check
 
 from reasoning_dataset_lab.errors import RdlabError
 from reasoning_dataset_lab.generators.base import (
@@ -104,6 +105,9 @@ def test_mock_generator_plan_and_build_deterministic() -> None:
 
     assert item.proof_basis == "proved"
     assert item.key_basis == "construction"
+    assert item.structure in puzzle_check.STRUCTURES
+    assert item.structure == "falsifier_first"
+    assert receipt.structure == item.structure
     assert item.key == proof.key == receipt.answer
     assert proof.solutions == 1
     assert proof.adapter_trace_source == "rdlab.adapter_model_summary"

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import aspire_si_gates
 import pytest
-from role_set import gates, proven
+from role_set import gates, proven, puzzle_check
 
 from reasoning_dataset_lab.errors import EXIT_REFUSED, RdlabError
 from reasoning_dataset_lab.generators.base import (
@@ -91,6 +91,9 @@ def test_pilot_a_map_builds_all_12_buildable_cells_and_refuses_zero_capacity() -
         assert item.cell_id == cell.cell_id
         assert item.proof_basis == "proved"
         assert item.key_basis == "construction"
+        assert item.structure in puzzle_check.STRUCTURES
+        assert item.structure == "falsifier_first"
+        assert receipt.structure == item.structure
         assert item.key in ("supported", "unsupported", "cannot_tell")
         assert proof.key == item.key
         assert receipt.answer == item.key
@@ -202,6 +205,23 @@ def test_role_set_receipt_hash_fields_are_valid_sha256() -> None:
     for key, val in receipt.pins.items():
         if key.endswith("_sha256"):
             assert is_valid_sha256(val), f"receipt.pins[{key!r}] is not a valid sha256: {val!r}"
+
+
+def test_role_set_built_item_structure_is_in_puzzle_check_structures() -> None:
+    map_data = load_map_yaml(EXAMPLE_MAP)
+    first_cell = MapCell.from_dict(map_data["cells"][0])
+    canon_refs = _canon_for_cell(first_cell)
+
+    gen = RoleSetGenerator()
+    slots = gen.plan(first_cell, canon_refs, n=1, seed=100)
+    assert slots[0].metadata["structure"] == "falsifier_first"
+    assert slots[0].metadata["structure"] in puzzle_check.STRUCTURES
+    item, _, receipt = gen.build(slots[0])
+
+    assert item.structure == "falsifier_first"
+    assert item.structure in puzzle_check.STRUCTURES
+    assert receipt.structure == item.structure
+    assert item.structure != "interval_bound"
 
 
 def test_role_set_generator_multi_slot_determinism_and_refusals() -> None:
