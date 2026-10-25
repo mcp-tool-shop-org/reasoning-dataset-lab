@@ -1,4 +1,4 @@
-"""Part A: Real loopback Ollama writer and blind-reader adapters for Pilot B (Card gk, Card gn, Card gp, Card gr, Card gs).
+"""Part A: Real loopback Ollama writer and blind-reader adapters for Pilot B (Card gk, Card gn, Card gp, Card gr, Card gs, Card gw).
 
 Relies on the official Ollama HTTP API (`https://github.com/ollama/ollama/blob/main/docs/api.md`):
 - `GET /api/tags` (`https://github.com/ollama/ollama/blob/main/docs/api.md#list-local-models`):
@@ -13,24 +13,24 @@ Relies on the official Ollama HTTP API (`https://github.com/ollama/ollama/blob/m
 - `POST /api/chat` with `keep_alive: 0` (`https://github.com/ollama/ollama/blob/main/docs/api.md#unload-a-model`):
   unloads the model from VRAM after each wave.
 
-Publisher rulings (Card gs, 2026-10-25 — replaces the withdrawn thinking/answer split):
+Publisher rulings (Card gs & Card gw, 2026-10-25):
 1. **One total `num_predict` per operation**, as configuration (`cli` > `config` > `default`), with the
    value and its source recorded. No separate thinking cap and no answer budget as controls.
 2. **Thinking is recorded as `thinking_words`** (word count of `message.thinking`), for information only;
    nothing gates on it.
-3. **Provisional defaults** (until the next stub's per-call p95 of `eval_count`; see `docs/calibration-2026-10-25.md`):
+3. **Provisional defaults** (provisional until the full build's p95 of `eval_count`; see `docs/calibration-2026-10-25.md`):
    - `render_material` (writer, `qwen3.6:35b`): `num_predict = 4,096`, `max_num_ctx = 8,192`.
      Source: `docs/calibration-2026-10-25.md` — render `eval_count`
-     max `3,462` (`n = 3`: `2,095 / 2,306 / 3,462`; peak VRAM `25,229 MiB`–`25,309 MiB` at `num_ctx 8,192`).
+     `2,095 / 2,306 / 3,462` (`n = 3`, peak VRAM `25,229 MiB`); 10-triad stub p95 `3,515`, max `3,515` (`n = 9`), peak VRAM `25,157 MiB`.
+   - `word_claim` (writer, `qwen3.6:35b`): `num_predict = 4,255`, `max_num_ctx = 8,192`.
+     Source: `docs/calibration-2026-10-25.md` — word_claim calibration `eval_count` min `1,101`, median `1,300`, p95 `3,743`, max `3,743` (`n = 15`, `0` length stops, peak VRAM `25,221 MiB`), default set to `4,255` (`p95 3,743` + calibrate margin `512`); 10-triad stub p95 `3,083`, max `3,743` (`n = 27`).
    - `read_claim` on `reader_1` (`nemotron-3.5-lightning:30b`): `num_predict = 6,144`, `max_num_ctx = 7,168`.
      Source: `docs/calibration-2026-10-25.md` — Nemotron `eval_count`
-     p95 `3,086` and max `3,434` (`n = 20`), plus one earlier call cut off at `4,096` (`n = 9`). Runs under
+     p95 `3,086` and max `3,434` (`n = 20`), plus one earlier call cut off at `4,096` (`n = 9`); 10-triad stub p95 `2,160`, max `2,186` (`n = 27`). Runs under
      the Publisher's recorded exception to the 26 GB plan rule (alone on the card, halt at `30,000 MiB`;
-     measured peak `27.4 GB` / `27,355 MiB` at `num_ctx 9,216`).
-   - `read_claim` on `reader_2` (`granite4.2:8b`): `num_predict = 2,048`, `max_num_ctx = 8,192`.
-     Source: `docs/calibration-2026-10-25.md` — Granite
-     `eval_count` max about `1,239` (`n = 9`; peak VRAM `8,825 MiB` at `num_ctx 5,120`).
-   - `word_claim` (writer, `qwen3.6:35b`): kept at the current total `num_predict = 352` until measured.
+     measured peak `27,355 MiB` at `num_ctx 9,216`, stub peak `27,185 MiB`).
+   - `read_claim` on `reader_2` (`granite4.2:8b`): `num_predict = 2,560`, `max_num_ctx = 8,192`.
+     Source: `docs/calibration-2026-10-25.md` — Granite calibration `eval_count` min `154`, median `340`, max `1,239` (`n = 9`, peak VRAM `8,825 MiB`); 10-triad stub p95 `1,251`, max `1,877` (`n = 27`, peak VRAM `8,242 MiB`); raised from `2,048` to `2,560` because its max of `1,877` was `92%` of `2,048`.
 """
 
 from __future__ import annotations
@@ -53,8 +53,10 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     ProvedClaim,
 )
 from reasoning_dataset_lab.pilot_b.rendering import (
+    StyleIssue,
     check_rendered_material,
     check_worded_claim,
+    style_lint,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
     ALLOWED_READER_VERDICTS,
@@ -92,15 +94,15 @@ NUM_PREDICT_OPERATION_KEYS: tuple[NumPredictOperationKey, ...] = (
 NumPredictSource = Literal["cli", "config", "default"]
 OllamaHttpTransport = Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
 
-# Recorded total num_predict defaults per operation (Card gs Ruling 3 — provisional until the next stub's p95 of eval_count; see docs/calibration-2026-10-25.md):
-# - render_material (qwen3.6:35b): 4,096 (eval_count max 3,462, n = 3; docs/calibration-2026-10-25.md)
-# - word_claim (qwen3.6:35b): 352 (kept at the current total until measured)
-# - read_claim_reader_1 (nemotron-3.5-lightning:30b): 6,144 (eval_count p95 3,086, max 3,434, n = 20, plus one earlier call cut off at 4,096; docs/calibration-2026-10-25.md)
-# - read_claim_reader_2 (granite4.2:8b): 2,048 (eval_count max ~1,239, n = 9; docs/calibration-2026-10-25.md)
+# Recorded total num_predict defaults per operation (Card gw Part A — provisional until the full build's p95 of eval_count; see docs/calibration-2026-10-25.md):
+# - render_material (qwen3.6:35b): 4,096 (eval_count 2,095 / 2,306 / 3,462, n = 3; stub p95 3,515, max 3,515, n = 9; docs/calibration-2026-10-25.md)
+# - word_claim (qwen3.6:35b): 4,255 (eval_count min 1,101, median 1,300, p95 3,743, max 3,743, n = 15, p95 3,743 + calibrate margin 512; stub p95 3,083, max 3,743, n = 27; docs/calibration-2026-10-25.md)
+# - read_claim_reader_1 (nemotron-3.5-lightning:30b): 6,144 (eval_count p95 3,086, max 3,434, n = 20; stub p95 2,160, max 2,186, n = 27; docs/calibration-2026-10-25.md)
+# - read_claim_reader_2 (granite4.2:8b): 2,560 (raised from 2,048 to 2,560 because stub max of 1,877 was 92% of 2,048; stub p95 1,251, max 1,877, n = 27; docs/calibration-2026-10-25.md)
 DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT: int = 4096
-DOCUMENTED_DEFAULT_WORD_NUM_PREDICT: int = 352
+DOCUMENTED_DEFAULT_WORD_NUM_PREDICT: int = 4255
 DOCUMENTED_DEFAULT_READ_READER_1_NUM_PREDICT: int = 6144
-DOCUMENTED_DEFAULT_READ_READER_2_NUM_PREDICT: int = 2048
+DOCUMENTED_DEFAULT_READ_READER_2_NUM_PREDICT: int = 2560
 DOCUMENTED_DEFAULT_READ_NUM_PREDICT: int = DOCUMENTED_DEFAULT_READ_READER_1_NUM_PREDICT
 DOCUMENTED_DEFAULT_NUM_PREDICT: int = DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT
 
@@ -121,10 +123,10 @@ DEFAULT_READER_1_MAX_NUM_CTX: int = 7168
 DEFAULT_READER_2_MAX_NUM_CTX: int = 8192
 
 # Per-role max_num_ctx defaults:
-# - writer (qwen3.6:35b, weights 22.6 GB): 8192 (measured peak 25,229–25,316 MiB at num_ctx 8,192)
+# - writer (qwen3.6:35b, weights 22.6 GB): 8192 (measured peak 25,229 MiB at num_ctx 8,192; stub peak 25,157 MiB)
 # - reader_1 (nemotron-3.5-lightning:30b, weights 25.4 GB): 7168 (Publisher's recorded exception to the 26 GB rule:
-#   runs alone on the card, halt at 30,000 MiB; measured peak 27.4 GB / 27,355 MiB at num_ctx 9,216)
-# - reader_2 (granite4.2:8b, weights 5.3 GB): 8192 (measured peak 8,825 MiB at num_ctx 5,120)
+#   runs alone on the card, halt at 30,000 MiB; measured peak 27,355 MiB at num_ctx 9,216; stub peak 27,185 MiB)
+# - reader_2 (granite4.2:8b, weights 5.3 GB): 8192 (measured peak 8,825 MiB at num_ctx 5,120; stub peak 8,242 MiB)
 DEFAULT_ROLE_MAX_NUM_CTX: dict[str, int] = {
     "writer": DEFAULT_RENDER_MAX_NUM_CTX,
     "reader_1": DEFAULT_READER_1_MAX_NUM_CTX,
@@ -794,8 +796,12 @@ def build_writer_render_messages(table: FactTable) -> list[dict[str, str]]:
             "role": "system",
             "content": (
                 "You are the Pilot B writer. Render each fact in the formal FactTable into one numbered "
-                "sentence per line ('1. ...', '2. ...'), preserving exact entities, attributes, numbers, "
-                "dates, intervals, polarity, and quantifier direction. Introduce no extra numbers or proper nouns."
+                "sentence per line ('1. ...', '2. ...') in natural, grammatical English, preserving exact "
+                "entities, attributes, numbers, dates, intervals, polarity, and quantifier direction. "
+                "Introduce no extra numbers or proper nouns. Use 'The <attribute> of <entity> is <value>' "
+                "or '<Entity> has <n> <unit>', keep subject-verb agreement for plural attributes, never use "
+                "'equals' or 'is equal to' for an exact value, and do not repeat a unit-noun (never '36 holds' "
+                "after 'cargo holds')."
             ),
         },
         {
@@ -828,9 +834,12 @@ def build_writer_word_messages(claim: ProvedClaim) -> list[dict[str, str]]:
         {
             "role": "system",
             "content": (
-                "You are the Pilot B writer. Word the formal claim into a single declarative English sentence "
-                "preserving its exact entity, attribute, value, unit, polarity, and quantifier direction. "
-                "Introduce no unlisted numbers or proper nouns."
+                "You are the Pilot B writer. Word the formal claim into a single declarative sentence in "
+                "natural, grammatical English, preserving its exact entity, attribute, value, unit, "
+                "polarity, and quantifier direction. Introduce no unlisted numbers or proper nouns. Use "
+                "'The <attribute> of <entity> is <value>' or '<Entity> has <n> <unit>', keep subject-verb "
+                "agreement for plural attributes, never use 'equals' or 'is equal to' for an exact value, "
+                "and do not repeat a unit-noun (never '36 holds' after 'cargo holds')."
             ),
         },
         {

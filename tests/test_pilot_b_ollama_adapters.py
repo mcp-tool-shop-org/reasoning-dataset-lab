@@ -1556,7 +1556,7 @@ def test_gs_request_num_predict_equals_configured_total_per_operation_with_sourc
     assert by_op["render_material"] == {"value": 3500, "source": "cli"}
     assert by_op["word_claim"] == {"value": 512, "source": "config"}
     assert by_op["read_claim_reader_1"] == {"value": 5000, "source": "config"}
-    assert by_op["read_claim_reader_2"] == {"value": 2048, "source": "default"}
+    assert by_op["read_claim_reader_2"] == {"value": 2560, "source": "default"}
 
     prov_row = json.loads(
         (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
@@ -1572,7 +1572,7 @@ def test_gs_request_num_predict_equals_configured_total_per_operation_with_sourc
     r_calls = {r["model"]: r for r in prov_row["judgments"][0]["call_records"]}
     assert r_calls["nemotron-3.5-lightning:30b"]["num_predict"] == 5000
     assert r_calls["nemotron-3.5-lightning:30b"]["num_predict_source"] == "config"
-    assert r_calls["granite4.2:8b"]["num_predict"] == 2048
+    assert r_calls["granite4.2:8b"]["num_predict"] == 2560
     assert r_calls["granite4.2:8b"]["num_predict_source"] == "default"
 
     chat_num_predicts = [
@@ -1583,7 +1583,7 @@ def test_gs_request_num_predict_equals_configured_total_per_operation_with_sourc
         and isinstance(b, dict)
         and b.get("messages")
     ]
-    assert set(chat_num_predicts) == {3500, 512, 5000, 2048}
+    assert set(chat_num_predicts) == {3500, 512, 5000, 2560}
 
 
 def test_gs_no_request_or_record_carries_thinking_cap_or_answer_budget(
@@ -1680,7 +1680,7 @@ def test_gs_thinking_words_is_recorded_and_nothing_gates_on_it(
 def test_gs_defaults_are_4096_6144_2048(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Card gs Acceptance 4: defaults are render 4,096 (max_num_ctx 8,192), reader_1 Nemotron 6,144 (max_num_ctx 7,168), reader_2 Granite 2,048 (max_num_ctx 8,192), and word_claim 352."""
+    """Card gs Acceptance 4 & Card gw Part A: defaults are render 4,096 (max_num_ctx 8,192), word_claim 4,255 (max_num_ctx 8,192), reader_1 Nemotron 6,144 (max_num_ctx 7,168), and reader_2 Granite 2,560 (max_num_ctx 8,192)."""
     import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 
     transport, requests = build_mock_ollama_http_transport()
@@ -1712,9 +1712,9 @@ def test_gs_defaults_are_4096_6144_2048(
     rep = res["report"]
     by_op = rep["num_predict_config"]["by_operation"]
     assert by_op["render_material"] == {"value": 4096, "source": "default"}
-    assert by_op["word_claim"] == {"value": 352, "source": "default"}
+    assert by_op["word_claim"] == {"value": 4255, "source": "default"}
     assert by_op["read_claim_reader_1"] == {"value": 6144, "source": "default"}
-    assert by_op["read_claim_reader_2"] == {"value": 2048, "source": "default"}
+    assert by_op["read_claim_reader_2"] == {"value": 2560, "source": "default"}
     assert rep["num_ctx_policy"]["max_num_ctx_by_role"] == {
         "writer": 8192,
         "reader_1": 7168,
@@ -1729,23 +1729,31 @@ def test_gs_defaults_are_4096_6144_2048(
         and isinstance(b, dict)
         and b.get("messages")
     ]
-    assert set(chat_num_predicts) == {4096, 352, 6144, 2048}
+    assert set(chat_num_predicts) == {4096, 4255, 6144, 2560}
 
     doc_text = ollama_mod.__doc__ or ""
     assert "3,462" in doc_text
+    assert "3,743" in doc_text
+    assert "4,255" in doc_text
     assert "3,086" in doc_text
     assert "3,434" in doc_text
     assert "1,239" in doc_text
+    assert "1,877" in doc_text
+    assert "2,560" in doc_text
     assert "docs/calibration-2026-10-25.md" in doc_text
 
     repo_root = Path(__file__).resolve().parent.parent
     readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
     assert "3,462" in readme_text
+    assert "3,743" in readme_text
+    assert "4,255" in readme_text
     assert "3,086" in readme_text
     assert "3,434" in readme_text
     assert "1,239" in readme_text
+    assert "1,877" in readme_text
+    assert "2,560" in readme_text
     assert "30,000" in readme_text
-    assert "27.4 GB" in readme_text
+    assert "27,355 MiB" in readme_text
     assert "docs/calibration-2026-10-25.md" in readme_text
 
     cal_doc_text = (repo_root / "docs" / "calibration-2026-10-25.md").read_text(
@@ -1767,6 +1775,10 @@ def test_gs_defaults_are_4096_6144_2048(
         "1,239",
         "8,825 MiB",
         "thinking_words",
+        "4,255",
+        "3,743",
+        "2,560",
+        "1,877",
     ):
         assert expected in cal_doc_text
 
@@ -1842,6 +1854,77 @@ def test_gs_calibrate_suggests_total_num_predict_and_reports_eval_count_and_thin
         assert row["thinking_words"] == 850
         assert "thinking_tokens" not in row
         assert "answer_tokens" not in row
+
+
+def test_gw_prompts_and_report_style_issues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card gw Part C: writer system prompts include style rules and build report carries style_issues (reported, not a gate)."""
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        build_writer_render_messages,
+        build_writer_word_messages,
+    )
+
+    t1 = build_sample_fact_table(seed=1, closure="open")
+    tr1 = build_contrast_triad(t1, seed=1)
+    r_sys = build_writer_render_messages(t1)[0]["content"]
+    w_sys = build_writer_word_messages(tr1.claims["supported"])[0]["content"]
+    for sys_prompt in (r_sys, w_sys):
+        assert "natural, grammatical English" in sys_prompt
+        assert "The <attribute> of <entity> is <value>" in sys_prompt
+        assert "<Entity> has <n> <unit>" in sys_prompt
+        assert "subject-verb agreement" in sys_prompt
+        assert "equals" in sys_prompt
+        assert "36 holds" in sys_prompt
+
+    # 1. Clean build report has 0 style_issues
+    transport_clean, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport_clean,
+    )
+    out_clean = tmp_path / "gw_clean"
+    res_clean = run_pilot_b_build(
+        output_dir=out_clean,
+        triad_count=1,
+        stub_mode=True,
+    )
+    si_clean = res_clean["report"]["style_issues"]
+    assert si_clean["count"] == 0
+    assert si_clean["sentences_checked"] == 8
+    assert si_clean["rate_per_sentence"] == 0.0
+    assert si_clean["examples"] == []
+
+    # 2. Stilted material is kept (not a gate) and reported in style_issues (capped at <= 10 examples)
+    t2 = build_sample_fact_table(seed=2, closure="closed")
+    stilted_lines = [
+        f"1. {t2.facts[0].entity} {t2.facts[0].attribute} equal {t2.facts[0].value} {t2.facts[0].unit}.",
+        f"2. {t2.facts[1].entity} {t2.facts[1].attribute} equals {t2.facts[1].value}.",
+        f"3. The {t2.facts[2].attribute} of {t2.facts[2].entity} is between {t2.facts[2].value[0]} and {t2.facts[2].value[1]} {t2.facts[2].unit}.",
+        f"4. {t2.facts[3].entity} {t2.facts[3].attribute} equals {t2.facts[3].value}.",
+        f"5. The {t2.facts[4].attribute} of {t2.facts[4].entity} equals {t2.facts[4].value}.",
+    ]
+    transport_stilted, _ = build_mock_ollama_http_transport(
+        bad_render_table_ids={t2.table_id: "\n".join(stilted_lines)}
+    )
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport_stilted,
+    )
+    out_stilted = tmp_path / "gw_stilted"
+    res_stilted = run_pilot_b_build(
+        output_dir=out_stilted,
+        triad_count=2,
+        stub_mode=True,
+    )
+    rep_stilted = res_stilted["report"]
+    assert rep_stilted["triads_kept"] == 2
+    si_stilted = rep_stilted["style_issues"]
+    assert si_stilted["count"] > 0
+    assert si_stilted["sentences_checked"] == 16
+    assert si_stilted["rate_per_sentence"] == round(si_stilted["count"] / 16, 4)
+    assert 1 <= len(si_stilted["examples"]) <= 10
+
 
 
 
