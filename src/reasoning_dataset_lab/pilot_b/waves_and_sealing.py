@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from reasoning_dataset_lab.errors import refused_error
+from reasoning_dataset_lab.errors import RdlabError, refused_error
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     ProvedTriad,
     VerdictKey,
@@ -31,11 +31,12 @@ from reasoning_dataset_lab.pilot_b.rendering import (
     check_worded_claim,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
-     DEFAULT_MIN_PASS_RATE_PER_CLASS,
+    DEFAULT_MIN_PASS_RATE_PER_CLASS,
     VERDICT_CLASSES,
     BlindReaderAdapter,
     BlindReadPrompt,
     BlindReadResult,
+    ClaimGateEvaluation,
     ModelIdentity,
     TriadGateEvaluation,
     append_to_review_queue,
@@ -241,40 +242,197 @@ def run_pilot_b_waves(
 
     # Wave 1: render material for all tables (writer model)
     rendered_materials: dict[str, str] = {}
+    render_failed_evals: list[TriadGateEvaluation] = []
+
+    def _build_render_failed_eval(
+        triad_obj: ProvedTriad,
+        material_text: str,
+        partial_claims: dict[VerdictKey, str],
+        reason: str,
+    ) -> TriadGateEvaluation:
+        dummy_r1 = BlindReadResult(
+            claim_id="",
+            reader=reader_1.model,
+            verdict="ambiguous",
+            thinking_tokens=0,
+            completion_tokens=0,
+            seconds=0.0,
+        )
+        dummy_r2 = BlindReadResult(
+            claim_id="",
+            reader=reader_2.model,
+            verdict="ambiguous",
+            thinking_tokens=0,
+            completion_tokens=0,
+            seconds=0.0,
+        )
+        c_evals: dict[VerdictKey, ClaimGateEvaluation] = {}
+        for k in VERDICT_CLASSES:
+            cid = triad_obj.claims[k].claim_id
+            c_evals[k] = ClaimGateEvaluation(
+                claim_id=cid,
+                key=k,
+                read_1=BlindReadResult(
+                    claim_id=cid,
+                    reader=dummy_r1.reader,
+                    verdict="ambiguous",
+                    thinking_tokens=0,
+                    completion_tokens=0,
+                    seconds=0.0,
+                ),
+                read_2=BlindReadResult(
+                    claim_id=cid,
+                    reader=dummy_r2.reader,
+                    verdict="ambiguous",
+                    thinking_tokens=0,
+                    completion_tokens=0,
+                    seconds=0.0,
+                ),
+                agrees_1=False,
+                agrees_2=False,
+                passed=False,
+                failure_reason=reason,
+            )
+        return TriadGateEvaluation(
+            worded=WordedTriad(
+                triad=triad_obj,
+                material=material_text,
+                worded_claims={
+                    k: partial_claims.get(k, "") for k in VERDICT_CLASSES
+                },
+            ),
+            claim_evals=c_evals,
+            passed=False,
+            failure_reasons=(reason,),
+        )
+
     for t in triads:
-        mat = writer_adapter.render_material(t.table)
-        check_rendered_material(t.table, mat)
-        est_thinking = min(thinking_token_cap, 32)
-        est_completion = max(16, len(mat.split()))
+        try:
+            mat = writer_adapter.render_material(t.table)
+            check_rendered_material(t.table, mat)
+        except RdlabError as err:
+            if not err.code.startswith("PILOT_B_RENDER_"):
+                raise
+            last_rec = getattr(writer_adapter, "last_call_record", None)
+            raw_out = str(getattr(writer_adapter, "last_raw_output", ""))
+            tracker.record(
+                wave_name="render",
+                model_name=writer_model.name,
+                target_id=t.table.table_id,
+                thinking_tokens=(
+                    last_rec.thinking_tokens
+                    if last_rec is not None
+                    else min(thinking_token_cap, 32)
+                ),
+                completion_tokens=(
+                    last_rec.eval_tokens
+                    if last_rec is not None
+                    else max(16, len(raw_out.split()))
+                ),
+                seconds=last_rec.wall_time_s if last_rec is not None else 0.02,
+            )
+            render_failed_evals.append(
+                _build_render_failed_eval(
+                    t,
+                    raw_out,
+                    {},
+                    f"rendering_check ({err.code}): {err.message}",
+                )
+            )
+            continue
+
+        last_rec = getattr(writer_adapter, "last_call_record", None)
+        est_thinking = (
+            last_rec.thinking_tokens
+            if last_rec is not None
+            else min(thinking_token_cap, 32)
+        )
+        est_completion = (
+            last_rec.eval_tokens
+            if last_rec is not None
+            else max(16, len(mat.split()))
+        )
+        est_seconds = last_rec.wall_time_s if last_rec is not None else 0.02
         tracker.record(
             wave_name="render",
             model_name=writer_model.name,
             target_id=t.table.table_id,
             thinking_tokens=est_thinking,
             completion_tokens=est_completion,
-            seconds=0.02,
+            seconds=est_seconds,
         )
         rendered_materials[t.triad_id] = mat
 
-    # Wave 2: word all claims across all triads (writer model)
+    # Wave 2: word all claims across all triads that passed Wave 1 (writer model)
     worded_triads: list[WordedTriad] = []
     for t in triads:
+        if t.triad_id not in rendered_materials:
+            continue
         w_claims: dict[VerdictKey, str] = {}
+        word_failed_reason: str | None = None
         for key in VERDICT_CLASSES:
             claim = t.claims[key]
-            w_text = writer_adapter.word_claim(t.table, claim)
-            check_worded_claim(t.table, claim, w_text)
-            est_thinking = min(thinking_token_cap, 24)
-            est_completion = max(8, len(w_text.split()))
+            try:
+                w_text = writer_adapter.word_claim(t.table, claim)
+                check_worded_claim(t.table, claim, w_text)
+            except RdlabError as err:
+                if not err.code.startswith("PILOT_B_RENDER_"):
+                    raise
+                last_rec = getattr(writer_adapter, "last_call_record", None)
+                raw_out = str(getattr(writer_adapter, "last_raw_output", ""))
+                tracker.record(
+                    wave_name="word",
+                    model_name=writer_model.name,
+                    target_id=claim.claim_id,
+                    thinking_tokens=(
+                        last_rec.thinking_tokens
+                        if last_rec is not None
+                        else min(thinking_token_cap, 24)
+                    ),
+                    completion_tokens=(
+                        last_rec.eval_tokens
+                        if last_rec is not None
+                        else max(8, len(raw_out.split()))
+                    ),
+                    seconds=last_rec.wall_time_s if last_rec is not None else 0.01,
+                )
+                w_claims[key] = raw_out
+                word_failed_reason = f"wording_check ({err.code}): {err.message}"
+                break
+
+            last_rec = getattr(writer_adapter, "last_call_record", None)
+            est_thinking = (
+                last_rec.thinking_tokens
+                if last_rec is not None
+                else min(thinking_token_cap, 24)
+            )
+            est_completion = (
+                last_rec.eval_tokens
+                if last_rec is not None
+                else max(8, len(w_text.split()))
+            )
+            est_seconds = last_rec.wall_time_s if last_rec is not None else 0.01
             tracker.record(
                 wave_name="word",
                 model_name=writer_model.name,
                 target_id=claim.claim_id,
                 thinking_tokens=est_thinking,
                 completion_tokens=est_completion,
-                seconds=0.01,
+                seconds=est_seconds,
             )
             w_claims[key] = w_text
+
+        if word_failed_reason is not None:
+            render_failed_evals.append(
+                _build_render_failed_eval(
+                    t,
+                    rendered_materials[t.triad_id],
+                    w_claims,
+                    word_failed_reason,
+                )
+            )
+            continue
+
         worded_triads.append(
             WordedTriad(
                 triad=t,
@@ -333,9 +491,9 @@ def run_pilot_b_waves(
         reads_2_list.append(r2_map)
 
     # Evaluate unanimity per triad
-    evaluations: list[TriadGateEvaluation] = []
+    evaluations: list[TriadGateEvaluation] = list(render_failed_evals)
     kept: list[TriadGateEvaluation] = []
-    failed: list[TriadGateEvaluation] = []
+    failed: list[TriadGateEvaluation] = list(render_failed_evals)
     for wt, r1_map, r2_map in zip(worded_triads, reads_1_list, reads_2_list):
         ev = evaluate_triad_unanimity(wt, r1_map, r2_map)
         evaluations.append(ev)
