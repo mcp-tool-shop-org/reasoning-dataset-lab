@@ -488,12 +488,6 @@ STYLE_EQUALS_RE: re.Pattern[str] = re.compile(
     r"\b(?:equals?|is\s+equal\s+to|equal\s+to)\b",
     re.IGNORECASE,
 )
-STYLE_BARE_ENTITY_ATTR_RE: re.Pattern[str] = re.compile(
-    r"^(?!The\b)(?:[A-Z][a-zA-Z0-9-]*\s+)+(?:[a-z][a-zA-Z0-9-]*\s+)+(?:is|are|equals?)\b"
-)
-STYLE_THE_ATTR_OF_ENTITY_IS_RE: re.Pattern[str] = re.compile(
-    r"^The\s+(?P<attr>[a-zA-Z][a-zA-Z0-9\s-]*?)\s+of\s+(?:[A-Z][a-zA-Z0-9-]*\s*)+\s*is\b"
-)
 STYLE_NUM_UNIT_RE: re.Pattern[str] = re.compile(
     r"\b\d+(?:\.\d+)?\s+(?P<unit>[a-z]{3,})\b"
 )
@@ -537,6 +531,52 @@ class StyleIssue(dict[str, str]):
         return self["detail"]
 
 
+def _has_bare_entity_attribute_verb(words: list[str]) -> bool:
+    if not words or words[0].lower() == "the":
+        return False
+    idx = 0
+    while idx < len(words) and words[idx][:1].isupper():
+        idx += 1
+    if idx == 0:
+        return False
+    attr_start = idx
+    stop_verbs = {"is", "are", "equal", "equals", "has", "have"}
+    while (
+        idx < len(words)
+        and words[idx][:1].islower()
+        and words[idx].lower() not in stop_verbs
+    ):
+        idx += 1
+    return (
+        idx > attr_start
+        and idx < len(words)
+        and words[idx].lower() in {"is", "are", "equal", "equals"}
+    )
+
+
+def _find_plural_attr_before_of_is(words: list[str]) -> str | None:
+    if len(words) < 5 or words[0].lower() != "the":
+        return None
+    lower_words = [w.lower() for w in words]
+    if "of" not in lower_words[2:]:
+        return None
+    of_idx = lower_words.index("of", 2)
+    attr_words = words[1:of_idx]
+    if not attr_words:
+        return None
+    ent_end = of_idx + 1
+    while ent_end < len(words) and words[ent_end][:1].isupper():
+        ent_end += 1
+    if ent_end == of_idx + 1 or ent_end >= len(words):
+        return None
+    if lower_words[ent_end] != "is":
+        return None
+    head_noun = attr_words[-1].lower()
+    if head_noun.endswith("s") and not head_noun.endswith(("ss", "us", "is")):
+        return " ".join(attr_words)
+    return None
+
+
 def style_lint(text: str) -> list[StyleIssue]:
     """Deterministically flag stilted rendering patterns (reported in the build report, not a gate)."""
     issues: list[StyleIssue] = []
@@ -558,7 +598,10 @@ def style_lint(text: str) -> list[StyleIssue]:
                 )
             )
 
-        if STYLE_BARE_ENTITY_ATTR_RE.search(sent) is not None:
+        words = [
+            w.strip(".,;:!?") for w in sent.split() if w.strip(".,;:!?")
+        ]
+        if _has_bare_entity_attribute_verb(words):
             issues.append(
                 StyleIssue(
                     kind="missing_article_of",
@@ -567,21 +610,15 @@ def style_lint(text: str) -> list[StyleIssue]:
                 )
             )
 
-        m_pl = STYLE_THE_ATTR_OF_ENTITY_IS_RE.search(sent)
-        if m_pl is not None:
-            attr_words = m_pl.group("attr").strip().split()
-            if attr_words:
-                head_noun = attr_words[-1].lower()
-                if head_noun.endswith("s") and not head_noun.endswith(
-                    ("ss", "us", "is")
-                ):
-                    issues.append(
-                        StyleIssue(
-                            kind="plural_is_agreement",
-                            sentence=sent,
-                            detail=f"Plural attribute '{m_pl.group('attr')}' is followed by singular 'is'.",
-                        )
-                    )
+        plural_attr = _find_plural_attr_before_of_is(words)
+        if plural_attr is not None:
+            issues.append(
+                StyleIssue(
+                    kind="plural_is_agreement",
+                    sentence=sent,
+                    detail=f"Plural attribute '{plural_attr}' is followed by singular 'is'.",
+                )
+            )
 
         for m_u in STYLE_NUM_UNIT_RE.finditer(sent):
             unit_word = m_u.group("unit").lower()
