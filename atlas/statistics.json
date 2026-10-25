@@ -83,7 +83,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 0,
+      "qualifyingSourceCommits": 1,
       "rebaseline": null
     }
   ],
@@ -116,8 +116,8 @@
         "path": "LICENSE"
       },
       {
-        "commits": 5,
-        "lines": 113,
+        "commits": 6,
+        "lines": 142,
         "path": "README.md"
       },
       {
@@ -126,8 +126,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 6,
-        "lines": 135,
+        "commits": 7,
+        "lines": 152,
         "path": "atlas/README.md"
       },
       {
@@ -136,18 +136,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 6,
-        "lines": 344,
+        "commits": 7,
+        "lines": 376,
         "path": "atlas/page.json"
       },
       {
-        "commits": 6,
-        "lines": 663,
+        "commits": 7,
+        "lines": 709,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 6,
-        "lines": 8712,
+        "commits": 7,
+        "lines": 9556,
         "path": "atlas/structure.json"
       },
       {
@@ -261,8 +261,8 @@
         "path": "tests/test_map.py"
       },
       {
-        "commits": 2,
-        "lines": 1590,
+        "commits": 3,
+        "lines": 2002,
         "path": "tests/test_pilot_b_ollama_adapters.py"
       },
       {
@@ -311,9 +311,9 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-25T12:25:08.458Z",
+  "generatedAt": "2026-10-25T12:55:57.198Z",
   "generatedFrom": {
-    "commit": "04563d8c1fad6a12e35bc3663ef65fb3ea08f95a"
+    "commit": "76c967d148d1615a826e1ff7215e885289b8272f"
   },
   "pairs": [],
   "parameters": {
@@ -326,16 +326,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-25T08:20:10-04:00",
+    "headDate": "2026-10-25T08:25:35-04:00",
     "inScopeFiles": 43,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 2,
+    "qualifyingCommits": 3,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-28T12:20:10.000Z",
+    "since": "2026-04-28T12:25:35.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

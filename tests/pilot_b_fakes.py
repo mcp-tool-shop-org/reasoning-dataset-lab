@@ -156,11 +156,11 @@ class UnanimousReaderFake:
         self,
         model: ModelIdentity,
         oracle_triads: Sequence[WordedTriad] = (),
-        thinking_tokens: int = 24,
+        thinking_words: int = 24,
         completion_tokens: int = 6,
     ) -> None:
         self._model = model
-        self._thinking_tokens = thinking_tokens
+        self._thinking_words = thinking_words
         self._completion_tokens = completion_tokens
         self._lookup: dict[str, VerdictKey] = {}
         for wt in oracle_triads:
@@ -247,7 +247,7 @@ class UnanimousReaderFake:
             claim_id=prompt.claim_id,
             reader=self._model,
             verdict=verdict,
-            thinking_tokens=self._thinking_tokens,
+            thinking_words=self._thinking_words,
             completion_tokens=self._completion_tokens,
             seconds=0.01,
         )
@@ -273,7 +273,7 @@ class AmbiguousClaimReaderFake(UnanimousReaderFake):
                 claim_id=prompt.claim_id,
                 reader=self.model,
                 verdict="ambiguous",
-                thinking_tokens=24,
+                thinking_words=24,
                 completion_tokens=6,
                 seconds=0.01,
             )
@@ -300,7 +300,7 @@ class DisagreeingReaderFake(UnanimousReaderFake):
                 claim_id=prompt.claim_id,
                 reader=self.model,
                 verdict=self._flips[prompt.claim_id],
-                thinking_tokens=24,
+                thinking_words=24,
                 completion_tokens=6,
                 seconds=0.01,
             )

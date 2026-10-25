@@ -1,11 +1,11 @@
-"""Part D: Waves, caps and sealing (DESIGN.md ruling 5a, ruling 8b, §2.1, §7, §11 B.4).
+"""Part D: Waves, num_predict configuration, and sealing (DESIGN.md ruling 5a, ruling 8b, §2.1, §7, §11 B.4).
 
 Runs go in single-model waves (render, word, reader_1, reader_2), each model loaded once,
-never interleaved per triad. Caps thinking tokens per call and records the cap. Keys go
-only to keys.sealed.jsonl, and the freeze refuses any key-bearing field name or per-item
-key-derived value anywhere else in the part. Items are shuffled with a recorded seed so
-a triad's position cannot hint at its key, and provenance carries judgment outcomes only
-as aggregates (§2.1).
+never interleaved per triad. Configures a total num_predict per operation and records its value
+and source, plus informational thinking_words. Keys go only to keys.sealed.jsonl, and the freeze
+refuses any key-bearing field name or per-item key-derived value anywhere else in the part.
+Items are shuffled with a recorded seed so a triad's position cannot hint at its key, and
+provenance carries judgment outcomes only as aggregates (§2.1).
 """
 
 from __future__ import annotations
@@ -27,20 +27,16 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
 )
 from reasoning_dataset_lab.pilot_b.ollama import (
     DEFAULT_ROLE_MAX_NUM_CTX,
-    DOCUMENTED_DEFAULT_ANSWER_BUDGET,
-    DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
+    DOCUMENTED_DEFAULT_NUM_PREDICT,
     NUM_CTX_MARGIN_TOKENS,
     NUM_CTX_STEP_TOKENS,
     PROMPT_TOKEN_ESTIMATE_RULE,
-    AnswerBudgetConfig,
-    AnswerBudgetSource,
+    NumPredictConfig,
+    NumPredictSource,
     OllamaBlindReaderAdapter,
     OllamaOperation,
     OllamaWriterAdapter,
-    ThinkingCapConfig,
-    ThinkingCapSource,
-    coerce_answer_budget_config,
-    coerce_thinking_cap_config,
+    coerce_num_predict_config,
 )
 from reasoning_dataset_lab.pilot_b.rendering import (
     PilotBWriterAdapter,
@@ -66,8 +62,8 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
 
 WaveName = Literal["render", "word", "reader_1", "reader_2"]
 EXPECTED_WAVE_ORDER: tuple[WaveName, ...] = ("render", "word", "reader_1", "reader_2")
-# Documented default only (Card gp Part B: the thinking cap is configuration, never a constant source of truth)
-DEFAULT_THINKING_TOKEN_CAP: int = DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP
+# Documented default only (Card gs: total num_predict per operation is configuration, never a constant source of truth)
+DEFAULT_NUM_PREDICT: int = DOCUMENTED_DEFAULT_NUM_PREDICT
 WAVE_TO_OPERATION: dict[WaveName, OllamaOperation] = {
     "render": "render_material",
     "word": "word_claim",
@@ -97,7 +93,7 @@ class WaveCallEntry:
     wave_name: WaveName
     model_name: str
     target_id: str
-    thinking_tokens: int
+    thinking_words: int
     completion_tokens: int
     seconds: float
     num_ctx: int = 0
@@ -107,7 +103,7 @@ class WaveCallEntry:
             "wave_name": self.wave_name,
             "model_name": self.model_name,
             "target_id": self.target_id,
-            "thinking_tokens": self.thinking_tokens,
+            "thinking_words": self.thinking_words,
             "completion_tokens": self.completion_tokens,
             "seconds": self.seconds,
             "num_ctx": self.num_ctx,
@@ -123,18 +119,16 @@ class WaveMetric:
     model_family: str
     model_digest: str
     calls: int
-    thinking_token_cap: int
-    thinking_tokens_total: int
-    max_thinking_tokens_observed: int
+    num_predict: int
+    thinking_words_total: int
+    max_thinking_words_observed: int
     completion_tokens_total: int
     seconds_total: float
     adapter: str = ""
     unloaded: bool = False
     max_num_ctx: int = 0
     max_num_ctx_observed: int = 0
-    thinking_token_cap_source: ThinkingCapSource = "default"
-    answer_budget: int = DOCUMENTED_DEFAULT_ANSWER_BUDGET
-    answer_budget_source: AnswerBudgetSource = "default"
+    num_predict_source: NumPredictSource = "default"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -144,12 +138,10 @@ class WaveMetric:
             "model_family": self.model_family,
             "model_digest": self.model_digest,
             "calls": self.calls,
-            "thinking_token_cap": self.thinking_token_cap,
-            "thinking_token_cap_source": self.thinking_token_cap_source,
-            "answer_budget": self.answer_budget,
-            "answer_budget_source": self.answer_budget_source,
-            "thinking_tokens_total": self.thinking_tokens_total,
-            "max_thinking_tokens_observed": self.max_thinking_tokens_observed,
+            "num_predict": self.num_predict,
+            "num_predict_source": self.num_predict_source,
+            "thinking_words_total": self.thinking_words_total,
+            "max_thinking_words_observed": self.max_thinking_words_observed,
             "completion_tokens_total": self.completion_tokens_total,
             "eval_tokens_total": self.completion_tokens_total,
             "seconds_total": round(self.seconds_total, 4),
@@ -167,7 +159,7 @@ class PilotBWaveRunResult:
     writer_model: ModelIdentity
     reader_1_model: ModelIdentity
     reader_2_model: ModelIdentity
-    thinking_token_cap: int
+    num_predict: int
     wave_metrics: tuple[WaveMetric, ...]
     call_log: tuple[WaveCallEntry, ...]
     kept_triads: tuple[TriadGateEvaluation, ...]
@@ -184,50 +176,33 @@ class PilotBWaveRunResult:
     writer_call_records: Mapping[str, dict[str, object]] | None = None
     reader_1_call_records: Mapping[str, dict[str, object]] | None = None
     reader_2_call_records: Mapping[str, dict[str, object]] | None = None
-    thinking_token_cap_source: ThinkingCapSource = "default"
-    thinking_cap_config: ThinkingCapConfig | None = None
-    answer_budget: int = DOCUMENTED_DEFAULT_ANSWER_BUDGET
-    answer_budget_source: AnswerBudgetSource = "default"
-    answer_budget_config: AnswerBudgetConfig | None = None
+    num_predict_source: NumPredictSource = "default"
+    num_predict_config: NumPredictConfig | None = None
 
 
 class WaveCallTracker:
-    """Enforces strict non-interleaved wave execution and per-call thinking token caps."""
+    """Enforces strict non-interleaved wave execution and records per-operation num_predict and thinking_words."""
 
     def __init__(
         self,
-        thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
+        num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
         *,
-        thinking_cap_source: ThinkingCapSource | None = None,
-        answer_budget: int | AnswerBudgetConfig | Mapping[str, Any] | None = None,
-        answer_budget_source: AnswerBudgetSource | None = None,
+        num_predict_source: NumPredictSource | None = None,
     ) -> None:
-        self._cap_config = coerce_thinking_cap_config(
-            thinking_token_cap, source=thinking_cap_source
+        self._num_predict_config = coerce_num_predict_config(
+            num_predict, source=num_predict_source
         )
-        self._cap = self._cap_config.effective_cap
-        self._budget_config = coerce_answer_budget_config(
-            answer_budget, source=answer_budget_source
-        )
-        self._budget = self._budget_config.effective_budget
+        self._num_predict = self._num_predict_config.effective_num_predict
         self._entries: list[WaveCallEntry] = []
         self._seen_waves: list[WaveName] = []
 
     @property
-    def thinking_token_cap(self) -> int:
-        return self._cap
+    def num_predict(self) -> int:
+        return self._num_predict
 
     @property
-    def thinking_cap_config(self) -> ThinkingCapConfig:
-        return self._cap_config
-
-    @property
-    def answer_budget(self) -> int:
-        return self._budget
-
-    @property
-    def answer_budget_config(self) -> AnswerBudgetConfig:
-        return self._budget_config
+    def num_predict_config(self) -> NumPredictConfig:
+        return self._num_predict_config
 
     @property
     def entries(self) -> tuple[WaveCallEntry, ...]:
@@ -239,7 +214,7 @@ class WaveCallTracker:
         wave_name: WaveName,
         model_name: str,
         target_id: str,
-        thinking_tokens: int,
+        thinking_words: int,
         completion_tokens: int,
         seconds: float,
         num_ctx: int = 0,
@@ -269,7 +244,7 @@ class WaveCallTracker:
                 wave_name=wave_name,
                 model_name=model_name,
                 target_id=target_id,
-                thinking_tokens=thinking_tokens,
+                thinking_words=thinking_words,
                 completion_tokens=completion_tokens,
                 seconds=seconds,
                 num_ctx=num_ctx,
@@ -288,19 +263,22 @@ class WaveCallTracker:
         wave_calls = [e for e in self._entries if e.wave_name == wave_name]
         resolved_max_ctx = max_num_ctx if max_num_ctx > 0 else model.max_num_ctx
         op = WAVE_TO_OPERATION[wave_name]
+        role = (
+            "reader_2"
+            if wave_name == "reader_2"
+            else ("reader_1" if wave_name == "reader_1" else None)
+        )
         return WaveMetric(
             wave_name=wave_name,
             model_name=model.name,
             model_family=model.normalized_family,
             model_digest=model.digest,
             calls=len(wave_calls),
-            thinking_token_cap=self._cap_config.cap_for(op),
-            thinking_token_cap_source=self._cap_config.source_for(op),
-            answer_budget=self._budget_config.budget_for(op),
-            answer_budget_source=self._budget_config.source_for(op),
-            thinking_tokens_total=sum(e.thinking_tokens for e in wave_calls),
-            max_thinking_tokens_observed=max(
-                (e.thinking_tokens for e in wave_calls), default=0
+            num_predict=self._num_predict_config.num_predict_for(op, role=role),
+            num_predict_source=self._num_predict_config.source_for(op, role=role),
+            thinking_words_total=sum(e.thinking_words for e in wave_calls),
+            max_thinking_words_observed=max(
+                (e.thinking_words for e in wave_calls), default=0
             ),
             completion_tokens_total=sum(e.completion_tokens for e in wave_calls),
             seconds_total=round(sum(e.seconds for e in wave_calls), 4),
@@ -319,10 +297,8 @@ def run_pilot_b_waves(
     reader_1: BlindReaderAdapter,
     reader_2: BlindReaderAdapter,
     review_queue_path: Path,
-    thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
-    thinking_cap_source: ThinkingCapSource | None = None,
-    answer_budget: int | AnswerBudgetConfig | Mapping[str, Any] | None = None,
-    answer_budget_source: AnswerBudgetSource | None = None,
+    num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
+    num_predict_source: NumPredictSource | None = None,
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
 ) -> PilotBWaveRunResult:
     """Execute Pilot B in 4 strict single-model waves: render -> word -> reader_1 -> reader_2."""
@@ -330,22 +306,17 @@ def run_pilot_b_waves(
     for t in triads:
         verify_triad_against_table(t.table, t)
 
-    cap_config = coerce_thinking_cap_config(
-        thinking_token_cap, source=thinking_cap_source
-    )
-    effective_cap = cap_config.effective_cap
-    if answer_budget is not None:
-        budget_config = coerce_answer_budget_config(
-            answer_budget, source=answer_budget_source
+    if num_predict is not None:
+        np_config = coerce_num_predict_config(
+            num_predict, source=num_predict_source
         )
-    elif isinstance(getattr(writer_adapter, "answer_budget_config", None), AnswerBudgetConfig):
-        budget_config = getattr(writer_adapter, "answer_budget_config")
+    elif isinstance(getattr(writer_adapter, "num_predict_config", None), NumPredictConfig):
+        np_config = getattr(writer_adapter, "num_predict_config")
     else:
-        budget_config = coerce_answer_budget_config(None, source=answer_budget_source)
-    effective_budget = budget_config.effective_budget
+        np_config = coerce_num_predict_config(None, source=num_predict_source)
+    effective_num_predict = np_config.effective_num_predict
     tracker = WaveCallTracker(
-        thinking_token_cap=cap_config,
-        answer_budget=budget_config,
+        num_predict=np_config,
     )
 
     # Wave 1: render material for all tables (writer model)
@@ -362,7 +333,7 @@ def run_pilot_b_waves(
             claim_id="",
             reader=reader_1.model,
             verdict="ambiguous",
-            thinking_tokens=0,
+            thinking_words=0,
             completion_tokens=0,
             seconds=0.0,
         )
@@ -370,7 +341,7 @@ def run_pilot_b_waves(
             claim_id="",
             reader=reader_2.model,
             verdict="ambiguous",
-            thinking_tokens=0,
+            thinking_words=0,
             completion_tokens=0,
             seconds=0.0,
         )
@@ -384,7 +355,7 @@ def run_pilot_b_waves(
                     claim_id=cid,
                     reader=dummy_r1.reader,
                     verdict="ambiguous",
-                    thinking_tokens=0,
+                    thinking_words=0,
                     completion_tokens=0,
                     seconds=0.0,
                 ),
@@ -392,7 +363,7 @@ def run_pilot_b_waves(
                     claim_id=cid,
                     reader=dummy_r2.reader,
                     verdict="ambiguous",
-                    thinking_tokens=0,
+                    thinking_words=0,
                     completion_tokens=0,
                     seconds=0.0,
                 ),
@@ -430,10 +401,10 @@ def run_pilot_b_waves(
                 wave_name="render",
                 model_name=writer_model.name,
                 target_id=t.table.table_id,
-                thinking_tokens=(
-                    last_rec.thinking_tokens
+                thinking_words=(
+                    last_rec.thinking_words
                     if last_rec is not None
-                    else min(cap_config.cap_for("render_material"), 32)
+                    else min(np_config.num_predict_for("render_material"), 32)
                 ),
                 completion_tokens=(
                     last_rec.eval_tokens
@@ -461,9 +432,9 @@ def run_pilot_b_waves(
 
         last_rec = getattr(writer_adapter, "last_call_record", None)
         est_thinking = (
-            last_rec.thinking_tokens
+            last_rec.thinking_words
             if last_rec is not None
-            else min(cap_config.cap_for("render_material"), 32)
+            else min(np_config.num_predict_for("render_material"), 32)
         )
         est_completion = (
             last_rec.eval_tokens
@@ -476,7 +447,7 @@ def run_pilot_b_waves(
             wave_name="render",
             model_name=writer_model.name,
             target_id=t.table.table_id,
-            thinking_tokens=est_thinking,
+            thinking_words=est_thinking,
             completion_tokens=est_completion,
             seconds=est_seconds,
             num_ctx=est_num_ctx,
@@ -512,10 +483,10 @@ def run_pilot_b_waves(
                     wave_name="word",
                     model_name=writer_model.name,
                     target_id=claim.claim_id,
-                    thinking_tokens=(
-                        last_rec.thinking_tokens
+                    thinking_words=(
+                        last_rec.thinking_words
                         if last_rec is not None
-                        else min(cap_config.cap_for("word_claim"), 24)
+                        else min(np_config.num_predict_for("word_claim"), 24)
                     ),
                     completion_tokens=(
                         last_rec.eval_tokens
@@ -537,9 +508,9 @@ def run_pilot_b_waves(
 
             last_rec = getattr(writer_adapter, "last_call_record", None)
             est_thinking = (
-                last_rec.thinking_tokens
+                last_rec.thinking_words
                 if last_rec is not None
-                else min(cap_config.cap_for("word_claim"), 24)
+                else min(np_config.num_predict_for("word_claim"), 24)
             )
             est_completion = (
                 last_rec.eval_tokens
@@ -552,7 +523,7 @@ def run_pilot_b_waves(
                 wave_name="word",
                 model_name=writer_model.name,
                 target_id=claim.claim_id,
-                thinking_tokens=est_thinking,
+                thinking_words=est_thinking,
                 completion_tokens=est_completion,
                 seconds=est_seconds,
                 num_ctx=est_num_ctx,
@@ -613,7 +584,7 @@ def run_pilot_b_waves(
                     claim_id=t_prompts[key].claim_id,
                     reader=reader_1.model,
                     verdict="ambiguous",
-                    thinking_tokens=0,
+                    thinking_words=0,
                     completion_tokens=0,
                     seconds=0.0,
                     raw_text="",
@@ -625,7 +596,7 @@ def run_pilot_b_waves(
                 wave_name="reader_1",
                 model_name=reader_1.model.name,
                 target_id=t_prompts[key].claim_id,
-                thinking_tokens=res1.thinking_tokens,
+                thinking_words=res1.thinking_words,
                 completion_tokens=res1.completion_tokens,
                 seconds=res1.seconds,
                 num_ctx=res1.num_ctx,
@@ -653,7 +624,7 @@ def run_pilot_b_waves(
                     claim_id=t_prompts[key].claim_id,
                     reader=reader_2.model,
                     verdict="ambiguous",
-                    thinking_tokens=0,
+                    thinking_words=0,
                     completion_tokens=0,
                     seconds=0.0,
                     raw_text="",
@@ -665,7 +636,7 @@ def run_pilot_b_waves(
                 wave_name="reader_2",
                 model_name=reader_2.model.name,
                 target_id=t_prompts[key].claim_id,
-                thinking_tokens=res2.thinking_tokens,
+                thinking_words=res2.thinking_words,
                 completion_tokens=res2.completion_tokens,
                 seconds=res2.seconds,
                 num_ctx=res2.num_ctx,
@@ -760,7 +731,7 @@ def run_pilot_b_waves(
         writer_model=writer_model,
         reader_1_model=reader_1.model,
         reader_2_model=reader_2.model,
-        thinking_token_cap=effective_cap,
+        num_predict=effective_num_predict,
         wave_metrics=wave_metrics,
         call_log=tracker.entries,
         kept_triads=tuple(kept),
@@ -777,11 +748,8 @@ def run_pilot_b_waves(
         writer_call_records=w_call_map,
         reader_1_call_records=r1_call_map,
         reader_2_call_records=r2_call_map,
-        thinking_token_cap_source=cap_config.source,
-        thinking_cap_config=cap_config,
-        answer_budget=effective_budget,
-        answer_budget_source=budget_config.source,
-        answer_budget_config=budget_config,
+        num_predict_source=np_config.source,
+        num_predict_config=np_config,
     )
 
 
@@ -955,26 +923,14 @@ def write_sealed_part(
                 "source_match": wave_result.writer_model.source_match,
                 "source_match_reason": wave_result.writer_model.source_match_reason,
                 "messages_sha256": msg_sha,
-                "thinking_token_cap": wave_result.thinking_token_cap,
-                "thinking_token_cap_source": wave_result.thinking_token_cap_source,
-                "thinking_cap_config": (
-                    wave_result.thinking_cap_config.to_dict()
-                    if wave_result.thinking_cap_config is not None
+                "num_predict": wave_result.num_predict,
+                "num_predict_source": wave_result.num_predict_source,
+                "num_predict_config": (
+                    wave_result.num_predict_config.to_dict()
+                    if wave_result.num_predict_config is not None
                     else {
-                        "default_cap": wave_result.thinking_token_cap,
-                        "source": wave_result.thinking_token_cap_source,
-                        "by_operation": {},
-                        "sources_by_operation": {},
-                    }
-                ),
-                "answer_budget": wave_result.answer_budget,
-                "answer_budget_source": wave_result.answer_budget_source,
-                "answer_budget_config": (
-                    wave_result.answer_budget_config.to_dict()
-                    if wave_result.answer_budget_config is not None
-                    else {
-                        "default_budget": wave_result.answer_budget,
-                        "source": wave_result.answer_budget_source,
+                        "default_num_predict": wave_result.num_predict,
+                        "source": wave_result.num_predict_source,
                         "by_operation": {},
                         "sources_by_operation": {},
                     }
@@ -1096,26 +1052,14 @@ def write_sealed_part(
         "map_version": map_version,
         "map_sha256": map_sha256,
         "shuffle_seed": shuffle_seed,
-        "thinking_token_cap": wave_result.thinking_token_cap,
-        "thinking_token_cap_source": wave_result.thinking_token_cap_source,
-        "thinking_cap_config": (
-            wave_result.thinking_cap_config.to_dict()
-            if wave_result.thinking_cap_config is not None
+        "num_predict": wave_result.num_predict,
+        "num_predict_source": wave_result.num_predict_source,
+        "num_predict_config": (
+            wave_result.num_predict_config.to_dict()
+            if wave_result.num_predict_config is not None
             else {
-                "default_cap": wave_result.thinking_token_cap,
-                "source": wave_result.thinking_token_cap_source,
-                "by_operation": {},
-                "sources_by_operation": {},
-            }
-        ),
-        "answer_budget": wave_result.answer_budget,
-        "answer_budget_source": wave_result.answer_budget_source,
-        "answer_budget_config": (
-            wave_result.answer_budget_config.to_dict()
-            if wave_result.answer_budget_config is not None
-            else {
-                "default_budget": wave_result.answer_budget,
-                "source": wave_result.answer_budget_source,
+                "default_num_predict": wave_result.num_predict,
+                "source": wave_result.num_predict_source,
                 "by_operation": {},
                 "sources_by_operation": {},
             }

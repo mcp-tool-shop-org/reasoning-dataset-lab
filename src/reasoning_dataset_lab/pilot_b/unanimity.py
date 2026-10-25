@@ -106,7 +106,7 @@ class BlindReadResult:
     claim_id: str
     reader: ModelIdentity
     verdict: ReaderVerdict
-    thinking_tokens: int = 16
+    thinking_words: int = 16
     completion_tokens: int = 8
     seconds: float = 0.01
     raw_text: str = ""
@@ -124,7 +124,7 @@ class BlindReadResult:
             "prompt_sha256": self.prompt_sha256,
             "done_reason": self.done_reason,
             "num_ctx": self.num_ctx,
-            "thinking_tokens": self.thinking_tokens,
+            "thinking_words": self.thinking_words,
             "completion_tokens": self.completion_tokens,
             "seconds": self.seconds,
         }

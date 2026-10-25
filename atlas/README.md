@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-25 from commit 04563d8 by Atlas 1.24.0.
+Mapped at 2026-10-25 from commit 76c967d by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,14 +8,13 @@ reasoning-dataset-lab validates dataset maps, loads the five-file project config
 
 5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
 
-## What changed since 2026-10-25 (7ad36a1)
+## What changed since 2026-10-25 (04563d8)
 
-- README.md is now also read by tests/test_pilot_b_ollama_adapters.py.
-- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_answer_budget_config`, before `resolve_answer_budget_config`.
-- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `resolve_answer_budget_config`, before `coerce_answer_budget_config`.
-- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_answer_budget_config`, before `refused_error`.
-- And 3 more changes to the order of work.
-- 6 files changed content, across 3 parts.
+- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_num_predict_config`, before `resolve_num_predict_config`.
+- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `resolve_num_predict_config`, before `coerce_num_predict_config`.
+- In src/reasoning_dataset_lab/pilot_b/models_and_build.py, `run_pilot_b_build` gained a step, `coerce_num_predict_config`, before `refused_error`.
+- And 9 more changes to the order of work.
+- 10 files changed content, across 3 parts.
 
 ## What comes in
 
@@ -74,7 +73,7 @@ Read those in order to follow one pull request end to end.
 
 - 6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
 - 2 reads use paths built at run time and are not named here.
-- 8 writes and 17 reads go to a path their caller passes, not to this repository.
+- 8 writes and 16 reads go to a path their caller passes, not to this repository.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.

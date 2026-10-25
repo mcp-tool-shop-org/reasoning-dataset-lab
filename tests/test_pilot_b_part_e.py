@@ -126,7 +126,7 @@ def test_stub_build_10_triads_end_to_end_and_build_report_fields(
         stub_mode=True,
         seed=1,
         shuffle_seed=42,
-        thinking_token_cap=256,
+        num_predict=256,
     )
 
     report = result["report"]

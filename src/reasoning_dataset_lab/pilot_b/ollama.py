@@ -1,4 +1,4 @@
-"""Part A: Real loopback Ollama writer adapter for Pilot B (Card gk Part A, Card gn, Card gp & Card gr).
+"""Part A: Real loopback Ollama writer and blind-reader adapters for Pilot B (Card gk, Card gn, Card gp, Card gr, Card gs).
 
 Relies on the official Ollama HTTP API (`https://github.com/ollama/ollama/blob/main/docs/api.md`):
 - `GET /api/tags` (`https://github.com/ollama/ollama/blob/main/docs/api.md#list-local-models`):
@@ -7,19 +7,32 @@ Relies on the official Ollama HTTP API (`https://github.com/ollama/ollama/blob/m
   is never called).
 - `POST /api/chat` (`https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion`):
   sends `model` (pinned `ollama_tag`), `messages`, top-level `think` (`docs/api.md:499`), `stream: false`,
-  and `options: {"temperature": 0, "num_predict": <cap + answer_budget>, "num_ctx": <computed_num_ctx>}`
+  and `options: {"temperature": 0, "num_predict": <configured_total_num_predict>, "num_ctx": <computed_num_ctx>}`
   (`docs/api.md:393`, `:513`); reads `message.content`, `message.thinking` (`docs/api.md:505`),
-  `done_reason` (`docs/api.md:658`), `eval_count`, and `thinking_tokens` / `thinking_eval_count`.
+  `done_reason` (`docs/api.md:658`), and `eval_count`.
 - `POST /api/chat` with `keep_alive: 0` (`https://github.com/ollama/ollama/blob/main/docs/api.md#unload-a-model`):
   unloads the model from VRAM after each wave.
 
-Provisional render defaults — **PROVISIONAL (n = 3, 2026-10-25)**:
-- `render_material` thinking cap `2,048` and answer budget `1,792` (calibrated at `num_predict` `4,096`;
-  `cap + answer_budget = 3,840`), with writer `max_num_ctx` `8,192`.
-- Measured on `qwen3.6:35b` (`a7eb95c5`, `think: true`, 3 tables at `num_predict 4,096`, `num_ctx 8,192`):
-  thinking `1,144 / 1,234 / 1,945`; answers `951 / 1,072 / 1,517`; peak `25,229 MiB` at `num_ctx 8,192`.
-- `word_claim` (`cap = 256`, `answer_budget = 96`) and `read_claim` (`cap = 256`, `answer_budget = 32`)
-  keep their existing defaults pending separate calibration.
+Publisher rulings (Card gs, 2026-10-25 — replaces the withdrawn thinking/answer split):
+1. **One total `num_predict` per operation**, as configuration (`cli` > `config` > `default`), with the
+   value and its source recorded. No separate thinking cap and no answer budget as controls.
+2. **Thinking is recorded as `thinking_words`** (word count of `message.thinking`), for information only;
+   nothing gates on it.
+3. **Provisional defaults** (until the next stub's per-call p95 of `eval_count`):
+   - `render_material` (writer, `qwen3.6:35b`): `num_predict = 4,096`, `max_num_ctx = 8,192`.
+     Source: `E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-render/FINDINGS.md` and
+     `E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-read/FINDINGS.md` — render `eval_count`
+     max `3,462` (`n = 3`: `2,095 / 2,306 / 3,462`; peak VRAM `25,229 MiB`–`25,309 MiB` at `num_ctx 8,192`).
+   - `read_claim` on `reader_1` (`nemotron-3.5-lightning:30b`): `num_predict = 6,144`, `max_num_ctx = 7,168`.
+     Source: `E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-nemotron/FINDINGS.md` and
+     `E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-read/FINDINGS.md` — Nemotron `eval_count`
+     p95 `3,086` and max `3,434` (`n = 20`), plus one earlier call cut off at `4,096` (`n = 9`). Runs under
+     the Publisher's recorded exception to the 26 GB plan rule (alone on the card, halt at `30,000 MiB`;
+     measured peak `27.4 GB` / `27,355 MiB` at `num_ctx 9,216`).
+   - `read_claim` on `reader_2` (`granite4.2:8b`): `num_predict = 2,048`, `max_num_ctx = 8,192`.
+     Source: `E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-read/FINDINGS.md` — Granite
+     `eval_count` max about `1,239` (`n = 9`; peak VRAM `8,825 MiB` at `num_ctx 5,120`).
+   - `word_claim` (writer, `qwen3.6:35b`): kept at the current total `num_predict = 352` until measured.
 """
 
 from __future__ import annotations
@@ -60,69 +73,64 @@ if TYPE_CHECKING:
 DEFAULT_OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
 LOOPBACK_HOST: str = "127.0.0.1"
 
-# Documented default thinking token cap (Card gp Part B & Card gr Part B: the cap is configuration, never a constant source of truth).
-# Render values are PROVISIONAL (n = 3, 2026-10-25): thinking 1,144 / 1,234 / 1,945; answers 951 / 1,072 / 1,517; peak 25,229 MiB at num_ctx 8,192.
-DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP: int = 256
-DOCUMENTED_DEFAULT_RENDER_THINKING_CAP: int = 2048
-DOCUMENTED_DEFAULT_WORD_THINKING_CAP: int = 256
-DOCUMENTED_DEFAULT_READ_THINKING_CAP: int = 256
-DEFAULT_THINKING_TOKEN_CAP: int = DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP
-
 OllamaOperation = Literal["render_material", "word_claim", "read_claim"]
 PILOT_B_OPERATIONS: tuple[OllamaOperation, ...] = (
     "render_material",
     "word_claim",
     "read_claim",
 )
-ThinkingCapSource = Literal["cli", "config", "default"]
-AnswerBudgetSource = Literal["cli", "config", "default"]
+NumPredictOperationKey = Literal[
+    "render_material",
+    "word_claim",
+    "read_claim_reader_1",
+    "read_claim_reader_2",
+]
+NUM_PREDICT_OPERATION_KEYS: tuple[NumPredictOperationKey, ...] = (
+    "render_material",
+    "word_claim",
+    "read_claim_reader_1",
+    "read_claim_reader_2",
+)
+NumPredictSource = Literal["cli", "config", "default"]
 OllamaHttpTransport = Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
 
-DOCUMENTED_DEFAULT_THINKING_CAP_BY_OPERATION: dict[OllamaOperation, int] = {
-    "render_material": DOCUMENTED_DEFAULT_RENDER_THINKING_CAP,
-    "word_claim": DOCUMENTED_DEFAULT_WORD_THINKING_CAP,
-    "read_claim": DOCUMENTED_DEFAULT_READ_THINKING_CAP,
+# Recorded total num_predict defaults per operation (Card gs Ruling 3 — provisional until the next stub's p95 of eval_count):
+# - render_material (qwen3.6:35b): 4,096 (eval_count max 3,462, n = 3; E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-render/FINDINGS.md)
+# - word_claim (qwen3.6:35b): 352 (kept at the current total until measured)
+# - read_claim_reader_1 (nemotron-3.5-lightning:30b): 6,144 (eval_count p95 3,086, max 3,434, n = 20, plus one earlier call cut off at 4,096; E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-nemotron/FINDINGS.md)
+# - read_claim_reader_2 (granite4.2:8b): 2,048 (eval_count max ~1,239, n = 9; E:/AI/rnd-local/projects/test-dataset-lab/pilot-b-calibrate-read/FINDINGS.md)
+DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT: int = 4096
+DOCUMENTED_DEFAULT_WORD_NUM_PREDICT: int = 352
+DOCUMENTED_DEFAULT_READ_READER_1_NUM_PREDICT: int = 6144
+DOCUMENTED_DEFAULT_READ_READER_2_NUM_PREDICT: int = 2048
+DOCUMENTED_DEFAULT_READ_NUM_PREDICT: int = DOCUMENTED_DEFAULT_READ_READER_1_NUM_PREDICT
+DOCUMENTED_DEFAULT_NUM_PREDICT: int = DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT
+
+DOCUMENTED_DEFAULT_NUM_PREDICT_BY_OPERATION: dict[NumPredictOperationKey, int] = {
+    "render_material": DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT,
+    "word_claim": DOCUMENTED_DEFAULT_WORD_NUM_PREDICT,
+    "read_claim_reader_1": DOCUMENTED_DEFAULT_READ_READER_1_NUM_PREDICT,
+    "read_claim_reader_2": DOCUMENTED_DEFAULT_READ_READER_2_NUM_PREDICT,
 }
 
-# Documented default answer token budgets per operation (Card gr Part A & Part B: answer budgets are configuration,
-# never constants; options.num_predict = configured_thinking_cap + configured_answer_budget).
-# Render values are PROVISIONAL (n = 3, 2026-10-25): thinking 1,144 / 1,234 / 1,945; answers 951 / 1,072 / 1,517; peak 25,229 MiB at num_ctx 8,192.
-DOCUMENTED_DEFAULT_RENDER_ANSWER_BUDGET: int = 1792
-DOCUMENTED_DEFAULT_WORD_ANSWER_BUDGET: int = 96
-DOCUMENTED_DEFAULT_READ_ANSWER_BUDGET: int = 32
-DOCUMENTED_DEFAULT_ANSWER_BUDGET: int = DOCUMENTED_DEFAULT_RENDER_ANSWER_BUDGET
-
-RENDER_ANSWER_BUDGET: int = DOCUMENTED_DEFAULT_RENDER_ANSWER_BUDGET
-WORD_ANSWER_BUDGET: int = DOCUMENTED_DEFAULT_WORD_ANSWER_BUDGET
-READ_ANSWER_BUDGET: int = DOCUMENTED_DEFAULT_READ_ANSWER_BUDGET
-RENDER_MATERIAL_ANSWER_BUDGET: int = RENDER_ANSWER_BUDGET
-WORD_CLAIM_ANSWER_BUDGET: int = WORD_ANSWER_BUDGET
-READ_CLAIM_ANSWER_BUDGET: int = READ_ANSWER_BUDGET
-
-DOCUMENTED_DEFAULT_ANSWER_BUDGET_BY_OPERATION: dict[OllamaOperation, int] = {
-    "render_material": DOCUMENTED_DEFAULT_RENDER_ANSWER_BUDGET,
-    "word_claim": DOCUMENTED_DEFAULT_WORD_ANSWER_BUDGET,
-    "read_claim": DOCUMENTED_DEFAULT_READ_ANSWER_BUDGET,
-}
-OPERATION_ANSWER_BUDGETS: dict[OllamaOperation, int] = dict(
-    DOCUMENTED_DEFAULT_ANSWER_BUDGET_BY_OPERATION
-)
-
-# Explicit num_ctx calculation and per-role ceilings (Card gp Part A & Card gr Part B):
+# Explicit num_ctx calculation and per-role ceilings (Card gp Part A & Card gs Ruling 3):
 # options.num_ctx = round_up(prompt_tokens_estimate + num_predict + margin, 1024)
 PROMPT_TOKEN_ESTIMATE_RULE: str = "ceil(utf8_bytes / 3)"
 NUM_CTX_MARGIN_TOKENS: int = 256
 NUM_CTX_STEP_TOKENS: int = 1024
 DEFAULT_RENDER_MAX_NUM_CTX: int = 8192
+DEFAULT_READER_1_MAX_NUM_CTX: int = 7168
+DEFAULT_READER_2_MAX_NUM_CTX: int = 8192
 
-# Per-role max_num_ctx defaults planned so weights + KV stay at or below 26.0 GB (GPU-jobs rule):
-# - writer (qwen3.6:35b, weights 22.6 GB, 3.4 GB under 26.0 GB): 8192 (PROVISIONAL (n = 3, 2026-10-25): peak 25,229 MiB at num_ctx 8,192)
-# - reader_1 (nemotron-3.5-lightning:30b, weights 25.4 GB, ~0.6 GB under 26.0 GB): 2048
-# - reader_2 (granite4.2:8b, weights 5.3 GB, 20.7 GB under 26.0 GB): 8192
+# Per-role max_num_ctx defaults:
+# - writer (qwen3.6:35b, weights 22.6 GB): 8192 (measured peak 25,229–25,316 MiB at num_ctx 8,192)
+# - reader_1 (nemotron-3.5-lightning:30b, weights 25.4 GB): 7168 (Publisher's recorded exception to the 26 GB rule:
+#   runs alone on the card, halt at 30,000 MiB; measured peak 27.4 GB / 27,355 MiB at num_ctx 9,216)
+# - reader_2 (granite4.2:8b, weights 5.3 GB): 8192 (measured peak 8,825 MiB at num_ctx 5,120)
 DEFAULT_ROLE_MAX_NUM_CTX: dict[str, int] = {
     "writer": DEFAULT_RENDER_MAX_NUM_CTX,
-    "reader_1": 2048,
-    "reader_2": 8192,
+    "reader_1": DEFAULT_READER_1_MAX_NUM_CTX,
+    "reader_2": DEFAULT_READER_2_MAX_NUM_CTX,
 }
 
 
@@ -153,422 +161,136 @@ def compute_num_ctx(
     return round_up_num_ctx(prompt_tokens_estimate + num_predict + margin, step=step)
 
 
-ENV_THINKING_CAP_GLOBAL: str = "RDLAB_THINKING_CAP"
-ENV_THINKING_CAP_BY_OPERATION: dict[OllamaOperation, str] = {
-    "render_material": "RDLAB_THINKING_CAP_RENDER_MATERIAL",
-    "word_claim": "RDLAB_THINKING_CAP_WORD_CLAIM",
-    "read_claim": "RDLAB_THINKING_CAP_READ_CLAIM",
-}
-
-
-def _validate_positive_cap(raw_val: object, context_label: str) -> int:
-    if isinstance(raw_val, bool):
-        raise refused_error(
-            "PILOT_B_INVALID_THINKING_CAP",
-            f"Invalid thinking_token_cap for {context_label}: boolean {raw_val!r} is not an integer.",
-            "Pass a positive integer thinking_token_cap >= 1.",
-        )
-    if isinstance(raw_val, str):
-        try:
-            val = int(raw_val.strip())
-        except ValueError as exc:
-            raise refused_error(
-                "PILOT_B_INVALID_THINKING_CAP",
-                f"Invalid thinking_token_cap for {context_label}: {raw_val!r} is not an integer.",
-                "Pass a positive integer thinking_token_cap >= 1.",
-            ) from exc
-    elif isinstance(raw_val, int):
-        val = raw_val
-    else:
-        raise refused_error(
-            "PILOT_B_INVALID_THINKING_CAP",
-            f"Invalid thinking_token_cap for {context_label}: {raw_val!r} must be an integer >= 1.",
-            "Pass a positive integer thinking_token_cap >= 1.",
-        )
-    if val < 1:
-        raise refused_error(
-            "PILOT_B_INVALID_THINKING_CAP",
-            f"thinking_token_cap must be >= 1 for {context_label}, got {val}.",
-            "Pass a positive integer thinking_token_cap.",
-        )
-    return val
-
-
-@dataclass(frozen=True)
-class ThinkingCapConfig:
-    """Configured per-operation thinking token cap and provenance source (`cli` / `config` / `default`)."""
-
-    render_material: int
-    word_claim: int
-    read_claim: int
-    source: ThinkingCapSource = "default"
-    render_material_source: ThinkingCapSource = "default"
-    word_claim_source: ThinkingCapSource = "default"
-    read_claim_source: ThinkingCapSource = "default"
-
-    def __post_init__(self) -> None:
-        _validate_positive_cap(self.render_material, "render_material")
-        _validate_positive_cap(self.word_claim, "word_claim")
-        _validate_positive_cap(self.read_claim, "read_claim")
-
-    def cap_for(self, operation: OllamaOperation) -> int:
-        if operation == "render_material":
-            return self.render_material
-        if operation == "word_claim":
-            return self.word_claim
-        return self.read_claim
-
-    def source_for(self, operation: OllamaOperation) -> ThinkingCapSource:
-        if operation == "render_material":
-            return self.render_material_source
-        if operation == "word_claim":
-            return self.word_claim_source
-        return self.read_claim_source
-
-    @property
-    def effective_cap(self) -> int:
-        if self.render_material == self.word_claim == self.read_claim:
-            return self.render_material
-        return max(self.render_material, self.word_claim, self.read_claim)
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            "value": self.effective_cap,
-            "source": self.source,
-            "documented_default": DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
-            "documented_defaults_by_operation": dict(
-                DOCUMENTED_DEFAULT_THINKING_CAP_BY_OPERATION
-            ),
-            "by_operation": {
-                "render_material": {
-                    "value": self.render_material,
-                    "source": self.render_material_source,
-                },
-                "word_claim": {
-                    "value": self.word_claim,
-                    "source": self.word_claim_source,
-                },
-                "read_claim": {
-                    "value": self.read_claim,
-                    "source": self.read_claim_source,
-                },
-            },
-        }
-
-
-def _extract_cap_block_from_config_dict(data: Mapping[str, Any]) -> Any:
-    if "pilot_b" in data and isinstance(data["pilot_b"], Mapping):
-        pb = data["pilot_b"]
-        if "thinking_token_cap" in pb:
-            return pb["thinking_token_cap"]
-        if "thinking_cap" in pb:
-            return pb["thinking_cap"]
-    if "thinking_token_cap" in data:
-        return data["thinking_token_cap"]
-    if "thinking_cap" in data:
-        return data["thinking_cap"]
-    return None
-
-
-def resolve_thinking_cap_config(
-    *,
-    cli_cap: int | Mapping[str, int] | None = None,
-    cli_by_operation: Mapping[str, int | None] | None = None,
-    config_path: Path | None = None,
-    config_data: Mapping[str, Any] | int | None = None,
-    env: Mapping[str, str] | None = None,
-    use_environ: bool = True,
-    default_cap: int | Mapping[str, int] | None = None,
-) -> ThinkingCapConfig:
-    """Resolve `ThinkingCapConfig` with precedence `cli` > `config` (file/env) > `default`."""
-    default_by_op: dict[OllamaOperation, int] = dict(
-        DOCUMENTED_DEFAULT_THINKING_CAP_BY_OPERATION
-    )
-    if default_cap is not None:
-        if isinstance(default_cap, Mapping):
-            for op in PILOT_B_OPERATIONS:
-                if op in default_cap and default_cap[op] is not None:
-                    default_by_op[op] = _validate_positive_cap(
-                        default_cap[op], f"default.{op}"
-                    )
-        else:
-            validated_def = _validate_positive_cap(default_cap, "default")
-            for op in PILOT_B_OPERATIONS:
-                default_by_op[op] = validated_def
-
-    active_env: Mapping[str, str] = (
-        env if env is not None else (os.environ if use_environ else {})
-    )
-
-    loaded_cfg_block: Any = None
-    if config_path is not None:
-        if not config_path.exists() or not config_path.is_file():
-            raise usage_error(
-                "PILOT_B_CONFIG_NOT_FOUND",
-                f"Pilot B config file not found: {config_path}",
-                "Pass an existing JSON configuration file to --config.",
-            )
-        try:
-            raw_cfg = json.loads(config_path.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise refused_error(
-                "PILOT_B_INVALID_CONFIG_JSON",
-                f"Invalid JSON in Pilot B config file {config_path}: {exc}",
-                "Ensure the config file is valid UTF-8 JSON.",
-            ) from exc
-        if not isinstance(raw_cfg, Mapping):
-            raise refused_error(
-                "PILOT_B_INVALID_CONFIG_SHAPE",
-                f"Pilot B config file {config_path} must be a JSON object.",
-                "Format the config file as a JSON object.",
-            )
-        loaded_cfg_block = _extract_cap_block_from_config_dict(raw_cfg)
-        if loaded_cfg_block is None and set(raw_cfg.keys()) <= {
-            "default",
-            "render_material",
-            "word_claim",
-            "read_claim",
-        }:
-            loaded_cfg_block = raw_cfg
-
-    if config_data is not None:
-        if isinstance(config_data, Mapping):
-            extracted = _extract_cap_block_from_config_dict(config_data)
-            loaded_cfg_block = (
-                extracted
-                if extracted is not None
-                else config_data
-            )
-        else:
-            loaded_cfg_block = config_data
-
-    cfg_global: int | None = None
-    cfg_per_op: dict[OllamaOperation, int] = {}
-    if loaded_cfg_block is not None:
-        if isinstance(loaded_cfg_block, Mapping):
-            if "default" in loaded_cfg_block and loaded_cfg_block["default"] is not None:
-                cfg_global = _validate_positive_cap(
-                    loaded_cfg_block["default"], "config.default"
-                )
-            for op in PILOT_B_OPERATIONS:
-                if op in loaded_cfg_block and loaded_cfg_block[op] is not None:
-                    cfg_per_op[op] = _validate_positive_cap(
-                        loaded_cfg_block[op], f"config.{op}"
-                    )
-        else:
-            cfg_global = _validate_positive_cap(loaded_cfg_block, "config")
-
-    # Environment variables also populate the 'config' tier
-    env_global_raw = active_env.get(ENV_THINKING_CAP_GLOBAL, "").strip()
-    env_global = (
-        _validate_positive_cap(env_global_raw, ENV_THINKING_CAP_GLOBAL)
-        if env_global_raw
-        else None
-    )
-    env_per_op: dict[OllamaOperation, int] = {}
-    for op, env_name in ENV_THINKING_CAP_BY_OPERATION.items():
-        raw_env_op = active_env.get(env_name, "").strip()
-        if raw_env_op:
-            env_per_op[op] = _validate_positive_cap(raw_env_op, env_name)
-
-    # CLI tier
-    cli_global: int | None = None
-    cli_per_op: dict[OllamaOperation, int] = {}
-    if cli_cap is not None:
-        if isinstance(cli_cap, Mapping):
-            if "default" in cli_cap and cli_cap["default"] is not None:
-                cli_global = _validate_positive_cap(cli_cap["default"], "cli.default")
-            for op in PILOT_B_OPERATIONS:
-                if op in cli_cap and cli_cap[op] is not None:
-                    cli_per_op[op] = _validate_positive_cap(cli_cap[op], f"cli.{op}")
-        else:
-            cli_global = _validate_positive_cap(cli_cap, "cli")
-
-    if cli_by_operation is not None:
-        for op in PILOT_B_OPERATIONS:
-            if op in cli_by_operation and cli_by_operation[op] is not None:
-                cli_per_op[op] = _validate_positive_cap(
-                    cli_by_operation[op], f"cli.{op}"
-                )
-
-    vals: dict[OllamaOperation, int] = {}
-    sources: dict[OllamaOperation, ThinkingCapSource] = {}
-    for op in PILOT_B_OPERATIONS:
-        if op in cli_per_op:
-            vals[op] = cli_per_op[op]
-            sources[op] = "cli"
-        elif cli_global is not None:
-            vals[op] = cli_global
-            sources[op] = "cli"
-        elif op in cfg_per_op:
-            vals[op] = cfg_per_op[op]
-            sources[op] = "config"
-        elif op in env_per_op:
-            vals[op] = env_per_op[op]
-            sources[op] = "config"
-        elif cfg_global is not None:
-            vals[op] = cfg_global
-            sources[op] = "config"
-        elif env_global is not None:
-            vals[op] = env_global
-            sources[op] = "config"
-        else:
-            vals[op] = default_by_op[op]
-            sources[op] = "default"
-
-    unique_sources = set(sources.values())
-    if len(unique_sources) == 1:
-        overall_source: ThinkingCapSource = next(iter(unique_sources))
-    elif "cli" in unique_sources:
-        overall_source = "cli"
-    elif "config" in unique_sources:
-        overall_source = "config"
-    else:
-        overall_source = "default"
-
-    return ThinkingCapConfig(
-        render_material=vals["render_material"],
-        word_claim=vals["word_claim"],
-        read_claim=vals["read_claim"],
-        source=overall_source,
-        render_material_source=sources["render_material"],
-        word_claim_source=sources["word_claim"],
-        read_claim_source=sources["read_claim"],
-    )
-
-
-def coerce_thinking_cap_config(
-    thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
-    *,
-    source: ThinkingCapSource | None = None,
-    config_path: Path | None = None,
-) -> ThinkingCapConfig:
-    """Coerce an optional int, mapping, or `ThinkingCapConfig` into a validated `ThinkingCapConfig`."""
-    if isinstance(thinking_token_cap, ThinkingCapConfig):
-        return thinking_token_cap
-    if thinking_token_cap is None:
-        return resolve_thinking_cap_config(config_path=config_path)
-    if isinstance(thinking_token_cap, Mapping):
-        if source == "cli":
-            return resolve_thinking_cap_config(
-                cli_cap=thinking_token_cap, config_path=config_path
-            )
-        return resolve_thinking_cap_config(
-            config_data=thinking_token_cap, config_path=config_path
-        )
-    val = _validate_positive_cap(thinking_token_cap, "thinking_token_cap")
-    if source == "cli":
-        return resolve_thinking_cap_config(cli_cap=val, config_path=config_path)
-    if source == "config":
-        return resolve_thinking_cap_config(config_data=val, config_path=config_path)
-    if source == "default":
-        return ThinkingCapConfig(
-            render_material=val,
-            word_claim=val,
-            read_claim=val,
-            source="default",
-            render_material_source="default",
-            word_claim_source="default",
-            read_claim_source="default",
-        )
-    if val != DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP or config_path is not None:
-        return resolve_thinking_cap_config(config_data=val, config_path=config_path)
-    return resolve_thinking_cap_config(config_path=config_path, default_cap=val)
-
-
-ENV_ANSWER_BUDGET_GLOBAL: str = "RDLAB_ANSWER_BUDGET"
-ENV_ANSWER_BUDGET_BY_OPERATION: dict[OllamaOperation, tuple[str, ...]] = {
+ENV_NUM_PREDICT_GLOBAL: str = "RDLAB_NUM_PREDICT"
+ENV_NUM_PREDICT_BY_KEY: dict[str, tuple[str, ...]] = {
     "render_material": (
-        "RDLAB_RENDER_ANSWER_BUDGET",
-        "RDLAB_ANSWER_BUDGET_RENDER_MATERIAL",
+        "RDLAB_RENDER_NUM_PREDICT",
+        "RDLAB_NUM_PREDICT_RENDER_MATERIAL",
     ),
     "word_claim": (
-        "RDLAB_WORD_ANSWER_BUDGET",
-        "RDLAB_ANSWER_BUDGET_WORD_CLAIM",
+        "RDLAB_WORD_NUM_PREDICT",
+        "RDLAB_NUM_PREDICT_WORD_CLAIM",
     ),
     "read_claim": (
-        "RDLAB_READ_ANSWER_BUDGET",
-        "RDLAB_ANSWER_BUDGET_READ_CLAIM",
+        "RDLAB_READ_NUM_PREDICT",
+        "RDLAB_NUM_PREDICT_READ_CLAIM",
+    ),
+    "read_claim_reader_1": (
+        "RDLAB_READER_1_NUM_PREDICT",
+        "RDLAB_NUM_PREDICT_READER_1",
+        "RDLAB_READ_READER_1_NUM_PREDICT",
+    ),
+    "read_claim_reader_2": (
+        "RDLAB_READER_2_NUM_PREDICT",
+        "RDLAB_NUM_PREDICT_READER_2",
+        "RDLAB_READ_READER_2_NUM_PREDICT",
     ),
 }
 
 
-def _validate_positive_budget(raw_val: object, context_label: str) -> int:
+def _validate_positive_num_predict(raw_val: object, context_label: str) -> int:
     if isinstance(raw_val, bool):
         raise refused_error(
-            "PILOT_B_INVALID_ANSWER_BUDGET",
-            f"Invalid answer_budget for {context_label}: boolean {raw_val!r} is not an integer.",
-            "Pass a positive integer answer_budget >= 1.",
+            "PILOT_B_INVALID_NUM_PREDICT",
+            f"Invalid num_predict for {context_label}: boolean {raw_val!r} is not an integer.",
+            "Pass a positive integer num_predict >= 1.",
         )
     if isinstance(raw_val, str):
         try:
             val = int(raw_val.strip())
         except ValueError as exc:
             raise refused_error(
-                "PILOT_B_INVALID_ANSWER_BUDGET",
-                f"Invalid answer_budget for {context_label}: {raw_val!r} is not an integer.",
-                "Pass a positive integer answer_budget >= 1.",
+                "PILOT_B_INVALID_NUM_PREDICT",
+                f"Invalid num_predict for {context_label}: {raw_val!r} is not an integer.",
+                "Pass a positive integer num_predict >= 1.",
             ) from exc
     elif isinstance(raw_val, int):
         val = raw_val
     else:
         raise refused_error(
-            "PILOT_B_INVALID_ANSWER_BUDGET",
-            f"Invalid answer_budget for {context_label}: {raw_val!r} must be an integer >= 1.",
-            "Pass a positive integer answer_budget >= 1.",
+            "PILOT_B_INVALID_NUM_PREDICT",
+            f"Invalid num_predict for {context_label}: {raw_val!r} must be an integer >= 1.",
+            "Pass a positive integer num_predict >= 1.",
         )
     if val < 1:
         raise refused_error(
-            "PILOT_B_INVALID_ANSWER_BUDGET",
-            f"answer_budget must be >= 1 for {context_label}, got {val}.",
-            "Pass a positive integer answer_budget.",
+            "PILOT_B_INVALID_NUM_PREDICT",
+            f"num_predict must be >= 1 for {context_label}, got {val}.",
+            "Pass a positive integer num_predict.",
         )
     return val
 
 
 @dataclass(frozen=True)
-class AnswerBudgetConfig:
-    """Configured per-operation answer token budget and provenance source (`cli` / `config` / `default`, Card gr Part A)."""
+class NumPredictConfig:
+    """Configured per-operation total `options.num_predict` budget and provenance source (`cli` / `config` / `default`)."""
 
-    render_material: int
-    word_claim: int
-    read_claim: int
-    source: AnswerBudgetSource = "default"
-    render_material_source: AnswerBudgetSource = "default"
-    word_claim_source: AnswerBudgetSource = "default"
-    read_claim_source: AnswerBudgetSource = "default"
+    render_material: int = DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT
+    word_claim: int = DOCUMENTED_DEFAULT_WORD_NUM_PREDICT
+    read_claim_reader_1: int = DOCUMENTED_DEFAULT_READ_READER_1_NUM_PREDICT
+    read_claim_reader_2: int = DOCUMENTED_DEFAULT_READ_READER_2_NUM_PREDICT
+    source: NumPredictSource = "default"
+    render_material_source: NumPredictSource = "default"
+    word_claim_source: NumPredictSource = "default"
+    read_claim_reader_1_source: NumPredictSource = "default"
+    read_claim_reader_2_source: NumPredictSource = "default"
 
     def __post_init__(self) -> None:
-        _validate_positive_budget(self.render_material, "render_material")
-        _validate_positive_budget(self.word_claim, "word_claim")
-        _validate_positive_budget(self.read_claim, "read_claim")
+        _validate_positive_num_predict(self.render_material, "render_material")
+        _validate_positive_num_predict(self.word_claim, "word_claim")
+        _validate_positive_num_predict(self.read_claim_reader_1, "read_claim_reader_1")
+        _validate_positive_num_predict(self.read_claim_reader_2, "read_claim_reader_2")
 
-    def budget_for(self, operation: OllamaOperation) -> int:
+    def num_predict_for(
+        self,
+        operation: OllamaOperation,
+        *,
+        role: str | None = None,
+    ) -> int:
         if operation == "render_material":
             return self.render_material
         if operation == "word_claim":
             return self.word_claim
-        return self.read_claim
+        if role == "reader_2":
+            return self.read_claim_reader_2
+        return self.read_claim_reader_1
 
-    def source_for(self, operation: OllamaOperation) -> AnswerBudgetSource:
+    def source_for(
+        self,
+        operation: OllamaOperation,
+        *,
+        role: str | None = None,
+    ) -> NumPredictSource:
         if operation == "render_material":
             return self.render_material_source
         if operation == "word_claim":
             return self.word_claim_source
-        return self.read_claim_source
+        if role == "reader_2":
+            return self.read_claim_reader_2_source
+        return self.read_claim_reader_1_source
 
     @property
-    def effective_budget(self) -> int:
-        if self.render_material == self.word_claim == self.read_claim:
+    def effective_num_predict(self) -> int:
+        if (
+            self.render_material
+            == self.word_claim
+            == self.read_claim_reader_1
+            == self.read_claim_reader_2
+        ):
             return self.render_material
-        return max(self.render_material, self.word_claim, self.read_claim)
+        return max(
+            self.render_material,
+            self.word_claim,
+            self.read_claim_reader_1,
+            self.read_claim_reader_2,
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "value": self.effective_budget,
+            "value": self.effective_num_predict,
             "source": self.source,
             "documented_defaults_by_operation": dict(
-                DOCUMENTED_DEFAULT_ANSWER_BUDGET_BY_OPERATION
+                DOCUMENTED_DEFAULT_NUM_PREDICT_BY_OPERATION
             ),
             "by_operation": {
                 "render_material": {
@@ -579,53 +301,104 @@ class AnswerBudgetConfig:
                     "value": self.word_claim,
                     "source": self.word_claim_source,
                 },
-                "read_claim": {
-                    "value": self.read_claim,
-                    "source": self.read_claim_source,
+                "read_claim_reader_1": {
+                    "value": self.read_claim_reader_1,
+                    "source": self.read_claim_reader_1_source,
+                },
+                "read_claim_reader_2": {
+                    "value": self.read_claim_reader_2,
+                    "source": self.read_claim_reader_2_source,
                 },
             },
         }
 
 
-def _extract_budget_block_from_config_dict(data: Mapping[str, Any]) -> Any:
+def _extract_num_predict_block_from_config_dict(data: Mapping[str, Any]) -> Any:
     if "pilot_b" in data and isinstance(data["pilot_b"], Mapping):
         pb = data["pilot_b"]
-        if "answer_budget" in pb:
-            return pb["answer_budget"]
-        if "answer_budgets" in pb:
-            return pb["answer_budgets"]
-    if "answer_budget" in data:
-        return data["answer_budget"]
-    if "answer_budgets" in data:
-        return data["answer_budgets"]
+        if "num_predict" in pb:
+            return pb["num_predict"]
+    if "num_predict" in data:
+        return data["num_predict"]
     return None
 
 
-def resolve_answer_budget_config(
+def _populate_op_dict_from_mapping(
+    raw_map: Mapping[str, Any],
+    label_prefix: str,
+) -> tuple[int | None, dict[NumPredictOperationKey, int]]:
+    global_val: int | None = None
+    per_op: dict[NumPredictOperationKey, int] = {}
+    if "default" in raw_map and raw_map["default"] is not None:
+        global_val = _validate_positive_num_predict(
+            raw_map["default"], f"{label_prefix}.default"
+        )
+    if "render_material" in raw_map and raw_map["render_material"] is not None:
+        per_op["render_material"] = _validate_positive_num_predict(
+            raw_map["render_material"], f"{label_prefix}.render_material"
+        )
+    if "render" in raw_map and raw_map["render"] is not None and "render_material" not in per_op:
+        per_op["render_material"] = _validate_positive_num_predict(
+            raw_map["render"], f"{label_prefix}.render"
+        )
+    if "word_claim" in raw_map and raw_map["word_claim"] is not None:
+        per_op["word_claim"] = _validate_positive_num_predict(
+            raw_map["word_claim"], f"{label_prefix}.word_claim"
+        )
+    if "word" in raw_map and raw_map["word"] is not None and "word_claim" not in per_op:
+        per_op["word_claim"] = _validate_positive_num_predict(
+            raw_map["word"], f"{label_prefix}.word"
+        )
+    # Generic read_claim sets both reader_1 and reader_2 unless overridden per reader
+    for read_alias in ("read_claim", "read"):
+        if read_alias in raw_map and raw_map[read_alias] is not None:
+            read_val = _validate_positive_num_predict(
+                raw_map[read_alias], f"{label_prefix}.{read_alias}"
+            )
+            per_op["read_claim_reader_1"] = read_val
+            per_op["read_claim_reader_2"] = read_val
+    for r1_alias in ("read_claim_reader_1", "reader_1", "read_reader_1"):
+        if r1_alias in raw_map and raw_map[r1_alias] is not None:
+            per_op["read_claim_reader_1"] = _validate_positive_num_predict(
+                raw_map[r1_alias], f"{label_prefix}.{r1_alias}"
+            )
+    for r2_alias in ("read_claim_reader_2", "reader_2", "read_reader_2"):
+        if r2_alias in raw_map and raw_map[r2_alias] is not None:
+            per_op["read_claim_reader_2"] = _validate_positive_num_predict(
+                raw_map[r2_alias], f"{label_prefix}.{r2_alias}"
+            )
+    return global_val, per_op
+
+
+def resolve_num_predict_config(
     *,
-    cli_budget: int | Mapping[str, int] | None = None,
+    cli_num_predict: int | Mapping[str, int] | None = None,
     cli_by_operation: Mapping[str, int | None] | None = None,
     config_path: Path | None = None,
     config_data: Mapping[str, Any] | int | None = None,
     env: Mapping[str, str] | None = None,
     use_environ: bool = True,
-    default_budget: int | Mapping[str, int] | None = None,
-) -> AnswerBudgetConfig:
-    """Resolve `AnswerBudgetConfig` with precedence `cli` > `config` (file/env) > `default`."""
-    default_by_op: dict[OllamaOperation, int] = dict(
-        DOCUMENTED_DEFAULT_ANSWER_BUDGET_BY_OPERATION
+    default_num_predict: int | Mapping[str, int] | None = None,
+) -> NumPredictConfig:
+    """Resolve `NumPredictConfig` with precedence `cli` > `config` (file/env) > `default`."""
+    default_by_op: dict[NumPredictOperationKey, int] = dict(
+        DOCUMENTED_DEFAULT_NUM_PREDICT_BY_OPERATION
     )
-    if default_budget is not None:
-        if isinstance(default_budget, Mapping):
-            for op in PILOT_B_OPERATIONS:
-                if op in default_budget and default_budget[op] is not None:
-                    default_by_op[op] = _validate_positive_budget(
-                        default_budget[op], f"default.{op}"
-                    )
+    if default_num_predict is not None:
+        if isinstance(default_num_predict, Mapping):
+            def_glob, def_ops = _populate_op_dict_from_mapping(
+                default_num_predict, "default"
+            )
+            if def_glob is not None:
+                for k in NUM_PREDICT_OPERATION_KEYS:
+                    default_by_op[k] = def_glob
+            default_by_op.update(def_ops)
         else:
-            validated_def = _validate_positive_budget(default_budget, "default")
-            for op in PILOT_B_OPERATIONS:
-                default_by_op[op] = validated_def
+            validated_def = _validate_positive_num_predict(
+                default_num_predict, "default"
+            )
+            for k in NUM_PREDICT_OPERATION_KEYS:
+                default_by_op[k] = validated_def
 
     active_env: Mapping[str, str] = (
         env if env is not None else (os.environ if use_environ else {})
@@ -653,18 +426,25 @@ def resolve_answer_budget_config(
                 f"Pilot B config file {config_path} must be a JSON object.",
                 "Format the config file as a JSON object.",
             )
-        loaded_cfg_block = _extract_budget_block_from_config_dict(raw_cfg)
+        loaded_cfg_block = _extract_num_predict_block_from_config_dict(raw_cfg)
         if loaded_cfg_block is None and set(raw_cfg.keys()) <= {
             "default",
             "render_material",
+            "render",
             "word_claim",
+            "word",
             "read_claim",
+            "read",
+            "read_claim_reader_1",
+            "read_claim_reader_2",
+            "reader_1",
+            "reader_2",
         }:
             loaded_cfg_block = raw_cfg
 
     if config_data is not None:
         if isinstance(config_data, Mapping):
-            extracted = _extract_budget_block_from_config_dict(config_data)
+            extracted = _extract_num_predict_block_from_config_dict(config_data)
             loaded_cfg_block = (
                 extracted if extracted is not None else config_data
             )
@@ -672,86 +452,100 @@ def resolve_answer_budget_config(
             loaded_cfg_block = config_data
 
     cfg_global: int | None = None
-    cfg_per_op: dict[OllamaOperation, int] = {}
+    cfg_per_op: dict[NumPredictOperationKey, int] = {}
     if loaded_cfg_block is not None:
         if isinstance(loaded_cfg_block, Mapping):
-            if "default" in loaded_cfg_block and loaded_cfg_block["default"] is not None:
-                cfg_global = _validate_positive_budget(
-                    loaded_cfg_block["default"], "config.default"
-                )
-            for op in PILOT_B_OPERATIONS:
-                if op in loaded_cfg_block and loaded_cfg_block[op] is not None:
-                    cfg_per_op[op] = _validate_positive_budget(
-                        loaded_cfg_block[op], f"config.{op}"
-                    )
+            cfg_global, cfg_per_op = _populate_op_dict_from_mapping(
+                loaded_cfg_block, "config"
+            )
         else:
-            cfg_global = _validate_positive_budget(loaded_cfg_block, "config")
+            cfg_global = _validate_positive_num_predict(loaded_cfg_block, "config")
 
-    env_global_raw = active_env.get(ENV_ANSWER_BUDGET_GLOBAL, "").strip()
+    env_global_raw = active_env.get(ENV_NUM_PREDICT_GLOBAL, "").strip()
     env_global = (
-        _validate_positive_budget(env_global_raw, ENV_ANSWER_BUDGET_GLOBAL)
+        _validate_positive_num_predict(env_global_raw, ENV_NUM_PREDICT_GLOBAL)
         if env_global_raw
         else None
     )
-    env_per_op: dict[OllamaOperation, int] = {}
-    for op, env_names in ENV_ANSWER_BUDGET_BY_OPERATION.items():
-        for env_name in env_names:
-            raw_env_op = active_env.get(env_name, "").strip()
-            if raw_env_op:
-                env_per_op[op] = _validate_positive_budget(raw_env_op, env_name)
-                break
+    env_per_op: dict[NumPredictOperationKey, int] = {}
+    for env_name in ENV_NUM_PREDICT_BY_KEY["render_material"]:
+        raw_v = active_env.get(env_name, "").strip()
+        if raw_v:
+            env_per_op["render_material"] = _validate_positive_num_predict(
+                raw_v, env_name
+            )
+            break
+    for env_name in ENV_NUM_PREDICT_BY_KEY["word_claim"]:
+        raw_v = active_env.get(env_name, "").strip()
+        if raw_v:
+            env_per_op["word_claim"] = _validate_positive_num_predict(
+                raw_v, env_name
+            )
+            break
+    for env_name in ENV_NUM_PREDICT_BY_KEY["read_claim"]:
+        raw_v = active_env.get(env_name, "").strip()
+        if raw_v:
+            v = _validate_positive_num_predict(raw_v, env_name)
+            env_per_op["read_claim_reader_1"] = v
+            env_per_op["read_claim_reader_2"] = v
+            break
+    for env_name in ENV_NUM_PREDICT_BY_KEY["read_claim_reader_1"]:
+        raw_v = active_env.get(env_name, "").strip()
+        if raw_v:
+            env_per_op["read_claim_reader_1"] = _validate_positive_num_predict(
+                raw_v, env_name
+            )
+            break
+    for env_name in ENV_NUM_PREDICT_BY_KEY["read_claim_reader_2"]:
+        raw_v = active_env.get(env_name, "").strip()
+        if raw_v:
+            env_per_op["read_claim_reader_2"] = _validate_positive_num_predict(
+                raw_v, env_name
+            )
+            break
 
     cli_global: int | None = None
-    cli_per_op: dict[OllamaOperation, int] = {}
-    if cli_budget is not None:
-        if isinstance(cli_budget, Mapping):
-            if "default" in cli_budget and cli_budget["default"] is not None:
-                cli_global = _validate_positive_budget(
-                    cli_budget["default"], "cli.default"
-                )
-            for op in PILOT_B_OPERATIONS:
-                if op in cli_budget and cli_budget[op] is not None:
-                    cli_per_op[op] = _validate_positive_budget(
-                        cli_budget[op], f"cli.{op}"
-                    )
+    cli_per_op: dict[NumPredictOperationKey, int] = {}
+    if cli_num_predict is not None:
+        if isinstance(cli_num_predict, Mapping):
+            cli_global, cli_per_op = _populate_op_dict_from_mapping(
+                cli_num_predict, "cli"
+            )
         else:
-            cli_global = _validate_positive_budget(cli_budget, "cli")
+            cli_global = _validate_positive_num_predict(cli_num_predict, "cli")
 
     if cli_by_operation is not None:
-        for op in PILOT_B_OPERATIONS:
-            if op in cli_by_operation and cli_by_operation[op] is not None:
-                cli_per_op[op] = _validate_positive_budget(
-                    cli_by_operation[op], f"cli.{op}"
-                )
+        _, extra_cli_ops = _populate_op_dict_from_mapping(cli_by_operation, "cli")
+        cli_per_op.update(extra_cli_ops)
 
-    vals: dict[OllamaOperation, int] = {}
-    sources: dict[OllamaOperation, AnswerBudgetSource] = {}
-    for op in PILOT_B_OPERATIONS:
-        if op in cli_per_op:
-            vals[op] = cli_per_op[op]
-            sources[op] = "cli"
+    vals: dict[NumPredictOperationKey, int] = {}
+    sources: dict[NumPredictOperationKey, NumPredictSource] = {}
+    for k in NUM_PREDICT_OPERATION_KEYS:
+        if k in cli_per_op:
+            vals[k] = cli_per_op[k]
+            sources[k] = "cli"
         elif cli_global is not None:
-            vals[op] = cli_global
-            sources[op] = "cli"
-        elif op in cfg_per_op:
-            vals[op] = cfg_per_op[op]
-            sources[op] = "config"
-        elif op in env_per_op:
-            vals[op] = env_per_op[op]
-            sources[op] = "config"
+            vals[k] = cli_global
+            sources[k] = "cli"
+        elif k in cfg_per_op:
+            vals[k] = cfg_per_op[k]
+            sources[k] = "config"
+        elif k in env_per_op:
+            vals[k] = env_per_op[k]
+            sources[k] = "config"
         elif cfg_global is not None:
-            vals[op] = cfg_global
-            sources[op] = "config"
+            vals[k] = cfg_global
+            sources[k] = "config"
         elif env_global is not None:
-            vals[op] = env_global
-            sources[op] = "config"
+            vals[k] = env_global
+            sources[k] = "config"
         else:
-            vals[op] = default_by_op[op]
-            sources[op] = "default"
+            vals[k] = default_by_op[k]
+            sources[k] = "default"
 
     unique_sources = set(sources.values())
     if len(unique_sources) == 1:
-        overall_source: AnswerBudgetSource = next(iter(unique_sources))
+        overall_source: NumPredictSource = next(iter(unique_sources))
     elif "cli" in unique_sources:
         overall_source = "cli"
     elif "config" in unique_sources:
@@ -759,52 +553,56 @@ def resolve_answer_budget_config(
     else:
         overall_source = "default"
 
-    return AnswerBudgetConfig(
+    return NumPredictConfig(
         render_material=vals["render_material"],
         word_claim=vals["word_claim"],
-        read_claim=vals["read_claim"],
+        read_claim_reader_1=vals["read_claim_reader_1"],
+        read_claim_reader_2=vals["read_claim_reader_2"],
         source=overall_source,
         render_material_source=sources["render_material"],
         word_claim_source=sources["word_claim"],
-        read_claim_source=sources["read_claim"],
+        read_claim_reader_1_source=sources["read_claim_reader_1"],
+        read_claim_reader_2_source=sources["read_claim_reader_2"],
     )
 
 
-def coerce_answer_budget_config(
-    answer_budget: int | AnswerBudgetConfig | Mapping[str, Any] | None = None,
+def coerce_num_predict_config(
+    num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
     *,
-    source: AnswerBudgetSource | None = None,
+    source: NumPredictSource | None = None,
     config_path: Path | None = None,
-) -> AnswerBudgetConfig:
-    """Coerce an optional int, mapping, or `AnswerBudgetConfig` into a validated `AnswerBudgetConfig`."""
-    if isinstance(answer_budget, AnswerBudgetConfig):
-        return answer_budget
-    if answer_budget is None:
-        return resolve_answer_budget_config(config_path=config_path)
-    if isinstance(answer_budget, Mapping):
+) -> NumPredictConfig:
+    """Coerce an optional int, mapping, or `NumPredictConfig` into a validated `NumPredictConfig`."""
+    if isinstance(num_predict, NumPredictConfig):
+        return num_predict
+    if num_predict is None:
+        return resolve_num_predict_config(config_path=config_path)
+    if isinstance(num_predict, Mapping):
         if source == "cli":
-            return resolve_answer_budget_config(
-                cli_budget=answer_budget, config_path=config_path
+            return resolve_num_predict_config(
+                cli_num_predict=num_predict, config_path=config_path
             )
-        return resolve_answer_budget_config(
-            config_data=answer_budget, config_path=config_path
+        return resolve_num_predict_config(
+            config_data=num_predict, config_path=config_path
         )
-    val = _validate_positive_budget(answer_budget, "answer_budget")
+    val = _validate_positive_num_predict(num_predict, "num_predict")
     if source == "cli":
-        return resolve_answer_budget_config(cli_budget=val, config_path=config_path)
+        return resolve_num_predict_config(cli_num_predict=val, config_path=config_path)
     if source == "config":
-        return resolve_answer_budget_config(config_data=val, config_path=config_path)
+        return resolve_num_predict_config(config_data=val, config_path=config_path)
     if source == "default":
-        return AnswerBudgetConfig(
+        return NumPredictConfig(
             render_material=val,
             word_claim=val,
-            read_claim=val,
+            read_claim_reader_1=val,
+            read_claim_reader_2=val,
             source="default",
             render_material_source="default",
             word_claim_source="default",
-            read_claim_source="default",
+            read_claim_reader_1_source="default",
+            read_claim_reader_2_source="default",
         )
-    return resolve_answer_budget_config(config_data=val, config_path=config_path)
+    return resolve_num_predict_config(config_data=val, config_path=config_path)
 
 
 def require_loopback_ollama_url(url: str) -> str:
@@ -874,7 +672,7 @@ def default_ollama_http_transport(
 
 @dataclass(frozen=True)
 class OllamaCallRecord:
-    """Per-call audit record for an Ollama writer or blind-reader invocation (Card gk Part A/B/C, Card gn, Card gp, Card gr)."""
+    """Per-call audit record for an Ollama writer or blind-reader invocation (Card gk, Card gn, Card gp, Card gs)."""
 
     model: str
     digest: str
@@ -882,14 +680,11 @@ class OllamaCallRecord:
     target_id: str
     prompt_sha256: str
     eval_tokens: int
-    thinking_tokens: int
-    thinking_token_cap: int
+    thinking_words: int
+    num_predict: int
     wall_time_s: float
     think: ThinkSetting = True
-    thinking_token_cap_source: ThinkingCapSource = "default"
-    answer_budget: int = 0
-    answer_budget_source: AnswerBudgetSource = "default"
-    num_predict: int = 0
+    num_predict_source: NumPredictSource = "default"
     num_ctx: int = 0
     max_num_ctx: int = 0
     prompt_tokens_estimate: int = 0
@@ -903,16 +698,13 @@ class OllamaCallRecord:
             "prompt_sha256": self.prompt_sha256,
             "prompt_tokens_estimate": self.prompt_tokens_estimate,
             "think": self.think,
-            "thinking_token_cap": self.thinking_token_cap,
-            "thinking_token_cap_source": self.thinking_token_cap_source,
-            "answer_budget": self.answer_budget,
-            "answer_budget_source": self.answer_budget_source,
             "num_predict": self.num_predict,
+            "num_predict_source": self.num_predict_source,
             "num_ctx": self.num_ctx,
             "max_num_ctx": self.max_num_ctx,
             "done_reason": self.done_reason,
             "eval_tokens": self.eval_tokens,
-            "thinking_tokens": self.thinking_tokens,
+            "thinking_words": self.thinking_words,
             "wall_time_s": round(self.wall_time_s, 6),
         }
         if include_target_id:
@@ -1107,23 +899,32 @@ def _extract_token_counts(
     content: str,
     thinking_text: str,
 ) -> tuple[int, int]:
+    """Extract `(eval_tokens, thinking_words)` from an Ollama `/api/chat` response.
+
+    `eval_count` is Ollama's real generated token count; `thinking_words` is the word count
+    of `message.thinking` (`len(thinking_text.split())`), recorded for information only.
+    """
     raw_eval = resp.get("eval_count")
     if isinstance(raw_eval, int) and not isinstance(raw_eval, bool) and raw_eval >= 0:
         eval_tokens = raw_eval
     else:
         eval_tokens = len(content.split())
 
-    raw_think = resp.get("thinking_tokens", resp.get("thinking_eval_count"))
-    if isinstance(raw_think, int) and not isinstance(raw_think, bool) and raw_think >= 0:
-        thinking_tokens = raw_think
+    raw_think_words = resp.get("thinking_words")
+    if (
+        isinstance(raw_think_words, int)
+        and not isinstance(raw_think_words, bool)
+        and raw_think_words >= 0
+    ):
+        thinking_words = raw_think_words
     else:
-        thinking_tokens = len(thinking_text.split()) if thinking_text.strip() else 0
+        thinking_words = len(thinking_text.split()) if thinking_text.strip() else 0
 
-    return eval_tokens, thinking_tokens
+    return eval_tokens, thinking_words
 
 
 class OllamaWriterAdapter:
-    """Real loopback Ollama writer adapter implementing `PilotBWriterAdapter` (Card gk Part A & Card gp Part A/B)."""
+    """Real loopback Ollama writer adapter implementing `PilotBWriterAdapter` (Card gk Part A, Card gp, Card gs)."""
 
     is_fake: ClassVar[bool] = False
 
@@ -1132,18 +933,13 @@ class OllamaWriterAdapter:
         model: ModelIdentity | PinnedModelSpec,
         *,
         base_url: str = DEFAULT_OLLAMA_BASE_URL,
-        thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
-        thinking_cap_source: ThinkingCapSource | None = None,
-        answer_budget: int | AnswerBudgetConfig | Mapping[str, Any] | None = None,
-        answer_budget_source: AnswerBudgetSource | None = None,
+        num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
+        num_predict_source: NumPredictSource | None = None,
         max_num_ctx: int | None = None,
         http_transport: OllamaHttpTransport | None = None,
     ) -> None:
-        self._cap_config = coerce_thinking_cap_config(
-            thinking_token_cap, source=thinking_cap_source
-        )
-        self._budget_config = coerce_answer_budget_config(
-            answer_budget, source=answer_budget_source
+        self._num_predict_config = coerce_num_predict_config(
+            num_predict, source=num_predict_source
         )
         self._base_url = require_loopback_ollama_url(base_url)
         self._model = _resolve_model_identity(model)
@@ -1160,8 +956,7 @@ class OllamaWriterAdapter:
             )
         self._max_num_ctx = resolved_max_ctx
         self._think: ThinkSetting = self._model.think
-        self._thinking_token_cap = self._cap_config.effective_cap
-        self._answer_budget = self._budget_config.effective_budget
+        self._num_predict = self._num_predict_config.effective_num_predict
         self._transport: OllamaHttpTransport = (
             http_transport if http_transport is not None else default_ollama_http_transport
         )
@@ -1191,20 +986,12 @@ class OllamaWriterAdapter:
         return self._think
 
     @property
-    def thinking_token_cap(self) -> int:
-        return self._thinking_token_cap
+    def num_predict(self) -> int:
+        return self._num_predict
 
     @property
-    def thinking_cap_config(self) -> ThinkingCapConfig:
-        return self._cap_config
-
-    @property
-    def answer_budget(self) -> int:
-        return self._answer_budget
-
-    @property
-    def answer_budget_config(self) -> AnswerBudgetConfig:
-        return self._budget_config
+    def num_predict_config(self) -> NumPredictConfig:
+        return self._num_predict_config
 
     @property
     def max_num_ctx(self) -> int:
@@ -1250,14 +1037,11 @@ class OllamaWriterAdapter:
         self._ensure_verified()
         prompt_sha = _canonical_prompt_sha256(messages)
         prompt_tokens_estimate = estimate_prompt_tokens(messages)
-        op_cap = self._cap_config.cap_for(operation)
-        op_source = self._cap_config.source_for(operation)
-        op_budget = self._budget_config.budget_for(operation)
-        op_budget_source = self._budget_config.source_for(operation)
-        num_predict = op_cap + op_budget
+        op_num_predict = self._num_predict_config.num_predict_for(operation)
+        op_source = self._num_predict_config.source_for(operation)
         num_ctx = compute_num_ctx(
             prompt_tokens_estimate,
-            num_predict,
+            op_num_predict,
             margin=NUM_CTX_MARGIN_TOKENS,
             step=NUM_CTX_STEP_TOKENS,
         )
@@ -1270,14 +1054,11 @@ class OllamaWriterAdapter:
                     target_id=target_id,
                     prompt_sha256=prompt_sha,
                     eval_tokens=0,
-                    thinking_tokens=0,
-                    thinking_token_cap=op_cap,
-                    thinking_token_cap_source=op_source,
-                    answer_budget=op_budget,
-                    answer_budget_source=op_budget_source,
+                    thinking_words=0,
+                    num_predict=op_num_predict,
+                    num_predict_source=op_source,
                     wall_time_s=0.0,
                     think=self._think,
-                    num_predict=num_predict,
                     num_ctx=num_ctx,
                     max_num_ctx=self._max_num_ctx,
                     prompt_tokens_estimate=prompt_tokens_estimate,
@@ -1288,10 +1069,10 @@ class OllamaWriterAdapter:
             raise refused_error(
                 "PILOT_B_NUM_CTX_EXCEEDS_MAX",
                 f"Writer call '{target_id}' ({operation}) requires num_ctx={num_ctx} "
-                f"(prompt_tokens_estimate={prompt_tokens_estimate} + num_predict={num_predict} + "
+                f"(prompt_tokens_estimate={prompt_tokens_estimate} + num_predict={op_num_predict} + "
                 f"margin={NUM_CTX_MARGIN_TOKENS}), which exceeds max_num_ctx={self._max_num_ctx} "
                 f"for '{self.ollama_tag}'.",
-                "Reduce thinking_token_cap or answer_budget, or configure a higher max_num_ctx if VRAM permits.",
+                "Reduce num_predict or configure a higher max_num_ctx if VRAM permits.",
             )
 
         chat_url = f"{self._base_url}/api/chat"
@@ -1302,7 +1083,7 @@ class OllamaWriterAdapter:
             "stream": False,
             "options": {
                 "temperature": 0,
-                "num_predict": num_predict,
+                "num_predict": op_num_predict,
                 "num_ctx": num_ctx,
             },
         }
@@ -1316,7 +1097,7 @@ class OllamaWriterAdapter:
         content = str(msg.get("content") or "").strip()
         thinking_text = str(msg.get("thinking") or "")
         done_reason = str(resp.get("done_reason") or "stop").strip()
-        eval_tokens, thinking_tokens = _extract_token_counts(resp, content, thinking_text)
+        eval_tokens, thinking_words = _extract_token_counts(resp, content, thinking_text)
 
         record = OllamaCallRecord(
             model=self.ollama_tag,
@@ -1325,14 +1106,11 @@ class OllamaWriterAdapter:
             target_id=target_id,
             prompt_sha256=prompt_sha,
             eval_tokens=eval_tokens,
-            thinking_tokens=thinking_tokens,
-            thinking_token_cap=op_cap,
-            thinking_token_cap_source=op_source,
-            answer_budget=op_budget,
-            answer_budget_source=op_budget_source,
+            thinking_words=thinking_words,
+            num_predict=op_num_predict,
+            num_predict_source=op_source,
             wall_time_s=wall_s,
             think=self._think,
-            num_predict=num_predict,
             num_ctx=num_ctx,
             max_num_ctx=self._max_num_ctx,
             prompt_tokens_estimate=prompt_tokens_estimate,
@@ -1345,8 +1123,8 @@ class OllamaWriterAdapter:
             raise refused_error(
                 "PILOT_B_OLLAMA_LENGTH_STOP",
                 f"Writer call '{target_id}' ({operation}) stopped with done_reason='length' "
-                f"(num_predict={num_predict}).",
-                "Increase thinking_token_cap or answer_budget.",
+                f"(num_predict={op_num_predict}).",
+                "Increase num_predict for the operation.",
             )
         return content
 
@@ -1419,7 +1197,7 @@ def parse_reader_verdict(raw_text: str) -> ReaderVerdict:
 
 
 class OllamaBlindReaderAdapter:
-    """Real loopback Ollama blind-reader adapter implementing `BlindReaderAdapter` (Card gk Part B & Card gp Part A/B)."""
+    """Real loopback Ollama blind-reader adapter implementing `BlindReaderAdapter` (Card gk Part B, Card gp, Card gs)."""
 
     is_fake: ClassVar[bool] = False
 
@@ -1428,26 +1206,28 @@ class OllamaBlindReaderAdapter:
         model: ModelIdentity | PinnedModelSpec,
         *,
         base_url: str = DEFAULT_OLLAMA_BASE_URL,
-        thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
-        thinking_cap_source: ThinkingCapSource | None = None,
-        answer_budget: int | AnswerBudgetConfig | Mapping[str, Any] | None = None,
-        answer_budget_source: AnswerBudgetSource | None = None,
+        num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
+        num_predict_source: NumPredictSource | None = None,
+        role: Literal["reader_1", "reader_2"] | None = None,
         max_num_ctx: int | None = None,
         http_transport: OllamaHttpTransport | None = None,
     ) -> None:
-        self._cap_config = coerce_thinking_cap_config(
-            thinking_token_cap, source=thinking_cap_source
-        )
-        self._budget_config = coerce_answer_budget_config(
-            answer_budget, source=answer_budget_source
+        self._num_predict_config = coerce_num_predict_config(
+            num_predict, source=num_predict_source
         )
         self._base_url = require_loopback_ollama_url(base_url)
         self._model = _resolve_model_identity(model)
-        default_role_max = (
-            DEFAULT_ROLE_MAX_NUM_CTX["reader_1"]
-            if self._model.normalized_family == "nemotron"
-            else DEFAULT_ROLE_MAX_NUM_CTX["reader_2"]
+        resolved_role: Literal["reader_1", "reader_2"] = (
+            role
+            if role is not None
+            else (
+                "reader_2"
+                if self._model.normalized_family == "granite"
+                else "reader_1"
+            )
         )
+        self._role = resolved_role
+        default_role_max = DEFAULT_ROLE_MAX_NUM_CTX[resolved_role]
         resolved_max_ctx = (
             max_num_ctx
             if max_num_ctx is not None
@@ -1461,8 +1241,9 @@ class OllamaBlindReaderAdapter:
             )
         self._max_num_ctx = resolved_max_ctx
         self._think: ThinkSetting = self._model.think
-        self._thinking_token_cap = self._cap_config.cap_for("read_claim")
-        self._answer_budget = self._budget_config.budget_for("read_claim")
+        self._num_predict = self._num_predict_config.num_predict_for(
+            "read_claim", role=self._role
+        )
         self._transport: OllamaHttpTransport = (
             http_transport if http_transport is not None else default_ollama_http_transport
         )
@@ -1473,6 +1254,10 @@ class OllamaBlindReaderAdapter:
     @property
     def model(self) -> ModelIdentity:
         return self._model
+
+    @property
+    def role(self) -> Literal["reader_1", "reader_2"]:
+        return self._role
 
     @property
     def ollama_tag(self) -> str:
@@ -1491,20 +1276,12 @@ class OllamaBlindReaderAdapter:
         return self._think
 
     @property
-    def thinking_token_cap(self) -> int:
-        return self._thinking_token_cap
+    def num_predict(self) -> int:
+        return self._num_predict
 
     @property
-    def thinking_cap_config(self) -> ThinkingCapConfig:
-        return self._cap_config
-
-    @property
-    def answer_budget(self) -> int:
-        return self._answer_budget
-
-    @property
-    def answer_budget_config(self) -> AnswerBudgetConfig:
-        return self._budget_config
+    def num_predict_config(self) -> NumPredictConfig:
+        return self._num_predict_config
 
     @property
     def max_num_ctx(self) -> int:
@@ -1545,14 +1322,13 @@ class OllamaBlindReaderAdapter:
         self._ensure_verified()
         prompt_sha = _canonical_prompt_sha256(messages)
         prompt_tokens_estimate = estimate_prompt_tokens(messages)
-        op_cap = self._cap_config.cap_for("read_claim")
-        op_source = self._cap_config.source_for("read_claim")
-        op_budget = self._budget_config.budget_for("read_claim")
-        op_budget_source = self._budget_config.source_for("read_claim")
-        num_predict = op_cap + op_budget
+        op_num_predict = self._num_predict_config.num_predict_for(
+            "read_claim", role=self._role
+        )
+        op_source = self._num_predict_config.source_for("read_claim", role=self._role)
         num_ctx = compute_num_ctx(
             prompt_tokens_estimate,
-            num_predict,
+            op_num_predict,
             margin=NUM_CTX_MARGIN_TOKENS,
             step=NUM_CTX_STEP_TOKENS,
         )
@@ -1564,14 +1340,11 @@ class OllamaBlindReaderAdapter:
                 target_id=target_id,
                 prompt_sha256=prompt_sha,
                 eval_tokens=0,
-                thinking_tokens=0,
-                thinking_token_cap=op_cap,
-                thinking_token_cap_source=op_source,
-                answer_budget=op_budget,
-                answer_budget_source=op_budget_source,
+                thinking_words=0,
+                num_predict=op_num_predict,
+                num_predict_source=op_source,
                 wall_time_s=0.0,
                 think=self._think,
-                num_predict=num_predict,
                 num_ctx=num_ctx,
                 max_num_ctx=self._max_num_ctx,
                 prompt_tokens_estimate=prompt_tokens_estimate,
@@ -1580,11 +1353,11 @@ class OllamaBlindReaderAdapter:
             self._call_records.append(record)
             raise refused_error(
                 "PILOT_B_NUM_CTX_EXCEEDS_MAX",
-                f"Reader call '{target_id}' (read_claim) requires num_ctx={num_ctx} "
-                f"(prompt_tokens_estimate={prompt_tokens_estimate} + num_predict={num_predict} + "
+                f"Reader call '{target_id}' (read_claim, {self._role}) requires num_ctx={num_ctx} "
+                f"(prompt_tokens_estimate={prompt_tokens_estimate} + num_predict={op_num_predict} + "
                 f"margin={NUM_CTX_MARGIN_TOKENS}), which exceeds max_num_ctx={self._max_num_ctx} "
                 f"for '{self.ollama_tag}'.",
-                "Reduce thinking_token_cap or answer_budget, or configure a higher max_num_ctx if VRAM permits.",
+                "Reduce num_predict or configure a higher max_num_ctx if VRAM permits.",
             )
 
         chat_url = f"{self._base_url}/api/chat"
@@ -1595,7 +1368,7 @@ class OllamaBlindReaderAdapter:
             "stream": False,
             "options": {
                 "temperature": 0,
-                "num_predict": num_predict,
+                "num_predict": op_num_predict,
                 "num_ctx": num_ctx,
             },
         }
@@ -1609,7 +1382,7 @@ class OllamaBlindReaderAdapter:
         raw_text = str(msg.get("content") or "").strip()
         thinking_text = str(msg.get("thinking") or "")
         done_reason = str(resp.get("done_reason") or "stop").strip()
-        eval_tokens, thinking_tokens = _extract_token_counts(resp, raw_text, thinking_text)
+        eval_tokens, thinking_words = _extract_token_counts(resp, raw_text, thinking_text)
 
         record = OllamaCallRecord(
             model=self.ollama_tag,
@@ -1618,14 +1391,11 @@ class OllamaBlindReaderAdapter:
             target_id=target_id,
             prompt_sha256=prompt_sha,
             eval_tokens=eval_tokens,
-            thinking_tokens=thinking_tokens,
-            thinking_token_cap=op_cap,
-            thinking_token_cap_source=op_source,
-            answer_budget=op_budget,
-            answer_budget_source=op_budget_source,
+            thinking_words=thinking_words,
+            num_predict=op_num_predict,
+            num_predict_source=op_source,
             wall_time_s=wall_s,
             think=self._think,
-            num_predict=num_predict,
             num_ctx=num_ctx,
             max_num_ctx=self._max_num_ctx,
             prompt_tokens_estimate=prompt_tokens_estimate,
@@ -1648,7 +1418,7 @@ class OllamaBlindReaderAdapter:
             claim_id=prompt.claim_id,
             reader=self._model,
             verdict=verdict,
-            thinking_tokens=record.thinking_tokens,
+            thinking_words=record.thinking_words,
             completion_tokens=record.eval_tokens,
             seconds=record.wall_time_s,
             raw_text=raw_text,
@@ -1679,8 +1449,7 @@ class OllamaBlindReaderAdapter:
         return rec
 
 
-CALIBRATION_CAP_MARGIN_TOKENS: int = 128
-CALIBRATION_ANSWER_BUDGET_MARGIN_TOKENS: int = 256
+CALIBRATION_NUM_PREDICT_MARGIN_TOKENS: int = 512
 DEFAULT_CALIBRATION_TABLES: int = 3
 DEFAULT_CALIBRATION_NUM_PREDICT: int = 4096
 DEFAULT_CALIBRATION_NUM_CTX: int = 8192
@@ -1763,10 +1532,9 @@ def run_ollama_calibration_calls(
             content = str(msg.get("content") or "").strip()
             thinking_text = str(msg.get("thinking") or "")
             done_reason = str(resp.get("done_reason") or "stop").strip()
-            eval_tokens, thinking_tokens = _extract_token_counts(
+            eval_tokens, thinking_words = _extract_token_counts(
                 resp, content, thinking_text
             )
-            answer_tokens = max(0, eval_tokens - thinking_tokens)
             rows.append(
                 {
                     "target_id": target_id,
@@ -1776,9 +1544,9 @@ def run_ollama_calibration_calls(
                     "prompt_sha256": prompt_sha,
                     "prompt_tokens_estimate": prompt_tokens_est,
                     "think": True,
-                    "thinking_tokens": thinking_tokens,
+                    "eval_count": eval_tokens,
                     "eval_tokens": eval_tokens,
-                    "answer_tokens": answer_tokens,
+                    "thinking_words": thinking_words,
                     "done_reason": done_reason,
                     "wall_time_s": wall_s,
                     "num_ctx": int(num_ctx),
@@ -1792,16 +1560,13 @@ def run_ollama_calibration_calls(
             "keep_alive": 0,
             "stream": False,
         }
-        t_u0 = time.perf_counter()
+        t_u = time.perf_counter()
         transport("POST", chat_url, unload_payload)
-        unload_wall_s = round(max(0.0, time.perf_counter() - t_u0), 6)
         unload_rec = OllamaUnloadRecord(
             model=resolved_model.name,
             digest=resolved_model.digest,
             keep_alive=0,
-            wall_time_s=unload_wall_s,
+            wall_time_s=max(0.0, time.perf_counter() - t_u),
         )
 
     return rows, unload_rec
-
-
