@@ -609,6 +609,27 @@ def test_allows_none_in_wrong_family_axis() -> None:
     assert validate_map(data).target_total == 60
 
 
+def test_refuses_mismatched_trait_and_wrong_family_registry_join() -> None:
+    data = _valid_base_map()
+    data["axes"]["trait"] = ["T10", "T12"]
+    data["cells"][0]["trait"] = "T12"
+    data["cells"][0]["wrong_family"] = "exact_read_as_floor"
+    with pytest.raises(RdlabError) as exc_info:
+        validate_map(data)
+    err = exc_info.value
+    assert err.exit_code == EXIT_REFUSED
+    assert err.code == "MAP_UNREGISTERED_TRAIT_WRONG_FAMILY"
+    assert "T12.exact_read_as_floor" in err.message
+
+    # And when wrong_family == "none", the join is skipped and allowed:
+    data_none = _valid_base_map()
+    data_none["axes"]["trait"] = ["T10", "T12"]
+    data_none["axes"]["wrong_family"].append("none")
+    data_none["cells"][0]["trait"] = "T12"
+    data_none["cells"][0]["wrong_family"] = "none"
+    assert validate_map(data_none).cells_total == 24
+
+
 def test_refuses_null_bypasses_in_map() -> None:
     # 1. splits: null
     data = _valid_base_map()

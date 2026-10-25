@@ -4,6 +4,18 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-24
+
+### Added
+
+- Generator interface (`reasoning_dataset_lab.generators.base`): `Generator` protocol (`plan(cell, canon, n, seed) -> list[SlotSpec]` and `build(slot) -> BuiltItem`), typed `SlotSpec`, `ItemRecord`, `ProofRecord`, `ReceiptRecord`, `BuiltItem`, `MapCell`, and deterministic `MockGenerator` (`DESIGN.md §4`).
+- `role-set` generator adapter (`reasoning_dataset_lab.generators.role_set`): `RoleSetGenerator` driving `role-set` at pinned commit `4033ebd` unchanged (`role_set.generate`, `role_set.solvefirst`, `role_set.mock.MockWriter`, `role_set.puzzle.check_puzzle`, `role_set.assemble.assemble`) with `aspire-si-gates` pinned at `8ed78f2`.
+
+### Fixed
+
+- Enforce `f"{trait}.{wrong_family}"` join against `role_set.generate.shortcuts.REGISTRY` (`src/role_set/generate/shortcuts.py:21-29@4033ebd`) in both `rdlab map check` and `RoleSetGenerator` when `wrong_family != "none"` (`dx` Fix #1).
+- Validate that all files under `canon/` are UTF-8 text (`errors="strict"`, no NUL bytes, allowed extensions `.yaml`, `.yml`, `.json`, `.txt`, `.md`) in both `rdlab map check` and `rdlab project fingerprint` (`dx` Fix #3).
+
 ## [0.1.1] - 2026-10-24
 
 ### Fixed

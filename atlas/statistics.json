@@ -126,8 +126,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 1,
-        "lines": 74,
+        "commits": 2,
+        "lines": 82,
         "path": "atlas/README.md"
       },
       {
@@ -136,18 +136,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 1,
-        "lines": 138,
+        "commits": 2,
+        "lines": 166,
         "path": "atlas/page.json"
       },
       {
-        "commits": 1,
-        "lines": 239,
+        "commits": 2,
+        "lines": 315,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 1,
-        "lines": 3117,
+        "commits": 2,
+        "lines": 3929,
         "path": "atlas/structure.json"
       },
       {
@@ -211,9 +211,9 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-24T23:33:47.948Z",
+  "generatedAt": "2026-10-25T01:17:51.577Z",
   "generatedFrom": {
-    "commit": "00690ce3656e7f0fe10b8a23b00d34d60dbd64ea"
+    "commit": "c3a33e6cb3bc1409d06bdcc6d57517b9ea589106"
   },
   "pairs": [],
   "parameters": {
@@ -226,7 +226,7 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-24T19:33:37-04:00",
+    "headDate": "2026-10-24T19:53:54-04:00",
     "inScopeFiles": 23,
     "pinnedStart": null,
     "priorFloor": "fallen",
@@ -235,7 +235,7 @@
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-27T23:33:37.000Z",
+    "since": "2026-04-27T23:53:54.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

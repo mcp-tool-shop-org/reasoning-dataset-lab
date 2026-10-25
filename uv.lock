@@ -2,6 +2,14 @@ version = 1
 revision = 5
 requires-python = ">=3.12"
 
+[manifest]
+overrides = [{ name = "aspire-si-gates", git = "https://github.com/mcp-tool-shop-org/aspire-si-gates?rev=8ed78f2fee388e81443953f8dd3753c73e1ff2bd" }]
+
+[[package]]
+name = "aspire-si-gates"
+version = "1.7.6"
+source = { git = "https://github.com/mcp-tool-shop-org/aspire-si-gates?rev=8ed78f2fee388e81443953f8dd3753c73e1ff2bd#8ed78f2fee388e81443953f8dd3753c73e1ff2bd" }
+
 [[package]]
 name = "colorama"
 version = "0.4.6"
@@ -224,10 +232,12 @@ wheels = [
 
 [[package]]
 name = "reasoning-dataset-lab"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aspire-si-gates" },
     { name = "pyyaml" },
+    { name = "role-set" },
 ]
 
 [package.optional-dependencies]
@@ -246,10 +256,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aspire-si-gates", git = "https://github.com/mcp-tool-shop-org/aspire-si-gates?rev=8ed78f2fee388e81443953f8dd3753c73e1ff2bd" },
     { name = "coverage", marker = "extra == 'dev'", specifier = "==7.16.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = "==7.0.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "role-set", git = "https://github.com/mcp-tool-shop-org/role-set?rev=4033ebd6f4090096c882f26049d577fc66322c47" },
 ]
 provides-extras = ["dev"]
 
@@ -258,4 +270,12 @@ dev = [
     { name = "coverage", specifier = "==7.16.2" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-cov", specifier = "==7.0.0" },
+]
+
+[[package]]
+name = "role-set"
+version = "0.2.0"
+source = { git = "https://github.com/mcp-tool-shop-org/role-set?rev=4033ebd6f4090096c882f26049d577fc66322c47#4033ebd6f4090096c882f26049d577fc66322c47" }
+dependencies = [
+    { name = "aspire-si-gates" },
 ]
