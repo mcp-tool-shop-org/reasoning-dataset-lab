@@ -1,0 +1,590 @@
+{
+  "$defs": {
+    "class_rates": {
+      "additionalProperties": false,
+      "properties": {
+        "cannot_tell": {
+          "type": "number"
+        },
+        "supported": {
+          "type": "number"
+        },
+        "unsupported": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "cannot_tell",
+        "supported",
+        "unsupported"
+      ],
+      "type": "object"
+    },
+    "dist": {
+      "additionalProperties": false,
+      "properties": {
+        "max": {
+          "type": "number"
+        },
+        "median": {
+          "type": "number"
+        },
+        "min": {
+          "type": "number"
+        },
+        "n": {
+          "type": "integer"
+        },
+        "p95": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "max",
+        "median",
+        "min",
+        "n",
+        "p95"
+      ],
+      "type": "object"
+    },
+    "num_predict_config": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "by_operation": {
+              "additionalProperties": {
+                "additionalProperties": false,
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "type": "object"
+            },
+            "documented_defaults_by_operation": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "source": {
+              "type": "string"
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "by_operation",
+            "documented_defaults_by_operation",
+            "source",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "by_operation": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "default_num_predict": {
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            },
+            "sources_by_operation": {
+              "additionalProperties": false,
+              "type": "object"
+            }
+          },
+          "required": [
+            "by_operation",
+            "default_num_predict",
+            "source",
+            "sources_by_operation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "registry": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "read_dates": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "read_dates",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "wave": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "calls": {
+          "type": "integer"
+        },
+        "completion_tokens_total": {
+          "type": "integer"
+        },
+        "eval_tokens_total": {
+          "type": "integer"
+        },
+        "max_num_ctx": {
+          "type": "integer"
+        },
+        "max_num_ctx_observed": {
+          "type": "integer"
+        },
+        "max_thinking_words_observed": {
+          "type": "integer"
+        },
+        "model_digest": {
+          "type": "string"
+        },
+        "model_family": {
+          "type": "string"
+        },
+        "model_name": {
+          "type": "string"
+        },
+        "num_predict": {
+          "type": "integer"
+        },
+        "num_predict_source": {
+          "type": "string"
+        },
+        "seconds_total": {
+          "type": "number"
+        },
+        "thinking_words_total": {
+          "type": "integer"
+        },
+        "unloaded": {
+          "type": "boolean"
+        },
+        "wall_time_s_total": {
+          "type": "number"
+        },
+        "wave_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapter",
+        "calls",
+        "completion_tokens_total",
+        "eval_tokens_total",
+        "max_num_ctx",
+        "max_num_ctx_observed",
+        "max_thinking_words_observed",
+        "model_digest",
+        "model_family",
+        "model_name",
+        "num_predict",
+        "num_predict_source",
+        "seconds_total",
+        "thinking_words_total",
+        "unloaded",
+        "wall_time_s_total",
+        "wave_name"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "adapters": {
+      "additionalProperties": false,
+      "properties": {
+        "reader_1": {
+          "type": "string"
+        },
+        "reader_2": {
+          "type": "string"
+        },
+        "writer": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "reader_1",
+        "reader_2",
+        "writer"
+      ],
+      "type": "object"
+    },
+    "coverage": {
+      "additionalProperties": false,
+      "properties": {
+        "built_items": {
+          "type": "integer"
+        },
+        "built_triads": {
+          "type": "integer"
+        },
+        "by_domain": {
+          "additionalProperties": {
+            "additionalProperties": false,
+            "properties": {
+              "built": {
+                "type": "integer"
+              },
+              "target": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "built",
+              "target"
+            ],
+            "type": "object"
+          },
+          "type": "object"
+        },
+        "missed_cells": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "target_items": {
+          "type": "integer"
+        },
+        "target_triads": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "built_items",
+        "built_triads",
+        "by_domain",
+        "missed_cells",
+        "target_items",
+        "target_triads"
+      ],
+      "type": "object"
+    },
+    "dataset": {
+      "type": "string"
+    },
+    "full_build_estimate_50_triads": {
+      "additionalProperties": false,
+      "properties": {
+        "estimated_calls": {
+          "type": "integer"
+        },
+        "estimated_completion_tokens": {
+          "type": "integer"
+        },
+        "estimated_seconds_stub_rate": {
+          "type": "number"
+        },
+        "estimated_thinking_words": {
+          "type": "integer"
+        },
+        "scale_factor": {
+          "type": "number"
+        },
+        "target_items": {
+          "type": "integer"
+        },
+        "target_triads": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "estimated_calls",
+        "estimated_completion_tokens",
+        "estimated_seconds_stub_rate",
+        "estimated_thinking_words",
+        "scale_factor",
+        "target_items",
+        "target_triads"
+      ],
+      "type": "object"
+    },
+    "gate_pass_rate_per_class": {
+      "$ref": "#/$defs/class_rates"
+    },
+    "human_sample": {
+      "additionalProperties": false,
+      "properties": {
+        "auditor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "defects": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "done": {
+          "type": "boolean"
+        },
+        "max_defects": {
+          "type": "integer"
+        },
+        "requested_size": {
+          "type": "integer"
+        },
+        "size": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "auditor",
+        "date",
+        "defects",
+        "done",
+        "max_defects",
+        "requested_size",
+        "size"
+      ],
+      "type": "object"
+    },
+    "items_total": {
+      "type": "integer"
+    },
+    "key_proof_rate": {
+      "type": "number"
+    },
+    "licence_registry": {
+      "$ref": "#/$defs/registry"
+    },
+    "licence_registry_path": {
+      "type": "string"
+    },
+    "licence_registry_sha256": {
+      "type": "string"
+    },
+    "num_ctx_policy": {
+      "additionalProperties": false,
+      "properties": {
+        "margin_tokens": {
+          "type": "integer"
+        },
+        "max_num_ctx_by_role": {
+          "additionalProperties": false,
+          "properties": {
+            "reader_1": {
+              "type": "integer"
+            },
+            "reader_2": {
+              "type": "integer"
+            },
+            "writer": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "reader_1",
+            "reader_2",
+            "writer"
+          ],
+          "type": "object"
+        },
+        "prompt_token_estimate_rule": {
+          "type": "string"
+        },
+        "step_tokens": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "margin_tokens",
+        "max_num_ctx_by_role",
+        "prompt_token_estimate_rule",
+        "step_tokens"
+      ],
+      "type": "object"
+    },
+    "num_predict": {
+      "type": "integer"
+    },
+    "num_predict_config": {
+      "$ref": "#/$defs/num_predict_config"
+    },
+    "num_predict_source": {
+      "type": "string"
+    },
+    "part_id": {
+      "type": "string"
+    },
+    "split": {
+      "const": "sealed"
+    },
+    "stub_mode": {
+      "type": "boolean"
+    },
+    "style_issues": {
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "type": "integer"
+        },
+        "examples": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "sentence": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "detail",
+              "kind",
+              "sentence"
+            ],
+            "type": "object"
+          },
+          "maxItems": 10,
+          "type": "array"
+        },
+        "rate": {
+          "type": "number"
+        },
+        "rate_per_sentence": {
+          "type": "number"
+        },
+        "sentences_checked": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "count",
+        "examples",
+        "rate",
+        "rate_per_sentence",
+        "sentences_checked"
+      ],
+      "type": "object"
+    },
+    "totals": {
+      "additionalProperties": false,
+      "properties": {
+        "calls": {
+          "type": "integer"
+        },
+        "completion_tokens": {
+          "type": "integer"
+        },
+        "eval_tokens": {
+          "type": "integer"
+        },
+        "seconds": {
+          "type": "number"
+        },
+        "thinking_words": {
+          "type": "integer"
+        },
+        "wall_time_s": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "calls",
+        "completion_tokens",
+        "eval_tokens",
+        "seconds",
+        "thinking_words",
+        "wall_time_s"
+      ],
+      "type": "object"
+    },
+    "triad_pass_rate": {
+      "type": "number"
+    },
+    "triads_failed": {
+      "type": "integer"
+    },
+    "triads_kept": {
+      "type": "integer"
+    },
+    "triads_requested": {
+      "type": "integer"
+    },
+    "waves": {
+      "items": {
+        "$ref": "#/$defs/wave"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "type": "array"
+    }
+  },
+  "required": [
+    "adapters",
+    "coverage",
+    "dataset",
+    "full_build_estimate_50_triads",
+    "gate_pass_rate_per_class",
+    "human_sample",
+    "items_total",
+    "key_proof_rate",
+    "licence_registry",
+    "licence_registry_path",
+    "licence_registry_sha256",
+    "num_ctx_policy",
+    "num_predict",
+    "num_predict_config",
+    "num_predict_source",
+    "part_id",
+    "split",
+    "stub_mode",
+    "style_issues",
+    "totals",
+    "triad_pass_rate",
+    "triads_failed",
+    "triads_kept",
+    "triads_requested",
+    "waves"
+  ],
+  "title": "A Pilot B build report",
+  "type": "object"
+}

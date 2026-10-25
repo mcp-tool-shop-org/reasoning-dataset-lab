@@ -1,0 +1,343 @@
+{
+  "$defs": {
+    "class_rates": {
+      "additionalProperties": false,
+      "properties": {
+        "cannot_tell": {
+          "type": "number"
+        },
+        "supported": {
+          "type": "number"
+        },
+        "unsupported": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "cannot_tell",
+        "supported",
+        "unsupported"
+      ],
+      "type": "object"
+    },
+    "dist": {
+      "additionalProperties": false,
+      "properties": {
+        "max": {
+          "type": "number"
+        },
+        "median": {
+          "type": "number"
+        },
+        "min": {
+          "type": "number"
+        },
+        "n": {
+          "type": "integer"
+        },
+        "p95": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "max",
+        "median",
+        "min",
+        "n",
+        "p95"
+      ],
+      "type": "object"
+    },
+    "num_predict_config": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "by_operation": {
+              "additionalProperties": {
+                "additionalProperties": false,
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "type": "object"
+            },
+            "documented_defaults_by_operation": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "source": {
+              "type": "string"
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "by_operation",
+            "documented_defaults_by_operation",
+            "source",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "by_operation": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "default_num_predict": {
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            },
+            "sources_by_operation": {
+              "additionalProperties": false,
+              "type": "object"
+            }
+          },
+          "required": [
+            "by_operation",
+            "default_num_predict",
+            "source",
+            "sources_by_operation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "registry": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "read_dates": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "read_dates",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "wave": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "calls": {
+          "type": "integer"
+        },
+        "completion_tokens_total": {
+          "type": "integer"
+        },
+        "eval_tokens_total": {
+          "type": "integer"
+        },
+        "max_num_ctx": {
+          "type": "integer"
+        },
+        "max_num_ctx_observed": {
+          "type": "integer"
+        },
+        "max_thinking_words_observed": {
+          "type": "integer"
+        },
+        "model_digest": {
+          "type": "string"
+        },
+        "model_family": {
+          "type": "string"
+        },
+        "model_name": {
+          "type": "string"
+        },
+        "num_predict": {
+          "type": "integer"
+        },
+        "num_predict_source": {
+          "type": "string"
+        },
+        "seconds_total": {
+          "type": "number"
+        },
+        "thinking_words_total": {
+          "type": "integer"
+        },
+        "unloaded": {
+          "type": "boolean"
+        },
+        "wall_time_s_total": {
+          "type": "number"
+        },
+        "wave_name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "adapter",
+        "calls",
+        "completion_tokens_total",
+        "eval_tokens_total",
+        "max_num_ctx",
+        "max_num_ctx_observed",
+        "max_thinking_words_observed",
+        "model_digest",
+        "model_family",
+        "model_name",
+        "num_predict",
+        "num_predict_source",
+        "seconds_total",
+        "thinking_words_total",
+        "unloaded",
+        "wall_time_s_total",
+        "wave_name"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "call_distributions": {
+      "additionalProperties": {
+        "additionalProperties": {
+          "additionalProperties": false,
+          "properties": {
+            "eval_tokens": {
+              "$ref": "#/$defs/dist"
+            },
+            "num_ctx": {
+              "$ref": "#/$defs/dist"
+            },
+            "prompt_tokens_estimate": {
+              "$ref": "#/$defs/dist"
+            },
+            "thinking_words": {
+              "$ref": "#/$defs/dist"
+            },
+            "wall_time_s": {
+              "$ref": "#/$defs/dist"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "type": "object"
+      },
+      "type": "object"
+    },
+    "frozen": {
+      "type": "boolean"
+    },
+    "frozen_mac": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "items_count": {
+      "type": "integer"
+    },
+    "judgment_aggregates": {
+      "additionalProperties": false,
+      "properties": {
+        "pass_rate_per_class": {
+          "$ref": "#/$defs/class_rates"
+        },
+        "triad_pass_rate": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "pass_rate_per_class",
+        "triad_pass_rate"
+      ],
+      "type": "object"
+    },
+    "keys_sealed_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "map_sha256": {
+      "type": "string"
+    },
+    "map_version": {
+      "type": "integer"
+    },
+    "num_predict": {
+      "type": "integer"
+    },
+    "num_predict_config": {
+      "$ref": "#/$defs/num_predict_config"
+    },
+    "num_predict_source": {
+      "type": "string"
+    },
+    "part_id": {
+      "type": "string"
+    },
+    "split": {
+      "const": "sealed"
+    },
+    "test_only": {
+      "type": "boolean"
+    },
+    "triads_failed": {
+      "type": "integer"
+    },
+    "triads_kept": {
+      "type": "integer"
+    },
+    "waves": {
+      "items": {
+        "$ref": "#/$defs/wave"
+      },
+      "maxItems": 4,
+      "minItems": 4,
+      "type": "array"
+    }
+  },
+  "required": [
+    "call_distributions",
+    "frozen",
+    "items_count",
+    "judgment_aggregates",
+    "keys_sealed_sha256",
+    "map_sha256",
+    "map_version",
+    "num_predict",
+    "num_predict_config",
+    "num_predict_source",
+    "part_id",
+    "split",
+    "triads_failed",
+    "triads_kept",
+    "waves"
+  ],
+  "title": "part.json of a sealed Pilot B part",
+  "type": "object"
+}

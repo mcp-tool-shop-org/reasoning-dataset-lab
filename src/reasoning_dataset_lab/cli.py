@@ -137,8 +137,14 @@ def _build_parser() -> _StructuredArgumentParser:
         "--shuffle-seed",
         dest="shuffle_seed",
         type=int,
-        default=42,
-        help="Seed for shuffling sealed triad items (default: 42).",
+        default=None,
+        help="Seed for shuffling sealed triad items. Default: a fresh secret seed per build, kept in the sealed store.",
+    )
+    pb_parser.add_argument(
+        "--allow-weak-seed",
+        dest="allow_weak_test_seed",
+        action="store_true",
+        help="Test only: accept a --shuffle-seed of fewer than 64 bits.",
     )
     pb_parser.add_argument(
         "--num-predict",
@@ -371,6 +377,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 stub_mode=stub_mode,
                 seed=args.seed,
                 shuffle_seed=args.shuffle_seed,
+                allow_weak_test_seed=args.allow_weak_test_seed,
                 num_predict=args.num_predict,
                 num_predict_by_operation=op_num_predict,
                 config_path=args.config_path,

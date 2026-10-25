@@ -18,6 +18,7 @@ import hashlib
 import json
 import math
 import random
+import secrets
 import statistics
 import urllib.error
 import urllib.request
@@ -78,6 +79,7 @@ from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
     PilotBWaveRunResult,
     freeze_sealed_part,
     run_pilot_b_waves,
+    write_public_report,
     write_sealed_part,
 )
 
@@ -670,6 +672,39 @@ def draw_human_sample(
     }
 
 
+def style_review(items: Sequence[Mapping[str, Any]]) -> tuple[int, int, list[dict[str, str]]]:
+    """Style-lint the public items in their public (shuffled) order: each triad's material once, at its first
+    item, and every claim. Returns ``(issue_count, sentences_checked, first ten issues)``."""
+
+    examples: list[dict[str, str]] = []
+    count = 0
+    checked = 0
+    seen: set[str] = set()
+    for item in items:
+        sentences: list[str] = []
+        triad = str(item.get("triad_id"))
+        if triad not in seen:
+            seen.add(triad)
+            for raw_line in str(item.get("material", "")).splitlines():
+                stripped = raw_line.strip()
+                if not stripped or stripped.lower().startswith("material"):
+                    continue
+                m_num = NUMBERED_LINE_RE.match(stripped)
+                sent = m_num.group(2).strip() if m_num is not None else stripped
+                if sent:
+                    sentences.append(sent)
+        claim = str(item.get("claim", "")).strip()
+        if claim:
+            sentences.append(claim)
+        for sent in sentences:
+            checked += 1
+            for iss in style_lint(sent):
+                count += 1
+                if len(examples) < 10:
+                    examples.append(dict(iss))
+    return count, checked, examples
+
+
 def build_pilot_b_report(
     *,
     part_dir: Path,
@@ -678,6 +713,7 @@ def build_pilot_b_report(
     stub_mode: bool,
     sample_seed: int = 42,
     licence_registry: Mapping[str, Any] | None = None,
+    sample_out: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct the Pilot B build report (§6, Part E): coverage, key-proof rate 1.0, gate pass rate per class, and sample of 20."""
     items_path = part_dir / "items.jsonl"
@@ -725,33 +761,21 @@ def build_pilot_b_report(
         "estimated_seconds_stub_rate": round(total_seconds * scale, 4),
     }
 
-    sample_block = draw_human_sample(items, sample_size=20, seed=sample_seed)
-    style_examples: list[dict[str, str]] = []
-    style_issue_count = 0
-    sentences_checked = 0
-    for ev in wave_result.kept_triads:
-        for raw_line in ev.worded.material.splitlines():
-            stripped = raw_line.strip()
-            if not stripped or stripped.lower().startswith("material"):
-                continue
-            m_num = NUMBERED_LINE_RE.match(stripped)
-            sent = m_num.group(2).strip() if m_num is not None else stripped
-            if not sent:
-                continue
-            sentences_checked += 1
-            for iss in style_lint(sent):
-                style_issue_count += 1
-                if len(style_examples) < 10:
-                    style_examples.append(dict(iss))
-        for claim_key in ("supported", "unsupported", "cannot_tell"):
-            claim_sent = ev.worded.worded_claims.get(claim_key, "").strip()
-            if not claim_sent:
-                continue
-            sentences_checked += 1
-            for iss in style_lint(claim_sent):
-                style_issue_count += 1
-                if len(style_examples) < 10:
-                    style_examples.append(dict(iss))
+    # The hand-audit sample is drawn here but stays out of the public report: it goes to ``sample_out`` (the sealed
+    # store). The report carries only the audit's summary.
+    sample = draw_human_sample(items, sample_size=20, seed=sample_seed)
+    if sample_out is not None:
+        sample_out.update(sample)
+    sample_block = {
+        "done": False,
+        "size": sample["size"],
+        "requested_size": sample["requested_size"],
+        "max_defects": sample["max_defects"],
+        "defects": None,
+        "auditor": None,
+        "date": None,
+    }
+    style_issue_count, sentences_checked, style_examples = style_review(items)
 
     style_rate_per_sentence = (
         round(style_issue_count / sentences_checked, 4)
@@ -867,7 +891,8 @@ def run_pilot_b_build(
     triad_count: int = 50,
     stub_mode: bool = False,
     seed: int = 1,
-    shuffle_seed: int = 42,
+    shuffle_seed: int | None = None,
+    allow_weak_test_seed: bool = False,
     num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
     num_predict_source: NumPredictSource | None = None,
     num_predict_by_operation: Mapping[str, int | None] | None = None,
@@ -1042,23 +1067,26 @@ def run_pilot_b_build(
         wave_result=wave_res,
         shuffle_seed=shuffle_seed,
         licence_registry=licence_registry_meta,
+        allow_weak_test_seed=allow_weak_test_seed,
     )
-    frozen_meta = freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
 
+    hand_audit_sample: dict[str, Any] = {}
     report = build_pilot_b_report(
         part_dir=part_dir,
         triads_requested=triad_count,
         wave_result=wave_res,
         stub_mode=stub_mode,
-        sample_seed=shuffle_seed,
+        sample_seed=secrets.randbits(32),
         licence_registry=licence_registry_meta,
+        sample_out=hand_audit_sample,
+    )
+    (keys_path.parent / "human_sample.sealed.json").write_text(
+        json.dumps(hand_audit_sample, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     report_path = output_dir / "reports" / "pilot_b_report.json"
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text(
-        json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    write_public_report(report_path, keys_path, report)
+    # the report is public too: freeze verifies it with the part
+    frozen_meta = freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path, extra_public_files=[report_path])
 
     return {
         "status": "ok",
