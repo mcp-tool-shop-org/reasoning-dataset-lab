@@ -54,28 +54,93 @@
           "additionalProperties": false,
           "properties": {
             "by_operation": {
-              "additionalProperties": {
-                "additionalProperties": false,
-                "properties": {
-                  "source": {
-                    "type": "string"
+              "additionalProperties": false,
+              "properties": {
+                "read_claim_reader_1": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
                   },
-                  "value": {
-                    "type": "integer"
-                  }
+                  "required": [
+                    "source",
+                    "value"
+                  ],
+                  "type": "object"
                 },
-                "required": [
-                  "source",
-                  "value"
-                ],
-                "type": "object"
+                "read_claim_reader_2": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "render_material": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "value"
+                  ],
+                  "type": "object"
+                },
+                "word_claim": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "source",
+                    "value"
+                  ],
+                  "type": "object"
+                }
               },
+              "required": [],
               "type": "object"
             },
             "documented_defaults_by_operation": {
-              "additionalProperties": {
-                "type": "integer"
+              "additionalProperties": false,
+              "properties": {
+                "read_claim_reader_1": {
+                  "type": "integer"
+                },
+                "read_claim_reader_2": {
+                  "type": "integer"
+                },
+                "render_material": {
+                  "type": "integer"
+                },
+                "word_claim": {
+                  "type": "integer"
+                }
               },
+              "required": [],
               "type": "object"
             },
             "source": {
@@ -129,6 +194,7 @@
         },
         "read_dates": {
           "additionalProperties": {
+            "pattern": "^(\\d{4}-\\d{2}-\\d{2})?$",
             "type": "string"
           },
           "type": "object"
@@ -225,31 +291,123 @@
   "additionalProperties": false,
   "properties": {
     "call_distributions": {
-      "additionalProperties": {
-        "additionalProperties": {
+      "additionalProperties": false,
+      "properties": {
+        "reader_1": {
           "additionalProperties": false,
           "properties": {
-            "eval_tokens": {
-              "$ref": "#/$defs/dist"
-            },
-            "num_ctx": {
-              "$ref": "#/$defs/dist"
-            },
-            "prompt_tokens_estimate": {
-              "$ref": "#/$defs/dist"
-            },
-            "thinking_words": {
-              "$ref": "#/$defs/dist"
-            },
-            "wall_time_s": {
-              "$ref": "#/$defs/dist"
+            "read_claim": {
+              "additionalProperties": false,
+              "properties": {
+                "eval_tokens": {
+                  "$ref": "#/$defs/dist"
+                },
+                "num_ctx": {
+                  "$ref": "#/$defs/dist"
+                },
+                "prompt_tokens_estimate": {
+                  "$ref": "#/$defs/dist"
+                },
+                "thinking_words": {
+                  "$ref": "#/$defs/dist"
+                },
+                "wall_time_s": {
+                  "$ref": "#/$defs/dist"
+                }
+              },
+              "required": [],
+              "type": "object"
             }
           },
           "required": [],
           "type": "object"
         },
-        "type": "object"
+        "reader_2": {
+          "additionalProperties": false,
+          "properties": {
+            "read_claim": {
+              "additionalProperties": false,
+              "properties": {
+                "eval_tokens": {
+                  "$ref": "#/$defs/dist"
+                },
+                "num_ctx": {
+                  "$ref": "#/$defs/dist"
+                },
+                "prompt_tokens_estimate": {
+                  "$ref": "#/$defs/dist"
+                },
+                "thinking_words": {
+                  "$ref": "#/$defs/dist"
+                },
+                "wall_time_s": {
+                  "$ref": "#/$defs/dist"
+                }
+              },
+              "required": [],
+              "type": "object"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "writer": {
+          "additionalProperties": false,
+          "properties": {
+            "render_material": {
+              "additionalProperties": false,
+              "properties": {
+                "eval_tokens": {
+                  "$ref": "#/$defs/dist"
+                },
+                "num_ctx": {
+                  "$ref": "#/$defs/dist"
+                },
+                "prompt_tokens_estimate": {
+                  "$ref": "#/$defs/dist"
+                },
+                "thinking_words": {
+                  "$ref": "#/$defs/dist"
+                },
+                "wall_time_s": {
+                  "$ref": "#/$defs/dist"
+                }
+              },
+              "required": [],
+              "type": "object"
+            },
+            "word_claim": {
+              "additionalProperties": false,
+              "properties": {
+                "eval_tokens": {
+                  "$ref": "#/$defs/dist"
+                },
+                "num_ctx": {
+                  "$ref": "#/$defs/dist"
+                },
+                "prompt_tokens_estimate": {
+                  "$ref": "#/$defs/dist"
+                },
+                "thinking_words": {
+                  "$ref": "#/$defs/dist"
+                },
+                "wall_time_s": {
+                  "$ref": "#/$defs/dist"
+                }
+              },
+              "required": [],
+              "type": "object"
+            }
+          },
+          "required": [],
+          "type": "object"
+        }
       },
+      "required": [
+        "reader_1",
+        "reader_2",
+        "writer"
+      ],
       "type": "object"
     },
     "frozen": {

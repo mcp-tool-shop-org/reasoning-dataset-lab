@@ -9,6 +9,7 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 ### Changed
 
 - sealing: the per-build seed is kept in the sealed store.
+- sealing: the render inputs are validated at write and at verify, the report is cross-checked against them, and the schema maps are closed.
 
 ## [0.3.0] - 2026-10-25
 
