@@ -97,7 +97,7 @@ def _public_ints(part_dir: Path) -> set[int]:
     return found
 
 
-def reshuffle_probe(part_dir: Path) -> dict[str, str]:
+def order_probe(part_dir: Path) -> dict[str, str]:
     """Re-run the shuffle with every seed the public files offer, and the old default 42."""
 
     items = _jsonl(part_dir / "items.jsonl")
@@ -114,7 +114,7 @@ def reshuffle_probe(part_dir: Path) -> dict[str, str]:
     return best
 
 
-def hash_probe(part_dir: Path) -> dict[str, str]:
+def digest_probe(part_dir: Path) -> dict[str, str]:
     """Rebuild each triad from its public id and match any 64-hex value the provenance carries."""
 
     items = {row["id"]: row for row in _jsonl(part_dir / "items.jsonl")}
@@ -122,7 +122,8 @@ def hash_probe(part_dir: Path) -> dict[str, str]:
     for prov in _jsonl(part_dir / "provenance.jsonl"):
         item = items[prov["id"]]
         match = re.search(r"-(\d{3})-triad$", item["triad_id"])
-        assert match is not None
+        if match is None:
+            continue  # an opaque handle: there is no generation seed to start from
         table_seed = int(match.group(1))
         public_hex = set(re.findall(r"\b[0-9a-f]{64}\b", json.dumps(prov)))
         table = build_sample_fact_table(seed=table_seed, closure=item["closure"])
@@ -151,15 +152,15 @@ def sealed(tmp_path_factory) -> tuple[Path, Path]:
         mp.undo()
 
 
-def test_reshuffle_probe_on_the_public_part_is_at_chance(sealed):
+def test_public_part_order_is_independent_of_keys(sealed):
     part_dir, keys_path = sealed
-    accuracy = _accuracy(reshuffle_probe(part_dir), _true_keys(keys_path))
+    accuracy = _accuracy(order_probe(part_dir), _true_keys(keys_path))
     assert accuracy <= CHANCE + TOLERANCE, accuracy
 
 
-def test_hash_probe_on_the_public_part_is_at_chance(sealed):
+def test_public_provenance_holds_no_unkeyed_item_digest(sealed):
     part_dir, keys_path = sealed
-    accuracy = _accuracy(hash_probe(part_dir), _true_keys(keys_path))
+    accuracy = _accuracy(digest_probe(part_dir), _true_keys(keys_path))
     assert accuracy <= CHANCE + TOLERANCE, accuracy
 
 
@@ -221,3 +222,30 @@ def test_freeze_refuses_a_public_file_that_carries_the_seed(tmp_path, monkeypatc
     with pytest.raises(RdlabError) as caught:
         freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
     assert caught.value.code == "PILOT_B_SEALED_SEED_IN_PUBLIC_FILE"
+
+
+def test_public_part_carries_no_generation_seed_or_per_item_measurement(sealed):
+    part_dir, keys_path = sealed
+    items = _jsonl(part_dir / "items.jsonl")
+    assert all(re.fullmatch(r"triad-[0-9a-f]{16}", row["triad_id"]) for row in items)
+    assert len({row["triad_id"] for row in items}) == TRIADS
+    # the real triad ids (which hold the generation seed) are in the sealed store only
+    real = {row["triad_id"] for row in _jsonl(keys_path)}
+    assert all(re.search(r"-\d{3}-triad$", t) for t in real)
+    public_text = "".join(p.read_text(encoding="utf-8") for p in part_dir.iterdir())
+    assert not any(t in public_text for t in real)
+    for name in ("eval_tokens", "thinking_words", "wall_time_s", "prompt_tokens_estimate", "done_reason"):
+        assert name not in "".join(p.read_text(encoding="utf-8") for p in part_dir.glob("*.jsonl")), name
+
+
+def test_per_item_measurements_are_in_the_sealed_store_and_the_part_has_distributions(sealed):
+    part_dir, keys_path = sealed
+    rows = _jsonl(keys_path.parent / "call_metrics.sealed.jsonl")
+    assert len(rows) == TRIADS * 3
+    assert all("eval_tokens" in call for row in rows for call in (*row["writer"], *row["readers"]))
+    meta = json.loads((part_dir / "part.json").read_text(encoding="utf-8"))
+    distributions = meta["call_distributions"]
+    assert distributions
+    for per_operation in distributions.values():
+        assert set(per_operation["eval_tokens"]) >= {"n", "min", "median", "p95", "max"}
+    assert "-item-" not in json.dumps(distributions)

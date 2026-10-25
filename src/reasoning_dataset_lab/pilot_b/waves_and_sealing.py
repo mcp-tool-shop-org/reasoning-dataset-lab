@@ -90,6 +90,17 @@ FORBIDDEN_SEALED_FIELD_NAMES: frozenset[str] = frozenset(
 )
 
 SEALING_STORE_NAME = "sealing.sealed.json"
+CALL_METRICS_NAME = "call_metrics.sealed.jsonl"
+
+# Per-call measurements that can vary with an item: they live in the sealed store, and the public part carries
+# whole-build distributions only.
+PER_ITEM_METRIC_FIELDS: tuple[str, ...] = (
+    "prompt_tokens_estimate",
+    "eval_tokens",
+    "thinking_words",
+    "wall_time_s",
+    "done_reason",
+)
 
 
 @dataclass(frozen=True)
@@ -773,6 +784,12 @@ def _commitment_key(shuffle_seed: int) -> bytes:
     return hashlib.sha256(f"rdlab-sealing-commitment-v1:{shuffle_seed}".encode()).digest()
 
 
+def _triad_handle(key: bytes, triad_id: str) -> str:
+    """The public name of a triad: an opaque keyed handle, so the public part carries no generation seed."""
+
+    return "triad-" + _commit(key, "triad", triad_id)[:16]
+
+
 def _commit(key: bytes, kind: str, value: str) -> str:
     """A keyed commitment to a hash, so the public provenance carries no plain digest of per-item material."""
 
@@ -892,6 +909,7 @@ def write_sealed_part(
     items_lines: list[str] = []
     prov_lines: list[str] = []
     sealed_key_lines: list[str] = []
+    metric_lines: list[str] = []
 
     for out_idx, orig_idx in enumerate(shuffled_indices, start=1):
         entry = raw_entries[orig_idx]
@@ -906,7 +924,7 @@ def write_sealed_part(
         # Public items.jsonl carries NO key, verdict, label, or answer (§7, §11 B.4)
         item_row = {
             "id": item_id,
-            "triad_id": entry["triad_id"],
+            "triad_id": _triad_handle(commitment_key, entry["triad_id"]),
             "trait": "T10",
             "kind": "D",
             "domain": entry["domain"],
@@ -969,7 +987,9 @@ def write_sealed_part(
                         wave_result.writer_model.max_num_ctx,
                     )
                 ),
-                "call_records": [_commit_prompt(commitment_key, rec) for rec in entry["writer_call_records"]],
+                "call_records": [
+                    _public_call_record(commitment_key, rec, writer=True) for rec in entry["writer_call_records"]
+                ],
             },
             "checks": [
                 {
@@ -1042,7 +1062,9 @@ def write_sealed_part(
                             )
                         ),
                     ],
-                    "call_records": entry["reader_call_records"],
+                    "call_records": [
+                        _public_call_record(commitment_key, rec, writer=False) for rec in entry["reader_call_records"]
+                    ],
                     "agrees_all_readers": True,
                     "ambiguous_count": 0,
                 }
@@ -1054,11 +1076,21 @@ def write_sealed_part(
         sealed_row = {
             "id": item_id,
             "triad_id": entry["triad_id"],
+            "triad_handle": _triad_handle(commitment_key, entry["triad_id"]),
             "key": entry["key"],
             "proof": entry["proof"],
             "blind_reads": [entry["read_1"], entry["read_2"]],
         }
         sealed_key_lines.append(_canonical_json_line(sealed_row))
+        metric_lines.append(
+            _canonical_json_line(
+                {
+                    "id": item_id,
+                    "writer": _sealed_call_metrics(entry["writer_call_records"]),
+                    "readers": _sealed_call_metrics(entry["reader_call_records"]),
+                }
+            )
+        )
 
     items_bytes = ("\n".join(items_lines) + ("\n" if items_lines else "")).encode("utf-8")
     prov_bytes = ("\n".join(prov_lines) + ("\n" if prov_lines else "")).encode("utf-8")
@@ -1069,6 +1101,9 @@ def write_sealed_part(
     (part_dir / "items.jsonl").write_bytes(items_bytes)
     (part_dir / "provenance.jsonl").write_bytes(prov_bytes)
     keys_sealed_path.write_bytes(sealed_bytes)
+    (keys_sealed_path.parent / CALL_METRICS_NAME).write_text(
+        "\n".join(metric_lines) + ("\n" if metric_lines else ""), encoding="utf-8"
+    )
     (keys_sealed_path.parent / SEALING_STORE_NAME).write_text(
         json.dumps(
             {
@@ -1107,6 +1142,7 @@ def write_sealed_part(
         "triads_kept": len(wave_result.kept_triads),
         "triads_failed": len(wave_result.failed_triads),
         "keys_sealed_sha256": keys_sealed_sha256,
+        "call_distributions": _call_distributions(w_calls_by_target, r1_calls_by_target, r2_calls_by_target),
         "judgment_aggregates": {
             "pass_rate_per_class": dict(wave_result.pass_rate_per_class),
             "triad_pass_rate": wave_result.triad_pass_rate,
@@ -1127,6 +1163,47 @@ def _commit_prompt(key: bytes, record: Mapping[str, Any]) -> dict[str, Any]:
     if "prompt_sha256" in out:
         out["prompt_commitment"] = _commit(key, "prompt", str(out.pop("prompt_sha256")))
     return out
+
+
+def _public_call_record(key: bytes, record: Mapping[str, Any], *, writer: bool) -> dict[str, Any]:
+    """A call record as the public part carries it: no per-item measurement, and the writer prompt committed."""
+
+    out = _commit_prompt(key, record) if writer else dict(record)
+    for name in PER_ITEM_METRIC_FIELDS:
+        out.pop(name, None)
+    return out
+
+
+def _sealed_call_metrics(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return [{"operation": r.get("operation"), **{n: r[n] for n in PER_ITEM_METRIC_FIELDS if n in r}} for r in records]
+
+
+def _distribution(values: Sequence[float]) -> dict[str, float | int]:
+    ordered = sorted(values)
+    if not ordered:
+        return {"n": 0}
+
+    def at(q: float) -> float:
+        return ordered[min(len(ordered) - 1, int(q * len(ordered)))]
+
+    return {"n": len(ordered), "min": ordered[0], "median": at(0.5), "p95": at(0.95), "max": ordered[-1]}
+
+
+def _call_distributions(*record_maps: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Whole-build distributions of the per-call measurements, by operation, with no item or claim ids."""
+
+    by_operation: dict[str, dict[str, list[float]]] = {}
+    for records in record_maps:
+        for record in records.values():
+            bucket = by_operation.setdefault(str(record.get("operation")), {n: [] for n in PER_ITEM_METRIC_FIELDS})
+            for name in PER_ITEM_METRIC_FIELDS:
+                value = record.get(name)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    bucket[name].append(float(value))
+    return {
+        op: {name: _distribution(values) for name, values in sorted(metrics.items()) if values}
+        for op, metrics in sorted(by_operation.items())
+    }
 
 
 def _write_checksums(part_dir: Path) -> dict[str, str]:
