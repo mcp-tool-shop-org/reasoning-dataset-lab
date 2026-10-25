@@ -119,7 +119,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
         manifest_digest="a7eb95c53bcf96b4bdd008d0fab4a5dac88047d9c1a7a9ab88ed453423fbd87c",
         model_layer_digest="d372de8e934898a59e6ccfabc3368474711384d8f1fd4d22d87a3f0a45400cdc",
         licence_layer_digest="5f3a3c817e78f5b8a4ad2d2c458a3e4b2cce470d6c12642c4eeb12cb8a9bf51d",
-        licence_id="apache-2.0",
+        licence_id="qwen3.6-35b-a3b-licence",
         source_match="unconfirmed",
         source_match_reason=(
             "Ollama manifest layer 'from' is 'qwen3.6-source:35b-a3b-mtp-q4_K_M-20260824' "
@@ -150,7 +150,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
         manifest_digest="f586c02fdecdf151b656207c339aa003997345774a41768bac1fd6d2fb85913b",
         model_layer_digest="16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
         licence_layer_digest="58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
-        licence_id="apache-2.0",
+        licence_id="granite-4.2-8b-hf-card",
         source_match="unconfirmed",
         source_match_reason=(
             "Ollama manifest layer 'from' is a local runner blob path without an HF "

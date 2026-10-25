@@ -413,3 +413,52 @@ def test_fix3_verify_live_pins_licence_layer_digest_source_match_and_provenance(
         ]
 
 
+def test_fix4_default_specific_licence_ids_and_configurability(
+    tmp_path: Path,
+) -> None:
+    """Card gc Fix 4: Default to qwen3.6-35b-a3b-licence, openmdw-1.1, and granite-4.2-8b-hf-card while keeping them configurable."""
+    from reasoning_dataset_lab.pilot_b.models_and_build import resolve_pilot_b_model_pins
+
+    assert (
+        DEFAULT_PILOT_B_MODEL_PINS["writer"].licence_id == "qwen3.6-35b-a3b-licence"
+    )
+    assert DEFAULT_PILOT_B_MODEL_PINS["reader_1"].licence_id == "openmdw-1.1"
+    assert (
+        DEFAULT_PILOT_B_MODEL_PINS["reader_2"].licence_id == "granite-4.2-8b-hf-card"
+    )
+
+    resolved_default = resolve_pilot_b_model_pins()
+    assert resolved_default["writer"].licence_id == "qwen3.6-35b-a3b-licence"
+    assert resolved_default["reader_1"].licence_id == "openmdw-1.1"
+    assert resolved_default["reader_2"].licence_id == "granite-4.2-8b-hf-card"
+    validate_models_against_licence_registry(list(resolved_default.values()))
+
+    # Configurable overrides still work by role or by ollama_tag
+    overridden = resolve_pilot_b_model_pins(
+        {"writer": "apache-2.0", "granite4.2:8b": "apache-2.0"}
+    )
+    assert overridden["writer"].licence_id == "apache-2.0"
+    assert overridden["reader_1"].licence_id == "openmdw-1.1"
+    assert overridden["reader_2"].licence_id == "apache-2.0"
+    validate_models_against_licence_registry(list(overridden.values()))
+
+    # Verify build provenance records the specific default licence_ids
+    out_dir = tmp_path / "fix4_default_lics"
+    run_pilot_b_build(output_dir=out_dir, triad_count=2, stub_mode=True)
+    prov_lines = [
+        json.loads(line)
+        for line in (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert len(prov_lines) == 6
+    for prow in prov_lines:
+        assert prow["writer"]["licence_id"] == "qwen3.6-35b-a3b-licence"
+        assert prow["judgments"][0]["reader_licence_ids"] == [
+            "openmdw-1.1",
+            "granite-4.2-8b-hf-card",
+        ]
+
+
+
