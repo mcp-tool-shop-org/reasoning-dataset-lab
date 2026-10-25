@@ -46,11 +46,13 @@ TOLERANCE = 0.2  # 90 items: the standard deviation of a chance guess is about 0
 SECRET_SEED = 18_446_744_073_709_551_629  # a little over 64 bits
 
 
-def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, triads: int = TRIADS, mutate_wave=None, **seal_kwargs):
+def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, triads: int = TRIADS, mutate_wave=None, wrap_transport=None, **seal_kwargs):
     writer_id, _r1, _r2 = _setup_models()
     tables = generate_fact_tables(n=triads, seed=10)
     triads = [build_contrast_triad(t, seed=10 + idx) for idx, t in enumerate(tables)]
     transport, _ = build_mock_ollama_http_transport()
+    if wrap_transport is not None:
+        transport = wrap_transport(transport)
     monkeypatch.setattr("reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport", transport)
     wave_res = run_pilot_b_waves(
         triads=triads,
@@ -1397,3 +1399,88 @@ def test_honest_builds_at_realistic_sizes_pass_the_residual_channel_rules(tmp_pa
         part, keys = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl"
         verify_sealed_part(part_dir=part, keys_sealed_path=keys, extra_public_files=[out / "reports" / "pilot_b_report.json"])
         assert part_status(part, keys) == "frozen"
+
+
+# ── the model of each call is the recorded model; coverage targets add up; writer whitespace is regular ───
+
+
+def _poison_writer_model(inputs):
+    for entry in inputs["entries"]:
+        for record in entry["writer_call_records"]:
+            record["model"] = "spoofed-render-model:99b"
+
+
+def _poison_reader_model(inputs):
+    for entry in inputs["entries"]:
+        entry["reader_call_records"][1]["model"] = "spoofed-reader:1b"
+
+
+@pytest.mark.parametrize("poison", [_poison_writer_model, _poison_reader_model], ids=lambda f: f.__name__[8:])
+def test_a_call_made_by_another_model_than_the_recorded_one_is_refused(tmp_path, monkeypatch, poison):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "t4-" + poison.__name__)
+    _poison_the_sealed_store(part_dir, keys_path, poison)
+    with pytest.raises(RdlabError) as caught:
+        freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert caught.value.code == "PILOT_B_SEALED_INPUT_INVALID"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda c: c.update(target=999_999_999),
+        lambda c: c.update(target=c["built"] + 1),
+        lambda c: c.update(built=True),
+        lambda c: c.update(target=float(c["target"])),
+        lambda c: c.update(built=c["built"] + 3, target=c["target"] + 3),
+    ],
+    ids=["huge-target", "target-not-a-multiple-of-3", "boolean-built", "float-target", "sum-differs"],
+)
+def test_the_report_coverage_numbers_must_add_up(tmp_path, monkeypatch, mutate):
+    out, _result = _stub_build(tmp_path, monkeypatch, "t4-cov")
+    part_dir, keys_path = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl"
+
+    def poison(report):
+        domain = next(iter(report["coverage"]["by_domain"]))
+        mutate(report["coverage"]["by_domain"][domain])
+
+    report_path = _rewrite_report(out, poison)
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report_path]) in {
+        "PILOT_B_SEALED_RENDER_MISMATCH",
+        "PILOT_B_SEALED_SCHEMA_MISMATCH",
+    }
+
+
+def test_the_coverage_check_itself_refuses_a_coverage_entry_that_is_not_a_mapping():
+    from reasoning_dataset_lab.pilot_b.waves_and_sealing import _check_report_coverage
+
+    inputs = {"entries": [], "triads_kept": 0, "triads_failed": 0}
+    with pytest.raises(RdlabError) as caught:
+        _check_report_coverage({"coverage": {"by_domain": {"turbines": 7}}}, inputs)
+    assert caught.value.code == "PILOT_B_SEALED_RENDER_MISMATCH"
+
+
+def _irregular_whitespace(transport):
+    """A writer that doubles every space and ends lines with CRLF, as a model can."""
+
+    def wrapped(method, url, body=None):
+        reply = transport(method, url, body)
+        messages = (body or {}).get("messages") or []
+        user = str(messages[-1].get("content") or "") if messages else ""
+        if method == "POST" and ("FACTS_JSON:" in user or "CLAIM_JSON:" in user):
+            text = reply["message"]["content"].replace(" ", "  ").replace("\n", "\r\n")
+            reply = {**reply, "message": {**reply["message"], "content": text + ("\r\n" if "FACTS_JSON:" in user else "")}}
+        return reply
+
+    return wrapped
+
+
+def test_a_writer_that_emits_irregular_whitespace_still_seals(tmp_path, monkeypatch):
+    part_dir, keys_path = _build(
+        tmp_path, monkeypatch, "t4-ws", triads=4, shuffle_seed=SECRET_SEED, wrap_transport=_irregular_whitespace
+    )
+    verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)["frozen"] is True
+    for row in _jsonl(part_dir / "items.jsonl"):
+        for text in (row["material"], row["claim"]):
+            assert "  " not in text and "\r" not in text
+        assert not row["material"].endswith("\n")

@@ -811,6 +811,25 @@ def build_writer_render_messages(table: FactTable) -> list[dict[str, str]]:
     ]
 
 
+def normalise_material(text: str) -> str:
+    """Regular whitespace in a rendered material: one space between words, ``\n`` line ends, no trailing blank lines.
+
+    Applied to the writer's output before it is checked and before anything reads it, so an irregularity of the
+    model's spacing never reaches a reader or the sealed part (which accepts only regular whitespace).
+    """
+
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
+
+
+def normalise_claim(text: str) -> str:
+    """Regular whitespace in a worded claim: one space between words, nothing at either end."""
+
+    return " ".join(text.split())
+
+
 def build_writer_word_messages(claim: ProvedClaim) -> list[dict[str, str]]:
     """Build the `/api/chat` messages payload for `word_claim`."""
     claim_spec = {
@@ -1143,6 +1162,7 @@ class OllamaWriterAdapter:
             target_id=table.table_id,
             messages=messages,
         )
+        rendered = normalise_material(rendered)
         check_rendered_material(table, rendered)
         return rendered
 
@@ -1154,6 +1174,7 @@ class OllamaWriterAdapter:
             target_id=claim.claim_id,
             messages=messages,
         )
+        worded = normalise_claim(worded)
         check_worded_claim(table, claim, worded)
         return worded
 

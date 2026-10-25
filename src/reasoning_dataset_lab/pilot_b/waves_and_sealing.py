@@ -1175,12 +1175,18 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
         raise _invalid_inputs("the prover or its version is not the one this code pins")
     for slot, role in ((2, inputs["readers"][0]), (3, inputs["readers"][1])):
         fields = constant_calls.get(("r", slot))
-        if fields is not None and (fields[1] != role["model"]["digest"] or fields[2] != role["max_num_ctx"]):
+        if fields is not None and (
+            fields[0] != role["model"]["name"]
+            or fields[1] != role["model"]["digest"]
+            or fields[2] != role["max_num_ctx"]
+        ):
             raise _invalid_inputs("a reader's calls do not match the reader recorded")
     writer_fields = [constant_calls.get(("w", slot)) for slot in (0, 1)]
     for fields in writer_fields:
         if fields is not None and (
-            fields[1] != inputs["writer"]["model"]["digest"] or fields[2] != inputs["writer"]["max_num_ctx"]
+            fields[0] != inputs["writer"]["model"]["name"]
+            or fields[1] != inputs["writer"]["model"]["digest"]
+            or fields[2] != inputs["writer"]["max_num_ctx"]
         ):
             raise _invalid_inputs("the writer's calls do not match the writer recorded")
 
@@ -1938,9 +1944,18 @@ def _check_report_coverage(report: Mapping[str, Any], inputs: Mapping[str, Any])
     built: dict[str, int] = {}
     for entry in inputs["entries"]:
         built[entry["domain"]] = built.get(entry["domain"], 0) + 1
+    def whole(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    target_total = 0
     for domain, counts in by_domain.items():
-        if counts.get("built") != built.get(domain, 0) or counts.get("target", 0) < counts.get("built", 0):
+        if not isinstance(counts, Mapping) or not whole(counts.get("built")) or not whole(counts.get("target")):
+            raise _render_mismatch("pilot_b_report.json", f"its coverage for '{domain}' is not whole numbers")
+        if counts["built"] != built.get(domain, 0) or counts["target"] < counts["built"] or counts["target"] % 3:
             raise _render_mismatch("pilot_b_report.json", f"its coverage for '{domain}' differs from the build")
+        target_total += counts["target"]
+    if target_total != 3 * (inputs["triads_kept"] + inputs["triads_failed"]):
+        raise _render_mismatch("pilot_b_report.json", "its coverage targets do not add up to the triads attempted")
     if {d for d, n in built.items() if n} - set(by_domain):
         raise _render_mismatch("pilot_b_report.json", "its coverage leaves out a domain that was built")
 
