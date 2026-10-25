@@ -393,3 +393,123 @@ def test_the_report_style_examples_follow_the_shuffled_item_order():
     ]
     assert checked == 2 + 3  # each triad's material once (first encounter), every claim
     assert count == len(examples)
+
+
+# ── hl: weak seeds are never releasable, digests are verified not trusted, the report is checked in full ──
+
+
+def _sealed_store(keys_path: Path) -> dict:
+    return json.loads((keys_path.parent / "sealing.sealed.json").read_text(encoding="utf-8"))
+
+
+def _write_store(keys_path: Path, store: dict) -> None:
+    (keys_path.parent / "sealing.sealed.json").write_text(json.dumps(store), encoding="utf-8")
+
+
+def test_a_test_only_seed_part_is_never_marked_releasable(tmp_path, monkeypatch):
+    part_dir, keys_path = _build(tmp_path, monkeypatch, "weak-freeze", shuffle_seed=42, allow_weak_test_seed=True)
+    assert _sealed_store(keys_path)["test_only"] is True
+    meta = freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert meta["frozen"] is False
+    assert meta["test_only"] is True
+    assert json.loads((part_dir / "part.json").read_text(encoding="utf-8"))["frozen"] is False
+
+
+def test_verify_refuses_a_stored_weak_seed_that_is_not_marked_test_only(tmp_path, monkeypatch):
+    part_dir, keys_path = _build(tmp_path, monkeypatch, "weak-store", shuffle_seed=42, allow_weak_test_seed=True)
+    store = _sealed_store(keys_path)
+    store.pop("test_only")
+    _write_store(keys_path, store)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_WEAK_SHUFFLE_SEED"
+
+
+@pytest.mark.parametrize("seed", [0, -1, -(1 << 64) - 13, True])
+def test_a_non_positive_or_boolean_seed_is_refused_outright(tmp_path, monkeypatch, seed):
+    with pytest.raises(RdlabError) as caught:
+        _build(tmp_path, monkeypatch, "neg", shuffle_seed=seed, allow_weak_test_seed=True)
+    assert caught.value.code == "PILOT_B_WEAK_SHUFFLE_SEED"
+
+
+def test_verify_refuses_a_malformed_commitment_key_in_the_store(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "badkey")
+    store = _sealed_store(keys_path)
+    store["commitment_key"] = "abc"
+    _write_store(keys_path, store)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_STORE_INVALID"
+
+
+def _sha(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_a_digest_field_holding_class_hashes_is_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "g1")
+    truth = _true_keys(keys_path)
+    _edit_provenance(part_dir, lambda r: r["writer"].update(messages_sha256=_sha(truth[r["id"]])))
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_DIGEST_MISMATCH"
+
+
+def test_class_pure_buckets_in_a_commitment_field_are_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "g2")
+    truth = _true_keys(keys_path)
+    triads = {}
+
+    def bucket(row):
+        n = triads.setdefault(truth[row["id"]], len(triads))
+        row["proof"]["trace_commitment"] = _sha(f"{truth[row['id']]}:{n}")
+
+    _edit_provenance(part_dir, bucket)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_DIGEST_MISMATCH"
+
+
+def test_a_per_item_salted_hash_of_the_key_in_a_commitment_field_is_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "g3")
+    truth = _true_keys(keys_path)
+    _edit_provenance(part_dir, lambda r: r["proof"].update(trace_commitment=_sha(f"{r['id']}:{truth[r['id']]}")))
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_DIGEST_MISMATCH"
+
+
+def test_a_field_that_isolates_one_class_is_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "g4")
+    truth = _true_keys(keys_path)
+    _edit_provenance(part_dir, lambda r: r.update(class_hint="cannot_tell" if truth[r["id"]] == "cannot_tell" else "other"))
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_CONTENT_LEAK"
+
+
+def test_a_plain_writer_prompt_digest_anywhere_in_a_public_file_is_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "g5")
+    metrics = {r["id"]: r for r in _jsonl(keys_path.parent / "call_metrics.sealed.jsonl")}
+    _edit_provenance(part_dir, lambda r: r.update(note=metrics[r["id"]]["writer"][-1]["prompt_sha256"]))
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_SEED_IN_PUBLIC_FILE"
+
+
+def _report_with_items(tmp_path: Path, items: list[dict]) -> Path:
+    path = tmp_path / "pilot_b_report.json"
+    path.write_text(json.dumps({"human_sample": {"items": items}}), encoding="utf-8")
+    return path
+
+
+def test_the_report_gets_the_forbidden_field_check(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "r1")
+    truth = _true_keys(keys_path)
+    report = _report_with_items(tmp_path, [{"id": i, "key": k} for i, k in list(truth.items())[:20]])
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report]) == "PILOT_B_SEALED_KEY_FIELD_LEAK"
+
+
+def test_the_report_gets_the_content_check(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "r2")
+    truth = _true_keys(keys_path)
+    report = _report_with_items(tmp_path, [{"id": i, "panel_class": k} for i, k in truth.items()])
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report]) == "PILOT_B_SEALED_CONTENT_LEAK"
+
+
+def test_no_helper_in_the_sealing_module_is_defined_twice():
+    import ast
+
+    source = (Path(__file__).resolve().parents[1] / "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py").read_text(
+        encoding="utf-8"
+    )
+    names = [n.name for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.ClassDef))]
+    assert sorted({n for n in names if names.count(n) > 1}) == []

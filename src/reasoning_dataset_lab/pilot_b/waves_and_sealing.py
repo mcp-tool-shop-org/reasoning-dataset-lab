@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import random
 import re
 import secrets
@@ -835,6 +836,12 @@ def write_sealed_part(
 
     if shuffle_seed is None:
         shuffle_seed = secrets.randbits(128)
+    elif not isinstance(shuffle_seed, int) or isinstance(shuffle_seed, bool) or shuffle_seed <= 0:
+        raise refused_error(
+            "PILOT_B_WEAK_SHUFFLE_SEED",
+            "A given shuffle seed must be a positive integer.",
+            "Omit the seed for a fresh one per build, or pass a large positive one.",
+        )
     elif shuffle_seed.bit_length() < MIN_SHUFFLE_SEED_BITS and not allow_weak_test_seed:
         raise refused_error(
             "PILOT_B_WEAK_SHUFFLE_SEED",
@@ -1123,6 +1130,7 @@ def write_sealed_part(
                 "part_id": part_id,
                 "shuffle_seed": shuffle_seed,
                 "commitment_key": commitment_key.hex(),
+                **({"test_only": True} if shuffle_seed.bit_length() < MIN_SHUFFLE_SEED_BITS else {}),
             },
             indent=2,
             sort_keys=True,
@@ -1191,7 +1199,14 @@ def _public_call_record(key: bytes, record: Mapping[str, Any], *, writer: bool) 
 
 
 def _sealed_call_metrics(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [{"operation": r.get("operation"), **{n: r[n] for n in PER_ITEM_METRIC_FIELDS if n in r}} for r in records]
+    return [
+        {
+            "operation": r.get("operation"),
+            **({"prompt_sha256": r["prompt_sha256"]} if "prompt_sha256" in r else {}),
+            **{n: r[n] for n in PER_ITEM_METRIC_FIELDS if n in r},
+        }
+        for r in records
+    ]
 
 
 def _distribution(values: Sequence[float]) -> dict[str, float | int]:
@@ -1229,37 +1244,6 @@ def _call_distributions(
     return out
 
 
-def _commit_prompt(key: bytes, record: Mapping[str, Any]) -> dict[str, Any]:
-    out = dict(record)
-    if "prompt_sha256" in out:
-        out["prompt_commitment"] = _commit(key, "prompt", str(out.pop("prompt_sha256")))
-    return out
-
-
-def _public_call_record(key: bytes, record: Mapping[str, Any], *, writer: bool) -> dict[str, Any]:
-    """A call record as the public part carries it: no per-item measurement, and the writer prompt committed."""
-
-    out = _commit_prompt(key, record) if writer else dict(record)
-    for name in PER_ITEM_METRIC_FIELDS:
-        out.pop(name, None)
-    return out
-
-
-def _sealed_call_metrics(records: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    return [{"operation": r.get("operation"), **{n: r[n] for n in PER_ITEM_METRIC_FIELDS if n in r}} for r in records]
-
-
-def _distribution(values: Sequence[float]) -> dict[str, float | int]:
-    ordered = sorted(values)
-    if not ordered:
-        return {"n": 0}
-
-    def at(q: float) -> float:
-        return ordered[min(len(ordered) - 1, int(q * len(ordered)))]
-
-    return {"n": len(ordered), "min": ordered[0], "median": at(0.5), "p95": at(0.95), "max": ordered[-1]}
-
-
 def _write_checksums(part_dir: Path) -> dict[str, str]:
     checksums: dict[str, str] = {}
     for filename in ("items.jsonl", "provenance.jsonl", "part.json"):
@@ -1287,25 +1271,18 @@ def _scan_object_for_forbidden_keys(obj: object, path_label: str) -> None:
             _scan_object_for_forbidden_keys(elem, f"{path_label}[{idx}]")
 
 
-# Digest fields the public provenance may carry, skipped by the content check by path (never by name alone).
-# Digests of content that is itself public (the task text) or constant per build add nothing to the text, so they
-# are exempt when they are 64-hex strings. A keyed commitment of non-public material is exempt only when it is a true
-# per-item value: it takes as many distinct values as there are triads, never a handful that could stand for classes.
-_PUBLIC_CONTENT_DIGESTS: frozenset[str] = frozenset(
-    {
-        "writer.messages_sha256",
-        "judgments[].call_records[].prompt_sha256",
-        "map.sha256",
-        "licence_registry_sha256",
-        "licence_registry.sha256",
-    }
-)
-_KEYED_COMMITMENTS: frozenset[str] = frozenset(
+# Provenance fields whose value is checked exactly against the sealed store (or the public items) in
+# verify_sealed_part, so none of them needs, or gets, an exemption from the content check by name or cardinality.
+_VERIFIED_PATTERNS: frozenset[str] = frozenset(
     {
         "proof.trace_commitment",
         "writer.call_records[].prompt_commitment",
+        "writer.messages_sha256",
+        "judgments[].call_records[].prompt_sha256",
     }
 )
+# Build-constant digests: exempt only while they take one value across the whole part.
+_CONSTANT_DIGESTS: frozenset[str] = frozenset({"map.sha256", "licence_registry_sha256", "licence_registry.sha256"})
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -1331,10 +1308,160 @@ def _field_pattern(path: str) -> str:
     return re.sub(r"\[\d+\]", "[]", path)
 
 
+def _jsonl_rows(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _item_rows_in(obj: Any, item_to_key: Mapping[str, str]) -> list[dict[str, Any]]:
+    """Rows keyed by a sealed item id anywhere inside a parsed JSON document (a report's sample items, say)."""
+
+    found: list[dict[str, Any]] = []
+    if isinstance(obj, Mapping):
+        if isinstance(obj.get("id"), str) and obj["id"] in item_to_key:
+            found.append(dict(obj))
+        for value in obj.values():
+            found.extend(_item_rows_in(value, item_to_key))
+    elif isinstance(obj, Sequence) and not isinstance(obj, (str, bytes)):
+        for element in obj:
+            found.extend(_item_rows_in(element, item_to_key))
+    return found
+
+
+def _digest_mismatch(file_name: str, row_id: str, field: str) -> Any:
+    return refused_error(
+        "PILOT_B_SEALED_DIGEST_MISMATCH",
+        f"Field '{field}' of '{row_id}' in '{file_name}' is not the value the sealed store gives for it.",
+        "Public digests and commitments must be exactly the ones write_sealed_part computes.",
+    )
+
+
+def _verify_provenance_digests(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    commitment_key: bytes,
+    keys_by_id: Mapping[str, Mapping[str, Any]],
+    metrics_by_id: Mapping[str, Mapping[str, Any]],
+    messages_by_id: Mapping[str, Any],
+) -> None:
+    """Check each digest and commitment in the public provenance against its ground truth."""
+
+    for row in rows:
+        rid = str(row.get("id"))
+        key_row = keys_by_id.get(rid)
+        metric_row = metrics_by_id.get(rid)
+        if key_row is None or metric_row is None:
+            raise _digest_mismatch("provenance.jsonl", rid, "id")
+        expected_trace = _commit(commitment_key, "trace", str((key_row.get("proof") or {}).get("trace_sha256")))
+        if (row.get("proof") or {}).get("trace_commitment") != expected_trace:
+            raise _digest_mismatch("provenance.jsonl", rid, "proof.trace_commitment")
+        writer = row.get("writer") or {}
+        writer_calls = writer.get("call_records") or []
+        sealed_writer = metric_row.get("writer") or []
+        if len(writer_calls) != len(sealed_writer):
+            raise _digest_mismatch("provenance.jsonl", rid, "writer.call_records")
+        for public_call, sealed_call in zip(writer_calls, sealed_writer, strict=True):
+            expected = _commit(commitment_key, "prompt", str(sealed_call.get("prompt_sha256")))
+            if public_call.get("prompt_commitment") != expected or "prompt_sha256" in public_call:
+                raise _digest_mismatch("provenance.jsonl", rid, "writer.call_records[].prompt_commitment")
+        expected_messages = _sha256_bytes(_canonical_json_line(messages_by_id.get(rid)).encode("utf-8"))
+        if writer.get("messages_sha256") != expected_messages:
+            raise _digest_mismatch("provenance.jsonl", rid, "writer.messages_sha256")
+        judgments = row.get("judgments") or []
+        reader_calls = (judgments[0].get("call_records") if judgments else None) or []
+        sealed_readers = metric_row.get("readers") or []
+        if len(reader_calls) != len(sealed_readers):
+            raise _digest_mismatch("provenance.jsonl", rid, "judgments[].call_records")
+        for public_call, sealed_call in zip(reader_calls, sealed_readers, strict=True):
+            if public_call.get("prompt_sha256") != sealed_call.get("prompt_sha256"):
+                raise _digest_mismatch("provenance.jsonl", rid, "judgments[].call_records[].prompt_sha256")
+
+
+def _check_content_leak(
+    rows: Sequence[Mapping[str, Any]],
+    item_to_key: Mapping[str, str],
+    file_name: str,
+    *,
+    exempt: frozenset[str],
+    complete: bool = True,
+) -> None:
+    """Refuse a public field whose values line up with the sealed keys.
+
+    In a complete file (every item of the part, whose triad-level fields always span all three classes) a field is
+    refused when every value maps to one class, or when a value shared by several items maps to one class (a field
+    that isolates a class from the others). In a partial one, such as a report's random sample of items, a single-class
+    value can happen by chance, so the evidence must be strong: the chance of the single-class values seen, taking
+    each class as equally likely, below one in ten thousand.
+    """
+
+    joined = [r for r in rows if isinstance(r.get("id"), str) and r["id"] in item_to_key]
+    if len(joined) < 3 or len(set(item_to_key.values())) < 2:
+        return
+    flattened = {str(r["id"]): _flatten_scalar_fields(r) for r in joined}
+    for fname in sorted({name for flat in flattened.values() for name in flat}):
+        if _field_pattern(fname) in exempt:
+            continue
+        val_to_keys: dict[str, set[str]] = {}
+        val_counts: dict[str, int] = {}
+        for rid, flat in flattened.items():
+            val = flat.get(fname, "<missing>")
+            val_to_keys.setdefault(val, set()).add(item_to_key[rid])
+            val_counts[val] = val_counts.get(val, 0) + 1
+        if len(val_to_keys) < 2:
+            continue
+        if complete:
+            all_single = all(len(kset) == 1 for kset in val_to_keys.values())
+            isolates = any(len(kset) == 1 and val_counts[val] >= 2 for val, kset in val_to_keys.items())
+            leaking = all_single or isolates
+        else:
+            evidence = sum((val_counts[v] - 1) * math.log(3) for v, kset in val_to_keys.items() if len(kset) == 1)
+            leaking = evidence >= math.log(10_000)
+        if leaking:
+            raise refused_error(
+                "PILOT_B_SEALED_CONTENT_LEAK",
+                f"Field '{fname}' in '{file_name}' has per-item values that line up with the sealed key "
+                "(ruling 5a content-sealing violation).",
+                "Remove per-item key-derived fields from public files; report aggregates only.",
+            )
+
+
+def _validated_store(keys_sealed_path: Path) -> dict[str, Any]:
+    store_path = keys_sealed_path.parent / SEALING_STORE_NAME
+    if not store_path.is_file():
+        raise refused_error(
+            "PILOT_B_SEALED_STORE_MISSING",
+            f"The sealed store file '{SEALING_STORE_NAME}' was not found beside the keys.",
+            "Write the part with write_sealed_part, which creates it, before verifying or freezing.",
+        )
+    store = json.loads(store_path.read_text(encoding="utf-8"))
+    seed = store.get("shuffle_seed")
+    if not isinstance(seed, int) or isinstance(seed, bool) or seed <= 0:
+        raise refused_error(
+            "PILOT_B_WEAK_SHUFFLE_SEED",
+            "The sealed store holds no positive integer shuffle seed.",
+            "Rebuild the part with write_sealed_part.",
+        )
+    if seed.bit_length() < MIN_SHUFFLE_SEED_BITS and store.get("test_only") is not True:
+        raise refused_error(
+            "PILOT_B_WEAK_SHUFFLE_SEED",
+            f"The sealed store holds a shuffle seed of fewer than {MIN_SHUFFLE_SEED_BITS} bits and is not marked test-only.",
+            "Rebuild the part with a fresh seed.",
+        )
+    commitment_key = store.get("commitment_key")
+    if not isinstance(commitment_key, str) or not _HEX64.match(commitment_key):
+        raise refused_error(
+            "PILOT_B_SEALED_STORE_INVALID",
+            "The sealed store holds no valid commitment key.",
+            "Rebuild the part with write_sealed_part.",
+        )
+    return store
+
+
 def verify_sealed_part(
     part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path] = ()
 ) -> None:
-    """Verify that no file in part_dir contains keys.sealed.jsonl, forbidden field names, or per-item key-predicting values (ruling 5a)."""
+    """Verify that no public file (the part's files and any extra ones, such as the report) holds a sealed value, a
+    forbidden field, or a per-item value that lines up with the keys, and that every public digest is the exact one
+    the sealed store gives (ruling 5a)."""
     if not part_dir.exists() or not part_dir.is_dir():
         raise refused_error(
             "PILOT_B_PART_DIR_NOT_FOUND",
@@ -1356,15 +1483,14 @@ def verify_sealed_part(
             "Store keys.sealed.jsonl outside the public part directory.",
         )
 
-    # The sealed store holds the per-build secrets; it must exist, and no public file may carry any of its values
-    store_path = keys_sealed_path.parent / SEALING_STORE_NAME
-    if not store_path.is_file():
+    store = _validated_store(keys_sealed_path)
+    metrics_path = keys_sealed_path.parent / CALL_METRICS_NAME
+    if not metrics_path.is_file():
         raise refused_error(
             "PILOT_B_SEALED_STORE_MISSING",
-            f"The sealed store file '{SEALING_STORE_NAME}' was not found beside the keys.",
+            f"The sealed store file '{CALL_METRICS_NAME}' was not found beside the keys.",
             "Write the part with write_sealed_part, which creates it, before verifying or freezing.",
         )
-    store = json.loads(store_path.read_text(encoding="utf-8"))
     keys_bytes = keys_sealed_path.read_bytes()
     part_json_path = part_dir / "part.json"
     if part_json_path.is_file():
@@ -1375,20 +1501,29 @@ def verify_sealed_part(
                 "part.json names a keys digest that does not match the sealed keys file.",
                 "Rebuild the part, or restore the sealed keys file it was written with.",
             )
-    sealed_values: list[str] = []
-    seed = store.get("shuffle_seed")
-    if isinstance(seed, int) and seed.bit_length() >= MIN_SHUFFLE_SEED_BITS:
+
+    keys_rows = _jsonl_rows(keys_sealed_path)
+    metrics_rows = _jsonl_rows(metrics_path)
+    item_to_key = {str(r["id"]): str(r["key"]) for r in keys_rows}
+    keys_by_id = {str(r["id"]): r for r in keys_rows}
+    metrics_by_id = {str(r["id"]): r for r in metrics_rows}
+
+    # Every value the sealed store holds, which no public file may carry (compared case-insensitively)
+    seed = int(store["shuffle_seed"])
+    sealed_values: list[str] = [store["commitment_key"]]
+    if seed >= 10**11:
         sealed_values += [str(seed), hex(seed)[2:]]
-    if isinstance(store.get("commitment_key"), str):
-        sealed_values.append(store["commitment_key"])
-    for raw_key_line in keys_bytes.decode("utf-8").splitlines():
-        if raw_key_line.strip():
-            key_row = json.loads(raw_key_line)
-            sealed_values.append(str(key_row.get("triad_id", "")))
-            trace = (key_row.get("proof") or {}).get("trace_sha256")
-            if isinstance(trace, str):
-                sealed_values.append(trace)
+    for key_row in keys_rows:
+        sealed_values.append(str(key_row.get("triad_id", "")))
+        trace = (key_row.get("proof") or {}).get("trace_sha256")
+        if isinstance(trace, str):
+            sealed_values.append(trace)
+    for metric_row in metrics_rows:
+        for call in metric_row.get("writer") or []:
+            if isinstance(call.get("prompt_sha256"), str):
+                sealed_values.append(call["prompt_sha256"])
     sealed_values = [v.lower() for v in dict.fromkeys(sealed_values) if v]
+
     public_files = [p for p in sorted(part_dir.iterdir()) if p.is_file()] + [Path(p) for p in extra_public_files]
     for public in public_files:
         text = public.read_text(encoding="utf-8").lower()
@@ -1399,82 +1534,60 @@ def verify_sealed_part(
                 "Keep the per-build seed, keys and commitment key only in the sealed store.",
             )
 
-    # Load sealed keys map: item_id -> key
-    item_to_key: dict[str, str] = {}
-    for raw_line in keys_sealed_path.read_text(encoding="utf-8").splitlines():
-        if not raw_line.strip():
-            continue
-        k_row = json.loads(raw_line)
-        item_to_key[str(k_row["id"])] = str(k_row["key"])
+    items_path = part_dir / "items.jsonl"
+    messages_by_id = {str(r["id"]): r.get("messages") for r in _jsonl_rows(items_path)} if items_path.is_file() else {}
 
-    distinct_keys = set(item_to_key.values())
-
-    # Inspect every file in part_dir
-    for file_path in sorted(part_dir.iterdir()):
-        if not file_path.is_file() or file_path.name == "checksums.txt":
+    for file_path in public_files:
+        if file_path.name == "checksums.txt":
             continue
         if file_path.suffix == ".json":
             parsed = json.loads(file_path.read_text(encoding="utf-8"))
             _scan_object_for_forbidden_keys(parsed, file_path.name)
+            _check_content_leak(
+                _item_rows_in(parsed, item_to_key), item_to_key, file_path.name, exempt=frozenset(), complete=False
+            )
         elif file_path.suffix == ".jsonl":
-            rows: list[dict[str, Any]] = []
-            for line_no, raw_line in enumerate(
-                file_path.read_text(encoding="utf-8").splitlines(), start=1
-            ):
-                if not raw_line.strip():
-                    continue
-                row = json.loads(raw_line)
+            rows = _jsonl_rows(file_path)
+            for line_no, row in enumerate(rows, start=1):
                 _scan_object_for_forbidden_keys(row, f"{file_path.name}:{line_no}")
-                rows.append(row)
-
-            # Content-based sealing check (ruling 5a): join rows with item_id against item_to_key
-            joined_rows = [
-                r for r in rows if isinstance(r.get("id"), str) and r["id"] in item_to_key
-            ]
-            if len(joined_rows) >= 3 and len(distinct_keys) >= 2:
-                field_names: set[str] = set()
-                flattened_by_id: dict[str, dict[str, str]] = {}
-                for r in joined_rows:
-                    rid = str(r["id"])
-                    flat = _flatten_scalar_fields(r)
-                    flattened_by_id[rid] = flat
-                    field_names |= set(flat.keys())
-
-                for fname in sorted(field_names):
-                    val_to_keys: dict[str, set[str]] = {}
-                    for rid, flat in flattened_by_id.items():
-                        val = flat.get(fname, "<missing>")
-                        val_to_keys.setdefault(val, set()).add(item_to_key[rid])
-
-                    pattern = _field_pattern(fname)
-                    hex_values = [json.loads(v) for v in val_to_keys if v != "<missing>"]
-                    if all(isinstance(v, str) and _HEX64.match(v) for v in hex_values):
-                        if pattern in _PUBLIC_CONTENT_DIGESTS:
-                            continue
-                        if pattern in _KEYED_COMMITMENTS and len(val_to_keys) >= min(len(joined_rows), max(4, len(joined_rows) // 3)):
-                            continue
-
-                    # If a field takes >= 2 distinct values and every value maps deterministically to a single key class,
-                    # then that field leaks the key (or a class partition of the key) by content!
-                    if len(val_to_keys) >= 2 and all(
-                        len(kset) == 1 for kset in val_to_keys.values()
-                    ):
-                        raise refused_error(
-                            "PILOT_B_SEALED_CONTENT_LEAK",
-                            f"Field '{fname}' in '{file_path.name}' has per-item values that deterministically "
-                            "predict the sealed key (ruling 5a content-sealing violation).",
-                            "Remove per-item key-derived fields from public files; report aggregates only.",
-                        )
+            exempt: frozenset[str] = frozenset()
+            if file_path.name == "provenance.jsonl":
+                _verify_provenance_digests(
+                    rows,
+                    commitment_key=bytes.fromhex(store["commitment_key"]),
+                    keys_by_id=keys_by_id,
+                    metrics_by_id=metrics_by_id,
+                    messages_by_id=messages_by_id,
+                )
+                for pattern in _CONSTANT_DIGESTS:
+                    values = {
+                        _flatten_scalar_fields(r).get(p)
+                        for r in rows
+                        for p in _flatten_scalar_fields(r)
+                        if _field_pattern(p) == pattern
+                    }
+                    if len(values) > 1:
+                        raise _digest_mismatch(file_path.name, "*", pattern)
+                exempt = _VERIFIED_PATTERNS | _CONSTANT_DIGESTS
+            _check_content_leak(rows, item_to_key, file_path.name, exempt=exempt)
 
 
 def freeze_sealed_part(
     part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path] = ()
 ) -> dict[str, Any]:
-    """Run all sealed-part checks, mark part.json frozen=True, and update checksums.txt."""
+    """Run all sealed-part checks, mark part.json frozen=True, and update checksums.txt.
+
+    A part written with a test-only seed is verified but never marked frozen: it is not releasable.
+    """
     verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_sealed_path, extra_public_files=extra_public_files)
+    store = json.loads((keys_sealed_path.parent / SEALING_STORE_NAME).read_text(encoding="utf-8"))
     part_json_path = part_dir / "part.json"
     part_meta: dict[str, Any] = json.loads(part_json_path.read_text(encoding="utf-8"))
-    part_meta["frozen"] = True
+    if store.get("test_only") is True:
+        part_meta["frozen"] = False
+        part_meta["test_only"] = True
+    else:
+        part_meta["frozen"] = True
     part_json_path.write_bytes(
         (json.dumps(part_meta, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode(
             "utf-8"
