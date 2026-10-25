@@ -14,6 +14,7 @@ from typing import Protocol, runtime_checkable
 
 from reasoning_dataset_lab.errors import refused_error
 from reasoning_dataset_lab.pilot_b.fact_tables import (
+    DOMAIN_CATALOGUE,
     AtomicFact,
     FactOp,
     FactTable,
@@ -41,8 +42,11 @@ BETWEEN_RE: re.Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 ONLY_RE: re.Pattern[str] = re.compile(r"\bonly\b", re.IGNORECASE)
-NUMBER_TOKEN_RE: re.Pattern[str] = re.compile(r"\b\d+(?:\.\d+)?\b")
+NUMBER_TOKEN_RE: re.Pattern[str] = re.compile(
+    r"(?<![a-zA-Z0-9-])\d+(?:\.\d+)?(?![a-zA-Z0-9-])"
+)
 PROPER_NOUN_TOKEN_RE: re.Pattern[str] = re.compile(r"\b[A-Z][a-zA-Z0-9-]*\b")
+WORD_TOKEN_RE: re.Pattern[str] = re.compile(r"\b[a-zA-Z][a-zA-Z0-9-]*\b")
 
 STRUCTURAL_HEADER_WORDS: frozenset[str] = frozenset(
     {
@@ -121,6 +125,40 @@ def _value_proper_nouns(val: FactValue) -> set[str]:
     return nouns
 
 
+def _value_word_tokens(val: FactValue) -> set[str]:
+    tokens: set[str] = set()
+    for s in _value_strings(val):
+        for m in WORD_TOKEN_RE.finditer(s):
+            tokens.add(m.group(0))
+    return tokens
+
+
+def _catalogue_values_for_attribute(table: FactTable, attribute: str) -> tuple[str, ...]:
+    attr_lower = attribute.strip().lower()
+    values: list[str] = []
+    for k, v in table.open_attributes:
+        if k.strip().lower() == attr_lower:
+            values.append(str(v))
+    for spec in DOMAIN_CATALOGUE:
+        if str(spec.get("domain", "")).lower() != table.domain.lower():
+            continue
+        for key in ("state_attr", "attr_spec"):
+            entry = spec.get(key)
+            if isinstance(entry, tuple) and len(entry) == 2:
+                entry_attr, entry_vals = entry
+                if str(entry_attr).strip().lower() == attr_lower and isinstance(
+                    entry_vals, tuple
+                ):
+                    values.extend(str(v) for v in entry_vals)
+        open_entry = spec.get("open_attrs")
+        if isinstance(open_entry, tuple):
+            for pair in open_entry:
+                if isinstance(pair, tuple) and len(pair) == 2:
+                    if str(pair[0]).strip().lower() == attr_lower:
+                        values.append(str(pair[1]))
+    return tuple(values)
+
+
 def structural_token_whitelist(
     table: FactTable,
     extra_claim: ProvedClaim | None = None,
@@ -139,12 +177,16 @@ def structural_token_whitelist(
             allowed_proper_nouns.add(m.group(0))
     for f in table.facts:
         allowed_proper_nouns |= _value_proper_nouns(f.value)
+        allowed_proper_nouns |= _value_word_tokens(f.value)
         for m in PROPER_NOUN_TOKEN_RE.finditer(f.attribute):
             allowed_proper_nouns.add(m.group(0))
 
     if extra_claim is not None:
         allowed_numbers |= _value_numbers(extra_claim.claimed_value)
         allowed_proper_nouns |= _value_proper_nouns(extra_claim.claimed_value)
+        allowed_proper_nouns |= _value_word_tokens(extra_claim.claimed_value)
+        for cat_val in _catalogue_values_for_attribute(table, extra_claim.attribute):
+            allowed_proper_nouns |= _value_word_tokens(cat_val)
         for m in PROPER_NOUN_TOKEN_RE.finditer(extra_claim.attribute):
             allowed_proper_nouns.add(m.group(0))
 
@@ -254,9 +296,10 @@ def _check_grounding_tokens(
                 "Render only numbers present in the FactTable or structural line numbers.",
             )
 
+    allowed_proper_nouns_lower = {tok.lower() for tok in whitelist["proper_nouns"]}
     for m_noun in PROPER_NOUN_TOKEN_RE.finditer(text):
         noun_tok = m_noun.group(0)
-        if noun_tok not in whitelist["proper_nouns"]:
+        if noun_tok.lower() not in allowed_proper_nouns_lower:
             raise refused_error(
                 "PILOT_B_RENDER_UNGROUNDED_PROPER_NOUN",
                 f"{context_label} contains proper noun '{noun_tok}' which is absent from the fact table.",

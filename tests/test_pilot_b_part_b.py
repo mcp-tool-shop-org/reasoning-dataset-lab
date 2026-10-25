@@ -331,3 +331,35 @@ def test_part_b_additional_rendering_branches_and_refusals() -> None:
         )
     assert exc_inc_wt.value.code == "PILOT_B_INCOMPLETE_WORDED_TRIAD"
 
+
+def test_worded_claim_allows_catalogue_and_claimed_value_case_insensitively_and_refuses_ungrounded_proper_nouns() -> None:
+    """Card gw Part B: 'The seal material of Pump Epsilon is Viton.' and '... is viton.' both pass; 'Hastelloy' or 'Orion-9' is refused."""
+    table = build_sample_fact_table(seed=10)
+    triad = build_contrast_triad(table, seed=10)
+    assert table.table_id == "T10-D-pumps-010"
+    unsup_claim = triad.claims["unsupported"]
+    assert unsup_claim.entity == "Pump Epsilon"
+    assert unsup_claim.attribute == "seal material"
+    assert unsup_claim.claimed_value == "viton"
+
+    check_worded_claim(
+        table,
+        unsup_claim,
+        "The seal material of Pump Epsilon is Viton.",
+    )
+    check_worded_claim(
+        table,
+        unsup_claim,
+        "The seal material of Pump Epsilon is viton.",
+    )
+
+    for bad_noun in ("Hastelloy", "Orion-9"):
+        with pytest.raises(RdlabError) as exc_noun:
+            check_worded_claim(
+                table,
+                unsup_claim,
+                f"The seal material of Pump Epsilon is viton from {bad_noun}.",
+            )
+        assert exc_noun.value.code == "PILOT_B_RENDER_UNGROUNDED_PROPER_NOUN"
+
+
