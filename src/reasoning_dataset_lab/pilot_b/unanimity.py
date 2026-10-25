@@ -12,6 +12,7 @@ min_pass_rate_per_class (default 0.50), halting the build if any class falls bel
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -482,15 +483,76 @@ class UnanimousReaderFake:
     def model(self) -> ModelIdentity:
         return self._model
 
+    @staticmethod
+    def _derive_verdict_from_prompt_text(prompt: BlindReadPrompt) -> ReaderVerdict:
+        """Derive the true verdict strictly from prompt.material and prompt.claim_text (never from claim_id)."""
+        claim_clean = prompt.claim_text.strip()
+        mat_lines = [
+            re.sub(r"^\s*\d+[.)]\s+", "", ln.strip())
+            for ln in prompt.material.splitlines()
+            if ln.strip() and not ln.strip().lower().startswith("material")
+        ]
+        # 1. Exact sentence restatement -> supported
+        if any(claim_clean.lower() == ln.lower() for ln in mat_lines):
+            return "supported"
+
+        # 2. Check if claim refines an interval line ("The <attr> of <ent> is between <lo> and <hi>...")
+        m_claim_num = re.match(
+            r"^(?:The\s+(.+?)\s+of\s+(.+?)\s+is\s+(\d+)|(.+?)\s+has\s+(\d+)(?:\s+\w+)?\s+of\s+(.+?))\.$",
+            claim_clean,
+            re.IGNORECASE,
+        )
+        if m_claim_num:
+            if m_claim_num.group(1) is not None:
+                c_attr = m_claim_num.group(1).strip().lower()
+                c_ent = m_claim_num.group(2).strip().lower()
+                c_val = int(m_claim_num.group(3))
+            else:
+                c_ent = m_claim_num.group(4).strip().lower()
+                c_val = int(m_claim_num.group(5))
+                c_attr = m_claim_num.group(6).strip().lower()
+            for ln in mat_lines:
+                m_int = re.search(
+                    r"The\s+(.+?)\s+of\s+(.+?)\s+is\s+between\s+(\d+)\s+and\s+(\d+)",
+                    ln,
+                    re.IGNORECASE,
+                )
+                if m_int:
+                    f_attr = m_int.group(1).strip().lower()
+                    f_ent = m_int.group(2).strip().lower()
+                    lo, hi = int(m_int.group(3)), int(m_int.group(4))
+                    if f_attr == c_attr and f_ent == c_ent:
+                        if lo <= c_val <= hi and lo < hi:
+                            return "cannot_tell"
+                        return "unsupported"
+
+        # 3. Check if claim's attribute is stated anywhere in material for that entity
+        m_claim_gen = re.match(
+            r"^The\s+(.+?)\s+of\s+(.+?)\s+is\s+(.+?)\.$",
+            claim_clean,
+            re.IGNORECASE,
+        )
+        if m_claim_gen:
+            c_attr = m_claim_gen.group(1).strip().lower()
+            c_ent = m_claim_gen.group(2).strip().lower()
+            for ln in mat_lines:
+                if c_ent in ln.lower() and c_attr in ln.lower():
+                    return "unsupported"
+            if prompt.closure == "open":
+                return "cannot_tell"
+
+        if m_claim_num:
+            for ln in mat_lines:
+                if c_ent in ln.lower() and c_attr in ln.lower():
+                    return "unsupported"
+
+        return "cannot_tell"
+
     def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
         if prompt.claim_id in self._lookup:
             verdict: ReaderVerdict = self._lookup[prompt.claim_id]
-        elif prompt.claim_id.endswith("-sup"):
-            verdict = "supported"
-        elif prompt.claim_id.endswith("-unsup"):
-            verdict = "unsupported"
         else:
-            verdict = "cannot_tell"
+            verdict = self._derive_verdict_from_prompt_text(prompt)
         return BlindReadResult(
             claim_id=prompt.claim_id,
             reader=self._model,

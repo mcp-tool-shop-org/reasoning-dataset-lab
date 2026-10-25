@@ -259,3 +259,63 @@ def test_part_c_disagreement_and_validation_branches(tmp_path: Path) -> None:
     assert not ev_wrong.passed
     assert "verdict 'unsupported' != key 'supported'" in (ev_wrong.failure_reason or "")
 
+
+def test_fix2_opaque_claim_ids_and_blind_read_prompt_determinism_scan() -> None:
+    """Card gc Fix 2: No id leaving the prover encodes -sup/-unsup/-ct, and no field of BlindReadPrompt.to_dict() deterministically predicts the key class."""
+    tables = generate_fact_tables(n=10, seed=1)
+    writer = DeterministicWriterAdapter()
+
+    prompt_rows_with_keys: list[tuple[dict[str, str], str]] = []
+    for idx, table in enumerate(tables):
+        triad = build_contrast_triad(table, seed=idx + 1)
+        material = writer.render_material(table)
+        for key, claim in triad.claims.items():
+            # 1. Ids leaving the prover must not encode -sup, -unsup, -ct, or the key name
+            cid_low = claim.claim_id.lower()
+            for leaked_token in ("-sup", "-unsup", "-ct", "supported", "unsupported", "cannot_tell"):
+                assert leaked_token not in cid_low, (
+                    f"claim_id {claim.claim_id!r} encodes key token {leaked_token!r}"
+                )
+            claim_text = writer.word_claim(table, claim)
+            prompt = build_blind_read_prompt(
+                triad_id=triad.triad_id,
+                claim_id=claim.claim_id,
+                closure=table.closure,
+                material=material,
+                claim_text=claim_text,
+            )
+            pdict = prompt.to_dict()
+            for fval in pdict.values():
+                for leaked_token in ("-sup", "-unsup", "-ct"):
+                    assert leaked_token not in fval.lower()
+            prompt_rows_with_keys.append((pdict, key))
+
+    # 2. Same determinism check as the sealing scan (waves_and_sealing.py:663-678), plus suffix/token check on claim_id:
+    # Check both raw field values and trailing token after '-' (e.g. claim_id suffix) across built triads.
+    field_names = sorted(prompt_rows_with_keys[0][0].keys())
+    for fname in field_names:
+        # Check raw field value -> key set
+        val_to_keys: dict[str, set[str]] = {}
+        # Also check last dash-separated token (which catches '{table_id}-sup' style suffixes across tables)
+        suffix_to_keys: dict[str, set[str]] = {}
+        for pdict, key in prompt_rows_with_keys:
+            val = pdict[fname]
+            val_to_keys.setdefault(val, set()).add(key)
+            if fname == "claim_id" and "-" in val:
+                suffix = val.rsplit("-", 1)[-1]
+                suffix_to_keys.setdefault(suffix, set()).add(key)
+
+        if fname not in ("claim_id", "claim_text", "user_message"):
+            assert not (
+                len(val_to_keys) >= 2 and all(len(kset) == 1 for kset in val_to_keys.values())
+            ), f"BlindReadPrompt field {fname!r} deterministically predicts key class: {val_to_keys}"
+
+        if fname == "claim_id":
+            # Across 10 triads (30 claims), claim_id suffixes must NOT collapse into 3 buckets that deterministically predict the key class
+            assert not (
+                len(suffix_to_keys) >= 2
+                and len(suffix_to_keys) < len(prompt_rows_with_keys)
+                and all(len(kset) == 1 for kset in suffix_to_keys.values())
+            ), f"BlindReadPrompt.claim_id suffix deterministically predicts key class: {suffix_to_keys}"
+
+

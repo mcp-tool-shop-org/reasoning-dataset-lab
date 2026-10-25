@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 from dataclasses import dataclass
 from typing import Literal
 
@@ -973,6 +974,17 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     sup_fact = provable_sup_facts[abs(seed) % len(provable_sup_facts)]
     unsup_fact = provable_unsup_facts[(abs(seed) + 1) % len(provable_unsup_facts)]
 
+    # Opaque claim ids (Card gc Fix 2): short hash of table_id, seed, and post-shuffle position (never -sup, -unsup, -ct)
+    slot_keys: list[VerdictKey] = ["supported", "unsupported", "cannot_tell"]
+    id_rng = random.Random(f"{table.table_id}:{seed}:opaque-claim-ids")
+    id_rng.shuffle(slot_keys)
+    opaque_claim_ids: dict[VerdictKey, str] = {}
+    for post_shuffle_pos, k in enumerate(slot_keys, start=1):
+        digest_8 = hashlib.sha256(
+            f"{table.table_id}:{seed}:pos={post_shuffle_pos}".encode("utf-8")
+        ).hexdigest()[:8]
+        opaque_claim_ids[k] = f"{table.table_id}-c-{digest_8}"
+
     # 1. Supported claim: restates sup_fact
     sup_dummy_proof = ClaimProof(
         key="supported",
@@ -988,7 +1000,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         trace_sha256="0" * 64,
     )
     sup_claim_draft = ProvedClaim(
-        claim_id=f"{table.table_id}-sup",
+        claim_id=opaque_claim_ids["supported"],
         table_id=table.table_id,
         key="supported",
         fact_id=sup_fact.fact_id,
@@ -1018,7 +1030,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     # 2. Unsupported claim: applies a provably disjoint typed mutation to unsup_fact with op='='
     mutated_val = mutate_fact_value(unsup_fact, step=abs(seed) + 1)
     unsup_claim_draft = ProvedClaim(
-        claim_id=f"{table.table_id}-unsup",
+        claim_id=opaque_claim_ids["unsupported"],
         table_id=table.table_id,
         key="unsupported",
         fact_id=unsup_fact.fact_id,
@@ -1063,7 +1075,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         open_attr, open_val = table.open_attributes[abs(seed) % len(table.open_attributes)]
         target_entity = table.entities[abs(seed) % len(table.entities)]
         ct_claim_draft = ProvedClaim(
-            claim_id=f"{table.table_id}-ct",
+            claim_id=opaque_claim_ids["cannot_tell"],
             table_id=table.table_id,
             key="cannot_tell",
             fact_id=None,
@@ -1087,7 +1099,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         lo, hi = int(int_fact.value[0]), int(int_fact.value[1])
         interior_val = (lo + hi) // 2
         ct_claim_draft = ProvedClaim(
-            claim_id=f"{table.table_id}-ct",
+            claim_id=opaque_claim_ids["cannot_tell"],
             table_id=table.table_id,
             key="cannot_tell",
             fact_id=int_fact.fact_id,
