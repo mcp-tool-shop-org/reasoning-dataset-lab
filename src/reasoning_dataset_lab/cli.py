@@ -20,7 +20,14 @@ from reasoning_dataset_lab.map import check_map_file
 from reasoning_dataset_lab.pilot_b.models_and_build import (
     DEFAULT_PILOT_B_MODEL_PINS,
     run_pilot_b_build,
+    run_pilot_b_calibration,
     verify_live_ollama_models,
+)
+from reasoning_dataset_lab.pilot_b.ollama import (
+    DEFAULT_CALIBRATION_NUM_CTX,
+    DEFAULT_CALIBRATION_NUM_PREDICT,
+    DEFAULT_CALIBRATION_TABLES,
+    PILOT_B_OPERATIONS,
 )
 
 
@@ -137,8 +144,36 @@ def _build_parser() -> _StructuredArgumentParser:
         "--thinking-cap",
         dest="thinking_cap",
         type=int,
-        default=256,
-        help="Per-call thinking token cap (default: 256).",
+        default=None,
+        help="Per-call thinking token cap override (precedence: CLI > config/env > default 256).",
+    )
+    pb_parser.add_argument(
+        "--thinking-cap-render-material",
+        dest="thinking_cap_render_material",
+        type=int,
+        default=None,
+        help="Optional CLI thinking token cap override for render_material.",
+    )
+    pb_parser.add_argument(
+        "--thinking-cap-word-claim",
+        dest="thinking_cap_word_claim",
+        type=int,
+        default=None,
+        help="Optional CLI thinking token cap override for word_claim.",
+    )
+    pb_parser.add_argument(
+        "--thinking-cap-read-claim",
+        dest="thinking_cap_read_claim",
+        type=int,
+        default=None,
+        help="Optional CLI thinking token cap override for read_claim.",
+    )
+    pb_parser.add_argument(
+        "--config",
+        dest="config_path",
+        type=Path,
+        default=None,
+        help="Optional JSON config file for Pilot B settings (e.g. thinking_token_cap).",
     )
     pb_parser.add_argument(
         "--licence-registry",
@@ -158,11 +193,104 @@ def _build_parser() -> _StructuredArgumentParser:
     return parser
 
 
+def _build_pilot_b_calibrate_parser() -> _StructuredArgumentParser:
+    cal_parser = _StructuredArgumentParser(
+        prog="rdlab pilot-b calibrate",
+        description=(
+            "Run a Pilot B thinking-token calibration measurement for a single operation "
+            "(think: true only; writes calibration.json and seals nothing)."
+        ),
+    )
+    cal_parser.add_argument(
+        "--operation",
+        dest="operation",
+        required=True,
+        choices=list(PILOT_B_OPERATIONS),
+        help="Pilot B operation to calibrate: render_material, word_claim, or read_claim.",
+    )
+    cal_parser.add_argument(
+        "--tables",
+        dest="tables_count",
+        type=int,
+        default=DEFAULT_CALIBRATION_TABLES,
+        help=f"Number of formal fact tables to sample (default: {DEFAULT_CALIBRATION_TABLES}).",
+    )
+    cal_parser.add_argument(
+        "--num-predict",
+        dest="num_predict",
+        type=int,
+        default=DEFAULT_CALIBRATION_NUM_PREDICT,
+        help=f"Per-call options.num_predict budget (default: {DEFAULT_CALIBRATION_NUM_PREDICT}).",
+    )
+    cal_parser.add_argument(
+        "--num-ctx",
+        dest="num_ctx",
+        type=int,
+        default=DEFAULT_CALIBRATION_NUM_CTX,
+        help=f"Explicit per-call options.num_ctx window (default: {DEFAULT_CALIBRATION_NUM_CTX}).",
+    )
+    cal_parser.add_argument(
+        "--licence-registry",
+        dest="licence_registry",
+        type=Path,
+        default=None,
+        help="Path to licences/registry.json (required).",
+    )
+    cal_parser.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        type=Path,
+        default=Path("build/pilot_b_calibrate"),
+        help="Output directory for calibration.json (default: build/pilot_b_calibrate).",
+    )
+    cal_parser.add_argument(
+        "--seed",
+        type=int,
+        default=1,
+        help="Base generation seed for fact tables (default: 1).",
+    )
+    cal_parser.add_argument(
+        "--role",
+        dest="role",
+        type=str,
+        default=None,
+        choices=["writer", "reader_1", "reader_2"],
+        help="Optional model role override (defaults to writer for render/word and reader_1 for read_claim).",
+    )
+    cal_parser.add_argument(
+        "--ollama-url",
+        dest="ollama_url",
+        type=str,
+        default="http://127.0.0.1:11434",
+        help="Loopback Ollama HTTP endpoint (default: http://127.0.0.1:11434).",
+    )
+    return cal_parser
+
+
 def run_cli(argv: Sequence[str] | None = None) -> int:
     """Execute the CLI and return its exit code (0 clean, 1 refused, 2 usage)."""
+    raw_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = _build_parser()
     try:
-        args = parser.parse_args(list(argv) if argv is not None else None)
+        if len(raw_argv) >= 2 and raw_argv[0] == "pilot-b" and raw_argv[1] == "calibrate":
+            cal_parser = _build_pilot_b_calibrate_parser()
+            cal_args = cal_parser.parse_args(raw_argv[2:])
+            cal_res = run_pilot_b_calibration(
+                operation=cal_args.operation,
+                output_dir=cal_args.output_dir,
+                licence_registry_path=cal_args.licence_registry,
+                tables_count=cal_args.tables_count,
+                num_predict=cal_args.num_predict,
+                num_ctx=cal_args.num_ctx,
+                seed=cal_args.seed,
+                role=cal_args.role,
+                ollama_base_url=cal_args.ollama_url,
+                think=True,
+            )
+            print(json.dumps(cal_res, indent=2))
+            return EXIT_CLEAN
+
+        args = parser.parse_args(raw_argv)
 
         if args.command == "map":
             if args.map_command != "check":
@@ -209,6 +337,11 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
         if args.command == "pilot-b":
             triad_count = args.stub_count if args.stub_count is not None else 50
             stub_mode = args.stub_count is not None
+            op_caps = {
+                "render_material": args.thinking_cap_render_material,
+                "word_claim": args.thinking_cap_word_claim,
+                "read_claim": args.thinking_cap_read_claim,
+            }
             build_res = run_pilot_b_build(
                 output_dir=args.output_dir,
                 triad_count=triad_count,
@@ -216,6 +349,8 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 seed=args.seed,
                 shuffle_seed=args.shuffle_seed,
                 thinking_token_cap=args.thinking_cap,
+                thinking_cap_by_operation=op_caps,
+                config_path=args.config_path,
                 licence_registry_path=args.licence_registry,
                 ollama_base_url=args.ollama_url,
             )

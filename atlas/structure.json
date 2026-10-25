@@ -71,7 +71,7 @@
           "path": "LICENSE"
         },
         {
-          "hash": "15157e013e852006640503a1072c43e95690bc8cae3a2381c1eaf6e248d2fc26",
+          "hash": "7795f1709bce851339460d62121c8e9b9a52f3cfa960998f1d03210f8769032f",
           "path": "README.md"
         },
         {
@@ -125,49 +125,138 @@
             {
               "in": "error",
               "kind": "raise",
-              "line": 31
+              "line": 38
             },
             {
               "in": "run_cli",
               "kind": "raise",
-              "line": 169
+              "line": 297
             },
             {
               "in": "run_cli",
               "kind": "raise",
-              "line": 180
+              "line": 308
             },
             {
               "in": "run_cli",
               "kind": "raise",
-              "line": 225
+              "line": 360
             },
             {
               "in": "run_cli",
               "kind": "except",
-              "line": 230
+              "line": 365
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 236
+              "line": 371
             }
           ],
-          "hash": "d32ac1e53765544b9f5e31dacc8491cc9828f131069e63298308a70d3540eea6",
+          "hash": "a795725738beea9dcfb3c0ef2634666d0c3f1d50286d25038e35472b96b26bbd",
           "importsFiles": [
             "src/reasoning_dataset_lab/__init__.py",
             "src/reasoning_dataset_lab/config.py",
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/map.py",
-            "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
+            "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
+            "src/reasoning_dataset_lab/pilot_b/ollama.py"
           ],
           "path": "src/reasoning_dataset_lab/cli.py",
           "sequences": [
             {
               "calls": [
                 {
+                  "line": 208,
+                  "name": "PILOT_B_OPERATIONS",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  }
+                },
+                {
+                  "line": 215,
+                  "name": "DEFAULT_CALIBRATION_TABLES",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  }
+                },
+                {
+                  "line": 222,
+                  "name": "DEFAULT_CALIBRATION_NUM_PREDICT",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  }
+                },
+                {
+                  "line": 229,
+                  "name": "DEFAULT_CALIBRATION_NUM_CTX",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_build_pilot_b_calibrate_parser"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
+                  "line": 208,
+                  "name": "PILOT_B_OPERATIONS",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  },
+                  "via": "_build_pilot_b_calibrate_parser"
+                },
+                {
+                  "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
+                  "line": 215,
+                  "name": "DEFAULT_CALIBRATION_TABLES",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  },
+                  "via": "_build_pilot_b_calibrate_parser"
+                },
+                {
+                  "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
+                  "line": 222,
+                  "name": "DEFAULT_CALIBRATION_NUM_PREDICT",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  },
+                  "via": "_build_pilot_b_calibrate_parser"
+                },
+                {
+                  "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
+                  "line": 229,
+                  "name": "DEFAULT_CALIBRATION_NUM_CTX",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  },
+                  "via": "_build_pilot_b_calibrate_parser"
+                },
+                {
+                  "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
+                  "line": 278,
+                  "name": "run_pilot_b_calibration",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
+                  }
+                },
+                {
                   "branch": "args.map_command != \"check\"",
-                  "line": 169,
+                  "line": 297,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -175,7 +264,7 @@
                 },
                 {
                   "branch": "args.command == \"map\"",
-                  "line": 174,
+                  "line": 302,
                   "name": "check_map_file",
                   "target": {
                     "file": "src/reasoning_dataset_lab/map.py"
@@ -183,7 +272,7 @@
                 },
                 {
                   "branch": "args.project_command != \"fingerprint\"",
-                  "line": 180,
+                  "line": 308,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -191,7 +280,7 @@
                 },
                 {
                   "branch": "args.command == \"project\"",
-                  "line": 185,
+                  "line": 313,
                   "name": "compute_config_fingerprint",
                   "target": {
                     "file": "src/reasoning_dataset_lab/config.py"
@@ -199,7 +288,7 @@
                 },
                 {
                   "branch": "args.verify_live",
-                  "line": 195,
+                  "line": 323,
                   "name": "verify_live_ollama_models",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -207,7 +296,7 @@
                 },
                 {
                   "branch": "args.command == \"models\"",
-                  "line": 203,
+                  "line": 331,
                   "name": "values",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -215,14 +304,14 @@
                 },
                 {
                   "branch": "args.command == \"pilot-b\"",
-                  "line": 212,
+                  "line": 345,
                   "name": "run_pilot_b_build",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
                   }
                 },
                 {
-                  "line": 225,
+                  "line": 360,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -237,8 +326,157 @@
             {
               "calls": [
                 {
+                  "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
+                  "line": 208,
+                  "name": "PILOT_B_OPERATIONS",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  },
+                  "via": "_build_pilot_b_calibrate_parser"
+                },
+                {
+                  "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
+                  "line": 215,
+                  "name": "DEFAULT_CALIBRATION_TABLES",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  },
+                  "via": "_build_pilot_b_calibrate_parser"
+                },
+                {
+                  "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
+                  "line": 222,
+                  "name": "DEFAULT_CALIBRATION_NUM_PREDICT",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  },
+                  "via": "_build_pilot_b_calibrate_parser"
+                },
+                {
+                  "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
+                  "line": 229,
+                  "name": "DEFAULT_CALIBRATION_NUM_CTX",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  },
+                  "via": "_build_pilot_b_calibrate_parser"
+                },
+                {
+                  "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
+                  "inner": [
+                    {
+                      "branch": "think is not True",
+                      "line": 1052,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      }
+                    },
+                    {
+                      "branch": "operation not in PILOT_B_OPERATIONS",
+                      "line": 1060,
+                      "name": "PILOT_B_OPERATIONS",
+                      "passed": true,
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                      }
+                    },
+                    {
+                      "branch": "operation not in PILOT_B_OPERATIONS",
+                      "line": 1058,
+                      "name": "usage_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      }
+                    },
+                    {
+                      "branch": "tables_count < 1",
+                      "line": 1064,
+                      "name": "usage_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      }
+                    },
+                    {
+                      "branch": "num_predict < 1",
+                      "line": 1070,
+                      "name": "usage_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      }
+                    },
+                    {
+                      "branch": "num_ctx < NUM_CTX_STEP_TOKENS",
+                      "line": 1076,
+                      "name": "usage_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      }
+                    },
+                    {
+                      "branch": "not isinstance(lic_id, str) or not lic_id.strip()",
+                      "line": 244,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "resolve_pilot_b_model_pins"
+                    },
+                    {
+                      "branch": "not isinstance(bundled_id, str) or not bundled_id.strip()",
+                      "line": 253,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "resolve_pilot_b_model_pins"
+                    },
+                    {
+                      "branch": "max_ctx < NUM_CTX_STEP_TOKENS",
+                      "line": 260,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "resolve_pilot_b_model_pins"
+                    },
+                    {
+                      "branch": "registry_path is None",
+                      "line": 425,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "validate_models_against_licence_registry"
+                    },
+                    {
+                      "line": 384,
+                      "name": "exists",
+                      "target": null,
+                      "via": "load_licence_registry"
+                    },
+                    {
+                      "line": 384,
+                      "name": "is_file",
+                      "target": null,
+                      "via": "load_licence_registry"
+                    }
+                  ],
+                  "innerTruncated": true,
+                  "line": 278,
+                  "name": "run_pilot_b_calibration",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
+                  },
+                  "via": "run_cli"
+                },
+                {
                   "branch": "args.map_command != \"check\"",
-                  "line": 169,
+                  "line": 297,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -347,7 +585,7 @@
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 174,
+                  "line": 302,
                   "name": "check_map_file",
                   "target": {
                     "file": "src/reasoning_dataset_lab/map.py"
@@ -356,7 +594,7 @@
                 },
                 {
                   "branch": "args.project_command != \"fingerprint\"",
-                  "line": 180,
+                  "line": 308,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -456,7 +694,7 @@
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 185,
+                  "line": 313,
                   "name": "compute_config_fingerprint",
                   "target": {
                     "file": "src/reasoning_dataset_lab/config.py"
@@ -468,7 +706,7 @@
                   "inner": [
                     {
                       "branch": "registry_path is None",
-                      "line": 380,
+                      "line": 425,
                       "name": "refused_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -476,20 +714,20 @@
                       "via": "validate_models_against_licence_registry"
                     },
                     {
-                      "line": 339,
+                      "line": 384,
                       "name": "exists",
                       "target": null,
                       "via": "load_licence_registry"
                     },
                     {
-                      "line": 339,
+                      "line": 384,
                       "name": "is_file",
                       "target": null,
                       "via": "load_licence_registry"
                     },
                     {
                       "branch": "not registry_path.exists() or not registry_path.is_file()",
-                      "line": 340,
+                      "line": 385,
                       "name": "usage_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -497,13 +735,13 @@
                       "via": "load_licence_registry"
                     },
                     {
-                      "line": 346,
+                      "line": 391,
                       "name": "read_text",
                       "target": null,
                       "via": "load_licence_registry"
                     },
                     {
-                      "line": 348,
+                      "line": 393,
                       "name": "refused_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -512,7 +750,7 @@
                     },
                     {
                       "branch": "not isinstance(parsed, dict) or not isinstance(parsed.get(\"…",
-                      "line": 355,
+                      "line": 400,
                       "name": "refused_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -520,7 +758,7 @@
                       "via": "load_licence_registry"
                     },
                     {
-                      "line": 392,
+                      "line": 437,
                       "name": "is_valid_sha256",
                       "target": {
                         "file": "src/reasoning_dataset_lab/map.py"
@@ -529,7 +767,7 @@
                     },
                     {
                       "branch": "not is_valid_sha256(spec.manifest_digest) or not is_valid_s…",
-                      "line": 396,
+                      "line": 441,
                       "name": "refused_error",
                       "over": "models",
                       "target": {
@@ -539,7 +777,7 @@
                     },
                     {
                       "branch": "not spec.licence_id or spec.licence_id not in entries_map",
-                      "line": 402,
+                      "line": 447,
                       "name": "refused_error",
                       "over": "models",
                       "target": {
@@ -549,7 +787,7 @@
                     },
                     {
                       "branch": "training_verdict in (\"barred\", \"not_proven\", \"\") or eval_ve…",
-                      "line": 419,
+                      "line": 464,
                       "name": "refused_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -558,7 +796,7 @@
                     },
                     {
                       "branch": "not spec.bundled_licence_id or spec.bundled_licence_id not …",
-                      "line": 426,
+                      "line": 471,
                       "name": "refused_error",
                       "over": "models",
                       "target": {
@@ -568,7 +806,7 @@
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 195,
+                  "line": 323,
                   "name": "verify_live_ollama_models",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -577,7 +815,7 @@
                 },
                 {
                   "branch": "args.command == \"models\"",
-                  "line": 203,
+                  "line": 331,
                   "name": "values",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -589,15 +827,36 @@
                   "inner": [
                     {
                       "branch": "triad_count < 1",
-                      "line": 751,
+                      "line": 840,
                       "name": "refused_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
                       }
                     },
                     {
+                      "line": 847,
+                      "name": "coerce_thinking_cap_config",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                      }
+                    },
+                    {
+                      "line": 856,
+                      "name": "resolve_thinking_cap_config",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                      }
+                    },
+                    {
+                      "line": 872,
+                      "name": "coerce_thinking_cap_config",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                      }
+                    },
+                    {
                       "branch": "not isinstance(lic_id, str) or not lic_id.strip()",
-                      "line": 208,
+                      "line": 244,
                       "name": "refused_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -606,7 +865,7 @@
                     },
                     {
                       "branch": "not isinstance(bundled_id, str) or not bundled_id.strip()",
-                      "line": 217,
+                      "line": 253,
                       "name": "refused_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -614,20 +873,29 @@
                       "via": "resolve_pilot_b_model_pins"
                     },
                     {
-                      "line": 339,
+                      "branch": "max_ctx < NUM_CTX_STEP_TOKENS",
+                      "line": 260,
+                      "name": "refused_error",
+                      "target": {
+                        "file": "src/reasoning_dataset_lab/errors.py"
+                      },
+                      "via": "resolve_pilot_b_model_pins"
+                    },
+                    {
+                      "line": 384,
                       "name": "exists",
                       "target": null,
                       "via": "load_licence_registry"
                     },
                     {
-                      "line": 339,
+                      "line": 384,
                       "name": "is_file",
                       "target": null,
                       "via": "load_licence_registry"
                     },
                     {
                       "branch": "not registry_path.exists() or not registry_path.is_file()",
-                      "line": 340,
+                      "line": 385,
                       "name": "usage_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
@@ -635,53 +903,22 @@
                       "via": "load_licence_registry"
                     },
                     {
-                      "line": 346,
+                      "line": 391,
                       "name": "read_text",
                       "target": null,
                       "via": "load_licence_registry"
                     },
                     {
-                      "line": 348,
+                      "line": 393,
                       "name": "refused_error",
                       "target": {
                         "file": "src/reasoning_dataset_lab/errors.py"
                       },
                       "via": "load_licence_registry"
-                    },
-                    {
-                      "branch": "not isinstance(parsed, dict) or not isinstance(parsed.get(\"…",
-                      "line": 355,
-                      "name": "refused_error",
-                      "target": {
-                        "file": "src/reasoning_dataset_lab/errors.py"
-                      },
-                      "via": "load_licence_registry"
-                    },
-                    {
-                      "line": 765,
-                      "name": "read_bytes",
-                      "target": null
-                    },
-                    {
-                      "branch": "registry_path is None",
-                      "line": 380,
-                      "name": "refused_error",
-                      "target": {
-                        "file": "src/reasoning_dataset_lab/errors.py"
-                      },
-                      "via": "validate_models_against_licence_registry"
-                    },
-                    {
-                      "line": 392,
-                      "name": "is_valid_sha256",
-                      "target": {
-                        "file": "src/reasoning_dataset_lab/map.py"
-                      },
-                      "via": "validate_models_against_licence_registry"
                     }
                   ],
                   "innerTruncated": true,
-                  "line": 212,
+                  "line": 345,
                   "name": "run_pilot_b_build",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -689,7 +926,7 @@
                   "via": "run_cli"
                 },
                 {
-                  "line": 225,
+                  "line": 360,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3510,7 +3747,7 @@
           "path": "src/reasoning_dataset_lab/pilot_b/fact_tables.py"
         },
         {
-          "entry": "run_pilot_b_build",
+          "entry": "run_pilot_b_calibration",
           "entryRule": 4,
           "exports": [
             "build_fixture_licence_registry",
@@ -3519,6 +3756,7 @@
             "load_licence_registry",
             "resolve_pilot_b_model_pins",
             "run_pilot_b_build",
+            "run_pilot_b_calibration",
             "validate_models_against_licence_registry",
             "verify_live_ollama_models"
           ],
@@ -3526,110 +3764,150 @@
             {
               "in": "resolve_pilot_b_model_pins",
               "kind": "raise",
-              "line": 208
+              "line": 244
             },
             {
               "in": "resolve_pilot_b_model_pins",
               "kind": "raise",
-              "line": 217
+              "line": 253
+            },
+            {
+              "in": "resolve_pilot_b_model_pins",
+              "kind": "raise",
+              "line": 260
             },
             {
               "in": "load_licence_registry",
               "kind": "raise",
-              "line": 340
+              "line": 385
             },
             {
               "in": "load_licence_registry",
               "kind": "except",
-              "line": 347
+              "line": 392
             },
             {
               "in": "load_licence_registry",
               "kind": "raise",
-              "line": 348
+              "line": 393
             },
             {
               "in": "load_licence_registry",
               "kind": "raise",
-              "line": 355
+              "line": 400
             },
             {
               "in": "validate_models_against_licence_registry",
               "kind": "raise",
-              "line": 380
+              "line": 425
             },
             {
               "in": "validate_models_against_licence_registry",
               "kind": "raise",
-              "line": 396
+              "line": 441
             },
             {
               "in": "validate_models_against_licence_registry",
               "kind": "raise",
-              "line": 402
+              "line": 447
             },
             {
               "in": "validate_models_against_licence_registry",
               "kind": "raise",
-              "line": 419
+              "line": 464
             },
             {
               "in": "validate_models_against_licence_registry",
-              "kind": "raise",
-              "line": 426
-            },
-            {
-              "in": "_default_fetch_ollama_manifest",
-              "kind": "except",
-              "line": 470
-            },
-            {
-              "in": "_default_fetch_ollama_manifest",
               "kind": "raise",
               "line": 471
             },
             {
+              "in": "_default_fetch_ollama_manifest",
+              "kind": "except",
+              "line": 515
+            },
+            {
+              "in": "_default_fetch_ollama_manifest",
+              "kind": "raise",
+              "line": 516
+            },
+            {
               "in": "verify_live_ollama_models",
               "kind": "except",
-              "line": 509
+              "line": 554
             },
             {
               "in": "verify_live_ollama_models",
               "kind": "raise",
-              "line": 510
+              "line": 555
             },
             {
               "in": "verify_live_ollama_models",
               "kind": "raise",
-              "line": 536
+              "line": 581
             },
             {
               "in": "verify_live_ollama_models",
               "kind": "raise",
-              "line": 544
+              "line": 589
             },
             {
               "in": "verify_live_ollama_models",
               "kind": "raise",
-              "line": 552
+              "line": 597
             },
             {
               "in": "run_pilot_b_build",
               "kind": "raise",
-              "line": 751
+              "line": 840
             },
             {
               "in": "run_pilot_b_build",
               "kind": "raise",
-              "line": 787
+              "line": 907
             },
             {
               "in": "run_pilot_b_build",
               "kind": "raise",
-              "line": 847
+              "line": 967
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1052
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1058
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1064
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1070
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1076
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1094
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1102
             }
           ],
-          "hash": "087cce219146a0cc8886e195ad98a92ca742a7607f52f68ac132a6b160abe881",
+          "hash": "5050916c26fc007d7f3cd630c3e58e9100c97a91b8e342607a0d9c73b63b0d5f",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/map.py",
@@ -3644,7 +3922,7 @@
               "calls": [
                 {
                   "branch": "not isinstance(lic_id, str) or not lic_id.strip()",
-                  "line": 208,
+                  "line": 244,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3652,7 +3930,15 @@
                 },
                 {
                   "branch": "not isinstance(bundled_id, str) or not bundled_id.strip()",
-                  "line": 217,
+                  "line": 253,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "max_ctx < NUM_CTX_STEP_TOKENS",
+                  "line": 260,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3667,30 +3953,30 @@
             {
               "calls": [
                 {
-                  "line": 339,
+                  "line": 384,
                   "name": "exists",
                   "target": null
                 },
                 {
-                  "line": 339,
+                  "line": 384,
                   "name": "is_file",
                   "target": null
                 },
                 {
                   "branch": "not registry_path.exists() or not registry_path.is_file()",
-                  "line": 340,
+                  "line": 385,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 346,
+                  "line": 391,
                   "name": "read_text",
                   "target": null
                 },
                 {
-                  "line": 348,
+                  "line": 393,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3698,7 +3984,7 @@
                 },
                 {
                   "branch": "not isinstance(parsed, dict) or not isinstance(parsed.get(\"…",
-                  "line": 355,
+                  "line": 400,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3714,27 +4000,27 @@
               "calls": [
                 {
                   "branch": "registry_path is None",
-                  "line": 380,
+                  "line": 425,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 339,
+                  "line": 384,
                   "name": "exists",
                   "target": null,
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 339,
+                  "line": 384,
                   "name": "is_file",
                   "target": null,
                   "via": "load_licence_registry"
                 },
                 {
                   "branch": "not registry_path.exists() or not registry_path.is_file()",
-                  "line": 340,
+                  "line": 385,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3742,13 +4028,13 @@
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 346,
+                  "line": 391,
                   "name": "read_text",
                   "target": null,
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 348,
+                  "line": 393,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3757,7 +4043,7 @@
                 },
                 {
                   "branch": "not isinstance(parsed, dict) or not isinstance(parsed.get(\"…",
-                  "line": 355,
+                  "line": 400,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3765,7 +4051,7 @@
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 392,
+                  "line": 437,
                   "name": "is_valid_sha256",
                   "target": {
                     "file": "src/reasoning_dataset_lab/map.py"
@@ -3773,7 +4059,7 @@
                 },
                 {
                   "branch": "not is_valid_sha256(spec.manifest_digest) or not is_valid_s…",
-                  "line": 396,
+                  "line": 441,
                   "name": "refused_error",
                   "over": "models",
                   "target": {
@@ -3782,7 +4068,7 @@
                 },
                 {
                   "branch": "not spec.licence_id or spec.licence_id not in entries_map",
-                  "line": 402,
+                  "line": 447,
                   "name": "refused_error",
                   "over": "models",
                   "target": {
@@ -3791,7 +4077,7 @@
                 },
                 {
                   "branch": "training_verdict in (\"barred\", \"not_proven\", \"\") or eval_ve…",
-                  "line": 419,
+                  "line": 464,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3799,7 +4085,7 @@
                 },
                 {
                   "branch": "not spec.bundled_licence_id or spec.bundled_licence_id not …",
-                  "line": 426,
+                  "line": 471,
                   "name": "refused_error",
                   "over": "models",
                   "target": {
@@ -3815,7 +4101,7 @@
             {
               "calls": [
                 {
-                  "line": 471,
+                  "line": 516,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3831,7 +4117,7 @@
               "calls": [
                 {
                   "branch": "registry_path is None",
-                  "line": 380,
+                  "line": 425,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3839,20 +4125,20 @@
                   "via": "validate_models_against_licence_registry"
                 },
                 {
-                  "line": 339,
+                  "line": 384,
                   "name": "exists",
                   "target": null,
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 339,
+                  "line": 384,
                   "name": "is_file",
                   "target": null,
                   "via": "load_licence_registry"
                 },
                 {
                   "branch": "not registry_path.exists() or not registry_path.is_file()",
-                  "line": 340,
+                  "line": 385,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3860,13 +4146,13 @@
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 346,
+                  "line": 391,
                   "name": "read_text",
                   "target": null,
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 348,
+                  "line": 393,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3875,7 +4161,7 @@
                 },
                 {
                   "branch": "not isinstance(parsed, dict) or not isinstance(parsed.get(\"…",
-                  "line": 355,
+                  "line": 400,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3883,7 +4169,7 @@
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 392,
+                  "line": 437,
                   "name": "is_valid_sha256",
                   "target": {
                     "file": "src/reasoning_dataset_lab/map.py"
@@ -3892,7 +4178,7 @@
                 },
                 {
                   "branch": "not is_valid_sha256(spec.manifest_digest) or not is_valid_s…",
-                  "line": 396,
+                  "line": 441,
                   "name": "refused_error",
                   "over": "models",
                   "target": {
@@ -3902,7 +4188,7 @@
                 },
                 {
                   "branch": "not spec.licence_id or spec.licence_id not in entries_map",
-                  "line": 402,
+                  "line": 447,
                   "name": "refused_error",
                   "over": "models",
                   "target": {
@@ -3912,7 +4198,7 @@
                 },
                 {
                   "branch": "training_verdict in (\"barred\", \"not_proven\", \"\") or eval_ve…",
-                  "line": 419,
+                  "line": 464,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3921,7 +4207,7 @@
                 },
                 {
                   "branch": "not spec.bundled_licence_id or spec.bundled_licence_id not …",
-                  "line": 426,
+                  "line": 471,
                   "name": "refused_error",
                   "over": "models",
                   "target": {
@@ -3930,12 +4216,12 @@
                   "via": "validate_models_against_licence_registry"
                 },
                 {
-                  "line": 497,
+                  "line": 542,
                   "name": "read_bytes",
                   "target": null
                 },
                 {
-                  "line": 510,
+                  "line": 555,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3943,7 +4229,7 @@
                 },
                 {
                   "branch": "live_manifest_sha256 != spec.manifest_digest",
-                  "line": 536,
+                  "line": 581,
                   "name": "refused_error",
                   "over": "specs",
                   "target": {
@@ -3952,7 +4238,7 @@
                 },
                 {
                   "branch": "model_layer_sha256 and model_layer_sha256 != spec.model_lay…",
-                  "line": 544,
+                  "line": 589,
                   "name": "refused_error",
                   "over": "specs",
                   "target": {
@@ -3961,7 +4247,7 @@
                 },
                 {
                   "branch": "licence_layer_sha256 and licence_layer_sha256 != spec.licen…",
-                  "line": 552,
+                  "line": 597,
                   "name": "refused_error",
                   "over": "specs",
                   "target": {
@@ -3978,15 +4264,36 @@
               "calls": [
                 {
                   "branch": "triad_count < 1",
-                  "line": 751,
+                  "line": 840,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
+                  "line": 847,
+                  "name": "coerce_thinking_cap_config",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  }
+                },
+                {
+                  "line": 856,
+                  "name": "resolve_thinking_cap_config",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  }
+                },
+                {
+                  "line": 872,
+                  "name": "coerce_thinking_cap_config",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  }
+                },
+                {
                   "branch": "not isinstance(lic_id, str) or not lic_id.strip()",
-                  "line": 208,
+                  "line": 244,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3995,7 +4302,7 @@
                 },
                 {
                   "branch": "not isinstance(bundled_id, str) or not bundled_id.strip()",
-                  "line": 217,
+                  "line": 253,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4003,20 +4310,29 @@
                   "via": "resolve_pilot_b_model_pins"
                 },
                 {
-                  "line": 339,
+                  "branch": "max_ctx < NUM_CTX_STEP_TOKENS",
+                  "line": 260,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "resolve_pilot_b_model_pins"
+                },
+                {
+                  "line": 384,
                   "name": "exists",
                   "target": null,
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 339,
+                  "line": 384,
                   "name": "is_file",
                   "target": null,
                   "via": "load_licence_registry"
                 },
                 {
                   "branch": "not registry_path.exists() or not registry_path.is_file()",
-                  "line": 340,
+                  "line": 385,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4024,13 +4340,13 @@
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 346,
+                  "line": 391,
                   "name": "read_text",
                   "target": null,
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 348,
+                  "line": 393,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4039,7 +4355,7 @@
                 },
                 {
                   "branch": "not isinstance(parsed, dict) or not isinstance(parsed.get(\"…",
-                  "line": 355,
+                  "line": 400,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4047,13 +4363,13 @@
                   "via": "load_licence_registry"
                 },
                 {
-                  "line": 765,
+                  "line": 885,
                   "name": "read_bytes",
                   "target": null
                 },
                 {
                   "branch": "registry_path is None",
-                  "line": 380,
+                  "line": 425,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4061,7 +4377,7 @@
                   "via": "validate_models_against_licence_registry"
                 },
                 {
-                  "line": 392,
+                  "line": 437,
                   "name": "is_valid_sha256",
                   "target": {
                     "file": "src/reasoning_dataset_lab/map.py"
@@ -4070,7 +4386,7 @@
                 },
                 {
                   "branch": "not is_valid_sha256(spec.manifest_digest) or not is_valid_s…",
-                  "line": 396,
+                  "line": 441,
                   "name": "refused_error",
                   "over": "models",
                   "target": {
@@ -4080,7 +4396,7 @@
                 },
                 {
                   "branch": "not spec.licence_id or spec.licence_id not in entries_map",
-                  "line": 402,
+                  "line": 447,
                   "name": "refused_error",
                   "over": "models",
                   "target": {
@@ -4090,7 +4406,7 @@
                 },
                 {
                   "branch": "training_verdict in (\"barred\", \"not_proven\", \"\") or eval_ve…",
-                  "line": 419,
+                  "line": 464,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4099,7 +4415,7 @@
                 },
                 {
                   "branch": "not spec.bundled_licence_id or spec.bundled_licence_id not …",
-                  "line": 426,
+                  "line": 471,
                   "name": "refused_error",
                   "over": "models",
                   "target": {
@@ -4108,60 +4424,31 @@
                   "via": "validate_models_against_licence_registry"
                 },
                 {
-                  "line": 815,
+                  "line": 935,
                   "name": "validate_chain_families",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/unanimity.py"
                   }
                 },
                 {
-                  "line": 817,
+                  "line": 937,
                   "name": "generate_fact_tables",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/fact_tables.py"
                   }
                 },
                 {
-                  "line": 819,
+                  "line": 939,
                   "name": "build_contrast_triad",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/fact_tables.py"
                   }
                 },
                 {
-                  "line": 823,
+                  "line": 943,
                   "name": "OllamaWriterAdapter",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
-                  }
-                },
-                {
-                  "line": 828,
-                  "name": "OllamaBlindReaderAdapter",
-                  "target": {
-                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
-                  }
-                },
-                {
-                  "branch": "not ( type(active_writer) is OllamaWriterAdapter and type(a…",
-                  "line": 847,
-                  "name": "refused_error",
-                  "target": {
-                    "file": "src/reasoning_dataset_lab/errors.py"
-                  }
-                },
-                {
-                  "line": 854,
-                  "name": "run_pilot_b_waves",
-                  "target": {
-                    "file": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py"
-                  }
-                },
-                {
-                  "line": 869,
-                  "name": "write_sealed_part",
-                  "target": {
-                    "file": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py"
                   }
                 }
               ],
@@ -4170,86 +4457,378 @@
               "isDefaultExport": false,
               "name": "run_pilot_b_build",
               "truncated": true
+            },
+            {
+              "calls": [
+                {
+                  "branch": "think is not True",
+                  "line": 1052,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "operation not in PILOT_B_OPERATIONS",
+                  "line": 1060,
+                  "name": "PILOT_B_OPERATIONS",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+                  }
+                },
+                {
+                  "branch": "operation not in PILOT_B_OPERATIONS",
+                  "line": 1058,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "tables_count < 1",
+                  "line": 1064,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "num_predict < 1",
+                  "line": 1070,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "num_ctx < NUM_CTX_STEP_TOKENS",
+                  "line": 1076,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(lic_id, str) or not lic_id.strip()",
+                  "line": 244,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "resolve_pilot_b_model_pins"
+                },
+                {
+                  "branch": "not isinstance(bundled_id, str) or not bundled_id.strip()",
+                  "line": 253,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "resolve_pilot_b_model_pins"
+                },
+                {
+                  "branch": "max_ctx < NUM_CTX_STEP_TOKENS",
+                  "line": 260,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "resolve_pilot_b_model_pins"
+                },
+                {
+                  "branch": "registry_path is None",
+                  "line": 425,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "validate_models_against_licence_registry"
+                },
+                {
+                  "line": 384,
+                  "name": "exists",
+                  "target": null,
+                  "via": "load_licence_registry"
+                },
+                {
+                  "line": 384,
+                  "name": "is_file",
+                  "target": null,
+                  "via": "load_licence_registry"
+                },
+                {
+                  "branch": "not registry_path.exists() or not registry_path.is_file()",
+                  "line": 385,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_licence_registry"
+                },
+                {
+                  "line": 391,
+                  "name": "read_text",
+                  "target": null,
+                  "via": "load_licence_registry"
+                },
+                {
+                  "line": 393,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_licence_registry"
+                },
+                {
+                  "branch": "not isinstance(parsed, dict) or not isinstance(parsed.get(\"…",
+                  "line": 400,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "load_licence_registry"
+                },
+                {
+                  "line": 437,
+                  "name": "is_valid_sha256",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/map.py"
+                  },
+                  "via": "validate_models_against_licence_registry"
+                },
+                {
+                  "branch": "not is_valid_sha256(spec.manifest_digest) or not is_valid_s…",
+                  "line": 441,
+                  "name": "refused_error",
+                  "over": "models",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "validate_models_against_licence_registry"
+                },
+                {
+                  "branch": "not spec.licence_id or spec.licence_id not in entries_map",
+                  "line": 447,
+                  "name": "refused_error",
+                  "over": "models",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "validate_models_against_licence_registry"
+                },
+                {
+                  "branch": "training_verdict in (\"barred\", \"not_proven\", \"\") or eval_ve…",
+                  "line": 464,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "validate_models_against_licence_registry"
+                },
+                {
+                  "branch": "not spec.bundled_licence_id or spec.bundled_licence_id not …",
+                  "line": 471,
+                  "name": "refused_error",
+                  "over": "models",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "validate_models_against_licence_registry"
+                },
+                {
+                  "line": 1089,
+                  "name": "read_bytes",
+                  "target": null
+                },
+                {
+                  "branch": "selected_role != \"writer\"",
+                  "line": 1094,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "selected_role not in (\"reader_1\", \"reader_2\")",
+                  "line": 1102,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "run_pilot_b_calibration",
+              "truncated": true
             }
           ]
         },
         {
+          "entry": "resolve_thinking_cap_config",
+          "entryRule": 4,
           "exports": [
+            "build_reader_read_messages",
+            "build_writer_render_messages",
+            "build_writer_word_messages",
+            "coerce_thinking_cap_config",
+            "compute_num_ctx",
             "default_ollama_http_transport",
+            "estimate_prompt_tokens",
+            "format_reference_claim",
+            "format_reference_material",
             "parse_reader_verdict",
             "require_loopback_ollama_url",
+            "resolve_thinking_cap_config",
+            "round_up_num_ctx",
+            "run_ollama_calibration_calls",
             "verify_local_ollama_model_digest"
           ],
           "failurePaths": [
             {
-              "in": "require_loopback_ollama_url",
+              "in": "round_up_num_ctx",
               "kind": "raise",
-              "line": 83
-            },
-            {
-              "in": "default_ollama_http_transport",
-              "kind": "except",
               "line": 112
             },
             {
-              "in": "default_ollama_http_transport",
+              "in": "_validate_positive_cap",
               "kind": "raise",
-              "line": 113
+              "line": 136
+            },
+            {
+              "in": "_validate_positive_cap",
+              "kind": "except",
+              "line": 144
+            },
+            {
+              "in": "_validate_positive_cap",
+              "kind": "raise",
+              "line": 145
+            },
+            {
+              "in": "_validate_positive_cap",
+              "kind": "raise",
+              "line": 153
+            },
+            {
+              "in": "_validate_positive_cap",
+              "kind": "raise",
+              "line": 159
+            },
+            {
+              "in": "resolve_thinking_cap_config",
+              "kind": "raise",
+              "line": 259
+            },
+            {
+              "in": "resolve_thinking_cap_config",
+              "kind": "except",
+              "line": 266
+            },
+            {
+              "in": "resolve_thinking_cap_config",
+              "kind": "raise",
+              "line": 267
+            },
+            {
+              "in": "resolve_thinking_cap_config",
+              "kind": "raise",
+              "line": 273
+            },
+            {
+              "in": "require_loopback_ollama_url",
+              "kind": "raise",
+              "line": 445
             },
             {
               "in": "default_ollama_http_transport",
               "kind": "except",
-              "line": 121
+              "line": 474
             },
             {
               "in": "default_ollama_http_transport",
               "kind": "raise",
-              "line": 122
+              "line": 475
+            },
+            {
+              "in": "default_ollama_http_transport",
+              "kind": "except",
+              "line": 483
             },
             {
               "in": "default_ollama_http_transport",
               "kind": "raise",
-              "line": 129
+              "line": 484
+            },
+            {
+              "in": "default_ollama_http_transport",
+              "kind": "raise",
+              "line": 491
             },
             {
               "in": "verify_local_ollama_model_digest",
               "kind": "raise",
-              "line": 229
+              "line": 600
             },
             {
               "in": "verify_local_ollama_model_digest",
               "kind": "raise",
-              "line": 238
+              "line": 609
             },
             {
               "in": "__init__",
               "kind": "raise",
-              "line": 280
+              "line": 771
             },
             {
               "in": "_chat",
               "kind": "raise",
-              "line": 402
+              "line": 890
+            },
+            {
+              "in": "_chat",
+              "kind": "raise",
+              "line": 945
             },
             {
               "in": "parse_reader_verdict",
               "kind": "except",
-              "line": 515
+              "line": 1012
             },
             {
               "in": "__init__",
               "kind": "raise",
-              "line": 538
+              "line": 1052
+            },
+            {
+              "in": "_chat",
+              "kind": "raise",
+              "line": 1163
+            },
+            {
+              "in": "run_ollama_calibration_calls",
+              "kind": "raise",
+              "line": 1281
+            },
+            {
+              "in": "run_ollama_calibration_calls",
+              "kind": "raise",
+              "line": 1287
+            },
+            {
+              "in": "run_ollama_calibration_calls",
+              "kind": "raise",
+              "line": 1293
+            },
+            {
+              "in": "run_ollama_calibration_calls",
+              "kind": "raise",
+              "line": 1299
             }
           ],
-          "hash": "daa693a30d745c0f62d0ec35151bd6e257482872cc8427ae153860a8f3e298b9",
-          "importOrder": [
-            "src/reasoning_dataset_lab/errors.py",
-            "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
-            "src/reasoning_dataset_lab/pilot_b/rendering.py",
-            "src/reasoning_dataset_lab/pilot_b/unanimity.py",
-            "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
-          ],
+          "hash": "b12800454f70da5ae4ba13fb4d2cb8ca0926ab2330ce580ea1d1b2ce57d29bc2",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
@@ -4257,7 +4836,365 @@
             "src/reasoning_dataset_lab/pilot_b/rendering.py",
             "src/reasoning_dataset_lab/pilot_b/unanimity.py"
           ],
-          "path": "src/reasoning_dataset_lab/pilot_b/ollama.py"
+          "path": "src/reasoning_dataset_lab/pilot_b/ollama.py",
+          "sequences": [
+            {
+              "calls": [
+                {
+                  "branch": "isinstance(raw_val, bool)",
+                  "line": 136,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 145,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "val < 1",
+                  "line": 159,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_validate_positive_cap"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "isinstance(raw_val, bool)",
+                  "line": 136,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_positive_cap"
+                },
+                {
+                  "line": 145,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_positive_cap"
+                },
+                {
+                  "branch": "val < 1",
+                  "line": 159,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_positive_cap"
+                },
+                {
+                  "line": 258,
+                  "name": "exists",
+                  "target": null
+                },
+                {
+                  "line": 258,
+                  "name": "is_file",
+                  "target": null
+                },
+                {
+                  "branch": "not config_path.exists() or not config_path.is_file()",
+                  "line": 259,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 265,
+                  "name": "read_text",
+                  "target": null
+                },
+                {
+                  "line": 267,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(raw_cfg, Mapping)",
+                  "line": 273,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "resolve_thinking_cap_config"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "thinking_token_cap is None",
+                  "line": 136,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "_validate_positive_cap"
+                },
+                {
+                  "branch": "thinking_token_cap is None",
+                  "line": 258,
+                  "name": "exists",
+                  "target": null,
+                  "via": "resolve_thinking_cap_config"
+                },
+                {
+                  "branch": "thinking_token_cap is None",
+                  "line": 258,
+                  "name": "is_file",
+                  "target": null,
+                  "via": "resolve_thinking_cap_config"
+                },
+                {
+                  "branch": "thinking_token_cap is None",
+                  "line": 259,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "resolve_thinking_cap_config"
+                },
+                {
+                  "branch": "thinking_token_cap is None",
+                  "line": 265,
+                  "name": "read_text",
+                  "target": null,
+                  "via": "resolve_thinking_cap_config"
+                },
+                {
+                  "branch": "thinking_token_cap is None",
+                  "line": 267,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "resolve_thinking_cap_config"
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "coerce_thinking_cap_config"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "parsed.scheme != \"http\" or parsed.hostname != LOOPBACK_HOST…",
+                  "line": 445,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "require_loopback_ollama_url"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "parsed.scheme != \"http\" or parsed.hostname != LOOPBACK_HOST…",
+                  "line": 445,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "require_loopback_ollama_url"
+                },
+                {
+                  "line": 475,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "not isinstance(parsed, dict)",
+                  "line": 491,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "default_ollama_http_transport"
+            },
+            {
+              "calls": [
+                {
+                  "line": 562,
+                  "name": "ModelIdentity",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/unanimity.py"
+                  }
+                },
+                {
+                  "line": 564,
+                  "name": "to_model_identity",
+                  "target": null
+                }
+              ],
+              "exported": false,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "_resolve_model_identity"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "parsed.scheme != \"http\" or parsed.hostname != LOOPBACK_HOST…",
+                  "line": 445,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "require_loopback_ollama_url"
+                },
+                {
+                  "branch": "entry is None",
+                  "line": 600,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "got_digest != norm_expected",
+                  "line": 609,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "verify_local_ollama_model_digest"
+            },
+            {
+              "calls": [
+                {
+                  "line": 620,
+                  "name": "to_dict",
+                  "target": null
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "build_writer_render_messages"
+            },
+            {
+              "calls": [
+                {
+                  "branch": "think is not True",
+                  "line": 1281,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "operation not in PILOT_B_OPERATIONS",
+                  "line": 1287,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "num_predict < 1",
+                  "line": 1293,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "num_ctx < NUM_CTX_STEP_TOKENS",
+                  "line": 1299,
+                  "name": "usage_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "branch": "parsed.scheme != \"http\" or parsed.hostname != LOOPBACK_HOST…",
+                  "line": 445,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "require_loopback_ollama_url"
+                },
+                {
+                  "line": 562,
+                  "name": "ModelIdentity",
+                  "passed": true,
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/unanimity.py"
+                  },
+                  "via": "_resolve_model_identity"
+                },
+                {
+                  "line": 564,
+                  "name": "to_model_identity",
+                  "target": null,
+                  "via": "_resolve_model_identity"
+                },
+                {
+                  "branch": "entry is None",
+                  "line": 600,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "verify_local_ollama_model_digest"
+                },
+                {
+                  "branch": "got_digest != norm_expected",
+                  "line": 609,
+                  "name": "refused_error",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/errors.py"
+                  },
+                  "via": "verify_local_ollama_model_digest"
+                }
+              ],
+              "exported": true,
+              "invokedAtTopLevel": false,
+              "isDefaultExport": false,
+              "name": "run_ollama_calibration_calls"
+            }
+          ]
         },
         {
           "exports": [
@@ -4405,40 +5342,40 @@
             {
               "in": "validate_chain_families",
               "kind": "raise",
-              "line": 211
+              "line": 215
             },
             {
               "in": "validate_chain_families",
               "kind": "raise",
-              "line": 225
+              "line": 229
             },
             {
               "in": "validate_chain_families",
               "kind": "raise",
-              "line": 236
+              "line": 240
             },
             {
               "in": "validate_chain_families",
               "kind": "raise",
-              "line": 245
+              "line": 249
             },
             {
               "in": "validate_chain_families",
               "kind": "raise",
-              "line": 253
+              "line": 257
             },
             {
               "in": "evaluate_claim_unanimity",
               "kind": "raise",
-              "line": 301
+              "line": 305
             },
             {
               "in": "check_min_pass_rate_per_class",
               "kind": "raise",
-              "line": 423
+              "line": 435
             }
           ],
-          "hash": "84c0fcb299faec8451ffcbec7c764470800b28452e072479b4099babe71457a6",
+          "hash": "34893f7dbd88e1b3c7faacd30d85be4e4c7245505bdc48cbd6780057b3380036",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
@@ -4455,72 +5392,87 @@
           ],
           "failurePaths": [
             {
-              "in": "__init__",
+              "in": "record",
               "kind": "raise",
-              "line": 162
+              "line": 224
             },
             {
               "in": "record",
               "kind": "raise",
-              "line": 191
-            },
-            {
-              "in": "record",
-              "kind": "raise",
-              "line": 200
+              "line": 233
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "except",
-              "line": 335
+              "line": 380
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "raise",
-              "line": 340
+              "line": 385
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "except",
-              "line": 413
+              "line": 462
             },
             {
               "in": "run_pilot_b_waves",
               "kind": "raise",
-              "line": 418
+              "line": 467
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "except",
+              "line": 567
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "raise",
+              "line": 569
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "except",
+              "line": 607
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "raise",
+              "line": 609
             },
             {
               "in": "write_sealed_part",
               "kind": "raise",
-              "line": 664
+              "line": 775
             },
             {
               "in": "_scan_object_for_forbidden_keys",
               "kind": "raise",
-              "line": 934
+              "line": 1090
             },
             {
               "in": "verify_sealed_part",
               "kind": "raise",
-              "line": 964
+              "line": 1120
             },
             {
               "in": "verify_sealed_part",
               "kind": "raise",
-              "line": 970
+              "line": 1126
             },
             {
               "in": "verify_sealed_part",
               "kind": "raise",
-              "line": 978
+              "line": 1134
             },
             {
               "in": "verify_sealed_part",
               "kind": "raise",
-              "line": 1036
+              "line": 1192
             }
           ],
-          "hash": "75a2ea18c4731b5496edfd90f935fe9773f367228af1109973af2957ce67b7e1",
+          "hash": "a5c1da0bc2033cba3e6d70e510e8b54693b20962b773d6e2fc858aebc29bd7bf",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/ollama.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -4546,15 +5498,15 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 14,
+          "reads": 16,
           "where": [
             "caller"
           ],
-          "writes": 7
+          "writes": 8
         }
       ],
-      "outsideReads": 14,
-      "outsideWrites": 7,
+      "outsideReads": 16,
+      "outsideWrites": 8,
       "role": "code",
       "testRunners": [
         "pytest"
@@ -4671,6 +5623,11 @@
             "test_fix1_done_reason_length_routes_triad_to_review_queue_without_aborting_build",
             "test_fix1_request_body_has_top_level_think_and_num_predict_and_no_thinking_token_cap",
             "test_fix2_run_pilot_b_build_has_no_adapter_or_transport_params_and_refuses_subclasses_or_custom_transport_at_seal",
+            "test_gp_part_a_num_ctx_present_in_every_request_body_and_recorded",
+            "test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued",
+            "test_gp_part_b_thinking_cap_precedence_and_source_recorded",
+            "test_gp_part_c_calibrate_seals_nothing",
+            "test_gp_part_c_calibrate_writes_stats_and_never_sends_think_false",
             "test_part_a_refused_rendering_routes_triad_to_review_queue_without_retry",
             "test_part_a_writer_adapter_success_and_call_records",
             "test_part_a_writer_refuses_digest_mismatch_with_pull_hint",
@@ -4684,7 +5641,7 @@
             "test_part_c_run_pilot_b_build_uses_real_ollama_adapters_in_stub_and_non_stub_and_unloads_after_each_wave",
             "test_part_d_ollama_transport_verdict_parsing_and_properties"
           ],
-          "hash": "26b4ef13250acb353385f7af28550742b52c7bb7f50a61bf61973d58550928dd",
+          "hash": "4ec97d4d84b5c5cbcf6a055950b061637892f9ff88b59a384a4d6d5f76b82d8f",
           "importOrder": [
             "tests/pilot_b_fakes.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -4693,9 +5650,11 @@
             "src/reasoning_dataset_lab/pilot_b/rendering.py",
             "src/reasoning_dataset_lab/pilot_b/unanimity.py",
             "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
-            "src/reasoning_dataset_lab/pilot_b/ollama.py"
+            "src/reasoning_dataset_lab/pilot_b/ollama.py",
+            "src/reasoning_dataset_lab/cli.py"
           ],
           "importsFiles": [
+            "src/reasoning_dataset_lab/cli.py",
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
             "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
@@ -5111,7 +6070,7 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "6e2867b64ae7bd9970fbbd0c9f1c8c7de1d03b56",
+    "commit": "7ad36a116387947ad963728e7450003a8ef92f00",
     "tracked": 38
   },
   "landings": [

@@ -54,6 +54,7 @@ class ModelIdentity:
     source_match: SourceMatchStatus = "unconfirmed"
     source_match_reason: str = ""
     think: ThinkSetting = True
+    max_num_ctx: int = 8192
 
     @property
     def normalized_family(self) -> str:
@@ -72,6 +73,7 @@ class ModelIdentity:
             "source_match": self.source_match,
             "source_match_reason": self.source_match_reason,
             "think": self.think,
+            "max_num_ctx": self.max_num_ctx,
         }
 
 
@@ -110,6 +112,7 @@ class BlindReadResult:
     raw_text: str = ""
     prompt_sha256: str = ""
     done_reason: str = "stop"
+    num_ctx: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -120,6 +123,7 @@ class BlindReadResult:
             "raw_text": self.raw_text if self.raw_text else self.verdict,
             "prompt_sha256": self.prompt_sha256,
             "done_reason": self.done_reason,
+            "num_ctx": self.num_ctx,
             "thinking_tokens": self.thinking_tokens,
             "completion_tokens": self.completion_tokens,
             "seconds": self.seconds,
@@ -305,19 +309,23 @@ def evaluate_claim_unanimity(
             )
 
     agrees_1 = (
-        read_1.done_reason != "length"
+        read_1.done_reason not in ("length", "max_num_ctx_exceeded")
         and read_1.verdict == key
         and read_1.verdict != "ambiguous"
     )
     agrees_2 = (
-        read_2.done_reason != "length"
+        read_2.done_reason not in ("length", "max_num_ctx_exceeded")
         and read_2.verdict == key
         and read_2.verdict != "ambiguous"
     )
     passed = agrees_1 and agrees_2
 
     reasons: list[str] = []
-    if read_1.done_reason == "length":
+    if read_1.done_reason == "max_num_ctx_exceeded":
+        reasons.append(
+            f"reader_1 ({read_1.reader.name}) exceeded max_num_ctx (PILOT_B_NUM_CTX_EXCEEDS_MAX) on '{claim_id}'"
+        )
+    elif read_1.done_reason == "length":
         reasons.append(
             f"reader_1 ({read_1.reader.name}) stopped with done_reason='length' on '{claim_id}'"
         )
@@ -327,7 +335,11 @@ def evaluate_claim_unanimity(
         reasons.append(
             f"reader_1 ({read_1.reader.name}) verdict '{read_1.verdict}' != key '{key}' on '{claim_id}'"
         )
-    if read_2.done_reason == "length":
+    if read_2.done_reason == "max_num_ctx_exceeded":
+        reasons.append(
+            f"reader_2 ({read_2.reader.name}) exceeded max_num_ctx (PILOT_B_NUM_CTX_EXCEEDS_MAX) on '{claim_id}'"
+        )
+    elif read_2.done_reason == "length":
         reasons.append(
             f"reader_2 ({read_2.reader.name}) stopped with done_reason='length' on '{claim_id}'"
         )

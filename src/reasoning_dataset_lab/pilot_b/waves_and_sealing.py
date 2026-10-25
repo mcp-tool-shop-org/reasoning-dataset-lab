@@ -26,8 +26,17 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     verify_triad_against_table,
 )
 from reasoning_dataset_lab.pilot_b.ollama import (
+    DEFAULT_ROLE_MAX_NUM_CTX,
+    DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
+    NUM_CTX_MARGIN_TOKENS,
+    NUM_CTX_STEP_TOKENS,
+    PROMPT_TOKEN_ESTIMATE_RULE,
     OllamaBlindReaderAdapter,
+    OllamaOperation,
     OllamaWriterAdapter,
+    ThinkingCapConfig,
+    ThinkingCapSource,
+    coerce_thinking_cap_config,
 )
 from reasoning_dataset_lab.pilot_b.rendering import (
     PilotBWriterAdapter,
@@ -53,7 +62,14 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
 
 WaveName = Literal["render", "word", "reader_1", "reader_2"]
 EXPECTED_WAVE_ORDER: tuple[WaveName, ...] = ("render", "word", "reader_1", "reader_2")
-DEFAULT_THINKING_TOKEN_CAP: int = 256
+# Documented default only (Card gp Part B: the thinking cap is configuration, never a constant source of truth)
+DEFAULT_THINKING_TOKEN_CAP: int = DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP
+WAVE_TO_OPERATION: dict[WaveName, OllamaOperation] = {
+    "render": "render_material",
+    "word": "word_claim",
+    "reader_1": "read_claim",
+    "reader_2": "read_claim",
+}
 
 FORBIDDEN_SEALED_FIELD_NAMES: frozenset[str] = frozenset(
     {
@@ -80,6 +96,7 @@ class WaveCallEntry:
     thinking_tokens: int
     completion_tokens: int
     seconds: float
+    num_ctx: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -89,6 +106,7 @@ class WaveCallEntry:
             "thinking_tokens": self.thinking_tokens,
             "completion_tokens": self.completion_tokens,
             "seconds": self.seconds,
+            "num_ctx": self.num_ctx,
         }
 
 
@@ -108,6 +126,9 @@ class WaveMetric:
     seconds_total: float
     adapter: str = ""
     unloaded: bool = False
+    max_num_ctx: int = 0
+    max_num_ctx_observed: int = 0
+    thinking_token_cap_source: ThinkingCapSource = "default"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -118,6 +139,7 @@ class WaveMetric:
             "model_digest": self.model_digest,
             "calls": self.calls,
             "thinking_token_cap": self.thinking_token_cap,
+            "thinking_token_cap_source": self.thinking_token_cap_source,
             "thinking_tokens_total": self.thinking_tokens_total,
             "max_thinking_tokens_observed": self.max_thinking_tokens_observed,
             "completion_tokens_total": self.completion_tokens_total,
@@ -125,6 +147,8 @@ class WaveMetric:
             "seconds_total": round(self.seconds_total, 4),
             "wall_time_s_total": round(self.seconds_total, 4),
             "unloaded": self.unloaded,
+            "max_num_ctx": self.max_num_ctx,
+            "max_num_ctx_observed": self.max_num_ctx_observed,
         }
 
 
@@ -152,25 +176,33 @@ class PilotBWaveRunResult:
     writer_call_records: Mapping[str, dict[str, object]] | None = None
     reader_1_call_records: Mapping[str, dict[str, object]] | None = None
     reader_2_call_records: Mapping[str, dict[str, object]] | None = None
+    thinking_token_cap_source: ThinkingCapSource = "default"
+    thinking_cap_config: ThinkingCapConfig | None = None
 
 
 class WaveCallTracker:
     """Enforces strict non-interleaved wave execution and per-call thinking token caps."""
 
-    def __init__(self, thinking_token_cap: int) -> None:
-        if thinking_token_cap < 1:
-            raise refused_error(
-                "PILOT_B_INVALID_THINKING_CAP",
-                f"thinking_token_cap must be >= 1, got {thinking_token_cap}.",
-                "Set a positive integer thinking_token_cap.",
-            )
-        self._cap = thinking_token_cap
+    def __init__(
+        self,
+        thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
+        *,
+        thinking_cap_source: ThinkingCapSource | None = None,
+    ) -> None:
+        self._cap_config = coerce_thinking_cap_config(
+            thinking_token_cap, source=thinking_cap_source
+        )
+        self._cap = self._cap_config.effective_cap
         self._entries: list[WaveCallEntry] = []
         self._seen_waves: list[WaveName] = []
 
     @property
     def thinking_token_cap(self) -> int:
         return self._cap
+
+    @property
+    def thinking_cap_config(self) -> ThinkingCapConfig:
+        return self._cap_config
 
     @property
     def entries(self) -> tuple[WaveCallEntry, ...]:
@@ -185,6 +217,7 @@ class WaveCallTracker:
         thinking_tokens: int,
         completion_tokens: int,
         seconds: float,
+        num_ctx: int = 0,
     ) -> None:
         if self._seen_waves and self._seen_waves[-1] != wave_name:
             if wave_name in self._seen_waves:
@@ -214,6 +247,7 @@ class WaveCallTracker:
                 thinking_tokens=thinking_tokens,
                 completion_tokens=completion_tokens,
                 seconds=seconds,
+                num_ctx=num_ctx,
             )
         )
 
@@ -224,15 +258,19 @@ class WaveCallTracker:
         *,
         adapter: str = "",
         unloaded: bool = False,
+        max_num_ctx: int = 0,
     ) -> WaveMetric:
         wave_calls = [e for e in self._entries if e.wave_name == wave_name]
+        resolved_max_ctx = max_num_ctx if max_num_ctx > 0 else model.max_num_ctx
+        op = WAVE_TO_OPERATION[wave_name]
         return WaveMetric(
             wave_name=wave_name,
             model_name=model.name,
             model_family=model.normalized_family,
             model_digest=model.digest,
             calls=len(wave_calls),
-            thinking_token_cap=self._cap,
+            thinking_token_cap=self._cap_config.cap_for(op),
+            thinking_token_cap_source=self._cap_config.source_for(op),
             thinking_tokens_total=sum(e.thinking_tokens for e in wave_calls),
             max_thinking_tokens_observed=max(
                 (e.thinking_tokens for e in wave_calls), default=0
@@ -241,6 +279,8 @@ class WaveCallTracker:
             seconds_total=round(sum(e.seconds for e in wave_calls), 4),
             adapter=adapter,
             unloaded=unloaded,
+            max_num_ctx=resolved_max_ctx,
+            max_num_ctx_observed=max((e.num_ctx for e in wave_calls), default=0),
         )
 
 
@@ -252,7 +292,8 @@ def run_pilot_b_waves(
     reader_1: BlindReaderAdapter,
     reader_2: BlindReaderAdapter,
     review_queue_path: Path,
-    thinking_token_cap: int = DEFAULT_THINKING_TOKEN_CAP,
+    thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
+    thinking_cap_source: ThinkingCapSource | None = None,
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
 ) -> PilotBWaveRunResult:
     """Execute Pilot B in 4 strict single-model waves: render -> word -> reader_1 -> reader_2."""
@@ -260,7 +301,11 @@ def run_pilot_b_waves(
     for t in triads:
         verify_triad_against_table(t.table, t)
 
-    tracker = WaveCallTracker(thinking_token_cap=thinking_token_cap)
+    cap_config = coerce_thinking_cap_config(
+        thinking_token_cap, source=thinking_cap_source
+    )
+    effective_cap = cap_config.effective_cap
+    tracker = WaveCallTracker(thinking_token_cap=cap_config)
 
     # Wave 1: render material for all tables (writer model)
     rendered_materials: dict[str, str] = {}
@@ -335,7 +380,7 @@ def run_pilot_b_waves(
         except RdlabError as err:
             if not (
                 err.code.startswith("PILOT_B_RENDER_")
-                or err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+                or err.code in ("PILOT_B_OLLAMA_LENGTH_STOP", "PILOT_B_NUM_CTX_EXCEEDS_MAX")
             ):
                 raise
             last_rec = getattr(writer_adapter, "last_call_record", None)
@@ -347,7 +392,7 @@ def run_pilot_b_waves(
                 thinking_tokens=(
                     last_rec.thinking_tokens
                     if last_rec is not None
-                    else min(thinking_token_cap, 32)
+                    else min(cap_config.cap_for("render_material"), 32)
                 ),
                 completion_tokens=(
                     last_rec.eval_tokens
@@ -355,12 +400,14 @@ def run_pilot_b_waves(
                     else max(16, len(raw_out.split()))
                 ),
                 seconds=last_rec.wall_time_s if last_rec is not None else 0.02,
+                num_ctx=last_rec.num_ctx if last_rec is not None else 0,
             )
-            reason_prefix = (
-                "length_stop"
-                if err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
-                else "rendering_check"
-            )
+            if err.code == "PILOT_B_OLLAMA_LENGTH_STOP":
+                reason_prefix = "length_stop"
+            elif err.code == "PILOT_B_NUM_CTX_EXCEEDS_MAX":
+                reason_prefix = "num_ctx_exceeded"
+            else:
+                reason_prefix = "rendering_check"
             render_failed_evals.append(
                 _build_render_failed_eval(
                     t,
@@ -375,7 +422,7 @@ def run_pilot_b_waves(
         est_thinking = (
             last_rec.thinking_tokens
             if last_rec is not None
-            else min(thinking_token_cap, 32)
+            else min(cap_config.cap_for("render_material"), 32)
         )
         est_completion = (
             last_rec.eval_tokens
@@ -383,6 +430,7 @@ def run_pilot_b_waves(
             else max(16, len(mat.split()))
         )
         est_seconds = last_rec.wall_time_s if last_rec is not None else 0.02
+        est_num_ctx = last_rec.num_ctx if last_rec is not None else 0
         tracker.record(
             wave_name="render",
             model_name=writer_model.name,
@@ -390,6 +438,7 @@ def run_pilot_b_waves(
             thinking_tokens=est_thinking,
             completion_tokens=est_completion,
             seconds=est_seconds,
+            num_ctx=est_num_ctx,
         )
         rendered_materials[t.triad_id] = mat
 
@@ -413,7 +462,7 @@ def run_pilot_b_waves(
             except RdlabError as err:
                 if not (
                     err.code.startswith("PILOT_B_RENDER_")
-                    or err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+                    or err.code in ("PILOT_B_OLLAMA_LENGTH_STOP", "PILOT_B_NUM_CTX_EXCEEDS_MAX")
                 ):
                     raise
                 last_rec = getattr(writer_adapter, "last_call_record", None)
@@ -425,7 +474,7 @@ def run_pilot_b_waves(
                     thinking_tokens=(
                         last_rec.thinking_tokens
                         if last_rec is not None
-                        else min(thinking_token_cap, 24)
+                        else min(cap_config.cap_for("word_claim"), 24)
                     ),
                     completion_tokens=(
                         last_rec.eval_tokens
@@ -433,13 +482,15 @@ def run_pilot_b_waves(
                         else max(8, len(raw_out.split()))
                     ),
                     seconds=last_rec.wall_time_s if last_rec is not None else 0.01,
+                    num_ctx=last_rec.num_ctx if last_rec is not None else 0,
                 )
                 w_claims[key] = raw_out
-                reason_prefix = (
-                    "length_stop"
-                    if err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
-                    else "wording_check"
-                )
+                if err.code == "PILOT_B_OLLAMA_LENGTH_STOP":
+                    reason_prefix = "length_stop"
+                elif err.code == "PILOT_B_NUM_CTX_EXCEEDS_MAX":
+                    reason_prefix = "num_ctx_exceeded"
+                else:
+                    reason_prefix = "wording_check"
                 word_failed_reason = f"{reason_prefix} ({err.code}): {err.message}"
                 break
 
@@ -447,7 +498,7 @@ def run_pilot_b_waves(
             est_thinking = (
                 last_rec.thinking_tokens
                 if last_rec is not None
-                else min(thinking_token_cap, 24)
+                else min(cap_config.cap_for("word_claim"), 24)
             )
             est_completion = (
                 last_rec.eval_tokens
@@ -455,6 +506,7 @@ def run_pilot_b_waves(
                 else max(8, len(w_text.split()))
             )
             est_seconds = last_rec.wall_time_s if last_rec is not None else 0.01
+            est_num_ctx = last_rec.num_ctx if last_rec is not None else 0
             tracker.record(
                 wave_name="word",
                 model_name=writer_model.name,
@@ -462,6 +514,7 @@ def run_pilot_b_waves(
                 thinking_tokens=est_thinking,
                 completion_tokens=est_completion,
                 seconds=est_seconds,
+                num_ctx=est_num_ctx,
             )
             w_claims[key] = w_text
 
@@ -509,7 +562,24 @@ def run_pilot_b_waves(
     for t_prompts in prompts_by_triad:
         r1_map: dict[VerdictKey, BlindReadResult] = {}
         for key in VERDICT_CLASSES:
-            res1 = reader_1.read_claim(t_prompts[key])
+            try:
+                res1 = reader_1.read_claim(t_prompts[key])
+            except RdlabError as err:
+                if err.code != "PILOT_B_NUM_CTX_EXCEEDS_MAX":
+                    raise
+                last_r1 = getattr(reader_1, "last_call_record", None)
+                res1 = BlindReadResult(
+                    claim_id=t_prompts[key].claim_id,
+                    reader=reader_1.model,
+                    verdict="ambiguous",
+                    thinking_tokens=0,
+                    completion_tokens=0,
+                    seconds=0.0,
+                    raw_text="",
+                    prompt_sha256=last_r1.prompt_sha256 if last_r1 is not None else "",
+                    done_reason="max_num_ctx_exceeded",
+                    num_ctx=last_r1.num_ctx if last_r1 is not None else 0,
+                )
             tracker.record(
                 wave_name="reader_1",
                 model_name=reader_1.model.name,
@@ -517,6 +587,7 @@ def run_pilot_b_waves(
                 thinking_tokens=res1.thinking_tokens,
                 completion_tokens=res1.completion_tokens,
                 seconds=res1.seconds,
+                num_ctx=res1.num_ctx,
             )
             r1_map[key] = res1
         reads_1_list.append(r1_map)
@@ -531,7 +602,24 @@ def run_pilot_b_waves(
     for t_prompts in prompts_by_triad:
         r2_map: dict[VerdictKey, BlindReadResult] = {}
         for key in VERDICT_CLASSES:
-            res2 = reader_2.read_claim(t_prompts[key])
+            try:
+                res2 = reader_2.read_claim(t_prompts[key])
+            except RdlabError as err:
+                if err.code != "PILOT_B_NUM_CTX_EXCEEDS_MAX":
+                    raise
+                last_r2 = getattr(reader_2, "last_call_record", None)
+                res2 = BlindReadResult(
+                    claim_id=t_prompts[key].claim_id,
+                    reader=reader_2.model,
+                    verdict="ambiguous",
+                    thinking_tokens=0,
+                    completion_tokens=0,
+                    seconds=0.0,
+                    raw_text="",
+                    prompt_sha256=last_r2.prompt_sha256 if last_r2 is not None else "",
+                    done_reason="max_num_ctx_exceeded",
+                    num_ctx=last_r2.num_ctx if last_r2 is not None else 0,
+                )
             tracker.record(
                 wave_name="reader_2",
                 model_name=reader_2.model.name,
@@ -539,6 +627,7 @@ def run_pilot_b_waves(
                 thinking_tokens=res2.thinking_tokens,
                 completion_tokens=res2.completion_tokens,
                 seconds=res2.seconds,
+                num_ctx=res2.num_ctx,
             )
             r2_map[key] = res2
         reads_2_list.append(r2_map)
@@ -591,18 +680,38 @@ def run_pilot_b_waves(
         for rec in getattr(reader_2, "call_records", ())
     }
 
+    w_max_ctx = int(getattr(writer_adapter, "max_num_ctx", writer_model.max_num_ctx))
+    r1_max_ctx = int(getattr(reader_1, "max_num_ctx", reader_1.model.max_num_ctx))
+    r2_max_ctx = int(getattr(reader_2, "max_num_ctx", reader_2.model.max_num_ctx))
+
     wave_metrics = (
         tracker.summarize_wave(
-            "render", writer_model, adapter=w_cls, unloaded=render_unloaded
+            "render",
+            writer_model,
+            adapter=w_cls,
+            unloaded=render_unloaded,
+            max_num_ctx=w_max_ctx,
         ),
         tracker.summarize_wave(
-            "word", writer_model, adapter=w_cls, unloaded=word_unloaded
+            "word",
+            writer_model,
+            adapter=w_cls,
+            unloaded=word_unloaded,
+            max_num_ctx=w_max_ctx,
         ),
         tracker.summarize_wave(
-            "reader_1", reader_1.model, adapter=r1_cls, unloaded=r1_unloaded
+            "reader_1",
+            reader_1.model,
+            adapter=r1_cls,
+            unloaded=r1_unloaded,
+            max_num_ctx=r1_max_ctx,
         ),
         tracker.summarize_wave(
-            "reader_2", reader_2.model, adapter=r2_cls, unloaded=r2_unloaded
+            "reader_2",
+            reader_2.model,
+            adapter=r2_cls,
+            unloaded=r2_unloaded,
+            max_num_ctx=r2_max_ctx,
         ),
     )
 
@@ -610,7 +719,7 @@ def run_pilot_b_waves(
         writer_model=writer_model,
         reader_1_model=reader_1.model,
         reader_2_model=reader_2.model,
-        thinking_token_cap=thinking_token_cap,
+        thinking_token_cap=effective_cap,
         wave_metrics=wave_metrics,
         call_log=tracker.entries,
         kept_triads=tuple(kept),
@@ -627,6 +736,8 @@ def run_pilot_b_waves(
         writer_call_records=w_call_map,
         reader_1_call_records=r1_call_map,
         reader_2_call_records=r2_call_map,
+        thinking_token_cap_source=cap_config.source,
+        thinking_cap_config=cap_config,
     )
 
 
@@ -801,6 +912,24 @@ def write_sealed_part(
                 "source_match_reason": wave_result.writer_model.source_match_reason,
                 "messages_sha256": msg_sha,
                 "thinking_token_cap": wave_result.thinking_token_cap,
+                "thinking_token_cap_source": wave_result.thinking_token_cap_source,
+                "thinking_cap_config": (
+                    wave_result.thinking_cap_config.to_dict()
+                    if wave_result.thinking_cap_config is not None
+                    else {
+                        "default_cap": wave_result.thinking_token_cap,
+                        "source": wave_result.thinking_token_cap_source,
+                        "by_operation": {},
+                        "sources_by_operation": {},
+                    }
+                ),
+                "max_num_ctx": int(
+                    getattr(
+                        wave_result.writer_adapter,
+                        "max_num_ctx",
+                        wave_result.writer_model.max_num_ctx,
+                    )
+                ),
                 "call_records": entry["writer_call_records"],
             },
             "checks": [
@@ -858,6 +987,22 @@ def write_sealed_part(
                         wave_result.reader_1_model.source_match_reason,
                         wave_result.reader_2_model.source_match_reason,
                     ],
+                    "reader_max_num_ctx": [
+                        int(
+                            getattr(
+                                wave_result.reader_1_adapter,
+                                "max_num_ctx",
+                                wave_result.reader_1_model.max_num_ctx,
+                            )
+                        ),
+                        int(
+                            getattr(
+                                wave_result.reader_2_adapter,
+                                "max_num_ctx",
+                                wave_result.reader_2_model.max_num_ctx,
+                            )
+                        ),
+                    ],
                     "call_records": entry["reader_call_records"],
                     "agrees_all_readers": True,
                     "ambiguous_count": 0,
@@ -896,6 +1041,17 @@ def write_sealed_part(
         "map_sha256": map_sha256,
         "shuffle_seed": shuffle_seed,
         "thinking_token_cap": wave_result.thinking_token_cap,
+        "thinking_token_cap_source": wave_result.thinking_token_cap_source,
+        "thinking_cap_config": (
+            wave_result.thinking_cap_config.to_dict()
+            if wave_result.thinking_cap_config is not None
+            else {
+                "default_cap": wave_result.thinking_token_cap,
+                "source": wave_result.thinking_token_cap_source,
+                "by_operation": {},
+                "sources_by_operation": {},
+            }
+        ),
         "items_count": len(items_lines),
         "triads_kept": len(wave_result.kept_triads),
         "triads_failed": len(wave_result.failed_triads),

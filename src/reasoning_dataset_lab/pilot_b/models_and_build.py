@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
+import statistics
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -32,15 +34,38 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
 )
 import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 from reasoning_dataset_lab.pilot_b.ollama import (
+    CALIBRATION_CAP_MARGIN_TOKENS,
+    DEFAULT_CALIBRATION_NUM_CTX,
+    DEFAULT_CALIBRATION_NUM_PREDICT,
+    DEFAULT_CALIBRATION_TABLES,
     DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_ROLE_MAX_NUM_CTX,
+    DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
+    NUM_CTX_MARGIN_TOKENS,
+    NUM_CTX_STEP_TOKENS,
+    PILOT_B_OPERATIONS,
+    PROMPT_TOKEN_ESTIMATE_RULE,
     OllamaBlindReaderAdapter,
+    OllamaOperation,
     OllamaWriterAdapter,
+    ThinkingCapConfig,
+    ThinkingCapSource,
+    build_reader_read_messages,
+    build_writer_render_messages,
+    build_writer_word_messages,
+    coerce_thinking_cap_config,
+    format_reference_claim,
+    format_reference_material,
+    resolve_thinking_cap_config,
+    run_ollama_calibration_calls,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
     DEFAULT_MIN_PASS_RATE_PER_CLASS,
+    VERDICT_CLASSES,
     ModelIdentity,
     SourceMatchStatus,
     ThinkSetting,
+    build_blind_read_prompt,
     validate_chain_families,
 )
 from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
@@ -71,11 +96,14 @@ class PinnedModelSpec:
     source_match: SourceMatchStatus = "unconfirmed"
     source_match_reason: str = ""
     think: ThinkSetting = True
+    max_num_ctx: int = 8192
 
     def with_licence_id(
         self,
         new_licence_id: str,
         new_bundled_licence_id: str | None = None,
+        *,
+        new_max_num_ctx: int | None = None,
     ) -> PinnedModelSpec:
         return PinnedModelSpec(
             role=self.role,
@@ -94,6 +122,7 @@ class PinnedModelSpec:
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
             think=self.think,
+            max_num_ctx=new_max_num_ctx if new_max_num_ctx is not None else self.max_num_ctx,
         )
 
     def with_bundled_licence_id(self, new_bundled_licence_id: str) -> PinnedModelSpec:
@@ -117,6 +146,7 @@ class PinnedModelSpec:
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
             think=self.think,
+            max_num_ctx=self.max_num_ctx,
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -133,6 +163,7 @@ class PinnedModelSpec:
             "source_match": self.source_match,
             "source_match_reason": self.source_match_reason,
             "think": self.think,
+            "max_num_ctx": self.max_num_ctx,
         }
 
 
@@ -158,6 +189,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
             "and config names 'qwen35moe' (35.5B Q4_K_M), without a cryptographic HF "
             "Qwen/Qwen3.6-35B-A3B commit/weights hash in the registry manifest."
         ),
+        max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["writer"],
     ),
     "reader_1": PinnedModelSpec(
         role="reader_1",
@@ -174,6 +206,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
             "Ollama manifest layer 'from' is 'nemotron3.5:30b-a3b-q4_K_M' and bundles "
             "NVIDIA licence layer 215a3316... without an HF commit/weights hash in the manifest."
         ),
+        max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["reader_1"],
     ),
     "reader_2": PinnedModelSpec(
         role="reader_2",
@@ -190,6 +223,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
             "Ollama manifest layer 'from' is a local runner blob path without an HF "
             "ibm-granite/granite-4.2-8b commit/weights hash in the registry manifest."
         ),
+        max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["reader_2"],
     ),
 }
 
@@ -197,10 +231,12 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
 def resolve_pilot_b_model_pins(
     licence_id_overrides: Mapping[str, str] | None = None,
     bundled_licence_id_overrides: Mapping[str, str] | None = None,
+    max_num_ctx_overrides: Mapping[str, int] | None = None,
 ) -> dict[str, PinnedModelSpec]:
-    """Return the three pinned Pilot B models with optional configurable licence_id and bundled_licence_id overrides."""
+    """Return the three pinned Pilot B models with optional configurable licence_id, bundled_licence_id, and max_num_ctx overrides."""
     overrides = dict(licence_id_overrides or {})
     bundled_overrides = dict(bundled_licence_id_overrides or {})
+    ctx_overrides = dict(max_num_ctx_overrides or {})
     out: dict[str, PinnedModelSpec] = {}
     for role, spec in DEFAULT_PILOT_B_MODEL_PINS.items():
         lic_id = overrides.get(role, overrides.get(spec.ollama_tag, spec.licence_id))
@@ -219,7 +255,16 @@ def resolve_pilot_b_model_pins(
                 f"Model '{spec.ollama_tag}' ({role}) has an empty bundled_licence_id.",
                 "Configure a non-empty registry bundled_licence_id for every model in the chain.",
             )
-        out[role] = spec.with_licence_id(lic_id.strip(), bundled_id.strip())
+        max_ctx = int(ctx_overrides.get(role, ctx_overrides.get(spec.ollama_tag, spec.max_num_ctx)))
+        if max_ctx < NUM_CTX_STEP_TOKENS:
+            raise refused_error(
+                "PILOT_B_INVALID_MAX_NUM_CTX",
+                f"Model '{spec.ollama_tag}' ({role}) has invalid max_num_ctx={max_ctx} (< {NUM_CTX_STEP_TOKENS}).",
+                f"Configure max_num_ctx >= {NUM_CTX_STEP_TOKENS}.",
+            )
+        out[role] = spec.with_licence_id(
+            lic_id.strip(), bundled_id.strip(), new_max_num_ctx=max_ctx
+        )
     return out
 
 
@@ -713,6 +758,45 @@ def build_pilot_b_report(
         "gate_pass_rate_per_class": dict(wave_result.pass_rate_per_class),
         "triad_pass_rate": wave_result.triad_pass_rate,
         "thinking_token_cap": wave_result.thinking_token_cap,
+        "thinking_token_cap_source": wave_result.thinking_token_cap_source,
+        "thinking_cap_config": (
+            wave_result.thinking_cap_config.to_dict()
+            if wave_result.thinking_cap_config is not None
+            else {
+                "default_cap": wave_result.thinking_token_cap,
+                "source": wave_result.thinking_token_cap_source,
+                "by_operation": {},
+                "sources_by_operation": {},
+            }
+        ),
+        "num_ctx_policy": {
+            "prompt_token_estimate_rule": PROMPT_TOKEN_ESTIMATE_RULE,
+            "margin_tokens": NUM_CTX_MARGIN_TOKENS,
+            "step_tokens": NUM_CTX_STEP_TOKENS,
+            "max_num_ctx_by_role": {
+                "writer": int(
+                    getattr(
+                        wave_result.writer_adapter,
+                        "max_num_ctx",
+                        wave_result.writer_model.max_num_ctx,
+                    )
+                ),
+                "reader_1": int(
+                    getattr(
+                        wave_result.reader_1_adapter,
+                        "max_num_ctx",
+                        wave_result.reader_1_model.max_num_ctx,
+                    )
+                ),
+                "reader_2": int(
+                    getattr(
+                        wave_result.reader_2_adapter,
+                        "max_num_ctx",
+                        wave_result.reader_2_model.max_num_ctx,
+                    )
+                ),
+            },
+        },
         "adapters": {
             "writer": wave_result.writer_adapter_class,
             "reader_1": wave_result.reader_1_adapter_class,
@@ -739,11 +823,16 @@ def run_pilot_b_build(
     stub_mode: bool = False,
     seed: int = 1,
     shuffle_seed: int = 42,
-    thinking_token_cap: int = DEFAULT_THINKING_TOKEN_CAP,
+    thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
+    thinking_cap_source: ThinkingCapSource | None = None,
+    thinking_cap_by_operation: Mapping[str, int | None] | None = None,
+    config_path: Path | None = None,
+    environ: Mapping[str, str] | None = None,
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
     licence_registry_path: Path | None = None,
     licence_id_overrides: Mapping[str, str] | None = None,
     bundled_licence_id_overrides: Mapping[str, str] | None = None,
+    max_num_ctx_overrides: Mapping[str, int] | None = None,
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
 ) -> dict[str, Any]:
     """Run an end-to-end Pilot B build (or `--stub N` run), seal and freeze the part, and write the build report."""
@@ -754,9 +843,40 @@ def run_pilot_b_build(
             "Pass a positive integer number of triads (e.g. --stub 10 or 50).",
         )
 
+    if isinstance(thinking_token_cap, (ThinkingCapConfig, Mapping)):
+        cap_config = coerce_thinking_cap_config(
+            thinking_token_cap, source=thinking_cap_source
+        )
+    elif (
+        config_path is not None
+        or environ is not None
+        or thinking_cap_by_operation is not None
+        or thinking_token_cap is None
+    ):
+        cap_config = resolve_thinking_cap_config(
+            cli_cap=thinking_token_cap if isinstance(thinking_token_cap, int) else None,
+            cli_by_operation=thinking_cap_by_operation,
+            config_path=config_path,
+            env=environ,
+        )
+    else:
+        inferred_src: ThinkingCapSource = (
+            thinking_cap_source
+            if thinking_cap_source is not None
+            else (
+                "cli"
+                if int(thinking_token_cap) != DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP
+                else "default"
+            )
+        )
+        cap_config = coerce_thinking_cap_config(
+            int(thinking_token_cap), source=inferred_src
+        )
+
     pins = resolve_pilot_b_model_pins(
         licence_id_overrides=licence_id_overrides,
         bundled_licence_id_overrides=bundled_licence_id_overrides,
+        max_num_ctx_overrides=max_num_ctx_overrides,
     )
 
     if licence_registry_path is not None:
@@ -823,17 +943,17 @@ def run_pilot_b_build(
     active_writer = OllamaWriterAdapter(
         model=writer_id,
         base_url=ollama_base_url,
-        thinking_token_cap=thinking_token_cap,
+        thinking_token_cap=cap_config,
     )
     active_r1 = OllamaBlindReaderAdapter(
         model=r1_id,
         base_url=ollama_base_url,
-        thinking_token_cap=thinking_token_cap,
+        thinking_token_cap=cap_config,
     )
     active_r2 = OllamaBlindReaderAdapter(
         model=r2_id,
         base_url=ollama_base_url,
-        thinking_token_cap=thinking_token_cap,
+        thinking_token_cap=cap_config,
     )
 
     if not (
@@ -858,7 +978,7 @@ def run_pilot_b_build(
         reader_1=active_r1,
         reader_2=active_r2,
         review_queue_path=review_queue_path,
-        thinking_token_cap=thinking_token_cap,
+        thinking_token_cap=cap_config,
         min_pass_rate_per_class=min_pass_rate_per_class,
     )
 
@@ -904,3 +1024,178 @@ def run_pilot_b_build(
             "review_queue": str(review_queue_path),
         },
     }
+
+
+def _nearest_rank_p95(values: Sequence[int]) -> int:
+    if not values:
+        return 0
+    sorted_vals = sorted(int(v) for v in values)
+    idx = max(0, math.ceil(0.95 * len(sorted_vals)) - 1)
+    return sorted_vals[idx]
+
+
+def run_pilot_b_calibration(
+    *,
+    operation: OllamaOperation,
+    output_dir: Path,
+    licence_registry_path: Path | None = None,
+    tables_count: int = DEFAULT_CALIBRATION_TABLES,
+    num_predict: int = DEFAULT_CALIBRATION_NUM_PREDICT,
+    num_ctx: int = DEFAULT_CALIBRATION_NUM_CTX,
+    seed: int = 1,
+    role: str | None = None,
+    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    think: Any = True,
+) -> dict[str, Any]:
+    """Run `rdlab pilot-b calibrate` (Card gp Part C): measure thinking tokens, write `calibration.json`, seal nothing."""
+    if think is not True:
+        raise refused_error(
+            "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN",
+            f"Calibration requires think=True, got {think!r}.",
+            "Run calibration with thinking enabled (think: true only).",
+        )
+    if operation not in PILOT_B_OPERATIONS:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_OPERATION",
+            f"Unsupported calibration operation {operation!r}; must be one of {list(PILOT_B_OPERATIONS)}.",
+            "Pass --operation render_material|word_claim|read_claim.",
+        )
+    if tables_count < 1:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_TABLES",
+            f"--tables must be >= 1, got {tables_count}.",
+            "Pass a positive integer --tables N (default: 3).",
+        )
+    if num_predict < 1:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_NUM_PREDICT",
+            f"--num-predict must be >= 1, got {num_predict}.",
+            "Pass a positive integer --num-predict (default: 4096).",
+        )
+    if num_ctx < NUM_CTX_STEP_TOKENS:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_NUM_CTX",
+            f"--num-ctx must be >= {NUM_CTX_STEP_TOKENS}, got {num_ctx}.",
+            f"Pass --num-ctx >= {NUM_CTX_STEP_TOKENS} (default: 8192).",
+        )
+
+    pins = resolve_pilot_b_model_pins()
+    # Require explicit --licence-registry (never falls back to fixture)
+    validate_models_against_licence_registry(
+        list(pins.values()),
+        registry_path=licence_registry_path,
+    )
+    assert licence_registry_path is not None
+    reg_sha256 = hashlib.sha256(licence_registry_path.read_bytes()).hexdigest()
+
+    if operation in ("render_material", "word_claim"):
+        selected_role = role if role is not None else "writer"
+        if selected_role != "writer":
+            raise usage_error(
+                "PILOT_B_INVALID_CALIBRATE_ROLE",
+                f"Operation '{operation}' runs on the writer model (role='writer'), got role={selected_role!r}.",
+                "Omit --role or pass --role writer for render_material and word_claim.",
+            )
+    else:
+        selected_role = role if role is not None else "reader_1"
+        if selected_role not in ("reader_1", "reader_2"):
+            raise usage_error(
+                "PILOT_B_INVALID_CALIBRATE_ROLE",
+                f"Operation 'read_claim' requires role 'reader_1' or 'reader_2', got {selected_role!r}.",
+                "Pass --role reader_1 or --role reader_2 for read_claim.",
+            )
+
+    target_spec = pins[selected_role]
+    tables = generate_fact_tables(n=tables_count, seed=seed)
+    triads = [
+        build_contrast_triad(table, seed=seed + idx)
+        for idx, table in enumerate(tables)
+    ]
+
+    call_items: list[tuple[str, list[dict[str, str]]]] = []
+    if operation == "render_material":
+        for t in triads:
+            call_items.append(
+                (t.table.table_id, build_writer_render_messages(t.table))
+            )
+    elif operation == "word_claim":
+        for t in triads:
+            for key in VERDICT_CLASSES:
+                claim = t.claims[key]
+                call_items.append(
+                    (claim.claim_id, build_writer_word_messages(claim))
+                )
+    else:
+        for t in triads:
+            ref_mat = format_reference_material(t.table)
+            for key in VERDICT_CLASSES:
+                claim = t.claims[key]
+                ref_claim = format_reference_claim(claim)
+                prompt = build_blind_read_prompt(
+                    triad_id=t.triad_id,
+                    claim_id=claim.claim_id,
+                    closure=t.table.closure,
+                    material=ref_mat,
+                    claim_text=ref_claim,
+                )
+                call_items.append(
+                    (claim.claim_id, build_reader_read_messages(prompt))
+                )
+
+    rows, unload_rec = run_ollama_calibration_calls(
+        model=target_spec,
+        operation=operation,
+        call_items=call_items,
+        num_predict=num_predict,
+        num_ctx=num_ctx,
+        base_url=ollama_base_url,
+        think=True,
+        http_transport=ollama_mod.default_ollama_http_transport,
+    )
+
+    thinking_vals = [int(r["thinking_tokens"]) for r in rows]
+    count_val = len(rows)
+    min_val = min(thinking_vals) if thinking_vals else 0
+    median_val = int(round(statistics.median(thinking_vals))) if thinking_vals else 0
+    p95_val = _nearest_rank_p95(thinking_vals)
+    max_val = max(thinking_vals) if thinking_vals else 0
+    length_stops = sum(1 for r in rows if r["done_reason"] == "length")
+    suggested_cap = p95_val + CALIBRATION_CAP_MARGIN_TOKENS
+
+    calibration_payload: dict[str, Any] = {
+        "operation": operation,
+        "role": selected_role,
+        "model": target_spec.ollama_tag,
+        "manifest_digest": target_spec.manifest_digest,
+        "think": True,
+        "tables": tables_count,
+        "num_predict": int(num_predict),
+        "num_ctx": int(num_ctx),
+        "licence_registry_path": str(licence_registry_path),
+        "licence_registry_sha256": reg_sha256,
+        "count": count_val,
+        "min": min_val,
+        "median": median_val,
+        "p95": p95_val,
+        "max": max_val,
+        "length_stops": length_stops,
+        "margin_constant": "CALIBRATION_CAP_MARGIN_TOKENS",
+        "margin_tokens": CALIBRATION_CAP_MARGIN_TOKENS,
+        "suggested_thinking_cap": suggested_cap,
+        "suggested_cap_summary": (
+            f"Suggested thinking cap for {operation}: {suggested_cap} "
+            f"(p95={p95_val} + CALIBRATION_CAP_MARGIN_TOKENS={CALIBRATION_CAP_MARGIN_TOKENS})"
+        ),
+        "unloaded": unload_rec.to_dict(),
+        "calls": rows,
+        "rows": rows,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cal_path = output_dir / "calibration.json"
+    cal_path.write_text(
+        json.dumps(calibration_payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return calibration_payload
+
