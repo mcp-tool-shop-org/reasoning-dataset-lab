@@ -147,6 +147,13 @@ def _build_parser() -> _StructuredArgumentParser:
         default=None,
         help="Path to licences/registry.json (required for non-stub builds).",
     )
+    pb_parser.add_argument(
+        "--ollama-url",
+        dest="ollama_url",
+        type=str,
+        default="http://127.0.0.1:11434",
+        help="Loopback Ollama HTTP endpoint (default: http://127.0.0.1:11434).",
+    )
 
     return parser
 
@@ -210,6 +217,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 shuffle_seed=args.shuffle_seed,
                 thinking_token_cap=args.thinking_cap,
                 licence_registry_path=args.licence_registry,
+                ollama_base_url=args.ollama_url,
             )
             print(json.dumps(build_res, indent=2))
             return EXIT_CLEAN

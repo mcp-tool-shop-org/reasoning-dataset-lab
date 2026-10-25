@@ -18,11 +18,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from reasoning_dataset_lab.errors import refused_error
+import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
+from reasoning_dataset_lab.errors import RdlabError, refused_error
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     ProvedTriad,
     VerdictKey,
     verify_triad_against_table,
+)
+from reasoning_dataset_lab.pilot_b.ollama import (
+    OllamaBlindReaderAdapter,
+    OllamaWriterAdapter,
 )
 from reasoning_dataset_lab.pilot_b.rendering import (
     PilotBWriterAdapter,
@@ -31,11 +36,12 @@ from reasoning_dataset_lab.pilot_b.rendering import (
     check_worded_claim,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
-     DEFAULT_MIN_PASS_RATE_PER_CLASS,
+    DEFAULT_MIN_PASS_RATE_PER_CLASS,
     VERDICT_CLASSES,
     BlindReaderAdapter,
     BlindReadPrompt,
     BlindReadResult,
+    ClaimGateEvaluation,
     ModelIdentity,
     TriadGateEvaluation,
     append_to_review_queue,
@@ -100,10 +106,13 @@ class WaveMetric:
     max_thinking_tokens_observed: int
     completion_tokens_total: int
     seconds_total: float
+    adapter: str = ""
+    unloaded: bool = False
 
     def to_dict(self) -> dict[str, object]:
         return {
             "wave_name": self.wave_name,
+            "adapter": self.adapter,
             "model_name": self.model_name,
             "model_family": self.model_family,
             "model_digest": self.model_digest,
@@ -112,7 +121,10 @@ class WaveMetric:
             "thinking_tokens_total": self.thinking_tokens_total,
             "max_thinking_tokens_observed": self.max_thinking_tokens_observed,
             "completion_tokens_total": self.completion_tokens_total,
+            "eval_tokens_total": self.completion_tokens_total,
             "seconds_total": round(self.seconds_total, 4),
+            "wall_time_s_total": round(self.seconds_total, 4),
+            "unloaded": self.unloaded,
         }
 
 
@@ -130,6 +142,16 @@ class PilotBWaveRunResult:
     failed_triads: tuple[TriadGateEvaluation, ...]
     pass_rate_per_class: dict[VerdictKey, float]
     triad_pass_rate: float
+    writer_adapter_class: str = "OllamaWriterAdapter"
+    reader_1_adapter_class: str = "OllamaBlindReaderAdapter"
+    reader_2_adapter_class: str = "OllamaBlindReaderAdapter"
+    has_fake_adapter: bool = False
+    writer_adapter: object = None
+    reader_1_adapter: object = None
+    reader_2_adapter: object = None
+    writer_call_records: Mapping[str, dict[str, object]] | None = None
+    reader_1_call_records: Mapping[str, dict[str, object]] | None = None
+    reader_2_call_records: Mapping[str, dict[str, object]] | None = None
 
 
 class WaveCallTracker:
@@ -184,14 +206,6 @@ class WaveCallTracker:
         if not self._seen_waves or self._seen_waves[-1] != wave_name:
             self._seen_waves.append(wave_name)
 
-        if thinking_tokens > self._cap:
-            raise refused_error(
-                "PILOT_B_THINKING_CAP_EXCEEDED",
-                f"Call '{target_id}' in wave '{wave_name}' used {thinking_tokens} thinking tokens, "
-                f"exceeding thinking_token_cap={self._cap}.",
-                "Enforce the per-call thinking token cap on the model adapter.",
-            )
-
         self._entries.append(
             WaveCallEntry(
                 wave_name=wave_name,
@@ -203,7 +217,14 @@ class WaveCallTracker:
             )
         )
 
-    def summarize_wave(self, wave_name: WaveName, model: ModelIdentity) -> WaveMetric:
+    def summarize_wave(
+        self,
+        wave_name: WaveName,
+        model: ModelIdentity,
+        *,
+        adapter: str = "",
+        unloaded: bool = False,
+    ) -> WaveMetric:
         wave_calls = [e for e in self._entries if e.wave_name == wave_name]
         return WaveMetric(
             wave_name=wave_name,
@@ -218,6 +239,8 @@ class WaveCallTracker:
             ),
             completion_tokens_total=sum(e.completion_tokens for e in wave_calls),
             seconds_total=round(sum(e.seconds for e in wave_calls), 4),
+            adapter=adapter,
+            unloaded=unloaded,
         )
 
 
@@ -241,40 +264,218 @@ def run_pilot_b_waves(
 
     # Wave 1: render material for all tables (writer model)
     rendered_materials: dict[str, str] = {}
+    render_failed_evals: list[TriadGateEvaluation] = []
+
+    def _build_render_failed_eval(
+        triad_obj: ProvedTriad,
+        material_text: str,
+        partial_claims: dict[VerdictKey, str],
+        reason: str,
+    ) -> TriadGateEvaluation:
+        dummy_r1 = BlindReadResult(
+            claim_id="",
+            reader=reader_1.model,
+            verdict="ambiguous",
+            thinking_tokens=0,
+            completion_tokens=0,
+            seconds=0.0,
+        )
+        dummy_r2 = BlindReadResult(
+            claim_id="",
+            reader=reader_2.model,
+            verdict="ambiguous",
+            thinking_tokens=0,
+            completion_tokens=0,
+            seconds=0.0,
+        )
+        c_evals: dict[VerdictKey, ClaimGateEvaluation] = {}
+        for k in VERDICT_CLASSES:
+            cid = triad_obj.claims[k].claim_id
+            c_evals[k] = ClaimGateEvaluation(
+                claim_id=cid,
+                key=k,
+                read_1=BlindReadResult(
+                    claim_id=cid,
+                    reader=dummy_r1.reader,
+                    verdict="ambiguous",
+                    thinking_tokens=0,
+                    completion_tokens=0,
+                    seconds=0.0,
+                ),
+                read_2=BlindReadResult(
+                    claim_id=cid,
+                    reader=dummy_r2.reader,
+                    verdict="ambiguous",
+                    thinking_tokens=0,
+                    completion_tokens=0,
+                    seconds=0.0,
+                ),
+                agrees_1=False,
+                agrees_2=False,
+                passed=False,
+                failure_reason=reason,
+            )
+        return TriadGateEvaluation(
+            worded=WordedTriad(
+                triad=triad_obj,
+                material=material_text,
+                worded_claims={
+                    k: partial_claims.get(k, "") for k in VERDICT_CLASSES
+                },
+            ),
+            claim_evals=c_evals,
+            passed=False,
+            failure_reasons=(reason,),
+        )
+
     for t in triads:
-        mat = writer_adapter.render_material(t.table)
-        check_rendered_material(t.table, mat)
-        est_thinking = min(thinking_token_cap, 32)
-        est_completion = max(16, len(mat.split()))
+        try:
+            mat = writer_adapter.render_material(t.table)
+            check_rendered_material(t.table, mat)
+        except RdlabError as err:
+            if not (
+                err.code.startswith("PILOT_B_RENDER_")
+                or err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+            ):
+                raise
+            last_rec = getattr(writer_adapter, "last_call_record", None)
+            raw_out = str(getattr(writer_adapter, "last_raw_output", ""))
+            tracker.record(
+                wave_name="render",
+                model_name=writer_model.name,
+                target_id=t.table.table_id,
+                thinking_tokens=(
+                    last_rec.thinking_tokens
+                    if last_rec is not None
+                    else min(thinking_token_cap, 32)
+                ),
+                completion_tokens=(
+                    last_rec.eval_tokens
+                    if last_rec is not None
+                    else max(16, len(raw_out.split()))
+                ),
+                seconds=last_rec.wall_time_s if last_rec is not None else 0.02,
+            )
+            reason_prefix = (
+                "length_stop"
+                if err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+                else "rendering_check"
+            )
+            render_failed_evals.append(
+                _build_render_failed_eval(
+                    t,
+                    raw_out,
+                    {},
+                    f"{reason_prefix} ({err.code}): {err.message}",
+                )
+            )
+            continue
+
+        last_rec = getattr(writer_adapter, "last_call_record", None)
+        est_thinking = (
+            last_rec.thinking_tokens
+            if last_rec is not None
+            else min(thinking_token_cap, 32)
+        )
+        est_completion = (
+            last_rec.eval_tokens
+            if last_rec is not None
+            else max(16, len(mat.split()))
+        )
+        est_seconds = last_rec.wall_time_s if last_rec is not None else 0.02
         tracker.record(
             wave_name="render",
             model_name=writer_model.name,
             target_id=t.table.table_id,
             thinking_tokens=est_thinking,
             completion_tokens=est_completion,
-            seconds=0.02,
+            seconds=est_seconds,
         )
         rendered_materials[t.triad_id] = mat
 
-    # Wave 2: word all claims across all triads (writer model)
+    render_unloaded = False
+    if callable(getattr(writer_adapter, "unload_model", None)):
+        writer_adapter.unload_model()  # type: ignore[attr-defined]
+        render_unloaded = True
+
+    # Wave 2: word all claims across all triads that passed Wave 1 (writer model)
     worded_triads: list[WordedTriad] = []
     for t in triads:
+        if t.triad_id not in rendered_materials:
+            continue
         w_claims: dict[VerdictKey, str] = {}
+        word_failed_reason: str | None = None
         for key in VERDICT_CLASSES:
             claim = t.claims[key]
-            w_text = writer_adapter.word_claim(t.table, claim)
-            check_worded_claim(t.table, claim, w_text)
-            est_thinking = min(thinking_token_cap, 24)
-            est_completion = max(8, len(w_text.split()))
+            try:
+                w_text = writer_adapter.word_claim(t.table, claim)
+                check_worded_claim(t.table, claim, w_text)
+            except RdlabError as err:
+                if not (
+                    err.code.startswith("PILOT_B_RENDER_")
+                    or err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+                ):
+                    raise
+                last_rec = getattr(writer_adapter, "last_call_record", None)
+                raw_out = str(getattr(writer_adapter, "last_raw_output", ""))
+                tracker.record(
+                    wave_name="word",
+                    model_name=writer_model.name,
+                    target_id=claim.claim_id,
+                    thinking_tokens=(
+                        last_rec.thinking_tokens
+                        if last_rec is not None
+                        else min(thinking_token_cap, 24)
+                    ),
+                    completion_tokens=(
+                        last_rec.eval_tokens
+                        if last_rec is not None
+                        else max(8, len(raw_out.split()))
+                    ),
+                    seconds=last_rec.wall_time_s if last_rec is not None else 0.01,
+                )
+                w_claims[key] = raw_out
+                reason_prefix = (
+                    "length_stop"
+                    if err.code == "PILOT_B_OLLAMA_LENGTH_STOP"
+                    else "wording_check"
+                )
+                word_failed_reason = f"{reason_prefix} ({err.code}): {err.message}"
+                break
+
+            last_rec = getattr(writer_adapter, "last_call_record", None)
+            est_thinking = (
+                last_rec.thinking_tokens
+                if last_rec is not None
+                else min(thinking_token_cap, 24)
+            )
+            est_completion = (
+                last_rec.eval_tokens
+                if last_rec is not None
+                else max(8, len(w_text.split()))
+            )
+            est_seconds = last_rec.wall_time_s if last_rec is not None else 0.01
             tracker.record(
                 wave_name="word",
                 model_name=writer_model.name,
                 target_id=claim.claim_id,
                 thinking_tokens=est_thinking,
                 completion_tokens=est_completion,
-                seconds=0.01,
+                seconds=est_seconds,
             )
             w_claims[key] = w_text
+
+        if word_failed_reason is not None:
+            render_failed_evals.append(
+                _build_render_failed_eval(
+                    t,
+                    rendered_materials[t.triad_id],
+                    w_claims,
+                    word_failed_reason,
+                )
+            )
+            continue
+
         worded_triads.append(
             WordedTriad(
                 triad=t,
@@ -282,6 +483,11 @@ def run_pilot_b_waves(
                 worded_claims=w_claims,
             )
         )
+
+    word_unloaded = False
+    if callable(getattr(writer_adapter, "unload_model", None)):
+        writer_adapter.unload_model()  # type: ignore[attr-defined]
+        word_unloaded = True
 
     # Prepare blind-read prompts for all triads (key-free)
     prompts_by_triad: list[dict[VerdictKey, BlindReadPrompt]] = []
@@ -315,6 +521,11 @@ def run_pilot_b_waves(
             r1_map[key] = res1
         reads_1_list.append(r1_map)
 
+    r1_unloaded = False
+    if callable(getattr(reader_1, "unload_model", None)):
+        reader_1.unload_model()  # type: ignore[attr-defined]
+        r1_unloaded = True
+
     # Wave 4: reader_2 over all claims
     reads_2_list: list[dict[VerdictKey, BlindReadResult]] = []
     for t_prompts in prompts_by_triad:
@@ -332,10 +543,15 @@ def run_pilot_b_waves(
             r2_map[key] = res2
         reads_2_list.append(r2_map)
 
+    r2_unloaded = False
+    if callable(getattr(reader_2, "unload_model", None)):
+        reader_2.unload_model()  # type: ignore[attr-defined]
+        r2_unloaded = True
+
     # Evaluate unanimity per triad
-    evaluations: list[TriadGateEvaluation] = []
+    evaluations: list[TriadGateEvaluation] = list(render_failed_evals)
     kept: list[TriadGateEvaluation] = []
-    failed: list[TriadGateEvaluation] = []
+    failed: list[TriadGateEvaluation] = list(render_failed_evals)
     for wt, r1_map, r2_map in zip(worded_triads, reads_1_list, reads_2_list):
         ev = evaluate_triad_unanimity(wt, r1_map, r2_map)
         evaluations.append(ev)
@@ -350,11 +566,44 @@ def run_pilot_b_waves(
     )
     triad_rate = round(len(kept) / len(evaluations), 4) if evaluations else 0.0
 
+    w_cls = type(writer_adapter).__name__
+    r1_cls = type(reader_1).__name__
+    r2_cls = type(reader_2).__name__
+    has_fake = not (
+        type(writer_adapter) is OllamaWriterAdapter
+        and type(reader_1) is OllamaBlindReaderAdapter
+        and type(reader_2) is OllamaBlindReaderAdapter
+        and writer_adapter.http_transport is ollama_mod.default_ollama_http_transport
+        and reader_1.http_transport is ollama_mod.default_ollama_http_transport
+        and reader_2.http_transport is ollama_mod.default_ollama_http_transport
+    )
+
+    w_call_map: dict[str, dict[str, object]] = {
+        rec.target_id: rec.to_dict(include_target_id=False)
+        for rec in getattr(writer_adapter, "call_records", ())
+    }
+    r1_call_map: dict[str, dict[str, object]] = {
+        rec.target_id: rec.to_dict(include_target_id=False)
+        for rec in getattr(reader_1, "call_records", ())
+    }
+    r2_call_map: dict[str, dict[str, object]] = {
+        rec.target_id: rec.to_dict(include_target_id=False)
+        for rec in getattr(reader_2, "call_records", ())
+    }
+
     wave_metrics = (
-        tracker.summarize_wave("render", writer_model),
-        tracker.summarize_wave("word", writer_model),
-        tracker.summarize_wave("reader_1", reader_1.model),
-        tracker.summarize_wave("reader_2", reader_2.model),
+        tracker.summarize_wave(
+            "render", writer_model, adapter=w_cls, unloaded=render_unloaded
+        ),
+        tracker.summarize_wave(
+            "word", writer_model, adapter=w_cls, unloaded=word_unloaded
+        ),
+        tracker.summarize_wave(
+            "reader_1", reader_1.model, adapter=r1_cls, unloaded=r1_unloaded
+        ),
+        tracker.summarize_wave(
+            "reader_2", reader_2.model, adapter=r2_cls, unloaded=r2_unloaded
+        ),
     )
 
     return PilotBWaveRunResult(
@@ -368,6 +617,16 @@ def run_pilot_b_waves(
         failed_triads=tuple(failed),
         pass_rate_per_class=rates,
         triad_pass_rate=triad_rate,
+        writer_adapter_class=w_cls,
+        reader_1_adapter_class=r1_cls,
+        reader_2_adapter_class=r2_cls,
+        has_fake_adapter=has_fake,
+        writer_adapter=writer_adapter,
+        reader_1_adapter=reader_1,
+        reader_2_adapter=reader_2,
+        writer_call_records=w_call_map,
+        reader_1_call_records=r1_call_map,
+        reader_2_call_records=r2_call_map,
     )
 
 
@@ -391,8 +650,31 @@ def write_sealed_part(
     licence_registry: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write a sealed Pilot B part directory with shuffled items, aggregate-only judgment provenance, and external keys.sealed.jsonl."""
+    w = wave_result.writer_adapter
+    r1 = wave_result.reader_1_adapter
+    r2 = wave_result.reader_2_adapter
+    if wave_result.has_fake_adapter or not (
+        type(w) is OllamaWriterAdapter
+        and type(r1) is OllamaBlindReaderAdapter
+        and type(r2) is OllamaBlindReaderAdapter
+        and w.http_transport is ollama_mod.default_ollama_http_transport
+        and r1.http_transport is ollama_mod.default_ollama_http_transport
+        and r2.http_transport is ollama_mod.default_ollama_http_transport
+    ):
+        raise refused_error(
+            "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED",
+            f"Refused to seal Pilot B part '{part_id}' because adapters or transports are not allow-listed "
+            f"(writer={wave_result.writer_adapter_class}, reader_1={wave_result.reader_1_adapter_class}, "
+            f"reader_2={wave_result.reader_2_adapter_class}).",
+            "Run Pilot B waves with exact OllamaWriterAdapter and OllamaBlindReaderAdapter instances using default_ollama_http_transport.",
+        )
+
     part_dir.mkdir(parents=True, exist_ok=True)
     keys_sealed_path.parent.mkdir(parents=True, exist_ok=True)
+
+    w_calls_by_target = dict(wave_result.writer_call_records or {})
+    r1_calls_by_target = dict(wave_result.reader_1_call_records or {})
+    r2_calls_by_target = dict(wave_result.reader_2_call_records or {})
 
     default_read_dates: dict[str, str] = {}
     for m in (
@@ -425,6 +707,16 @@ def write_sealed_part(
         for key in VERDICT_CLASSES:
             claim = wt.triad.claims[key]
             claim_ev = ev.claim_evals[key]
+            w_recs: list[dict[str, object]] = []
+            if table.table_id in w_calls_by_target:
+                w_recs.append(dict(w_calls_by_target[table.table_id]))
+            if claim.claim_id in w_calls_by_target:
+                w_recs.append(dict(w_calls_by_target[claim.claim_id]))
+            r_recs: list[dict[str, object]] = []
+            if claim.claim_id in r1_calls_by_target:
+                r_recs.append(dict(r1_calls_by_target[claim.claim_id]))
+            if claim.claim_id in r2_calls_by_target:
+                r_recs.append(dict(r2_calls_by_target[claim.claim_id]))
             raw_entries.append(
                 {
                     "triad_id": wt.triad.triad_id,
@@ -437,6 +729,8 @@ def write_sealed_part(
                     "proof": claim.proof.to_dict(),
                     "read_1": claim_ev.read_1.to_dict(),
                     "read_2": claim_ev.read_2.to_dict(),
+                    "writer_call_records": w_recs,
+                    "reader_call_records": r_recs,
                 }
             )
 
@@ -494,6 +788,7 @@ def write_sealed_part(
                 "trace_sha256": entry["proof"]["trace_sha256"],
             },
             "writer": {
+                "adapter": wave_result.writer_adapter_class,
                 "model": wave_result.writer_model.name,
                 "family": wave_result.writer_model.normalized_family,
                 "digest": wave_result.writer_model.digest,
@@ -506,6 +801,7 @@ def write_sealed_part(
                 "source_match_reason": wave_result.writer_model.source_match_reason,
                 "messages_sha256": msg_sha,
                 "thinking_token_cap": wave_result.thinking_token_cap,
+                "call_records": entry["writer_call_records"],
             },
             "checks": [
                 {
@@ -522,6 +818,10 @@ def write_sealed_part(
             "judgments": [
                 {
                     "kind": "blind_read_unanimity_aggregate",
+                    "reader_adapters": [
+                        wave_result.reader_1_adapter_class,
+                        wave_result.reader_2_adapter_class,
+                    ],
                     "readers": [
                         f"model:{wave_result.reader_1_model.name}@{wave_result.reader_1_model.digest}",
                         f"model:{wave_result.reader_2_model.name}@{wave_result.reader_2_model.digest}",
@@ -558,6 +858,7 @@ def write_sealed_part(
                         wave_result.reader_1_model.source_match_reason,
                         wave_result.reader_2_model.source_match_reason,
                     ],
+                    "call_records": entry["reader_call_records"],
                     "agrees_all_readers": True,
                     "ambiguous_count": 0,
                 }

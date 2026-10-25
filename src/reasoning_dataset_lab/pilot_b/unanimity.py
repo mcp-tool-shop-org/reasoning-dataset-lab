@@ -36,6 +36,7 @@ DEFAULT_MIN_PASS_RATE_PER_CLASS: float = 0.50
 
 
 SourceMatchStatus = Literal["confirmed", "unconfirmed"]
+ThinkSetting = bool | Literal["low", "medium", "high", "max"]
 
 
 @dataclass(frozen=True)
@@ -52,12 +53,13 @@ class ModelIdentity:
     licence_layer_digest: str = "0" * 64
     source_match: SourceMatchStatus = "unconfirmed"
     source_match_reason: str = ""
+    think: ThinkSetting = True
 
     @property
     def normalized_family(self) -> str:
         return self.family.strip().lower()
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "family": self.family,
@@ -69,6 +71,7 @@ class ModelIdentity:
             "licence_layer_digest": self.licence_layer_digest,
             "source_match": self.source_match,
             "source_match_reason": self.source_match_reason,
+            "think": self.think,
         }
 
 
@@ -104,6 +107,9 @@ class BlindReadResult:
     thinking_tokens: int = 16
     completion_tokens: int = 8
     seconds: float = 0.01
+    raw_text: str = ""
+    prompt_sha256: str = ""
+    done_reason: str = "stop"
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -111,6 +117,9 @@ class BlindReadResult:
             "by": f"model:{self.reader.name}@{self.reader.digest}",
             "family": self.reader.normalized_family,
             "verdict": self.verdict,
+            "raw_text": self.raw_text if self.raw_text else self.verdict,
+            "prompt_sha256": self.prompt_sha256,
+            "done_reason": self.done_reason,
             "thinking_tokens": self.thinking_tokens,
             "completion_tokens": self.completion_tokens,
             "seconds": self.seconds,
@@ -165,15 +174,15 @@ class TriadGateEvaluation:
     failure_reasons: tuple[str, ...]
 
     def to_review_queue_record(self) -> dict[str, object]:
+        evals_dict = {k: v.to_dict() for k, v in self.claim_evals.items()}
         return {
             "triad_id": self.worded.triad.triad_id,
             "table_id": self.worded.triad.table.table_id,
             "closure": self.worded.triad.table.closure,
             "material": self.worded.material,
             "worded_claims": dict(self.worded.worded_claims),
-            "claim_evaluations": {
-                k: v.to_dict() for k, v in self.claim_evals.items()
-            },
+            "claim_evaluations": evals_dict,
+            "claims": evals_dict,
             "failure_reasons": list(self.failure_reasons),
         }
 
@@ -295,18 +304,34 @@ def evaluate_claim_unanimity(
                 "Reader verdict must be 'supported', 'unsupported', 'cannot_tell', or 'ambiguous'.",
             )
 
-    agrees_1 = read_1.verdict == key and read_1.verdict != "ambiguous"
-    agrees_2 = read_2.verdict == key and read_2.verdict != "ambiguous"
+    agrees_1 = (
+        read_1.done_reason != "length"
+        and read_1.verdict == key
+        and read_1.verdict != "ambiguous"
+    )
+    agrees_2 = (
+        read_2.done_reason != "length"
+        and read_2.verdict == key
+        and read_2.verdict != "ambiguous"
+    )
     passed = agrees_1 and agrees_2
 
     reasons: list[str] = []
-    if read_1.verdict == "ambiguous":
+    if read_1.done_reason == "length":
+        reasons.append(
+            f"reader_1 ({read_1.reader.name}) stopped with done_reason='length' on '{claim_id}'"
+        )
+    elif read_1.verdict == "ambiguous":
         reasons.append(f"reader_1 ({read_1.reader.name}) marked '{claim_id}' ambiguous")
     elif not agrees_1:
         reasons.append(
             f"reader_1 ({read_1.reader.name}) verdict '{read_1.verdict}' != key '{key}' on '{claim_id}'"
         )
-    if read_2.verdict == "ambiguous":
+    if read_2.done_reason == "length":
+        reasons.append(
+            f"reader_2 ({read_2.reader.name}) stopped with done_reason='length' on '{claim_id}'"
+        )
+    elif read_2.verdict == "ambiguous":
         reasons.append(f"reader_2 ({read_2.reader.name}) marked '{claim_id}' ambiguous")
     elif not agrees_2:
         reasons.append(
@@ -470,159 +495,3 @@ def run_unanimity_gate_batch(
         triad_pass_rate=triad_rate,
     )
 
-
-class UnanimousReaderFake:
-    """Deterministic fake blind reader that derives the true verdict from the table & claim text without seeing the key."""
-
-    def __init__(
-        self,
-        model: ModelIdentity,
-        oracle_triads: Sequence[WordedTriad] = (),
-        thinking_tokens: int = 24,
-        completion_tokens: int = 6,
-    ) -> None:
-        self._model = model
-        self._thinking_tokens = thinking_tokens
-        self._completion_tokens = completion_tokens
-        self._lookup: dict[str, VerdictKey] = {}
-        for wt in oracle_triads:
-            for key, claim in wt.triad.claims.items():
-                self._lookup[claim.claim_id] = key
-
-    def register_triads(self, triads: Sequence[WordedTriad]) -> None:
-        for wt in triads:
-            for key, claim in wt.triad.claims.items():
-                self._lookup[claim.claim_id] = key
-
-    @property
-    def model(self) -> ModelIdentity:
-        return self._model
-
-    @staticmethod
-    def _derive_verdict_from_prompt_text(prompt: BlindReadPrompt) -> ReaderVerdict:
-        """Derive the true verdict strictly from prompt.material and prompt.claim_text (never from claim_id)."""
-        claim_clean = prompt.claim_text.strip()
-        mat_lines = [
-            re.sub(r"^\s*\d+[.)]\s+", "", ln.strip())
-            for ln in prompt.material.splitlines()
-            if ln.strip() and not ln.strip().lower().startswith("material")
-        ]
-        # 1. Exact sentence restatement -> supported
-        if any(claim_clean.lower() == ln.lower() for ln in mat_lines):
-            return "supported"
-
-        # 2. Check if claim refines an interval line ("The <attr> of <ent> is between <lo> and <hi>...")
-        m_claim_num = re.match(
-            r"^(?:The\s+(.+?)\s+of\s+(.+?)\s+is\s+(\d+)|(.+?)\s+has\s+(\d+)(?:\s+\w+)?\s+of\s+(.+?))\.$",
-            claim_clean,
-            re.IGNORECASE,
-        )
-        if m_claim_num:
-            if m_claim_num.group(1) is not None:
-                c_attr = m_claim_num.group(1).strip().lower()
-                c_ent = m_claim_num.group(2).strip().lower()
-                c_val = int(m_claim_num.group(3))
-            else:
-                c_ent = m_claim_num.group(4).strip().lower()
-                c_val = int(m_claim_num.group(5))
-                c_attr = m_claim_num.group(6).strip().lower()
-            for ln in mat_lines:
-                m_int = re.search(
-                    r"The\s+(.+?)\s+of\s+(.+?)\s+is\s+between\s+(\d+)\s+and\s+(\d+)",
-                    ln,
-                    re.IGNORECASE,
-                )
-                if m_int:
-                    f_attr = m_int.group(1).strip().lower()
-                    f_ent = m_int.group(2).strip().lower()
-                    lo, hi = int(m_int.group(3)), int(m_int.group(4))
-                    if f_attr == c_attr and f_ent == c_ent:
-                        if lo <= c_val <= hi and lo < hi:
-                            return "cannot_tell"
-                        return "unsupported"
-
-        # 3. Check if claim's attribute is stated anywhere in material for that entity
-        m_claim_gen = re.match(
-            r"^The\s+(.+?)\s+of\s+(.+?)\s+is\s+(.+?)\.$",
-            claim_clean,
-            re.IGNORECASE,
-        )
-        if m_claim_gen:
-            c_attr = m_claim_gen.group(1).strip().lower()
-            c_ent = m_claim_gen.group(2).strip().lower()
-            for ln in mat_lines:
-                if c_ent in ln.lower() and c_attr in ln.lower():
-                    return "unsupported"
-            if prompt.closure == "open":
-                return "cannot_tell"
-
-        if m_claim_num:
-            for ln in mat_lines:
-                if c_ent in ln.lower() and c_attr in ln.lower():
-                    return "unsupported"
-
-        return "cannot_tell"
-
-    def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
-        if prompt.claim_id in self._lookup:
-            verdict: ReaderVerdict = self._lookup[prompt.claim_id]
-        else:
-            verdict = self._derive_verdict_from_prompt_text(prompt)
-        return BlindReadResult(
-            claim_id=prompt.claim_id,
-            reader=self._model,
-            verdict=verdict,
-            thinking_tokens=self._thinking_tokens,
-            completion_tokens=self._completion_tokens,
-            seconds=0.01,
-        )
-
-
-class AmbiguousClaimReaderFake(UnanimousReaderFake):
-    """Deterministic fake blind reader that marks specified claim_ids as 'ambiguous'."""
-
-    def __init__(
-        self,
-        model: ModelIdentity,
-        oracle_triads: Sequence[WordedTriad] = (),
-        ambiguous_claim_ids: set[str] | None = None,
-    ) -> None:
-        super().__init__(model=model, oracle_triads=oracle_triads)
-        self._ambiguous_ids = set(ambiguous_claim_ids or ())
-
-    def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
-        if prompt.claim_id in self._ambiguous_ids:
-            return BlindReadResult(
-                claim_id=prompt.claim_id,
-                reader=self.model,
-                verdict="ambiguous",
-                thinking_tokens=24,
-                completion_tokens=6,
-                seconds=0.01,
-            )
-        return super().read_claim(prompt)
-
-
-class DisagreeingReaderFake(UnanimousReaderFake):
-    """Deterministic fake blind reader that flips the verdict on specified claim_ids."""
-
-    def __init__(
-        self,
-        model: ModelIdentity,
-        oracle_triads: Sequence[WordedTriad] = (),
-        flip_claim_ids: dict[str, ReaderVerdict] | None = None,
-    ) -> None:
-        super().__init__(model=model, oracle_triads=oracle_triads)
-        self._flips = dict(flip_claim_ids or {})
-
-    def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
-        if prompt.claim_id in self._flips:
-            return BlindReadResult(
-                claim_id=prompt.claim_id,
-                reader=self.model,
-                verdict=self._flips[prompt.claim_id],
-                thinking_tokens=24,
-                completion_tokens=6,
-                seconds=0.01,
-            )
-        return super().read_claim(prompt)

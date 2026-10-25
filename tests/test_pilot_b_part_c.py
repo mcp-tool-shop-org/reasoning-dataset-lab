@@ -13,16 +13,18 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     build_sample_fact_table,
     generate_fact_tables,
 )
-from reasoning_dataset_lab.pilot_b.rendering import (
+from pilot_b_fakes import (
+    AmbiguousClaimReaderFake,
     DeterministicWriterAdapter,
+    DisagreeingReaderFake,
+    UnanimousReaderFake,
+)
+from reasoning_dataset_lab.pilot_b.rendering import (
     WordedTriad,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
-    AmbiguousClaimReaderFake,
     BlindReadPrompt,
-    DisagreeingReaderFake,
     ModelIdentity,
-    UnanimousReaderFake,
     build_blind_read_prompt,
     evaluate_triad_unanimity,
     run_unanimity_gate_batch,

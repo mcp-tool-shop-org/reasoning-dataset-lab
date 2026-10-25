@@ -30,12 +30,17 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     build_contrast_triad,
     generate_fact_tables,
 )
-from reasoning_dataset_lab.pilot_b.rendering import DeterministicWriterAdapter
+import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
+from reasoning_dataset_lab.pilot_b.ollama import (
+    DEFAULT_OLLAMA_BASE_URL,
+    OllamaBlindReaderAdapter,
+    OllamaWriterAdapter,
+)
 from reasoning_dataset_lab.pilot_b.unanimity import (
     DEFAULT_MIN_PASS_RATE_PER_CLASS,
     ModelIdentity,
     SourceMatchStatus,
-    UnanimousReaderFake,
+    ThinkSetting,
     validate_chain_families,
 )
 from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
@@ -65,6 +70,7 @@ class PinnedModelSpec:
     licence_layer_digest: str = "0" * 64
     source_match: SourceMatchStatus = "unconfirmed"
     source_match_reason: str = ""
+    think: ThinkSetting = True
 
     def with_licence_id(
         self,
@@ -87,6 +93,7 @@ class PinnedModelSpec:
             licence_layer_digest=self.licence_layer_digest,
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
+            think=self.think,
         )
 
     def with_bundled_licence_id(self, new_bundled_licence_id: str) -> PinnedModelSpec:
@@ -109,9 +116,10 @@ class PinnedModelSpec:
             licence_layer_digest=self.licence_layer_digest,
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
+            think=self.think,
         )
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, object]:
         return {
             "role": self.role,
             "display_name": self.display_name,
@@ -124,6 +132,7 @@ class PinnedModelSpec:
             "bundled_licence_id": self.bundled_licence_id,
             "source_match": self.source_match,
             "source_match_reason": self.source_match_reason,
+            "think": self.think,
         }
 
 
@@ -704,12 +713,19 @@ def build_pilot_b_report(
         "gate_pass_rate_per_class": dict(wave_result.pass_rate_per_class),
         "triad_pass_rate": wave_result.triad_pass_rate,
         "thinking_token_cap": wave_result.thinking_token_cap,
+        "adapters": {
+            "writer": wave_result.writer_adapter_class,
+            "reader_1": wave_result.reader_1_adapter_class,
+            "reader_2": wave_result.reader_2_adapter_class,
+        },
         "waves": wave_dicts,
         "totals": {
             "calls": total_calls,
             "thinking_tokens": total_thinking,
             "completion_tokens": total_completion,
+            "eval_tokens": total_completion,
             "seconds": total_seconds,
+            "wall_time_s": total_seconds,
         },
         "full_build_estimate_50_triads": full_estimate,
         "human_sample": sample_block,
@@ -728,6 +744,7 @@ def run_pilot_b_build(
     licence_registry_path: Path | None = None,
     licence_id_overrides: Mapping[str, str] | None = None,
     bundled_licence_id_overrides: Mapping[str, str] | None = None,
+    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
 ) -> dict[str, Any]:
     """Run an end-to-end Pilot B build (or `--stub N` run), seal and freeze the part, and write the build report."""
     if triad_count < 1:
@@ -803,17 +820,43 @@ def run_pilot_b_build(
         for idx, table in enumerate(tables)
     ]
 
-    writer_adapter = DeterministicWriterAdapter()
-    reader_1 = UnanimousReaderFake(model=r1_id, thinking_tokens=28, completion_tokens=6)
-    reader_2 = UnanimousReaderFake(model=r2_id, thinking_tokens=24, completion_tokens=6)
+    active_writer = OllamaWriterAdapter(
+        model=writer_id,
+        base_url=ollama_base_url,
+        thinking_token_cap=thinking_token_cap,
+    )
+    active_r1 = OllamaBlindReaderAdapter(
+        model=r1_id,
+        base_url=ollama_base_url,
+        thinking_token_cap=thinking_token_cap,
+    )
+    active_r2 = OllamaBlindReaderAdapter(
+        model=r2_id,
+        base_url=ollama_base_url,
+        thinking_token_cap=thinking_token_cap,
+    )
+
+    if not (
+        type(active_writer) is OllamaWriterAdapter
+        and type(active_r1) is OllamaBlindReaderAdapter
+        and type(active_r2) is OllamaBlindReaderAdapter
+        and active_writer.http_transport is ollama_mod.default_ollama_http_transport
+        and active_r1.http_transport is ollama_mod.default_ollama_http_transport
+        and active_r2.http_transport is ollama_mod.default_ollama_http_transport
+    ):
+        raise refused_error(
+            "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED",
+            "Refused to run Pilot B build or seal output without exact OllamaWriterAdapter and OllamaBlindReaderAdapter over default_ollama_http_transport.",
+            "Use real OllamaWriterAdapter and OllamaBlindReaderAdapter instances backed by loopback Ollama.",
+        )
 
     review_queue_path = output_dir / "review_queue.jsonl"
     wave_res = run_pilot_b_waves(
         triads=triads,
         writer_model=writer_id,
-        writer_adapter=writer_adapter,
-        reader_1=reader_1,
-        reader_2=reader_2,
+        writer_adapter=active_writer,
+        reader_1=active_r1,
+        reader_2=active_r2,
         review_queue_path=review_queue_path,
         thinking_token_cap=thinking_token_cap,
         min_pass_rate_per_class=min_pass_rate_per_class,

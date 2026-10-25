@@ -1,19 +1,16 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-25 from commit 65f7663 by Atlas 1.24.0.
+Mapped at 2026-10-25 from commit 6e2867b by Atlas 1.24.0.
 
 ## What this is
 
 reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints. (written by a person)
 
-5 parts, mostly Python (24 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
+5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
 
-## What changed since 2026-10-25 (c3a33e6)
+## What changed since 2026-10-25 (482311f)
 
-- In src/reasoning_dataset_lab/cli.py, `main` gained a step, `verify_live_ollama_models`, before `values`.
-- In src/reasoning_dataset_lab/cli.py, `main` gained a step, `values`, before `run_pilot_b_build`.
-- In src/reasoning_dataset_lab/cli.py, `main` gained a step, `run_pilot_b_build`, before `usage_error`.
-- 16 files added and 6 changed content, across 3 parts.
+Nothing structural changed since 2026-10-25; 2 files added and 6 changed content.
 
 ## What comes in
 
@@ -72,7 +69,7 @@ Read those in order to follow one pull request end to end.
 
 - 6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
 - 2 reads use paths built at run time and are not named here.
-- 7 writes and 12 reads go to a path their caller passes, not to this repository.
+- 7 writes and 14 reads go to a path their caller passes, not to this repository.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.

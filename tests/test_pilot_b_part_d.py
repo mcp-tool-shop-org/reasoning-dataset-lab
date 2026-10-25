@@ -7,13 +7,18 @@ from pathlib import Path
 
 import pytest
 
+from pilot_b_fakes import DeterministicWriterAdapter, UnanimousReaderFake
 from reasoning_dataset_lab.errors import RdlabError
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     build_contrast_triad,
     generate_fact_tables,
 )
-from reasoning_dataset_lab.pilot_b.rendering import DeterministicWriterAdapter
-from reasoning_dataset_lab.pilot_b.unanimity import ModelIdentity, UnanimousReaderFake
+from reasoning_dataset_lab.pilot_b.models_and_build import DEFAULT_PILOT_B_MODEL_PINS
+from reasoning_dataset_lab.pilot_b.ollama import (
+    OllamaBlindReaderAdapter,
+    OllamaWriterAdapter,
+)
+from reasoning_dataset_lab.pilot_b.unanimity import ModelIdentity
 from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
     WaveCallTracker,
     freeze_sealed_part,
@@ -21,6 +26,7 @@ from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
     verify_sealed_part,
     write_sealed_part,
 )
+from test_pilot_b_ollama_adapters import build_mock_ollama_http_transport
 
 
 def _setup_models() -> tuple[ModelIdentity, ModelIdentity, ModelIdentity]:
@@ -86,39 +92,56 @@ def test_single_model_waves_order_and_thinking_cap_recorded(tmp_path: Path) -> N
     assert compressed == ["render", "word", "reader_1", "reader_2"]
 
 
-def test_thinking_token_cap_exceeded_is_refused(tmp_path: Path) -> None:
+def test_thinking_token_cap_exceeded_is_recorded_as_post_hoc_metric(
+    tmp_path: Path,
+) -> None:
     writer_id, r1_id, r2_id = _setup_models()
     tables = generate_fact_tables(n=2, seed=1)
     triads = [build_contrast_triad(t, seed=idx + 1) for idx, t in enumerate(tables)]
 
     writer = DeterministicWriterAdapter()
-    # Reader 1 emits 512 thinking tokens when the cap is 128
+    # Reader 1 emits 512 thinking tokens when the cap is 128 -> post-hoc count is recorded as a metric, not a build-killing raise
     r1_over = UnanimousReaderFake(model=r1_id, thinking_tokens=512, completion_tokens=8)
     r2 = UnanimousReaderFake(model=r2_id, thinking_tokens=32, completion_tokens=6)
 
-    with pytest.raises(RdlabError) as exc_cap:
-        run_pilot_b_waves(
-            triads=triads,
-            writer_model=writer_id,
-            writer_adapter=writer,
-            reader_1=r1_over,
-            reader_2=r2,
-            thinking_token_cap=128,
-            review_queue_path=tmp_path / "review_queue.jsonl",
-        )
-    assert exc_cap.value.code == "PILOT_B_THINKING_CAP_EXCEEDED"
+    wave_res = run_pilot_b_waves(
+        triads=triads,
+        writer_model=writer_id,
+        writer_adapter=writer,
+        reader_1=r1_over,
+        reader_2=r2,
+        thinking_token_cap=128,
+        review_queue_path=tmp_path / "review_queue.jsonl",
+    )
+    r1_wave = next(w for w in wave_res.wave_metrics if w.wave_name == "reader_1")
+    assert r1_wave.thinking_token_cap == 128
+    assert r1_wave.max_thinking_tokens_observed == 512
 
 
 def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     writer_id, r1_id, r2_id = _setup_models()
     tables = generate_fact_tables(n=6, seed=10)
     triads = [build_contrast_triad(t, seed=10 + idx) for idx, t in enumerate(tables)]
 
-    writer = DeterministicWriterAdapter()
-    r1 = UnanimousReaderFake(model=r1_id)
-    r2 = UnanimousReaderFake(model=r2_id)
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
+    writer = OllamaWriterAdapter(
+        model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
+        thinking_token_cap=256,
+    )
+    r1 = OllamaBlindReaderAdapter(
+        model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
+        thinking_token_cap=256,
+    )
+    r2 = OllamaBlindReaderAdapter(
+        model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
+        thinking_token_cap=256,
+    )
 
     wave_res = run_pilot_b_waves(
         triads=triads,
@@ -178,18 +201,32 @@ def test_sealing_shuffles_items_with_seed_and_keeps_keys_only_in_sealed_store(
 
 
 def test_freeze_refuses_key_bearing_field_or_per_item_key_association_in_part(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     writer_id, r1_id, r2_id = _setup_models()
     tables = generate_fact_tables(n=4, seed=20)
     triads = [build_contrast_triad(t, seed=20 + idx) for idx, t in enumerate(tables)]
 
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        transport,
+    )
     wave_res = run_pilot_b_waves(
         triads=triads,
         writer_model=writer_id,
-        writer_adapter=DeterministicWriterAdapter(),
-        reader_1=UnanimousReaderFake(model=r1_id),
-        reader_2=UnanimousReaderFake(model=r2_id),
+        writer_adapter=OllamaWriterAdapter(
+            model=DEFAULT_PILOT_B_MODEL_PINS["writer"],
+            thinking_token_cap=256,
+        ),
+        reader_1=OllamaBlindReaderAdapter(
+            model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
+            thinking_token_cap=256,
+        ),
+        reader_2=OllamaBlindReaderAdapter(
+            model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
+            thinking_token_cap=256,
+        ),
         thinking_token_cap=256,
         review_queue_path=tmp_path / "review_queue.jsonl",
     )
