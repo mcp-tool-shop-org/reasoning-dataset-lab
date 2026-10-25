@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
+from reasoning_dataset_lab.pilot_b import schema_check
 from reasoning_dataset_lab.errors import RdlabError, refused_error
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     ProvedTriad,
@@ -1341,9 +1342,12 @@ def _verify_provenance_digests(
     keys_by_id: Mapping[str, Mapping[str, Any]],
     metrics_by_id: Mapping[str, Mapping[str, Any]],
     messages_by_id: Mapping[str, Any],
+    key_ids: Sequence[str],
 ) -> None:
     """Check each digest and commitment in the public provenance against its ground truth."""
 
+    if [str(r.get("id")) for r in rows] != list(key_ids):
+        raise _digest_mismatch("provenance.jsonl", "*", "id")
     for row in rows:
         rid = str(row.get("id"))
         key_row = keys_by_id.get(rid)
@@ -1365,8 +1369,10 @@ def _verify_provenance_digests(
         expected_messages = _sha256_bytes(_canonical_json_line(messages_by_id.get(rid)).encode("utf-8"))
         if writer.get("messages_sha256") != expected_messages:
             raise _digest_mismatch("provenance.jsonl", rid, "writer.messages_sha256")
-        judgments = row.get("judgments") or []
-        reader_calls = (judgments[0].get("call_records") if judgments else None) or []
+        judgments = row.get("judgments")
+        if not isinstance(judgments, Sequence) or isinstance(judgments, (str, bytes)) or len(judgments) != 1:
+            raise _digest_mismatch("provenance.jsonl", rid, "judgments")
+        reader_calls = judgments[0].get("call_records") or []
         sealed_readers = metric_row.get("readers") or []
         if len(reader_calls) != len(sealed_readers):
             raise _digest_mismatch("provenance.jsonl", rid, "judgments[].call_records")
@@ -1390,9 +1396,17 @@ def _check_content_leak(
     if len(joined) < 3 or len(set(item_to_key.values())) < 2:
         return
     flattened = {str(r["id"]): _flatten_scalar_fields(r) for r in joined}
+    all_classes = {item_to_key[rid] for rid in flattened}
     for fname in sorted({name for flat in flattened.values() for name in flat}):
         if _field_pattern(fname) in exempt:
             continue
+        present = {item_to_key[rid] for rid, flat in flattened.items() if fname in flat}
+        if present != all_classes:
+            raise refused_error(
+                "PILOT_B_SEALED_CONTENT_LEAK",
+                f"Field '{fname}' in '{file_name}' is present on the items of some classes and absent on others.",
+                "A field must be present on every item or on none.",
+            )
         val_to_keys: dict[str, set[str]] = {}
         val_counts: dict[str, int] = {}
         for rid, flat in flattened.items():
@@ -1445,6 +1459,76 @@ def _validated_store(keys_sealed_path: Path) -> dict[str, Any]:
     return store
 
 
+_PART_FILES: tuple[str, ...] = ("checksums.txt", "items.jsonl", "part.json", "provenance.jsonl")
+
+
+def _part_mac(part_dir: Path, commitment_key: bytes) -> str:
+    """The seal: an HMAC under the sealed commitment key over the part's items, provenance and part.json (without
+    its own frozen, seal and test-only marks). Nothing a public file says about itself stands in for it."""
+
+    meta = json.loads((part_dir / "part.json").read_text(encoding="utf-8"))
+    for name in ("frozen", "frozen_mac", "test_only"):
+        meta.pop(name, None)
+    body = _canonical_json_line(
+        {
+            "items": _sha256_bytes((part_dir / "items.jsonl").read_bytes()),
+            "provenance": _sha256_bytes((part_dir / "provenance.jsonl").read_bytes()),
+            "part": meta,
+        }
+    )
+    return _commit(commitment_key, "frozen", body)
+
+
+def _schema_errors(label: str, errors: list[str]) -> None:
+    if errors:
+        raise refused_error(
+            "PILOT_B_SEALED_SCHEMA_MISMATCH",
+            f"Public file '{label}' does not match its schema: {errors[0]}"
+            + (f" (and {len(errors) - 1} more)" if len(errors) > 1 else ""),
+            "A public file may carry only the fields, entries and values the writer produces.",
+        )
+
+
+def _check_part_shapes(part_dir: Path, extra_public_files: Sequence[Path], key_ids: Sequence[str]) -> None:
+    """The allow-list: every public file must be one of the known files and match its shipped schema."""
+
+    present = sorted(p.name for p in part_dir.iterdir())
+    if present != list(_PART_FILES):
+        raise refused_error(
+            "PILOT_B_SEALED_SCHEMA_MISMATCH",
+            f"A sealed part holds exactly {list(_PART_FILES)}; found {present}.",
+            "Remove files that the writer does not produce.",
+        )
+    _schema_errors("part.json", schema_check.validate(json.loads((part_dir / "part.json").read_text("utf-8")), "part"))
+    items = _jsonl_rows(part_dir / "items.jsonl")
+    if [str(r.get("id")) for r in items] != list(key_ids):
+        raise _digest_mismatch("items.jsonl", "*", "id")
+    for number, row in enumerate(items, start=1):
+        _schema_errors(f"items.jsonl:{number}", schema_check.validate(row, "item"))
+    for number, row in enumerate(_jsonl_rows(part_dir / "provenance.jsonl"), start=1):
+        _schema_errors(f"provenance.jsonl:{number}", schema_check.validate(row, "provenance"))
+    expected = [
+        f"{_sha256_bytes((part_dir / name).read_bytes())}  {name}"
+        for name in _PART_FILES
+        if name != "checksums.txt"
+    ]
+    if (part_dir / "checksums.txt").read_text(encoding="utf-8").splitlines() != sorted(expected, key=lambda x: x[66:]):
+        raise refused_error(
+            "PILOT_B_SEALED_SCHEMA_MISMATCH",
+            "checksums.txt does not list exactly the digests of items.jsonl, part.json and provenance.jsonl.",
+            "Rewrite the checksums from the files.",
+        )
+    for extra in extra_public_files:
+        extra = Path(extra)
+        if extra.name != "pilot_b_report.json":
+            raise refused_error(
+                "PILOT_B_SEALED_SCHEMA_MISMATCH",
+                f"Public file '{extra.name}' is not a file of a sealed part or its report.",
+                "Pass only the build report as an extra public file.",
+            )
+        _schema_errors(extra.name, schema_check.validate(json.loads(extra.read_text(encoding="utf-8")), "report"))
+
+
 def verify_sealed_part(
     part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path] = ()
 ) -> None:
@@ -1493,6 +1577,9 @@ def verify_sealed_part(
 
     keys_rows = _jsonl_rows(keys_sealed_path)
     metrics_rows = _jsonl_rows(metrics_path)
+    key_ids = [str(r["id"]) for r in keys_rows]
+    if [str(r["id"]) for r in metrics_rows] != key_ids:
+        raise _digest_mismatch(CALL_METRICS_NAME, "*", "id")
     item_to_key = {str(r["id"]): str(r["key"]) for r in keys_rows}
     keys_by_id = {str(r["id"]): r for r in keys_rows}
     metrics_by_id = {str(r["id"]): r for r in metrics_rows}
@@ -1545,18 +1632,35 @@ def verify_sealed_part(
                     keys_by_id=keys_by_id,
                     metrics_by_id=metrics_by_id,
                     messages_by_id=messages_by_id,
+                    key_ids=key_ids,
                 )
+                flat_rows = [_flatten_scalar_fields(r) for r in rows]
                 for pattern in _CONSTANT_DIGESTS:
-                    values = {
-                        _flatten_scalar_fields(r).get(p)
-                        for r in rows
-                        for p in _flatten_scalar_fields(r)
-                        if _field_pattern(p) == pattern
+                    seen = {
+                        next((f[p] for p in f if _field_pattern(p) == pattern), "<missing>") for f in flat_rows
                     }
-                    if len(values) > 1:
+                    if len(seen) != 1 or "<missing>" in seen:
                         raise _digest_mismatch(file_path.name, "*", pattern)
-                exempt = _VERIFIED_PATTERNS | _CONSTANT_DIGESTS
+                exempt = _VERIFIED_PATTERNS
             _check_content_leak(rows, item_to_key, file_path.name, exempt=exempt)
+
+    part_meta = json.loads(part_json_path.read_text(encoding="utf-8"))
+    if part_meta.get("frozen") is True:
+        if store.get("test_only") is True:
+            raise refused_error(
+                "PILOT_B_SEALED_TEST_ONLY_FROZEN",
+                "A part written with a test-only seed is marked frozen.",
+                "A test-only part is never releasable; rebuild it with a fresh seed.",
+            )
+        mac = part_meta.get("frozen_mac")
+        expected_mac = _part_mac(part_dir, bytes.fromhex(store["commitment_key"]))
+        if not isinstance(mac, str) or not hmac.compare_digest(mac, expected_mac):
+            raise refused_error(
+                "PILOT_B_SEALED_FROZEN_MISMATCH",
+                "part.json says frozen, but its seal does not match the part.",
+                "Only freeze_sealed_part marks a part frozen; rebuild or re-freeze it.",
+            )
+    _check_part_shapes(part_dir, extra_public_files, key_ids)
 
 
 def freeze_sealed_part(
@@ -1575,6 +1679,7 @@ def freeze_sealed_part(
         part_meta["test_only"] = True
     else:
         part_meta["frozen"] = True
+        part_meta["frozen_mac"] = _part_mac(part_dir, bytes.fromhex(store["commitment_key"]))
     part_json_path.write_bytes(
         (json.dumps(part_meta, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode(
             "utf-8"
@@ -1582,3 +1687,17 @@ def freeze_sealed_part(
     )
     _write_checksums(part_dir)
     return part_meta
+
+
+def part_status(part_dir: Path, keys_sealed_path: Path | None = None) -> str:
+    """``"frozen"``, ``"not_frozen"``, or ``"unverifiable"``.
+
+    Without the sealed store nothing a public file says about itself can be trusted, so the answer is
+    ``"unverifiable"``, never ``"frozen"``. With it, the part is verified and its seal recomputed.
+    """
+
+    if keys_sealed_path is None or not (Path(keys_sealed_path).parent / SEALING_STORE_NAME).is_file():
+        return "unverifiable"
+    verify_sealed_part(part_dir=part_dir, keys_sealed_path=Path(keys_sealed_path))
+    meta = json.loads((part_dir / "part.json").read_text(encoding="utf-8"))
+    return "frozen" if meta.get("frozen") is True else "not_frozen"

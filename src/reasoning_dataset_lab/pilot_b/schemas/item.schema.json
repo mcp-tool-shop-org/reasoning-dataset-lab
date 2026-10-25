@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "claim": {
+      "type": "string"
+    },
+    "closure": {
+      "enum": [
+        "open",
+        "closed"
+      ]
+    },
+    "domain": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "key_basis": {
+      "const": "construction"
+    },
+    "kind": {
+      "const": "D"
+    },
+    "material": {
+      "type": "string"
+    },
+    "messages": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "role": {
+            "const": "user"
+          }
+        },
+        "required": [
+          "content",
+          "role"
+        ],
+        "type": "object"
+      },
+      "maxItems": 1,
+      "minItems": 1,
+      "type": "array"
+    },
+    "proof_basis": {
+      "const": "proved"
+    },
+    "trait": {
+      "const": "T10"
+    },
+    "triad_id": {
+      "pattern": "^triad-[0-9a-f]{16}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "claim",
+    "closure",
+    "domain",
+    "id",
+    "key_basis",
+    "kind",
+    "material",
+    "messages",
+    "proof_basis",
+    "trait",
+    "triad_id"
+  ],
+  "title": "One public item of a sealed Pilot B part",
+  "type": "object"
+}

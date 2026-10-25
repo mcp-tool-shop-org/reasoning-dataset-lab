@@ -46,9 +46,9 @@ TOLERANCE = 0.2  # 90 items: the standard deviation of a chance guess is about 0
 SECRET_SEED = 18_446_744_073_709_551_629  # a little over 64 bits
 
 
-def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, **seal_kwargs):
+def _build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, triads: int = TRIADS, **seal_kwargs):
     writer_id, _r1, _r2 = _setup_models()
-    tables = generate_fact_tables(n=TRIADS, seed=10)
+    tables = generate_fact_tables(n=triads, seed=10)
     triads = [build_contrast_triad(t, seed=10 + idx) for idx, t in enumerate(tables)]
     transport, _ = build_mock_ollama_http_transport()
     monkeypatch.setattr("reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport", transport)
@@ -563,3 +563,276 @@ def test_there_is_no_separate_statistical_rule_for_partial_files():
 
     assert "complete" not in inspect.signature(waves_and_sealing._check_content_leak).parameters
     assert "10_000" not in inspect.getsource(waves_and_sealing)
+
+
+# ── hm: the exact rule on a sample-like report, one judgment per row, constants present, row sets match ──
+
+
+def _report_rows(truth: dict[str, str], count: int, make) -> list[dict]:
+    return [{"id": i, **make(i, k)} for i, k in list(truth.items())[:count]]
+
+
+def test_the_exact_rule_refuses_a_unique_per_item_tag_in_the_report(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "h1")
+    truth = _true_keys(keys_path)
+    report = _report_with_items(tmp_path, _report_rows(truth, 20, lambda i, k: {"item_tag": f"{i}:{k}"}))
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report]) == "PILOT_B_SEALED_CONTENT_LEAK"
+
+
+def test_the_exact_rule_refuses_a_one_vs_two_class_isolator_in_the_report(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "h2")
+    truth = _true_keys(keys_path)
+    hint = lambda i, k: {"class_hint": "cannot_tell" if k == "cannot_tell" else "other"}  # noqa: E731
+    report = _report_with_items(tmp_path, _report_rows(truth, 20, hint))
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report]) == "PILOT_B_SEALED_CONTENT_LEAK"
+
+
+def test_the_exact_rule_refuses_a_class_label_in_the_report_of_a_small_build(tmp_path, monkeypatch):
+    part_dir, keys_path = _build(tmp_path, monkeypatch, "h3", triads=3, shuffle_seed=SECRET_SEED)
+    truth = _true_keys(keys_path)
+    report = _report_with_items(tmp_path, _report_rows(truth, 9, lambda i, k: {"panel_class": k}))
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report]) == "PILOT_B_SEALED_CONTENT_LEAK"
+
+
+def test_a_second_judgment_with_true_prompt_digests_is_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "h4")
+    metrics = {r["id"]: r for r in _jsonl(keys_path.parent / "call_metrics.sealed.jsonl")}
+    _edit_provenance(
+        part_dir,
+        lambda r: r["judgments"].append({"call_records": [{"prompt_sha256": metrics[r["id"]]["readers"][0]["prompt_sha256"]}]}),
+    )
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_DIGEST_MISMATCH"
+
+
+@pytest.mark.parametrize("field", [("map", "sha256"), ("licence_registry_sha256",)])
+def test_a_constant_digest_deleted_on_one_class_is_refused(tmp_path, monkeypatch, field):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "h5-" + field[0])
+    truth = _true_keys(keys_path)
+
+    def drop(row):
+        if truth[row["id"]] == "cannot_tell":
+            target = row
+            for part in field[:-1]:
+                target = target[part]
+            target.pop(field[-1], None)
+
+    _edit_provenance(part_dir, drop)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_DIGEST_MISMATCH"
+
+
+def test_a_test_only_part_edited_to_frozen_is_refused_by_verify(tmp_path, monkeypatch):
+    part_dir, keys_path = _build(tmp_path, monkeypatch, "h6", shuffle_seed=42, allow_weak_test_seed=True)
+    meta = json.loads((part_dir / "part.json").read_text(encoding="utf-8"))
+    meta["frozen"] = True
+    (part_dir / "part.json").write_text(json.dumps(meta), encoding="utf-8")
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_TEST_ONLY_FROZEN"
+
+
+def test_provenance_rows_must_be_the_sealed_rows_in_order(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "h7")
+    rows = _jsonl(part_dir / "provenance.jsonl")
+    (part_dir / "provenance.jsonl").write_text("\n".join(json.dumps(r) for r in rows[:-3]) + "\n", encoding="utf-8")
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_DIGEST_MISMATCH"
+    rows[0], rows[1] = rows[1], rows[0]
+    (part_dir / "provenance.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_DIGEST_MISMATCH"
+
+
+def test_the_public_items_must_be_the_sealed_items(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "h8")
+    rows = _jsonl(part_dir / "items.jsonl")
+    (part_dir / "items.jsonl").write_text("\n".join(json.dumps(r) for r in rows[:-1]) + "\n", encoding="utf-8")
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_DIGEST_MISMATCH"
+
+
+@pytest.mark.parametrize("triads", [1, 2, 3, 4, 6])
+def test_legitimate_builds_of_any_size_still_verify(tmp_path, monkeypatch, triads):
+    part_dir, keys_path = _build(tmp_path, monkeypatch, f"ok{triads}", triads=triads, shuffle_seed=SECRET_SEED)
+    verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)["frozen"] is True
+
+
+# ── an allow-list: public files must match a fixed shape; integrity is recomputed from the sealed store ──
+
+
+def _edit_json(path: Path, mutate) -> None:
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    mutate(doc)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _rewrite_checksums(part_dir: Path) -> None:
+    import hashlib
+
+    lines = [
+        f"{hashlib.sha256((part_dir / n).read_bytes()).hexdigest()}  {n}"
+        for n in ("items.jsonl", "part.json", "provenance.jsonl")
+    ]
+    (part_dir / "checksums.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_rows(path: Path, rows: list[dict]) -> None:
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d.update(note="x"),
+        lambda d: d["waves"][0].update(note="x"),
+        lambda d: d["judgment_aggregates"].update(note="x"),
+        lambda d: d["waves"].append(dict(d["waves"][0])),
+    ],
+    ids=["top-level", "nested-object", "aggregates", "extra-array-entry"],
+)
+def test_part_json_must_match_its_schema(tmp_path, monkeypatch, mutate):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "s-part")
+    _edit_json(part_dir / "part.json", mutate)
+    _rewrite_checksums(part_dir)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_SCHEMA_MISMATCH"
+
+
+def test_every_item_must_match_its_schema(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "s-item")
+    rows = _jsonl(part_dir / "items.jsonl")
+    rows[0]["extra"] = "x"
+    _write_rows(part_dir / "items.jsonl", rows)
+    _rewrite_checksums(part_dir)
+    assert _verify_code(part_dir, keys_path) in {"PILOT_B_SEALED_SCHEMA_MISMATCH", "PILOT_B_SEALED_CONTENT_LEAK"}
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r["writer"].update(extra="x"),
+        lambda r: r["writer"]["call_records"][0].update(extra="x"),
+        lambda r: r["writer"]["call_records"].append(dict(r["writer"]["call_records"][0])),
+        lambda r: r["judgments"][0]["call_records"].append(dict(r["judgments"][0]["call_records"][0])),
+        lambda r: r["checks"].append(dict(r["checks"][0])),
+        lambda r: r["judgments"][0]["readers"].append("x"),
+    ],
+    ids=["writer-field", "call-record-field", "extra-writer-call", "extra-reader-call", "extra-check", "long-pair"],
+)
+def test_provenance_rows_must_match_their_schema(tmp_path, monkeypatch, mutate):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "s-prov")
+    _edit_provenance(part_dir, mutate)
+    _rewrite_checksums(part_dir)
+    assert _verify_code(part_dir, keys_path) in {"PILOT_B_SEALED_SCHEMA_MISMATCH", "PILOT_B_SEALED_DIGEST_MISMATCH"}
+
+
+def test_a_file_the_writer_does_not_produce_is_refused(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "s-file")
+    (part_dir / "notes.txt").write_text("hello", encoding="utf-8")
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_SCHEMA_MISMATCH"
+
+
+def test_checksums_must_list_the_digests_of_the_files(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "s-sum")
+    (part_dir / "checksums.txt").write_text("0" * 64 + "  items.jsonl\n", encoding="utf-8")
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_SCHEMA_MISMATCH"
+
+
+def test_the_report_must_match_its_schema_and_be_the_report(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "s-report")
+    out, _result = _stub_build(tmp_path, monkeypatch, "s-report-build")
+    report = out / "reports" / "pilot_b_report.json"
+    real_part, real_keys = out / "part_pilot_b_sealed", out / "sealed_store" / "keys.sealed.jsonl"
+    verify_sealed_part(part_dir=real_part, keys_sealed_path=real_keys, extra_public_files=[report])
+    _edit_json(report, lambda d: d.update(note="x"))
+    assert _verify_code(real_part, real_keys, extra_public_files=[report]) == "PILOT_B_SEALED_SCHEMA_MISMATCH"
+    other = tmp_path / "other.json"
+    other.write_text("{}", encoding="utf-8")
+    assert _verify_code(part_dir, keys_path, extra_public_files=[other]) == "PILOT_B_SEALED_SCHEMA_MISMATCH"
+
+
+def test_frozen_is_a_seal_recomputed_from_the_sealed_store(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "f1")
+    meta = freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert meta["frozen"] is True and len(meta["frozen_mac"]) == 64
+    verify_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    # a hand-edited frozen flag on an unfrozen part carries no valid seal
+    other_dir, other_keys = _fresh(tmp_path, monkeypatch, "f2")
+    _edit_json(other_dir / "part.json", lambda d: d.update(frozen=True))
+    _rewrite_checksums(other_dir)
+    assert _verify_code(other_dir, other_keys) == "PILOT_B_SEALED_FROZEN_MISMATCH"
+    # a seal copied from another part does not fit
+    _edit_json(other_dir / "part.json", lambda d: d.update(frozen=True, frozen_mac=meta["frozen_mac"]))
+    _rewrite_checksums(other_dir)
+    assert _verify_code(other_dir, other_keys) == "PILOT_B_SEALED_FROZEN_MISMATCH"
+
+
+def test_a_frozen_part_that_is_edited_afterwards_fails_its_seal(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "f3")
+    freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    rows = _jsonl(part_dir / "items.jsonl")
+    rows[0]["claim"] = rows[0]["claim"] + " "
+    _write_rows(part_dir / "items.jsonl", rows)
+    _rewrite_checksums(part_dir)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_FROZEN_MISMATCH"
+
+
+def test_without_the_sealed_store_a_part_is_unverifiable_never_frozen(tmp_path, monkeypatch):
+    from reasoning_dataset_lab.pilot_b.waves_and_sealing import part_status
+
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "f4")
+    freeze_sealed_part(part_dir=part_dir, keys_sealed_path=keys_path)
+    assert part_status(part_dir) == "unverifiable"
+    assert part_status(part_dir, tmp_path / "nowhere" / "keys.sealed.jsonl") == "unverifiable"
+    assert part_status(part_dir, keys_path) == "frozen"
+    other_dir, other_keys = _fresh(tmp_path, monkeypatch, "f5")
+    assert part_status(other_dir, other_keys) == "not_frozen"
+
+
+def test_a_field_present_on_one_class_only_is_refused_in_every_public_file(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "p1")
+    truth = _true_keys(keys_path)
+    count = {"n": 0}
+
+    def only_cannot_tell(row):
+        if truth[row["id"]] == "cannot_tell":
+            count["n"] += 1
+            row[f"extra_{count['n']}"] = count["n"]
+
+    _edit_provenance(part_dir, only_cannot_tell)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_CONTENT_LEAK"
+    part2, keys2 = _fresh(tmp_path, monkeypatch, "p2")
+    truth2 = _true_keys(keys2)
+    rows = _jsonl(part2 / "items.jsonl")
+    for i, row in enumerate(rows):
+        if truth2[row["id"]] == "supported":
+            row[f"extra_{i}"] = i
+    _write_rows(part2 / "items.jsonl", rows)
+    assert _verify_code(part2, keys2) == "PILOT_B_SEALED_CONTENT_LEAK"
+
+
+def test_the_public_items_must_be_in_the_sealed_order(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "o1")
+    rows = _jsonl(part_dir / "items.jsonl")
+    rows[0], rows[1] = rows[1], rows[0]
+    _write_rows(part_dir / "items.jsonl", rows)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_DIGEST_MISMATCH"
+
+
+def test_the_schema_checker_is_strict_about_what_it_does_not_know():
+    from reasoning_dataset_lab.pilot_b import schema_check
+
+    root = {"$defs": {"n": {"type": "integer", "minimum": 2}}}
+    check = schema_check._check
+    assert check(1, {"$ref": "#/$defs/n"}, root, "$") == ["$: below 2"]
+    assert check(2, {"$ref": "#/$defs/n"}, root, "$") == []
+    assert "not supported" in check(1, {"oneOf": []}, root, "$")[0]
+    assert "unsupported reference" in check(1, {"$ref": "http://x"}, root, "$")[0]
+    assert check(1, {"anyOf": [{"type": "string"}, {"type": "boolean"}]}, root, "$")
+    assert check(True, {"type": "integer"}, root, "$") == ["$: expected integer"]
+    assert check("a", {"enum": ["b"]}, root, "$") and check("a", {"const": "b"}, root, "$")
+    assert check([1, 2, 3], {"type": "array", "maxItems": 2}, root, "$") == ["$: more than 2 entries"]
+    assert check({"a": 1}, {"type": "object", "additionalProperties": {"type": "string"}}, root, "$") == [
+        "$.a: expected string"
+    ]
+
+
+def test_the_wheel_ships_the_schema_files():
+    import importlib.resources as resources
+
+    names = {p.name for p in resources.files("reasoning_dataset_lab.pilot_b").joinpath("schemas").iterdir()}
+    assert names >= {"part.schema.json", "item.schema.json", "provenance.schema.json", "report.schema.json"}
