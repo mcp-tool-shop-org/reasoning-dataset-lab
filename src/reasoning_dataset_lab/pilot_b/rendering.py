@@ -42,9 +42,7 @@ BETWEEN_RE: re.Pattern[str] = re.compile(
     re.IGNORECASE,
 )
 ONLY_RE: re.Pattern[str] = re.compile(r"\bonly\b", re.IGNORECASE)
-NUMBER_TOKEN_RE: re.Pattern[str] = re.compile(
-    r"(?<![a-zA-Z0-9-])\d+(?:\.\d+)?(?![a-zA-Z0-9-])"
-)
+NUMBER_TOKEN_RE: re.Pattern[str] = re.compile(r"\b\d+(?:\.\d+)?\b")
 PROPER_NOUN_TOKEN_RE: re.Pattern[str] = re.compile(r"\b[A-Z][a-zA-Z0-9-]*\b")
 WORD_TOKEN_RE: re.Pattern[str] = re.compile(r"\b[a-zA-Z][a-zA-Z0-9-]*\b")
 

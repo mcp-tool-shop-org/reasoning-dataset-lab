@@ -360,7 +360,122 @@ def test_worded_claim_allows_catalogue_and_claimed_value_case_insensitively_and_
                 unsup_claim,
                 f"The seal material of Pump Epsilon is viton from {bad_noun}.",
             )
-        assert exc_noun.value.code == "PILOT_B_RENDER_UNGROUNDED_PROPER_NOUN"
+        assert exc_noun.value.code in {
+            "PILOT_B_RENDER_UNGROUNDED_PROPER_NOUN",
+            "PILOT_B_RENDER_UNGROUNDED_NUMBER",
+        }
+
+
+def test_hyphenated_unlisted_numbers_are_refused_and_listed_24_passes() -> None:
+    """Card gx: hyphenated unlisted numbers ('36-hold', '42-56', 'rated-49') are refused with PILOT_B_RENDER_UNGROUNDED_NUMBER, while 'Kiln One has 24 heating zones.' passes when 24 is in the table."""
+    from dataclasses import replace
+
+    base_table = build_sample_fact_table(seed=4, closure="open")
+    # Build a table with entities Tanker Orion, Tanker Vega, Pump Delta and no numbers 36, 42, 56, or 49
+    no_num_table = FactTable(
+        table_id="T10-D-gx-001",
+        domain="vessels",
+        closure="open",
+        entities=("Tanker Orion", "Tanker Vega", "Pump Delta"),
+        facts=(
+            AtomicFact(
+                fact_id="T10-D-gx-001-f1",
+                line=1,
+                entity="Tanker Orion",
+                attribute="tanker",
+                fact_type="attribute",
+                value="hold",
+            ),
+            AtomicFact(
+                fact_id="T10-D-gx-001-f2",
+                line=2,
+                entity="Tanker Vega",
+                attribute="draft depth",
+                fact_type="attribute",
+                value="meters",
+            ),
+            AtomicFact(
+                fact_id="T10-D-gx-001-f3",
+                line=3,
+                entity="Pump Delta",
+                attribute="value",
+                fact_type="attribute",
+                value="high",
+            ),
+        ),
+    )
+    triad_template = build_contrast_triad(base_table, seed=4)
+    base_claim = triad_template.claims["supported"]
+
+    cases = [
+        (
+            replace(
+                base_claim,
+                table_id=no_num_table.table_id,
+                fact_id="T10-D-gx-001-f1",
+                entity="Tanker Orion",
+                attribute="tanker",
+                fact_type="attribute",
+                claimed_value="hold",
+                unit=None,
+                op="=",
+            ),
+            "Tanker Orion is a 36-hold tanker.",
+        ),
+        (
+            replace(
+                base_claim,
+                table_id=no_num_table.table_id,
+                fact_id="T10-D-gx-001-f2",
+                entity="Tanker Vega",
+                attribute="draft depth",
+                fact_type="attribute",
+                claimed_value="meters",
+                unit=None,
+                op="=",
+            ),
+            "The draft depth of Tanker Vega is 42-56 meters.",
+        ),
+        (
+            replace(
+                base_claim,
+                table_id=no_num_table.table_id,
+                fact_id="T10-D-gx-001-f3",
+                entity="Pump Delta",
+                attribute="value",
+                fact_type="attribute",
+                claimed_value="high",
+                unit=None,
+                op="=",
+            ),
+            "The rated-49 value of Pump Delta is high.",
+        ),
+    ]
+    for claim_obj, bad_sentence in cases:
+        with pytest.raises(RdlabError) as exc_num:
+            check_worded_claim(no_num_table, claim_obj, bad_sentence)
+        assert exc_num.value.code == "PILOT_B_RENDER_UNGROUNDED_NUMBER"
+
+    # Also verify "Kiln One has 24 heating zones." passes when 24 is in the table
+    kiln_table = replace(
+        base_table,
+        facts=(
+            replace(base_table.facts[0], entity="Kiln One", attribute="heating zones", value=24, unit="zones"),
+            *base_table.facts[1:],
+        ),
+    )
+    kiln_claim = replace(
+        base_claim,
+        table_id=kiln_table.table_id,
+        fact_id=kiln_table.facts[0].fact_id,
+        entity="Kiln One",
+        attribute="heating zones",
+        fact_type="number",
+        claimed_value=24,
+        unit="zones",
+        op="=",
+    )
+    check_worded_claim(kiln_table, kiln_claim, "Kiln One has 24 heating zones.")
 
 
 def test_style_lint_flags_quoted_defects_and_passes_clean_lines() -> None:

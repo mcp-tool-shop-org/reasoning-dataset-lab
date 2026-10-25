@@ -5266,120 +5266,120 @@
             {
               "in": "_check_polarity_and_quantifiers",
               "kind": "raise",
-              "line": 221
+              "line": 219
             },
             {
               "in": "_check_polarity_and_quantifiers",
               "kind": "raise",
-              "line": 229
+              "line": 227
             },
             {
               "in": "_check_polarity_and_quantifiers",
               "kind": "raise",
-              "line": 240
+              "line": 238
             },
             {
               "in": "_check_polarity_and_quantifiers",
               "kind": "raise",
-              "line": 247
+              "line": 245
             },
             {
               "in": "_check_polarity_and_quantifiers",
               "kind": "raise",
-              "line": 254
+              "line": 252
             },
             {
               "in": "_check_polarity_and_quantifiers",
               "kind": "raise",
-              "line": 263
+              "line": 261
             },
             {
               "in": "_check_polarity_and_quantifiers",
               "kind": "raise",
-              "line": 270
+              "line": 268
             },
             {
               "in": "_check_polarity_and_quantifiers",
               "kind": "raise",
-              "line": 277
+              "line": 275
             },
             {
               "in": "_check_grounding_tokens",
               "kind": "raise",
-              "line": 293
+              "line": 291
             },
             {
               "in": "_check_grounding_tokens",
               "kind": "raise",
-              "line": 303
+              "line": 301
             },
             {
               "in": "_parse_material_sentences",
               "kind": "raise",
-              "line": 320
+              "line": 318
             },
             {
               "in": "_parse_material_sentences",
               "kind": "raise",
-              "line": 327
+              "line": 325
             },
             {
               "in": "check_rendered_material",
               "kind": "raise",
-              "line": 341
+              "line": 339
             },
             {
               "in": "check_rendered_material",
               "kind": "raise",
-              "line": 353
+              "line": 351
             },
             {
               "in": "check_rendered_material",
               "kind": "raise",
-              "line": 359
+              "line": 357
             },
             {
               "in": "check_rendered_material",
               "kind": "raise",
-              "line": 366
+              "line": 364
             },
             {
               "in": "check_rendered_material",
               "kind": "raise",
-              "line": 375
+              "line": 373
             },
             {
               "in": "check_rendered_material",
               "kind": "raise",
-              "line": 385
+              "line": 383
             },
             {
               "in": "check_worded_claim",
               "kind": "raise",
-              "line": 410
+              "line": 408
             },
             {
               "in": "check_worded_claim",
               "kind": "raise",
-              "line": 416
+              "line": 414
             },
             {
               "in": "check_worded_claim",
               "kind": "raise",
-              "line": 423
+              "line": 421
             },
             {
               "in": "check_worded_claim",
               "kind": "raise",
-              "line": 431
+              "line": 429
             },
             {
               "in": "check_worded_triad",
               "kind": "raise",
-              "line": 448
+              "line": 446
             }
           ],
-          "hash": "a09a9079e558657cc5bbf90833f5c6dc1faa080286a57c14b9f421b0ff9b60ce",
+          "hash": "a3632f88ae7b6623f9ae33baba98dc6382d4b151dc1c25b3211375ebc9889c6f",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py"
@@ -5755,6 +5755,7 @@
           "exports": [
             "test_deterministic_writer_renders_valid_material_and_claims",
             "test_flipped_bound_fake_is_refused_by_rendering_check",
+            "test_hyphenated_unlisted_numbers_are_refused_and_listed_24_passes",
             "test_part_b_additional_rendering_branches_and_refusals",
             "test_polarity_mismatch_and_only_insertion_are_refused",
             "test_relational_swap_or_extra_entity_on_sentence_is_refused",
@@ -5764,7 +5765,7 @@
             "test_worded_claim_allows_catalogue_and_claimed_value_case_insensitively_and_refuses_ungrounded_proper_nouns",
             "test_worded_claim_checks_refuse_flipped_bound_or_ungrounded_tokens"
           ],
-          "hash": "280d1fc5250fcb18379bd87756e8e7568a75ba46268bd093f9b728d82db90459",
+          "hash": "32668d225f6fcc2eec707416e95a6921b884e0a1c157133d3bec203e3b0d35e6",
           "importOrder": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
@@ -6135,7 +6136,7 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "50ceb2aa382fbf0ec65aa39f1fe62e8e2837096e",
+    "commit": "8ebfcc4e45e90eaf6d1de4cef9e274037eb66adc",
     "tracked": 39
   },
   "landings": [

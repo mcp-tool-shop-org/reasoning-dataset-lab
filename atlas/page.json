@@ -19,21 +19,21 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 1,
+      "changed": 2,
       "moved": 0,
-      "parts": 1,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-10-25; 1 file changed content.",
+        "sentence": "Nothing structural changed since 2026-10-25; 2 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "9c217a25681980f1c3b529f5dde98eca0bc4da13",
-      "generatedAt": "2026-10-25T13:53:57.692Z"
+      "commit": "50ceb2aa382fbf0ec65aa39f1fe62e8e2837096e",
+      "generatedAt": "2026-10-25T13:57:55.444Z"
     },
     "unchanged": true
   },
@@ -42,7 +42,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "50ceb2aa382fbf0ec65aa39f1fe62e8e2837096e",
+  "commit": "8ebfcc4e45e90eaf6d1de4cef9e274037eb66adc",
   "defaultBranch": "main",
   "derived": "5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
@@ -114,7 +114,7 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-25T13:57:55.444Z",
+  "generatedAt": "2026-10-25T14:04:44.534Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "2 reads use paths built at run time and are not named here.",
