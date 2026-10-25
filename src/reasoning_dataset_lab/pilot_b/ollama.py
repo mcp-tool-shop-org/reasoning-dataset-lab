@@ -1,4 +1,4 @@
-"""Part A: Real loopback Ollama writer adapter for Pilot B (Card gk Part A & Card gn).
+"""Part A: Real loopback Ollama writer adapter for Pilot B (Card gk Part A, Card gn, Card gp & Card gr).
 
 Relies on the official Ollama HTTP API (`https://github.com/ollama/ollama/blob/main/docs/api.md`):
 - `GET /api/tags` (`https://github.com/ollama/ollama/blob/main/docs/api.md#list-local-models`):
@@ -7,11 +7,19 @@ Relies on the official Ollama HTTP API (`https://github.com/ollama/ollama/blob/m
   is never called).
 - `POST /api/chat` (`https://github.com/ollama/ollama/blob/main/docs/api.md#generate-a-chat-completion`):
   sends `model` (pinned `ollama_tag`), `messages`, top-level `think` (`docs/api.md:499`), `stream: false`,
-  and `options: {"temperature": 0, "num_predict": <cap + answer_budget>}` (`docs/api.md:393`, `:513`);
-  reads `message.content`, `message.thinking` (`docs/api.md:505`), `done_reason` (`docs/api.md:658`),
-  `eval_count`, and `thinking_tokens` / `thinking_eval_count`.
+  and `options: {"temperature": 0, "num_predict": <cap + answer_budget>, "num_ctx": <computed_num_ctx>}`
+  (`docs/api.md:393`, `:513`); reads `message.content`, `message.thinking` (`docs/api.md:505`),
+  `done_reason` (`docs/api.md:658`), `eval_count`, and `thinking_tokens` / `thinking_eval_count`.
 - `POST /api/chat` with `keep_alive: 0` (`https://github.com/ollama/ollama/blob/main/docs/api.md#unload-a-model`):
   unloads the model from VRAM after each wave.
+
+Provisional render defaults — **PROVISIONAL (n = 3, 2026-10-25)**:
+- `render_material` thinking cap `2,048` and answer budget `1,792` (calibrated at `num_predict` `4,096`;
+  `cap + answer_budget = 3,840`), with writer `max_num_ctx` `8,192`.
+- Measured on `qwen3.6:35b` (`a7eb95c5`, `think: true`, 3 tables at `num_predict 4,096`, `num_ctx 8,192`):
+  thinking `1,144 / 1,234 / 1,945`; answers `951 / 1,072 / 1,517`; peak `25,229 MiB` at `num_ctx 8,192`.
+- `word_claim` (`cap = 256`, `answer_budget = 96`) and `read_claim` (`cap = 256`, `answer_budget = 32`)
+  keep their existing defaults pending separate calibration.
 """
 
 from __future__ import annotations
@@ -52,8 +60,12 @@ if TYPE_CHECKING:
 DEFAULT_OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
 LOOPBACK_HOST: str = "127.0.0.1"
 
-# Documented default thinking token cap (Card gp Part B: the cap is configuration, never a constant source of truth)
+# Documented default thinking token cap (Card gp Part B & Card gr Part B: the cap is configuration, never a constant source of truth).
+# Render values are PROVISIONAL (n = 3, 2026-10-25): thinking 1,144 / 1,234 / 1,945; answers 951 / 1,072 / 1,517; peak 25,229 MiB at num_ctx 8,192.
 DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP: int = 256
+DOCUMENTED_DEFAULT_RENDER_THINKING_CAP: int = 2048
+DOCUMENTED_DEFAULT_WORD_THINKING_CAP: int = 256
+DOCUMENTED_DEFAULT_READ_THINKING_CAP: int = 256
 DEFAULT_THINKING_TOKEN_CAP: int = DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP
 
 OllamaOperation = Literal["render_material", "word_claim", "read_claim"]
@@ -67,14 +79,15 @@ AnswerBudgetSource = Literal["cli", "config", "default"]
 OllamaHttpTransport = Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
 
 DOCUMENTED_DEFAULT_THINKING_CAP_BY_OPERATION: dict[OllamaOperation, int] = {
-    "render_material": DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
-    "word_claim": DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
-    "read_claim": DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
+    "render_material": DOCUMENTED_DEFAULT_RENDER_THINKING_CAP,
+    "word_claim": DOCUMENTED_DEFAULT_WORD_THINKING_CAP,
+    "read_claim": DOCUMENTED_DEFAULT_READ_THINKING_CAP,
 }
 
-# Documented default answer token budgets per operation (Card gr Part A: answer budgets are configuration,
-# never constants; options.num_predict = configured_thinking_cap + configured_answer_budget)
-DOCUMENTED_DEFAULT_RENDER_ANSWER_BUDGET: int = 256
+# Documented default answer token budgets per operation (Card gr Part A & Part B: answer budgets are configuration,
+# never constants; options.num_predict = configured_thinking_cap + configured_answer_budget).
+# Render values are PROVISIONAL (n = 3, 2026-10-25): thinking 1,144 / 1,234 / 1,945; answers 951 / 1,072 / 1,517; peak 25,229 MiB at num_ctx 8,192.
+DOCUMENTED_DEFAULT_RENDER_ANSWER_BUDGET: int = 1792
 DOCUMENTED_DEFAULT_WORD_ANSWER_BUDGET: int = 96
 DOCUMENTED_DEFAULT_READ_ANSWER_BUDGET: int = 32
 DOCUMENTED_DEFAULT_ANSWER_BUDGET: int = DOCUMENTED_DEFAULT_RENDER_ANSWER_BUDGET
@@ -95,18 +108,19 @@ OPERATION_ANSWER_BUDGETS: dict[OllamaOperation, int] = dict(
     DOCUMENTED_DEFAULT_ANSWER_BUDGET_BY_OPERATION
 )
 
-# Explicit num_ctx calculation and per-role ceilings (Card gp Part A):
+# Explicit num_ctx calculation and per-role ceilings (Card gp Part A & Card gr Part B):
 # options.num_ctx = round_up(prompt_tokens_estimate + num_predict + margin, 1024)
 PROMPT_TOKEN_ESTIMATE_RULE: str = "ceil(utf8_bytes / 3)"
 NUM_CTX_MARGIN_TOKENS: int = 256
 NUM_CTX_STEP_TOKENS: int = 1024
+DEFAULT_RENDER_MAX_NUM_CTX: int = 8192
 
 # Per-role max_num_ctx defaults planned so weights + KV stay at or below 26.0 GB (GPU-jobs rule):
-# - writer (qwen3.6:35b, weights 22.6 GB, 3.4 GB under 26.0 GB): 8192
+# - writer (qwen3.6:35b, weights 22.6 GB, 3.4 GB under 26.0 GB): 8192 (PROVISIONAL (n = 3, 2026-10-25): peak 25,229 MiB at num_ctx 8,192)
 # - reader_1 (nemotron-3.5-lightning:30b, weights 25.4 GB, ~0.6 GB under 26.0 GB): 2048
 # - reader_2 (granite4.2:8b, weights 5.3 GB, 20.7 GB under 26.0 GB): 8192
 DEFAULT_ROLE_MAX_NUM_CTX: dict[str, int] = {
-    "writer": 8192,
+    "writer": DEFAULT_RENDER_MAX_NUM_CTX,
     "reader_1": 2048,
     "reader_2": 8192,
 }
