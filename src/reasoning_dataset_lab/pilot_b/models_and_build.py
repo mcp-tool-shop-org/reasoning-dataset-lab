@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
+import statistics
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -32,24 +34,38 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
 )
 import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 from reasoning_dataset_lab.pilot_b.ollama import (
+    CALIBRATION_CAP_MARGIN_TOKENS,
+    DEFAULT_CALIBRATION_NUM_CTX,
+    DEFAULT_CALIBRATION_NUM_PREDICT,
+    DEFAULT_CALIBRATION_TABLES,
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_ROLE_MAX_NUM_CTX,
     DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
     NUM_CTX_MARGIN_TOKENS,
     NUM_CTX_STEP_TOKENS,
+    PILOT_B_OPERATIONS,
     PROMPT_TOKEN_ESTIMATE_RULE,
     OllamaBlindReaderAdapter,
+    OllamaOperation,
     OllamaWriterAdapter,
     ThinkingCapConfig,
     ThinkingCapSource,
+    build_reader_read_messages,
+    build_writer_render_messages,
+    build_writer_word_messages,
     coerce_thinking_cap_config,
+    format_reference_claim,
+    format_reference_material,
     resolve_thinking_cap_config,
+    run_ollama_calibration_calls,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
     DEFAULT_MIN_PASS_RATE_PER_CLASS,
+    VERDICT_CLASSES,
     ModelIdentity,
     SourceMatchStatus,
     ThinkSetting,
+    build_blind_read_prompt,
     validate_chain_families,
 )
 from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
@@ -1008,3 +1024,178 @@ def run_pilot_b_build(
             "review_queue": str(review_queue_path),
         },
     }
+
+
+def _nearest_rank_p95(values: Sequence[int]) -> int:
+    if not values:
+        return 0
+    sorted_vals = sorted(int(v) for v in values)
+    idx = max(0, math.ceil(0.95 * len(sorted_vals)) - 1)
+    return sorted_vals[idx]
+
+
+def run_pilot_b_calibration(
+    *,
+    operation: OllamaOperation,
+    output_dir: Path,
+    licence_registry_path: Path | None = None,
+    tables_count: int = DEFAULT_CALIBRATION_TABLES,
+    num_predict: int = DEFAULT_CALIBRATION_NUM_PREDICT,
+    num_ctx: int = DEFAULT_CALIBRATION_NUM_CTX,
+    seed: int = 1,
+    role: str | None = None,
+    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    think: Any = True,
+) -> dict[str, Any]:
+    """Run `rdlab pilot-b calibrate` (Card gp Part C): measure thinking tokens, write `calibration.json`, seal nothing."""
+    if think is not True:
+        raise refused_error(
+            "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN",
+            f"Calibration requires think=True, got {think!r}.",
+            "Run calibration with thinking enabled (think: true only).",
+        )
+    if operation not in PILOT_B_OPERATIONS:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_OPERATION",
+            f"Unsupported calibration operation {operation!r}; must be one of {list(PILOT_B_OPERATIONS)}.",
+            "Pass --operation render_material|word_claim|read_claim.",
+        )
+    if tables_count < 1:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_TABLES",
+            f"--tables must be >= 1, got {tables_count}.",
+            "Pass a positive integer --tables N (default: 3).",
+        )
+    if num_predict < 1:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_NUM_PREDICT",
+            f"--num-predict must be >= 1, got {num_predict}.",
+            "Pass a positive integer --num-predict (default: 4096).",
+        )
+    if num_ctx < NUM_CTX_STEP_TOKENS:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_NUM_CTX",
+            f"--num-ctx must be >= {NUM_CTX_STEP_TOKENS}, got {num_ctx}.",
+            f"Pass --num-ctx >= {NUM_CTX_STEP_TOKENS} (default: 8192).",
+        )
+
+    pins = resolve_pilot_b_model_pins()
+    # Require explicit --licence-registry (never falls back to fixture)
+    validate_models_against_licence_registry(
+        list(pins.values()),
+        registry_path=licence_registry_path,
+    )
+    assert licence_registry_path is not None
+    reg_sha256 = hashlib.sha256(licence_registry_path.read_bytes()).hexdigest()
+
+    if operation in ("render_material", "word_claim"):
+        selected_role = role if role is not None else "writer"
+        if selected_role != "writer":
+            raise usage_error(
+                "PILOT_B_INVALID_CALIBRATE_ROLE",
+                f"Operation '{operation}' runs on the writer model (role='writer'), got role={selected_role!r}.",
+                "Omit --role or pass --role writer for render_material and word_claim.",
+            )
+    else:
+        selected_role = role if role is not None else "reader_1"
+        if selected_role not in ("reader_1", "reader_2"):
+            raise usage_error(
+                "PILOT_B_INVALID_CALIBRATE_ROLE",
+                f"Operation 'read_claim' requires role 'reader_1' or 'reader_2', got {selected_role!r}.",
+                "Pass --role reader_1 or --role reader_2 for read_claim.",
+            )
+
+    target_spec = pins[selected_role]
+    tables = generate_fact_tables(n=tables_count, seed=seed)
+    triads = [
+        build_contrast_triad(table, seed=seed + idx)
+        for idx, table in enumerate(tables)
+    ]
+
+    call_items: list[tuple[str, list[dict[str, str]]]] = []
+    if operation == "render_material":
+        for t in triads:
+            call_items.append(
+                (t.table.table_id, build_writer_render_messages(t.table))
+            )
+    elif operation == "word_claim":
+        for t in triads:
+            for key in VERDICT_CLASSES:
+                claim = t.claims[key]
+                call_items.append(
+                    (claim.claim_id, build_writer_word_messages(claim))
+                )
+    else:
+        for t in triads:
+            ref_mat = format_reference_material(t.table)
+            for key in VERDICT_CLASSES:
+                claim = t.claims[key]
+                ref_claim = format_reference_claim(claim)
+                prompt = build_blind_read_prompt(
+                    triad_id=t.triad_id,
+                    claim_id=claim.claim_id,
+                    closure=t.table.closure,
+                    material=ref_mat,
+                    claim_text=ref_claim,
+                )
+                call_items.append(
+                    (claim.claim_id, build_reader_read_messages(prompt))
+                )
+
+    rows, unload_rec = run_ollama_calibration_calls(
+        model=target_spec,
+        operation=operation,
+        call_items=call_items,
+        num_predict=num_predict,
+        num_ctx=num_ctx,
+        base_url=ollama_base_url,
+        think=True,
+        http_transport=ollama_mod.default_ollama_http_transport,
+    )
+
+    thinking_vals = [int(r["thinking_tokens"]) for r in rows]
+    count_val = len(rows)
+    min_val = min(thinking_vals) if thinking_vals else 0
+    median_val = int(round(statistics.median(thinking_vals))) if thinking_vals else 0
+    p95_val = _nearest_rank_p95(thinking_vals)
+    max_val = max(thinking_vals) if thinking_vals else 0
+    length_stops = sum(1 for r in rows if r["done_reason"] == "length")
+    suggested_cap = p95_val + CALIBRATION_CAP_MARGIN_TOKENS
+
+    calibration_payload: dict[str, Any] = {
+        "operation": operation,
+        "role": selected_role,
+        "model": target_spec.ollama_tag,
+        "manifest_digest": target_spec.manifest_digest,
+        "think": True,
+        "tables": tables_count,
+        "num_predict": int(num_predict),
+        "num_ctx": int(num_ctx),
+        "licence_registry_path": str(licence_registry_path),
+        "licence_registry_sha256": reg_sha256,
+        "count": count_val,
+        "min": min_val,
+        "median": median_val,
+        "p95": p95_val,
+        "max": max_val,
+        "length_stops": length_stops,
+        "margin_constant": "CALIBRATION_CAP_MARGIN_TOKENS",
+        "margin_tokens": CALIBRATION_CAP_MARGIN_TOKENS,
+        "suggested_thinking_cap": suggested_cap,
+        "suggested_cap_summary": (
+            f"Suggested thinking cap for {operation}: {suggested_cap} "
+            f"(p95={p95_val} + CALIBRATION_CAP_MARGIN_TOKENS={CALIBRATION_CAP_MARGIN_TOKENS})"
+        ),
+        "unloaded": unload_rec.to_dict(),
+        "calls": rows,
+        "rows": rows,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cal_path = output_dir / "calibration.json"
+    cal_path.write_text(
+        json.dumps(calibration_payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return calibration_payload
+

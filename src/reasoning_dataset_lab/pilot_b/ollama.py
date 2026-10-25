@@ -614,6 +614,114 @@ def verify_local_ollama_model_digest(
     return norm_expected
 
 
+def build_writer_render_messages(table: FactTable) -> list[dict[str, str]]:
+    """Build the `/api/chat` messages payload for `render_material`."""
+    table_json = json.dumps(
+        table.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are the Pilot B writer. Render each fact in the formal FactTable into one numbered "
+                "sentence per line ('1. ...', '2. ...'), preserving exact entities, attributes, numbers, "
+                "dates, intervals, polarity, and quantifier direction. Introduce no extra numbers or proper nouns."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Render the following formal FactTable into numbered lines.\nFACTS_JSON:\n{table_json}",
+        },
+    ]
+
+
+def build_writer_word_messages(claim: ProvedClaim) -> list[dict[str, str]]:
+    """Build the `/api/chat` messages payload for `word_claim`."""
+    claim_spec = {
+        "claim_id": claim.claim_id,
+        "table_id": claim.table_id,
+        "entity": claim.entity,
+        "attribute": claim.attribute,
+        "fact_type": claim.fact_type,
+        "claimed_value": (
+            [int(claim.claimed_value[0]), int(claim.claimed_value[1])]
+            if isinstance(claim.claimed_value, tuple)
+            else claim.claimed_value
+        ),
+        "unit": claim.unit,
+        "op": claim.op,
+    }
+    claim_json = json.dumps(
+        claim_spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are the Pilot B writer. Word the formal claim into a single declarative English sentence "
+                "preserving its exact entity, attribute, value, unit, polarity, and quantifier direction. "
+                "Introduce no unlisted numbers or proper nouns."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Word the following formal ProvedClaim into one sentence.\nCLAIM_JSON:\n{claim_json}",
+        },
+    ]
+
+
+def build_reader_read_messages(prompt: BlindReadPrompt) -> list[dict[str, str]]:
+    """Build the `/api/chat` messages payload for `read_claim`."""
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a blind verification reader. Given only the Material and a single Claim, "
+                "reply with exactly one token: supported, unsupported, cannot_tell, or ambiguous."
+            ),
+        },
+        {
+            "role": "user",
+            "content": prompt.user_message,
+        },
+    ]
+
+
+def format_reference_material(table: FactTable) -> str:
+    """Format a `FactTable` into numbered lines for `read_claim` calibration prompts."""
+    lines: list[str] = []
+    for idx, f in enumerate(table.facts, start=1):
+        unit_suffix = f" {f.unit}" if f.unit else ""
+        if f.op == "between" and isinstance(f.value, tuple):
+            phrase = f"is between {f.value[0]} and {f.value[1]}{unit_suffix}"
+        elif f.op == "at_least":
+            phrase = f"is at least {f.value}{unit_suffix}"
+        elif f.op == "at_most":
+            phrase = f"is at most {f.value}{unit_suffix}"
+        elif f.op == "not_equal":
+            phrase = f"is not {f.value}{unit_suffix}"
+        else:
+            phrase = f"is {f.value}{unit_suffix}"
+        lines.append(f"{idx}. {f.entity} {f.attribute} {phrase}.")
+    return "\n".join(lines)
+
+
+def format_reference_claim(claim: ProvedClaim) -> str:
+    """Format a `ProvedClaim` into one sentence for `read_claim` calibration prompts."""
+    unit_suffix = f" {claim.unit}" if claim.unit else ""
+    if claim.op == "between" and isinstance(claim.claimed_value, tuple):
+        phrase = f"is between {claim.claimed_value[0]} and {claim.claimed_value[1]}{unit_suffix}"
+    elif claim.op == "at_least":
+        phrase = f"is at least {claim.claimed_value}{unit_suffix}"
+    elif claim.op == "at_most":
+        phrase = f"is at most {claim.claimed_value}{unit_suffix}"
+    elif claim.op == "not_equal":
+        phrase = f"is not {claim.claimed_value}{unit_suffix}"
+    else:
+        phrase = f"is {claim.claimed_value}{unit_suffix}"
+    return f"{claim.entity} {claim.attribute} {phrase}."
+
+
 def _extract_token_counts(
     resp: dict[str, Any],
     content: str,
@@ -844,23 +952,7 @@ class OllamaWriterAdapter:
 
     def render_material(self, table: FactTable) -> str:
         """Render `table` into numbered prose via `POST /api/chat` and run `check_rendered_material`."""
-        table_json = json.dumps(
-            table.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        )
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are the Pilot B writer. Render each fact in the formal FactTable into one numbered "
-                    "sentence per line ('1. ...', '2. ...'), preserving exact entities, attributes, numbers, "
-                    "dates, intervals, polarity, and quantifier direction. Introduce no extra numbers or proper nouns."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Render the following formal FactTable into numbered lines.\nFACTS_JSON:\n{table_json}",
-            },
-        ]
+        messages = build_writer_render_messages(table)
         rendered = self._chat(
             operation="render_material",
             target_id=table.table_id,
@@ -871,37 +963,7 @@ class OllamaWriterAdapter:
 
     def word_claim(self, table: FactTable, claim: ProvedClaim) -> str:
         """Word `claim` into a single sentence via `POST /api/chat` and run `check_worded_claim`."""
-        claim_spec = {
-            "claim_id": claim.claim_id,
-            "table_id": claim.table_id,
-            "entity": claim.entity,
-            "attribute": claim.attribute,
-            "fact_type": claim.fact_type,
-            "claimed_value": (
-                [int(claim.claimed_value[0]), int(claim.claimed_value[1])]
-                if isinstance(claim.claimed_value, tuple)
-                else claim.claimed_value
-            ),
-            "unit": claim.unit,
-            "op": claim.op,
-        }
-        claim_json = json.dumps(
-            claim_spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        )
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are the Pilot B writer. Word the formal claim into a single declarative English sentence "
-                    "preserving its exact entity, attribute, value, unit, polarity, and quantifier direction. "
-                    "Introduce no unlisted numbers or proper nouns."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Word the following formal ProvedClaim into one sentence.\nCLAIM_JSON:\n{claim_json}",
-            },
-        ]
+        messages = build_writer_word_messages(claim)
         worded = self._chat(
             operation="word_claim",
             target_id=claim.claim_id,
@@ -1154,19 +1216,7 @@ class OllamaBlindReaderAdapter:
 
     def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
         """Send only `prompt` (material + one claim, never the key) to `POST /api/chat` and parse the verdict."""
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a blind verification reader. Given only the Material and a single Claim, "
-                    "reply with exactly one token: supported, unsupported, cannot_tell, or ambiguous."
-                ),
-            },
-            {
-                "role": "user",
-                "content": prompt.user_message,
-            },
-        ]
+        messages = build_reader_read_messages(prompt)
         raw_text, record = self._chat(
             target_id=prompt.claim_id,
             messages=messages,
@@ -1207,4 +1257,128 @@ class OllamaBlindReaderAdapter:
         )
         self._unload_records.append(rec)
         return rec
+
+
+CALIBRATION_CAP_MARGIN_TOKENS: int = 128
+DEFAULT_CALIBRATION_TABLES: int = 3
+DEFAULT_CALIBRATION_NUM_PREDICT: int = 4096
+DEFAULT_CALIBRATION_NUM_CTX: int = 8192
+
+
+def run_ollama_calibration_calls(
+    *,
+    model: ModelIdentity | PinnedModelSpec,
+    operation: OllamaOperation,
+    call_items: Sequence[tuple[str, list[dict[str, str]]]],
+    num_predict: int = DEFAULT_CALIBRATION_NUM_PREDICT,
+    num_ctx: int = DEFAULT_CALIBRATION_NUM_CTX,
+    base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    think: Any = True,
+    http_transport: OllamaHttpTransport | None = None,
+) -> tuple[list[dict[str, Any]], OllamaUnloadRecord]:
+    """Run calibration calls for `operation` with `think: True` only and unload with `keep_alive: 0`."""
+    if think is not True:
+        raise refused_error(
+            "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN",
+            f"Calibration requires think=True, got {think!r}.",
+            "Run calibration with thinking enabled (think: true only).",
+        )
+    if operation not in PILOT_B_OPERATIONS:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_OPERATION",
+            f"Unsupported calibration operation {operation!r}; must be one of {list(PILOT_B_OPERATIONS)}.",
+            "Pass --operation render_material|word_claim|read_claim.",
+        )
+    if num_predict < 1:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_NUM_PREDICT",
+            f"--num-predict must be >= 1, got {num_predict}.",
+            "Pass a positive integer --num-predict (default: 4096).",
+        )
+    if num_ctx < NUM_CTX_STEP_TOKENS:
+        raise usage_error(
+            "PILOT_B_INVALID_CALIBRATE_NUM_CTX",
+            f"--num-ctx must be >= {NUM_CTX_STEP_TOKENS}, got {num_ctx}.",
+            f"Pass --num-ctx >= {NUM_CTX_STEP_TOKENS} (default: 8192).",
+        )
+
+    norm_url = require_loopback_ollama_url(base_url)
+    resolved_model = _resolve_model_identity(model)
+    transport = (
+        http_transport if http_transport is not None else default_ollama_http_transport
+    )
+
+    verify_local_ollama_model_digest(
+        base_url=norm_url,
+        ollama_tag=resolved_model.name,
+        expected_digest=resolved_model.digest,
+        http_transport=transport,
+    )
+
+    chat_url = f"{norm_url}/api/chat"
+    rows: list[dict[str, Any]] = []
+    try:
+        for target_id, messages in call_items:
+            prompt_sha = _canonical_prompt_sha256(messages)
+            prompt_tokens_est = estimate_prompt_tokens(messages)
+            payload: dict[str, Any] = {
+                "model": resolved_model.name,
+                "messages": messages,
+                "think": True,
+                "stream": False,
+                "options": {
+                    "temperature": 0,
+                    "num_predict": int(num_predict),
+                    "num_ctx": int(num_ctx),
+                },
+            }
+            t0 = time.perf_counter()
+            resp = transport("POST", chat_url, payload)
+            wall_s = round(max(0.0, time.perf_counter() - t0), 6)
+
+            msg = resp.get("message")
+            if not isinstance(msg, dict):
+                msg = {}
+            content = str(msg.get("content") or "").strip()
+            thinking_text = str(msg.get("thinking") or "")
+            done_reason = str(resp.get("done_reason") or "stop").strip()
+            eval_tokens, thinking_tokens = _extract_token_counts(
+                resp, content, thinking_text
+            )
+            rows.append(
+                {
+                    "target_id": target_id,
+                    "operation": operation,
+                    "model": resolved_model.name,
+                    "digest": resolved_model.digest,
+                    "prompt_sha256": prompt_sha,
+                    "prompt_tokens_estimate": prompt_tokens_est,
+                    "think": True,
+                    "thinking_tokens": thinking_tokens,
+                    "eval_tokens": eval_tokens,
+                    "done_reason": done_reason,
+                    "wall_time_s": wall_s,
+                    "num_ctx": int(num_ctx),
+                    "num_predict": int(num_predict),
+                }
+            )
+    finally:
+        unload_payload: dict[str, Any] = {
+            "model": resolved_model.name,
+            "messages": [],
+            "keep_alive": 0,
+            "stream": False,
+        }
+        t_u0 = time.perf_counter()
+        transport("POST", chat_url, unload_payload)
+        unload_wall_s = round(max(0.0, time.perf_counter() - t_u0), 6)
+        unload_rec = OllamaUnloadRecord(
+            model=resolved_model.name,
+            digest=resolved_model.digest,
+            keep_alive=0,
+            wall_time_s=unload_wall_s,
+        )
+
+    return rows, unload_rec
+
 
