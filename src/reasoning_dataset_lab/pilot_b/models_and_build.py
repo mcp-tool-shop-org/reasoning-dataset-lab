@@ -61,11 +61,16 @@ class PinnedModelSpec:
     manifest_digest: str
     model_layer_digest: str
     licence_id: str
+    bundled_licence_id: str = "apache-2.0"
     licence_layer_digest: str = "0" * 64
     source_match: SourceMatchStatus = "unconfirmed"
     source_match_reason: str = ""
 
-    def with_licence_id(self, new_licence_id: str) -> PinnedModelSpec:
+    def with_licence_id(
+        self,
+        new_licence_id: str,
+        new_bundled_licence_id: str | None = None,
+    ) -> PinnedModelSpec:
         return PinnedModelSpec(
             role=self.role,
             display_name=self.display_name,
@@ -74,10 +79,18 @@ class PinnedModelSpec:
             manifest_digest=self.manifest_digest,
             model_layer_digest=self.model_layer_digest,
             licence_id=new_licence_id,
+            bundled_licence_id=(
+                new_bundled_licence_id
+                if new_bundled_licence_id is not None
+                else self.bundled_licence_id
+            ),
             licence_layer_digest=self.licence_layer_digest,
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
         )
+
+    def with_bundled_licence_id(self, new_bundled_licence_id: str) -> PinnedModelSpec:
+        return self.with_licence_id(self.licence_id, new_bundled_licence_id)
 
     def to_model_identity(self) -> ModelIdentity:
         return ModelIdentity(
@@ -85,6 +98,7 @@ class PinnedModelSpec:
             family=self.family,
             digest=self.manifest_digest,
             licence_id=self.licence_id,
+            bundled_licence_id=self.bundled_licence_id,
             licence_layer_digest=self.licence_layer_digest,
             source_match=self.source_match,
             source_match_reason=self.source_match_reason,
@@ -100,6 +114,7 @@ class PinnedModelSpec:
             "model_layer_digest": self.model_layer_digest,
             "licence_layer_digest": self.licence_layer_digest,
             "licence_id": self.licence_id,
+            "bundled_licence_id": self.bundled_licence_id,
             "source_match": self.source_match,
             "source_match_reason": self.source_match_reason,
         }
@@ -120,6 +135,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
         model_layer_digest="d372de8e934898a59e6ccfabc3368474711384d8f1fd4d22d87a3f0a45400cdc",
         licence_layer_digest="5f3a3c817e78f5b8a4ad2d2c458a3e4b2cce470d6c12642c4eeb12cb8a9bf51d",
         licence_id="qwen3.6-35b-a3b-licence",
+        bundled_licence_id="qwen3.6-35b-a3b-licence",
         source_match="unconfirmed",
         source_match_reason=(
             "Ollama manifest layer 'from' is 'qwen3.6-source:35b-a3b-mtp-q4_K_M-20260824' "
@@ -136,6 +152,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
         model_layer_digest="5c19f6282f4fc51cb114cb6c876d70ca2fc3b9cf0fbd0a018d9908f4fe1f63b3",
         licence_layer_digest="215a3316f0f10bebc2c8d5b6426d1c6ad06e162187df10e043bafed246894d9a",
         licence_id="openmdw-1.1",
+        bundled_licence_id="nvidia-open-model-license",
         source_match="unconfirmed",
         source_match_reason=(
             "Ollama manifest layer 'from' is 'nemotron3.5:30b-a3b-q4_K_M' and bundles "
@@ -151,6 +168,7 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
         model_layer_digest="16a9369d0805f80b7377d25d87f937a90c05dc04ad79173a52001e42c9aab311",
         licence_layer_digest="58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
         licence_id="granite-4.2-8b-hf-card",
+        bundled_licence_id="granite-4.2-8b-hf-card",
         source_match="unconfirmed",
         source_match_reason=(
             "Ollama manifest layer 'from' is a local runner blob path without an HF "
@@ -162,9 +180,11 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
 
 def resolve_pilot_b_model_pins(
     licence_id_overrides: Mapping[str, str] | None = None,
+    bundled_licence_id_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, PinnedModelSpec]:
-    """Return the three pinned Pilot B models with optional configurable licence_id overrides."""
+    """Return the three pinned Pilot B models with optional configurable licence_id and bundled_licence_id overrides."""
     overrides = dict(licence_id_overrides or {})
+    bundled_overrides = dict(bundled_licence_id_overrides or {})
     out: dict[str, PinnedModelSpec] = {}
     for role, spec in DEFAULT_PILOT_B_MODEL_PINS.items():
         lic_id = overrides.get(role, overrides.get(spec.ollama_tag, spec.licence_id))
@@ -174,7 +194,16 @@ def resolve_pilot_b_model_pins(
                 f"Model '{spec.ollama_tag}' ({role}) has an empty licence_id.",
                 "Configure a non-empty registry licence_id for every model in the chain.",
             )
-        out[role] = spec.with_licence_id(lic_id.strip())
+        bundled_id = bundled_overrides.get(
+            role, bundled_overrides.get(spec.ollama_tag, spec.bundled_licence_id)
+        )
+        if not isinstance(bundled_id, str) or not bundled_id.strip():
+            raise refused_error(
+                "PILOT_B_INVALID_LICENCE_ID",
+                f"Model '{spec.ollama_tag}' ({role}) has an empty bundled_licence_id.",
+                "Configure a non-empty registry bundled_licence_id for every model in the chain.",
+            )
+        out[role] = spec.with_licence_id(lic_id.strip(), bundled_id.strip())
     return out
 
 
@@ -238,6 +267,25 @@ def build_fixture_licence_registry() -> dict[str, Any]:
                 "url": "https://huggingface.co/ibm-granite/granite-4.2-8b",
                 "read_date": "2026-10-25",
                 "clauses": ["license: apache-2.0"],
+                "uses": {
+                    "assets": "allowed",
+                    "training": "allowed",
+                    "evaluation": "allowed",
+                    "code": "allowed",
+                },
+            },
+            {
+                "id": "nvidia-open-model-license",
+                "owner": "NVIDIA",
+                "kind": "model-licence",
+                "covers": [
+                    "the licence bundled in the Ollama nemotron-3.5-lightning tag"
+                ],
+                "url": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+                "read_date": "2026-10-16",
+                "clauses": [
+                    "NVIDIA does not claim ownership to any outputs generated using the Models or Derivative Models"
+                ],
                 "uses": {
                     "assets": "allowed",
                     "training": "allowed",
@@ -332,6 +380,13 @@ def validate_models_against_licence_registry(
                 f"licence_id '{spec.licence_id}', which is not in the licence registry.",
                 "Add the model's entry to rnd licences/registry.json before running the build.",
             )
+        if not spec.bundled_licence_id or spec.bundled_licence_id not in entries_map:
+            raise refused_error(
+                "PILOT_B_LICENCE_NOT_IN_REGISTRY",
+                f"Chain member '{spec.display_name}' ({spec.ollama_tag}, role={spec.role}) references "
+                f"bundled_licence_id '{spec.bundled_licence_id}', which is not in the licence registry.",
+                "Add the bundled licence entry to rnd licences/registry.json before running the build.",
+            )
         entry = entries_map[spec.licence_id]
         uses = entry.get("uses", {})
         if not isinstance(uses, dict):
@@ -355,6 +410,7 @@ def validate_models_against_licence_registry(
                 "display_name": spec.display_name,
                 "ollama_tag": spec.ollama_tag,
                 "licence_id": spec.licence_id,
+                "bundled_licence_id": spec.bundled_licence_id,
                 "training": training_verdict,
                 "evaluation": eval_verdict,
             }
@@ -469,6 +525,7 @@ def verify_live_ollama_models(
                 "family": spec.family,
                 "ollama_tag": spec.ollama_tag,
                 "licence_id": spec.licence_id,
+                "bundled_licence_id": spec.bundled_licence_id,
                 "pinned_manifest_digest": spec.manifest_digest,
                 "live_manifest_digest": live_manifest_sha256,
                 "pinned_model_layer_digest": spec.model_layer_digest,
@@ -623,6 +680,7 @@ def run_pilot_b_build(
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
     licence_registry_path: Path | None = None,
     licence_id_overrides: Mapping[str, str] | None = None,
+    bundled_licence_id_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Run an end-to-end Pilot B build (or `--stub N` run), seal and freeze the part, and write the build report."""
     if triad_count < 1:
@@ -632,7 +690,10 @@ def run_pilot_b_build(
             "Pass a positive integer number of triads (e.g. --stub 10 or 50).",
         )
 
-    pins = resolve_pilot_b_model_pins(licence_id_overrides=licence_id_overrides)
+    pins = resolve_pilot_b_model_pins(
+        licence_id_overrides=licence_id_overrides,
+        bundled_licence_id_overrides=bundled_licence_id_overrides,
+    )
     validate_models_against_licence_registry(
         list(pins.values()),
         registry_path=licence_registry_path,

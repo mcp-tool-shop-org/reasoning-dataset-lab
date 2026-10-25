@@ -461,4 +461,118 @@ def test_fix4_default_specific_licence_ids_and_configurability(
         ]
 
 
+def test_fix_gg_bundled_licence_id_and_reader_source_match_reasons(
+    tmp_path: Path,
+) -> None:
+    """Card gg: bundled_licence_id on PinnedModelSpec, ModelIdentity, --verify-live, and provenance, plus reader_source_match_reasons."""
+    from reasoning_dataset_lab.pilot_b.models_and_build import resolve_pilot_b_model_pins
+
+    # 1. Default PinnedModelSpec and ModelIdentity carry bundled_licence_id
+    writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
+    r1_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_1"]
+    r2_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_2"]
+
+    assert writer_pin.licence_id == "qwen3.6-35b-a3b-licence"
+    assert writer_pin.bundled_licence_id == "qwen3.6-35b-a3b-licence"
+
+    assert r1_pin.licence_id == "openmdw-1.1"
+    assert r1_pin.bundled_licence_id == "nvidia-open-model-license"
+
+    assert r2_pin.licence_id == "granite-4.2-8b-hf-card"
+    assert r2_pin.bundled_licence_id == "granite-4.2-8b-hf-card"
+
+    assert r1_pin.to_model_identity().bundled_licence_id == "nvidia-open-model-license"
+    assert r1_pin.to_dict()["bundled_licence_id"] == "nvidia-open-model-license"
+
+    # 2. Configurable bundled_licence_id overrides (by role or ollama_tag), refusing empty
+    overridden = resolve_pilot_b_model_pins(
+        bundled_licence_id_overrides={
+            "reader_1": "openmdw-1.1",
+            "granite4.2:8b": "apache-2.0",
+        }
+    )
+    assert overridden["reader_1"].bundled_licence_id == "openmdw-1.1"
+    assert overridden["reader_2"].bundled_licence_id == "apache-2.0"
+    assert overridden["writer"].bundled_licence_id == "qwen3.6-35b-a3b-licence"
+    validate_models_against_licence_registry(list(overridden.values()))
+
+    with pytest.raises(RdlabError) as exc_empty_bundled:
+        resolve_pilot_b_model_pins(bundled_licence_id_overrides={"reader_1": "   "})
+    assert exc_empty_bundled.value.code == "PILOT_B_INVALID_LICENCE_ID"
+
+    # 3. --verify-live emits bundled_licence_id alongside licence_id
+    fake_manifest = json.dumps(
+        {
+            "schemaVersion": 2,
+            "layers": [
+                {
+                    "mediaType": "application/vnd.ollama.image.model",
+                    "digest": "sha256:" + r1_pin.model_layer_digest,
+                    "size": 25430738944,
+                },
+                {
+                    "mediaType": "application/vnd.ollama.image.license",
+                    "digest": "sha256:" + r1_pin.licence_layer_digest,
+                    "size": 10127,
+                },
+            ],
+        }
+    ).encode("utf-8")
+    fake_man_sha = __import__("hashlib").sha256(fake_manifest).hexdigest()
+    r1_test_spec = PinnedModelSpec(
+        role=r1_pin.role,
+        display_name=r1_pin.display_name,
+        family=r1_pin.family,
+        ollama_tag=r1_pin.ollama_tag,
+        manifest_digest=fake_man_sha,
+        model_layer_digest=r1_pin.model_layer_digest,
+        licence_layer_digest=r1_pin.licence_layer_digest,
+        licence_id=r1_pin.licence_id,
+        bundled_licence_id=r1_pin.bundled_licence_id,
+        source_match=r1_pin.source_match,
+        source_match_reason=r1_pin.source_match_reason,
+    )
+    live_res = verify_live_ollama_models(
+        models=[r1_test_spec],
+        fetch_manifest=lambda _tag: (fake_manifest, {}),
+    )
+    assert live_res["models"][0]["licence_id"] == "openmdw-1.1"
+    assert live_res["models"][0]["bundled_licence_id"] == "nvidia-open-model-license"
+
+    # 4. Provenance rows carry writer.licence_id + writer.bundled_licence_id,
+    #    and reader judgments carry reader_licence_ids, reader_bundled_licence_ids, and reader_source_match_reasons
+    out_dir = tmp_path / "fix_gg_prov"
+    run_pilot_b_build(output_dir=out_dir, triad_count=2, stub_mode=True)
+    prov_lines = [
+        json.loads(line)
+        for line in (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert len(prov_lines) == 6
+    for prow in prov_lines:
+        w = prow["writer"]
+        assert w["licence_id"] == "qwen3.6-35b-a3b-licence"
+        assert w["bundled_licence_id"] == "qwen3.6-35b-a3b-licence"
+        j0 = prow["judgments"][0]
+        assert j0["reader_licence_ids"] == [
+            "openmdw-1.1",
+            "granite-4.2-8b-hf-card",
+        ]
+        assert j0["reader_bundled_licence_ids"] == [
+            "nvidia-open-model-license",
+            "granite-4.2-8b-hf-card",
+        ]
+        assert j0["reader_source_matches"] == [
+            r1_pin.source_match,
+            r2_pin.source_match,
+        ]
+        assert j0["reader_source_match_reasons"] == [
+            r1_pin.source_match_reason,
+            r2_pin.source_match_reason,
+        ]
+
+
+
 

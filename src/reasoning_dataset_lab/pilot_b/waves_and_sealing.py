@@ -471,6 +471,7 @@ def write_sealed_part(
                 "family": wave_result.writer_model.normalized_family,
                 "digest": wave_result.writer_model.digest,
                 "licence_id": wave_result.writer_model.licence_id,
+                "bundled_licence_id": wave_result.writer_model.bundled_licence_id,
                 "licence_layer_digest": wave_result.writer_model.licence_layer_digest,
                 "source_match": wave_result.writer_model.source_match,
                 "source_match_reason": wave_result.writer_model.source_match_reason,
@@ -504,6 +505,10 @@ def write_sealed_part(
                         wave_result.reader_1_model.licence_id,
                         wave_result.reader_2_model.licence_id,
                     ],
+                    "reader_bundled_licence_ids": [
+                        wave_result.reader_1_model.bundled_licence_id,
+                        wave_result.reader_2_model.bundled_licence_id,
+                    ],
                     "reader_licence_layer_digests": [
                         wave_result.reader_1_model.licence_layer_digest,
                         wave_result.reader_2_model.licence_layer_digest,
@@ -511,6 +516,10 @@ def write_sealed_part(
                     "reader_source_matches": [
                         wave_result.reader_1_model.source_match,
                         wave_result.reader_2_model.source_match,
+                    ],
+                    "reader_source_match_reasons": [
+                        wave_result.reader_1_model.source_match_reason,
+                        wave_result.reader_2_model.source_match_reason,
                     ],
                     "agrees_all_readers": True,
                     "ambiguous_count": 0,
