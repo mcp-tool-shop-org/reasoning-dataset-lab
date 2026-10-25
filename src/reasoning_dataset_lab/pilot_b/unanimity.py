@@ -35,6 +35,9 @@ BARRED_READER_FAMILIES: frozenset[str] = frozenset(
 DEFAULT_MIN_PASS_RATE_PER_CLASS: float = 0.50
 
 
+SourceMatchStatus = Literal["confirmed", "unconfirmed"]
+
+
 @dataclass(frozen=True)
 class ModelIdentity:
     """Identity and family metadata for a writer or blind-reader model."""
@@ -43,6 +46,9 @@ class ModelIdentity:
     family: str
     digest: str
     licence_id: str = "apache-2.0"
+    licence_layer_digest: str = "0" * 64
+    source_match: SourceMatchStatus = "unconfirmed"
+    source_match_reason: str = ""
 
     @property
     def normalized_family(self) -> str:
@@ -54,6 +60,9 @@ class ModelIdentity:
             "family": self.family,
             "digest": self.digest,
             "licence_id": self.licence_id,
+            "licence_layer_digest": self.licence_layer_digest,
+            "source_match": self.source_match,
+            "source_match_reason": self.source_match_reason,
         }
 
 

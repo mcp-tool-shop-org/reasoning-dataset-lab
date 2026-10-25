@@ -284,3 +284,132 @@ def test_part_e_additional_model_and_licence_error_branches(tmp_path: Path) -> N
         run_pilot_b_build(output_dir=tmp_path / "bad_tc", triad_count=0)
     assert exc_tc.value.code == "PILOT_B_INVALID_TRIAD_COUNT"
 
+
+def test_fix3_verify_live_pins_licence_layer_digest_source_match_and_provenance(
+    tmp_path: Path,
+) -> None:
+    """Card gc Fix 3: --verify-live checks licence_layer_digest, reports source_match, and writes licence_layer_digest into item provenance."""
+    # 1. Every default pinned model has a valid 64-hex licence_layer_digest and source_match
+    expected_lic_digests = {
+        "writer": "5f3a3c817e78f5b8a4ad2d2c458a3e4b2cce470d6c12642c4eeb12cb8a9bf51d",
+        "reader_1": "215a3316f0f10bebc2c8d5b6426d1c6ad06e162187df10e043bafed246894d9a",
+        "reader_2": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+    }
+    for role, pin in DEFAULT_PILOT_B_MODEL_PINS.items():
+        assert pin.licence_layer_digest == expected_lic_digests[role]
+        assert pin.source_match in ("confirmed", "unconfirmed")
+        if pin.source_match == "unconfirmed":
+            assert pin.source_match_reason
+
+    # 2. A wrong licence-layer digest fails --verify-live with PILOT_B_LIVE_LICENCE_DIGEST_MISMATCH
+    writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
+    fake_manifest = json.dumps(
+        {
+            "schemaVersion": 2,
+            "layers": [
+                {
+                    "mediaType": "application/vnd.ollama.image.model",
+                    "digest": "sha256:" + writer_pin.model_layer_digest,
+                    "size": 21718480960,
+                    "from": "qwen3.6-source:35b-a3b-mtp-q4_K_M-20260824",
+                },
+                {
+                    "mediaType": "application/vnd.ollama.image.license",
+                    "digest": "sha256:" + "9" * 64,
+                    "size": 11357,
+                },
+            ],
+        }
+    ).encode("utf-8")
+    fake_man_sha = __import__("hashlib").sha256(fake_manifest).hexdigest()
+    spec_wrong_lic_layer = PinnedModelSpec(
+        role=writer_pin.role,
+        display_name=writer_pin.display_name,
+        family=writer_pin.family,
+        ollama_tag=writer_pin.ollama_tag,
+        manifest_digest=fake_man_sha,
+        model_layer_digest=writer_pin.model_layer_digest,
+        licence_layer_digest=writer_pin.licence_layer_digest,
+        licence_id=writer_pin.licence_id,
+        source_match=writer_pin.source_match,
+        source_match_reason=writer_pin.source_match_reason,
+    )
+    with pytest.raises(RdlabError) as exc_lic_mismatch:
+        verify_live_ollama_models(
+            models=[spec_wrong_lic_layer],
+            fetch_manifest=lambda _tag: (fake_manifest, {}),
+        )
+    assert exc_lic_mismatch.value.code == "PILOT_B_LIVE_LICENCE_DIGEST_MISMATCH"
+
+    # 3. When licence_layer_digest matches, verify_live_ollama_models succeeds and includes source_match on every model
+    fake_manifest_ok = json.dumps(
+        {
+            "schemaVersion": 2,
+            "layers": [
+                {
+                    "mediaType": "application/vnd.ollama.image.model",
+                    "digest": "sha256:" + writer_pin.model_layer_digest,
+                    "size": 21718480960,
+                    "from": "qwen3.6-source:35b-a3b-mtp-q4_K_M-20260824",
+                },
+                {
+                    "mediaType": "application/vnd.ollama.image.license",
+                    "digest": "sha256:" + writer_pin.licence_layer_digest,
+                    "size": 11357,
+                    "from": "qwen3.6-source:35b-a3b-mtp-q4_K_M-20260824",
+                },
+            ],
+        }
+    ).encode("utf-8")
+    fake_man_ok_sha = __import__("hashlib").sha256(fake_manifest_ok).hexdigest()
+    spec_ok = PinnedModelSpec(
+        role=writer_pin.role,
+        display_name=writer_pin.display_name,
+        family=writer_pin.family,
+        ollama_tag=writer_pin.ollama_tag,
+        manifest_digest=fake_man_ok_sha,
+        model_layer_digest=writer_pin.model_layer_digest,
+        licence_layer_digest=writer_pin.licence_layer_digest,
+        licence_id=writer_pin.licence_id,
+        source_match=writer_pin.source_match,
+        source_match_reason=writer_pin.source_match_reason,
+    )
+    live_res = verify_live_ollama_models(
+        models=[spec_ok],
+        fetch_manifest=lambda _tag: (fake_manifest_ok, {}),
+    )
+    assert live_res["status"] == "PASS"
+    model_entry = live_res["models"][0]
+    assert model_entry["pinned_licence_layer_digest"] == writer_pin.licence_layer_digest
+    assert model_entry["live_licence_layer_digest"] == writer_pin.licence_layer_digest
+    assert model_entry["source_match"] in ("confirmed", "unconfirmed")
+    assert "source_match_reason" in model_entry
+
+    # 4. Item provenance records licence_layer_digest and source_match
+    out_dir = tmp_path / "fix3_prov_check"
+    run_pilot_b_build(output_dir=out_dir, triad_count=4, stub_mode=True)
+    prov_lines = [
+        json.loads(line)
+        for line in (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert len(prov_lines) == 12
+    for prow in prov_lines:
+        assert (
+            prow["writer"]["licence_layer_digest"]
+            == expected_lic_digests["writer"]
+        )
+        assert prow["writer"]["source_match"] in ("confirmed", "unconfirmed")
+        j0 = prow["judgments"][0]
+        assert j0["reader_licence_layer_digests"] == [
+            expected_lic_digests["reader_1"],
+            expected_lic_digests["reader_2"],
+        ]
+        assert j0["reader_source_matches"] == [
+            DEFAULT_PILOT_B_MODEL_PINS["reader_1"].source_match,
+            DEFAULT_PILOT_B_MODEL_PINS["reader_2"].source_match,
+        ]
+
+
