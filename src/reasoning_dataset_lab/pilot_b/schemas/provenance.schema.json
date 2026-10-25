@@ -1,0 +1,542 @@
+{
+  "$defs": {
+    "num_predict_config": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "by_operation": {
+              "additionalProperties": {
+                "additionalProperties": false,
+                "properties": {
+                  "source": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "source",
+                  "value"
+                ],
+                "type": "object"
+              },
+              "type": "object"
+            },
+            "documented_defaults_by_operation": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "source": {
+              "type": "string"
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "by_operation",
+            "documented_defaults_by_operation",
+            "source",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "by_operation": {
+              "additionalProperties": false,
+              "type": "object"
+            },
+            "default_num_predict": {
+              "type": "integer"
+            },
+            "source": {
+              "type": "string"
+            },
+            "sources_by_operation": {
+              "additionalProperties": false,
+              "type": "object"
+            }
+          },
+          "required": [
+            "by_operation",
+            "default_num_predict",
+            "source",
+            "sources_by_operation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "registry": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "read_dates": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "read_dates",
+        "sha256"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "checks": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "result": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "result",
+          "version"
+        ],
+        "type": "object"
+      },
+      "maxItems": 2,
+      "minItems": 2,
+      "type": "array"
+    },
+    "id": {
+      "type": "string"
+    },
+    "judgments": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "agrees_all_readers": {
+            "const": true
+          },
+          "ambiguous_count": {
+            "const": 0
+          },
+          "call_records": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "digest": {
+                  "type": "string"
+                },
+                "max_num_ctx": {
+                  "type": "integer"
+                },
+                "model": {
+                  "type": "string"
+                },
+                "num_predict": {
+                  "type": "integer"
+                },
+                "num_predict_source": {
+                  "type": "string"
+                },
+                "operation": {
+                  "type": "string"
+                },
+                "prompt_sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "think": {
+                  "type": [
+                    "boolean",
+                    "string"
+                  ]
+                }
+              },
+              "required": [
+                "digest",
+                "max_num_ctx",
+                "model",
+                "num_predict",
+                "num_predict_source",
+                "operation",
+                "prompt_sha256",
+                "think"
+              ],
+              "type": "object"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "families": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "kind": {
+            "const": "blind_read_unanimity_aggregate"
+          },
+          "reader_adapters": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "reader_bundled_licence_ids": {
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "reader_bundled_licence_read_dates": {
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "reader_licence_ids": {
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "reader_licence_layer_digests": {
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "reader_licence_read_dates": {
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "reader_max_num_ctx": {
+            "items": {
+              "type": "integer"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "reader_source_match_reasons": {
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "reader_source_matches": {
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          },
+          "readers": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "type": "array"
+          }
+        },
+        "required": [
+          "agrees_all_readers",
+          "ambiguous_count",
+          "call_records",
+          "families",
+          "kind",
+          "reader_adapters",
+          "reader_bundled_licence_ids",
+          "reader_bundled_licence_read_dates",
+          "reader_licence_ids",
+          "reader_licence_layer_digests",
+          "reader_licence_read_dates",
+          "reader_max_num_ctx",
+          "reader_source_match_reasons",
+          "reader_source_matches",
+          "readers"
+        ],
+        "type": "object"
+      },
+      "maxItems": 1,
+      "minItems": 1,
+      "type": "array"
+    },
+    "key_basis": {
+      "const": "construction"
+    },
+    "licence_registry": {
+      "$ref": "#/$defs/registry"
+    },
+    "licence_registry_path": {
+      "type": "string"
+    },
+    "licence_registry_sha256": {
+      "type": "string"
+    },
+    "map": {
+      "additionalProperties": false,
+      "properties": {
+        "cell": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        },
+        "version": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cell",
+        "sha256",
+        "version"
+      ],
+      "type": "object"
+    },
+    "proof": {
+      "additionalProperties": false,
+      "properties": {
+        "prover": {
+          "type": "string"
+        },
+        "trace_commitment": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "prover",
+        "trace_commitment",
+        "version"
+      ],
+      "type": "object"
+    },
+    "proof_basis": {
+      "const": "proved"
+    },
+    "writer": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "type": "string"
+        },
+        "bundled_licence_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "bundled_licence_read_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "call_records": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "digest": {
+                "type": "string"
+              },
+              "max_num_ctx": {
+                "type": "integer"
+              },
+              "model": {
+                "type": "string"
+              },
+              "num_predict": {
+                "type": "integer"
+              },
+              "num_predict_source": {
+                "type": "string"
+              },
+              "operation": {
+                "type": "string"
+              },
+              "prompt_commitment": {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "think": {
+                "type": [
+                  "boolean",
+                  "string"
+                ]
+              }
+            },
+            "required": [
+              "digest",
+              "max_num_ctx",
+              "model",
+              "num_predict",
+              "num_predict_source",
+              "operation",
+              "prompt_commitment",
+              "think"
+            ],
+            "type": "object"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "type": "array"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
+        },
+        "licence_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licence_layer_digest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "licence_read_date": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_num_ctx": {
+          "type": "integer"
+        },
+        "messages_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "num_predict": {
+          "type": "integer"
+        },
+        "num_predict_config": {
+          "$ref": "#/$defs/num_predict_config"
+        },
+        "num_predict_source": {
+          "type": "string"
+        },
+        "source_match": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_match_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "adapter",
+        "bundled_licence_id",
+        "bundled_licence_read_date",
+        "call_records",
+        "digest",
+        "family",
+        "licence_id",
+        "licence_layer_digest",
+        "licence_read_date",
+        "max_num_ctx",
+        "messages_sha256",
+        "model",
+        "num_predict",
+        "num_predict_config",
+        "num_predict_source",
+        "source_match",
+        "source_match_reason"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "checks",
+    "id",
+    "judgments",
+    "key_basis",
+    "licence_registry",
+    "licence_registry_path",
+    "licence_registry_sha256",
+    "map",
+    "proof",
+    "proof_basis",
+    "writer"
+  ],
+  "title": "One row of the provenance.jsonl of a sealed Pilot B part",
+  "type": "object"
+}

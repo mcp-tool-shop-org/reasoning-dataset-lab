@@ -658,10 +658,9 @@ def test_part_c_run_pilot_b_build_uses_real_ollama_adapters_in_stub_and_non_stub
             assert prow["writer"]["adapter"] == "OllamaWriterAdapter"
             assert len(prow["writer"]["call_records"]) == 2
             for wcall in prow["writer"]["call_records"]:
-                assert len(wcall["prompt_sha256"]) == 64
-                assert wcall["eval_tokens"] == 22
-                assert wcall["thinking_words"] == 16
-                assert "wall_time_s" in wcall
+                assert len(wcall["prompt_commitment"]) == 64
+                assert "prompt_sha256" not in wcall
+                assert "eval_tokens" not in wcall
             j0 = prow["judgments"][0]
             assert j0["reader_adapters"] == [
                 "OllamaBlindReaderAdapter",
@@ -670,9 +669,18 @@ def test_part_c_run_pilot_b_build_uses_real_ollama_adapters_in_stub_and_non_stub
             assert len(j0["call_records"]) == 2
             for rcall in j0["call_records"]:
                 assert len(rcall["prompt_sha256"]) == 64
-                assert rcall["eval_tokens"] == 22
-                assert rcall["thinking_words"] == 16
-                assert "wall_time_s" in rcall
+                assert "eval_tokens" not in rcall
+        metrics_rows = [
+            json.loads(line)
+            for line in (out_dir / "sealed_store" / "call_metrics.sealed.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert len(metrics_rows) == 6
+        for mrow in metrics_rows:
+            for call in (*mrow["writer"], *mrow["readers"]):
+                assert call["eval_tokens"] == 22
+                assert call["thinking_words"] == 16
+                assert "wall_time_s" in call
 
         # Check report has per-wave wall time, token totals, adapter names, and unloaded flag
         report = res["report"]
@@ -724,6 +732,7 @@ def test_part_c_fakes_moved_to_tests_and_cannot_produce_sealed_output(
             map_sha256="a" * 64,
             wave_result=fake_wave_res,
             shuffle_seed=42,
+            allow_weak_test_seed=True,
         )
     assert exc_seal_fake.value.code == "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED"
 
@@ -1026,6 +1035,7 @@ def test_fix2_run_pilot_b_build_has_no_adapter_or_transport_params_and_refuses_s
             map_sha256="a" * 64,
             wave_result=wave_sub_w,
             shuffle_seed=42,
+            allow_weak_test_seed=True,
         )
     assert exc_sub_w.value.code == "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED"
 
@@ -1050,6 +1060,7 @@ def test_fix2_run_pilot_b_build_has_no_adapter_or_transport_params_and_refuses_s
             map_sha256="a" * 64,
             wave_result=wave_sub_r,
             shuffle_seed=42,
+            allow_weak_test_seed=True,
         )
     assert exc_sub_r.value.code == "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED"
 
@@ -1072,6 +1083,7 @@ def test_fix2_run_pilot_b_build_has_no_adapter_or_transport_params_and_refuses_s
             map_sha256="a" * 64,
             wave_result=wave_other_t,
             shuffle_seed=42,
+            allow_weak_test_seed=True,
         )
     assert exc_other_t.value.code == "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED"
 
@@ -1100,6 +1112,7 @@ def test_fix2_run_pilot_b_build_has_no_adapter_or_transport_params_and_refuses_s
             map_sha256="a" * 64,
             wave_result=wave_duck,
             shuffle_seed=42,
+            allow_weak_test_seed=True,
         )
     assert exc_duck.value.code == "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED"
 
@@ -1121,6 +1134,7 @@ def test_gp_part_a_num_ctx_present_in_every_request_body_and_recorded(
         stub_mode=True,
         seed=1,
         shuffle_seed=42,
+        allow_weak_test_seed=True,
     )
 
     chat_bodies = [
@@ -1161,11 +1175,19 @@ def test_gp_part_a_num_ctx_present_in_every_request_body_and_recorded(
     for prov in prov_lines:
         assert prov["writer"]["max_num_ctx"] == 9216
         for w_rec in prov["writer"]["call_records"]:
-            assert isinstance(w_rec.get("num_ctx"), int) and w_rec["num_ctx"] >= 1024
+            assert "num_ctx" not in w_rec  # the per-call size is kept in the sealed store
             assert w_rec.get("max_num_ctx") == 9216
         for r_rec in prov["judgments"][0]["call_records"]:
-            assert isinstance(r_rec.get("num_ctx"), int) and r_rec["num_ctx"] >= 1024
+            assert "num_ctx" not in r_rec
             assert r_rec.get("max_num_ctx") in (7168, 8192)
+    metrics = [
+        json.loads(line)
+        for line in (out_dir / "sealed_store" / "call_metrics.sealed.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    for mrow in metrics:
+        for call in (*mrow["writer"], *mrow["readers"]):
+            assert isinstance(call.get("num_ctx"), int) and call["num_ctx"] >= 1024
 
 
 def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
@@ -1666,14 +1688,13 @@ def test_gs_thinking_words_is_recorded_and_nothing_gates_on_it(
         assert w["thinking_words_total"] > 0
         assert w["max_thinking_words_observed"] == 9999
 
-    prov_row = json.loads(
-        (out_dir / "part_pilot_b_sealed" / "provenance.jsonl")
-        .read_text(encoding="utf-8")
-        .splitlines()[0]
+    # per-item measurements are kept in the sealed store; the public provenance carries none
+    metrics_row = json.loads(
+        (out_dir / "sealed_store" / "call_metrics.sealed.jsonl").read_text(encoding="utf-8").splitlines()[0]
     )
-    for wcall in prov_row["writer"]["call_records"]:
+    for wcall in metrics_row["writer"]:
         assert wcall["thinking_words"] == 9999
-    for rcall in prov_row["judgments"][0]["call_records"]:
+    for rcall in metrics_row["readers"]:
         assert rcall["thinking_words"] == 9999
 
 
