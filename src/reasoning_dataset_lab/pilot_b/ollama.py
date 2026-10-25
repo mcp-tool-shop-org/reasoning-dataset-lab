@@ -18,15 +18,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
-from reasoning_dataset_lab.errors import refused_error
+from reasoning_dataset_lab.errors import refused_error, usage_error
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     FactTable,
     ProvedClaim,
@@ -49,9 +51,18 @@ if TYPE_CHECKING:
 
 DEFAULT_OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
 LOOPBACK_HOST: str = "127.0.0.1"
-DEFAULT_THINKING_TOKEN_CAP: int = 256
+
+# Documented default thinking token cap (Card gp Part B: the cap is configuration, never a constant source of truth)
+DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP: int = 256
+DEFAULT_THINKING_TOKEN_CAP: int = DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP
 
 OllamaOperation = Literal["render_material", "word_claim", "read_claim"]
+PILOT_B_OPERATIONS: tuple[OllamaOperation, ...] = (
+    "render_material",
+    "word_claim",
+    "read_claim",
+)
+ThinkingCapSource = Literal["cli", "config", "default"]
 OllamaHttpTransport = Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
 
 # Named answer token budgets per operation (Card gn FIX 1: options.num_predict = thinking_token_cap + answer_budget)
@@ -110,6 +121,314 @@ def compute_num_ctx(
 ) -> int:
     """Compute `options.num_ctx = round_up(prompt_tokens_estimate + num_predict + margin, 1024)`."""
     return round_up_num_ctx(prompt_tokens_estimate + num_predict + margin, step=step)
+
+
+ENV_THINKING_CAP_GLOBAL: str = "RDLAB_THINKING_CAP"
+ENV_THINKING_CAP_BY_OPERATION: dict[OllamaOperation, str] = {
+    "render_material": "RDLAB_THINKING_CAP_RENDER_MATERIAL",
+    "word_claim": "RDLAB_THINKING_CAP_WORD_CLAIM",
+    "read_claim": "RDLAB_THINKING_CAP_READ_CLAIM",
+}
+
+
+def _validate_positive_cap(raw_val: object, context_label: str) -> int:
+    if isinstance(raw_val, bool):
+        raise refused_error(
+            "PILOT_B_INVALID_THINKING_CAP",
+            f"Invalid thinking_token_cap for {context_label}: boolean {raw_val!r} is not an integer.",
+            "Pass a positive integer thinking_token_cap >= 1.",
+        )
+    if isinstance(raw_val, str):
+        try:
+            val = int(raw_val.strip())
+        except ValueError as exc:
+            raise refused_error(
+                "PILOT_B_INVALID_THINKING_CAP",
+                f"Invalid thinking_token_cap for {context_label}: {raw_val!r} is not an integer.",
+                "Pass a positive integer thinking_token_cap >= 1.",
+            ) from exc
+    elif isinstance(raw_val, int):
+        val = raw_val
+    else:
+        raise refused_error(
+            "PILOT_B_INVALID_THINKING_CAP",
+            f"Invalid thinking_token_cap for {context_label}: {raw_val!r} must be an integer >= 1.",
+            "Pass a positive integer thinking_token_cap >= 1.",
+        )
+    if val < 1:
+        raise refused_error(
+            "PILOT_B_INVALID_THINKING_CAP",
+            f"thinking_token_cap must be >= 1 for {context_label}, got {val}.",
+            "Pass a positive integer thinking_token_cap.",
+        )
+    return val
+
+
+@dataclass(frozen=True)
+class ThinkingCapConfig:
+    """Configured per-operation thinking token cap and provenance source (`cli` / `config` / `default`)."""
+
+    render_material: int
+    word_claim: int
+    read_claim: int
+    source: ThinkingCapSource = "default"
+    render_material_source: ThinkingCapSource = "default"
+    word_claim_source: ThinkingCapSource = "default"
+    read_claim_source: ThinkingCapSource = "default"
+
+    def __post_init__(self) -> None:
+        _validate_positive_cap(self.render_material, "render_material")
+        _validate_positive_cap(self.word_claim, "word_claim")
+        _validate_positive_cap(self.read_claim, "read_claim")
+
+    def cap_for(self, operation: OllamaOperation) -> int:
+        if operation == "render_material":
+            return self.render_material
+        if operation == "word_claim":
+            return self.word_claim
+        return self.read_claim
+
+    def source_for(self, operation: OllamaOperation) -> ThinkingCapSource:
+        if operation == "render_material":
+            return self.render_material_source
+        if operation == "word_claim":
+            return self.word_claim_source
+        return self.read_claim_source
+
+    @property
+    def effective_cap(self) -> int:
+        if self.render_material == self.word_claim == self.read_claim:
+            return self.render_material
+        return max(self.render_material, self.word_claim, self.read_claim)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "value": self.effective_cap,
+            "source": self.source,
+            "documented_default": DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
+            "by_operation": {
+                "render_material": {
+                    "value": self.render_material,
+                    "source": self.render_material_source,
+                },
+                "word_claim": {
+                    "value": self.word_claim,
+                    "source": self.word_claim_source,
+                },
+                "read_claim": {
+                    "value": self.read_claim,
+                    "source": self.read_claim_source,
+                },
+            },
+        }
+
+
+def _extract_cap_block_from_config_dict(data: Mapping[str, Any]) -> Any:
+    if "pilot_b" in data and isinstance(data["pilot_b"], Mapping):
+        pb = data["pilot_b"]
+        if "thinking_token_cap" in pb:
+            return pb["thinking_token_cap"]
+        if "thinking_cap" in pb:
+            return pb["thinking_cap"]
+    if "thinking_token_cap" in data:
+        return data["thinking_token_cap"]
+    if "thinking_cap" in data:
+        return data["thinking_cap"]
+    return None
+
+
+def resolve_thinking_cap_config(
+    *,
+    cli_cap: int | Mapping[str, int] | None = None,
+    cli_by_operation: Mapping[str, int | None] | None = None,
+    config_path: Path | None = None,
+    config_data: Mapping[str, Any] | int | None = None,
+    env: Mapping[str, str] | None = None,
+    use_environ: bool = True,
+    default_cap: int = DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
+) -> ThinkingCapConfig:
+    """Resolve `ThinkingCapConfig` with precedence `cli` > `config` (file/env) > `default`."""
+    validated_default = _validate_positive_cap(default_cap, "default")
+    active_env: Mapping[str, str] = (
+        env if env is not None else (os.environ if use_environ else {})
+    )
+
+    loaded_cfg_block: Any = None
+    if config_path is not None:
+        if not config_path.exists() or not config_path.is_file():
+            raise usage_error(
+                "PILOT_B_CONFIG_NOT_FOUND",
+                f"Pilot B config file not found: {config_path}",
+                "Pass an existing JSON configuration file to --config.",
+            )
+        try:
+            raw_cfg = json.loads(config_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise refused_error(
+                "PILOT_B_INVALID_CONFIG_JSON",
+                f"Invalid JSON in Pilot B config file {config_path}: {exc}",
+                "Ensure the config file is valid UTF-8 JSON.",
+            ) from exc
+        if not isinstance(raw_cfg, Mapping):
+            raise refused_error(
+                "PILOT_B_INVALID_CONFIG_SHAPE",
+                f"Pilot B config file {config_path} must be a JSON object.",
+                "Format the config file as a JSON object.",
+            )
+        loaded_cfg_block = _extract_cap_block_from_config_dict(raw_cfg)
+        if loaded_cfg_block is None and set(raw_cfg.keys()) <= {
+            "default",
+            "render_material",
+            "word_claim",
+            "read_claim",
+        }:
+            loaded_cfg_block = raw_cfg
+
+    if config_data is not None:
+        if isinstance(config_data, Mapping):
+            extracted = _extract_cap_block_from_config_dict(config_data)
+            loaded_cfg_block = (
+                extracted
+                if extracted is not None
+                else config_data
+            )
+        else:
+            loaded_cfg_block = config_data
+
+    cfg_global: int | None = None
+    cfg_per_op: dict[OllamaOperation, int] = {}
+    if loaded_cfg_block is not None:
+        if isinstance(loaded_cfg_block, Mapping):
+            if "default" in loaded_cfg_block and loaded_cfg_block["default"] is not None:
+                cfg_global = _validate_positive_cap(
+                    loaded_cfg_block["default"], "config.default"
+                )
+            for op in PILOT_B_OPERATIONS:
+                if op in loaded_cfg_block and loaded_cfg_block[op] is not None:
+                    cfg_per_op[op] = _validate_positive_cap(
+                        loaded_cfg_block[op], f"config.{op}"
+                    )
+        else:
+            cfg_global = _validate_positive_cap(loaded_cfg_block, "config")
+
+    # Environment variables also populate the 'config' tier
+    env_global_raw = active_env.get(ENV_THINKING_CAP_GLOBAL, "").strip()
+    env_global = (
+        _validate_positive_cap(env_global_raw, ENV_THINKING_CAP_GLOBAL)
+        if env_global_raw
+        else None
+    )
+    env_per_op: dict[OllamaOperation, int] = {}
+    for op, env_name in ENV_THINKING_CAP_BY_OPERATION.items():
+        raw_env_op = active_env.get(env_name, "").strip()
+        if raw_env_op:
+            env_per_op[op] = _validate_positive_cap(raw_env_op, env_name)
+
+    # CLI tier
+    cli_global: int | None = None
+    cli_per_op: dict[OllamaOperation, int] = {}
+    if cli_cap is not None:
+        if isinstance(cli_cap, Mapping):
+            if "default" in cli_cap and cli_cap["default"] is not None:
+                cli_global = _validate_positive_cap(cli_cap["default"], "cli.default")
+            for op in PILOT_B_OPERATIONS:
+                if op in cli_cap and cli_cap[op] is not None:
+                    cli_per_op[op] = _validate_positive_cap(cli_cap[op], f"cli.{op}")
+        else:
+            cli_global = _validate_positive_cap(cli_cap, "cli")
+
+    if cli_by_operation is not None:
+        for op in PILOT_B_OPERATIONS:
+            if op in cli_by_operation and cli_by_operation[op] is not None:
+                cli_per_op[op] = _validate_positive_cap(
+                    cli_by_operation[op], f"cli.{op}"
+                )
+
+    vals: dict[OllamaOperation, int] = {}
+    sources: dict[OllamaOperation, ThinkingCapSource] = {}
+    for op in PILOT_B_OPERATIONS:
+        if op in cli_per_op:
+            vals[op] = cli_per_op[op]
+            sources[op] = "cli"
+        elif cli_global is not None:
+            vals[op] = cli_global
+            sources[op] = "cli"
+        elif op in cfg_per_op:
+            vals[op] = cfg_per_op[op]
+            sources[op] = "config"
+        elif op in env_per_op:
+            vals[op] = env_per_op[op]
+            sources[op] = "config"
+        elif cfg_global is not None:
+            vals[op] = cfg_global
+            sources[op] = "config"
+        elif env_global is not None:
+            vals[op] = env_global
+            sources[op] = "config"
+        else:
+            vals[op] = validated_default
+            sources[op] = "default"
+
+    unique_sources = set(sources.values())
+    if len(unique_sources) == 1:
+        overall_source: ThinkingCapSource = next(iter(unique_sources))
+    elif "cli" in unique_sources:
+        overall_source = "cli"
+    elif "config" in unique_sources:
+        overall_source = "config"
+    else:
+        overall_source = "default"
+
+    return ThinkingCapConfig(
+        render_material=vals["render_material"],
+        word_claim=vals["word_claim"],
+        read_claim=vals["read_claim"],
+        source=overall_source,
+        render_material_source=sources["render_material"],
+        word_claim_source=sources["word_claim"],
+        read_claim_source=sources["read_claim"],
+    )
+
+
+def coerce_thinking_cap_config(
+    thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
+    *,
+    source: ThinkingCapSource | None = None,
+    config_path: Path | None = None,
+) -> ThinkingCapConfig:
+    """Coerce an optional int, mapping, or `ThinkingCapConfig` into a validated `ThinkingCapConfig`."""
+    if isinstance(thinking_token_cap, ThinkingCapConfig):
+        return thinking_token_cap
+    if thinking_token_cap is None:
+        return resolve_thinking_cap_config(config_path=config_path)
+    if isinstance(thinking_token_cap, Mapping):
+        if source == "cli":
+            return resolve_thinking_cap_config(
+                cli_cap=thinking_token_cap, config_path=config_path
+            )
+        return resolve_thinking_cap_config(
+            config_data=thinking_token_cap, config_path=config_path
+        )
+    val = _validate_positive_cap(thinking_token_cap, "thinking_token_cap")
+    if source == "cli":
+        return resolve_thinking_cap_config(cli_cap=val, config_path=config_path)
+    if source == "config":
+        return resolve_thinking_cap_config(config_data=val, config_path=config_path)
+    if source == "default":
+        return ThinkingCapConfig(
+            render_material=val,
+            word_claim=val,
+            read_claim=val,
+            source="default",
+            render_material_source="default",
+            word_claim_source="default",
+            read_claim_source="default",
+        )
+    # When passed an int without explicit source: if it differs from the documented default, record 'config';
+    # otherwise resolve env/config first and fall back to 'default'.
+    if val != DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP or config_path is not None:
+        return resolve_thinking_cap_config(config_data=val, config_path=config_path)
+    return resolve_thinking_cap_config(config_path=config_path, default_cap=val)
 
 
 def require_loopback_ollama_url(url: str) -> str:
@@ -191,6 +510,7 @@ class OllamaCallRecord:
     thinking_token_cap: int
     wall_time_s: float
     think: ThinkSetting = True
+    thinking_token_cap_source: ThinkingCapSource = "default"
     num_predict: int = 0
     num_ctx: int = 0
     max_num_ctx: int = 0
@@ -205,6 +525,8 @@ class OllamaCallRecord:
             "prompt_sha256": self.prompt_sha256,
             "prompt_tokens_estimate": self.prompt_tokens_estimate,
             "think": self.think,
+            "thinking_token_cap": self.thinking_token_cap,
+            "thinking_token_cap_source": self.thinking_token_cap_source,
             "num_predict": self.num_predict,
             "num_ctx": self.num_ctx,
             "max_num_ctx": self.max_num_ctx,
@@ -313,7 +635,7 @@ def _extract_token_counts(
 
 
 class OllamaWriterAdapter:
-    """Real loopback Ollama writer adapter implementing `PilotBWriterAdapter` (Card gk Part A & Card gp Part A)."""
+    """Real loopback Ollama writer adapter implementing `PilotBWriterAdapter` (Card gk Part A & Card gp Part A/B)."""
 
     is_fake: ClassVar[bool] = False
 
@@ -322,16 +644,14 @@ class OllamaWriterAdapter:
         model: ModelIdentity | PinnedModelSpec,
         *,
         base_url: str = DEFAULT_OLLAMA_BASE_URL,
-        thinking_token_cap: int = DEFAULT_THINKING_TOKEN_CAP,
+        thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
+        thinking_cap_source: ThinkingCapSource | None = None,
         max_num_ctx: int | None = None,
         http_transport: OllamaHttpTransport | None = None,
     ) -> None:
-        if thinking_token_cap < 1:
-            raise refused_error(
-                "PILOT_B_INVALID_THINKING_CAP",
-                f"thinking_token_cap must be >= 1, got {thinking_token_cap}.",
-                "Pass a positive integer thinking_token_cap.",
-            )
+        self._cap_config = coerce_thinking_cap_config(
+            thinking_token_cap, source=thinking_cap_source
+        )
         self._base_url = require_loopback_ollama_url(base_url)
         self._model = _resolve_model_identity(model)
         resolved_max_ctx = (
@@ -347,7 +667,7 @@ class OllamaWriterAdapter:
             )
         self._max_num_ctx = resolved_max_ctx
         self._think: ThinkSetting = self._model.think
-        self._thinking_token_cap = thinking_token_cap
+        self._thinking_token_cap = self._cap_config.effective_cap
         self._transport: OllamaHttpTransport = (
             http_transport if http_transport is not None else default_ollama_http_transport
         )
@@ -379,6 +699,10 @@ class OllamaWriterAdapter:
     @property
     def thinking_token_cap(self) -> int:
         return self._thinking_token_cap
+
+    @property
+    def thinking_cap_config(self) -> ThinkingCapConfig:
+        return self._cap_config
 
     @property
     def max_num_ctx(self) -> int:
@@ -424,7 +748,9 @@ class OllamaWriterAdapter:
         self._ensure_verified()
         prompt_sha = _canonical_prompt_sha256(messages)
         prompt_tokens_estimate = estimate_prompt_tokens(messages)
-        num_predict = self._thinking_token_cap + OPERATION_ANSWER_BUDGETS[operation]
+        op_cap = self._cap_config.cap_for(operation)
+        op_source = self._cap_config.source_for(operation)
+        num_predict = op_cap + OPERATION_ANSWER_BUDGETS[operation]
         num_ctx = compute_num_ctx(
             prompt_tokens_estimate,
             num_predict,
@@ -441,7 +767,8 @@ class OllamaWriterAdapter:
                     prompt_sha256=prompt_sha,
                     eval_tokens=0,
                     thinking_tokens=0,
-                    thinking_token_cap=self._thinking_token_cap,
+                    thinking_token_cap=op_cap,
+                    thinking_token_cap_source=op_source,
                     wall_time_s=0.0,
                     think=self._think,
                     num_predict=num_predict,
@@ -493,7 +820,8 @@ class OllamaWriterAdapter:
             prompt_sha256=prompt_sha,
             eval_tokens=eval_tokens,
             thinking_tokens=thinking_tokens,
-            thinking_token_cap=self._thinking_token_cap,
+            thinking_token_cap=op_cap,
+            thinking_token_cap_source=op_source,
             wall_time_s=wall_s,
             think=self._think,
             num_predict=num_predict,
@@ -629,7 +957,7 @@ def parse_reader_verdict(raw_text: str) -> ReaderVerdict:
 
 
 class OllamaBlindReaderAdapter:
-    """Real loopback Ollama blind-reader adapter implementing `BlindReaderAdapter` (Card gk Part B & Card gp Part A)."""
+    """Real loopback Ollama blind-reader adapter implementing `BlindReaderAdapter` (Card gk Part B & Card gp Part A/B)."""
 
     is_fake: ClassVar[bool] = False
 
@@ -638,16 +966,14 @@ class OllamaBlindReaderAdapter:
         model: ModelIdentity | PinnedModelSpec,
         *,
         base_url: str = DEFAULT_OLLAMA_BASE_URL,
-        thinking_token_cap: int = DEFAULT_THINKING_TOKEN_CAP,
+        thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
+        thinking_cap_source: ThinkingCapSource | None = None,
         max_num_ctx: int | None = None,
         http_transport: OllamaHttpTransport | None = None,
     ) -> None:
-        if thinking_token_cap < 1:
-            raise refused_error(
-                "PILOT_B_INVALID_THINKING_CAP",
-                f"thinking_token_cap must be >= 1, got {thinking_token_cap}.",
-                "Pass a positive integer thinking_token_cap.",
-            )
+        self._cap_config = coerce_thinking_cap_config(
+            thinking_token_cap, source=thinking_cap_source
+        )
         self._base_url = require_loopback_ollama_url(base_url)
         self._model = _resolve_model_identity(model)
         default_role_max = (
@@ -668,7 +994,7 @@ class OllamaBlindReaderAdapter:
             )
         self._max_num_ctx = resolved_max_ctx
         self._think: ThinkSetting = self._model.think
-        self._thinking_token_cap = thinking_token_cap
+        self._thinking_token_cap = self._cap_config.cap_for("read_claim")
         self._transport: OllamaHttpTransport = (
             http_transport if http_transport is not None else default_ollama_http_transport
         )
@@ -699,6 +1025,10 @@ class OllamaBlindReaderAdapter:
     @property
     def thinking_token_cap(self) -> int:
         return self._thinking_token_cap
+
+    @property
+    def thinking_cap_config(self) -> ThinkingCapConfig:
+        return self._cap_config
 
     @property
     def max_num_ctx(self) -> int:
@@ -739,7 +1069,9 @@ class OllamaBlindReaderAdapter:
         self._ensure_verified()
         prompt_sha = _canonical_prompt_sha256(messages)
         prompt_tokens_estimate = estimate_prompt_tokens(messages)
-        num_predict = self._thinking_token_cap + READ_ANSWER_BUDGET
+        op_cap = self._cap_config.cap_for("read_claim")
+        op_source = self._cap_config.source_for("read_claim")
+        num_predict = op_cap + READ_ANSWER_BUDGET
         num_ctx = compute_num_ctx(
             prompt_tokens_estimate,
             num_predict,
@@ -755,7 +1087,8 @@ class OllamaBlindReaderAdapter:
                 prompt_sha256=prompt_sha,
                 eval_tokens=0,
                 thinking_tokens=0,
-                thinking_token_cap=self._thinking_token_cap,
+                thinking_token_cap=op_cap,
+                thinking_token_cap_source=op_source,
                 wall_time_s=0.0,
                 think=self._think,
                 num_predict=num_predict,
@@ -806,7 +1139,8 @@ class OllamaBlindReaderAdapter:
             prompt_sha256=prompt_sha,
             eval_tokens=eval_tokens,
             thinking_tokens=thinking_tokens,
-            thinking_token_cap=self._thinking_token_cap,
+            thinking_token_cap=op_cap,
+            thinking_token_cap_source=op_source,
             wall_time_s=wall_s,
             think=self._think,
             num_predict=num_predict,

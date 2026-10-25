@@ -34,11 +34,16 @@ import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 from reasoning_dataset_lab.pilot_b.ollama import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_ROLE_MAX_NUM_CTX,
+    DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP,
     NUM_CTX_MARGIN_TOKENS,
     NUM_CTX_STEP_TOKENS,
     PROMPT_TOKEN_ESTIMATE_RULE,
     OllamaBlindReaderAdapter,
     OllamaWriterAdapter,
+    ThinkingCapConfig,
+    ThinkingCapSource,
+    coerce_thinking_cap_config,
+    resolve_thinking_cap_config,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
     DEFAULT_MIN_PASS_RATE_PER_CLASS,
@@ -737,6 +742,17 @@ def build_pilot_b_report(
         "gate_pass_rate_per_class": dict(wave_result.pass_rate_per_class),
         "triad_pass_rate": wave_result.triad_pass_rate,
         "thinking_token_cap": wave_result.thinking_token_cap,
+        "thinking_token_cap_source": wave_result.thinking_token_cap_source,
+        "thinking_cap_config": (
+            wave_result.thinking_cap_config.to_dict()
+            if wave_result.thinking_cap_config is not None
+            else {
+                "default_cap": wave_result.thinking_token_cap,
+                "source": wave_result.thinking_token_cap_source,
+                "by_operation": {},
+                "sources_by_operation": {},
+            }
+        ),
         "num_ctx_policy": {
             "prompt_token_estimate_rule": PROMPT_TOKEN_ESTIMATE_RULE,
             "margin_tokens": NUM_CTX_MARGIN_TOKENS,
@@ -791,7 +807,11 @@ def run_pilot_b_build(
     stub_mode: bool = False,
     seed: int = 1,
     shuffle_seed: int = 42,
-    thinking_token_cap: int = DEFAULT_THINKING_TOKEN_CAP,
+    thinking_token_cap: int | ThinkingCapConfig | Mapping[str, Any] | None = None,
+    thinking_cap_source: ThinkingCapSource | None = None,
+    thinking_cap_by_operation: Mapping[str, int | None] | None = None,
+    config_path: Path | None = None,
+    environ: Mapping[str, str] | None = None,
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
     licence_registry_path: Path | None = None,
     licence_id_overrides: Mapping[str, str] | None = None,
@@ -805,6 +825,36 @@ def run_pilot_b_build(
             "PILOT_B_INVALID_TRIAD_COUNT",
             f"triad_count must be >= 1, got {triad_count}.",
             "Pass a positive integer number of triads (e.g. --stub 10 or 50).",
+        )
+
+    if isinstance(thinking_token_cap, (ThinkingCapConfig, Mapping)):
+        cap_config = coerce_thinking_cap_config(
+            thinking_token_cap, source=thinking_cap_source
+        )
+    elif (
+        config_path is not None
+        or environ is not None
+        or thinking_cap_by_operation is not None
+        or thinking_token_cap is None
+    ):
+        cap_config = resolve_thinking_cap_config(
+            cli_cap=thinking_token_cap if isinstance(thinking_token_cap, int) else None,
+            cli_by_operation=thinking_cap_by_operation,
+            config_path=config_path,
+            env=environ,
+        )
+    else:
+        inferred_src: ThinkingCapSource = (
+            thinking_cap_source
+            if thinking_cap_source is not None
+            else (
+                "cli"
+                if int(thinking_token_cap) != DOCUMENTED_DEFAULT_THINKING_TOKEN_CAP
+                else "default"
+            )
+        )
+        cap_config = coerce_thinking_cap_config(
+            int(thinking_token_cap), source=inferred_src
         )
 
     pins = resolve_pilot_b_model_pins(
@@ -877,17 +927,17 @@ def run_pilot_b_build(
     active_writer = OllamaWriterAdapter(
         model=writer_id,
         base_url=ollama_base_url,
-        thinking_token_cap=thinking_token_cap,
+        thinking_token_cap=cap_config,
     )
     active_r1 = OllamaBlindReaderAdapter(
         model=r1_id,
         base_url=ollama_base_url,
-        thinking_token_cap=thinking_token_cap,
+        thinking_token_cap=cap_config,
     )
     active_r2 = OllamaBlindReaderAdapter(
         model=r2_id,
         base_url=ollama_base_url,
-        thinking_token_cap=thinking_token_cap,
+        thinking_token_cap=cap_config,
     )
 
     if not (
@@ -912,7 +962,7 @@ def run_pilot_b_build(
         reader_1=active_r1,
         reader_2=active_r2,
         review_queue_path=review_queue_path,
-        thinking_token_cap=thinking_token_cap,
+        thinking_token_cap=cap_config,
         min_pass_rate_per_class=min_pass_rate_per_class,
     )
 

@@ -137,8 +137,36 @@ def _build_parser() -> _StructuredArgumentParser:
         "--thinking-cap",
         dest="thinking_cap",
         type=int,
-        default=256,
-        help="Per-call thinking token cap (default: 256).",
+        default=None,
+        help="Per-call thinking token cap override (precedence: CLI > config/env > default 256).",
+    )
+    pb_parser.add_argument(
+        "--thinking-cap-render-material",
+        dest="thinking_cap_render_material",
+        type=int,
+        default=None,
+        help="Optional CLI thinking token cap override for render_material.",
+    )
+    pb_parser.add_argument(
+        "--thinking-cap-word-claim",
+        dest="thinking_cap_word_claim",
+        type=int,
+        default=None,
+        help="Optional CLI thinking token cap override for word_claim.",
+    )
+    pb_parser.add_argument(
+        "--thinking-cap-read-claim",
+        dest="thinking_cap_read_claim",
+        type=int,
+        default=None,
+        help="Optional CLI thinking token cap override for read_claim.",
+    )
+    pb_parser.add_argument(
+        "--config",
+        dest="config_path",
+        type=Path,
+        default=None,
+        help="Optional JSON config file for Pilot B settings (e.g. thinking_token_cap).",
     )
     pb_parser.add_argument(
         "--licence-registry",
@@ -209,6 +237,11 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
         if args.command == "pilot-b":
             triad_count = args.stub_count if args.stub_count is not None else 50
             stub_mode = args.stub_count is not None
+            op_caps = {
+                "render_material": args.thinking_cap_render_material,
+                "word_claim": args.thinking_cap_word_claim,
+                "read_claim": args.thinking_cap_read_claim,
+            }
             build_res = run_pilot_b_build(
                 output_dir=args.output_dir,
                 triad_count=triad_count,
@@ -216,6 +249,8 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 seed=args.seed,
                 shuffle_seed=args.shuffle_seed,
                 thinking_token_cap=args.thinking_cap,
+                thinking_cap_by_operation=op_caps,
+                config_path=args.config_path,
                 licence_registry_path=args.licence_registry,
                 ollama_base_url=args.ollama_url,
             )
