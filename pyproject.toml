@@ -33,6 +33,8 @@ dev = [
 ]
 
 [tool.uv]
+# Known workaround until role-set #120 ( the root fix ) lands: forces aspire-si-gates@8ed78f2
+# over role-set@4033ebd's declared aspire-si@6a603baa subdirectory pin.
 override-dependencies = [
     "aspire-si-gates @ git+https://github.com/mcp-tool-shop-org/aspire-si-gates@8ed78f2fee388e81443953f8dd3753c73e1ff2bd",
 ]
