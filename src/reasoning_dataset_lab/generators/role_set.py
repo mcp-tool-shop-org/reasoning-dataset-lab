@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 from collections.abc import Sequence
@@ -276,8 +277,17 @@ class RoleSetGenerator:
             f"## This slot\nWrite a B item for {slot.cell.trait} ({structure}).\n\n"
             + solvefirst.brief(locked)
         )
+        prompt_messages = [{"role": "user", "content": prompt}]
         writer_client = mock.MockWriter()
-        completion = writer_client([{"role": "user", "content": prompt}], seed=slot.seed)
+        completion = writer_client(prompt_messages, seed=slot.seed)
+        msg_blob = json.dumps(
+            prompt_messages, sort_keys=True, ensure_ascii=False, default=str
+        )
+        messages_sha256 = (
+            str(completion.messages_sha256)
+            if completion.messages_sha256 is not None
+            else hashlib.sha256(msg_blob.encode("utf-8")).hexdigest()
+        )
         fields: dict[str, object] = json.loads(completion.text)
         fields["model"] = locked.model
         fields["answer"] = locked.key
@@ -393,7 +403,7 @@ class RoleSetGenerator:
             "writer_gguf_path": "mock",
             "writer_gguf_sha256": "0" * 64,
             "critic_gguf_path": "none",
-            "critic_gguf_sha256": "",
+            "critic_gguf_sha256": "0" * 64,
             "server_commit": "mock",
             "seed": slot.seed,
         }
@@ -402,7 +412,7 @@ class RoleSetGenerator:
             "revision": ROLE_SET_COMMIT,
             "gguf_sha256": "0" * 64,
             "licence_id": "MIT",
-            "messages_sha256": str(completion.messages_sha256),
+            "messages_sha256": messages_sha256,
         }
         receipt = ReceiptRecord(
             slot_id=slot.slot_id,
@@ -415,7 +425,7 @@ class RoleSetGenerator:
             seed=slot.seed,
             tries=built.tries,
             answer=checked.answer,
-            messages_sha256=str(completion.messages_sha256),
+            messages_sha256=messages_sha256,
             writer=writer_meta,
             pins=pins,
             readings=readings,

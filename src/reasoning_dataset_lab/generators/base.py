@@ -466,7 +466,7 @@ class MockGenerator:
             "writer_gguf_path": "mock",
             "writer_gguf_sha256": "0" * 64,
             "critic_gguf_path": "none",
-            "critic_gguf_sha256": "",
+            "critic_gguf_sha256": "0" * 64,
             "server_commit": "mock",
             "seed": slot.seed,
         }

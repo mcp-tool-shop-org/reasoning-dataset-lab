@@ -118,9 +118,16 @@ def test_pilot_a_map_builds_all_12_buildable_cells_and_refuses_zero_capacity() -
 
         assert receipt.generator_name == "role-set"
         assert receipt.generator_commit == ROLE_SET_COMMIT
+        assert is_valid_sha256(receipt.messages_sha256)
+        assert is_valid_sha256(receipt.writer["messages_sha256"])
+        assert receipt.writer["messages_sha256"] == receipt.messages_sha256
+        assert is_valid_sha256(receipt.writer["gguf_sha256"])
         assert set(proven.PIN_FIELDS).issubset(set(receipt.pins.keys()))
         assert receipt.pins["role_set_sha"] == ROLE_SET_COMMIT
         assert receipt.pins["gates_sha256"] == ASPIRE_SI_GATES_SHA256
+        for key, val in receipt.pins.items():
+            if key.endswith("_sha256"):
+                assert is_valid_sha256(val), f"receipt.pins[{key!r}] is not a valid sha256: {val!r}"
 
     key_proof_rate = sum(
         1 for b in built_items if b.item.proof_basis == "proved"
@@ -177,6 +184,24 @@ def test_role_set_proof_version_is_solver_sha256_and_solutions_recorded() -> Non
     proof_dict = proof.to_dict()
     assert proof_dict["version"] == proof.version
     assert proof_dict["solutions"] == proof.solutions
+
+
+def test_role_set_receipt_hash_fields_are_valid_sha256() -> None:
+    map_data = load_map_yaml(EXAMPLE_MAP)
+    first_cell = MapCell.from_dict(map_data["cells"][0])
+    canon_refs = _canon_for_cell(first_cell)
+
+    gen = RoleSetGenerator()
+    slots = gen.plan(first_cell, canon_refs, n=1, seed=100)
+    _, _, receipt = gen.build(slots[0])
+
+    assert is_valid_sha256(receipt.messages_sha256)
+    assert is_valid_sha256(receipt.writer["messages_sha256"])
+    assert receipt.writer["messages_sha256"] == receipt.messages_sha256
+    assert is_valid_sha256(receipt.writer["gguf_sha256"])
+    for key, val in receipt.pins.items():
+        if key.endswith("_sha256"):
+            assert is_valid_sha256(val), f"receipt.pins[{key!r}] is not a valid sha256: {val!r}"
 
 
 def test_role_set_generator_multi_slot_determinism_and_refusals() -> None:

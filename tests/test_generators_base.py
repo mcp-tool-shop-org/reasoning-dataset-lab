@@ -110,6 +110,11 @@ def test_mock_generator_plan_and_build_deterministic() -> None:
     assert len(proof.adapter_trace) >= 2
     assert is_valid_sha256(proof.adapter_trace_sha256)
     assert is_valid_sha256(receipt.messages_sha256)
+    assert is_valid_sha256(receipt.writer["messages_sha256"])
+    assert is_valid_sha256(receipt.writer["gguf_sha256"])
+    for key, val in receipt.pins.items():
+        if key.endswith("_sha256"):
+            assert is_valid_sha256(val), f"receipt.pins[{key!r}] is not a valid sha256: {val!r}"
     assert item.to_dict()["id"] == item.id
     proof_dict = proof.to_dict()
     assert "trace" not in proof_dict
