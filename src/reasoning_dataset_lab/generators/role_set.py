@@ -1,4 +1,4 @@
-"""Adapter driving role-set at pinned commit 4033ebd unchanged (DESIGN.md §4)."""
+"""Adapter driving role-set at pinned commit 2b26840 unchanged (DESIGN.md §4)."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ from reasoning_dataset_lab.generators.base import (
     hash_canonical_json,
 )
 
-ROLE_SET_COMMIT: str = "4033ebd"
-ROLE_SET_FULL_SHA: str = "4033ebd6f4090096c882f26049d577fc66322c47"
+ROLE_SET_COMMIT: str = "2b26840"
+ROLE_SET_FULL_SHA: str = "2b268401f89437df3aa5226ac8579d90598f851b"
 ASPIRE_SI_GATES_COMMIT: str = "8ed78f2"
 ASPIRE_SI_GATES_FULL_SHA: str = "8ed78f2fee388e81443953f8dd3753c73e1ff2bd"
 ASPIRE_SI_GATES_SHA256: str = (
@@ -63,14 +63,14 @@ def validate_shortcut_join(trait: str, wrong_family: str) -> str | None:
         raise refused_error(
             "MAP_UNREGISTERED_TRAIT_WRONG_FAMILY",
             f"Shortcut '{joined}' is not registered in role_set.generate.shortcuts.REGISTRY "
-            f"(src/role_set/generate/shortcuts.py:21-29@4033ebd).",
+            f"(src/role_set/generate/shortcuts.py:21-29@2b26840).",
             f"Use a (trait, wrong_family) pair registered in REGISTRY ({registered}) or 'none'.",
         )
     return joined
 
 
 def _validate_cell_for_role_set(cell: MapCell) -> str:
-    """Validate cell axes against role-set's T10 B generator capabilities at 4033ebd."""
+    """Validate cell axes against role-set's T10 B generator capabilities at 2b26840."""
     shortcut_id = validate_shortcut_join(cell.trait, cell.wrong_family)
     if cell.trait != "T10":
         raise refused_error(
@@ -106,7 +106,7 @@ def _validate_cell_for_role_set(cell: MapCell) -> str:
 
 
 class RoleSetGenerator:
-    """Generator adapter driving role-set at commit 4033ebd unchanged."""
+    """Generator adapter driving role-set at commit 2b26840 unchanged."""
 
     def __init__(
         self,

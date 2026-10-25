@@ -224,13 +224,19 @@ def test_role_set_built_item_structure_is_in_puzzle_check_structures() -> None:
     assert item.structure != "interval_bound"
 
 
-def test_pyproject_uv_override_discloses_role_set_120_workaround() -> None:
+def test_pyproject_has_no_uv_override_dependencies() -> None:
     pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     text = pyproject_path.read_text(encoding="utf-8")
-    assert "[tool.uv]" in text
-    assert "override-dependencies" in text
-    assert "role-set #120" in text
-    assert "aspire-si-gates@8ed78f2" in text
+    assert "[tool.uv]" not in text
+    assert "override-dependencies" not in text
+    assert (
+        "role-set @ git+https://github.com/mcp-tool-shop-org/role-set@2b268401f89437df3aa5226ac8579d90598f851b"
+        in text
+    )
+    assert (
+        "aspire-si-gates @ git+https://github.com/mcp-tool-shop-org/aspire-si-gates@8ed78f2fee388e81443953f8dd3753c73e1ff2bd"
+        in text
+    )
 
 
 def test_role_set_generator_multi_slot_determinism_and_refusals() -> None:

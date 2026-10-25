@@ -2,9 +2,6 @@ version = 1
 revision = 5
 requires-python = ">=3.12"
 
-[manifest]
-overrides = [{ name = "aspire-si-gates", git = "https://github.com/mcp-tool-shop-org/aspire-si-gates?rev=8ed78f2fee388e81443953f8dd3753c73e1ff2bd" }]
-
 [[package]]
 name = "aspire-si-gates"
 version = "1.7.6"
@@ -261,7 +258,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = "==7.0.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
-    { name = "role-set", git = "https://github.com/mcp-tool-shop-org/role-set?rev=4033ebd6f4090096c882f26049d577fc66322c47" },
+    { name = "role-set", git = "https://github.com/mcp-tool-shop-org/role-set?rev=2b268401f89437df3aa5226ac8579d90598f851b" },
 ]
 provides-extras = ["dev"]
 
@@ -275,7 +272,7 @@ dev = [
 [[package]]
 name = "role-set"
 version = "0.2.0"
-source = { git = "https://github.com/mcp-tool-shop-org/role-set?rev=4033ebd6f4090096c882f26049d577fc66322c47#4033ebd6f4090096c882f26049d577fc66322c47" }
+source = { git = "https://github.com/mcp-tool-shop-org/role-set?rev=2b268401f89437df3aa5226ac8579d90598f851b#2b268401f89437df3aa5226ac8579d90598f851b" }
 dependencies = [
     { name = "aspire-si-gates" },
 ]

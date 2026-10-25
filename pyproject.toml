@@ -12,7 +12,7 @@ license = "MIT"
 dependencies = [
     "pyyaml==6.0.3",
     "aspire-si-gates @ git+https://github.com/mcp-tool-shop-org/aspire-si-gates@8ed78f2fee388e81443953f8dd3753c73e1ff2bd",
-    "role-set @ git+https://github.com/mcp-tool-shop-org/role-set@4033ebd6f4090096c882f26049d577fc66322c47",
+    "role-set @ git+https://github.com/mcp-tool-shop-org/role-set@2b268401f89437df3aa5226ac8579d90598f851b",
 ]
 
 [project.optional-dependencies]
@@ -30,13 +30,6 @@ dev = [
     "coverage==7.16.2",
     "pytest==9.0.3",
     "pytest-cov==7.0.0",
-]
-
-[tool.uv]
-# Known workaround until role-set #120 ( the root fix ) lands: forces aspire-si-gates@8ed78f2
-# over role-set@4033ebd's declared aspire-si@6a603baa subdirectory pin.
-override-dependencies = [
-    "aspire-si-gates @ git+https://github.com/mcp-tool-shop-org/aspire-si-gates@8ed78f2fee388e81443953f8dd3753c73e1ff2bd",
 ]
 
 [tool.hatch.metadata]
