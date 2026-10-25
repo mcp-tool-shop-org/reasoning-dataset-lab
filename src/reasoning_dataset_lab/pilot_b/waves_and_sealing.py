@@ -13,7 +13,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-import math
 import random
 import re
 import secrets
@@ -1382,16 +1381,10 @@ def _check_content_leak(
     file_name: str,
     *,
     exempt: frozenset[str],
-    complete: bool = True,
 ) -> None:
-    """Refuse a public field whose values line up with the sealed keys.
-
-    In a complete file (every item of the part, whose triad-level fields always span all three classes) a field is
-    refused when every value maps to one class, or when a value shared by several items maps to one class (a field
-    that isolates a class from the others). In a partial one, such as a report's random sample of items, a single-class
-    value can happen by chance, so the evidence must be strong: the chance of the single-class values seen, taking
-    each class as equally likely, below one in ten thousand.
-    """
+    """Refuse a public field whose values line up with the sealed keys: every value maps to one class, or a value
+    shared by several items maps to one class (a field that isolates a class from the others). The same exact rule
+    applies to every public file; no public file carries a per-item sample for it to tolerate."""
 
     joined = [r for r in rows if isinstance(r.get("id"), str) and r["id"] in item_to_key]
     if len(joined) < 3 or len(set(item_to_key.values())) < 2:
@@ -1408,13 +1401,9 @@ def _check_content_leak(
             val_counts[val] = val_counts.get(val, 0) + 1
         if len(val_to_keys) < 2:
             continue
-        if complete:
-            all_single = all(len(kset) == 1 for kset in val_to_keys.values())
-            isolates = any(len(kset) == 1 and val_counts[val] >= 2 for val, kset in val_to_keys.items())
-            leaking = all_single or isolates
-        else:
-            evidence = sum((val_counts[v] - 1) * math.log(3) for v, kset in val_to_keys.items() if len(kset) == 1)
-            leaking = evidence >= math.log(10_000)
+        all_single = all(len(kset) == 1 for kset in val_to_keys.values())
+        isolates = any(len(kset) == 1 and val_counts[val] >= 2 for val, kset in val_to_keys.items())
+        leaking = all_single or isolates
         if leaking:
             raise refused_error(
                 "PILOT_B_SEALED_CONTENT_LEAK",
@@ -1543,9 +1532,7 @@ def verify_sealed_part(
         if file_path.suffix == ".json":
             parsed = json.loads(file_path.read_text(encoding="utf-8"))
             _scan_object_for_forbidden_keys(parsed, file_path.name)
-            _check_content_leak(
-                _item_rows_in(parsed, item_to_key), item_to_key, file_path.name, exempt=frozenset(), complete=False
-            )
+            _check_content_leak(_item_rows_in(parsed, item_to_key), item_to_key, file_path.name, exempt=frozenset())
         elif file_path.suffix == ".jsonl":
             rows = _jsonl_rows(file_path)
             for line_no, row in enumerate(rows, start=1):

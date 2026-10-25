@@ -712,6 +712,7 @@ def build_pilot_b_report(
     stub_mode: bool,
     sample_seed: int = 42,
     licence_registry: Mapping[str, Any] | None = None,
+    sample_out: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Construct the Pilot B build report (§6, Part E): coverage, key-proof rate 1.0, gate pass rate per class, and sample of 20."""
     items_path = part_dir / "items.jsonl"
@@ -759,7 +760,20 @@ def build_pilot_b_report(
         "estimated_seconds_stub_rate": round(total_seconds * scale, 4),
     }
 
-    sample_block = draw_human_sample(items, sample_size=20, seed=sample_seed)
+    # The hand-audit sample is drawn here but stays out of the public report: it goes to ``sample_out`` (the sealed
+    # store). The report carries only the audit's summary.
+    sample = draw_human_sample(items, sample_size=20, seed=sample_seed)
+    if sample_out is not None:
+        sample_out.update(sample)
+    sample_block = {
+        "done": False,
+        "size": sample["size"],
+        "requested_size": sample["requested_size"],
+        "max_defects": sample["max_defects"],
+        "defects": None,
+        "auditor": None,
+        "date": None,
+    }
     style_issue_count, sentences_checked, style_examples = style_review(items)
 
     style_rate_per_sentence = (
@@ -1055,6 +1069,7 @@ def run_pilot_b_build(
         allow_weak_test_seed=allow_weak_test_seed,
     )
 
+    hand_audit_sample: dict[str, Any] = {}
     report = build_pilot_b_report(
         part_dir=part_dir,
         triads_requested=triad_count,
@@ -1062,6 +1077,10 @@ def run_pilot_b_build(
         stub_mode=stub_mode,
         sample_seed=secrets.randbits(32),
         licence_registry=licence_registry_meta,
+        sample_out=hand_audit_sample,
+    )
+    (keys_path.parent / "human_sample.sealed.json").write_text(
+        json.dumps(hand_audit_sample, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     report_path = output_dir / "reports" / "pilot_b_report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)

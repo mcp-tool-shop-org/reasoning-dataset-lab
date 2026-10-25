@@ -155,7 +155,8 @@ def test_stub_build_10_triads_end_to_end_and_build_report_fields(
     }
 
     # 4. sample of 20 (seeded random, 20 items from the built part)
-    assert len(report["human_sample"]["items"]) == 20
+    assert "items" not in report["human_sample"]
+    assert report["human_sample"]["done"] is False
     assert report["human_sample"]["size"] == 20
 
     # Per-wave timing and token counts for the 10-triad stub that re-estimates the full 50-triad build
@@ -186,7 +187,7 @@ def test_cli_models_verify_live_and_pilot_b_stub(
     assert parsed["status"] == "ok"
     assert parsed["report"]["triads_kept"] == 10
     assert parsed["report"]["key_proof_rate"] == 1.0
-    assert len(parsed["report"]["human_sample"]["items"]) == 20
+    assert "items" not in parsed["report"]["human_sample"]
 
     # Also test `rdlab models` without --verify-live
     code_models = run_cli(["models"])

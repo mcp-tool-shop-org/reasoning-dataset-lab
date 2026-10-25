@@ -513,3 +513,53 @@ def test_no_helper_in_the_sealing_module_is_defined_twice():
     )
     names = [n.name for n in ast.parse(source).body if isinstance(n, (ast.FunctionDef, ast.ClassDef))]
     assert sorted({n for n in names if names.count(n) > 1}) == []
+
+
+# ── the public report carries an audit summary and no per-item sample ────────────────────────────────
+
+
+def _stub_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> tuple[Path, dict]:
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr("reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport", transport)
+    out = tmp_path / name
+    result = run_pilot_b_build(output_dir=out, triad_count=10, stub_mode=True, seed=1, num_predict=256)
+    return out, result
+
+
+def test_the_public_report_has_an_audit_summary_and_no_per_item_sample(tmp_path, monkeypatch):
+    out, result = _stub_build(tmp_path, monkeypatch, "audit")
+    summary = result["report"]["human_sample"]
+    assert set(summary) == {"done", "size", "requested_size", "max_defects", "defects", "auditor", "date"}
+    assert summary["done"] is False
+    assert summary["size"] == 20
+    report_text = (out / "reports" / "pilot_b_report.json").read_text(encoding="utf-8")
+    assert "-item-" not in report_text
+    assert "triad-" not in report_text
+    for path in (out / "part_pilot_b_sealed").iterdir():
+        assert "human_sample" not in path.read_text(encoding="utf-8"), path.name
+
+
+def test_the_hand_audit_sample_is_kept_in_the_sealed_store(tmp_path, monkeypatch):
+    out, _result = _stub_build(tmp_path, monkeypatch, "sample")
+    sample = json.loads((out / "sealed_store" / "human_sample.sealed.json").read_text(encoding="utf-8"))
+    assert len(sample["items"]) == 20
+    assert {"id", "triad_id", "claim"} <= set(sample["items"][0])
+
+
+def test_the_exact_isolation_rule_runs_on_the_report_even_for_a_few_items(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "exact")
+    truth = _true_keys(keys_path)
+    cannot = [i for i, k in truth.items() if k == "cannot_tell"][:2]
+    other = [i for i, k in truth.items() if k != "cannot_tell"][:2]
+    rows = [{"id": i, "bucket": "a"} for i in cannot] + [{"id": other[0], "bucket": "b"}, {"id": other[1], "bucket": "c"}]
+    report = _report_with_items(tmp_path, rows)
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report]) == "PILOT_B_SEALED_CONTENT_LEAK"
+
+
+def test_there_is_no_separate_statistical_rule_for_partial_files():
+    import inspect
+
+    from reasoning_dataset_lab.pilot_b import waves_and_sealing
+
+    assert "complete" not in inspect.signature(waves_and_sealing._check_content_leak).parameters
+    assert "10_000" not in inspect.getsource(waves_and_sealing)
