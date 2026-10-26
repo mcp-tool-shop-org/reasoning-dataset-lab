@@ -1464,6 +1464,12 @@ class OllamaBlindReaderAdapter:
         self._call_records.append(record)
         return raw_text, record
 
+    def chat_raw(
+        self, *, target_id: str, messages: list[dict[str, str]]
+    ) -> tuple[str, OllamaCallRecord]:
+        """One chat call with caller-built messages (the value-set certifier's own prompt), same pins and settings."""
+        return self._chat(target_id=target_id, messages=messages)
+
     def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
         """Send only `prompt` (material + one claim, never the key) to `POST /api/chat` and parse the verdict."""
         messages = build_reader_read_messages(prompt)
