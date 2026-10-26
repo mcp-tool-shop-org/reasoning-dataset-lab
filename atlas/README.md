@@ -1,19 +1,16 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-26 from commit 70e8ff4 by Atlas 1.24.0.
+Mapped at 2026-10-26 from commit ec4a8fc by Atlas 1.24.0.
 
 ## What this is
 
 reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints. (written by a person)
 
-5 parts, mostly Python (32 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
+5 parts, mostly Python (33 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
 
-## What changed since 2026-10-25 (8ebfcc4)
+## What changed since 2026-10-26 (70e8ff4)
 
-- ci no longer runs src/reasoning_dataset_lab/cli.py.
-- src/reasoning_dataset_lab/pilot_b/schemas/ is now read by src/reasoning_dataset_lab/pilot_b/schema_check.py.
-- src/reasoning_dataset_lab/pilot_b/variety_targets.yaml is now read by src/reasoning_dataset_lab/pilot_b/variety.py.
-- 9 files added and 20 changed content, across 4 parts.
+Nothing structural changed since 2026-10-26; 2 files added and 2 changed content.
 
 ## What comes in
 
@@ -24,6 +21,7 @@ reasoning-dataset-lab validates dataset maps, loads the five-file project config
 
 1. The workflow runs tests/ in tests.
 2. That reaches src (16 files).
+3. It uploads coverage to Codecov.
 
 ## Who reads the results
 

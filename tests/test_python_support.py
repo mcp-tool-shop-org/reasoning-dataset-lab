@@ -39,3 +39,14 @@ def test_ci_runs_the_suite_on_3_15_with_the_check_name_kept_and_on_3_13_and_3_14
         body = ci.split(NL + "  " + leg + ":" + NL, 1)[1].split(NL + "  test-py3", 1)[0]
         assert f'python-version: "{version}"' in body
         assert "- name: Atlas check" not in body
+        assert "codecov" not in body.lower() and "--no-cov" in body  # coverage and the upload run on the 3.15 leg only
+    assert "codecov/codecov-action@" in test_job and "--cov-fail-under=90" in test_job
+
+
+def test_every_action_in_the_workflow_is_pinned_by_commit_sha_with_a_version_comment():
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    uses = re.findall(r"uses: (\S+)(.*)", ci)
+    assert uses
+    for ref, rest in uses:
+        assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", ref), f"{ref} is not pinned by commit sha"
+        assert re.search(r"# v\d", rest), f"{ref} has no version comment"

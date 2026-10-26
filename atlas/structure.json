@@ -9,7 +9,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "58adaf3e118dd2f1055ea14c5c5829533cd0884e47bac24fc8517417b3e921c3",
+          "hash": "1ae0590ae8104b2ea0499983f3fe97294524887f43741ae7dccccecb9a8e94e5",
           "path": ".github/workflows/ci.yml"
         }
       ],
@@ -63,7 +63,11 @@
           "path": ".gitignore"
         },
         {
-          "hash": "396db6ece32e54285f495f72743e2f14cc2b6721cc964f35a80aa69d211afc0d",
+          "hash": "1253c91eccb2aac1c6ff2ac03fd69c1aaa0b221abd3d1bf5b563c12602452b4e",
+          "path": ".python-version"
+        },
+        {
+          "hash": "89a030252f0eb91d956025c39bcee044bf392f32a6c2d520ea536b66a2ead6f0",
           "path": "CHANGELOG.md"
         },
         {
@@ -7140,6 +7144,16 @@
         },
         {
           "exports": [
+            "test_ci_runs_the_suite_on_3_15_with_the_check_name_kept_and_on_3_13_and_3_14",
+            "test_every_action_in_the_workflow_is_pinned_by_commit_sha_with_a_version_comment",
+            "test_requires_python_python_version_file_and_lock_agree_on_current_python",
+            "test_role_set_is_pinned_to_a_commit_that_allows_current_python_and_the_lock_agrees"
+          ],
+          "hash": "e4ba9894149b533ffcfc508b43cba8f00c6ae385dde9d8aced78d82933a26c71",
+          "path": "tests/test_python_support.py"
+        },
+        {
+          "exports": [
             "test_aspire_si_gates_single_install_matches_8ed78f2",
             "test_pilot_a_map_builds_all_12_buildable_cells_and_refuses_zero_capacity",
             "test_pyproject_has_no_uv_override_dependencies",
@@ -7225,7 +7239,7 @@
           "programs": [
             "uv"
           ],
-          "step": "Run pytest with coverage (floor 90%)"
+          "step": "Run pytest (no coverage on this leg)"
         },
         {
           "dir": "",
@@ -7249,7 +7263,7 @@
           "programs": [
             "uv"
           ],
-          "step": "Run pytest with coverage (floor 90%)"
+          "step": "Run pytest (no coverage on this leg)"
         },
         {
           "dir": "",
@@ -7286,7 +7300,7 @@
                   "range": ">=22.0.0 <23.0.0-0"
                 }
               ],
-              "step": "5",
+              "step": "6",
               "uses": "actions/setup-node",
               "version": "22"
             }
@@ -7342,14 +7356,15 @@
       ],
       "name": "ci",
       "permissions": [
-        "contents:read"
+        "contents:read",
+        "id-token:write"
       ],
       "pushes": false,
       "reach": [
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 15
+          "files": 16
         },
         {
           "boundary": "src",
@@ -7405,7 +7420,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 15,
+          "files": 16,
           "job": "test",
           "runner": "pytest",
           "step": "Run pytest with coverage (floor 90%)"
@@ -7413,18 +7428,18 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 15,
+          "files": 16,
           "job": "test-py313",
           "runner": "pytest",
-          "step": "Run pytest with coverage (floor 90%)"
+          "step": "Run pytest (no coverage on this leg)"
         },
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 15,
+          "files": 16,
           "job": "test-py314",
           "runner": "pytest",
-          "step": "Run pytest with coverage (floor 90%)"
+          "step": "Run pytest (no coverage on this leg)"
         }
       ],
       "triggers": [
@@ -7482,7 +7497,8 @@
       "uses": [
         "actions/checkout",
         "actions/setup-node",
-        "astral-sh/setup-uv"
+        "astral-sh/setup-uv",
+        "codecov/codecov-action"
       ],
       "usesWorkflowToken": false
     },
@@ -7539,8 +7555,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "70e8ff4cf2f27ddd63203a8072cef47f10e82e67",
-    "tracked": 48
+    "commit": "ec4a8fcbdbaca2bd6b88f4347cf6d25f420f8c41",
+    "tracked": 50
   },
   "landings": [
     {
@@ -7630,7 +7646,7 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 15,
+  "testFiles": 16,
   "unassigned": [
     {
       "hash": "2b7c7e75565178a5d9b7de497bbade83301c35245bd254c816ad280c16596d9f",

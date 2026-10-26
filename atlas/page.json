@@ -18,57 +18,33 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 9,
-      "changed": 20,
+      "added": 2,
+      "changed": 2,
       "moved": 0,
-      "parts": 4,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "ci no longer runs src/reasoning_dataset_lab/cli.py.",
-        "subjects": [
-          ".github/workflows/ci.yml",
-          "src/reasoning_dataset_lab/cli.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "src/reasoning_dataset_lab/pilot_b/schemas/ is now read by src/reasoning_dataset_lab/pilot_b/schema_check.py.",
-        "subjects": [
-          "src/reasoning_dataset_lab/pilot_b/schemas/",
-          "src/reasoning_dataset_lab/pilot_b/schema_check.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "src/reasoning_dataset_lab/pilot_b/variety_targets.yaml is now read by src/reasoning_dataset_lab/pilot_b/variety.py.",
-        "subjects": [
-          "src/reasoning_dataset_lab/pilot_b/variety_targets.yaml",
-          "src/reasoning_dataset_lab/pilot_b/variety.py"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "9 files added and 20 changed content, across 4 parts.",
+        "sentence": "Nothing structural changed since 2026-10-26; 2 files added and 2 changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "8ebfcc4e45e90eaf6d1de4cef9e274037eb66adc",
-      "generatedAt": "2026-10-25T14:04:44.534Z"
+      "commit": "70e8ff4cf2f27ddd63203a8072cef47f10e82e67",
+      "generatedAt": "2026-10-26T01:07:06.925Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "70e8ff4cf2f27ddd63203a8072cef47f10e82e67",
+  "commit": "ec4a8fcbdbaca2bd6b88f4347cf6d25f420f8c41",
   "defaultBranch": "main",
-  "derived": "5 parts, mostly Python (32 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
+  "derived": "5 parts, mostly Python (33 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -83,7 +59,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 15
+          "files": 16
         },
         {
           "boundary": "src",
@@ -96,7 +72,9 @@
       ],
       "runsCount": 1,
       "runsMore": 0,
-      "sends": [],
+      "sends": [
+        "uploads coverage to Codecov"
+      ],
       "stages": [],
       "triggers": [
         "on a pull request",
@@ -137,7 +115,7 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-26T01:07:06.925Z",
+  "generatedAt": "2026-10-26T01:11:38.065Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "7 reads use paths built at run time and are not named here.",
@@ -169,7 +147,7 @@
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
   "summary": "reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints.",
   "summaryFrom": "person",
-  "testFiles": 15,
+  "testFiles": 16,
   "testedBy": {
     "src": 14
   },
