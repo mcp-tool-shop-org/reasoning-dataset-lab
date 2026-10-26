@@ -6,6 +6,7 @@ on:
     paths:
       - pyproject.toml
       - uv.lock
+      - .python-version
       - src/**
       - tests/**
       - examples/**
@@ -22,30 +23,88 @@ permissions:
   contents: read
 
 jobs:
+  # Python 3.15. The main leg: coverage with the 90% floor, the Codecov upload and the Atlas check run here once.
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
-          python-version: "3.12"
+          enable-cache: true
+          python-version: "3.15"
 
       - name: Install dependencies
-        run: |
-          python -m pip install uv
-          uv pip install --system -e ".[dev]"
+        run: uv sync --frozen
 
       - name: Run pytest with coverage (floor 90%)
-        run: python -m pytest -v --cov=reasoning_dataset_lab --cov-report=term-missing --cov-fail-under=90
+        run: uv run pytest -v --cov=reasoning_dataset_lab --cov-report=term-missing --cov-report=xml --cov-fail-under=90
 
       - name: Validate example map
-        run: rdlab map check examples/t10-pilot-a.map.yaml
+        run: uv run rdlab map check examples/t10-pilot-a.map.yaml
 
-      - uses: actions/setup-node@v4
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          version: v11.3.1
+          use_oidc: true
+          fail_ci_if_error: false
+          disable_search: true
+          files: coverage.xml
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
       - name: Atlas check
         run: npx --yes @dogfood-lab/atlas@1.24.0 check
+
+  # Python 3.13. Tests without coverage; a job of its own so the check named "test" keeps its name (it runs on 3.15).
+  test-py313:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run pytest (no coverage on this leg)
+        run: uv run pytest -v --no-cov
+
+      - name: Validate example map
+        run: uv run rdlab map check examples/t10-pilot-a.map.yaml
+
+  # Python 3.14. Tests without coverage; a job of its own so the check named "test" keeps its name (it runs on 3.15).
+  test-py314:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          enable-cache: true
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run pytest (no coverage on this leg)
+        run: uv run pytest -v --no-cov
+
+      - name: Validate example map
+        run: uv run rdlab map check examples/t10-pilot-a.map.yaml

@@ -19,21 +19,21 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 2,
+      "changed": 6,
       "moved": 0,
-      "parts": 2,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-10-25; 2 files changed content.",
+        "sentence": "Nothing structural changed since 2026-10-26; 6 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "50ceb2aa382fbf0ec65aa39f1fe62e8e2837096e",
-      "generatedAt": "2026-10-25T13:57:55.444Z"
+      "commit": "ee62fb11fdfa0481d2311929582c06c46782beff",
+      "generatedAt": "2026-10-26T02:10:10.470Z"
     },
     "unchanged": true
   },
@@ -42,9 +42,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "8ebfcc4e45e90eaf6d1de4cef9e274037eb66adc",
+  "commit": "ab7c07ce8592296dd52de8d334206d60ae9d4f77",
   "defaultBranch": "main",
-  "derived": "5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
+  "derived": "5 parts, mostly Python (33 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -57,27 +57,28 @@
       "pushes": false,
       "reach": [
         {
-          "boundary": "src",
-          "depth": 0,
-          "files": 13
-        },
-        {
           "boundary": "tests",
           "depth": 0,
-          "files": 13
+          "files": 16
+        },
+        {
+          "boundary": "src",
+          "depth": 1,
+          "files": 17
         }
       ],
       "runs": [
-        "src/reasoning_dataset_lab/cli.py",
         "tests/"
       ],
-      "runsCount": 2,
+      "runsCount": 1,
       "runsMore": 0,
-      "sends": [],
+      "sends": [
+        "uploads coverage to Codecov"
+      ],
       "stages": [],
       "triggers": [
         "on a pull request",
-        "on a push to main touching 7 paths",
+        "on a push to main touching 8 paths",
         "or by hand"
       ]
     },
@@ -95,7 +96,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 11
+          "files": 14
         }
       ],
       "runs": [
@@ -114,11 +115,11 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-25T14:04:44.534Z",
+  "generatedAt": "2026-10-26T02:31:50.134Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
-    "2 reads use paths built at run time and are not named here.",
-    "8 writes and 16 reads go to a path their caller passes, not to this repository.",
+    "7 reads use paths built at run time and are not named here.",
+    "11 writes and 33 reads go to a path their caller passes, not to this repository.",
     "1 file belongs to no part: docs/calibration-2026-10-25.md.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
@@ -134,20 +135,21 @@
   "readers": [],
   "repo": "mcp-tool-shop-org/reasoning-dataset-lab",
   "sequences": [],
-  "startDoor": ".github/workflows/ci.yml",
+  "startDoor": "pyproject.toml#rdlab",
   "startHere": [
-    ".github/workflows/ci.yml",
     "src/reasoning_dataset_lab/cli.py",
     "src/reasoning_dataset_lab/errors.py",
     "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
     "src/reasoning_dataset_lab/map.py",
-    "src/reasoning_dataset_lab/config.py"
+    "src/reasoning_dataset_lab/config.py",
+    "src/reasoning_dataset_lab/pilot_b/variety.py"
   ],
+  "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
   "summary": "reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints.",
   "summaryFrom": "person",
-  "testFiles": 13,
+  "testFiles": 16,
   "testedBy": {
-    "src": 12
+    "src": 15
   },
   "unnamedWrites": 0,
   "unread": [],

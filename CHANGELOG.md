@@ -8,6 +8,8 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ### Changed
 
+- **Python: `requires-python` is `>=3.13` (was `>=3.12,<3.13`); Python 3.12 is dropped.** 3.15 is the main target (`.python-version`); CI runs the suite on 3.15 (`test`, with the Atlas check), 3.13 (`test-py313`) and 3.14 (`test-py314`), each from `uv sync --frozen`. Coverage (floor 90) and a Codecov upload run on the 3.15 leg only; the 3.13 and 3.14 legs run the tests without coverage. Every action is pinned by commit SHA with a version comment, at its current major (checkout v7.0.1, setup-uv v10.3.2, setup-node v7.1.0, codecov-action v7.1.1, read 2026-10-25). `role-set` is re-pinned to its commit that supports `>=3.13` (`d105f3d`, role-set PR #121; to be re-pointed to the merge commit). The Part F parity test now expects `>=3.13`. On 3.15, PyYAML 6.0.3 installs from its source distribution until it publishes cp315 wheels.
+
 - sealing: the per-build seed is kept in the sealed store.
 - sealing: the render inputs are validated at write and at verify, the report is cross-checked against them, and the schema maps are closed.
 - sealing: more render-input rules (unique digests, constant call fields, catalogue domains, regular whitespace) and a coverage check on the report.
