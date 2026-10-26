@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-26 from commit ec4a8fc by Atlas 1.24.0.
+Mapped at 2026-10-26 from commit ee62fb1 by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,19 +8,20 @@ reasoning-dataset-lab validates dataset maps, loads the five-file project config
 
 5 parts, mostly Python (33 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
 
-## What changed since 2026-10-26 (70e8ff4)
+## What changed since 2026-10-26 (ec4a8fc)
 
-Nothing structural changed since 2026-10-26; 2 files added and 2 changed content.
+- ci's push trigger now also names `.python-version`.
+- 9 files changed content, across 4 parts.
 
 ## What comes in
 
-1. **ci.** On a pull request; on a push to main touching 7 paths; or by hand. Runs tests/.
+1. **ci.** On a pull request; on a push to main touching 8 paths; or by hand. Runs tests/.
 2. **rdlab** (a command people run). Runs src/reasoning_dataset_lab/cli.py.
 
 ## What happens through ci
 
 1. The workflow runs tests/ in tests.
-2. That reaches src (16 files).
+2. That reaches src (17 files).
 3. It uploads coverage to Codecov.
 
 ## Who reads the results

@@ -18,31 +18,38 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 2,
-      "changed": 2,
+      "added": 0,
+      "changed": 9,
       "moved": 0,
-      "parts": 3,
+      "parts": 4,
       "removed": 0
     },
     "items": [
       {
+        "kind": "door",
+        "sentence": "ci's push trigger now also names `.python-version`.",
+        "subjects": [
+          ".github/workflows/ci.yml"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-10-26; 2 files added and 2 changed content.",
+        "sentence": "9 files changed content, across 4 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "70e8ff4cf2f27ddd63203a8072cef47f10e82e67",
-      "generatedAt": "2026-10-26T01:07:06.925Z"
+      "commit": "ec4a8fcbdbaca2bd6b88f4347cf6d25f420f8c41",
+      "generatedAt": "2026-10-26T01:11:38.065Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "ec4a8fcbdbaca2bd6b88f4347cf6d25f420f8c41",
+  "commit": "ee62fb11fdfa0481d2311929582c06c46782beff",
   "defaultBranch": "main",
   "derived": "5 parts, mostly Python (33 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
@@ -64,7 +71,7 @@
         {
           "boundary": "src",
           "depth": 1,
-          "files": 16
+          "files": 17
         }
       ],
       "runs": [
@@ -78,7 +85,7 @@
       "stages": [],
       "triggers": [
         "on a pull request",
-        "on a push to main touching 7 paths",
+        "on a push to main touching 8 paths",
         "or by hand"
       ]
     },
@@ -115,7 +122,7 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-26T01:11:38.065Z",
+  "generatedAt": "2026-10-26T02:10:10.470Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "7 reads use paths built at run time and are not named here.",
@@ -149,7 +156,7 @@
   "summaryFrom": "person",
   "testFiles": 16,
   "testedBy": {
-    "src": 14
+    "src": 15
   },
   "unnamedWrites": 0,
   "unread": [],

@@ -50,3 +50,21 @@ def test_every_action_in_the_workflow_is_pinned_by_commit_sha_with_a_version_com
     for ref, rest in uses:
         assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", ref), f"{ref} is not pinned by commit sha"
         assert re.search(r"# v\d", rest), f"{ref} has no version comment"
+
+
+def test_the_role_set_pin_has_one_value_in_pyproject_the_constants_and_the_installed_distribution():
+    import importlib.metadata
+    import json
+
+    from reasoning_dataset_lab.generators import role_set as adapter
+
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    (pinned,) = re.findall(r"role-set @ git\+https://github.com/mcp-tool-shop-org/role-set@([0-9a-f]{40})", pyproject)
+    assert adapter.ROLE_SET_FULL_SHA == pinned
+    assert adapter.ROLE_SET_COMMIT == pinned[:7]
+    direct_url = json.loads(importlib.metadata.distribution("role-set").read_text("direct_url.json"))
+    assert direct_url["vcs_info"]["commit_id"] == pinned, "the installed role-set is not the pinned commit; run uv sync --frozen"
+    # the citations name the commit that is actually pinned
+    for path in (ROOT / "src" / "reasoning_dataset_lab").rglob("*.py"):
+        for cited in re.findall(r"@([0-9a-f]{7})\b", path.read_text(encoding="utf-8")):
+            assert cited in (pinned[:7], adapter.ASPIRE_SI_GATES_COMMIT), f"{path.name} cites role-set@{cited}, not {pinned[:7]}"

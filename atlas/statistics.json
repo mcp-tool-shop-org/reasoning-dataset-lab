@@ -83,7 +83,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 7,
+      "qualifyingSourceCommits": 8,
       "rebaseline": null
     }
   ],
@@ -96,8 +96,8 @@
         "path": ".gitattributes"
       },
       {
-        "commits": 3,
-        "lines": 109,
+        "commits": 5,
+        "lines": 157,
         "path": ".github/workflows/ci.yml"
       },
       {
@@ -111,8 +111,8 @@
         "path": ".python-version"
       },
       {
-        "commits": 11,
-        "lines": 63,
+        "commits": 13,
+        "lines": 67,
         "path": "CHANGELOG.md"
       },
       {
@@ -131,8 +131,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 9,
-        "lines": 180,
+        "commits": 10,
+        "lines": 192,
         "path": "atlas/README.md"
       },
       {
@@ -141,18 +141,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 9,
-        "lines": 493,
+        "commits": 10,
+        "lines": 545,
         "path": "atlas/page.json"
       },
       {
-        "commits": 9,
-        "lines": 937,
+        "commits": 10,
+        "lines": 1011,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 9,
-        "lines": 12004,
+        "commits": 10,
+        "lines": 12052,
         "path": "atlas/structure.json"
       },
       {
@@ -351,8 +351,8 @@
         "path": "tests/test_pilot_b_variety.py"
       },
       {
-        "commits": 1,
-        "lines": 41,
+        "commits": 2,
+        "lines": 52,
         "path": "tests/test_python_support.py"
       },
       {
@@ -371,17 +371,17 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-26T01:11:38.065Z",
+  "generatedAt": "2026-10-26T02:10:10.470Z",
   "generatedFrom": {
-    "commit": "ec4a8fcbdbaca2bd6b88f4347cf6d25f420f8c41"
+    "commit": "ee62fb11fdfa0481d2311929582c06c46782beff"
   },
   "pairs": [
     {
       "a": "CHANGELOG.md",
       "b": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
-      "either": 6,
+      "either": 8,
       "shared": 4,
-      "strength": 0.666667
+      "strength": 0.5
     }
   ],
   "parameters": {
@@ -394,16 +394,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-25T21:07:42-04:00",
+    "headDate": "2026-10-25T21:12:57-04:00",
     "inScopeFiles": 55,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 7,
+    "qualifyingCommits": 9,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-04-29T01:07:42.000Z",
+    "since": "2026-04-29T01:12:57.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

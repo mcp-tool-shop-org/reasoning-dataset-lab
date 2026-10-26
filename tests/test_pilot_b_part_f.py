@@ -20,19 +20,12 @@ def _load_requires_python_from_pyproject(path: Path) -> str:
 def _load_role_set_requires_python() -> str:
     """The installed (pinned) role-set's Requires-Python: that is the code the lab actually runs against.
 
-    A sibling checkout used to win here. That is wrong on a rig that keeps an older role-set next to this repo (it read
-    ">=3.12,<3.13" from the sibling while the pinned install said ">=3.13"), so the sibling is only a fallback.
+    No sibling checkout is consulted. One used to win here, and on a rig that keeps an older role-set next to this repo
+    it read ">=3.12,<3.13" while the pinned install said ">=3.13".
     """
-    try:
-        meta_req = importlib.metadata.metadata("role-set").get("Requires-Python")
-    except importlib.metadata.PackageNotFoundError:
-        meta_req = None
-    if isinstance(meta_req, str) and meta_req.strip():
-        return meta_req.strip()
-    sibling_role_set_pyproject = (
-        Path(__file__).resolve().parents[2] / "role-set" / "pyproject.toml"
-    )
-    return _load_requires_python_from_pyproject(sibling_role_set_pyproject)
+    meta_req = importlib.metadata.metadata("role-set").get("Requires-Python")
+    assert isinstance(meta_req, str) and meta_req.strip(), "Missing Requires-Python on the installed role-set"
+    return meta_req.strip()
 
 
 def check_lab_requires_python_subset_of_role_set(

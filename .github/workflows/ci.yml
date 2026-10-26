@@ -6,6 +6,7 @@ on:
     paths:
       - pyproject.toml
       - uv.lock
+      - .python-version
       - src/**
       - tests/**
       - examples/**

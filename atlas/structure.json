@@ -9,7 +9,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "1ae0590ae8104b2ea0499983f3fe97294524887f43741ae7dccccecb9a8e94e5",
+          "hash": "82226eff92e9afdcf844c6ba3eb0ec6a473ef1d00e4194b201210644bca30cf6",
           "path": ".github/workflows/ci.yml"
         }
       ],
@@ -67,7 +67,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "89a030252f0eb91d956025c39bcee044bf392f32a6c2d520ea536b66a2ead6f0",
+          "hash": "57aa27091a31eafda56c6a7926aa29faed56372a8370267bdfc8f5fddf860254",
           "path": "CHANGELOG.md"
         },
         {
@@ -83,11 +83,11 @@
           "path": "SECURITY.md"
         },
         {
-          "hash": "0c47b1ee6dbc9cd84a9a4aa7ff971ccceca90bbd0a364a51d64ad44c3bd973cd",
+          "hash": "c955908cbef982532d85715472c3a1edd97b938dc089a7e077353c3345401b48",
           "path": "pyproject.toml"
         },
         {
-          "hash": "232b9cb34105a5272ddd4bc978e4dd7637584691c69dec485aad5988b46429c0",
+          "hash": "e00a43cdbea89c15c42504472a7095bd4c52dbeb4cb0bbb6f8ec39b1596dde50",
           "path": "uv.lock"
         }
       ],
@@ -2117,7 +2117,7 @@
               "line": 311
             }
           ],
-          "hash": "021223982b47965ed1ac5eb074b845bd0412f5e93cb670b0575a36dc4f939300",
+          "hash": "72dc2da579797b15a97b612a72136b8e78d225c8409df2b397e02650e184f536",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/generators/base.py"
@@ -2504,7 +2504,7 @@
               "line": 804
             }
           ],
-          "hash": "637b38943b50c52fa2500f9dec6596b94a5c943d2b8e74de396cf75b9fa6c839",
+          "hash": "ef21bb367c3433f8e0b9bb3c50e800c6050d1da523302e338862460a4ba36e36",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py"
           ],
@@ -6658,7 +6658,7 @@
       "testRunners": [
         "pytest"
       ],
-      "testedBy": 14,
+      "testedBy": 15,
       "unresolvedSites": 0
     },
     {
@@ -6976,7 +6976,7 @@
             "check_lab_requires_python_subset_of_role_set",
             "test_lab_requires_python_matches_role_set_and_allows_no_refused_python"
           ],
-          "hash": "fa8a5eeb4e8676a1520d29ae55bc7c35dc8845ed1e91e02016776d59e21d576f",
+          "hash": "8ea41caca76ad2f4a141692f8b4fd27bc0f6a0bdfa3dc084c5060d6bc71adf2d",
           "path": "tests/test_pilot_b_part_f.py"
         },
         {
@@ -7147,9 +7147,14 @@
             "test_ci_runs_the_suite_on_3_15_with_the_check_name_kept_and_on_3_13_and_3_14",
             "test_every_action_in_the_workflow_is_pinned_by_commit_sha_with_a_version_comment",
             "test_requires_python_python_version_file_and_lock_agree_on_current_python",
-            "test_role_set_is_pinned_to_a_commit_that_allows_current_python_and_the_lock_agrees"
+            "test_role_set_is_pinned_to_a_commit_that_allows_current_python_and_the_lock_agrees",
+            "test_the_role_set_pin_has_one_value_in_pyproject_the_constants_and_the_installed_distribution"
           ],
-          "hash": "e4ba9894149b533ffcfc508b43cba8f00c6ae385dde9d8aced78d82933a26c71",
+          "hash": "d322c57650e0ae0605546e8cc4b21fac9e586729a394ae2ef2f1908b522b1f32",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/generators/__init__.py",
+            "src/reasoning_dataset_lab/generators/role_set.py"
+          ],
           "path": "tests/test_python_support.py"
         },
         {
@@ -7164,7 +7169,7 @@
             "test_role_set_proof_version_is_solver_sha256_and_solutions_recorded",
             "test_role_set_receipt_hash_fields_are_valid_sha256"
           ],
-          "hash": "72e29c6ce49ff67acf62d1059a3bca91d8b26a0a5cea1102b5187f9307dfeae5",
+          "hash": "6d97771cb4ab9d48cf31795466a5ef78fdac296a769cfc9d88fec650fbf94a4c",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/generators/base.py",
@@ -7373,7 +7378,7 @@
             "file": "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
             "from": "tests/pilot_b_fakes.py"
           },
-          "files": 16
+          "files": 17
         }
       ],
       "readers": [],
@@ -7453,6 +7458,7 @@
           "event": "push",
           "paths": [
             ".github/workflows/**",
+            ".python-version",
             "atlas/**",
             "examples/**",
             "pyproject.toml",
@@ -7555,7 +7561,7 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "ec4a8fcbdbaca2bd6b88f4347cf6d25f420f8c41",
+    "commit": "ee62fb11fdfa0481d2311929582c06c46782beff",
     "tracked": 50
   },
   "landings": [
