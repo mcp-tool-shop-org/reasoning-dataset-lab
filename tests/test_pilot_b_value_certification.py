@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,8 +17,6 @@ from reasoning_dataset_lab.pilot_b import value_certification as vc
 from reasoning_dataset_lab.pilot_b.fact_tables import value_sets
 from reasoning_dataset_lab.pilot_b.models_and_build import DEFAULT_PILOT_B_MODEL_PINS
 from reasoning_dataset_lab.pilot_b.unanimity import (
-    BlindReadPrompt,
-    BlindReadResult,
     ModelIdentity,
 )
 
@@ -38,7 +37,7 @@ class FakeClock:
 
 
 class FakeReader:
-    """Reads every pair as a contradiction unless ``verdict_for`` says otherwise."""
+    """Answers every pair ``incompatible`` and every control pair ``compatible`` unless told otherwise."""
 
     def __init__(
         self,
@@ -49,40 +48,33 @@ class FakeReader:
         verdict_for=None,
         control_verdict=None,
     ):
-        self.control_verdict = control_verdict or (lambda number: "supported")
-        self.control_prompts: list[BlindReadPrompt] = []
+        self.control_verdict = control_verdict or (lambda number: "compatible")
+        self.control_prompts: list = []
         self.model = model
         self.events = events
         self.clock = clock
         self.seconds = seconds
-        self.verdict_for = verdict_for or (lambda prompt, index: "unsupported")
-        self.prompts: list[BlindReadPrompt] = []
+        self.verdict_for = verdict_for or (lambda prompt, index: "incompatible")
+        self.prompts: list = []
 
-    def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
-        if prompt.claim_id.startswith(
-            "control."
-        ):  # the negative control: compatible pairs, not contradictions
-            self.control_prompts.append(prompt)
+    def chat_raw(self, *, target_id, messages):
+        shim = SimpleNamespace(claim_id=target_id, messages=messages)
+        record = SimpleNamespace(done_reason="stop", eval_tokens=5)
+        if target_id.startswith("control."):  # the negative control: compatible pairs
+            self.control_prompts.append(shim)
             verdict = self.control_verdict(len(self.control_prompts))
             if verdict == "raise":
                 raise RdlabError("PILOT_B_NUM_CTX_EXCEEDS_MAX", "too long", "shorten")
-            return BlindReadResult(
-                claim_id=prompt.claim_id, reader=self.model, verdict=verdict
-            )
+            return verdict, record
         index = len(self.prompts)
-        self.prompts.append(prompt)
+        self.prompts.append(shim)
         self.events.append(("read", self.model.name))
         if self.clock is not None:
             self.clock.now += self.seconds
-        verdict = self.verdict_for(prompt, index)
+        verdict = self.verdict_for(shim, index)
         if verdict == "raise":
             raise RdlabError("PILOT_B_NUM_CTX_EXCEEDS_MAX", "too long", "shorten")
-        return BlindReadResult(
-            claim_id=prompt.claim_id,
-            reader=self.model,
-            verdict=verdict,
-            seconds=self.seconds,
-        )
+        return verdict, record
 
     def unload_model(self):
         self.events.append(("unload", self.model.name))
@@ -119,20 +111,64 @@ def test_the_hash_follows_domain_attribute_and_the_values_in_order():
     assert base != vc.values_hash("relays", "casing alloy", ("a", "b"))
 
 
-def test_the_pair_prompt_states_one_value_and_claims_another_without_a_key():
-    prompt = vc.pair_prompt(
+def test_the_pair_question_is_the_compatibility_question():
+    system, user = vc.pair_messages(
         entity="Unit Alpha",
         attribute="lubricant grade",
-        first="mineral",
-        second="ester",
-        pair_id="x",
+        first="polyol",
+        second="synthetic",
     )
-    assert "The lubricant grade of Unit Alpha is mineral." in prompt.material
-    assert prompt.claim_text == "The lubricant grade of Unit Alpha is ester."
-    assert (
-        "unsupported" in prompt.user_message
-    )  # the verdict words are offered, never the answer
-    assert "key" not in prompt.user_message.lower()
+    assert system["role"] == "system" and user["role"] == "user"
+    assert user["content"].startswith(
+        "Statement 1: The lubricant grade of Unit Alpha is polyol.\n"
+        "Statement 2: The lubricant grade of Unit Alpha is synthetic.\n"
+        "Could both statements be true of the same Unit Alpha at the same time?"
+    )
+    for word in ("compatible", "incompatible", "unsure"):
+        assert word in user["content"] and word in system["content"]
+
+
+def test_the_prompt_sha_is_the_hash_of_the_prompt_text():
+    import hashlib
+
+    text = vc.SYSTEM_PROMPT + "\n---\n" + vc.USER_TEMPLATE
+    assert vc.PROMPT_SHA256 == hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("text", "answer"),
+    [
+        ("compatible", "compatible"),
+        ("incompatible", "incompatible"),
+        ("unsure", "unsure"),
+        ("  Incompatible\n", "incompatible"),
+        ("UNSURE", "unsure"),
+        ("\tcompatible \n\n", "compatible"),
+    ],
+)
+def test_the_parser_takes_exactly_one_answer_word_ignoring_case_and_surrounding_whitespace(
+    text, answer
+):
+    assert vc.parse_answer(text) == answer
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "   ",
+        None,
+        "incompatible.",
+        "not compatible",
+        "compatible, because both",
+        "Yes",
+        "both can be true",
+        "incompatible incompatible",
+        "in compatible",
+    ],
+)
+def test_anything_else_is_a_parse_error(text):
+    assert vc.parse_answer(text) is None
 
 
 def test_a_set_every_pair_of_which_both_readers_call_a_contradiction_is_admitted(
@@ -148,7 +184,7 @@ def test_a_set_every_pair_of_which_both_readers_call_a_contradiction_is_admitted
             entry["domain"], entry["attribute"], tuple(entry["values"])
         )
         assert all(
-            set(p["verdicts"].values()) == {"unsupported"} for p in entry["pairs"]
+            set(p["verdicts"].values()) == {"incompatible"} for p in entry["pairs"]
         )
     assert run.review_queue == [] and not queue.read_text(encoding="utf-8").strip()
     assert run.manifest["date"] == "2026-10-26"
@@ -164,8 +200,8 @@ def test_one_pair_that_a_reader_does_not_call_a_contradiction_keeps_the_set_out_
     def cannot_tell_once(prompt, index):
         if index == 7:
             bad_claim["id"] = prompt.claim_id
-            return "cannot_tell"
-        return "unsupported"
+            return "unsure"
+        return "incompatible"
 
     readers = [
         FakeReader(GRANITE, events, verdict_for=cannot_tell_once),
@@ -177,9 +213,7 @@ def test_one_pair_that_a_reader_does_not_call_a_contradiction_keeps_the_set_out_
     assert len(run.review_queue) == 1
     record = run.review_queue[0]
     assert record["attribute"] not in certified
-    assert [p["verdicts"][GRANITE.name] for p in record["failed_pairs"]] == [
-        "cannot_tell"
-    ]
+    assert [p["verdicts"][GRANITE.name] for p in record["failed_pairs"]] == ["unsure"]
     assert len(queue.read_text(encoding="utf-8").strip().splitlines()) == 1
 
 
@@ -240,7 +274,7 @@ def test_a_run_within_the_wall_cap_goes_on_past_calibration(tmp_path):
 
 def test_more_than_two_percent_failed_verdicts_stops_the_run(tmp_path):
     def three_percent(prompt, index):
-        return "raise" if index % 33 == 0 else "unsupported"
+        return "raise" if index % 33 == 0 else "incompatible"
 
     readers = [
         FakeReader(GRANITE, [], verdict_for=three_percent),
@@ -253,7 +287,7 @@ def test_more_than_two_percent_failed_verdicts_stops_the_run(tmp_path):
 
 def test_an_error_rate_under_the_stop_goes_on_and_the_failed_pair_is_queued(tmp_path):
     def one_in_two_hundred(prompt, index):
-        return "raise" if index == 100 else "unsupported"
+        return "raise" if index == 100 else "incompatible"
 
     readers = [
         FakeReader(GRANITE, [], verdict_for=one_in_two_hundred),
@@ -296,7 +330,7 @@ def test_a_tampered_manifest_fails_its_content_hash(tmp_path):
     path = tmp_path / "m.json"
     vc.write_manifest(path, manifest)
     doc = json.loads(path.read_text(encoding="utf-8"))
-    doc["sets"][0]["pairs"][0]["verdicts"][GRANITE.name] = "supported"
+    doc["sets"][0]["pairs"][0]["verdicts"][GRANITE.name] = "compatible"
     path.write_text(json.dumps(doc), encoding="utf-8")
     with pytest.raises(RdlabError) as caught:
         vc.load_manifest(path)
@@ -307,7 +341,7 @@ def test_an_entry_with_a_non_contradiction_verdict_fails_even_with_a_matching_ha
     tmp_path,
 ):
     manifest = _good_manifest(tmp_path)
-    manifest["sets"][0]["pairs"][0]["verdicts"][GRANITE.name] = "cannot_tell"
+    manifest["sets"][0]["pairs"][0]["verdicts"][GRANITE.name] = "unsure"
     manifest["content_sha256"] = vc.content_hash(manifest)
     problems = vc.verify_manifest(manifest, SMALL)
     assert any("not read as a contradiction" in p for p in problems)
@@ -538,7 +572,7 @@ def test_verdict_keys_that_are_not_exactly_the_manifest_readers_fail_the_verifie
 ):
     manifest = _good_manifest(tmp_path)
     pair = manifest["sets"][0]["pairs"][0]
-    pair["verdicts"] = {GRANITE.name: "unsupported"}
+    pair["verdicts"] = {GRANITE.name: "incompatible"}
     problems = vc.verify_manifest(manifest, SMALL)
     assert any("not read by exactly the manifest's readers" in p for p in problems)
 
@@ -558,10 +592,10 @@ class RaisingReader(FakeReader):
         super().__init__(*a, **kw)
         self.fail_at = fail_at
 
-    def read_claim(self, prompt):
-        if len(self.prompts) == self.fail_at:
+    def chat_raw(self, *, target_id, messages):
+        if not target_id.startswith("control.") and len(self.prompts) == self.fail_at:
             raise RdlabError("PILOT_B_CERT_WALL_CAP_EXCEEDED", "boom", "stop")
-        return super().read_claim(prompt)
+        return super().chat_raw(target_id=target_id, messages=messages)
 
 
 def test_every_exit_path_unloads_the_reader_it_loaded(tmp_path):
@@ -575,23 +609,15 @@ def test_every_exit_path_unloads_the_reader_it_loaded(tmp_path):
 
 def test_a_stop_still_writes_the_manifest_the_queue_and_the_failing_calls(tmp_path):
     def length_stop(prompt, index):
-        return "unsupported"
+        return "incompatible"
 
     class LengthReader(FakeReader):
-        def read_claim(self, prompt):
-            result = super().read_claim(prompt)
-            if (
-                not prompt.claim_id.startswith("control.")
-                and len(self.prompts) % 2 == 0
-            ):
-                return BlindReadResult(
-                    claim_id=prompt.claim_id,
-                    reader=self.model,
-                    verdict="garbage",  # a parse failure: not one of the four verdicts
-                    done_reason="stop",
-                    completion_tokens=3072,
-                    raw_text="x" * 500,
-                )
+        def chat_raw(self, *, target_id, messages):
+            result = super().chat_raw(target_id=target_id, messages=messages)
+            if not target_id.startswith("control.") and len(self.prompts) % 2 == 0:
+                return "x" * 500, SimpleNamespace(
+                    done_reason="stop", eval_tokens=3072
+                )  # not one of the answers
             return result
 
     manifest_path = tmp_path / "m.json"
@@ -637,7 +663,7 @@ def test_a_stop_still_writes_the_manifest_the_queue_and_the_failing_calls(tmp_pa
 def test_a_failing_call_that_raises_is_recorded_with_its_error_code(tmp_path):
     readers = [
         FakeReader(
-            GRANITE, [], verdict_for=lambda p, i: "raise" if i == 0 else "unsupported"
+            GRANITE, [], verdict_for=lambda p, i: "raise" if i == 0 else "incompatible"
         ),
         FakeReader(NEMOTRON, []),
     ]
@@ -676,26 +702,16 @@ def test_the_projection_is_made_even_when_one_readers_jobs_equal_the_calibration
 
 
 class LengthStopReader(FakeReader):
-    """Ends the Nth certification calls at the num_predict cap with an empty answer."""
+    """Ends every Nth certification call at the num_predict cap with an empty answer."""
 
     def __init__(self, *a, every=10, **kw):
         super().__init__(*a, **kw)
         self.every = every
 
-    def read_claim(self, prompt):
-        result = super().read_claim(prompt)
-        if (
-            not prompt.claim_id.startswith("control.")
-            and len(self.prompts) % self.every == 0
-        ):
-            return BlindReadResult(
-                claim_id=prompt.claim_id,
-                reader=self.model,
-                verdict="ambiguous",
-                done_reason="length",
-                completion_tokens=3072,
-                raw_text="",
-            )
+    def chat_raw(self, *, target_id, messages):
+        result = super().chat_raw(target_id=target_id, messages=messages)
+        if not target_id.startswith("control.") and len(self.prompts) % self.every == 0:
+            return "", SimpleNamespace(done_reason="length", eval_tokens=3072)
         return result
 
 
@@ -757,14 +773,16 @@ def test_the_control_is_the_twenty_compatible_pairs():
 
 def test_sixteen_of_twenty_passes_the_control_and_fifteen_does_not(tmp_path):
     sixteen = FakeReader(
-        GRANITE, [], control_verdict=lambda n: "supported" if n <= 16 else "unsupported"
+        GRANITE,
+        [],
+        control_verdict=lambda n: "compatible" if n <= 16 else "incompatible",
     )
     run, _ = _run([sixteen, FakeReader(NEMOTRON, [])], tmp_path=tmp_path)
     assert run.manifest["control"][GRANITE.name]["passes"] == 16
     fifteen = FakeReader(
         GRANITE,
         [],
-        control_verdict=lambda n: "cannot_tell" if n <= 15 else "unsupported",
+        control_verdict=lambda n: "unsure" if n <= 15 else "incompatible",
     )
     with pytest.raises(RdlabError) as caught:
         _run([fifteen, FakeReader(NEMOTRON, [])], tmp_path=tmp_path)
@@ -774,7 +792,7 @@ def test_sixteen_of_twenty_passes_the_control_and_fifteen_does_not(tmp_path):
 def test_a_failed_control_certifies_nothing_and_says_so_in_the_manifest(tmp_path):
     events: list = []
     always_contradiction = FakeReader(
-        GRANITE, events, control_verdict=lambda n: "unsupported"
+        GRANITE, events, control_verdict=lambda n: "incompatible"
     )
     nemotron = FakeReader(NEMOTRON, events)
     manifest_path = tmp_path / "m.json"
@@ -807,7 +825,7 @@ def test_a_failed_control_certifies_nothing_and_says_so_in_the_manifest(tmp_path
 
 def test_control_errors_and_length_stops_count_as_fails(tmp_path):
     flaky = FakeReader(
-        GRANITE, [], control_verdict=lambda n: "raise" if n <= 5 else "supported"
+        GRANITE, [], control_verdict=lambda n: "raise" if n <= 5 else "compatible"
     )
     with pytest.raises(RdlabError) as caught:
         _run([flaky, FakeReader(NEMOTRON, [])], tmp_path=tmp_path)
@@ -818,13 +836,15 @@ def test_the_verifier_rejects_a_manifest_with_no_control(tmp_path):
     manifest = _good_manifest(tmp_path)
     manifest["control"] = {}
     assert any(
-        "no passing negative control" in p for p in vc.verify_manifest(manifest, SMALL)
+        "did not answer the 20 control pairs" in p for p in vc.verify_manifest(manifest, SMALL)
     )
 
 
 def test_the_control_threshold_is_configurable(tmp_path):
     sixteen = FakeReader(
-        GRANITE, [], control_verdict=lambda n: "supported" if n <= 16 else "unsupported"
+        GRANITE,
+        [],
+        control_verdict=lambda n: "compatible" if n <= 16 else "incompatible",
     )
     with pytest.raises(RdlabError):
         _run(
@@ -832,3 +852,87 @@ def test_the_control_threshold_is_configurable(tmp_path):
             tmp_path=tmp_path,
             control_pass_threshold=0.90,
         )
+
+
+def test_a_manifest_made_with_another_prompt_does_not_verify(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    assert manifest["prompt_sha256"] == vc.PROMPT_SHA256
+    manifest["prompt_sha256"] = "0" * 64
+    assert any(p.startswith("prompt:") for p in vc.verify_manifest(manifest, SMALL))
+    del manifest["prompt_sha256"]
+    assert any(p.startswith("prompt:") for p in vc.verify_manifest(manifest, SMALL))
+
+
+def test_the_verifier_recomputes_the_control_instead_of_trusting_passed(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    for name in (GRANITE.name, NEMOTRON.name):
+        for pair in manifest["control"][name]["pairs"][:8]:
+            pair["verdict"] = (
+                "incompatible"  # 12 of 20 left, the recorded passed flag still says True
+            )
+    assert manifest["control"][GRANITE.name]["passed"] is True
+    problems = vc.verify_manifest(manifest, SMALL)
+    assert any("passed 12 of 20" in p for p in problems)
+
+
+def test_a_control_with_length_stops_does_not_count_them_as_passes(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    for pair in manifest["control"][GRANITE.name]["pairs"][:6]:
+        pair["verdict"] = "compatible"
+        pair["done_reason"] = "length"
+    assert any("passed 14 of 20" in p for p in vc.verify_manifest(manifest, SMALL))
+
+
+def test_a_control_that_is_not_the_twenty_pairs_is_rejected(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    manifest["control"][GRANITE.name]["pairs"].pop()
+    assert any(
+        "did not answer the 20 control pairs" in p
+        for p in vc.verify_manifest(manifest, SMALL)
+    )
+
+
+def test_only_incompatible_counts_as_a_contradiction_in_certification(tmp_path):
+    def unsure_once(prompt, index):
+        return "unsure" if index == 3 else "incompatible"
+
+    run, _ = _run(
+        [FakeReader(GRANITE, [], verdict_for=unsure_once), FakeReader(NEMOTRON, [])],
+        tmp_path=tmp_path,
+    )
+    assert len(run.review_queue) == 1
+    only_pair = run.review_queue[0]["failed_pairs"]
+    assert len(only_pair) == 1 and only_pair[0]["verdicts"][GRANITE.name] == "unsure"
+
+
+def test_in_the_control_compatible_and_unsure_pass_and_incompatible_fails(tmp_path):
+    def mix(n):
+        return ["compatible", "unsure", "incompatible"][n % 3]
+
+    run, _ = _run(
+        [
+            FakeReader(
+                GRANITE,
+                [],
+                control_verdict=lambda n: "compatible" if n % 2 else "unsure",
+            ),
+            FakeReader(NEMOTRON, []),
+        ],
+        tmp_path=tmp_path,
+    )
+    assert run.manifest["control"][GRANITE.name]["passes"] == 20
+    with pytest.raises(RdlabError):
+        _run(
+            [FakeReader(GRANITE, [], control_verdict=mix), FakeReader(NEMOTRON, [])],
+            tmp_path=tmp_path,
+        )
+
+
+def test_a_garbled_control_answer_is_a_fail_and_the_real_adapter_has_chat_raw():
+    from reasoning_dataset_lab.pilot_b.ollama import OllamaBlindReaderAdapter
+
+    assert callable(getattr(OllamaBlindReaderAdapter, "chat_raw", None))
+    reader = FakeReader(GRANITE, [], control_verdict=lambda n: "Yes, they can")
+    result = vc.run_control(reader, vc.first_entities(), 0.80)
+    assert result["passes"] == 0 and result["passed"] is False
+    assert result["pairs"][0]["verdict"] == "error"

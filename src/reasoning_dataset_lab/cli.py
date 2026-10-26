@@ -486,7 +486,6 @@ def _run_certify_values(argv: Sequence[str]) -> int:
         date=args.date or datetime.datetime.now(datetime.UTC).date().isoformat(),
         manifest_path=args.manifest_out,
     )
-    value_certification.write_manifest(args.manifest_out, run.manifest)
     print(
         json.dumps(
             {

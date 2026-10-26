@@ -1,16 +1,21 @@
-"""Certification of the value sets: every directed pair in a set must read as a contradiction to both reader families.
+"""Certification of the value sets: every directed pair in a set must read as incompatible to both reader families.
 
-A set is **admitted** only if, for every one of its directed pairs (20 for a 5-value set), each local reader says
-"unsupported" to the claim "The <attribute> of <entity> is <second>" against the material "The <attribute> of <entity>
-is <first>". Any pair that is not read as a contradiction by both keeps the set out and puts it in the review queue.
+A set is **admitted** only if, for every one of its directed pairs (20 for a 5-value set), each local reader answers
+``incompatible`` to the question "Statement 1: The <attribute> of <entity> is <first>. Statement 2: The <attribute> of
+<entity> is <second>. Could both statements be true of the same <entity> at the same time?". Any pair that is not read
+as incompatible by both keeps the set out and puts it in the review queue.
+
+The question is the certifier's own, not the triad blind-read prompt: that prompt asks whether a claim follows from
+material, so a reader answers "unsupported" to a compatible but unstated claim (negative control, run 1). The answer set
+is exactly ``compatible`` / ``incompatible`` / ``unsure``, parsed strictly.
 
 This module is the tooling only: the admission run, the manifest format with its loader and verifier. A manifest is the
-output of a real run on the readers and is committed with the PR that switches ``is_disjoint_value`` to it. Until that
-PR lands the guard is **not enforced**; nothing here claims any set is certified.
+output of a real run on the readers; the manifest records the sha256 of the prompt text and ``verify_manifest`` rejects
+a manifest made with any other prompt.
 
-The run is built to be started by hand on the rig under a GPU grant: one model loaded at a time (all pairs for the first
-reader, an unload, then the second), a calibration of the first calls that stops the run when the projected wall time
-passes the cap, and a stop when too many verdicts are malformed or failed.
+The run is built to be started by hand on the rig under a GPU grant: one model loaded at a time (the control, then all
+pairs for the first reader, an unload, then the second), a calibration of the first calls that stops the run when the
+projected wall time passes the cap, and a stop when too many verdicts are malformed or failed.
 """
 
 from __future__ import annotations
@@ -21,17 +26,13 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error
 from reasoning_dataset_lab.pilot_b.fact_tables import DOMAIN_CATALOGUE, value_sets
 from reasoning_dataset_lab.pilot_b.unanimity import (
-    ALLOWED_READER_VERDICTS,
     BARRED_ANY_ROLE_FAMILIES,
     BARRED_READER_FAMILIES,
-    BlindReaderAdapter,
-    BlindReadPrompt,
-    build_blind_read_prompt,
 )
 
 CERT_FORMAT = 1
@@ -43,7 +44,25 @@ CERT_FORMAT = 1
 MEASURED_MAX_COMPLETION_TOKENS = 2019
 DEFAULT_NUM_PREDICT = 3072
 DEFAULT_NUM_CTX = 4096
-CONTRADICTION = "unsupported"
+CONTRADICTION = "incompatible"
+COMPATIBLE_ANSWERS = ("compatible", "unsure")  # what a control pair may be answered
+ANSWERS = ("compatible", "incompatible", "unsure")
+
+# The certifier's own prompt. {entity}, {attribute}, {first} and {second} are filled per pair; the sha256 of this text
+# (system, then user template) goes in every manifest, and a manifest made with any other text does not verify.
+SYSTEM_PROMPT = (
+    "You compare two statements about the same item. Answer with exactly one word: compatible, incompatible, or unsure. "
+    "Answer incompatible only if the two statements cannot both be true of the same item at the same time."
+)
+USER_TEMPLATE = (
+    "Statement 1: The {attribute} of {entity} is {first}.\n"
+    "Statement 2: The {attribute} of {entity} is {second}.\n"
+    "Could both statements be true of the same {entity} at the same time? "
+    "Answer with one word: compatible, incompatible, or unsure."
+)
+PROMPT_SHA256 = hashlib.sha256(
+    (SYSTEM_PROMPT + "\n---\n" + USER_TEMPLATE).encode("utf-8")
+).hexdigest()
 FAILED_DONE_REASONS = ("length", "max_num_ctx_exceeded")
 
 ValueSet = tuple[str, str, tuple[str, ...]]
@@ -70,18 +89,87 @@ def directed_pairs(values: Sequence[str]) -> tuple[tuple[str, str], ...]:
     return tuple((a, b) for a in values for b in values if a != b)
 
 
-def pair_prompt(
-    *, entity: str, attribute: str, first: str, second: str, pair_id: str
-) -> BlindReadPrompt:
-    """The blind-read prompt for one directed pair: one value stated as material, the other claimed."""
+class CompatibilityReader(Protocol):
+    """A reader the certifier can ask: a model identity and one raw chat call with caller-built messages."""
 
-    return build_blind_read_prompt(
-        triad_id=f"cert-{pair_id}",
-        claim_id=pair_id,
-        closure="closed",
-        material=f"1. The {attribute} of {entity} is {first}.",
-        claim_text=f"The {attribute} of {entity} is {second}.",
-    )
+    @property
+    def model(self) -> Any: ...
+
+    def chat_raw(
+        self, *, target_id: str, messages: list[dict[str, str]]
+    ) -> tuple[str, Any]: ...
+
+
+def pair_messages(
+    *, entity: str, attribute: str, first: str, second: str
+) -> list[dict[str, str]]:
+    """The chat messages for one directed pair."""
+
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": USER_TEMPLATE.format(
+                entity=entity, attribute=attribute, first=first, second=second
+            ),
+        },
+    ]
+
+
+def parse_answer(text: object) -> str | None:
+    """The answer word, or None. Surrounding whitespace and letter case are ignored; anything else is a parse error.
+
+    So "Incompatible\n" is ``incompatible``; "incompatible." , "not compatible", "compatible, because ..." and an
+    empty answer are all None, and a None counts toward the error-rate stop.
+    """
+
+    word = str(text or "").strip().lower()
+    return word if word in ANSWERS else None
+
+
+def ask_pair(
+    reader: CompatibilityReader, target_id: str, messages: list[dict[str, str]]
+) -> tuple[str, dict[str, Any], bool]:
+    """Ask one reader one pair. Returns (verdict, detail, counted_error).
+
+    The verdict is an answer word, the done_reason of a length stop (not certified, not an error), or "error" for a
+    parse failure or a transport error (both counted).
+    """
+
+    try:
+        text, record = reader.chat_raw(target_id=target_id, messages=messages)
+    except RdlabError as err:
+        return (
+            "error",
+            {"kind": "transport", "error_code": err.code, "error": _tail(err, 200)},
+            True,
+        )
+    done_reason = str(getattr(record, "done_reason", "stop"))
+    tokens = int(getattr(record, "eval_tokens", 0) or 0)
+    if done_reason in FAILED_DONE_REASONS:
+        return (
+            done_reason,
+            {
+                "kind": "length_stop",
+                "done_reason": done_reason,
+                "completion_tokens": tokens,
+                "raw_tail": _tail(text),
+            },
+            False,
+        )
+    answer = parse_answer(text)
+    if answer is None:
+        return (
+            "error",
+            {
+                "kind": "parse",
+                "done_reason": done_reason,
+                "completion_tokens": tokens,
+                "raw_tail": _tail(text),
+            },
+            True,
+        )
+    return answer, {"done_reason": done_reason, "completion_tokens": tokens}, False
 
 
 @dataclass(frozen=True)
@@ -115,7 +203,7 @@ def content_hash(manifest: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def _check_readers(readers: Sequence[BlindReaderAdapter]) -> None:
+def _check_readers(readers: Sequence[CompatibilityReader]) -> None:
     families = [r.model.normalized_family for r in readers]
     for reader in readers:
         family = reader.model.normalized_family
@@ -172,48 +260,41 @@ DEFAULT_CONTROL_PASS_THRESHOLD = 0.80
 
 
 def run_control(
-    reader: BlindReaderAdapter, entities: dict[str, str], threshold: float
+    reader: CompatibilityReader, entities: dict[str, str], threshold: float
 ) -> dict[str, Any]:
-    """Ask one reader the compatible pairs. A pass is any answer that is not "unsupported" and not a length stop or error."""
+    """Ask one reader the compatible pairs. A pass is ``compatible`` or ``unsure``; ``incompatible``, a length stop or an error fails."""
 
     rows: list[dict[str, Any]] = []
     passes = 0
     for number, (domain, attribute, stated, claimed, relation) in enumerate(
         CONTROL_PAIRS, start=1
     ):
-        prompt = pair_prompt(
-            entity=entities[domain],
-            attribute=attribute,
-            first=stated,
-            second=claimed,
-            pair_id=f"control.{number}",
+        verdict, detail, _ = ask_pair(
+            reader,
+            f"control.{number}",
+            pair_messages(
+                entity=entities[domain],
+                attribute=attribute,
+                first=stated,
+                second=claimed,
+            ),
         )
-        row: dict[str, Any] = {
-            "n": number,
-            "domain": domain,
-            "attribute": attribute,
-            "stated": stated,
-            "claimed": claimed,
-            "relation": relation,
-        }
-        try:
-            result = reader.read_claim(prompt)
-            row.update(
-                verdict=result.verdict,
-                done_reason=result.done_reason,
-                completion_tokens=result.completion_tokens,
-            )
-            ok = (
-                result.verdict in ALLOWED_READER_VERDICTS
-                and result.done_reason not in FAILED_DONE_REASONS
-                and result.verdict != CONTRADICTION
-            )
-        except RdlabError as err:
-            row.update(verdict="error", done_reason=err.code, completion_tokens=0)
-            ok = False
-        row["passed"] = ok
+        ok = verdict in COMPATIBLE_ANSWERS
+        rows.append(
+            {
+                "n": number,
+                "domain": domain,
+                "attribute": attribute,
+                "stated": stated,
+                "claimed": claimed,
+                "relation": relation,
+                "verdict": verdict,
+                "done_reason": detail.get("done_reason", detail.get("error_code", "")),
+                "completion_tokens": detail.get("completion_tokens", 0),
+                "passed": ok,
+            }
+        )
         passes += 1 if ok else 0
-        rows.append(row)
     needed = threshold * len(CONTROL_PAIRS)
     return {
         "passes": passes,
@@ -227,7 +308,7 @@ def run_control(
 def _assemble(
     sets: Sequence[ValueSet],
     verdicts: dict[tuple[int, str, str], dict[str, str]],
-    readers: Sequence[BlindReaderAdapter],
+    readers: Sequence[CompatibilityReader],
     date: str,
     *,
     complete: bool,
@@ -308,6 +389,7 @@ def _assemble(
         "not_reached": not_reached,
         "control": control,
         "control_failed": control_failed,
+        "prompt_sha256": PROMPT_SHA256,
     }
     manifest["content_sha256"] = content_hash(manifest)
     return manifest, queue
@@ -317,7 +399,7 @@ def run_certification(
     *,
     sets: Sequence[ValueSet],
     entities: dict[str, str],
-    readers: Sequence[BlindReaderAdapter],
+    readers: Sequence[CompatibilityReader],
     review_queue_path: Path,
     options: CertificationOptions | None = None,
     date: str,
@@ -335,7 +417,7 @@ def run_certification(
     opts = options or CertificationOptions()
     _check_readers(readers)
 
-    jobs: list[tuple[int, str, str, BlindReadPrompt]] = []
+    jobs: list[tuple[int, str, str, str, list[dict[str, str]]]] = []
     for set_index, (domain, attribute, values) in enumerate(sets):
         entity = entities[domain]
         for a, b in directed_pairs(values):
@@ -349,12 +431,9 @@ def run_certification(
                     set_index,
                     a,
                     b,
-                    pair_prompt(
-                        entity=entity,
-                        attribute=attribute,
-                        first=a,
-                        second=b,
-                        pair_id=pair_id,
+                    pair_id,
+                    pair_messages(
+                        entity=entity, attribute=attribute, first=a, second=b
                     ),
                 )
             )
@@ -418,44 +497,17 @@ def run_certification(
                         "A reader that calls compatible values contradictions proves nothing: inspect the control pairs and the reader settings.",
                     )
                 reader_started = opts.clock()
-                for done, (set_index, a, b, prompt) in enumerate(jobs, start=1):
-                    verdict = "error"
-                    detail: dict[str, Any] = {}
-                    counted_error = False
-                    try:
-                        result = reader.read_claim(prompt)
-                        if result.verdict not in ALLOWED_READER_VERDICTS:
-                            counted_error = True
-                            detail = {
-                                "kind": "parse",
-                                "verdict": result.verdict,
-                                "done_reason": result.done_reason,
-                                "completion_tokens": result.completion_tokens,
-                                "raw_tail": _tail(result.raw_text),
-                            }
-                        elif result.done_reason in FAILED_DONE_REASONS:
-                            verdict = result.done_reason  # not certified, not an error
-                            detail = {
-                                "kind": "length_stop",
-                                "done_reason": result.done_reason,
-                                "completion_tokens": result.completion_tokens,
-                                "raw_tail": _tail(result.raw_text),
-                            }
-                        else:
-                            verdict = result.verdict
-                    except RdlabError as err:
-                        counted_error = True
-                        detail = {
-                            "kind": "transport",
-                            "error_code": err.code,
-                            "error": _tail(err, 200),
-                        }
+                for done, (set_index, a, b, pair_id, messages) in enumerate(
+                    jobs, start=1
+                ):
+                    verdict, detail, counted_error = ask_pair(reader, pair_id, messages)
+                    detail = {} if verdict in ANSWERS else detail
                     calls += 1
                     if detail:
                         failures.append(
                             {
                                 "reader": reader.model.name,
-                                "pair": prompt.claim_id,
+                                "pair": pair_id,
                                 "first": a,
                                 "second": b,
                                 **detail,
@@ -579,11 +631,41 @@ def verify_manifest(
         problems.append("readers: fewer than two model families")
     if manifest.get("control_failed"):
         problems.append("control: the negative control failed, so nothing is certified")
+    if manifest.get("prompt_sha256") != PROMPT_SHA256:
+        problems.append(
+            "prompt: the manifest was made with a different prompt than this code's"
+        )
     control = manifest.get("control") or {}
     for name in reader_names:
-        entry = control.get(name)
-        if not entry or not entry.get("passed"):
-            problems.append(f"control: {name} has no passing negative control")
+        entry = control.get(name) or {}
+        pairs = entry.get("pairs", [])
+        # recomputed from the pairs; the recorded 'passed' and 'passes' are not trusted
+        expected = [
+            (n, d, a, s, c) for n, (d, a, s, c, _r) in enumerate(CONTROL_PAIRS, start=1)
+        ]
+        given = [
+            (
+                p.get("n"),
+                p.get("domain"),
+                p.get("attribute"),
+                p.get("stated"),
+                p.get("claimed"),
+            )
+            for p in pairs
+        ]
+        if given != expected:
+            problems.append(f"control: {name} did not answer the 20 control pairs")
+            continue
+        passes = sum(
+            1
+            for p in pairs
+            if p.get("verdict") in COMPATIBLE_ANSWERS
+            and p.get("done_reason") not in FAILED_DONE_REASONS
+        )
+        if passes < DEFAULT_CONTROL_PASS_THRESHOLD * len(CONTROL_PAIRS) - 1e-9:
+            problems.append(
+                f"control: {name} passed {passes} of {len(CONTROL_PAIRS)}, under {DEFAULT_CONTROL_PASS_THRESHOLD:.2f}"
+            )
     pinned = _pinned_readers()
     for r in readers:
         key = (
@@ -642,7 +724,7 @@ def build_ollama_readers(
     base_url: str,
     num_ctx: int,
     num_predict: int,
-) -> list[BlindReaderAdapter]:
+) -> list[Any]:
     """Real loopback readers for the named families, in the order given (each one is run alone, then unloaded)."""
 
     from reasoning_dataset_lab.pilot_b.models_and_build import (
@@ -654,7 +736,7 @@ def build_ollama_readers(
         "nemotron": ("reader_1", "reader_1"),
         "granite": ("reader_2", "reader_2"),
     }
-    readers: list[BlindReaderAdapter] = []
+    readers: list[Any] = []
     for family in families:
         if family not in by_family:
             raise refused_error(
