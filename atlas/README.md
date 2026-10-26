@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-26 from commit ee62fb1 by Atlas 1.24.0.
+Mapped at 2026-10-26 from commit ab7c07c by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,10 +8,9 @@ reasoning-dataset-lab validates dataset maps, loads the five-file project config
 
 5 parts, mostly Python (33 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
 
-## What changed since 2026-10-26 (ec4a8fc)
+## What changed since 2026-10-26 (ee62fb1)
 
-- ci's push trigger now also names `.python-version`.
-- 9 files changed content, across 4 parts.
+Nothing structural changed since 2026-10-26; 6 files changed content.
 
 ## What comes in
 

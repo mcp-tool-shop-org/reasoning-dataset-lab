@@ -233,7 +233,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = "==7.0.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
-    { name = "role-set", git = "https://github.com/mcp-tool-shop-org/role-set?rev=70acb356708c1029e4b1b9eec6c030c4d009267e" },
+    { name = "role-set", git = "https://github.com/mcp-tool-shop-org/role-set?rev=d105f3da4550b6f4354d5ec66fe5f029b20c884e" },
 ]
 provides-extras = ["dev"]
 
@@ -247,7 +247,7 @@ dev = [
 [[package]]
 name = "role-set"
 version = "0.2.0"
-source = { git = "https://github.com/mcp-tool-shop-org/role-set?rev=70acb356708c1029e4b1b9eec6c030c4d009267e#70acb356708c1029e4b1b9eec6c030c4d009267e" }
+source = { git = "https://github.com/mcp-tool-shop-org/role-set?rev=d105f3da4550b6f4354d5ec66fe5f029b20c884e#d105f3da4550b6f4354d5ec66fe5f029b20c884e" }
 dependencies = [
     { name = "aspire-si-gates" },
 ]

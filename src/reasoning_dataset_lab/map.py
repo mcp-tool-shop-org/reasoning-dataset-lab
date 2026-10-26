@@ -93,8 +93,8 @@ FORBIDDEN_WRONG_FAMILY_ALIASES: dict[str, str] = {
 # Every wrong_family axis value must match role-set's shortcut-registry name
 # (or "none" for cells without a shortcut wrong-family), and each cell joins
 # f"{trait}.{wrong_family}" against REGISTRY when wrong_family != "none".
-# Source: src/role_set/generate/shortcuts.py:21-29@70acb35 (REGISTRY).
-WRONG_FAMILY_REGISTRY_SOURCE: str = "src/role_set/generate/shortcuts.py:21-29@70acb35 (REGISTRY)"
+# Source: src/role_set/generate/shortcuts.py:21-29@d105f3d (REGISTRY).
+WRONG_FAMILY_REGISTRY_SOURCE: str = "src/role_set/generate/shortcuts.py:21-29@d105f3d (REGISTRY)"
 ALLOWED_WRONG_FAMILY_IDS: frozenset[str] = frozenset(
     {key.split(".", 1)[1] for key in ROLE_SET_SHORTCUT_REGISTRY} | {"none"}
 )

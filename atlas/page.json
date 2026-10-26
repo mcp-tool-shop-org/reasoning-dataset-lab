@@ -19,37 +19,30 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 9,
+      "changed": 6,
       "moved": 0,
-      "parts": 4,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "ci's push trigger now also names `.python-version`.",
-        "subjects": [
-          ".github/workflows/ci.yml"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "9 files changed content, across 4 parts.",
+        "sentence": "Nothing structural changed since 2026-10-26; 6 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "ec4a8fcbdbaca2bd6b88f4347cf6d25f420f8c41",
-      "generatedAt": "2026-10-26T01:11:38.065Z"
+      "commit": "ee62fb11fdfa0481d2311929582c06c46782beff",
+      "generatedAt": "2026-10-26T02:10:10.470Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [],
   "changesTogetherNote": [
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "ee62fb11fdfa0481d2311929582c06c46782beff",
+  "commit": "ab7c07ce8592296dd52de8d334206d60ae9d4f77",
   "defaultBranch": "main",
   "derived": "5 parts, mostly Python (33 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
@@ -122,7 +115,7 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-26T02:10:10.470Z",
+  "generatedAt": "2026-10-26T02:31:50.134Z",
   "limits": [
     "6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "7 reads use paths built at run time and are not named here.",

@@ -67,7 +67,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "57aa27091a31eafda56c6a7926aa29faed56372a8370267bdfc8f5fddf860254",
+          "hash": "ae5bc654f8d2f768e17a2d7c3026be1a91cd5b39b765387c37dbbfdc15026df8",
           "path": "CHANGELOG.md"
         },
         {
@@ -83,11 +83,11 @@
           "path": "SECURITY.md"
         },
         {
-          "hash": "c955908cbef982532d85715472c3a1edd97b938dc089a7e077353c3345401b48",
+          "hash": "8e216d0aca5172b4e266e3004e1d2cbc175ec2658009efb45628a7e3c1ee5d2d",
           "path": "pyproject.toml"
         },
         {
-          "hash": "e00a43cdbea89c15c42504472a7095bd4c52dbeb4cb0bbb6f8ec39b1596dde50",
+          "hash": "4017223973840baf3eef66820e48ac9152e8b4f76d0d300c1af14f43de38f726",
           "path": "uv.lock"
         }
       ],
@@ -2117,7 +2117,7 @@
               "line": 311
             }
           ],
-          "hash": "72dc2da579797b15a97b612a72136b8e78d225c8409df2b397e02650e184f536",
+          "hash": "e466e5ca3e422b0bd544be8bed4a5d17556b7b4d390a30d2c48ef687ea4e7759",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/generators/base.py"
@@ -2504,7 +2504,7 @@
               "line": 804
             }
           ],
-          "hash": "ef21bb367c3433f8e0b9bb3c50e800c6050d1da523302e338862460a4ba36e36",
+          "hash": "e197932e3fffb2a1af6da69db47d4ed333960b7e7694e704090cbf7b6bd8dd00",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py"
           ],
@@ -7169,7 +7169,7 @@
             "test_role_set_proof_version_is_solver_sha256_and_solutions_recorded",
             "test_role_set_receipt_hash_fields_are_valid_sha256"
           ],
-          "hash": "6d97771cb4ab9d48cf31795466a5ef78fdac296a769cfc9d88fec650fbf94a4c",
+          "hash": "032d80f3a8d3b16755b96620b5486ba1b260f61f219e1973bf4abe4f2f5a4202",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/generators/base.py",
@@ -7561,7 +7561,7 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "ee62fb11fdfa0481d2311929582c06c46782beff",
+    "commit": "ab7c07ce8592296dd52de8d334206d60ae9d4f77",
     "tracked": 50
   },
   "landings": [
