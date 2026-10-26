@@ -18,14 +18,21 @@ def _load_requires_python_from_pyproject(path: Path) -> str:
 
 
 def _load_role_set_requires_python() -> str:
+    """The installed (pinned) role-set's Requires-Python: that is the code the lab actually runs against.
+
+    A sibling checkout used to win here. That is wrong on a rig that keeps an older role-set next to this repo (it read
+    ">=3.12,<3.13" from the sibling while the pinned install said ">=3.13"), so the sibling is only a fallback.
+    """
+    try:
+        meta_req = importlib.metadata.metadata("role-set").get("Requires-Python")
+    except importlib.metadata.PackageNotFoundError:
+        meta_req = None
+    if isinstance(meta_req, str) and meta_req.strip():
+        return meta_req.strip()
     sibling_role_set_pyproject = (
         Path(__file__).resolve().parents[2] / "role-set" / "pyproject.toml"
     )
-    if sibling_role_set_pyproject.exists():
-        return _load_requires_python_from_pyproject(sibling_role_set_pyproject)
-    meta_req = importlib.metadata.metadata("role-set").get("Requires-Python")
-    assert isinstance(meta_req, str) and meta_req.strip(), "Missing Requires-Python on role-set"
-    return meta_req.strip()
+    return _load_requires_python_from_pyproject(sibling_role_set_pyproject)
 
 
 def check_lab_requires_python_subset_of_role_set(
@@ -53,8 +60,8 @@ def test_lab_requires_python_matches_role_set_and_allows_no_refused_python() -> 
     lab_req = _load_requires_python_from_pyproject(lab_pyproject)
     role_set_req = _load_role_set_requires_python()
 
-    assert lab_req == ">=3.12,<3.13", (
-        f"Expected lab requires-python to be '>=3.12,<3.13', got {lab_req!r} "
+    assert lab_req == ">=3.13", (
+        f"Expected lab requires-python to be '>=3.13', got {lab_req!r} "
         f"(role-set requires-python is {role_set_req!r})"
     )
     leaked = check_lab_requires_python_subset_of_role_set(lab_req, role_set_req)
@@ -63,6 +70,6 @@ def test_lab_requires_python_matches_role_set_and_allows_no_refused_python() -> 
         f"role-set ({role_set_req!r}): {leaked[:6]}"
     )
 
-    # Also verify that if a lab range allowed >=3.12 without <3.13, the check catches 3.13+
+    # Also verify that if a lab range allowed >=3.12, the check catches the 3.12 that role-set now refuses
     caught = check_lab_requires_python_subset_of_role_set(">=3.12", role_set_req)
-    assert "3.13.0" in caught
+    assert "3.12.0" in caught

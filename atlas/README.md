@@ -1,25 +1,29 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-25 from commit 8ebfcc4 by Atlas 1.24.0.
+Mapped at 2026-10-26 from commit 70e8ff4 by Atlas 1.24.0.
 
 ## What this is
 
 reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints. (written by a person)
 
-5 parts, mostly Python (28 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
+5 parts, mostly Python (32 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.
 
-## What changed since 2026-10-25 (50ceb2a)
+## What changed since 2026-10-25 (8ebfcc4)
 
-Nothing structural changed since 2026-10-25; 2 files changed content.
+- ci no longer runs src/reasoning_dataset_lab/cli.py.
+- src/reasoning_dataset_lab/pilot_b/schemas/ is now read by src/reasoning_dataset_lab/pilot_b/schema_check.py.
+- src/reasoning_dataset_lab/pilot_b/variety_targets.yaml is now read by src/reasoning_dataset_lab/pilot_b/variety.py.
+- 9 files added and 20 changed content, across 4 parts.
 
 ## What comes in
 
-1. **ci.** On a pull request; on a push to main touching 7 paths; or by hand. Runs src/reasoning_dataset_lab/cli.py and tests/.
+1. **ci.** On a pull request; on a push to main touching 7 paths; or by hand. Runs tests/.
 2. **rdlab** (a command people run). Runs src/reasoning_dataset_lab/cli.py.
 
 ## What happens through ci
 
-1. The workflow runs src/reasoning_dataset_lab/cli.py in src and tests/ in tests.
+1. The workflow runs tests/ in tests.
+2. That reaches src (16 files).
 
 ## Who reads the results
 
@@ -61,15 +65,15 @@ People write .github/, examples/ and the repository root. Nothing in this reposi
 
 ## Where to start
 
-.github/workflows/ci.yml → src/reasoning_dataset_lab/cli.py → src/reasoning_dataset_lab/errors.py → src/reasoning_dataset_lab/pilot_b/models_and_build.py → src/reasoning_dataset_lab/map.py → src/reasoning_dataset_lab/config.py
+src/reasoning_dataset_lab/cli.py → src/reasoning_dataset_lab/errors.py → src/reasoning_dataset_lab/pilot_b/models_and_build.py → src/reasoning_dataset_lab/map.py → src/reasoning_dataset_lab/config.py → src/reasoning_dataset_lab/pilot_b/variety.py
 
-Read those in order to follow one pull request end to end.
+Read those in order to follow one run of rdlab end to end. This path follows rdlab (a command people run) from its entry, since ci runs only tests.
 
 ## What this map cannot see
 
 - 6 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
-- 2 reads use paths built at run time and are not named here.
-- 8 writes and 16 reads go to a path their caller passes, not to this repository.
+- 7 reads use paths built at run time and are not named here.
+- 11 writes and 33 reads go to a path their caller passes, not to this repository.
 - 1 file belongs to no part: docs/calibration-2026-10-25.md.
 - Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.
 
