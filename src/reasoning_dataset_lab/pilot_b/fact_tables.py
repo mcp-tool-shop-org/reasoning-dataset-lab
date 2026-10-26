@@ -130,7 +130,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "open_attrs": (
             (
                 "enclosure rating",
-                ("nema1", "nema3r", "nema4", "nema7", "nema12"),
+                ("nema3r", "nema4", "nema7", "nema12", "nema13"),
             ),
             ("mount style", ("rack", "rail", "wall", "pole", "floor")),
             ("coil voltage", ("dc24", "dc48", "dc125", "ac120", "ac240")),
@@ -154,7 +154,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             ("underway", "anchored", "alongside", "adrift", "aground"),
         ),
         "attr_spec": (
-            "hull coating",
+            "topcoat",
             ("epoxy", "polyurethane", "silicone", "acrylic", "vinyl"),
         ),
         "open_attrs": (
@@ -162,7 +162,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
                 "registry port",
                 ("Rotterdam", "Hamburg", "Antwerp", "Bergen", "Gothenburg"),
             ),
-            ("ice class", ("iasuper", "ia", "ib", "ic", "noclass")),
+            ("ice class", ("pc1", "pc3", "pc5", "pc7", "noclass")),
             (
                 "propulsion type",
                 ("diesel", "steam", "sail", "gasturbine", "battery"),
@@ -184,7 +184,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "interval_attr": ("operating temperature", "degrees"),
         "state_attr": (
             "damper position",
-            ("closed", "quarter", "half", "threequarter", "open"),
+            ("closed", "twentyfive", "fifty", "seventyfive", "open"),
         ),
         "attr_spec": (
             "lining brick",
@@ -227,7 +227,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             ),
             (
                 "shielding material",
-                ("concrete", "lead", "tungsten", "steel", "water"),
+                ("concrete", "lead", "tungsten", "steel", "depleteduranium"),
             ),
             (
                 "coolant type",
@@ -250,7 +250,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "interval_attr": ("suction flow", "liters"),
         "state_attr": (
             "compressor mode",
-            ("stopped", "starting", "loaded", "unloaded", "stopping"),
+            ("stopped", "starting", "onload", "offload", "stopping"),
         ),
         "attr_spec": (
             "rotor coating",
@@ -286,7 +286,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "interval_attr": ("winding load", "amperes"),
         "state_attr": (
             "tap position",
-            ("lowest", "low", "nominal", "high", "highest"),
+            ("lowest", "lower", "nominal", "higher", "highest"),
         ),
         "attr_spec": (
             "core steel",
@@ -334,8 +334,8 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
                 ("phosphate", "chelant", "volatile", "oxygenated", "caustic"),
             ),
             (
-                "sootblower medium",
-                ("steam", "air", "water", "nitrogen", "shot"),
+                "sootblower type",
+                ("retractable", "rotary", "wall", "rake", "sonic"),
             ),
             (
                 "firing method",
@@ -403,7 +403,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "open_attrs": (
             (
                 "drive coupling",
-                ("rigid", "flexible", "fluid", "magnetic", "clutch"),
+                ("rigid", "flexible", "fluid", "eddycurrent", "clutch"),
             ),
             (
                 "bearing type",
@@ -440,9 +440,9 @@ VALUE_SET_AXES: dict[tuple[str, str], str] = {
     ("relays", "mount style"): "where the relay is mounted",
     ("relays", "coil voltage"): "the rated coil supply, one designation",
     ("vessels", "berth status"): "the vessel's top-level situation",
-    ("vessels", "hull coating"): "the binder chemistry of the coating",
+    ("vessels", "topcoat"): "the binder chemistry of the outer coat",
     ("vessels", "registry port"): "the port of registry",
-    ("vessels", "ice class"): "the Finnish-Swedish ice class, one per vessel",
+    ("vessels", "ice class"): "the IACS polar class, one per vessel",
     ("vessels", "propulsion type"): "the prime mover",
     ("furnaces", "damper position"): "how far the damper is open",
     ("furnaces", "lining brick"): "the refractory oxide",
@@ -467,7 +467,7 @@ VALUE_SET_AXES: dict[tuple[str, str], str] = {
     ("boilers", "burner state"): "the burner-management sequence step",
     ("boilers", "tube alloy"): "the tube alloy family",
     ("boilers", "feedwater program"): "the one chemistry program in use",
-    ("boilers", "sootblower medium"): "the cleaning medium",
+    ("boilers", "sootblower type"): "the mechanism of the sootblower",
     ("boilers", "firing method"): "how the fuel is fired",
     ("chillers", "circuit state"): "the circuit's top-level operating mode",
     ("chillers", "brazing filler"): "the filler's base metal",
@@ -494,8 +494,7 @@ VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str]
     ("turbines", "cooling medium"): (("air", ("nitrogen",), "air is about four-fifths nitrogen"),),
     ("turbines", "turbine mode"): (("offline", ("standby", "coasting"), "a unit in standby or coasting down is not producing, so offline is true of it"),),
     ("relays", "enclosure rating"): (
-        ("waterproof", ("sealed",), "a rating is one NEMA type; a property such as waterproof holds for several"),
-        ("sealed", ("waterproof", "dustproof"), "a sealed enclosure keeps out water and dust"),
+        ("waterproof", ("dustproof", "sealed", "weatherproof"), "waterproof, dustproof and sealed are properties that hold together, not one rating"),
     ),
     ("vessels", "propulsion type"): (
         ("nuclear", ("steam",), "a nuclear ship drives steam turbines"),
@@ -508,10 +507,11 @@ VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str]
         ("moored", ("alongside",), "alongside is moored to a quay"),
     ),
     ("vessels", "ice class"): (
-        ("arctic", ("polar",), "arctic and polar are the same class"),
-        ("reinforced", ("ia", "ib", "ic"), "reinforced is not a class of its own scheme"),
+        ("arctic", ("polar", "pc1"), "arctic and polar are the same class"),
+        ("reinforced", ("ia", "ib", "ic", "pc5"), "reinforced is not a class of its own scheme"),
+        ("ia", ("pc1", "pc3", "pc5", "pc7"), "the Finnish-Swedish classes and the polar classes are two schemes; a set holds one"),
     ),
-    ("furnaces", "damper position"): (("modulating", ("quarter", "half", "threequarter"), "a modulating damper is throttling"),),
+    ("furnaces", "damper position"): (("modulating", ("twentyfive", "fifty", "seventyfive"), "a modulating damper is throttling"),),
     ("furnaces", "purge gas"): (
         ("inert", ("argon", "nitrogen", "helium"), "argon, nitrogen and helium are inert gases"),
         ("forming", ("nitrogen", "hydrogen"), "forming gas is nitrogen with hydrogen"),
@@ -548,7 +548,7 @@ VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str]
         ("deaerated", ("phosphate", "chelant", "volatile", "oxygenated", "caustic"), "deaeration applies to water under any program"),
         ("demineralized", ("phosphate", "chelant", "volatile"), "demineralized water is treated under a program as well"),
     ),
-    ("boilers", "sootblower medium"): (("acoustic", ("air",), "acoustic horns are driven by compressed air"), ("sonic", ("acoustic",), "sonic and acoustic are the same method")),
+    ("boilers", "sootblower type"): (("acoustic", ("sonic",), "acoustic and sonic are the same method"),),
     ("boilers", "firing method"): (
         ("balanced", ("forced", "induced"), "balanced draft uses both fans"),
         ("pressurized", ("forced",), "forced draft is a pressurized furnace"),
@@ -568,7 +568,10 @@ VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str]
         ("glycol", ("aircooled", "watercooled"), "a glycol loop rejects its heat to air or water"),
     ),
     ("pumps", "pump state"): (("primed", ("stopped", "running"), "primed is a condition, not a mode: a primed pump is stopped or running"),),
-    ("pumps", "drive coupling"): (("splined", ("rigid", "flexible"), "a splined coupling is rigid or flexible"),),
+    ("pumps", "drive coupling"): (
+        ("splined", ("rigid", "flexible"), "a splined coupling is rigid or flexible"),
+        ("magnetic", ("eddycurrent",), "an eddy-current coupling is a magnetic coupling"),
+    ),
     ("pumps", "bearing type"): (("ceramic", ("ball", "roller"), "ceramic is a material that ball and roller bearings are made of"),),
     ("pumps", "casing mount"): (("vertical", ("foot", "centerline", "pedestal"), "vertical is an orientation, not a way to support the casing"),),
     ("reactors", "coolant type"): (("primary", ("water",), "primary, secondary and auxiliary are loop roles, not coolants"),),
@@ -800,6 +803,20 @@ def is_disjoint_value(fact_type: FactType, fact_val: FactValue, claimed_val: Fac
     return False
 
 
+def _no_exclusive_value(fact: AtomicFact) -> Exception:
+    """A swap only ever stays inside the fact's own attribute set; with no such set there is no value to swap to.
+
+    The old fallbacks took a value from any set that held it (crossing attributes) or made one up (``non-<v>``,
+    ``uncoated-<v>``); either can give an "unsupported" claim that is not false (consult io2, F5).
+    """
+
+    return refused_error(
+        "PILOT_B_NO_EXCLUSIVE_VALUE",
+        f"Fact '{fact.fact_id}' has {fact.fact_type} value {fact.value!r} for attribute '{fact.attribute}', which is not in that attribute's value set.",
+        "Only a value from the fact's own attribute set can be swapped; add the attribute to the catalogue or fix the fact.",
+    )
+
+
 def mutate_fact_value(fact: AtomicFact, step: int = 1) -> FactValue:
     """Compute a deterministic typed mutation provably disjoint from fact.value."""
     offset = max(1, abs(step))
@@ -824,31 +841,29 @@ def mutate_fact_value(fact: AtomicFact, step: int = 1) -> FactValue:
         assert isinstance(fact.value, str)
         cur = fact.value.strip().lower()
         attr_low = fact.attribute.strip().lower()
-        for match_attr in (True, False):
-            for spec in DOMAIN_CATALOGUE:
-                s_attr, states = spec["state_attr"]  # type: ignore[misc]
-                if match_attr and str(s_attr).strip().lower() != attr_low:
-                    continue
-                if cur in [s.lower() for s in states]:
-                    cands = [str(cand) for cand in states if str(cand).lower() != cur]
-                    if cands:
-                        return cands[(offset - 1) % len(cands)]
-        return f"non-{cur}"
+        for spec in DOMAIN_CATALOGUE:
+            s_attr, states = spec["state_attr"]  # type: ignore[misc]
+            if str(s_attr).strip().lower() != attr_low:
+                continue
+            if cur in [s.lower() for s in states]:
+                cands = [str(cand) for cand in states if str(cand).lower() != cur]
+                if cands:
+                    return cands[(offset - 1) % len(cands)]
+        raise _no_exclusive_value(fact)
     assert isinstance(fact.value, str)
     cur_attr = fact.value.strip().lower()
     attr_low = fact.attribute.strip().lower()
-    for match_attr in (True, False):
-        for spec in DOMAIN_CATALOGUE:
-            attr_entries: list[tuple[str, tuple[str, ...]]] = [spec["attr_spec"]]  # type: ignore[list-item]
-            attr_entries.extend(spec["open_attrs"])  # type: ignore[arg-type]
-            for a_name, vals in attr_entries:
-                if match_attr and str(a_name).strip().lower() != attr_low:
-                    continue
-                if cur_attr in [v.lower() for v in vals]:
-                    cands = [str(cand) for cand in vals if str(cand).lower() != cur_attr]
-                    if cands:
-                        return cands[(offset - 1) % len(cands)]
-    return f"uncoated-{cur_attr}"
+    for spec in DOMAIN_CATALOGUE:
+        attr_entries: list[tuple[str, tuple[str, ...]]] = [spec["attr_spec"]]  # type: ignore[list-item]
+        attr_entries.extend(spec["open_attrs"])  # type: ignore[arg-type]
+        for a_name, vals in attr_entries:
+            if str(a_name).strip().lower() != attr_low:
+                continue
+            if cur_attr in [v.lower() for v in vals]:
+                cands = [str(cand) for cand in vals if str(cand).lower() != cur_attr]
+                if cands:
+                    return cands[(offset - 1) % len(cands)]
+    raise _no_exclusive_value(fact)
 
 
 def _normalize_str_value(val: str) -> str:

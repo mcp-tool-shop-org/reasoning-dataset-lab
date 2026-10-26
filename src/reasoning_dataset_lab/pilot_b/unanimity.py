@@ -33,6 +33,7 @@ BARRED_READER_FAMILIES: frozenset[str] = frozenset(
     {"argon", "gemini", "google", "muse", "muse-glimmer"}
 )
 DEFAULT_MIN_PASS_RATE_PER_CLASS: float = 0.50
+DEFAULT_MAX_RENDER_FAILURE_RATE: float = 0.50
 
 
 SourceMatchStatus = Literal["confirmed", "unconfirmed"]
@@ -176,6 +177,7 @@ class TriadGateEvaluation:
     claim_evals: dict[VerdictKey, ClaimGateEvaluation]
     passed: bool
     failure_reasons: tuple[str, ...]
+    render_failed: bool = False  # the triad never reached the readers: its own rate, not a verdict-class miss
 
     def to_review_queue_record(self) -> dict[str, object]:
         evals_dict = {k: v.to_dict() for k, v in self.claim_evals.items()}
@@ -412,20 +414,44 @@ def append_to_review_queue(
             )
 
 
+def render_failure_rate(evaluations: Sequence[TriadGateEvaluation]) -> float:
+    """The share of triads whose material or claims failed the rendering check, over all triads."""
+
+    if not evaluations:
+        return 0.0
+    return sum(1 for ev in evaluations if ev.render_failed) / len(evaluations)
+
+
 def check_min_pass_rate_per_class(
     evaluations: Sequence[TriadGateEvaluation],
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
+    max_render_failure_rate: float = DEFAULT_MAX_RENDER_FAILURE_RATE,
 ) -> dict[VerdictKey, float]:
-    """Compute per-class unanimity pass rates and halt if any class is below min_pass_rate_per_class (ruling 8c)."""
+    """Compute per-class unanimity pass rates and halt if a class is below its floor or too many triads failed to render.
+
+    A triad that failed the rendering check never reached the readers, so it says nothing about a verdict class. Class
+    rates are over the triads that rendered; the render failures are their own rate, held to ``max_render_failure_rate``
+    (consult io: counted against every class, five render failures left no room for any reader disagreement).
+    """
     if not evaluations:
         return {"supported": 0.0, "unsupported": 0.0, "cannot_tell": 0.0}
 
-    total = len(evaluations)
+    render_rate = render_failure_rate(evaluations)
+    rendered = [ev for ev in evaluations if not ev.render_failed]
+    if render_rate > max_render_failure_rate:
+        raise refused_error(
+            "PILOT_B_RENDER_FAILURE_RATE_ABOVE_CEILING",
+            f"{sum(1 for ev in evaluations if ev.render_failed)} of {len(evaluations)} triads failed the rendering "
+            f"check (rate {render_rate:.2f}, ceiling {max_render_failure_rate:.2f}).",
+            "Halt the build and inspect review_queue.jsonl for the rendering_check reasons; fix the writer prompt or the check, not the ceiling.",
+        )
+
+    total = len(rendered) or 1  # nothing rendered: every class rate is 0.0, held to the floor below
     rates: dict[VerdictKey, float] = {}
     below: list[str] = []
 
     for key in VERDICT_CLASSES:
-        passed_count = sum(1 for ev in evaluations if ev.claim_evals[key].passed)
+        passed_count = sum(1 for ev in rendered if ev.claim_evals[key].passed)
         rate = passed_count / total
         rates[key] = round(rate, 4)
         if rate < min_pass_rate_per_class:

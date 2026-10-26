@@ -66,6 +66,7 @@ from reasoning_dataset_lab.pilot_b.rendering import (
     style_lint,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
+    DEFAULT_MAX_RENDER_FAILURE_RATE,
     DEFAULT_MIN_PASS_RATE_PER_CLASS,
     VERDICT_CLASSES,
     ModelIdentity,
@@ -900,6 +901,7 @@ def run_pilot_b_build(
     config_path: Path | None = None,
     environ: Mapping[str, str] | None = None,
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
+    max_render_failure_rate: float = DEFAULT_MAX_RENDER_FAILURE_RATE,
     licence_registry_path: Path | None = None,
     licence_id_overrides: Mapping[str, str] | None = None,
     bundled_licence_id_overrides: Mapping[str, str] | None = None,
@@ -1070,6 +1072,7 @@ def run_pilot_b_build(
         review_queue_path=review_queue_path,
         num_predict=np_config,
         min_pass_rate_per_class=min_pass_rate_per_class,
+        max_render_failure_rate=max_render_failure_rate,
     )
 
     part_dir = output_dir / "part_pilot_b_sealed"

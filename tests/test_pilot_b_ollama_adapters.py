@@ -1247,6 +1247,7 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
         review_queue_path=rq_path,
         num_predict=256,
         min_pass_rate_per_class=0.0,
+        max_render_failure_rate=1.0,
     )
     assert len(wave_res.kept_triads) == 0
     assert len(wave_res.failed_triads) == 2
@@ -1276,6 +1277,7 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
         reader_2=r2_ok,
         review_queue_path=tmp_path / "rq_w_render.jsonl",
         min_pass_rate_per_class=0.0,
+        max_render_failure_rate=1.0,
     )
     assert len(wave_w_render.failed_triads) == 1
     assert "num_ctx_exceeded" in wave_w_render.failed_triads[0].failure_reasons[0]
@@ -1292,6 +1294,7 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
         reader_2=r2_ok,
         review_queue_path=tmp_path / "rq_w_word.jsonl",
         min_pass_rate_per_class=0.0,
+        max_render_failure_rate=1.0,
     )
     assert len(wave_w_word.failed_triads) == 1
     assert "num_ctx_exceeded" in wave_w_word.failed_triads[0].failure_reasons[0]
@@ -1308,6 +1311,7 @@ def test_gp_part_a_over_ceiling_num_ctx_is_refused_and_queued(
         reader_2=r2_over,
         review_queue_path=tmp_path / "rq_r2_over.jsonl",
         min_pass_rate_per_class=0.0,
+        max_render_failure_rate=1.0,
     )
     assert len(wave_r2_over.failed_triads) == 1
 

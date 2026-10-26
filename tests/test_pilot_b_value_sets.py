@@ -14,6 +14,7 @@ import pytest
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     DOMAIN_CATALOGUE,
     EXCLUSIVE_BY_MEANING,
+    VALUE_SET_AXES,
     VALUE_SUBSUMPTIONS,
     value_sets,
 )
@@ -43,15 +44,22 @@ def test_no_value_set_holds_a_value_beside_one_it_covers(domain, attribute, valu
 
 
 @pytest.mark.parametrize(("domain", "attribute", "values"), SETS, ids=SET_IDS)
-def test_no_value_is_a_part_of_another_value_in_its_set(domain, attribute, values):
-    """A guard the table does not need: one value spelled inside another is a class and its member."""
+def test_no_value_is_spelled_inside_another_value_in_its_set(domain, attribute, values):
+    """A plain substring test: 'water' inside 'watercooled' is a class and its member (the old lookaround guard never matched a single word)."""
 
     for a in values:
         for b in values:
             if a != b:
-                assert not re.search(
-                    rf"(?<![a-z0-9]){re.escape(a.lower())}(?![a-z0-9])", b.lower()
-                ), f"{domain}/{attribute}: '{a}' is inside '{b}'"
+                assert a.lower() not in b.lower(), (
+                    f"{domain}/{attribute}: '{a}' is inside '{b}'"
+                )
+
+
+def test_the_substring_guard_catches_what_the_lookaround_missed():
+    assert "watercooled".startswith("water")
+    assert (
+        re.search(r"(?<![a-z])water(?![a-z])", "watercooled") is None
+    )  # why the old guard was a no-op
 
 
 def test_every_rule_names_a_real_set():
@@ -98,3 +106,42 @@ def test_the_second_pass_replacements_are_in():
     assert "air" not in sets[("turbines", "cooling medium")]
     assert "brine" not in sets[("compressors", "intercooler medium")]
     assert "polyol" not in sets[("turbines", "lubricant grade")]
+
+
+def test_every_set_names_its_one_axis():
+    assert set(VALUE_SET_AXES) == {(d, a) for d, a, _ in SETS}
+    for axis in VALUE_SET_AXES.values():
+        assert len(axis) > 10
+
+
+def test_no_value_sits_in_two_sets_of_one_domain():
+    """'grounded' sat in a tap set and a vector-group set, 'magnetic' in a coupling and a bearing set: one word on two axes."""
+
+    seen: dict[tuple[str, str], str] = {}
+    for domain, attribute, values in SETS:
+        for value in values:
+            assert (domain, value) not in seen, (
+                f"{domain}: '{value}' is in both '{seen[(domain, value)]}' and '{attribute}'"
+            )
+            seen[(domain, value)] = attribute
+
+
+def test_attribute_names_are_unique_across_the_catalogue():
+    names = [attribute for _, attribute, _ in SETS]
+    assert len(names) == len(set(names))
+
+
+def test_a_state_set_holds_no_word_for_a_condition_of_another_mode():
+    banned = {
+        "grounded",
+        "floating",
+        "subcooling",
+        "pumping",
+        "primed",
+        "chattering",
+        "ballasted",
+        "synchronizing",
+    }
+    for spec in DOMAIN_CATALOGUE:
+        attribute, values = spec["state_attr"]
+        assert not banned & set(values), (spec["domain"], attribute)
