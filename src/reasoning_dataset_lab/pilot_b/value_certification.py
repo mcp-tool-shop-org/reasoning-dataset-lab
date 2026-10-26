@@ -138,6 +138,84 @@ def _check_readers(readers: Sequence[BlindReaderAdapter]) -> None:
         )
 
 
+def _tail(text: object, limit: int = 300) -> str:
+    return str(text or "")[-limit:]
+
+
+def _assemble(
+    sets: Sequence[ValueSet],
+    verdicts: dict[tuple[int, str, str], dict[str, str]],
+    readers: Sequence[BlindReaderAdapter],
+    date: str,
+    *,
+    complete: bool,
+    stopped: str | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The manifest of the sets every reader has fully read as contradictions, and the queue of the rest."""
+
+    names = [r.model.name for r in readers]
+    reader_rows = [
+        {
+            "name": r.model.name,
+            "family": r.model.family,
+            "digest": r.model.digest,
+            "num_ctx_cap": getattr(r, "max_num_ctx", None),
+            "num_predict": getattr(r, "num_predict", None),
+        }
+        for r in readers
+    ]
+    certified: list[dict[str, Any]] = []
+    queue: list[dict[str, Any]] = []
+    not_reached: list[str] = []
+    for set_index, (domain, attribute, values) in enumerate(sets):
+        pairs = [
+            (a, b, verdicts.get((set_index, a, b), {}))
+            for a, b in directed_pairs(values)
+        ]
+        read_fully = all(set(v) == set(names) for _, _, v in pairs)
+        bad = [
+            {"first": a, "second": b, "verdicts": dict(v)}
+            for a, b, v in pairs
+            if any(x != CONTRADICTION for x in v.values())
+        ]
+        if bad:
+            queue.append(
+                {
+                    "domain": domain,
+                    "attribute": attribute,
+                    "values": list(values),
+                    "failed_pairs": bad,
+                }
+            )
+        elif read_fully:
+            certified.append(
+                {
+                    "domain": domain,
+                    "attribute": attribute,
+                    "values": list(values),
+                    "values_sha256": values_hash(domain, attribute, values),
+                    "pairs": [
+                        {"first": a, "second": b, "verdicts": dict(v)}
+                        for a, b, v in pairs
+                    ],
+                    "certified": True,
+                }
+            )
+        else:
+            not_reached.append(f"{domain}/{attribute}")
+    manifest: dict[str, Any] = {
+        "format": CERT_FORMAT,
+        "date": date,
+        "readers": reader_rows,
+        "sets": certified,
+        "complete": complete,
+        "stopped": stopped,
+        "not_reached": not_reached,
+    }
+    manifest["content_sha256"] = content_hash(manifest)
+    return manifest, queue
+
+
 def run_certification(
     *,
     sets: Sequence[ValueSet],
@@ -146,8 +224,14 @@ def run_certification(
     review_queue_path: Path,
     options: CertificationOptions | None = None,
     date: str,
+    manifest_path: Path | None = None,
 ) -> CertificationRun:
-    """Ask every reader about every directed pair of every set, one reader at a time, and build the manifest."""
+    """Ask every reader about every directed pair of every set, one reader at a time, and build the manifest.
+
+    Every exit path unloads the reader it loaded. A run that stops (error rate, wall cap) still writes what it has: a
+    manifest marked ``"complete": false`` with the stop code, the review queue, and ``<queue>.failures.jsonl`` with the
+    failing calls' details; then the stop is raised.
+    """
 
     opts = options or CertificationOptions()
     _check_readers(readers)
@@ -177,114 +261,116 @@ def run_certification(
             )
 
     verdicts: dict[tuple[int, str, str], dict[str, str]] = {}
+    failures: list[dict[str, Any]] = []
     started = opts.clock()
     calls = failed = 0
-
-    for reader_index, reader in enumerate(readers):
-        reader_started = opts.clock()
-        for done, (set_index, a, b, prompt) in enumerate(jobs, start=1):
-            verdict = "error"
-            try:
-                result = reader.read_claim(prompt)
-                ok = (
-                    result.verdict in ALLOWED_READER_VERDICTS
-                    and result.done_reason not in FAILED_DONE_REASONS
-                )
-                verdict = result.verdict if ok else "error"
-            except RdlabError:
-                ok = False
-            calls += 1
-            if not ok:
-                failed += 1
-            verdicts.setdefault((set_index, a, b), {})[reader.model.name] = verdict
-
-            if (
-                calls >= opts.error_rate_min_calls
-                and failed / calls > opts.error_rate_stop
-            ):
-                raise refused_error(
-                    "PILOT_B_CERT_ERROR_RATE_EXCEEDED",
-                    f"{failed} of {calls} verdicts were malformed or failed (rate {failed / calls:.3f}, stop {opts.error_rate_stop:.3f}).",
-                    "Stop the run and inspect the reader: num_ctx, num_predict, or the model itself.",
-                )
-            elapsed = opts.clock() - started
-            if done == opts.calibration_calls and len(jobs) > done:
-                per_call = (opts.clock() - reader_started) / done
-                later = len(jobs) * (len(readers) - reader_index - 1)
-                projected = elapsed + per_call * (len(jobs) - done + later)
-                if projected > opts.wall_cap_s:
-                    raise refused_error(
-                        "PILOT_B_CERT_WALL_CAP_EXCEEDED",
-                        f"{reader.model.name}: {per_call:.2f} s a call projects {projected:.0f} s for {len(jobs) * len(readers)} calls, over the wall cap of {opts.wall_cap_s:.0f} s.",
-                        "Shorten the prompts, lower num_predict, or ask for a longer wall cap.",
-                    )
-            elif elapsed > opts.wall_cap_s:
-                raise refused_error(
-                    "PILOT_B_CERT_WALL_CAP_EXCEEDED",
-                    f"The run passed its wall cap of {opts.wall_cap_s:.0f} s after {calls} calls.",
-                    "Resume from the review queue and manifest, or ask for a longer wall cap.",
-                )
-        unload = getattr(reader, "unload_model", None)
-        if callable(unload):
-            unload()
-
-    reader_rows = [
-        {
-            "name": r.model.name,
-            "family": r.model.family,
-            "digest": r.model.digest,
-            "num_ctx_cap": getattr(r, "max_num_ctx", None),
-            "num_predict": getattr(r, "num_predict", None),
-        }
-        for r in readers
-    ]
-    certified: list[dict[str, Any]] = []
-    queue: list[dict[str, Any]] = []
-    for set_index, (domain, attribute, values) in enumerate(sets):
-        pairs = [
-            {"first": a, "second": b, "verdicts": dict(verdicts[(set_index, a, b)])}
-            for a, b in directed_pairs(values)
-        ]
-        bad = [
-            p for p in pairs if any(v != CONTRADICTION for v in p["verdicts"].values())
-        ]
-        if bad:
-            queue.append(
-                {
-                    "domain": domain,
-                    "attribute": attribute,
-                    "values": list(values),
-                    "failed_pairs": bad,
-                }
-            )
-        else:
-            certified.append(
-                {
-                    "domain": domain,
-                    "attribute": attribute,
-                    "values": list(values),
-                    "values_sha256": values_hash(domain, attribute, values),
-                    "pairs": pairs,
-                    "certified": True,
-                }
-            )
-
-    manifest: dict[str, Any] = {
-        "format": CERT_FORMAT,
-        "date": date,
-        "readers": reader_rows,
-        "sets": certified,
-    }
-    manifest["content_sha256"] = content_hash(manifest)
-
-    review_queue_path.parent.mkdir(parents=True, exist_ok=True)
-    review_queue_path.write_text(
-        "".join(
-            json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n" for r in queue
-        ),
-        encoding="utf-8",
-        newline="\n",
+    failures_path = review_queue_path.with_name(
+        review_queue_path.stem + ".failures.jsonl"
     )
+
+    def write_outputs(
+        complete: bool, stopped: str | None
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        manifest, queue = _assemble(
+            sets, verdicts, readers, date, complete=complete, stopped=stopped
+        )
+        review_queue_path.parent.mkdir(parents=True, exist_ok=True)
+        review_queue_path.write_text(
+            "".join(
+                json.dumps(r, sort_keys=True, ensure_ascii=False) + "\n" for r in queue
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        failures_path.write_text(
+            "".join(
+                json.dumps(f, sort_keys=True, ensure_ascii=False) + "\n"
+                for f in failures
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        if manifest_path is not None:
+            write_manifest(manifest_path, manifest)
+        return manifest, queue
+
+    try:
+        for reader_index, reader in enumerate(readers):
+            reader_started = opts.clock()
+            try:
+                for done, (set_index, a, b, prompt) in enumerate(jobs, start=1):
+                    verdict = "error"
+                    detail: dict[str, Any] = {}
+                    try:
+                        result = reader.read_claim(prompt)
+                        ok = (
+                            result.verdict in ALLOWED_READER_VERDICTS
+                            and result.done_reason not in FAILED_DONE_REASONS
+                        )
+                        verdict = result.verdict if ok else "error"
+                        if not ok:
+                            detail = {
+                                "done_reason": result.done_reason,
+                                "completion_tokens": result.completion_tokens,
+                                "verdict": result.verdict,
+                                "raw_tail": _tail(result.raw_text),
+                            }
+                    except RdlabError as err:
+                        ok = False
+                        detail = {"error_code": err.code, "error": _tail(err, 200)}
+                    calls += 1
+                    if not ok:
+                        failed += 1
+                        failures.append(
+                            {
+                                "reader": reader.model.name,
+                                "pair": prompt.claim_id,
+                                "first": a,
+                                "second": b,
+                                **detail,
+                            }
+                        )
+                    verdicts.setdefault((set_index, a, b), {})[reader.model.name] = (
+                        verdict
+                    )
+
+                    if (
+                        calls >= opts.error_rate_min_calls
+                        and failed / calls > opts.error_rate_stop
+                    ):
+                        raise refused_error(
+                            "PILOT_B_CERT_ERROR_RATE_EXCEEDED",
+                            f"{failed} of {calls} verdicts were malformed or failed (rate {failed / calls:.3f}, stop {opts.error_rate_stop:.3f}).",
+                            "Stop the run and inspect the reader: num_ctx, num_predict, or the model itself.",
+                        )
+                    elapsed = opts.clock() - started
+                    if done == opts.calibration_calls and (
+                        len(jobs) > done or reader_index < len(readers) - 1
+                    ):
+                        per_call = (opts.clock() - reader_started) / done
+                        later = len(jobs) * (len(readers) - reader_index - 1)
+                        projected = elapsed + per_call * (len(jobs) - done + later)
+                        if projected > opts.wall_cap_s:
+                            raise refused_error(
+                                "PILOT_B_CERT_WALL_CAP_EXCEEDED",
+                                f"{reader.model.name}: {per_call:.2f} s a call projects {projected:.0f} s for {len(jobs) * len(readers)} calls, over the wall cap of {opts.wall_cap_s:.0f} s.",
+                                "Shorten the prompts, lower num_predict, or ask for a longer wall cap.",
+                            )
+                    elif elapsed > opts.wall_cap_s:
+                        raise refused_error(
+                            "PILOT_B_CERT_WALL_CAP_EXCEEDED",
+                            f"The run passed its wall cap of {opts.wall_cap_s:.0f} s after {calls} calls.",
+                            "Resume from the review queue and manifest, or ask for a longer wall cap.",
+                        )
+            finally:
+                unload = getattr(reader, "unload_model", None)
+                if callable(unload):
+                    unload()
+    except RdlabError as stop:
+        write_outputs(False, stop.code)
+        raise
+
+    manifest, queue = write_outputs(True, None)
     return CertificationRun(
         manifest=manifest, review_queue=queue, calls_made=calls, failed_calls=failed
     )
@@ -324,6 +410,20 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return doc
 
 
+def _pinned_readers() -> set[tuple[str, str, str]]:
+    """(name, digest, family) of the reader models pinned for Pilot B: a manifest must come from these, not from a fake."""
+
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        DEFAULT_PILOT_B_MODEL_PINS,
+    )
+
+    pins = (
+        DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
+        DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
+    )
+    return {(s.ollama_tag, s.manifest_digest, s.family.strip().lower()) for s in pins}
+
+
 def verify_manifest(
     manifest: dict[str, Any], sets: Sequence[ValueSet] | None = None
 ) -> list[str]:
@@ -332,11 +432,26 @@ def verify_manifest(
     current = tuple(sets if sets is not None else value_sets())
     problems: list[str] = []
     entries = {(e["domain"], e["attribute"]): e for e in manifest.get("sets", [])}
-    families = {
-        str(r.get("family", "")).strip().lower() for r in manifest.get("readers", [])
-    }
-    if len(families - {""}) < 2:
+    if not manifest.get("complete", False):
+        problems.append(
+            f"incomplete: the run stopped ({manifest.get('stopped')!r}) and certifies nothing"
+        )
+    readers = manifest.get("readers", [])
+    reader_names = {str(r.get("name", "")) for r in readers}
+    families = {str(r.get("family", "")).strip().lower() for r in readers}
+    if len(readers) < 2 or len(families - {""}) < 2:
         problems.append("readers: fewer than two model families")
+    pinned = _pinned_readers()
+    for r in readers:
+        key = (
+            str(r.get("name", "")),
+            str(r.get("digest", "")),
+            str(r.get("family", "")).strip().lower(),
+        )
+        if key not in pinned:
+            problems.append(
+                f"readers: {key[0]} @ {key[1][:12]} is not a pinned reader model"
+            )
     for domain, attribute, values in current:
         entry = entries.pop((domain, attribute), None)
         label = f"{domain}/{attribute}"
@@ -361,7 +476,12 @@ def verify_manifest(
             )
         for pair in entry.get("pairs", []):
             reads = pair.get("verdicts", {})
-            if len(reads) < 2 or any(v != CONTRADICTION for v in reads.values()):
+            if set(reads) != reader_names:
+                problems.append(
+                    f"verdicts: {label} {pair.get('first')} / {pair.get('second')} was not read by exactly the manifest's readers"
+                )
+                break
+            if any(v != CONTRADICTION for v in reads.values()):
                 problems.append(
                     f"not read as a contradiction: {label} {pair.get('first')} / {pair.get('second')}"
                 )

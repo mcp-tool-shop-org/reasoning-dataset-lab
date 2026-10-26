@@ -206,10 +206,6 @@ def _named(token: str, text: str) -> bool:
     )
 
 
-def _first_pos(token: str, text: str) -> int:
-    m = re.search(r"(?<!\w)" + re.escape(token) + r"(?!\w)", text, re.IGNORECASE)
-    return m.start() if m else -1
-
 
 def _check_polarity_and_quantifiers(
     line_label: str,

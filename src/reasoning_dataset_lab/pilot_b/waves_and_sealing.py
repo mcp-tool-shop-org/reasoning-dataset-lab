@@ -61,6 +61,7 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
     build_blind_read_prompt,
     DEFAULT_MAX_RENDER_FAILURE_RATE,
     check_min_pass_rate_per_class,
+    render_failure_rate,
     evaluate_triad_unanimity,
     validate_chain_families,
 )
@@ -194,6 +195,8 @@ class PilotBWaveRunResult:
     reader_1_adapter_class: str = "OllamaBlindReaderAdapter"
     reader_2_adapter_class: str = "OllamaBlindReaderAdapter"
     has_fake_adapter: bool = False
+    render_failure_rate: float = 0.0
+    max_render_failure_rate: float = DEFAULT_MAX_RENDER_FAILURE_RATE
     writer_adapter: object = None
     reader_1_adapter: object = None
     reader_2_adapter: object = None
@@ -766,6 +769,8 @@ def run_pilot_b_waves(
         failed_triads=tuple(failed),
         pass_rate_per_class=rates,
         triad_pass_rate=triad_rate,
+        render_failure_rate=round(render_failure_rate(evaluations), 4),
+        max_render_failure_rate=max_render_failure_rate,
         writer_adapter_class=w_cls,
         reader_1_adapter_class=r1_cls,
         reader_2_adapter_class=r2_cls,

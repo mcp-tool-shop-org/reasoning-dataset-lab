@@ -826,6 +826,8 @@ def build_pilot_b_report(
         "key_proof_rate": key_proof_rate,
         "gate_pass_rate_per_class": dict(wave_result.pass_rate_per_class),
         "triad_pass_rate": wave_result.triad_pass_rate,
+        "render_failure_rate": wave_result.render_failure_rate,
+        "max_render_failure_rate": wave_result.max_render_failure_rate,
         "num_predict": wave_result.num_predict,
         "num_predict_source": wave_result.num_predict_source,
         "num_predict_config": (

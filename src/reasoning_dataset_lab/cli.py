@@ -347,7 +347,7 @@ def _build_certify_values_parser() -> _StructuredArgumentParser:
         ),
     )
     parser.add_argument("--readers", default="granite,nemotron", help="Comma-separated reader families, run in this order (default: granite,nemotron).")
-    parser.add_argument("--num-ctx", dest="num_ctx", type=int, default=value_certification.DEFAULT_NUM_CTX, help=f"Cap on each reader's num_ctx (default: {value_certification.DEFAULT_NUM_CTX}; thinking tokens count, see value_certification.py).")
+    parser.add_argument("--num-ctx", dest="num_ctx", type=int, default=value_certification.DEFAULT_NUM_CTX, help=f"Cap on each reader's num_ctx, not the context used: the adapter picks the actual context per call in steps of 1,024 (default: {value_certification.DEFAULT_NUM_CTX}).")
     parser.add_argument("--num-predict", dest="num_predict", type=int, default=value_certification.DEFAULT_NUM_PREDICT, help=f"Each reader's num_predict (default: {value_certification.DEFAULT_NUM_PREDICT}; thinking tokens count against it).")
     parser.add_argument("--wall-cap-s", dest="wall_cap_s", type=float, default=10800.0, help="Stop when the projected or elapsed wall time passes this many seconds (default: 10800).")
     parser.add_argument("--calibration-calls", dest="calibration_calls", type=int, default=20, help="Calls timed per reader before the projection (default: 20).")
@@ -393,6 +393,7 @@ def _run_certify_values(argv: Sequence[str]) -> int:
             error_rate_min_calls=args.error_rate_min_calls,
         ),
         date=args.date or datetime.datetime.now(datetime.UTC).date().isoformat(),
+        manifest_path=args.manifest_out,
     )
     value_certification.write_manifest(args.manifest_out, run.manifest)
     print(

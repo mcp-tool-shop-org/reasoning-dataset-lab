@@ -14,16 +14,17 @@ from reasoning_dataset_lab.cli import run_cli
 from reasoning_dataset_lab.errors import RdlabError
 from reasoning_dataset_lab.pilot_b import value_certification as vc
 from reasoning_dataset_lab.pilot_b.fact_tables import value_sets
+from reasoning_dataset_lab.pilot_b.models_and_build import DEFAULT_PILOT_B_MODEL_PINS
 from reasoning_dataset_lab.pilot_b.unanimity import (
     BlindReadPrompt,
     BlindReadResult,
     ModelIdentity,
 )
 
-GRANITE = ModelIdentity(name="granite4.2:8b", family="granite", digest="c" * 64)
-NEMOTRON = ModelIdentity(
-    name="nemotron-3.5-lightning:30b", family="nemotron", digest="b" * 64
-)
+# the pinned reader models: a manifest only verifies if its readers carry these digests
+GRANITE = DEFAULT_PILOT_B_MODEL_PINS["reader_2"].to_model_identity()
+NEMOTRON = DEFAULT_PILOT_B_MODEL_PINS["reader_1"].to_model_identity()
+FAKE_GRANITE = ModelIdentity(name="granite4.2:8b", family="granite", digest="c" * 64)
 SETS = value_sets()
 SMALL = SETS[:3]
 
@@ -501,3 +502,151 @@ def test_a_wall_cap_hit_after_calibration_stops_the_run(tmp_path):
             date="2026-10-26",
         )
     assert caught.value.code == "PILOT_B_CERT_WALL_CAP_EXCEEDED"
+
+
+def test_a_manifest_from_readers_that_are_not_the_pinned_models_fails_the_verifier(
+    tmp_path,
+):
+    readers = [FakeReader(FAKE_GRANITE, []), FakeReader(NEMOTRON, [])]
+    run, _ = _run(readers, tmp_path=tmp_path)
+    problems = vc.verify_manifest(run.manifest, SMALL)
+    assert any("not a pinned reader model" in p for p in problems)
+
+
+def test_verdict_keys_that_are_not_exactly_the_manifest_readers_fail_the_verifier(
+    tmp_path,
+):
+    manifest = _good_manifest(tmp_path)
+    pair = manifest["sets"][0]["pairs"][0]
+    pair["verdicts"] = {GRANITE.name: "unsupported"}
+    problems = vc.verify_manifest(manifest, SMALL)
+    assert any("not read by exactly the manifest's readers" in p for p in problems)
+
+
+def test_an_incomplete_manifest_certifies_nothing(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    manifest["complete"] = False
+    manifest["stopped"] = "PILOT_B_CERT_ERROR_RATE_EXCEEDED"
+    problems = vc.verify_manifest(manifest, SMALL)
+    assert any(p.startswith("incomplete") for p in problems)
+
+
+class RaisingReader(FakeReader):
+    """Raises a refusal on the Nth call."""
+
+    def __init__(self, *a, fail_at, **kw):
+        super().__init__(*a, **kw)
+        self.fail_at = fail_at
+
+    def read_claim(self, prompt):
+        if len(self.prompts) == self.fail_at:
+            raise RdlabError("PILOT_B_CERT_WALL_CAP_EXCEEDED", "boom", "stop")
+        return super().read_claim(prompt)
+
+
+def test_every_exit_path_unloads_the_reader_it_loaded(tmp_path):
+    events: list = []
+    granite = RaisingReader(GRANITE, events, fail_at=5)
+    with pytest.raises(RdlabError):
+        _run([granite, FakeReader(NEMOTRON, events)], tmp_path=tmp_path)
+    assert events[-1] == ("unload", GRANITE.name)
+    assert ("read", NEMOTRON.name) not in events
+
+
+def test_a_stop_still_writes_the_manifest_the_queue_and_the_failing_calls(tmp_path):
+    def length_stop(prompt, index):
+        return "unsupported"
+
+    class LengthReader(FakeReader):
+        def read_claim(self, prompt):
+            result = super().read_claim(prompt)
+            if len(self.prompts) % 2 == 0:
+                return BlindReadResult(
+                    claim_id=prompt.claim_id,
+                    reader=self.model,
+                    verdict="ambiguous",
+                    done_reason="length",
+                    completion_tokens=3072,
+                    raw_text="x" * 500,
+                )
+            return result
+
+    manifest_path = tmp_path / "m.json"
+    queue_path = tmp_path / "q.jsonl"
+    with pytest.raises(RdlabError) as caught:
+        vc.run_certification(
+            sets=SMALL,
+            entities=_entities(),
+            readers=[
+                LengthReader(GRANITE, [], verdict_for=length_stop),
+                FakeReader(NEMOTRON, []),
+            ],
+            review_queue_path=queue_path,
+            options=vc.CertificationOptions(error_rate_min_calls=10),
+            date="2026-10-26",
+            manifest_path=manifest_path,
+        )
+    assert caught.value.code == "PILOT_B_CERT_ERROR_RATE_EXCEEDED"
+    doc = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert (
+        doc["complete"] is False
+        and doc["stopped"] == "PILOT_B_CERT_ERROR_RATE_EXCEEDED"
+    )
+    assert doc["not_reached"]
+    assert queue_path.exists()
+    failures = [
+        json.loads(line)
+        for line in (tmp_path / "q.failures.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert (
+        failures
+        and failures[0]["done_reason"] == "length"
+        and failures[0]["completion_tokens"] == 3072
+    )
+    assert len(failures[0]["raw_tail"]) <= 300 and failures[0]["reader"] == GRANITE.name
+    # the partial manifest is loadable but certifies nothing
+    problems = vc.verify_manifest(vc.load_manifest(manifest_path), SMALL)
+    assert any(p.startswith("incomplete") for p in problems)
+
+
+def test_a_failing_call_that_raises_is_recorded_with_its_error_code(tmp_path):
+    readers = [
+        FakeReader(
+            GRANITE, [], verdict_for=lambda p, i: "raise" if i == 0 else "unsupported"
+        ),
+        FakeReader(NEMOTRON, []),
+    ]
+    _run(readers, tmp_path=tmp_path)
+    failures = [
+        json.loads(line)
+        for line in (tmp_path / "queue.failures.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert failures[0]["error_code"] == "PILOT_B_NUM_CTX_EXCEEDS_MAX"
+
+
+def test_the_projection_is_made_even_when_one_readers_jobs_equal_the_calibration_calls(
+    tmp_path,
+):
+    clock = FakeClock()
+    one_set = SETS[:1]  # 20 jobs per reader, calibration_calls 20
+    readers = [
+        FakeReader(GRANITE, [], clock=clock, seconds=100.0),
+        FakeReader(NEMOTRON, [], clock=clock, seconds=100.0),
+    ]
+    with pytest.raises(RdlabError) as caught:
+        vc.run_certification(
+            sets=one_set,
+            entities=_entities(),
+            readers=readers,
+            review_queue_path=tmp_path / "q.jsonl",
+            options=vc.CertificationOptions(
+                wall_cap_s=2500.0, calibration_calls=20, clock=clock
+            ),
+            date="2026-10-26",
+        )
+    assert caught.value.code == "PILOT_B_CERT_WALL_CAP_EXCEEDED"
+    assert len(readers[1].prompts) == 0  # stopped before the second reader started

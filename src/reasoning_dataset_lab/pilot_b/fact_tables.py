@@ -218,7 +218,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         ),
         "attr_spec": (
             "cladding metal",
-            ("zirconium", "stainless", "niobium", "molybdenum", "tantalum"),
+            ("zircaloy", "ss316", "magnox", "inconel", "aluminum"),
         ),
         "open_attrs": (
             (
@@ -254,7 +254,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         ),
         "attr_spec": (
             "rotor coating",
-            ("fluoropolymer", "chromium", "nitride", "carbide", "nickel"),
+            ("ptfe", "epoxyphenolic", "aluminide", "diamondlike", "anodized"),
         ),
         "open_attrs": (
             (
@@ -326,7 +326,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         ),
         "attr_spec": (
             "tube alloy",
-            ("carbon", "austenitic", "duplex", "titanium", "cupronickel"),
+            ("t11", "t22", "t91", "tp304h", "inconel625"),
         ),
         "open_attrs": (
             (
@@ -375,7 +375,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             ),
             (
                 "condenser cooling",
-                ("aircooled", "watercooled", "groundcoupled", "heatrecovery", "thermalstorage"),
+                ("aircooled", "groundcoupled", "seawatercooled", "rivercooled", "towercooled"),
             ),
         ),
     },
@@ -585,11 +585,11 @@ EXCLUSIVE_BY_MEANING: dict[tuple[str, str], tuple[tuple[str, str, str], ...]] = 
     ("turbines", "lubricant grade"): (("mineral", "polyalphaolefin", "mineral oil is refined crude; a PAO is synthesised from ethylene, so a base oil is one or the other"),),
     ("turbines", "governor mode"): (("droop", "baseload", "droop trims load against speed error; baseload holds a fixed power setpoint and ignores speed"),),
     ("furnaces", "hearth drive"): (("walking", "pusher", "a walking hearth lifts and steps the load; a pusher shoves the whole row, and no furnace moves a load both ways"),),
-    ("reactors", "cladding metal"): (("stainless", "zirconium", "stainless steel is an iron alloy and zirconium is a separate element"),),
+    ("reactors", "cladding metal"): (("zircaloy", "ss316", "zircaloy is a zirconium alloy and 316 stainless an iron alloy: a cladding is one or the other"),),
     ("reactors", "loop state"): (("heatup", "hot", "heatup is the ramp before the loop reaches temperature; hot is at temperature"),),
     ("compressors", "shaft seal"): (("mechanical", "brush", "a mechanical seal has rubbing faces; a brush seal is bristles on the shaft"),),
     ("transformers", "core steel"): (("silicon", "permalloy", "silicon steel is iron with silicon; permalloy is nickel-iron"),),
-    ("boilers", "tube alloy"): (("carbon", "austenitic", "carbon steel is a ferrous plain steel; austenitic is a chromium-nickel stainless family"),),
+    ("boilers", "tube alloy"): (("t11", "t22", "T11 is 1.25Cr-0.5Mo and T22 is 2.25Cr-1Mo: two different low-alloy grades"),),
     ("chillers", "expansion valve"): (("thermostatic", "electronic", "a thermostatic valve is driven by a bulb; an electronic one by a controller"),),
     ("pumps", "bearing type"): (("sleeve", "hydrostatic", "a sleeve bearing carries load on a self-generated film; a hydrostatic one on an externally pumped film"),),
     ("pumps", "casing mount"): (("flange", "inline", "a flange-mounted casing bolts to a driver; an inline one hangs in the pipe run"),),

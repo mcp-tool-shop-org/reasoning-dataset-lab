@@ -1593,3 +1593,13 @@ def test_sealing_store_closed_shape_requires_table_secret_and_refuses_unknown_ke
     _write_store(keys_path, extra_store)
     assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_STORE_INVALID"
 
+
+
+def test_the_unsealed_report_records_the_render_failure_rate_and_its_ceiling(tmp_path, monkeypatch):
+    from reasoning_dataset_lab.pilot_b.unanimity import DEFAULT_MAX_RENDER_FAILURE_RATE
+
+    out, result = _stub_build(tmp_path, monkeypatch, "render-rate")
+    report = json.loads((out / "reports" / "pilot_b_report.json").read_text(encoding="utf-8"))
+    assert report["render_failure_rate"] == 0.0
+    assert report["max_render_failure_rate"] == DEFAULT_MAX_RENDER_FAILURE_RATE
+    assert result["report"]["render_failure_rate"] == report["render_failure_rate"]
