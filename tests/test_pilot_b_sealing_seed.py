@@ -1034,6 +1034,104 @@ def test_the_renderer_is_the_only_writer(tmp_path, monkeypatch):
     assert ws._render_json_doc({"é": 1}) == b'{\n  "\\u00e9": 1\n}\n'
 
 
+# ── per-build secret variation in generated tables ───────────────────────────────────────────────────
+
+
+def default_table_probe(part_dir: Path) -> dict[str, str]:
+    """Compare public items against unseeded default tables across a range of generation seeds."""
+    from reasoning_dataset_lab.pilot_b.rendering import format_atomic_sentence
+
+    claim_to_key: dict[str, str] = {}
+    for s in range(1, 201):
+        for cl in ("open", "closed"):
+            t = build_sample_fact_table(seed=s, closure=cl)
+            for t_seed in (s, s + 9, s + 10):
+                tr = build_contrast_triad(t, seed=t_seed)
+                for k, c in tr.claims.items():
+                    sent = format_atomic_sentence(c.entity, c.attribute, c.fact_type, c.claimed_value, c.unit, c.op)
+                    claim_to_key[sent] = k
+    predicted: dict[str, str] = {}
+    for row in _jsonl(part_dir / "items.jsonl"):
+        hit = claim_to_key.get(row["claim"])
+        if hit is not None:
+            predicted[row["id"]] = hit
+    return predicted
+
+
+def test_public_part_table_values_carry_per_build_secret_variation(tmp_path, monkeypatch):
+    out, _result = _stub_build(tmp_path, monkeypatch, "secret-tables")
+    part_dir = out / "part_pilot_b_sealed"
+    keys_path = out / "sealed_store" / "keys.sealed.jsonl"
+    accuracy = _accuracy(default_table_probe(part_dir), _true_keys(keys_path))
+    assert accuracy <= CHANCE + TOLERANCE, accuracy
+    store = _sealed_store(keys_path)
+    assert isinstance(store.get("table_secret"), int)
+    assert store["table_secret"].bit_length() >= 64
+
+
+def test_two_builds_with_the_same_seed_get_different_table_secrets_and_materials(tmp_path, monkeypatch):
+    out_a, _ = _stub_build(tmp_path, monkeypatch, "sec-a")
+    out_b, _ = _stub_build(tmp_path, monkeypatch, "sec-b")
+    store_a = _sealed_store(out_a / "sealed_store" / "keys.sealed.jsonl")
+    store_b = _sealed_store(out_b / "sealed_store" / "keys.sealed.jsonl")
+    assert store_a["table_secret"] != store_b["table_secret"]
+    mats_a = {r["material"] for r in _jsonl(out_a / "part_pilot_b_sealed" / "items.jsonl")}
+    mats_b = {r["material"] for r in _jsonl(out_b / "part_pilot_b_sealed" / "items.jsonl")}
+    assert mats_a != mats_b
+
+
+def test_explicit_table_secret_requires_test_only_and_is_never_releasable(tmp_path, monkeypatch):
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr("reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport", transport)
+    with pytest.raises(RdlabError) as caught:
+        run_pilot_b_build(
+            output_dir=tmp_path / "explicit-refused",
+            triad_count=5,
+            stub_mode=True,
+            seed=1,
+            table_secret=SECRET_SEED,
+            num_predict=256,
+        )
+    assert caught.value.code == "PILOT_B_WEAK_TABLE_SECRET"
+
+    out = tmp_path / "explicit-test-only"
+    res = run_pilot_b_build(
+        output_dir=out,
+        triad_count=5,
+        stub_mode=True,
+        seed=1,
+        table_secret=42,
+        allow_weak_test_seed=True,
+        num_predict=256,
+    )
+    assert res["part"]["frozen"] is False
+    assert res["part"]["test_only"] is True
+    store = _sealed_store(out / "sealed_store" / "keys.sealed.jsonl")
+    assert store["table_secret"] == 42
+    assert store["test_only"] is True
+
+
+def test_verify_refuses_table_secret_in_public_files_or_missing_from_store(tmp_path, monkeypatch):
+    out, _ = _stub_build(tmp_path, monkeypatch, "sec-verify")
+    part_dir = out / "part_pilot_b_sealed"
+    keys_path = out / "sealed_store" / "keys.sealed.jsonl"
+    store = _sealed_store(keys_path)
+    secret_val = store["table_secret"]
+
+    report = tmp_path / "extra_report.json"
+    report.write_text(json.dumps({"note": str(secret_val)}), encoding="utf-8")
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report]) == "PILOT_B_SEALED_SEED_IN_PUBLIC_FILE"
+
+    report_hex = tmp_path / "extra_report_hex.json"
+    report_hex.write_text(json.dumps({"note": hex(secret_val)[2:]}), encoding="utf-8")
+    assert _verify_code(part_dir, keys_path, extra_public_files=[report_hex]) == "PILOT_B_SEALED_SEED_IN_PUBLIC_FILE"
+
+    bad_store = dict(store)
+    bad_store.pop("table_secret", None)
+    _write_store(keys_path, bad_store)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_WEAK_TABLE_SECRET"
+
+
 # ── the render inputs are held to an honest build's shape; the report is cross-checked; the maps are closed ──
 
 
@@ -1484,3 +1582,14 @@ def test_a_writer_that_emits_irregular_whitespace_still_seals(tmp_path, monkeypa
         for text in (row["material"], row["claim"]):
             assert "  " not in text and "\r" not in text
         assert not row["material"].endswith("\n")
+
+
+def test_sealing_store_closed_shape_requires_table_secret_and_refuses_unknown_keys(tmp_path, monkeypatch):
+    part_dir, keys_path = _fresh(tmp_path, monkeypatch, "t4-store-shape")
+    store = _sealed_store(keys_path)
+    assert "table_secret" in store
+
+    extra_store = dict(store, extra_field="unexpected")
+    _write_store(keys_path, extra_store)
+    assert _verify_code(part_dir, keys_path) == "PILOT_B_SEALED_STORE_INVALID"
+

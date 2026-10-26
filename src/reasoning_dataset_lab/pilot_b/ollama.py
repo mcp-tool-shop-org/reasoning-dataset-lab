@@ -19,11 +19,12 @@ Publisher rulings (Card gs & Card gw, 2026-10-25):
 2. **Thinking is recorded as `thinking_words`** (word count of `message.thinking`), for information only;
    nothing gates on it.
 3. **Provisional defaults** (provisional until the full build's p95 of `eval_count`; see `docs/calibration-2026-10-25.md`):
-   - `render_material` (writer, `qwen3.6:35b`): `num_predict = 4,096`, `max_num_ctx = 8,192`.
+   - `render_material` (writer, `qwen3.6:35b`): `num_predict = 8,192`, `max_num_ctx = 9,216`.
      Source: `docs/calibration-2026-10-25.md` — render `eval_count`
-     `2,095 / 2,306 / 3,462` (`n = 3`, peak VRAM `25,229 MiB`); 10-triad stub p95 `3,515`, max `3,515` (`n = 9`), peak VRAM `25,157 MiB`.
-   - `word_claim` (writer, `qwen3.6:35b`): `num_predict = 4,255`, `max_num_ctx = 8,192`.
-     Source: `docs/calibration-2026-10-25.md` — word_claim calibration `eval_count` min `1,101`, median `1,300`, p95 `3,743`, max `3,743` (`n = 15`, `0` length stops, peak VRAM `25,221 MiB`), default set to `4,255` (`p95 3,743` + calibrate margin `512`); 10-triad stub p95 `3,083`, max `3,743` (`n = 27`).
+     `2,095 / 2,306 / 3,462` (`n = 3`, peak VRAM `25,229 MiB`); 10-triad stub p95 `3,515`, max `3,515` (`n = 9`), peak VRAM `25,157 MiB`;
+     Qwen VRAM check 2026-10-25: peak 25,445 MiB at num_ctx 9,216 (render) and 25,399 MiB at 7,168 (word); halt line 26,000 MiB.
+   - `word_claim` (writer, `qwen3.6:35b`): `num_predict = 6,144`, `max_num_ctx = 9,216`.
+     Source: `docs/calibration-2026-10-25.md` — word_claim calibration `eval_count` min `1,101`, median `1,300`, p95 `3,743`, max `3,743` (`n = 15`, `0` length stops, peak VRAM `25,221 MiB`), initial default `4,255` (`p95 3,743` + calibrate margin `512`); 10-triad stub p95 `3,083`, max `3,743` (`n = 27`); raised to `6,144` (Qwen VRAM check 2026-10-25: peak 25,445 MiB at num_ctx 9,216 (render) and 25,399 MiB at 7,168 (word); halt line 26,000 MiB).
    - `read_claim` on `reader_1` (`nemotron-3.5-lightning:30b`): `num_predict = 6,144`, `max_num_ctx = 7,168`.
      Source: `docs/calibration-2026-10-25.md` — Nemotron `eval_count`
      p95 `3,086` and max `3,434` (`n = 20`), plus one earlier call cut off at `4,096` (`n = 9`); 10-triad stub p95 `2,160`, max `2,186` (`n = 27`). Runs under
@@ -94,13 +95,13 @@ NUM_PREDICT_OPERATION_KEYS: tuple[NumPredictOperationKey, ...] = (
 NumPredictSource = Literal["cli", "config", "default"]
 OllamaHttpTransport = Callable[[str, str, dict[str, Any] | None], dict[str, Any]]
 
-# Recorded total num_predict defaults per operation (Card gw Part A — provisional until the full build's p95 of eval_count; see docs/calibration-2026-10-25.md):
-# - render_material (qwen3.6:35b): 4,096 (eval_count 2,095 / 2,306 / 3,462, n = 3; stub p95 3,515, max 3,515, n = 9; docs/calibration-2026-10-25.md)
-# - word_claim (qwen3.6:35b): 4,255 (eval_count min 1,101, median 1,300, p95 3,743, max 3,743, n = 15, p95 3,743 + calibrate margin 512; stub p95 3,083, max 3,743, n = 27; docs/calibration-2026-10-25.md)
+# Recorded total num_predict defaults per operation (Card gw Part A & Card he Part D — provisional until the full build's p95 of eval_count; see docs/calibration-2026-10-25.md):
+# - render_material (qwen3.6:35b): 8,192 (eval_count 2,095 / 2,306 / 3,462, n = 3; stub p95 3,515, max 3,515, n = 9; Qwen VRAM check 2026-10-25: peak 25,445 MiB at num_ctx 9,216 (render) and 25,399 MiB at 7,168 (word); halt line 26,000 MiB; docs/calibration-2026-10-25.md)
+# - word_claim (qwen3.6:35b): 6,144 (eval_count min 1,101, median 1,300, p95 3,743, max 3,743, n = 15; stub p95 3,083, max 3,743, n = 27; Qwen VRAM check 2026-10-25: peak 25,445 MiB at num_ctx 9,216 (render) and 25,399 MiB at 7,168 (word); halt line 26,000 MiB; docs/calibration-2026-10-25.md)
 # - read_claim_reader_1 (nemotron-3.5-lightning:30b): 6,144 (eval_count p95 3,086, max 3,434, n = 20; stub p95 2,160, max 2,186, n = 27; docs/calibration-2026-10-25.md)
 # - read_claim_reader_2 (granite4.2:8b): 2,560 (raised from 2,048 to 2,560 because stub max of 1,877 was 92% of 2,048; stub p95 1,251, max 1,877, n = 27; docs/calibration-2026-10-25.md)
-DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT: int = 4096
-DOCUMENTED_DEFAULT_WORD_NUM_PREDICT: int = 4255
+DOCUMENTED_DEFAULT_RENDER_NUM_PREDICT: int = 8192
+DOCUMENTED_DEFAULT_WORD_NUM_PREDICT: int = 6144
 DOCUMENTED_DEFAULT_READ_READER_1_NUM_PREDICT: int = 6144
 DOCUMENTED_DEFAULT_READ_READER_2_NUM_PREDICT: int = 2560
 DOCUMENTED_DEFAULT_READ_NUM_PREDICT: int = DOCUMENTED_DEFAULT_READ_READER_1_NUM_PREDICT
@@ -113,17 +114,17 @@ DOCUMENTED_DEFAULT_NUM_PREDICT_BY_OPERATION: dict[NumPredictOperationKey, int] =
     "read_claim_reader_2": DOCUMENTED_DEFAULT_READ_READER_2_NUM_PREDICT,
 }
 
-# Explicit num_ctx calculation and per-role ceilings (Card gp Part A & Card gs Ruling 3):
+# Explicit num_ctx calculation and per-role ceilings (Card gp Part A, Card gs Ruling 3 & Card he Part D):
 # options.num_ctx = round_up(prompt_tokens_estimate + num_predict + margin, 1024)
 PROMPT_TOKEN_ESTIMATE_RULE: str = "ceil(utf8_bytes / 3)"
 NUM_CTX_MARGIN_TOKENS: int = 256
 NUM_CTX_STEP_TOKENS: int = 1024
-DEFAULT_RENDER_MAX_NUM_CTX: int = 8192
+DEFAULT_RENDER_MAX_NUM_CTX: int = 9216
 DEFAULT_READER_1_MAX_NUM_CTX: int = 7168
 DEFAULT_READER_2_MAX_NUM_CTX: int = 8192
 
 # Per-role max_num_ctx defaults:
-# - writer (qwen3.6:35b, weights 22.6 GB): 8192 (measured peak 25,229 MiB at num_ctx 8,192; stub peak 25,157 MiB)
+# - writer (qwen3.6:35b, weights 22.6 GB): 9216 (Qwen VRAM check 2026-10-25: peak 25,445 MiB at num_ctx 9,216 (render) and 25,399 MiB at 7,168 (word); halt line 26,000 MiB)
 # - reader_1 (nemotron-3.5-lightning:30b, weights 25.4 GB): 7168 (Publisher's recorded exception to the 26 GB rule:
 #   runs alone on the card, halt at 30,000 MiB; measured peak 27,355 MiB at num_ctx 9,216; stub peak 27,185 MiB)
 # - reader_2 (granite4.2:8b, weights 5.3 GB): 8192 (measured peak 8,825 MiB at num_ctx 5,120; stub peak 8,242 MiB)
@@ -786,6 +787,24 @@ def verify_local_ollama_model_digest(
     return norm_expected
 
 
+KEY_BLIND_PHRASING_CUES: tuple[str, ...] = (
+    "Open with a definite article phrase naming the attribute and entity.",
+    "Begin with the entity name as the grammatical subject with an active verb (such as has, carries, or operates with).",
+    "Open with a fronted prepositional phrase ('For ..., the ...') before stating the attribute and value.",
+    "Use a possessive opening on the entity name or link the attribute and entity with 'for' rather than 'of'.",
+)
+
+
+def derive_key_blind_phrasing_cue(claim_id: str) -> str:
+    """Derive a deterministic phrasing cue solely from the opaque hash in `claim_id` (never from `claim.key`)."""
+    suffix = claim_id.rsplit("-c-", 1)[-1].strip()
+    try:
+        hash_int = int(suffix, 16)
+    except ValueError:
+        hash_int = int(hashlib.sha256(claim_id.encode("utf-8")).hexdigest()[:8], 16)
+    return KEY_BLIND_PHRASING_CUES[hash_int % len(KEY_BLIND_PHRASING_CUES)]
+
+
 def build_writer_render_messages(table: FactTable) -> list[dict[str, str]]:
     """Build the `/api/chat` messages payload for `render_material`."""
     table_json = json.dumps(
@@ -796,11 +815,12 @@ def build_writer_render_messages(table: FactTable) -> list[dict[str, str]]:
             "role": "system",
             "content": (
                 "You are the Pilot B writer. Render each fact in the formal FactTable into one numbered "
-                "sentence per line ('1. ...', '2. ...') in natural, grammatical English, preserving exact "
-                "entities, attributes, numbers, dates, intervals, polarity, and quantifier direction. "
-                "Introduce no extra numbers or proper nouns. Use 'The <attribute> of <entity> is <value>' "
-                "or '<Entity> has <n> <unit>', keep subject-verb agreement for plural attributes, never use "
-                "'equals' or 'is equal to' for an exact value, and do not repeat a unit-noun (never '36 holds' "
+                "sentence per line ('1. ...', '2. ...') in natural, grammatical English with varied, "
+                "natural phrasing across lines, preserving exact entities, attributes, numbers, dates, "
+                "intervals, polarity, and quantifier direction. Introduce no extra numbers or proper "
+                "nouns. Keep subject-verb agreement for plural attributes, never use 'equals' or "
+                "'is equal to' for an exact value, never write bare entity-attribute-verb without a "
+                "connecting article or preposition, and do not repeat a unit-noun (never '36 holds' "
                 "after 'cargo holds')."
             ),
         },
@@ -849,21 +869,27 @@ def build_writer_word_messages(claim: ProvedClaim) -> list[dict[str, str]]:
     claim_json = json.dumps(
         claim_spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
+    phrasing_cue = derive_key_blind_phrasing_cue(claim.claim_id)
     return [
         {
             "role": "system",
             "content": (
                 "You are the Pilot B writer. Word the formal claim into a single declarative sentence in "
-                "natural, grammatical English, preserving its exact entity, attribute, value, unit, "
-                "polarity, and quantifier direction. Introduce no unlisted numbers or proper nouns. Use "
-                "'The <attribute> of <entity> is <value>' or '<Entity> has <n> <unit>', keep subject-verb "
-                "agreement for plural attributes, never use 'equals' or 'is equal to' for an exact value, "
-                "and do not repeat a unit-noun (never '36 holds' after 'cargo holds')."
+                "natural, grammatical English with varied, natural phrasing, preserving its exact entity, "
+                "attribute, value, unit, polarity, and quantifier direction. Introduce no unlisted numbers "
+                "or proper nouns. Keep subject-verb agreement for plural attributes, never use 'equals' or "
+                "'is equal to' for an exact value, never write bare entity-attribute-verb without a "
+                "connecting article or preposition, and do not repeat a unit-noun (never '36 holds' "
+                "after 'cargo holds')."
             ),
         },
         {
             "role": "user",
-            "content": f"Word the following formal ProvedClaim into one sentence.\nCLAIM_JSON:\n{claim_json}",
+            "content": (
+                f"Word the following formal ProvedClaim into one sentence.\n"
+                f"PHRASING_CUE: {phrasing_cue}\n"
+                f"CLAIM_JSON:\n{claim_json}"
+            ),
         },
     ]
 

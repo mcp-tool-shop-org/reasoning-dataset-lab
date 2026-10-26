@@ -153,7 +153,10 @@ def _catalogue_values_for_attribute(table: FactTable, attribute: str) -> tuple[s
             for pair in open_entry:
                 if isinstance(pair, tuple) and len(pair) == 2:
                     if str(pair[0]).strip().lower() == attr_lower:
-                        values.append(str(pair[1]))
+                        if isinstance(pair[1], tuple):
+                            values.extend(str(v) for v in pair[1])
+                        else:
+                            values.append(str(pair[1]))
     return tuple(values)
 
 
@@ -466,6 +469,8 @@ def format_atomic_sentence(
     unit_suffix = f" {unit}" if unit else ""
     if op == "between" or isinstance(value, tuple):
         assert isinstance(value, tuple)
+        if unit and attribute.lower().endswith(unit.lower()):
+            return f"{entity} has between {value[0]} and {value[1]} {attribute}."
         return (
             f"The {attribute} of {entity} is between {value[0]} and {value[1]}{unit_suffix}."
         )
@@ -475,10 +480,8 @@ def format_atomic_sentence(
         return f"The {attribute} of {entity} is at most {value}{unit_suffix}."
     if op == "not":
         return f"The {attribute} of {entity} is not {value}{unit_suffix}."
-    if fact_type == "number":
-        if unit and attribute.lower().endswith(unit.lower()):
-            return f"{entity} has {value} {attribute}."
-        return f"{entity} has {value}{unit_suffix} of {attribute}."
+    if fact_type == "number" and unit and attribute.lower().endswith(unit.lower()):
+        return f"{entity} has {value} {attribute}."
     return f"The {attribute} of {entity} is {value}{unit_suffix}."
 
 
@@ -538,6 +541,10 @@ def _has_bare_entity_attribute_verb(words: list[str]) -> bool:
     if idx == 0:
         return False
     attr_start = idx
+    if words[attr_start - 1].endswith(("'s", "\u2019s", "s'")):
+        return False
+    if attr_start < len(words) and words[attr_start].lower() in {"the", "a", "an"}:
+        return False
     stop_verbs = {"is", "are", "equal", "equals", "has", "have"}
     while (
         idx < len(words)
@@ -570,7 +577,7 @@ def _find_plural_attr_before_of_is(words: list[str]) -> str | None:
     if lower_words[ent_end] != "is":
         return None
     head_noun = attr_words[-1].lower()
-    if head_noun.endswith("s") and not head_noun.endswith(("ss", "us", "is")):
+    if head_noun.endswith("s") and not head_noun.endswith(("ss", "us", "is", "as")):
         return " ".join(attr_words)
     return None
 

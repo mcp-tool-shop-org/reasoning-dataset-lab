@@ -15,7 +15,7 @@ from typing import NoReturn, Sequence
 
 from reasoning_dataset_lab import __version__
 from reasoning_dataset_lab.config import compute_config_fingerprint
-from reasoning_dataset_lab.errors import EXIT_CLEAN, RdlabError, usage_error
+from reasoning_dataset_lab.errors import EXIT_CLEAN, EXIT_REFUSED, RdlabError, usage_error
 from reasoning_dataset_lab.map import check_map_file
 from reasoning_dataset_lab.pilot_b.models_and_build import (
     DEFAULT_PILOT_B_MODEL_PINS,
@@ -28,6 +28,10 @@ from reasoning_dataset_lab.pilot_b.ollama import (
     DEFAULT_CALIBRATION_NUM_PREDICT,
     DEFAULT_CALIBRATION_TABLES,
     PILOT_B_OPERATIONS,
+)
+from reasoning_dataset_lab.pilot_b.variety import (
+    evaluate_build_variety,
+    format_variety_report_text,
 )
 
 
@@ -141,10 +145,17 @@ def _build_parser() -> _StructuredArgumentParser:
         help="Seed for shuffling sealed triad items. Default: a fresh secret seed per build, kept in the sealed store.",
     )
     pb_parser.add_argument(
+        "--table-secret",
+        dest="table_secret",
+        type=int,
+        default=None,
+        help="Test only: explicit secret for table variation (requires --allow-weak-seed).",
+    )
+    pb_parser.add_argument(
         "--allow-weak-seed",
         dest="allow_weak_test_seed",
         action="store_true",
-        help="Test only: accept a --shuffle-seed of fewer than 64 bits.",
+        help="Test only: accept a --shuffle-seed of fewer than 64 bits or an explicit --table-secret.",
     )
     pb_parser.add_argument(
         "--num-predict",
@@ -215,6 +226,37 @@ def _build_parser() -> _StructuredArgumentParser:
         type=str,
         default="http://127.0.0.1:11434",
         help="Loopback Ollama HTTP endpoint (default: http://127.0.0.1:11434).",
+    )
+
+    # rdlab variety <build-dir> [--json] [--audit-sample N --seed S]
+    var_parser = subparsers.add_parser(
+        "variety",
+        help="Compute the deterministic DESIGN.md §11c (Amendment 1) variety report for a Pilot B build.",
+    )
+    var_parser.add_argument(
+        "build_dir",
+        type=Path,
+        help="Pilot B build directory (containing part_pilot_b_sealed/items.jsonl) or direct path to items.jsonl.",
+    )
+    var_parser.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="Output the variety report as JSON.",
+    )
+    var_parser.add_argument(
+        "--audit-sample",
+        dest="audit_sample",
+        type=int,
+        default=None,
+        help="Sample N claims deterministically and write them with their computed frames to variety_audit_sample.json.",
+    )
+    var_parser.add_argument(
+        "--seed",
+        dest="seed",
+        type=int,
+        default=1,
+        help="Random seed for --audit-sample (default: 1).",
     )
 
     return parser
@@ -377,6 +419,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 stub_mode=stub_mode,
                 seed=args.seed,
                 shuffle_seed=args.shuffle_seed,
+                table_secret=args.table_secret,
                 allow_weak_test_seed=args.allow_weak_test_seed,
                 num_predict=args.num_predict,
                 num_predict_by_operation=op_num_predict,
@@ -386,6 +429,22 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(build_res, indent=2))
             return EXIT_CLEAN
+
+        if args.command == "variety":
+            var_rep = evaluate_build_variety(
+                args.build_dir,
+                audit_sample=args.audit_sample,
+                seed=args.seed,
+            )
+            if args.json_output:
+                print(json.dumps(var_rep, indent=2))
+            else:
+                print(format_variety_report_text(var_rep))
+            return (
+                EXIT_REFUSED
+                if var_rep.get("gate_status") == "fail" or var_rep.get("leak")
+                else EXIT_CLEAN
+            )
 
         raise usage_error(
             "CLI_USAGE_ERROR",

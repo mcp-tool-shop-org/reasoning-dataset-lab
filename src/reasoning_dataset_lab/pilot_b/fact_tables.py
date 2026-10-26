@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -74,54 +75,353 @@ MONTH_NAMES: tuple[str, ...] = (
 DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
     {
         "domain": "turbines",
-        "entities": ("Unit Alpha", "Unit Beta", "Unit Gamma"),
+        "entities": (
+            "Unit Alpha",
+            "Unit Beta",
+            "Unit Gamma",
+            "Unit Delta",
+            "Unit Epsilon",
+        ),
         "number_attr": ("rotor blades", "blades"),
+        "measure_attr": ("shaft speed", "rpm"),
         "date_attr": "inspection date",
         "interval_attr": ("output capacity", "megawatts"),
-        "state_attr": ("grid status", ("online", "standby", "offline")),
-        "attr_spec": ("casing alloy", ("titanium", "inconel", "steel")),
-        "open_attrs": (("cooling medium", "helium"), ("lubricant grade", "synthetic")),
+        "state_attr": (
+            "grid status",
+            ("online", "standby", "offline", "synchronizing", "isolated"),
+        ),
+        "attr_spec": (
+            "casing alloy",
+            ("titanium", "inconel", "steel", "nickel", "cobalt"),
+        ),
+        "open_attrs": (
+            ("cooling medium", ("helium", "nitrogen", "hydrogen", "water", "air")),
+            (
+                "lubricant grade",
+                ("synthetic", "mineral", "ester", "polyol", "silicone"),
+            ),
+            (
+                "governor mode",
+                ("droop", "isochronous", "manual", "remote", "cascade"),
+            ),
+        ),
     },
     {
         "domain": "relays",
-        "entities": ("Relay North", "Relay South", "Relay East"),
+        "entities": (
+            "Relay North",
+            "Relay South",
+            "Relay East",
+            "Relay West",
+            "Relay Central",
+        ),
         "number_attr": ("backup cells", "cells"),
+        "measure_attr": ("coil resistance", "ohms"),
         "date_attr": "calibration date",
         "interval_attr": ("switching latency", "milliseconds"),
-        "state_attr": ("breaker state", ("armed", "bypassed", "locked")),
-        "attr_spec": ("contact plating", ("silver", "gold", "palladium")),
-        "open_attrs": (("enclosure rating", "waterproof"), ("mount style", "rack")),
+        "state_attr": (
+            "breaker state",
+            ("armed", "bypassed", "locked", "tripped", "reset"),
+        ),
+        "attr_spec": (
+            "contact plating",
+            ("silver", "gold", "palladium", "rhodium", "platinum"),
+        ),
+        "open_attrs": (
+            (
+                "enclosure rating",
+                ("waterproof", "dustproof", "weatherproof", "sealed", "vented"),
+            ),
+            ("mount style", ("rack", "panel", "rail", "flush", "surface")),
+            ("coil voltage", ("low", "medium", "high", "nominal", "auxiliary")),
+        ),
     },
     {
         "domain": "vessels",
-        "entities": ("Tanker Orion", "Tanker Vega", "Tanker Sirius"),
+        "entities": (
+            "Tanker Orion",
+            "Tanker Vega",
+            "Tanker Sirius",
+            "Tanker Rigel",
+            "Tanker Altair",
+        ),
         "number_attr": ("cargo holds", "holds"),
+        "measure_attr": ("ballast capacity", "tonnes"),
         "date_attr": "departure date",
         "interval_attr": ("draft depth", "meters"),
-        "state_attr": ("berth status", ("docked", "anchored", "underway")),
-        "attr_spec": ("hull coating", ("epoxy", "silicone", "copper")),
-        "open_attrs": (("registry port", "Rotterdam"), ("ice class", "polar")),
+        "state_attr": (
+            "berth status",
+            ("docked", "anchored", "underway", "moored", "ballasted"),
+        ),
+        "attr_spec": (
+            "hull coating",
+            ("epoxy", "silicone", "copper", "zinc", "polyurethane"),
+        ),
+        "open_attrs": (
+            (
+                "registry port",
+                ("Rotterdam", "Hamburg", "Antwerp", "Bergen", "Gothenburg"),
+            ),
+            ("ice class", ("polar", "baltic", "arctic", "reinforced", "standard")),
+            (
+                "propulsion type",
+                ("diesel", "steam", "hybrid", "electric", "geared"),
+            ),
+        ),
     },
     {
         "domain": "furnaces",
-        "entities": ("Kiln One", "Kiln Two", "Kiln Three"),
+        "entities": (
+            "Kiln One",
+            "Kiln Two",
+            "Kiln Three",
+            "Kiln Four",
+            "Kiln Five",
+        ),
         "number_attr": ("heating zones", "zones"),
+        "measure_attr": ("exhaust flow", "liters"),
         "date_attr": "service date",
         "interval_attr": ("operating temperature", "degrees"),
-        "state_attr": ("damper state", ("sealed", "vented", "purging")),
-        "attr_spec": ("lining brick", ("alumina", "magnesia", "zirconia")),
-        "open_attrs": (("purge gas", "argon"), ("thermocouple type", "platinum")),
+        "state_attr": (
+            "damper state",
+            ("sealed", "vented", "purging", "throttled", "damped"),
+        ),
+        "attr_spec": (
+            "lining brick",
+            ("alumina", "magnesia", "zirconia", "silica", "chromite"),
+        ),
+        "open_attrs": (
+            ("purge gas", ("argon", "nitrogen", "helium", "forming", "inert")),
+            (
+                "thermocouple type",
+                ("platinum", "chromel", "alumel", "tungsten", "nickel"),
+            ),
+            ("hearth drive", ("roller", "walking", "pusher", "rotary", "car")),
+        ),
+    },
+    {
+        "domain": "reactors",
+        "entities": (
+            "Reactor Alpha",
+            "Reactor Beta",
+            "Reactor Gamma",
+            "Reactor Delta",
+            "Reactor Epsilon",
+        ),
+        "number_attr": ("control rods", "rods"),
+        "measure_attr": ("rod travel", "millimeters"),
+        "date_attr": "refuel date",
+        "interval_attr": ("core pressure", "kilopascals"),
+        "state_attr": (
+            "loop state",
+            ("circulating", "banked", "cooldown", "pressurized", "drained"),
+        ),
+        "attr_spec": (
+            "cladding metal",
+            ("zirconium", "stainless", "niobium", "molybdenum", "tantalum"),
+        ),
+        "open_attrs": (
+            (
+                "moderator type",
+                ("graphite", "heavywater", "lightwater", "beryllium", "paraffin"),
+            ),
+            (
+                "shielding material",
+                ("concrete", "lead", "boron", "cadmium", "tungsten"),
+            ),
+            (
+                "coolant loop",
+                ("primary", "secondary", "auxiliary", "emergency", "residual"),
+            ),
+        ),
+    },
+    {
+        "domain": "compressors",
+        "entities": (
+            "Compressor North",
+            "Compressor South",
+            "Compressor East",
+            "Compressor West",
+            "Compressor Central",
+        ),
+        "number_attr": ("piston cylinders", "cylinders"),
+        "measure_attr": ("stage ratio", "bars"),
+        "date_attr": "alignment date",
+        "interval_attr": ("suction flow", "liters"),
+        "state_attr": (
+            "intake state",
+            ("loaded", "unloaded", "idling", "choked", "bleeding"),
+        ),
+        "attr_spec": (
+            "rotor coating",
+            ("fluoropolymer", "ceramic", "carbide", "nitride", "anodized"),
+        ),
+        "open_attrs": (
+            (
+                "intercooler medium",
+                ("glycol", "brine", "water", "air", "oil"),
+            ),
+            (
+                "shaft seal",
+                ("labyrinth", "mechanical", "carbon", "lip", "drygas"),
+            ),
+            (
+                "unloader mechanism",
+                ("pneumatic", "hydraulic", "solenoid", "spring", "manual"),
+            ),
+        ),
+    },
+    {
+        "domain": "transformers",
+        "entities": (
+            "Bank One",
+            "Bank Two",
+            "Bank Three",
+            "Bank Four",
+            "Bank Five",
+        ),
+        "number_attr": ("cooling fins", "fins"),
+        "measure_attr": ("oil volume", "gallons"),
+        "date_attr": "testing date",
+        "interval_attr": ("winding load", "amperes"),
+        "state_attr": (
+            "tap state",
+            ("nominal", "boosted", "bucked", "grounded", "floating"),
+        ),
+        "attr_spec": (
+            "core steel",
+            ("silicon", "amorphous", "ferrite", "laminated", "oriented"),
+        ),
+        "open_attrs": (
+            (
+                "dielectric fluid",
+                ("mineral", "silicone", "ester", "paraffinic", "naphthenic"),
+            ),
+            (
+                "bushing material",
+                ("porcelain", "polymer", "epoxy", "resin", "ceramic"),
+            ),
+            (
+                "vector group",
+                ("delta", "star", "zigzag", "autotransformer", "grounded"),
+            ),
+        ),
+    },
+    {
+        "domain": "boilers",
+        "entities": (
+            "Boiler Alpha",
+            "Boiler Beta",
+            "Boiler Gamma",
+            "Boiler Delta",
+            "Boiler Epsilon",
+        ),
+        "number_attr": ("burner nozzles", "nozzles"),
+        "measure_attr": ("feed pressure", "kilopascals"),
+        "date_attr": "cleaning date",
+        "interval_attr": ("steam output", "tonnes"),
+        "state_attr": (
+            "flue state",
+            ("drafting", "banked", "dampered", "scavenging", "firing"),
+        ),
+        "attr_spec": (
+            "tube alloy",
+            ("carbon", "chromoly", "austenitic", "duplex", "ferritic"),
+        ),
+        "open_attrs": (
+            (
+                "feedwater treatment",
+                ("deaerated", "demineralized", "softened", "condensate", "alkaline"),
+            ),
+            (
+                "sootblower medium",
+                ("steam", "air", "water", "acoustic", "sonic"),
+            ),
+            (
+                "draft arrangement",
+                ("forced", "induced", "balanced", "natural", "pressurized"),
+            ),
+        ),
+    },
+    {
+        "domain": "chillers",
+        "entities": (
+            "Chiller North",
+            "Chiller South",
+            "Chiller East",
+            "Chiller West",
+            "Chiller Central",
+        ),
+        "number_attr": ("evaporator tubes", "tubes"),
+        "measure_attr": ("compressor load", "kilowatts"),
+        "date_attr": "charging date",
+        "interval_attr": ("coolant flow", "gallons"),
+        "state_attr": (
+            "circuit state",
+            ("chilling", "defrosting", "pumping", "subcooling", "idle"),
+        ),
+        "attr_spec": (
+            "brazing filler",
+            ("copper", "silver", "nickel", "bronze", "phosphorus"),
+        ),
+        "open_attrs": (
+            (
+                "refrigerant blend",
+                ("ammonia", "propane", "halocarbon", "hydrofluoro", "isobutane"),
+            ),
+            (
+                "expansion valve",
+                ("electronic", "thermostatic", "orifice", "float", "capillary"),
+            ),
+            (
+                "condenser cooling",
+                ("evaporative", "watercooled", "aircooled", "glycol", "hybrid"),
+            ),
+        ),
     },
     {
         "domain": "pumps",
-        "entities": ("Pump Delta", "Pump Epsilon", "Pump Zeta"),
+        "entities": (
+            "Pump Delta",
+            "Pump Epsilon",
+            "Pump Zeta",
+            "Pump Eta",
+            "Pump Theta",
+        ),
         "number_attr": ("impeller stages", "stages"),
+        "measure_attr": ("impeller diameter", "millimeters"),
         "date_attr": "overhaul date",
         "interval_attr": ("discharge pressure", "bars"),
-        "state_attr": ("valve state", ("open", "throttled", "closed")),
-        "attr_spec": ("seal material", ("viton", "teflon", "nitrile")),
-        "open_attrs": (("drive coupling", "magnetic"), ("bearing type", "ceramic")),
+        "state_attr": (
+            "valve state",
+            ("open", "throttled", "closed", "primed", "bypassed"),
+        ),
+        "attr_spec": (
+            "seal material",
+            ("viton", "teflon", "nitrile", "graphite", "kalrez"),
+        ),
+        "open_attrs": (
+            (
+                "drive coupling",
+                ("magnetic", "flexible", "rigid", "fluid", "splined"),
+            ),
+            (
+                "bearing type",
+                ("ceramic", "roller", "sleeve", "hydrostatic", "ball"),
+            ),
+            (
+                "casing mount",
+                ("foot", "centerline", "flange", "pedestal", "vertical"),
+            ),
+        ),
     },
+)
+
+SLOT_SCHEDULES: tuple[tuple[int, int, int, int, int], ...] = (
+    (0, 2, 1, 3, 2),
+    (1, 3, 2, 0, 2),
+    (2, 0, 2, 1, 3),
+    (3, 2, 0, 2, 1),
 )
 
 
@@ -334,21 +634,31 @@ def mutate_fact_value(fact: AtomicFact, step: int = 1) -> FactValue:
     if fact.fact_type == "state":
         assert isinstance(fact.value, str)
         cur = fact.value.strip().lower()
-        for spec in DOMAIN_CATALOGUE:
-            _, states = spec["state_attr"]  # type: ignore[misc]
-            if cur in [s.lower() for s in states]:
-                for cand in states:
-                    if cand.lower() != cur:
-                        return str(cand)
+        attr_low = fact.attribute.strip().lower()
+        for match_attr in (True, False):
+            for spec in DOMAIN_CATALOGUE:
+                s_attr, states = spec["state_attr"]  # type: ignore[misc]
+                if match_attr and str(s_attr).strip().lower() != attr_low:
+                    continue
+                if cur in [s.lower() for s in states]:
+                    cands = [str(cand) for cand in states if str(cand).lower() != cur]
+                    if cands:
+                        return cands[(offset - 1) % len(cands)]
         return f"non-{cur}"
     assert isinstance(fact.value, str)
     cur_attr = fact.value.strip().lower()
-    for spec in DOMAIN_CATALOGUE:
-        _, vals = spec["attr_spec"]  # type: ignore[misc]
-        if cur_attr in [v.lower() for v in vals]:
-            for cand in vals:
-                if cand.lower() != cur_attr:
-                    return str(cand)
+    attr_low = fact.attribute.strip().lower()
+    for match_attr in (True, False):
+        for spec in DOMAIN_CATALOGUE:
+            attr_entries: list[tuple[str, tuple[str, ...]]] = [spec["attr_spec"]]  # type: ignore[list-item]
+            attr_entries.extend(spec["open_attrs"])  # type: ignore[arg-type]
+            for a_name, vals in attr_entries:
+                if match_attr and str(a_name).strip().lower() != attr_low:
+                    continue
+                if cur_attr in [v.lower() for v in vals]:
+                    cands = [str(cand) for cand in vals if str(cand).lower() != cur_attr]
+                    if cands:
+                        return cands[(offset - 1) % len(cands)]
     return f"uncoated-{cur_attr}"
 
 
@@ -428,7 +738,14 @@ def _enumerate_finite_world_domain(
                 cat_vals.extend(str(s) for s in states)
             else:
                 _, attrs = spec["attr_spec"]  # type: ignore[misc]
-                cat_vals.extend(str(a) for a in attrs)
+                matched_oa = False
+                for oa_name, oa_vals in spec["open_attrs"]:  # type: ignore[misc]
+                    if str(oa_name).strip().lower() == fact.attribute.strip().lower():
+                        cat_vals.extend(str(v) for v in oa_vals)
+                        matched_oa = True
+                        break
+                if not matched_oa:
+                    cat_vals.extend(str(a) for a in attrs)
             break
     for extra in (fact.value, claim.claimed_value):
         if isinstance(extra, str):
@@ -750,11 +1067,8 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
             )
         stated_attrs = {
             (f.entity.lower(), f.attribute.lower()) for f in table.facts
-        } | {("", f.attribute.lower()) for f in table.facts}
-        if (claim.entity.lower(), claim.attribute.lower()) in stated_attrs or (
-            "",
-            claim.attribute.lower(),
-        ) in stated_attrs:
+        }
+        if (claim.entity.lower(), claim.attribute.lower()) in stated_attrs:
             raise refused_error(
                 "PILOT_B_CANNOT_TELL_DECIDABLE",
                 f"Cannot_tell claim '{claim.claim_id}' asks attribute '{claim.attribute}' which is already stated in table '{table.table_id}'.",
@@ -825,97 +1139,429 @@ def verify_triad_against_table(table: FactTable, triad: ProvedTriad) -> None:
             )
 
 
-def build_sample_fact_table(seed: int = 1, closure: ClosureTag | None = None) -> FactTable:
-    """Build a deterministic FactTable covering all 5 atomic fact types."""
-    spec_idx = (abs(seed) - 1) % len(DOMAIN_CATALOGUE)
-    spec = DOMAIN_CATALOGUE[spec_idx]
-    domain = str(spec["domain"])
-    entities: tuple[str, ...] = tuple(spec["entities"])  # type: ignore[arg-type]
-    resolved_closure: ClosureTag = (
-        closure if closure is not None else ("open" if abs(seed) % 2 == 1 else "closed")
-    )
+_OPEN_NON_INT_6: tuple[str, ...] = ("A1", "A2", "A3", "A0", "S0", "D0")
+_CLOSED_BASE_3: tuple[str, ...] = ("N0", "N1", "N2")
 
+_ENT_PERMS_6: tuple[tuple[int, int, int], ...] = (
+    (0, 1, 2),
+    (0, 2, 1),
+    (1, 0, 2),
+    (1, 2, 0),
+    (2, 0, 1),
+    (2, 1, 0),
+)
+
+_LINE_ORDER_12: tuple[tuple[int, int, int, int, int], ...] = (
+    (0, 1, 2, 3, 4),
+    (0, 2, 1, 3, 4),
+    (1, 0, 2, 3, 4),
+    (1, 2, 0, 3, 4),
+    (2, 0, 1, 3, 4),
+    (2, 1, 0, 3, 4),
+    (0, 1, 2, 4, 3),
+    (0, 2, 1, 4, 3),
+    (1, 0, 2, 4, 3),
+    (1, 2, 0, 4, 3),
+    (2, 0, 1, 4, 3),
+    (2, 1, 0, 4, 3),
+)
+
+_CLAIM_ORDER_PERMS: tuple[tuple[VerdictKey, VerdictKey, VerdictKey], ...] = (
+    ("supported", "unsupported", "cannot_tell"),
+    ("supported", "cannot_tell", "unsupported"),
+    ("unsupported", "supported", "cannot_tell"),
+    ("unsupported", "cannot_tell", "supported"),
+    ("cannot_tell", "supported", "unsupported"),
+    ("cannot_tell", "unsupported", "supported"),
+)
+
+
+def _secret_int(secret: int | None, seed: int, tag: str) -> int:
+    if secret is None:
+        return 0
+    digest = hashlib.sha256(f"rdlab-table-secret-v1:{secret}:{seed}:{tag}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def _domain_role_map(spec: dict[str, object]) -> dict[str, tuple[str, str | None, tuple[str, ...]]]:
     num_attr, num_unit = spec["number_attr"]  # type: ignore[misc]
+    meas_attr, meas_unit = spec["measure_attr"]  # type: ignore[misc]
     date_attr = str(spec["date_attr"])
     int_attr, int_unit = spec["interval_attr"]  # type: ignore[misc]
     state_attr, state_vals = spec["state_attr"]  # type: ignore[misc]
     attr_name, attr_vals = spec["attr_spec"]  # type: ignore[misc]
-    open_attrs: tuple[tuple[str, str], ...] = tuple(spec["open_attrs"])  # type: ignore[arg-type]
+    open_list = spec["open_attrs"]  # type: ignore[index]
+    oa0_name, oa0_vals = open_list[0]  # type: ignore[misc]
+    oa1_name, oa1_vals = open_list[1]  # type: ignore[misc]
+    oa2_name, oa2_vals = open_list[2]  # type: ignore[misc]
+    return {
+        "N0": (str(num_attr), str(num_unit), ()),
+        "N1": (str(meas_attr), str(meas_unit), ()),
+        "N2": (str(int_attr), str(int_unit), ()),
+        "D0": (date_attr, None, ()),
+        "S0": (str(state_attr), None, tuple(str(v) for v in state_vals)),
+        "A0": (str(attr_name), None, tuple(str(v) for v in attr_vals)),
+        "A1": (str(oa0_name), None, tuple(str(v) for v in oa0_vals)),
+        "A2": (str(oa1_name), None, tuple(str(v) for v in oa1_vals)),
+        "A3": (str(oa2_name), None, tuple(str(v) for v in oa2_vals)),
+    }
 
-    num_val = 12 + (abs(seed) * 3) % 25
-    day_val = ((abs(seed) * 5) % 26) + 2
-    month_val = MONTH_NAMES[abs(seed) % len(MONTH_NAMES)]
+
+def _parity_domain_rank(spec_idx: int, secret: int | None, tag: str) -> int:
+    """Return a 0..4 rank for spec_idx within its parity group [0,2,4,6,8] or [1,3,5,7,9]."""
+    base_rank = (spec_idx // 2) % 5
+    if secret is None:
+        return base_rank
+    parity = spec_idx % 2
+    order = list(range(5))
+    random.Random(f"rdlab-dom-parity-v2:{secret}:{parity}:{tag}").shuffle(order)
+    return order[base_rank]
+
+
+def _plan_visit_roles(
+    spec_idx: int,
+    visit: int,
+    closure: ClosureTag,
+    secret: int | None = None,
+) -> dict[str, object]:
+    """Return the deterministic role assignment for a (domain, visit, closure) table and triad."""
+    if visit == 0 and secret is None and spec_idx in (0, 2, 7, 9):
+        if spec_idx == 0:
+            stated = ("N1", "D0", "N2", "S0", "A0")
+            open_r = ("A1", "A2", "A3")
+            interval_role = "N2"
+            sup_r, unsup_r, ct_r, u_mode = "N1", "N2", ("A1" if closure == "open" else "N2"), "number"
+        elif spec_idx == 2:
+            stated = ("N0", "D0", "N2", "S0", "A0")
+            open_r = ("A1", "A2", "A3")
+            interval_role = "N2"
+            sup_r, unsup_r, ct_r, u_mode = "D0", "N0", ("A3" if closure == "open" else "N2"), "default"
+        elif spec_idx == 7:
+            stated = ("N0", "D0", "N1", "S0", "A1")
+            open_r = ("A0", "A2", "A3")
+            interval_role = "N1"
+            sup_r, unsup_r, ct_r, u_mode = "A1", "D0", ("A2" if closure == "open" else "N1"), "default"
+        else:
+            stated = ("N0", "D0", "N2", "S0", "A0")
+            open_r = ("A1", "A2", "A3")
+            interval_role = "N2"
+            sup_r, unsup_r, ct_r, u_mode = "D0", "A0", ("A1" if closure == "open" else "N2"), "default"
+        default_ents = (0, 0, 1, 2, 1)
+        line_specs = tuple(
+            (r_k, default_ents[idx_l], r_k == interval_role, 0)
+            for idx_l, r_k in enumerate(stated)
+        )
+        return {
+            "stated_roles": stated,
+            "open_roles": open_r,
+            "interval_role": interval_role,
+            "sup_role": sup_r,
+            "unsup_role": unsup_r,
+            "ct_role": ct_r,
+            "unsup_mode": u_mode,
+            "permute_lines": False,
+            "homogeneous": False,
+            "line_specs": line_specs,
+            "key_entities": (0, 1, 2),
+        }
+
+    m = (visit // 2) % 10
+    p_rank = _parity_domain_rank(spec_idx, secret, closure)
+    table_seq = visit * len(DOMAIN_CATALOGUE) + ((spec_idx - visit) % len(DOMAIN_CATALOGUE))
+    b50 = table_seq // 50
+    pos_50 = table_seq % 50
+    head_counts_6 = (3, 2, 2, 1, 1, 1)
+    tail_counts_6 = (8, 6, 6, 7, 7, 6)
+    if secret is None:
+        ent_perm_idx = (table_seq + visit) % len(_ENT_PERMS_6)
+        ord_perm_6 = (table_seq + (spec_idx // 2)) % len(_ENT_PERMS_6)
+    else:
+        shift = (0, 0, 0, 1)[b50 % 4]
+        active_counts = head_counts_6 if pos_50 < 10 else tail_counts_6
+        active_pos = pos_50 if pos_50 < 10 else (pos_50 - 10)
+        part_tag = "head10" if pos_50 < 10 else "tail40"
+
+        ent_sigma_idx = _secret_int(secret, 0, "ent_sigma") % 6
+        ent_base_sigma = _ENT_PERMS_6[ent_sigma_idx]
+        ent_sigma = tuple(ent_base_sigma[(i + shift) % 3] for i in range(3))
+        ent_block: list[int] = []
+        for p_i, cnt in enumerate(active_counts):
+            raw_p = _ENT_PERMS_6[p_i]
+            relabeled_p = (ent_sigma[raw_p[0]], ent_sigma[raw_p[1]], ent_sigma[raw_p[2]])
+            ent_block.extend([_ENT_PERMS_6.index(relabeled_p)] * cnt)
+        random.Random(f"rdlab-ent-b50-v1:{secret}:{b50}:{part_tag}").shuffle(ent_block)
+        ent_perm_idx = ent_block[active_pos]
+
+        ord_sigma_idx = _secret_int(secret, 0, "ord_sigma") % 6
+        ord_base_sigma = _ENT_PERMS_6[ord_sigma_idx]
+        ord_sigma = tuple(ord_base_sigma[(i + shift) % 3] for i in range(3))
+        ord_block: list[int] = []
+        for p_i, cnt in enumerate(active_counts):
+            raw_p = _ENT_PERMS_6[p_i]
+            relabeled_p = (ord_sigma[raw_p[0]], ord_sigma[raw_p[1]], ord_sigma[raw_p[2]])
+            ord_block.extend([_ENT_PERMS_6.index(relabeled_p)] * cnt)
+        random.Random(f"rdlab-ord-b50-v1:{secret}:{b50}:{part_tag}").shuffle(ord_block)
+        ord_perm_6 = ord_block[active_pos]
+
+    e_sup, e_unsup, e_ct = _ENT_PERMS_6[ent_perm_idx]
+
+    fill_perm_idx = (
+        (table_seq + spec_idx + 1) % len(_ENT_PERMS_6)
+        if secret is None
+        else (_secret_int(secret, table_seq, f"fill_ent:{closure}") % len(_ENT_PERMS_6))
+    )
+    e_fill0, e_fill1, _ = _ENT_PERMS_6[fill_perm_idx]
+
+    if closure == "open":
+        m_n2 = (0, 1, 1, 2, 3)[p_rank]
+        if m < 7:
+            if m == m_n2:
+                target_role = "N2"
+            else:
+                non_int_step = m if m < m_n2 else (m - 1)
+                target_role = _OPEN_NON_INT_6[(p_rank + non_int_step) % 6]
+        else:
+            target_role = ("A1", "A2", "A3")[(p_rank + (m - 7)) % 3]
+
+        sup_r = target_role
+        unsup_r = target_role
+        ct_r = target_role
+        u_mode = "interval" if target_role == "N2" else "default"
+
+        other_open = [r for r in ("A1", "A2", "A3", "A0") if r != target_role][:2]
+        oa_idx = ((visit // 2) + (spec_idx // 2)) % 3
+        open_list = list(other_open)
+        open_list.insert(oa_idx, target_role)
+        open_r = (open_list[0], open_list[1], open_list[2])
+
+        if target_role == "N2":
+            interval_role = "N2"
+            raw_specs: list[tuple[str, int, bool, int]] = [
+                ("N2", e_sup, True, 0),
+                ("N2", e_unsup, True, 1),
+                ("N0", e_ct, False, 0),
+                ("D0", e_fill0, False, 0),
+                ("A0", e_fill1, False, 0),
+            ]
+        else:
+            interval_role = "N2"
+            filler_3 = "A0" if target_role not in ("A0", "A1", "A2", "A3") else "D0"
+            raw_specs = [
+                (target_role, e_sup, False, 0),
+                (target_role, e_unsup, False, 1),
+                ("N2", e_ct, True, 0),
+                ("N0" if (visit + spec_idx) % 2 == 0 else "N1", e_fill0, False, 0),
+                (filler_3, e_fill1, False, 0),
+            ]
+    else:
+        target_role = _CLOSED_BASE_3[(p_rank + m) % 3]
+        sup_r = target_role
+        unsup_r = target_role
+        ct_r = target_role
+        u_mode = "default"
+        interval_role = target_role
+        open_r = ("A1", "A2", "A3")
+        raw_specs = [
+            (target_role, e_sup, False, 0),
+            (target_role, e_unsup, False, 1),
+            (target_role, e_ct, True, 0),
+            ("D0", e_fill0, False, 0),
+            ("S0" if (visit + spec_idx) % 2 == 0 else "A0", e_fill1, False, 0),
+        ]
+
+    tail_bit = (
+        (table_seq % 2)
+        if secret is None
+        else (_secret_int(secret, table_seq, f"line_tail:{closure}") % 2)
+    )
+    ord_idx = ord_perm_6 + 6 * tail_bit
+    perm_5 = _LINE_ORDER_12[ord_idx]
+    ordered_specs = tuple(raw_specs[i] for i in perm_5)
+    stated_roles = tuple(s[0] for s in ordered_specs)
+
+    return {
+        "stated_roles": stated_roles,
+        "open_roles": open_r,
+        "interval_role": interval_role,
+        "sup_role": sup_r,
+        "unsup_role": unsup_r,
+        "ct_role": ct_r,
+        "unsup_mode": u_mode,
+        "permute_lines": True,
+        "homogeneous": True,
+        "line_specs": ordered_specs,
+        "key_entities": (e_sup, e_unsup, e_ct),
+    }
+
+
+def build_sample_fact_table(
+    seed: int = 1,
+    closure: ClosureTag | None = None,
+    *,
+    secret: int | None = None,
+) -> FactTable:
+    """Build a deterministic FactTable covering typed atomic facts."""
+    n_dom = len(DOMAIN_CATALOGUE)
+    s = max(0, abs(seed) - 1)
+    visit = s // n_dom
+    spec_idx = (s + visit) % n_dom
+    spec = DOMAIN_CATALOGUE[spec_idx]
+    domain = str(spec["domain"])
+    all_entities: tuple[str, ...] = tuple(spec["entities"])  # type: ignore[arg-type]
+    ent_list = list(all_entities)
+    if secret is not None:
+        random.Random(f"rdlab-dom-ents-v2:{secret}:{spec_idx}").shuffle(ent_list)
+    cands: tuple[str, ...] = tuple(
+        ent_list[(visit + i) % len(ent_list)] for i in range(3)
+    )
+    resolved_closure: ClosureTag = (
+        closure
+        if closure is not None
+        else ("open" if s % 2 == 0 else "closed")
+    )
+
+    plan = _plan_visit_roles(spec_idx, visit, resolved_closure, secret=secret)
+    e_sup_p, e_unsup_p, e_ct_p = plan["key_entities"]  # type: ignore[misc]
+    ent_slots = ["", "", ""]
+    ent_slots[e_sup_p] = cands[0]
+    ent_slots[e_unsup_p] = cands[1]
+    ent_slots[e_ct_p] = cands[2]
+    entities: tuple[str, ...] = (ent_slots[0], ent_slots[1], ent_slots[2])
+    role_map = _domain_role_map(spec)
+
+    if secret is None:
+        if visit == 0:
+            num_val = 12 + ((abs(seed) * 3 + visit * 7) % 47)
+            num_val_alt = 15 + ((abs(seed) * 7 + visit * 5 + spec_idx * 3) % 53)
+            int_lo = 40 + ((abs(seed) * 4 + visit * 6) % 36)
+        else:
+            num_val = 65 + ((abs(seed) * 11 + visit * 29) % 401)
+            num_val_alt = 70 + ((abs(seed) * 17 + visit * 31 + spec_idx * 7) % 409)
+            int_lo = 80 + ((abs(seed) * 13 + visit * 23) % 360)
+        day_val = ((abs(seed) * 5 + visit * 3) % 26) + 2
+        month_val = MONTH_NAMES[(abs(seed) + visit * 2) % len(MONTH_NAMES)]
+        int_hi = int_lo + 10 + ((abs(seed) + visit) % 6) * 2
+    else:
+        num_val = 12 + (_secret_int(secret, seed, "num") % 969)
+        num_val_alt = 12 + (_secret_int(secret, seed, "num_alt") % 969)
+        day_val = (_secret_int(secret, seed, "day") % 26) + 2
+        month_val = MONTH_NAMES[_secret_int(secret, seed, "month") % len(MONTH_NAMES)]
+        int_lo = 40 + (_secret_int(secret, seed, "int_lo") % 881)
+        int_hi = int_lo + 10 + (_secret_int(secret, seed, "int_span") % 41) * 2
+
+    if resolved_closure == "closed" and bool(plan.get("homogeneous")):
+        m_step = (visit // 2) % 3
+        if m_step == 1:
+            num_val = int_lo
+        elif m_step == 2:
+            num_val = int_hi
+    if num_val_alt == num_val:
+        num_val_alt = num_val + 3
+
     date_val = f"{day_val} {month_val}"
-    int_lo = 40 + (abs(seed) * 4) % 30
-    int_hi = int_lo + 10 + (abs(seed) % 6) * 2
-    state_val = str(state_vals[abs(seed) % len(state_vals)])
-    attr_val = str(attr_vals[(abs(seed) + 1) % len(attr_vals)])
+    date_val_alt = f"{((day_val + 3) % 26) + 2} {month_val}"
+
+    def _role_value(r_key: str, *, for_open: bool = False, val_slot: int = 0) -> FactValue:
+        _, _, vals = role_map[r_key]
+        sec_off = _secret_int(secret, seed, f"val:{r_key}")
+        if r_key in ("N0", "N1", "N2"):
+            if for_open and r_key == "N2":
+                return f"{int_lo} and {int_hi + 12}"
+            return num_val if val_slot == 0 else num_val_alt
+        if r_key == "D0":
+            if for_open:
+                o_day = ((day_val + 7 + visit) % 26) + 2
+                o_mon = MONTH_NAMES[(abs(seed) + visit * 3 + 4 + (sec_off % 12)) % len(MONTH_NAMES)]
+                return f"{o_day} {o_mon}"
+            return date_val if val_slot == 0 else date_val_alt
+        b5 = (0, 1, 3, 2)[(visit // 5) % 4]
+        if r_key == "S0":
+            base_idx = abs(seed) + visit + b5 + sec_off + val_slot
+            if for_open:
+                base_idx += 2 + (visit // 2)
+            return str(vals[base_idx % len(vals)])
+        if r_key == "A0":
+            base_idx = abs(seed) + 1 + visit + b5 + sec_off + val_slot
+            if for_open:
+                base_idx += 2 + (visit // 2)
+            return str(vals[base_idx % len(vals)])
+        b5_open = (0, 1, 2, 2)[(visit // 5) % 4]
+        base_idx = visit + spec_idx + b5_open + sec_off + val_slot
+        if for_open:
+            base_idx += 2 + (visit // 2)
+        return str(vals[base_idx % len(vals)])
+
+    open_roles: tuple[str, ...] = plan["open_roles"]  # type: ignore[assignment]
+    line_specs: tuple[tuple[str, int, bool, int], ...] = plan["line_specs"]  # type: ignore[assignment]
+
+    open_attrs = tuple(
+        (role_map[r_key][0], str(_role_value(r_key, for_open=True)))
+        for r_key in open_roles
+    )
 
     table_id = f"T10-D-{domain}-{seed:03d}"
-    facts = (
-        AtomicFact(
-            fact_id=f"{table_id}-f1",
-            line=1,
-            entity=entities[0],
-            attribute=str(num_attr),
-            fact_type="number",
-            value=num_val,
-            unit=str(num_unit),
-            op="=",
-        ),
-        AtomicFact(
-            fact_id=f"{table_id}-f2",
-            line=2,
-            entity=entities[0],
-            attribute=date_attr,
-            fact_type="date",
-            value=date_val,
-            unit=None,
-            op="=",
-        ),
-        AtomicFact(
-            fact_id=f"{table_id}-f3",
-            line=3,
-            entity=entities[1],
-            attribute=str(int_attr),
-            fact_type="interval",
-            value=(int_lo, int_hi),
-            unit=str(int_unit),
-            op="between",
-        ),
-        AtomicFact(
-            fact_id=f"{table_id}-f4",
-            line=4,
-            entity=entities[2],
-            attribute=str(state_attr),
-            fact_type="state",
-            value=state_val,
-            unit=None,
-            op="=",
-        ),
-        AtomicFact(
-            fact_id=f"{table_id}-f5",
-            line=5,
-            entity=entities[1],
-            attribute=str(attr_name),
-            fact_type="attribute",
-            value=attr_val,
-            unit=None,
-            op="=",
-        ),
-    )
+    facts_list: list[AtomicFact] = []
+    for idx_line, (r_key, ent_idx, is_interval, val_slot) in enumerate(line_specs):
+        line_no = idx_line + 1
+        attr_str, unit_str, _ = role_map[r_key]
+        ent_str = entities[ent_idx % len(entities)]
+
+        if is_interval:
+            f_type: FactType = "interval"
+            f_val: FactValue = (int_lo, int_hi) if val_slot == 0 else (int_lo, int_hi + 6)
+            f_unit: str | None = unit_str
+            f_op: FactOp = "between"
+        elif r_key in ("N0", "N1", "N2"):
+            f_type = "number"
+            f_val = _role_value(r_key, val_slot=val_slot)
+            f_unit = unit_str
+            f_op = "="
+        elif r_key == "D0":
+            f_type = "date"
+            f_val = _role_value(r_key, val_slot=val_slot)
+            f_unit = None
+            f_op = "="
+        elif r_key == "S0":
+            f_type = "state"
+            f_val = _role_value(r_key, val_slot=val_slot)
+            f_unit = None
+            f_op = "="
+        else:
+            f_type = "attribute"
+            f_val = _role_value(r_key, val_slot=val_slot)
+            f_unit = None
+            f_op = "="
+
+        facts_list.append(
+            AtomicFact(
+                fact_id=f"{table_id}-f{line_no}",
+                line=line_no,
+                entity=ent_str,
+                attribute=attr_str,
+                fact_type=f_type,
+                value=f_val,
+                unit=f_unit,
+                op=f_op,
+            )
+        )
+
     return FactTable(
         table_id=table_id,
         domain=domain,
         closure=resolved_closure,
         entities=entities,
-        facts=facts,
+        facts=tuple(facts_list),
         open_attributes=open_attrs,
     )
 
 
-def generate_fact_tables(n: int, seed: int = 1) -> list[FactTable]:
-    """Generate n deterministic FactTables alternating open and closed world closure."""
+def generate_fact_tables(
+    n: int,
+    seed: int = 1,
+    *,
+    secret: int | None = None,
+) -> list[FactTable]:
+    """Generate n deterministic FactTables alternating open and closed world closure without fixed seed parity."""
     if n < 0:
         raise refused_error(
             "PILOT_B_INVALID_TABLE_COUNT",
@@ -926,11 +1572,16 @@ def generate_fact_tables(n: int, seed: int = 1) -> list[FactTable]:
     for idx in range(n):
         item_seed = seed + idx
         closure: ClosureTag = "open" if idx % 2 == 0 else "closed"
-        tables.append(build_sample_fact_table(seed=item_seed, closure=closure))
+        tables.append(build_sample_fact_table(seed=item_seed, closure=closure, secret=secret))
     return tables
 
 
-def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
+def build_contrast_triad(
+    table: FactTable,
+    seed: int = 1,
+    *,
+    secret: int | None = None,
+) -> ProvedTriad:
     """Build a ProvedTriad (supported, unsupported, cannot_tell) from a FactTable with proved keys."""
     if not table.facts:
         raise refused_error(
@@ -942,27 +1593,14 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     provable_sup_facts = [
         f
         for f in table.facts
-        if f.fact_type != "interval"
-        and (f.fact_type, f.op, f.fact_type, f.op) in PROVEN_OP_PAIRS_BY_KEY["supported"]
+        if (f.fact_type, f.op, f.fact_type, f.op) in PROVEN_OP_PAIRS_BY_KEY["supported"]
     ]
-    if not provable_sup_facts:
-        provable_sup_facts = [
-            f
-            for f in table.facts
-            if (f.fact_type, f.op, f.fact_type, f.op) in PROVEN_OP_PAIRS_BY_KEY["supported"]
-        ]
     provable_unsup_facts = [
         f
         for f in table.facts
-        if f.fact_type != "interval"
-        and (f.fact_type, f.op, f.fact_type, "=") in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
+        if (f.fact_type, f.op, f.fact_type, "=") in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
+        or (f.fact_type, f.op, "number", "=") in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
     ]
-    if not provable_unsup_facts:
-        provable_unsup_facts = [
-            f
-            for f in table.facts
-            if (f.fact_type, f.op, f.fact_type, "=") in PROVEN_OP_PAIRS_BY_KEY["unsupported"]
-        ]
 
     if not provable_sup_facts or not provable_unsup_facts:
         raise refused_error(
@@ -971,8 +1609,97 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
             "Include facts with proven ops ('=' for number/date/state/attribute or 'between' for interval).",
         )
 
-    sup_fact = provable_sup_facts[abs(seed) % len(provable_sup_facts)]
-    unsup_fact = provable_unsup_facts[(abs(seed) + 1) % len(provable_unsup_facts)]
+    n_dom = len(DOMAIN_CATALOGUE)
+    s = max(0, abs(seed) - 1)
+    visit = s // n_dom
+    d_idx = next(
+        (
+            i
+            for i, sp in enumerate(DOMAIN_CATALOGUE)
+            if str(sp["domain"]) == table.domain
+        ),
+        (s + visit) % n_dom,
+    )
+    spec = DOMAIN_CATALOGUE[d_idx]
+    role_map = _domain_role_map(spec)
+    plan = _plan_visit_roles(d_idx, visit, table.closure, secret=secret)
+    sup_attr_target = role_map[str(plan["sup_role"])][0]
+    unsup_attr_target = role_map[str(plan["unsup_role"])][0]
+    ct_role_target = str(plan["ct_role"])
+    ct_attr_target = role_map[ct_role_target][0]
+    unsup_mode = str(plan["unsup_mode"])
+    e_sup_idx, e_unsup_idx, e_ct_idx = plan["key_entities"]  # type: ignore[misc]
+
+    fact_by_attr = {f.attribute: f for f in table.facts}
+    unsup_claim_fact_type: FactType | None = None
+    unsup_mutated_override: FactValue | None = None
+
+    mut_step = (
+        (visit + 1)
+        if secret is None
+        else (1 + (_secret_int(secret, seed, "mut") % 80))
+    )
+
+    sup_ent_cand = (
+        next(
+            (
+                f
+                for f in provable_sup_facts
+                if f.entity == table.entities[e_sup_idx % len(table.entities)]
+                and f.attribute == sup_attr_target
+                and (table.closure == "open" or f.fact_type != "interval")
+            ),
+            None,
+        )
+        if len(table.entities) >= 2
+        else None
+    )
+    unsup_ent_cand = (
+        next(
+            (
+                f
+                for f in provable_unsup_facts
+                if f.entity == table.entities[e_unsup_idx % len(table.entities)]
+                and f.attribute == unsup_attr_target
+                and (table.closure == "open" or f.fact_type != "interval")
+            ),
+            None,
+        )
+        if len(table.entities) >= 2
+        else None
+    )
+
+    if sup_ent_cand is not None and unsup_ent_cand is not None:
+        sup_fact = sup_ent_cand
+        unsup_fact = unsup_ent_cand
+        if unsup_fact.fact_type == "interval" and isinstance(unsup_fact.value, tuple):
+            unsup_claim_fact_type = "interval"
+    elif (
+        len(table.facts) == 5
+        and sup_attr_target in fact_by_attr
+        and unsup_attr_target in fact_by_attr
+        and fact_by_attr[sup_attr_target] in provable_sup_facts
+        and fact_by_attr[unsup_attr_target] in provable_unsup_facts
+    ):
+        sup_fact = fact_by_attr[sup_attr_target]
+        unsup_fact = fact_by_attr[unsup_attr_target]
+        if unsup_fact.fact_type == "interval" and isinstance(unsup_fact.value, tuple):
+            if unsup_mode == "number":
+                unsup_claim_fact_type = "number"
+                unsup_mutated_override = int(unsup_fact.value[1]) + mut_step + 5
+            else:
+                unsup_claim_fact_type = "interval"
+    else:
+        non_int_sup = [f for f in provable_sup_facts if f.fact_type != "interval"] or provable_sup_facts
+        non_int_unsup = [f for f in provable_unsup_facts if f.fact_type != "interval"] or provable_unsup_facts
+        if len(non_int_sup) == 4 and len(non_int_unsup) == 4:
+            sup_fact = non_int_sup[SLOT_SCHEDULES[d_idx % 4][visit % 5]]
+            unsup_fact = non_int_unsup[SLOT_SCHEDULES[(d_idx + 2) % 4][visit % 5]]
+        else:
+            sup_fact = non_int_sup[abs(seed) % len(non_int_sup)]
+            unsup_fact = non_int_unsup[(abs(seed) + 1) % len(non_int_unsup)]
+            if unsup_fact.fact_type == "interval" and isinstance(unsup_fact.value, tuple):
+                unsup_claim_fact_type = "interval"
 
     # Opaque claim ids (Card gc Fix 2): short hash of table_id, seed, and post-shuffle position (never -sup, -unsup, -ct)
     slot_keys: list[VerdictKey] = ["supported", "unsupported", "cannot_tell"]
@@ -1028,7 +1755,16 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     )
 
     # 2. Unsupported claim: applies a provably disjoint typed mutation to unsup_fact with op='='
-    mutated_val = mutate_fact_value(unsup_fact, step=abs(seed) + 1)
+    mutated_val = (
+        unsup_mutated_override
+        if unsup_mutated_override is not None
+        else mutate_fact_value(unsup_fact, step=mut_step)
+    )
+    resolved_unsup_type: FactType = (
+        unsup_claim_fact_type
+        if unsup_claim_fact_type is not None
+        else unsup_fact.fact_type
+    )
     unsup_claim_draft = ProvedClaim(
         claim_id=opaque_claim_ids["unsupported"],
         table_id=table.table_id,
@@ -1036,7 +1772,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         fact_id=unsup_fact.fact_id,
         entity=unsup_fact.entity,
         attribute=unsup_fact.attribute,
-        fact_type=unsup_fact.fact_type,
+        fact_type=resolved_unsup_type,
         claimed_value=mutated_val,
         unit=unsup_fact.unit,
         op="=",
@@ -1050,7 +1786,7 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         fact_id=unsup_fact.fact_id,
         entity=unsup_fact.entity,
         attribute=unsup_fact.attribute,
-        fact_type=unsup_fact.fact_type,
+        fact_type=resolved_unsup_type,
         claimed_value=mutated_val,
         unit=unsup_fact.unit,
         op="=",
@@ -1058,22 +1794,57 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
     )
 
     # 3. Cannot_tell claim:
-    # - On closed tables (or odd seeds on open tables when interval exists): refine interval to interior value
-    # - On open tables when open_attributes exist and seed selects open attribute: ask open attribute of named entity
+    # - On closed tables (or when no open_attributes exist): refine interval to a visit-varying interior value
+    # - On open tables when open_attributes exist: ask open attribute of named entity
     interval_facts = [
         f
         for f in table.facts
         if f.fact_type == "interval"
         and (f.fact_type, f.op, "number", "=") in PROVEN_OP_PAIRS_BY_KEY["cannot_tell"]
     ]
-    use_open_attr = (
-        table.closure == "open"
-        and bool(table.open_attributes)
-        and (abs(seed) % 2 == 1 or not interval_facts)
-    )
+    use_open_attr = table.closure == "open" and bool(table.open_attributes)
     if use_open_attr:
-        open_attr, open_val = table.open_attributes[abs(seed) % len(table.open_attributes)]
-        target_entity = table.entities[abs(seed) % len(table.entities)]
+        oa_names = [a for a, _ in table.open_attributes]
+        if ct_attr_target in oa_names:
+            oa_idx = oa_names.index(ct_attr_target)
+        elif d_idx == 0 and visit == 0:
+            oa_idx = 0
+        else:
+            oa_idx = (visit + (visit // 3) + d_idx) % len(table.open_attributes)
+        open_attr, open_val = table.open_attributes[oa_idx]
+        target_entity = (
+            table.entities[e_ct_idx % len(table.entities)]
+            if len(table.entities) > 2
+            else table.entities[(visit + d_idx + 1) % len(table.entities)]
+        )
+        stated_for_open = {
+            f.entity.lower() for f in table.facts if f.attribute.lower() == open_attr.lower()
+        }
+        if target_entity.lower() in stated_for_open:
+            target_entity = next(
+                (ent for ent in table.entities if ent.lower() not in stated_for_open),
+                target_entity,
+            )
+
+        int_attr_name, int_unit_str = spec["interval_attr"]  # type: ignore[misc]
+        m_btw_open = re.match(r"^(\d+)\s+and\s+(\d+)$", str(open_val).strip())
+        if open_attr == str(int_attr_name) and m_btw_open is not None:
+            ct_fact_type: FactType = "interval"
+            ct_val: FactValue = (int(m_btw_open.group(1)), int(m_btw_open.group(2)))
+            ct_unit: str | None = str(int_unit_str)
+        elif open_attr == str(spec["date_attr"]):
+            ct_fact_type = "date"
+            ct_val = open_val
+            ct_unit = None
+        elif open_attr == str(spec["state_attr"][0]):  # type: ignore[index]
+            ct_fact_type = "state"
+            ct_val = open_val
+            ct_unit = None
+        else:
+            ct_fact_type = "attribute"
+            ct_val = open_val
+            ct_unit = None
+
         ct_claim_draft = ProvedClaim(
             claim_id=opaque_claim_ids["cannot_tell"],
             table_id=table.table_id,
@@ -1081,9 +1852,9 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
             fact_id=None,
             entity=target_entity,
             attribute=open_attr,
-            fact_type="attribute",
-            claimed_value=open_val,
-            unit=None,
+            fact_type=ct_fact_type,
+            claimed_value=ct_val,
+            unit=ct_unit,
             op="=",
             proof=sup_dummy_proof,
         )
@@ -1094,10 +1865,18 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
                 f"Closed FactTable '{table.table_id}' has no interval fact to refine for cannot_tell.",
                 "Include an interval fact in closed tables or use closure='open' with open_attributes.",
             )
-        int_fact = interval_facts[abs(seed) % len(interval_facts)]
+        int_fact = next(
+            (f for f in interval_facts if f.attribute == ct_attr_target),
+            interval_facts[abs(seed) % len(interval_facts)],
+        )
         assert isinstance(int_fact.value, tuple)
         lo, hi = int(int_fact.value[0]), int(int_fact.value[1])
-        interior_val = (lo + hi) // 2
+        if hi - lo >= 2:
+            span = hi - lo - 1
+            sec_int_off = _secret_int(secret, seed, "interior")
+            interior_val = lo + 1 + ((visit * 3 + d_idx + abs(seed) + sec_int_off) % span)
+        else:
+            interior_val = (lo + hi) // 2
         ct_claim_draft = ProvedClaim(
             claim_id=opaque_claim_ids["cannot_tell"],
             table_id=table.table_id,
@@ -1127,14 +1906,19 @@ def build_contrast_triad(table: FactTable, seed: int = 1) -> ProvedTriad:
         proof=ct_proof,
     )
 
+    claims_by_key: dict[VerdictKey, ProvedClaim] = {
+        "supported": sup_claim,
+        "unsupported": unsup_claim,
+        "cannot_tell": ct_claim,
+    }
+    perm_idx = (s + (visit // 2) + (_secret_int(secret, seed, "perm") % 6)) % 6
+    perm = _CLAIM_ORDER_PERMS[perm_idx]
+    ordered_claims: dict[VerdictKey, ProvedClaim] = {k: claims_by_key[k] for k in perm}
+
     triad = ProvedTriad(
         triad_id=f"{table.table_id}-triad",
         table=table,
-        claims={
-            "supported": sup_claim,
-            "unsupported": unsup_claim,
-            "cannot_tell": ct_claim,
-        },
+        claims=ordered_claims,
         seed=seed,
     )
     verify_triad_against_table(table, triad)

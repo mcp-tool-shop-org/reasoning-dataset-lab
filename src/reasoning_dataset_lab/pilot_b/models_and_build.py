@@ -892,6 +892,7 @@ def run_pilot_b_build(
     stub_mode: bool = False,
     seed: int = 1,
     shuffle_seed: int | None = None,
+    table_secret: int | None = None,
     allow_weak_test_seed: bool = False,
     num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
     num_predict_source: NumPredictSource | None = None,
@@ -1004,9 +1005,26 @@ def run_pilot_b_build(
     )
     validate_chain_families(writer_id, r1_id, r2_id)
 
-    tables = generate_fact_tables(n=triad_count, seed=seed)
+    if table_secret is None:
+        active_table_secret = secrets.randbits(128) | (1 << 127)
+    else:
+        if not isinstance(table_secret, int) or isinstance(table_secret, bool) or table_secret <= 0:
+            raise refused_error(
+                "PILOT_B_WEAK_TABLE_SECRET",
+                "A given table secret must be a positive integer.",
+                "Omit the table secret for a fresh one per build, or pass a positive integer with allow_weak_test_seed=True for tests.",
+            )
+        if not allow_weak_test_seed:
+            raise refused_error(
+                "PILOT_B_WEAK_TABLE_SECRET",
+                "An explicit table secret is for test-only builds and requires allow_weak_test_seed=True.",
+                "Omit table_secret for a fresh per-build secret, or pass allow_weak_test_seed=True for test-only builds.",
+            )
+        active_table_secret = table_secret
+
+    tables = generate_fact_tables(n=triad_count, seed=seed, secret=active_table_secret)
     triads = [
-        build_contrast_triad(table, seed=seed + idx)
+        build_contrast_triad(table, seed=seed + idx, secret=active_table_secret)
         for idx, table in enumerate(tables)
     ]
 
@@ -1066,6 +1084,8 @@ def run_pilot_b_build(
         map_sha256=map_sha,
         wave_result=wave_res,
         shuffle_seed=shuffle_seed,
+        table_secret=table_secret,
+        _generated_table_secret=active_table_secret if table_secret is None else None,
         licence_registry=licence_registry_meta,
         allow_weak_test_seed=allow_weak_test_seed,
     )

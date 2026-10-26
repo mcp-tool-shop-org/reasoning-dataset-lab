@@ -12,6 +12,7 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 - sealing: the render inputs are validated at write and at verify, the report is cross-checked against them, and the schema maps are closed.
 - sealing: more render-input rules (unique digests, constant call fields, catalogue domains, regular whitespace) and a coverage check on the report.
 - sealing: the writer's whitespace is regularised before anything reads it, each call's model must be the recorded one, and the report's coverage numbers must add up.
+- generator: per-build secret variation in table values and homogeneous triad surface features; variety: surface-feature balance and triad-level assignment baseline checks.
 
 ## [0.3.0] - 2026-10-25
 
