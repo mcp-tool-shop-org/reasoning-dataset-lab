@@ -87,22 +87,22 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "inspection date",
         "interval_attr": ("output capacity", "megawatts"),
         "state_attr": (
-            "grid status",
-            ("online", "standby", "offline", "synchronizing", "islanded"),
+            "turbine mode",
+            ("standby", "barring", "starting", "online", "coasting"),
         ),
         "attr_spec": (
             "casing alloy",
-            ("titanium", "inconel", "steel", "hastelloy", "cobalt"),
+            ("steel", "castiron", "titanium", "inconel", "aluminum"),
         ),
         "open_attrs": (
             ("cooling medium", ("helium", "nitrogen", "hydrogen", "water", "oil")),
             (
                 "lubricant grade",
-                ("polyalphaolefin", "mineral", "ester", "polyglycol", "silicone"),
+                ("mineral", "polyalphaolefin", "ester", "polyglycol", "silicone"),
             ),
             (
                 "governor mode",
-                ("droop", "isochronous", "manual", "remote", "cascade"),
+                ("droop", "isochronous", "baseload", "pressure", "loadlimit"),
             ),
         ),
     },
@@ -120,8 +120,8 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "calibration date",
         "interval_attr": ("switching latency", "milliseconds"),
         "state_attr": (
-            "breaker state",
-            ("armed", "bypassed", "racked", "tripped", "reset"),
+            "breaker position",
+            ("service", "test", "disconnected", "withdrawn", "earthed"),
         ),
         "attr_spec": (
             "contact plating",
@@ -130,10 +130,10 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "open_attrs": (
             (
                 "enclosure rating",
-                ("waterproof", "dustproof", "explosionproof", "shockproof", "vented"),
+                ("nema1", "nema3r", "nema4", "nema7", "nema12"),
             ),
-            ("mount style", ("rack", "panel", "rail", "flush", "surface")),
-            ("coil voltage", ("low", "medium", "high", "dual", "auxiliary")),
+            ("mount style", ("rack", "rail", "wall", "pole", "floor")),
+            ("coil voltage", ("dc24", "dc48", "dc125", "ac120", "ac240")),
         ),
     },
     {
@@ -151,21 +151,21 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "interval_attr": ("draft depth", "meters"),
         "state_attr": (
             "berth status",
-            ("docked", "anchored", "underway", "adrift", "ballasted"),
+            ("underway", "anchored", "alongside", "adrift", "aground"),
         ),
         "attr_spec": (
             "hull coating",
-            ("epoxy", "silicone", "copper", "zinc", "polyurethane"),
+            ("epoxy", "polyurethane", "silicone", "acrylic", "vinyl"),
         ),
         "open_attrs": (
             (
                 "registry port",
                 ("Rotterdam", "Hamburg", "Antwerp", "Bergen", "Gothenburg"),
             ),
-            ("ice class", ("polar", "baltic", "light", "reinforced", "standard")),
+            ("ice class", ("iasuper", "ia", "ib", "ic", "noclass")),
             (
                 "propulsion type",
-                ("diesel", "steam", "sail", "electric", "nuclear"),
+                ("diesel", "steam", "sail", "gasturbine", "battery"),
             ),
         ),
     },
@@ -183,18 +183,18 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "service date",
         "interval_attr": ("operating temperature", "degrees"),
         "state_attr": (
-            "damper state",
-            ("sealed", "vented", "purging", "throttled", "modulating"),
+            "damper position",
+            ("closed", "quarter", "half", "threequarter", "open"),
         ),
         "attr_spec": (
             "lining brick",
             ("alumina", "magnesia", "zirconia", "silica", "chromite"),
         ),
         "open_attrs": (
-            ("purge gas", ("argon", "nitrogen", "helium", "forming", "steam")),
+            ("purge gas", ("argon", "nitrogen", "helium", "hydrogen", "carbondioxide")),
             (
                 "thermocouple type",
-                ("platinum", "chromel", "alumel", "tungsten", "constantan"),
+                ("typej", "typek", "typen", "typer", "types"),
             ),
             ("hearth drive", ("roller", "walking", "pusher", "rotary", "car")),
         ),
@@ -214,7 +214,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "interval_attr": ("core pressure", "kilopascals"),
         "state_attr": (
             "loop state",
-            ("circulating", "banked", "cooldown", "pressurized", "drained"),
+            ("drained", "cold", "heatup", "hot", "cooldown"),
         ),
         "attr_spec": (
             "cladding metal",
@@ -227,11 +227,11 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             ),
             (
                 "shielding material",
-                ("concrete", "lead", "boron", "cadmium", "tungsten"),
+                ("concrete", "lead", "tungsten", "steel", "water"),
             ),
             (
-                "coolant loop",
-                ("primary", "secondary", "auxiliary", "emergency", "residual"),
+                "coolant type",
+                ("water", "sodium", "helium", "carbondioxide", "leadbismuth"),
             ),
         ),
     },
@@ -249,25 +249,25 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "alignment date",
         "interval_attr": ("suction flow", "liters"),
         "state_attr": (
-            "intake state",
-            ("loaded", "unloaded", "surging", "choked", "bleeding"),
+            "compressor mode",
+            ("stopped", "starting", "loaded", "unloaded", "stopping"),
         ),
         "attr_spec": (
             "rotor coating",
-            ("fluoropolymer", "chromium", "carbide", "nitride", "anodized"),
+            ("fluoropolymer", "chromium", "nitride", "carbide", "nickel"),
         ),
         "open_attrs": (
             (
                 "intercooler medium",
-                ("glycol", "refrigerant", "water", "air", "oil"),
+                ("air", "water", "oil", "ammonia", "propane"),
             ),
             (
                 "shaft seal",
-                ("labyrinth", "mechanical", "packed", "lip", "drygas"),
+                ("labyrinth", "mechanical", "packed", "lip", "brush"),
             ),
             (
                 "unloader mechanism",
-                ("pneumatic", "hydraulic", "solenoid", "spring", "manual"),
+                ("pneumatic", "hydraulic", "electric", "spring", "manual"),
             ),
         ),
     },
@@ -285,8 +285,8 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "testing date",
         "interval_attr": ("winding load", "amperes"),
         "state_attr": (
-            "tap state",
-            ("nominal", "boosted", "bucked", "grounded", "floating"),
+            "tap position",
+            ("lowest", "low", "nominal", "high", "highest"),
         ),
         "attr_spec": (
             "core steel",
@@ -303,7 +303,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             ),
             (
                 "vector group",
-                ("delta", "star", "zigzag", "autotransformer", "scott"),
+                ("dyn11", "yyn0", "ynd1", "dd0", "yzn11"),
             ),
         ),
     },
@@ -321,25 +321,25 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "cleaning date",
         "interval_attr": ("steam output", "tonnes"),
         "state_attr": (
-            "flue state",
-            ("drafting", "banked", "dampered", "scavenging", "firing"),
+            "burner state",
+            ("prepurge", "lightoff", "firing", "postpurge", "lockout"),
         ),
         "attr_spec": (
             "tube alloy",
-            ("carbon", "titanium", "austenitic", "duplex", "ferritic"),
+            ("carbon", "austenitic", "duplex", "titanium", "cupronickel"),
         ),
         "open_attrs": (
             (
-                "feedwater treatment",
-                ("deaerated", "demineralized", "chelated", "condensate", "alkaline"),
+                "feedwater program",
+                ("phosphate", "chelant", "volatile", "oxygenated", "caustic"),
             ),
             (
                 "sootblower medium",
-                ("steam", "air", "water", "acoustic", "nitrogen"),
+                ("steam", "air", "water", "nitrogen", "shot"),
             ),
             (
-                "draft arrangement",
-                ("forced", "induced", "recirculated", "natural", "ejector"),
+                "firing method",
+                ("pulverized", "stoker", "fluidized", "cyclone", "gasfired"),
             ),
         ),
     },
@@ -358,24 +358,24 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "interval_attr": ("coolant flow", "gallons"),
         "state_attr": (
             "circuit state",
-            ("chilling", "defrosting", "pumping", "subcooling", "idle"),
+            ("idle", "startup", "chilling", "defrosting", "pumpdown"),
         ),
         "attr_spec": (
             "brazing filler",
-            ("copper", "silver", "nickel", "aluminum", "phosphorus"),
+            ("silver", "nickel", "aluminum", "copper", "gold"),
         ),
         "open_attrs": (
             (
-                "refrigerant blend",
-                ("ammonia", "propane", "carbondioxide", "hydrofluoro", "isobutane"),
+                "refrigerant",
+                ("ammonia", "propane", "carbondioxide", "isobutane", "r134a"),
             ),
             (
                 "expansion valve",
-                ("electronic", "thermostatic", "orifice", "float", "capillary"),
+                ("electronic", "thermostatic", "automatic", "float", "fixed"),
             ),
             (
                 "condenser cooling",
-                ("evaporative", "watercooled", "aircooled", "glycol", "geothermal"),
+                ("aircooled", "watercooled", "groundcoupled", "heatrecovery", "thermalstorage"),
             ),
         ),
     },
@@ -393,8 +393,8 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "overhaul date",
         "interval_attr": ("discharge pressure", "bars"),
         "state_attr": (
-            "valve state",
-            ("open", "chattering", "closed", "primed", "bypassed"),
+            "pump state",
+            ("stopped", "priming", "starting", "running", "coasting"),
         ),
         "attr_spec": (
             "seal material",
@@ -403,7 +403,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "open_attrs": (
             (
                 "drive coupling",
-                ("magnetic", "flexible", "rigid", "fluid", "splined"),
+                ("rigid", "flexible", "fluid", "magnetic", "clutch"),
             ),
             (
                 "bearing type",
@@ -411,50 +411,124 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             ),
             (
                 "casing mount",
-                ("foot", "centerline", "flange", "pedestal", "vertical"),
+                ("foot", "centerline", "flange", "pedestal", "inline"),
             ),
         ),
     },
 )
 
 
-# Value-set exclusivity. A claim is "unsupported" when its value is disjoint from the true one, so every value set
-# must hold values that exclude each other. A set that holds a class beside its members (``synthetic`` beside
-# ``ester``) makes an "unsupported" claim true: the key is wrong, and a reader who says so is right (Pilot B stub 10d).
+# Value-set exclusivity. An "unsupported" claim is made by swapping the true value for another value from the same
+# set, which is a contradiction only if the two values cannot both be true. So each set sits on ONE axis and every
+# value on it excludes every other. A set that mixes axes (a material beside a type, a mode beside a sub-process)
+# or holds a class beside its member makes an "unsupported" claim true, and the key wrong (Pilot B stub 10d, the
+# lubricant grade "synthetic" against "polyol"). The 10 state sets hold top-level operating modes only.
 #
-# This table is the explicit record of the subsumptions and overlaps found in the 2026-10-26 audit of all 50 value
-# sets. Each row: (domain, attribute) -> ((general, (members it covers), reason), ...). A set may never again hold a
-# row's ``general`` together with any of its members; ``tests/test_pilot_b_value_sets.py`` enforces that on every set.
-# ``general`` is the term that covers the others, or, for a synonym or an overlap, the one value that was dropped.
+# The three tables below are the first gate. The second gate, run on local readers, is the pairwise-contradiction
+# admission check in ``pilot_b/value_admission.py``.
+
+# The one axis each set sits on. Every set has one, and the test fails on a set without a line here.
+VALUE_SET_AXES: dict[tuple[str, str], str] = {
+    ("turbines", "turbine mode"): "the unit's top-level operating mode",
+    ("turbines", "casing alloy"): "the alloy family of the casing",
+    ("turbines", "cooling medium"): "the single fluid that cools the unit",
+    ("turbines", "lubricant grade"): "the base-oil chemistry",
+    ("turbines", "governor mode"): "the control law the governor runs",
+    ("relays", "breaker position"): "the breaker's position in its cubicle",
+    ("relays", "contact plating"): "the plating metal",
+    ("relays", "enclosure rating"): "the NEMA type designation, one per enclosure",
+    ("relays", "mount style"): "where the relay is mounted",
+    ("relays", "coil voltage"): "the rated coil supply, one designation",
+    ("vessels", "berth status"): "the vessel's top-level situation",
+    ("vessels", "hull coating"): "the binder chemistry of the coating",
+    ("vessels", "registry port"): "the port of registry",
+    ("vessels", "ice class"): "the Finnish-Swedish ice class, one per vessel",
+    ("vessels", "propulsion type"): "the prime mover",
+    ("furnaces", "damper position"): "how far the damper is open",
+    ("furnaces", "lining brick"): "the refractory oxide",
+    ("furnaces", "purge gas"): "a single pure gas",
+    ("furnaces", "thermocouple type"): "the standard thermocouple designation",
+    ("furnaces", "hearth drive"): "the mechanism that moves the load",
+    ("reactors", "loop state"): "the loop's phase of the heat cycle",
+    ("reactors", "cladding metal"): "the cladding metal",
+    ("reactors", "moderator type"): "the moderating material",
+    ("reactors", "shielding material"): "the bulk gamma shielding material",
+    ("reactors", "coolant type"): "the reactor coolant",
+    ("compressors", "compressor mode"): "the compressor's top-level operating mode",
+    ("compressors", "rotor coating"): "the coating chemistry",
+    ("compressors", "intercooler medium"): "the single fluid in the intercooler",
+    ("compressors", "shaft seal"): "the sealing principle",
+    ("compressors", "unloader mechanism"): "the energy that actuates the unloader",
+    ("transformers", "tap position"): "the tap-changer position",
+    ("transformers", "core steel"): "the core material family",
+    ("transformers", "dielectric fluid"): "the insulating-fluid chemistry",
+    ("transformers", "bushing material"): "the bushing insulation material",
+    ("transformers", "vector group"): "the IEC vector group designation",
+    ("boilers", "burner state"): "the burner-management sequence step",
+    ("boilers", "tube alloy"): "the tube alloy family",
+    ("boilers", "feedwater program"): "the one chemistry program in use",
+    ("boilers", "sootblower medium"): "the cleaning medium",
+    ("boilers", "firing method"): "how the fuel is fired",
+    ("chillers", "circuit state"): "the circuit's top-level operating mode",
+    ("chillers", "brazing filler"): "the filler's base metal",
+    ("chillers", "refrigerant"): "the single refrigerant fluid",
+    ("chillers", "expansion valve"): "how the valve's metering is controlled",
+    ("chillers", "condenser cooling"): "the heat sink the condenser rejects to",
+    ("pumps", "pump state"): "the pump's top-level operating mode",
+    ("pumps", "seal material"): "the seal material",
+    ("pumps", "drive coupling"): "the class of coupling",
+    ("pumps", "bearing type"): "the bearing principle",
+    ("pumps", "casing mount"): "how the casing is supported",
+}
+
+# Known subsumptions and overlaps found in the audit of the catalogue. Each row:
+# (domain, attribute) -> ((general, (members it covers), reason), ...). A set may never hold a row's ``general``
+# together with any of its members; ``tests/test_pilot_b_value_sets.py`` enforces that on every set. The rows also
+# stand guard over values the audit removed, so a replacement or a new value cannot bring the same overlap back.
 VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str], ...]] = {
-    ("turbines", "casing alloy"): (("nickel", ("inconel",), "inconel is a nickel-based alloy"),),
     ("turbines", "lubricant grade"): (
-        ("synthetic", ("ester", "polyol", "silicone"), "esters, polyols and silicones are synthetic lubricants"),
+        ("synthetic", ("ester", "polyalphaolefin", "polyglycol", "silicone"), "esters, PAOs, polyglycols and silicones are synthetic lubricants"),
         ("ester", ("polyol",), "polyol esters are esters"),
     ),
-    ("turbines", "grid status"): (
-        ("isolated", ("offline",), "an isolated unit is disconnected, so offline is true of it"),
-        ("faulted", ("offline",), "a faulted unit is off the grid, so offline is true of it"),
-    ),
+    ("turbines", "casing alloy"): (("nickel", ("inconel",), "inconel is a nickel-based alloy"),),
+    ("turbines", "cooling medium"): (("air", ("nitrogen",), "air is about four-fifths nitrogen"),),
+    ("turbines", "turbine mode"): (("offline", ("standby", "coasting"), "a unit in standby or coasting down is not producing, so offline is true of it"),),
     ("relays", "enclosure rating"): (
-        ("weatherproof", ("waterproof",), "weatherproof covers water"),
+        ("waterproof", ("sealed",), "a rating is one NEMA type; a property such as waterproof holds for several"),
         ("sealed", ("waterproof", "dustproof"), "a sealed enclosure keeps out water and dust"),
     ),
-    ("relays", "breaker state"): (("locked", ("tripped",), "a lockout is entered from a trip, so a locked breaker is also tripped"),),
-    ("relays", "coil voltage"): (("nominal", ("low", "medium", "high"), "nominal is any band's rated value"),),
-    ("vessels", "berth status"): (("moored", ("docked",), "a docked vessel is moored"),),
-    ("vessels", "ice class"): (("arctic", ("polar",), "arctic and polar are the same class"),),
     ("vessels", "propulsion type"): (
-        ("hybrid", ("diesel", "electric"), "hybrid is diesel plus electric"),
-        ("geared", ("diesel", "steam", "electric"), "geared is a drive train that any prime mover can have"),
+        ("nuclear", ("steam",), "a nuclear ship drives steam turbines"),
+        ("hybrid", ("diesel", "battery"), "hybrid is diesel plus battery"),
+        ("electric", ("diesel", "battery"), "electric propulsion covers diesel-electric and battery-electric"),
+        ("geared", ("diesel", "steam", "gasturbine"), "geared is a drive train that any prime mover can have"),
     ),
-    ("furnaces", "damper state"): (("damped", ("throttled",), "damped and throttled are the same state"),),
-    ("furnaces", "purge gas"): (("inert", ("argon", "nitrogen", "helium"), "argon, nitrogen and helium are inert gases"),),
-    ("furnaces", "thermocouple type"): (("nickel", ("chromel", "alumel"), "chromel and alumel are nickel alloys"),),
-    ("compressors", "intercooler medium"): (("brine", ("water",), "brine is water with salt in it"),),
-    ("compressors", "intake state"): (("idling", ("unloaded",), "an idling compressor is unloaded"),),
-    ("compressors", "rotor coating"): (("ceramic", ("carbide", "nitride"), "carbides and nitrides are ceramics"),),
-    ("compressors", "shaft seal"): (("carbon", ("mechanical",), "a carbon ring is the face of a mechanical seal"),),
+    ("vessels", "berth status"): (
+        ("ballasted", ("underway", "anchored", "alongside"), "ballasted is a load condition that holds in any berth state"),
+        ("moored", ("alongside",), "alongside is moored to a quay"),
+    ),
+    ("vessels", "ice class"): (
+        ("arctic", ("polar",), "arctic and polar are the same class"),
+        ("reinforced", ("ia", "ib", "ic"), "reinforced is not a class of its own scheme"),
+    ),
+    ("furnaces", "damper position"): (("modulating", ("quarter", "half", "threequarter"), "a modulating damper is throttling"),),
+    ("furnaces", "purge gas"): (
+        ("inert", ("argon", "nitrogen", "helium"), "argon, nitrogen and helium are inert gases"),
+        ("forming", ("nitrogen", "hydrogen"), "forming gas is nitrogen with hydrogen"),
+    ),
+    ("compressors", "rotor coating"): (
+        ("ceramic", ("carbide", "nitride"), "carbides and nitrides are ceramics"),
+        ("anodized", ("carbide", "nitride"), "an anodized layer is an oxide ceramic"),
+    ),
+    ("compressors", "shaft seal"): (
+        ("mechanical", ("drygas",), "a dry-gas seal is a kind of mechanical seal"),
+        ("carbon", ("mechanical",), "a carbon ring is the face of a mechanical seal"),
+    ),
+    ("compressors", "intercooler medium"): (
+        ("brine", ("water",), "brine is water with salt in it"),
+        ("glycol", ("water",), "glycol coolant is a water mix"),
+        ("refrigerant", ("ammonia", "propane"), "ammonia and propane are refrigerants"),
+    ),
     ("transformers", "core steel"): (
         ("oriented", ("silicon",), "oriented steel is grain-oriented silicon steel"),
         ("laminated", ("silicon", "amorphous", "ferrite"), "laminated is how a core is built, not what it is made of"),
@@ -465,39 +539,57 @@ VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str]
         ("polymer", ("epoxy", "resin"), "epoxy and resin are polymers"),
         ("resin", ("epoxy",), "epoxy is a resin"),
     ),
-    ("transformers", "vector group"): (("grounded", ("star",), "a grounded star is a star group"),),
-    ("boilers", "tube alloy"): (("chromoly", ("ferritic",), "chromoly steel is ferritic"),),
-    ("boilers", "feedwater treatment"): (("softened", ("demineralized",), "demineralized water is softer than softened water"),),
-    ("boilers", "sootblower medium"): (("sonic", ("acoustic",), "acoustic and sonic are the same method"),),
-    ("boilers", "draft arrangement"): (
+    ("transformers", "vector group"): (("grounded", ("yyn0", "ynd1", "dyn11"), "grounding is a separate axis from the winding group"),),
+    ("boilers", "tube alloy"): (
+        ("ferritic", ("carbon", "chromoly"), "carbon steel and chromoly steel are ferritic"),
+        ("chromoly", ("ferritic",), "chromoly steel is ferritic"),
+    ),
+    ("boilers", "feedwater program"): (
+        ("deaerated", ("phosphate", "chelant", "volatile", "oxygenated", "caustic"), "deaeration applies to water under any program"),
+        ("demineralized", ("phosphate", "chelant", "volatile"), "demineralized water is treated under a program as well"),
+    ),
+    ("boilers", "sootblower medium"): (("acoustic", ("air",), "acoustic horns are driven by compressed air"), ("sonic", ("acoustic",), "sonic and acoustic are the same method")),
+    ("boilers", "firing method"): (
         ("balanced", ("forced", "induced"), "balanced draft uses both fans"),
         ("pressurized", ("forced",), "forced draft is a pressurized furnace"),
     ),
-    ("chillers", "brazing filler"): (("bronze", ("copper",), "bronze is a copper alloy"),),
-    ("chillers", "refrigerant blend"): (("halocarbon", ("hydrofluoro",), "hydrofluorocarbons are halocarbons"),),
-    ("chillers", "condenser cooling"): (("hybrid", ("evaporative", "watercooled", "aircooled"), "hybrid is a mix of the others"),),
-    ("pumps", "valve state"): (
-        ("throttled", ("open",), "a throttled valve is partly open"),
-        ("locked", ("open", "closed"), "a valve is locked open or locked closed"),
+    ("chillers", "brazing filler"): (
+        ("bronze", ("copper",), "bronze is a copper alloy"),
+        ("phosphorus", ("copper",), "phosphorus fillers are copper-phosphorus"),
     ),
+    ("chillers", "refrigerant"): (("halocarbon", ("hydrofluoro", "r134a"), "hydrofluorocarbons are halocarbons"),),
+    ("chillers", "circuit state"): (
+        ("chilling", ("subcooling", "pumping"), "subcooling and pumping happen while the circuit is chilling"),
+    ),
+    ("chillers", "expansion valve"): (("orifice", ("capillary", "fixed"), "a capillary is a fixed orifice"),),
+    ("chillers", "condenser cooling"): (
+        ("hybrid", ("aircooled", "watercooled"), "hybrid is a mix of the others"),
+        ("evaporative", ("watercooled",), "evaporative cooling uses water"),
+        ("glycol", ("aircooled", "watercooled"), "a glycol loop rejects its heat to air or water"),
+    ),
+    ("pumps", "pump state"): (("primed", ("stopped", "running"), "primed is a condition, not a mode: a primed pump is stopped or running"),),
+    ("pumps", "drive coupling"): (("splined", ("rigid", "flexible"), "a splined coupling is rigid or flexible"),),
     ("pumps", "bearing type"): (("ceramic", ("ball", "roller"), "ceramic is a material that ball and roller bearings are made of"),),
-    ("turbines", "cooling medium"): (("air", ("nitrogen",), "air is about four-fifths nitrogen"),),
+    ("pumps", "casing mount"): (("vertical", ("foot", "centerline", "pedestal"), "vertical is an orientation, not a way to support the casing"),),
+    ("reactors", "coolant type"): (("primary", ("water",), "primary, secondary and auxiliary are loop roles, not coolants"),),
 }
 
-
-# Pairs that sit in one set and were reviewed as exclusive because of what the attribute means. Each row:
-# (domain, attribute) -> ((value, value, why they exclude each other), ...). The test checks the pair is really in
-# that set, so a row cannot outlive the values it describes.
+# Pairs in one set that were reviewed as exclusive because of what the attribute means. Each row:
+# (domain, attribute) -> ((value, value, why they exclude each other), ...). The test checks that both values are
+# in that set, so a row cannot outlive the values it describes.
 EXCLUSIVE_BY_MEANING: dict[tuple[str, str], tuple[tuple[str, str, str], ...]] = {
-    ("turbines", "grid status"): (("standby", "offline", "standby is a hot reserve, ready to synchronise; offline is shut down"),),
-    ("turbines", "casing alloy"): (("inconel", "hastelloy", "two named nickel-chromium alloys of different families; neither is the other"),),
-    ("compressors", "intercooler medium"): (("glycol", "water", "glycol is the undiluted glycol coolant; a glycol-water mix is not a value in this set"),),
-    ("chillers", "condenser cooling"): (
-        ("evaporative", "watercooled", "evaporative rejects heat by evaporating spray water at the coil; watercooled rejects it into a water loop with no evaporation at the condenser"),
-        ("glycol", "aircooled", "glycol is a glycol loop to a heat exchanger; aircooled blows air over the refrigerant coil"),
-        ("geothermal", "watercooled", "geothermal rejects heat into a ground loop, not a cooling-water circuit"),
-    ),
-    ("relays", "enclosure rating"): (("dustproof", "waterproof", "two separate ingress ratings: dust only, water only"),),
+    ("turbines", "casing alloy"): (("steel", "castiron", "steel is under 2% carbon and cast iron over it, so a casing is one or the other"),),
+    ("turbines", "lubricant grade"): (("mineral", "polyalphaolefin", "mineral oil is refined crude; a PAO is synthesised from ethylene, so a base oil is one or the other"),),
+    ("turbines", "governor mode"): (("droop", "baseload", "droop trims load against speed error; baseload holds a fixed power setpoint and ignores speed"),),
+    ("furnaces", "hearth drive"): (("walking", "pusher", "a walking hearth lifts and steps the load; a pusher shoves the whole row, and no furnace moves a load both ways"),),
+    ("reactors", "cladding metal"): (("stainless", "zirconium", "stainless steel is an iron alloy and zirconium is a separate element"),),
+    ("reactors", "loop state"): (("heatup", "hot", "heatup is the ramp before the loop reaches temperature; hot is at temperature"),),
+    ("compressors", "shaft seal"): (("mechanical", "brush", "a mechanical seal has rubbing faces; a brush seal is bristles on the shaft"),),
+    ("transformers", "core steel"): (("silicon", "permalloy", "silicon steel is iron with silicon; permalloy is nickel-iron"),),
+    ("boilers", "tube alloy"): (("carbon", "austenitic", "carbon steel is a ferrous plain steel; austenitic is a chromium-nickel stainless family"),),
+    ("chillers", "expansion valve"): (("thermostatic", "electronic", "a thermostatic valve is driven by a bulb; an electronic one by a controller"),),
+    ("pumps", "bearing type"): (("sleeve", "hydrostatic", "a sleeve bearing carries load on a self-generated film; a hydrostatic one on an externally pumped film"),),
+    ("pumps", "casing mount"): (("flange", "inline", "a flange-mounted casing bolts to a driver; an inline one hangs in the pipe run"),),
 }
 
 

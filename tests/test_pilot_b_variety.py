@@ -88,14 +88,14 @@ def test_he_part_e_1_fixture_build_matches_hand_computation_and_audit_sample(
         "1. Unit Alpha has 15 rotor blades.\n"
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 44 and 56 megawatts.\n"
-        "4. The grid status of Unit Gamma is standby.\n"
+        "4. The turbine mode of Unit Gamma is standby.\n"
         "5. The casing alloy of Unit Beta is steel."
     )
     mat_t2 = (
         "1. Relay North has 18 backup cells.\n"
         "2. The calibration date of Relay North is 12 March.\n"
         "3. The switching latency of Relay South is between 48 and 62 milliseconds.\n"
-        "4. The breaker state of Relay East is locked.\n"
+        "4. The breaker position of Relay East is locked.\n"
         "5. The contact plating of Relay South is silver."
     )
     raw_items = [
@@ -112,7 +112,7 @@ def test_he_part_e_1_fixture_build_matches_hand_computation_and_audit_sample(
             "domain": "turbines",
             "closure": "open",
             "material": mat_t1,
-            "claim": "The grid status of Unit Gamma is online.",
+            "claim": "The turbine mode of Unit Gamma is online.",
             "key": "unsupported",
         },
         {
@@ -128,7 +128,7 @@ def test_he_part_e_1_fixture_build_matches_hand_computation_and_audit_sample(
             "domain": "relays",
             "closure": "closed",
             "material": mat_t2,
-            "claim": "The breaker state of Relay East is locked.",
+            "claim": "The breaker position of Relay East is locked.",
             "key": "supported",
         },
         {
@@ -226,7 +226,7 @@ def test_hh_fix1_build_dir_without_keys_refused_with_exit_1(
         "1. Unit Alpha has 15 rotor blades.\n"
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 44 and 56 megawatts.\n"
-        "4. The grid status of Unit Gamma is standby.\n"
+        "4. The turbine mode of Unit Gamma is standby.\n"
         "5. The casing alloy of Unit Beta is steel."
     )
     raw_items = [
@@ -242,7 +242,7 @@ def test_hh_fix1_build_dir_without_keys_refused_with_exit_1(
             "domain": "turbines",
             "closure": "open",
             "material": mat,
-            "claim": "The grid status of Unit Gamma is online.",
+            "claim": "The turbine mode of Unit Gamma is online.",
         },
         {
             "triad_id": "T10-D-turbines-001-triad",
@@ -347,7 +347,7 @@ def test_he_part_e_3_unreliable_path_triggers_when_class_exceeds_10_percent_unma
         "1. Unit Alpha has 15 rotor blades.\n"
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 44 and 56 megawatts.\n"
-        "4. The grid status of Unit Gamma is standby.\n"
+        "4. The turbine mode of Unit Gamma is standby.\n"
         "5. The casing alloy of Unit Beta is steel."
     )
     raw_items = [
@@ -364,7 +364,7 @@ def test_he_part_e_3_unreliable_path_triggers_when_class_exceeds_10_percent_unma
             "domain": "turbines",
             "closure": "open",
             "material": base_mat,
-            "claim": "The grid status of Unit Gamma is online.",
+            "claim": "The turbine mode of Unit Gamma is online.",
             "key": "unsupported",
         },
         {
@@ -420,7 +420,7 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
         "1. Unit Alpha has 15 rotor blades.\n"
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 40 and 70 megawatts.\n"
-        "4. The grid status of Unit Gamma is standby.\n"
+        "4. The turbine mode of Unit Gamma is standby.\n"
         "5. The casing alloy of Unit Beta is steel."
     )
 
@@ -435,7 +435,7 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
                     "domain": "turbines",
                     "closure": "closed",
                     "material": base_mat,
-                    "claim": "The grid status of Unit Gamma is standby.",
+                    "claim": "The turbine mode of Unit Gamma is standby.",
                     "key": "supported",
                 },
                 {
@@ -479,7 +479,7 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
         "1. The shaft speed of Unit Alpha is 15 rpm.\n"
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 40 and 70 megawatts.\n"
-        "4. The grid status of Unit Beta is standby.\n"
+        "4. The turbine mode of Unit Beta is standby.\n"
         "5. The casing alloy of Unit Beta is steel."
     )
     perms_6 = (
@@ -504,13 +504,13 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
             )
         elif idx < 8:
             claims_3 = (
-                f"The grid status of {e_triad} is standby.",
-                f"The grid status of {e_triad} is active.",
-                f"The grid status of {e_triad} is offline.",
+                f"The turbine mode of {e_triad} is standby.",
+                f"The turbine mode of {e_triad} is barring.",
+                f"The turbine mode of {e_triad} is starting.",
             )
         else:
             claims_3 = (
-                f"The lubricant grade of {e_triad} is synthetic.",
+                f"The lubricant grade of {e_triad} is polyalphaolefin.",
                 f"The lubricant grade of {e_triad} is mineral.",
                 f"The lubricant grade of {e_triad} is ester.",
             )
@@ -678,7 +678,7 @@ def test_hs_part_c_synthetic_shortcut_builds_fail_variety_gate(
         "1. Unit Alpha has 15 rotor blades.\n"
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 40 and 70 megawatts.\n"
-        "4. The grid status of Unit Gamma is standby.\n"
+        "4. The turbine mode of Unit Gamma is standby.\n"
         "5. The casing alloy of Unit Beta is steel."
     )
 
@@ -692,7 +692,7 @@ def test_hs_part_c_synthetic_shortcut_builds_fail_variety_gate(
                 "domain": "turbines",
                 "closure": "open",
                 "material": base_mat,
-                "claim": "The grid status of Unit Gamma is standby.",
+                "claim": "The turbine mode of Unit Gamma is standby.",
                 "key": "supported",
             },
             {
@@ -782,7 +782,7 @@ def test_hs_part_c_synthetic_shortcut_builds_fail_variety_gate(
         pair_mat = (
             f"1. {three_claims[rot]}\n"
             f"2. {three_claims[(rot + 1) % 3]}\n"
-            "3. The grid status of Unit Gamma is standby.\n"
+            "3. The turbine mode of Unit Gamma is standby.\n"
             f"4. {three_claims[(rot + 2) % 3]}\n"
             "5. The casing alloy of Unit Beta is steel."
         )
@@ -842,7 +842,7 @@ def test_hs_part_c_synthetic_shortcut_builds_fail_variety_gate(
             if prof == 0:
                 claim_str = f"{e_name} has {15 + idx} rotor blades."
             elif prof == 1:
-                claim_str = f"The grid status of {e_name} is standby."
+                claim_str = f"The turbine mode of {e_name} is standby."
             else:
                 claim_str = f"The output capacity of {e_name} is between 40 and 70 megawatts."
             by_pos[p_i] = {
@@ -1067,7 +1067,7 @@ def test_hw_fix_t2_below_chance_accuracy_is_instrument_error_not_pass(
         "1. Unit Alpha has 15 rotor blades.\n"
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 40 and 70 megawatts.\n"
-        "4. The grid status of Unit Gamma is standby.\n"
+        "4. The turbine mode of Unit Gamma is standby.\n"
         "5. The casing alloy of Unit Beta is steel."
     )
     items: list[dict[str, str]] = []
@@ -1140,7 +1140,7 @@ def test_synthetic_entity_order_bound_build_fails_variety_gate(
             f"1. {e_first} has 15 rotor blades.\n"
             f"2. The inspection date of {e_first} is 7 February.\n"
             f"3. The output capacity of {e_second} is between 40 and 70 megawatts.\n"
-            f"4. The grid status of {e_second} is standby.\n"
+            f"4. The turbine mode of {e_second} is standby.\n"
             f"5. The casing alloy of {e_third} is steel."
         )
         triad_rows = [

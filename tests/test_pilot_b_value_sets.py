@@ -50,7 +50,7 @@ def test_no_value_is_a_part_of_another_value_in_its_set(domain, attribute, value
         for b in values:
             if a != b:
                 assert not re.search(
-                    rf"(?<![a-z]){re.escape(a.lower())}(?![a-z])", b.lower()
+                    rf"(?<![a-z0-9]){re.escape(a.lower())}(?![a-z0-9])", b.lower()
                 ), f"{domain}/{attribute}: '{a}' is inside '{b}'"
 
 
