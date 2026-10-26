@@ -40,7 +40,17 @@ class FakeClock:
 class FakeReader:
     """Reads every pair as a contradiction unless ``verdict_for`` says otherwise."""
 
-    def __init__(self, model, events, clock=None, seconds=0.0, verdict_for=None):
+    def __init__(
+        self,
+        model,
+        events,
+        clock=None,
+        seconds=0.0,
+        verdict_for=None,
+        control_verdict=None,
+    ):
+        self.control_verdict = control_verdict or (lambda number: "supported")
+        self.control_prompts: list[BlindReadPrompt] = []
         self.model = model
         self.events = events
         self.clock = clock
@@ -49,6 +59,16 @@ class FakeReader:
         self.prompts: list[BlindReadPrompt] = []
 
     def read_claim(self, prompt: BlindReadPrompt) -> BlindReadResult:
+        if prompt.claim_id.startswith(
+            "control."
+        ):  # the negative control: compatible pairs, not contradictions
+            self.control_prompts.append(prompt)
+            verdict = self.control_verdict(len(self.control_prompts))
+            if verdict == "raise":
+                raise RdlabError("PILOT_B_NUM_CTX_EXCEEDS_MAX", "too long", "shorten")
+            return BlindReadResult(
+                claim_id=prompt.claim_id, reader=self.model, verdict=verdict
+            )
         index = len(self.prompts)
         self.prompts.append(prompt)
         self.events.append(("read", self.model.name))
@@ -560,12 +580,15 @@ def test_a_stop_still_writes_the_manifest_the_queue_and_the_failing_calls(tmp_pa
     class LengthReader(FakeReader):
         def read_claim(self, prompt):
             result = super().read_claim(prompt)
-            if len(self.prompts) % 2 == 0:
+            if (
+                not prompt.claim_id.startswith("control.")
+                and len(self.prompts) % 2 == 0
+            ):
                 return BlindReadResult(
                     claim_id=prompt.claim_id,
                     reader=self.model,
-                    verdict="ambiguous",
-                    done_reason="length",
+                    verdict="garbage",  # a parse failure: not one of the four verdicts
+                    done_reason="stop",
                     completion_tokens=3072,
                     raw_text="x" * 500,
                 )
@@ -602,7 +625,7 @@ def test_a_stop_still_writes_the_manifest_the_queue_and_the_failing_calls(tmp_pa
     ]
     assert (
         failures
-        and failures[0]["done_reason"] == "length"
+        and failures[0]["kind"] == "parse"
         and failures[0]["completion_tokens"] == 3072
     )
     assert len(failures[0]["raw_tail"]) <= 300 and failures[0]["reader"] == GRANITE.name
@@ -650,3 +673,162 @@ def test_the_projection_is_made_even_when_one_readers_jobs_equal_the_calibration
         )
     assert caught.value.code == "PILOT_B_CERT_WALL_CAP_EXCEEDED"
     assert len(readers[1].prompts) == 0  # stopped before the second reader started
+
+
+class LengthStopReader(FakeReader):
+    """Ends the Nth certification calls at the num_predict cap with an empty answer."""
+
+    def __init__(self, *a, every=10, **kw):
+        super().__init__(*a, **kw)
+        self.every = every
+
+    def read_claim(self, prompt):
+        result = super().read_claim(prompt)
+        if (
+            not prompt.claim_id.startswith("control.")
+            and len(self.prompts) % self.every == 0
+        ):
+            return BlindReadResult(
+                claim_id=prompt.claim_id,
+                reader=self.model,
+                verdict="ambiguous",
+                done_reason="length",
+                completion_tokens=3072,
+                raw_text="",
+            )
+        return result
+
+
+def test_a_length_stop_is_not_certified_but_is_not_an_error(tmp_path):
+    """3 length stops in 60 calls (5%) would trip a 2% error-rate stop if they counted; they route the set to the queue."""
+
+    readers = [LengthStopReader(GRANITE, [], every=20), FakeReader(NEMOTRON, [])]
+    run, _ = _run(readers, tmp_path=tmp_path)  # no stop is raised
+    assert run.failed_calls == 0
+    assert run.review_queue
+    granite_verdicts = {
+        p["verdicts"][GRANITE.name] for r in run.review_queue for p in r["failed_pairs"]
+    }
+    assert granite_verdicts == {"length"}
+    certified = {e["attribute"] for e in run.manifest["sets"]}
+    assert certified.isdisjoint({r["attribute"] for r in run.review_queue})
+    failures = [
+        json.loads(line)
+        for line in (tmp_path / "queue.failures.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert failures and all(
+        f["kind"] == "length_stop" and f["completion_tokens"] == 3072 for f in failures
+    )
+
+
+def test_a_reader_that_passes_the_negative_control_is_recorded_with_every_pair(
+    tmp_path,
+):
+    run, _ = _run(
+        [FakeReader(GRANITE, []), FakeReader(NEMOTRON, [])], tmp_path=tmp_path
+    )
+    for name in (GRANITE.name, NEMOTRON.name):
+        ctl = run.manifest["control"][name]
+        assert (
+            ctl["passes"] == 20
+            and ctl["total"] == 20
+            and ctl["threshold"] == 0.80
+            and ctl["passed"] is True
+        )
+        assert len(ctl["pairs"]) == 20 and {
+            "verdict",
+            "done_reason",
+            "completion_tokens",
+        } <= set(ctl["pairs"][0])
+    assert run.manifest["control_failed"] is False
+
+
+def test_the_control_is_the_twenty_compatible_pairs():
+    assert len(vc.CONTROL_PAIRS) == 20
+    assert vc.DEFAULT_CONTROL_PASS_THRESHOLD == 0.80
+    assert {pair[4] for pair in vc.CONTROL_PAIRS} >= {
+        "member to class",
+        "synonym",
+        "implies",
+    }
+
+
+def test_sixteen_of_twenty_passes_the_control_and_fifteen_does_not(tmp_path):
+    sixteen = FakeReader(
+        GRANITE, [], control_verdict=lambda n: "supported" if n <= 16 else "unsupported"
+    )
+    run, _ = _run([sixteen, FakeReader(NEMOTRON, [])], tmp_path=tmp_path)
+    assert run.manifest["control"][GRANITE.name]["passes"] == 16
+    fifteen = FakeReader(
+        GRANITE,
+        [],
+        control_verdict=lambda n: "cannot_tell" if n <= 15 else "unsupported",
+    )
+    with pytest.raises(RdlabError) as caught:
+        _run([fifteen, FakeReader(NEMOTRON, [])], tmp_path=tmp_path)
+    assert caught.value.code == "PILOT_B_CERT_CONTROL_FAILED"
+
+
+def test_a_failed_control_certifies_nothing_and_says_so_in_the_manifest(tmp_path):
+    events: list = []
+    always_contradiction = FakeReader(
+        GRANITE, events, control_verdict=lambda n: "unsupported"
+    )
+    nemotron = FakeReader(NEMOTRON, events)
+    manifest_path = tmp_path / "m.json"
+    with pytest.raises(RdlabError) as caught:
+        vc.run_certification(
+            sets=SMALL,
+            entities=_entities(),
+            readers=[always_contradiction, nemotron],
+            review_queue_path=tmp_path / "q.jsonl",
+            options=vc.CertificationOptions(),
+            date="2026-10-26",
+            manifest_path=manifest_path,
+        )
+    assert caught.value.code == "PILOT_B_CERT_CONTROL_FAILED"
+    doc = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert doc["control_failed"] is True and doc["sets"] == []
+    queue = [
+        json.loads(line)
+        for line in (tmp_path / "q.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert len(queue) == len(SMALL) and all(
+        r["reason"] == "negative control failed" for r in queue
+    )
+    assert (
+        nemotron.control_prompts == [] and nemotron.prompts == []
+    )  # stopped before the second reader
+    assert ("unload", GRANITE.name) in events
+    assert any(p.startswith("control") for p in vc.verify_manifest(doc, SMALL))
+
+
+def test_control_errors_and_length_stops_count_as_fails(tmp_path):
+    flaky = FakeReader(
+        GRANITE, [], control_verdict=lambda n: "raise" if n <= 5 else "supported"
+    )
+    with pytest.raises(RdlabError) as caught:
+        _run([flaky, FakeReader(NEMOTRON, [])], tmp_path=tmp_path)
+    assert caught.value.code == "PILOT_B_CERT_CONTROL_FAILED"
+
+
+def test_the_verifier_rejects_a_manifest_with_no_control(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    manifest["control"] = {}
+    assert any(
+        "no passing negative control" in p for p in vc.verify_manifest(manifest, SMALL)
+    )
+
+
+def test_the_control_threshold_is_configurable(tmp_path):
+    sixteen = FakeReader(
+        GRANITE, [], control_verdict=lambda n: "supported" if n <= 16 else "unsupported"
+    )
+    with pytest.raises(RdlabError):
+        _run(
+            [sixteen, FakeReader(NEMOTRON, [])],
+            tmp_path=tmp_path,
+            control_pass_threshold=0.90,
+        )

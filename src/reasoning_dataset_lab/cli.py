@@ -15,7 +15,12 @@ from typing import NoReturn, Sequence
 
 from reasoning_dataset_lab import __version__
 from reasoning_dataset_lab.config import compute_config_fingerprint
-from reasoning_dataset_lab.errors import EXIT_CLEAN, EXIT_REFUSED, RdlabError, usage_error
+from reasoning_dataset_lab.errors import (
+    EXIT_CLEAN,
+    EXIT_REFUSED,
+    RdlabError,
+    usage_error,
+)
 from reasoning_dataset_lab.map import check_map_file
 from reasoning_dataset_lab.pilot_b import value_certification
 from reasoning_dataset_lab.pilot_b.models_and_build import (
@@ -63,11 +68,15 @@ def _build_parser() -> _StructuredArgumentParser:
     # rdlab map check <path>
     map_parser = subparsers.add_parser("map", help="Map validation commands.")
     map_sub = map_parser.add_subparsers(dest="map_command")
-    map_check = map_sub.add_parser("check", help="Validate a map.yaml file and print its canonical sha256.")
+    map_check = map_sub.add_parser(
+        "check", help="Validate a map.yaml file and print its canonical sha256."
+    )
     map_check.add_argument("path", type=Path, help="Path to map.yaml.")
 
     # rdlab project fingerprint [project_root] [--map <path>] [--canon <dir>]
-    proj_parser = subparsers.add_parser("project", help="Project configuration commands.")
+    proj_parser = subparsers.add_parser(
+        "project", help="Project configuration commands."
+    )
     proj_sub = proj_parser.add_subparsers(dest="project_command")
     proj_fp = proj_sub.add_parser(
         "fingerprint",
@@ -346,18 +355,89 @@ def _build_certify_values_parser() -> _StructuredArgumentParser:
             "of the rest. Needs a GPU grant: run by hand on the rig, with absolute paths."
         ),
     )
-    parser.add_argument("--readers", default="granite,nemotron", help="Comma-separated reader families, run in this order (default: granite,nemotron).")
-    parser.add_argument("--num-ctx", dest="num_ctx", type=int, default=value_certification.DEFAULT_NUM_CTX, help=f"Cap on each reader's num_ctx, not the context used: the adapter picks the actual context per call in steps of 1,024 (default: {value_certification.DEFAULT_NUM_CTX}).")
-    parser.add_argument("--num-predict", dest="num_predict", type=int, default=value_certification.DEFAULT_NUM_PREDICT, help=f"Each reader's num_predict (default: {value_certification.DEFAULT_NUM_PREDICT}; thinking tokens count against it).")
-    parser.add_argument("--wall-cap-s", dest="wall_cap_s", type=float, default=10800.0, help="Stop when the projected or elapsed wall time passes this many seconds (default: 10800).")
-    parser.add_argument("--calibration-calls", dest="calibration_calls", type=int, default=20, help="Calls timed per reader before the projection (default: 20).")
-    parser.add_argument("--error-rate-stop", dest="error_rate_stop", type=float, default=0.02, help="Stop when more than this share of verdicts are malformed or failed (default: 0.02).")
-    parser.add_argument("--error-rate-min-calls", dest="error_rate_min_calls", type=int, default=50, help="Calls before the error-rate stop can fire (default: 50).")
-    parser.add_argument("--domain", dest="domain", default=None, help="Only the sets of this domain.")
-    parser.add_argument("--manifest-out", dest="manifest_out", type=Path, required=True, help="Absolute path of the manifest to write.")
-    parser.add_argument("--review-queue-out", dest="review_queue_out", type=Path, required=True, help="Absolute path of the review queue (JSONL) to write.")
-    parser.add_argument("--ollama-url", dest="ollama_url", default="http://127.0.0.1:11434", help="Loopback Ollama endpoint.")
-    parser.add_argument("--date", dest="date", default=None, help="Manifest date, YYYY-MM-DD (default: today).")
+    parser.add_argument(
+        "--readers",
+        default="granite,nemotron",
+        help="Comma-separated reader families, run in this order (default: granite,nemotron).",
+    )
+    parser.add_argument(
+        "--num-ctx",
+        dest="num_ctx",
+        type=int,
+        default=value_certification.DEFAULT_NUM_CTX,
+        help=f"Cap on each reader's num_ctx, not the context used: the adapter picks the actual context per call in steps of 1,024 (default: {value_certification.DEFAULT_NUM_CTX}).",
+    )
+    parser.add_argument(
+        "--num-predict",
+        dest="num_predict",
+        type=int,
+        default=value_certification.DEFAULT_NUM_PREDICT,
+        help=f"Each reader's num_predict (default: {value_certification.DEFAULT_NUM_PREDICT}; thinking tokens count against it).",
+    )
+    parser.add_argument(
+        "--wall-cap-s",
+        dest="wall_cap_s",
+        type=float,
+        default=10800.0,
+        help="Stop when the projected or elapsed wall time passes this many seconds (default: 10800).",
+    )
+    parser.add_argument(
+        "--calibration-calls",
+        dest="calibration_calls",
+        type=int,
+        default=20,
+        help="Calls timed per reader before the projection (default: 20).",
+    )
+    parser.add_argument(
+        "--error-rate-stop",
+        dest="error_rate_stop",
+        type=float,
+        default=0.02,
+        help="Stop when more than this share of verdicts are malformed or failed (default: 0.02).",
+    )
+    parser.add_argument(
+        "--error-rate-min-calls",
+        dest="error_rate_min_calls",
+        type=int,
+        default=50,
+        help="Calls before the error-rate stop can fire (default: 50).",
+    )
+    parser.add_argument(
+        "--control-pass-threshold",
+        dest="control_pass_threshold",
+        type=float,
+        default=value_certification.DEFAULT_CONTROL_PASS_THRESHOLD,
+        help="Share of the 20 negative-control pairs a reader must not call a contradiction (default: 0.80).",
+    )
+    parser.add_argument(
+        "--domain", dest="domain", default=None, help="Only the sets of this domain."
+    )
+    parser.add_argument(
+        "--manifest-out",
+        dest="manifest_out",
+        type=Path,
+        required=True,
+        help="Absolute path of the manifest to write.",
+    )
+    parser.add_argument(
+        "--review-queue-out",
+        dest="review_queue_out",
+        type=Path,
+        required=True,
+        help="Absolute path of the review queue (JSONL) to write.",
+    )
+    parser.add_argument(
+        "--ollama-url",
+        dest="ollama_url",
+        default="http://127.0.0.1:11434",
+        help="Loopback Ollama endpoint.",
+    )
+    parser.add_argument(
+        "--date",
+        dest="date",
+        default=None,
+        help="Manifest date, YYYY-MM-DD (default: today).",
+    )
     return parser
 
 
@@ -365,7 +445,10 @@ def _run_certify_values(argv: Sequence[str]) -> int:
     import datetime
 
     args = _build_certify_values_parser().parse_args(argv)
-    for flag, path in (("--manifest-out", args.manifest_out), ("--review-queue-out", args.review_queue_out)):
+    for flag, path in (
+        ("--manifest-out", args.manifest_out),
+        ("--review-queue-out", args.review_queue_out),
+    ):
         if not path.is_absolute():
             raise usage_error(
                 "CLI_USAGE_ERROR",
@@ -376,10 +459,17 @@ def _run_certify_values(argv: Sequence[str]) -> int:
 
     sets = [s for s in value_sets() if args.domain is None or s[0] == args.domain]
     if not sets:
-        raise usage_error("CLI_USAGE_ERROR", f"No value sets for domain '{args.domain}'.", "Use a domain from the catalogue.")
+        raise usage_error(
+            "CLI_USAGE_ERROR",
+            f"No value sets for domain '{args.domain}'.",
+            "Use a domain from the catalogue.",
+        )
     families = [f.strip().lower() for f in args.readers.split(",") if f.strip()]
     readers = value_certification.build_ollama_readers(
-        families, base_url=args.ollama_url, num_ctx=args.num_ctx, num_predict=args.num_predict
+        families,
+        base_url=args.ollama_url,
+        num_ctx=args.num_ctx,
+        num_predict=args.num_predict,
     )
     run = value_certification.run_certification(
         sets=sets,
@@ -391,6 +481,7 @@ def _run_certify_values(argv: Sequence[str]) -> int:
             calibration_calls=args.calibration_calls,
             error_rate_stop=args.error_rate_stop,
             error_rate_min_calls=args.error_rate_min_calls,
+            control_pass_threshold=args.control_pass_threshold,
         ),
         date=args.date or datetime.datetime.now(datetime.UTC).date().isoformat(),
         manifest_path=args.manifest_out,
@@ -424,7 +515,11 @@ def _run_verify_values_manifest(argv: Sequence[str]) -> int:
     problems = value_certification.verify_manifest(manifest)
     for problem in problems:
         print(problem, file=sys.stderr)
-    print(json.dumps({"manifest": str(args.manifest), "problems": len(problems)}, indent=2))
+    print(
+        json.dumps(
+            {"manifest": str(args.manifest), "problems": len(problems)}, indent=2
+        )
+    )
     return EXIT_REFUSED if problems else EXIT_CLEAN
 
 
@@ -433,11 +528,23 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
     parser = _build_parser()
     try:
-        if len(raw_argv) >= 2 and raw_argv[0] == "pilot-b" and raw_argv[1] == "certify-values":
+        if (
+            len(raw_argv) >= 2
+            and raw_argv[0] == "pilot-b"
+            and raw_argv[1] == "certify-values"
+        ):
             return _run_certify_values(raw_argv[2:])
-        if len(raw_argv) >= 2 and raw_argv[0] == "pilot-b" and raw_argv[1] == "verify-values-manifest":
+        if (
+            len(raw_argv) >= 2
+            and raw_argv[0] == "pilot-b"
+            and raw_argv[1] == "verify-values-manifest"
+        ):
             return _run_verify_values_manifest(raw_argv[2:])
-        if len(raw_argv) >= 2 and raw_argv[0] == "pilot-b" and raw_argv[1] == "calibrate":
+        if (
+            len(raw_argv) >= 2
+            and raw_argv[0] == "pilot-b"
+            and raw_argv[1] == "calibrate"
+        ):
             cal_parser = _build_pilot_b_calibrate_parser()
             cal_args = cal_parser.parse_args(raw_argv[2:])
             cal_res = run_pilot_b_calibration(
