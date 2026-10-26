@@ -463,6 +463,9 @@
     "licence_registry_sha256": {
       "type": "string"
     },
+    "max_render_failure_rate": {
+      "type": "number"
+    },
     "num_ctx_policy": {
       "additionalProperties": false,
       "properties": {
@@ -603,6 +606,9 @@
       ],
       "type": "object"
     },
+    "render_failure_rate": {
+      "type": "number"
+    },
     "triad_pass_rate": {
       "type": "number"
     },
@@ -636,11 +642,13 @@
     "licence_registry",
     "licence_registry_path",
     "licence_registry_sha256",
+    "max_render_failure_rate",
     "num_ctx_policy",
     "num_predict",
     "num_predict_config",
     "num_predict_source",
     "part_id",
+    "render_failure_rate",
     "split",
     "stub_mode",
     "style_issues",

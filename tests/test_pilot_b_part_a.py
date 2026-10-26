@@ -299,11 +299,15 @@ def test_part_a_serialization_and_error_guards() -> None:
     custom_state = AtomicFact(
         fact_id="f-cs", line=1, entity="Unit Alpha", attribute="mode", fact_type="state", value="dormant"
     )
-    assert mutate_fact_value(custom_state) == "non-dormant"
+    with pytest.raises(RdlabError) as exc_cs:  # no value is made up for an attribute outside the catalogue
+        mutate_fact_value(custom_state)
+    assert exc_cs.value.code == "PILOT_B_NO_EXCLUSIVE_VALUE"
     custom_attr = AtomicFact(
         fact_id="f-ca", line=1, entity="Unit Alpha", attribute="finish", fact_type="attribute", value="matte"
     )
-    assert mutate_fact_value(custom_attr) == "uncoated-matte"
+    with pytest.raises(RdlabError) as exc_ca:
+        mutate_fact_value(custom_attr)
+    assert exc_ca.value.code == "PILOT_B_NO_EXCLUSIVE_VALUE"
 
     # Unknown fact_id
     with pytest.raises(RdlabError) as exc_fact:

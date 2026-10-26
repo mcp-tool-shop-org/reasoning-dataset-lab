@@ -821,7 +821,10 @@ def build_writer_render_messages(table: FactTable) -> list[dict[str, str]]:
                 "nouns. Keep subject-verb agreement for plural attributes, never use 'equals' or "
                 "'is equal to' for an exact value, never write bare entity-attribute-verb without a "
                 "connecting article or preposition, and do not repeat a unit-noun (never '36 holds' "
-                "after 'cargo holds')."
+                "after 'cargo holds'). "
+                "State an interval as 'between <lo> and <hi>'. For an exact fact, link the attribute to its "
+                "value with a direct verb (is, operates in, uses, has), never a hedged link such as "
+                "'characterized by' or 'associated with'."
             ),
         },
         {
@@ -880,7 +883,10 @@ def build_writer_word_messages(claim: ProvedClaim) -> list[dict[str, str]]:
                 "or proper nouns. Keep subject-verb agreement for plural attributes, never use 'equals' or "
                 "'is equal to' for an exact value, never write bare entity-attribute-verb without a "
                 "connecting article or preposition, and do not repeat a unit-noun (never '36 holds' "
-                "after 'cargo holds')."
+                "after 'cargo holds'). "
+                "State an interval as 'between <lo> and <hi>'. For an exact fact, link the attribute to its "
+                "value with a direct verb (is, operates in, uses, has), never a hedged link such as "
+                "'characterized by' or 'associated with'."
             ),
         },
         {

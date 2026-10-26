@@ -290,17 +290,17 @@ def test_part_b_additional_rendering_branches_and_refusals() -> None:
         )
     assert exc_mv.value.code == "PILOT_B_RENDER_MISSING_FACT_VALUE"
 
-    with pytest.raises(RdlabError) as exc_rev:
-        check_rendered_material(
-            table,
-            "\n".join(
-                [
-                    f"1. {f0.value} {f0.unit} of {f0.attribute} belong to {f0.entity}.",
-                    *lines[1:],
-                ]
-            ),
-        )
-    assert exc_rev.value.code == "PILOT_B_RENDER_RELATIONAL_SWAP"
+    # A value before its entity is allowed: one entity per sentence already stops a value binding to the wrong entity
+    # (consult io, F1); the one-entity rule is still enforced (see test_pilot_b_render_rules.py).
+    check_rendered_material(
+        table,
+        "\n".join(
+            [
+                f"1. {f0.value} {f0.unit} of {f0.attribute} belong to {f0.entity}.",
+                *lines[1:],
+            ]
+        ),
+    )
 
     # Worded claim missing entity, attribute, value, or extra entity, or incomplete worded triad
     sup_claim = triad.claims["supported"]

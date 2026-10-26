@@ -37,8 +37,10 @@ AT_MOST_RE: re.Pattern[str] = re.compile(
     r"\b(?:at most|no more than|maximum of|up to)\b",
     re.IGNORECASE,
 )
+# The closed interval in either wording: "between <lo> and <hi>" or "from <lo> to <hi>". Both name the same bounds.
 BETWEEN_RE: re.Pattern[str] = re.compile(
-    r"\bbetween\s+(\d+)\s+and\s+(\d+)\b",
+    r"\b(?:between\s+(?P<lo_between>\d+)\s+and\s+(?P<hi_between>\d+)"
+    r"|from\s+(?P<lo_from>\d+)\s+to\s+(?P<hi_from>\d+))\b",
     re.IGNORECASE,
 )
 ONLY_RE: re.Pattern[str] = re.compile(r"\bonly\b", re.IGNORECASE)
@@ -204,10 +206,6 @@ def _named(token: str, text: str) -> bool:
     )
 
 
-def _first_pos(token: str, text: str) -> int:
-    m = re.search(r"(?<!\w)" + re.escape(token) + r"(?!\w)", text, re.IGNORECASE)
-    return m.start() if m else -1
-
 
 def _check_polarity_and_quantifiers(
     line_label: str,
@@ -255,7 +253,7 @@ def _check_polarity_and_quantifiers(
             raise refused_error(
                 "PILOT_B_RENDER_QUANTIFIER_FLIP",
                 f"{line_label} replaces interval 'between' with a one-sided bound: {sentence!r}.",
-                "State 'between <lo> and <hi>' for interval facts.",
+                "State 'between <lo> and <hi>' (or 'from <lo> to <hi>') for interval facts.",
             )
         assert isinstance(val, tuple)
         lo, hi = int(val[0]), int(val[1])
@@ -266,7 +264,8 @@ def _check_polarity_and_quantifiers(
                 f"{line_label} is an interval fact [{lo}, {hi}] but prose lacks 'between <lo> and <hi>': {sentence!r}.",
                 f"Write 'between {lo} and {hi}'.",
             )
-        stated_lo, stated_hi = int(m_bet.group(1)), int(m_bet.group(2))
+        stated_lo = int(m_bet.group("lo_between") or m_bet.group("lo_from"))
+        stated_hi = int(m_bet.group("hi_between") or m_bet.group("hi_from"))
         if (stated_lo, stated_hi) != (lo, hi):
             raise refused_error(
                 "PILOT_B_RENDER_QUANTIFIER_FLIP",
@@ -379,17 +378,7 @@ def check_rendered_material(table: FactTable, material: str) -> dict[int, str]:
                     "Each atomic fact sentence may name only its own bound entity.",
                 )
 
-        # 3. Relational argument order: entity must precede value (prevents subject-object swap)
-        ent_pos = _first_pos(fact.entity, sent)
-        val_pos = min(_first_pos(vp, sent) for vp in _value_strings(fact.value))
-        if ent_pos > val_pos:
-            raise refused_error(
-                "PILOT_B_RENDER_RELATIONAL_SWAP",
-                f"{line_label} places value before entity '{fact.entity}' (relational swap): {sent!r}.",
-                "State the subject entity before its attribute value.",
-            )
-
-        # 4. Polarity and quantifier direction check (puzzle.py:396-405, ruling 8a)
+        # 3. Polarity and quantifier direction check (puzzle.py:396-405, ruling 8a)
         _check_polarity_and_quantifiers(line_label, sent, fact.op, fact.value)
 
     # 5. Grounding check: refuse any number or proper noun not in the table (§11 step 3, §2.4)

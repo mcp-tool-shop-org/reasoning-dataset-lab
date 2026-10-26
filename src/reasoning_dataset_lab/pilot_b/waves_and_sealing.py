@@ -59,7 +59,9 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
     TriadGateEvaluation,
     append_to_review_queue,
     build_blind_read_prompt,
+    DEFAULT_MAX_RENDER_FAILURE_RATE,
     check_min_pass_rate_per_class,
+    render_failure_rate,
     evaluate_triad_unanimity,
     validate_chain_families,
 )
@@ -193,6 +195,8 @@ class PilotBWaveRunResult:
     reader_1_adapter_class: str = "OllamaBlindReaderAdapter"
     reader_2_adapter_class: str = "OllamaBlindReaderAdapter"
     has_fake_adapter: bool = False
+    render_failure_rate: float = 0.0
+    max_render_failure_rate: float = DEFAULT_MAX_RENDER_FAILURE_RATE
     writer_adapter: object = None
     reader_1_adapter: object = None
     reader_2_adapter: object = None
@@ -323,6 +327,7 @@ def run_pilot_b_waves(
     num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
     num_predict_source: NumPredictSource | None = None,
     min_pass_rate_per_class: float = DEFAULT_MIN_PASS_RATE_PER_CLASS,
+    max_render_failure_rate: float = DEFAULT_MAX_RENDER_FAILURE_RATE,
 ) -> PilotBWaveRunResult:
     """Execute Pilot B in 4 strict single-model waves: render -> word -> reader_1 -> reader_2."""
     validate_chain_families(writer_model, reader_1.model, reader_2.model)
@@ -406,6 +411,7 @@ def run_pilot_b_waves(
             claim_evals=c_evals,
             passed=False,
             failure_reasons=(reason,),
+            render_failed=True,
         )
 
     for t in triads:
@@ -686,7 +692,9 @@ def run_pilot_b_waves(
 
     append_to_review_queue(review_queue_path, failed)
     rates = check_min_pass_rate_per_class(
-        evaluations, min_pass_rate_per_class=min_pass_rate_per_class
+        evaluations,
+        min_pass_rate_per_class=min_pass_rate_per_class,
+        max_render_failure_rate=max_render_failure_rate,
     )
     triad_rate = round(len(kept) / len(evaluations), 4) if evaluations else 0.0
 
@@ -761,6 +769,8 @@ def run_pilot_b_waves(
         failed_triads=tuple(failed),
         pass_rate_per_class=rates,
         triad_pass_rate=triad_rate,
+        render_failure_rate=round(render_failure_rate(evaluations), 4),
+        max_render_failure_rate=max_render_failure_rate,
         writer_adapter_class=w_cls,
         reader_1_adapter_class=r1_cls,
         reader_2_adapter_class=r2_cls,
