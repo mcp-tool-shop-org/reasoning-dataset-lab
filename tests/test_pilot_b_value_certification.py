@@ -367,3 +367,137 @@ def test_the_verify_command_fails_while_any_set_is_uncertified(tmp_path):
     manifest["content_sha256"] = vc.content_hash(manifest)
     vc.write_manifest(empty, manifest)
     assert run_cli(["pilot-b", "verify-values-manifest", str(empty)]) == 1
+
+
+def test_the_default_budgets_cover_the_measured_thinking_tokens():
+    """Stub 10d: readers spent up to 2,019 completion tokens per read, thinking included."""
+
+    assert vc.DEFAULT_NUM_PREDICT >= vc.MEASURED_MAX_COMPLETION_TOKENS
+    assert (
+        vc.DEFAULT_NUM_CTX >= vc.DEFAULT_NUM_PREDICT + 512
+    )  # the pair prompt and a margin fit beside it
+
+
+def test_the_cli_defaults_are_the_measured_budgets(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_build(families, **kw):
+        seen.update(kw)
+        return [FakeReader(GRANITE, []), FakeReader(NEMOTRON, [])]
+
+    monkeypatch.setattr(vc, "build_ollama_readers", fake_build)
+    rc = run_cli(
+        [
+            "pilot-b",
+            "certify-values",
+            "--domain",
+            "pumps",
+            "--manifest-out",
+            str(tmp_path / "m.json"),
+            "--review-queue-out",
+            str(tmp_path / "q.jsonl"),
+        ]
+    )
+    assert rc == 0
+    assert (
+        seen["num_ctx"] == vc.DEFAULT_NUM_CTX
+        and seen["num_predict"] == vc.DEFAULT_NUM_PREDICT
+    )
+
+
+def test_an_unknown_domain_is_a_usage_error(tmp_path):
+    rc = run_cli(
+        [
+            "pilot-b",
+            "certify-values",
+            "--domain",
+            "nowhere",
+            "--manifest-out",
+            str(tmp_path / "m.json"),
+            "--review-queue-out",
+            str(tmp_path / "q.jsonl"),
+        ]
+    )
+    assert rc == 2
+
+
+def test_an_unknown_reader_family_is_refused():
+    with pytest.raises(RdlabError) as caught:
+        vc.build_ollama_readers(
+            ["llama"], base_url="http://127.0.0.1:11434", num_ctx=4096, num_predict=3072
+        )
+    assert caught.value.code == "PILOT_B_CERT_UNKNOWN_READER"
+
+
+def test_the_real_reader_builder_returns_one_adapter_per_family_in_order():
+    readers = vc.build_ollama_readers(
+        ["granite", "nemotron"],
+        base_url="http://127.0.0.1:11434",
+        num_ctx=4096,
+        num_predict=3072,
+    )
+    assert [r.model.normalized_family for r in readers] == ["granite", "nemotron"]
+    assert all(r.max_num_ctx == 4096 and r.num_predict == 3072 for r in readers)
+
+
+def test_a_barred_reader_family_is_refused(tmp_path):
+    argon = ModelIdentity(name="gemini-4-argon", family="gemini", digest="e" * 64)
+    with pytest.raises(RdlabError) as caught:
+        _run([FakeReader(argon, []), FakeReader(NEMOTRON, [])], tmp_path=tmp_path)
+    assert caught.value.code == "PILOT_B_BARRED_MODEL_FAMILY"
+
+
+def test_a_full_fake_run_over_every_set_verifies_clean_and_the_cli_accepts_it(tmp_path):
+    readers = [FakeReader(GRANITE, []), FakeReader(NEMOTRON, [])]
+    run, _ = _run(readers, sets=SETS, tmp_path=tmp_path)
+    path = tmp_path / "full.json"
+    vc.write_manifest(path, run.manifest)
+    assert vc.verify_manifest(vc.load_manifest(path)) == []
+    assert run_cli(["pilot-b", "verify-values-manifest", str(path)]) == 0
+
+
+def test_the_loader_refuses_a_missing_file_and_a_missing_key(tmp_path):
+    with pytest.raises(RdlabError):
+        vc.load_manifest(tmp_path / "nope.json")
+    path = tmp_path / "short.json"
+    path.write_text(json.dumps({"format": vc.CERT_FORMAT}), encoding="utf-8")
+    with pytest.raises(RdlabError):
+        vc.load_manifest(path)
+
+
+def test_the_verifier_reports_a_stale_entry_a_gap_in_pairs_and_one_family(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    stale = json.loads(json.dumps(manifest["sets"][0]))
+    stale["attribute"] = "no longer a set"
+    manifest["sets"].append(stale)
+    manifest["sets"][1]["pairs"].pop()
+    manifest["sets"][2]["certified"] = False
+    manifest["readers"] = manifest["readers"][:1]
+    problems = vc.verify_manifest(manifest, SMALL)
+    text = "\n".join(problems)
+    assert (
+        "stale entry" in text
+        and "every directed pair" in text
+        and "not marked certified" in text
+        and "fewer than two" in text
+    )
+
+
+def test_a_wall_cap_hit_after_calibration_stops_the_run(tmp_path):
+    clock = FakeClock()
+    readers = [
+        FakeReader(GRANITE, [], clock=clock, seconds=1.0),
+        FakeReader(NEMOTRON, [], clock=clock, seconds=1.0),
+    ]
+    with pytest.raises(RdlabError) as caught:
+        vc.run_certification(
+            sets=SETS[:6],
+            entities=_entities(),
+            readers=readers,
+            review_queue_path=tmp_path / "q.jsonl",
+            options=vc.CertificationOptions(
+                wall_cap_s=200.0, calibration_calls=1_000, clock=clock
+            ),
+            date="2026-10-26",
+        )
+    assert caught.value.code == "PILOT_B_CERT_WALL_CAP_EXCEEDED"

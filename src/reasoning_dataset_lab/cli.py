@@ -347,8 +347,8 @@ def _build_certify_values_parser() -> _StructuredArgumentParser:
         ),
     )
     parser.add_argument("--readers", default="granite,nemotron", help="Comma-separated reader families, run in this order (default: granite,nemotron).")
-    parser.add_argument("--num-ctx", dest="num_ctx", type=int, default=2048, help="Cap on each reader's num_ctx (default: 2048).")
-    parser.add_argument("--num-predict", dest="num_predict", type=int, default=128, help="Each reader's num_predict (default: 128).")
+    parser.add_argument("--num-ctx", dest="num_ctx", type=int, default=value_certification.DEFAULT_NUM_CTX, help=f"Cap on each reader's num_ctx (default: {value_certification.DEFAULT_NUM_CTX}; thinking tokens count, see value_certification.py).")
+    parser.add_argument("--num-predict", dest="num_predict", type=int, default=value_certification.DEFAULT_NUM_PREDICT, help=f"Each reader's num_predict (default: {value_certification.DEFAULT_NUM_PREDICT}; thinking tokens count against it).")
     parser.add_argument("--wall-cap-s", dest="wall_cap_s", type=float, default=10800.0, help="Stop when the projected or elapsed wall time passes this many seconds (default: 10800).")
     parser.add_argument("--calibration-calls", dest="calibration_calls", type=int, default=20, help="Calls timed per reader before the projection (default: 20).")
     parser.add_argument("--error-rate-stop", dest="error_rate_stop", type=float, default=0.02, help="Stop when more than this share of verdicts are malformed or failed (default: 0.02).")
@@ -392,7 +392,7 @@ def _run_certify_values(argv: Sequence[str]) -> int:
             error_rate_stop=args.error_rate_stop,
             error_rate_min_calls=args.error_rate_min_calls,
         ),
-        date=args.date or datetime.date.today().isoformat(),
+        date=args.date or datetime.datetime.now(datetime.UTC).date().isoformat(),
     )
     value_certification.write_manifest(args.manifest_out, run.manifest)
     print(

@@ -35,6 +35,14 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
 )
 
 CERT_FORMAT = 1
+
+# Both pinned readers run with think=True, and Ollama counts thinking tokens against num_predict. Measured in Pilot B
+# stub 10d (completion_tokens per read, all done_reason stop): nemotron 347 to 2,019, granite 158 to 1,899. A budget of
+# 128 would end nearly every call at "length", so the defaults cover the measured maximum with room for a short pair
+# prompt (about 150 tokens) inside num_ctx.
+MEASURED_MAX_COMPLETION_TOKENS = 2019
+DEFAULT_NUM_PREDICT = 3072
+DEFAULT_NUM_CTX = 4096
 CONTRADICTION = "unsupported"
 FAILED_DONE_REASONS = ("length", "max_num_ctx_exceeded")
 
