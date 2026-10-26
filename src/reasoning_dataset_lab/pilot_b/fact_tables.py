@@ -88,17 +88,17 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "interval_attr": ("output capacity", "megawatts"),
         "state_attr": (
             "grid status",
-            ("online", "standby", "offline", "synchronizing", "faulted"),
+            ("online", "standby", "offline", "synchronizing", "islanded"),
         ),
         "attr_spec": (
             "casing alloy",
             ("titanium", "inconel", "steel", "hastelloy", "cobalt"),
         ),
         "open_attrs": (
-            ("cooling medium", ("helium", "nitrogen", "hydrogen", "water", "air")),
+            ("cooling medium", ("helium", "nitrogen", "hydrogen", "water", "oil")),
             (
                 "lubricant grade",
-                ("polyalphaolefin", "mineral", "ester", "polyol", "silicone"),
+                ("polyalphaolefin", "mineral", "ester", "polyglycol", "silicone"),
             ),
             (
                 "governor mode",
@@ -121,7 +121,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "interval_attr": ("switching latency", "milliseconds"),
         "state_attr": (
             "breaker state",
-            ("armed", "bypassed", "locked", "tripped", "reset"),
+            ("armed", "bypassed", "racked", "tripped", "reset"),
         ),
         "attr_spec": (
             "contact plating",
@@ -259,7 +259,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "open_attrs": (
             (
                 "intercooler medium",
-                ("glycol", "brine", "water", "air", "oil"),
+                ("glycol", "refrigerant", "water", "air", "oil"),
             ),
             (
                 "shaft seal",
@@ -290,7 +290,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         ),
         "attr_spec": (
             "core steel",
-            ("silicon", "amorphous", "ferrite", "laminated", "nanocrystalline"),
+            ("silicon", "amorphous", "ferrite", "permalloy", "nanocrystalline"),
         ),
         "open_attrs": (
             (
@@ -394,7 +394,7 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "interval_attr": ("discharge pressure", "bars"),
         "state_attr": (
             "valve state",
-            ("open", "locked", "closed", "primed", "bypassed"),
+            ("open", "chattering", "closed", "primed", "bypassed"),
         ),
         "attr_spec": (
             "seal material",
@@ -428,12 +428,19 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
 # ``general`` is the term that covers the others, or, for a synonym or an overlap, the one value that was dropped.
 VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str], ...]] = {
     ("turbines", "casing alloy"): (("nickel", ("inconel",), "inconel is a nickel-based alloy"),),
-    ("turbines", "lubricant grade"): (("synthetic", ("ester", "polyol", "silicone"), "esters, polyols and silicones are synthetic lubricants"),),
-    ("turbines", "grid status"): (("isolated", ("offline",), "an isolated unit is disconnected, so offline is true of it"),),
+    ("turbines", "lubricant grade"): (
+        ("synthetic", ("ester", "polyol", "silicone"), "esters, polyols and silicones are synthetic lubricants"),
+        ("ester", ("polyol",), "polyol esters are esters"),
+    ),
+    ("turbines", "grid status"): (
+        ("isolated", ("offline",), "an isolated unit is disconnected, so offline is true of it"),
+        ("faulted", ("offline",), "a faulted unit is off the grid, so offline is true of it"),
+    ),
     ("relays", "enclosure rating"): (
         ("weatherproof", ("waterproof",), "weatherproof covers water"),
         ("sealed", ("waterproof", "dustproof"), "a sealed enclosure keeps out water and dust"),
     ),
+    ("relays", "breaker state"): (("locked", ("tripped",), "a lockout is entered from a trip, so a locked breaker is also tripped"),),
     ("relays", "coil voltage"): (("nominal", ("low", "medium", "high"), "nominal is any band's rated value"),),
     ("vessels", "berth status"): (("moored", ("docked",), "a docked vessel is moored"),),
     ("vessels", "ice class"): (("arctic", ("polar",), "arctic and polar are the same class"),),
@@ -444,10 +451,14 @@ VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str]
     ("furnaces", "damper state"): (("damped", ("throttled",), "damped and throttled are the same state"),),
     ("furnaces", "purge gas"): (("inert", ("argon", "nitrogen", "helium"), "argon, nitrogen and helium are inert gases"),),
     ("furnaces", "thermocouple type"): (("nickel", ("chromel", "alumel"), "chromel and alumel are nickel alloys"),),
+    ("compressors", "intercooler medium"): (("brine", ("water",), "brine is water with salt in it"),),
     ("compressors", "intake state"): (("idling", ("unloaded",), "an idling compressor is unloaded"),),
     ("compressors", "rotor coating"): (("ceramic", ("carbide", "nitride"), "carbides and nitrides are ceramics"),),
     ("compressors", "shaft seal"): (("carbon", ("mechanical",), "a carbon ring is the face of a mechanical seal"),),
-    ("transformers", "core steel"): (("oriented", ("silicon",), "oriented steel is grain-oriented silicon steel"),),
+    ("transformers", "core steel"): (
+        ("oriented", ("silicon",), "oriented steel is grain-oriented silicon steel"),
+        ("laminated", ("silicon", "amorphous", "ferrite"), "laminated is how a core is built, not what it is made of"),
+    ),
     ("transformers", "dielectric fluid"): (("mineral", ("paraffinic", "naphthenic"), "paraffinic and naphthenic oils are mineral oils"),),
     ("transformers", "bushing material"): (
         ("ceramic", ("porcelain",), "porcelain is a ceramic"),
@@ -465,8 +476,28 @@ VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str]
     ("chillers", "brazing filler"): (("bronze", ("copper",), "bronze is a copper alloy"),),
     ("chillers", "refrigerant blend"): (("halocarbon", ("hydrofluoro",), "hydrofluorocarbons are halocarbons"),),
     ("chillers", "condenser cooling"): (("hybrid", ("evaporative", "watercooled", "aircooled"), "hybrid is a mix of the others"),),
-    ("pumps", "valve state"): (("throttled", ("open",), "a throttled valve is partly open"),),
+    ("pumps", "valve state"): (
+        ("throttled", ("open",), "a throttled valve is partly open"),
+        ("locked", ("open", "closed"), "a valve is locked open or locked closed"),
+    ),
     ("pumps", "bearing type"): (("ceramic", ("ball", "roller"), "ceramic is a material that ball and roller bearings are made of"),),
+    ("turbines", "cooling medium"): (("air", ("nitrogen",), "air is about four-fifths nitrogen"),),
+}
+
+
+# Pairs that sit in one set and were reviewed as exclusive because of what the attribute means. Each row:
+# (domain, attribute) -> ((value, value, why they exclude each other), ...). The test checks the pair is really in
+# that set, so a row cannot outlive the values it describes.
+EXCLUSIVE_BY_MEANING: dict[tuple[str, str], tuple[tuple[str, str, str], ...]] = {
+    ("turbines", "grid status"): (("standby", "offline", "standby is a hot reserve, ready to synchronise; offline is shut down"),),
+    ("turbines", "casing alloy"): (("inconel", "hastelloy", "two named nickel-chromium alloys of different families; neither is the other"),),
+    ("compressors", "intercooler medium"): (("glycol", "water", "glycol is the undiluted glycol coolant; a glycol-water mix is not a value in this set"),),
+    ("chillers", "condenser cooling"): (
+        ("evaporative", "watercooled", "evaporative rejects heat by evaporating spray water at the coil; watercooled rejects it into a water loop with no evaporation at the condenser"),
+        ("glycol", "aircooled", "glycol is a glycol loop to a heat exchanger; aircooled blows air over the refrigerant coil"),
+        ("geothermal", "watercooled", "geothermal rejects heat into a ground loop, not a cooling-water circuit"),
+    ),
+    ("relays", "enclosure rating"): (("dustproof", "waterproof", "two separate ingress ratings: dust only, water only"),),
 }
 
 

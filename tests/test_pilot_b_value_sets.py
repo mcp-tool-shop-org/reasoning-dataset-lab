@@ -13,6 +13,7 @@ import pytest
 
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     DOMAIN_CATALOGUE,
+    EXCLUSIVE_BY_MEANING,
     VALUE_SUBSUMPTIONS,
     value_sets,
 )
@@ -36,7 +37,9 @@ def test_no_value_set_holds_a_value_beside_one_it_covers(domain, attribute, valu
     for general, members, reason in VALUE_SUBSUMPTIONS.get((domain, attribute), ()):
         if general in values:
             clash = [m for m in members if m in values]
-            assert not clash, f"{domain}/{attribute}: '{general}' covers {clash} ({reason})"
+            assert not clash, (
+                f"{domain}/{attribute}: '{general}' covers {clash} ({reason})"
+            )
 
 
 @pytest.mark.parametrize(("domain", "attribute", "values"), SETS, ids=SET_IDS)
@@ -46,9 +49,9 @@ def test_no_value_is_a_part_of_another_value_in_its_set(domain, attribute, value
     for a in values:
         for b in values:
             if a != b:
-                assert not re.search(rf"(?<![a-z]){re.escape(a.lower())}(?![a-z])", b.lower()), (
-                    f"{domain}/{attribute}: '{a}' is inside '{b}'"
-                )
+                assert not re.search(
+                    rf"(?<![a-z]){re.escape(a.lower())}(?![a-z])", b.lower()
+                ), f"{domain}/{attribute}: '{a}' is inside '{b}'"
 
 
 def test_every_rule_names_a_real_set():
@@ -64,5 +67,34 @@ def test_the_two_stub_10d_sets_are_fixed():
     sets = {(d, a): values for d, a, values in SETS}
     assert "synthetic" not in sets[("turbines", "lubricant grade")]
     assert "mineral" not in sets[("transformers", "dielectric fluid")]
-    assert {"ester", "polyol", "silicone"} <= set(sets[("turbines", "lubricant grade")])
-    assert {"paraffinic", "naphthenic"} <= set(sets[("transformers", "dielectric fluid")])
+    assert {"ester", "silicone"} <= set(sets[("turbines", "lubricant grade")])
+    assert {"paraffinic", "naphthenic"} <= set(
+        sets[("transformers", "dielectric fluid")]
+    )
+
+
+def test_every_kept_pair_is_really_in_its_set_and_says_why():
+    """A pair reviewed as exclusive by meaning stays honest: both values are in that set, and the reason is written."""
+
+    sets = {(d, a): values for d, a, values in SETS}
+    assert set(EXCLUSIVE_BY_MEANING) <= set(sets)
+    for key, rows in EXCLUSIVE_BY_MEANING.items():
+        for first, second, why in rows:
+            assert first in sets[key] and second in sets[key], (key, first, second)
+            assert first != second and len(why) > 20, (key, first, second)
+
+
+def test_a_kept_pair_is_never_also_a_covering_pair():
+    for key, rows in EXCLUSIVE_BY_MEANING.items():
+        for first, second, _ in rows:
+            for general, members, _ in VALUE_SUBSUMPTIONS.get(key, ()):
+                assert not (
+                    general in (first, second) and (set(members) & {first, second})
+                ), (key, first, second)
+
+
+def test_the_second_pass_replacements_are_in():
+    sets = {(d, a): values for d, a, values in SETS}
+    assert "air" not in sets[("turbines", "cooling medium")]
+    assert "brine" not in sets[("compressors", "intercooler medium")]
+    assert "polyol" not in sets[("turbines", "lubricant grade")]
