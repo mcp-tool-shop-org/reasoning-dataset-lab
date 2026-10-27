@@ -319,6 +319,7 @@ def _assemble(
     stopped: str | None,
     control: dict[str, Any],
     control_failed: bool,
+    licence_registry_sha256: str,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The manifest of the sets every reader has fully read as contradictions, and the queue of the rest."""
 
@@ -395,6 +396,7 @@ def _assemble(
         "control_failed": control_failed,
         "prompt_sha256": PROMPT_SHA256,
         "control_pairs_sha256": CONTROL_PAIRS_SHA256,
+        "licence_registry_sha256": licence_registry_sha256,
     }
     manifest["content_sha256"] = content_hash(manifest)
     return manifest, queue
@@ -409,6 +411,7 @@ def run_certification(
     options: CertificationOptions | None = None,
     date: str,
     manifest_path: Path | None = None,
+    licence_registry_sha256: str,
 ) -> CertificationRun:
     """Ask every reader about every directed pair of every set, one reader at a time, and build the manifest.
 
@@ -464,6 +467,7 @@ def run_certification(
             stopped=stopped,
             control=control,
             control_failed=control_failed,
+            licence_registry_sha256=licence_registry_sha256,
         )
         review_queue_path.parent.mkdir(parents=True, exist_ok=True)
         review_queue_path.write_text(
@@ -618,8 +622,19 @@ def _pinned_readers() -> set[tuple[str, str, str]]:
     return {(s.ollama_tag, s.manifest_digest, s.family.strip().lower()) for s in pins}
 
 
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(c in "0123456789abcdef" for c in value)
+    )
+
+
 def verify_manifest(
-    manifest: dict[str, Any], sets: Sequence[ValueSet] | None = None
+    manifest: dict[str, Any],
+    sets: Sequence[ValueSet] | None = None,
+    *,
+    licence_registry_path: Path | None = None,
 ) -> list[str]:
     """Problems that keep the manifest from certifying the current sets; an empty list means every set is certified."""
 
@@ -641,6 +656,21 @@ def verify_manifest(
         problems.append(
             "prompt: the manifest was made with a different prompt than this code's"
         )
+    recorded_registry = manifest.get("licence_registry_sha256")
+    if not _is_sha256(recorded_registry):
+        problems.append(
+            "licence: the manifest records no licence-registry sha256, so its readers were not checked against a registry"
+        )
+    elif licence_registry_path is not None:
+        try:
+            actual_registry = hashlib.sha256(licence_registry_path.read_bytes()).hexdigest()
+        except OSError:
+            problems.append(f"licence: cannot read the registry at {licence_registry_path}")
+        else:
+            if actual_registry != recorded_registry:
+                problems.append(
+                    "licence: the manifest was made against a different licence registry than this one"
+                )
     if manifest.get("control_pairs_sha256") != CONTROL_PAIRS_SHA256:
         problems.append(
             "control: the manifest was made with a different control-pair table than this code's"
@@ -728,6 +758,29 @@ def verify_manifest(
     return problems
 
 
+def reader_pins(families: Sequence[str]) -> list[Any]:
+    """The pinned model specs of the named reader families, in order; an unknown family is refused.
+
+    The licence gate validates exactly these before any Ollama call.
+    """
+
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        DEFAULT_PILOT_B_MODEL_PINS,
+    )
+    from reasoning_dataset_lab.pilot_b.ollama import READER_ROLE_BY_FAMILY
+
+    specs: list[Any] = []
+    for family in families:
+        if family not in READER_ROLE_BY_FAMILY:
+            raise refused_error(
+                "PILOT_B_CERT_UNKNOWN_READER",
+                f"Unknown reader family '{family}'.",
+                f"Choose from: {', '.join(sorted(READER_ROLE_BY_FAMILY))}.",
+            )
+        specs.append(DEFAULT_PILOT_B_MODEL_PINS[READER_ROLE_BY_FAMILY[family]])
+    return specs
+
+
 def build_ollama_readers(
     families: Sequence[str],
     *,
@@ -737,28 +790,14 @@ def build_ollama_readers(
 ) -> list[Any]:
     """Real loopback readers for the named families, in the order given (each one is run alone, then unloaded)."""
 
-    from reasoning_dataset_lab.pilot_b.models_and_build import (
-        DEFAULT_PILOT_B_MODEL_PINS,
-    )
     from reasoning_dataset_lab.pilot_b.ollama import OllamaBlindReaderAdapter
 
-    by_family = {
-        "nemotron": ("reader_1", "reader_1"),
-        "granite": ("reader_2", "reader_2"),
-        "mistral": ("reader_3", "reader_3"),
-    }
     readers: list[Any] = []
-    for family in families:
-        if family not in by_family:
-            raise refused_error(
-                "PILOT_B_CERT_UNKNOWN_READER",
-                f"Unknown reader family '{family}'.",
-                f"Choose from: {', '.join(sorted(by_family))}.",
-            )
-        pin_key, role = by_family[family]
+    for spec in reader_pins(families):
+        role = spec.role
         readers.append(
             OllamaBlindReaderAdapter(
-                model=DEFAULT_PILOT_B_MODEL_PINS[pin_key],
+                model=spec,
                 base_url=base_url,
                 num_predict=num_predict,
                 role=role,  # type: ignore[arg-type]

@@ -125,6 +125,13 @@ DEFAULT_READER_2_MAX_NUM_CTX: int = 8192
 # reader_3 (mistral-small3.2:24b) is used by the certification only, which runs at num_ctx 4096; its cap is not raised past reader_1's.
 DEFAULT_READER_3_MAX_NUM_CTX: int = 7168
 
+# The reader role of each reader family. One map: the adapter's role fallback and the certification's reader builder both use it.
+READER_ROLE_BY_FAMILY: dict[str, str] = {
+    "nemotron": "reader_1",
+    "granite": "reader_2",
+    "mistral": "reader_3",
+}
+
 # Per-role max_num_ctx defaults:
 # - writer (qwen3.6:35b, weights 22.6 GB): 9216 (Qwen VRAM check 2026-10-25: peak 25,445 MiB at num_ctx 9,216 (render) and 25,399 MiB at 7,168 (word); halt line 26,000 MiB)
 # - reader_1 (nemotron-3.5-lightning:30b, weights 25.4 GB): 7168 (Publisher's recorded exception to the 26 GB rule:
@@ -1280,15 +1287,16 @@ class OllamaBlindReaderAdapter:
         )
         self._base_url = require_loopback_ollama_url(base_url)
         self._model = _resolve_model_identity(model)
-        resolved_role: Literal["reader_1", "reader_2", "reader_3"] = (
-            role
-            if role is not None
-            else (
-                "reader_2"
-                if self._model.normalized_family == "granite"
-                else "reader_1"
-            )
-        )
+        if role is None:
+            mapped = READER_ROLE_BY_FAMILY.get(self._model.normalized_family)
+            if mapped is None:
+                raise refused_error(
+                    "PILOT_B_UNKNOWN_READER_FAMILY",
+                    f"No reader role for the model family '{self._model.normalized_family}'.",
+                    f"Pass role explicitly, or use a family from: {', '.join(sorted(READER_ROLE_BY_FAMILY))}.",
+                )
+            role = mapped  # type: ignore[assignment]
+        resolved_role: Literal["reader_1", "reader_2", "reader_3"] = role  # type: ignore[assignment]
         self._role = resolved_role
         default_role_max = DEFAULT_ROLE_MAX_NUM_CTX[resolved_role]
         resolved_max_ctx = (

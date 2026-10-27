@@ -5,6 +5,7 @@ No manifest is committed and no claim is made here: the tool is tested with fake
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,9 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
 GRANITE = DEFAULT_PILOT_B_MODEL_PINS["reader_2"].to_model_identity()
 NEMOTRON = DEFAULT_PILOT_B_MODEL_PINS["reader_1"].to_model_identity()
 FAKE_GRANITE = ModelIdentity(name="granite4.2:8b", family="granite", digest="c" * 64)
+# A copy of rnd's licences/registry.json at fb27d76 (rnd #247): the registry the CLI tests and the manifest tests use.
+RND_REGISTRY_COPY = Path(__file__).parent / "fixtures" / "rnd-licences-registry-fb27d76.json"
+REGISTRY_SHA256 = hashlib.sha256(RND_REGISTRY_COPY.read_bytes()).hexdigest()
 SETS = value_sets()
 SMALL = SETS[:3]
 
@@ -93,6 +97,7 @@ def _run(readers, sets=SMALL, tmp_path=None, **options):
         review_queue_path=queue,
         options=vc.CertificationOptions(**options),
         date="2026-10-26",
+        licence_registry_sha256=REGISTRY_SHA256,
     ), queue
 
 
@@ -255,6 +260,7 @@ def test_the_run_stops_after_calibration_when_the_projected_total_passes_the_wal
                 wall_cap_s=600.0, calibration_calls=20, clock=clock
             ),
             date="2026-10-26",
+            licence_registry_sha256=REGISTRY_SHA256,
         )
     assert caught.value.code == "PILOT_B_CERT_WALL_CAP_EXCEEDED"
     assert (
@@ -385,6 +391,8 @@ def test_the_cli_writes_the_manifest_and_the_queue_at_absolute_paths(
             "0.02",
             "--domain",
             "pumps",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
             "--manifest-out",
             str(manifest),
             "--review-queue-out",
@@ -402,6 +410,8 @@ def test_the_cli_refuses_relative_output_paths():
         [
             "pilot-b",
             "certify-values",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
             "--manifest-out",
             "m.json",
             "--review-queue-out",
@@ -447,6 +457,8 @@ def test_the_cli_defaults_are_the_measured_budgets(monkeypatch, tmp_path):
             "certify-values",
             "--domain",
             "pumps",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
             "--manifest-out",
             str(tmp_path / "m.json"),
             "--review-queue-out",
@@ -467,6 +479,8 @@ def test_an_unknown_domain_is_a_usage_error(tmp_path):
             "certify-values",
             "--domain",
             "nowhere",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
             "--manifest-out",
             str(tmp_path / "m.json"),
             "--review-queue-out",
@@ -554,6 +568,7 @@ def test_a_wall_cap_hit_after_calibration_stops_the_run(tmp_path):
                 wall_cap_s=200.0, calibration_calls=1_000, clock=clock
             ),
             date="2026-10-26",
+            licence_registry_sha256=REGISTRY_SHA256,
         )
     assert caught.value.code == "PILOT_B_CERT_WALL_CAP_EXCEEDED"
 
@@ -633,6 +648,7 @@ def test_a_stop_still_writes_the_manifest_the_queue_and_the_failing_calls(tmp_pa
             review_queue_path=queue_path,
             options=vc.CertificationOptions(error_rate_min_calls=10),
             date="2026-10-26",
+            licence_registry_sha256=REGISTRY_SHA256,
             manifest_path=manifest_path,
         )
     assert caught.value.code == "PILOT_B_CERT_ERROR_RATE_EXCEEDED"
@@ -696,6 +712,7 @@ def test_the_projection_is_made_even_when_one_readers_jobs_equal_the_calibration
                 wall_cap_s=2500.0, calibration_calls=20, clock=clock
             ),
             date="2026-10-26",
+            licence_registry_sha256=REGISTRY_SHA256,
         )
     assert caught.value.code == "PILOT_B_CERT_WALL_CAP_EXCEEDED"
     assert len(readers[1].prompts) == 0  # stopped before the second reader started
@@ -804,6 +821,7 @@ def test_a_failed_control_certifies_nothing_and_says_so_in_the_manifest(tmp_path
             review_queue_path=tmp_path / "q.jsonl",
             options=vc.CertificationOptions(),
             date="2026-10-26",
+            licence_registry_sha256=REGISTRY_SHA256,
             manifest_path=manifest_path,
         )
     assert caught.value.code == "PILOT_B_CERT_CONTROL_FAILED"
@@ -1042,10 +1060,6 @@ def test_an_unknown_reader_family_still_refuses_and_the_hint_lists_the_three():
     assert "granite, mistral, nemotron" in str(exc.value)
 
 
-# A copy of rnd's licences/registry.json at fb27d76 (rnd #247), the registry that carries the two Mistral entries.
-RND_REGISTRY_COPY = Path(__file__).parent / "fixtures" / "rnd-licences-registry-fb27d76.json"
-
-
 def test_the_real_registry_accepts_the_mistral_pin_and_every_default_pin():
     from reasoning_dataset_lab.pilot_b.models_and_build import validate_models_against_licence_registry
 
@@ -1100,3 +1114,153 @@ def test_the_build_chain_leaves_out_the_certification_only_reader():
     from reasoning_dataset_lab.pilot_b.models_and_build import _build_chain, resolve_pilot_b_model_pins
 
     assert set(_build_chain(resolve_pilot_b_model_pins())) == {"writer", "reader_1", "reader_2"}
+
+
+# ---- the licence gate on certify-values, the registry sha in the manifest, and the role fallback
+
+
+def _certify_argv(tmp_path, registry, readers="mistral,nemotron"):
+    return [
+        "pilot-b",
+        "certify-values",
+        "--readers",
+        readers,
+        "--domain",
+        "pumps",
+        "--licence-registry",
+        str(registry),
+        "--manifest-out",
+        str(tmp_path / "m.json"),
+        "--review-queue-out",
+        str(tmp_path / "q.jsonl"),
+    ]
+
+
+def test_certify_values_requires_a_licence_registry(tmp_path):
+    argv = _certify_argv(tmp_path, RND_REGISTRY_COPY)
+    del argv[argv.index("--licence-registry") : argv.index("--licence-registry") + 2]
+    assert run_cli(argv) == 2
+
+
+def test_certify_values_refuses_before_any_transport_call_when_a_readers_licence_entry_is_missing(
+    monkeypatch, tmp_path
+):
+    registry = json.loads(RND_REGISTRY_COPY.read_text(encoding="utf-8"))
+    kept = [e for e in registry["entries"] if e["id"] != "mistral-small-3.2-24b-hf-card"]
+    assert len(kept) == len(registry["entries"]) - 1
+    without = tmp_path / "registry-without-mistral.json"
+    without.write_text(json.dumps({**registry, "entries": kept}), encoding="utf-8")
+
+    seen: list = []
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        lambda method, url, body=None: seen.append((method, url)) or {},
+    )
+
+    def must_not_build(families, **kw):
+        raise AssertionError("readers were built before the licence gate refused")
+
+    monkeypatch.setattr(vc, "build_ollama_readers", must_not_build)
+    rc = run_cli(_certify_argv(tmp_path, without))
+    assert rc == 1  # EXIT_REFUSED
+    assert seen == []
+    assert not (tmp_path / "m.json").exists()
+
+
+def test_certify_values_proceeds_against_the_real_registry_and_records_its_sha(monkeypatch, tmp_path):
+    events: list = []
+    monkeypatch.setattr(
+        vc,
+        "build_ollama_readers",
+        lambda families, **kw: [FakeReader(MISTRAL, events), FakeReader(NEMOTRON, events)],
+    )
+    rc = run_cli(_certify_argv(tmp_path, RND_REGISTRY_COPY))
+    assert rc == 0
+    doc = json.loads((tmp_path / "m.json").read_text(encoding="utf-8"))
+    assert doc["licence_registry_sha256"] == REGISTRY_SHA256
+
+
+def test_the_gate_validates_exactly_the_readers_that_will_run(monkeypatch, tmp_path):
+    # a registry that lacks only the Mistral entry still lets granite and nemotron through
+    registry = json.loads(RND_REGISTRY_COPY.read_text(encoding="utf-8"))
+    kept = [e for e in registry["entries"] if e["id"] != "mistral-small-3.2-24b-hf-card"]
+    without = tmp_path / "registry-without-mistral.json"
+    without.write_text(json.dumps({**registry, "entries": kept}), encoding="utf-8")
+    events: list = []
+    monkeypatch.setattr(
+        vc,
+        "build_ollama_readers",
+        lambda families, **kw: [FakeReader(GRANITE, events), FakeReader(NEMOTRON, events)],
+    )
+    assert run_cli(_certify_argv(tmp_path, without, readers="granite,nemotron")) == 0
+
+
+def test_reader_pins_are_the_pins_of_the_families_in_order_and_an_unknown_family_refuses():
+    pins = vc.reader_pins(["mistral", "granite"])
+    assert [p.ollama_tag for p in pins] == ["mistral-small3.2:24b", "granite4.2:8b"]
+    with pytest.raises(RdlabError) as caught:
+        vc.reader_pins(["llama"])
+    assert caught.value.code == "PILOT_B_CERT_UNKNOWN_READER"
+
+
+def test_the_manifest_requires_a_registry_sha_and_the_verifier_recomputes_it(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    assert manifest["licence_registry_sha256"] == REGISTRY_SHA256
+    assert vc.verify_manifest(manifest, SMALL) == []
+    assert vc.verify_manifest(manifest, SMALL, licence_registry_path=RND_REGISTRY_COPY) == []
+
+    # another registry file: the recomputed sha differs
+    other = tmp_path / "other-registry.json"
+    other.write_text(RND_REGISTRY_COPY.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    problems = vc.verify_manifest(manifest, SMALL, licence_registry_path=other)
+    assert any("different licence registry" in p for p in problems)
+
+    # a registry file that cannot be read
+    problems = vc.verify_manifest(manifest, SMALL, licence_registry_path=tmp_path / "nope.json")
+    assert any("cannot read the registry" in p for p in problems)
+
+    # no sha recorded, or a malformed one
+    for bad in (None, "", "xyz", "A" * 64):
+        broken = dict(manifest)
+        broken["licence_registry_sha256"] = bad
+        assert any("records no licence-registry sha256" in p for p in vc.verify_manifest(broken, SMALL))
+    del manifest["licence_registry_sha256"]
+    assert any("records no licence-registry sha256" in p for p in vc.verify_manifest(manifest, SMALL))
+
+
+def test_the_verify_command_recomputes_the_registry_sha(tmp_path, capsys):
+    manifest = _good_manifest(tmp_path)
+    path = tmp_path / "manifest.json"
+    vc.write_manifest(path, manifest)
+    # the shipped manifest is for SMALL, so the command reports uncertified sets; read only the licence problem
+    run_cli(["pilot-b", "verify-values-manifest", str(path), "--licence-registry", str(RND_REGISTRY_COPY)])
+    assert "different licence registry" not in capsys.readouterr().err
+    other = tmp_path / "other.json"
+    other.write_text("{}", encoding="utf-8")
+    run_cli(["pilot-b", "verify-values-manifest", str(path), "--licence-registry", str(other)])
+    assert "different licence registry" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("family", "role"),
+    [("granite", "reader_2"), ("nemotron", "reader_1"), ("mistral", "reader_3")],
+)
+def test_the_adapter_role_fallback_maps_each_family_to_its_role(family, role):
+    from reasoning_dataset_lab.pilot_b.ollama import OllamaBlindReaderAdapter
+
+    model = ModelIdentity(name=f"{family}-x", family=family, digest="a" * 64)
+    assert OllamaBlindReaderAdapter(model, base_url="http://127.0.0.1:11434", num_predict=64).role == role
+
+
+def test_the_adapter_role_fallback_refuses_an_unknown_family_instead_of_defaulting():
+    from reasoning_dataset_lab.pilot_b.ollama import OllamaBlindReaderAdapter
+
+    model = ModelIdentity(name="mystery-x", family="mystery", digest="a" * 64)
+    with pytest.raises(RdlabError) as caught:
+        OllamaBlindReaderAdapter(model, base_url="http://127.0.0.1:11434", num_predict=64)
+    assert caught.value.code == "PILOT_B_UNKNOWN_READER_FAMILY"
+    # an explicit role still works for any family
+    ok = OllamaBlindReaderAdapter(
+        model, base_url="http://127.0.0.1:11434", num_predict=64, role="reader_1"
+    )
+    assert ok.role == "reader_1"
