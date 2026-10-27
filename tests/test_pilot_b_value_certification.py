@@ -1042,18 +1042,41 @@ def test_an_unknown_reader_family_still_refuses_and_the_hint_lists_the_three():
     assert "granite, mistral, nemotron" in str(exc.value)
 
 
-def test_the_licence_check_refuses_the_mistral_pin_without_its_registry_entry_and_accepts_it_with():
+# A copy of rnd's licences/registry.json at fb27d76 (rnd #247), the registry that carries the two Mistral entries.
+RND_REGISTRY_COPY = Path(__file__).parent / "fixtures" / "rnd-licences-registry-fb27d76.json"
+
+
+def test_the_real_registry_accepts_the_mistral_pin_and_every_default_pin():
+    from reasoning_dataset_lab.pilot_b.models_and_build import validate_models_against_licence_registry
+
+    checked = validate_models_against_licence_registry([MISTRAL_PIN], registry_path=RND_REGISTRY_COPY)
+    assert len(checked) == 1
+    everything = validate_models_against_licence_registry(
+        list(DEFAULT_PILOT_B_MODEL_PINS.values()), registry_path=RND_REGISTRY_COPY
+    )
+    assert len(everything) == 4
+
+
+def test_the_licence_check_refuses_the_mistral_pin_when_its_registry_entry_is_removed(tmp_path):
+    from reasoning_dataset_lab.pilot_b.models_and_build import validate_models_against_licence_registry
+
+    registry = json.loads(RND_REGISTRY_COPY.read_text(encoding="utf-8"))
+    kept = [e for e in registry["entries"] if e["id"] != "mistral-small-3.2-24b-hf-card"]
+    assert len(kept) == len(registry["entries"]) - 1
+    removed = tmp_path / "registry-without-mistral.json"
+    removed.write_text(json.dumps({**registry, "entries": kept}), encoding="utf-8")
+    with pytest.raises(RdlabError):
+        validate_models_against_licence_registry([MISTRAL_PIN], registry_path=removed)
+
+
+def test_the_fixture_registry_used_by_stub_runs_also_carries_the_mistral_entry():
     from reasoning_dataset_lab.pilot_b.models_and_build import (
         build_fixture_licence_registry,
         validate_models_against_licence_registry,
     )
 
     entries = {str(e["id"]): e for e in build_fixture_licence_registry()["entries"]}
-    assert "mistral-small-3.2-24b-hf-card" in entries
     assert validate_models_against_licence_registry([MISTRAL_PIN], registry_entries=entries)
-    without = {k: v for k, v in entries.items() if k != "mistral-small-3.2-24b-hf-card"}
-    with pytest.raises(RdlabError):
-        validate_models_against_licence_registry([MISTRAL_PIN], registry_entries=without)
 
 
 def test_the_manifest_lists_reader_3_when_it_ran_and_an_older_manifest_still_verifies(tmp_path):

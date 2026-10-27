@@ -1,0 +1,1728 @@
+{
+  "_about": "The studio's path to every licence and terms page it relies on for AI-generated content: the page, the exact clause, its date, and R&D's verdict per use. Uses: assets (shipping output commercially), training (output as training data), evaluation (output in tests or controls), code (AI-written code in studio tools). Verdicts: proven, conditions (proven with the conditions listed), barred, not_proven, n/a. snapshot_sha256 is the sha256 of the page text as fetched on read_date; full-text snapshots are kept off the repo (see README). This is a reading of published terms, not legal advice.",
+  "schema_version": 1,
+  "entries": [
+    {
+      "id": "google-tos",
+      "owner": "Google",
+      "kind": "service-terms",
+      "covers": [
+        "Gemini app (Browser Argon)",
+        "Antigravity (Argon builds)",
+        "Flow",
+        "Flow Music",
+        "Project Genie"
+      ],
+      "url": "https://policies.google.com/terms",
+      "page_date": "2026-07-30 (effective)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "using AI-generated content from our services to develop machine learning models or related AI technology",
+        "Google won't claim ownership over that content"
+      ],
+      "uses": {
+        "assets": "conditions",
+        "training": "barred",
+        "evaluation": "conditions",
+        "code": "conditions"
+      },
+      "notes": "Revised 2026-10-16: game code, dialogue, lore that isn't training data, and docs are allowed; the ML clause stands. Revised 2026-10-17: code is read by the clause's purpose (stopping extraction into a rival model), so studio code that no model trains on is allowed, AI tooling included; training data stays barred.",
+      "snapshot_sha256": "2def678586392e0e143d5948b3915530175522258e0d11fa20ce5933a4559dd0",
+      "snapshot_file": "2026-10-17/google-tos.txt",
+      "archive_url": "http://web.archive.org/web/20261017030446/https://policies.google.com/terms",
+      "conditions": [
+        "Code: allowed when no model trains on it and it builds no rival to Google; training data, and text a model trains on, stay barred",
+        "Otherwise allowed: Google disclaims ownership and the contract restricts nothing else that applies"
+      ]
+    },
+    {
+      "id": "google-ultra-benefits",
+      "owner": "Google",
+      "kind": "service-page",
+      "covers": [
+        "Flow Music (Member plan, via Google AI Ultra)"
+      ],
+      "url": "https://support.google.com/googleone/answer/16286513?hl=en",
+      "page_date": "unknown (help page)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "Commercial use rights"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "barred",
+        "evaluation": "allowed",
+        "code": "n/a"
+      },
+      "notes": "Proven for Flow Music only. Flow and Project Genie have no comparable grant (the Flow help page defers to the ToS). Flow and Genie output for non-AI use is allowed under google-tos (revised 2026-10-16). Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "bae7a849fbc4fabd1748f6805cf8d10a8f45e68452bf18f8f40ec9c06b8c19a8",
+      "snapshot_file": "2026-10-17/google-ultra-benefits.txt",
+      "archive_url": "http://web.archive.org/web/20261007090922/https://support.google.com/googleone/answer/16286513?hl=en"
+    },
+    {
+      "id": "antigravity-terms",
+      "owner": "Google",
+      "kind": "service-terms",
+      "covers": [
+        "Antigravity"
+      ],
+      "url": "https://antigravity.google/terms",
+      "page_date": "live 2026-10-16",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "Using third party software, tools, or services to access the Service (e.g. using OpenClaw with Antigravity OAuth) is a breach of this Agreement."
+      ],
+      "uses": {
+        "assets": "conditions",
+        "training": "barred",
+        "evaluation": "conditions",
+        "code": "conditions"
+      },
+      "notes": "Incorporates the Google ToS (google-tos). Section 6 bars third-party tools reaching Antigravity through the maintainer's OAuth. Revised 2026-10-17: code is read by the clause's purpose (stopping extraction into a rival model), so studio code that no model trains on is allowed, AI tooling included; training data stays barred.",
+      "snapshot_sha256": "db9652829d03dad9d541706a3bff5a12ecca8c6f8f71565e1766b8066aa4737b",
+      "snapshot_file": "2026-10-17/antigravity-terms.txt",
+      "archive_url": "http://web.archive.org/web/20261015094837/https://antigravity.google/terms",
+      "conditions": [
+        "Code: allowed when no model trains on it and it builds no rival to Google; training data, and text a model trains on, stay barred",
+        "No third-party tool may reach Antigravity through the maintainer's OAuth"
+      ]
+    },
+    {
+      "id": "xai-consumer-terms",
+      "owner": "xAI (SpaceXAI LLC)",
+      "kind": "service-terms",
+      "covers": [
+        "Grok",
+        "Grok Build"
+      ],
+      "url": "https://x.ai/legal/terms-of-service",
+      "page_date": "2026-10-12 (last updated)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "you retain your ownership rights to the User Content",
+        "When using Output or SpaceXSI's name, logos, trademarks, or other brand elements, you are required to obtain our permission and attribute your generation of the Output to the Service"
+      ],
+      "uses": {
+        "assets": "conditions",
+        "training": "barred",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "Attribute Output: 'Written with Grok' or 'Created with Grok' (xai-brand-guidelines)",
+        "Code is barred only when it develops a model or product that competes with xAI (xai-aup)"
+      ],
+      "notes": "Training is barred by xai-aup. Our Use of User Content grants xAI a perpetual licence over what is sent; it limits nothing on the user's side. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "0afec3601b4f8f8ed544c1b7fb785de637483476891ec43c12aed0640af4f960",
+      "snapshot_file": "2026-10-17/xai-consumer-terms.txt",
+      "archive_url": "http://web.archive.org/web/20261016171554/https://x.ai/legal/terms-of-service"
+    },
+    {
+      "id": "xai-aup",
+      "owner": "xAI (SpaceXAI LLC)",
+      "kind": "usage-policy",
+      "covers": [
+        "Grok",
+        "Grok Build",
+        "xAI API"
+      ],
+      "url": "https://x.ai/legal/acceptable-use-policy",
+      "page_date": "2026-08-14 (effective)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "Scraping, harvesting or reselling any Input or Output, or distilling model data or Outputs",
+        "Using the Service or any Output to develop (or assist anyone in developing) machine learning models or any products or services that compete with SpaceXSI, whether directly or indirectly"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "barred",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "Code is barred only when it develops a model or product that competes with xAI"
+      ],
+      "notes": "Applies to consumers, developers and businesses. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "686a4bc1e0fbf0142a89ef8355b8c733f149017733af3c798d4eb341c271230f",
+      "snapshot_file": "2026-10-17/xai-aup.txt",
+      "archive_url": "http://web.archive.org/web/20261014165045/https://x.ai/legal/acceptable-use-policy"
+    },
+    {
+      "id": "xai-enterprise-terms",
+      "owner": "xAI (SpaceXAI LLC)",
+      "kind": "service-terms",
+      "covers": [
+        "xAI enterprise and API"
+      ],
+      "url": "https://x.ai/legal/terms-of-service-enterprise",
+      "page_date": "see page",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "use any Output to train any foundation models, large language models, or other artificial intelligence systems except as may be expressly permitted in an Order Form"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "barred",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Training only with an Order Form permission. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "66e3dc46a14de289f5295f01e2d09ca5ed069ec5ecca3c513985c4ef6a6e57de",
+      "snapshot_file": "2026-10-17/xai-enterprise-terms.txt",
+      "archive_url": "http://web.archive.org/web/20261010013935/https://x.ai/legal/terms-of-service-enterprise"
+    },
+    {
+      "id": "xai-brand-guidelines",
+      "owner": "xAI (SpaceXAI LLC)",
+      "kind": "attribution",
+      "covers": [
+        "Grok output"
+      ],
+      "url": "https://x.ai/legal/brand-guidelines",
+      "page_date": "unknown",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "please attribute them to SpaceXSI and Grok by displaying one of the following phrases in a legible and noticeable manner wherever the Grok-generated material is published or distributed: Written with Grok Created with Grok"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "n/a",
+        "code": "n/a"
+      },
+      "notes": "Met in interlock and role-set by a README line plus CONTRIBUTORS.md (interlock#130, role-set#69).",
+      "snapshot_sha256": "e3a09b401e5853b6b831c2e05c8096d797eae5bdae92651ae09e980848bd8de1",
+      "snapshot_file": "2026-10-17/xai-brand-guidelines.txt",
+      "archive_url": "http://web.archive.org/web/20261014165026/https://x.ai/legal/brand-guidelines"
+    },
+    {
+      "id": "anthropic-help-12326764",
+      "owner": "Anthropic",
+      "kind": "help-center",
+      "covers": [
+        "Claude (all plans)",
+        "Claude Code"
+      ],
+      "url": "https://support.claude.com/en/articles/12326764-can-i-use-my-outputs-to-train-an-ai-model",
+      "page_date": "2026-03-16",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "You can use Claude's Outputs to train models that don't compete with Anthropic's own models. This includes creating specialized classifiers and tools",
+        "Using Outputs as training targets for models",
+        "Models designed for open-ended text generation"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "conditions",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [
+        "Only for a non-competing specialized classifier or tool (the maintainer ruled the Stage 1 verifier is one)",
+        "Training targets allowed for a non-competing model (the maintainer ruled 2026-10-17: Anthropic's prohibited list sits under training models that compete with Anthropic's own, and the narrow verifier doesn't compete, so Claude text may be its training targets)",
+        "Never for general chatbots or open-ended text generation"
+      ],
+      "notes": "Anthropic's support channel agreed for this use on 2026-10-16; that reply came from an AI agent, so it supports but doesn't prove. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'. Ruling on training targets: the maintainer ruled 2026-10-17: Anthropic's prohibited list sits under training models that compete with Anthropic's own, and the narrow verifier doesn't compete, so Claude text may be its training targets.",
+      "snapshot_sha256": "cca7d7fd734a6be43df8381660e22fcce9f452e16b184d95dcb8b427a2776a97",
+      "snapshot_file": "2026-10-17/anthropic-help-12326764.txt",
+      "archive_url": "http://web.archive.org/web/20261012155740/https://support.claude.com/en/articles/12326764-can-i-use-my-outputs-to-train-an-ai-model"
+    },
+    {
+      "id": "anthropic-consumer-terms",
+      "owner": "Anthropic",
+      "kind": "service-terms",
+      "covers": [
+        "Claude Pro and Max",
+        "Claude Code on a consumer plan"
+      ],
+      "url": "https://www.anthropic.com/legal/consumer-terms",
+      "page_date": "2025-10-08 (effective)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "To develop any products or services that compete with our Services, including to develop or train any artificial intelligence or machine learning algorithms or models or resell the Services."
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "conditions",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [
+        "Read with anthropic-help-12326764 for what counts as competing"
+      ],
+      "notes": "The non-commercial line applies to evaluation access only. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "d9d650a0f8eef517a0512e5280b8f544297f418b4b208e7d1702506802e0e386",
+      "snapshot_file": "2026-10-17/anthropic-consumer-terms.txt",
+      "archive_url": "http://web.archive.org/web/20261016204948/https://www.anthropic.com/legal/consumer-terms"
+    },
+    {
+      "id": "anthropic-commercial-terms",
+      "owner": "Anthropic",
+      "kind": "service-terms",
+      "covers": [
+        "Claude API",
+        "Commercial plans"
+      ],
+      "url": "https://www.anthropic.com/legal/commercial-terms",
+      "page_date": "2025-06-17 (effective)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "access the Services to build a competing product or service, including to train competing AI models or resell the Services except as expressly approved by Anthropic"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "conditions",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [
+        "Non-competing models only"
+      ],
+      "notes": "Not the terms the studio's plan runs under; recorded for comparison. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "8d37664d7ee4ed441cc65991811812dd2607cd0e99601d4343d1f1133479422e",
+      "snapshot_file": "2026-10-17/anthropic-commercial-terms.txt",
+      "archive_url": "http://web.archive.org/web/20261016152019/https://www.anthropic.com/legal/commercial-terms"
+    },
+    {
+      "id": "anthropic-usage-policy",
+      "owner": "Anthropic",
+      "kind": "usage-policy",
+      "covers": [
+        "All Anthropic services"
+      ],
+      "url": "https://www.anthropic.com/legal/aup",
+      "page_date": "2026-11-12 (effective)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "Use outputs to train an AI model (e.g., \"model scraping\" or \"model distillation\") without prior authorization from Anthropic"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "conditions",
+        "evaluation": "n/a",
+        "code": "n/a"
+      },
+      "conditions": [
+        "Authorized uses are as published in anthropic-help-12326764"
+      ],
+      "notes": "",
+      "snapshot_sha256": "8d7011d64c21c74789c099ae4ef07f6c2a1972fe8deafaeb079cf496d505c3aa",
+      "snapshot_file": "2026-10-17/anthropic-usage-policy.txt",
+      "archive_url": "http://web.archive.org/web/20261016151954/https://www.anthropic.com/legal/aup"
+    },
+    {
+      "id": "kimi-app-agreement",
+      "owner": "Moonshot AI",
+      "kind": "service-terms",
+      "covers": [
+        "Kimi app (consumer)"
+      ],
+      "url": "https://www.kimi.com/user/agreement/en/modelUse",
+      "page_date": "2024-01-05 (effective)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "you may only use Kimi in a non-commercial, personal research, and study manner"
+      ],
+      "uses": {
+        "assets": "barred",
+        "training": "barred",
+        "evaluation": "barred",
+        "code": "barred"
+      },
+      "notes": "Did not apply to the studio's Kimi seat, which ran through Ollama Cloud (ollama-terms, kimi-k3-licence, kimi-k2.6-licence). Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "d985dc8514bf4c659bdd4646de29ed704fc382b096dc66390901ed8bde41d31a",
+      "snapshot_file": "2026-10-17/kimi-app-agreement.txt",
+      "archive_url": "http://web.archive.org/web/20250929160236/https://www.kimi.com/user/agreement/en/modelUse"
+    },
+    {
+      "id": "ollama-terms",
+      "owner": "Ollama",
+      "kind": "service-terms",
+      "covers": [
+        "Ollama Cloud models (for example kimi-k3:cloud, kimi-k2.6:cloud)"
+      ],
+      "url": "https://ollama.com/terms",
+      "page_date": "2026-05 (last updated)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "You retain ownership of content you create using our services.",
+        "We claim no ownership over your inputs or outputs.",
+        "Use our services to develop competing products"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [],
+      "notes": "The model's own licence also applies; neither restricts training on outputs. Only building products that compete with Ollama is barred. Revised 2026-10-16 under the reworded rule: silence no longer counts as a bar. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "0f31d86a6f9d0cecdc84c2224000904a59ff0309b30528465f6f42dfa743f2b9",
+      "snapshot_file": "2026-10-17/ollama-terms.txt",
+      "archive_url": "http://web.archive.org/web/20261011233708/https://ollama.com/terms"
+    },
+    {
+      "id": "openmdw-1.1",
+      "owner": "Linux Foundation (OpenMDW)",
+      "kind": "model-licence",
+      "covers": [
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
+        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+        "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB (and -GGUF, -BF16)"
+      ],
+      "url": "https://openmdw.ai/license/1-1/",
+      "page_date": "version 1.1",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "This agreement does not impose any restrictions or obligations with respect to any use, modification, or sharing of any outputs generated by using the Model Materials."
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Each model card names OpenMDW-1.1 as its governing terms (nemotron-model-cards). The Ollama tag for Lightning bundles a different NVIDIA licence; the card governs. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'. Outside check for pilot B (Nemotron-3.5-Lightning as a blind reader): Gemini Argon (AI Studio) by hand, 2026-10-25, confirmed OpenMDW-1.1 governs, with no restriction or obligation on outputs (paragraph 6). A Gemini Pro answer the same day analysed the NVIDIA Open Model License instead; that licence is not the one of record.",
+      "snapshot_sha256": "c709632b442a6da23660cc64546b1d02a3a5ba1c26b19cb658d2a4ccd1cf4ab6",
+      "snapshot_file": "2026-10-17/openmdw-1.1.txt",
+      "archive_url": "http://web.archive.org/web/20261011054331/https://openmdw.ai/license/1-1/"
+    },
+    {
+      "id": "nemotron-model-cards",
+      "owner": "NVIDIA",
+      "kind": "model-card",
+      "covers": [
+        "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+        "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
+        "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16",
+        "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB (and -GGUF, -BF16)"
+      ],
+      "url": "https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
+      "page_date": "Super-VL released 2026-10-15; Ultra released 2026-06-04",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "Governing Download Terms: Use of this model is governed by the OpenMDW License Agreement, version 1.1"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Ultra: https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16 . Pin the card revision read when a model is used. Bolt-74B-A9B-24GB: 'Governing Terms: Use of the models is governed by the OpenMDW License Agreement, version 1.1', released 2026-10-15 (https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB). Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "dd5eefc7db106f3d038089eb5fe7bdaeee1d557046e41726d25e2b23f5593a10",
+      "snapshot_file": "2026-10-17/nemotron-model-cards.txt",
+      "archive_url": "http://web.archive.org/web/20261016004133/https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16"
+    },
+    {
+      "id": "muse-glimmer-30b-card",
+      "owner": "Meta (meta-models)",
+      "kind": "model-card",
+      "covers": [
+        "meta-models/Muse-Glimmer-30B",
+        "meta-models/Muse-Glimmer-30B-GGUF"
+      ],
+      "url": "https://huggingface.co/meta-models/Muse-Glimmer-30B",
+      "page_date": "unknown (card)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "Synthetic data generation: Generating high-quality training data for downstream model development."
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Licence Apache-2.0; the card's intended use is the grant. Its Usage Policy has no clause on outputs or training. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "d1e893e0f418dfa66a960a7a85344bc647e915b12a119a73a0c19bbe629b9db8",
+      "snapshot_file": "2026-10-17/muse-glimmer-30b-card.txt",
+      "archive_url": "http://web.archive.org/web/20261010025638/https://huggingface.co/meta-models/Muse-Glimmer-30B"
+    },
+    {
+      "id": "muse-model-license-spark",
+      "owner": "Meta (meta-models)",
+      "kind": "model-licence",
+      "covers": [
+        "meta-models/Muse-Spark-Open-816B-A42B"
+      ],
+      "url": "https://huggingface.co/meta-models/Muse-Spark-Open-816B-A42B",
+      "page_date": "2026-10-15 (release)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "Synthetic Data Generation - generating high-quality training data for downstream model development.",
+        "\"Derivatives\" means any AI model created, trained, modified (including fine-tuned), distilled, or otherwise improved using the Software or any outputs or results thereof.",
+        "Licensee shall prominently display \"Built with Muse Spark Open\""
+      ],
+      "uses": {
+        "assets": "conditions",
+        "training": "conditions",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "A model trained on its outputs carries the notice, licence and Usage Policy",
+        "Display 'Built with Muse Spark Open'",
+        "Gated repo: access request in the maintainer's legal name"
+      ],
+      "notes": "Not in use (the frontier tier is out of reach). Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "a47210b2ac41bac2b8955b2862d8304ab41d773fa401990f3007e02fcc554ff7",
+      "snapshot_file": "2026-10-17/muse-model-license-spark.txt",
+      "archive_url": "http://web.archive.org/web/20261015170519/https://huggingface.co/meta-models/Muse-Spark-Open-816B-A42B"
+    },
+    {
+      "id": "deepseek-r1-card",
+      "owner": "DeepSeek",
+      "kind": "model-card",
+      "covers": [
+        "deepseek-ai/DeepSeek-R1",
+        "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
+      ],
+      "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1",
+      "page_date": "2025-01-20",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "DeepSeek-R1 series support commercial use, allow for any modifications and derivative works, including, but not limited to, distillation for training other LLMs."
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "MIT. R1-Distill-Qwen-32B is not used: its Qwen2.5 base is plain Apache-2.0 (the Publisher's ruling). Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "b20b17e9911d646b4adefde3a1f14ad46f823064cd987b14d858d6142da09411",
+      "snapshot_file": "2026-10-17/deepseek-r1-card.txt",
+      "archive_url": "http://web.archive.org/web/20261012140521/https://huggingface.co/deepseek-ai/DeepSeek-R1"
+    },
+    {
+      "id": "deepseek-r1-0528-card",
+      "owner": "DeepSeek",
+      "kind": "model-card",
+      "covers": [
+        "deepseek-ai/DeepSeek-R1-0528"
+      ],
+      "url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-0528",
+      "page_date": "2025-05-28",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "DeepSeek-R1 series (including Base and Chat) supports commercial use and distillation."
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "MIT. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "924a114f7779cc2179c2da56f21dda2c3072ab541a98da37a26187bdf54e9842",
+      "snapshot_file": "2026-10-17/deepseek-r1-0528-card.txt",
+      "archive_url": "http://web.archive.org/web/20261015183426/https://huggingface.co/deepseek-ai/DeepSeek-R1-0528"
+    },
+    {
+      "id": "llama-3.3-licence",
+      "owner": "Meta (Llama)",
+      "kind": "model-licence",
+      "covers": [
+        "Llama 3.3 and models built on it (for example R1-Distill-Llama-70B)"
+      ],
+      "url": "https://raw.githubusercontent.com/meta-llama/llama-models/main/models/llama3_3/LICENSE",
+      "page_date": "2024-12-06 (version release)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "any outputs or results of the Llama Materials to create, train, fine tune, or otherwise improve an AI model"
+      ],
+      "uses": {
+        "assets": "conditions",
+        "training": "conditions",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "A model so trained, if distributed, must have a name beginning with 'Llama' (Section 1.b.i)"
+      ],
+      "notes": "Not in use: the naming condition would fall on the studio's student. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "1beaed4a9925af5f6d4d07eebcc351c2c59b00bbb3cdeac59d780adffadcfcdb",
+      "snapshot_file": "2026-10-17/llama-3.3-licence.txt",
+      "archive_url": null
+    },
+    {
+      "id": "kimi-k3-licence",
+      "owner": "Moonshot AI",
+      "kind": "model-licence",
+      "covers": [
+        "moonshotai/Kimi-K3",
+        "kimi-k3:cloud"
+      ],
+      "url": "https://github.com/MoonshotAI/Kimi-K3/blob/main/LICENSE",
+      "page_date": "2026",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "to deal in the Software without restriction"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [
+        "Display 'Kimi K3' only above 100M monthly users or $20M monthly revenue",
+        "Separate agreement only for a Model as a Service business above $20M revenue; internal use exempt"
+      ],
+      "notes": "Silent on outputs. Assets, evaluation and code rest on ollama-terms ownership for the Ollama Cloud route. Revised 2026-10-16 under the reworded rule: silence no longer counts as a bar. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "d4de1d14edd7bfa695c7b7b8ce8e8ff4eab625e4b61b3e5f6af5d88841ee9691",
+      "snapshot_file": "2026-10-17/kimi-k3-licence.txt",
+      "archive_url": "http://web.archive.org/web/20260808211815/https://github.com/MoonshotAI/Kimi-K3/blob/main/LICENSE"
+    },
+    {
+      "id": "kimi-k2.6-licence",
+      "owner": "Moonshot AI",
+      "kind": "model-licence",
+      "covers": [
+        "moonshotai/Kimi-K2.6",
+        "kimi-k2.6:cloud"
+      ],
+      "url": "https://huggingface.co/moonshotai/Kimi-K2.6/raw/main/LICENSE",
+      "page_date": "2026",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "Our only modification part is that, if the Software (or any derivative works thereof) is used for any of your commercial products or services that have more than 100 million monthly active users"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Modified MIT; silent on outputs. Same reading as kimi-k3-licence. Revised 2026-10-16 under the reworded rule: silence no longer counts as a bar. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "941ddde5de6c074eac890c67856db540e48bd4653e34d4d9e38d1a9fae4344b8",
+      "snapshot_file": "2026-10-17/kimi-k2.6-licence.txt",
+      "archive_url": null
+    },
+    {
+      "id": "nvidia-open-model-license",
+      "owner": "NVIDIA",
+      "kind": "model-licence",
+      "covers": [
+        "Nemotron-4-340B",
+        "NVIDIA-Nemotron-3-Super-120B (Dec 2025)",
+        "the licence bundled in the Ollama nemotron-3.5-lightning tag"
+      ],
+      "url": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+      "page_date": "2025-10-24",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "NVIDIA does not claim ownership to any outputs generated using the Models or Derivative Models"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Disclaims ownership of outputs and places no restriction on them; the licence's other conditions (on the models themselves) still apply. Revised 2026-10-16 under the reworded rule: silence no longer counts as a bar. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "25afb28cff985c67f62a8eb3c800f240eb355bac62edae6241eba0670638ef0a",
+      "snapshot_file": "2026-10-17/nvidia-open-model-license.txt",
+      "archive_url": "http://web.archive.org/web/20261005213244/https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/"
+    },
+    {
+      "id": "apache-2.0",
+      "owner": "Apache Software Foundation",
+      "kind": "model-licence",
+      "covers": [
+        "Qwen3.8-27B",
+        "Qwen3.6-35B-A3B",
+        "Gemma 4 31B",
+        "Granite 4.2",
+        "Qwen2.5-32B",
+        "nomic-ai/nomic-embed-text-v1.5",
+        "BAAI/bge-reranker-v2-m3",
+        "cross-encoder/nli-deberta-v3-base",
+        "Qwen/Qwen3-Embedding-0.6B",
+        "Mistral Small 3.2 24B"
+      ],
+      "url": "https://www.apache.org/licenses/LICENSE-2.0",
+      "page_date": "2004-01",
+      "read_date": "2026-10-16",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Grants rights in the Work and makes no claim on, or restriction of, outputs; no contract binds a local run. Allowed under the reworded rule (no restriction found). Check any model-specific use policy as well (for example Gemma's). Revised 2026-10-16 under the reworded rule: silence no longer counts as a bar. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "0ffddef9e48f8a09aed5caf2d44f7ba1c1be2d9b8e0a6f693b1635b2d5566645",
+      "snapshot_file": "2026-10-17/apache-2.0.txt",
+      "archive_url": "http://web.archive.org/web/20261012114733/https://www.apache.org/licenses/LICENSE-2.0",
+      "restriction_search": "Apache License 2.0 read in full (sections 1-9): it licenses the Work and Derivative Works, and has no term on model outputs. No contract binds a local run."
+    },
+    {
+      "id": "census-naics-2022",
+      "owner": "US Census Bureau",
+      "kind": "public-data-policy",
+      "covers": [
+        "NAICS 2022 sector and subsector titles (US edition), used by role-set's domain table (BUILD-SPEC B2)"
+      ],
+      "url": "https://www2.census.gov/foia/ds_policies/ds027.pdf",
+      "page_date": "unknown (DS027, Data Stewardship Program)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "Data/works created by Census Bureau employees generally are not subject to copyright protection within the United States."
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "n/a"
+      },
+      "conditions": [],
+      "notes": "Human-written public data, not AI output; listed so the domain table's source has a path. The same page notes foreign copyright may apply. Pin the NAICS source file by sha256 with its census.gov URL in role-set. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "f66c4341e8f240b9b868e683d7a814f1b861c6d73ecaf1f363cffb41973868c1",
+      "snapshot_file": "2026-10-17/census-naics-2022.txt",
+      "archive_url": null
+    },
+    {
+      "id": "gemini-api-terms",
+      "owner": "Google",
+      "kind": "service-terms",
+      "covers": [
+        "Gemini API",
+        "Google AI Studio"
+      ],
+      "url": "https://ai.google.dev/gemini-api/terms",
+      "page_date": "2026-04-28 (last updated)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "You may not use the Services to develop models that compete with the Services (e.g., Gemini API or Google AI Studio)."
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "conditions",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "Only models or products that don't compete with the Gemini API or AI Studio",
+        "Prospective: covers only output generated through the API, not earlier consumer-plan output"
+      ],
+      "notes": "The clean route for future Google-written ML tooling (a paid API key, the maintainer's decision). The consumer ToS clause (google-tos) does not apply here. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "296d96034f56cc95ddbf4be680e92510a4fd38d651d6499dff2fcfc079305cec",
+      "snapshot_file": "2026-10-17/gemini-api-terms.txt",
+      "archive_url": null
+    },
+    {
+      "id": "google-cloud-service-terms",
+      "owner": "Google",
+      "kind": "service-terms",
+      "covers": [
+        "Vertex AI",
+        "Google Cloud Generative AI Services"
+      ],
+      "url": "https://cloud.google.com/terms/service-terms",
+      "page_date": "2026-10-12 (last modified)",
+      "read_date": "2026-10-16",
+      "clauses": [
+        "Customer will not, and will not allow End Users to use an AI/ML Service or Generated Output to develop a similar or competing product or service."
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "conditions",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "Only products that aren't similar to or competing with the service",
+        "Prospective: covers only Generated Output of Google Cloud services"
+      ],
+      "notes": "Section 17 (Generative AI Services). Generated Output is Customer Data. Revised 2026-10-17: verdicts follow the clause rule (barred only by a quoted clause); 'proven' became 'allowed'.",
+      "snapshot_sha256": "754883b257a7d5422bbb4f8a9ea627532e629c065dfd522c7542395ebd1a2bc9",
+      "snapshot_file": "2026-10-17/google-cloud-service-terms.txt",
+      "archive_url": "http://web.archive.org/web/20261015131600/https://cloud.google.com/terms/service-terms"
+    },
+    {
+      "id": "gemma-prohibited-use-policy",
+      "owner": "Google (Gemma)",
+      "kind": "usage-policy",
+      "covers": [
+        "Gemma models and Model Derivatives (Gemma 4 31B is licensed Apache-2.0 on its own page)"
+      ],
+      "url": "https://ai.google.dev/gemma/prohibited_use_policy",
+      "page_date": "2024-02-21 (last modified)",
+      "read_date": "2026-10-17",
+      "clauses": [
+        "You may not use nor allow others to use Gemma or Model Derivatives to:"
+      ],
+      "uses": {
+        "assets": "conditions",
+        "training": "conditions",
+        "evaluation": "conditions",
+        "code": "conditions"
+      },
+      "conditions": [
+        "Only the listed harmful-content categories are barred (for example malware, CSAM, harassment, unlicensed professional practice); code fixing, evaluation and training on outputs are not restricted"
+      ],
+      "notes": "Read by R&D on 2026-10-17 for local-builders F14. Whether this policy binds Gemma 4 at all is unclear (its licence page is plain Apache-2.0); either way it doesn't restrict the studio's uses.",
+      "snapshot_sha256": "e4200773b1ec74148dec9738744a3a9a07465d9819a2dc23b831e9695fbd978f",
+      "snapshot_file": "2026-10-17/gemma-prohibited-use-policy.txt",
+      "archive_url": "http://web.archive.org/web/20261008155755/https://ai.google.dev/gemma/prohibited_use_policy"
+    },
+    {
+      "id": "kokoro-82m-model-card",
+      "owner": "hexgrad (Kokoro)",
+      "kind": "model-card",
+      "covers": [
+        "Kokoro-82M (hexgrad/Kokoro-82M) weights and its voices, e.g. bm_george, bm_lewis, am_fenrir (VOICES.md)"
+      ],
+      "url": "https://huggingface.co/hexgrad/Kokoro-82M/raw/main/README.md",
+      "page_date": "undated (Hub README at main)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "license: apache-2.0",
+        "With Apache-licensed weights, Kokoro can be deployed anywhere from production environments to personal projects.",
+        "Kokoro was trained exclusively on **permissive/non-copyrighted audio data** and IPA phoneme labels.",
+        "TTS models from large providers",
+        "base_model:",
+        "yl4579/StyleTTS2-LJSpeech"
+      ],
+      "uses": {
+        "assets": "conditions",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "n/a"
+      },
+      "conditions": [
+        "Apache-2.0: shipping the weights carries the licence text and any NOTICE; synthesized speech is not claimed by the licence",
+        "Kokoro names StyleTTS2-LJSpeech as its base model, whose pre-trained-model terms ask that listeners be told the speech is synthesized unless the speakers gave permission (entry styletts2-pretrained-model-terms); a credit saying the voices are synthesized by Kokoro meets it"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native voice, at the Editor's request; every clause re-read at the raw README. Provenance note, not a bar: the card says its training data includes synthetic audio from closed TTS providers' models, and CC BY audio (Koniwa CC BY 3.0, SIWIS CC BY 4.0) credited on the card. The studio agreed to none of those providers' terms and uses only Kokoro's outputs, so no clause the studio is bound by restricts the use; for the full-provenance aim the voice is not a clean-room asset.",
+      "snapshot_sha256": "18a866b4ce76ab391df6731f36a69e88b3c216971b45632c647d171c9e090379",
+      "snapshot_file": "2026-10-22/kokoro-82m-model-card.txt"
+    },
+    {
+      "id": "styletts2-pretrained-model-terms",
+      "owner": "Yinghao Aaron Li (StyleTTS 2)",
+      "kind": "model-terms",
+      "covers": [
+        "StyleTTS 2 pre-trained models (yl4579/StyleTTS2, including StyleTTS2-LJSpeech, Kokoro-82M's base model); the code is MIT"
+      ],
+      "url": "https://raw.githubusercontent.com/yl4579/StyleTTS2/main/README.md",
+      "page_date": "undated (README at main)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "Code: MIT License",
+        "Before using these pre-trained models, you agree to inform the listeners that the speech samples are synthesized by the pre-trained models, unless you have the permission to use the voice you synthesize.",
+        "You only need to abide by the above rules if you use **the pre-trained models** and the voices are **NOT** in the training set"
+      ],
+      "uses": {
+        "assets": "conditions",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [
+        "Synthesized speech made public is disclosed as synthesized (a credit is enough), unless the voice's speaker gave permission",
+        "R&D's reading, conservative: the terms bind StyleTTS 2's own pre-trained models; whether they carry into Kokoro's separately licensed weights is not stated, so the disclosure is kept"
+      ],
+      "notes": "Read by R&D on 2026-10-22 while tracing Kokoro-82M's base model (the StyleTTS2-LJSpeech Hub repo has no card or licence tag). The HF repo yl4579/StyleTTS2-LJSpeech holds only the checkpoint and config.",
+      "snapshot_sha256": "5db2279acf8214ebe6aac9f38304173165615b5cfe9807c77eacad1eeaacbbd4",
+      "snapshot_file": "2026-10-22/styletts2-pretrained-model-terms.txt"
+    },
+    {
+      "id": "sherpa-onnx-licence",
+      "owner": "k2-fsa (sherpa-onnx)",
+      "kind": "licence",
+      "covers": [
+        "sherpa-onnx, the runtime that serves Kokoro-82M"
+      ],
+      "url": "https://raw.githubusercontent.com/k2-fsa/sherpa-onnx/master/LICENSE",
+      "page_date": "Apache License Version 2.0, January 2004",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "Apache License",
+        "Version 2.0, January 2004"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "Apache-2.0: shipping the runtime carries the licence text and any NOTICE",
+        "Corrected 2026-10-22 (the Editor's check, re-read by R&D): no release drops espeak-ng (GPL-3.0). The latest release, v1.13.8 (crates.io and GitHub), includes espeak-ng-for-piper and piper-phonemize in CMakeLists.txt whenever TTS is built, and sherpa-onnx-static.pc.in links -lespeak-ng, so any TTS build of a released version links GPL code even if only the lexicon path runs. Only master's Kokoro config says espeak-ng is ignored from v2.0.0, which is unreleased",
+        "So a game binary may use sherpa-onnx TTS only from a pinned master commit whose build is shown to link no espeak-ng or piper_phonemize symbols or libraries; otherwise not",
+        "The lexicon files shipped with sherpa-onnx's Kokoro packages were not read; check their licence before bundling them"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native voice, at the Editor's request.",
+      "snapshot_sha256": "0ffddef9e48f8a09aed5caf2d44f7ba1c1be2d9b8e0a6f693b1635b2d5566645",
+      "snapshot_file": "2026-10-22/sherpa-onnx-licence.txt"
+    },
+    {
+      "id": "misaki-licence",
+      "owner": "hexgrad (misaki)",
+      "kind": "licence",
+      "covers": [
+        "misaki, Kokoro's grapheme-to-phoneme dictionaries, used as data by the native voice route"
+      ],
+      "url": "https://raw.githubusercontent.com/hexgrad/misaki/fba1236595f2d2bf21d414ba6e57d25256afada3/LICENSE",
+      "page_date": "Apache License Version 2.0, January 2004 (commit fba1236; no release tags)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "Apache License",
+        "Version 2.0, January 2004"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "Apache-2.0: shipping its dictionaries carries the licence text and any NOTICE",
+        "Read at commit fba1236 because the repository has no tags or releases; pin the same commit in the build",
+        "The spike (PR #26, S3) fetched us_gold/us_silver/gb_gold/gb_silver.json from misaki's main branch. Phase 7 pins them to commit fba1236 and hashes each file"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native build (the Rust spikes, escape-the-valley PR #26), at a pinned ref.",
+      "snapshot_sha256": "0ffddef9e48f8a09aed5caf2d44f7ba1c1be2d9b8e0a6f693b1635b2d5566645",
+      "snapshot_file": "2026-10-22/misaki-licence.txt"
+    },
+    {
+      "id": "cmudict-licence",
+      "owner": "Carnegie Mellon University (CMU Pronouncing Dictionary)",
+      "kind": "licence",
+      "covers": [
+        "The CMU Pronouncing Dictionary, the native voice route's fallback word list"
+      ],
+      "url": "https://raw.githubusercontent.com/cmusphinx/cmudict/74790861f652b15e4ac49015a90074ad62a27690/LICENSE",
+      "page_date": "Copyright (C) 1993-2015 Carnegie Mellon University (commit 7479086; no release tags)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "Copyright (C) 1993-2015 Carnegie Mellon University. All rights reserved.",
+        "Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution."
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "BSD-style (two clauses): the file itself counts as source code, so shipping it keeps the notice; a binary that embeds it reproduces the notice in its documentation",
+        "Read at commit 7479086 because the repository has no tags or releases",
+        "The spike fetched cmudict.dict from master; Phase 7 pins it to commit 7479086 and hashes it"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native build (the Rust spikes, escape-the-valley PR #26), at a pinned ref.",
+      "snapshot_sha256": "7bfabdd5ef01151c99c3a0f6c626c8292cb635c26d955a886b4431f9dd8f6771",
+      "snapshot_file": "2026-10-22/cmudict-licence.txt"
+    },
+    {
+      "id": "kokoro-onnx-licence",
+      "owner": "thewh1teagle (kokoro-onnx)",
+      "kind": "licence",
+      "covers": [
+        "kokoro-onnx (thewh1teagle): the reference Python runtime the native voice spike followed, and the source of the spike's model files (release model-files-v1.0)"
+      ],
+      "url": "https://raw.githubusercontent.com/thewh1teagle/kokoro-onnx/3596b26764286a7de9d90c363e988d50578918e5/LICENSE",
+      "page_date": "MIT License, Copyright (c) 2025 github.com/thewh1teagle (commit 3596b26)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "MIT License",
+        "The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software."
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "MIT: a shipped binary carries the copyright line and licence text (a third-party notices file) if any of its code is carried over",
+        "Its tags name model-file releases only, so it was read at commit 3596b26",
+        "The spike (escape-the-valley PR #26, S3) downloads kokoro-v1.0.onnx and voices-v1.0.bin from this repository's model-files-v1.0 release. The release text names the ONNX file an optimised f32 version from taylorchu/kokoro-onnx (kokoro-onnx-taylorchu-licence) and states no licence for the files; the README says 'kokoro model: Apache 2.0'. So the chain is Kokoro-82M (Apache-2.0) → taylorchu's ONNX conversion (MIT repo) → this release",
+        "Before shipping (ETV Phase 7): pin the release asset by sha256, record the chain in the notices, and prefer a conversion the studio can reproduce from Kokoro-82M itself"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native build (the Rust spikes, escape-the-valley PR #26), at a pinned ref.",
+      "snapshot_sha256": "17f57e54d6b42dd9ff888c22af34417d9088d3a7440c4a31f792d03c29ebd921",
+      "snapshot_file": "2026-10-22/kokoro-onnx-licence.txt"
+    },
+    {
+      "id": "ort-licence",
+      "owner": "pyke.io (ort)",
+      "kind": "licence",
+      "covers": [
+        "ort, the Rust bindings to ONNX Runtime used by the native voice route"
+      ],
+      "url": "https://raw.githubusercontent.com/pykeio/ort/v2.0.0-rc.15/LICENSE-MIT",
+      "page_date": "MIT License, Copyright (c) 2023-2026 pyke.io (tag v2.0.0-rc.15; dual MIT OR Apache-2.0)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "MIT License",
+        "Copyright (c) 2023-2026 pyke.io"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "MIT (it is dual-licensed MIT OR Apache-2.0; we take MIT): a shipped binary carries the copyright line and licence text (a third-party notices file)",
+        "The newest tag is a release candidate (v2.0.0-rc.15); the build pins the version the spike used"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native build (the Rust spikes, escape-the-valley PR #26), at a pinned ref.",
+      "snapshot_sha256": "6bb09993106f009fb9d3d6bbac9bed5e365da0a1e11d10d9951c9f55ef9f4f4d",
+      "snapshot_file": "2026-10-22/ort-licence.txt"
+    },
+    {
+      "id": "onnxruntime-licence",
+      "owner": "Microsoft (ONNX Runtime)",
+      "kind": "licence",
+      "covers": [
+        "ONNX Runtime, which runs Kokoro-82M in the native voice route, linked into the binary"
+      ],
+      "url": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.31.0/LICENSE",
+      "page_date": "MIT License, Copyright (c) Microsoft Corporation (tag v1.31.0)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "MIT License",
+        "Copyright (c) Microsoft Corporation"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "MIT: a shipped binary carries the copyright line and licence text (a third-party notices file)",
+        "ONNX Runtime ships its own ThirdPartyNotices.txt for code it bundles; a binary that links it carries that file too. Not read line by line here"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native build (the Rust spikes, escape-the-valley PR #26), at a pinned ref.",
+      "snapshot_sha256": "50da1661589023a2668812fdacb204e4014c41269baa1558897b61290fd28c78",
+      "snapshot_file": "2026-10-22/onnxruntime-licence.txt"
+    },
+    {
+      "id": "xrpl-rust-licence",
+      "owner": "Tanveer Wahid, now under XRPLF (xrpl-rust)",
+      "kind": "licence",
+      "covers": [
+        "xrpl-rust 1.3.0 on crates.io (library name `xrpl`), the native ledger client; not the separate `xrpl` crate on crates.io"
+      ],
+      "url": "https://raw.githubusercontent.com/XRPLF/xrpl-rust/v1.3.0/LICENSE",
+      "page_date": "Copyright (c) 2021, Tanveer Wahid (ISC; tag v1.3.0)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "Copyright (c) 2021, Tanveer Wahid",
+        "provided that the above copyright notice and this permission notice appear in all copies."
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "ISC: a shipped binary carries the copyright line and licence text (a third-party notices file)",
+        "Its Cargo.toml at v1.3.0 names the crate xrpl-rust with library name xrpl, and pins secp256k1 0.30.0",
+        "A later tag, xrpl-sdk@2.0.0, exists; it was not read"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native build (the Rust spikes, escape-the-valley PR #26), at a pinned ref.",
+      "snapshot_sha256": "7290d023eaecb8ad4445f2cdea77129ab9b70b690b5540b20fa6388f81be97c2",
+      "snapshot_file": "2026-10-22/xrpl-rust-licence.txt"
+    },
+    {
+      "id": "secp256k1-licence",
+      "owner": "rust-bitcoin (secp256k1)",
+      "kind": "licence",
+      "covers": [
+        "secp256k1 0.30.0, the signing crate xrpl-rust 1.3.0 depends on"
+      ],
+      "url": "https://raw.githubusercontent.com/rust-bitcoin/rust-secp256k1/secp256k1-0.30.0/LICENSE",
+      "page_date": "CC0 1.0 Universal (tag secp256k1-0.30.0)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "CC0 1.0 Universal"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [
+        "CC0: no conditions. It is 0.30.0 because xrpl-rust 1.3.0 pins it; the newest release is 0.33.1"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native build (the Rust spikes, escape-the-valley PR #26), at a pinned ref.",
+      "snapshot_sha256": "05d9f1a0af61535887a399e161c9d14d1f898043b61d05fe4854ed8c6460179c",
+      "snapshot_file": "2026-10-22/secp256k1-licence.txt"
+    },
+    {
+      "id": "webpki-root-certs-licence",
+      "owner": "rustls (webpki-roots repository: webpki-root-certs)",
+      "kind": "licence",
+      "covers": [
+        "webpki-root-certs 1.0.10, Mozilla's root certificates; in the ETV spikes' Cargo.lock as a build-time dependency of ort-sys's download-binaries path (via ureq)"
+      ],
+      "url": "https://raw.githubusercontent.com/rustls/webpki-roots/v/1.0.10/LICENSE-CCADB",
+      "page_date": "Community Data License Agreement - Permissive - Version 2.0 (tag v/1.0.10)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "Community Data License Agreement - Permissive - Version 2.0",
+        "so long as the Data Recipient makes available the text of this agreement with the shared Data."
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "CDLA-Permissive-2.0 (webpki-root-certs/Cargo.toml license field at v/1.0.10, read with WebFetch): whoever shares the certificate data makes the agreement's text available with it",
+        "In the spikes it is a build dependency: ort-sys's download-binaries feature pulls ureq, which fetches ONNX Runtime at build time. A build dependency is not linked into the game binary, so the condition attaches only if a runtime crate pulls it in. Check the shipping Cargo.lock at ETV Phase 7 (cargo tree -e normal)",
+        "Corrected 2026-10-22 before merge: first drafted as webpki-roots for the ledger client's TLS. The spikes' lockfile holds webpki-root-certs, not webpki-roots, and xrpl-rust's json-rpc path doesn't use it. Both crates live in the rustls/webpki-roots repository under the same LICENSE-CCADB"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native build (the Rust spikes, escape-the-valley PR #26), at a pinned ref.",
+      "snapshot_sha256": "44912421a0a0528813512b50b09d1219268c6770a8a37b4095af012a6fe8ec36",
+      "snapshot_file": "2026-10-22/webpki-root-certs-licence.txt"
+    },
+    {
+      "id": "rodio-licence",
+      "owner": "The Rodio Project Contributors (rodio)",
+      "kind": "licence",
+      "covers": [
+        "rodio, audio playback only, in the native voice route"
+      ],
+      "url": "https://raw.githubusercontent.com/RustAudio/rodio/v0.23.0/LICENSE-MIT",
+      "page_date": "Copyright (c) The Rodio Project Contributors (MIT; tag v0.23.0; dual MIT OR Apache-2.0)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "Copyright (c) The Rodio Project Contributors",
+        "The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software."
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "MIT (dual-licensed MIT OR Apache-2.0; we take MIT): a shipped binary carries the copyright line and licence text (a third-party notices file)",
+        "The Editor read it first at v0.23.0 (LICENSE-MIT, LICENSE-APACHE and Cargo.toml); R&D re-read it here"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 2.0's native build (the Rust spikes, escape-the-valley PR #26), at a pinned ref.",
+      "snapshot_sha256": "374925befba27c0fbb190acf8e0bbd3264c33afd707e3c8dfca6a9d7f2407f57",
+      "snapshot_file": "2026-10-22/rodio-licence.txt"
+    },
+    {
+      "id": "certifi-licence",
+      "owner": "certifi (python-certifi)",
+      "kind": "licence",
+      "covers": [
+        "certifi 2026.10.19, the CA bundle bundled unmodified in Escape the Valley's PyInstaller binaries (via httpx)"
+      ],
+      "url": "https://raw.githubusercontent.com/certifi/python-certifi/2026.10.19/LICENSE",
+      "page_date": "certifi LICENSE (MPL-2.0 block; tag 2026.10.19)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "This package contains a modified version of ca-bundle.crt",
+        "This Source Code Form is subject to the terms of the Mozilla Public License"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "MPL-2.0: a binary that ships it must also tell recipients where to get its source (see mpl-2.0-licence §3.2(a)). The file's own URLs point to Mozilla's certdata.txt at tip and to the MPL text, not to certifi's modified bundle, so they don't do this",
+        "So the notices file names the exact version and its source: the PyPI sdist certifi-2026.10.19.tar.gz and github.com/certifi/python-certifi at tag 2026.10.19",
+        "The source line is generated for any MPL, LGPL or GPL-family entry, so a later version or dependency can't slip past"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 1.3.1's third-party notices (escape-the-valley PR #25, issue #28), at a pinned ref.",
+      "snapshot_sha256": "3a32ae6fd1e6f82723772d8892771f07ca4f6309b01587ac04c6fe93c74f9bae",
+      "snapshot_file": "2026-10-22/certifi-licence.txt"
+    },
+    {
+      "id": "mpl-2.0-licence",
+      "owner": "Mozilla Foundation (MPL 2.0)",
+      "kind": "licence",
+      "covers": [
+        "Mozilla Public License 2.0, the licence of certifi and any other MPL dependency the studio ships in a binary"
+      ],
+      "url": "https://www.mozilla.org/media/MPL/2.0/index.txt",
+      "page_date": "Mozilla Public License Version 2.0",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "If You distribute Covered Software in Executable Form then",
+        "You must inform recipients of the Executable Form how they can obtain a copy of such Source Code Form"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "§3.2(a): distributing Covered Software in executable form means making its source available and telling recipients how to get it, at no more than the cost of distribution",
+        "§3.2(b): the executable may be distributed under other terms, so long as they don't limit recipients' rights in the source",
+        "File-level copyleft: only the MPL files themselves (here certifi's), not the game"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 1.3.1's third-party notices (escape-the-valley PR #25, issue #28), at a pinned ref.",
+      "snapshot_sha256": "e8ba82e63ba908724aaee6043943c5a2629b9ebf1af581ea0eea19a713123685",
+      "snapshot_file": "2026-10-22/mpl-2.0-licence.txt"
+    },
+    {
+      "id": "pyinstaller-licence",
+      "owner": "PyInstaller Development Team",
+      "kind": "licence",
+      "covers": [
+        "PyInstaller's bootloader and run-time hooks, embedded in every Escape the Valley binary"
+      ],
+      "url": "https://raw.githubusercontent.com/pyinstaller/pyinstaller/v6.22.3/COPYING.txt",
+      "page_date": "The PyInstaller licensing terms (tag v6.22.3, the latest release)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "Bootloader Exception",
+        "the authors give you unlimited permission to link or embed compiled bootloader",
+        "these files are now licensed under the Apache License, Version 2.0."
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "GPL-2.0-or-later with the Bootloader Exception: embedding the unmodified bootloader in a combined executable and distributing it carries no GPL obligation, so no source line is needed",
+        "The GPL still applies to modifying the bootloader or distributing it unlinked; a modified bootloader would need a fresh read",
+        "Run-time hooks are Apache-2.0: the notices file includes COPYING.txt, which carries the full GPL-2.0 and Apache-2.0 texts",
+        "The build pins pyinstaller>=6.9.0; re-read COPYING.txt if a later major release changes it"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 1.3.1's third-party notices (escape-the-valley PR #25, issue #28), at a pinned ref.",
+      "snapshot_sha256": "f2d6310e2ca624ec078ddbd868c09189990e9c1cef132516a4e819186f5c367f",
+      "snapshot_file": "2026-10-22/pyinstaller-licence.txt"
+    },
+    {
+      "id": "cpython-licence",
+      "owner": "Python Software Foundation (CPython)",
+      "kind": "licence",
+      "covers": [
+        "The CPython runtime frozen into Escape the Valley's PyInstaller binaries"
+      ],
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.12/LICENSE",
+      "page_date": "CPython LICENSE (tag v3.12.12)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2",
+        "provided, however, that PSF's License Agreement and PSF's notice of copyright",
+        "Some software incorporated into Python is under different licenses."
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "PSF §2: a binary that carries Python keeps PSF's licence agreement and copyright notice, so the notices file includes the runtime's LICENSE",
+        "The repository LICENSE covers Python's own terms only. The libraries the build links (OpenSSL, libffi, zlib, expat, bzip2, xz, sqlite, mpdecimal) carry their own licences, which come from the build: python.org's Windows LICENSE.txt appends them; python-build-standalone (what uv installs) ships copies of the licence texts in its archive",
+        "python-build-standalone builds against libedit, not readline, and disables _gdbm to avoid GPL links; releases before 2023 may link readline. Check the build in use"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 1.3.1's third-party notices (escape-the-valley PR #25, issue #28), at a pinned ref.",
+      "snapshot_sha256": "350fbb5f093f61337b130b56e5a7119129c68975bebc1e7dd247d0206313d0e1",
+      "snapshot_file": "2026-10-22/cpython-licence.txt"
+    },
+    {
+      "id": "kokoro-onnx-taylorchu-licence",
+      "owner": "taylorchu (kokoro-onnx)",
+      "kind": "licence",
+      "covers": [
+        "taylorchu/kokoro-onnx, the ONNX conversion of Kokoro-82M that thewh1teagle's model-files-v1.0 release optimises"
+      ],
+      "url": "https://raw.githubusercontent.com/taylorchu/kokoro-onnx/de4c145318ec8e67c8026982b9dab8f572a1f57b/LICENSE",
+      "page_date": "MIT License, Copyright (c) 2025 taylorchu (commit de4c145)",
+      "read_date": "2026-10-22",
+      "clauses": [
+        "MIT License",
+        "Copyright (c) 2025 taylorchu"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "MIT covers the repository's code; its README names the model an ONNX optimised version of hexgrad/Kokoro-82M but states no licence for the ONNX files themselves. The weights' licence follows Kokoro-82M (Apache-2.0, kokoro-82m-model-card)"
+      ],
+      "notes": "Read by R&D on 2026-10-22 for Escape the Valley 1.3.1's third-party notices (escape-the-valley PR #25, issue #28), at a pinned ref.",
+      "snapshot_sha256": "5eeb76973189dd7ee5d71dd3af4b097f7c9ca6133ce618717e8a0f0185a02e11",
+      "snapshot_file": "2026-10-22/kokoro-onnx-taylorchu-licence.txt"
+    },
+    {
+      "id": "cpython-licence-3.12.13",
+      "owner": "Python Software Foundation (CPython)",
+      "kind": "licence",
+      "covers": [
+        "The CPython 3.12.13 runtime frozen into Escape the Valley 1.3.1 and XRPL Camp 1.5.1 PyInstaller binaries (uv 0.11.18, python-build-standalone 20260510)"
+      ],
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.13/LICENSE",
+      "page_date": "CPython LICENSE (tag v3.12.13)",
+      "read_date": "2026-10-23",
+      "clauses": [
+        "PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2",
+        "provided, however, that PSF's License Agreement and PSF's notice of copyright",
+        "Some software incorporated into Python is under different licenses."
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "PSF section 2: a binary that carries Python keeps PSF's licence agreement and copyright notice",
+        "The LICENSE text at v3.12.13 is byte-identical to v3.12.12's (same sha256 of the extracted text); the incorporated-software notices come from Doc/license.rst at the same tag, vendored verbatim by the release (escape-the-valley PR #25)"
+      ],
+      "notes": "Read by R&D on 2026-10-23 for the bundled interpreter the 1.3.1 and 1.5.1 releases pin (the Editor confirmed Doc/license.rst at v3.12.13 against the vendored copy, sha 341832873f...).",
+      "snapshot_sha256": "350fbb5f093f61337b130b56e5a7119129c68975bebc1e7dd247d0206313d0e1",
+      "snapshot_file": "2026-10-23/cpython-licence-3.12.13.txt"
+    },
+    {
+      "id": "python-build-standalone-licence",
+      "owner": "Astral (python-build-standalone)",
+      "kind": "licence",
+      "covers": [
+        "python-build-standalone release 20260510: the cpython-3.12.13 full archives (x86_64-unknown-linux-gnu pgo+lto, aarch64-apple-darwin pgo+lto, x86_64-pc-windows-msvc pgo) whose python/licenses/ texts are vendored into the 1.3.1 and 1.5.1 notices; the install-only builds uv installs"
+      ],
+      "url": "https://raw.githubusercontent.com/astral-sh/python-build-standalone/20260510/LICENSE",
+      "page_date": "python-build-standalone LICENSE (tag 20260510)",
+      "read_date": "2026-10-23",
+      "clauses": [
+        "Mozilla Public License Version 2.0"
+      ],
+      "uses": {
+        "assets": "n/a",
+        "training": "n/a",
+        "evaluation": "allowed",
+        "code": "conditions"
+      },
+      "conditions": [
+        "MPL-2.0 covers the build project's own files; the built distributions carry each component's licence (CPython PSF, OpenSSL Apache-2.0, bzip2, expat, libffi, liblzma, libuuid, mpdecimal, sqlite, zlib, and on Linux libedit and ncurses), shipped as python/licenses/LICENSE.*.txt in the full archive only, not the install-only archive uv installs",
+        "Archive sha256s, checked against the release's SHA256SUMS by the build and the Editor: linux 3d59ae16..., macOS 0750a735..., windows e6dd2577..."
+      ],
+      "notes": "Read by R&D on 2026-10-23 at the release tag the 1.3.1 and 1.5.1 builds pin (escape-the-valley PR #25, xrpl-camp PR #25).",
+      "snapshot_sha256": "a7fae6cb34ec631564f892e475d03e5d8781b78949caf5c54d404d384e30fffe",
+      "snapshot_file": "2026-10-23/python-build-standalone-licence.txt"
+    },
+    {
+      "id": "phi-3.5-mini-instruct-licence",
+      "owner": "Microsoft",
+      "kind": "model-licence",
+      "covers": [
+        "phi3.5:3.8b",
+        "microsoft/Phi-3.5-mini-instruct"
+      ],
+      "url": "https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/main/LICENSE",
+      "page_date": "2026-05 (archive); LICENSE file undated",
+      "read_date": "2026-10-24",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Plain MIT text with a Microsoft copyright line, no extra terms. Card says it adds no restriction to the licence. Card is saved as phi35-card.txt (sha cab9d7e23368cf9e8ba469e6c9facf2535f4d32eb9381a604d6d6757f9915b94).",
+      "snapshot_sha256": "0ac2c84cb42399031127325c8c5b8f6bb988ff9e2c689d89e56253f834162d3a",
+      "snapshot_file": "2026-10-24/phi-3.5-mini-instruct-licence.txt",
+      "archive_url": "http://web.archive.org/web/20260511060842/https://huggingface.co/microsoft/Phi-3.5-mini-instruct/blob/main/LICENSE",
+      "restriction_search": "Read LICENSE and full card; card has a responsible-AI section and a disclaimer line but no use restriction or acceptable-use policy link. No bar found."
+    },
+    {
+      "id": "ollama-phi3.5-licence",
+      "owner": "Ollama (redistributing Microsoft's weights)",
+      "kind": "model-licence",
+      "covers": [
+        "phi3.5:3.8b"
+      ],
+      "url": "https://ollama.com/library/phi3.5:3.8b/blobs/c5f9f560a704",
+      "page_date": "2026-10-24 (live fetch; HTML snapshot)",
+      "read_date": "2026-10-24",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Ollama's licence layer for the tag is the same MIT text (1.1kB). Snapshot is HTML; the tag page is saved as ollama-phi3.5.txt (sha 2c90ad5714d2b51eb7c8e8f78ee37a8e3cafd3e9bee968a213e56eaf8a98dd3d).",
+      "snapshot_sha256": "e7674c856fbff94bc5827c7cf3474cb5e7d4a6fd5e8679ba75917486c4906c63",
+      "snapshot_file": "2026-10-24/ollama-phi3.5-licence.txt",
+      "archive_url": "http://web.archive.org/web/20260909180112/https://ollama.com/library/phi3.5",
+      "restriction_search": "Read the licence blob and the tag page; the licence text matches the HF LICENSE. No extra terms. No bar found."
+    },
+    {
+      "id": "nomic-embed-text-v1.5-card",
+      "owner": "Nomic AI",
+      "kind": "model-card",
+      "covers": [
+        "nomic-ai/nomic-embed-text-v1.5"
+      ],
+      "url": "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+      "page_date": "revision e9b6763 card; repo last modified 2026-04-07",
+      "read_date": "2026-10-24",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Card front matter says apache-2.0. Repo has no LICENSE file (only README). Not gated. Checked the pinned revision's card, which matches the live value.",
+      "snapshot_sha256": "96a3837ae669c25dee466137c9a855b29811f7cb3e6e94c4e1a28fb3d909062d",
+      "snapshot_file": "2026-10-24/nomic-embed-text-v1.5-card.txt",
+      "archive_url": "http://web.archive.org/web/20261009054906/https://huggingface.co/nomic-ai/nomic-embed-text-v1.5",
+      "restriction_search": "Read the license field at the pinned revision and the API record (gated=False, file list). No use restriction or policy link found. No bar found."
+    },
+    {
+      "id": "bge-base-en-v1.5-card",
+      "owner": "BAAI",
+      "kind": "model-card",
+      "covers": [
+        "BAAI/bge-base-en-v1.5"
+      ],
+      "url": "https://huggingface.co/BAAI/bge-base-en-v1.5",
+      "page_date": "repo last modified 2024-02-21",
+      "read_date": "2026-10-24",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Card front matter says mit; License section says FlagEmbedding is MIT and the models can be used commercially free of charge. No LICENSE file in this repo. Not gated.",
+      "snapshot_sha256": "93878921d2ff4b16147edcb767b1e2d27bc41ffff488fde84bb30a27c25b7918",
+      "snapshot_file": "2026-10-24/bge-base-en-v1.5-card.txt",
+      "archive_url": "http://web.archive.org/web/20261010154443/https://huggingface.co/BAAI/bge-base-en-v1.5",
+      "restriction_search": "Read the card's license field and License section, plus the API record. No further terms. No bar found."
+    },
+    {
+      "id": "bge-reranker-v2-m3-card",
+      "owner": "BAAI",
+      "kind": "model-card",
+      "covers": [
+        "BAAI/bge-reranker-v2-m3"
+      ],
+      "url": "https://huggingface.co/BAAI/bge-reranker-v2-m3",
+      "page_date": "repo last modified 2024-06-24",
+      "read_date": "2026-10-24",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Card front matter says apache-2.0. No LICENSE file; no licence section in the body. Not gated. Differs from bge-base (MIT) but both are permissive.",
+      "snapshot_sha256": "892f28e80ed64f67ad1798ed3697f3458f17ab27753a28a929788fe41583cb2e",
+      "snapshot_file": "2026-10-24/bge-reranker-v2-m3-card.txt",
+      "archive_url": "http://web.archive.org/web/20260929112759/https://huggingface.co/BAAI/bge-reranker-v2-m3",
+      "restriction_search": "Grepped the card for licence, terms, restriction, commercial, prohibit; only the front matter matched. No bar found."
+    },
+    {
+      "id": "nli-deberta-v3-base-card",
+      "owner": "cross-encoder (Sentence-Transformers community)",
+      "kind": "model-card",
+      "covers": [
+        "cross-encoder/nli-deberta-v3-base"
+      ],
+      "url": "https://huggingface.co/cross-encoder/nli-deberta-v3-base",
+      "page_date": "repo last modified 2025-04-11",
+      "read_date": "2026-10-24",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Card front matter says apache-2.0. No LICENSE file. Not gated. Card does not state what NLI training data (SNLI, MultiNLI) terms apply; that is the model's training set, not a term on using the weights.",
+      "snapshot_sha256": "776f8d9b0589d66d8a87ae3d12c19a2fb3825ee59398dbdc16c96407c539b33a",
+      "snapshot_file": "2026-10-24/nli-deberta-v3-base-card.txt",
+      "archive_url": "http://web.archive.org/web/20260929112426/https://huggingface.co/cross-encoder/nli-deberta-v3-base",
+      "restriction_search": "Read the whole short card and API record. No restriction found; training-data licences not examined (outside this task). No bar found."
+    },
+    {
+      "id": "qwen3-embedding-0.6b-card",
+      "owner": "Alibaba Qwen",
+      "kind": "model-card",
+      "covers": [
+        "Qwen/Qwen3-Embedding-0.6B"
+      ],
+      "url": "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
+      "page_date": "repo last modified 2026-04-20",
+      "read_date": "2026-10-24",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Card front matter says apache-2.0. The repo has no LICENSE file (raw LICENSE returned 404). Not gated.",
+      "snapshot_sha256": "7f91c0f408ca82ec1213b8aac4ce129f465fa2d508a4a1ffeee4e99b66f82b4b",
+      "snapshot_file": "2026-10-24/qwen3-embedding-0.6b-card.txt",
+      "archive_url": "http://web.archive.org/web/20261016225955/https://huggingface.co/Qwen/Qwen3-Embedding-0.6B",
+      "restriction_search": "Read the card, grepped for terms/restrictions, checked API file list and the LICENSE URL (404). No bar found."
+    },
+    {
+      "id": "qwen3.6-35b-a3b-licence",
+      "owner": "Alibaba Cloud (Qwen team)",
+      "kind": "model-licence",
+      "covers": [
+        "Qwen/Qwen3.6-35B-A3B",
+        "Qwen/Qwen3.6-35B-A3B-FP8",
+        "Ollama qwen3.6:35b"
+      ],
+      "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/LICENSE",
+      "page_date": "2026-04-24 (HF repo last modified)",
+      "read_date": "2026-10-25",
+      "clauses": [
+        "You may reproduce and distribute copies of the",
+        "Subject to the terms and conditions of"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [
+        "Redistributing weights or derivative works: give recipients a copy of Apache-2.0, mark modified files, keep notices.",
+        "No condition attaches to model outputs; the text has no output clause."
+      ],
+      "notes": "Standard Apache-2.0 text, no custom Qwen clauses. Repo id Qwen/Qwen3.6-35B-A3B; card says license: apache-2.0. Quoted clauses are the grant and redistribution terms (weights/derivatives, not outputs). Silence on outputs is not a bar. Outside check: Gemini Pro and Gemini Argon (AI Studio) by hand, 2026-10-25. Both found no clause barring an openly published dataset written by Qwen3.6-35B-A3B and filtered by Granite 4.2 8B and Nemotron-3.5-Lightning as blind readers, and no obligation on the dataset. The verdict rests on running the models as open weights on our own compute and publishing only the writer's text. R&D re-checked every quoted clause at its live source on 2026-10-25.",
+      "snapshot_sha256": "50cbab8a892c5f2993b8c7351a99182507472def3b1374558308605d99b86b32",
+      "snapshot_file": "2026-10-25/qwen3.6-35b-a3b-licence.txt",
+      "archive_url": "none found for the LICENSE blob URL; card page: https://web.archive.org/web/20261016112924/https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+      "restriction_search": "Searched snapshot for: prohibit, restrict, output, derivative, distill, synthetic, training; hits are in clauses; none restricts outputs."
+    },
+    {
+      "id": "qwen3.6-35b-a3b-hf-card",
+      "owner": "Alibaba Cloud (Qwen team)",
+      "kind": "model-card",
+      "covers": [
+        "Qwen/Qwen3.6-35B-A3B"
+      ],
+      "url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+      "page_date": "2026-04-24",
+      "read_date": "2026-10-25",
+      "clauses": [
+        "license: apache-2.0"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [],
+      "notes": "Card declares Apache-2.0 and links the LICENSE file. No use-policy, output or distillation language found. Ollama tag qwen3.6:35b (library lists 27b, 35b, latest, -mlx). Outside check: Gemini Pro and Gemini Argon (AI Studio) by hand, 2026-10-25. Both found no clause barring an openly published dataset written by Qwen3.6-35B-A3B and filtered by Granite 4.2 8B and Nemotron-3.5-Lightning as blind readers, and no obligation on the dataset. The verdict rests on running the models as open weights on our own compute and publishing only the writer's text. R&D re-checked every quoted clause at its live source on 2026-10-25.",
+      "snapshot_sha256": "c4ddaa065649ff6352648f64747a16eda31726f3e34add94ce04abb461c77b75",
+      "snapshot_file": "2026-10-25/qwen3.6-35b-a3b-hf-card.txt",
+      "archive_url": "https://web.archive.org/web/20261016112924/https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
+      "restriction_search": "Searched snapshot for: prohibit, restrict, output, derivative, distill, synthetic, training; hits are in clauses; none restricts outputs."
+    },
+    {
+      "id": "qwen3.6-ollama-page",
+      "owner": "Ollama (listing of Qwen3.6)",
+      "kind": "model-card",
+      "covers": [
+        "qwen3.6:35b"
+      ],
+      "url": "https://ollama.com/library/qwen3.6",
+      "page_date": "2026-10-25 (fetched; no page date shown)",
+      "read_date": "2026-10-25",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [],
+      "notes": "Listing only. Tag qwen3.6:35b exists; the page shows a 35b_a3b figure, so it is taken to be the same weights (not independently confirmed). Licence evidence is the HF repo. Outside check: Gemini Pro and Gemini Argon (AI Studio) by hand, 2026-10-25. Both found no clause barring an openly published dataset written by Qwen3.6-35B-A3B and filtered by Granite 4.2 8B and Nemotron-3.5-Lightning as blind readers, and no obligation on the dataset. The verdict rests on running the models as open weights on our own compute and publishing only the writer's text. R&D re-checked every quoted clause at its live source on 2026-10-25.",
+      "snapshot_sha256": "32eebcd644996bca3a03a6a5384f69bb67d3e0e9073fa90c49d921ef6865af0b",
+      "snapshot_file": "2026-10-25/qwen3.6-ollama-page.txt",
+      "archive_url": "https://web.archive.org/web/20261011030033/https://ollama.com/library/qwen3.6",
+      "restriction_search": "Searched snapshot for: prohibit, restrict, output, derivative, distill, synthetic, training; hits are in clauses; none restricts outputs."
+    },
+    {
+      "id": "granite-4.2-8b-hf-card",
+      "owner": "IBM (Granite Team)",
+      "kind": "model-card",
+      "covers": [
+        "ibm-granite/granite-4.2-8b",
+        "ibm-granite/granite-4.2-8b-GGUF",
+        "Ollama granite4.2:8b"
+      ],
+      "url": "https://huggingface.co/ibm-granite/granite-4.2-8b",
+      "page_date": "2026-10-20 (HF repo last modified)",
+      "read_date": "2026-10-25",
+      "clauses": [
+        "license: apache-2.0",
+        "All Granite models are released under the Apache 2.0 license"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [
+        "Redistributing weights or derivatives: Apache-2.0 licence copy and notices.",
+        "No condition attaches to model outputs."
+      ],
+      "notes": "Reasoning-mode instruct model (think tags). Local tag: Ollama granite4.2:8b (also :3b, :30b, :8b-q8_0, latest). No LICENSE file was served at /raw/main/LICENSE, so evidence is the card front matter and card text plus the Apache 2.0 link; the Apache text itself was not read from this repo. Training-data sources listed in the card are not output restrictions. Outside check: Gemini Pro and Gemini Argon (AI Studio) by hand, 2026-10-25. Both found no clause barring an openly published dataset written by Qwen3.6-35B-A3B and filtered by Granite 4.2 8B and Nemotron-3.5-Lightning as blind readers, and no obligation on the dataset. The verdict rests on running the models as open weights on our own compute and publishing only the writer's text. R&D re-checked every quoted clause at its live source on 2026-10-25.",
+      "snapshot_sha256": "01396b1a8596586986fea22cfaa86d0255d19113d71fe09e0b69cc2bfa4307da",
+      "snapshot_file": "2026-10-25/granite-4.2-8b-hf-card.txt",
+      "archive_url": "https://web.archive.org/web/20261013044551/https://huggingface.co/ibm-granite/granite-4.2-8b",
+      "restriction_search": "Searched snapshot for: prohibit, restrict, output, derivative, distill, synthetic, training; hits are in clauses; none restricts outputs."
+    },
+    {
+      "id": "granite4.2-ollama-page",
+      "owner": "Ollama (listing of IBM Granite)",
+      "kind": "model-card",
+      "covers": [
+        "granite4.2:8b"
+      ],
+      "url": "https://ollama.com/library/granite4.2",
+      "page_date": "2026-10-25 (fetched; no page date shown)",
+      "read_date": "2026-10-25",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [],
+      "notes": "Ollama listing repeats Apache 2.0; tag granite4.2:8b confirmed present. Outside check: Gemini Pro and Gemini Argon (AI Studio) by hand, 2026-10-25. Both found no clause barring an openly published dataset written by Qwen3.6-35B-A3B and filtered by Granite 4.2 8B and Nemotron-3.5-Lightning as blind readers, and no obligation on the dataset. The verdict rests on running the models as open weights on our own compute and publishing only the writer's text. R&D re-checked every quoted clause at its live source on 2026-10-25.",
+      "snapshot_sha256": "2d3c9424e95ac7a2de98a67eca41a5f43bd0459053db71c20c2ee024c128afff",
+      "snapshot_file": "2026-10-25/granite4.2-ollama-page.txt",
+      "archive_url": "https://web.archive.org/web/20261008155928/https://ollama.com/library/granite4.2",
+      "restriction_search": "Searched snapshot for: prohibit, restrict, output, derivative, distill, synthetic, training; hits are in clauses; none restricts outputs."
+    },
+    {
+      "id": "qwen3-8b-card",
+      "owner": "Alibaba Qwen",
+      "kind": "model-card",
+      "covers": [
+        "Qwen/Qwen3-8B",
+        "qwen3:8b (Ollama library: q4_K_M, q8_0, fp16)"
+      ],
+      "url": "https://huggingface.co/Qwen/Qwen3-8B",
+      "page_date": "repo last modified 2025-07-26",
+      "read_date": "2026-10-26",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Card front matter says apache-2.0 and links the repo's LICENSE file, which is the Apache License 2.0 text (raw LICENSE returned 200). Not gated. Covers the C2 sweep's qwen3:8b library quants on Colab (speed and memory measurement; no output kept).",
+      "restriction_search": "Read the card and the HF API metadata (license tag apache-2.0, gated false), fetched the raw LICENSE (Apache-2.0 text). No restricting clause found.",
+      "snapshot_sha256": "178a042383482e10bef579d73b9b4035e59dd76ab68371e031076e4d5d685a8d",
+      "snapshot_file": "2026-10-26/qwen3-8b-card.txt",
+      "archive_url": "http://web.archive.org/web/20261013224905/https://huggingface.co/Qwen/Qwen3-8B"
+    },
+    {
+      "id": "qwen3-8b-gguf-card",
+      "owner": "Alibaba Qwen",
+      "kind": "model-card",
+      "covers": [
+        "Qwen/Qwen3-8B-GGUF (rev 7c41481f57cb95916b40956ab2f0b139b296d974, Qwen3-8B-Q6_K.gguf)"
+      ],
+      "url": "https://huggingface.co/Qwen/Qwen3-8B-GGUF",
+      "page_date": "repo last modified 2025-05-21",
+      "read_date": "2026-10-26",
+      "clauses": [],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "notes": "Card front matter says apache-2.0, and the repo ships a LICENSE file. Not gated. Source of the C2 sweep's qwen3:8b Q6_K (GGUF path).",
+      "restriction_search": "Read the card and the HF API metadata (license apache-2.0, gated false, LICENSE file present). No restricting clause found.",
+      "snapshot_sha256": "5a0bb6a84c0343e2dc4b0066a4565c4f325718f607a2636d6fd8e021e2f229b7",
+      "snapshot_file": "2026-10-26/qwen3-8b-gguf-card.txt",
+      "archive_url": "http://web.archive.org/web/20261001153337/https://huggingface.co/Qwen/Qwen3-8B-GGUF"
+    },
+    {
+      "id": "mistral-small-3.2-24b-hf-card",
+      "owner": "Mistral AI",
+      "kind": "model-card",
+      "covers": [
+        "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+        "Ollama mistral-small3.2:24b"
+      ],
+      "url": "https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+      "page_date": "HF commit 95a6d26c4bfb886c58daf9d3f7332c857cb27b43",
+      "read_date": "2026-10-27",
+      "clauses": [
+        "license: apache-2.0"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [
+        "Redistributing weights or derivatives: Apache-2.0 licence copy and notices.",
+        "No condition attaches to model outputs."
+      ],
+      "notes": "Dense 24B instruct model, chosen 2026-10-27 as the second blind-reader family for reasoning-dataset-lab's value certification (pilot B); its yes/no filters items and its text is never published. No LICENSE file is served in the HF repo and it isn't gated; evidence is the card front matter (license: apache-2.0) plus the Ollama tag's bundled licence layer, which is the unmodified Apache-2.0 text (mistral-small3.2-ollama-page). The only other terms link on the card is Mistral's Privacy Policy, which attaches to the hosted service, not to local open weights; if the model is ever routed through Mistral's API or Le Chat, re-read those terms first. Outside check: Grok/Gemini by hand (product not named), 2026-10-27: no clause bars the blind-reader use and no obligation attaches to the dataset (sections 1, 4 and 6 of Apache-2.0). Newer Mistral releases exist (Small 4 119B MoE, Ministral 3 14B); Small 3.2 is the dense model that fits a Colab A100 40 GB.",
+      "snapshot_sha256": "48d492d5ded3dfb80ab53033391c7ada71f42037e442758d9eb29fdb08929edb",
+      "snapshot_file": "2026-10-27/mistral-small-3.2-24b-hf-card.md",
+      "archive_url": "",
+      "restriction_search": "Card front matter and text read in full at commit 95a6d26c: the only licence statement is 'license: apache-2.0'; no acceptable-use policy, no output clause, no gating. The repo file list (API) has no LICENSE or NOTICE file."
+    },
+    {
+      "id": "mistral-small3.2-ollama-page",
+      "owner": "Ollama (library page for Mistral AI's model)",
+      "kind": "model-licence",
+      "covers": [
+        "Ollama mistral-small3.2:24b (manifest sha256 5a408ab55df5c1b5cf46533c368813b30bf9e4d8fc39263bf2a3338cfa3b895b; model layer 41a5b0c3…; licence layer 43070e2d…)"
+      ],
+      "url": "https://ollama.com/library/mistral-small3.2",
+      "page_date": "registry manifest read 2026-10-27",
+      "read_date": "2026-10-27",
+      "clauses": [
+        "Apache License, Version 2.0, January 2004 (the bundled licence layer, unmodified)"
+      ],
+      "uses": {
+        "assets": "allowed",
+        "training": "allowed",
+        "evaluation": "allowed",
+        "code": "allowed"
+      },
+      "conditions": [
+        "Redistributing weights or derivatives: Apache-2.0 licence copy and notices.",
+        "No condition attaches to model outputs."
+      ],
+      "notes": "The Ollama tag's licence layer (sha256 43070e2d…) is byte-identical to apache.org's LICENSE-2.0.txt except a trailing newline, so the bundled licence is plain Apache-2.0 with nothing added. The manifest carries no HF commit or weights hash, so source_match stays unconfirmed in the lab's pin.",
+      "snapshot_sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+      "snapshot_file": "2026-10-27/mistral-small3.2-ollama-licence.txt",
+      "archive_url": "",
+      "restriction_search": "The licence layer read in full: Apache-2.0 sections 1-9, no added terms. Ollama's own terms (ollama-terms) govern the download service, not the model."
+    }
+  ]
+}
