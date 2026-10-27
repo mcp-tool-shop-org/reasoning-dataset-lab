@@ -233,7 +233,35 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
         ),
         max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["reader_2"],
     ),
+    "reader_3": PinnedModelSpec(
+        role="reader_3",
+        display_name="Mistral-Small-3.2-24B-Instruct-2506",
+        family="mistral",
+        ollama_tag="mistral-small3.2:24b",
+        manifest_digest="5a408ab55df5c1b5cf46533c368813b30bf9e4d8fc39263bf2a3338cfa3b895b",
+        model_layer_digest="41a5b0c36a28a3a0480ce2e4007d3a21e3298be70e2b9a103960581412997dca",
+        licence_layer_digest="43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+        licence_id="mistral-small-3.2-24b-hf-card",
+        bundled_licence_id="apache-2.0",
+        source_match="unconfirmed",
+        source_match_reason=(
+            "Ollama manifest carries no HF commit or weights hash; the HF card at 95a6d26c names apache-2.0 and the "
+            "Ollama licence layer is the unmodified Apache-2.0 text."
+        ),
+        max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["reader_3"],
+    ),
 }
+
+
+# The build and calibration chain is the writer and the first two readers. reader_3 is used by the value certification
+# only, so it stays out of the build's licence checks and its sealed-part provenance.
+PILOT_B_BUILD_ROLES: tuple[str, ...] = ("writer", "reader_1", "reader_2")
+
+
+def _build_chain(pins: Mapping[str, PinnedModelSpec]) -> dict[str, PinnedModelSpec]:
+    """The pins the Pilot B build and calibration use, without the certification-only readers."""
+
+    return {role: spec for role, spec in pins.items() if role in PILOT_B_BUILD_ROLES}
 
 
 def resolve_pilot_b_model_pins(
@@ -339,6 +367,24 @@ def build_fixture_licence_registry() -> dict[str, Any]:
                 "covers": ["ibm-granite/granite-4.2-8b", "Ollama granite4.2:8b"],
                 "url": "https://huggingface.co/ibm-granite/granite-4.2-8b",
                 "read_date": "2026-10-25",
+                "clauses": ["license: apache-2.0"],
+                "uses": {
+                    "assets": "allowed",
+                    "training": "allowed",
+                    "evaluation": "allowed",
+                    "code": "allowed",
+                },
+            },
+            {
+                "id": "mistral-small-3.2-24b-hf-card",
+                "owner": "Mistral AI",
+                "kind": "model-card",
+                "covers": [
+                    "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+                    "Ollama mistral-small3.2:24b",
+                ],
+                "url": "https://huggingface.co/mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+                "read_date": "2026-10-27",
                 "clauses": ["license: apache-2.0"],
                 "uses": {
                     "assets": "allowed",
@@ -959,7 +1005,7 @@ def run_pilot_b_build(
         reg_path_str = str(licence_registry_path)
         reg_sha256 = hashlib.sha256(licence_registry_path.read_bytes()).hexdigest()
         validate_models_against_licence_registry(
-            list(pins.values()),
+            list(_build_chain(pins).values()),
             registry_entries=entries_map,
         )
     elif stub_mode:
@@ -970,19 +1016,19 @@ def run_pilot_b_build(
             json.dumps(fixture, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
         validate_models_against_licence_registry(
-            list(pins.values()),
+            list(_build_chain(pins).values()),
             registry_entries=entries_map,
         )
     else:
         # Non-stub build with no registry path must refuse (never fall back to fixture)
         validate_models_against_licence_registry(
-            list(pins.values()),
+            list(_build_chain(pins).values()),
             registry_path=None,
         )
         raise AssertionError("Unreachable")  # pragma: no cover
 
     read_dates_by_id: dict[str, str] = {}
-    for spec in pins.values():
+    for spec in _build_chain(pins).values():
         for lid in (spec.licence_id, spec.bundled_licence_id):
             if lid not in read_dates_by_id:
                 read_dates_by_id[lid] = str(
@@ -1182,7 +1228,7 @@ def run_pilot_b_calibration(
     pins = resolve_pilot_b_model_pins()
     # Require explicit --licence-registry (never falls back to fixture)
     validate_models_against_licence_registry(
-        list(pins.values()),
+        list(_build_chain(pins).values()),
         registry_path=licence_registry_path,
     )
     assert licence_registry_path is not None

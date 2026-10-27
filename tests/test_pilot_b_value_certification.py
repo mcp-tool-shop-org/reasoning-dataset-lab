@@ -1006,3 +1006,97 @@ def test_a_manifest_made_under_another_control_table_does_not_verify(tmp_path):
     assert any(p.startswith("control: the manifest was made") for p in vc.verify_manifest(manifest, SMALL))
     del manifest["control_pairs_sha256"]
     assert any(p.startswith("control: the manifest was made") for p in vc.verify_manifest(manifest, SMALL))
+
+
+MISTRAL_PIN = DEFAULT_PILOT_B_MODEL_PINS["reader_3"]
+MISTRAL = MISTRAL_PIN.to_model_identity()
+
+
+def test_the_mistral_reader_is_pinned_to_its_tag_and_manifest_digest():
+    assert MISTRAL_PIN.role == "reader_3" and MISTRAL_PIN.family == "mistral"
+    assert MISTRAL_PIN.ollama_tag == "mistral-small3.2:24b"
+    assert MISTRAL_PIN.manifest_digest == "5a408ab55df5c1b5cf46533c368813b30bf9e4d8fc39263bf2a3338cfa3b895b"
+    assert MISTRAL_PIN.model_layer_digest == "41a5b0c36a28a3a0480ce2e4007d3a21e3298be70e2b9a103960581412997dca"
+    assert MISTRAL_PIN.licence_layer_digest == "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+    assert MISTRAL_PIN.licence_id == "mistral-small-3.2-24b-hf-card"
+    assert MISTRAL_PIN.bundled_licence_id == "apache-2.0"
+    assert MISTRAL_PIN.source_match == "unconfirmed" and MISTRAL_PIN.source_match_reason
+    assert MISTRAL_PIN.max_num_ctx == 7168
+
+
+def test_build_ollama_readers_returns_the_mistral_adapter_pinned_to_the_tag_and_digest():
+    (reader,) = vc.build_ollama_readers(
+        ["mistral"], base_url="http://127.0.0.1:11434", num_ctx=4096, num_predict=3072
+    )
+    assert reader.ollama_tag == "mistral-small3.2:24b"
+    assert reader.manifest_digest == MISTRAL_PIN.manifest_digest
+    assert reader.role == "reader_3"
+
+
+def test_an_unknown_reader_family_still_refuses_and_the_hint_lists_the_three():
+    with pytest.raises(RdlabError) as exc:
+        vc.build_ollama_readers(
+            ["llama"], base_url="http://127.0.0.1:11434", num_ctx=4096, num_predict=3072
+        )
+    assert exc.value.code == "PILOT_B_CERT_UNKNOWN_READER"
+    assert "granite, mistral, nemotron" in str(exc.value)
+
+
+# A copy of rnd's licences/registry.json at fb27d76 (rnd #247), the registry that carries the two Mistral entries.
+RND_REGISTRY_COPY = Path(__file__).parent / "fixtures" / "rnd-licences-registry-fb27d76.json"
+
+
+def test_the_real_registry_accepts_the_mistral_pin_and_every_default_pin():
+    from reasoning_dataset_lab.pilot_b.models_and_build import validate_models_against_licence_registry
+
+    checked = validate_models_against_licence_registry([MISTRAL_PIN], registry_path=RND_REGISTRY_COPY)
+    assert len(checked) == 1
+    everything = validate_models_against_licence_registry(
+        list(DEFAULT_PILOT_B_MODEL_PINS.values()), registry_path=RND_REGISTRY_COPY
+    )
+    assert len(everything) == 4
+
+
+def test_the_licence_check_refuses_the_mistral_pin_when_its_registry_entry_is_removed(tmp_path):
+    from reasoning_dataset_lab.pilot_b.models_and_build import validate_models_against_licence_registry
+
+    registry = json.loads(RND_REGISTRY_COPY.read_text(encoding="utf-8"))
+    kept = [e for e in registry["entries"] if e["id"] != "mistral-small-3.2-24b-hf-card"]
+    assert len(kept) == len(registry["entries"]) - 1
+    removed = tmp_path / "registry-without-mistral.json"
+    removed.write_text(json.dumps({**registry, "entries": kept}), encoding="utf-8")
+    with pytest.raises(RdlabError):
+        validate_models_against_licence_registry([MISTRAL_PIN], registry_path=removed)
+
+
+def test_the_fixture_registry_used_by_stub_runs_also_carries_the_mistral_entry():
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        build_fixture_licence_registry,
+        validate_models_against_licence_registry,
+    )
+
+    entries = {str(e["id"]): e for e in build_fixture_licence_registry()["entries"]}
+    assert validate_models_against_licence_registry([MISTRAL_PIN], registry_entries=entries)
+
+
+def test_the_manifest_lists_reader_3_when_it_ran_and_an_older_manifest_still_verifies(tmp_path):
+    older = _good_manifest(tmp_path)
+    assert {r["family"] for r in older["readers"]} == {"granite", "nemotron"}
+    assert vc.verify_manifest(older, SMALL) == []
+
+    run, _ = _run([FakeReader(MISTRAL, []), FakeReader(NEMOTRON, [])], tmp_path=tmp_path)
+    assert {r["name"] for r in run.manifest["readers"]} == {MISTRAL.name, NEMOTRON.name}
+    assert MISTRAL.name in run.manifest["control"]
+    assert vc.verify_manifest(run.manifest, SMALL) == []
+
+
+def test_a_reader_that_is_not_a_pinned_model_still_fails_the_verifier(tmp_path):
+    fake = ModelIdentity(name="mistral-small3.2:24b", family="mistral", digest="d" * 64)
+    run, _ = _run([FakeReader(fake, []), FakeReader(NEMOTRON, [])], tmp_path=tmp_path)
+    assert any("is not a pinned reader model" in p for p in vc.verify_manifest(run.manifest, SMALL))
+
+
+def test_the_build_chain_leaves_out_the_certification_only_reader():
+    from reasoning_dataset_lab.pilot_b.models_and_build import _build_chain, resolve_pilot_b_model_pins
+
+    assert set(_build_chain(resolve_pilot_b_model_pins())) == {"writer", "reader_1", "reader_2"}

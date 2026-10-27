@@ -613,6 +613,7 @@ def _pinned_readers() -> set[tuple[str, str, str]]:
     pins = (
         DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
         DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
+        DEFAULT_PILOT_B_MODEL_PINS["reader_3"],
     )
     return {(s.ollama_tag, s.manifest_digest, s.family.strip().lower()) for s in pins}
 
@@ -744,6 +745,7 @@ def build_ollama_readers(
     by_family = {
         "nemotron": ("reader_1", "reader_1"),
         "granite": ("reader_2", "reader_2"),
+        "mistral": ("reader_3", "reader_3"),
     }
     readers: list[Any] = []
     for family in families:

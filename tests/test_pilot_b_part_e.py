@@ -20,17 +20,24 @@ from reasoning_dataset_lab.pilot_b.models_and_build import (
 from test_pilot_b_ollama_adapters import build_mock_ollama_http_transport
 
 
-def test_default_pilot_b_model_pins_have_three_distinct_families_and_digests() -> None:
-    assert set(DEFAULT_PILOT_B_MODEL_PINS.keys()) == {"writer", "reader_1", "reader_2"}
+def test_default_pilot_b_model_pins_have_four_distinct_families_and_digests() -> None:
+    assert set(DEFAULT_PILOT_B_MODEL_PINS.keys()) == {
+        "writer",
+        "reader_1",
+        "reader_2",
+        "reader_3",
+    }
     writer = DEFAULT_PILOT_B_MODEL_PINS["writer"]
     r1 = DEFAULT_PILOT_B_MODEL_PINS["reader_1"]
     r2 = DEFAULT_PILOT_B_MODEL_PINS["reader_2"]
+    r3 = DEFAULT_PILOT_B_MODEL_PINS["reader_3"]
 
     assert writer.ollama_tag == "qwen3.6:35b"
     assert r1.ollama_tag == "nemotron-3.5-lightning:30b"
     assert r2.ollama_tag == "granite4.2:8b"
-    assert len({writer.family, r1.family, r2.family}) == 3
-    for pin in (writer, r1, r2):
+    assert r3.ollama_tag == "mistral-small3.2:24b"
+    assert len({writer.family, r1.family, r2.family, r3.family}) == 4
+    for pin in (writer, r1, r2, r3):
         assert len(pin.manifest_digest) == 64
         assert pin.licence_id
 
@@ -47,7 +54,7 @@ def test_licence_check_passes_with_fixture_registry_and_refuses_missing_or_barre
         list(DEFAULT_PILOT_B_MODEL_PINS.values()),
         registry_path=reg_path,
     )
-    assert len(checked) == 3
+    assert len(checked) == 4
 
     # Refuses a chain member with an unknown licence_id
     unlisted_model = PinnedModelSpec(
@@ -194,7 +201,7 @@ def test_cli_models_verify_live_and_pilot_b_stub(
     assert code_models == 0
     cap_models = json.loads(capsys.readouterr().out)
     assert cap_models["status"] == "ok"
-    assert len(cap_models["models"]) == 3
+    assert len(cap_models["models"]) == 4
 
 
 def test_part_e_additional_model_and_licence_error_branches(tmp_path: Path) -> None:
@@ -333,6 +340,7 @@ def test_fix3_verify_live_pins_licence_layer_digest_source_match_and_provenance(
         "writer": "5f3a3c817e78f5b8a4ad2d2c458a3e4b2cce470d6c12642c4eeb12cb8a9bf51d",
         "reader_1": "215a3316f0f10bebc2c8d5b6426d1c6ad06e162187df10e043bafed246894d9a",
         "reader_2": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+        "reader_3": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
     }
     for role, pin in DEFAULT_PILOT_B_MODEL_PINS.items():
         assert pin.licence_layer_digest == expected_lic_digests[role]
