@@ -30,10 +30,10 @@ def test_example_t10_pilot_a_map_passes() -> None:
     assert result.dataset == "verifier-t10-pilot-a"
     assert result.map_version == 1
     assert result.cells_total == 24
-    assert result.cells_buildable == 12
-    assert result.cells_zero_capacity == 12
+    assert result.cells_buildable == 24
+    assert result.cells_zero_capacity == 0
     assert result.target_total == 60
-    assert result.capacity_total == 60
+    assert result.capacity_total == 120
     assert len(result.map_sha256) == 64
     d = result.to_dict()
     assert d["status"] == "ok"
@@ -78,9 +78,22 @@ def test_refuses_target_exceeds_capacity() -> None:
     assert err.code in str(err)
 
 
-def test_refuses_target_exceeds_zero_capacity() -> None:
+def _map_with_a_zero_capacity_cell() -> dict:
+    """The example map with cell 12 (a floor_read_as_exact cell) held back: capacity 0, target 0, a reason."""
+
     data = _valid_base_map()
-    # Cell 12 is a floor_read_as_exact cell with capacity: 0
+    data["cells"][12].update(target=0, capacity=0, reason="held back")
+    data["splits"] = {"train": 46, "eval": 12}  # 60 - the 2 items the held-back cell no longer targets
+    return data
+
+
+def test_a_zero_capacity_cell_with_a_reason_passes() -> None:
+    result = validate_map(_map_with_a_zero_capacity_cell())
+    assert result.cells_zero_capacity == 1 and result.cells_buildable == 23
+
+
+def test_refuses_target_exceeds_zero_capacity() -> None:
+    data = _map_with_a_zero_capacity_cell()
     data["cells"][12]["target"] = 1
     with pytest.raises(RdlabError) as exc_info:
         validate_map(data)
@@ -91,7 +104,7 @@ def test_refuses_target_exceeds_zero_capacity() -> None:
 
 @pytest.mark.parametrize("bad_reason", [None, "", "   ", 123])
 def test_refuses_zero_capacity_without_reason(bad_reason: object) -> None:
-    data = _valid_base_map()
+    data = _map_with_a_zero_capacity_cell()
     cell = data["cells"][12]
     assert cell["capacity"] == 0
     if bad_reason is None:

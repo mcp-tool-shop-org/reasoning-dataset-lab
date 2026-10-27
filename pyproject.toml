@@ -12,7 +12,7 @@ license = "MIT"
 dependencies = [
     "pyyaml==6.0.3",
     "aspire-si-gates @ git+https://github.com/mcp-tool-shop-org/aspire-si-gates@8ed78f2fee388e81443953f8dd3753c73e1ff2bd",
-    "role-set @ git+https://github.com/mcp-tool-shop-org/role-set@d105f3da4550b6f4354d5ec66fe5f029b20c884e",
+    "role-set @ git+https://github.com/mcp-tool-shop-org/role-set@3ce9ada0336301417ae416da46e9a15746bd893e",
 ]
 
 [project.optional-dependencies]

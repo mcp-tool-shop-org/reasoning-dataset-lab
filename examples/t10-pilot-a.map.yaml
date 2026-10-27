@@ -11,34 +11,34 @@ axes:
     - floor_read_as_exact
     - ceiling_read_as_exact
 cells:
-  # Buildable claim cells: exact_read_as_floor (6 cells x 5 items = 30 items)
-  - {trait: T10, kind: B, difficulty: d2, domain: lamps, wrong_family: exact_read_as_floor, target: 5, capacity: 5}
-  - {trait: T10, kind: B, difficulty: d2, domain: cups, wrong_family: exact_read_as_floor, target: 5, capacity: 5}
-  - {trait: T10, kind: B, difficulty: d3, domain: lamps, wrong_family: exact_read_as_floor, target: 5, capacity: 5}
-  - {trait: T10, kind: B, difficulty: d3, domain: cups, wrong_family: exact_read_as_floor, target: 5, capacity: 5}
-  - {trait: T10, kind: B, difficulty: d4, domain: lamps, wrong_family: exact_read_as_floor, target: 5, capacity: 5}
-  - {trait: T10, kind: B, difficulty: d4, domain: cups, wrong_family: exact_read_as_floor, target: 5, capacity: 5}
-  # Buildable claim cells: exact_read_as_ceiling (6 cells x 5 items = 30 items)
-  - {trait: T10, kind: B, difficulty: d2, domain: lamps, wrong_family: exact_read_as_ceiling, target: 5, capacity: 5}
-  - {trait: T10, kind: B, difficulty: d2, domain: cups, wrong_family: exact_read_as_ceiling, target: 5, capacity: 5}
-  - {trait: T10, kind: B, difficulty: d3, domain: lamps, wrong_family: exact_read_as_ceiling, target: 5, capacity: 5}
-  - {trait: T10, kind: B, difficulty: d3, domain: cups, wrong_family: exact_read_as_ceiling, target: 5, capacity: 5}
-  - {trait: T10, kind: B, difficulty: d4, domain: lamps, wrong_family: exact_read_as_ceiling, target: 5, capacity: 5}
-  - {trait: T10, kind: B, difficulty: d4, domain: cups, wrong_family: exact_read_as_ceiling, target: 5, capacity: 5}
-  # Planned floor claim cells (capacity: 0, reason: "role-set PR pending")
-  - {trait: T10, kind: B, difficulty: d2, domain: lamps, wrong_family: floor_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  - {trait: T10, kind: B, difficulty: d2, domain: cups, wrong_family: floor_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  - {trait: T10, kind: B, difficulty: d3, domain: lamps, wrong_family: floor_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  - {trait: T10, kind: B, difficulty: d3, domain: cups, wrong_family: floor_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  - {trait: T10, kind: B, difficulty: d4, domain: lamps, wrong_family: floor_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  - {trait: T10, kind: B, difficulty: d4, domain: cups, wrong_family: floor_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  # Planned ceiling claim cells (capacity: 0, reason: "role-set PR pending")
-  - {trait: T10, kind: B, difficulty: d2, domain: lamps, wrong_family: ceiling_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  - {trait: T10, kind: B, difficulty: d2, domain: cups, wrong_family: ceiling_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  - {trait: T10, kind: B, difficulty: d3, domain: lamps, wrong_family: ceiling_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  - {trait: T10, kind: B, difficulty: d3, domain: cups, wrong_family: ceiling_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  - {trait: T10, kind: B, difficulty: d4, domain: lamps, wrong_family: ceiling_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
-  - {trait: T10, kind: B, difficulty: d4, domain: cups, wrong_family: ceiling_read_as_exact, target: 0, capacity: 0, reason: "role-set PR pending"}
+  # Buildable claim cells: exact_read_as_floor (6 cells x 3 items = 18 items)
+  - {trait: T10, kind: B, difficulty: d2, domain: lamps, wrong_family: exact_read_as_floor, target: 3, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d2, domain: cups, wrong_family: exact_read_as_floor, target: 3, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d3, domain: lamps, wrong_family: exact_read_as_floor, target: 3, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d3, domain: cups, wrong_family: exact_read_as_floor, target: 3, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d4, domain: lamps, wrong_family: exact_read_as_floor, target: 3, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d4, domain: cups, wrong_family: exact_read_as_floor, target: 3, capacity: 5}
+  # Buildable claim cells: exact_read_as_ceiling (6 cells x 3 items = 18 items)
+  - {trait: T10, kind: B, difficulty: d2, domain: lamps, wrong_family: exact_read_as_ceiling, target: 3, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d2, domain: cups, wrong_family: exact_read_as_ceiling, target: 3, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d3, domain: lamps, wrong_family: exact_read_as_ceiling, target: 3, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d3, domain: cups, wrong_family: exact_read_as_ceiling, target: 3, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d4, domain: lamps, wrong_family: exact_read_as_ceiling, target: 3, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d4, domain: cups, wrong_family: exact_read_as_ceiling, target: 3, capacity: 5}
+  # Buildable set-question cells: floor_read_as_exact (6 cells x 2 items = 12 items). "At least k" is separated from "exactly k" by the set question (role-set 3ce9ada, target_shortcut).
+  - {trait: T10, kind: B, difficulty: d2, domain: lamps, wrong_family: floor_read_as_exact, target: 2, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d2, domain: cups, wrong_family: floor_read_as_exact, target: 2, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d3, domain: lamps, wrong_family: floor_read_as_exact, target: 2, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d3, domain: cups, wrong_family: floor_read_as_exact, target: 2, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d4, domain: lamps, wrong_family: floor_read_as_exact, target: 2, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d4, domain: cups, wrong_family: floor_read_as_exact, target: 2, capacity: 5}
+  # Buildable set-question cells: ceiling_read_as_exact (6 cells x 2 items = 12 items).
+  - {trait: T10, kind: B, difficulty: d2, domain: lamps, wrong_family: ceiling_read_as_exact, target: 2, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d2, domain: cups, wrong_family: ceiling_read_as_exact, target: 2, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d3, domain: lamps, wrong_family: ceiling_read_as_exact, target: 2, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d3, domain: cups, wrong_family: ceiling_read_as_exact, target: 2, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d4, domain: lamps, wrong_family: ceiling_read_as_exact, target: 2, capacity: 5}
+  - {trait: T10, kind: B, difficulty: d4, domain: cups, wrong_family: ceiling_read_as_exact, target: 2, capacity: 5}
 splits:
   train: 48
   eval: 12
