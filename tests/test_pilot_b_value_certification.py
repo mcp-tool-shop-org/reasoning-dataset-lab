@@ -957,7 +957,7 @@ CONTROL_TABLE_V2 = [
     ("compressors", "rotor coating", "alumina", "ceramic", "member to class"),
     ("compressors", "rotor coating", "nitride", "ceramic", "member to class"),
     ("boilers", "tube alloy", "chromoly", "alloy steel", "member to class"),
-    ("compressors", "shaft seal", "drygas", "mechanical seal", "member to class"),
+    ("compressors", "shaft seal", "silicon carbide", "ceramic", "member to class"),
     ("relays", "enclosure rating", "IP67", "dust-tight", "implies"),
     ("chillers", "refrigerant", "R-134a", "HFC-134a", "synonym"),
 ]
@@ -977,8 +977,9 @@ def test_the_control_table_hash_is_the_hash_of_the_table():
     assert vc.CONTROL_PAIRS_SHA256 == expected
 
 
-def test_the_five_replaced_pairs_are_gone():
+def test_the_six_replaced_pairs_are_gone():
     gone = {
+        ("compressors", "shaft seal", "drygas", "mechanical seal"),
         ("vessels", "berth status", "docked", "moored"),
         ("compressors", "rotor coating", "carbide", "ceramic"),
         ("boilers", "tube alloy", "chromoly", "ferritic steel"),

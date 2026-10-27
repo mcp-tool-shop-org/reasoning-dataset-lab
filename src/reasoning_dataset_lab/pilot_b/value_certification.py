@@ -252,7 +252,7 @@ CONTROL_PAIRS: tuple[tuple[str, str, str, str, str], ...] = (
     ("compressors", "rotor coating", "alumina", "ceramic", "member to class"),
     ("compressors", "rotor coating", "nitride", "ceramic", "member to class"),
     ("boilers", "tube alloy", "chromoly", "alloy steel", "member to class"),
-    ("compressors", "shaft seal", "drygas", "mechanical seal", "member to class"),
+    ("compressors", "shaft seal", "silicon carbide", "ceramic", "member to class"),
     ("relays", "enclosure rating", "IP67", "dust-tight", "implies"),
     ("chillers", "refrigerant", "R-134a", "HFC-134a", "synonym"),
 )
