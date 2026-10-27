@@ -936,3 +936,73 @@ def test_a_garbled_control_answer_is_a_fail_and_the_real_adapter_has_chat_raw():
     result = vc.run_control(reader, vc.first_entities(), 0.80)
     assert result["passes"] == 0 and result["passed"] is False
     assert result["pairs"][0]["verdict"] == "error"
+
+
+# The 20 control pairs v2, written out in full: changing any of them must change this test too.
+CONTROL_TABLE_V2 = [
+    ("turbines", "lubricant grade", "polyol", "synthetic", "member to class"),
+    ("turbines", "lubricant grade", "ester", "synthetic", "member to class"),
+    ("turbines", "lubricant grade", "silicone", "synthetic", "member to class"),
+    ("transformers", "dielectric fluid", "paraffinic", "mineral", "member to class"),
+    ("transformers", "dielectric fluid", "naphthenic", "mineral", "member to class"),
+    ("turbines", "casing alloy", "inconel", "nickel alloy", "member to class"),
+    ("furnaces", "purge gas", "argon", "inert gas", "member to class"),
+    ("furnaces", "purge gas", "helium", "inert gas", "member to class"),
+    ("furnaces", "thermocouple wire", "chromel", "nickel alloy", "member to class"),
+    ("transformers", "bushing material", "porcelain", "ceramic", "member to class"),
+    ("transformers", "bushing material", "epoxy", "resin", "member to class"),
+    ("transformers", "bushing material", "epoxy", "polymer", "member to class"),
+    ("vessels", "hull material", "steel", "metal", "member to class"),
+    ("chillers", "refrigerant", "hydrofluorocarbon", "halocarbon", "member to class"),
+    ("compressors", "rotor coating", "alumina", "ceramic", "member to class"),
+    ("compressors", "rotor coating", "nitride", "ceramic", "member to class"),
+    ("boilers", "tube alloy", "chromoly", "alloy steel", "member to class"),
+    ("compressors", "shaft seal", "silicon carbide", "ceramic", "member to class"),
+    ("relays", "enclosure rating", "IP67", "dust-tight", "implies"),
+    ("chillers", "refrigerant", "R-134a", "HFC-134a", "synonym"),
+]
+
+
+def test_the_control_table_is_the_twenty_pairs_of_v2():
+    assert list(vc.CONTROL_PAIRS) == CONTROL_TABLE_V2
+
+
+def test_the_control_table_hash_is_the_hash_of_the_table():
+    import hashlib
+    import json
+
+    expected = hashlib.sha256(
+        json.dumps([list(pair) for pair in CONTROL_TABLE_V2], separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    assert vc.CONTROL_PAIRS_SHA256 == expected
+
+
+def test_the_six_replaced_pairs_are_gone():
+    gone = {
+        ("compressors", "shaft seal", "drygas", "mechanical seal"),
+        ("vessels", "berth status", "docked", "moored"),
+        ("compressors", "rotor coating", "carbide", "ceramic"),
+        ("boilers", "tube alloy", "chromoly", "ferritic steel"),
+        ("relays", "enclosure rating", "sealed", "waterproof"),
+        ("boilers", "sootblower medium", "acoustic", "sonic"),
+    }
+    assert gone.isdisjoint({pair[:4] for pair in vc.CONTROL_PAIRS})
+
+
+def test_every_control_pair_names_a_domain_that_has_an_entity():
+    entities = vc.first_entities()
+    for domain, _attribute, _stated, _claimed, _relation in vc.CONTROL_PAIRS:
+        assert entities.get(domain), domain
+
+
+def test_the_manifest_records_the_control_table_hash(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    assert manifest["control_pairs_sha256"] == vc.CONTROL_PAIRS_SHA256
+
+
+def test_a_manifest_made_under_another_control_table_does_not_verify(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    manifest["control_pairs_sha256"] = "0" * 64
+    assert any(p.startswith("control: the manifest was made") for p in vc.verify_manifest(manifest, SMALL))
+    del manifest["control_pairs_sha256"]
+    assert any(p.startswith("control: the manifest was made") for p in vc.verify_manifest(manifest, SMALL))

@@ -247,16 +247,20 @@ CONTROL_PAIRS: tuple[tuple[str, str, str, str, str], ...] = (
     ("transformers", "bushing material", "porcelain", "ceramic", "member to class"),
     ("transformers", "bushing material", "epoxy", "resin", "member to class"),
     ("transformers", "bushing material", "epoxy", "polymer", "member to class"),
-    ("vessels", "berth status", "docked", "moored", "state implies state"),
+    ("vessels", "hull material", "steel", "metal", "member to class"),
     ("chillers", "refrigerant", "hydrofluorocarbon", "halocarbon", "member to class"),
-    ("compressors", "rotor coating", "carbide", "ceramic", "member to class"),
+    ("compressors", "rotor coating", "alumina", "ceramic", "member to class"),
     ("compressors", "rotor coating", "nitride", "ceramic", "member to class"),
-    ("boilers", "tube alloy", "chromoly", "ferritic steel", "member to class"),
-    ("compressors", "shaft seal", "drygas", "mechanical seal", "member to class"),
-    ("relays", "enclosure rating", "sealed", "waterproof", "implies"),
-    ("boilers", "sootblower medium", "acoustic", "sonic", "synonym"),
+    ("boilers", "tube alloy", "chromoly", "alloy steel", "member to class"),
+    ("compressors", "shaft seal", "silicon carbide", "ceramic", "member to class"),
+    ("relays", "enclosure rating", "IP67", "dust-tight", "implies"),
+    ("chillers", "refrigerant", "R-134a", "HFC-134a", "synonym"),
 )
 DEFAULT_CONTROL_PASS_THRESHOLD = 0.80
+# The table is pinned: a manifest made under another table does not verify.
+CONTROL_PAIRS_SHA256 = hashlib.sha256(
+    json.dumps([list(pair) for pair in CONTROL_PAIRS], separators=(",", ":")).encode("utf-8")
+).hexdigest()
 
 
 def run_control(
@@ -390,6 +394,7 @@ def _assemble(
         "control": control,
         "control_failed": control_failed,
         "prompt_sha256": PROMPT_SHA256,
+        "control_pairs_sha256": CONTROL_PAIRS_SHA256,
     }
     manifest["content_sha256"] = content_hash(manifest)
     return manifest, queue
@@ -634,6 +639,10 @@ def verify_manifest(
     if manifest.get("prompt_sha256") != PROMPT_SHA256:
         problems.append(
             "prompt: the manifest was made with a different prompt than this code's"
+        )
+    if manifest.get("control_pairs_sha256") != CONTROL_PAIRS_SHA256:
+        problems.append(
+            "control: the manifest was made with a different control-pair table than this code's"
         )
     control = manifest.get("control") or {}
     for name in reader_names:
