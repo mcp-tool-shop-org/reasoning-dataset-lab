@@ -122,6 +122,8 @@ NUM_CTX_STEP_TOKENS: int = 1024
 DEFAULT_RENDER_MAX_NUM_CTX: int = 9216
 DEFAULT_READER_1_MAX_NUM_CTX: int = 7168
 DEFAULT_READER_2_MAX_NUM_CTX: int = 8192
+# reader_3 (mistral-small3.2:24b) is used by the certification only, which runs at num_ctx 4096; its cap is not raised past reader_1's.
+DEFAULT_READER_3_MAX_NUM_CTX: int = 7168
 
 # Per-role max_num_ctx defaults:
 # - writer (qwen3.6:35b, weights 22.6 GB): 9216 (Qwen VRAM check 2026-10-25: peak 25,445 MiB at num_ctx 9,216 (render) and 25,399 MiB at 7,168 (word); halt line 26,000 MiB)
@@ -132,6 +134,7 @@ DEFAULT_ROLE_MAX_NUM_CTX: dict[str, int] = {
     "writer": DEFAULT_RENDER_MAX_NUM_CTX,
     "reader_1": DEFAULT_READER_1_MAX_NUM_CTX,
     "reader_2": DEFAULT_READER_2_MAX_NUM_CTX,
+    "reader_3": DEFAULT_READER_3_MAX_NUM_CTX,
 }
 
 
@@ -1268,7 +1271,7 @@ class OllamaBlindReaderAdapter:
         base_url: str = DEFAULT_OLLAMA_BASE_URL,
         num_predict: int | NumPredictConfig | Mapping[str, Any] | None = None,
         num_predict_source: NumPredictSource | None = None,
-        role: Literal["reader_1", "reader_2"] | None = None,
+        role: Literal["reader_1", "reader_2", "reader_3"] | None = None,
         max_num_ctx: int | None = None,
         http_transport: OllamaHttpTransport | None = None,
     ) -> None:
@@ -1277,7 +1280,7 @@ class OllamaBlindReaderAdapter:
         )
         self._base_url = require_loopback_ollama_url(base_url)
         self._model = _resolve_model_identity(model)
-        resolved_role: Literal["reader_1", "reader_2"] = (
+        resolved_role: Literal["reader_1", "reader_2", "reader_3"] = (
             role
             if role is not None
             else (
@@ -1316,7 +1319,7 @@ class OllamaBlindReaderAdapter:
         return self._model
 
     @property
-    def role(self) -> Literal["reader_1", "reader_2"]:
+    def role(self) -> Literal["reader_1", "reader_2", "reader_3"]:
         return self._role
 
     @property
