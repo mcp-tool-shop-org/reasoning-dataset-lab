@@ -8,6 +8,7 @@ Commands in the scaffold:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ from reasoning_dataset_lab.pilot_b.models_and_build import (
     DEFAULT_PILOT_B_MODEL_PINS,
     run_pilot_b_build,
     run_pilot_b_calibration,
+    validate_models_against_licence_registry,
     verify_live_ollama_models,
 )
 from reasoning_dataset_lab.pilot_b.ollama import (
@@ -356,6 +358,13 @@ def _build_certify_values_parser() -> _StructuredArgumentParser:
         ),
     )
     parser.add_argument(
+        "--licence-registry",
+        dest="licence_registry",
+        type=Path,
+        required=True,
+        help="Absolute path of licences/registry.json: the readers' pins are checked against it before any Ollama call, and its sha256 goes in the manifest.",
+    )
+    parser.add_argument(
         "--readers",
         default="granite,nemotron",
         help="Comma-separated reader families, run in this order (default: granite,nemotron).",
@@ -448,6 +457,7 @@ def _run_certify_values(argv: Sequence[str]) -> int:
     for flag, path in (
         ("--manifest-out", args.manifest_out),
         ("--review-queue-out", args.review_queue_out),
+        ("--licence-registry", args.licence_registry),
     ):
         if not path.is_absolute():
             raise usage_error(
@@ -465,6 +475,14 @@ def _run_certify_values(argv: Sequence[str]) -> int:
             "Use a domain from the catalogue.",
         )
     families = [f.strip().lower() for f in args.readers.split(",") if f.strip()]
+    # the licence gate: exactly the readers that will run, checked before any Ollama call
+    validate_models_against_licence_registry(
+        value_certification.reader_pins(families),
+        registry_path=args.licence_registry,
+    )
+    licence_registry_sha256 = hashlib.sha256(
+        args.licence_registry.read_bytes()
+    ).hexdigest()
     readers = value_certification.build_ollama_readers(
         families,
         base_url=args.ollama_url,
@@ -485,6 +503,7 @@ def _run_certify_values(argv: Sequence[str]) -> int:
         ),
         date=args.date or datetime.datetime.now(datetime.UTC).date().isoformat(),
         manifest_path=args.manifest_out,
+        licence_registry_sha256=licence_registry_sha256,
     )
     print(
         json.dumps(
@@ -509,9 +528,18 @@ def _run_verify_values_manifest(argv: Sequence[str]) -> int:
         description="Check that a certification manifest certifies every current value set and that its hashes still match.",
     )
     parser.add_argument("manifest", type=Path, help="Path to the manifest JSON.")
+    parser.add_argument(
+        "--licence-registry",
+        dest="licence_registry",
+        type=Path,
+        default=None,
+        help="Recompute the sha256 of this registry and compare it with the manifest's.",
+    )
     args = parser.parse_args(argv)
     manifest = value_certification.load_manifest(args.manifest)
-    problems = value_certification.verify_manifest(manifest)
+    problems = value_certification.verify_manifest(
+        manifest, licence_registry_path=args.licence_registry
+    )
     for problem in problems:
         print(problem, file=sys.stderr)
     print(
