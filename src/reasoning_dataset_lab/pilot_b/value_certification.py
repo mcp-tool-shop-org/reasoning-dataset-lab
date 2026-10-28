@@ -274,7 +274,9 @@ def content_hash(manifest: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def _check_readers(readers: Sequence[CompatibilityReader]) -> None:
+def _check_readers(
+    readers: Sequence[CompatibilityReader], *, is_addendum: bool = False
+) -> None:
     families = [r.model.normalized_family for r in readers]
     for reader in readers:
         family = reader.model.normalized_family
@@ -290,7 +292,8 @@ def _check_readers(readers: Sequence[CompatibilityReader]) -> None:
                 f"Model '{reader.model.name}' (family '{reader.model.family}') cannot certify value sets.",
                 "Use two approved open-weight reader families.",
             )
-    if len(set(families)) < 2:
+    min_families = 1 if is_addendum else 2
+    if len(set(families)) < min_families:
         raise refused_error(
             "PILOT_B_CERT_NEEDS_TWO_FAMILIES",
             f"Certification needs readers from at least two model families, got {sorted(set(families))}.",
@@ -648,7 +651,7 @@ def run_certification(
         tier_label = build_setting_tier(
             overrides, readers=readers, parent_manifest=parent_doc
         )
-    _check_readers(readers)
+    _check_readers(readers, is_addendum=(parent_manifest_path is not None))
 
     jobs: list[tuple[int, str, str, str, list[dict[str, str]]]] = []
     for set_index, (domain, attribute, values) in enumerate(sets):
@@ -877,7 +880,17 @@ def verify_manifest(
     readers = manifest.get("readers", [])
     reader_names = {str(r.get("name", "")) for r in readers}
     families = {str(r.get("family", "")).strip().lower() for r in readers}
-    if len(readers) < 2 or len(families - {""}) < 2:
+    if "parent_manifest_sha256" in manifest:
+        if not _is_sha256(manifest.get("parent_manifest_sha256")):
+            problems.append(
+                "addendum: parent_manifest_sha256 is not a valid sha256"
+            )
+        setting_tier = manifest.get("setting_tier")
+        if not isinstance(setting_tier, str) or not setting_tier.strip():
+            problems.append("addendum: setting_tier is missing or empty")
+        if len(readers) < 1 or len(families - {""}) < 1:
+            problems.append("readers: addendum manifest has no reader family")
+    elif len(readers) < 2 or len(families - {""}) < 2:
         problems.append("readers: fewer than two model families")
     if manifest.get("control_failed"):
         problems.append("control: the negative control failed, so nothing is certified")

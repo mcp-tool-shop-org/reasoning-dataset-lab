@@ -2002,6 +2002,129 @@ def test_compare_arms_on_real_certification_runs_when_sets_move_between_queue_an
     assert set_positions == sorted(set_positions)
 
 
+def test_single_reader_with_parent_manifest_is_accepted_and_verifies_as_addendum(
+    monkeypatch, tmp_path
+):
+    pumps_sets = [s for s in SETS if s[0] == "pumps"]
+    parent_doc = _good_manifest(tmp_path, sets=pumps_sets)
+    parent_path = tmp_path / "manifest-r3.json"
+    vc.write_manifest(parent_path, parent_doc)
+    expected_parent_sha = hashlib.sha256(parent_path.read_bytes()).hexdigest()
+
+    events: list = []
+
+    def fake_build(families, **kw):
+        assert list(families) == ["nemotron"]
+        overrides = vc.parse_reader_think_overrides(kw.get("reader_think"))
+        r_n = FakeReader(NEMOTRON, events)
+        if "nemotron" in overrides:
+            r_n.think = overrides["nemotron"]
+            r_n.think_overridden = (
+                overrides["nemotron"] != DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think
+            )
+        return [r_n]
+
+    monkeypatch.setattr(vc, "build_ollama_readers", fake_build)
+    addendum_path = tmp_path / "manifest-r3-nemotron-medium.json"
+    addendum_queue = tmp_path / "review_queue-r3-nemotron-medium.jsonl"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "certify-values",
+            "--readers",
+            "nemotron",
+            "--reader-think",
+            "nemotron=medium",
+            "--parent-manifest",
+            str(parent_path),
+            "--domain",
+            "pumps",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
+            "--manifest-out",
+            str(addendum_path),
+            "--review-queue-out",
+            str(addendum_queue),
+        ]
+    )
+    assert rc == 0
+    addendum_doc = vc.load_manifest(addendum_path)
+    assert [r["family"] for r in addendum_doc["readers"]] == ["nemotron"]
+    assert addendum_doc["parent_manifest_sha256"] == expected_parent_sha
+    assert addendum_doc["setting_tier"] == "nemotron:think=medium"
+    assert vc.verify_manifest(addendum_doc, pumps_sets) == []
+
+
+def test_single_reader_without_parent_is_refused_and_barred_or_malformed_addendum_rejected(
+    tmp_path,
+):
+    pumps_sets = [s for s in SETS if s[0] == "pumps"]
+    parent_doc = _good_manifest(tmp_path, sets=pumps_sets)
+    parent_path = tmp_path / "manifest-r3.json"
+    vc.write_manifest(parent_path, parent_doc)
+
+    # 1. One reader family without a parent manifest is still refused
+    with pytest.raises(RdlabError) as no_parent_err:
+        vc.run_certification(
+            sets=SMALL,
+            entities=_entities(),
+            readers=[FakeReader(NEMOTRON, [])],
+            review_queue_path=tmp_path / "q-no-parent.jsonl",
+            manifest_path=tmp_path / "m-no-parent.json",
+            date="2026-10-28",
+            licence_registry_sha256=REGISTRY_SHA256,
+        )
+    assert no_parent_err.value.code == "PILOT_B_CERT_NEEDS_TWO_FAMILIES"
+
+    # 2. Barred family is still refused even when --parent-manifest is passed
+    barred_model = ModelIdentity(name="muse-glimmer:12b", family="muse", digest="b" * 64)
+    with pytest.raises(RdlabError) as barred_err:
+        vc.run_certification(
+            sets=SMALL,
+            entities=_entities(),
+            readers=[FakeReader(barred_model, [])],
+            review_queue_path=tmp_path / "q-barred.jsonl",
+            manifest_path=tmp_path / "m-barred.json",
+            date="2026-10-28",
+            licence_registry_sha256=REGISTRY_SHA256,
+            parent_manifest_path=parent_path,
+        )
+    assert barred_err.value.code == "PILOT_B_BARRED_MODEL_FAMILY"
+
+    # 3. One reader family with a parent manifest is accepted and verifies as an addendum,
+    # whereas a standalone manifest with one reader fails verify_manifest
+    addendum_run = vc.run_certification(
+        sets=SMALL,
+        entities=_entities(),
+        readers=[FakeReader(NEMOTRON, [])],
+        review_queue_path=tmp_path / "q-addendum.jsonl",
+        manifest_path=tmp_path / "m-addendum.json",
+        date="2026-10-28",
+        licence_registry_sha256=REGISTRY_SHA256,
+        parent_manifest_path=parent_path,
+    )
+    assert vc.verify_manifest(addendum_run.manifest, SMALL) == []
+
+    standalone_one_reader = json.loads(json.dumps(addendum_run.manifest))
+    standalone_one_reader.pop("parent_manifest_sha256", None)
+    standalone_one_reader.pop("setting_tier", None)
+    standalone_one_reader["content_sha256"] = vc.content_hash(standalone_one_reader)
+    assert "readers: fewer than two model families" in vc.verify_manifest(
+        standalone_one_reader, SMALL
+    )
+
+    bad_addendum = json.loads(json.dumps(addendum_run.manifest))
+    bad_addendum["parent_manifest_sha256"] = "not-a-sha"
+    bad_addendum["setting_tier"] = ""
+    bad_addendum["readers"] = []
+    bad_addendum["content_sha256"] = vc.content_hash(bad_addendum)
+    bad_problems = vc.verify_manifest(bad_addendum, SMALL)
+    assert "addendum: parent_manifest_sha256 is not a valid sha256" in bad_problems
+    assert "addendum: setting_tier is missing or empty" in bad_problems
+    assert "readers: addendum manifest has no reader family" in bad_problems
+
+
+
 
 
 
