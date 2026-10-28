@@ -1283,7 +1283,7 @@ def test_the_adapter_role_fallback_refuses_an_unknown_family_instead_of_defaulti
 
 
 def test_the_pins_say_which_readers_think():
-    assert DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think is True
+    assert DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think == "medium"
     assert DEFAULT_PILOT_B_MODEL_PINS["reader_2"].think is True
     assert DEFAULT_PILOT_B_MODEL_PINS["reader_3"].think is False
 
@@ -1292,7 +1292,7 @@ def test_the_manifest_records_each_readers_think_setting(tmp_path):
     manifest = _good_manifest(tmp_path)
     assert {r["name"]: r["think"] for r in manifest["readers"]} == {
         GRANITE.name: True,
-        NEMOTRON.name: True,
+        NEMOTRON.name: "medium",
     }
 
 
@@ -1327,3 +1327,938 @@ def test_a_think_setting_of_the_wrong_type_does_not_pass_as_equal(tmp_path):
     manifest["readers"][0]["think"] = 1  # 1 == True, but it is not the pinned boolean
     problems = vc.verify_manifest(manifest, SMALL)
     assert any("recorded think=1" in p for p in problems)
+
+
+# ---- Part 1: --reader-think FAMILY=SETTING override on certify-values
+
+
+def test_reader_think_override_reaches_request_body_top_level_think_for_that_family_only(
+    monkeypatch, tmp_path
+):
+    sent_by_model: dict[str, set[object]] = {}
+    pins = [DEFAULT_PILOT_B_MODEL_PINS["reader_2"], DEFAULT_PILOT_B_MODEL_PINS["reader_1"]]
+
+    def fake_transport(method, url, body=None):
+        if method == "GET" and url.endswith("/api/tags"):
+            return {
+                "models": [
+                    {"name": p.ollama_tag, "model": p.ollama_tag, "digest": p.manifest_digest}
+                    for p in pins
+                ]
+            }
+        if method == "POST" and url.endswith("/api/chat"):
+            assert isinstance(body, dict)
+            if body.get("keep_alive") == 0:
+                return {"model": body["model"], "message": {"role": "assistant", "content": ""}, "done": True}
+            model_name = body["model"]
+            sent_by_model.setdefault(model_name, set()).add(body.get("think"))
+            user_text = body["messages"][-1]["content"]
+            # control pairs ask about synthetic/mineral/inert/ceramic/etc.; pumps sets do not
+            is_control = any(
+                f"is {stated}." in user_text and f"is {claimed}." in user_text
+                for _d, _a, stated, claimed, _r in vc.CONTROL_PAIRS
+            )
+            ans = "compatible" if is_control else "incompatible"
+            return {
+                "model": model_name,
+                "message": {"role": "assistant", "content": ans, "thinking": "t1 t2"},
+                "done": True,
+                "done_reason": "stop",
+                "eval_count": 7,
+            }
+        raise AssertionError(f"Unexpected call: {method} {url}")
+
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        fake_transport,
+    )
+    manifest_out = tmp_path / "manifest-override.json"
+    queue_out = tmp_path / "queue-override.jsonl"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "certify-values",
+            "--readers",
+            "granite,nemotron",
+            "--reader-think",
+            "nemotron=high",
+            "--domain",
+            "pumps",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
+            "--manifest-out",
+            str(manifest_out),
+            "--review-queue-out",
+            str(queue_out),
+        ]
+    )
+    assert rc == 0
+    assert sent_by_model[GRANITE.name] == {True}
+    assert sent_by_model[NEMOTRON.name] == {"high"}
+    doc = vc.load_manifest(manifest_out)
+    readers_by_family = {r["family"]: r for r in doc["readers"]}
+    assert readers_by_family["granite"]["think"] is True
+    assert readers_by_family["granite"]["think_overridden"] is False
+    assert readers_by_family["nemotron"]["think"] == "high"
+    assert readers_by_family["nemotron"]["think_overridden"] is True
+    assert vc.verify_manifest(doc, [s for s in SETS if s[0] == "pumps"]) == []
+
+    # All six ThinkSetting tokens parse and repeatable --reader-think works across families
+    parsed = vc.parse_reader_think_overrides(
+        ["granite=false", "mistral=true", "nemotron=low"]
+    )
+    assert parsed == {"granite": False, "mistral": True, "nemotron": "low"}
+    for token, expected in (
+        ("true", True),
+        ("false", False),
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("max", "max"),
+    ):
+        assert vc.parse_reader_think_overrides([f"nemotron={token}"]) == {"nemotron": expected}
+
+
+@pytest.mark.parametrize(
+    "bad_arg",
+    [
+        "llama=medium",
+        "nemotron=turbo",
+        "nemotron",
+        "=medium",
+        "nemotron=",
+    ],
+)
+def test_reader_think_refuses_bad_family_or_setting_before_any_ollama_call(
+    monkeypatch, tmp_path, capsys, bad_arg
+):
+    seen: list = []
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        lambda method, url, body=None: seen.append((method, url)) or {},
+    )
+    rc = run_cli(
+        [
+            "pilot-b",
+            "certify-values",
+            "--readers",
+            "granite,nemotron",
+            "--reader-think",
+            bad_arg,
+            "--domain",
+            "pumps",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
+            "--manifest-out",
+            str(tmp_path / "m.json"),
+            "--review-queue-out",
+            str(tmp_path / "q.jsonl"),
+        ]
+    )
+    assert rc == 2
+    assert seen == []
+    err_payload = json.loads(capsys.readouterr().err.strip())
+    assert err_payload["code"] in (
+        "PILOT_B_CERT_UNKNOWN_READER",
+        "PILOT_B_CERT_INVALID_READER_THINK",
+    )
+
+
+# ---- Part 2: --parent-manifest PATH
+
+
+def test_parent_manifest_records_parent_sha_and_setting_tier_and_verifies_only_as_its_own_manifest(
+    monkeypatch, tmp_path
+):
+    pumps_sets = [s for s in SETS if s[0] == "pumps"]
+    parent_manifest_doc = _good_manifest(tmp_path, sets=pumps_sets)
+    parent_path = tmp_path / "manifest-r3.json"
+    parent_queue = tmp_path / "review_queue-r3.json"
+    vc.write_manifest(parent_path, parent_manifest_doc)
+    parent_queue.write_text('{"domain":"pumps"}\n', encoding="utf-8")
+    expected_parent_sha = hashlib.sha256(parent_path.read_bytes()).hexdigest()
+    parent_queue_bytes = parent_queue.read_bytes()
+
+    events: list = []
+
+    def fake_build(families, **kw):
+        overrides = vc.parse_reader_think_overrides(kw.get("reader_think"))
+        r_g = FakeReader(GRANITE, events)
+        r_n = FakeReader(NEMOTRON, events)
+        if "nemotron" in overrides:
+            r_n.think = overrides["nemotron"]
+            r_n.think_overridden = True
+        return [r_g, r_n]
+
+    monkeypatch.setattr(vc, "build_ollama_readers", fake_build)
+    addendum_path = tmp_path / "manifest-r3-nemotron-medium.json"
+    addendum_queue = tmp_path / "review_queue-r3-nemotron-medium.jsonl"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "certify-values",
+            "--readers",
+            "granite,nemotron",
+            "--reader-think",
+            "nemotron=medium",
+            "--parent-manifest",
+            str(parent_path),
+            "--domain",
+            "pumps",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
+            "--manifest-out",
+            str(addendum_path),
+            "--review-queue-out",
+            str(addendum_queue),
+        ]
+    )
+    assert rc == 0
+    assert hashlib.sha256(parent_path.read_bytes()).hexdigest() == expected_parent_sha
+    assert parent_queue.read_bytes() == parent_queue_bytes
+
+    addendum_doc = vc.load_manifest(addendum_path)
+    assert addendum_doc["parent_manifest_sha256"] == expected_parent_sha
+    assert addendum_doc["setting_tier"] == "nemotron:think=medium"
+    assert vc.verify_manifest(addendum_doc, pumps_sets) == []
+
+    # verify_manifest accepts an addendum only as its own manifest; nothing merges verdicts across manifests
+    partial_addendum = json.loads(json.dumps(addendum_doc))
+    partial_addendum["sets"] = partial_addendum["sets"][:-1]
+    partial_addendum["content_sha256"] = vc.content_hash(partial_addendum)
+    problems = vc.verify_manifest(partial_addendum, pumps_sets)
+    assert any("uncertified:" in p for p in problems)
+
+
+def test_parent_manifest_refuses_to_overwrite_parent_manifest_or_queue_paths(
+    monkeypatch, tmp_path, capsys
+):
+    pumps_sets = [s for s in SETS if s[0] == "pumps"]
+    parent_manifest_doc = _good_manifest(tmp_path, sets=pumps_sets)
+    parent_path = tmp_path / "manifest-r3.json"
+    parent_queue = tmp_path / "review_queue-r3.json"
+    vc.write_manifest(parent_path, parent_manifest_doc)
+    parent_queue.write_text('{"domain":"pumps"}\n', encoding="utf-8")
+    parent_bytes = parent_path.read_bytes()
+    parent_queue_bytes = parent_queue.read_bytes()
+
+    seen: list = []
+    monkeypatch.setattr(
+        vc,
+        "build_ollama_readers",
+        lambda families, **kw: seen.append(families) or [],
+    )
+
+    for bad_manifest_out, bad_queue_out in (
+        (parent_path, tmp_path / "new-queue.jsonl"),
+        (tmp_path / "new-manifest.json", parent_path),
+        (tmp_path / "new-manifest.json", parent_queue),
+    ):
+        rc = run_cli(
+            [
+                "pilot-b",
+                "certify-values",
+                "--readers",
+                "granite,nemotron",
+                "--reader-think",
+                "nemotron=medium",
+                "--parent-manifest",
+                str(parent_path),
+                "--domain",
+                "pumps",
+                "--licence-registry",
+                str(RND_REGISTRY_COPY),
+                "--manifest-out",
+                str(bad_manifest_out),
+                "--review-queue-out",
+                str(bad_queue_out),
+            ]
+        )
+        assert rc == 1
+        err_payload = json.loads(capsys.readouterr().err.strip())
+        assert err_payload["code"] == "PILOT_B_CERT_PARENT_OVERWRITE_REFUSED"
+        assert parent_path.read_bytes() == parent_bytes
+        assert parent_queue.read_bytes() == parent_queue_bytes
+        assert seen == []
+
+
+def _arm_fixture_manifest(
+    *,
+    nemotron_think: object,
+    nemotron_verdicts: dict[tuple[str, int, str, str, str], str],
+    completion_tokens: int | None = None,
+    wall_time_s: float | None = None,
+    prompt_sha256: str = vc.PROMPT_SHA256,
+    control_pairs_sha256: str = vc.CONTROL_PAIRS_SHA256,
+) -> dict:
+    ctrl_sha = control_pairs_sha256
+    nem_reader: dict[str, object] = {
+        "family": "nemotron",
+        "name": NEMOTRON.name,
+        "digest": NEMOTRON.digest,
+        "think": nemotron_think,
+        "think_overridden": nemotron_think != DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think,
+        "temperature": 0.0,
+        "seed": 42,
+        "num_predict": 2048,
+    }
+    if completion_tokens is not None:
+        nem_reader["completion_tokens"] = completion_tokens
+    if wall_time_s is not None:
+        nem_reader["wall_time_s"] = wall_time_s
+
+    sets_spec = [
+        ("pumps", 0, "seal_condition", [("A", "B"), ("A", "C"), ("B", "C")]),
+        ("pumps", 0, "impeller_wear", [("D", "E"), ("D", "F"), ("E", "F")]),
+    ]
+    out_sets = []
+    for domain, ti, slot, pairs in sets_spec:
+        pair_entries = []
+        for a, b in pairs:
+            v_nem = nemotron_verdicts[(domain, ti, slot, a, b)]
+            pair_entries.append(
+                {
+                    "a": a,
+                    "b": b,
+                    "verdicts": {"granite": "incompatible", "nemotron": v_nem},
+                }
+            )
+        out_sets.append(
+            {
+                "domain": domain,
+                "table_index": ti,
+                "slot": slot,
+                "values": sorted({x for p in pairs for x in p}),
+                "pairs": pair_entries,
+            }
+        )
+    doc = {
+        "format": vc.CERT_FORMAT,
+        "date": "2026-10-28",
+        "prompt_sha256": prompt_sha256,
+        "control_pairs_sha256": ctrl_sha,
+        "readers": [
+            {
+                "family": "granite",
+                "name": GRANITE.name,
+                "digest": GRANITE.digest,
+                "think": False,
+                "think_overridden": False,
+                "temperature": 0.0,
+                "seed": 42,
+                "num_predict": 512,
+            },
+            nem_reader,
+        ],
+        "control_results": {"passed": True, "failures": []},
+        "sets": out_sets,
+    }
+    doc["content_sha256"] = vc.content_hash(doc)
+    return doc
+
+
+def test_compare_arms_on_two_fixture_manifests_gives_expected_table_and_separates_length_stops(
+    tmp_path,
+):
+    parent_verdicts = {
+        ("pumps", 0, "seal_condition", "A", "B"): "incompatible",
+        ("pumps", 0, "seal_condition", "A", "C"): "length",
+        ("pumps", 0, "seal_condition", "B", "C"): "compatible",
+        ("pumps", 0, "impeller_wear", "D", "E"): "incompatible",
+        ("pumps", 0, "impeller_wear", "D", "F"): "compatible",
+        ("pumps", 0, "impeller_wear", "E", "F"): "length",
+    }
+    addendum_verdicts = {
+        ("pumps", 0, "seal_condition", "A", "B"): "incompatible",
+        ("pumps", 0, "seal_condition", "A", "C"): "incompatible",
+        ("pumps", 0, "seal_condition", "B", "C"): "incompatible",
+        ("pumps", 0, "impeller_wear", "D", "E"): "incompatible",
+        ("pumps", 0, "impeller_wear", "D", "F"): "compatible",
+        ("pumps", 0, "impeller_wear", "E", "F"): "length",
+    }
+    parent_doc = _arm_fixture_manifest(
+        nemotron_think=True,
+        nemotron_verdicts=parent_verdicts,
+        completion_tokens=48000,
+        wall_time_s=120.5,
+    )
+    addendum_doc = _arm_fixture_manifest(
+        nemotron_think="medium",
+        nemotron_verdicts=addendum_verdicts,
+        completion_tokens=19500,
+        wall_time_s=48.2,
+    )
+    parent_path = tmp_path / "manifest-parent.json"
+    addendum_path = tmp_path / "manifest-addendum.json"
+    report_path = tmp_path / "arm-comparison.md"
+    vc.write_manifest(parent_path, parent_doc)
+    vc.write_manifest(addendum_path, addendum_doc)
+
+    rc = run_cli(
+        [
+            "pilot-b",
+            "compare-arms",
+            str(parent_path),
+            str(addendum_path),
+            "--reader",
+            "nemotron",
+            "--out",
+            str(report_path),
+        ]
+    )
+    assert rc == 0
+    assert report_path.exists()
+    report_text = report_path.read_text(encoding="utf-8")
+    first_lines = "\n".join(report_text.splitlines()[:5]).lower()
+    assert '"medium"' in first_lines or "medium" in first_lines
+    assert "effort hint" in first_lines
+    assert "not a cap" in first_lines
+
+    comparison = vc.compare_arms(parent_doc, addendum_doc, reader_family="nemotron")
+    assert comparison["total_pairs"] == 6
+    assert comparison["parent_length_stops"] == 2
+    assert comparison["addendum_length_stops"] == 1
+    assert comparison["pairs_with_verdict_at_both"] == 4
+    assert comparison["exact_verdict_agreement_count"] == 3
+    assert comparison["verdict_disagreement_count"] == 1
+    assert comparison["agreement_rate_all_pairs"] == pytest.approx(3 / 6)
+    assert comparison["agreement_rate_verdict_pairs"] == pytest.approx(3 / 4)
+    assert comparison["cross_table"]["incompatible"]["incompatible"] == 2
+    assert comparison["cross_table"]["compatible"]["incompatible"] == 1
+    assert comparison["cross_table"]["compatible"]["compatible"] == 1
+    assert comparison["cross_table"]["length"]["incompatible"] == 1
+    assert comparison["cross_table"]["length"]["length"] == 1
+    assert comparison["parent_sets_passed"] == 0
+    assert comparison["addendum_sets_passed"] == 1
+    assert comparison["total_sets"] == 2
+    assert comparison["parent_completion_tokens"] == 48000
+    assert comparison["addendum_completion_tokens"] == 19500
+    assert comparison["parent_wall_time_s"] == pytest.approx(120.5)
+    assert comparison["addendum_wall_time_s"] == pytest.approx(48.2)
+
+    assert "3 / 6 (50.0%)" in report_text
+    assert "3 / 4 (75.0%)" in report_text
+    assert "48000" in report_text and "19500" in report_text
+    assert "120.5" in report_text and "48.2" in report_text
+
+    # Also verify companion review_queue reconstruction when queued sets live alongside manifest
+    p_queue_path = tmp_path / "review_queue-parent.jsonl"
+    a_queue_path = tmp_path / "review_queue-addendum.jsonl"
+    p_queue_path.write_text(
+        json.dumps(
+            {
+                "domain": "pumps",
+                "attribute": "bearing_clearance",
+                "values": ["X", "Y"],
+                "failed_pairs": [
+                    {
+                        "first": "X",
+                        "second": "Y",
+                        "verdicts": {"granite": "incompatible", "nemotron": "length"},
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    a_queue_path.write_text(
+        json.dumps(
+            [
+                {
+                    "domain": "pumps",
+                    "attribute": "bearing_clearance",
+                    "values": ["X", "Y"],
+                    "failed_pairs": [],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    comp_with_q = vc.compare_arms(
+        parent_doc,
+        addendum_doc,
+        reader_family="nemotron",
+        parent_path=parent_path,
+        addendum_path=addendum_path,
+    )
+    assert comp_with_q["total_sets"] == 3
+    assert comp_with_q["total_pairs"] == 8
+    assert comp_with_q["parent_length_stops"] == 3
+    assert comp_with_q["addendum_length_stops"] == 1
+    assert comp_with_q["addendum_sets_passed"] == 2
+    comp_swapped = vc.compare_arms(
+        addendum_doc,
+        parent_doc,
+        reader_family="nemotron",
+        parent_path=addendum_path,
+        addendum_path=parent_path,
+    )
+    assert comp_swapped["parent_sets_passed"] == 2
+
+
+def test_compare_arms_refuses_mismatched_manifests(tmp_path, capsys):
+    base_verdicts = {
+        ("pumps", 0, "seal_condition", "A", "B"): "incompatible",
+        ("pumps", 0, "seal_condition", "A", "C"): "incompatible",
+        ("pumps", 0, "seal_condition", "B", "C"): "incompatible",
+        ("pumps", 0, "impeller_wear", "D", "E"): "incompatible",
+        ("pumps", 0, "impeller_wear", "D", "F"): "incompatible",
+        ("pumps", 0, "impeller_wear", "E", "F"): "incompatible",
+    }
+    parent_doc = _arm_fixture_manifest(
+        nemotron_think=True, nemotron_verdicts=base_verdicts
+    )
+    parent_path = tmp_path / "parent.json"
+    vc.write_manifest(parent_path, parent_doc)
+
+    bad_prompt = _arm_fixture_manifest(
+        nemotron_think="medium",
+        nemotron_verdicts=base_verdicts,
+        prompt_sha256="0" * 64,
+    )
+    bad_ctrl = _arm_fixture_manifest(
+        nemotron_think="medium",
+        nemotron_verdicts=base_verdicts,
+        control_pairs_sha256="f" * 64,
+    )
+    bad_sets = _arm_fixture_manifest(
+        nemotron_think="medium", nemotron_verdicts=base_verdicts
+    )
+    bad_sets["sets"] = bad_sets["sets"][:1]
+    bad_sets["content_sha256"] = vc.content_hash(bad_sets)
+    bad_pairs = _arm_fixture_manifest(
+        nemotron_think="medium", nemotron_verdicts=base_verdicts
+    )
+    bad_pairs["sets"][0]["pairs"] = bad_pairs["sets"][0]["pairs"][:2]
+    bad_pairs["content_sha256"] = vc.content_hash(bad_pairs)
+
+    for idx, bad_doc in enumerate((bad_prompt, bad_ctrl, bad_sets, bad_pairs)):
+        bad_path = tmp_path / f"bad-{idx}.json"
+        out_path = tmp_path / f"out-{idx}.md"
+        vc.write_manifest(bad_path, bad_doc)
+        rc = run_cli(
+            [
+                "pilot-b",
+                "compare-arms",
+                str(parent_path),
+                str(bad_path),
+                "--reader",
+                "nemotron",
+                "--out",
+                str(out_path),
+            ]
+        )
+        assert rc == 1
+        err_payload = json.loads(capsys.readouterr().err.strip())
+        assert err_payload["code"] == "PILOT_B_COMPARE_ARMS_MISMATCH"
+        assert not out_path.exists()
+
+
+def test_nemotron_pin_is_think_medium_with_ollama_renderer_citation_and_r3_manifest_still_verifies_unchanged(
+    tmp_path,
+):
+    from reasoning_dataset_lab.pilot_b import models_and_build
+
+    assert DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think == "medium"
+    source_text = Path(models_and_build.__file__).read_text(encoding="utf-8")
+    assert "model/renderers/nemotron3nano.go:30, 86-87" in source_text
+    assert "effort hint" in source_text
+    assert "not a cap" in source_text
+
+    # An r3-style manifest whose Nemotron reader entry has think: True (and no think_overridden key)
+    # must still verify unchanged under verify_manifest.
+    r3_style_manifest = _good_manifest(tmp_path)
+    for r_row in r3_style_manifest["readers"]:
+        r_row.pop("think_overridden", None)
+        if r_row["family"] == "nemotron":
+            r_row["think"] = True
+    r3_style_manifest["content_sha256"] = vc.content_hash(r3_style_manifest)
+    assert vc.verify_manifest(r3_style_manifest, SMALL) == []
+
+    # Coverage for helper branches in parse_reader_think_overrides, build_setting_tier, check_parent_manifest, and compare_arms
+    assert vc.parse_reader_think_overrides({"nemotron": True}) == {"nemotron": True}
+    with pytest.raises(RdlabError) as bad_type_err:
+        vc.parse_reader_think_overrides({"nemotron": 123})
+    assert bad_type_err.value.code == "PILOT_B_CERT_INVALID_READER_THINK"
+
+    r_g = FakeReader(GRANITE, [])
+    r_n = FakeReader(NEMOTRON, [])
+    assert (
+        vc.build_setting_tier({}, readers=[r_g, r_n], parent_manifest=r3_style_manifest)
+        == "nemotron:think=medium"
+    )
+    assert vc.build_setting_tier({}, readers=[r_g, r_n], parent_manifest=None) == (
+        "granite:think=true,nemotron:think=medium"
+    )
+    assert vc.build_setting_tier({}) == ""
+
+    with pytest.raises(RdlabError) as missing_parent_err:
+        vc.check_parent_manifest(
+            tmp_path / "no-such-parent.json",
+            manifest_out=tmp_path / "m.json",
+            review_queue_out=tmp_path / "q.jsonl",
+        )
+    assert missing_parent_err.value.code == "PILOT_B_CERT_PARENT_MANIFEST_NOT_FOUND"
+
+    with pytest.raises(RdlabError) as missing_reader_err:
+        vc.compare_arms(r3_style_manifest, r3_style_manifest, reader_family="mistral")
+    assert missing_reader_err.value.code == "PILOT_B_COMPARE_ARMS_MISMATCH"
+
+
+def test_compare_arms_on_real_certification_runs_when_sets_move_between_queue_and_sets(
+    tmp_path,
+):
+    events: list = []
+    parent_manifest_path = tmp_path / "manifest-parent.json"
+    parent_queue_path = tmp_path / "queue-parent.jsonl"
+
+    parent_granite = FakeReader(GRANITE, events)
+    parent_nemotron = FakeReader(
+        NEMOTRON,
+        events,
+        verdict_for=lambda _prompt, index: "compatible" if index == 0 else "incompatible",
+    )
+    parent_nemotron.think = True
+    parent_nemotron.think_overridden = True
+
+    parent_run = vc.run_certification(
+        sets=SMALL,
+        entities=_entities(),
+        readers=[parent_granite, parent_nemotron],
+        review_queue_path=parent_queue_path,
+        manifest_path=parent_manifest_path,
+        date="2026-10-28",
+        licence_registry_sha256=REGISTRY_SHA256,
+    )
+    assert [(s["domain"], s["attribute"]) for s in parent_run.manifest["sets"]] == [
+        (SMALL[1][0], SMALL[1][1]),
+        (SMALL[2][0], SMALL[2][1]),
+    ]
+    assert [(q["domain"], q["attribute"]) for q in parent_run.review_queue] == [
+        (SMALL[0][0], SMALL[0][1]),
+    ]
+
+    addendum_manifest_path = tmp_path / "manifest-addendum.json"
+    addendum_queue_path = tmp_path / "review_queue-addendum.jsonl"
+    addendum_granite = FakeReader(GRANITE, events)
+    addendum_nemotron = FakeReader(
+        NEMOTRON,
+        events,
+        verdict_for=lambda _prompt, index: "compatible" if index == 20 else "incompatible",
+    )
+    addendum_nemotron.think = "medium"
+
+    addendum_run = vc.run_certification(
+        sets=SMALL,
+        entities=_entities(),
+        readers=[addendum_granite, addendum_nemotron],
+        review_queue_path=addendum_queue_path,
+        manifest_path=addendum_manifest_path,
+        date="2026-10-28",
+        licence_registry_sha256=REGISTRY_SHA256,
+        parent_manifest_path=parent_manifest_path,
+        reader_think={"nemotron": "medium"},
+    )
+    assert [(s["domain"], s["attribute"]) for s in addendum_run.manifest["sets"]] == [
+        (SMALL[0][0], SMALL[0][1]),
+        (SMALL[2][0], SMALL[2][1]),
+    ]
+    assert [(q["domain"], q["attribute"]) for q in addendum_run.review_queue] == [
+        (SMALL[1][0], SMALL[1][1]),
+    ]
+
+    comparison = vc.compare_arms(
+        parent_run.manifest,
+        addendum_run.manifest,
+        reader_family="nemotron",
+        parent_path=parent_manifest_path,
+        addendum_path=addendum_manifest_path,
+    )
+    expected_set_labels = [f"{d}/{a}" for d, a, _ in SMALL]
+    assert [row["set"] for row in comparison["per_set"]] == expected_set_labels
+    assert [(row["parent_pass"], row["addendum_pass"]) for row in comparison["per_set"]] == [
+        (False, True),
+        (True, False),
+        (True, True),
+    ]
+    assert comparison["total_sets"] == 3
+    assert comparison["total_pairs"] == 60
+    assert comparison["exact_verdict_agreement_count"] == 58
+    assert comparison["verdict_disagreement_count"] == 2
+
+    report_path = tmp_path / "report.md"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "compare-arms",
+            str(parent_manifest_path),
+            str(addendum_manifest_path),
+            "--reader",
+            "nemotron",
+            "--out",
+            str(report_path),
+        ]
+    )
+    assert rc == 0
+    report_text = report_path.read_text(encoding="utf-8")
+    set_positions = [report_text.index(f"| {label} |") for label in expected_set_labels]
+    assert set_positions == sorted(set_positions)
+
+
+def test_single_reader_with_parent_manifest_is_accepted_and_verifies_as_addendum(
+    monkeypatch, tmp_path
+):
+    pumps_sets = [s for s in SETS if s[0] == "pumps"]
+    parent_doc = _good_manifest(tmp_path, sets=pumps_sets)
+    parent_path = tmp_path / "manifest-r3.json"
+    vc.write_manifest(parent_path, parent_doc)
+    expected_parent_sha = hashlib.sha256(parent_path.read_bytes()).hexdigest()
+
+    events: list = []
+
+    def fake_build(families, **kw):
+        assert list(families) == ["nemotron"]
+        overrides = vc.parse_reader_think_overrides(kw.get("reader_think"))
+        r_n = FakeReader(NEMOTRON, events)
+        if "nemotron" in overrides:
+            r_n.think = overrides["nemotron"]
+            r_n.think_overridden = (
+                overrides["nemotron"] != DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think
+            )
+        return [r_n]
+
+    monkeypatch.setattr(vc, "build_ollama_readers", fake_build)
+    addendum_path = tmp_path / "manifest-r3-nemotron-medium.json"
+    addendum_queue = tmp_path / "review_queue-r3-nemotron-medium.jsonl"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "certify-values",
+            "--readers",
+            "nemotron",
+            "--reader-think",
+            "nemotron=medium",
+            "--parent-manifest",
+            str(parent_path),
+            "--domain",
+            "pumps",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
+            "--manifest-out",
+            str(addendum_path),
+            "--review-queue-out",
+            str(addendum_queue),
+        ]
+    )
+    assert rc == 0
+    addendum_doc = vc.load_manifest(addendum_path)
+    assert [r["family"] for r in addendum_doc["readers"]] == ["nemotron"]
+    assert addendum_doc["parent_manifest_sha256"] == expected_parent_sha
+    assert addendum_doc["setting_tier"] == "nemotron:think=medium"
+    assert vc.verify_manifest(addendum_doc, pumps_sets) == []
+
+
+def test_single_reader_without_parent_is_refused_and_barred_or_malformed_addendum_rejected(
+    tmp_path,
+):
+    pumps_sets = [s for s in SETS if s[0] == "pumps"]
+    parent_doc = _good_manifest(tmp_path, sets=pumps_sets)
+    parent_path = tmp_path / "manifest-r3.json"
+    vc.write_manifest(parent_path, parent_doc)
+
+    # 1. One reader family without a parent manifest is still refused
+    with pytest.raises(RdlabError) as no_parent_err:
+        vc.run_certification(
+            sets=SMALL,
+            entities=_entities(),
+            readers=[FakeReader(NEMOTRON, [])],
+            review_queue_path=tmp_path / "q-no-parent.jsonl",
+            manifest_path=tmp_path / "m-no-parent.json",
+            date="2026-10-28",
+            licence_registry_sha256=REGISTRY_SHA256,
+        )
+    assert no_parent_err.value.code == "PILOT_B_CERT_NEEDS_TWO_FAMILIES"
+
+    # 2. Barred family is still refused even when --parent-manifest is passed
+    barred_model = ModelIdentity(name="muse-glimmer:12b", family="muse", digest="b" * 64)
+    with pytest.raises(RdlabError) as barred_err:
+        vc.run_certification(
+            sets=SMALL,
+            entities=_entities(),
+            readers=[FakeReader(barred_model, [])],
+            review_queue_path=tmp_path / "q-barred.jsonl",
+            manifest_path=tmp_path / "m-barred.json",
+            date="2026-10-28",
+            licence_registry_sha256=REGISTRY_SHA256,
+            parent_manifest_path=parent_path,
+        )
+    assert barred_err.value.code == "PILOT_B_BARRED_MODEL_FAMILY"
+
+    # 3. One reader family with a parent manifest is accepted and verifies as an addendum,
+    # whereas a standalone manifest with one reader fails verify_manifest
+    addendum_run = vc.run_certification(
+        sets=SMALL,
+        entities=_entities(),
+        readers=[FakeReader(NEMOTRON, [])],
+        review_queue_path=tmp_path / "q-addendum.jsonl",
+        manifest_path=tmp_path / "m-addendum.json",
+        date="2026-10-28",
+        licence_registry_sha256=REGISTRY_SHA256,
+        parent_manifest_path=parent_path,
+    )
+    assert vc.verify_manifest(addendum_run.manifest, SMALL) == []
+
+    standalone_one_reader = json.loads(json.dumps(addendum_run.manifest))
+    standalone_one_reader.pop("parent_manifest_sha256", None)
+    standalone_one_reader.pop("setting_tier", None)
+    standalone_one_reader["content_sha256"] = vc.content_hash(standalone_one_reader)
+    assert "readers: fewer than two model families" in vc.verify_manifest(
+        standalone_one_reader, SMALL
+    )
+
+    bad_addendum = json.loads(json.dumps(addendum_run.manifest))
+    bad_addendum["parent_manifest_sha256"] = "not-a-sha"
+    bad_addendum["setting_tier"] = ""
+    bad_addendum["readers"] = []
+    bad_addendum["content_sha256"] = vc.content_hash(bad_addendum)
+    bad_problems = vc.verify_manifest(bad_addendum, SMALL)
+    assert "addendum: parent_manifest_sha256 is not a valid sha256" in bad_problems
+    assert "addendum: setting_tier is missing or empty" in bad_problems
+    assert "readers: addendum manifest has no reader family" in bad_problems
+
+
+def test_compare_arms_with_single_reader_addendum_reports_would_pass_for_that_readers_half_only(
+    tmp_path,
+):
+    events: list = []
+    parent_manifest_path = tmp_path / "manifest-r3.json"
+    parent_queue_path = tmp_path / "review_queue-r3.jsonl"
+
+    # In the 2-reader parent run:
+    # - Set 0 (indices 0..19): Granite fails pair 0 ("compatible"), while Nemotron passes all 20 pairs ("incompatible").
+    #   Set 0 is queued in parent because of Granite, yet Nemotron's half of Set 0 passed!
+    # - Set 1 (indices 20..39): Granite passes all 20, while Nemotron has 1 length stop at index 20.
+    # - Set 2 (indices 40..59): Both Granite and Nemotron pass all 20 pairs.
+    parent_granite = FakeReader(
+        GRANITE,
+        events,
+        verdict_for=lambda _prompt, index: "compatible" if index == 0 else "incompatible",
+    )
+
+    class LengthAt20Reader(FakeReader):
+        def chat_raw(self, *, target_id, messages):
+            if not target_id.startswith("control.") and len(self.prompts) == 20:
+                shim = SimpleNamespace(claim_id=target_id, messages=messages)
+                self.prompts.append(shim)
+                self.events.append(("read", self.model.name))
+                return "partial thinking", SimpleNamespace(
+                    done_reason="length", eval_tokens=3072
+                )
+            return super().chat_raw(target_id=target_id, messages=messages)
+
+    parent_nemotron = LengthAt20Reader(NEMOTRON, events)
+    parent_nemotron.think = True
+    parent_nemotron.think_overridden = True
+
+    parent_run = vc.run_certification(
+        sets=SMALL,
+        entities=_entities(),
+        readers=[parent_granite, parent_nemotron],
+        review_queue_path=parent_queue_path,
+        manifest_path=parent_manifest_path,
+        date="2026-10-28",
+        licence_registry_sha256=REGISTRY_SHA256,
+    )
+    # Only Set 2 is certified by both readers in the parent manifest
+    assert len(parent_run.manifest["sets"]) == 1
+    assert len(parent_run.review_queue) == 2
+
+    # In the single-reader addendum run (Nemotron only, think="medium"):
+    # - Set 0 (indices 0..19): Nemotron passes all 20 pairs ("incompatible").
+    # - Set 1 (indices 20..39): Nemotron passes all 20 pairs ("incompatible").
+    # - Set 2 (indices 40..59): Nemotron answers "unsure" at index 40.
+    addendum_manifest_path = tmp_path / "manifest-r3-nemotron-medium.json"
+    addendum_queue_path = tmp_path / "review_queue-r3-nemotron-medium.jsonl"
+    addendum_nemotron = FakeReader(
+        NEMOTRON,
+        events,
+        verdict_for=lambda _prompt, index: "unsure" if index == 40 else "incompatible",
+    )
+    addendum_nemotron.think = "medium"
+
+    addendum_run = vc.run_certification(
+        sets=SMALL,
+        entities=_entities(),
+        readers=[addendum_nemotron],
+        review_queue_path=addendum_queue_path,
+        manifest_path=addendum_manifest_path,
+        date="2026-10-28",
+        licence_registry_sha256=REGISTRY_SHA256,
+        parent_manifest_path=parent_manifest_path,
+        reader_think={"nemotron": "medium"},
+    )
+    assert [r["family"] for r in addendum_run.manifest["readers"]] == ["nemotron"]
+    assert len(addendum_run.manifest["sets"]) == 2
+    assert len(addendum_run.review_queue) == 1
+
+    report_path = tmp_path / "nemotron-arm-report.md"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "compare-arms",
+            str(parent_manifest_path),
+            str(addendum_manifest_path),
+            "--reader",
+            "nemotron",
+            "--out",
+            str(report_path),
+        ]
+    )
+    assert rc == 0
+
+    comparison = vc.compare_arms(
+        parent_run.manifest,
+        addendum_run.manifest,
+        reader_family="nemotron",
+        parent_path=parent_manifest_path,
+        addendum_path=addendum_manifest_path,
+    )
+    assert comparison["total_sets"] == 3
+    assert comparison["total_pairs"] == 60
+    assert comparison["parent_length_stops"] == 1
+    assert comparison["addendum_length_stops"] == 0
+    assert comparison["pairs_with_verdict_at_both"] == 59
+    assert comparison["exact_verdict_agreement_count"] == 58
+    assert comparison["verdict_disagreement_count"] == 1
+    assert comparison["cross_table"]["incompatible"]["incompatible"] == 58
+    assert comparison["cross_table"]["incompatible"]["unsure"] == 1
+    assert comparison["cross_table"]["length"]["incompatible"] == 1
+
+    # Per-set "would pass" is for Nemotron's half only:
+    # Set 0 passed Nemotron's half in parent (even though Granite failed it) and in addendum;
+    # Set 1 failed Nemotron's half in parent (1 length stop) and passed in addendum;
+    # Set 2 passed Nemotron's half in parent and failed in addendum (1 unsure).
+    assert comparison["parent_sets_would_pass"] == 2
+    assert comparison["addendum_sets_would_pass"] == 2
+    assert [
+        (row["set"], row["parent_would_pass"], row["addendum_would_pass"])
+        for row in comparison["per_set"]
+    ] == [
+        (f"{SMALL[0][0]}/{SMALL[0][1]}", True, True),
+        (f"{SMALL[1][0]}/{SMALL[1][1]}", False, True),
+        (f"{SMALL[2][0]}/{SMALL[2][1]}", True, False),
+    ]
+
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "Per-set would pass (nemotron half only, parent `True`): 2 / 3" in report_text
+    assert "Per-set would pass (nemotron half only, addendum `'medium'`): 2 / 3" in report_text
+    assert "## Per-Set Would-Pass by Setting (nemotron half only)" in report_text
+
+
+
+
+
+
+
+

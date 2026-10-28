@@ -370,6 +370,14 @@ def _build_certify_values_parser() -> _StructuredArgumentParser:
         help="Comma-separated reader families, run in this order (default: granite,nemotron).",
     )
     parser.add_argument(
+        "--reader-think",
+        dest="reader_think",
+        action="append",
+        default=[],
+        metavar="FAMILY=SETTING",
+        help="Override the pinned think setting for a reader family (repeatable; SETTING in: true, false, low, medium, high, max).",
+    )
+    parser.add_argument(
         "--num-ctx",
         dest="num_ctx",
         type=int,
@@ -436,6 +444,13 @@ def _build_certify_values_parser() -> _StructuredArgumentParser:
         help="Absolute path of the review queue (JSONL) to write.",
     )
     parser.add_argument(
+        "--parent-manifest",
+        dest="parent_manifest",
+        type=Path,
+        default=None,
+        help="Optional parent manifest path for an addendum arm: records parent_manifest_sha256 and setting_tier, and refuses to overwrite the parent's paths.",
+    )
+    parser.add_argument(
         "--ollama-url",
         dest="ollama_url",
         default="http://127.0.0.1:11434",
@@ -458,6 +473,11 @@ def _run_certify_values(argv: Sequence[str]) -> int:
         ("--manifest-out", args.manifest_out),
         ("--review-queue-out", args.review_queue_out),
         ("--licence-registry", args.licence_registry),
+        *(
+            (("--parent-manifest", args.parent_manifest),)
+            if args.parent_manifest is not None
+            else ()
+        ),
     ):
         if not path.is_absolute():
             raise usage_error(
@@ -475,19 +495,31 @@ def _run_certify_values(argv: Sequence[str]) -> int:
             "Use a domain from the catalogue.",
         )
     families = [f.strip().lower() for f in args.readers.split(",") if f.strip()]
+    reader_think = value_certification.parse_reader_think_overrides(args.reader_think)
+    if args.parent_manifest is not None:
+        value_certification.check_parent_manifest(
+            args.parent_manifest,
+            manifest_out=args.manifest_out,
+            review_queue_out=args.review_queue_out,
+        )
     # the licence gate: exactly the readers that will run, checked before any Ollama call
     validate_models_against_licence_registry(
-        value_certification.reader_pins(families),
+        value_certification.reader_pins(families, reader_think=reader_think),
         registry_path=args.licence_registry,
     )
     licence_registry_sha256 = hashlib.sha256(
         args.licence_registry.read_bytes()
     ).hexdigest()
+    build_kwargs: dict[str, object] = {
+        "base_url": args.ollama_url,
+        "num_ctx": args.num_ctx,
+        "num_predict": args.num_predict,
+    }
+    if reader_think:
+        build_kwargs["reader_think"] = reader_think
     readers = value_certification.build_ollama_readers(
         families,
-        base_url=args.ollama_url,
-        num_ctx=args.num_ctx,
-        num_predict=args.num_predict,
+        **build_kwargs,  # type: ignore[arg-type]
     )
     run = value_certification.run_certification(
         sets=sets,
@@ -504,6 +536,8 @@ def _run_certify_values(argv: Sequence[str]) -> int:
         date=args.date or datetime.datetime.now(datetime.UTC).date().isoformat(),
         manifest_path=args.manifest_out,
         licence_registry_sha256=licence_registry_sha256,
+        parent_manifest_path=args.parent_manifest,
+        reader_think=reader_think,
     )
     print(
         json.dumps(
@@ -550,6 +584,73 @@ def _run_verify_values_manifest(argv: Sequence[str]) -> int:
     return EXIT_REFUSED if problems else EXIT_CLEAN
 
 
+def _run_compare_arms(argv: Sequence[str]) -> int:
+    parser = _StructuredArgumentParser(
+        prog="rdlab pilot-b compare-arms",
+        description=(
+            "Compare a parent certification manifest and an addendum manifest for a single reader family, "
+            "reporting length stops separately from verdicts."
+        ),
+    )
+    parser.add_argument(
+        "parent_manifest",
+        type=Path,
+        help="Path to the parent certification manifest JSON.",
+    )
+    parser.add_argument(
+        "addendum_manifest",
+        type=Path,
+        help="Path to the addendum certification manifest JSON.",
+    )
+    parser.add_argument(
+        "--reader",
+        dest="reader",
+        type=str,
+        default="nemotron",
+        help="Reader family to compare (default: nemotron).",
+    )
+    parser.add_argument(
+        "--out",
+        dest="out_path",
+        type=Path,
+        required=True,
+        help="Output path for the markdown comparison report.",
+    )
+    args = parser.parse_args(argv)
+    parent_doc = value_certification.load_manifest(args.parent_manifest)
+    addendum_doc = value_certification.load_manifest(args.addendum_manifest)
+    comparison = value_certification.compare_arms(
+        parent_doc,
+        addendum_doc,
+        reader_family=args.reader,
+        parent_path=args.parent_manifest,
+        addendum_path=args.addendum_manifest,
+    )
+    report_text = value_certification.format_arm_comparison_report(comparison)
+    args.out_path.parent.mkdir(parents=True, exist_ok=True)
+    args.out_path.write_text(report_text, encoding="utf-8", newline="\n")
+    print(
+        json.dumps(
+            {
+                "reader_family": comparison["reader_family"],
+                "total_pairs": comparison["total_pairs"],
+                "parent_length_stops": comparison["parent_length_stops"],
+                "addendum_length_stops": comparison["addendum_length_stops"],
+                "exact_verdict_agreement_count": comparison[
+                    "exact_verdict_agreement_count"
+                ],
+                "agreement_rate_all_pairs": comparison["agreement_rate_all_pairs"],
+                "agreement_rate_verdict_pairs": comparison[
+                    "agreement_rate_verdict_pairs"
+                ],
+                "out": str(args.out_path),
+            },
+            indent=2,
+        )
+    )
+    return EXIT_CLEAN
+
+
 def run_cli(argv: Sequence[str] | None = None) -> int:
     """Execute the CLI and return its exit code (0 clean, 1 refused, 2 usage)."""
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
@@ -567,6 +668,12 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             and raw_argv[1] == "verify-values-manifest"
         ):
             return _run_verify_values_manifest(raw_argv[2:])
+        if (
+            len(raw_argv) >= 2
+            and raw_argv[0] == "pilot-b"
+            and raw_argv[1] == "compare-arms"
+        ):
+            return _run_compare_arms(raw_argv[2:])
         if (
             len(raw_argv) >= 2
             and raw_argv[0] == "pilot-b"

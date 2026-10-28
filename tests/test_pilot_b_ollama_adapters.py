@@ -877,7 +877,7 @@ def test_fix1_request_body_has_top_level_think_and_num_predict_and_no_thinking_t
     writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
     reader_pin = DEFAULT_PILOT_B_MODEL_PINS["reader_1"]
     assert writer_pin.think is True
-    assert reader_pin.think is True
+    assert reader_pin.think == "medium"
 
     writer = OllamaWriterAdapter(model=writer_pin, num_predict=256)
     reader = OllamaBlindReaderAdapter(model=reader_pin, num_predict=256)
@@ -906,7 +906,7 @@ def test_fix1_request_body_has_top_level_think_and_num_predict_and_no_thinking_t
 
     for body in chat_bodies:
         assert isinstance(body, dict)
-        assert body["think"] is True
+        assert body["think"] in (True, "medium")
         assert "thinking_token_cap" not in body
         assert "thinking_token_cap" not in body["options"]
         assert body["options"]["temperature"] == 0
@@ -2077,7 +2077,7 @@ def test_the_reader_3_payload_sends_think_false_and_the_other_readers_send_true(
         assert len(bodies) == 1
         sent[role] = bodies[0]
     assert sent["reader_3"]["think"] is False
-    assert sent["reader_1"]["think"] is True and sent["reader_2"]["think"] is True
+    assert sent["reader_1"]["think"] == "medium" and sent["reader_2"]["think"] is True
 
 
 def test_calibration_calls_take_the_pinned_think_of_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2096,7 +2096,7 @@ def test_calibration_calls_take_the_pinned_think_of_the_model(monkeypatch: pytes
         chat = [b for _m, url, b in requests if url.endswith("/api/chat") and b and b.get("keep_alive") != 0]
         assert len(chat) == 1
         sent[role] = (chat[0]["think"], rows[0]["think"])
-    assert sent["reader_1"] == (True, True)
+    assert sent["reader_1"] == ("medium", "medium")
     assert sent["reader_3"] == (False, False)
 
 

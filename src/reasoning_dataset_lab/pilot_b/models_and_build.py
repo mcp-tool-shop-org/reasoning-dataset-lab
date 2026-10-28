@@ -136,6 +136,23 @@ class PinnedModelSpec:
     def with_bundled_licence_id(self, new_bundled_licence_id: str) -> PinnedModelSpec:
         return self.with_licence_id(self.licence_id, new_bundled_licence_id)
 
+    def with_think(self, new_think: ThinkSetting) -> PinnedModelSpec:
+        return PinnedModelSpec(
+            role=self.role,
+            display_name=self.display_name,
+            family=self.family,
+            ollama_tag=self.ollama_tag,
+            manifest_digest=self.manifest_digest,
+            model_layer_digest=self.model_layer_digest,
+            licence_id=self.licence_id,
+            bundled_licence_id=self.bundled_licence_id,
+            licence_layer_digest=self.licence_layer_digest,
+            source_match=self.source_match,
+            source_match_reason=self.source_match_reason,
+            think=new_think,
+            max_num_ctx=self.max_num_ctx,
+        )
+
     def to_model_identity(
         self,
         *,
@@ -214,6 +231,9 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
             "Ollama manifest layer 'from' is 'nemotron3.5:30b-a3b-q4_K_M' and bundles "
             "NVIDIA licence layer 215a3316... without an HF commit/weights hash in the manifest."
         ),
+        # Ollama v0.40.9 model/renderers/nemotron3nano.go:30, 86-87: "medium" is an effort hint
+        # Ollama's template adds (thinking stays on), not a cap.
+        think="medium",
         max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["reader_1"],
     ),
     "reader_2": PinnedModelSpec(
@@ -1297,7 +1317,7 @@ def run_pilot_b_calibration(
         num_predict=num_predict,
         num_ctx=num_ctx,
         base_url=ollama_base_url,
-        think=True,
+        think=None,
         http_transport=ollama_mod.default_ollama_http_transport,
     )
 
@@ -1321,7 +1341,7 @@ def run_pilot_b_calibration(
         "role": selected_role,
         "model": target_spec.ollama_tag,
         "manifest_digest": target_spec.manifest_digest,
-        "think": True,
+        "think": target_spec.think,
         "tables": tables_count,
         "num_predict": int(num_predict),
         "num_ctx": int(num_ctx),

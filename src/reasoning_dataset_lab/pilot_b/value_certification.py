@@ -23,19 +23,89 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from reasoning_dataset_lab.errors import RdlabError, refused_error
+from reasoning_dataset_lab.errors import RdlabError, refused_error, usage_error
 from reasoning_dataset_lab.pilot_b.fact_tables import DOMAIN_CATALOGUE, value_sets
 from reasoning_dataset_lab.pilot_b.unanimity import (
     BARRED_ANY_ROLE_FAMILIES,
     BARRED_READER_FAMILIES,
+    ThinkSetting,
 )
 
 CERT_FORMAT = 1
+
+THINK_SETTINGS_BY_TOKEN: dict[str, ThinkSetting] = {
+    "true": True,
+    "false": False,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "max",
+}
+
+
+def _is_valid_think_setting(value: object) -> bool:
+    if isinstance(value, bool):
+        return True
+    return isinstance(value, str) and value in ("low", "medium", "high", "max")
+
+
+def parse_reader_think_overrides(
+    raw_overrides: Sequence[str] | Mapping[str, Any] | None,
+) -> dict[str, ThinkSetting]:
+    """Parse repeatable ``--reader-think FAMILY=SETTING`` flags (or a mapping) into validated family overrides."""
+
+    if not raw_overrides:
+        return {}
+    from reasoning_dataset_lab.pilot_b.ollama import READER_ROLE_BY_FAMILY
+
+    items: list[tuple[str, Any]] = []
+    if isinstance(raw_overrides, Mapping):
+        items = list(raw_overrides.items())
+    else:
+        for raw_entry in raw_overrides:
+            text = str(raw_entry)
+            if "=" not in text:
+                raise usage_error(
+                    "PILOT_B_CERT_INVALID_READER_THINK",
+                    f"Invalid --reader-think '{text}': expected FAMILY=SETTING.",
+                    "Pass --reader-think FAMILY=SETTING with SETTING in: true, false, low, medium, high, max.",
+                )
+            fam_part, set_part = text.split("=", 1)
+            items.append((fam_part, set_part))
+
+    resolved: dict[str, ThinkSetting] = {}
+    for raw_family, raw_setting in items:
+        family = str(raw_family).strip().lower()
+        if not family or family not in READER_ROLE_BY_FAMILY:
+            raise usage_error(
+                "PILOT_B_CERT_UNKNOWN_READER",
+                f"Unknown reader family '{str(raw_family).strip()}'.",
+                f"Choose from: {', '.join(sorted(READER_ROLE_BY_FAMILY))}.",
+            )
+        if isinstance(raw_setting, bool):
+            setting: ThinkSetting = raw_setting
+        elif isinstance(raw_setting, str):
+            token = raw_setting.strip().lower()
+            if token not in THINK_SETTINGS_BY_TOKEN:
+                raise usage_error(
+                    "PILOT_B_CERT_INVALID_READER_THINK",
+                    f"Unknown think setting '{raw_setting.strip()}' for reader family '{family}'.",
+                    "Allowed think settings are: true, false, low, medium, high, max.",
+                )
+            setting = THINK_SETTINGS_BY_TOKEN[token]
+        else:
+            raise usage_error(
+                "PILOT_B_CERT_INVALID_READER_THINK",
+                f"Invalid think setting {raw_setting!r} for reader family '{family}'.",
+                "Allowed think settings are: true, false, low, medium, high, max.",
+            )
+        resolved[family] = setting
+    return resolved
 
 # The nemotron and granite readers run with think=True (reader_3, Mistral Small 3.2, runs think=False: it answers
 # directly), and Ollama counts thinking tokens against num_predict. Measured in Pilot B
@@ -204,7 +274,9 @@ def content_hash(manifest: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def _check_readers(readers: Sequence[CompatibilityReader]) -> None:
+def _check_readers(
+    readers: Sequence[CompatibilityReader], *, is_addendum: bool = False
+) -> None:
     families = [r.model.normalized_family for r in readers]
     for reader in readers:
         family = reader.model.normalized_family
@@ -220,7 +292,8 @@ def _check_readers(readers: Sequence[CompatibilityReader]) -> None:
                 f"Model '{reader.model.name}' (family '{reader.model.family}') cannot certify value sets.",
                 "Use two approved open-weight reader families.",
             )
-    if len(set(families)) < 2:
+    min_families = 1 if is_addendum else 2
+    if len(set(families)) < min_families:
         raise refused_error(
             "PILOT_B_CERT_NEEDS_TWO_FAMILIES",
             f"Certification needs readers from at least two model families, got {sorted(set(families))}.",
@@ -310,6 +383,134 @@ def run_control(
     }
 
 
+def _format_think_setting(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def build_setting_tier(
+    reader_think: Mapping[str, ThinkSetting] | None = None,
+    *,
+    readers: Sequence[CompatibilityReader] | None = None,
+    parent_manifest: Mapping[str, Any] | None = None,
+) -> str:
+    """Build the ``setting_tier`` label (for example ``nemotron:think=medium``) from overrides or parent diff."""
+
+    overrides = dict(reader_think or {})
+    if overrides:
+        ordered_families: list[str] = []
+        if readers is not None:
+            for r in readers:
+                fam = str(getattr(r.model, "family", "")).strip().lower()
+                if fam in overrides and fam not in ordered_families:
+                    ordered_families.append(fam)
+        for fam in sorted(overrides):
+            if fam not in ordered_families:
+                ordered_families.append(fam)
+        return ",".join(
+            f"{fam}:think={_format_think_setting(overrides[fam])}"
+            for fam in ordered_families
+        )
+    if readers is not None and parent_manifest is not None:
+        parent_by_fam = {
+            str(r.get("family", "")).strip().lower(): r.get("think")
+            for r in parent_manifest.get("readers", [])
+            if isinstance(r, Mapping)
+        }
+        changed = [
+            f"{str(getattr(r.model, 'family', '')).strip().lower()}:think={_format_think_setting(_reader_think_and_overridden(r)[0])}"
+            for r in readers
+            if str(getattr(r.model, "family", "")).strip().lower() in parent_by_fam
+            and not (
+                type(_reader_think_and_overridden(r)[0])
+                is type(parent_by_fam[str(getattr(r.model, "family", "")).strip().lower()])
+                and _reader_think_and_overridden(r)[0]
+                == parent_by_fam[str(getattr(r.model, "family", "")).strip().lower()]
+            )
+        ]
+        if changed:
+            return ",".join(changed)
+    if readers is not None:
+        return ",".join(
+            f"{str(getattr(r.model, 'family', '')).strip().lower()}:think={_format_think_setting(_reader_think_and_overridden(r)[0])}"
+            for r in readers
+        )
+    return ""
+
+
+def _parent_protected_paths(parent_manifest_path: Path) -> set[Path]:
+    resolved_parent = parent_manifest_path.resolve()
+    protected: set[Path] = {resolved_parent}
+    parent_dir = resolved_parent.parent
+    stem = resolved_parent.stem
+    if "manifest" in stem:
+        for replacement in ("review_queue", "queue"):
+            q_stem = stem.replace("manifest", replacement, 1)
+            for ext in (".json", ".jsonl", ".failures.jsonl"):
+                protected.add((parent_dir / f"{q_stem}{ext}").resolve())
+    for name in ("review_queue.json", "review_queue.jsonl"):
+        cand = (parent_dir / name).resolve()
+        if cand.exists():
+            protected.add(cand)
+    return protected
+
+
+def check_parent_manifest(
+    parent_manifest_path: Path,
+    *,
+    manifest_out: Path | None,
+    review_queue_out: Path,
+) -> tuple[str, dict[str, Any]]:
+    """Validate ``--parent-manifest`` and refuse to overwrite the parent manifest or queue paths."""
+
+    if not parent_manifest_path.exists() or not parent_manifest_path.is_file():
+        raise usage_error(
+            "PILOT_B_CERT_PARENT_MANIFEST_NOT_FOUND",
+            f"Parent manifest not found: {parent_manifest_path}",
+            "Pass an existing manifest file to --parent-manifest.",
+        )
+    parent_sha256 = hashlib.sha256(parent_manifest_path.read_bytes()).hexdigest()
+    parent_doc = load_manifest(parent_manifest_path)
+    protected = _parent_protected_paths(parent_manifest_path)
+    failures_out = review_queue_out.with_name(
+        review_queue_out.stem + ".failures.jsonl"
+    )
+    candidates: list[tuple[str, Path]] = [
+        ("review_queue", review_queue_out),
+        ("failures", failures_out),
+    ]
+    if manifest_out is not None:
+        candidates.insert(0, ("manifest", manifest_out))
+    for label, out_path in candidates:
+        resolved_out = out_path.resolve()
+        if resolved_out in protected or resolved_out.exists():
+            raise refused_error(
+                "PILOT_B_CERT_PARENT_OVERWRITE_REFUSED",
+                f"Refusing to write {label} '{out_path}' over an existing or parent path (parent: '{parent_manifest_path}').",
+                "Write the addendum manifest and review queue to fresh paths distinct from the parent's.",
+            )
+    return parent_sha256, parent_doc
+
+
+def _reader_think_and_overridden(reader: CompatibilityReader) -> tuple[Any, bool]:
+    actual_think = getattr(reader, "think", getattr(reader.model, "think", None))
+    explicit_flag = getattr(reader, "think_overridden", None)
+    if isinstance(explicit_flag, bool):
+        return actual_think, explicit_flag
+    pinned = _pinned_readers()
+    key = (
+        str(getattr(reader.model, "name", "")),
+        str(getattr(reader.model, "digest", "")),
+        str(getattr(reader.model, "family", "")).strip().lower(),
+    )
+    if key in pinned:
+        pin_think = pinned[key]
+        overridden = not (type(actual_think) is type(pin_think) and actual_think == pin_think)
+        return actual_think, overridden
+    return actual_think, False
+
+
 def _assemble(
     sets: Sequence[ValueSet],
     verdicts: dict[tuple[int, str, str], dict[str, str]],
@@ -321,21 +522,26 @@ def _assemble(
     control: dict[str, Any],
     control_failed: bool,
     licence_registry_sha256: str,
+    parent_manifest_sha256: str | None = None,
+    setting_tier: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The manifest of the sets every reader has fully read as contradictions, and the queue of the rest."""
 
     names = [r.model.name for r in readers]
-    reader_rows = [
-        {
-            "name": r.model.name,
-            "family": r.model.family,
-            "digest": r.model.digest,
-            "num_ctx_cap": getattr(r, "max_num_ctx", None),
-            "num_predict": getattr(r, "num_predict", None),
-            "think": getattr(r, "think", None),
-        }
-        for r in readers
-    ]
+    reader_rows = []
+    for r in readers:
+        actual_think, overridden = _reader_think_and_overridden(r)
+        reader_rows.append(
+            {
+                "name": r.model.name,
+                "family": r.model.family,
+                "digest": r.model.digest,
+                "num_ctx_cap": getattr(r, "max_num_ctx", None),
+                "num_predict": getattr(r, "num_predict", None),
+                "think": actual_think,
+                "think_overridden": overridden,
+            }
+        )
     certified: list[dict[str, Any]] = []
     queue: list[dict[str, Any]] = []
     not_reached: list[str] = []
@@ -400,6 +606,10 @@ def _assemble(
         "control_pairs_sha256": CONTROL_PAIRS_SHA256,
         "licence_registry_sha256": licence_registry_sha256,
     }
+    if parent_manifest_sha256 is not None:
+        manifest["parent_manifest_sha256"] = parent_manifest_sha256
+    if setting_tier:
+        manifest["setting_tier"] = setting_tier
     manifest["content_sha256"] = content_hash(manifest)
     return manifest, queue
 
@@ -414,6 +624,8 @@ def run_certification(
     date: str,
     manifest_path: Path | None = None,
     licence_registry_sha256: str,
+    parent_manifest_path: Path | None = None,
+    reader_think: Sequence[str] | Mapping[str, Any] | None = None,
 ) -> CertificationRun:
     """Ask every reader about every directed pair of every set, one reader at a time, and build the manifest.
 
@@ -425,7 +637,21 @@ def run_certification(
     """
 
     opts = options or CertificationOptions()
-    _check_readers(readers)
+    overrides = parse_reader_think_overrides(reader_think)
+    parent_sha256: str | None = None
+    parent_doc: dict[str, Any] | None = None
+    if parent_manifest_path is not None:
+        parent_sha256, parent_doc = check_parent_manifest(
+            parent_manifest_path,
+            manifest_out=manifest_path,
+            review_queue_out=review_queue_path,
+        )
+    tier_label: str | None = None
+    if overrides or parent_manifest_path is not None:
+        tier_label = build_setting_tier(
+            overrides, readers=readers, parent_manifest=parent_doc
+        )
+    _check_readers(readers, is_addendum=(parent_manifest_path is not None))
 
     jobs: list[tuple[int, str, str, str, list[dict[str, str]]]] = []
     for set_index, (domain, attribute, values) in enumerate(sets):
@@ -470,6 +696,8 @@ def run_certification(
             control=control,
             control_failed=control_failed,
             licence_registry_sha256=licence_registry_sha256,
+            parent_manifest_sha256=parent_sha256,
+            setting_tier=tier_label,
         )
         review_queue_path.parent.mkdir(parents=True, exist_ok=True)
         review_queue_path.write_text(
@@ -652,7 +880,17 @@ def verify_manifest(
     readers = manifest.get("readers", [])
     reader_names = {str(r.get("name", "")) for r in readers}
     families = {str(r.get("family", "")).strip().lower() for r in readers}
-    if len(readers) < 2 or len(families - {""}) < 2:
+    if "parent_manifest_sha256" in manifest:
+        if not _is_sha256(manifest.get("parent_manifest_sha256")):
+            problems.append(
+                "addendum: parent_manifest_sha256 is not a valid sha256"
+            )
+        setting_tier = manifest.get("setting_tier")
+        if not isinstance(setting_tier, str) or not setting_tier.strip():
+            problems.append("addendum: setting_tier is missing or empty")
+        if len(readers) < 1 or len(families - {""}) < 1:
+            problems.append("readers: addendum manifest has no reader family")
+    elif len(readers) < 2 or len(families - {""}) < 2:
         problems.append("readers: fewer than two model families")
     if manifest.get("control_failed"):
         problems.append("control: the negative control failed, so nothing is certified")
@@ -725,6 +963,15 @@ def verify_manifest(
             problems.append(
                 f"readers: {key[0]} records no think setting, so the manifest cannot show how it answered"
             )
+        elif not _is_valid_think_setting(r["think"]):
+            problems.append(
+                f"readers: {key[0]} recorded think={r['think']!r}, but its pin says think={pinned[key]!r}"
+            )
+        elif r.get("think_overridden") is True:
+            pass
+        elif key[2] == "nemotron" and type(r["think"]) is bool and r["think"] is True:
+            # r3 full-thinking tier (think: true) remains verifiable unchanged after Nemotron's pin moved to think="medium".
+            pass
         elif not (type(r["think"]) is type(pinned[key]) and r["think"] == pinned[key]):
             problems.append(
                 f"readers: {key[0]} recorded think={r['think']!r}, but its pin says think={pinned[key]!r}"
@@ -770,7 +1017,11 @@ def verify_manifest(
     return problems
 
 
-def reader_pins(families: Sequence[str]) -> list[Any]:
+def reader_pins(
+    families: Sequence[str],
+    *,
+    reader_think: Sequence[str] | Mapping[str, Any] | None = None,
+) -> list[Any]:
     """The pinned model specs of the named reader families, in order; an unknown family is refused.
 
     The licence gate validates exactly these before any Ollama call.
@@ -781,6 +1032,7 @@ def reader_pins(families: Sequence[str]) -> list[Any]:
     )
     from reasoning_dataset_lab.pilot_b.ollama import READER_ROLE_BY_FAMILY
 
+    overrides = parse_reader_think_overrides(reader_think)
     specs: list[Any] = []
     for family in families:
         if family not in READER_ROLE_BY_FAMILY:
@@ -789,7 +1041,10 @@ def reader_pins(families: Sequence[str]) -> list[Any]:
                 f"Unknown reader family '{family}'.",
                 f"Choose from: {', '.join(sorted(READER_ROLE_BY_FAMILY))}.",
             )
-        specs.append(DEFAULT_PILOT_B_MODEL_PINS[READER_ROLE_BY_FAMILY[family]])
+        spec = DEFAULT_PILOT_B_MODEL_PINS[READER_ROLE_BY_FAMILY[family]]
+        if family in overrides:
+            spec = spec.with_think(overrides[family])
+        specs.append(spec)
     return specs
 
 
@@ -799,14 +1054,17 @@ def build_ollama_readers(
     base_url: str,
     num_ctx: int,
     num_predict: int,
+    reader_think: Sequence[str] | Mapping[str, Any] | None = None,
 ) -> list[Any]:
     """Real loopback readers for the named families, in the order given (each one is run alone, then unloaded)."""
 
     from reasoning_dataset_lab.pilot_b.ollama import OllamaBlindReaderAdapter
 
+    overrides = parse_reader_think_overrides(reader_think)
     readers: list[Any] = []
-    for spec in reader_pins(families):
+    for spec in reader_pins(families, reader_think=overrides):
         role = spec.role
+        fam = spec.family.strip().lower()
         readers.append(
             OllamaBlindReaderAdapter(
                 model=spec,
@@ -814,6 +1072,414 @@ def build_ollama_readers(
                 num_predict=num_predict,
                 role=role,  # type: ignore[arg-type]
                 max_num_ctx=num_ctx,
+                think_overridden=(fam in overrides),
             )
         )
     return readers
+
+
+CROSS_TABLE_OUTCOMES: tuple[str, ...] = ("incompatible", "compatible", "unsure", "length")
+
+
+def _load_companion_review_queue(manifest_path: Path | None) -> list[dict[str, Any]]:
+    if manifest_path is None:
+        return []
+    parent_dir = manifest_path.parent
+    stem = manifest_path.stem
+    candidates: list[Path] = []
+    if "manifest" in stem:
+        for replacement in ("review_queue", "queue"):
+            same_ext = manifest_path.with_name(
+                manifest_path.name.replace("manifest", replacement, 1)
+            )
+            if same_ext not in candidates:
+                candidates.append(same_ext)
+            q_stem = stem.replace("manifest", replacement, 1)
+            for ext in (".json", ".jsonl"):
+                cand = parent_dir / f"{q_stem}{ext}"
+                if cand not in candidates:
+                    candidates.append(cand)
+    for name in ("review_queue.json", "review_queue.jsonl"):
+        cand = parent_dir / name
+        if cand not in candidates:
+            candidates.append(cand)
+    for cand in candidates:
+        if cand != manifest_path and cand.exists():
+            raw = cand.read_text(encoding="utf-8").strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                return list(json.loads(raw))
+            return [json.loads(line) for line in raw.splitlines() if line.strip()]
+    return []
+
+
+def _extract_manifest_sets_and_pairs(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path | None = None,
+    reader_name: str,
+    reader_family: str,
+) -> dict[tuple[str, str], dict[tuple[str, str], str]]:
+    """Return mapping of (domain, attribute_or_slot) -> {(first, second): verdict_for_reader}."""
+    sets_map: dict[tuple[str, str], dict[tuple[str, str], str]] = {}
+    for entry in manifest.get("sets", []):
+        domain = str(entry.get("domain", ""))
+        attr = str(entry.get("attribute") or entry.get("slot") or "")
+        ti = entry.get("table_index")
+        set_key = (domain, f"{ti}:{attr}" if ti is not None and "attribute" not in entry else attr)
+        pair_map: dict[tuple[str, str], str] = {}
+        for pair in entry.get("pairs", []):
+            first = str(pair.get("first") if "first" in pair else pair.get("a", ""))
+            second = str(pair.get("second") if "second" in pair else pair.get("b", ""))
+            verdicts = pair.get("verdicts") or {}
+            v = verdicts.get(reader_name) or verdicts.get(reader_family)
+            pair_map[(first, second)] = str(v) if v is not None else "missing"
+        sets_map[set_key] = pair_map
+
+    queue_rows = list(manifest.get("review_queue", [])) or _load_companion_review_queue(
+        manifest_path
+    )
+    for q_entry in queue_rows:
+        domain = str(q_entry.get("domain", ""))
+        attr = str(q_entry.get("attribute") or q_entry.get("slot") or "")
+        set_key = (domain, attr)
+        values = [str(v) for v in q_entry.get("values", [])]
+        failed_lookup: dict[tuple[str, str], str] = {}
+        for fp in q_entry.get("failed_pairs", []):
+            first = str(fp.get("first") if "first" in fp else fp.get("a", ""))
+            second = str(fp.get("second") if "second" in fp else fp.get("b", ""))
+            verdicts = fp.get("verdicts") or {}
+            v = verdicts.get(reader_name) or verdicts.get(reader_family)
+            failed_lookup[(first, second)] = str(v) if v is not None else "missing"
+        pair_map = {}
+        for a, b in directed_pairs(values):
+            pair_map[(a, b)] = failed_lookup.get((a, b), CONTRADICTION)
+        sets_map[set_key] = pair_map
+    return sets_map
+
+
+def _find_reader_entry(manifest: Mapping[str, Any], reader_family: str) -> dict[str, Any]:
+    target = reader_family.strip().lower()
+    for r in manifest.get("readers", []):
+        fam = str(r.get("family", "")).strip().lower()
+        name = str(r.get("name", "") or r.get("model_tag", "")).strip().lower()
+        if fam == target or name == target or name.startswith(target):
+            return dict(r)
+    raise refused_error(
+        "PILOT_B_COMPARE_ARMS_MISMATCH",
+        f"Reader '{reader_family}' was not found in manifest readers.",
+        "Pass --reader matching a reader family present in both parent and addendum manifests.",
+    )
+
+
+def compare_arms(
+    parent_manifest: Mapping[str, Any],
+    addendum_manifest: Mapping[str, Any],
+    *,
+    reader_family: str = "nemotron",
+    parent_path: Path | None = None,
+    addendum_path: Path | None = None,
+) -> dict[str, Any]:
+    """Compare parent and addendum manifests for one reader family, keeping length stops separate from verdicts."""
+    if parent_manifest.get("prompt_sha256") != addendum_manifest.get("prompt_sha256"):
+        raise refused_error(
+            "PILOT_B_COMPARE_ARMS_MISMATCH",
+            "Parent and addendum manifests have different prompt_sha256.",
+            "Compare manifests generated under the exact same certification prompt.",
+        )
+    if parent_manifest.get("control_pairs_sha256") != addendum_manifest.get(
+        "control_pairs_sha256"
+    ):
+        raise refused_error(
+            "PILOT_B_COMPARE_ARMS_MISMATCH",
+            "Parent and addendum manifests have different control_pairs_sha256.",
+            "Compare manifests generated under the exact same negative-control pair table.",
+        )
+
+    parent_reader = _find_reader_entry(parent_manifest, reader_family)
+    addendum_reader = _find_reader_entry(addendum_manifest, reader_family)
+    p_name = str(parent_reader.get("name") or parent_reader.get("model_tag") or reader_family)
+    a_name = str(addendum_reader.get("name") or addendum_reader.get("model_tag") or reader_family)
+    fam = str(parent_reader.get("family") or reader_family).strip().lower()
+
+    parent_sets = _extract_manifest_sets_and_pairs(
+        parent_manifest,
+        manifest_path=parent_path,
+        reader_name=p_name,
+        reader_family=fam,
+    )
+    addendum_sets = _extract_manifest_sets_and_pairs(
+        addendum_manifest,
+        manifest_path=addendum_path,
+        reader_name=a_name,
+        reader_family=fam,
+    )
+
+    if set(parent_sets.keys()) != set(addendum_sets.keys()):
+        raise refused_error(
+            "PILOT_B_COMPARE_ARMS_MISMATCH",
+            "Parent and addendum manifests cover different value sets.",
+            "Run compare-arms on manifests covering the exact same value sets.",
+        )
+
+    for set_key in parent_sets:
+        if set(parent_sets[set_key].keys()) != set(addendum_sets[set_key].keys()):
+            raise refused_error(
+                "PILOT_B_COMPARE_ARMS_MISMATCH",
+                f"Parent and addendum manifests have different pairs for set {set_key[0]}/{set_key[1]}.",
+                "Run compare-arms on manifests covering the exact same directed pairs.",
+            )
+
+    catalogue = value_sets()
+    catalogue_set_rank: dict[tuple[str, str], int] = {
+        (domain, attr): idx for idx, (domain, attr, _vals) in enumerate(catalogue)
+    }
+    catalogue_pair_rank: dict[tuple[str, str], dict[tuple[str, str], int]] = {
+        (domain, attr): {
+            pair: p_idx for p_idx, pair in enumerate(directed_pairs(vals))
+        }
+        for domain, attr, vals in catalogue
+    }
+    ordered_set_keys = sorted(
+        parent_sets.keys(),
+        key=lambda sk: (
+            (0, catalogue_set_rank[sk], sk[0], sk[1])
+            if sk in catalogue_set_rank
+            else (1, 0, sk[0], sk[1])
+        ),
+    )
+
+    cross_table: dict[str, dict[str, int]] = {
+        r_out: {c_out: 0 for c_out in CROSS_TABLE_OUTCOMES}
+        for r_out in CROSS_TABLE_OUTCOMES
+    }
+    pair_rows: list[dict[str, Any]] = []
+    per_set_rows: list[dict[str, Any]] = []
+
+    total_pairs = 0
+    parent_length_stops = 0
+    addendum_length_stops = 0
+    pairs_with_verdict_at_both = 0
+    exact_verdict_agreement_count = 0
+    verdict_disagreement_count = 0
+    parent_sets_passed = 0
+    addendum_sets_passed = 0
+
+    for domain, attr in ordered_set_keys:
+        set_key = (domain, attr)
+        p_pairs = parent_sets[set_key]
+        a_pairs = addendum_sets[set_key]
+        pair_rank = catalogue_pair_rank.get(set_key, {})
+        ordered_pairs = sorted(
+            p_pairs.keys(),
+            key=lambda pair: (
+                (0, pair_rank[pair], pair[0], pair[1])
+                if pair in pair_rank
+                else (1, 0, pair[0], pair[1])
+            ),
+        )
+        set_label = f"{domain}/{attr}"
+        p_set_all_incompat = len(p_pairs) > 0
+        a_set_all_incompat = len(a_pairs) > 0
+        p_set_len_stops = 0
+        a_set_len_stops = 0
+
+        for first, second in ordered_pairs:
+            p_val = p_pairs[(first, second)]
+            a_val = a_pairs[(first, second)]
+            total_pairs += 1
+            p_is_len = p_val in FAILED_DONE_REASONS
+            a_is_len = a_val in FAILED_DONE_REASONS
+            p_bucket = "length" if p_is_len else p_val
+            a_bucket = "length" if a_is_len else a_val
+            row_buckets = cross_table.setdefault(
+                p_bucket, {k: 0 for k in CROSS_TABLE_OUTCOMES}
+            )
+            row_buckets[a_bucket] = row_buckets.get(a_bucket, 0) + 1
+
+            if p_is_len:
+                parent_length_stops += 1
+                p_set_len_stops += 1
+            if a_is_len:
+                addendum_length_stops += 1
+                a_set_len_stops += 1
+
+            if p_val != CONTRADICTION:
+                p_set_all_incompat = False
+            if a_val != CONTRADICTION:
+                a_set_all_incompat = False
+
+            # Length stops are NEVER counted as a verdict or folded into "disagree"
+            both_have_verdict = (p_val in ANSWERS) and (a_val in ANSWERS)
+            if both_have_verdict:
+                pairs_with_verdict_at_both += 1
+                if p_val == a_val:
+                    exact_verdict_agreement_count += 1
+                    outcome_class = "verdict_agree"
+                else:
+                    verdict_disagreement_count += 1
+                    outcome_class = "verdict_disagree"
+            else:
+                outcome_class = "length_stop_excluded_from_verdicts"
+
+            pair_rows.append(
+                {
+                    "set": set_label,
+                    "domain": domain,
+                    "attribute": attr,
+                    "first": first,
+                    "second": second,
+                    "parent_verdict": p_val,
+                    "addendum_verdict": a_val,
+                    "outcome_class": outcome_class,
+                }
+            )
+
+        if p_set_all_incompat:
+            parent_sets_passed += 1
+        if a_set_all_incompat:
+            addendum_sets_passed += 1
+        per_set_rows.append(
+            {
+                "set": set_label,
+                "domain": domain,
+                "attribute": attr,
+                "parent_pass": p_set_all_incompat,
+                "addendum_pass": a_set_all_incompat,
+                "parent_would_pass": p_set_all_incompat,
+                "addendum_would_pass": a_set_all_incompat,
+                "parent_length_stops": p_set_len_stops,
+                "addendum_length_stops": a_set_len_stops,
+            }
+        )
+
+    agreement_rate_all_pairs = (
+        exact_verdict_agreement_count / total_pairs if total_pairs > 0 else 0.0
+    )
+    agreement_rate_verdict_pairs = (
+        exact_verdict_agreement_count / pairs_with_verdict_at_both
+        if pairs_with_verdict_at_both > 0
+        else 0.0
+    )
+
+    return {
+        "reader_family": fam,
+        "parent_think": parent_reader.get("think"),
+        "addendum_think": addendum_reader.get("think"),
+        "total_sets": len(parent_sets),
+        "total_pairs": total_pairs,
+        "parent_length_stops": parent_length_stops,
+        "addendum_length_stops": addendum_length_stops,
+        "pairs_with_verdict_at_both": pairs_with_verdict_at_both,
+        "exact_verdict_agreement_count": exact_verdict_agreement_count,
+        "verdict_disagreement_count": verdict_disagreement_count,
+        "agreement_rate_all_pairs": agreement_rate_all_pairs,
+        "agreement_rate_verdict_pairs": agreement_rate_verdict_pairs,
+        "parent_sets_passed": parent_sets_passed,
+        "addendum_sets_passed": addendum_sets_passed,
+        "parent_sets_would_pass": parent_sets_passed,
+        "addendum_sets_would_pass": addendum_sets_passed,
+        "parent_completion_tokens": parent_reader.get("completion_tokens"),
+        "addendum_completion_tokens": addendum_reader.get("completion_tokens"),
+        "parent_wall_time_s": parent_reader.get("wall_time_s"),
+        "addendum_wall_time_s": addendum_reader.get("wall_time_s"),
+        "cross_table": cross_table,
+        "per_set": per_set_rows,
+        "pairs": pair_rows,
+    }
+
+
+def format_arm_comparison_report(comparison: Mapping[str, Any]) -> str:
+    """Format the markdown arm-comparison report with length stops separated from verdicts."""
+    fam = comparison["reader_family"]
+    p_think = comparison["parent_think"]
+    a_think = comparison["addendum_think"]
+    total_pairs = comparison["total_pairs"]
+    both_verdicts = comparison["pairs_with_verdict_at_both"]
+    agree = comparison["exact_verdict_agreement_count"]
+    disagree = comparison["verdict_disagreement_count"]
+    rate_all = comparison["agreement_rate_all_pairs"] * 100.0
+    rate_verdicts = comparison["agreement_rate_verdict_pairs"] * 100.0
+
+    lines: list[str] = [
+        f"# Pilot B Reader Think-Arm Comparison ({fam})",
+        (
+            'Note: In Ollama\'s nemotron3nano renderer (`model/renderers/nemotron3nano.go:30, 86-87`), '
+            '`"medium"` is an effort hint the template knows (thinking stays on), not a cap on thinking tokens.'
+        ),
+        "",
+        "## Summary",
+        f"- Reader family: `{fam}`",
+        f"- Parent think setting: `{p_think!r}`",
+        f"- Addendum think setting: `{a_think!r}`",
+        f"- Total sets: {comparison['total_sets']}",
+        f"- Total directed pairs: {total_pairs}",
+        f"- Parent length stops (reported separately from verdicts; never counted as a verdict or folded into disagree): {comparison['parent_length_stops']}",
+        f"- Addendum length stops (reported separately from verdicts; never counted as a verdict or folded into disagree): {comparison['addendum_length_stops']}",
+        f"- Pairs with a verdict at both settings: {both_verdicts}",
+        f"- Exact verdict agreement count: {agree}",
+        f"- Verdict disagreement count (verdict pairs only): {disagree}",
+        f"- Exact verdict agreement rate (over all pairs): {agree} / {total_pairs} ({rate_all:.1f}%)",
+        f"- Exact verdict agreement rate (over pairs with a verdict at both settings): {agree} / {both_verdicts} ({rate_verdicts:.1f}%)",
+        f"- Per-set would pass ({fam} half only, parent `{p_think!r}`): {comparison['parent_sets_passed']} / {comparison['total_sets']}",
+        f"- Per-set would pass ({fam} half only, addendum `{a_think!r}`): {comparison['addendum_sets_passed']} / {comparison['total_sets']}",
+    ]
+
+    p_tok = comparison.get("parent_completion_tokens")
+    a_tok = comparison.get("addendum_completion_tokens")
+    if p_tok is not None or a_tok is not None:
+        lines.append(f"- Completion tokens: parent={p_tok}, addendum={a_tok}")
+    p_wall = comparison.get("parent_wall_time_s")
+    a_wall = comparison.get("addendum_wall_time_s")
+    if p_wall is not None or a_wall is not None:
+        lines.append(f"- Wall time (s): parent={p_wall}, addendum={a_wall}")
+
+    ct = comparison["cross_table"]
+    lines.extend(
+        [
+            "",
+            "## Cross-Table (Parent Rows vs Addendum Columns; `length` Separated from Verdicts)",
+            "| Parent \\ Addendum | incompatible (verdict) | compatible (verdict) | unsure (verdict) | length (stop — not a verdict) |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for row_key in CROSS_TABLE_OUTCOMES:
+        row_label = (
+            f"{row_key} (stop — not a verdict)"
+            if row_key == "length"
+            else f"{row_key} (verdict)"
+        )
+        row_counts = ct.get(row_key, {})
+        lines.append(
+            f"| {row_label} | {row_counts.get('incompatible', 0)} | {row_counts.get('compatible', 0)} | {row_counts.get('unsure', 0)} | {row_counts.get('length', 0)} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            f"## Per-Set Would-Pass by Setting ({fam} half only)",
+            f"| Set | Parent Would Pass ({fam} half) | Addendum Would Pass ({fam} half) | Parent Length Stops | Addendum Length Stops |",
+            "| --- | :---: | :---: | ---: | ---: |",
+        ]
+    )
+    for s_row in comparison["per_set"]:
+        lines.append(
+            f"| {s_row['set']} | {'pass' if s_row['parent_pass'] else 'fail'} | {'pass' if s_row['addendum_pass'] else 'fail'} | {s_row['parent_length_stops']} | {s_row['addendum_length_stops']} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Per-Pair Verdicts and Length Stops",
+            "| Set | First | Second | Parent | Addendum | Classification |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for p_row in comparison["pairs"]:
+        lines.append(
+            f"| {p_row['set']} | {p_row['first']} | {p_row['second']} | {p_row['parent_verdict']} | {p_row['addendum_verdict']} | {p_row['outcome_class']} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+

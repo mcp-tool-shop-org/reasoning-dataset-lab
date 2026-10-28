@@ -1280,6 +1280,7 @@ class OllamaBlindReaderAdapter:
         num_predict_source: NumPredictSource | None = None,
         role: Literal["reader_1", "reader_2", "reader_3"] | None = None,
         max_num_ctx: int | None = None,
+        think_overridden: bool = False,
         http_transport: OllamaHttpTransport | None = None,
     ) -> None:
         self._num_predict_config = coerce_num_predict_config(
@@ -1312,6 +1313,7 @@ class OllamaBlindReaderAdapter:
             )
         self._max_num_ctx = resolved_max_ctx
         self._think: ThinkSetting = self._model.think
+        self._think_overridden = bool(think_overridden)
         self._num_predict = self._num_predict_config.num_predict_for(
             "read_claim", role=self._role
         )
@@ -1345,6 +1347,10 @@ class OllamaBlindReaderAdapter:
     @property
     def think(self) -> ThinkSetting:
         return self._think
+
+    @property
+    def think_overridden(self) -> bool:
+        return self._think_overridden
 
     @property
     def num_predict(self) -> int:
@@ -1553,11 +1559,11 @@ def run_ollama_calibration_calls(
     if think is None:
         think = pinned_think
     if type(think) is not type(pinned_think) or think != pinned_think:
-        if pinned_think is True:
+        if pinned_think is not False and think is False:
             raise refused_error(
                 "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN",
-                f"Calibration requires think=True, got {think!r}.",
-                "Run calibration with thinking enabled (think: true only).",
+                f"Calibration requires thinking enabled (pinned think={pinned_think!r}), got {think!r}.",
+                "Run calibration with thinking enabled.",
             )
         raise refused_error(
             "PILOT_B_CALIBRATE_THINK_MISMATCH",
