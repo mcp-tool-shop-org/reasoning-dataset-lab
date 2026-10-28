@@ -380,6 +380,125 @@ def run_control(
     }
 
 
+def _format_think_setting(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def build_setting_tier(
+    reader_think: Mapping[str, ThinkSetting] | None = None,
+    *,
+    readers: Sequence[CompatibilityReader] | None = None,
+    parent_manifest: Mapping[str, Any] | None = None,
+) -> str:
+    """Build the ``setting_tier`` label (for example ``nemotron:think=medium``) from overrides or parent diff."""
+
+    overrides = dict(reader_think or {})
+    if overrides:
+        ordered_families: list[str] = []
+        if readers is not None:
+            for r in readers:
+                fam = str(getattr(r.model, "family", "")).strip().lower()
+                if fam in overrides and fam not in ordered_families:
+                    ordered_families.append(fam)
+        for fam in sorted(overrides):
+            if fam not in ordered_families:
+                ordered_families.append(fam)
+        return ",".join(
+            f"{fam}:think={_format_think_setting(overrides[fam])}"
+            for fam in ordered_families
+        )
+    if readers is not None and parent_manifest is not None:
+        parent_by_fam = {
+            str(r.get("family", "")).strip().lower(): r.get("think")
+            for r in parent_manifest.get("readers", [])
+            if isinstance(r, Mapping)
+        }
+        changed: list[str] = []
+        for r in readers:
+            fam = str(getattr(r.model, "family", "")).strip().lower()
+            actual_think, overridden = _reader_think_and_overridden(r)
+            if fam in parent_by_fam:
+                p_think = parent_by_fam[fam]
+                if not (type(actual_think) is type(p_think) and actual_think == p_think):
+                    changed.append(f"{fam}:think={_format_think_setting(actual_think)}")
+            elif overridden:
+                changed.append(f"{fam}:think={_format_think_setting(actual_think)}")
+        if changed:
+            return ",".join(changed)
+    if readers is not None:
+        overridden_parts = []
+        for r in readers:
+            fam = str(getattr(r.model, "family", "")).strip().lower()
+            actual_think, overridden = _reader_think_and_overridden(r)
+            if overridden:
+                overridden_parts.append(
+                    f"{fam}:think={_format_think_setting(actual_think)}"
+                )
+        if overridden_parts:
+            return ",".join(overridden_parts)
+        return ",".join(
+            f"{str(getattr(r.model, 'family', '')).strip().lower()}:think={_format_think_setting(_reader_think_and_overridden(r)[0])}"
+            for r in readers
+        )
+    return ""
+
+
+def _parent_protected_paths(parent_manifest_path: Path) -> set[Path]:
+    resolved_parent = parent_manifest_path.resolve()
+    protected: set[Path] = {resolved_parent}
+    parent_dir = resolved_parent.parent
+    stem = resolved_parent.stem
+    if "manifest" in stem:
+        for replacement in ("review_queue", "queue"):
+            q_stem = stem.replace("manifest", replacement, 1)
+            for ext in (".json", ".jsonl", ".failures.jsonl"):
+                protected.add((parent_dir / f"{q_stem}{ext}").resolve())
+    for name in ("review_queue.json", "review_queue.jsonl"):
+        cand = (parent_dir / name).resolve()
+        if cand.exists():
+            protected.add(cand)
+    return protected
+
+
+def check_parent_manifest(
+    parent_manifest_path: Path,
+    *,
+    manifest_out: Path | None,
+    review_queue_out: Path,
+) -> tuple[str, dict[str, Any]]:
+    """Validate ``--parent-manifest`` and refuse to overwrite the parent manifest or queue paths."""
+
+    if not parent_manifest_path.exists() or not parent_manifest_path.is_file():
+        raise usage_error(
+            "PILOT_B_CERT_PARENT_MANIFEST_NOT_FOUND",
+            f"Parent manifest not found: {parent_manifest_path}",
+            "Pass an existing manifest file to --parent-manifest.",
+        )
+    parent_sha256 = hashlib.sha256(parent_manifest_path.read_bytes()).hexdigest()
+    parent_doc = load_manifest(parent_manifest_path)
+    protected = _parent_protected_paths(parent_manifest_path)
+    failures_out = review_queue_out.with_name(
+        review_queue_out.stem + ".failures.jsonl"
+    )
+    candidates: list[tuple[str, Path]] = [
+        ("review_queue", review_queue_out),
+        ("failures", failures_out),
+    ]
+    if manifest_out is not None:
+        candidates.insert(0, ("manifest", manifest_out))
+    for label, out_path in candidates:
+        resolved_out = out_path.resolve()
+        if resolved_out in protected or resolved_out.exists():
+            raise refused_error(
+                "PILOT_B_CERT_PARENT_OVERWRITE_REFUSED",
+                f"Refusing to write {label} '{out_path}' over an existing or parent path (parent: '{parent_manifest_path}').",
+                "Write the addendum manifest and review queue to fresh paths distinct from the parent's.",
+            )
+    return parent_sha256, parent_doc
+
+
 def _reader_think_and_overridden(reader: CompatibilityReader) -> tuple[Any, bool]:
     actual_think = getattr(reader, "think", getattr(reader.model, "think", None))
     explicit_flag = getattr(reader, "think_overridden", None)
@@ -409,6 +528,8 @@ def _assemble(
     control: dict[str, Any],
     control_failed: bool,
     licence_registry_sha256: str,
+    parent_manifest_sha256: str | None = None,
+    setting_tier: str | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The manifest of the sets every reader has fully read as contradictions, and the queue of the rest."""
 
@@ -491,6 +612,10 @@ def _assemble(
         "control_pairs_sha256": CONTROL_PAIRS_SHA256,
         "licence_registry_sha256": licence_registry_sha256,
     }
+    if parent_manifest_sha256 is not None:
+        manifest["parent_manifest_sha256"] = parent_manifest_sha256
+    if setting_tier:
+        manifest["setting_tier"] = setting_tier
     manifest["content_sha256"] = content_hash(manifest)
     return manifest, queue
 
@@ -505,6 +630,8 @@ def run_certification(
     date: str,
     manifest_path: Path | None = None,
     licence_registry_sha256: str,
+    parent_manifest_path: Path | None = None,
+    reader_think: Sequence[str] | Mapping[str, Any] | None = None,
 ) -> CertificationRun:
     """Ask every reader about every directed pair of every set, one reader at a time, and build the manifest.
 
@@ -516,6 +643,20 @@ def run_certification(
     """
 
     opts = options or CertificationOptions()
+    overrides = parse_reader_think_overrides(reader_think)
+    parent_sha256: str | None = None
+    parent_doc: dict[str, Any] | None = None
+    if parent_manifest_path is not None:
+        parent_sha256, parent_doc = check_parent_manifest(
+            parent_manifest_path,
+            manifest_out=manifest_path,
+            review_queue_out=review_queue_path,
+        )
+    tier_label: str | None = None
+    if overrides or parent_manifest_path is not None:
+        tier_label = build_setting_tier(
+            overrides, readers=readers, parent_manifest=parent_doc
+        )
     _check_readers(readers)
 
     jobs: list[tuple[int, str, str, str, list[dict[str, str]]]] = []
@@ -561,6 +702,8 @@ def run_certification(
             control=control,
             control_failed=control_failed,
             licence_registry_sha256=licence_registry_sha256,
+            parent_manifest_sha256=parent_sha256,
+            setting_tier=tier_label,
         )
         review_queue_path.parent.mkdir(parents=True, exist_ok=True)
         review_queue_path.write_text(

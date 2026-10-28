@@ -444,6 +444,13 @@ def _build_certify_values_parser() -> _StructuredArgumentParser:
         help="Absolute path of the review queue (JSONL) to write.",
     )
     parser.add_argument(
+        "--parent-manifest",
+        dest="parent_manifest",
+        type=Path,
+        default=None,
+        help="Optional parent manifest path for an addendum arm: records parent_manifest_sha256 and setting_tier, and refuses to overwrite the parent's paths.",
+    )
+    parser.add_argument(
         "--ollama-url",
         dest="ollama_url",
         default="http://127.0.0.1:11434",
@@ -466,6 +473,11 @@ def _run_certify_values(argv: Sequence[str]) -> int:
         ("--manifest-out", args.manifest_out),
         ("--review-queue-out", args.review_queue_out),
         ("--licence-registry", args.licence_registry),
+        *(
+            (("--parent-manifest", args.parent_manifest),)
+            if args.parent_manifest is not None
+            else ()
+        ),
     ):
         if not path.is_absolute():
             raise usage_error(
@@ -484,6 +496,12 @@ def _run_certify_values(argv: Sequence[str]) -> int:
         )
     families = [f.strip().lower() for f in args.readers.split(",") if f.strip()]
     reader_think = value_certification.parse_reader_think_overrides(args.reader_think)
+    if args.parent_manifest is not None:
+        value_certification.check_parent_manifest(
+            args.parent_manifest,
+            manifest_out=args.manifest_out,
+            review_queue_out=args.review_queue_out,
+        )
     # the licence gate: exactly the readers that will run, checked before any Ollama call
     validate_models_against_licence_registry(
         value_certification.reader_pins(families, reader_think=reader_think),
@@ -518,6 +536,8 @@ def _run_certify_values(argv: Sequence[str]) -> int:
         date=args.date or datetime.datetime.now(datetime.UTC).date().isoformat(),
         manifest_path=args.manifest_out,
         licence_registry_sha256=licence_registry_sha256,
+        parent_manifest_path=args.parent_manifest,
+        reader_think=reader_think,
     )
     print(
         json.dumps(

@@ -1459,3 +1459,122 @@ def test_reader_think_refuses_bad_family_or_setting_before_any_ollama_call(
         "PILOT_B_CERT_INVALID_READER_THINK",
     )
 
+
+# ---- Part 2: --parent-manifest PATH
+
+
+def test_parent_manifest_records_parent_sha_and_setting_tier_and_verifies_only_as_its_own_manifest(
+    monkeypatch, tmp_path
+):
+    pumps_sets = [s for s in SETS if s[0] == "pumps"]
+    parent_manifest_doc = _good_manifest(tmp_path, sets=pumps_sets)
+    parent_path = tmp_path / "manifest-r3.json"
+    parent_queue = tmp_path / "review_queue-r3.json"
+    vc.write_manifest(parent_path, parent_manifest_doc)
+    parent_queue.write_text('{"domain":"pumps"}\n', encoding="utf-8")
+    expected_parent_sha = hashlib.sha256(parent_path.read_bytes()).hexdigest()
+    parent_queue_bytes = parent_queue.read_bytes()
+
+    events: list = []
+
+    def fake_build(families, **kw):
+        overrides = vc.parse_reader_think_overrides(kw.get("reader_think"))
+        r_g = FakeReader(GRANITE, events)
+        r_n = FakeReader(NEMOTRON, events)
+        if "nemotron" in overrides:
+            r_n.think = overrides["nemotron"]
+            r_n.think_overridden = True
+        return [r_g, r_n]
+
+    monkeypatch.setattr(vc, "build_ollama_readers", fake_build)
+    addendum_path = tmp_path / "manifest-r3-nemotron-medium.json"
+    addendum_queue = tmp_path / "review_queue-r3-nemotron-medium.jsonl"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "certify-values",
+            "--readers",
+            "granite,nemotron",
+            "--reader-think",
+            "nemotron=medium",
+            "--parent-manifest",
+            str(parent_path),
+            "--domain",
+            "pumps",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
+            "--manifest-out",
+            str(addendum_path),
+            "--review-queue-out",
+            str(addendum_queue),
+        ]
+    )
+    assert rc == 0
+    assert hashlib.sha256(parent_path.read_bytes()).hexdigest() == expected_parent_sha
+    assert parent_queue.read_bytes() == parent_queue_bytes
+
+    addendum_doc = vc.load_manifest(addendum_path)
+    assert addendum_doc["parent_manifest_sha256"] == expected_parent_sha
+    assert addendum_doc["setting_tier"] == "nemotron:think=medium"
+    assert vc.verify_manifest(addendum_doc, pumps_sets) == []
+
+    # verify_manifest accepts an addendum only as its own manifest; nothing merges verdicts across manifests
+    partial_addendum = json.loads(json.dumps(addendum_doc))
+    partial_addendum["sets"] = partial_addendum["sets"][:-1]
+    partial_addendum["content_sha256"] = vc.content_hash(partial_addendum)
+    problems = vc.verify_manifest(partial_addendum, pumps_sets)
+    assert any("uncertified:" in p for p in problems)
+
+
+def test_parent_manifest_refuses_to_overwrite_parent_manifest_or_queue_paths(
+    monkeypatch, tmp_path, capsys
+):
+    pumps_sets = [s for s in SETS if s[0] == "pumps"]
+    parent_manifest_doc = _good_manifest(tmp_path, sets=pumps_sets)
+    parent_path = tmp_path / "manifest-r3.json"
+    parent_queue = tmp_path / "review_queue-r3.json"
+    vc.write_manifest(parent_path, parent_manifest_doc)
+    parent_queue.write_text('{"domain":"pumps"}\n', encoding="utf-8")
+    parent_bytes = parent_path.read_bytes()
+    parent_queue_bytes = parent_queue.read_bytes()
+
+    seen: list = []
+    monkeypatch.setattr(
+        vc,
+        "build_ollama_readers",
+        lambda families, **kw: seen.append(families) or [],
+    )
+
+    for bad_manifest_out, bad_queue_out in (
+        (parent_path, tmp_path / "new-queue.jsonl"),
+        (tmp_path / "new-manifest.json", parent_path),
+        (tmp_path / "new-manifest.json", parent_queue),
+    ):
+        rc = run_cli(
+            [
+                "pilot-b",
+                "certify-values",
+                "--readers",
+                "granite,nemotron",
+                "--reader-think",
+                "nemotron=medium",
+                "--parent-manifest",
+                str(parent_path),
+                "--domain",
+                "pumps",
+                "--licence-registry",
+                str(RND_REGISTRY_COPY),
+                "--manifest-out",
+                str(bad_manifest_out),
+                "--review-queue-out",
+                str(bad_queue_out),
+            ]
+        )
+        assert rc == 1
+        err_payload = json.loads(capsys.readouterr().err.strip())
+        assert err_payload["code"] == "PILOT_B_CERT_PARENT_OVERWRITE_REFUSED"
+        assert parent_path.read_bytes() == parent_bytes
+        assert parent_queue.read_bytes() == parent_queue_bytes
+        assert seen == []
+
+
