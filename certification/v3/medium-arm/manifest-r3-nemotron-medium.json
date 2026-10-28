@@ -1,0 +1,4927 @@
+{
+  "complete": true,
+  "content_sha256": "d0e17416c4a3df97bcd1bbe7cfdf310c1ed406fedad7e5982dd8acddd11b3265",
+  "control": {
+    "nemotron-3.5-lightning:30b": {
+      "pairs": [
+        {
+          "attribute": "lubricant grade",
+          "claimed": "synthetic",
+          "completion_tokens": 864,
+          "domain": "turbines",
+          "done_reason": "stop",
+          "n": 1,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "polyol",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "lubricant grade",
+          "claimed": "synthetic",
+          "completion_tokens": 374,
+          "domain": "turbines",
+          "done_reason": "stop",
+          "n": 2,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "ester",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "lubricant grade",
+          "claimed": "synthetic",
+          "completion_tokens": 329,
+          "domain": "turbines",
+          "done_reason": "stop",
+          "n": 3,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "silicone",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "dielectric fluid",
+          "claimed": "mineral",
+          "completion_tokens": 550,
+          "domain": "transformers",
+          "done_reason": "stop",
+          "n": 4,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "paraffinic",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "dielectric fluid",
+          "claimed": "mineral",
+          "completion_tokens": 631,
+          "domain": "transformers",
+          "done_reason": "stop",
+          "n": 5,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "naphthenic",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "casing alloy",
+          "claimed": "nickel alloy",
+          "completion_tokens": 351,
+          "domain": "turbines",
+          "done_reason": "stop",
+          "n": 6,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "inconel",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "purge gas",
+          "claimed": "inert gas",
+          "completion_tokens": 708,
+          "domain": "furnaces",
+          "done_reason": "stop",
+          "n": 7,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "argon",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "purge gas",
+          "claimed": "inert gas",
+          "completion_tokens": 547,
+          "domain": "furnaces",
+          "done_reason": "stop",
+          "n": 8,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "helium",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "thermocouple wire",
+          "claimed": "nickel alloy",
+          "completion_tokens": 544,
+          "domain": "furnaces",
+          "done_reason": "stop",
+          "n": 9,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "chromel",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "bushing material",
+          "claimed": "ceramic",
+          "completion_tokens": 489,
+          "domain": "transformers",
+          "done_reason": "stop",
+          "n": 10,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "porcelain",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "bushing material",
+          "claimed": "resin",
+          "completion_tokens": 1062,
+          "domain": "transformers",
+          "done_reason": "stop",
+          "n": 11,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "epoxy",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "bushing material",
+          "claimed": "polymer",
+          "completion_tokens": 624,
+          "domain": "transformers",
+          "done_reason": "stop",
+          "n": 12,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "epoxy",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "hull material",
+          "claimed": "metal",
+          "completion_tokens": 223,
+          "domain": "vessels",
+          "done_reason": "stop",
+          "n": 13,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "steel",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "refrigerant",
+          "claimed": "halocarbon",
+          "completion_tokens": 426,
+          "domain": "chillers",
+          "done_reason": "stop",
+          "n": 14,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "hydrofluorocarbon",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "rotor coating",
+          "claimed": "ceramic",
+          "completion_tokens": 588,
+          "domain": "compressors",
+          "done_reason": "stop",
+          "n": 15,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "alumina",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "rotor coating",
+          "claimed": "ceramic",
+          "completion_tokens": 1305,
+          "domain": "compressors",
+          "done_reason": "stop",
+          "n": 16,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "nitride",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "tube alloy",
+          "claimed": "alloy steel",
+          "completion_tokens": 335,
+          "domain": "boilers",
+          "done_reason": "stop",
+          "n": 17,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "chromoly",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "shaft seal",
+          "claimed": "ceramic",
+          "completion_tokens": 380,
+          "domain": "compressors",
+          "done_reason": "stop",
+          "n": 18,
+          "passed": true,
+          "relation": "member to class",
+          "stated": "silicon carbide",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "enclosure rating",
+          "claimed": "dust-tight",
+          "completion_tokens": 450,
+          "domain": "relays",
+          "done_reason": "stop",
+          "n": 19,
+          "passed": true,
+          "relation": "implies",
+          "stated": "IP67",
+          "verdict": "compatible"
+        },
+        {
+          "attribute": "refrigerant",
+          "claimed": "HFC-134a",
+          "completion_tokens": 491,
+          "domain": "chillers",
+          "done_reason": "stop",
+          "n": 20,
+          "passed": true,
+          "relation": "synonym",
+          "stated": "R-134a",
+          "verdict": "compatible"
+        }
+      ],
+      "passed": true,
+      "passes": 20,
+      "threshold": 0.8,
+      "total": 20
+    }
+  },
+  "control_failed": false,
+  "control_pairs_sha256": "40ade7c48cc87e4cc133b0d0c6e48bf7b7a0ea8d30157a91b9149fa2abe40eeb",
+  "date": "2026-10-28",
+  "format": 1,
+  "licence_registry_sha256": "596e7b3c0321849a00e5c31859aed2260475d6f4e25b9c8b20ee5edf5620bfef",
+  "not_reached": [],
+  "parent_manifest_sha256": "77bfd2d51bf907060b8f8894691ed3e9dfdbb900512505b0ec7b3cacf5f00080",
+  "prompt_sha256": "6a65de773992d757bb71078e55769af05c259bf6769078ff2102e05e15f3623a",
+  "readers": [
+    {
+      "digest": "e6905fffe2e2d9bbe325a9a2d2e074e3bd32683721bc6dfba409dede2f17f4dc",
+      "family": "nemotron",
+      "name": "nemotron-3.5-lightning:30b",
+      "num_ctx_cap": 4096,
+      "num_predict": 3072,
+      "think": "medium",
+      "think_overridden": true
+    }
+  ],
+  "sets": [
+    {
+      "attribute": "casing alloy",
+      "certified": true,
+      "domain": "turbines",
+      "pairs": [
+        {
+          "first": "steel",
+          "second": "castiron",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steel",
+          "second": "titanium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steel",
+          "second": "inconel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steel",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "castiron",
+          "second": "steel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "castiron",
+          "second": "titanium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "castiron",
+          "second": "inconel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "castiron",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "titanium",
+          "second": "steel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "titanium",
+          "second": "castiron",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "titanium",
+          "second": "inconel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "titanium",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel",
+          "second": "steel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel",
+          "second": "castiron",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel",
+          "second": "titanium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "steel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "castiron",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "titanium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "inconel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "steel",
+        "castiron",
+        "titanium",
+        "inconel",
+        "aluminum"
+      ],
+      "values_sha256": "8ec85a31fe51e82d777c699d363ef39a6f8a9c6322bf165f9aeeb20ca4a571a1"
+    },
+    {
+      "attribute": "cooling medium",
+      "certified": true,
+      "domain": "turbines",
+      "pairs": [
+        {
+          "first": "helium",
+          "second": "nitrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "hydrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "oil",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrogen",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrogen",
+          "second": "hydrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrogen",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrogen",
+          "second": "oil",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "hydrogen",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "hydrogen",
+          "second": "nitrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "hydrogen",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "hydrogen",
+          "second": "oil",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "nitrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "hydrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "oil",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oil",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oil",
+          "second": "nitrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oil",
+          "second": "hydrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oil",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "helium",
+        "nitrogen",
+        "hydrogen",
+        "water",
+        "oil"
+      ],
+      "values_sha256": "663642db9cbc7dbac72dd5558802fd93b2818cf7f42bbcf5a6f058640a3d5bce"
+    },
+    {
+      "attribute": "lubricant grade",
+      "certified": true,
+      "domain": "turbines",
+      "pairs": [
+        {
+          "first": "mineral",
+          "second": "polyalphaolefin",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "mineral",
+          "second": "ester",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "mineral",
+          "second": "polyglycol",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "mineral",
+          "second": "silicone",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyalphaolefin",
+          "second": "mineral",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyalphaolefin",
+          "second": "ester",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyalphaolefin",
+          "second": "polyglycol",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyalphaolefin",
+          "second": "silicone",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ester",
+          "second": "mineral",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ester",
+          "second": "polyalphaolefin",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ester",
+          "second": "polyglycol",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ester",
+          "second": "silicone",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyglycol",
+          "second": "mineral",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyglycol",
+          "second": "polyalphaolefin",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyglycol",
+          "second": "ester",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyglycol",
+          "second": "silicone",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silicone",
+          "second": "mineral",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silicone",
+          "second": "polyalphaolefin",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silicone",
+          "second": "ester",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silicone",
+          "second": "polyglycol",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "mineral",
+        "polyalphaolefin",
+        "ester",
+        "polyglycol",
+        "silicone"
+      ],
+      "values_sha256": "0bb8bb55067e72ebf0d184243109961b07c45304d6c1e2eb0ad1a6ca794cb2cd"
+    },
+    {
+      "attribute": "contact plating",
+      "certified": true,
+      "domain": "relays",
+      "pairs": [
+        {
+          "first": "silver",
+          "second": "gold",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silver",
+          "second": "palladium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silver",
+          "second": "rhodium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silver",
+          "second": "platinum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gold",
+          "second": "silver",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gold",
+          "second": "palladium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gold",
+          "second": "rhodium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gold",
+          "second": "platinum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "palladium",
+          "second": "silver",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "palladium",
+          "second": "gold",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "palladium",
+          "second": "rhodium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "palladium",
+          "second": "platinum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rhodium",
+          "second": "silver",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rhodium",
+          "second": "gold",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rhodium",
+          "second": "palladium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rhodium",
+          "second": "platinum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "platinum",
+          "second": "silver",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "platinum",
+          "second": "gold",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "platinum",
+          "second": "palladium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "platinum",
+          "second": "rhodium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "silver",
+        "gold",
+        "palladium",
+        "rhodium",
+        "platinum"
+      ],
+      "values_sha256": "93a34e627612e2831b6fa7e232c56e5a98533f6775a4c888c14fce345d075580"
+    },
+    {
+      "attribute": "mount style",
+      "certified": true,
+      "domain": "relays",
+      "pairs": [
+        {
+          "first": "rack",
+          "second": "rail",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rack",
+          "second": "wall",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rack",
+          "second": "pole",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rack",
+          "second": "floor",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rail",
+          "second": "rack",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rail",
+          "second": "wall",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rail",
+          "second": "pole",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rail",
+          "second": "floor",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "wall",
+          "second": "rack",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "wall",
+          "second": "rail",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "wall",
+          "second": "pole",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "wall",
+          "second": "floor",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pole",
+          "second": "rack",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pole",
+          "second": "rail",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pole",
+          "second": "wall",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pole",
+          "second": "floor",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "floor",
+          "second": "rack",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "floor",
+          "second": "rail",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "floor",
+          "second": "wall",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "floor",
+          "second": "pole",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "rack",
+        "rail",
+        "wall",
+        "pole",
+        "floor"
+      ],
+      "values_sha256": "656c75536999171055aec5db7662011c9c8584b150e5abc9367a0c99c79c887e"
+    },
+    {
+      "attribute": "coil voltage",
+      "certified": true,
+      "domain": "relays",
+      "pairs": [
+        {
+          "first": "dc24",
+          "second": "dc48",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc24",
+          "second": "dc125",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc24",
+          "second": "ac120",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc24",
+          "second": "ac240",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc48",
+          "second": "dc24",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc48",
+          "second": "dc125",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc48",
+          "second": "ac120",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc48",
+          "second": "ac240",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc125",
+          "second": "dc24",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc125",
+          "second": "dc48",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc125",
+          "second": "ac120",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dc125",
+          "second": "ac240",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ac120",
+          "second": "dc24",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ac120",
+          "second": "dc48",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ac120",
+          "second": "dc125",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ac120",
+          "second": "ac240",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ac240",
+          "second": "dc24",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ac240",
+          "second": "dc48",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ac240",
+          "second": "dc125",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ac240",
+          "second": "ac120",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "dc24",
+        "dc48",
+        "dc125",
+        "ac120",
+        "ac240"
+      ],
+      "values_sha256": "37bebbc2bc2ad159e7f1c23687f9dc1706e0244b708b9a6de40e78d413e0296a"
+    },
+    {
+      "attribute": "berth status",
+      "certified": true,
+      "domain": "vessels",
+      "pairs": [
+        {
+          "first": "underway",
+          "second": "anchored",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "underway",
+          "second": "alongside",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "underway",
+          "second": "adrift",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "underway",
+          "second": "aground",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "anchored",
+          "second": "underway",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "anchored",
+          "second": "alongside",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "anchored",
+          "second": "adrift",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "anchored",
+          "second": "aground",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "alongside",
+          "second": "underway",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "alongside",
+          "second": "anchored",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "alongside",
+          "second": "adrift",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "alongside",
+          "second": "aground",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "adrift",
+          "second": "underway",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "adrift",
+          "second": "anchored",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "adrift",
+          "second": "alongside",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "adrift",
+          "second": "aground",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aground",
+          "second": "underway",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aground",
+          "second": "anchored",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aground",
+          "second": "alongside",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aground",
+          "second": "adrift",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "underway",
+        "anchored",
+        "alongside",
+        "adrift",
+        "aground"
+      ],
+      "values_sha256": "fdf4259fa9f3bdf5cab52c3d25b6ac6906bfe6c39a1745255008ce8563ab778b"
+    },
+    {
+      "attribute": "topcoat",
+      "certified": true,
+      "domain": "vessels",
+      "pairs": [
+        {
+          "first": "epoxy",
+          "second": "polyurethane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxy",
+          "second": "silicone",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxy",
+          "second": "acrylic",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxy",
+          "second": "vinyl",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyurethane",
+          "second": "epoxy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyurethane",
+          "second": "silicone",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyurethane",
+          "second": "acrylic",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "polyurethane",
+          "second": "vinyl",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silicone",
+          "second": "epoxy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silicone",
+          "second": "polyurethane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silicone",
+          "second": "acrylic",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silicone",
+          "second": "vinyl",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "acrylic",
+          "second": "epoxy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "acrylic",
+          "second": "polyurethane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "acrylic",
+          "second": "silicone",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "acrylic",
+          "second": "vinyl",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "vinyl",
+          "second": "epoxy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "vinyl",
+          "second": "polyurethane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "vinyl",
+          "second": "silicone",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "vinyl",
+          "second": "acrylic",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "epoxy",
+        "polyurethane",
+        "silicone",
+        "acrylic",
+        "vinyl"
+      ],
+      "values_sha256": "c099c429392b43e3085b1d83698fba28e0267d2cbfe59ff36900ce19f11dc703"
+    },
+    {
+      "attribute": "registry port",
+      "certified": true,
+      "domain": "vessels",
+      "pairs": [
+        {
+          "first": "Rotterdam",
+          "second": "Hamburg",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Rotterdam",
+          "second": "Antwerp",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Rotterdam",
+          "second": "Bergen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Rotterdam",
+          "second": "Gothenburg",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Hamburg",
+          "second": "Rotterdam",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Hamburg",
+          "second": "Antwerp",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Hamburg",
+          "second": "Bergen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Hamburg",
+          "second": "Gothenburg",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Antwerp",
+          "second": "Rotterdam",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Antwerp",
+          "second": "Hamburg",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Antwerp",
+          "second": "Bergen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Antwerp",
+          "second": "Gothenburg",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Bergen",
+          "second": "Rotterdam",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Bergen",
+          "second": "Hamburg",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Bergen",
+          "second": "Antwerp",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Bergen",
+          "second": "Gothenburg",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Gothenburg",
+          "second": "Rotterdam",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Gothenburg",
+          "second": "Hamburg",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Gothenburg",
+          "second": "Antwerp",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "Gothenburg",
+          "second": "Bergen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "Rotterdam",
+        "Hamburg",
+        "Antwerp",
+        "Bergen",
+        "Gothenburg"
+      ],
+      "values_sha256": "063cdbe0718d2e80b3f71d793c69acf8fd7b857e1851f51afea9219183ba8e0b"
+    },
+    {
+      "attribute": "ice class",
+      "certified": true,
+      "domain": "vessels",
+      "pairs": [
+        {
+          "first": "pc1",
+          "second": "pc3",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc1",
+          "second": "pc5",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc1",
+          "second": "pc7",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc1",
+          "second": "noclass",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc3",
+          "second": "pc1",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc3",
+          "second": "pc5",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc3",
+          "second": "pc7",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc3",
+          "second": "noclass",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc5",
+          "second": "pc1",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc5",
+          "second": "pc3",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc5",
+          "second": "pc7",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc5",
+          "second": "noclass",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc7",
+          "second": "pc1",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc7",
+          "second": "pc3",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc7",
+          "second": "pc5",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pc7",
+          "second": "noclass",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "noclass",
+          "second": "pc1",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "noclass",
+          "second": "pc3",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "noclass",
+          "second": "pc5",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "noclass",
+          "second": "pc7",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "pc1",
+        "pc3",
+        "pc5",
+        "pc7",
+        "noclass"
+      ],
+      "values_sha256": "1fa56bdf57cc61c401d5f1fa5cd10d599a6170dc8cf2d005310f7536b4a903c2"
+    },
+    {
+      "attribute": "propulsion type",
+      "certified": true,
+      "domain": "vessels",
+      "pairs": [
+        {
+          "first": "diesel",
+          "second": "steam",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "diesel",
+          "second": "sail",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "diesel",
+          "second": "gasturbine",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "diesel",
+          "second": "battery",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steam",
+          "second": "diesel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steam",
+          "second": "sail",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steam",
+          "second": "gasturbine",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steam",
+          "second": "battery",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "sail",
+          "second": "diesel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "sail",
+          "second": "steam",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "sail",
+          "second": "gasturbine",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "sail",
+          "second": "battery",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gasturbine",
+          "second": "diesel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gasturbine",
+          "second": "steam",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gasturbine",
+          "second": "sail",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gasturbine",
+          "second": "battery",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "battery",
+          "second": "diesel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "battery",
+          "second": "steam",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "battery",
+          "second": "sail",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "battery",
+          "second": "gasturbine",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "diesel",
+        "steam",
+        "sail",
+        "gasturbine",
+        "battery"
+      ],
+      "values_sha256": "9e4ddbafb1c0d38af414c2715ad1a445eedb33ff61ecede867666a11ab197d60"
+    },
+    {
+      "attribute": "lining brick",
+      "certified": true,
+      "domain": "furnaces",
+      "pairs": [
+        {
+          "first": "alumina",
+          "second": "magnesia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "alumina",
+          "second": "zirconia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "alumina",
+          "second": "silica",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "alumina",
+          "second": "chromite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "magnesia",
+          "second": "alumina",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "magnesia",
+          "second": "zirconia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "magnesia",
+          "second": "silica",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "magnesia",
+          "second": "chromite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "zirconia",
+          "second": "alumina",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "zirconia",
+          "second": "magnesia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "zirconia",
+          "second": "silica",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "zirconia",
+          "second": "chromite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silica",
+          "second": "alumina",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silica",
+          "second": "magnesia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silica",
+          "second": "zirconia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silica",
+          "second": "chromite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "chromite",
+          "second": "alumina",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "chromite",
+          "second": "magnesia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "chromite",
+          "second": "zirconia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "chromite",
+          "second": "silica",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "alumina",
+        "magnesia",
+        "zirconia",
+        "silica",
+        "chromite"
+      ],
+      "values_sha256": "b11a85dc39c79fc0645a1ffdb63de382e093c777473653208c71e27f3aa38fc2"
+    },
+    {
+      "attribute": "purge gas",
+      "certified": true,
+      "domain": "furnaces",
+      "pairs": [
+        {
+          "first": "argon",
+          "second": "nitrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "argon",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "argon",
+          "second": "hydrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "argon",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrogen",
+          "second": "argon",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrogen",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrogen",
+          "second": "hydrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrogen",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "argon",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "nitrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "hydrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "hydrogen",
+          "second": "argon",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "hydrogen",
+          "second": "nitrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "hydrogen",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "hydrogen",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "argon",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "nitrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "hydrogen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "argon",
+        "nitrogen",
+        "helium",
+        "hydrogen",
+        "carbondioxide"
+      ],
+      "values_sha256": "bbe0fd77b6d24527c71f687d880bdee7a93737c5234e755b0cdb52ef2beebf78"
+    },
+    {
+      "attribute": "thermocouple type",
+      "certified": true,
+      "domain": "furnaces",
+      "pairs": [
+        {
+          "first": "typej",
+          "second": "typek",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typej",
+          "second": "typen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typej",
+          "second": "typer",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typej",
+          "second": "types",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typek",
+          "second": "typej",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typek",
+          "second": "typen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typek",
+          "second": "typer",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typek",
+          "second": "types",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typen",
+          "second": "typej",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typen",
+          "second": "typek",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typen",
+          "second": "typer",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typen",
+          "second": "types",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typer",
+          "second": "typej",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typer",
+          "second": "typek",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typer",
+          "second": "typen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "typer",
+          "second": "types",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "types",
+          "second": "typej",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "types",
+          "second": "typek",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "types",
+          "second": "typen",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "types",
+          "second": "typer",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "typej",
+        "typek",
+        "typen",
+        "typer",
+        "types"
+      ],
+      "values_sha256": "5b0317f2f3a1a9629af360dbc1e5ff4fc9df256e878ed2414239011c155ddaef"
+    },
+    {
+      "attribute": "cladding metal",
+      "certified": true,
+      "domain": "reactors",
+      "pairs": [
+        {
+          "first": "zircaloy",
+          "second": "ss316",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "zircaloy",
+          "second": "magnox",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "zircaloy",
+          "second": "inconel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "zircaloy",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ss316",
+          "second": "zircaloy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ss316",
+          "second": "magnox",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ss316",
+          "second": "inconel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ss316",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "magnox",
+          "second": "zircaloy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "magnox",
+          "second": "ss316",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "magnox",
+          "second": "inconel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "magnox",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel",
+          "second": "zircaloy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel",
+          "second": "ss316",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel",
+          "second": "magnox",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "zircaloy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "ss316",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "magnox",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "inconel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "zircaloy",
+        "ss316",
+        "magnox",
+        "inconel",
+        "aluminum"
+      ],
+      "values_sha256": "3ad81cfee2e48719f6b72867a8bded0e4a24e6758bc4b554e8f216a90aaa8db6"
+    },
+    {
+      "attribute": "moderator type",
+      "certified": true,
+      "domain": "reactors",
+      "pairs": [
+        {
+          "first": "graphite",
+          "second": "heavywater",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "graphite",
+          "second": "lightwater",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "graphite",
+          "second": "beryllium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "graphite",
+          "second": "paraffin",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "heavywater",
+          "second": "graphite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "heavywater",
+          "second": "lightwater",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "heavywater",
+          "second": "beryllium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "heavywater",
+          "second": "paraffin",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lightwater",
+          "second": "graphite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lightwater",
+          "second": "heavywater",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lightwater",
+          "second": "beryllium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lightwater",
+          "second": "paraffin",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "beryllium",
+          "second": "graphite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "beryllium",
+          "second": "heavywater",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "beryllium",
+          "second": "lightwater",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "beryllium",
+          "second": "paraffin",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "paraffin",
+          "second": "graphite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "paraffin",
+          "second": "heavywater",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "paraffin",
+          "second": "lightwater",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "paraffin",
+          "second": "beryllium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "graphite",
+        "heavywater",
+        "lightwater",
+        "beryllium",
+        "paraffin"
+      ],
+      "values_sha256": "ee49c9836985535e334e9a6ba2e5e6a22741df325096b1366505ae49cf18ed78"
+    },
+    {
+      "attribute": "shielding material",
+      "certified": true,
+      "domain": "reactors",
+      "pairs": [
+        {
+          "first": "concrete",
+          "second": "lead",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "concrete",
+          "second": "tungsten",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "concrete",
+          "second": "steel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "concrete",
+          "second": "depleteduranium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lead",
+          "second": "concrete",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lead",
+          "second": "tungsten",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lead",
+          "second": "steel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lead",
+          "second": "depleteduranium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "tungsten",
+          "second": "concrete",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "tungsten",
+          "second": "lead",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "tungsten",
+          "second": "steel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "tungsten",
+          "second": "depleteduranium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steel",
+          "second": "concrete",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steel",
+          "second": "lead",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steel",
+          "second": "tungsten",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "steel",
+          "second": "depleteduranium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "depleteduranium",
+          "second": "concrete",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "depleteduranium",
+          "second": "lead",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "depleteduranium",
+          "second": "tungsten",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "depleteduranium",
+          "second": "steel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "concrete",
+        "lead",
+        "tungsten",
+        "steel",
+        "depleteduranium"
+      ],
+      "values_sha256": "2ca840557ce0030d945c0b14d7353bfa6484896bbd99bacfd3c4428f9dcfdc3d"
+    },
+    {
+      "attribute": "coolant type",
+      "certified": true,
+      "domain": "reactors",
+      "pairs": [
+        {
+          "first": "water",
+          "second": "sodium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "leadbismuth",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "sodium",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "sodium",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "sodium",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "sodium",
+          "second": "leadbismuth",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "sodium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "helium",
+          "second": "leadbismuth",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "sodium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "leadbismuth",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "leadbismuth",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "leadbismuth",
+          "second": "sodium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "leadbismuth",
+          "second": "helium",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "leadbismuth",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "water",
+        "sodium",
+        "helium",
+        "carbondioxide",
+        "leadbismuth"
+      ],
+      "values_sha256": "97ae6ec02449b64c2e7f2fbcef5d8c0497a08ce789ed2509d4731d296a522bc4"
+    },
+    {
+      "attribute": "rotor coating",
+      "certified": true,
+      "domain": "compressors",
+      "pairs": [
+        {
+          "first": "ptfe",
+          "second": "epoxyphenolic",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ptfe",
+          "second": "aluminide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ptfe",
+          "second": "diamondlike",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ptfe",
+          "second": "anodized",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxyphenolic",
+          "second": "ptfe",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxyphenolic",
+          "second": "aluminide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxyphenolic",
+          "second": "diamondlike",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxyphenolic",
+          "second": "anodized",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminide",
+          "second": "ptfe",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminide",
+          "second": "epoxyphenolic",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminide",
+          "second": "diamondlike",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminide",
+          "second": "anodized",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "diamondlike",
+          "second": "ptfe",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "diamondlike",
+          "second": "epoxyphenolic",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "diamondlike",
+          "second": "aluminide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "diamondlike",
+          "second": "anodized",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "anodized",
+          "second": "ptfe",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "anodized",
+          "second": "epoxyphenolic",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "anodized",
+          "second": "aluminide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "anodized",
+          "second": "diamondlike",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "ptfe",
+        "epoxyphenolic",
+        "aluminide",
+        "diamondlike",
+        "anodized"
+      ],
+      "values_sha256": "595c5bb5d9d471b33a7ca26e892c2a2b6b16da1d43f91a3b30e239e3eb3f8e3a"
+    },
+    {
+      "attribute": "intercooler medium",
+      "certified": true,
+      "domain": "compressors",
+      "pairs": [
+        {
+          "first": "air",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "air",
+          "second": "oil",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "air",
+          "second": "ammonia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "air",
+          "second": "propane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "air",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "oil",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "ammonia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "water",
+          "second": "propane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oil",
+          "second": "air",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oil",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oil",
+          "second": "ammonia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oil",
+          "second": "propane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ammonia",
+          "second": "air",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ammonia",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ammonia",
+          "second": "oil",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ammonia",
+          "second": "propane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "propane",
+          "second": "air",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "propane",
+          "second": "water",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "propane",
+          "second": "oil",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "propane",
+          "second": "ammonia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "air",
+        "water",
+        "oil",
+        "ammonia",
+        "propane"
+      ],
+      "values_sha256": "0549c818e64d4bb341db61b95178dcbce2a6e4d1e9f0dc2376c83abe6246bb64"
+    },
+    {
+      "attribute": "shaft seal",
+      "certified": true,
+      "domain": "compressors",
+      "pairs": [
+        {
+          "first": "labyrinth",
+          "second": "mechanical",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "labyrinth",
+          "second": "packed",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "labyrinth",
+          "second": "lip",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "labyrinth",
+          "second": "brush",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "mechanical",
+          "second": "labyrinth",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "mechanical",
+          "second": "packed",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "mechanical",
+          "second": "lip",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "mechanical",
+          "second": "brush",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "packed",
+          "second": "labyrinth",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "packed",
+          "second": "mechanical",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "packed",
+          "second": "lip",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "packed",
+          "second": "brush",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lip",
+          "second": "labyrinth",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lip",
+          "second": "mechanical",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lip",
+          "second": "packed",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lip",
+          "second": "brush",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "brush",
+          "second": "labyrinth",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "brush",
+          "second": "mechanical",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "brush",
+          "second": "packed",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "brush",
+          "second": "lip",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "labyrinth",
+        "mechanical",
+        "packed",
+        "lip",
+        "brush"
+      ],
+      "values_sha256": "f2a89893631f5e0266700bea4e07d73b349f717ace0bebcc0614544f9f4591fa"
+    },
+    {
+      "attribute": "bushing material",
+      "certified": true,
+      "domain": "transformers",
+      "pairs": [
+        {
+          "first": "porcelain",
+          "second": "oilpaper",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "porcelain",
+          "second": "epoxy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "porcelain",
+          "second": "siliconerubber",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "porcelain",
+          "second": "glass",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oilpaper",
+          "second": "porcelain",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oilpaper",
+          "second": "epoxy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oilpaper",
+          "second": "siliconerubber",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "oilpaper",
+          "second": "glass",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxy",
+          "second": "porcelain",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxy",
+          "second": "oilpaper",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxy",
+          "second": "siliconerubber",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "epoxy",
+          "second": "glass",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "siliconerubber",
+          "second": "porcelain",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "siliconerubber",
+          "second": "oilpaper",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "siliconerubber",
+          "second": "epoxy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "siliconerubber",
+          "second": "glass",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "glass",
+          "second": "porcelain",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "glass",
+          "second": "oilpaper",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "glass",
+          "second": "epoxy",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "glass",
+          "second": "siliconerubber",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "porcelain",
+        "oilpaper",
+        "epoxy",
+        "siliconerubber",
+        "glass"
+      ],
+      "values_sha256": "82514b5e462280d636c56beb651d5bb0b4e1196105473e574c6a7b0c3d482d7b"
+    },
+    {
+      "attribute": "vector group",
+      "certified": true,
+      "domain": "transformers",
+      "pairs": [
+        {
+          "first": "dyn11",
+          "second": "yyn0",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dyn11",
+          "second": "ynd1",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dyn11",
+          "second": "dd0",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dyn11",
+          "second": "yzn11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "yyn0",
+          "second": "dyn11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "yyn0",
+          "second": "ynd1",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "yyn0",
+          "second": "dd0",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "yyn0",
+          "second": "yzn11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ynd1",
+          "second": "dyn11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ynd1",
+          "second": "yyn0",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ynd1",
+          "second": "dd0",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ynd1",
+          "second": "yzn11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dd0",
+          "second": "dyn11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dd0",
+          "second": "yyn0",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dd0",
+          "second": "ynd1",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "dd0",
+          "second": "yzn11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "yzn11",
+          "second": "dyn11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "yzn11",
+          "second": "yyn0",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "yzn11",
+          "second": "ynd1",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "yzn11",
+          "second": "dd0",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "dyn11",
+        "yyn0",
+        "ynd1",
+        "dd0",
+        "yzn11"
+      ],
+      "values_sha256": "626ac8b76d272179398a758e830c132ed69dee5b43fdde1561d5e5ddf1ba810f"
+    },
+    {
+      "attribute": "burner state",
+      "certified": true,
+      "domain": "boilers",
+      "pairs": [
+        {
+          "first": "prepurge",
+          "second": "lightoff",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "prepurge",
+          "second": "firing",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "prepurge",
+          "second": "postpurge",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "prepurge",
+          "second": "lockout",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lightoff",
+          "second": "prepurge",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lightoff",
+          "second": "firing",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lightoff",
+          "second": "postpurge",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lightoff",
+          "second": "lockout",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "firing",
+          "second": "prepurge",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "firing",
+          "second": "lightoff",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "firing",
+          "second": "postpurge",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "firing",
+          "second": "lockout",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "postpurge",
+          "second": "prepurge",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "postpurge",
+          "second": "lightoff",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "postpurge",
+          "second": "firing",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "postpurge",
+          "second": "lockout",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lockout",
+          "second": "prepurge",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lockout",
+          "second": "lightoff",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lockout",
+          "second": "firing",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "lockout",
+          "second": "postpurge",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "prepurge",
+        "lightoff",
+        "firing",
+        "postpurge",
+        "lockout"
+      ],
+      "values_sha256": "2dc71bccebc2effd3523c226527337b8a74e166274afcb906e8b3ecac23902b2"
+    },
+    {
+      "attribute": "tube alloy",
+      "certified": true,
+      "domain": "boilers",
+      "pairs": [
+        {
+          "first": "t11",
+          "second": "t22",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t11",
+          "second": "t91",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t11",
+          "second": "tp304h",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t11",
+          "second": "inconel625",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t22",
+          "second": "t11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t22",
+          "second": "t91",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t22",
+          "second": "tp304h",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t22",
+          "second": "inconel625",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t91",
+          "second": "t11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t91",
+          "second": "t22",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t91",
+          "second": "tp304h",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "t91",
+          "second": "inconel625",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "tp304h",
+          "second": "t11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "tp304h",
+          "second": "t22",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "tp304h",
+          "second": "t91",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "tp304h",
+          "second": "inconel625",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel625",
+          "second": "t11",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel625",
+          "second": "t22",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel625",
+          "second": "t91",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "inconel625",
+          "second": "tp304h",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "t11",
+        "t22",
+        "t91",
+        "tp304h",
+        "inconel625"
+      ],
+      "values_sha256": "3de29d970f2b44fb627a03fc1076b3d99d9cebeb6c8f58fb008b87e17d49ff0f"
+    },
+    {
+      "attribute": "circuit state",
+      "certified": true,
+      "domain": "chillers",
+      "pairs": [
+        {
+          "first": "idle",
+          "second": "startup",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "idle",
+          "second": "chilling",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "idle",
+          "second": "defrosting",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "idle",
+          "second": "pumpdown",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "startup",
+          "second": "idle",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "startup",
+          "second": "chilling",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "startup",
+          "second": "defrosting",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "startup",
+          "second": "pumpdown",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "chilling",
+          "second": "idle",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "chilling",
+          "second": "startup",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "chilling",
+          "second": "defrosting",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "chilling",
+          "second": "pumpdown",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "defrosting",
+          "second": "idle",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "defrosting",
+          "second": "startup",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "defrosting",
+          "second": "chilling",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "defrosting",
+          "second": "pumpdown",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pumpdown",
+          "second": "idle",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pumpdown",
+          "second": "startup",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pumpdown",
+          "second": "chilling",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "pumpdown",
+          "second": "defrosting",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "idle",
+        "startup",
+        "chilling",
+        "defrosting",
+        "pumpdown"
+      ],
+      "values_sha256": "b50320ff2d506ee46ab7f8c6e14964c017eaed8a02e179b74a1a9be0929e34fc"
+    },
+    {
+      "attribute": "brazing filler",
+      "certified": true,
+      "domain": "chillers",
+      "pairs": [
+        {
+          "first": "silver",
+          "second": "nickel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silver",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silver",
+          "second": "copper",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "silver",
+          "second": "gold",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nickel",
+          "second": "silver",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nickel",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nickel",
+          "second": "copper",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nickel",
+          "second": "gold",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "silver",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "nickel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "copper",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aluminum",
+          "second": "gold",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "copper",
+          "second": "silver",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "copper",
+          "second": "nickel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "copper",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "copper",
+          "second": "gold",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gold",
+          "second": "silver",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gold",
+          "second": "nickel",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gold",
+          "second": "aluminum",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "gold",
+          "second": "copper",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "silver",
+        "nickel",
+        "aluminum",
+        "copper",
+        "gold"
+      ],
+      "values_sha256": "ac81199f4f971237897ae5a47d6018208e608d9655ed678f1e89687ec458d01a"
+    },
+    {
+      "attribute": "refrigerant",
+      "certified": true,
+      "domain": "chillers",
+      "pairs": [
+        {
+          "first": "ammonia",
+          "second": "propane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ammonia",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ammonia",
+          "second": "isobutane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "ammonia",
+          "second": "r134a",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "propane",
+          "second": "ammonia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "propane",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "propane",
+          "second": "isobutane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "propane",
+          "second": "r134a",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "ammonia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "propane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "isobutane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "carbondioxide",
+          "second": "r134a",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "isobutane",
+          "second": "ammonia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "isobutane",
+          "second": "propane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "isobutane",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "isobutane",
+          "second": "r134a",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "r134a",
+          "second": "ammonia",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "r134a",
+          "second": "propane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "r134a",
+          "second": "carbondioxide",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "r134a",
+          "second": "isobutane",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "ammonia",
+        "propane",
+        "carbondioxide",
+        "isobutane",
+        "r134a"
+      ],
+      "values_sha256": "7cdeb59784e96304936fb13ea2f2944d850c625cfb9c1392c4da38b3d92f396c"
+    },
+    {
+      "attribute": "condenser cooling",
+      "certified": true,
+      "domain": "chillers",
+      "pairs": [
+        {
+          "first": "aircooled",
+          "second": "groundcoupled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aircooled",
+          "second": "seawatercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aircooled",
+          "second": "rivercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "aircooled",
+          "second": "towercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "groundcoupled",
+          "second": "aircooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "groundcoupled",
+          "second": "seawatercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "groundcoupled",
+          "second": "rivercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "groundcoupled",
+          "second": "towercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "seawatercooled",
+          "second": "aircooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "seawatercooled",
+          "second": "groundcoupled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "seawatercooled",
+          "second": "rivercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "seawatercooled",
+          "second": "towercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rivercooled",
+          "second": "aircooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rivercooled",
+          "second": "groundcoupled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rivercooled",
+          "second": "seawatercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "rivercooled",
+          "second": "towercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "towercooled",
+          "second": "aircooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "towercooled",
+          "second": "groundcoupled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "towercooled",
+          "second": "seawatercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "towercooled",
+          "second": "rivercooled",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "aircooled",
+        "groundcoupled",
+        "seawatercooled",
+        "rivercooled",
+        "towercooled"
+      ],
+      "values_sha256": "ff5893e65f37f9d958100d460694ee71b07947eaa5deeedfef312f4090d8fe3c"
+    },
+    {
+      "attribute": "seal material",
+      "certified": true,
+      "domain": "pumps",
+      "pairs": [
+        {
+          "first": "viton",
+          "second": "teflon",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "viton",
+          "second": "nitrile",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "viton",
+          "second": "graphite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "viton",
+          "second": "kalrez",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "teflon",
+          "second": "viton",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "teflon",
+          "second": "nitrile",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "teflon",
+          "second": "graphite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "teflon",
+          "second": "kalrez",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrile",
+          "second": "viton",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrile",
+          "second": "teflon",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrile",
+          "second": "graphite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "nitrile",
+          "second": "kalrez",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "graphite",
+          "second": "viton",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "graphite",
+          "second": "teflon",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "graphite",
+          "second": "nitrile",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "graphite",
+          "second": "kalrez",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "kalrez",
+          "second": "viton",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "kalrez",
+          "second": "teflon",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "kalrez",
+          "second": "nitrile",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        },
+        {
+          "first": "kalrez",
+          "second": "graphite",
+          "verdicts": {
+            "nemotron-3.5-lightning:30b": "incompatible"
+          }
+        }
+      ],
+      "values": [
+        "viton",
+        "teflon",
+        "nitrile",
+        "graphite",
+        "kalrez"
+      ],
+      "values_sha256": "5a09659b7e537749a18bb5016e82cdd3a9fda4fcebca3aca60ec0890cf31edda"
+    }
+  ],
+  "setting_tier": "nemotron:think=medium",
+  "stopped": null
+}

@@ -1,0 +1,560 @@
+{"id": "w0001", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be stoppedlockedout and standby at the same instant."}
+{"id": "w0002", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap75pct and cap50pct."}
+{"id": "w0003", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in pumpdown and lockout modes."}
+{"id": "w0004", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain mineraloil and demineralizedwater unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0005", "key": "contradiction", "reason": "A compressor cannot simultaneously be in lockout and accelerating operating states."}
+{"id": "w0006", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in prepurge and mainflame."}
+{"id": "w0007", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in defrosting and idle modes."}
+{"id": "w0008", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap0pct and cap25pct."}
+{"id": "w0009", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in chilling and lockout modes."}
+{"id": "w0010", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in fullpower and criticalstartup simultaneously."}
+{"id": "w0011", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be starting and coastingdown at the same instant."}
+{"id": "w0012", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use fullsailrig and diesel."}
+{"id": "w0013", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use directair and oncethroughwell."}
+{"id": "w0014", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be polysiloxane and polyurethane."}
+{"id": "w0015", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be rayleighstep and logarithmicspiral."}
+{"id": "w0016", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use gasturbine and fullsailrig."}
+{"id": "w0017", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-balsi and aws-bni because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0018", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in coldshutdown and fullpower simultaneously."}
+{"id": "w0019", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in fullpower and hotstandby simultaneously."}
+{"id": "w0020", "key": "arguable", "reason": "Blended phosphate-chelant (phosphate-EDTA) programs are used in industrial boilers, so edtachelant and congruentphosphate are compatible under a combined-program reading unless 'sole' is read as forbidding hybrid chemical regimens."}
+{"id": "w0021", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be gearcoupling and rigidflange."}
+{"id": "w0022", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop4pct and droop8pct."}
+{"id": "w0023", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both bwr and sfr."}
+{"id": "w0024", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between aluminide and diamondlike."}
+{"id": "w0025", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be sphericalroller and babbittsleeve."}
+{"id": "w0026", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be alkyd and pureepoxy."}
+{"id": "w0027", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between electrolessnickel and ptfe."}
+{"id": "w0028", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil350kv and bil150kv."}
+{"id": "w0029", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group1 and group2 cannot both be active simultaneously."}
+{"id": "w0030", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be gridcoupling and rigidflange."}
+{"id": "w0031", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain demineralizedwater and mineraloil unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0032", "key": "contradiction", "reason": "A compressor cannot simultaneously be in standby and loaded operating states."}
+{"id": "w0033", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use fullsailrig and fuelcell."}
+{"id": "w0034", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use coolingtower and oncethroughriver."}
+{"id": "w0035", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between parylene and ptfe."}
+{"id": "w0036", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop4pct and droop0pct."}
+{"id": "w0037", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughwell and directair."}
+{"id": "w0038", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in criticalstartup and hotshutdown simultaneously."}
+{"id": "w0039", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap25pct and cap0pct."}
+{"id": "w0040", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be gearcoupling and elastomericjaw."}
+{"id": "w0041", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be sphericalroller and cylindricalroller."}
+{"id": "w0042", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height6u and height4u."}
+{"id": "w0043", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughwell and oncethroughriver."}
+{"id": "w0044", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use coolingtower and oncethroughsea."}
+{"id": "w0045", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under allvolatile and oxygenatedpurity as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0046", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in idle and pumpdown modes."}
+{"id": "w0047", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughriver and oncethroughwell."}
+{"id": "w0048", "key": "arguable", "reason": "A single chiller evaporator assembly commonly uses different brazing filler classes at dissimilar-metal joints (e.g., aws-bni on copper-to-steel or stainless connections and aws-bag on copper-to-copper or stainless plate joints), so both are compatible unless the attribute refers to a single homogeneous braze joint."}
+{"id": "w0049", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under edtachelant and oxygenatedpurity as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0050", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group3 and group4 cannot both be active simultaneously."}
+{"id": "w0051", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate fullahead and fullastern."}
+{"id": "w0052", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be polysiloxane and fluoropolymer."}
+{"id": "w0053", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be delivering and stoppedlockedout at the same instant."}
+{"id": "w0054", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in idle and chilling modes."}
+{"id": "w0055", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between aluminide and parylene."}
+{"id": "w0056", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under congruentphosphate and oxygenatedpurity as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0057", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be polyurethane and alkyd."}
+{"id": "w0058", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be gearcoupling and metallicdisc."}
+{"id": "w0059", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between aluminide and ptfe."}
+{"id": "w0060", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be cylindricalroller and sphericalroller."}
+{"id": "w0061", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of siliconsteel and ferrite."}
+{"id": "w0062", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be circularmicrodimple and herringbonechevron."}
+{"id": "w0063", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughriver and directair."}
+{"id": "w0064", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both bwr and htgr."}
+{"id": "w0065", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate halfahead and fullastern."}
+{"id": "w0066", "key": "contradiction", "reason": "A turbine cannot simultaneously be in overhaul and standby operating modes at the same time."}
+{"id": "w0067", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height1u and height6u."}
+{"id": "w0068", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use r134a and carbondioxide."}
+{"id": "w0069", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be metallicdisc and gearcoupling."}
+{"id": "w0070", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be polysiloxane and pureepoxy."}
+{"id": "w0071", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain demineralizedwater and ambientair unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0072", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be babbittsleeve and deepgrooveball."}
+{"id": "w0073", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in criticalstartup and hotstandby simultaneously."}
+{"id": "w0074", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both vs1 and oh2."}
+{"id": "w0075", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both bb1 and oh1."}
+{"id": "w0076", "key": "arguable", "reason": "Drum boilers on solid conditioning (congruentphosphate) routinely dose volatile amines/oxygen scavengers (AVT chemicals) in the feedwater/steam loop, making allvolatile and congruentphosphate compatible unless 'sole boiler water treatment program' strictly classifies the drum regime as solid vs all-volatile."}
+{"id": "w0077", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be taperedroller and sphericalroller."}
+{"id": "w0078", "key": "arguable", "reason": "A single chiller evaporator assembly commonly uses different brazing filler classes at dissimilar-metal joints (e.g., aws-bag on copper-to-steel or stainless connections and aws-bni on copper-to-copper or stainless plate joints), so both are compatible unless the attribute refers to a single homogeneous braze joint."}
+{"id": "w0079", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be logarithmicspiral and bidirectionaltgroove."}
+{"id": "w0080", "key": "arguable", "reason": "A single chiller evaporator assembly commonly uses different brazing filler classes at dissimilar-metal joints (e.g., aws-bcup on copper-to-steel or stainless connections and aws-bag on copper-to-copper or stainless plate joints), so both are compatible unless the attribute refers to a single homogeneous braze joint."}
+{"id": "w0081", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-bau and aws-bni because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0082", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in hotstandby and criticalstartup simultaneously."}
+{"id": "w0083", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be alkyd and fluoropolymer."}
+{"id": "w0084", "key": "arguable", "reason": "A single chiller evaporator assembly commonly uses different brazing filler classes at dissimilar-metal joints (e.g., aws-bcup on copper-to-steel or stainless connections and aws-bni on copper-to-copper or stainless plate joints), so both are compatible unless the attribute refers to a single homogeneous braze joint."}
+{"id": "w0085", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil350kv and bil250kv."}
+{"id": "w0086", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil200kv and bil350kv."}
+{"id": "w0087", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate fullahead and halfastern."}
+{"id": "w0088", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under caustichydroxide and congruentphosphate as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0089", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be herringbonechevron and bidirectionaltgroove."}
+{"id": "w0090", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group5 and group3 cannot both be active simultaneously."}
+{"id": "w0091", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be taperedroller and deepgrooveball."}
+{"id": "w0092", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain mineraloil and siliconefluid unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0093", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in prepurge and postpurge."}
+{"id": "w0094", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap50pct and cap100pct."}
+{"id": "w0095", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use diesel and fullsailrig."}
+{"id": "w0096", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both bb1 and oh3."}
+{"id": "w0097", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of permalloy and alfenol."}
+{"id": "w0098", "key": "contradiction", "reason": "A compressor cannot simultaneously be in lockout and standby operating states."}
+{"id": "w0099", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain ambientair and siliconefluid unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0100", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughsea and oncethroughriver."}
+{"id": "w0101", "key": "contradiction", "reason": "A compressor cannot simultaneously be in lockout and idling operating states."}
+{"id": "w0102", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both phwr and sfr."}
+{"id": "w0103", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both htgr and sfr."}
+{"id": "w0104", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate halfahead and stopengine."}
+{"id": "w0105", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop8pct and droop2pct."}
+{"id": "w0106", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use diesel and fuelcell."}
+{"id": "w0107", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap25pct and cap50pct."}
+{"id": "w0108", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in prepurge and coldstandby."}
+{"id": "w0109", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap25pct and cap75pct."}
+{"id": "w0110", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain ambientair and demineralizedwater unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0111", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate stopengine and fullahead."}
+{"id": "w0112", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height3u and height2u."}
+{"id": "w0113", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of ferrite and siliconsteel."}
+{"id": "w0114", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain perfluorocarbon and ambientair unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0115", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both pwr and phwr."}
+{"id": "w0116", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil200kv and bil150kv."}
+{"id": "w0117", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap100pct and cap75pct."}
+{"id": "w0118", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be circularmicrodimple and bidirectionaltgroove."}
+{"id": "w0119", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use coolingtower and directair."}
+{"id": "w0120", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height3u and height6u."}
+{"id": "w0121", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be babbittsleeve and sphericalroller."}
+{"id": "w0122", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of ferrite and alfenol."}
+{"id": "w0123", "key": "contradiction", "reason": "A turbine cannot simultaneously be in standby and overhaul operating modes at the same time."}
+{"id": "w0124", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh3 and oh2."}
+{"id": "w0125", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group3 and group1 cannot both be active simultaneously."}
+{"id": "w0126", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be compressedair and steamjet."}
+{"id": "w0127", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop4pct and droop2pct."}
+{"id": "w0128", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil150kv and bil250kv."}
+{"id": "w0129", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be circularmicrodimple and rayleighstep."}
+{"id": "w0130", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh1 and oh2."}
+{"id": "w0131", "key": "contradiction", "reason": "A turbine cannot simultaneously be in online and accelerating operating modes at the same time."}
+{"id": "w0132", "key": "arguable", "reason": "Hybrid dry-gas seal faces exist that combine logarithmicspiral pumping grooves at the outer diameter with a circularmicrodimple texture dam on the same primary seal ring, making them compatible on a dual-textured seal face reading."}
+{"id": "w0133", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of permendur and siliconsteel."}
+{"id": "w0134", "key": "contradiction", "reason": "A compressor cannot simultaneously be in idling and loaded operating states."}
+{"id": "w0135", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of permalloy and siliconsteel."}
+{"id": "w0136", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of alfenol and permendur."}
+{"id": "w0137", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh3 and oh1."}
+{"id": "w0138", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in mainflame and coldstandby."}
+{"id": "w0139", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-bau and aws-bcup because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0140", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both bwr and phwr."}
+{"id": "w0141", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be herringbonechevron and rayleighstep."}
+{"id": "w0142", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between electrolessnickel and aluminide."}
+{"id": "w0143", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop8pct and droop6pct."}
+{"id": "w0144", "key": "arguable", "reason": "Hybrid dry-gas seal faces exist that combine circularmicrodimple pumping grooves at the outer diameter with a logarithmicspiral texture dam on the same primary seal ring, making them compatible on a dual-textured seal face reading."}
+{"id": "w0145", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in coldstandby and postpurge."}
+{"id": "w0146", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height3u and height4u."}
+{"id": "w0147", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop2pct and droop6pct."}
+{"id": "w0148", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in coldshutdown and hotstandby simultaneously."}
+{"id": "w0149", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be pulsedetonation and steamjet."}
+{"id": "w0150", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use gasturbine and steam."}
+{"id": "w0151", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil200kv and bil110kv."}
+{"id": "w0152", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in coldshutdown and criticalstartup simultaneously."}
+{"id": "w0153", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be rigidflange and metallicdisc."}
+{"id": "w0154", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use r134a and isobutane."}
+{"id": "w0155", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be starting and standby at the same instant."}
+{"id": "w0156", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use isobutane and r134a."}
+{"id": "w0157", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be gridcoupling and elastomericjaw."}
+{"id": "w0158", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both phwr and bwr."}
+{"id": "w0159", "key": "arguable", "reason": "Drum boilers on solid conditioning (caustichydroxide) routinely dose volatile amines/oxygen scavengers (AVT chemicals) in the feedwater/steam loop, making caustichydroxide and allvolatile compatible unless 'sole boiler water treatment program' strictly classifies the drum regime as solid vs all-volatile."}
+{"id": "w0160", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be neoprene and nitrile."}
+{"id": "w0161", "key": "contradiction", "reason": "A turbine cannot simultaneously be in coasting and online operating modes at the same time."}
+{"id": "w0162", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group2 and group4 cannot both be active simultaneously."}
+{"id": "w0163", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be epdm and neoprene."}
+{"id": "w0164", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in lockout and defrosting modes."}
+{"id": "w0165", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in coldshutdown and hotshutdown simultaneously."}
+{"id": "w0166", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be starting and delivering at the same instant."}
+{"id": "w0167", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be sonichorn and waterlance."}
+{"id": "w0168", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in defrosting and chilling modes."}
+{"id": "w0169", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both sfr and bwr."}
+{"id": "w0170", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of siliconsteel and permendur."}
+{"id": "w0171", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil250kv and bil150kv."}
+{"id": "w0172", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in lockout and prepurge."}
+{"id": "w0173", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be starting and stoppedlockedout at the same instant."}
+{"id": "w0174", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under oxygenatedpurity and congruentphosphate as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0175", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be kalrez and viton."}
+{"id": "w0176", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-balsi and aws-bag because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0177", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap100pct and cap50pct."}
+{"id": "w0178", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under oxygenatedpurity and caustichydroxide as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0179", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap75pct and cap0pct."}
+{"id": "w0180", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be gridcoupling and metallicdisc."}
+{"id": "w0181", "key": "contradiction", "reason": "A turbine cannot simultaneously be in standby and coasting operating modes at the same time."}
+{"id": "w0182", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both sfr and pwr."}
+{"id": "w0183", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between diamondlike and electrolessnickel."}
+{"id": "w0184", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in lockout and mainflame."}
+{"id": "w0185", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh3 and bb1."}
+{"id": "w0186", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both bb1 and vs1."}
+{"id": "w0187", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use coolingtower and oncethroughwell."}
+{"id": "w0188", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate halfastern and stopengine."}
+{"id": "w0189", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height2u and height4u."}
+{"id": "w0190", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop2pct and droop8pct."}
+{"id": "w0191", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be epdm and kalrez."}
+{"id": "w0192", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be neoprene and epdm."}
+{"id": "w0193", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of permalloy and permendur."}
+{"id": "w0194", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughriver and coolingtower."}
+{"id": "w0195", "key": "contradiction", "reason": "A compressor cannot simultaneously be in standby and idling operating states."}
+{"id": "w0196", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be metallicdisc and gridcoupling."}
+{"id": "w0197", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in idle and defrosting modes."}
+{"id": "w0198", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group2 and group1 cannot both be active simultaneously."}
+{"id": "w0199", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain perfluorocarbon and demineralizedwater unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0200", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height1u and height3u."}
+{"id": "w0201", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be waterlance and compressedair."}
+{"id": "w0202", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use r134a and propane."}
+{"id": "w0203", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between parylene and aluminide."}
+{"id": "w0204", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be polyurethane and pureepoxy."}
+{"id": "w0205", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil150kv and bil350kv."}
+{"id": "w0206", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be deepgrooveball and sphericalroller."}
+{"id": "w0207", "key": "contradiction", "reason": "A compressor cannot simultaneously be in standby and lockout operating states."}
+{"id": "w0208", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be kalrez and neoprene."}
+{"id": "w0209", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be fluoropolymer and polyurethane."}
+{"id": "w0210", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be herringbonechevron and circularmicrodimple."}
+{"id": "w0211", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of ferrite and permendur."}
+{"id": "w0212", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be viton and nitrile."}
+{"id": "w0213", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be steamjet and pulsedetonation."}
+{"id": "w0214", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both htgr and phwr."}
+{"id": "w0215", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be delivering and coastingdown at the same instant."}
+{"id": "w0216", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use isobutane and ammonia."}
+{"id": "w0217", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height4u and height1u."}
+{"id": "w0218", "key": "contradiction", "reason": "A turbine cannot simultaneously be in standby and accelerating operating modes at the same time."}
+{"id": "w0219", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of permendur and permalloy."}
+{"id": "w0220", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate halfastern and halfahead."}
+{"id": "w0221", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap50pct and cap25pct."}
+{"id": "w0222", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in pumpdown and defrosting modes."}
+{"id": "w0223", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be epdm and viton."}
+{"id": "w0224", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use r134a and ammonia."}
+{"id": "w0225", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil250kv and bil110kv."}
+{"id": "w0226", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group5 and group4 cannot both be active simultaneously."}
+{"id": "w0227", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height1u and height4u."}
+{"id": "w0228", "key": "arguable", "reason": "Drum boilers on solid conditioning (caustichydroxide) routinely dose volatile amines/oxygen scavengers (AVT chemicals) in the feedwater/steam loop, making allvolatile and caustichydroxide compatible unless 'sole boiler water treatment program' strictly classifies the drum regime as solid vs all-volatile."}
+{"id": "w0229", "key": "contradiction", "reason": "A compressor cannot simultaneously be in idling and lockout operating states."}
+{"id": "w0230", "key": "contradiction", "reason": "A turbine cannot simultaneously be in overhaul and accelerating operating modes at the same time."}
+{"id": "w0231", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate fullahead and halfahead."}
+{"id": "w0232", "key": "arguable", "reason": "A single chiller evaporator assembly commonly uses different brazing filler classes at dissimilar-metal joints (e.g., aws-bni on copper-to-steel or stainless connections and aws-bcup on copper-to-copper or stainless plate joints), so both are compatible unless the attribute refers to a single homogeneous braze joint."}
+{"id": "w0233", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be fluoropolymer and pureepoxy."}
+{"id": "w0234", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be nitrile and kalrez."}
+{"id": "w0235", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughwell and coolingtower."}
+{"id": "w0236", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap75pct and cap25pct."}
+{"id": "w0237", "key": "contradiction", "reason": "A turbine cannot simultaneously be in coasting and standby operating modes at the same time."}
+{"id": "w0238", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be fluoropolymer and alkyd."}
+{"id": "w0239", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use steam and diesel."}
+{"id": "w0240", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be gridcoupling and gearcoupling."}
+{"id": "w0241", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughwell and oncethroughsea."}
+{"id": "w0242", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both htgr and pwr."}
+{"id": "w0243", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under edtachelant and caustichydroxide as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0244", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-bcup and aws-balsi because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0245", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain demineralizedwater and siliconefluid unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0246", "key": "contradiction", "reason": "A compressor cannot simultaneously be in lockout and loaded operating states."}
+{"id": "w0247", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain siliconefluid and demineralizedwater unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0248", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain perfluorocarbon and siliconefluid unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0249", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-bau and aws-bag because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0250", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group4 and group5 cannot both be active simultaneously."}
+{"id": "w0251", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be logarithmicspiral and rayleighstep."}
+{"id": "w0252", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be elastomericjaw and metallicdisc."}
+{"id": "w0253", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use isobutane and propane."}
+{"id": "w0254", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between parylene and electrolessnickel."}
+{"id": "w0255", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be viton and kalrez."}
+{"id": "w0256", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be pureepoxy and alkyd."}
+{"id": "w0257", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be alkyd and polysiloxane."}
+{"id": "w0258", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be sonichorn and steamjet."}
+{"id": "w0259", "key": "contradiction", "reason": "A turbine cannot simultaneously be in online and coasting operating modes at the same time."}
+{"id": "w0260", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be pureepoxy and polyurethane."}
+{"id": "w0261", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be waterlance and pulsedetonation."}
+{"id": "w0262", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use propane and ammonia."}
+{"id": "w0263", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be epdm and nitrile."}
+{"id": "w0264", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain ambientair and perfluorocarbon unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0265", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group4 and group1 cannot both be active simultaneously."}
+{"id": "w0266", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be coastingdown and delivering at the same instant."}
+{"id": "w0267", "key": "contradiction", "reason": "A turbine cannot simultaneously be in online and overhaul operating modes at the same time."}
+{"id": "w0268", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil350kv and bil200kv."}
+{"id": "w0269", "key": "contradiction", "reason": "A turbine cannot simultaneously be in coasting and overhaul operating modes at the same time."}
+{"id": "w0270", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be viton and epdm."}
+{"id": "w0271", "key": "contradiction", "reason": "A compressor cannot simultaneously be in accelerating and lockout operating states."}
+{"id": "w0272", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be cylindricalroller and babbittsleeve."}
+{"id": "w0273", "key": "contradiction", "reason": "A turbine cannot simultaneously be in online and standby operating modes at the same time."}
+{"id": "w0274", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate fullastern and halfahead."}
+{"id": "w0275", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be sphericalroller and deepgrooveball."}
+{"id": "w0276", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between diamondlike and aluminide."}
+{"id": "w0277", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop6pct and droop2pct."}
+{"id": "w0278", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be rigidflange and gearcoupling."}
+{"id": "w0279", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be deepgrooveball and cylindricalroller."}
+{"id": "w0280", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both vs1 and bb1."}
+{"id": "w0281", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use directair and coolingtower."}
+{"id": "w0282", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain mineraloil and ambientair unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0283", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of siliconsteel and alfenol."}
+{"id": "w0284", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-bag and aws-bau because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0285", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be kalrez and nitrile."}
+{"id": "w0286", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be waterlance and sonichorn."}
+{"id": "w0287", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of permendur and alfenol."}
+{"id": "w0288", "key": "contradiction", "reason": "A turbine cannot simultaneously be in standby and online operating modes at the same time."}
+{"id": "w0289", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be stoppedlockedout and coastingdown at the same instant."}
+{"id": "w0290", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate stopengine and halfahead."}
+{"id": "w0291", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-bcup and aws-bau because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0292", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be polyurethane and polysiloxane."}
+{"id": "w0293", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-bni and aws-bau because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0294", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be elastomericjaw and rigidflange."}
+{"id": "w0295", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group5 and group2 cannot both be active simultaneously."}
+{"id": "w0296", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil150kv and bil200kv."}
+{"id": "w0297", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group4 and group3 cannot both be active simultaneously."}
+{"id": "w0298", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in hotshutdown and fullpower simultaneously."}
+{"id": "w0299", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be bidirectionaltgroove and herringbonechevron."}
+{"id": "w0300", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between ptfe and parylene."}
+{"id": "w0301", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate fullastern and stopengine."}
+{"id": "w0302", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be viton and neoprene."}
+{"id": "w0303", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be rayleighstep and herringbonechevron."}
+{"id": "w0304", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil110kv and bil250kv."}
+{"id": "w0305", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both sfr and phwr."}
+{"id": "w0306", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-balsi and aws-bcup because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0307", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be babbittsleeve and taperedroller."}
+{"id": "w0308", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-balsi and aws-bau because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0309", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in lockout and coldstandby."}
+{"id": "w0310", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in pumpdown and idle modes."}
+{"id": "w0311", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in lockout and idle modes."}
+{"id": "w0312", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap0pct and cap100pct."}
+{"id": "w0313", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use carbondioxide and propane."}
+{"id": "w0314", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in fullpower and coldshutdown simultaneously."}
+{"id": "w0315", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in pumpdown and chilling modes."}
+{"id": "w0316", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be deepgrooveball and babbittsleeve."}
+{"id": "w0317", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be steamjet and waterlance."}
+{"id": "w0318", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be steamjet and sonichorn."}
+{"id": "w0319", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop4pct and droop6pct."}
+{"id": "w0320", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be waterlance and steamjet."}
+{"id": "w0321", "key": "contradiction", "reason": "A turbine cannot simultaneously be in accelerating and standby operating modes at the same time."}
+{"id": "w0322", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be sonichorn and pulsedetonation."}
+{"id": "w0323", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop6pct and droop8pct."}
+{"id": "w0324", "key": "contradiction", "reason": "A turbine cannot simultaneously be in accelerating and coasting operating modes at the same time."}
+{"id": "w0325", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both sfr and htgr."}
+{"id": "w0326", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be bidirectionaltgroove and logarithmicspiral."}
+{"id": "w0327", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between diamondlike and parylene."}
+{"id": "w0328", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate fullastern and halfastern."}
+{"id": "w0329", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both phwr and htgr."}
+{"id": "w0330", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh1 and bb1."}
+{"id": "w0331", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil150kv and bil110kv."}
+{"id": "w0332", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between electrolessnickel and diamondlike."}
+{"id": "w0333", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be pulsedetonation and waterlance."}
+{"id": "w0334", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in chilling and idle modes."}
+{"id": "w0335", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be standby and delivering at the same instant."}
+{"id": "w0336", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use directair and oncethroughsea."}
+{"id": "w0337", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use ammonia and propane."}
+{"id": "w0338", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of permalloy and ferrite."}
+{"id": "w0339", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain siliconefluid and mineraloil unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0340", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain siliconefluid and ambientair unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0341", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be compressedair and pulsedetonation."}
+{"id": "w0342", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be bidirectionaltgroove and circularmicrodimple."}
+{"id": "w0343", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be coastingdown and starting at the same instant."}
+{"id": "w0344", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be fluoropolymer and polysiloxane."}
+{"id": "w0345", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughriver and oncethroughsea."}
+{"id": "w0346", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-bau and aws-balsi because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0347", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both bb1 and oh2."}
+{"id": "w0348", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in hotshutdown and criticalstartup simultaneously."}
+{"id": "w0349", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use fuelcell and diesel."}
+{"id": "w0350", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use carbondioxide and r134a."}
+{"id": "w0351", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of alfenol and permalloy."}
+{"id": "w0352", "key": "arguable", "reason": "Drum boilers on solid conditioning (edtachelant) routinely dose volatile amines/oxygen scavengers (AVT chemicals) in the feedwater/steam loop, making edtachelant and allvolatile compatible unless 'sole boiler water treatment program' strictly classifies the drum regime as solid vs all-volatile."}
+{"id": "w0353", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in postpurge and lockout."}
+{"id": "w0354", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be rigidflange and gridcoupling."}
+{"id": "w0355", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in lockout and pumpdown modes."}
+{"id": "w0356", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be delivering and starting at the same instant."}
+{"id": "w0357", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughsea and directair."}
+{"id": "w0358", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate fullastern and fullahead."}
+{"id": "w0359", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh1 and vs1."}
+{"id": "w0360", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in coldstandby and lockout."}
+{"id": "w0361", "key": "contradiction", "reason": "A turbine cannot simultaneously be in coasting and accelerating operating modes at the same time."}
+{"id": "w0362", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in defrosting and pumpdown modes."}
+{"id": "w0363", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be stoppedlockedout and starting at the same instant."}
+{"id": "w0364", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap0pct and cap75pct."}
+{"id": "w0365", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be polysiloxane and alkyd."}
+{"id": "w0366", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil110kv and bil150kv."}
+{"id": "w0367", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of alfenol and siliconsteel."}
+{"id": "w0368", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil250kv and bil350kv."}
+{"id": "w0369", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use carbondioxide and isobutane."}
+{"id": "w0370", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in criticalstartup and fullpower simultaneously."}
+{"id": "w0371", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain siliconefluid and perfluorocarbon unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0372", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between ptfe and electrolessnickel."}
+{"id": "w0373", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be nitrile and viton."}
+{"id": "w0374", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of siliconsteel and permalloy."}
+{"id": "w0375", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be rayleighstep and circularmicrodimple."}
+{"id": "w0376", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in idle and lockout modes."}
+{"id": "w0377", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in mainflame and prepurge."}
+{"id": "w0378", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in coldstandby and prepurge."}
+{"id": "w0379", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh2 and oh1."}
+{"id": "w0380", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in prepurge and lockout."}
+{"id": "w0381", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be sphericalroller and taperedroller."}
+{"id": "w0382", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop6pct and droop0pct."}
+{"id": "w0383", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be deepgrooveball and taperedroller."}
+{"id": "w0384", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height3u and height1u."}
+{"id": "w0385", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use steam and fullsailrig."}
+{"id": "w0386", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group3 and group5 cannot both be active simultaneously."}
+{"id": "w0387", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use steam and fuelcell."}
+{"id": "w0388", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh2 and bb1."}
+{"id": "w0389", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be kalrez and epdm."}
+{"id": "w0390", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap100pct and cap25pct."}
+{"id": "w0391", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop0pct and droop8pct."}
+{"id": "w0392", "key": "contradiction", "reason": "A turbine cannot simultaneously be in overhaul and online operating modes at the same time."}
+{"id": "w0393", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between ptfe and diamondlike."}
+{"id": "w0394", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be elastomericjaw and gridcoupling."}
+{"id": "w0395", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use directair and oncethroughriver."}
+{"id": "w0396", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate stopengine and halfastern."}
+{"id": "w0397", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use fullsailrig and steam."}
+{"id": "w0398", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height6u and height1u."}
+{"id": "w0399", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh2 and oh3."}
+{"id": "w0400", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height2u and height3u."}
+{"id": "w0401", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain mineraloil and perfluorocarbon unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0402", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height2u and height1u."}
+{"id": "w0403", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh2 and vs1."}
+{"id": "w0404", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be compressedair and waterlance."}
+{"id": "w0405", "key": "arguable", "reason": "Drum boilers on solid conditioning (congruentphosphate) routinely dose volatile amines/oxygen scavengers (AVT chemicals) in the feedwater/steam loop, making congruentphosphate and allvolatile compatible unless 'sole boiler water treatment program' strictly classifies the drum regime as solid vs all-volatile."}
+{"id": "w0406", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both pwr and htgr."}
+{"id": "w0407", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap0pct and cap50pct."}
+{"id": "w0408", "key": "contradiction", "reason": "A turbine cannot simultaneously be in overhaul and coasting operating modes at the same time."}
+{"id": "w0409", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both htgr and bwr."}
+{"id": "w0410", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh3 and vs1."}
+{"id": "w0411", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be taperedroller and babbittsleeve."}
+{"id": "w0412", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height1u and height2u."}
+{"id": "w0413", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be coastingdown and standby at the same instant."}
+{"id": "w0414", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be standby and starting at the same instant."}
+{"id": "w0415", "key": "arguable", "reason": "A single chiller evaporator assembly commonly uses different brazing filler classes at dissimilar-metal joints (e.g., aws-bag on copper-to-steel or stainless connections and aws-bcup on copper-to-copper or stainless plate joints), so both are compatible unless the attribute refers to a single homogeneous braze joint."}
+{"id": "w0416", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in postpurge and mainflame."}
+{"id": "w0417", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both oh1 and oh3."}
+{"id": "w0418", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be pulsedetonation and sonichorn."}
+{"id": "w0419", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be metallicdisc and elastomericjaw."}
+{"id": "w0420", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use diesel and gasturbine."}
+{"id": "w0421", "key": "contradiction", "reason": "A compressor cannot simultaneously be in accelerating and idling operating states."}
+{"id": "w0422", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughsea and oncethroughwell."}
+{"id": "w0423", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate stopengine and fullastern."}
+{"id": "w0424", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in chilling and pumpdown modes."}
+{"id": "w0425", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of ferrite and permalloy."}
+{"id": "w0426", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between aluminide and electrolessnickel."}
+{"id": "w0427", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in criticalstartup and coldshutdown simultaneously."}
+{"id": "w0428", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be rigidflange and elastomericjaw."}
+{"id": "w0429", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in hotstandby and coldshutdown simultaneously."}
+{"id": "w0430", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group1 and group4 cannot both be active simultaneously."}
+{"id": "w0431", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be pureepoxy and polysiloxane."}
+{"id": "w0432", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop6pct and droop4pct."}
+{"id": "w0433", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in postpurge and coldstandby."}
+{"id": "w0434", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate halfahead and fullahead."}
+{"id": "w0435", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil350kv and bil110kv."}
+{"id": "w0436", "key": "contradiction", "reason": "A compressor cannot simultaneously be in idling and accelerating operating states."}
+{"id": "w0437", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate fullahead and stopengine."}
+{"id": "w0438", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be steamjet and compressedair."}
+{"id": "w0439", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height2u and height6u."}
+{"id": "w0440", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both pwr and sfr."}
+{"id": "w0441", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in lockout and chilling modes."}
+{"id": "w0442", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be babbittsleeve and cylindricalroller."}
+{"id": "w0443", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group2 and group3 cannot both be active simultaneously."}
+{"id": "w0444", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between electrolessnickel and parylene."}
+{"id": "w0445", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-bni and aws-balsi because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0446", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be compressedair and sonichorn."}
+{"id": "w0447", "key": "contradiction", "reason": "A compressor cannot simultaneously be in accelerating and loaded operating states."}
+{"id": "w0448", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use propane and carbondioxide."}
+{"id": "w0449", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be cylindricalroller and taperedroller."}
+{"id": "w0450", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in hotstandby and hotshutdown simultaneously."}
+{"id": "w0451", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use propane and r134a."}
+{"id": "w0452", "key": "contradiction", "reason": "A compressor cannot simultaneously be in idling and standby operating states."}
+{"id": "w0453", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop0pct and droop4pct."}
+{"id": "w0454", "key": "contradiction", "reason": "A turbine cannot simultaneously be in accelerating and overhaul operating modes at the same time."}
+{"id": "w0455", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both vs1 and oh1."}
+{"id": "w0456", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both phwr and pwr."}
+{"id": "w0457", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height6u and height2u."}
+{"id": "w0458", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain perfluorocarbon and mineraloil unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0459", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be logarithmicspiral and herringbonechevron."}
+{"id": "w0460", "key": "contradiction", "reason": "A compressor cannot simultaneously be in loaded and accelerating operating states."}
+{"id": "w0461", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use carbondioxide and ammonia."}
+{"id": "w0462", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be nitrile and neoprene."}
+{"id": "w0463", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under oxygenatedpurity and allvolatile as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0464", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be sonichorn and compressedair."}
+{"id": "w0465", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop0pct and droop2pct."}
+{"id": "w0466", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group1 and group3 cannot both be active simultaneously."}
+{"id": "w0467", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in coldstandby and mainflame."}
+{"id": "w0468", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in mainflame and postpurge."}
+{"id": "w0469", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height4u and height2u."}
+{"id": "w0470", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use ammonia and r134a."}
+{"id": "w0471", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in lockout and postpurge."}
+{"id": "w0472", "key": "contradiction", "reason": "A compressor cannot simultaneously be in standby and accelerating operating states."}
+{"id": "w0473", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use gasturbine and fuelcell."}
+{"id": "w0474", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop0pct and droop6pct."}
+{"id": "w0475", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap75pct and cap100pct."}
+{"id": "w0476", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be stoppedlockedout and delivering at the same instant."}
+{"id": "w0477", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be gearcoupling and gridcoupling."}
+{"id": "w0478", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use fuelcell and fullsailrig."}
+{"id": "w0479", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap25pct and cap100pct."}
+{"id": "w0480", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be taperedroller and cylindricalroller."}
+{"id": "w0481", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be standby and stoppedlockedout at the same instant."}
+{"id": "w0482", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use fullsailrig and gasturbine."}
+{"id": "w0483", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil110kv and bil350kv."}
+{"id": "w0484", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use fuelcell and gasturbine."}
+{"id": "w0485", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use isobutane and carbondioxide."}
+{"id": "w0486", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group3 and group2 cannot both be active simultaneously."}
+{"id": "w0487", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both pwr and bwr."}
+{"id": "w0488", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in defrosting and lockout modes."}
+{"id": "w0489", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be alkyd and polyurethane."}
+{"id": "w0490", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use fuelcell and steam."}
+{"id": "w0491", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil250kv and bil200kv."}
+{"id": "w0492", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain demineralizedwater and perfluorocarbon unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0493", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be polyurethane and fluoropolymer."}
+{"id": "w0494", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group4 and group2 cannot both be active simultaneously."}
+{"id": "w0495", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in postpurge and prepurge."}
+{"id": "w0496", "key": "arguable", "reason": "Drum boilers on solid conditioning (edtachelant) routinely dose volatile amines/oxygen scavengers (AVT chemicals) in the feedwater/steam loop, making allvolatile and edtachelant compatible unless 'sole boiler water treatment program' strictly classifies the drum regime as solid vs all-volatile."}
+{"id": "w0497", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop8pct and droop0pct."}
+{"id": "w0498", "key": "contradiction", "reason": "A compressor cannot simultaneously be in loaded and idling operating states."}
+{"id": "w0499", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be coastingdown and stoppedlockedout at the same instant."}
+{"id": "w0500", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under congruentphosphate and caustichydroxide as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0501", "key": "contradiction", "reason": "When a boiler uses a sole sootblower cleaning mechanism, it cannot simultaneously be pulsedetonation and compressedair."}
+{"id": "w0502", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between diamondlike and ptfe."}
+{"id": "w0503", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group1 and group5 cannot both be active simultaneously."}
+{"id": "w0504", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group2 and group5 cannot both be active simultaneously."}
+{"id": "w0505", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use diesel and steam."}
+{"id": "w0506", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height6u and height3u."}
+{"id": "w0507", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be standby and coastingdown at the same instant."}
+{"id": "w0508", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop2pct and droop0pct."}
+{"id": "w0509", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil110kv and bil200kv."}
+{"id": "w0510", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be rayleighstep and bidirectionaltgroove."}
+{"id": "w0511", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between ptfe and aluminide."}
+{"id": "w0512", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be metallicdisc and rigidflange."}
+{"id": "w0513", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height4u and height3u."}
+{"id": "w0514", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be herringbonechevron and logarithmicspiral."}
+{"id": "w0515", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be neoprene and viton."}
+{"id": "w0516", "key": "contradiction", "reason": "An unblended superstructure topcoat resin cannot simultaneously be pureepoxy and fluoropolymer."}
+{"id": "w0517", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate halfastern and fullahead."}
+{"id": "w0518", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use gasturbine and diesel."}
+{"id": "w0519", "key": "contradiction", "reason": "An unblended single-layer rotor coating specification is mutually exclusive between parylene and diamondlike."}
+{"id": "w0520", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be nitrile and epdm."}
+{"id": "w0521", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap50pct and cap75pct."}
+{"id": "w0522", "key": "contradiction", "reason": "A compressor cannot simultaneously be in accelerating and standby operating states."}
+{"id": "w0523", "key": "contradiction", "reason": "A relay chassis has a single fixed physical EIA rack-unit height and cannot be both height4u and height6u."}
+{"id": "w0524", "key": "contradiction", "reason": "A pump's operating state cannot simultaneously be delivering and standby at the same instant."}
+{"id": "w0525", "key": "contradiction", "reason": "A turbine cannot simultaneously be in accelerating and online operating modes at the same time."}
+{"id": "w0526", "key": "contradiction", "reason": "A compressor cannot simultaneously be in loaded and lockout operating states."}
+{"id": "w0527", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in fullpower and hotshutdown simultaneously."}
+{"id": "w0528", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously operate in chilling and defrosting modes."}
+{"id": "w0529", "key": "contradiction", "reason": "The single H1 high-voltage bushing on a transformer has one specific rated Basic Impulse Insulation Level (BIL) class and cannot be both bil200kv and bil250kv."}
+{"id": "w0530", "key": "contradiction", "reason": "A compressor's primary dry-gas seal face is machined with one primary hydrodynamic groove geometry and cannot simultaneously be bidirectionaltgroove and rayleighstep."}
+{"id": "w0531", "key": "contradiction", "reason": "A compressor cannot simultaneously be in loaded and standby operating states."}
+{"id": "w0532", "key": "contradiction", "reason": "When a pump has a sole mechanical shaft coupling, that single coupling cannot simultaneously be elastomericjaw and gearcoupling."}
+{"id": "w0533", "key": "contradiction", "reason": "An evaporator will not simultaneously use aws-bag and aws-balsi because aluminum filler (aws-balsi) and gold filler (aws-bau) belong to mutually exclusive base-metal and manufacturing systems."}
+{"id": "w0534", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under caustichydroxide and edtachelant as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0535", "key": "contradiction", "reason": "When a pump has a sole secondary seal O-ring elastomer, that single elastomer material cannot simultaneously be neoprene and kalrez."}
+{"id": "w0536", "key": "contradiction", "reason": "A protective relay executes protection logic from only one active setting group at any given instant, so group5 and group1 cannot both be active simultaneously."}
+{"id": "w0537", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate halfahead and halfastern."}
+{"id": "w0538", "key": "contradiction", "reason": "A burner management system steps sequentially through discrete states and cannot simultaneously be in mainflame and lockout."}
+{"id": "w0539", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use propane and isobutane."}
+{"id": "w0540", "key": "contradiction", "reason": "A chiller with a sole condenser heat rejection loop cannot simultaneously use oncethroughsea and coolingtower."}
+{"id": "w0541", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under oxygenatedpurity and edtachelant as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0542", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in hotshutdown and coldshutdown simultaneously."}
+{"id": "w0543", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of permendur and ferrite."}
+{"id": "w0544", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop2pct and droop4pct."}
+{"id": "w0545", "key": "contradiction", "reason": "An engine order telegraph commands one discrete order step at a time and cannot simultaneously indicate halfastern and fullastern."}
+{"id": "w0546", "key": "contradiction", "reason": "IAEA reactor type codes classify the fundamental core moderator and coolant architecture; one reactor cannot be both bwr and pwr."}
+{"id": "w0547", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in hotstandby and fullpower simultaneously."}
+{"id": "w0548", "key": "contradiction", "reason": "NRC technical specification operational modes (Modes 1 through 5) are strictly mutually exclusive by reactivity, temperature, and power thresholds; a reactor cannot be in hotshutdown and hotstandby simultaneously."}
+{"id": "w0549", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use ammonia and isobutane."}
+{"id": "w0550", "key": "contradiction", "reason": "An unblended transformer main magnetic core cannot simultaneously be composed of alfenol and ferrite."}
+{"id": "w0551", "key": "contradiction", "reason": "A boiler cannot simultaneously operate under caustichydroxide and oxygenatedpurity as its sole water treatment program because their chemical regimes (e.g. oxidizing OT vs reducing AVT or incompatible solid programs) conflict."}
+{"id": "w0552", "key": "contradiction", "reason": "A vessel with a sole propulsion power plant cannot simultaneously use steam and gasturbine."}
+{"id": "w0553", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap100pct and cap0pct."}
+{"id": "w0554", "key": "contradiction", "reason": "A compressor's active unloader capacity step is a single discrete percentage at any instant and cannot be both cap50pct and cap0pct."}
+{"id": "w0555", "key": "contradiction", "reason": "When a pump has a sole drive-end radial bearing, that single bearing cannot simultaneously be cylindricalroller and deepgrooveball."}
+{"id": "w0556", "key": "contradiction", "reason": "A turbine governor has a single active droop percentage setting at any instant and cannot simultaneously be set to droop8pct and droop4pct."}
+{"id": "w0557", "key": "contradiction", "reason": "A single-circuit chiller charged with an unblended refrigerant cannot simultaneously use ammonia and carbondioxide."}
+{"id": "w0558", "key": "arguable", "reason": "Blended phosphate-chelant (phosphate-EDTA) programs are used in industrial boilers, so congruentphosphate and edtachelant are compatible under a combined-program reading unless 'sole' is read as forbidding hybrid chemical regimens."}
+{"id": "w0559", "key": "contradiction", "reason": "An intercooler tube circuit using a single unblended coolant cannot simultaneously contain ambientair and mineraloil unless a multi-stage compressor cools different intercooler stages with different media."}
+{"id": "w0560", "key": "contradiction", "reason": "API 610 pump configuration codes are mutually exclusive architectural classifications; a single pump cannot be both vs1 and oh3."}
