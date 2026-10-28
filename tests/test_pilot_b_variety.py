@@ -89,13 +89,13 @@ def test_he_part_e_1_fixture_build_matches_hand_computation_and_audit_sample(
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 44 and 56 megawatts.\n"
         "4. The turbine operating mode of Unit Gamma is standby.\n"
-        "5. The monolithic casing alloy of Unit Beta is castiron."
+        "5. The monolithic casing alloy of Unit Beta is steel."
     )
     mat_t2 = (
         "1. Relay North has 18 backup cells.\n"
         "2. The calibration date of Relay North is 12 March.\n"
         "3. The switching latency of Relay South is between 48 and 62 milliseconds.\n"
-        "4. The drawout breaker position of Relay East is disconnected.\n"
+        "4. The active relay setting group of Relay East is group1.\n"
         "5. The outermost contact plating metal of Relay South is silver."
     )
     raw_items = [
@@ -128,7 +128,7 @@ def test_he_part_e_1_fixture_build_matches_hand_computation_and_audit_sample(
             "domain": "relays",
             "closure": "closed",
             "material": mat_t2,
-            "claim": "The drawout breaker position of Relay East is disconnected.",
+            "claim": "The active relay setting group of Relay East is group1.",
             "key": "supported",
         },
         {
@@ -227,7 +227,7 @@ def test_hh_fix1_build_dir_without_keys_refused_with_exit_1(
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 44 and 56 megawatts.\n"
         "4. The turbine operating mode of Unit Gamma is standby.\n"
-        "5. The monolithic casing alloy of Unit Beta is castiron."
+        "5. The monolithic casing alloy of Unit Beta is steel."
     )
     raw_items = [
         {
@@ -348,7 +348,7 @@ def test_he_part_e_3_unreliable_path_triggers_when_class_exceeds_10_percent_unma
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 44 and 56 megawatts.\n"
         "4. The turbine operating mode of Unit Gamma is standby.\n"
-        "5. The monolithic casing alloy of Unit Beta is castiron."
+        "5. The monolithic casing alloy of Unit Beta is steel."
     )
     raw_items = [
         {
@@ -421,7 +421,7 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 40 and 70 megawatts.\n"
         "4. The turbine operating mode of Unit Gamma is standby.\n"
-        "5. The monolithic casing alloy of Unit Beta is castiron."
+        "5. The monolithic casing alloy of Unit Beta is steel."
     )
 
     # 1. Leak build: 12 triads where all 12 cannot_tell claims use 'the <a> of <e> is <v> <u>.' and no sup/unsup claim does (12/12 = 1.000 > 0.60)
@@ -480,7 +480,7 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
         "2. The inspection date of Unit Alpha is 7 February.\n"
         "3. The output capacity of Unit Beta is between 40 and 70 megawatts.\n"
         "4. The turbine operating mode of Unit Beta is standby.\n"
-        "5. The monolithic casing alloy of Unit Beta is castiron."
+        "5. The monolithic casing alloy of Unit Beta is steel."
     )
     perms_6 = (
         ("supported", "unsupported", "cannot_tell"),
@@ -505,14 +505,14 @@ def test_hh_fix3_leak_reproducing_build_50_shape_fails_and_spread_frame_passes(
         elif idx < 8:
             claims_3 = (
                 f"The turbine operating mode of {e_triad} is standby.",
-                f"The turbine operating mode of {e_triad} is turninggear.",
+                f"The turbine operating mode of {e_triad} is accelerating.",
                 f"The turbine operating mode of {e_triad} is online.",
             )
         else:
             claims_3 = (
                 f"The unblended base-oil grade of {e_triad} is polyalphaolefin.",
                 f"The unblended base-oil grade of {e_triad} is mineral.",
-                f"The unblended base-oil grade of {e_triad} is phosphateester.",
+                f"The unblended base-oil grade of {e_triad} is ester.",
             )
         triad_rows = [
             {
@@ -784,7 +784,7 @@ def test_hs_part_c_synthetic_shortcut_builds_fail_variety_gate(
             f"2. {three_claims[(rot + 1) % 3]}\n"
             "3. The turbine operating mode of Unit Gamma is standby.\n"
             f"4. {three_claims[(rot + 2) % 3]}\n"
-            "5. The monolithic casing alloy of Unit Beta is castiron."
+            "5. The monolithic casing alloy of Unit Beta is steel."
         )
         rows = [
             {
@@ -1128,7 +1128,7 @@ def test_synthetic_entity_order_bound_build_fails_variety_gate(
     from reasoning_dataset_lab.pilot_b.variety import evaluate_build_variety
 
     ents = ["Unit Alpha", "Unit Beta", "Unit Gamma"]
-    vals = ["polyalphaolefin", "mineral", "phosphateester"]
+    vals = ["polyalphaolefin", "mineral", "ester"]
     items: list[dict[str, str]] = []
     for idx in range(12):
         tid = f"T10-D-turbines-entord-{idx + 1:03d}-triad"
@@ -1141,7 +1141,7 @@ def test_synthetic_entity_order_bound_build_fails_variety_gate(
             f"2. The inspection date of {e_first} is 7 February.\n"
             f"3. The output capacity of {e_second} is between 40 and 70 megawatts.\n"
             f"4. The turbine operating mode of {e_second} is standby.\n"
-            f"5. The monolithic casing alloy of {e_third} is castiron."
+            f"5. The monolithic casing alloy of {e_third} is steel."
         )
         triad_rows = [
             {
@@ -1203,6 +1203,23 @@ def test_synthetic_entity_order_bound_build_fails_variety_gate(
     }
     assert run_cli(["variety", str(bdir), "--json"]) == 1
     capsys.readouterr()
+
+
+def test_variety_fixture_strings_match_domain_catalogue() -> None:
+    """Fix 5: Synthetic fixture sentences in test_pilot_b_variety.py use current DOMAIN_CATALOGUE values ('ester' and 'steel')."""
+    from reasoning_dataset_lab.pilot_b.fact_tables import DOMAIN_CATALOGUE
+
+    src = Path(__file__).read_text(encoding="utf-8")
+    stale_tokens = ("phosphate" + "ester", "cast" + "iron")
+    for tok in stale_tokens:
+        assert tok not in src, f"Stale value {tok!r} still present in {__file__}"
+
+    turbines = next(d for d in DOMAIN_CATALOGUE if d["domain"] == "turbines")
+    assert "steel" in turbines["attr_spec"][1]
+    base_oil = dict(turbines["open_attrs"])["unblended base-oil grade"]
+    assert "ester" in base_oil
+
+
 
 
 

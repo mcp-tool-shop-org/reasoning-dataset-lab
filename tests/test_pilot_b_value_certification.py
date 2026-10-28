@@ -1005,7 +1005,7 @@ def test_the_control_table_hash_is_the_hash_of_the_table():
     assert vc.CONTROL_PAIRS_SHA256 == expected == CONTROL_TABLE_V3_SHA256
 
 
-def test_the_six_replaced_pairs_are_gone():
+def test_the_eight_replaced_pairs_are_gone():
     gone = {
         ("compressors", "shaft seal", "drygas", "mechanical seal"),
         ("vessels", "berth status", "docked", "moored"),
@@ -1016,6 +1016,7 @@ def test_the_six_replaced_pairs_are_gone():
         ("turbines", "lubricant grade", "polyol", "synthetic"),
         ("compressors", "rotor coating", "nitride", "ceramic"),
     }
+    assert len(gone) == 8
     assert gone.isdisjoint({pair[:4] for pair in vc.CONTROL_PAIRS})
 
 
