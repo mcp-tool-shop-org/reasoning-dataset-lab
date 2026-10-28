@@ -1279,7 +1279,7 @@ def test_the_adapter_role_fallback_refuses_an_unknown_family_instead_of_defaulti
 
 
 def test_the_pins_say_which_readers_think():
-    assert DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think is True
+    assert DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think == "medium"
     assert DEFAULT_PILOT_B_MODEL_PINS["reader_2"].think is True
     assert DEFAULT_PILOT_B_MODEL_PINS["reader_3"].think is False
 
@@ -1288,7 +1288,7 @@ def test_the_manifest_records_each_readers_think_setting(tmp_path):
     manifest = _good_manifest(tmp_path)
     assert {r["name"]: r["think"] for r in manifest["readers"]} == {
         GRANITE.name: True,
-        NEMOTRON.name: True,
+        NEMOTRON.name: "medium",
     }
 
 
@@ -1840,6 +1840,29 @@ def test_compare_arms_refuses_mismatched_manifests(tmp_path, capsys):
         err_payload = json.loads(capsys.readouterr().err.strip())
         assert err_payload["code"] == "PILOT_B_COMPARE_ARMS_MISMATCH"
         assert not out_path.exists()
+
+
+def test_nemotron_pin_is_think_medium_with_ollama_renderer_citation_and_r3_manifest_still_verifies_unchanged(
+    tmp_path,
+):
+    from reasoning_dataset_lab.pilot_b import models_and_build
+
+    assert DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think == "medium"
+    source_text = Path(models_and_build.__file__).read_text(encoding="utf-8")
+    assert "model/renderers/nemotron3nano.go:30, 86-87" in source_text
+    assert "effort hint" in source_text
+    assert "not a cap" in source_text
+
+    # An r3-style manifest whose Nemotron reader entry has think: True (and no think_overridden key)
+    # must still verify unchanged under verify_manifest.
+    r3_style_manifest = _good_manifest(tmp_path)
+    for r_row in r3_style_manifest["readers"]:
+        r_row.pop("think_overridden", None)
+        if r_row["family"] == "nemotron":
+            r_row["think"] = True
+    r3_style_manifest["content_sha256"] = vc.content_hash(r3_style_manifest)
+    assert vc.verify_manifest(r3_style_manifest, SMALL) == []
+
 
 
 

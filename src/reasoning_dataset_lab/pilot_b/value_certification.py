@@ -965,6 +965,9 @@ def verify_manifest(
             )
         elif r.get("think_overridden") is True:
             pass
+        elif key[2] == "nemotron" and type(r["think"]) is bool and r["think"] is True:
+            # r3 full-thinking tier (think: true) remains verifiable unchanged after Nemotron's pin moved to think="medium".
+            pass
         elif not (type(r["think"]) is type(pinned[key]) and r["think"] == pinned[key]):
             problems.append(
                 f"readers: {key[0]} recorded think={r['think']!r}, but its pin says think={pinned[key]!r}"

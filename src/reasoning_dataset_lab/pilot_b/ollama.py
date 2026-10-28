@@ -1559,11 +1559,11 @@ def run_ollama_calibration_calls(
     if think is None:
         think = pinned_think
     if type(think) is not type(pinned_think) or think != pinned_think:
-        if pinned_think is True:
+        if pinned_think is not False and think is False:
             raise refused_error(
                 "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN",
-                f"Calibration requires think=True, got {think!r}.",
-                "Run calibration with thinking enabled (think: true only).",
+                f"Calibration requires thinking enabled (pinned think={pinned_think!r}), got {think!r}.",
+                "Run calibration with thinking enabled.",
             )
         raise refused_error(
             "PILOT_B_CALIBRATE_THINK_MISMATCH",
