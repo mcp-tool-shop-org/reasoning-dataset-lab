@@ -33,9 +33,13 @@ def test_every_value_set_is_found_and_keeps_its_size():
 
 @pytest.mark.parametrize(("domain", "attribute", "values"), SETS, ids=SET_IDS)
 def test_no_value_set_holds_a_value_beside_one_it_covers(domain, attribute, values):
-    """The table's rows, applied to this set: the covering value may not sit beside a member it covers."""
+    """The table's rows and the second-keying class/member rules, applied to this set: the covering value may not sit beside a member it covers."""
 
-    for general, members, reason in VALUE_SUBSUMPTIONS.get((domain, attribute), ()):
+    rows = (
+        *VALUE_SUBSUMPTIONS.get((domain, attribute), ()),
+        *SECOND_KEYING_SUBSUMPTIONS.get(domain, ()),
+    )
+    for general, members, reason in rows:
         if general in values:
             clash = [m for m in members if m in values]
             assert not clash, (
@@ -69,16 +73,26 @@ def test_every_rule_names_a_real_set():
         for general, members, reason in rows:
             assert general and members and reason
             assert general not in members
+    for domain, expected_rows in SECOND_KEYING_SUBSUMPTIONS.items():
+        domain_recorded: dict[str, set[str]] = {}
+        for (d, _a), rows in VALUE_SUBSUMPTIONS.items():
+            if d == domain:
+                for general, members, _ in rows:
+                    domain_recorded.setdefault(general, set()).update(members)
+        for general, members, reason in expected_rows:
+            assert general in domain_recorded and set(members) <= domain_recorded[general], (
+                f"{domain}: VALUE_SUBSUMPTIONS must record '{general}' covering {members} ({reason})"
+            )
 
 
 def test_the_two_stub_10d_sets_are_fixed():
     sets = {(d, a): values for d, a, values in SETS}
-    assert "synthetic" not in sets[("turbines", "lubricant grade")]
-    assert "mineral" not in sets[("transformers", "dielectric fluid")]
-    assert {"ester", "silicone"} <= set(sets[("turbines", "lubricant grade")])
-    assert {"paraffinic", "naphthenic"} <= set(
-        sets[("transformers", "dielectric fluid")]
-    )
+    lube = sets.get(("turbines", "lubricant grade")) or sets[("turbines", "unblended base-oil grade")]
+    diel = sets.get(("transformers", "dielectric fluid")) or sets[("transformers", "unblended dielectric fluid")]
+    assert "synthetic" not in lube
+    assert "mineral" not in diel
+    assert {"ester", "silicone"} <= set(lube)
+    assert {"paraffinic", "naphthenic"} <= set(diel)
 
 
 def test_every_kept_pair_is_really_in_its_set_and_says_why():
@@ -103,15 +117,150 @@ def test_a_kept_pair_is_never_also_a_covering_pair():
 
 def test_the_second_pass_replacements_are_in():
     sets = {(d, a): values for d, a, values in SETS}
-    assert "air" not in sets[("turbines", "cooling medium")]
-    assert "brine" not in sets[("compressors", "intercooler medium")]
-    assert "polyol" not in sets[("turbines", "lubricant grade")]
+    cool = sets.get(("turbines", "cooling medium")) or sets[("turbines", "generator rotor cooling gas")]
+    inter = sets.get(("compressors", "intercooler medium")) or sets[("compressors", "intercooler tube coolant")]
+    lube = sets.get(("turbines", "lubricant grade")) or sets[("turbines", "unblended base-oil grade")]
+    assert "air" not in cool
+    assert "brine" not in inter
+    assert "polyol" not in lube
 
 
 def test_every_set_names_its_one_axis():
     assert set(VALUE_SET_AXES) == {(d, a) for d, a, _ in SETS}
-    for axis in VALUE_SET_AXES.values():
+    for key, axis in VALUE_SET_AXES.items():
         assert len(axis) > 10
+        assert (
+            re.search(
+                r"\b(?:one|single|sole|only|at a time|either|cannot|excludes)\b",
+                axis,
+                re.IGNORECASE,
+            )
+            is not None
+        ), f"{key}: axis must state why one entity holds only one value ({axis!r})"
+
+
+# Comparative or relative words that can hold simultaneously of a member and a superlative or range
+# (e.g., "highest" is a "higher" tap position, and "open" covers partial openings like "fifty"):
+RELATIVE_VALUE_WORDS: dict[str, str] = {
+    "higher": "comparative: any above-nominal step (including highest) is a higher step",
+    "lower": "comparative: any below-nominal step (including lowest) is a lower step",
+    "highest": "superlative paired with comparative 'higher' in relative tap labels",
+    "lowest": "superlative paired with comparative 'lower' in relative tap labels",
+    "upper": "relative positional term unless tied to a fixed structural coordinate",
+    "inner": "relative radial/layer term unless scoped by a specific component name",
+    "outer": "relative radial/layer term unless scoped by a specific component name",
+    "more": "comparative degree word",
+    "less": "comparative degree word",
+    "partial": "relative degree word that covers any non-zero, non-full step",
+}
+
+
+@pytest.mark.parametrize(("domain", "attribute", "values"), SETS, ids=SET_IDS)
+def test_no_value_is_a_relative_or_comparative_word(domain, attribute, values):
+    """Rule 1: No value is a comparative or relative word (higher, lower, highest, lowest, etc.)."""
+
+    clash = [v for v in values if v.lower() in RELATIVE_VALUE_WORDS]
+    assert not clash, (
+        f"{domain}/{attribute}: relative/comparative value(s) {clash} "
+        f"({'; '.join(f'{w}: {RELATIVE_VALUE_WORDS[w.lower()]}' for w in clash)})"
+    )
+
+
+# Class/member and hypernym pairs found in the r3 audit and second keying (la):
+SECOND_KEYING_SUBSUMPTIONS: dict[
+    str, tuple[tuple[str, tuple[str, ...], str], ...]
+] = {
+    "transformers": (
+        (
+            "silicon",
+            ("amorphous", "nanocrystalline"),
+            "amorphous (Fe-Si-B) and nanocrystalline (Fe-Si-B-Nb-Cu) core alloys contain silicon",
+        ),
+    ),
+    "chillers": (
+        (
+            "automatic",
+            ("electronic", "thermostatic", "float"),
+            "in plain engineering English, electronic, thermostatic and float expansion valves operate automatically",
+        ),
+    ),
+    "vessels": (
+        (
+            "underway",
+            ("adrift",),
+            "under COLREGs Rule 3(i), a vessel adrift (not at anchor, moored, or aground) is underway",
+        ),
+    ),
+    "relays": (
+        (
+            "disconnected",
+            ("withdrawn",),
+            "a withdrawn drawout breaker is electrically disconnected",
+        ),
+    ),
+    "pumps": (
+        (
+            "flexible",
+            ("fluid", "clutch", "eddycurrent"),
+            "fluid, clutch and eddy-current couplings incorporate or act as flexible couplings for shaft misalignment",
+        ),
+    ),
+    "boilers": (
+        (
+            "rotary",
+            ("retractable",),
+            "a long retractable sootblower rotates helically as it traverses",
+        ),
+        (
+            "firing",
+            ("lightoff",),
+            "during the lightoff ignition trial, once flame is established the burner is firing",
+        ),
+    ),
+    "furnaces": (
+        (
+            "open",
+            ("twentyfive", "fifty", "seventyfive"),
+            "a damper at 25%, 50% or 75% is partially open, so bare 'open' reads as 'not closed'",
+        ),
+    ),
+    "compressors": (
+        (
+            "anodized",
+            ("ptfe", "diamondlike"),
+            "PTFE-impregnated and DLC-overcoated rotors use an anodized substrate layer",
+        ),
+    ),
+    "reactors": (
+        (
+            "cold",
+            ("drained", "cooldown"),
+            "a drained loop at ambient temperature is cold, and a loop in cooldown is cold at the end of the ramp",
+        ),
+    ),
+}
+
+
+# Concatenated or ambiguous tokens that read as another English word in "The <attribute> of <entity> is <value>."
+AMBIGUOUS_STATEMENT_TOKENS: dict[str, str] = {
+    "types": "concatenated 'Type S' thermocouple code reads as the English plural noun 'types'",
+    "typer": "concatenated 'Type R' thermocouple code reads as the English agent noun 'typer'",
+    "typej": "unspaced thermocouple code should match the unambiguous spelled format of its sibling values",
+    "typek": "unspaced thermocouple code should match the unambiguous spelled format of its sibling values",
+    "typen": "unspaced thermocouple code should match the unambiguous spelled format of its sibling values",
+}
+
+
+@pytest.mark.parametrize(("domain", "attribute", "values"), SETS, ids=SET_IDS)
+def test_no_value_is_a_garbled_or_ambiguous_english_token(domain, attribute, values):
+    """Rule 4: No value is an ambiguous or garbled token that reads as something else in the statement frame."""
+
+    clash = [v for v in values if v.lower() in AMBIGUOUS_STATEMENT_TOKENS]
+    assert not clash, (
+        f"{domain}/{attribute}: ambiguous/garbled value token(s) {clash} "
+        f"({'; '.join(f'{w}: {AMBIGUOUS_STATEMENT_TOKENS[w.lower()]}' for w in clash)})"
+    )
+
 
 
 def test_no_value_sits_in_two_sets_of_one_domain():
