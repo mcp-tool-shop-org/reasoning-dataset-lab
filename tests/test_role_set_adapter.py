@@ -236,7 +236,7 @@ def test_pyproject_has_no_uv_override_dependencies() -> None:
     assert "[tool.uv]" not in text
     assert "override-dependencies" not in text
     assert (
-        "role-set @ git+https://github.com/mcp-tool-shop-org/role-set@3ce9ada0336301417ae416da46e9a15746bd893e"
+        "role-set @ git+https://github.com/mcp-tool-shop-org/role-set@d29499f77a81bda144ebd51885f3c167a04667aa"
         in text
     )
     assert (

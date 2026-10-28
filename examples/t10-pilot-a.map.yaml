@@ -25,7 +25,7 @@ cells:
   - {trait: T10, kind: B, difficulty: d3, domain: cups, wrong_family: exact_read_as_ceiling, target: 3, capacity: 5}
   - {trait: T10, kind: B, difficulty: d4, domain: lamps, wrong_family: exact_read_as_ceiling, target: 3, capacity: 5}
   - {trait: T10, kind: B, difficulty: d4, domain: cups, wrong_family: exact_read_as_ceiling, target: 3, capacity: 5}
-  # Buildable set-question cells: floor_read_as_exact (6 cells x 2 items = 12 items). "At least k" is separated from "exactly k" by the set question (role-set 3ce9ada, target_shortcut).
+  # Buildable set-question cells: floor_read_as_exact (6 cells x 2 items = 12 items). "At least k" is separated from "exactly k" by the set question (role-set d29499f, target_shortcut).
   - {trait: T10, kind: B, difficulty: d2, domain: lamps, wrong_family: floor_read_as_exact, target: 2, capacity: 5}
   - {trait: T10, kind: B, difficulty: d2, domain: cups, wrong_family: floor_read_as_exact, target: 2, capacity: 5}
   - {trait: T10, kind: B, difficulty: d3, domain: lamps, wrong_family: floor_read_as_exact, target: 2, capacity: 5}
