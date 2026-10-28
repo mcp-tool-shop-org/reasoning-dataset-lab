@@ -2055,3 +2055,71 @@ def test_he_part_d_defaults_8192_6144_and_writer_max_num_ctx_9216(
 
 
 
+
+
+def test_the_reader_3_payload_sends_think_false_and_the_other_readers_send_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from reasoning_dataset_lab.pilot_b.ollama import OllamaBlindReaderAdapter
+
+    sent: dict[str, Any] = {}
+    for role in ("reader_1", "reader_2", "reader_3"):
+        pin = DEFAULT_PILOT_B_MODEL_PINS[role]
+        transport, requests = build_mock_ollama_http_transport()
+        monkeypatch.setattr(
+            "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+            transport,
+        )
+        reader = OllamaBlindReaderAdapter(model=pin, num_predict=64)
+        assert reader.think is pin.think
+        reader.chat_raw(target_id="t", messages=[{"role": "user", "content": "x"}])
+        bodies = [b for _m, url, b in requests if url.endswith("/api/chat")]
+        assert len(bodies) == 1
+        sent[role] = bodies[0]
+    assert sent["reader_3"]["think"] is False
+    assert sent["reader_1"]["think"] is True and sent["reader_2"]["think"] is True
+
+
+def test_calibration_calls_take_the_pinned_think_of_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    from reasoning_dataset_lab.pilot_b.ollama import run_ollama_calibration_calls
+
+    sent: dict[str, Any] = {}
+    for role in ("reader_1", "reader_3"):
+        pin = DEFAULT_PILOT_B_MODEL_PINS[role]
+        transport, requests = build_mock_ollama_http_transport()
+        rows, _unload = run_ollama_calibration_calls(
+            model=pin,
+            operation="read_claim",
+            call_items=[("c1", [{"role": "user", "content": "x"}])],
+            http_transport=transport,
+        )
+        chat = [b for _m, url, b in requests if url.endswith("/api/chat") and b and b.get("keep_alive") != 0]
+        assert len(chat) == 1
+        sent[role] = (chat[0]["think"], rows[0]["think"])
+    assert sent["reader_1"] == (True, True)
+    assert sent["reader_3"] == (False, False)
+
+
+def test_calibration_refuses_a_think_setting_that_differs_from_the_pin() -> None:
+    from reasoning_dataset_lab.pilot_b.ollama import run_ollama_calibration_calls
+
+    items = [("c1", [{"role": "user", "content": "x"}])]
+    transport, _requests = build_mock_ollama_http_transport()
+    with pytest.raises(RdlabError) as off:
+        run_ollama_calibration_calls(
+            model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"],
+            operation="read_claim",
+            call_items=items,
+            think=False,
+            http_transport=transport,
+        )
+    assert off.value.code == "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN"
+    with pytest.raises(RdlabError) as on:
+        run_ollama_calibration_calls(
+            model=DEFAULT_PILOT_B_MODEL_PINS["reader_3"],
+            operation="read_claim",
+            call_items=items,
+            think=True,
+            http_transport=transport,
+        )
+    assert on.value.code == "PILOT_B_CALIBRATE_THINK_MISMATCH"

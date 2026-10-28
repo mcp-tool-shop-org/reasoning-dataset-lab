@@ -55,6 +55,15 @@ class FakeReader:
         self.control_verdict = control_verdict or (lambda number: "compatible")
         self.control_prompts: list = []
         self.model = model
+        # a real reader carries the think setting of its pin; the fake does the same, found by family
+        self.think = next(
+            (
+                pin.think
+                for pin in DEFAULT_PILOT_B_MODEL_PINS.values()
+                if pin.family == getattr(model, 'family', None)
+            ),
+            True,
+        )
         self.events = events
         self.clock = clock
         self.seconds = seconds
@@ -1264,3 +1273,53 @@ def test_the_adapter_role_fallback_refuses_an_unknown_family_instead_of_defaulti
         model, base_url="http://127.0.0.1:11434", num_predict=64, role="reader_1"
     )
     assert ok.role == "reader_1"
+
+
+# ---- reader think settings: reader_3 (Mistral Small 3.2) answers directly
+
+
+def test_the_pins_say_which_readers_think():
+    assert DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think is True
+    assert DEFAULT_PILOT_B_MODEL_PINS["reader_2"].think is True
+    assert DEFAULT_PILOT_B_MODEL_PINS["reader_3"].think is False
+
+
+def test_the_manifest_records_each_readers_think_setting(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    assert {r["name"]: r["think"] for r in manifest["readers"]} == {
+        GRANITE.name: True,
+        NEMOTRON.name: True,
+    }
+
+
+def test_a_manifest_with_a_deliberating_mistral_fails_the_verifier(tmp_path):
+    mistral = DEFAULT_PILOT_B_MODEL_PINS["reader_3"].to_model_identity()
+    manifest = _good_manifest(tmp_path)
+    # the nemotron row stands in for the first family; the second family is Mistral, recorded as thinking
+    manifest["readers"][1] = {
+        **manifest["readers"][1],
+        "name": mistral.name,
+        "family": mistral.family,
+        "digest": mistral.digest,
+        "think": True,
+    }
+    problems = vc.verify_manifest(manifest, SMALL)
+    assert any(
+        mistral.name in p and "think=True" in p and "pin says think=False" in p
+        for p in problems
+    )
+
+
+def test_a_manifest_that_records_no_think_setting_fails_the_verifier(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    for row in manifest["readers"]:
+        del row["think"]
+    problems = vc.verify_manifest(manifest, SMALL)
+    assert sum("records no think setting" in p for p in problems) == len(manifest["readers"])
+
+
+def test_a_think_setting_of_the_wrong_type_does_not_pass_as_equal(tmp_path):
+    manifest = _good_manifest(tmp_path)
+    manifest["readers"][0]["think"] = 1  # 1 == True, but it is not the pinned boolean
+    problems = vc.verify_manifest(manifest, SMALL)
+    assert any("recorded think=1" in p for p in problems)

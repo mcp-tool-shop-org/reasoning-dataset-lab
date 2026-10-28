@@ -37,7 +37,8 @@ from reasoning_dataset_lab.pilot_b.unanimity import (
 
 CERT_FORMAT = 1
 
-# Both pinned readers run with think=True, and Ollama counts thinking tokens against num_predict. Measured in Pilot B
+# The nemotron and granite readers run with think=True (reader_3, Mistral Small 3.2, runs think=False: it answers
+# directly), and Ollama counts thinking tokens against num_predict. Measured in Pilot B
 # stub 10d (completion_tokens per read, all done_reason stop): nemotron 347 to 2,019, granite 158 to 1,899. A budget of
 # 128 would end nearly every call at "length", so the defaults cover the measured maximum with room for a short pair
 # prompt (about 150 tokens) inside num_ctx.
@@ -331,6 +332,7 @@ def _assemble(
             "digest": r.model.digest,
             "num_ctx_cap": getattr(r, "max_num_ctx", None),
             "num_predict": getattr(r, "num_predict", None),
+            "think": getattr(r, "think", None),
         }
         for r in readers
     ]
@@ -607,8 +609,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return doc
 
 
-def _pinned_readers() -> set[tuple[str, str, str]]:
-    """(name, digest, family) of the reader models pinned for Pilot B: a manifest must come from these, not from a fake."""
+def _pinned_readers() -> dict[tuple[str, str, str], Any]:
+    """(name, digest, family) of the reader models pinned for Pilot B, each with its pinned think setting: a manifest must come from these, not from a fake."""
 
     from reasoning_dataset_lab.pilot_b.models_and_build import (
         DEFAULT_PILOT_B_MODEL_PINS,
@@ -619,7 +621,9 @@ def _pinned_readers() -> set[tuple[str, str, str]]:
         DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
         DEFAULT_PILOT_B_MODEL_PINS["reader_3"],
     )
-    return {(s.ollama_tag, s.manifest_digest, s.family.strip().lower()) for s in pins}
+    return {
+        (s.ollama_tag, s.manifest_digest, s.family.strip().lower()): s.think for s in pins
+    }
 
 
 def _is_sha256(value: object) -> bool:
@@ -716,6 +720,14 @@ def verify_manifest(
         if key not in pinned:
             problems.append(
                 f"readers: {key[0]} @ {key[1][:12]} is not a pinned reader model"
+            )
+        elif "think" not in r:
+            problems.append(
+                f"readers: {key[0]} records no think setting, so the manifest cannot show how it answered"
+            )
+        elif not (type(r["think"]) is type(pinned[key]) and r["think"] == pinned[key]):
+            problems.append(
+                f"readers: {key[0]} recorded think={r['think']!r}, but its pin says think={pinned[key]!r}"
             )
     for domain, attribute, values in current:
         entry = entries.pop((domain, attribute), None)

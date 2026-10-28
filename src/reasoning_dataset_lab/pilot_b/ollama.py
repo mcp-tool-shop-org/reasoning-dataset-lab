@@ -1540,15 +1540,29 @@ def run_ollama_calibration_calls(
     num_predict: int = DEFAULT_CALIBRATION_NUM_PREDICT,
     num_ctx: int = DEFAULT_CALIBRATION_NUM_CTX,
     base_url: str = DEFAULT_OLLAMA_BASE_URL,
-    think: Any = True,
+    think: Any = None,
     http_transport: OllamaHttpTransport | None = None,
 ) -> tuple[list[dict[str, Any]], OllamaUnloadRecord]:
-    """Run calibration calls for `operation` with `think: True` only and unload with `keep_alive: 0`."""
-    if think is not True:
+    """Run calibration calls for `operation` with the model's pinned `think` setting and unload with `keep_alive: 0`.
+
+    `think=None` takes the pin's setting (a thinking model calibrates with thinking on; a direct-answer model such as
+    reader_3 with it off). An explicit value must equal the pin's: thinking is never switched off for a model that
+    thinks, and never switched on for one that cannot.
+    """
+    pinned_think = model.think
+    if think is None:
+        think = pinned_think
+    if type(think) is not type(pinned_think) or think != pinned_think:
+        if pinned_think is True:
+            raise refused_error(
+                "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN",
+                f"Calibration requires think=True, got {think!r}.",
+                "Run calibration with thinking enabled (think: true only).",
+            )
         raise refused_error(
-            "PILOT_B_CALIBRATE_THINK_OFF_FORBIDDEN",
-            f"Calibration requires think=True, got {think!r}.",
-            "Run calibration with thinking enabled (think: true only).",
+            "PILOT_B_CALIBRATE_THINK_MISMATCH",
+            f"Calibration got think={think!r}, but the pin for {model.name if isinstance(model, ModelIdentity) else model.ollama_tag} says think={pinned_think!r}.",
+            "Leave think unset to use the pin's setting.",
         )
     if operation not in PILOT_B_OPERATIONS:
         raise usage_error(
@@ -1591,7 +1605,7 @@ def run_ollama_calibration_calls(
             payload: dict[str, Any] = {
                 "model": resolved_model.name,
                 "messages": messages,
-                "think": True,
+                "think": think,
                 "stream": False,
                 "options": {
                     "temperature": 0,
@@ -1620,7 +1634,7 @@ def run_ollama_calibration_calls(
                     "digest": resolved_model.digest,
                     "prompt_sha256": prompt_sha,
                     "prompt_tokens_estimate": prompt_tokens_est,
-                    "think": True,
+                    "think": think,
                     "eval_count": eval_tokens,
                     "eval_tokens": eval_tokens,
                     "thinking_words": thinking_words,
