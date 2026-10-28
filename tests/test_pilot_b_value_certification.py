@@ -965,9 +965,9 @@ def test_a_garbled_control_answer_is_a_fail_and_the_real_adapter_has_chat_raw():
     assert result["pairs"][0]["verdict"] == "error"
 
 
-# The 20 control pairs v2, written out in full: changing any of them must change this test too.
-CONTROL_TABLE_V2 = [
-    ("turbines", "lubricant grade", "polyol", "synthetic", "member to class"),
+# The 20 control pairs v3, written out in full: changing any of them must change this test too.
+CONTROL_TABLE_V3 = [
+    ("turbines", "lubricant grade", "polyalphaolefin", "synthetic", "member to class"),
     ("turbines", "lubricant grade", "ester", "synthetic", "member to class"),
     ("turbines", "lubricant grade", "silicone", "synthetic", "member to class"),
     ("transformers", "dielectric fluid", "paraffinic", "mineral", "member to class"),
@@ -982,16 +982,17 @@ CONTROL_TABLE_V2 = [
     ("vessels", "hull material", "steel", "metal", "member to class"),
     ("chillers", "refrigerant", "hydrofluorocarbon", "halocarbon", "member to class"),
     ("compressors", "rotor coating", "alumina", "ceramic", "member to class"),
-    ("compressors", "rotor coating", "nitride", "ceramic", "member to class"),
+    ("compressors", "rotor coating", "silicon nitride", "ceramic", "member to class"),
     ("boilers", "tube alloy", "chromoly", "alloy steel", "member to class"),
     ("compressors", "shaft seal", "silicon carbide", "ceramic", "member to class"),
     ("relays", "enclosure rating", "IP67", "dust-tight", "implies"),
     ("chillers", "refrigerant", "R-134a", "HFC-134a", "synonym"),
 ]
+CONTROL_TABLE_V3_SHA256 = "3edf79bde1531ccfe1b1fcad889a338bd21db437d44b353a0ac90359e02a59b0"
 
 
-def test_the_control_table_is_the_twenty_pairs_of_v2():
-    assert list(vc.CONTROL_PAIRS) == CONTROL_TABLE_V2
+def test_the_control_table_is_the_twenty_pairs_of_v3():
+    assert list(vc.CONTROL_PAIRS) == CONTROL_TABLE_V3
 
 
 def test_the_control_table_hash_is_the_hash_of_the_table():
@@ -999,9 +1000,9 @@ def test_the_control_table_hash_is_the_hash_of_the_table():
     import json
 
     expected = hashlib.sha256(
-        json.dumps([list(pair) for pair in CONTROL_TABLE_V2], separators=(",", ":")).encode("utf-8")
+        json.dumps([list(pair) for pair in CONTROL_TABLE_V3], separators=(",", ":")).encode("utf-8")
     ).hexdigest()
-    assert vc.CONTROL_PAIRS_SHA256 == expected
+    assert vc.CONTROL_PAIRS_SHA256 == expected == CONTROL_TABLE_V3_SHA256
 
 
 def test_the_six_replaced_pairs_are_gone():
@@ -1012,6 +1013,8 @@ def test_the_six_replaced_pairs_are_gone():
         ("boilers", "tube alloy", "chromoly", "ferritic steel"),
         ("relays", "enclosure rating", "sealed", "waterproof"),
         ("boilers", "sootblower medium", "acoustic", "sonic"),
+        ("turbines", "lubricant grade", "polyol", "synthetic"),
+        ("compressors", "rotor coating", "nitride", "ceramic"),
     }
     assert gone.isdisjoint({pair[:4] for pair in vc.CONTROL_PAIRS})
 

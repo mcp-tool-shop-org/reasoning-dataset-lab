@@ -236,7 +236,7 @@ def _tail(text: object, limit: int = 300) -> str:
 # (a class it belongs to, or a synonym), so the right answer is NOT "unsupported". A reader that says "unsupported" to
 # all of them would pass the real pairs for the wrong reason. (domain, attribute for the prompt, stated, claimed, relation)
 CONTROL_PAIRS: tuple[tuple[str, str, str, str, str], ...] = (
-    ("turbines", "lubricant grade", "polyol", "synthetic", "member to class"),
+    ("turbines", "lubricant grade", "polyalphaolefin", "synthetic", "member to class"),
     ("turbines", "lubricant grade", "ester", "synthetic", "member to class"),
     ("turbines", "lubricant grade", "silicone", "synthetic", "member to class"),
     ("transformers", "dielectric fluid", "paraffinic", "mineral", "member to class"),
@@ -251,7 +251,7 @@ CONTROL_PAIRS: tuple[tuple[str, str, str, str, str], ...] = (
     ("vessels", "hull material", "steel", "metal", "member to class"),
     ("chillers", "refrigerant", "hydrofluorocarbon", "halocarbon", "member to class"),
     ("compressors", "rotor coating", "alumina", "ceramic", "member to class"),
-    ("compressors", "rotor coating", "nitride", "ceramic", "member to class"),
+    ("compressors", "rotor coating", "silicon nitride", "ceramic", "member to class"),
     ("boilers", "tube alloy", "chromoly", "alloy steel", "member to class"),
     ("compressors", "shaft seal", "silicon carbide", "ceramic", "member to class"),
     ("relays", "enclosure rating", "IP67", "dust-tight", "implies"),
