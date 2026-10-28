@@ -1578,3 +1578,268 @@ def test_parent_manifest_refuses_to_overwrite_parent_manifest_or_queue_paths(
         assert seen == []
 
 
+def _arm_fixture_manifest(
+    *,
+    nemotron_think: object,
+    nemotron_verdicts: dict[tuple[str, int, str, str, str], str],
+    completion_tokens: int | None = None,
+    wall_time_s: float | None = None,
+    prompt_sha256: str = vc.PROMPT_SHA256,
+    control_pairs_sha256: str = vc.CONTROL_PAIRS_SHA256,
+) -> dict:
+    ctrl_sha = control_pairs_sha256
+    nem_reader: dict[str, object] = {
+        "family": "nemotron",
+        "name": NEMOTRON.name,
+        "digest": NEMOTRON.digest,
+        "think": nemotron_think,
+        "think_overridden": nemotron_think != DEFAULT_PILOT_B_MODEL_PINS["reader_1"].think,
+        "temperature": 0.0,
+        "seed": 42,
+        "num_predict": 2048,
+    }
+    if completion_tokens is not None:
+        nem_reader["completion_tokens"] = completion_tokens
+    if wall_time_s is not None:
+        nem_reader["wall_time_s"] = wall_time_s
+
+    sets_spec = [
+        ("pumps", 0, "seal_condition", [("A", "B"), ("A", "C"), ("B", "C")]),
+        ("pumps", 0, "impeller_wear", [("D", "E"), ("D", "F"), ("E", "F")]),
+    ]
+    out_sets = []
+    for domain, ti, slot, pairs in sets_spec:
+        pair_entries = []
+        for a, b in pairs:
+            v_nem = nemotron_verdicts[(domain, ti, slot, a, b)]
+            pair_entries.append(
+                {
+                    "a": a,
+                    "b": b,
+                    "verdicts": {"granite": "incompatible", "nemotron": v_nem},
+                }
+            )
+        out_sets.append(
+            {
+                "domain": domain,
+                "table_index": ti,
+                "slot": slot,
+                "values": sorted({x for p in pairs for x in p}),
+                "pairs": pair_entries,
+            }
+        )
+    doc = {
+        "format": vc.CERT_FORMAT,
+        "date": "2026-10-28",
+        "prompt_sha256": prompt_sha256,
+        "control_pairs_sha256": ctrl_sha,
+        "readers": [
+            {
+                "family": "granite",
+                "name": GRANITE.name,
+                "digest": GRANITE.digest,
+                "think": False,
+                "think_overridden": False,
+                "temperature": 0.0,
+                "seed": 42,
+                "num_predict": 512,
+            },
+            nem_reader,
+        ],
+        "control_results": {"passed": True, "failures": []},
+        "sets": out_sets,
+    }
+    doc["content_sha256"] = vc.content_hash(doc)
+    return doc
+
+
+def test_compare_arms_on_two_fixture_manifests_gives_expected_table_and_separates_length_stops(
+    tmp_path,
+):
+    parent_verdicts = {
+        ("pumps", 0, "seal_condition", "A", "B"): "incompatible",
+        ("pumps", 0, "seal_condition", "A", "C"): "length",
+        ("pumps", 0, "seal_condition", "B", "C"): "compatible",
+        ("pumps", 0, "impeller_wear", "D", "E"): "incompatible",
+        ("pumps", 0, "impeller_wear", "D", "F"): "compatible",
+        ("pumps", 0, "impeller_wear", "E", "F"): "length",
+    }
+    addendum_verdicts = {
+        ("pumps", 0, "seal_condition", "A", "B"): "incompatible",
+        ("pumps", 0, "seal_condition", "A", "C"): "incompatible",
+        ("pumps", 0, "seal_condition", "B", "C"): "incompatible",
+        ("pumps", 0, "impeller_wear", "D", "E"): "incompatible",
+        ("pumps", 0, "impeller_wear", "D", "F"): "compatible",
+        ("pumps", 0, "impeller_wear", "E", "F"): "length",
+    }
+    parent_doc = _arm_fixture_manifest(
+        nemotron_think=True,
+        nemotron_verdicts=parent_verdicts,
+        completion_tokens=48000,
+        wall_time_s=120.5,
+    )
+    addendum_doc = _arm_fixture_manifest(
+        nemotron_think="medium",
+        nemotron_verdicts=addendum_verdicts,
+        completion_tokens=19500,
+        wall_time_s=48.2,
+    )
+    parent_path = tmp_path / "manifest-parent.json"
+    addendum_path = tmp_path / "manifest-addendum.json"
+    report_path = tmp_path / "arm-comparison.md"
+    vc.write_manifest(parent_path, parent_doc)
+    vc.write_manifest(addendum_path, addendum_doc)
+
+    rc = run_cli(
+        [
+            "pilot-b",
+            "compare-arms",
+            str(parent_path),
+            str(addendum_path),
+            "--reader",
+            "nemotron",
+            "--out",
+            str(report_path),
+        ]
+    )
+    assert rc == 0
+    assert report_path.exists()
+    report_text = report_path.read_text(encoding="utf-8")
+    first_lines = "\n".join(report_text.splitlines()[:5]).lower()
+    assert '"medium"' in first_lines or "medium" in first_lines
+    assert "effort hint" in first_lines
+    assert "not a cap" in first_lines
+
+    comparison = vc.compare_arms(parent_doc, addendum_doc, reader_family="nemotron")
+    assert comparison["total_pairs"] == 6
+    assert comparison["parent_length_stops"] == 2
+    assert comparison["addendum_length_stops"] == 1
+    assert comparison["pairs_with_verdict_at_both"] == 4
+    assert comparison["exact_verdict_agreement_count"] == 3
+    assert comparison["verdict_disagreement_count"] == 1
+    assert comparison["agreement_rate_all_pairs"] == pytest.approx(3 / 6)
+    assert comparison["agreement_rate_verdict_pairs"] == pytest.approx(3 / 4)
+    assert comparison["cross_table"]["incompatible"]["incompatible"] == 2
+    assert comparison["cross_table"]["compatible"]["incompatible"] == 1
+    assert comparison["cross_table"]["compatible"]["compatible"] == 1
+    assert comparison["cross_table"]["length"]["incompatible"] == 1
+    assert comparison["cross_table"]["length"]["length"] == 1
+    assert comparison["parent_sets_passed"] == 0
+    assert comparison["addendum_sets_passed"] == 1
+    assert comparison["total_sets"] == 2
+    assert comparison["parent_completion_tokens"] == 48000
+    assert comparison["addendum_completion_tokens"] == 19500
+    assert comparison["parent_wall_time_s"] == pytest.approx(120.5)
+    assert comparison["addendum_wall_time_s"] == pytest.approx(48.2)
+
+    assert "3 / 6 (50.0%)" in report_text
+    assert "3 / 4 (75.0%)" in report_text
+    assert "48000" in report_text and "19500" in report_text
+    assert "120.5" in report_text and "48.2" in report_text
+
+    # Also verify companion review_queue reconstruction when queued sets live alongside manifest
+    p_queue_path = tmp_path / "review_queue-parent.jsonl"
+    a_queue_path = tmp_path / "review_queue-addendum.jsonl"
+    p_queue_path.write_text(
+        json.dumps(
+            {
+                "domain": "pumps",
+                "attribute": "bearing_clearance",
+                "values": ["X", "Y"],
+                "failed_pairs": [
+                    {
+                        "first": "X",
+                        "second": "Y",
+                        "verdicts": {"granite": "incompatible", "nemotron": "length"},
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    a_queue_path.write_text(
+        json.dumps(
+            {
+                "domain": "pumps",
+                "attribute": "bearing_clearance",
+                "values": ["X", "Y"],
+                "failed_pairs": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    comp_with_q = vc.compare_arms(
+        parent_doc,
+        addendum_doc,
+        reader_family="nemotron",
+        parent_path=parent_path,
+        addendum_path=addendum_path,
+    )
+    assert comp_with_q["total_sets"] == 3
+    assert comp_with_q["total_pairs"] == 8
+    assert comp_with_q["parent_length_stops"] == 3
+    assert comp_with_q["addendum_length_stops"] == 1
+    assert comp_with_q["addendum_sets_passed"] == 2
+
+
+def test_compare_arms_refuses_mismatched_manifests(tmp_path, capsys):
+    base_verdicts = {
+        ("pumps", 0, "seal_condition", "A", "B"): "incompatible",
+        ("pumps", 0, "seal_condition", "A", "C"): "incompatible",
+        ("pumps", 0, "seal_condition", "B", "C"): "incompatible",
+        ("pumps", 0, "impeller_wear", "D", "E"): "incompatible",
+        ("pumps", 0, "impeller_wear", "D", "F"): "incompatible",
+        ("pumps", 0, "impeller_wear", "E", "F"): "incompatible",
+    }
+    parent_doc = _arm_fixture_manifest(
+        nemotron_think=True, nemotron_verdicts=base_verdicts
+    )
+    parent_path = tmp_path / "parent.json"
+    vc.write_manifest(parent_path, parent_doc)
+
+    bad_prompt = _arm_fixture_manifest(
+        nemotron_think="medium",
+        nemotron_verdicts=base_verdicts,
+        prompt_sha256="0" * 64,
+    )
+    bad_ctrl = _arm_fixture_manifest(
+        nemotron_think="medium",
+        nemotron_verdicts=base_verdicts,
+        control_pairs_sha256="f" * 64,
+    )
+    bad_sets = _arm_fixture_manifest(
+        nemotron_think="medium", nemotron_verdicts=base_verdicts
+    )
+    bad_sets["sets"] = bad_sets["sets"][:1]
+    bad_sets["content_sha256"] = vc.content_hash(bad_sets)
+    bad_pairs = _arm_fixture_manifest(
+        nemotron_think="medium", nemotron_verdicts=base_verdicts
+    )
+    bad_pairs["sets"][0]["pairs"] = bad_pairs["sets"][0]["pairs"][:2]
+    bad_pairs["content_sha256"] = vc.content_hash(bad_pairs)
+
+    for idx, bad_doc in enumerate((bad_prompt, bad_ctrl, bad_sets, bad_pairs)):
+        bad_path = tmp_path / f"bad-{idx}.json"
+        out_path = tmp_path / f"out-{idx}.md"
+        vc.write_manifest(bad_path, bad_doc)
+        rc = run_cli(
+            [
+                "pilot-b",
+                "compare-arms",
+                str(parent_path),
+                str(bad_path),
+                "--reader",
+                "nemotron",
+                "--out",
+                str(out_path),
+            ]
+        )
+        assert rc == 1
+        err_payload = json.loads(capsys.readouterr().err.strip())
+        assert err_payload["code"] == "PILOT_B_COMPARE_ARMS_MISMATCH"
+        assert not out_path.exists()
+
+
+

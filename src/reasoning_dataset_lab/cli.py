@@ -584,6 +584,73 @@ def _run_verify_values_manifest(argv: Sequence[str]) -> int:
     return EXIT_REFUSED if problems else EXIT_CLEAN
 
 
+def _run_compare_arms(argv: Sequence[str]) -> int:
+    parser = _StructuredArgumentParser(
+        prog="rdlab pilot-b compare-arms",
+        description=(
+            "Compare a parent certification manifest and an addendum manifest for a single reader family, "
+            "reporting length stops separately from verdicts."
+        ),
+    )
+    parser.add_argument(
+        "parent_manifest",
+        type=Path,
+        help="Path to the parent certification manifest JSON.",
+    )
+    parser.add_argument(
+        "addendum_manifest",
+        type=Path,
+        help="Path to the addendum certification manifest JSON.",
+    )
+    parser.add_argument(
+        "--reader",
+        dest="reader",
+        type=str,
+        default="nemotron",
+        help="Reader family to compare (default: nemotron).",
+    )
+    parser.add_argument(
+        "--out",
+        dest="out_path",
+        type=Path,
+        required=True,
+        help="Output path for the markdown comparison report.",
+    )
+    args = parser.parse_args(argv)
+    parent_doc = value_certification.load_manifest(args.parent_manifest)
+    addendum_doc = value_certification.load_manifest(args.addendum_manifest)
+    comparison = value_certification.compare_arms(
+        parent_doc,
+        addendum_doc,
+        reader_family=args.reader,
+        parent_path=args.parent_manifest,
+        addendum_path=args.addendum_manifest,
+    )
+    report_text = value_certification.format_arm_comparison_report(comparison)
+    args.out_path.parent.mkdir(parents=True, exist_ok=True)
+    args.out_path.write_text(report_text, encoding="utf-8", newline="\n")
+    print(
+        json.dumps(
+            {
+                "reader_family": comparison["reader_family"],
+                "total_pairs": comparison["total_pairs"],
+                "parent_length_stops": comparison["parent_length_stops"],
+                "addendum_length_stops": comparison["addendum_length_stops"],
+                "exact_verdict_agreement_count": comparison[
+                    "exact_verdict_agreement_count"
+                ],
+                "agreement_rate_all_pairs": comparison["agreement_rate_all_pairs"],
+                "agreement_rate_verdict_pairs": comparison[
+                    "agreement_rate_verdict_pairs"
+                ],
+                "out": str(args.out_path),
+            },
+            indent=2,
+        )
+    )
+    return EXIT_CLEAN
+
+
 def run_cli(argv: Sequence[str] | None = None) -> int:
     """Execute the CLI and return its exit code (0 clean, 1 refused, 2 usage)."""
     raw_argv = list(argv) if argv is not None else sys.argv[1:]
@@ -601,6 +668,12 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             and raw_argv[1] == "verify-values-manifest"
         ):
             return _run_verify_values_manifest(raw_argv[2:])
+        if (
+            len(raw_argv) >= 2
+            and raw_argv[0] == "pilot-b"
+            and raw_argv[1] == "compare-arms"
+        ):
+            return _run_compare_arms(raw_argv[2:])
         if (
             len(raw_argv) >= 2
             and raw_argv[0] == "pilot-b"

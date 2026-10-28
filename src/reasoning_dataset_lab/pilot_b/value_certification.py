@@ -1069,3 +1069,383 @@ def build_ollama_readers(
             )
         )
     return readers
+
+
+CROSS_TABLE_OUTCOMES: tuple[str, ...] = ("incompatible", "compatible", "unsure", "length")
+
+
+def _load_companion_review_queue(manifest_path: Path | None) -> list[dict[str, Any]]:
+    if manifest_path is None:
+        return []
+    candidates = [manifest_path.with_name(manifest_path.name.replace("manifest", "review_queue", 1))]
+    stem = manifest_path.stem.replace("manifest", "review_queue", 1)
+    for ext in (".json", ".jsonl"):
+        cand = manifest_path.with_name(stem + ext)
+        if cand not in candidates:
+            candidates.append(cand)
+    for cand in candidates:
+        if cand != manifest_path and cand.exists():
+            raw = cand.read_text(encoding="utf-8").strip()
+            if not raw:
+                return []
+            if raw.startswith("["):
+                data = json.loads(raw)
+                return list(data) if isinstance(data, list) else []
+            return [json.loads(line) for line in raw.splitlines() if line.strip()]
+    return []
+
+
+def _extract_manifest_sets_and_pairs(
+    manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path | None = None,
+    reader_name: str,
+    reader_family: str,
+) -> dict[tuple[str, str], dict[tuple[str, str], str]]:
+    """Return mapping of (domain, attribute_or_slot) -> {(first, second): verdict_for_reader}."""
+    sets_map: dict[tuple[str, str], dict[tuple[str, str], str]] = {}
+    for entry in manifest.get("sets", []):
+        domain = str(entry.get("domain", ""))
+        attr = str(entry.get("attribute") or entry.get("slot") or "")
+        ti = entry.get("table_index")
+        set_key = (domain, f"{ti}:{attr}" if ti is not None and "attribute" not in entry else attr)
+        pair_map: dict[tuple[str, str], str] = {}
+        for pair in entry.get("pairs", []):
+            first = str(pair.get("first") if "first" in pair else pair.get("a", ""))
+            second = str(pair.get("second") if "second" in pair else pair.get("b", ""))
+            verdicts = pair.get("verdicts") or {}
+            v = verdicts.get(reader_name)
+            if v is None:
+                v = verdicts.get(reader_family)
+            if v is None:
+                for k, val in verdicts.items():
+                    if str(k).strip().lower() in (reader_name.lower(), reader_family.lower()):
+                        v = val
+                        break
+            pair_map[(first, second)] = str(v) if v is not None else "missing"
+        sets_map[set_key] = pair_map
+
+    queue_rows = list(manifest.get("review_queue", [])) or _load_companion_review_queue(
+        manifest_path
+    )
+    for q_entry in queue_rows:
+        domain = str(q_entry.get("domain", ""))
+        attr = str(q_entry.get("attribute") or q_entry.get("slot") or "")
+        set_key = (domain, attr)
+        if set_key in sets_map:
+            continue
+        values = [str(v) for v in q_entry.get("values", [])]
+        failed_lookup: dict[tuple[str, str], str] = {}
+        for fp in q_entry.get("failed_pairs", []):
+            first = str(fp.get("first") if "first" in fp else fp.get("a", ""))
+            second = str(fp.get("second") if "second" in fp else fp.get("b", ""))
+            verdicts = fp.get("verdicts") or {}
+            v = verdicts.get(reader_name)
+            if v is None:
+                v = verdicts.get(reader_family)
+            if v is None:
+                for k, val in verdicts.items():
+                    if str(k).strip().lower() in (reader_name.lower(), reader_family.lower()):
+                        v = val
+                        break
+            if v is not None:
+                failed_lookup[(first, second)] = str(v)
+        pair_map = {}
+        for a, b in directed_pairs(values):
+            pair_map[(a, b)] = failed_lookup.get((a, b), CONTRADICTION)
+        sets_map[set_key] = pair_map
+    return sets_map
+
+
+def _find_reader_entry(manifest: Mapping[str, Any], reader_family: str) -> dict[str, Any]:
+    target = reader_family.strip().lower()
+    for r in manifest.get("readers", []):
+        fam = str(r.get("family", "")).strip().lower()
+        name = str(r.get("name", "") or r.get("model_tag", "")).strip().lower()
+        if fam == target or name == target or name.startswith(target):
+            return dict(r)
+    raise refused_error(
+        "PILOT_B_COMPARE_ARMS_MISMATCH",
+        f"Reader '{reader_family}' was not found in manifest readers.",
+        "Pass --reader matching a reader family present in both parent and addendum manifests.",
+    )
+
+
+def compare_arms(
+    parent_manifest: Mapping[str, Any],
+    addendum_manifest: Mapping[str, Any],
+    *,
+    reader_family: str = "nemotron",
+    parent_path: Path | None = None,
+    addendum_path: Path | None = None,
+) -> dict[str, Any]:
+    """Compare parent and addendum manifests for one reader family, keeping length stops separate from verdicts."""
+    if parent_manifest.get("prompt_sha256") != addendum_manifest.get("prompt_sha256"):
+        raise refused_error(
+            "PILOT_B_COMPARE_ARMS_MISMATCH",
+            "Parent and addendum manifests have different prompt_sha256.",
+            "Compare manifests generated under the exact same certification prompt.",
+        )
+    if parent_manifest.get("control_pairs_sha256") != addendum_manifest.get(
+        "control_pairs_sha256"
+    ):
+        raise refused_error(
+            "PILOT_B_COMPARE_ARMS_MISMATCH",
+            "Parent and addendum manifests have different control_pairs_sha256.",
+            "Compare manifests generated under the exact same negative-control pair table.",
+        )
+
+    parent_reader = _find_reader_entry(parent_manifest, reader_family)
+    addendum_reader = _find_reader_entry(addendum_manifest, reader_family)
+    p_name = str(parent_reader.get("name") or parent_reader.get("model_tag") or reader_family)
+    a_name = str(addendum_reader.get("name") or addendum_reader.get("model_tag") or reader_family)
+    fam = str(parent_reader.get("family") or reader_family).strip().lower()
+
+    parent_sets = _extract_manifest_sets_and_pairs(
+        parent_manifest,
+        manifest_path=parent_path,
+        reader_name=p_name,
+        reader_family=fam,
+    )
+    addendum_sets = _extract_manifest_sets_and_pairs(
+        addendum_manifest,
+        manifest_path=addendum_path,
+        reader_name=a_name,
+        reader_family=fam,
+    )
+
+    if list(parent_sets.keys()) != list(addendum_sets.keys()):
+        raise refused_error(
+            "PILOT_B_COMPARE_ARMS_MISMATCH",
+            "Parent and addendum manifests cover different value sets.",
+            "Run compare-arms on manifests covering the exact same value sets.",
+        )
+
+    for set_key in parent_sets:
+        if list(parent_sets[set_key].keys()) != list(addendum_sets[set_key].keys()):
+            raise refused_error(
+                "PILOT_B_COMPARE_ARMS_MISMATCH",
+                f"Parent and addendum manifests have different pairs for set {set_key[0]}/{set_key[1]}.",
+                "Run compare-arms on manifests covering the exact same directed pairs.",
+            )
+
+    cross_table: dict[str, dict[str, int]] = {
+        r_out: {c_out: 0 for c_out in CROSS_TABLE_OUTCOMES}
+        for r_out in CROSS_TABLE_OUTCOMES
+    }
+    pair_rows: list[dict[str, Any]] = []
+    per_set_rows: list[dict[str, Any]] = []
+
+    total_pairs = 0
+    parent_length_stops = 0
+    addendum_length_stops = 0
+    pairs_with_verdict_at_both = 0
+    exact_verdict_agreement_count = 0
+    verdict_disagreement_count = 0
+    parent_sets_passed = 0
+    addendum_sets_passed = 0
+
+    for domain, attr in parent_sets:
+        p_pairs = parent_sets[(domain, attr)]
+        a_pairs = addendum_sets[(domain, attr)]
+        set_label = f"{domain}/{attr}"
+        p_set_all_incompat = len(p_pairs) > 0
+        a_set_all_incompat = len(a_pairs) > 0
+        p_set_len_stops = 0
+        a_set_len_stops = 0
+
+        for (first, second), p_val in p_pairs.items():
+            a_val = a_pairs[(first, second)]
+            total_pairs += 1
+            p_is_len = p_val in FAILED_DONE_REASONS
+            a_is_len = a_val in FAILED_DONE_REASONS
+            p_bucket = "length" if p_is_len else p_val
+            a_bucket = "length" if a_is_len else a_val
+            if p_bucket not in cross_table:
+                cross_table[p_bucket] = {k: 0 for k in CROSS_TABLE_OUTCOMES}
+            if a_bucket not in cross_table[p_bucket]:
+                for row_dict in cross_table.values():
+                    row_dict.setdefault(a_bucket, 0)
+            cross_table[p_bucket][a_bucket] += 1
+
+            if p_is_len:
+                parent_length_stops += 1
+                p_set_len_stops += 1
+            if a_is_len:
+                addendum_length_stops += 1
+                a_set_len_stops += 1
+
+            if p_val != CONTRADICTION:
+                p_set_all_incompat = False
+            if a_val != CONTRADICTION:
+                a_set_all_incompat = False
+
+            # Length stops are NEVER counted as a verdict or folded into "disagree"
+            both_have_verdict = (p_val in ANSWERS) and (a_val in ANSWERS)
+            if both_have_verdict:
+                pairs_with_verdict_at_both += 1
+                if p_val == a_val:
+                    exact_verdict_agreement_count += 1
+                    outcome_class = "verdict_agree"
+                else:
+                    verdict_disagreement_count += 1
+                    outcome_class = "verdict_disagree"
+            else:
+                outcome_class = "length_stop_excluded_from_verdicts"
+
+            pair_rows.append(
+                {
+                    "set": set_label,
+                    "domain": domain,
+                    "attribute": attr,
+                    "first": first,
+                    "second": second,
+                    "parent_verdict": p_val,
+                    "addendum_verdict": a_val,
+                    "outcome_class": outcome_class,
+                }
+            )
+
+        if p_set_all_incompat:
+            parent_sets_passed += 1
+        if a_set_all_incompat:
+            addendum_sets_passed += 1
+        per_set_rows.append(
+            {
+                "set": set_label,
+                "domain": domain,
+                "attribute": attr,
+                "parent_pass": p_set_all_incompat,
+                "addendum_pass": a_set_all_incompat,
+                "parent_length_stops": p_set_len_stops,
+                "addendum_length_stops": a_set_len_stops,
+            }
+        )
+
+    agreement_rate_all_pairs = (
+        exact_verdict_agreement_count / total_pairs if total_pairs > 0 else 0.0
+    )
+    agreement_rate_verdict_pairs = (
+        exact_verdict_agreement_count / pairs_with_verdict_at_both
+        if pairs_with_verdict_at_both > 0
+        else 0.0
+    )
+
+    return {
+        "reader_family": fam,
+        "parent_think": parent_reader.get("think"),
+        "addendum_think": addendum_reader.get("think"),
+        "total_sets": len(parent_sets),
+        "total_pairs": total_pairs,
+        "parent_length_stops": parent_length_stops,
+        "addendum_length_stops": addendum_length_stops,
+        "pairs_with_verdict_at_both": pairs_with_verdict_at_both,
+        "exact_verdict_agreement_count": exact_verdict_agreement_count,
+        "verdict_disagreement_count": verdict_disagreement_count,
+        "agreement_rate_all_pairs": agreement_rate_all_pairs,
+        "agreement_rate_verdict_pairs": agreement_rate_verdict_pairs,
+        "parent_sets_passed": parent_sets_passed,
+        "addendum_sets_passed": addendum_sets_passed,
+        "parent_completion_tokens": parent_reader.get("completion_tokens"),
+        "addendum_completion_tokens": addendum_reader.get("completion_tokens"),
+        "parent_wall_time_s": parent_reader.get("wall_time_s"),
+        "addendum_wall_time_s": addendum_reader.get("wall_time_s"),
+        "cross_table": cross_table,
+        "per_set": per_set_rows,
+        "pairs": pair_rows,
+    }
+
+
+def format_arm_comparison_report(comparison: Mapping[str, Any]) -> str:
+    """Format the markdown arm-comparison report with length stops separated from verdicts."""
+    fam = comparison["reader_family"]
+    p_think = comparison["parent_think"]
+    a_think = comparison["addendum_think"]
+    total_pairs = comparison["total_pairs"]
+    both_verdicts = comparison["pairs_with_verdict_at_both"]
+    agree = comparison["exact_verdict_agreement_count"]
+    disagree = comparison["verdict_disagreement_count"]
+    rate_all = comparison["agreement_rate_all_pairs"] * 100.0
+    rate_verdicts = comparison["agreement_rate_verdict_pairs"] * 100.0
+
+    lines: list[str] = [
+        f"# Pilot B Reader Think-Arm Comparison ({fam})",
+        (
+            'Note: In Ollama\'s nemotron3nano renderer (`model/renderers/nemotron3nano.go:30, 86-87`), '
+            '`"medium"` is an effort hint the template knows (thinking stays on), not a cap on thinking tokens.'
+        ),
+        "",
+        "## Summary",
+        f"- Reader family: `{fam}`",
+        f"- Parent think setting: `{p_think!r}`",
+        f"- Addendum think setting: `{a_think!r}`",
+        f"- Total sets: {comparison['total_sets']}",
+        f"- Total directed pairs: {total_pairs}",
+        f"- Parent length stops (reported separately from verdicts; never counted as a verdict or folded into disagree): {comparison['parent_length_stops']}",
+        f"- Addendum length stops (reported separately from verdicts; never counted as a verdict or folded into disagree): {comparison['addendum_length_stops']}",
+        f"- Pairs with a verdict at both settings: {both_verdicts}",
+        f"- Exact verdict agreement count: {agree}",
+        f"- Verdict disagreement count (verdict pairs only): {disagree}",
+        f"- Exact verdict agreement rate (over all pairs): {agree} / {total_pairs} ({rate_all:.1f}%)",
+        f"- Exact verdict agreement rate (over pairs with a verdict at both settings): {agree} / {both_verdicts} ({rate_verdicts:.1f}%)",
+        f"- Per-set reader pass (parent `{p_think!r}`): {comparison['parent_sets_passed']} / {comparison['total_sets']}",
+        f"- Per-set reader pass (addendum `{a_think!r}`): {comparison['addendum_sets_passed']} / {comparison['total_sets']}",
+    ]
+
+    p_tok = comparison.get("parent_completion_tokens")
+    a_tok = comparison.get("addendum_completion_tokens")
+    if p_tok is not None or a_tok is not None:
+        lines.append(f"- Completion tokens: parent={p_tok}, addendum={a_tok}")
+    p_wall = comparison.get("parent_wall_time_s")
+    a_wall = comparison.get("addendum_wall_time_s")
+    if p_wall is not None or a_wall is not None:
+        lines.append(f"- Wall time (s): parent={p_wall}, addendum={a_wall}")
+
+    ct = comparison["cross_table"]
+    lines.extend(
+        [
+            "",
+            "## Cross-Table (Parent Rows vs Addendum Columns; `length` Separated from Verdicts)",
+            "| Parent \\ Addendum | incompatible (verdict) | compatible (verdict) | unsure (verdict) | length (stop — not a verdict) |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for row_key in CROSS_TABLE_OUTCOMES:
+        row_label = (
+            f"{row_key} (stop — not a verdict)"
+            if row_key == "length"
+            else f"{row_key} (verdict)"
+        )
+        row_counts = ct.get(row_key, {})
+        lines.append(
+            f"| {row_label} | {row_counts.get('incompatible', 0)} | {row_counts.get('compatible', 0)} | {row_counts.get('unsure', 0)} | {row_counts.get('length', 0)} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Per-Set Reader Pass by Setting",
+            "| Set | Parent Pass | Addendum Pass | Parent Length Stops | Addendum Length Stops |",
+            "| --- | :---: | :---: | ---: | ---: |",
+        ]
+    )
+    for s_row in comparison["per_set"]:
+        lines.append(
+            f"| {s_row['set']} | {'pass' if s_row['parent_pass'] else 'fail'} | {'pass' if s_row['addendum_pass'] else 'fail'} | {s_row['parent_length_stops']} | {s_row['addendum_length_stops']} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Per-Pair Verdicts and Length Stops",
+            "| Set | First | Second | Parent | Addendum | Classification |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for p_row in comparison["pairs"]:
+        lines.append(
+            f"| {p_row['set']} | {p_row['first']} | {p_row['second']} | {p_row['parent_verdict']} | {p_row['addendum_verdict']} | {p_row['outcome_class']} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
+
