@@ -32,6 +32,121 @@
       "externals": 0,
       "files": [
         {
+          "hash": "cda1b45bb6659e4a563ac5227fc763ae7e7843e12f5b7adcaf96872753010f6f",
+          "path": "certification/r3/FINDINGS.md"
+        },
+        {
+          "hash": "938abebcf859d7921ad6253615c38f3044c55854c4608a07c009aec081499888",
+          "path": "certification/r3/README.md"
+        },
+        {
+          "hash": "77bfd2d51bf907060b8f8894691ed3e9dfdbb900512505b0ec7b3cacf5f00080",
+          "path": "certification/r3/manifest-r3.json"
+        },
+        {
+          "hash": "d6a7aa10ffbab5663d22b269940c773296875b07d7bcc023b07661e215f8c9c1",
+          "path": "certification/r3/review_queue-r3.json"
+        },
+        {
+          "hash": "201d4a69531efc02547f184ab85c5a83a2868be6df51a3fecf336b2f93b64fba",
+          "path": "certification/r3/second-keying/argon-keys.jsonl"
+        },
+        {
+          "hash": "9a703ca13858e5eff918c4135b47fa47a1d7615c67e3adf587261bc66841bdc7",
+          "path": "certification/r3/second-keying/keying-items.jsonl"
+        },
+        {
+          "hash": "51b22786b4f0fc9371fad1bc72a94c2d204baf770546109d949a34bc9eb214ca",
+          "path": "certification/v3/FINDINGS.md"
+        },
+        {
+          "hash": "ef5538004ca344217c3b55c72319e41ca9d4339fb5530108e77c600ccbca9dae",
+          "path": "certification/v3/README.md"
+        },
+        {
+          "hash": "289800eb82bf1e24ef6e624d5f3e42896290587b3a43f1cb915bb7befbfb1e2a",
+          "path": "certification/v3/control-mistral-v3.json"
+        },
+        {
+          "hash": "b1fe03128b3e986d058368a008e26d50d49e53cbf0144c3688e85197e15468e0",
+          "path": "certification/v3/control-nemotron-v3.json"
+        },
+        {
+          "hash": "62cbd66cee277223db25713f49e7886e43d51744ba24217d62b36afd8bad1a2e",
+          "path": "certification/v3/manifest-v3.json"
+        },
+        {
+          "hash": "9aa6bcb8eeeafa60e328a0e386ddbd0e0aeae71e89d476cc0da067cb6f33e4c4",
+          "path": "certification/v3/medium-arm/COMPARE-r3-nemotron-medium.md"
+        },
+        {
+          "hash": "4a67011f471ed278ba971a45ae08ec1aea4a7118a7d1c543c6ef7a544551f9e5",
+          "path": "certification/v3/medium-arm/control-nemotron-v2-medium.json"
+        },
+        {
+          "hash": "fcd6e0d5771172ca80417549b808947efe680c3bb4bef73ba3dc0ad9ff3202f6",
+          "path": "certification/v3/medium-arm/manifest-r3-nemotron-medium.json"
+        },
+        {
+          "hash": "840804bd3e864742d35379cf3746f1b28f3bb0c257584145e524b968cd4cafbe",
+          "path": "certification/v3/medium-arm/review_queue-r3-nemotron-medium.json"
+        },
+        {
+          "hash": "a6d073a530b52839af7d6e735f1c13904ea23817dad81daa49b2ede0768f0053",
+          "path": "certification/v3/review_queue-v3.json"
+        },
+        {
+          "hash": "89711c1f3a3b936399eced0bda87793e113535ff2fb18ff033511edd6187f873",
+          "path": "certification/v3/second-keying/v3/argon-keys-v3.jsonl"
+        },
+        {
+          "hash": "b865543ef032e0971ee2b99d1e5bcfa1be4fc23d2f2fb34cb8065b593055197c",
+          "path": "certification/v3/second-keying/v3/changed-sets-33a429b.json"
+        },
+        {
+          "hash": "0f58b3309d5517bbfde04457feac3de24a0d2df6437fd0225adc971c1a548183",
+          "path": "certification/v3/second-keying/v3/keying-items-v3.jsonl"
+        },
+        {
+          "hash": "db6dd62ff1f31374a4d4a51c9331f5ac0bdeb3c76876a0ce4f6239d2c57fabd8",
+          "path": "certification/v3/second-keying/v3/lg-flagged-pairs.jsonl"
+        },
+        {
+          "hash": "2d6aff2a5e0fcbc82bf34e924e234c5b251b6080228ac4b624e124963c235302",
+          "path": "certification/v3/second-keying/v3b/argon-keys-v3b.jsonl"
+        },
+        {
+          "hash": "356443958dc63b9f754617371d4fdfada7af7ad6b71ccfd134721bf92541cb9e",
+          "path": "certification/v3/second-keying/v3b/keying-items-v3b.jsonl"
+        },
+        {
+          "hash": "1c78f734f789ffb51bf27f1d5c480dd5fa12690f155161f8b774d3113493da58",
+          "path": "certification/v3/second-keying/v3c/argon-keys-v3c.jsonl"
+        },
+        {
+          "hash": "abd102c58be9041f40757bb1682ff81bb7cf83cb12d71ba563fb045de9dc2bf0",
+          "path": "certification/v3/second-keying/v3c/keying-items-v3c.jsonl"
+        }
+      ],
+      "globs": [
+        "certification/**"
+      ],
+      "importConfidence": "full",
+      "name": "certification",
+      "origin": "authored",
+      "role": "data",
+      "testedBy": 0,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
           "hash": "e58eee096023fa7dfebe97de575b99814574ed8ea21cb6126d3d217e99deffb3",
           "path": "examples/t10-pilot-a.map.yaml"
         }
@@ -7714,8 +7829,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "a5d507c66796740fd56c0123ec881151bb5d1e60",
-    "tracked": 63
+    "commit": "5faf81152641afccc7e0be5fbef817f2c6b4cb79",
+    "tracked": 81
   },
   "landings": [
     {
@@ -7947,30 +8062,6 @@
   "symlinks": [],
   "testFiles": 22,
   "unassigned": [
-    {
-      "hash": "cda1b45bb6659e4a563ac5227fc763ae7e7843e12f5b7adcaf96872753010f6f",
-      "path": "certification/r3/FINDINGS.md"
-    },
-    {
-      "hash": "938abebcf859d7921ad6253615c38f3044c55854c4608a07c009aec081499888",
-      "path": "certification/r3/README.md"
-    },
-    {
-      "hash": "77bfd2d51bf907060b8f8894691ed3e9dfdbb900512505b0ec7b3cacf5f00080",
-      "path": "certification/r3/manifest-r3.json"
-    },
-    {
-      "hash": "d6a7aa10ffbab5663d22b269940c773296875b07d7bcc023b07661e215f8c9c1",
-      "path": "certification/r3/review_queue-r3.json"
-    },
-    {
-      "hash": "201d4a69531efc02547f184ab85c5a83a2868be6df51a3fecf336b2f93b64fba",
-      "path": "certification/r3/second-keying/argon-keys.jsonl"
-    },
-    {
-      "hash": "9a703ca13858e5eff918c4135b47fa47a1d7615c67e3adf587261bc66841bdc7",
-      "path": "certification/r3/second-keying/keying-items.jsonl"
-    },
     {
       "hash": "2b7c7e75565178a5d9b7de497bbade83301c35245bd254c816ad280c16596d9f",
       "path": "docs/calibration-2026-10-25.md"

@@ -4,6 +4,10 @@ boundaries:
     globs:
       - .github/**
     role: config
+  - name: certification
+    globs:
+      - certification/**
+    role: data
   - name: examples
     globs:
       - examples/**

@@ -1,6 +1,7 @@
 {
   "authored": [
     ".github/",
+    "certification/",
     "examples/",
     "root"
   ],
@@ -18,30 +19,29 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 0,
-      "changed": 12,
-      "moved": 0,
-      "parts": 3,
+      "added": 18,
+      "changed": 0,
+      "moved": 6,
+      "parts": 1,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "tests/test_pilot_b_variety.py is now read by tests/test_pilot_b_variety.py.",
+        "kind": "part",
+        "sentence": "certification is a new part, drawn from `certification/**`.",
         "subjects": [
-          "tests/test_pilot_b_variety.py",
-          "tests/test_pilot_b_variety.py"
+          "certification"
         ]
       },
       {
         "kind": "counts",
-        "sentence": "12 files changed content, across 3 parts.",
+        "sentence": "18 files added and 6 moved, across 1 part.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "dbd63dd5d5916824d31937274b469c89ec01b387",
-      "generatedAt": "2026-10-28T08:52:03.724Z"
+      "commit": "a5d507c66796740fd56c0123ec881151bb5d1e60",
+      "generatedAt": "2026-10-28T12:50:19.757Z"
     },
     "unchanged": false
   },
@@ -49,21 +49,6 @@
     {
       "a": "src/reasoning_dataset_lab/pilot_b/value_certification.py",
       "b": "tests/test_pilot_b_value_certification.py",
-      "either": 7,
-      "partLabels": [
-        "src",
-        "tests"
-      ],
-      "parts": [
-        "src",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 7
-    },
-    {
-      "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
-      "b": "tests/test_pilot_b_ollama_adapters.py",
       "either": 8,
       "partLabels": [
         "src",
@@ -74,12 +59,12 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 7
+      "shared": 8
     },
     {
-      "a": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
-      "b": "tests/test_pilot_b_sealing_seed.py",
-      "either": 7,
+      "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
+      "b": "tests/test_pilot_b_ollama_adapters.py",
+      "either": 10,
       "partLabels": [
         "src",
         "tests"
@@ -89,12 +74,12 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 5
+      "shared": 9
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
-      "either": 11,
+      "either": 13,
       "partLabels": [
         "src",
         "src"
@@ -104,11 +89,11 @@
         "src"
       ],
       "relation": "inside",
-      "shared": 7
+      "shared": 9
     },
     {
-      "a": "src/reasoning_dataset_lab/cli.py",
-      "b": "tests/test_pilot_b_ollama_adapters.py",
+      "a": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
+      "b": "tests/test_pilot_b_sealing_seed.py",
       "either": 9,
       "partLabels": [
         "src",
@@ -119,7 +104,22 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 5
+      "shared": 6
+    },
+    {
+      "a": "src/reasoning_dataset_lab/cli.py",
+      "b": "tests/test_pilot_b_ollama_adapters.py",
+      "either": 11,
+      "partLabels": [
+        "src",
+        "tests"
+      ],
+      "parts": [
+        "src",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 7
     }
   ],
   "changesTogetherNote": [
@@ -127,9 +127,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "a5d507c66796740fd56c0123ec881151bb5d1e60",
+  "commit": "5faf81152641afccc7e0be5fbef817f2c6b4cb79",
   "defaultBranch": "main",
-  "derived": "5 parts, mostly Python (39 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
+  "derived": "6 parts, mostly Python (39 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -200,23 +200,24 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-28T12:50:19.757Z",
+  "generatedAt": "2026-10-28T17:08:45.323Z",
   "limits": [
     "7 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "7 reads use paths built at run time and are not named here.",
     "15 writes and 42 reads go to a path their caller passes, not to this repository.",
-    "7 files belong to no part: certification/r3/FINDINGS.md, certification/r3/README.md, certification/r3/manifest-r3.json and 4 more.",
+    "1 file belongs to no part: docs/calibration-2026-10-25.md.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
   "partLabels": {
     ".github": ".github",
+    "certification": "certification",
     "examples": "examples",
     "root": "the repository root",
     "src": "src",
     "tests": "tests"
   },
-  "parts": 5,
+  "parts": 6,
   "readers": [],
   "repo": "mcp-tool-shop-org/reasoning-dataset-lab",
   "sequences": [],

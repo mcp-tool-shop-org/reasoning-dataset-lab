@@ -32,6 +32,22 @@
       "cohesionDropped": false,
       "confidence": "low",
       "highWater": null,
+      "name": "certification",
+      "qualifyingSourceCommits": 0,
+      "rebaseline": null
+    },
+    {
+      "breakage": {
+        "coChangesOnly": [],
+        "collapsed": false,
+        "confidence": "low",
+        "importsAndCoChanges": [],
+        "importsOnly": []
+      },
+      "cohesion": null,
+      "cohesionDropped": false,
+      "confidence": "low",
+      "highWater": null,
       "name": "examples",
       "qualifyingSourceCommits": 0,
       "rebaseline": null
@@ -62,12 +78,12 @@
         ],
         "importsOnly": []
       },
-      "cohesion": 0.313065,
+      "cohesion": 0.356367,
       "cohesionDropped": false,
       "confidence": "low",
       "highWater": null,
       "name": "src",
-      "qualifyingSourceCommits": 18,
+      "qualifyingSourceCommits": 21,
       "rebaseline": null
     },
     {
@@ -85,7 +101,7 @@
       "confidence": "low",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 18,
+      "qualifyingSourceCommits": 21,
       "rebaseline": null
     }
   ],
@@ -133,8 +149,8 @@
         "path": "SECURITY.md"
       },
       {
-        "commits": 10,
-        "lines": 211,
+        "commits": 11,
+        "lines": 237,
         "path": "atlas/README.md"
       },
       {
@@ -143,18 +159,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 10,
-        "lines": 641,
+        "commits": 11,
+        "lines": 732,
         "path": "atlas/page.json"
       },
       {
-        "commits": 10,
-        "lines": 1314,
+        "commits": 11,
+        "lines": 1486,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 10,
-        "lines": 14916,
+        "commits": 11,
+        "lines": 17757,
         "path": "atlas/structure.json"
       },
       {
@@ -186,6 +202,96 @@
         "commits": 1,
         "lines": 547,
         "path": "certification/r3/second-keying/keying-items.jsonl"
+      },
+      {
+        "commits": 1,
+        "lines": 95,
+        "path": "certification/v3/FINDINGS.md"
+      },
+      {
+        "commits": 1,
+        "lines": 15,
+        "path": "certification/v3/README.md"
+      },
+      {
+        "commits": 1,
+        "lines": 251,
+        "path": "certification/v3/control-mistral-v3.json"
+      },
+      {
+        "commits": 1,
+        "lines": 251,
+        "path": "certification/v3/control-nemotron-v3.json"
+      },
+      {
+        "commits": 1,
+        "lines": 8232,
+        "path": "certification/v3/manifest-v3.json"
+      },
+      {
+        "commits": 1,
+        "lines": 1084,
+        "path": "certification/v3/medium-arm/COMPARE-r3-nemotron-medium.md"
+      },
+      {
+        "commits": 1,
+        "lines": 251,
+        "path": "certification/v3/medium-arm/control-nemotron-v2-medium.json"
+      },
+      {
+        "commits": 1,
+        "lines": 4927,
+        "path": "certification/v3/medium-arm/manifest-r3-nemotron-medium.json"
+      },
+      {
+        "commits": 1,
+        "lines": 20,
+        "path": "certification/v3/medium-arm/review_queue-r3-nemotron-medium.json"
+      },
+      {
+        "commits": 1,
+        "lines": 6,
+        "path": "certification/v3/review_queue-v3.json"
+      },
+      {
+        "commits": 1,
+        "lines": 1000,
+        "path": "certification/v3/second-keying/v3/argon-keys-v3.jsonl"
+      },
+      {
+        "commits": 1,
+        "lines": 1,
+        "path": "certification/v3/second-keying/v3/changed-sets-33a429b.json"
+      },
+      {
+        "commits": 1,
+        "lines": 1000,
+        "path": "certification/v3/second-keying/v3/keying-items-v3.jsonl"
+      },
+      {
+        "commits": 1,
+        "lines": 120,
+        "path": "certification/v3/second-keying/v3/lg-flagged-pairs.jsonl"
+      },
+      {
+        "commits": 1,
+        "lines": 560,
+        "path": "certification/v3/second-keying/v3b/argon-keys-v3b.jsonl"
+      },
+      {
+        "commits": 1,
+        "lines": 560,
+        "path": "certification/v3/second-keying/v3b/keying-items-v3b.jsonl"
+      },
+      {
+        "commits": 1,
+        "lines": 60,
+        "path": "certification/v3/second-keying/v3c/argon-keys-v3c.jsonl"
+      },
+      {
+        "commits": 1,
+        "lines": 60,
+        "path": "certification/v3/second-keying/v3c/keying-items-v3c.jsonl"
       },
       {
         "commits": 3,
@@ -438,147 +544,161 @@
     "level": "low",
     "reason": "fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions"
   },
-  "generatedAt": "2026-10-28T12:50:19.757Z",
+  "generatedAt": "2026-10-28T17:08:45.323Z",
   "generatedFrom": {
-    "commit": "a5d507c66796740fd56c0123ec881151bb5d1e60"
+    "commit": "5faf81152641afccc7e0be5fbef817f2c6b4cb79"
   },
   "pairs": [
     {
       "a": "README.md",
       "b": "atlas/README.md",
-      "either": 7,
-      "shared": 4,
-      "strength": 0.571429
-    },
-    {
-      "a": "README.md",
-      "b": "atlas/page.json",
-      "either": 7,
-      "shared": 4,
-      "strength": 0.571429
-    },
-    {
-      "a": "README.md",
-      "b": "atlas/statistics.json",
-      "either": 7,
-      "shared": 4,
-      "strength": 0.571429
-    },
-    {
-      "a": "README.md",
-      "b": "atlas/structure.json",
-      "either": 7,
-      "shared": 4,
-      "strength": 0.571429
-    },
-    {
-      "a": "README.md",
-      "b": "tests/test_pilot_b_ollama_adapters.py",
-      "either": 8,
-      "shared": 4,
-      "strength": 0.5
-    },
-    {
-      "a": "atlas/README.md",
-      "b": "atlas/page.json",
-      "either": 6,
-      "shared": 6,
-      "strength": 1
-    },
-    {
-      "a": "atlas/README.md",
-      "b": "atlas/statistics.json",
-      "either": 6,
-      "shared": 6,
-      "strength": 1
-    },
-    {
-      "a": "atlas/README.md",
-      "b": "atlas/structure.json",
-      "either": 6,
-      "shared": 6,
-      "strength": 1
-    },
-    {
-      "a": "atlas/page.json",
-      "b": "atlas/statistics.json",
-      "either": 6,
-      "shared": 6,
-      "strength": 1
-    },
-    {
-      "a": "atlas/page.json",
-      "b": "atlas/structure.json",
-      "either": 6,
-      "shared": 6,
-      "strength": 1
-    },
-    {
-      "a": "atlas/statistics.json",
-      "b": "atlas/structure.json",
-      "either": 6,
-      "shared": 6,
-      "strength": 1
-    },
-    {
-      "a": "src/reasoning_dataset_lab/cli.py",
-      "b": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
-      "either": 10,
-      "shared": 5,
-      "strength": 0.5
-    },
-    {
-      "a": "src/reasoning_dataset_lab/cli.py",
-      "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
-    },
-    {
-      "a": "src/reasoning_dataset_lab/cli.py",
-      "b": "tests/test_pilot_b_ollama_adapters.py",
       "either": 9,
       "shared": 5,
       "strength": 0.555556
     },
     {
-      "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
+      "a": "README.md",
+      "b": "atlas/page.json",
+      "either": 9,
+      "shared": 5,
+      "strength": 0.555556
+    },
+    {
+      "a": "README.md",
+      "b": "atlas/statistics.json",
+      "either": 9,
+      "shared": 5,
+      "strength": 0.555556
+    },
+    {
+      "a": "README.md",
+      "b": "atlas/structure.json",
+      "either": 9,
+      "shared": 5,
+      "strength": 0.555556
+    },
+    {
+      "a": "README.md",
+      "b": "tests/test_pilot_b_ollama_adapters.py",
+      "either": 10,
+      "shared": 5,
+      "strength": 0.5
+    },
+    {
+      "a": "atlas/README.md",
+      "b": "atlas/page.json",
+      "either": 8,
+      "shared": 8,
+      "strength": 1
+    },
+    {
+      "a": "atlas/README.md",
+      "b": "atlas/statistics.json",
+      "either": 8,
+      "shared": 8,
+      "strength": 1
+    },
+    {
+      "a": "atlas/README.md",
+      "b": "atlas/structure.json",
+      "either": 8,
+      "shared": 8,
+      "strength": 1
+    },
+    {
+      "a": "atlas/page.json",
+      "b": "atlas/statistics.json",
+      "either": 8,
+      "shared": 8,
+      "strength": 1
+    },
+    {
+      "a": "atlas/page.json",
+      "b": "atlas/structure.json",
+      "either": 8,
+      "shared": 8,
+      "strength": 1
+    },
+    {
+      "a": "atlas/statistics.json",
+      "b": "atlas/structure.json",
+      "either": 8,
+      "shared": 8,
+      "strength": 1
+    },
+    {
+      "a": "src/reasoning_dataset_lab/cli.py",
+      "b": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
+      "either": 12,
+      "shared": 7,
+      "strength": 0.583333
+    },
+    {
+      "a": "src/reasoning_dataset_lab/cli.py",
       "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
+      "either": 13,
+      "shared": 8,
+      "strength": 0.615385
+    },
+    {
+      "a": "src/reasoning_dataset_lab/cli.py",
+      "b": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
+      "either": 12,
+      "shared": 6,
+      "strength": 0.5
+    },
+    {
+      "a": "src/reasoning_dataset_lab/cli.py",
+      "b": "tests/test_pilot_b_ollama_adapters.py",
       "either": 11,
       "shared": 7,
       "strength": 0.636364
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
+      "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
+      "either": 13,
+      "shared": 9,
+      "strength": 0.692308
+    },
+    {
+      "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "tests/test_pilot_b_ollama_adapters.py",
-      "either": 8,
-      "shared": 7,
-      "strength": 0.875
+      "either": 10,
+      "shared": 9,
+      "strength": 0.9
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/ollama.py",
       "b": "tests/test_pilot_b_ollama_adapters.py",
-      "either": 11,
-      "shared": 6,
-      "strength": 0.545455
+      "either": 13,
+      "shared": 8,
+      "strength": 0.615385
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/value_certification.py",
       "b": "tests/test_pilot_b_value_certification.py",
-      "either": 7,
-      "shared": 7,
+      "either": 8,
+      "shared": 8,
       "strength": 1
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
+      "b": "tests/test_pilot_b_ollama_adapters.py",
+      "either": 12,
+      "shared": 6,
+      "strength": 0.5
+    },
+    {
+      "a": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
       "b": "tests/test_pilot_b_sealing_seed.py",
-      "either": 7,
-      "shared": 5,
-      "strength": 0.714286
+      "either": 9,
+      "shared": 6,
+      "strength": 0.666667
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 17,
+    "appliedChangesetLimit": 21.5,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -587,16 +707,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "both",
-    "headDate": "2026-10-28T07:38:34-04:00",
-    "inScopeFiles": 68,
+    "headDate": "2026-10-28T08:50:38-04:00",
+    "inScopeFiles": 86,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 19,
+    "qualifyingCommits": 22,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-01T11:38:34.000Z",
+    "since": "2026-05-01T12:50:38.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
@@ -612,7 +732,7 @@
     ],
     "sourceFileReach": 20,
     "sourceFileRise": 25,
-    "sourceFilesReachingStrongFloor": 1,
+    "sourceFilesReachingStrongFloor": 2,
     "strength": 0.5,
     "windowDays": 180
   },
