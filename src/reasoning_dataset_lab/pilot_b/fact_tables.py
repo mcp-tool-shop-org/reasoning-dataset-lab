@@ -262,8 +262,8 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
                 ("demineralizedwater", "ambientair", "mineraloil", "perfluorocarbon", "siliconefluid"),
             ),
             (
-                "primary seal face groove pattern",
-                ("logarithmicspiral", "bidirectionaltgroove", "herringbonechevron", "rayleighstep", "circularmicrodimple"),
+                "unblended crankcase oil ISO viscosity grade",
+                ("isovg32", "isovg46", "isovg68", "isovg100", "isovg150"),
             ),
             (
                 "active unloader capacity step",
@@ -330,8 +330,8 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         ),
         "open_attrs": (
             (
-                "sole boiler water treatment program",
-                ("congruentphosphate", "caustichydroxide", "edtachelant", "allvolatile", "oxygenatedpurity"),
+                "sole continuous blowdown valve step",
+                ("blowdown0pct", "blowdown25pct", "blowdown50pct", "blowdown75pct", "blowdown100pct"),
             ),
             (
                 "sole sootblower cleaning mechanism",
@@ -361,8 +361,8 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             ("idle", "chilling", "defrosting", "pumpdown", "lockout"),
         ),
         "attr_spec": (
-            "evaporator brazing filler class",
-            ("aws-bag", "aws-bcup", "aws-bni", "aws-balsi", "aws-bau"),
+            "leaving chilled-water setpoint step",
+            ("setpoint4c", "setpoint6c", "setpoint8c", "setpoint10c", "setpoint12c"),
         ),
         "open_attrs": (
             (
@@ -457,7 +457,7 @@ VALUE_SET_AXES: dict[tuple[str, str], str] = {
     ("compressors", "compressor operating state"): "the compressor's single top-level operating state, only one state active at a time",
     ("compressors", "unblended single-layer rotor coating"): "the single unblended surface coating applied directly to the rotor lobes, one single-layer finish per rotor",
     ("compressors", "unblended intercooler tube coolant"): "the single unblended cooling fluid circulated through the intercooler tubes, one fluid per loop",
-    ("compressors", "primary seal face groove pattern"): "the single hydrodynamic lift-groove pattern machined into the primary seal face, one groove pattern per ring",
+    ("compressors", "unblended crankcase oil ISO viscosity grade"): "the single ISO 3448 kinematic viscosity grade of the unblended crankcase oil fill, one viscosity grade per crankcase",
     ("compressors", "active unloader capacity step"): "the unloader controller's single active capacity step setting, one capacity step at a time",
     ("transformers", "tap step position"): "the tap changer's single discrete step contact, only one tap step connected at a time",
     ("transformers", "unblended main core alloy"): "the single unblended magnetic core material of the main core, one core composition per transformer",
@@ -466,11 +466,11 @@ VALUE_SET_AXES: dict[tuple[str, str], str] = {
     ("transformers", "two-winding vector group"): "the IEC winding connection and phase-displacement code, one vector group per two-winding transformer",
     ("boilers", "burner sequence step"): "the burner management system's single active sequence step, one step at a time",
     ("boilers", "finishing superheater tube alloy"): "the single unclad ASTM base tube alloy of the finishing superheater bank, one grade per bank",
-    ("boilers", "sole boiler water treatment program"): "the boiler's single internal water chemistry treatment program, one treatment program at a time",
+    ("boilers", "sole continuous blowdown valve step"): "the sole continuous blowdown valve's single discrete opening percentage step, one step setting at a time",
     ("boilers", "sole sootblower cleaning mechanism"): "the boiler's single fireside sootblower cleaning mechanism, one cleaning mechanism per boiler",
     ("boilers", "coal firing system"): "the furnace's single coal-firing combustion system, one firing architecture per boiler",
     ("chillers", "circuit operating mode"): "the refrigeration circuit's single top-level operating state, one mode at a time",
-    ("chillers", "evaporator brazing filler class"): "the single AWS A5.8 brazing filler metal classification used on the evaporator, one filler class per assembly",
+    ("chillers", "leaving chilled-water setpoint step"): "the chiller controller's single active leaving chilled-water temperature setpoint step, one setpoint at a time",
     ("chillers", "unblended single-circuit refrigerant"): "the single pure unblended ASHRAE refrigerant fluid charged into the circuit, one fluid per single-circuit chiller",
     ("chillers", "metering device type"): "the single metering device type controlling evaporator feed, one valve mechanism per circuit",
     ("chillers", "sole condenser heat rejection loop"): "the single external heat-rejection loop architecture of the condenser, one sole sink loop per chiller",
@@ -517,8 +517,9 @@ VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str]
     ("compressors", "unblended single-layer rotor coating"): (
         ("ceramic", ("carbide", "nitride", "alumina"), "carbides, nitrides and oxide ceramics are ceramics"),
     ),
-    ("compressors", "primary seal face groove pattern"): (
+    ("compressors", "unblended crankcase oil ISO viscosity grade"): (
         ("mechanical", ("drygas", "drygasface"), "a dry-gas seal is a kind of mechanical seal"),
+        ("multigrade", ("isovg32", "isovg46", "isovg68", "isovg100", "isovg150"), "a wide-range multigrade lubricant spans multiple ISO viscosity grades"),
     ),
     ("compressors", "unblended intercooler tube coolant"): (
         ("refrigerant", ("ammonia", "propane"), "ammonia and propane are refrigerants"),
@@ -539,13 +540,16 @@ VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str]
         ("ferritic", ("carbon", "chromoly", "t11", "t22", "t91"), "carbon steel and Cr-Mo T-grades are ferritic/martensitic steels"),
         ("chromoly", ("t11", "t22", "t91"), "chromoly steel covers T11, T22 and T91 Cr-Mo alloys"),
     ),
+    ("boilers", "sole continuous blowdown valve step"): (
+        ("open", ("blowdown25pct", "blowdown50pct", "blowdown75pct", "blowdown100pct"), "a blowdown valve at 25%, 50%, 75% or 100% is open, so bare 'open' covers every non-zero blowdown step"),
+    ),
     ("boilers", "sole sootblower cleaning mechanism"): (
         ("acoustic", ("sonic", "sonichorn"), "acoustic and sonic cleaning are the same class"),
     ),
     ("boilers", "coal firing system"): (
         ("pressurized", ("forced",), "forced-draft firing operates with a pressurized furnace"),
     ),
-    ("chillers", "evaporator brazing filler class"): (
+    ("chillers", "leaving chilled-water setpoint step"): (
         ("bronze", ("copper",), "bronze is a copper alloy"),
         ("phosphorus", ("copper", "bcup", "aws-bcup"), "phosphorus brazing fillers are copper-phosphorus alloys"),
     ),
@@ -626,10 +630,11 @@ VALUE_COOCCURRENCES: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str
         ("brine", ("water", "demineralizedwater"), "brine is an aqueous salt solution mixed with water"),
         ("glycol", ("water", "demineralizedwater", "ethyleneglycol"), "intercooler glycol coolant is circulated as an aqueous solution mixed with demineralized water"),
     ),
-    ("compressors", "primary seal face groove pattern"): (
+    ("compressors", "unblended crankcase oil ISO viscosity grade"): (
         ("carbon", ("mechanical", "carbonring", "drygasface", "labyrinth", "brush", "brushseal"), "a dry-gas or compound shaft seal cartridge uses a carbon ring face alongside labyrinth or brush stages"),
         ("drygas", ("labyrinth", "carbon", "brush"), "a dry-gas seal cartridge incorporates an inner labyrinth and secondary carbon-ring or brush barrier stages"),
         ("labyrinth", ("carbon", "brush", "packed"), "compound compressor shaft seals combine a labyrinth stage with carbon rings, brush seals or gland packing"),
+        ("circularmicrodimple", ("logarithmicspiral", "bidirectionaltgroove", "herringbonechevron", "rayleighstep"), "hybrid dry-gas seal faces combine primary lift grooves with a laser-textured micro-dimple sealing dam"),
     ),
     ("compressors", "active unloader capacity step"): (
         ("handwheel", ("pneumatic", "hydraulic", "stepper"), "pneumatic, hydraulic and stepper unloader actuators include an integral manual handwheel override"),
@@ -652,11 +657,13 @@ VALUE_COOCCURRENCES: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str
     ("boilers", "burner sequence step"): (
         ("firing", ("lightoff", "pilotspark", "mainflame"), "during the main-flame trial for ignition, the pilot spark/flame and main flame overlap temporally"),
     ),
-    ("boilers", "sole boiler water treatment program"): (
-        ("deaerated", ("phosphate", "trisodiumphosphate", "chelant", "edta", "nta", "volatile", "oxygenated", "caustic", "sodiumhydroxide", "polyacrylate"), "deaeration applies to feedwater under any drum treatment program"),
-        ("demineralized", ("phosphate", "trisodiumphosphate", "chelant", "edta", "nta", "volatile", "polyacrylate"), "demineralized makeup water is used under any drum treatment program"),
-        ("polyacrylate", ("phosphate", "trisodiumphosphate", "chelant", "edta", "nta", "caustic", "sodiumhydroxide"), "polyacrylate dispersant is co-fed as a sludge conditioner with phosphate, chelant and caustic programs"),
-        ("caustic", ("phosphate", "trisodiumphosphate", "chelant", "edta", "nta"), "sodium hydroxide is co-fed for alkalinity control in phosphate and chelant drum treatments"),
+    ("boilers", "sole continuous blowdown valve step"): (
+        ("deaerated", ("phosphate", "trisodiumphosphate", "congruentphosphate", "chelant", "edta", "nta", "edtachelant", "volatile", "allvolatile", "oxygenated", "oxygenatedpurity", "caustic", "sodiumhydroxide", "caustichydroxide", "polyacrylate"), "deaeration applies to feedwater under any drum treatment program"),
+        ("demineralized", ("phosphate", "trisodiumphosphate", "congruentphosphate", "chelant", "edta", "nta", "edtachelant", "volatile", "allvolatile", "polyacrylate"), "demineralized makeup water is used under any drum treatment program"),
+        ("polyacrylate", ("phosphate", "trisodiumphosphate", "congruentphosphate", "chelant", "edta", "nta", "edtachelant", "caustic", "sodiumhydroxide", "caustichydroxide"), "polyacrylate dispersant is co-fed as a sludge conditioner with phosphate, chelant and caustic programs"),
+        ("caustic", ("phosphate", "trisodiumphosphate", "congruentphosphate", "chelant", "edta", "nta", "edtachelant"), "sodium hydroxide is co-fed for alkalinity control in phosphate and chelant drum treatments"),
+        ("allvolatile", ("phosphate", "trisodiumphosphate", "congruentphosphate", "chelant", "edta", "nta", "edtachelant", "caustic", "sodiumhydroxide", "caustichydroxide", "oxygenated", "oxygenatedpurity"), "all-volatile amine/ammonia treatment is dosed alongside solid drum treatments and oxygenated water programs"),
+        ("phosphate", ("chelant", "edta", "nta", "edtachelant", "congruentphosphate"), "blended phosphate-chelant (phosphate-EDTA) boiler water treatment programs co-dose both chemicals"),
     ),
     ("boilers", "sole sootblower cleaning mechanism"): (
         ("rotary", ("retractable", "longretractable", "fixedrotary", "wall", "walldeslagger", "sonic", "sonichorn"), "long-retractable and wall-deslagger blowers rotate as they traverse, and sonic horns co-exist on furnace walls"),
@@ -669,6 +676,11 @@ VALUE_COOCCURRENCES: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str
     ("chillers", "circuit operating mode"): (
         ("chilling", ("subcooling", "pumping", "startup"), "subcooling, refrigerant pumping and pull-down startup occur while the circuit is chilling"),
         ("prelubricating", ("idle",), "compressor pre-lubrication runs while the chiller circuit is idle prior to start"),
+    ),
+    ("chillers", "leaving chilled-water setpoint step"): (
+        ("aws-bcup", ("aws-bag", "aws-bni", "aws-balsi", "aws-bau"), "one evaporator assembly uses copper-phosphorus filler on copper tube joints and silver, nickel or gold filler on header/shell joints"),
+        ("aws-bag", ("aws-bni", "aws-balsi", "aws-bau"), "one evaporator assembly uses silver brazing filler on brass/steel joints alongside nickel or gold filler on stainless joints"),
+        ("aws-bni", ("aws-bau",), "one evaporator assembly uses nickel and gold brazing fillers on different stainless or high-nickel joints"),
     ),
     ("chillers", "sole condenser heat rejection loop"): (
         ("hybrid", ("aircooled", "watercooled", "directair", "coolingtower"), "a hybrid heat-rejection system combines air-cooled and water-cooled stages"),
@@ -707,9 +719,11 @@ EXCLUSIVE_BY_MEANING: dict[tuple[str, str], tuple[tuple[str, str, str], ...]] = 
     ("furnaces", "sole hearth conveyor mechanism"): (("walkingbeam", "pushertray", "a walking beam lifts and steps the load; a pusher tray shoves the row along rails, and a single hearth uses one mechanism"),),
     ("reactors", "driver fuel cladding alloy"): (("zircaloy", "ss316", "zircaloy is a zirconium alloy and 316 stainless an iron alloy: a fuel-pin cladding tube is one or the other"),),
     ("reactors", "NRC reactor operational mode"): (("hotshutdown", "hotstandby", "NRC Mode 4 (hot shutdown) is below 350°F; Mode 3 (hot standby) is at or above 350°F, and only one NRC mode holds at a time"),),
-    ("compressors", "primary seal face groove pattern"): (("logarithmicspiral", "bidirectionaltgroove", "logarithmic spiral grooves pump gas in one rotation direction; T-grooves are symmetric for bidirectional rotation"),),
+    ("compressors", "unblended crankcase oil ISO viscosity grade"): (("isovg32", "isovg68", "ISO VG 32 is 28.8–35.2 cSt at 40°C and ISO VG 68 is 61.2–74.8 cSt at 40°C: an unblended crankcase oil fill is one grade or the other"),),
     ("transformers", "unblended main core alloy"): (("siliconsteel", "permalloy", "grain-oriented silicon steel is iron-silicon; permalloy is nickel-iron"),),
     ("boilers", "finishing superheater tube alloy"): (("t11", "t22", "T11 is 1.25Cr-0.5Mo and T22 is 2.25Cr-1Mo: two different ASTM low-alloy tube grades"),),
+    ("boilers", "sole continuous blowdown valve step"): (("blowdown0pct", "blowdown50pct", "0% blowdown holds the continuous blowdown valve fully closed; 50% holds it at half travel, and one valve holds one step at a time"),),
+    ("chillers", "leaving chilled-water setpoint step"): (("setpoint4c", "setpoint8c", "a 4°C leaving chilled-water setpoint and an 8°C setpoint are distinct controller temperature targets, one active at a time"),),
     ("chillers", "metering device type"): (("thermostatic", "electronic", "a thermostatic valve is driven by a filled bulb; an electronic one by a stepper motor and controller"),),
     ("pumps", "sole drive-end radial bearing"): (("babbittsleeve", "deepgrooveball", "a Babbitt sleeve is a sliding journal bearing with no rolling elements; a deep-groove ball bearing carries load on rolling balls"),),
     ("pumps", "API pump configuration code"): (("oh1", "oh2", "API 610 OH1 is a foot-mounted overhung pump; OH2 is a centerline-supported overhung pump"),),

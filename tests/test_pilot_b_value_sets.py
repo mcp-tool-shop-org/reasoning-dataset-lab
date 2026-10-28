@@ -73,9 +73,18 @@ MEANING_SYNONYMS: dict[str, tuple[str, ...]] = {
     "pedestal": ("pedestal", "pedestalmounted"),
     "flange": ("flange", "cfaceflange"),
     "inline": ("inline", "inlinesuspended"),
-    "phosphate": ("phosphate", "trisodiumphosphate"),
-    "chelant": ("chelant", "edta", "nta"),
-    "caustic": ("caustic", "sodiumhydroxide"),
+    "phosphate": ("phosphate", "trisodiumphosphate", "congruentphosphate"),
+    "chelant": ("chelant", "edta", "nta", "edtachelant"),
+    "caustic": ("caustic", "sodiumhydroxide", "caustichydroxide"),
+    "allvolatile": ("allvolatile", "volatile", "volatileamine"),
+    "oxygenated": ("oxygenated", "oxygenatedpurity"),
+    "bcup": ("bcup", "aws-bcup", "copperphosphorus"),
+    "bag": ("bag", "aws-bag", "silverbrazing"),
+    "bni": ("bni", "aws-bni", "nickelbrazing"),
+    "balsi": ("balsi", "aws-balsi", "aluminumsilicon"),
+    "bau": ("bau", "aws-bau", "goldbrazing"),
+    "microdimple": ("microdimple", "circularmicrodimple", "dimpledam"),
+    "spiralgroove": ("spiralgroove", "logarithmicspiral"),
     "aircooled": ("aircooled", "directair"),
     "watercooled": ("watercooled", "coolingtower"),
     "groundloop": ("groundloop", "groundcoupled", "geothermalloop"),
@@ -271,6 +280,11 @@ SECOND_KEYING_COOCCURRENCES: dict[
             ("standby", "idling"),
             "the pre-lubrication oil pump runs while the compressor is in standby prior to start",
         ),
+        (
+            "circularmicrodimple",
+            ("logarithmicspiral", "bidirectionaltgroove", "herringbonechevron", "rayleighstep"),
+            "hybrid dry-gas seal faces combine primary lift grooves with a laser-textured micro-dimple sealing dam",
+        ),
     ),
     "transformers": (
         (
@@ -320,6 +334,16 @@ SECOND_KEYING_COOCCURRENCES: dict[
             ("phosphate", "chelant"),
             "sodium hydroxide is co-fed for alkalinity control in phosphate and chelant drum treatments",
         ),
+        (
+            "allvolatile",
+            ("phosphate", "chelant", "caustic", "oxygenated"),
+            "all-volatile amine/ammonia treatment is dosed alongside solid drum treatments and oxygenated water programs",
+        ),
+        (
+            "phosphate",
+            ("chelant",),
+            "blended phosphate-chelant (phosphate-EDTA) boiler water treatment programs co-dose both chemicals",
+        ),
     ),
     "chillers": (
         (
@@ -331,6 +355,21 @@ SECOND_KEYING_COOCCURRENCES: dict[
             "groundloop",
             ("watercooled",),
             "hybrid geothermal condenser systems combine a ground loop with a cooling tower on the same condenser loop",
+        ),
+        (
+            "aws-bcup",
+            ("aws-bag", "aws-bni", "aws-balsi", "aws-bau"),
+            "one evaporator assembly uses copper-phosphorus filler on copper tube joints and silver, nickel or gold filler on header/shell joints",
+        ),
+        (
+            "aws-bag",
+            ("aws-bni", "aws-balsi", "aws-bau"),
+            "one evaporator assembly uses silver brazing filler on brass/steel joints alongside nickel or gold filler on stainless joints",
+        ),
+        (
+            "aws-bni",
+            ("aws-bau",),
+            "one evaporator assembly uses nickel and gold brazing fillers on different stainless or high-nickel joints",
         ),
     ),
     "pumps": (
@@ -732,3 +771,88 @@ def test_a_state_set_holds_no_word_for_a_condition_of_another_mode():
     for spec in DOMAIN_CATALOGUE:
         attribute, values = spec["state_attr"]
         assert not banned & set(values), (spec["domain"], attribute)
+
+
+def test_lr_three_old_v3b_sets_fail_and_three_new_strong_sets_pass():
+    """Card lr: the three v3b-flagged sets fail the co-occurrence/covering guards and the three replacements pass."""
+
+    sets_by_key = {(d, a): values for d, a, values in SETS}
+
+    # 1. Old sets are absent and new sets are present with 5 values each:
+    old_keys = {
+        ("boilers", "sole boiler water treatment program"),
+        ("chillers", "evaporator brazing filler class"),
+        ("compressors", "primary seal face groove pattern"),
+    }
+    assert old_keys.isdisjoint(sets_by_key)
+
+    new_expected = {
+        ("boilers", "sole continuous blowdown valve step"): (
+            "blowdown0pct",
+            "blowdown25pct",
+            "blowdown50pct",
+            "blowdown75pct",
+            "blowdown100pct",
+        ),
+        ("chillers", "leaving chilled-water setpoint step"): (
+            "setpoint4c",
+            "setpoint6c",
+            "setpoint8c",
+            "setpoint10c",
+            "setpoint12c",
+        ),
+        ("compressors", "unblended crankcase oil ISO viscosity grade"): (
+            "isovg32",
+            "isovg46",
+            "isovg68",
+            "isovg100",
+            "isovg150",
+        ),
+    }
+    for key, expected_vals in new_expected.items():
+        assert sets_by_key.get(key) == expected_vals
+
+    # 2. Each of the 3 old value tuples fails test_no_value_set_holds_cooccurring_or_mixed_axis_values:
+    old_set_tuples = (
+        (
+            "boilers",
+            "sole continuous blowdown valve step",
+            ("congruentphosphate", "caustichydroxide", "edtachelant", "allvolatile", "oxygenatedpurity"),
+        ),
+        (
+            "chillers",
+            "leaving chilled-water setpoint step",
+            ("aws-bag", "aws-bcup", "aws-bni", "aws-balsi", "aws-bau"),
+        ),
+        (
+            "compressors",
+            "unblended crankcase oil ISO viscosity grade",
+            ("logarithmicspiral", "bidirectionaltgroove", "herringbonechevron", "rayleighstep", "circularmicrodimple"),
+        ),
+    )
+    for domain, attr, old_vals in old_set_tuples:
+        with pytest.raises(AssertionError, match="co-occurs with"):
+            test_no_value_set_holds_cooccurring_or_mixed_axis_values(domain, attr, old_vals)
+
+    # Covering guards also reject general covering terms alongside the new sets' members:
+    with pytest.raises(AssertionError, match="covers member"):
+        test_no_value_set_holds_a_value_beside_one_it_covers(
+            "boilers",
+            "sole continuous blowdown valve step",
+            ("open", "blowdown25pct", "blowdown50pct", "blowdown75pct", "blowdown100pct"),
+        )
+    with pytest.raises(AssertionError, match="covers member"):
+        test_no_value_set_holds_a_value_beside_one_it_covers(
+            "compressors",
+            "unblended crankcase oil ISO viscosity grade",
+            ("multigrade", "isovg32", "isovg46", "isovg68", "isovg100"),
+        )
+
+    # 3. Each of the 3 new sets passes every rule guard:
+    for (domain, attr), new_vals in new_expected.items():
+        test_no_value_set_holds_a_value_beside_one_it_covers(domain, attr, new_vals)
+        test_no_value_set_holds_cooccurring_or_mixed_axis_values(domain, attr, new_vals)
+        test_no_value_is_spelled_inside_another_value_in_its_set(domain, attr, new_vals)
+        test_no_value_is_a_relative_or_comparative_word(domain, attr, new_vals)
+        test_no_value_is_a_garbled_or_ambiguous_english_token(domain, attr, new_vals)
+
