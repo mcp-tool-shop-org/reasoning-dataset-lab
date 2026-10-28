@@ -1071,15 +1071,30 @@ CROSS_TABLE_OUTCOMES: tuple[str, ...] = ("incompatible", "compatible", "unsure",
 def _load_companion_review_queue(manifest_path: Path | None) -> list[dict[str, Any]]:
     if manifest_path is None:
         return []
-    candidates = [manifest_path.with_name(manifest_path.name.replace("manifest", "review_queue", 1))]
-    stem = manifest_path.stem.replace("manifest", "review_queue", 1)
-    for ext in (".json", ".jsonl"):
-        cand = manifest_path.with_name(stem + ext)
+    parent_dir = manifest_path.parent
+    stem = manifest_path.stem
+    candidates: list[Path] = []
+    if "manifest" in stem:
+        for replacement in ("review_queue", "queue"):
+            same_ext = manifest_path.with_name(
+                manifest_path.name.replace("manifest", replacement, 1)
+            )
+            if same_ext not in candidates:
+                candidates.append(same_ext)
+            q_stem = stem.replace("manifest", replacement, 1)
+            for ext in (".json", ".jsonl"):
+                cand = parent_dir / f"{q_stem}{ext}"
+                if cand not in candidates:
+                    candidates.append(cand)
+    for name in ("review_queue.json", "review_queue.jsonl"):
+        cand = parent_dir / name
         if cand not in candidates:
             candidates.append(cand)
     for cand in candidates:
         if cand != manifest_path and cand.exists():
             raw = cand.read_text(encoding="utf-8").strip()
+            if not raw:
+                return []
             if raw.startswith("["):
                 return list(json.loads(raw))
             return [json.loads(line) for line in raw.splitlines() if line.strip()]
@@ -1189,7 +1204,7 @@ def compare_arms(
         reader_family=fam,
     )
 
-    if list(parent_sets.keys()) != list(addendum_sets.keys()):
+    if set(parent_sets.keys()) != set(addendum_sets.keys()):
         raise refused_error(
             "PILOT_B_COMPARE_ARMS_MISMATCH",
             "Parent and addendum manifests cover different value sets.",
@@ -1197,12 +1212,31 @@ def compare_arms(
         )
 
     for set_key in parent_sets:
-        if list(parent_sets[set_key].keys()) != list(addendum_sets[set_key].keys()):
+        if set(parent_sets[set_key].keys()) != set(addendum_sets[set_key].keys()):
             raise refused_error(
                 "PILOT_B_COMPARE_ARMS_MISMATCH",
                 f"Parent and addendum manifests have different pairs for set {set_key[0]}/{set_key[1]}.",
                 "Run compare-arms on manifests covering the exact same directed pairs.",
             )
+
+    catalogue = value_sets()
+    catalogue_set_rank: dict[tuple[str, str], int] = {
+        (domain, attr): idx for idx, (domain, attr, _vals) in enumerate(catalogue)
+    }
+    catalogue_pair_rank: dict[tuple[str, str], dict[tuple[str, str], int]] = {
+        (domain, attr): {
+            pair: p_idx for p_idx, pair in enumerate(directed_pairs(vals))
+        }
+        for domain, attr, vals in catalogue
+    }
+    ordered_set_keys = sorted(
+        parent_sets.keys(),
+        key=lambda sk: (
+            (0, catalogue_set_rank[sk], sk[0], sk[1])
+            if sk in catalogue_set_rank
+            else (1, 0, sk[0], sk[1])
+        ),
+    )
 
     cross_table: dict[str, dict[str, int]] = {
         r_out: {c_out: 0 for c_out in CROSS_TABLE_OUTCOMES}
@@ -1220,16 +1254,27 @@ def compare_arms(
     parent_sets_passed = 0
     addendum_sets_passed = 0
 
-    for domain, attr in parent_sets:
-        p_pairs = parent_sets[(domain, attr)]
-        a_pairs = addendum_sets[(domain, attr)]
+    for domain, attr in ordered_set_keys:
+        set_key = (domain, attr)
+        p_pairs = parent_sets[set_key]
+        a_pairs = addendum_sets[set_key]
+        pair_rank = catalogue_pair_rank.get(set_key, {})
+        ordered_pairs = sorted(
+            p_pairs.keys(),
+            key=lambda pair: (
+                (0, pair_rank[pair], pair[0], pair[1])
+                if pair in pair_rank
+                else (1, 0, pair[0], pair[1])
+            ),
+        )
         set_label = f"{domain}/{attr}"
         p_set_all_incompat = len(p_pairs) > 0
         a_set_all_incompat = len(a_pairs) > 0
         p_set_len_stops = 0
         a_set_len_stops = 0
 
-        for (first, second), p_val in p_pairs.items():
+        for first, second in ordered_pairs:
+            p_val = p_pairs[(first, second)]
             a_val = a_pairs[(first, second)]
             total_pairs += 1
             p_is_len = p_val in FAILED_DONE_REASONS

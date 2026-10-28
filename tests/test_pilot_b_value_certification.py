@@ -1902,6 +1902,107 @@ def test_nemotron_pin_is_think_medium_with_ollama_renderer_citation_and_r3_manif
     assert missing_reader_err.value.code == "PILOT_B_COMPARE_ARMS_MISMATCH"
 
 
+def test_compare_arms_on_real_certification_runs_when_sets_move_between_queue_and_sets(
+    tmp_path,
+):
+    events: list = []
+    parent_manifest_path = tmp_path / "manifest-parent.json"
+    parent_queue_path = tmp_path / "queue-parent.jsonl"
+
+    parent_granite = FakeReader(GRANITE, events)
+    parent_nemotron = FakeReader(
+        NEMOTRON,
+        events,
+        verdict_for=lambda _prompt, index: "compatible" if index == 0 else "incompatible",
+    )
+    parent_nemotron.think = True
+    parent_nemotron.think_overridden = True
+
+    parent_run = vc.run_certification(
+        sets=SMALL,
+        entities=_entities(),
+        readers=[parent_granite, parent_nemotron],
+        review_queue_path=parent_queue_path,
+        manifest_path=parent_manifest_path,
+        date="2026-10-28",
+        licence_registry_sha256=REGISTRY_SHA256,
+    )
+    assert [(s["domain"], s["attribute"]) for s in parent_run.manifest["sets"]] == [
+        (SMALL[1][0], SMALL[1][1]),
+        (SMALL[2][0], SMALL[2][1]),
+    ]
+    assert [(q["domain"], q["attribute"]) for q in parent_run.review_queue] == [
+        (SMALL[0][0], SMALL[0][1]),
+    ]
+
+    addendum_manifest_path = tmp_path / "manifest-addendum.json"
+    addendum_queue_path = tmp_path / "review_queue-addendum.jsonl"
+    addendum_granite = FakeReader(GRANITE, events)
+    addendum_nemotron = FakeReader(
+        NEMOTRON,
+        events,
+        verdict_for=lambda _prompt, index: "compatible" if index == 20 else "incompatible",
+    )
+    addendum_nemotron.think = "medium"
+
+    addendum_run = vc.run_certification(
+        sets=SMALL,
+        entities=_entities(),
+        readers=[addendum_granite, addendum_nemotron],
+        review_queue_path=addendum_queue_path,
+        manifest_path=addendum_manifest_path,
+        date="2026-10-28",
+        licence_registry_sha256=REGISTRY_SHA256,
+        parent_manifest_path=parent_manifest_path,
+        reader_think={"nemotron": "medium"},
+    )
+    assert [(s["domain"], s["attribute"]) for s in addendum_run.manifest["sets"]] == [
+        (SMALL[0][0], SMALL[0][1]),
+        (SMALL[2][0], SMALL[2][1]),
+    ]
+    assert [(q["domain"], q["attribute"]) for q in addendum_run.review_queue] == [
+        (SMALL[1][0], SMALL[1][1]),
+    ]
+
+    comparison = vc.compare_arms(
+        parent_run.manifest,
+        addendum_run.manifest,
+        reader_family="nemotron",
+        parent_path=parent_manifest_path,
+        addendum_path=addendum_manifest_path,
+    )
+    expected_set_labels = [f"{d}/{a}" for d, a, _ in SMALL]
+    assert [row["set"] for row in comparison["per_set"]] == expected_set_labels
+    assert [(row["parent_pass"], row["addendum_pass"]) for row in comparison["per_set"]] == [
+        (False, True),
+        (True, False),
+        (True, True),
+    ]
+    assert comparison["total_sets"] == 3
+    assert comparison["total_pairs"] == 60
+    assert comparison["exact_verdict_agreement_count"] == 58
+    assert comparison["verdict_disagreement_count"] == 2
+
+    report_path = tmp_path / "report.md"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "compare-arms",
+            str(parent_manifest_path),
+            str(addendum_manifest_path),
+            "--reader",
+            "nemotron",
+            "--out",
+            str(report_path),
+        ]
+    )
+    assert rc == 0
+    report_text = report_path.read_text(encoding="utf-8")
+    set_positions = [report_text.index(f"| {label} |") for label in expected_set_labels]
+    assert set_positions == sorted(set_positions)
+
+
+
 
 
 
