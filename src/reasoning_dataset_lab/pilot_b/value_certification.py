@@ -1151,8 +1151,7 @@ def _extract_manifest_sets_and_pairs(
             second = str(fp.get("second") if "second" in fp else fp.get("b", ""))
             verdicts = fp.get("verdicts") or {}
             v = verdicts.get(reader_name) or verdicts.get(reader_family)
-            if v is not None:
-                failed_lookup[(first, second)] = str(v)
+            failed_lookup[(first, second)] = str(v) if v is not None else "missing"
         pair_map = {}
         for a, b in directed_pairs(values):
             pair_map[(a, b)] = failed_lookup.get((a, b), CONTRADICTION)
@@ -1348,6 +1347,8 @@ def compare_arms(
                 "attribute": attr,
                 "parent_pass": p_set_all_incompat,
                 "addendum_pass": a_set_all_incompat,
+                "parent_would_pass": p_set_all_incompat,
+                "addendum_would_pass": a_set_all_incompat,
                 "parent_length_stops": p_set_len_stops,
                 "addendum_length_stops": a_set_len_stops,
             }
@@ -1377,6 +1378,8 @@ def compare_arms(
         "agreement_rate_verdict_pairs": agreement_rate_verdict_pairs,
         "parent_sets_passed": parent_sets_passed,
         "addendum_sets_passed": addendum_sets_passed,
+        "parent_sets_would_pass": parent_sets_passed,
+        "addendum_sets_would_pass": addendum_sets_passed,
         "parent_completion_tokens": parent_reader.get("completion_tokens"),
         "addendum_completion_tokens": addendum_reader.get("completion_tokens"),
         "parent_wall_time_s": parent_reader.get("wall_time_s"),
@@ -1419,8 +1422,8 @@ def format_arm_comparison_report(comparison: Mapping[str, Any]) -> str:
         f"- Verdict disagreement count (verdict pairs only): {disagree}",
         f"- Exact verdict agreement rate (over all pairs): {agree} / {total_pairs} ({rate_all:.1f}%)",
         f"- Exact verdict agreement rate (over pairs with a verdict at both settings): {agree} / {both_verdicts} ({rate_verdicts:.1f}%)",
-        f"- Per-set reader pass (parent `{p_think!r}`): {comparison['parent_sets_passed']} / {comparison['total_sets']}",
-        f"- Per-set reader pass (addendum `{a_think!r}`): {comparison['addendum_sets_passed']} / {comparison['total_sets']}",
+        f"- Per-set would pass ({fam} half only, parent `{p_think!r}`): {comparison['parent_sets_passed']} / {comparison['total_sets']}",
+        f"- Per-set would pass ({fam} half only, addendum `{a_think!r}`): {comparison['addendum_sets_passed']} / {comparison['total_sets']}",
     ]
 
     p_tok = comparison.get("parent_completion_tokens")
@@ -1455,8 +1458,8 @@ def format_arm_comparison_report(comparison: Mapping[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## Per-Set Reader Pass by Setting",
-            "| Set | Parent Pass | Addendum Pass | Parent Length Stops | Addendum Length Stops |",
+            f"## Per-Set Would-Pass by Setting ({fam} half only)",
+            f"| Set | Parent Would Pass ({fam} half) | Addendum Would Pass ({fam} half) | Parent Length Stops | Addendum Length Stops |",
             "| --- | :---: | :---: | ---: | ---: |",
         ]
     )

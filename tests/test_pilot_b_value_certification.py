@@ -2124,6 +2124,135 @@ def test_single_reader_without_parent_is_refused_and_barred_or_malformed_addendu
     assert "readers: addendum manifest has no reader family" in bad_problems
 
 
+def test_compare_arms_with_single_reader_addendum_reports_would_pass_for_that_readers_half_only(
+    tmp_path,
+):
+    events: list = []
+    parent_manifest_path = tmp_path / "manifest-r3.json"
+    parent_queue_path = tmp_path / "review_queue-r3.jsonl"
+
+    # In the 2-reader parent run:
+    # - Set 0 (indices 0..19): Granite fails pair 0 ("compatible"), while Nemotron passes all 20 pairs ("incompatible").
+    #   Set 0 is queued in parent because of Granite, yet Nemotron's half of Set 0 passed!
+    # - Set 1 (indices 20..39): Granite passes all 20, while Nemotron has 1 length stop at index 20.
+    # - Set 2 (indices 40..59): Both Granite and Nemotron pass all 20 pairs.
+    parent_granite = FakeReader(
+        GRANITE,
+        events,
+        verdict_for=lambda _prompt, index: "compatible" if index == 0 else "incompatible",
+    )
+
+    class LengthAt20Reader(FakeReader):
+        def chat_raw(self, *, target_id, messages):
+            if not target_id.startswith("control.") and len(self.prompts) == 20:
+                shim = SimpleNamespace(claim_id=target_id, messages=messages)
+                self.prompts.append(shim)
+                self.events.append(("read", self.model.name))
+                return "partial thinking", SimpleNamespace(
+                    done_reason="length", eval_tokens=3072
+                )
+            return super().chat_raw(target_id=target_id, messages=messages)
+
+    parent_nemotron = LengthAt20Reader(NEMOTRON, events)
+    parent_nemotron.think = True
+    parent_nemotron.think_overridden = True
+
+    parent_run = vc.run_certification(
+        sets=SMALL,
+        entities=_entities(),
+        readers=[parent_granite, parent_nemotron],
+        review_queue_path=parent_queue_path,
+        manifest_path=parent_manifest_path,
+        date="2026-10-28",
+        licence_registry_sha256=REGISTRY_SHA256,
+    )
+    # Only Set 2 is certified by both readers in the parent manifest
+    assert len(parent_run.manifest["sets"]) == 1
+    assert len(parent_run.review_queue) == 2
+
+    # In the single-reader addendum run (Nemotron only, think="medium"):
+    # - Set 0 (indices 0..19): Nemotron passes all 20 pairs ("incompatible").
+    # - Set 1 (indices 20..39): Nemotron passes all 20 pairs ("incompatible").
+    # - Set 2 (indices 40..59): Nemotron answers "unsure" at index 40.
+    addendum_manifest_path = tmp_path / "manifest-r3-nemotron-medium.json"
+    addendum_queue_path = tmp_path / "review_queue-r3-nemotron-medium.jsonl"
+    addendum_nemotron = FakeReader(
+        NEMOTRON,
+        events,
+        verdict_for=lambda _prompt, index: "unsure" if index == 40 else "incompatible",
+    )
+    addendum_nemotron.think = "medium"
+
+    addendum_run = vc.run_certification(
+        sets=SMALL,
+        entities=_entities(),
+        readers=[addendum_nemotron],
+        review_queue_path=addendum_queue_path,
+        manifest_path=addendum_manifest_path,
+        date="2026-10-28",
+        licence_registry_sha256=REGISTRY_SHA256,
+        parent_manifest_path=parent_manifest_path,
+        reader_think={"nemotron": "medium"},
+    )
+    assert [r["family"] for r in addendum_run.manifest["readers"]] == ["nemotron"]
+    assert len(addendum_run.manifest["sets"]) == 2
+    assert len(addendum_run.review_queue) == 1
+
+    report_path = tmp_path / "nemotron-arm-report.md"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "compare-arms",
+            str(parent_manifest_path),
+            str(addendum_manifest_path),
+            "--reader",
+            "nemotron",
+            "--out",
+            str(report_path),
+        ]
+    )
+    assert rc == 0
+
+    comparison = vc.compare_arms(
+        parent_run.manifest,
+        addendum_run.manifest,
+        reader_family="nemotron",
+        parent_path=parent_manifest_path,
+        addendum_path=addendum_manifest_path,
+    )
+    assert comparison["total_sets"] == 3
+    assert comparison["total_pairs"] == 60
+    assert comparison["parent_length_stops"] == 1
+    assert comparison["addendum_length_stops"] == 0
+    assert comparison["pairs_with_verdict_at_both"] == 59
+    assert comparison["exact_verdict_agreement_count"] == 58
+    assert comparison["verdict_disagreement_count"] == 1
+    assert comparison["cross_table"]["incompatible"]["incompatible"] == 58
+    assert comparison["cross_table"]["incompatible"]["unsure"] == 1
+    assert comparison["cross_table"]["length"]["incompatible"] == 1
+
+    # Per-set "would pass" is for Nemotron's half only:
+    # Set 0 passed Nemotron's half in parent (even though Granite failed it) and in addendum;
+    # Set 1 failed Nemotron's half in parent (1 length stop) and passed in addendum;
+    # Set 2 passed Nemotron's half in parent and failed in addendum (1 unsure).
+    assert comparison["parent_sets_would_pass"] == 2
+    assert comparison["addendum_sets_would_pass"] == 2
+    assert [
+        (row["set"], row["parent_would_pass"], row["addendum_would_pass"])
+        for row in comparison["per_set"]
+    ] == [
+        (f"{SMALL[0][0]}/{SMALL[0][1]}", True, True),
+        (f"{SMALL[1][0]}/{SMALL[1][1]}", False, True),
+        (f"{SMALL[2][0]}/{SMALL[2][1]}", True, False),
+    ]
+
+    report_text = report_path.read_text(encoding="utf-8")
+    assert "Per-set would pass (nemotron half only, parent `True`): 2 / 3" in report_text
+    assert "Per-set would pass (nemotron half only, addendum `'medium'`): 2 / 3" in report_text
+    assert "## Per-Set Would-Pass by Setting (nemotron half only)" in report_text
+
+
+
 
 
 
