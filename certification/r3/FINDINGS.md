@@ -36,9 +36,11 @@ nemotron-3.5-lightning:30b (think on). One model resident at a time; `ollama ps`
 | unsure | length | 3 |
 | unsure | incompatible | 2 |
 
-- The readers disagree more than they jointly fail: 61 pairs split with one reader calling contradiction, 27 pairs both
-  readers call compatible (likely real weak pairs in the sets), and **25 pairs are Nemotron length stops** (its thinking
-  ran past 3,072 tokens), which count as failures, not verdicts.
+- All 121 failed pairs, in four groups: **55** where one reader said contradiction and the other compatible (40 + 15);
+  **27** both readers call compatible (likely real weak pairs in the sets); **25 Nemotron length stops** (its thinking
+  ran past 3,072 tokens; Mistral 18 incompatible, 4 compatible, 3 unsure), which count as failures, not verdicts; and
+  **14** where a reader answered "unsure" (6 + 6 + 2). (Corrected 2026-10-28: an earlier line said "61 split", which
+  counted the 6 incompatible/unsure pairs as split but not the 2 unsure/incompatible ones; the Editor caught it.)
 - Failed pairs per queued set: 1 to 14 (median about 4). 10 domains; compressors and pumps 4 sets each.
 - Not a reader-quality verdict: no gold labels here. What it means for the sets goes to the Book Keeper's review.
 
