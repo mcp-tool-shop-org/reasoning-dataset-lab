@@ -40,10 +40,10 @@ def test_a_value_of_an_unknown_attribute_is_refused_not_mutated(fact_type):
 
 @pytest.mark.parametrize("fact_type", ["state", "attribute"])
 def test_a_value_that_is_not_in_its_attributes_set_is_refused(fact_type):
-    """'standby' is a turbine mode; asked for under another attribute's name it must not be swapped."""
+    """'standby' is a turbine operating mode; asked for under another attribute's name it must not be swapped."""
 
     _, attribute, _ = next(
-        s for s in value_sets() if s[1] == "lubricant grade"
+        s for s in value_sets() if s[1] == "unblended base-oil grade"
     )
     fact = _fact(fact_type, attribute, "standby")
     with pytest.raises(RdlabError) as caught:
