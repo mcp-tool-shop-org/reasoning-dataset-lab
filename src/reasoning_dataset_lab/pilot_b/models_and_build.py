@@ -136,6 +136,23 @@ class PinnedModelSpec:
     def with_bundled_licence_id(self, new_bundled_licence_id: str) -> PinnedModelSpec:
         return self.with_licence_id(self.licence_id, new_bundled_licence_id)
 
+    def with_think(self, new_think: ThinkSetting) -> PinnedModelSpec:
+        return PinnedModelSpec(
+            role=self.role,
+            display_name=self.display_name,
+            family=self.family,
+            ollama_tag=self.ollama_tag,
+            manifest_digest=self.manifest_digest,
+            model_layer_digest=self.model_layer_digest,
+            licence_id=self.licence_id,
+            bundled_licence_id=self.bundled_licence_id,
+            licence_layer_digest=self.licence_layer_digest,
+            source_match=self.source_match,
+            source_match_reason=self.source_match_reason,
+            think=new_think,
+            max_num_ctx=self.max_num_ctx,
+        )
+
     def to_model_identity(
         self,
         *,

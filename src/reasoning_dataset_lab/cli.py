@@ -370,6 +370,14 @@ def _build_certify_values_parser() -> _StructuredArgumentParser:
         help="Comma-separated reader families, run in this order (default: granite,nemotron).",
     )
     parser.add_argument(
+        "--reader-think",
+        dest="reader_think",
+        action="append",
+        default=[],
+        metavar="FAMILY=SETTING",
+        help="Override the pinned think setting for a reader family (repeatable; SETTING in: true, false, low, medium, high, max).",
+    )
+    parser.add_argument(
         "--num-ctx",
         dest="num_ctx",
         type=int,
@@ -475,19 +483,25 @@ def _run_certify_values(argv: Sequence[str]) -> int:
             "Use a domain from the catalogue.",
         )
     families = [f.strip().lower() for f in args.readers.split(",") if f.strip()]
+    reader_think = value_certification.parse_reader_think_overrides(args.reader_think)
     # the licence gate: exactly the readers that will run, checked before any Ollama call
     validate_models_against_licence_registry(
-        value_certification.reader_pins(families),
+        value_certification.reader_pins(families, reader_think=reader_think),
         registry_path=args.licence_registry,
     )
     licence_registry_sha256 = hashlib.sha256(
         args.licence_registry.read_bytes()
     ).hexdigest()
+    build_kwargs: dict[str, object] = {
+        "base_url": args.ollama_url,
+        "num_ctx": args.num_ctx,
+        "num_predict": args.num_predict,
+    }
+    if reader_think:
+        build_kwargs["reader_think"] = reader_think
     readers = value_certification.build_ollama_readers(
         families,
-        base_url=args.ollama_url,
-        num_ctx=args.num_ctx,
-        num_predict=args.num_predict,
+        **build_kwargs,  # type: ignore[arg-type]
     )
     run = value_certification.run_certification(
         sets=sets,

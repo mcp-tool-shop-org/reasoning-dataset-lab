@@ -1280,6 +1280,7 @@ class OllamaBlindReaderAdapter:
         num_predict_source: NumPredictSource | None = None,
         role: Literal["reader_1", "reader_2", "reader_3"] | None = None,
         max_num_ctx: int | None = None,
+        think_overridden: bool = False,
         http_transport: OllamaHttpTransport | None = None,
     ) -> None:
         self._num_predict_config = coerce_num_predict_config(
@@ -1312,6 +1313,7 @@ class OllamaBlindReaderAdapter:
             )
         self._max_num_ctx = resolved_max_ctx
         self._think: ThinkSetting = self._model.think
+        self._think_overridden = bool(think_overridden)
         self._num_predict = self._num_predict_config.num_predict_for(
             "read_claim", role=self._role
         )
@@ -1345,6 +1347,10 @@ class OllamaBlindReaderAdapter:
     @property
     def think(self) -> ThinkSetting:
         return self._think
+
+    @property
+    def think_overridden(self) -> bool:
+        return self._think_overridden
 
     @property
     def num_predict(self) -> int:

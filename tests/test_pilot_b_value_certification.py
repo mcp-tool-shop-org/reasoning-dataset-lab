@@ -1323,3 +1323,139 @@ def test_a_think_setting_of_the_wrong_type_does_not_pass_as_equal(tmp_path):
     manifest["readers"][0]["think"] = 1  # 1 == True, but it is not the pinned boolean
     problems = vc.verify_manifest(manifest, SMALL)
     assert any("recorded think=1" in p for p in problems)
+
+
+# ---- Part 1: --reader-think FAMILY=SETTING override on certify-values
+
+
+def test_reader_think_override_reaches_request_body_top_level_think_for_that_family_only(
+    monkeypatch, tmp_path
+):
+    sent_by_model: dict[str, set[object]] = {}
+    pins = [DEFAULT_PILOT_B_MODEL_PINS["reader_2"], DEFAULT_PILOT_B_MODEL_PINS["reader_1"]]
+
+    def fake_transport(method, url, body=None):
+        if method == "GET" and url.endswith("/api/tags"):
+            return {
+                "models": [
+                    {"name": p.ollama_tag, "model": p.ollama_tag, "digest": p.manifest_digest}
+                    for p in pins
+                ]
+            }
+        if method == "POST" and url.endswith("/api/chat"):
+            assert isinstance(body, dict)
+            if body.get("keep_alive") == 0:
+                return {"model": body["model"], "message": {"role": "assistant", "content": ""}, "done": True}
+            model_name = body["model"]
+            sent_by_model.setdefault(model_name, set()).add(body.get("think"))
+            user_text = body["messages"][-1]["content"]
+            # control pairs ask about synthetic/mineral/inert/ceramic/etc.; pumps sets do not
+            is_control = any(
+                f"is {stated}." in user_text and f"is {claimed}." in user_text
+                for _d, _a, stated, claimed, _r in vc.CONTROL_PAIRS
+            )
+            ans = "compatible" if is_control else "incompatible"
+            return {
+                "model": model_name,
+                "message": {"role": "assistant", "content": ans, "thinking": "t1 t2"},
+                "done": True,
+                "done_reason": "stop",
+                "eval_count": 7,
+            }
+        raise AssertionError(f"Unexpected call: {method} {url}")
+
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        fake_transport,
+    )
+    manifest_out = tmp_path / "manifest-override.json"
+    queue_out = tmp_path / "queue-override.jsonl"
+    rc = run_cli(
+        [
+            "pilot-b",
+            "certify-values",
+            "--readers",
+            "granite,nemotron",
+            "--reader-think",
+            "nemotron=high",
+            "--domain",
+            "pumps",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
+            "--manifest-out",
+            str(manifest_out),
+            "--review-queue-out",
+            str(queue_out),
+        ]
+    )
+    assert rc == 0
+    assert sent_by_model[GRANITE.name] == {True}
+    assert sent_by_model[NEMOTRON.name] == {"high"}
+    doc = vc.load_manifest(manifest_out)
+    readers_by_family = {r["family"]: r for r in doc["readers"]}
+    assert readers_by_family["granite"]["think"] is True
+    assert readers_by_family["granite"]["think_overridden"] is False
+    assert readers_by_family["nemotron"]["think"] == "high"
+    assert readers_by_family["nemotron"]["think_overridden"] is True
+    assert vc.verify_manifest(doc, [s for s in SETS if s[0] == "pumps"]) == []
+
+    # All six ThinkSetting tokens parse and repeatable --reader-think works across families
+    parsed = vc.parse_reader_think_overrides(
+        ["granite=false", "mistral=true", "nemotron=low"]
+    )
+    assert parsed == {"granite": False, "mistral": True, "nemotron": "low"}
+    for token, expected in (
+        ("true", True),
+        ("false", False),
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("max", "max"),
+    ):
+        assert vc.parse_reader_think_overrides([f"nemotron={token}"]) == {"nemotron": expected}
+
+
+@pytest.mark.parametrize(
+    "bad_arg",
+    [
+        "llama=medium",
+        "nemotron=turbo",
+        "nemotron",
+        "=medium",
+        "nemotron=",
+    ],
+)
+def test_reader_think_refuses_bad_family_or_setting_before_any_ollama_call(
+    monkeypatch, tmp_path, capsys, bad_arg
+):
+    seen: list = []
+    monkeypatch.setattr(
+        "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+        lambda method, url, body=None: seen.append((method, url)) or {},
+    )
+    rc = run_cli(
+        [
+            "pilot-b",
+            "certify-values",
+            "--readers",
+            "granite,nemotron",
+            "--reader-think",
+            bad_arg,
+            "--domain",
+            "pumps",
+            "--licence-registry",
+            str(RND_REGISTRY_COPY),
+            "--manifest-out",
+            str(tmp_path / "m.json"),
+            "--review-queue-out",
+            str(tmp_path / "q.jsonl"),
+        ]
+    )
+    assert rc == 2
+    assert seen == []
+    err_payload = json.loads(capsys.readouterr().err.strip())
+    assert err_payload["code"] in (
+        "PILOT_B_CERT_UNKNOWN_READER",
+        "PILOT_B_CERT_INVALID_READER_THINK",
+    )
+

@@ -23,19 +23,89 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from reasoning_dataset_lab.errors import RdlabError, refused_error
+from reasoning_dataset_lab.errors import RdlabError, refused_error, usage_error
 from reasoning_dataset_lab.pilot_b.fact_tables import DOMAIN_CATALOGUE, value_sets
 from reasoning_dataset_lab.pilot_b.unanimity import (
     BARRED_ANY_ROLE_FAMILIES,
     BARRED_READER_FAMILIES,
+    ThinkSetting,
 )
 
 CERT_FORMAT = 1
+
+THINK_SETTINGS_BY_TOKEN: dict[str, ThinkSetting] = {
+    "true": True,
+    "false": False,
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "max",
+}
+
+
+def _is_valid_think_setting(value: object) -> bool:
+    if isinstance(value, bool):
+        return True
+    return isinstance(value, str) and value in ("low", "medium", "high", "max")
+
+
+def parse_reader_think_overrides(
+    raw_overrides: Sequence[str] | Mapping[str, Any] | None,
+) -> dict[str, ThinkSetting]:
+    """Parse repeatable ``--reader-think FAMILY=SETTING`` flags (or a mapping) into validated family overrides."""
+
+    if not raw_overrides:
+        return {}
+    from reasoning_dataset_lab.pilot_b.ollama import READER_ROLE_BY_FAMILY
+
+    items: list[tuple[str, Any]] = []
+    if isinstance(raw_overrides, Mapping):
+        items = list(raw_overrides.items())
+    else:
+        for raw_entry in raw_overrides:
+            text = str(raw_entry)
+            if "=" not in text:
+                raise usage_error(
+                    "PILOT_B_CERT_INVALID_READER_THINK",
+                    f"Invalid --reader-think '{text}': expected FAMILY=SETTING.",
+                    "Pass --reader-think FAMILY=SETTING with SETTING in: true, false, low, medium, high, max.",
+                )
+            fam_part, set_part = text.split("=", 1)
+            items.append((fam_part, set_part))
+
+    resolved: dict[str, ThinkSetting] = {}
+    for raw_family, raw_setting in items:
+        family = str(raw_family).strip().lower()
+        if not family or family not in READER_ROLE_BY_FAMILY:
+            raise usage_error(
+                "PILOT_B_CERT_UNKNOWN_READER",
+                f"Unknown reader family '{str(raw_family).strip()}'.",
+                f"Choose from: {', '.join(sorted(READER_ROLE_BY_FAMILY))}.",
+            )
+        if isinstance(raw_setting, bool):
+            setting: ThinkSetting = raw_setting
+        elif isinstance(raw_setting, str):
+            token = raw_setting.strip().lower()
+            if token not in THINK_SETTINGS_BY_TOKEN:
+                raise usage_error(
+                    "PILOT_B_CERT_INVALID_READER_THINK",
+                    f"Unknown think setting '{raw_setting.strip()}' for reader family '{family}'.",
+                    "Allowed think settings are: true, false, low, medium, high, max.",
+                )
+            setting = THINK_SETTINGS_BY_TOKEN[token]
+        else:
+            raise usage_error(
+                "PILOT_B_CERT_INVALID_READER_THINK",
+                f"Invalid think setting {raw_setting!r} for reader family '{family}'.",
+                "Allowed think settings are: true, false, low, medium, high, max.",
+            )
+        resolved[family] = setting
+    return resolved
 
 # The nemotron and granite readers run with think=True (reader_3, Mistral Small 3.2, runs think=False: it answers
 # directly), and Ollama counts thinking tokens against num_predict. Measured in Pilot B
@@ -310,6 +380,24 @@ def run_control(
     }
 
 
+def _reader_think_and_overridden(reader: CompatibilityReader) -> tuple[Any, bool]:
+    actual_think = getattr(reader, "think", getattr(reader.model, "think", None))
+    explicit_flag = getattr(reader, "think_overridden", None)
+    if isinstance(explicit_flag, bool):
+        return actual_think, explicit_flag
+    pinned = _pinned_readers()
+    key = (
+        str(getattr(reader.model, "name", "")),
+        str(getattr(reader.model, "digest", "")),
+        str(getattr(reader.model, "family", "")).strip().lower(),
+    )
+    if key in pinned:
+        pin_think = pinned[key]
+        overridden = not (type(actual_think) is type(pin_think) and actual_think == pin_think)
+        return actual_think, overridden
+    return actual_think, False
+
+
 def _assemble(
     sets: Sequence[ValueSet],
     verdicts: dict[tuple[int, str, str], dict[str, str]],
@@ -325,17 +413,20 @@ def _assemble(
     """The manifest of the sets every reader has fully read as contradictions, and the queue of the rest."""
 
     names = [r.model.name for r in readers]
-    reader_rows = [
-        {
-            "name": r.model.name,
-            "family": r.model.family,
-            "digest": r.model.digest,
-            "num_ctx_cap": getattr(r, "max_num_ctx", None),
-            "num_predict": getattr(r, "num_predict", None),
-            "think": getattr(r, "think", None),
-        }
-        for r in readers
-    ]
+    reader_rows = []
+    for r in readers:
+        actual_think, overridden = _reader_think_and_overridden(r)
+        reader_rows.append(
+            {
+                "name": r.model.name,
+                "family": r.model.family,
+                "digest": r.model.digest,
+                "num_ctx_cap": getattr(r, "max_num_ctx", None),
+                "num_predict": getattr(r, "num_predict", None),
+                "think": actual_think,
+                "think_overridden": overridden,
+            }
+        )
     certified: list[dict[str, Any]] = []
     queue: list[dict[str, Any]] = []
     not_reached: list[str] = []
@@ -725,6 +816,12 @@ def verify_manifest(
             problems.append(
                 f"readers: {key[0]} records no think setting, so the manifest cannot show how it answered"
             )
+        elif not _is_valid_think_setting(r["think"]):
+            problems.append(
+                f"readers: {key[0]} recorded think={r['think']!r}, but its pin says think={pinned[key]!r}"
+            )
+        elif r.get("think_overridden") is True:
+            pass
         elif not (type(r["think"]) is type(pinned[key]) and r["think"] == pinned[key]):
             problems.append(
                 f"readers: {key[0]} recorded think={r['think']!r}, but its pin says think={pinned[key]!r}"
@@ -770,7 +867,11 @@ def verify_manifest(
     return problems
 
 
-def reader_pins(families: Sequence[str]) -> list[Any]:
+def reader_pins(
+    families: Sequence[str],
+    *,
+    reader_think: Sequence[str] | Mapping[str, Any] | None = None,
+) -> list[Any]:
     """The pinned model specs of the named reader families, in order; an unknown family is refused.
 
     The licence gate validates exactly these before any Ollama call.
@@ -781,6 +882,7 @@ def reader_pins(families: Sequence[str]) -> list[Any]:
     )
     from reasoning_dataset_lab.pilot_b.ollama import READER_ROLE_BY_FAMILY
 
+    overrides = parse_reader_think_overrides(reader_think)
     specs: list[Any] = []
     for family in families:
         if family not in READER_ROLE_BY_FAMILY:
@@ -789,7 +891,10 @@ def reader_pins(families: Sequence[str]) -> list[Any]:
                 f"Unknown reader family '{family}'.",
                 f"Choose from: {', '.join(sorted(READER_ROLE_BY_FAMILY))}.",
             )
-        specs.append(DEFAULT_PILOT_B_MODEL_PINS[READER_ROLE_BY_FAMILY[family]])
+        spec = DEFAULT_PILOT_B_MODEL_PINS[READER_ROLE_BY_FAMILY[family]]
+        if family in overrides:
+            spec = spec.with_think(overrides[family])
+        specs.append(spec)
     return specs
 
 
@@ -799,14 +904,17 @@ def build_ollama_readers(
     base_url: str,
     num_ctx: int,
     num_predict: int,
+    reader_think: Sequence[str] | Mapping[str, Any] | None = None,
 ) -> list[Any]:
     """Real loopback readers for the named families, in the order given (each one is run alone, then unloaded)."""
 
     from reasoning_dataset_lab.pilot_b.ollama import OllamaBlindReaderAdapter
 
+    overrides = parse_reader_think_overrides(reader_think)
     readers: list[Any] = []
-    for spec in reader_pins(families):
+    for spec in reader_pins(families, reader_think=overrides):
         role = spec.role
+        fam = spec.family.strip().lower()
         readers.append(
             OllamaBlindReaderAdapter(
                 model=spec,
@@ -814,6 +922,7 @@ def build_ollama_readers(
                 num_predict=num_predict,
                 role=role,  # type: ignore[arg-type]
                 max_num_ctx=num_ctx,
+                think_overridden=(fam in overrides),
             )
         )
     return readers
