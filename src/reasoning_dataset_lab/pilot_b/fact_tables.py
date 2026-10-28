@@ -87,22 +87,22 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "inspection date",
         "interval_attr": ("output capacity", "megawatts"),
         "state_attr": (
-            "turbine mode",
-            ("standby", "barring", "starting", "online", "coasting"),
+            "turbine operating mode",
+            ("standby", "accelerating", "online", "coasting", "overhaul"),
         ),
         "attr_spec": (
-            "casing alloy",
+            "monolithic casing alloy",
             ("steel", "castiron", "titanium", "inconel", "aluminum"),
         ),
         "open_attrs": (
-            ("cooling medium", ("helium", "nitrogen", "hydrogen", "water", "oil")),
+            ("generator rotor cooling gas", ("helium", "nitrogen", "hydrogen", "argon", "carbondioxide")),
             (
-                "lubricant grade",
+                "unblended base-oil grade",
                 ("mineral", "polyalphaolefin", "ester", "polyglycol", "silicone"),
             ),
             (
-                "governor mode",
-                ("droop", "isochronous", "baseload", "pressure", "loadlimit"),
+                "governor droop percentage step",
+                ("droop0pct", "droop2pct", "droop4pct", "droop6pct", "droop8pct"),
             ),
         ),
     },
@@ -120,20 +120,20 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "calibration date",
         "interval_attr": ("switching latency", "milliseconds"),
         "state_attr": (
-            "breaker position",
-            ("service", "test", "disconnected", "withdrawn", "earthed"),
+            "active relay setting group",
+            ("group1", "group2", "group3", "group4", "group5"),
         ),
         "attr_spec": (
-            "contact plating",
+            "outermost contact plating metal",
             ("silver", "gold", "palladium", "rhodium", "platinum"),
         ),
         "open_attrs": (
             (
-                "enclosure rating",
-                ("nema3r", "nema4", "nema7", "nema12", "nema13"),
+                "sole NEMA enclosure rating",
+                ("nema3r", "nema4x", "nema7", "nema9", "nema12"),
             ),
-            ("mount style", ("rack", "rail", "wall", "pole", "floor")),
-            ("coil voltage", ("dc24", "dc48", "dc125", "ac120", "ac240")),
+            ("chassis rack-unit height", ("height1u", "height2u", "height3u", "height4u", "height6u")),
+            ("single-rated coil voltage", ("dc24", "dc48", "dc125", "ac120", "ac240")),
         ),
     },
     {
@@ -150,12 +150,12 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "departure date",
         "interval_attr": ("draft depth", "meters"),
         "state_attr": (
-            "berth status",
-            ("underway", "anchored", "alongside", "adrift", "aground"),
+            "bridge telegraph order step",
+            ("fullastern", "halfastern", "stopengine", "halfahead", "fullahead"),
         ),
         "attr_spec": (
-            "topcoat",
-            ("epoxy", "polyurethane", "silicone", "acrylic", "vinyl"),
+            "unblended superstructure topcoat resin",
+            ("pureepoxy", "polyurethane", "polysiloxane", "alkyd", "fluoropolymer"),
         ),
         "open_attrs": (
             (
@@ -164,8 +164,8 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
             ),
             ("ice class", ("pc1", "pc3", "pc5", "pc7", "noclass")),
             (
-                "propulsion type",
-                ("diesel", "steam", "sail", "gasturbine", "battery"),
+                "sole propulsion power plant",
+                ("diesel", "steam", "fullsailrig", "gasturbine", "fuelcell"),
             ),
         ),
     },
@@ -183,20 +183,20 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "service date",
         "interval_attr": ("operating temperature", "degrees"),
         "state_attr": (
-            "damper position",
-            ("closed", "twentyfive", "fifty", "seventyfive", "open"),
+            "damper opening step",
+            ("zero", "twentyfive", "fifty", "seventyfive", "hundred"),
         ),
         "attr_spec": (
-            "lining brick",
-            ("alumina", "magnesia", "zirconia", "silica", "chromite"),
+            "single-oxide hot-face brick",
+            ("purealumina", "puremagnesia", "puresilica", "purezirconia", "purechromia"),
         ),
         "open_attrs": (
-            ("purge gas", ("argon", "nitrogen", "helium", "hydrogen", "carbondioxide")),
+            ("single-component purge gas", ("argon", "nitrogen", "helium", "neon", "krypton")),
             (
-                "thermocouple type",
-                ("typej", "typek", "typen", "typer", "types"),
+                "control thermocouple calibration",
+                ("type-j", "type-k", "type-n", "type-r", "type-s"),
             ),
-            ("hearth drive", ("roller", "walking", "pusher", "rotary", "car")),
+            ("sole hearth conveyor mechanism", ("rollerhearth", "walkingbeam", "pushertray", "rotarytable", "carbottom")),
         ),
     },
     {
@@ -213,20 +213,20 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "refuel date",
         "interval_attr": ("core pressure", "kilopascals"),
         "state_attr": (
-            "loop state",
-            ("drained", "cold", "heatup", "hot", "cooldown"),
+            "NRC reactor operational mode",
+            ("coldshutdown", "hotshutdown", "hotstandby", "criticalstartup", "fullpower"),
         ),
         "attr_spec": (
-            "cladding metal",
+            "driver fuel cladding alloy",
             ("zircaloy", "ss316", "magnox", "inconel", "aluminum"),
         ),
         "open_attrs": (
             (
-                "moderator type",
-                ("graphite", "heavywater", "lightwater", "beryllium", "paraffin"),
+                "IAEA reactor type code",
+                ("pwr", "bwr", "phwr", "htgr", "sfr"),
             ),
             (
-                "shielding material",
+                "monolithic cask shield material",
                 ("concrete", "lead", "tungsten", "steel", "depleteduranium"),
             ),
             (
@@ -249,25 +249,25 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "alignment date",
         "interval_attr": ("suction flow", "liters"),
         "state_attr": (
-            "compressor mode",
-            ("stopped", "starting", "onload", "offload", "stopping"),
+            "compressor operating state",
+            ("standby", "accelerating", "loaded", "idling", "lockout"),
         ),
         "attr_spec": (
-            "rotor coating",
-            ("ptfe", "epoxyphenolic", "aluminide", "diamondlike", "anodized"),
+            "unblended single-layer rotor coating",
+            ("ptfe", "parylene", "aluminide", "diamondlike", "electrolessnickel"),
         ),
         "open_attrs": (
             (
-                "intercooler medium",
-                ("air", "water", "oil", "ammonia", "propane"),
+                "unblended intercooler tube coolant",
+                ("demineralizedwater", "ambientair", "mineraloil", "perfluorocarbon", "siliconefluid"),
             ),
             (
-                "shaft seal",
-                ("labyrinth", "mechanical", "packed", "lip", "brush"),
+                "unblended crankcase oil ISO viscosity grade",
+                ("isovg32", "isovg46", "isovg68", "isovg100", "isovg150"),
             ),
             (
-                "unloader mechanism",
-                ("pneumatic", "hydraulic", "electric", "spring", "manual"),
+                "active unloader capacity step",
+                ("cap0pct", "cap25pct", "cap50pct", "cap75pct", "cap100pct"),
             ),
         ),
     },
@@ -285,24 +285,24 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "testing date",
         "interval_attr": ("winding load", "amperes"),
         "state_attr": (
-            "tap position",
-            ("lowest", "lower", "nominal", "higher", "highest"),
+            "tap step position",
+            ("minus2", "minus1", "nominal", "plus1", "plus2"),
         ),
         "attr_spec": (
-            "core steel",
-            ("silicon", "amorphous", "ferrite", "permalloy", "nanocrystalline"),
+            "unblended main core alloy",
+            ("siliconsteel", "permalloy", "permendur", "alfenol", "ferrite"),
         ),
         "open_attrs": (
             (
-                "dielectric fluid",
-                ("fluorinated", "silicone", "ester", "paraffinic", "naphthenic"),
+                "unblended dielectric fluid",
+                ("polybutene", "silicone", "ester", "paraffinic", "naphthenic"),
             ),
             (
-                "bushing material",
-                ("porcelain", "oilpaper", "epoxy", "siliconerubber", "glass"),
+                "H1 bushing BIL impulse class",
+                ("bil110kv", "bil150kv", "bil200kv", "bil250kv", "bil350kv"),
             ),
             (
-                "vector group",
+                "two-winding vector group",
                 ("dyn11", "yyn0", "ynd1", "dd0", "yzn11"),
             ),
         ),
@@ -321,25 +321,25 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "cleaning date",
         "interval_attr": ("steam output", "tonnes"),
         "state_attr": (
-            "burner state",
-            ("prepurge", "lightoff", "firing", "postpurge", "lockout"),
+            "burner sequence step",
+            ("coldstandby", "prepurge", "mainflame", "postpurge", "lockout"),
         ),
         "attr_spec": (
-            "tube alloy",
-            ("t11", "t22", "t91", "tp304h", "inconel625"),
+            "finishing superheater tube alloy",
+            ("t11", "t22", "t91", "tp304h", "tp347h"),
         ),
         "open_attrs": (
             (
-                "feedwater program",
-                ("phosphate", "chelant", "volatile", "oxygenated", "caustic"),
+                "sole continuous blowdown valve step",
+                ("blowdown0pct", "blowdown25pct", "blowdown50pct", "blowdown75pct", "blowdown100pct"),
             ),
             (
-                "sootblower type",
-                ("retractable", "rotary", "wall", "rake", "sonic"),
+                "sole sootblower cleaning mechanism",
+                ("steamjet", "compressedair", "waterlance", "sonichorn", "pulsedetonation"),
             ),
             (
-                "firing method",
-                ("pulverized", "stoker", "fluidized", "cyclone", "gasfired"),
+                "coal firing system",
+                ("pulverizedburner", "travelingstoker", "fluidizedbed", "cyclonebarrel", "underfeedretort"),
             ),
         ),
     },
@@ -357,25 +357,25 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "charging date",
         "interval_attr": ("coolant flow", "gallons"),
         "state_attr": (
-            "circuit state",
-            ("idle", "startup", "chilling", "defrosting", "pumpdown"),
+            "circuit operating mode",
+            ("idle", "chilling", "defrosting", "pumpdown", "lockout"),
         ),
         "attr_spec": (
-            "brazing filler",
-            ("silver", "nickel", "aluminum", "copper", "gold"),
+            "leaving chilled-water setpoint step",
+            ("setpoint4c", "setpoint6c", "setpoint8c", "setpoint10c", "setpoint12c"),
         ),
         "open_attrs": (
             (
-                "refrigerant",
+                "unblended single-circuit refrigerant",
                 ("ammonia", "propane", "carbondioxide", "isobutane", "r134a"),
             ),
             (
-                "expansion valve",
-                ("electronic", "thermostatic", "automatic", "float", "fixed"),
+                "metering device type",
+                ("electronic", "thermostatic", "constantpressure", "float", "fixedorifice"),
             ),
             (
-                "condenser cooling",
-                ("aircooled", "groundcoupled", "seawatercooled", "rivercooled", "towercooled"),
+                "sole condenser heat rejection loop",
+                ("directair", "oncethroughwell", "oncethroughsea", "oncethroughriver", "coolingtower"),
             ),
         ),
     },
@@ -393,25 +393,25 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
         "date_attr": "overhaul date",
         "interval_attr": ("discharge pressure", "bars"),
         "state_attr": (
-            "pump state",
-            ("stopped", "priming", "starting", "running", "coasting"),
+            "pump operating mode",
+            ("standby", "starting", "delivering", "coastingdown", "stoppedlockedout"),
         ),
         "attr_spec": (
-            "seal material",
-            ("viton", "teflon", "nitrile", "graphite", "kalrez"),
+            "sole secondary seal O-ring elastomer",
+            ("viton", "epdm", "nitrile", "neoprene", "kalrez"),
         ),
         "open_attrs": (
             (
-                "drive coupling",
-                ("rigid", "flexible", "fluid", "eddycurrent", "clutch"),
+                "sole mechanical shaft coupling",
+                ("rigidflange", "elastomericjaw", "metallicdisc", "gearcoupling", "gridcoupling"),
             ),
             (
-                "bearing type",
-                ("magnetic", "roller", "sleeve", "hydrostatic", "ball"),
+                "sole drive-end radial bearing",
+                ("babbittsleeve", "deepgrooveball", "cylindricalroller", "sphericalroller", "taperedroller"),
             ),
             (
-                "casing mount",
-                ("foot", "centerline", "flange", "pedestal", "inline"),
+                "API pump configuration code",
+                ("oh1", "oh2", "oh3", "bb1", "vs1"),
             ),
         ),
     },
@@ -424,175 +424,309 @@ DOMAIN_CATALOGUE: tuple[dict[str, object], ...] = (
 # or holds a class beside its member makes an "unsupported" claim true, and the key wrong (Pilot B stub 10d, the
 # lubricant grade "synthetic" against "polyol"). The 10 state sets hold top-level operating modes only.
 #
-# The three tables below are the first gate. The second gate, run on local readers, is the pairwise-contradiction
-# admission check in ``pilot_b/value_admission.py``.
+# The four tables below are the first gate. The second gate, run on local readers, is the pairwise-contradiction
+# admission check in ``pilot_b/value_certification.py``.
 
-# The one axis each set sits on. Every set has one, and the test fails on a set without a line here.
+# The one axis each set sits on, stated with why one entity can hold only one value at a time.
 VALUE_SET_AXES: dict[tuple[str, str], str] = {
-    ("turbines", "turbine mode"): "the unit's top-level operating mode",
-    ("turbines", "casing alloy"): "the alloy family of the casing",
-    ("turbines", "cooling medium"): "the single fluid that cools the unit",
-    ("turbines", "lubricant grade"): "the base-oil chemistry",
-    ("turbines", "governor mode"): "the control law the governor runs",
-    ("relays", "breaker position"): "the breaker's position in its cubicle",
-    ("relays", "contact plating"): "the plating metal",
-    ("relays", "enclosure rating"): "the NEMA type designation, one per enclosure",
-    ("relays", "mount style"): "where the relay is mounted",
-    ("relays", "coil voltage"): "the rated coil supply, one designation",
-    ("vessels", "berth status"): "the vessel's top-level situation",
-    ("vessels", "topcoat"): "the binder chemistry of the outer coat",
-    ("vessels", "registry port"): "the port of registry",
-    ("vessels", "ice class"): "the IACS polar class, one per vessel",
-    ("vessels", "propulsion type"): "the prime mover",
-    ("furnaces", "damper position"): "how far the damper is open",
-    ("furnaces", "lining brick"): "the refractory oxide",
-    ("furnaces", "purge gas"): "a single pure gas",
-    ("furnaces", "thermocouple type"): "the standard thermocouple designation",
-    ("furnaces", "hearth drive"): "the mechanism that moves the load",
-    ("reactors", "loop state"): "the loop's phase of the heat cycle",
-    ("reactors", "cladding metal"): "the cladding metal",
-    ("reactors", "moderator type"): "the moderating material",
-    ("reactors", "shielding material"): "the bulk gamma shielding material",
-    ("reactors", "coolant type"): "the reactor coolant",
-    ("compressors", "compressor mode"): "the compressor's top-level operating mode",
-    ("compressors", "rotor coating"): "the coating chemistry",
-    ("compressors", "intercooler medium"): "the single fluid in the intercooler",
-    ("compressors", "shaft seal"): "the sealing principle",
-    ("compressors", "unloader mechanism"): "the energy that actuates the unloader",
-    ("transformers", "tap position"): "the tap-changer position",
-    ("transformers", "core steel"): "the core material family",
-    ("transformers", "dielectric fluid"): "the insulating-fluid chemistry",
-    ("transformers", "bushing material"): "the bushing insulation material",
-    ("transformers", "vector group"): "the IEC vector group designation",
-    ("boilers", "burner state"): "the burner-management sequence step",
-    ("boilers", "tube alloy"): "the tube alloy family",
-    ("boilers", "feedwater program"): "the one chemistry program in use",
-    ("boilers", "sootblower type"): "the mechanism of the sootblower",
-    ("boilers", "firing method"): "how the fuel is fired",
-    ("chillers", "circuit state"): "the circuit's top-level operating mode",
-    ("chillers", "brazing filler"): "the filler's base metal",
-    ("chillers", "refrigerant"): "the single refrigerant fluid",
-    ("chillers", "expansion valve"): "how the valve's metering is controlled",
-    ("chillers", "condenser cooling"): "the heat sink the condenser rejects to",
-    ("pumps", "pump state"): "the pump's top-level operating mode",
-    ("pumps", "seal material"): "the seal material",
-    ("pumps", "drive coupling"): "the class of coupling",
-    ("pumps", "bearing type"): "the bearing principle",
-    ("pumps", "casing mount"): "how the casing is supported",
+    ("turbines", "turbine operating mode"): "the unit's top-level operating mode, only one mode active at a time",
+    ("turbines", "monolithic casing alloy"): "the alloy of the monolithic casing casting, one alloy per unit",
+    ("turbines", "generator rotor cooling gas"): "the single gas that cools the generator rotor winding, one gas per rotor",
+    ("turbines", "unblended base-oil grade"): "the single unblended base-oil chemistry in the lube reservoir, one grade per fill",
+    ("turbines", "governor droop percentage step"): "the governor's single discrete speed-droop percentage step setting, one droop step at a time",
+    ("relays", "active relay setting group"): "the protective relay's single active setting group register, one setting group active at a time",
+    ("relays", "outermost contact plating metal"): "the single outermost surface finish metal on the relay contact, one top layer per contact",
+    ("relays", "sole NEMA enclosure rating"): "the single NEMA type designation stamped on the enclosure, one rating per housing",
+    ("relays", "chassis rack-unit height"): "the relay chassis's single physical EIA rack-unit height, one height per unit",
+    ("relays", "single-rated coil voltage"): "the fixed nominal supply voltage of a single-rated coil, one rating per coil",
+    ("vessels", "bridge telegraph order step"): "the bridge engine order telegraph's single active order step, one telegraph step at a time",
+    ("vessels", "unblended superstructure topcoat resin"): "the single unblended polymer binder resin of the superstructure topcoat, one resin family per topcoat",
+    ("vessels", "registry port"): "the vessel's single official port of registry under flag law, one port per vessel",
+    ("vessels", "ice class"): "the IACS polar class notation, one polar class per vessel",
+    ("vessels", "sole propulsion power plant"): "the vessel's sole main propulsion power plant architecture, one power plant per single-plant ship",
+    ("furnaces", "damper opening step"): "the damper actuator's single discrete opening step, one position at a time",
+    ("furnaces", "single-oxide hot-face brick"): "the single pure refractory oxide of the hot-face lining brick, one oxide grade per lining",
+    ("furnaces", "single-component purge gas"): "the single pure inert gas fed to the purge line, one gas per supply",
+    ("furnaces", "control thermocouple calibration"): "the single IEC/ANSI thermocouple letter designation of the control sensor, one calibration per probe",
+    ("furnaces", "sole hearth conveyor mechanism"): "the single mechanical drive that moves the load through the hearth, one mechanism per furnace",
+    ("reactors", "NRC reactor operational mode"): "the reactor unit's single active NRC technical-specification operational mode, one mode at a time",
+    ("reactors", "driver fuel cladding alloy"): "the single cladding tube alloy of the driver fuel pins, one cladding metal per core load",
+    ("reactors", "IAEA reactor type code"): "the reactor unit's single IAEA PRIS reactor type classification code, one type code per reactor",
+    ("reactors", "monolithic cask shield material"): "the single monolithic gamma-shield material of the cask wall, one material per cask",
+    ("reactors", "coolant type"): "the single primary core coolant fluid, one primary coolant per reactor",
+    ("compressors", "compressor operating state"): "the compressor's single top-level operating state, only one state active at a time",
+    ("compressors", "unblended single-layer rotor coating"): "the single unblended surface coating applied directly to the rotor lobes, one single-layer finish per rotor",
+    ("compressors", "unblended intercooler tube coolant"): "the single unblended cooling fluid circulated through the intercooler tubes, one fluid per loop",
+    ("compressors", "unblended crankcase oil ISO viscosity grade"): "the single ISO 3448 kinematic viscosity grade of the unblended crankcase oil fill, one viscosity grade per crankcase",
+    ("compressors", "active unloader capacity step"): "the unloader controller's single active capacity step setting, one capacity step at a time",
+    ("transformers", "tap step position"): "the tap changer's single discrete step contact, only one tap step connected at a time",
+    ("transformers", "unblended main core alloy"): "the single unblended magnetic core material of the main core, one core composition per transformer",
+    ("transformers", "unblended dielectric fluid"): "the single unblended insulating liquid filling the tank, one fluid chemistry per transformer",
+    ("transformers", "H1 bushing BIL impulse class"): "the H1 high-voltage bushing's single IEEE basic lightning impulse insulation level class, one BIL class per bushing",
+    ("transformers", "two-winding vector group"): "the IEC winding connection and phase-displacement code, one vector group per two-winding transformer",
+    ("boilers", "burner sequence step"): "the burner management system's single active sequence step, one step at a time",
+    ("boilers", "finishing superheater tube alloy"): "the single unclad ASTM base tube alloy of the finishing superheater bank, one grade per bank",
+    ("boilers", "sole continuous blowdown valve step"): "the sole continuous blowdown valve's single discrete opening percentage step, one step setting at a time",
+    ("boilers", "sole sootblower cleaning mechanism"): "the boiler's single fireside sootblower cleaning mechanism, one cleaning mechanism per boiler",
+    ("boilers", "coal firing system"): "the furnace's single coal-firing combustion system, one firing architecture per boiler",
+    ("chillers", "circuit operating mode"): "the refrigeration circuit's single top-level operating state, one mode at a time",
+    ("chillers", "leaving chilled-water setpoint step"): "the chiller controller's single active leaving chilled-water temperature setpoint step, one setpoint at a time",
+    ("chillers", "unblended single-circuit refrigerant"): "the single pure unblended ASHRAE refrigerant fluid charged into the circuit, one fluid per single-circuit chiller",
+    ("chillers", "metering device type"): "the single metering device type controlling evaporator feed, one valve mechanism per circuit",
+    ("chillers", "sole condenser heat rejection loop"): "the single external heat-rejection loop architecture of the condenser, one sole sink loop per chiller",
+    ("pumps", "pump operating mode"): "the pump's single top-level operating mode, only one mode active at a time",
+    ("pumps", "sole secondary seal O-ring elastomer"): "the single secondary O-ring elastomer grade of the mechanical seal, one sole elastomer per pump",
+    ("pumps", "sole mechanical shaft coupling"): "the single mechanical shaft coupling construction connecting driver to pump, one coupling per shaft train",
+    ("pumps", "sole drive-end radial bearing"): "the single drive-end radial shaft-support bearing design, one sole radial bearing per housing",
+    ("pumps", "API pump configuration code"): "the pump unit's single API 610 construction configuration code, one configuration code per pump",
 }
 
-# Known subsumptions and overlaps found in the audit of the catalogue. Each row:
-# (domain, attribute) -> ((general, (members it covers), reason), ...). A set may never hold a row's ``general``
-# together with any of its members; ``tests/test_pilot_b_value_sets.py`` enforces that on every set. The rows also
-# stand guard over values the audit removed, so a replacement or a new value cannot bring the same overlap back.
+# True class/member (hypernym) subsumptions found in the audit of the catalogue. Each row:
+# (domain, attribute) -> ((general, (members it covers), reason), ...). Co-occurrence and mixed-axis rules live in
+# ``VALUE_COOCCURRENCES`` below. A set may never hold a row's ``general`` together with any of its members (or their
+# synonyms in ``tests/test_pilot_b_value_sets.py``).
 VALUE_SUBSUMPTIONS: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str], ...]] = {
-    ("turbines", "lubricant grade"): (
+    ("turbines", "unblended base-oil grade"): (
         ("synthetic", ("ester", "polyalphaolefin", "polyglycol", "silicone"), "esters, PAOs, polyglycols and silicones are synthetic lubricants"),
-        ("ester", ("polyol",), "polyol esters are esters"),
+        ("ester", ("polyol", "phosphateester"), "polyol esters and phosphate esters are esters"),
     ),
-    ("turbines", "casing alloy"): (("nickel", ("inconel",), "inconel is a nickel-based alloy"),),
-    ("turbines", "cooling medium"): (("air", ("nitrogen",), "air is about four-fifths nitrogen"),),
-    ("turbines", "turbine mode"): (("offline", ("standby", "coasting"), "a unit in standby or coasting down is not producing, so offline is true of it"),),
-    ("relays", "enclosure rating"): (
-        ("waterproof", ("dustproof", "sealed", "weatherproof"), "waterproof, dustproof and sealed are properties that hold together, not one rating"),
+    ("turbines", "monolithic casing alloy"): (("nickel", ("inconel",), "inconel is a nickel-based alloy"),),
+    ("turbines", "turbine operating mode"): (
+        ("offline", ("standby", "coasting", "turninggear", "barring", "tripped", "accelerating", "overhaul"), "a unit in standby, turning gear, coasting, accelerating, overhaul or tripped is not generating on the grid, so offline is true of it"),
     ),
-    ("vessels", "propulsion type"): (
-        ("nuclear", ("steam",), "a nuclear ship drives steam turbines"),
-        ("hybrid", ("diesel", "battery"), "hybrid is diesel plus battery"),
-        ("electric", ("diesel", "battery"), "electric propulsion covers diesel-electric and battery-electric"),
-        ("geared", ("diesel", "steam", "gasturbine"), "geared is a drive train that any prime mover can have"),
+    ("relays", "active relay setting group"): (
+        ("disconnected", ("withdrawn", "removed", "earthed", "test"), "a withdrawn, removed, earthed or test-position drawout breaker has its main contacts electrically disconnected"),
     ),
-    ("vessels", "berth status"): (
-        ("ballasted", ("underway", "anchored", "alongside"), "ballasted is a load condition that holds in any berth state"),
-        ("moored", ("alongside",), "alongside is moored to a quay"),
+    ("vessels", "sole propulsion power plant"): (
+        ("electric", ("diesel", "battery", "fuelcell"), "electric propulsion covers diesel-electric, battery-electric and fuel-cell electric"),
+    ),
+    ("vessels", "bridge telegraph order step"): (
+        ("moored", ("alongside", "mooredalongside"), "alongside is moored to a quay"),
+        ("underway", ("adrift", "makingway", "notundercommand"), "under COLREGs Rule 3(i), a vessel adrift, making way or not under command (not at anchor, moored, or aground) is underway"),
     ),
     ("vessels", "ice class"): (
         ("arctic", ("polar", "pc1"), "arctic and polar are the same class"),
-        ("reinforced", ("ia", "ib", "ic", "pc5"), "reinforced is not a class of its own scheme"),
-        ("ia", ("pc1", "pc3", "pc5", "pc7"), "the Finnish-Swedish classes and the polar classes are two schemes; a set holds one"),
     ),
-    ("furnaces", "damper position"): (("modulating", ("twentyfive", "fifty", "seventyfive"), "a modulating damper is throttling"),),
-    ("furnaces", "purge gas"): (
-        ("inert", ("argon", "nitrogen", "helium"), "argon, nitrogen and helium are inert gases"),
-        ("forming", ("nitrogen", "hydrogen"), "forming gas is nitrogen with hydrogen"),
+    ("furnaces", "damper opening step"): (
+        ("modulating", ("twentyfive", "fifty", "seventyfive"), "a modulating damper is throttling at intermediate opening steps"),
+        ("open", ("twentyfive", "fifty", "seventyfive", "hundred"), "a damper at 25%, 50%, 75% or 100% is open, so bare 'open' covers every non-zero opening step"),
     ),
-    ("compressors", "rotor coating"): (
-        ("ceramic", ("carbide", "nitride"), "carbides and nitrides are ceramics"),
-        ("anodized", ("carbide", "nitride"), "an anodized layer is an oxide ceramic"),
+    ("furnaces", "single-component purge gas"): (
+        ("inert", ("argon", "nitrogen", "helium", "neon", "krypton"), "argon, nitrogen, helium, neon and krypton are inert gases"),
     ),
-    ("compressors", "shaft seal"): (
-        ("mechanical", ("drygas",), "a dry-gas seal is a kind of mechanical seal"),
-        ("carbon", ("mechanical",), "a carbon ring is the face of a mechanical seal"),
+    ("compressors", "unblended single-layer rotor coating"): (
+        ("ceramic", ("carbide", "nitride", "alumina"), "carbides, nitrides and oxide ceramics are ceramics"),
     ),
-    ("compressors", "intercooler medium"): (
-        ("brine", ("water",), "brine is water with salt in it"),
-        ("glycol", ("water",), "glycol coolant is a water mix"),
+    ("compressors", "unblended crankcase oil ISO viscosity grade"): (
+        ("mechanical", ("drygas", "drygasface"), "a dry-gas seal is a kind of mechanical seal"),
+        ("multigrade", ("isovg32", "isovg46", "isovg68", "isovg100", "isovg150"), "a wide-range multigrade lubricant spans multiple ISO viscosity grades"),
+    ),
+    ("compressors", "unblended intercooler tube coolant"): (
         ("refrigerant", ("ammonia", "propane"), "ammonia and propane are refrigerants"),
     ),
-    ("transformers", "core steel"): (
-        ("oriented", ("silicon",), "oriented steel is grain-oriented silicon steel"),
-        ("laminated", ("silicon", "amorphous", "ferrite"), "laminated is how a core is built, not what it is made of"),
+    ("transformers", "unblended main core alloy"): (
+        ("oriented", ("silicon", "siliconsteel"), "oriented steel is grain-oriented silicon steel"),
+        ("silicon", ("amorphous", "nanocrystalline", "siliconsteel"), "amorphous (Fe-Si-B) and nanocrystalline (Fe-Si-B-Nb-Cu) core alloys are silicon-bearing iron alloys"),
     ),
-    ("transformers", "dielectric fluid"): (("mineral", ("paraffinic", "naphthenic"), "paraffinic and naphthenic oils are mineral oils"),),
-    ("transformers", "bushing material"): (
+    ("transformers", "unblended dielectric fluid"): (
+        ("mineral", ("paraffinic", "naphthenic"), "paraffinic and naphthenic oils are mineral oils"),
+    ),
+    ("transformers", "H1 bushing BIL impulse class"): (
         ("ceramic", ("porcelain",), "porcelain is a ceramic"),
-        ("polymer", ("epoxy", "resin"), "epoxy and resin are polymers"),
-        ("resin", ("epoxy",), "epoxy is a resin"),
+        ("polymer", ("epoxy", "resin", "cycloaliphaticepoxy", "siliconerubber", "ptfe"), "epoxy, silicone rubber and PTFE are polymers"),
+        ("resin", ("epoxy", "cycloaliphaticepoxy"), "epoxy is a resin"),
     ),
-    ("transformers", "vector group"): (("grounded", ("yyn0", "ynd1", "dyn11"), "grounding is a separate axis from the winding group"),),
-    ("boilers", "tube alloy"): (
-        ("ferritic", ("carbon", "chromoly"), "carbon steel and chromoly steel are ferritic"),
-        ("chromoly", ("ferritic",), "chromoly steel is ferritic"),
+    ("boilers", "finishing superheater tube alloy"): (
+        ("ferritic", ("carbon", "chromoly", "t11", "t22", "t91"), "carbon steel and Cr-Mo T-grades are ferritic/martensitic steels"),
+        ("chromoly", ("t11", "t22", "t91"), "chromoly steel covers T11, T22 and T91 Cr-Mo alloys"),
     ),
-    ("boilers", "feedwater program"): (
-        ("deaerated", ("phosphate", "chelant", "volatile", "oxygenated", "caustic"), "deaeration applies to water under any program"),
-        ("demineralized", ("phosphate", "chelant", "volatile"), "demineralized water is treated under a program as well"),
+    ("boilers", "sole continuous blowdown valve step"): (
+        ("open", ("blowdown25pct", "blowdown50pct", "blowdown75pct", "blowdown100pct"), "a blowdown valve at 25%, 50%, 75% or 100% is open, so bare 'open' covers every non-zero blowdown step"),
     ),
-    ("boilers", "sootblower type"): (("acoustic", ("sonic",), "acoustic and sonic are the same method"),),
-    ("boilers", "firing method"): (
-        ("balanced", ("forced", "induced"), "balanced draft uses both fans"),
-        ("pressurized", ("forced",), "forced draft is a pressurized furnace"),
+    ("boilers", "sole sootblower cleaning mechanism"): (
+        ("acoustic", ("sonic", "sonichorn"), "acoustic and sonic cleaning are the same class"),
     ),
-    ("chillers", "brazing filler"): (
+    ("boilers", "coal firing system"): (
+        ("pressurized", ("forced",), "forced-draft firing operates with a pressurized furnace"),
+    ),
+    ("chillers", "leaving chilled-water setpoint step"): (
         ("bronze", ("copper",), "bronze is a copper alloy"),
-        ("phosphorus", ("copper",), "phosphorus fillers are copper-phosphorus"),
+        ("phosphorus", ("copper", "bcup", "aws-bcup"), "phosphorus brazing fillers are copper-phosphorus alloys"),
     ),
-    ("chillers", "refrigerant"): (("halocarbon", ("hydrofluoro", "r134a"), "hydrofluorocarbons are halocarbons"),),
-    ("chillers", "circuit state"): (
-        ("chilling", ("subcooling", "pumping"), "subcooling and pumping happen while the circuit is chilling"),
+    ("chillers", "unblended single-circuit refrigerant"): (("halocarbon", ("hydrofluoro", "r134a"), "hydrofluorocarbons are halocarbons"),),
+    ("chillers", "metering device type"): (
+        ("orifice", ("capillary", "fixed", "fixedorifice"), "a capillary is a fixed orifice"),
+        ("automatic", ("electronic", "thermostatic", "float", "constantpressure"), "in plain engineering English, electronic, thermostatic and float expansion valves operate automatically"),
     ),
-    ("chillers", "expansion valve"): (("orifice", ("capillary", "fixed"), "a capillary is a fixed orifice"),),
-    ("chillers", "condenser cooling"): (
-        ("hybrid", ("aircooled", "watercooled"), "hybrid is a mix of the others"),
-        ("evaporative", ("watercooled",), "evaporative cooling uses water"),
-        ("glycol", ("aircooled", "watercooled"), "a glycol loop rejects its heat to air or water"),
+    ("chillers", "sole condenser heat rejection loop"): (
+        ("evaporative", ("watercooled", "coolingtower"), "a cooling tower is an evaporative heat-rejection system"),
     ),
-    ("pumps", "pump state"): (("primed", ("stopped", "running"), "primed is a condition, not a mode: a primed pump is stopped or running"),),
-    ("pumps", "drive coupling"): (
-        ("splined", ("rigid", "flexible"), "a splined coupling is rigid or flexible"),
+    ("pumps", "sole mechanical shaft coupling"): (
         ("magnetic", ("eddycurrent",), "an eddy-current coupling is a magnetic coupling"),
+        ("flexible", ("elastomericjaw", "metallicdisc", "gearcoupling", "gridcoupling"), "jaw, disc, gear and grid shaft couplings are subtypes of mechanical flexible coupling"),
     ),
-    ("pumps", "bearing type"): (("ceramic", ("ball", "roller"), "ceramic is a material that ball and roller bearings are made of"),),
-    ("pumps", "casing mount"): (("vertical", ("foot", "centerline", "pedestal"), "vertical is an orientation, not a way to support the casing"),),
-    ("reactors", "coolant type"): (("primary", ("water",), "primary, secondary and auxiliary are loop roles, not coolants"),),
+    ("pumps", "sole drive-end radial bearing"): (
+        ("sleeve", ("hydrostatic", "hydrodynamicjournal", "hydrostaticpocket", "babbittsleeve"), "hydrodynamic, hydrostatic and Babbitt journal bearings are sleeve bearings"),
+    ),
+}
+
+# Co-occurring, composite, and multi-axis value pairs separated from true class/member subsumptions (lf fix 3).
+# Each row: (domain, attribute) -> ((first_meaning, (cooccurring_meanings, ...), reason), ...).
+VALUE_COOCCURRENCES: dict[tuple[str, str], tuple[tuple[str, tuple[str, ...], str], ...]] = {
+    ("turbines", "generator rotor cooling gas"): (
+        ("air", ("nitrogen",), "air is about four-fifths nitrogen"),
+    ),
+    ("turbines", "turbine operating mode"): (
+        ("standby", ("barring", "turninggear"), "a turbine on turning gear (barring) is held in hot standby"),
+        ("tripped", ("coasting", "barring", "turninggear"), "after a protection trip, the trip latch remains set while the rotor coasts down or turns on barring gear"),
+    ),
+    ("turbines", "governor droop percentage step"): (
+        ("speeddroop", ("inletpressure", "backpressure"), "a multi-loop governor runs speed-droop concurrently with inlet or backpressure control"),
+        ("isochronous", ("inletpressure", "backpressure"), "a multi-loop governor can pair an isochronous speed channel with a pressure limiter"),
+    ),
+    ("relays", "sole NEMA enclosure rating"): (
+        ("waterproof", ("dustproof", "sealed", "weatherproof"), "waterproof, dustproof and sealed are properties that hold together, not one NEMA rating"),
+    ),
+    ("relays", "chassis rack-unit height"): (
+        ("dinrail", ("floorcabinet", "rack19in", "surfacewall"), "a DIN-rail relay is clipped onto a DIN rail inside a floor cabinet, 19-inch rack or surface wall box"),
+        ("flushpanel", ("floorcabinet", "rack19in"), "a flush-panel relay mounts into the door of a floor cabinet or a 19-inch rack panel plate"),
+        ("rack19in", ("floorcabinet",), "a 19-inch rack relay subrack mounts inside an enclosed floor-standing cabinet"),
+    ),
+    ("vessels", "sole propulsion power plant"): (
+        ("nuclear", ("steam",), "a nuclear ship generates steam to drive steam turbines"),
+        ("hybrid", ("diesel", "battery"), "a hybrid propulsion plant combines diesel and battery power"),
+        ("geared", ("diesel", "steam", "gasturbine"), "geared is a transmission reduction stage that co-occurs with diesel, steam or gas-turbine plants"),
+        ("wingsail", ("diesel",), "a wingsail is a wind-assist rotor/foil retrofitted onto a diesel cargo vessel"),
+    ),
+    ("vessels", "bridge telegraph order step"): (
+        ("ballasted", ("underway", "makingway", "atanchor", "mooredalongside"), "ballasted is a hull loading condition that co-occurs with any navigation state"),
+        ("makingway", ("notundercommand",), "under COLREGs Rule 3(f) and Rule 27(a)(iii), a vessel not under command can still make way through the water"),
+        ("alongside", ("atanchor", "aground"), "a ship moored alongside a quay can keep an anchor deployed or rest on the bottom at low tide"),
+    ),
+    ("vessels", "ice class"): (
+        ("reinforced", ("ia", "ib", "ic", "pc5"), "hull ice reinforcement co-occurs with formal ice class notations"),
+        ("ia", ("pc1", "pc3", "pc5", "pc7"), "Finnish-Swedish ice classes and IACS polar classes are two separate classification schemes"),
+    ),
+    ("furnaces", "single-component purge gas"): (
+        ("forming", ("nitrogen", "hydrogen"), "forming gas is a mixture of nitrogen and hydrogen"),
+    ),
+    ("reactors", "NRC reactor operational mode"): (
+        ("cold", ("drained", "defueleddrained", "cooldown", "coldshutdown"), "a drained primary loop at ambient temperature is cold, and a cooldown ramp reaches cold shutdown"),
+    ),
+    ("reactors", "IAEA reactor type code"): (
+        ("lightwater", ("beryllium", "zirconiumhydride"), "MTR/ATR and TRIGA reactor cores combine light water with beryllium or zirconium-hydride moderation"),
+    ),
+    ("reactors", "coolant type"): (
+        ("primary", ("water",), "primary, secondary and auxiliary are loop roles rather than coolant substances"),
+    ),
+    ("compressors", "compressor operating state"): (
+        ("prelubricating", ("standby", "idling"), "the pre-lubrication pump runs while the compressor is in standby prior to start"),
+    ),
+    ("compressors", "unblended single-layer rotor coating"): (
+        ("anodized", ("carbide", "nitride", "ptfe", "diamondlike"), "hard-anodized aluminum serves as a substrate layer under PTFE or DLC topcoats"),
+        ("epoxyphenolic", ("mos2bonded", "ptfe"), "commercial bonded MoS2 and resin-bonded PTFE rotor coatings use an epoxy-phenolic binder resin"),
+    ),
+    ("compressors", "unblended intercooler tube coolant"): (
+        ("brine", ("water", "demineralizedwater"), "brine is an aqueous salt solution mixed with water"),
+        ("glycol", ("water", "demineralizedwater", "ethyleneglycol"), "intercooler glycol coolant is circulated as an aqueous solution mixed with demineralized water"),
+    ),
+    ("compressors", "unblended crankcase oil ISO viscosity grade"): (
+        ("carbon", ("mechanical", "carbonring", "drygasface", "labyrinth", "brush", "brushseal"), "a dry-gas or compound shaft seal cartridge uses a carbon ring face alongside labyrinth or brush stages"),
+        ("drygas", ("labyrinth", "carbon", "brush"), "a dry-gas seal cartridge incorporates an inner labyrinth and secondary carbon-ring or brush barrier stages"),
+        ("labyrinth", ("carbon", "brush", "packed"), "compound compressor shaft seals combine a labyrinth stage with carbon rings, brush seals or gland packing"),
+        ("circularmicrodimple", ("logarithmicspiral", "bidirectionaltgroove", "herringbonechevron", "rayleighstep"), "hybrid dry-gas seal faces combine primary lift grooves with a laser-textured micro-dimple sealing dam"),
+    ),
+    ("compressors", "active unloader capacity step"): (
+        ("handwheel", ("pneumatic", "hydraulic", "stepper"), "pneumatic, hydraulic and stepper unloader actuators include an integral manual handwheel override"),
+        ("solenoid", ("pneumatic", "hydraulic"), "pneumatic and hydraulic unloader actuators are piloted by an electro-pneumatic or electro-hydraulic solenoid"),
+    ),
+    ("transformers", "unblended main core alloy"): (
+        ("laminated", ("silicon", "siliconsteel", "amorphous", "ferrite"), "laminated describes core sheet stacking construction rather than alloy chemistry"),
+        ("amorphous", ("nanocrystalline",), "nanocrystalline Fe-Si-B-Nb-Cu core ribbon contains nanocrystallites embedded in a residual amorphous matrix"),
+    ),
+    ("transformers", "unblended dielectric fluid"): (
+        ("fluorinated", ("silicone", "ester"), "fluorinated is a chemical modifier that applies to fluorinated silicones and esters"),
+    ),
+    ("transformers", "H1 bushing BIL impulse class"): (
+        ("porcelain", ("siliconerubber", "cycloaliphaticepoxy"), "a transformer combines HV porcelain and LV epoxy/silicone bushings or RTV silicone coating on porcelain"),
+        ("siliconerubber", ("cycloaliphaticepoxy",), "a transformer combines HV silicone-rubber and LV cycloaliphatic-epoxy bushings or silicone booster sheds"),
+    ),
+    ("transformers", "two-winding vector group"): (
+        ("grounded", ("yyn0", "ynd1", "dyn11"), "neutral grounding is a separate axis from the winding vector group"),
+    ),
+    ("boilers", "burner sequence step"): (
+        ("firing", ("lightoff", "pilotspark", "mainflame"), "during the main-flame trial for ignition, the pilot spark/flame and main flame overlap temporally"),
+    ),
+    ("boilers", "sole continuous blowdown valve step"): (
+        ("deaerated", ("phosphate", "trisodiumphosphate", "congruentphosphate", "chelant", "edta", "nta", "edtachelant", "volatile", "allvolatile", "oxygenated", "oxygenatedpurity", "caustic", "sodiumhydroxide", "caustichydroxide", "polyacrylate"), "deaeration applies to feedwater under any drum treatment program"),
+        ("demineralized", ("phosphate", "trisodiumphosphate", "congruentphosphate", "chelant", "edta", "nta", "edtachelant", "volatile", "allvolatile", "polyacrylate"), "demineralized makeup water is used under any drum treatment program"),
+        ("polyacrylate", ("phosphate", "trisodiumphosphate", "congruentphosphate", "chelant", "edta", "nta", "edtachelant", "caustic", "sodiumhydroxide", "caustichydroxide"), "polyacrylate dispersant is co-fed as a sludge conditioner with phosphate, chelant and caustic programs"),
+        ("caustic", ("phosphate", "trisodiumphosphate", "congruentphosphate", "chelant", "edta", "nta", "edtachelant"), "sodium hydroxide is co-fed for alkalinity control in phosphate and chelant drum treatments"),
+        ("allvolatile", ("phosphate", "trisodiumphosphate", "congruentphosphate", "chelant", "edta", "nta", "edtachelant", "caustic", "sodiumhydroxide", "caustichydroxide", "oxygenated", "oxygenatedpurity"), "all-volatile amine/ammonia treatment is dosed alongside solid drum treatments and oxygenated water programs"),
+        ("phosphate", ("chelant", "edta", "nta", "edtachelant", "congruentphosphate"), "blended phosphate-chelant (phosphate-EDTA) boiler water treatment programs co-dose both chemicals"),
+    ),
+    ("boilers", "sole sootblower cleaning mechanism"): (
+        ("rotary", ("retractable", "longretractable", "fixedrotary", "wall", "walldeslagger", "sonic", "sonichorn"), "long-retractable and wall-deslagger blowers rotate as they traverse, and sonic horns co-exist on furnace walls"),
+        ("retractable", ("wall", "walldeslagger", "rake", "fixedrake", "sonic", "sonichorn"), "wall deslaggers and rake blowers retract, and sonic horns co-exist with mechanical blowers on boiler walls"),
+        ("sonic", ("wall", "walldeslagger", "rake", "fixedrake"), "boiler furnace walls install acoustic sonic horns alongside wall deslaggers and fixed rakes"),
+    ),
+    ("boilers", "coal firing system"): (
+        ("balanced", ("forced", "induced"), "balanced-draft firing uses both a forced-draft fan and an induced-draft fan"),
+    ),
+    ("chillers", "circuit operating mode"): (
+        ("chilling", ("subcooling", "pumping", "startup"), "subcooling, refrigerant pumping and pull-down startup occur while the circuit is chilling"),
+        ("prelubricating", ("idle",), "compressor pre-lubrication runs while the chiller circuit is idle prior to start"),
+    ),
+    ("chillers", "leaving chilled-water setpoint step"): (
+        ("aws-bcup", ("aws-bag", "aws-bni", "aws-balsi", "aws-bau"), "one evaporator assembly uses copper-phosphorus filler on copper tube joints and silver, nickel or gold filler on header/shell joints"),
+        ("aws-bag", ("aws-bni", "aws-balsi", "aws-bau"), "one evaporator assembly uses silver brazing filler on brass/steel joints alongside nickel or gold filler on stainless joints"),
+        ("aws-bni", ("aws-bau",), "one evaporator assembly uses nickel and gold brazing fillers on different stainless or high-nickel joints"),
+    ),
+    ("chillers", "sole condenser heat rejection loop"): (
+        ("hybrid", ("aircooled", "watercooled", "directair", "coolingtower"), "a hybrid heat-rejection system combines air-cooled and water-cooled stages"),
+        ("glycol", ("aircooled", "watercooled", "directair", "groundloop"), "a glycol heat-transfer loop rejects its heat to air, water or a ground loop"),
+        ("groundloop", ("watercooled", "coolingtower"), "hybrid geothermal condenser systems combine a ground loop with a cooling tower on the same condenser loop"),
+    ),
+    ("pumps", "pump operating mode"): (
+        ("primed", ("stopped", "standby", "running", "delivering"), "primed is a casing fill condition that holds while a pump is stopped in standby or running"),
+        ("priming", ("starting", "running", "delivering"), "a self-priming pump primes while starting or running"),
+        ("lockedout", ("coasting", "coastingdown"), "a protective lockout relay latches immediately upon trip while the pump rotor is still coasting down"),
+    ),
+    ("pumps", "sole mechanical shaft coupling"): (
+        ("splined", ("rigid", "flexible", "rigidflange"), "a splined hub interface is used on both rigid and flexible shaft couplings"),
+        ("flexible", ("fluid", "fluidcoupling", "clutch", "eddycurrent"), "hydrodynamic fluid, clutch and eddy-current slip drives do not take misalignment and mount in series with a flexible coupling"),
+    ),
+    ("pumps", "sole drive-end radial bearing"): (
+        ("ceramic", ("ball", "roller", "deepgrooveball", "cylindricalroller"), "ceramic rolling elements are a material option inside ball and roller bearings"),
+        ("magnetic", ("ball", "roller", "deepgrooveball", "cylindricalroller"), "every active magnetic bearing assembly contains an integral ball or roller auxiliary touchdown bearing"),
+        ("hydrostatic", ("hydrodynamic", "hydrodynamicjournal"), "hybrid fluid-film journal bearings combine hydrostatic jacking pockets with a hydrodynamic wedge in one bearing"),
+    ),
+    ("pumps", "API pump configuration code"): (
+        ("vertical", ("foot", "centerline", "pedestal", "footmounted", "centerlinesupported", "pedestalmounted"), "vertical shaft orientation is orthogonal to casing support style"),
+        ("pedestal", ("foot", "centerline", "flange", "footmounted", "centerlinesupported", "cfaceflange"), "foot-mounted, centerline-supported and C-face pumps bolt onto baseplate mounting pedestals"),
+        ("flange", ("foot", "centerline", "inline", "footmounted", "centerlinesupported", "inlinesuspended"), "close-coupled horizontal and vertical-inline pumps combine a C-face motor flange with foot, centerline or inline casing mounts"),
+        ("foot", ("centerline", "centerlinesupported"), "centerline-supported pump pedestals bolt to the baseplate by mounting feet on the same skid"),
+    ),
 }
 
 # Pairs in one set that were reviewed as exclusive because of what the attribute means. Each row:
 # (domain, attribute) -> ((value, value, why they exclude each other), ...). The test checks that both values are
 # in that set, so a row cannot outlive the values it describes.
 EXCLUSIVE_BY_MEANING: dict[tuple[str, str], tuple[tuple[str, str, str], ...]] = {
-    ("turbines", "casing alloy"): (("steel", "castiron", "steel is under 2% carbon and cast iron over it, so a casing is one or the other"),),
-    ("turbines", "lubricant grade"): (("mineral", "polyalphaolefin", "mineral oil is refined crude; a PAO is synthesised from ethylene, so a base oil is one or the other"),),
-    ("turbines", "governor mode"): (("droop", "baseload", "droop trims load against speed error; baseload holds a fixed power setpoint and ignores speed"),),
-    ("furnaces", "hearth drive"): (("walking", "pusher", "a walking hearth lifts and steps the load; a pusher shoves the whole row, and no furnace moves a load both ways"),),
-    ("reactors", "cladding metal"): (("zircaloy", "ss316", "zircaloy is a zirconium alloy and 316 stainless an iron alloy: a cladding is one or the other"),),
-    ("reactors", "loop state"): (("heatup", "hot", "heatup is the ramp before the loop reaches temperature; hot is at temperature"),),
-    ("compressors", "shaft seal"): (("mechanical", "brush", "a mechanical seal has rubbing faces; a brush seal is bristles on the shaft"),),
-    ("transformers", "core steel"): (("silicon", "permalloy", "silicon steel is iron with silicon; permalloy is nickel-iron"),),
-    ("boilers", "tube alloy"): (("t11", "t22", "T11 is 1.25Cr-0.5Mo and T22 is 2.25Cr-1Mo: two different low-alloy grades"),),
-    ("chillers", "expansion valve"): (("thermostatic", "electronic", "a thermostatic valve is driven by a bulb; an electronic one by a controller"),),
-    ("pumps", "bearing type"): (("sleeve", "hydrostatic", "a sleeve bearing carries load on a self-generated film; a hydrostatic one on an externally pumped film"),),
-    ("pumps", "casing mount"): (("flange", "inline", "a flange-mounted casing bolts to a driver; an inline one hangs in the pipe run"),),
+    ("turbines", "monolithic casing alloy"): (("steel", "castiron", "steel is under 2% carbon and cast iron over it, so a monolithic casing is one or the other"),),
+    ("turbines", "unblended base-oil grade"): (("mineral", "polyalphaolefin", "mineral oil is refined crude; a PAO is synthesised from ethylene, so an unblended base oil is one or the other"),),
+    ("turbines", "governor droop percentage step"): (("droop0pct", "droop4pct", "0% droop holds constant speed regardless of load; 4% droop reduces speed reference by 4% across full load"),),
+    ("furnaces", "sole hearth conveyor mechanism"): (("walkingbeam", "pushertray", "a walking beam lifts and steps the load; a pusher tray shoves the row along rails, and a single hearth uses one mechanism"),),
+    ("reactors", "driver fuel cladding alloy"): (("zircaloy", "ss316", "zircaloy is a zirconium alloy and 316 stainless an iron alloy: a fuel-pin cladding tube is one or the other"),),
+    ("reactors", "NRC reactor operational mode"): (("hotshutdown", "hotstandby", "NRC Mode 4 (hot shutdown) is below 350°F; Mode 3 (hot standby) is at or above 350°F, and only one NRC mode holds at a time"),),
+    ("compressors", "unblended crankcase oil ISO viscosity grade"): (("isovg32", "isovg68", "ISO VG 32 is 28.8–35.2 cSt at 40°C and ISO VG 68 is 61.2–74.8 cSt at 40°C: an unblended crankcase oil fill is one grade or the other"),),
+    ("transformers", "unblended main core alloy"): (("siliconsteel", "permalloy", "grain-oriented silicon steel is iron-silicon; permalloy is nickel-iron"),),
+    ("boilers", "finishing superheater tube alloy"): (("t11", "t22", "T11 is 1.25Cr-0.5Mo and T22 is 2.25Cr-1Mo: two different ASTM low-alloy tube grades"),),
+    ("boilers", "sole continuous blowdown valve step"): (("blowdown0pct", "blowdown50pct", "0% blowdown holds the continuous blowdown valve fully closed; 50% holds it at half travel, and one valve holds one step at a time"),),
+    ("chillers", "leaving chilled-water setpoint step"): (("setpoint4c", "setpoint8c", "a 4°C leaving chilled-water setpoint and an 8°C setpoint are distinct controller temperature targets, one active at a time"),),
+    ("chillers", "metering device type"): (("thermostatic", "electronic", "a thermostatic valve is driven by a filled bulb; an electronic one by a stepper motor and controller"),),
+    ("pumps", "sole drive-end radial bearing"): (("babbittsleeve", "deepgrooveball", "a Babbitt sleeve is a sliding journal bearing with no rolling elements; a deep-groove ball bearing carries load on rolling balls"),),
+    ("pumps", "API pump configuration code"): (("oh1", "oh2", "API 610 OH1 is a foot-mounted overhung pump; OH2 is a centerline-supported overhung pump"),),
 }
 
 
