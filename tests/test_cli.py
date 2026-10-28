@@ -23,8 +23,8 @@ def test_cli_map_check_passes_on_example(capsys: pytest.CaptureFixture[str]) -> 
     assert payload["status"] == "ok"
     assert payload["dataset"] == "verifier-t10-pilot-a"
     assert payload["cells_total"] == 24
-    assert payload["cells_buildable"] == 12
-    assert payload["cells_zero_capacity"] == 12
+    assert payload["cells_buildable"] == 24
+    assert payload["cells_zero_capacity"] == 0
     assert payload["target_total"] == 60
 
 
@@ -34,8 +34,9 @@ def test_cli_map_check_refuses_target_exceeding_capacity(
 ) -> None:
     bad_map = tmp_path / "bad-target.map.yaml"
     raw = EXAMPLE_MAP_PATH.read_text(encoding="utf-8")
-    # Change the first buildable cell's target from 5 to 6 while capacity is 5
-    bad_map.write_text(raw.replace("target: 5, capacity: 5", "target: 6, capacity: 5", 1), encoding="utf-8")
+    # Change the first buildable cell's target from 3 to 6 while capacity is 5
+    assert "target: 3, capacity: 5" in raw
+    bad_map.write_text(raw.replace("target: 3, capacity: 5", "target: 6, capacity: 5", 1), encoding="utf-8")
 
     code = run_cli(["map", "check", str(bad_map)])
     assert code == EXIT_REFUSED

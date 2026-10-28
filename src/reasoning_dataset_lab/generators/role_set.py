@@ -1,8 +1,9 @@
-"""Adapter driving role-set at pinned commit d105f3d unchanged (DESIGN.md §4)."""
+"""Adapter driving role-set at pinned commit d29499f unchanged (DESIGN.md §4)."""
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import random
 from collections.abc import Sequence
@@ -29,8 +30,8 @@ from reasoning_dataset_lab.generators.base import (
     hash_canonical_json,
 )
 
-ROLE_SET_COMMIT: str = "d105f3d"
-ROLE_SET_FULL_SHA: str = "d105f3da4550b6f4354d5ec66fe5f029b20c884e"
+ROLE_SET_COMMIT: str = "d29499f"
+ROLE_SET_FULL_SHA: str = "d29499f77a81bda144ebd51885f3c167a04667aa"
 ASPIRE_SI_GATES_COMMIT: str = "8ed78f2"
 ASPIRE_SI_GATES_FULL_SHA: str = "8ed78f2fee388e81443953f8dd3753c73e1ff2bd"
 ASPIRE_SI_GATES_SHA256: str = (
@@ -63,14 +64,14 @@ def validate_shortcut_join(trait: str, wrong_family: str) -> str | None:
         raise refused_error(
             "MAP_UNREGISTERED_TRAIT_WRONG_FAMILY",
             f"Shortcut '{joined}' is not registered in role_set.generate.shortcuts.REGISTRY "
-            f"(src/role_set/generate/shortcuts.py:21-29@d105f3d).",
+            f"(src/role_set/generate/shortcuts.py:21-29@d29499f).",
             f"Use a (trait, wrong_family) pair registered in REGISTRY ({registered}) or 'none'.",
         )
     return joined
 
 
 def _validate_cell_for_role_set(cell: MapCell) -> str:
-    """Validate cell axes against role-set's T10 B generator capabilities at d105f3d."""
+    """Validate cell axes against role-set's T10 B generator capabilities at d29499f."""
     shortcut_id = validate_shortcut_join(cell.trait, cell.wrong_family)
     if cell.trait != "T10":
         raise refused_error(
@@ -105,14 +106,45 @@ def _validate_cell_for_role_set(cell: MapCell) -> str:
     return shortcut_id
 
 
+def question_and_op(shortcut_id: str) -> tuple[str, str]:
+    """The question kind and the count operator a shortcut's items are built with.
+
+    The operator is the shortcut's ``from`` in role-set's REGISTRY. An exact (``=``) item asks the claim question;
+    a floor (``>=``) or ceiling (``<=``) item asks the set question ("Which of them could be ...?"), because a claim
+    cannot separate "at least k" from "exactly k": tightening only shrinks the assignment set, so a decided verdict
+    never flips, while the set of possible groups does.
+    """
+
+    op = str(shortcuts.REGISTRY[shortcut_id]["from"])
+    return ("claim" if op == "=" else "set"), op
+
+
+def target_shortcut_for(shortcut_id: str) -> str | None:
+    """The ``target_shortcut`` to pass role-set's ``build_t10``: the shortcut for a set question, none for a claim.
+
+    With a target, role-set refuses a build whose own reading does not change the answer, and a different puzzle can
+    come out of the same seed. The exact (claim) cells keep the untargeted build so the items already built stay
+    byte-identical; the adapter's ``shortcut_id in select.differing(...)`` check is their filter, as before.
+    """
+
+    question, _op = question_and_op(shortcut_id)
+    return shortcut_id if question == "set" else None
+
+
 class RoleSetGenerator:
-    """Generator adapter driving role-set at commit d105f3d unchanged."""
+    """Generator adapter driving role-set at commit d29499f unchanged."""
 
     def __init__(
         self,
         card_id: str = "2026-10-24ea-rdlab-pilot-a-adapter",
         max_probes_per_cell: int = MAX_SEED_PROBES_PER_VARIETY_CELL,
     ) -> None:
+        if "target_shortcut" not in inspect.signature(recipes.build_t10).parameters:
+            raise refused_error(
+                "ROLE_SET_PIN_LACKS_TARGET_SHORTCUT",
+                "The installed role-set's build_t10 takes no target_shortcut, so floor and ceiling items cannot be built.",
+                f"Install role-set at {ROLE_SET_COMMIT} or later (uv sync --frozen).",
+            )
         self._card_id = card_id
         self._max_probes_per_cell = max_probes_per_cell
         self._catalogue = t10_variety.load_cells()
@@ -142,12 +174,20 @@ class RoleSetGenerator:
             return []
 
         ifs_target = DIFFICULTY_TO_IFS[cell.difficulty]
-        pack_cells: list[dict[str, object]] = self._catalogue["cells"][cell.domain]["claim"]
+        question, op = question_and_op(shortcut_id)
+        target_shortcut = target_shortcut_for(shortcut_id)
+        pack_cells: list[dict[str, object]] = self._catalogue["cells"][cell.domain][question]
         matching_cells: list[tuple[int, dict[str, object]]] = [
             (idx, c)
             for idx, c in enumerate(pack_cells)
-            if c.get("ifs") == ifs_target
+            if c.get("ifs") == ifs_target and c.get("op") == op
         ]
+        if not matching_cells:
+            raise refused_error(
+                "ROLE_SET_NO_CATALOGUE_CELLS",
+                f"No {question}-question catalogue cells with ifs={ifs_target} and op={op!r} for {cell.domain}.",
+                "Check the role-set pin: the t10_variety catalogue must carry the floor and ceiling cells.",
+            )
 
         pack_dict = recipes.PACKS[cell.domain]
         canon_tuple = tuple(canon)
@@ -164,7 +204,7 @@ class RoleSetGenerator:
                 pack_dict,
                 int(v_cell["n"]),
                 random.Random(0),
-                "claim",
+                question,
             )
             structure = shape.structure
             for probe in range(1, self._max_probes_per_cell + 1):
@@ -172,8 +212,9 @@ class RoleSetGenerator:
                 built = recipes.build_t10(
                     cell.domain,
                     seed=candidate_seed,
-                    question="claim",
+                    question=question,
                     cell=v_cell,
+                    target_shortcut=target_shortcut,
                 )
                 rec = gen_build.receipt(
                     built,
@@ -196,7 +237,7 @@ class RoleSetGenerator:
                             index=slot_idx,
                             seed=candidate_seed,
                             metadata={
-                                "question": "claim",
+                                "question": question,
                                 "structure": structure,
                                 "cell_index": cand_idx,
                                 "shortcut_id": shortcut_id,
@@ -226,7 +267,16 @@ class RoleSetGenerator:
                 "Build only SlotSpec instances produced by RoleSetGenerator.plan.",
             )
 
-        pack_cells: list[dict[str, object]] = self._catalogue["cells"][slot.cell.domain]["claim"]
+        question, _op = question_and_op(shortcut_id)
+        target_shortcut = target_shortcut_for(shortcut_id)
+        stored_question = slot.metadata.get("question", question)
+        if stored_question != question:
+            raise refused_error(
+                "SLOT_QUESTION_MISMATCH",
+                f"Slot {slot.slot_id} carries question {stored_question!r}, but {shortcut_id} is built with {question!r}.",
+                "Build only SlotSpec instances produced by RoleSetGenerator.plan.",
+            )
+        pack_cells: list[dict[str, object]] = self._catalogue["cells"][slot.cell.domain][question]
         if cell_index < 0 or cell_index >= len(pack_cells):
             raise refused_error(
                 "SLOT_INVALID_CELL_INDEX",
@@ -239,15 +289,16 @@ class RoleSetGenerator:
             pack_dict,
             int(v_cell["n"]),
             random.Random(slot.seed),
-            "claim",
+            question,
         )
         structure = str(slot.metadata.get("structure", shape.structure))
 
         built = recipes.build_t10(
             slot.cell.domain,
             seed=slot.seed,
-            question="claim",
+            question=question,
             cell=v_cell,
+            target_shortcut=target_shortcut,
         )
         gen_rec = gen_build.receipt(
             built,
@@ -345,8 +396,10 @@ class RoleSetGenerator:
             f"line_{fact['line']}:{json.dumps(fact['rule'], separators=(',', ':'))}"
             for fact in built.model["facts"]
         ]
+        # a claim question is recorded as the claim; a set question as what the puzzle asks for
+        asked_key = "claim" if question == "claim" else "asks"
         adapter_trace_steps.append(
-            f"claim:{json.dumps(built.model['claim'], separators=(',', ':'))}"
+            f"{asked_key}:{json.dumps(built.model[asked_key], separators=(',', ':'))}"
         )
         adapter_trace_steps.append(
             f"checked:answer={checked.answer}:solutions={checked.solutions}:stop_at={checked.stop_at}"
@@ -392,7 +445,7 @@ class RoleSetGenerator:
             version=str(gen_rec["solver"]["sha256"]),
             key=checked.answer,
             solutions=checked.solutions,
-            question={"mode": "claim", "text": q_text},
+            question={"mode": question, "text": q_text},
             adapter_trace_source=ADAPTER_TRACE_SOURCE_MODEL_SUMMARY,
             adapter_trace=adapter_trace_tuple,
             adapter_trace_sha256=adapter_trace_sha256,

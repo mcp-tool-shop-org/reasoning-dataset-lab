@@ -67,20 +67,17 @@ def test_role_set_generator_satisfies_protocol() -> None:
     assert isinstance(gen, Generator)
 
 
-def test_pilot_a_map_builds_all_12_buildable_cells_and_refuses_zero_capacity() -> None:
+def test_pilot_a_map_builds_all_24_buildable_cells_each_with_its_own_question() -> None:
     map_data = load_map_yaml(EXAMPLE_MAP)
     cells = [MapCell.from_dict(raw_cell) for raw_cell in map_data["cells"]]
     assert len(cells) == 24
-
-    buildable = [c for c in cells if c.capacity > 0]
-    zero_cap = [c for c in cells if c.capacity == 0]
-    assert len(buildable) == 12
-    assert len(zero_cap) == 12
+    assert all(c.capacity == 5 for c in cells)
+    assert sum(c.target for c in cells) == 60
 
     gen = RoleSetGenerator()
     built_items = []
 
-    for idx, cell in enumerate(buildable):
+    for idx, cell in enumerate(cells):
         canon_refs = _canon_for_cell(cell)
         slots = gen.plan(cell, canon_refs, n=1, seed=100 + idx)
         assert len(slots) == 1
@@ -88,13 +85,21 @@ def test_pilot_a_map_builds_all_12_buildable_cells_and_refuses_zero_capacity() -
         built_items.append(built)
 
         item, proof, receipt = built
+        question = "claim" if cell.wrong_family.startswith("exact_") else "set"
+        assert slots[0].metadata["question"] == question
+        assert proof.question["mode"] == question
         assert item.cell_id == cell.cell_id
         assert item.proof_basis == "proved"
         assert item.key_basis == "construction"
         assert item.structure in puzzle_check.STRUCTURES
-        assert item.structure == "falsifier_first"
+        if question == "claim":
+            assert item.structure == "falsifier_first"
+            assert item.key in ("supported", "unsupported", "cannot_tell")
+        else:
+            assert item.structure == "underdetermined_with_explicit_set"
+            assert item.key not in ("supported", "unsupported", "cannot_tell")
+            assert proof.question["text"].startswith("Which of them could be ")
         assert receipt.structure == item.structure
-        assert item.key in ("supported", "unsupported", "cannot_tell")
         assert proof.key == item.key
         assert receipt.answer == item.key
 
@@ -116,7 +121,8 @@ def test_pilot_a_map_builds_all_12_buildable_cells_and_refuses_zero_capacity() -
         assert proof_dict["solutions"] == proof.solutions
 
         shortcut_key = f"{cell.trait}.{cell.wrong_family}"
-        assert shortcut_key in proof.readings
+        # the cell's shortcut is the one reading that changes the answer
+        assert list(proof.readings) == [shortcut_key]
         assert proof.readings[shortcut_key] != item.key
 
         assert receipt.generator_name == "role-set"
@@ -137,11 +143,11 @@ def test_pilot_a_map_builds_all_12_buildable_cells_and_refuses_zero_capacity() -
     ) / len(built_items)
     assert key_proof_rate == 1.0
 
-    for cell in zero_cap:
+    for cell in cells:
         canon_refs = _canon_for_cell(cell)
         assert gen.plan(cell, canon_refs, n=0, seed=42) == []
         with pytest.raises(RdlabError) as exc_info:
-            gen.plan(cell, canon_refs, n=1, seed=42)
+            gen.plan(cell, canon_refs, n=cell.capacity + 1, seed=42)
         assert exc_info.value.exit_code == EXIT_REFUSED
         assert exc_info.value.code == "CAPACITY_EXCEEDED"
 
@@ -230,7 +236,7 @@ def test_pyproject_has_no_uv_override_dependencies() -> None:
     assert "[tool.uv]" not in text
     assert "override-dependencies" not in text
     assert (
-        "role-set @ git+https://github.com/mcp-tool-shop-org/role-set@d105f3da4550b6f4354d5ec66fe5f029b20c884e"
+        "role-set @ git+https://github.com/mcp-tool-shop-org/role-set@d29499f77a81bda144ebd51885f3c167a04667aa"
         in text
     )
     assert (
@@ -301,3 +307,110 @@ def test_role_set_generator_multi_slot_determinism_and_refusals() -> None:
 
     with pytest.raises(RdlabError, match="out-of-range cell_index"):
         gen.build(replace(slots_a[0], metadata={"cell_index": 9999}))
+
+
+# ---- the floor and ceiling cells (set question), and the exact cells they must not disturb
+
+
+def _map_cells() -> list[MapCell]:
+    return [MapCell.from_dict(raw_cell) for raw_cell in load_map_yaml(EXAMPLE_MAP)["cells"]]
+
+
+def test_the_question_and_operator_follow_the_shortcuts_from_operator() -> None:
+    from reasoning_dataset_lab.generators.role_set import question_and_op, target_shortcut_for
+
+    assert question_and_op("T10.exact_read_as_floor") == ("claim", "=")
+    assert question_and_op("T10.exact_read_as_ceiling") == ("claim", "=")
+    assert question_and_op("T10.floor_read_as_exact") == ("set", ">=")
+    assert question_and_op("T10.ceiling_read_as_exact") == ("set", "<=")
+    assert target_shortcut_for("T10.exact_read_as_floor") is None
+    assert target_shortcut_for("T10.floor_read_as_exact") == "T10.floor_read_as_exact"
+
+
+@pytest.mark.parametrize("wrong_family", ["floor_read_as_exact", "ceiling_read_as_exact"])
+def test_each_new_cell_allocates_its_target_and_every_item_differs_on_its_shortcut_only(wrong_family) -> None:
+    gen = RoleSetGenerator()
+    cells = [c for c in _map_cells() if c.wrong_family == wrong_family]
+    assert len(cells) == 6
+    for idx, cell in enumerate(cells):
+        slots = gen.plan(cell, _canon_for_cell(cell), n=cell.target, seed=300 + idx)
+        assert len(slots) == cell.target == 2
+        assert len({s.seed for s in slots}) == cell.target
+        for slot in slots:
+            assert slot.metadata["question"] == "set"
+            item, proof, receipt = gen.build(slot)
+            assert list(proof.readings) == [f"T10.{wrong_family}"]
+            assert proof.solutions >= 1
+            assert proof.method == "solver" and item.proof_basis == "proved" and item.key_basis == "construction"
+            assert proof.question["text"].startswith("Which of them could be ")
+            assert "Which of them could be" in item.messages[0]["content"]
+            # the set key is the proved answer, in the item's own words, not a claim verdict
+            assert ";" in item.key or item.key in ("none",) or " and " in item.key or item.key.startswith("the ")
+            assert receipt.answer == item.key
+
+
+def test_the_catalogue_cells_used_are_those_of_the_question_and_the_operator() -> None:
+    gen = RoleSetGenerator()
+    for wrong_family, op in (("floor_read_as_exact", ">="), ("ceiling_read_as_exact", "<=")):
+        cell = next(c for c in _map_cells() if c.wrong_family == wrong_family and c.domain == "cups")
+        for slot in gen.plan(cell, _canon_for_cell(cell), n=cell.target, seed=11):
+            used = gen._catalogue["cells"]["cups"]["set"][slot.metadata["cell_index"]]
+            assert used["op"] == op
+
+
+# the items and proofs of the 12 exact cells, built at n=5 with seed 100+position, before the role-set re-pin and
+# the floor/ceiling change; the sha256 of their canonical JSON. The receipts are left out: they name the generator
+# commit, which moved with the pin.
+EXACT_CELLS_ITEMS_AND_PROOFS_SHA256 = "d74b9f7238282e5012475350178af33e1a364d945c224da13488feb526edb72c"
+
+
+def test_the_twelve_exact_cells_build_byte_identically_to_before_the_floor_and_ceiling_change() -> None:
+    import hashlib
+
+    gen = RoleSetGenerator()
+    payload = []
+    for idx, cell in enumerate(_map_cells()):
+        if not cell.wrong_family.startswith("exact_"):
+            continue
+        slots = gen.plan(cell, _canon_for_cell(cell), n=5, seed=100 + idx)
+        built = [gen.build(s) for s in slots]
+        payload.append(
+            [cell.cell_id, [[b.item.to_dict(), b.proof.to_dict()] for b in built]]
+        )
+    assert len(payload) == 12 and all(len(items) == 5 for _cell, items in payload)
+    payload.sort(key=lambda row: row[0])
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    assert digest == EXACT_CELLS_ITEMS_AND_PROOFS_SHA256
+
+
+def test_a_role_set_without_target_shortcut_fails_loudly(monkeypatch) -> None:
+    from role_set.generate import recipes
+
+    def old_build_t10(pack_name, seed, question, n=4, tries=400, cell=None):  # no target_shortcut
+        raise AssertionError("must not be reached")
+
+    monkeypatch.setattr(recipes, "build_t10", old_build_t10)
+    with pytest.raises(RdlabError) as caught:
+        RoleSetGenerator()
+    assert caught.value.code == "ROLE_SET_PIN_LACKS_TARGET_SHORTCUT"
+
+
+def test_a_slot_whose_question_does_not_match_its_shortcut_is_refused() -> None:
+    gen = RoleSetGenerator()
+    cell = next(c for c in _map_cells() if c.wrong_family == "floor_read_as_exact")
+    (slot, *_rest) = gen.plan(cell, _canon_for_cell(cell), n=1, seed=5)
+    tampered = replace(slot, metadata={**slot.metadata, "question": "claim"})
+    with pytest.raises(RdlabError) as caught:
+        gen.build(tampered)
+    assert caught.value.code == "SLOT_QUESTION_MISMATCH"
+
+
+def test_a_catalogue_without_the_floor_cells_is_refused_not_guessed() -> None:
+    gen = RoleSetGenerator()
+    cell = next(c for c in _map_cells() if c.wrong_family == "floor_read_as_exact" and c.domain == "lamps")
+    gen._catalogue = {"cells": {"lamps": {"claim": [], "set": []}, "cups": {"claim": [], "set": []}}}
+    with pytest.raises(RdlabError) as caught:
+        gen.plan(cell, _canon_for_cell(cell), n=1, seed=0)
+    assert caught.value.code == "ROLE_SET_NO_CATALOGUE_CELLS"
