@@ -1,0 +1,547 @@
+{"id": "k001", "key": "contradiction", "reason": "Ammonia and isobutane are incompatible refrigerants not mixed or paired in a single chiller."}
+{"id": "k002", "key": "contradiction", "reason": "A nuclear reactor cannot use both helium gas and liquid sodium as its primary core coolant."}
+{"id": "k003", "key": "arguable", "reason": "Incompatible as distinct mounting catalog options, but compatible when a DIN-rail relay is mounted onto a wall-fixed rail."}
+{"id": "k004", "key": "contradiction", "reason": "Magnox (used in CO2-cooled power reactors) and aluminum (used in low-temperature research reactors) do not coexist as fuel cladding in one reactor."}
+{"id": "k005", "key": "compatible", "reason": "Standard composite RIP transformer bushings have a cast/impregnated epoxy condenser core inside a silicone rubber weather housing."}
+{"id": "k006", "key": "arguable", "reason": "Contradictory for a single homogeneous seal element, but compatible in a PTFE-encapsulated nitrile O-ring or a PTFE lip seal with a nitrile energizer."}
+{"id": "k007", "key": "contradiction", "reason": "Argon (inert) and carbon dioxide (oxidizing/decarburizing at furnace temperatures) are alternative furnace purge gases."}
+{"id": "k008", "key": "arguable", "reason": "In narrow HVACR usage an automatic expansion valve (constant-pressure AEV) contrasts with a thermostatic expansion valve (TXV), but in general usage a TXV is a type of automatic expansion valve."}
+{"id": "k009", "key": "arguable", "reason": "Contradictory for a single-fluid heat exchanger, but compatible in an oil-injected multi-stage compressor where interstage cooling uses both oil and water."}
+{"id": "k010", "key": "contradiction", "reason": "Pole mounting (outdoor utility pole) and DIN-rail mounting (indoor panel) are mutually exclusive relay mount styles."}
+{"id": "k011", "key": "arguable", "reason": "Mutually exclusive for normal deep-water berths, but compatible at a tidal NAABSA berth where a vessel moored alongside rests aground at low water."}
+{"id": "k012", "key": "arguable", "reason": "Contradictory as single-metal platings, but compatible in reed and signal relay contacts plated with rhodium over a gold underlayer."}
+{"id": "k013", "key": "contradiction", "reason": "A boiler burner in safety lockout has its fuel valves tripped shut and cannot simultaneously be firing."}
+{"id": "k014", "key": "contradiction", "reason": "Zircaloy (high-temperature power reactor cladding) and aluminum (low-temperature research reactor cladding) are not used together in one reactor."}
+{"id": "k015", "key": "contradiction", "reason": "Prepurge (before ignition) and postpurge (after burner shutdown) are distinct sequential BMS states."}
+{"id": "k016", "key": "arguable", "reason": "Contradictory if comparing bulk insulator housings, but compatible in a composite hollow-core bushing with a glass-fiber tube core and silicone rubber sheds."}
+{"id": "k017", "key": "arguable", "reason": "Contradictory for a single fuel rod's cladding tube, but compatible in a reactor core with SS316 fuel cladding and Inconel control/absorber rod cladding or grid hardware."}
+{"id": "k018", "key": "contradiction", "reason": "Lubricating oil and liquid ammonia are distinct compressor intercooling media."}
+{"id": "k019", "key": "contradiction", "reason": "Magnox and SS316 belong to different gas-cooled reactor generations (Magnox vs AGR/fast reactors) and are not used together in one core."}
+{"id": "k020", "key": "contradiction", "reason": "Aluminum low-temperature cladding and Inconel high-temperature cladding belong to incompatible reactor operating regimes."}
+{"id": "k021", "key": "arguable", "reason": "Contradictory for a single monolithic casing ring, but compatible in an aeroderivative gas turbine with an aluminum inlet/fan casing and a titanium compressor casing."}
+{"id": "k022", "key": "arguable", "reason": "Contradictory for a single homogeneous shield layer, but compatible in a reactor combining a concrete biological shield with localized depleted-uranium gamma shielding."}
+{"id": "k023", "key": "arguable", "reason": "Contradictory as separate AWS filler classes, but compatible when using a gold-nickel brazing alloy (e.g., AWS BAu-4, 82Au-18Ni) on high-integrity heat exchanger joints."}
+{"id": "k024", "key": "contradiction", "reason": "Nickel high-temperature brazing filler and aluminum low-temperature filler cannot braze the same joint and belong to incompatible heat-exchanger metallurgies."}
+{"id": "k025", "key": "contradiction", "reason": "A nuclear reactor cannot be cooled simultaneously by carbon dioxide gas and liquid sodium."}
+{"id": "k026", "key": "arguable", "reason": "Contradictory as fixed-rotary vs long-retractable catalog classes, but compatible because a long retractable sootblower rotates as it traverses and a boiler carries both types."}
+{"id": "k027", "key": "arguable", "reason": "Contradictory for pure oxide bricks, but compatible in zircon (ZrSiO4) or fused-cast AZS (alumina-zirconia-silica) furnace lining bricks."}
+{"id": "k028", "key": "arguable", "reason": "Distinct BMS step names, but compatible during the trial-for-ignition (lightoff) window once the flame has ignited and is actively firing."}
+{"id": "k029", "key": "arguable", "reason": "Contradictory as AWS BNi vs BAg classes, but compatible in silver-nickel brazing fillers or a chiller with nickel-brazed stainless plate heat exchangers and silver-brazed copper piping."}
+{"id": "k030", "key": "contradiction", "reason": "Ammonia and R134a are incompatible refrigerants not paired in a single chiller."}
+{"id": "k031", "key": "arguable", "reason": "Contradictory for a single homogeneous elastomer, but compatible in a PTFE-encapsulated Viton O-ring or a pump mechanical seal combining PTFE wedges with Viton O-rings."}
+{"id": "k032", "key": "arguable", "reason": "Contradictory as pure gases, but compatible when purging a furnace with an argon-hydrogen forming/reducing gas mixture or purging an H2 furnace with argon."}
+{"id": "k033", "key": "contradiction", "reason": "A compressor does not use both ammonia and propane refrigerants as its intercooler medium."}
+{"id": "k034", "key": "contradiction", "reason": "Air-cooled finned condensers and once-through seawater shell-and-tube condensers are mutually exclusive chiller condenser types."}
+{"id": "k035", "key": "arguable", "reason": "Contradictory for one casting, but compatible in a turbine with a steel compressor/outer casing and an Inconel hot-section inner casing."}
+{"id": "k036", "key": "arguable", "reason": "Contradictory for a single intercooler loop, but compatible in a multi-stage propane refrigeration compressor using water-cooled intercoolers plus liquid-propane flash desuperheating."}
+{"id": "k037", "key": "contradiction", "reason": "Lockout (latched fault state) and postpurge (normal shutdown fan purge sequence) are distinct BMS states."}
+{"id": "k038", "key": "contradiction", "reason": "A ground-coupled water-source chiller condenser and a direct air-cooled chiller condenser are distinct designs."}
+{"id": "k039", "key": "contradiction", "reason": "Heavy stationary cast-iron turbine casings and lightweight aluminum casings belong to incompatible turbine classes."}
+{"id": "k040", "key": "arguable", "reason": "Contradictory for a single casing casting, but compatible in an aeroderivative turbine with a titanium compressor casing and an aluminum inlet casing."}
+{"id": "k041", "key": "arguable", "reason": "Contradictory as pure resin classes, but compatible in a silicone-acrylic hybrid marine topcoat or across a vessel's hull and superstructure zones."}
+{"id": "k042", "key": "contradiction", "reason": "A floor-standing relay cabinet and a wall-mounted relay enclosure cannot be the same relay's mount style."}
+{"id": "k043", "key": "contradiction", "reason": "Water-cooled (LWR/PHWR) and helium-cooled (HTGR) are mutually exclusive nuclear reactor primary coolant types."}
+{"id": "k044", "key": "arguable", "reason": "Contradictory for commercial power reactors, but compatible in high-flux research/test reactors (e.g., ATR, HFIR, BR2) that use both light water and beryllium in the core as moderator."}
+{"id": "k045", "key": "contradiction", "reason": "R134a (HFC) and propane (HC) are distinct refrigerants not used together in standard commercial chillers."}
+{"id": "k046", "key": "contradiction", "reason": "A chiller circuit that is actively defrosting is energized and cycling refrigerant, so it is not idle."}
+{"id": "k047", "key": "contradiction", "reason": "Under maritime law a vessel has a single official port of registry, so it cannot be registered in both Hamburg and Antwerp simultaneously."}
+{"id": "k048", "key": "contradiction", "reason": "Two-pack polyurethane and single-pack vinyl are distinct marine topcoat formulations."}
+{"id": "k049", "key": "arguable", "reason": "Contradictory for the working gas path, but compatible in a helium-cooled turbine that uses lubricating oil to cool its shaft bearings."}
+{"id": "k050", "key": "arguable", "reason": "Contradictory for a single lamination grade, but compatible because nanocrystalline FeSiBCuNb alloy contains ~13.5% silicon and multi-core instrument transformers pair a silicon-steel protection core with a nanocrystalline metering core."}
+{"id": "k051", "key": "arguable", "reason": "Contradictory as standalone catalog codes, but compatible when DIN-rail relays are mounted on a rail inside a 19-inch rack or a rack relay slides on chassis rails."}
+{"id": "k052", "key": "contradiction", "reason": "Aluminum low-temperature brazing filler and gold high-temperature filler are metallurgically incompatible."}
+{"id": "k053", "key": "contradiction", "reason": "Carbon dioxide gas and liquid lead-bismuth eutectic are mutually exclusive reactor coolants."}
+{"id": "k054", "key": "arguable", "reason": "Usually distinct berth states, but compatible when a vessel is moored alongside a quay or another ship with anchors deployed (e.g., Mediterranean mooring or STS lightering at anchor)."}
+{"id": "k055", "key": "contradiction", "reason": "Aluminum brazing filler (for aluminum coils) and silver filler (for copper/steel joints) cannot braze the same joint."}
+{"id": "k056", "key": "arguable", "reason": "Contradictory as pure homopolymers, but compatible in a vinyl-acrylic copolymer marine topcoat."}
+{"id": "k057", "key": "contradiction", "reason": "Silicone fluid and synthetic ester are distinct, unblended turbine lubricant base stocks."}
+{"id": "k058", "key": "compatible", "reason": "Nuclear reactors routinely use composite radiation shielding combining a steel thermal shield/liner with a reinforced concrete biological shield."}
+{"id": "k059", "key": "contradiction", "reason": "A vessel is assigned a single IACS Polar Class notation and cannot simultaneously hold both PC3 and PC7."}
+{"id": "k060", "key": "contradiction", "reason": "A transformer's high-voltage winding cannot simultaneously be grounded wye (YNd1) and delta (Dd0)."}
+{"id": "k061", "key": "arguable", "reason": "Contradictory for a single tube segment, but compatible across a single boiler that uses T11 in lower-temperature waterwall/economizer banks and T91 in high-temperature superheater banks."}
+{"id": "k062", "key": "contradiction", "reason": "Lightoff (ignition trial at startup) and postpurge (ventilation after shutdown) are mutually exclusive burner states."}
+{"id": "k063", "key": "arguable", "reason": "Contradictory for a single heat-transfer fluid, but compatible in a multi-stage ammonia compressor using an air-cooled intercooler together with liquid-ammonia interstage desuperheating."}
+{"id": "k064", "key": "contradiction", "reason": "Under COLREGs Rule 3(i), a vessel that is aground is explicitly not underway."}
+{"id": "k065", "key": "arguable", "reason": "Contradictory for one casing section, but compatible in a gas turbine with a titanium compressor casing and an Inconel hot-section turbine casing."}
+{"id": "k066", "key": "arguable", "reason": "Contradictory for a single homogeneous shield block, but compatible in a reactor using both lead and tungsten gamma shielding across different penetrations and detector zones."}
+{"id": "k067", "key": "contradiction", "reason": "Kalrez (FFKM perfluoroelastomer) and nitrile (NBR) are mutually exclusive elastomer grades for a pump seal."}
+{"id": "k068", "key": "contradiction", "reason": "Viton (FKM fluoroelastomer) and nitrile (NBR) are alternative elastomer specifications for a pump seal."}
+{"id": "k069", "key": "contradiction", "reason": "Paraffin wax (used in small subcritical lab assemblies) and reactor-grade graphite are not used together as a reactor's core moderator."}
+{"id": "k070", "key": "contradiction", "reason": "A 24 VDC relay coil and a 125 VDC relay coil have incompatible voltage ratings."}
+{"id": "k071", "key": "arguable", "reason": "Contradictory in standard once-through vs drum programs, but compatible in plants using oxygenated feedwater treatment with caustic (NaOH) pH trim."}
+{"id": "k072", "key": "contradiction", "reason": "Heavy water (D2O) and paraffin wax are not used together as the core moderator of a nuclear reactor."}
+{"id": "k073", "key": "contradiction", "reason": "A vessel cannot simultaneously have no ice class (noclass) and the highest Polar Class (PC1)."}
+{"id": "k074", "key": "arguable", "reason": "Contradictory for a single monolithic alloy, but compatible in a boiler using TP304H superheater tubes alongside Inconel 625 weld-overlaid tubes."}
+{"id": "k075", "key": "contradiction", "reason": "Once-through seawater cooling and direct air cooling are mutually exclusive chiller condenser designs."}
+{"id": "k076", "key": "contradiction", "reason": "Ammonia and propane are distinct refrigerants not used together in a single chiller."}
+{"id": "k077", "key": "contradiction", "reason": "A vessel that is aground is fast to the seabed and cannot simultaneously be adrift."}
+{"id": "k078", "key": "contradiction", "reason": "A 24 VDC relay coil and a 120 VAC relay coil have incompatible nominal coil ratings."}
+{"id": "k079", "key": "arguable", "reason": "Contradictory if comparing cast-resin vs glass-bulb bushings, but compatible in a fiberglass-reinforced epoxy (glass-epoxy composite) bushing core."}
+{"id": "k080", "key": "contradiction", "reason": "Lead-bismuth eutectic and liquid sodium are mutually exclusive liquid-metal reactor coolants."}
+{"id": "k081", "key": "compatible", "reason": "Steam and gas turbines routinely use lubricating oil to cool bearings and water in lube-oil coolers, casing jackets, or generator stator bars."}
+{"id": "k082", "key": "contradiction", "reason": "125 VDC and 48 VDC are distinct nominal DC substation relay coil voltages."}
+{"id": "k083", "key": "arguable", "reason": "Contradictory for a single shield component, but compatible in compact or research reactors using both tungsten and depleted uranium high-Z gamma shield elements."}
+{"id": "k084", "key": "contradiction", "reason": "An air-cooled chiller condenser and a once-through river-water cooled condenser are incompatible designs."}
+{"id": "k085", "key": "arguable", "reason": "Contradictory for fixed inland vs offshore plants, but compatible for a raw-water chiller in a tidal estuary or aboard a vessel operating in both river and sea water."}
+{"id": "k086", "key": "contradiction", "reason": "Mineral oil and silicone fluid are immiscible, incompatible turbine lubricant grades."}
+{"id": "k087", "key": "contradiction", "reason": "Oil-impregnated paper condenser bushings use porcelain or silicone housings, not glass."}
+{"id": "k088", "key": "arguable", "reason": "Contradictory for a two-winding transformer, but compatible in a three-winding transformer with a delta HV winding, a grounded-wye secondary (Dyn11), and a delta tertiary (Dd0)."}
+{"id": "k089", "key": "arguable", "reason": "Contradictory for a single fuel rod, but compatible in a reactor core with Zircaloy fuel cladding and SS316 control/absorber rod cladding or mixed fuel assemblies."}
+{"id": "k090", "key": "contradiction", "reason": "A chiller circuit in active defrost is not in the idle state."}
+{"id": "k091", "key": "arguable", "reason": "Contradictory as pure API base-stock groups (Group I/II vs Group IV), but compatible in a semi-synthetic mineral/PAO blend turbine oil."}
+{"id": "k092", "key": "arguable", "reason": "In narrow HVACR usage an automatic expansion valve (constant-pressure AEV) contrasts with an electronic expansion valve (EEV), but functionally an EEV is an automatic expansion valve."}
+{"id": "k093", "key": "contradiction", "reason": "Hydrogen (strongly reducing) and carbon dioxide (oxidizing) react at furnace temperatures via the reverse water-gas shift reaction and are not used together as a purge gas."}
+{"id": "k094", "key": "contradiction", "reason": "Carbon dioxide gas and water are distinct primary reactor coolant types."}
+{"id": "k095", "key": "contradiction", "reason": "A 19-inch rack-mount relay and a wall-mount relay have distinct enclosure mounting styles."}
+{"id": "k096", "key": "contradiction", "reason": "Kalrez (FFKM) and Viton (FKM) are alternative fluoroelastomer grades for a seal."}
+{"id": "k097", "key": "contradiction", "reason": "A vessel cannot simultaneously hold Polar Class PC5 and have no ice class (noclass)."}
+{"id": "k098", "key": "arguable", "reason": "Contradictory in standard air-cooled vs water-cooled chiller catalogs, but compatible in hybrid adiabatic/evaporative condensers and because a cooling tower rejects heat to ambient air."}
+{"id": "k099", "key": "arguable", "reason": "Compatible under COLREGs Rule 3(i) where a vessel adrift (not at anchor, moored, or aground) is legally 'underway', though contradictory in logs that equate 'underway' with making way under power."}
+{"id": "k100", "key": "arguable", "reason": "Contradictory for a single tube's ASTM grade, but compatible in a boiler that uses T11 in waterwall/economizer sections and T22 in superheater/reheater sections."}
+{"id": "k101", "key": "arguable", "reason": "Contradictory for a single-fluid tank, but compatible in heavy-water moderated, boiling-light-water cooled reactors (e.g., CANDU-BLW, Gentilly-1, Fugen) or spectral-shift D2O/H2O reactors where both moderate neutrons."}
+{"id": "k102", "key": "arguable", "reason": "Contradictory for a single cooling loop, but compatible in a helium-cooled turbine/generator system that uses water in its precoolers, intercoolers, or stator cooling."}
+{"id": "k103", "key": "arguable", "reason": "Contradictory for one individual tube, but compatible in a single boiler built with T11 economizer/waterwall tubes and T22 superheater tubes."}
+{"id": "k104", "key": "contradiction", "reason": "A single chiller refrigeration circuit cannot simultaneously be chilling and defrosting."}
+{"id": "k105", "key": "contradiction", "reason": "Pumpdown (evacuating refrigerant for shutdown) and startup are opposite transition states of a chiller circuit."}
+{"id": "k106", "key": "arguable", "reason": "Contradictory for a single homogeneous shield piece, but compatible in a reactor using both lead and depleted uranium gamma shields in different zones."}
+{"id": "k107", "key": "compatible", "reason": "Relay contacts routinely use a gold flash plating over a silver underplate (gold-over-silver contacts) to handle both dry-circuit and power loads."}
+{"id": "k108", "key": "arguable", "reason": "Contradictory for a uniform moderator block, but compatible in research and high-temperature reactors that combine graphite and beryllium moderator/reflector elements in the core."}
+{"id": "k109", "key": "contradiction", "reason": "Aluminum low-temperature research-reactor cladding and SS316 fast/power-reactor cladding are not used together in one reactor."}
+{"id": "k110", "key": "contradiction", "reason": "A burner in lockout is tripped and inhibited from entering lightoff."}
+{"id": "k111", "key": "arguable", "reason": "Contradictory for a two-winding transformer, but compatible in a three-winding transformer with a grounded-wye HV winding, a grounded-wye MV winding (Yyn0), and a delta tertiary/LV winding (YNd1)."}
+{"id": "k112", "key": "arguable", "reason": "Contradictory for a single tube segment, but compatible in a boiler using T11 in low-temperature sections and T91 in high-temperature superheater sections."}
+{"id": "k113", "key": "compatible", "reason": "Magnesia-chromite (mag-chrome) brick is a standard co-sintered refractory furnace lining brick composed of both magnesia and chromite."}
+{"id": "k114", "key": "contradiction", "reason": "Beryllium and paraffin wax are not combined as core moderators in a nuclear reactor."}
+{"id": "k115", "key": "arguable", "reason": "Contradictory for a single homogeneous condenser body, but compatible in hybrid bushings with an oil-paper upper core and cast-epoxy lower end or on a transformer with OIP HV bushings and epoxy LV bushings."}
+{"id": "k116", "key": "arguable", "reason": "Contradictory for a single uniform bushing core, but compatible in hybrid epoxy/oil-paper bushings or on a transformer with OIP HV bushings and cast-epoxy LV bushings."}
+{"id": "k117", "key": "arguable", "reason": "Contradictory for a single-fluid chiller circuit, but compatible in an R134a/CO2 cascade or secondary-loop chiller using R134a in the high stage and CO2 in the low stage."}
+{"id": "k118", "key": "compatible", "reason": "A standard mechanical pump seal pairs a carbon-graphite primary seal face with Viton (FKM) secondary O-rings."}
+{"id": "k119", "key": "contradiction", "reason": "Once-through river water cooling and direct air cooling are mutually exclusive chiller condenser types."}
+{"id": "k120", "key": "arguable", "reason": "Contradictory for a single pure polymer, but compatible in a PTFE-encapsulated Kalrez O-ring or a mechanical seal combining PTFE and Kalrez sealing elements."}
+{"id": "k121", "key": "arguable", "reason": "Contradictory as adjacent steps in a 5-point enum, but compatible in comparative usage because the highest tap position is a higher (above-nominal) tap position."}
+{"id": "k122", "key": "contradiction", "reason": "A vessel moored fast alongside a berth cannot simultaneously be adrift."}
+{"id": "k123", "key": "arguable", "reason": "Contradictory for one uniform shield slab, but compatible in a reactor using both lead and tungsten gamma shielding across different penetrations and instruments."}
+{"id": "k124", "key": "contradiction", "reason": "Polyglycol (PAG) and polyalphaolefin (PAO) turbine lubricants are chemically immiscible and incompatible."}
+{"id": "k125", "key": "contradiction", "reason": "Aluminum low-temperature brazing filler and nickel high-temperature filler belong to incompatible brazing regimes."}
+{"id": "k126", "key": "arguable", "reason": "Contradictory for a fixed single-voltage electromechanical coil, but compatible in protective/auxiliary relays rated for a continuous 24-48 VDC coil input range."}
+{"id": "k127", "key": "contradiction", "reason": "A vessel is assigned a single IACS Polar Class and cannot simultaneously hold PC5 and PC7."}
+{"id": "k128", "key": "contradiction", "reason": "A chiller circuit in pumpdown is evacuating refrigerant to shut down and is not in normal chilling mode."}
+{"id": "k129", "key": "contradiction", "reason": "SS316 and Magnox fuel cladding belong to different reactor classes and are not used together."}
+{"id": "k130", "key": "contradiction", "reason": "A vessel holds a single IACS Polar Class notation and cannot be both PC7 and PC3."}
+{"id": "k131", "key": "arguable", "reason": "Distinct controller state names, but compatible during the pull-down phase of startup when the compressor is already actively chilling water."}
+{"id": "k132", "key": "contradiction", "reason": "Nitrogen and hydrogen are never mixed or used simultaneously as a turbine/generator cooling gas."}
+{"id": "k133", "key": "arguable", "reason": "Contradictory for a single heat-transfer fluid, but compatible in a multi-stage ammonia compressor using an air-cooled intercooler and liquid-ammonia interstage desuperheating."}
+{"id": "k134", "key": "arguable", "reason": "Usually distinct berth statuses, but compatible when a vessel is moored alongside a pier or another ship with anchors dropped."}
+{"id": "k135", "key": "contradiction", "reason": "Polyglycol (PAG) and mineral turbine oils are immiscible and chemically incompatible."}
+{"id": "k136", "key": "arguable", "reason": "In some switchgear standards 'disconnected' and 'withdrawn' denote distinct drawout detents, but a withdrawn breaker is always electrically disconnected and many field conventions use the terms interchangeably."}
+{"id": "k137", "key": "arguable", "reason": "Contradictory for a single core alloy, but compatible in a multi-core instrument transformer housing both a nanocrystalline core and a permalloy metering core, or in Fe-Ni nanocrystalline permalloy alloys."}
+{"id": "k138", "key": "contradiction", "reason": "A vessel cannot simultaneously hold Polar Class PC3 and have no ice class (noclass)."}
+{"id": "k139", "key": "compatible", "reason": "Aluminum compressor rotors are routinely finished with PTFE-impregnated hard anodizing, which is simultaneously an anodized oxide layer and a PTFE coating."}
+{"id": "k140", "key": "arguable", "reason": "Contradictory for a single coolant circuit, but compatible in a nitrogen-cooled turbine that uses lubricating oil to cool its bearings."}
+{"id": "k141", "key": "arguable", "reason": "Contradictory for power reactor cores, but compatible in research reactors (e.g., DIDO/NRX types) with a heavy-water primary core moderator and a graphite thermal column/reflector moderator."}
+{"id": "k142", "key": "contradiction", "reason": "Liquid sodium and helium gas are mutually exclusive primary reactor coolants."}
+{"id": "k143", "key": "contradiction", "reason": "A transformer tap changer cannot be set at a higher (above-nominal) tap and the nominal tap at the same time."}
+{"id": "k144", "key": "arguable", "reason": "Usually distinct states, but compatible when an anchored vessel in a shallow tidal anchorage touches bottom (aground) at low tide."}
+{"id": "k145", "key": "arguable", "reason": "Contradictory for a single-fluid chiller, but compatible in a propane/CO2 (R290/R744) cascade chiller."}
+{"id": "k146", "key": "contradiction", "reason": "SS316 high-temperature cladding and aluminum low-temperature research cladding do not coexist in one reactor."}
+{"id": "k147", "key": "arguable", "reason": "Contradictory as product categories, but compatible because a long retractable sootblower rotates while traversing and a single boiler has both retractable and fixed-rotary sootblowers."}
+{"id": "k148", "key": "contradiction", "reason": "Zircaloy (water-cooled reactors) and Magnox (early CO2-cooled reactors) are never used together in one reactor."}
+{"id": "k149", "key": "contradiction", "reason": "Heavy stationary cast-iron casings and lightweight aerospace titanium casings belong to incompatible turbine designs."}
+{"id": "k150", "key": "contradiction", "reason": "Gold high-temperature brazing filler and aluminum low-temperature brazing filler are metallurgically incompatible."}
+{"id": "k151", "key": "arguable", "reason": "Contradictory as separate catalog headings, but compatible in a flexible clutch coupling that combines a clutch mechanism with a flexible elastomeric/disc element."}
+{"id": "k152", "key": "arguable", "reason": "Contradictory as pure elements, but compatible because silver brazing alloys (BAg) and silver-bearing phos-copper fillers (BCuP) contain both copper and silver, and chillers use both on copper joints."}
+{"id": "k153", "key": "contradiction", "reason": "Propane and ammonia are distinct refrigerants not used together in a single chiller."}
+{"id": "k154", "key": "contradiction", "reason": "A 48 VDC relay coil and a 120 VAC relay coil have incompatible nominal voltage ratings."}
+{"id": "k155", "key": "contradiction", "reason": "DIN-rail indoor panel mounting and outdoor utility pole mounting are mutually exclusive for a relay."}
+{"id": "k156", "key": "compatible", "reason": "Standard oil-impregnated paper (OIP) transformer bushings have an oil-paper internal condenser body inside a porcelain weather housing."}
+{"id": "k157", "key": "contradiction", "reason": "240 VAC and 24 VDC are incompatible nominal relay coil voltages."}
+{"id": "k158", "key": "contradiction", "reason": "Under COLREGs Rule 3(i), a vessel that is aground is by definition not underway."}
+{"id": "k159", "key": "compatible", "reason": "Synthetic turbine oils routinely blend polyalphaolefin (PAO) and synthetic ester base stocks to combine oxidative stability with additive solvency and seal compatibility."}
+{"id": "k160", "key": "contradiction", "reason": "Postpurge (after shutdown) and prepurge (before ignition) are distinct sequential BMS states."}
+{"id": "k161", "key": "arguable", "reason": "Contradictory for a single casing casting, but compatible in a gas turbine with an aluminum air-inlet/front compressor casing and a steel mid/turbine casing."}
+{"id": "k162", "key": "arguable", "reason": "Contradictory as adjacent steps in a 5-value enum, but compatible in comparative English because the highest tap is a higher (above-nominal) tap position."}
+{"id": "k163", "key": "arguable", "reason": "Contradictory as pure single-oxide bricks, but compatible in zirconia-toughened alumina or fused-cast AZS (alumina-zirconia-silica) furnace lining bricks."}
+{"id": "k164", "key": "contradiction", "reason": "During prepurge the fuel valves are closed to clear combustibles before ignition, so the burner cannot be firing."}
+{"id": "k165", "key": "contradiction", "reason": "A chiller circuit actively running a compressor pumpdown sequence is not idle."}
+{"id": "k166", "key": "arguable", "reason": "Contradictory as pure single-oxide bricks, but compatible in magnesia-zirconia co-sintered refractory bricks or magnesia-stabilized zirconia furnace linings."}
+{"id": "k167", "key": "contradiction", "reason": "A vessel can have only one official port of registry at a time (Gothenburg vs Rotterdam)."}
+{"id": "k168", "key": "contradiction", "reason": "Water and liquid sodium are mutually exclusive primary reactor coolants."}
+{"id": "k169", "key": "contradiction", "reason": "Helium gas and water are mutually exclusive primary reactor coolants."}
+{"id": "k170", "key": "contradiction", "reason": "A vessel can have only one official port of registry at a time (Rotterdam vs Gothenburg)."}
+{"id": "k171", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be delta (Dd0) and grounded wye (YNd1)."}
+{"id": "k172", "key": "contradiction", "reason": "Open-loop river water cooling and closed-loop geothermal ground-coupled cooling are distinct chiller condenser configurations."}
+{"id": "k173", "key": "arguable", "reason": "Contradictory for a single fluid, but compatible in an oil-injected compressor where oil cools the gas internally and ambient air cools the interstage heat exchanger."}
+{"id": "k174", "key": "contradiction", "reason": "A compact DIN-rail relay and a floor-standing relay panel have mutually exclusive mount styles."}
+{"id": "k175", "key": "arguable", "reason": "Contradictory as pure bottled gases, but compatible in exothermic furnace purge gas, which is a combustion-generated mixture of nitrogen and carbon dioxide."}
+{"id": "k176", "key": "contradiction", "reason": "Liquid sodium and lead-bismuth eutectic are mutually exclusive liquid-metal reactor coolants."}
+{"id": "k177", "key": "contradiction", "reason": "Aluminum low-temperature brazing filler and copper high-temperature filler cannot braze the same joint."}
+{"id": "k178", "key": "arguable", "reason": "Contradictory for a two-winding transformer, but compatible in a three-winding transformer with a wye HV winding, a delta secondary (YNd1), and a zigzag tertiary (Yzn11)."}
+{"id": "k179", "key": "contradiction", "reason": "Nitrile (NBR) and Viton (FKM) are alternative elastomer specifications for a pump seal."}
+{"id": "k180", "key": "contradiction", "reason": "Under COLREGs Rule 3(i), a vessel made fast alongside a berth is not underway."}
+{"id": "k181", "key": "contradiction", "reason": "A vessel held by its anchor is not adrift."}
+{"id": "k182", "key": "contradiction", "reason": "A vessel is assigned a single IACS Polar Class notation (PC7 vs PC5)."}
+{"id": "k183", "key": "arguable", "reason": "Contradictory for commercial power cores, but compatible in heavy-water research reactors that include a graphite reflector/thermal-column moderator."}
+{"id": "k184", "key": "compatible", "reason": "Nuclear reactors commonly combine a bulk concrete biological shield with lead gamma shielding around penetrations, detectors, and primary components."}
+{"id": "k185", "key": "contradiction", "reason": "125 VDC and 24 VDC are incompatible nominal DC relay coil voltages."}
+{"id": "k186", "key": "contradiction", "reason": "Lightweight titanium aerospace casings and heavy stationary cast-iron casings do not coexist on the same turbine."}
+{"id": "k187", "key": "contradiction", "reason": "Helium and nitrogen are alternative closed-cycle/inert cooling gases not used simultaneously in one turbine."}
+{"id": "k188", "key": "arguable", "reason": "Contradictory as pure API base-stock classes, but compatible in a semi-synthetic PAO/mineral blend turbine lubricant."}
+{"id": "k189", "key": "contradiction", "reason": "Under COLREGs Rule 3(i), a vessel at anchor is explicitly not underway."}
+{"id": "k190", "key": "arguable", "reason": "Contradictory if comparing high-purity alumina vs silica roof bricks, but compatible in aluminosilicate (fireclay or mullite, 3Al2O3-2SiO2) furnace lining bricks."}
+{"id": "k191", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be grounded wye (YNd1) and delta (Dyn11)."}
+{"id": "k192", "key": "contradiction", "reason": "Zirconia and chromite are distinct refractory brick types not combined into a standard furnace lining brick."}
+{"id": "k193", "key": "arguable", "reason": "Contradictory for a single homogeneous shield piece, but compatible in a reactor with a steel thermal/structural shield and tungsten high-Z gamma shielding."}
+{"id": "k194", "key": "arguable", "reason": "Contradictory for a single pure supply gas, but compatible in furnaces that use nitrogen for bulk rough purging and argon for high-temperature final purging or an Ar/N2 blend."}
+{"id": "k195", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be wye (Yyn0) and delta (Dyn11)."}
+{"id": "k196", "key": "arguable", "reason": "Contradictory for a single unclad alloy grade, but compatible in a boiler using both TP304H superheater tubes and Inconel 625 weld-overlaid tubes."}
+{"id": "k197", "key": "compatible", "reason": "Composite lead-and-steel shielding (lead gamma shield clad or backed by structural steel and steel thermal shielding) is standard on nuclear reactors."}
+{"id": "k198", "key": "arguable", "reason": "Contradictory for a single fluid loop, but compatible in a nitrogen-cooled turbine system that uses water in its heat exchangers or bearing/stator coolers."}
+{"id": "k199", "key": "contradiction", "reason": "125 VDC and 240 VAC are distinct nominal relay coil voltage ratings."}
+{"id": "k200", "key": "contradiction", "reason": "Firing (fuel burning) and prepurge (air purge with fuel shut off prior to ignition) cannot occur simultaneously."}
+{"id": "k201", "key": "compatible", "reason": "A reactor coolant loop that is drained for refueling or maintenance is also at cold shutdown temperature, so 'cold' (thermal state) and 'drained' (inventory state) hold simultaneously."}
+{"id": "k202", "key": "contradiction", "reason": "A single chiller circuit cannot simultaneously be in defrost mode and normal chilling mode."}
+{"id": "k203", "key": "compatible", "reason": "A standard mechanical pump seal combines a carbon-graphite primary seal face with nitrile (NBR) secondary O-rings."}
+{"id": "k204", "key": "contradiction", "reason": "A vessel is assigned a single IACS Polar Class notation (PC5 vs PC3)."}
+{"id": "k205", "key": "contradiction", "reason": "Liquid sodium and water are mutually exclusive primary reactor coolants."}
+{"id": "k206", "key": "arguable", "reason": "Contradictory for a single casting, but compatible in a multi-cylinder turbine with a cast-steel HP/IP casing and a cast-iron LP/exhaust casing."}
+{"id": "k207", "key": "arguable", "reason": "Contradictory for a single pure polymer, but compatible in a PTFE-encapsulated Kalrez O-ring or a mechanical seal with both PTFE and Kalrez secondary elements."}
+{"id": "k208", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be delta (Dd0) and wye (Yyn0)."}
+{"id": "k209", "key": "arguable", "reason": "Contradictory for a single fluid, but compatible in a multi-stage propane compressor using an air-cooled intercooler together with liquid-propane flash desuperheating."}
+{"id": "k210", "key": "contradiction", "reason": "A floor-standing cabinet relay cannot simultaneously be pole-mounted."}
+{"id": "k211", "key": "contradiction", "reason": "Once-through seawater cooling and closed-loop geothermal ground-coupled cooling are distinct chiller condenser configurations."}
+{"id": "k212", "key": "arguable", "reason": "Contradictory for a single fluid loop, but compatible in a hydrogen-cooled turbo-generator that uses oil for bearing cooling and hydrogen shaft-seal cooling."}
+{"id": "k213", "key": "contradiction", "reason": "Water and liquid lead-bismuth eutectic are mutually exclusive primary reactor coolants."}
+{"id": "k214", "key": "contradiction", "reason": "Palladium and rhodium are alternative platinum-group contact platings not typically combined on the same relay contact."}
+{"id": "k215", "key": "arguable", "reason": "Contradictory for one homogeneous material, but compatible in a PTFE-encapsulated nitrile O-ring or a PTFE lip/wedge seal energized by a nitrile O-ring."}
+{"id": "k216", "key": "contradiction", "reason": "Isobutane (HC) and R134a (HFC) are distinct chiller refrigerants."}
+{"id": "k217", "key": "arguable", "reason": "Contradictory as pure API Group V subclasses, but compatible in varnish-resistant synthetic gas-turbine oils formulated as a polyalkylene glycol (PAG) and polyol ester blend."}
+{"id": "k218", "key": "arguable", "reason": "Contradictory as pure gases, but compatible when purging a furnace with forming gas (a nitrogen-hydrogen mixture) or using nitrogen safety purges on a hydrogen furnace."}
+{"id": "k219", "key": "arguable", "reason": "Contradictory as grain-oriented electrical steel vs metallic glass ribbon, but compatible because amorphous core alloy (Fe-Si-B) contains silicon and hybrid transformers combine amorphous and silicon-steel core sections."}
+{"id": "k220", "key": "arguable", "reason": "Contradictory if naming pure single-component refrigerants, but compatible in chillers charged with a commercial isobutane/propane hydrocarbon blend (e.g., R436A/B)."}
+{"id": "k221", "key": "arguable", "reason": "Contradictory for a single-voltage coil, but compatible in dual-voltage 120/240 VAC relay coils or universal 100-240 VAC relay power supplies."}
+{"id": "k222", "key": "contradiction", "reason": "A burner in lockout is latched in a fault trip state and cannot be executing prepurge."}
+{"id": "k223", "key": "contradiction", "reason": "A vessel holds a single IACS Polar Class notation and cannot be both PC7 and PC1."}
+{"id": "k224", "key": "contradiction", "reason": "A cooling-tower condenser loop and a geothermal ground-coupled loop are distinct chiller heat-rejection systems."}
+{"id": "k225", "key": "arguable", "reason": "Contradictory for a simple AC-only or DC-only electromechanical coil, but compatible in substation protection relays rated for universal 120 VAC / 125 VDC control power."}
+{"id": "k226", "key": "contradiction", "reason": "Helium and hydrogen are distinct furnace purge/atmosphere gases."}
+{"id": "k227", "key": "arguable", "reason": "Contradictory as pure single-oxide bricks, but compatible in sintered alumina-chrome (Al2O3-Cr2O3) refractory furnace lining bricks."}
+{"id": "k228", "key": "compatible", "reason": "In drum boilers on a phosphate treatment program, volatile amines/ammonia treat the feedwater while phosphate treats the boiler drum water simultaneously."}
+{"id": "k229", "key": "arguable", "reason": "Contradictory for fixed inland vs offshore plants, but compatible for a marine or estuarine raw-water chiller operating in both river and sea water."}
+{"id": "k230", "key": "compatible", "reason": "Nuclear reactors routinely combine a steel thermal/structural shield with lead gamma shielding."}
+{"id": "k231", "key": "contradiction", "reason": "Helium and carbon dioxide are alternative gas-cooled reactor coolants (HTGR vs Magnox/AGR) not used together as primary coolant."}
+{"id": "k232", "key": "contradiction", "reason": "Palladium and platinum are alternative precious-metal contact platings."}
+{"id": "k233", "key": "contradiction", "reason": "Rhodium and palladium are alternative contact platings."}
+{"id": "k234", "key": "contradiction", "reason": "A vessel holds a single IACS Polar Class notation and cannot be both PC3 and PC1."}
+{"id": "k235", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Rotterdam vs Antwerp)."}
+{"id": "k236", "key": "arguable", "reason": "Contradictory as pure polymers, but compatible in a silicone-acrylic hybrid marine topcoat."}
+{"id": "k237", "key": "contradiction", "reason": "Rhodium (dry-circuit reed contact plating) and silver (power contact plating) are distinct contact plating specifications."}
+{"id": "k238", "key": "contradiction", "reason": "Silver and rhodium are distinct relay contact plating specifications."}
+{"id": "k239", "key": "contradiction", "reason": "Porcelain and glass are alternative ceramic/vitreous external insulator materials for a transformer bushing."}
+{"id": "k240", "key": "contradiction", "reason": "Under COLREGs Rule 3(i), a vessel made fast alongside is not underway."}
+{"id": "k241", "key": "arguable", "reason": "Contradictory as pure single gases, but compatible in vacuum/heat-treat furnaces that use nitrogen for rough purging and helium for high-purity backfill/quench purging."}
+{"id": "k242", "key": "arguable", "reason": "Contradictory for one casing piece, but compatible in an aeroderivative gas turbine with an aluminum cold-section inlet casing and an Inconel hot-section turbine casing."}
+{"id": "k243", "key": "arguable", "reason": "Contradictory for a single tube's alloy grade, but compatible across a single boiler using T22 in intermediate temperature banks and T91 in high-temperature superheater banks."}
+{"id": "k244", "key": "arguable", "reason": "Contradictory as pure gases, but compatible in furnaces that purge first with nitrogen and finish with argon or use a nitrogen-argon blend."}
+{"id": "k245", "key": "contradiction", "reason": "A chiller circuit that is idle (off/standby) cannot simultaneously be actively chilling."}
+{"id": "k246", "key": "arguable", "reason": "Contradictory as pure resin types, but compatible in an epoxy-acrylic hybrid marine topcoat or across deck (epoxy) and superstructure (acrylic) zones."}
+{"id": "k247", "key": "contradiction", "reason": "Helium gas and liquid lead-bismuth eutectic are mutually exclusive primary reactor coolants."}
+{"id": "k248", "key": "contradiction", "reason": "A chiller circuit that has entered its startup sequence is no longer idle."}
+{"id": "k249", "key": "contradiction", "reason": "Hydrogen and helium are alternative gas coolants not used together in the same turbine/generator."}
+{"id": "k250", "key": "contradiction", "reason": "A wall-mounted relay enclosure and a floor-standing relay cabinet are mutually exclusive mount styles."}
+{"id": "k251", "key": "arguable", "reason": "Contradictory for a single casting, but compatible in a gas turbine with an aluminum front/inlet casing and a steel compressor/turbine casing."}
+{"id": "k252", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be wye (Yyn0) and delta (Dd0)."}
+{"id": "k253", "key": "arguable", "reason": "Contradictory for fresh-water towers vs once-through seawater, but compatible in coastal plants using a seawater cooling tower or a helper cooling tower on a seawater-cooled chiller."}
+{"id": "k254", "key": "compatible", "reason": "Gold flash over silver underplating (gold-over-silver) is a standard dual-layer relay contact plating."}
+{"id": "k255", "key": "compatible", "reason": "A standard mechanical pump seal combines a carbon-graphite primary seal face with Teflon (PTFE) secondary seals, and graphite-filled PTFE is a standard composite seal material."}
+{"id": "k256", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Hamburg vs Rotterdam)."}
+{"id": "k257", "key": "contradiction", "reason": "Vinyl and silicone are distinct marine topcoat polymer classes."}
+{"id": "k258", "key": "arguable", "reason": "Contradictory for a single casing casting, but compatible in a steam or gas turbine with a cast-steel HP/hot casing and a cast-iron LP/exhaust casing."}
+{"id": "k259", "key": "arguable", "reason": "Contradictory if naming pure single-component refrigerants, but compatible in chillers charged with a commercial propane/isobutane hydrocarbon blend (e.g., R436A/B)."}
+{"id": "k260", "key": "arguable", "reason": "Contradictory for a single-fluid exchanger, but compatible in multi-stage compressors with an air-cooled precooler and water-cooled trim intercooler or evaporative spray intercooler."}
+{"id": "k261", "key": "contradiction", "reason": "A chiller circuit in pumpdown (evacuating refrigerant prior to stopping) is not in normal chilling mode."}
+{"id": "k262", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be delta (Dyn11) and wye (Yzn11)."}
+{"id": "k263", "key": "arguable", "reason": "Contradictory as separate AWS filler classes (BAg vs BAu), but compatible in gold-copper-silver brazing alloys."}
+{"id": "k264", "key": "arguable", "reason": "Contradictory as pure elements, but compatible in copper-nickel brazing fillers or a chiller with nickel-brazed stainless plate heat exchangers and copper-brazed piping."}
+{"id": "k265", "key": "arguable", "reason": "Contradictory as pure elements, but compatible in standard gold-copper brazing alloys (e.g., AWS BAu-1, BAu-3) which are binary alloys of gold and copper."}
+{"id": "k266", "key": "contradiction", "reason": "Hydrogen and helium are distinct furnace atmosphere/purge gases."}
+{"id": "k267", "key": "contradiction", "reason": "Platinum and silver are distinct relay contact plating specifications."}
+{"id": "k268", "key": "arguable", "reason": "Contradictory for a fixed single-voltage coil, but compatible in dual-winding 120/240 VAC relay coils or universal 100-240 VAC relay power supplies."}
+{"id": "k269", "key": "arguable", "reason": "Usually distinct states, but compatible at a tidal NAABSA berth where a vessel moored alongside rests aground at low tide."}
+{"id": "k270", "key": "arguable", "reason": "Compatible under COLREGs Rule 3(i) because an adrift vessel is not anchored, moored alongside, or aground and is therefore legally 'underway', though contradictory if 'underway' is read narrowly as making way under power."}
+{"id": "k271", "key": "contradiction", "reason": "Silicone and vinyl are distinct marine topcoat formulations."}
+{"id": "k272", "key": "arguable", "reason": "Contradictory for a single fluid, but compatible in an oil-injected multi-stage compressor where interstage cooling uses both injected oil and a water-cooled exchanger."}
+{"id": "k273", "key": "contradiction", "reason": "A chiller circuit actively executing its startup sequence is not idle."}
+{"id": "k274", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Bergen vs Hamburg)."}
+{"id": "k275", "key": "contradiction", "reason": "Closed-loop geothermal ground-coupled cooling and open-loop river water cooling are distinct chiller condenser systems."}
+{"id": "k276", "key": "contradiction", "reason": "Indoor 19-inch rack mounting and outdoor utility pole mounting are mutually exclusive relay mount styles."}
+{"id": "k277", "key": "arguable", "reason": "Contradictory for commercial LWRs, but compatible in high-flux research/test reactors (e.g., ATR, HFIR, BR2) that use both beryllium and light water in the core to moderate neutrons."}
+{"id": "k278", "key": "arguable", "reason": "Contradictory as single-layer platings, but compatible in reed and high-reliability relay contacts plated with rhodium over a gold underplate."}
+{"id": "k279", "key": "contradiction", "reason": "Single-pack vinyl and two-pack polyurethane are distinct marine topcoat formulations."}
+{"id": "k280", "key": "contradiction", "reason": "Postpurge (normal shutdown air purge) and lockout (latched safety trip state) are distinct BMS states."}
+{"id": "k281", "key": "arguable", "reason": "Contradictory for a two-winding transformer, but compatible in a three-winding transformer with a wye HV winding, a wye secondary (Yyn0), and a zigzag tertiary (Yzn11)."}
+{"id": "k282", "key": "contradiction", "reason": "Oxygenated water chemistry and chelant treatment are chemically incompatible because dissolved oxygen rapidly degrades EDTA/NTA chelants and causes severe boiler corrosion."}
+{"id": "k283", "key": "arguable", "reason": "Contradictory for a single homogeneous shield piece, but compatible in a reactor combining steel structural/thermal shielding with steel-clad depleted-uranium gamma shielding."}
+{"id": "k284", "key": "arguable", "reason": "Contradictory as pure gases, but compatible when purging a furnace with forming gas (a nitrogen-hydrogen mixture) or purging a hydrogen furnace with nitrogen."}
+{"id": "k285", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Hamburg vs Gothenburg)."}
+{"id": "k286", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Gothenburg vs Hamburg)."}
+{"id": "k287", "key": "compatible", "reason": "A standard mechanical pump seal combines a carbon-graphite primary seal face with Viton (FKM) secondary O-rings."}
+{"id": "k288", "key": "arguable", "reason": "Contradictory for a single homogeneous material, but compatible in a reactor with a bulk concrete biological shield and localized depleted-uranium gamma shielding."}
+{"id": "k289", "key": "contradiction", "reason": "Hydrogen and nitrogen are never used simultaneously as a turbine/generator cooling medium."}
+{"id": "k290", "key": "arguable", "reason": "Contradictory for one uniform shield slab, but compatible in a reactor combining a steel thermal/vessel shield with tungsten gamma shielding."}
+{"id": "k291", "key": "arguable", "reason": "Contradictory for a single bushing's weather housing, but compatible on a power transformer equipped with silicone-rubber HV bushings and porcelain LV/neutral bushings."}
+{"id": "k292", "key": "compatible", "reason": "Nuclear reactors routinely use both a reinforced concrete biological shield and a steel thermal shield/liner."}
+{"id": "k293", "key": "arguable", "reason": "Contradictory for a single topcoat layer, but compatible in an epoxy-polyurethane hybrid coating or across a vessel's epoxy deck/cargo-hold topcoat and polyurethane superstructure topcoat."}
+{"id": "k294", "key": "contradiction", "reason": "A burner in safety lockout has its fuel supply tripped off and cannot be firing."}
+{"id": "k295", "key": "contradiction", "reason": "Chromite and zirconia are distinct refractory brick types not combined into a standard furnace brick."}
+{"id": "k296", "key": "arguable", "reason": "Contradictory for a single sootblower unit, but compatible on a single boiler equipped with retractable steam sootblowers in the superheater and sonic horns in the economizer/air heater."}
+{"id": "k297", "key": "contradiction", "reason": "A vessel cannot simultaneously hold Polar Class PC1 and have no ice class (noclass)."}
+{"id": "k298", "key": "arguable", "reason": "Contradictory as pure base-stock categories, but compatible in a semi-synthetic turbine oil blending mineral oil and synthetic ester."}
+{"id": "k299", "key": "contradiction", "reason": "Carbon dioxide (oxidizing) and hydrogen (reducing) react at furnace temperatures and are alternative furnace gases."}
+{"id": "k300", "key": "contradiction", "reason": "Liquid ammonia and lubricating oil are distinct compressor intercooler media."}
+{"id": "k301", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Hamburg vs Bergen)."}
+{"id": "k302", "key": "arguable", "reason": "Contradictory as pure polymer types, but compatible in a standard epoxy-polysiloxane (epoxy-silicone) hybrid marine topcoat."}
+{"id": "k303", "key": "contradiction", "reason": "Liquid lead-bismuth eutectic and helium gas are mutually exclusive primary reactor coolants."}
+{"id": "k304", "key": "contradiction", "reason": "Rhodium and platinum are alternative precious-metal contact platings."}
+{"id": "k305", "key": "contradiction", "reason": "Oil-impregnated paper condenser bushings use porcelain or silicone rubber housings, not glass."}
+{"id": "k306", "key": "contradiction", "reason": "A vessel is assigned a single IACS Polar Class notation (PC3 vs PC5)."}
+{"id": "k307", "key": "contradiction", "reason": "Helium and hydrogen are alternative turbine/generator cooling gases."}
+{"id": "k308", "key": "arguable", "reason": "Contradictory as separate API Group V subclasses, but compatible in varnish-resistant synthetic gas-turbine oils formulated as a polyglycol (PAG) and polyol ester blend."}
+{"id": "k309", "key": "contradiction", "reason": "Polyalphaolefin (PAO) and silicone fluid are immiscible, unblended turbine lubricant grades."}
+{"id": "k310", "key": "arguable", "reason": "Contradictory for one uniform metal slab, but compatible in a reactor using a steel thermal/structural shield together with steel-clad depleted-uranium gamma shielding."}
+{"id": "k311", "key": "arguable", "reason": "Contradictory as pure single-oxide bricks, but compatible in sintered alumina-chrome (Al2O3-Cr2O3) refractory furnace lining bricks."}
+{"id": "k312", "key": "compatible", "reason": "Two-component acrylic polyurethane (acrylic polyol cured with aliphatic polyurethane isocyanate) is the standard marine topside topcoat."}
+{"id": "k313", "key": "contradiction", "reason": "Carbon dioxide and helium are alternative gas-cooled reactor coolants not used together as primary coolant."}
+{"id": "k314", "key": "arguable", "reason": "Contradictory for a single fluid loop, but compatible in a multi-stage ammonia compressor using water-cooled intercoolers together with liquid-ammonia flash desuperheating."}
+{"id": "k315", "key": "arguable", "reason": "Contradictory as AWS BAg vs BNi classes, but compatible in nickel-bearing silver brazing fillers (e.g., BAg-24) or a chiller with nickel-brazed stainless plates and silver-brazed copper lines."}
+{"id": "k316", "key": "arguable", "reason": "Contradictory for a single coolant circuit, but compatible in a helium-cooled turbine that uses lubricating oil to cool its shaft bearings."}
+{"id": "k317", "key": "arguable", "reason": "Contradictory for fresh-water towers vs once-through seawater, but compatible in coastal plants using a seawater cooling tower or a helper cooling tower on a seawater-cooled chiller."}
+{"id": "k318", "key": "contradiction", "reason": "Prepurge (air purge with fuel valves closed) must complete before the burner can enter lightoff (ignition trial)."}
+{"id": "k319", "key": "contradiction", "reason": "A floor-standing cabinet relay and a compact DIN-rail relay have mutually exclusive mount styles."}
+{"id": "k320", "key": "contradiction", "reason": "Mineral oil and polyglycol (PAG) synthetic turbine lubricants are chemically immiscible and incompatible."}
+{"id": "k321", "key": "contradiction", "reason": "R134a and ammonia are incompatible chiller refrigerants."}
+{"id": "k322", "key": "arguable", "reason": "Contradictory for a single-fluid chiller circuit, but compatible in an industrial NH3/CO2 cascade chiller using carbon dioxide in the low stage and ammonia in the high stage."}
+{"id": "k323", "key": "contradiction", "reason": "Inconel high-temperature cladding and aluminum low-temperature research-reactor cladding do not coexist in one reactor."}
+{"id": "k324", "key": "arguable", "reason": "Contradictory for a single cooling loop, but compatible in a nitrogen-cooled turbine system that uses water in its heat exchangers or stator coolers."}
+{"id": "k325", "key": "arguable", "reason": "Contradictory for a single fuel rod, but compatible in a reactor core with Zircaloy fuel-rod cladding and SS316 control/absorber-rod cladding or mixed fuel assemblies."}
+{"id": "k326", "key": "contradiction", "reason": "A vessel that is aground is fast to the bottom and cannot simultaneously be adrift."}
+{"id": "k327", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Bergen vs Rotterdam)."}
+{"id": "k328", "key": "arguable", "reason": "Contradictory for a uniform core block, but compatible in research and high-temperature reactors that use both graphite and beryllium moderator/reflector elements in the core."}
+{"id": "k329", "key": "arguable", "reason": "Contradictory as pure bottled gases, but compatible when purging a furnace with an argon-hydrogen forming/reducing gas mixture or purging an H2 furnace with argon."}
+{"id": "k330", "key": "arguable", "reason": "Contradictory for closed-loop tower vs once-through river cooling, but compatible in riverside plants using a river-water makeup/helper cooling tower."}
+{"id": "k331", "key": "contradiction", "reason": "Propane refrigerant and lubricating oil are distinct compressor intercooler media."}
+{"id": "k332", "key": "contradiction", "reason": "Inconel and Magnox fuel claddings belong to different reactor classes and are not used together."}
+{"id": "k333", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Gothenburg vs Antwerp)."}
+{"id": "k334", "key": "arguable", "reason": "Contradictory as adjacent steps in a 5-point enum, but compatible in comparative English because the lowest tap position is a lower (below-nominal) tap position."}
+{"id": "k335", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Antwerp vs Hamburg)."}
+{"id": "k336", "key": "contradiction", "reason": "Copper high-temperature brazing filler and aluminum low-temperature filler cannot braze the same joint."}
+{"id": "k337", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be delta (Dyn11) and wye (Yyn0)."}
+{"id": "k338", "key": "contradiction", "reason": "Isobutane and ammonia are distinct refrigerants not paired in a single chiller."}
+{"id": "k339", "key": "arguable", "reason": "Contradictory for a single casing ring, but compatible in a gas turbine with a titanium compressor casing and an Inconel hot-section turbine casing."}
+{"id": "k340", "key": "contradiction", "reason": "Aluminum low-temperature research cladding and Magnox CO2 power-reactor cladding are not used together."}
+{"id": "k341", "key": "arguable", "reason": "Contradictory as separate catalog headings, but compatible in a flexible clutch coupling that integrates a clutch with a flexible elastomeric or disc coupling element."}
+{"id": "k342", "key": "contradiction", "reason": "Nitrogen and helium are alternative closed-cycle/inert turbine cooling gases."}
+{"id": "k343", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Rotterdam vs Hamburg)."}
+{"id": "k344", "key": "contradiction", "reason": "Carbon dioxide and argon are alternative furnace purge gases."}
+{"id": "k345", "key": "contradiction", "reason": "Outdoor utility pole mounting and indoor 19-inch rack mounting are mutually exclusive relay mount styles."}
+{"id": "k346", "key": "contradiction", "reason": "Glass and porcelain are alternative external insulator materials for a transformer bushing."}
+{"id": "k347", "key": "arguable", "reason": "Contradictory for indoor vs outdoor installations, but compatible for outdoor feeder/recloser relay cabinets fitted with dual wall/pole mounting brackets."}
+{"id": "k348", "key": "arguable", "reason": "Contradictory for an unclad monolithic tube, but compatible in a boiler tube with a T91 pressure-bearing base tube and an Inconel 625 fireside weld overlay or across boiler sections."}
+{"id": "k349", "key": "contradiction", "reason": "Magnox and Inconel fuel claddings belong to different reactor classes and are not used together."}
+{"id": "k350", "key": "contradiction", "reason": "A vessel holds a single IACS Polar Class notation and cannot be both PC1 and PC7."}
+{"id": "k351", "key": "arguable", "reason": "In narrow HVACR usage a thermostatic expansion valve (TXV) contrasts with a constant-pressure automatic expansion valve (AEV), but functionally a TXV is an automatic expansion valve."}
+{"id": "k352", "key": "arguable", "reason": "Contradictory as standalone catalog codes, but compatible when a relay mounts on a DIN rail inside a 19-inch rack or on rack chassis rails."}
+{"id": "k353", "key": "arguable", "reason": "Contradictory for a single fluid loop, but compatible in a multi-stage propane compressor using water-cooled intercoolers together with liquid-propane flash desuperheating."}
+{"id": "k354", "key": "contradiction", "reason": "A burner latched in safety lockout cannot simultaneously be in lightoff (ignition trial)."}
+{"id": "k355", "key": "contradiction", "reason": "24 VDC and 240 VAC are incompatible nominal relay coil voltages."}
+{"id": "k356", "key": "arguable", "reason": "Contradictory as pure bottled gases, but compatible in exothermic furnace purge gas, which is a combustion-generated mixture of nitrogen and carbon dioxide."}
+{"id": "k357", "key": "arguable", "reason": "Contradictory for a two-winding transformer, but compatible in a three-winding transformer with a delta HV winding, a delta secondary/tertiary (Dd0), and a grounded-wye winding (Dyn11)."}
+{"id": "k358", "key": "arguable", "reason": "Contradictory for commercial power cores, but compatible in heavy-water research reactors that incorporate beryllium moderator/reflector elements in the core."}
+{"id": "k359", "key": "compatible", "reason": "Standard composite RIP transformer bushings have an epoxy condenser core inside a silicone rubber weather housing."}
+{"id": "k360", "key": "contradiction", "reason": "Defrosting and startup are distinct operating states of a chiller circuit."}
+{"id": "k361", "key": "contradiction", "reason": "Propane and ammonia are distinct refrigerants not used together as compressor intercooler media."}
+{"id": "k362", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Bergen vs Antwerp)."}
+{"id": "k363", "key": "arguable", "reason": "Contradictory for a single homogeneous material, but compatible in a reactor with a bulk concrete biological shield and localized tungsten gamma shielding."}
+{"id": "k364", "key": "arguable", "reason": "Contradictory for fixed indoor vs utility-pole sites, but compatible for outdoor feeder/recloser relay enclosures built for wall/pole bracket mounting."}
+{"id": "k365", "key": "contradiction", "reason": "Firing (fuel burning) and postpurge (ventilating the furnace after fuel shutoff) are mutually exclusive BMS states."}
+{"id": "k366", "key": "contradiction", "reason": "240 VAC and 48 VDC are incompatible nominal relay coil voltages."}
+{"id": "k367", "key": "arguable", "reason": "Contradictory for a single uniform material, but compatible in a resin-impregnated paper (epoxy) condenser bushing with a porcelain weather housing."}
+{"id": "k368", "key": "arguable", "reason": "Distinct controller state names, but compatible during the pull-down phase of startup when the circuit is already actively chilling fluid."}
+{"id": "k369", "key": "arguable", "reason": "Contradictory for a single-fluid exchanger, but compatible in multi-stage compressors combining an air-cooled precooler with a water-cooled trim intercooler or water-spray air intercooler."}
+{"id": "k370", "key": "contradiction", "reason": "Paraffin wax and heavy water (D2O) are not used together as the core moderator of a nuclear reactor."}
+{"id": "k371", "key": "contradiction", "reason": "Postpurge (after burner shutdown) and lightoff (ignition trial at startup) are mutually exclusive BMS states."}
+{"id": "k372", "key": "arguable", "reason": "Contradictory for a single homogeneous shield piece, but compatible in a reactor using both depleted uranium and lead high-Z gamma shielding in different zones."}
+{"id": "k373", "key": "arguable", "reason": "Contradictory as pure single gases, but compatible when purging or backfilling a vacuum/welding furnace with a helium-argon inert gas blend."}
+{"id": "k374", "key": "arguable", "reason": "Contradictory for a single fuel pin, but compatible in a reactor core with SS316 fuel cladding and Inconel control/absorber rod cladding or grid hardware."}
+{"id": "k375", "key": "arguable", "reason": "Contradictory for a single tube segment, but compatible across a single boiler using T91 in intermediate superheater stages and TP304H in high-temperature finishing superheater stages."}
+{"id": "k376", "key": "arguable", "reason": "Contradictory as pure single-metal platings, but compatible in standard gold-flashed palladium (or Au-Pd alloy) signal relay contacts."}
+{"id": "k377", "key": "arguable", "reason": "Contradictory if comparing glass-bulb vs cast-resin housings, but compatible in a glass-fiber reinforced epoxy (fiberglass-epoxy) composite bushing tube."}
+{"id": "k378", "key": "compatible", "reason": "Standard oil-impregnated paper (OIP) transformer bushings consist of an oil-paper condenser core inside a porcelain weather housing."}
+{"id": "k379", "key": "contradiction", "reason": "A vessel moored fast alongside a berth cannot simultaneously be adrift."}
+{"id": "k380", "key": "contradiction", "reason": "Silver and platinum are distinct relay contact plating specifications."}
+{"id": "k381", "key": "contradiction", "reason": "Postpurge occurs after fuel shutoff, so the burner cannot simultaneously be firing."}
+{"id": "k382", "key": "compatible", "reason": "In drum boilers on a caustic treatment program, caustic (NaOH) treats the boiler drum water while volatile amines/ammonia treat the feedwater and steam cycle simultaneously."}
+{"id": "k383", "key": "arguable", "reason": "Contradictory for a single unclad tube, but compatible in a T22 boiler waterwall/superheater tube clad with an Inconel 625 fireside weld overlay or across sections of one boiler."}
+{"id": "k384", "key": "contradiction", "reason": "Light water and solid paraffin wax are not combined as core moderators in a nuclear reactor."}
+{"id": "k385", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be wye (Yzn11) and delta (Dd0)."}
+{"id": "k386", "key": "arguable", "reason": "Contradictory for a single casting, but compatible in a gas turbine with a titanium front compressor casing and a steel mid/rear casing."}
+{"id": "k387", "key": "arguable", "reason": "Contradictory for a fixed single-voltage coil, but compatible in auxiliary/protection relays rated for a continuous 24-48 VDC coil voltage range."}
+{"id": "k388", "key": "arguable", "reason": "Contradictory for a two-winding transformer, but compatible in a three-winding transformer with a grounded-wye HV winding, a wye secondary (Yyn0), and a delta tertiary (YNd1)."}
+{"id": "k389", "key": "arguable", "reason": "Contradictory for a single-fluid chiller circuit, but compatible in a propane/CO2 (R290/R744) cascade chiller."}
+{"id": "k390", "key": "arguable", "reason": "Usually distinct states, but compatible when an anchored vessel in a shallow tidal anchorage rests aground at low tide."}
+{"id": "k391", "key": "arguable", "reason": "Contradictory as pure base-stock groups, but compatible in a semi-synthetic turbine oil blending mineral oil with synthetic ester."}
+{"id": "k392", "key": "contradiction", "reason": "48 VDC and 240 VAC are incompatible nominal relay coil voltages."}
+{"id": "k393", "key": "contradiction", "reason": "Platinum and gold are distinct precious-metal contact platings."}
+{"id": "k394", "key": "arguable", "reason": "Contradictory for a single-fluid chiller circuit, but compatible in an R134a/CO2 cascade or secondary-loop chiller."}
+{"id": "k395", "key": "compatible", "reason": "Synthetic turbine lubricants routinely blend polyalphaolefin (PAO) and synthetic ester base stocks."}
+{"id": "k396", "key": "contradiction", "reason": "A vessel cannot simultaneously have no ice class (noclass) and hold Polar Class PC5."}
+{"id": "k397", "key": "contradiction", "reason": "Lubricating oil and propane refrigerant are distinct compressor intercooler media."}
+{"id": "k398", "key": "arguable", "reason": "Contradictory for a single casing casting, but compatible in a turbine with a steel compressor/outer casing and an Inconel hot-section inner casing."}
+{"id": "k399", "key": "contradiction", "reason": "Paraffin wax and light water are not combined as core moderators in a nuclear reactor."}
+{"id": "k400", "key": "contradiction", "reason": "Graphite and paraffin wax are not used together as the core moderator of a nuclear reactor."}
+{"id": "k401", "key": "contradiction", "reason": "Defrosting and pumpdown are distinct operating states of a chiller refrigeration circuit."}
+{"id": "k402", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Rotterdam vs Bergen)."}
+{"id": "k403", "key": "contradiction", "reason": "120 VAC and 24 VDC are incompatible nominal relay coil voltages."}
+{"id": "k404", "key": "contradiction", "reason": "A chiller circuit actively chilling fluid is not idle."}
+{"id": "k405", "key": "arguable", "reason": "Contradictory for an AC-only or DC-only coil, but compatible in substation protective relays rated for universal 125 VDC / 120 VAC coil/control input."}
+{"id": "k406", "key": "contradiction", "reason": "Under COLREGs Rule 3(i), a vessel at anchor is explicitly not underway."}
+{"id": "k407", "key": "contradiction", "reason": "A vessel cannot simultaneously have no ice class (noclass) and hold Polar Class PC7."}
+{"id": "k408", "key": "compatible", "reason": "Nuclear reactors routinely combine a concrete biological shield with lead gamma shielding."}
+{"id": "k409", "key": "contradiction", "reason": "Gold and platinum are distinct precious-metal contact platings."}
+{"id": "k410", "key": "contradiction", "reason": "Propane (HC) and R134a (HFC) are distinct refrigerants not used together in standard commercial chillers."}
+{"id": "k411", "key": "arguable", "reason": "Contradictory for a single homogeneous shield piece, but compatible in compact or research reactors using both depleted uranium and tungsten high-Z gamma shield elements."}
+{"id": "k412", "key": "arguable", "reason": "Contradictory as pure single gases, but compatible in vacuum/heat-treat furnaces that use nitrogen for rough purging and helium for final backfill/quench purging."}
+{"id": "k413", "key": "arguable", "reason": "Contradictory for an unclad monolithic tube, but compatible in a T91 boiler tube clad with an Inconel 625 weld overlay or across sections of the same boiler."}
+{"id": "k414", "key": "arguable", "reason": "Contradictory as pure single-oxide bricks, but compatible in magnesia-zirconia co-sintered refractory bricks or magnesia-stabilized zirconia furnace linings."}
+{"id": "k415", "key": "arguable", "reason": "Contradictory for a single tube segment, but compatible across a single boiler using T91 in intermediate superheater stages and TP304H in finishing superheater stages."}
+{"id": "k416", "key": "arguable", "reason": "Distinct BMS step names, but compatible during the trial-for-ignition (lightoff) window once the flame has ignited and is actively firing."}
+{"id": "k417", "key": "contradiction", "reason": "Two-pack epoxy and single-pack vinyl are distinct marine topcoat classes."}
+{"id": "k418", "key": "compatible", "reason": "In drum boilers on a caustic treatment program, volatile amines/ammonia treat the feedwater/steam loop while caustic (NaOH) treats the boiler drum water simultaneously."}
+{"id": "k419", "key": "arguable", "reason": "Contradictory for a single monolithic alloy, but compatible in a T11 boiler waterwall tube protected by an Inconel 625 fireside weld overlay."}
+{"id": "k420", "key": "contradiction", "reason": "Direct air-cooled chiller condensers and geothermal ground-coupled water-source condensers are distinct designs."}
+{"id": "k421", "key": "contradiction", "reason": "Silver brazing filler (for copper/steel) and aluminum brazing filler (for aluminum coils) cannot braze the same joint."}
+{"id": "k422", "key": "contradiction", "reason": "48 VDC and 125 VDC are distinct nominal DC substation relay coil voltages."}
+{"id": "k423", "key": "arguable", "reason": "Contradictory as pure elements, but compatible in cupronickel brazing fillers or on a chiller with copper-brazed piping and nickel-brazed stainless plate heat exchangers."}
+{"id": "k424", "key": "compatible", "reason": "Standard composite oil-impregnated paper (OIP) transformer bushings have an oil-paper internal condenser body inside a silicone rubber weather housing."}
+{"id": "k425", "key": "contradiction", "reason": "Liquid sodium and carbon dioxide gas are mutually exclusive primary reactor coolants."}
+{"id": "k426", "key": "contradiction", "reason": "A floor-standing cabinet relay and a 19-inch rack-mount relay unit have distinct mount styles."}
+{"id": "k427", "key": "arguable", "reason": "Contradictory for a single fluid circuit, but compatible in a helium-cooled turbine/generator system that uses water in its precoolers, intercoolers, or stator cooling."}
+{"id": "k428", "key": "arguable", "reason": "Contradictory for commercial power cores, but compatible in heavy-water research reactors that incorporate beryllium moderator/reflector assemblies in the core."}
+{"id": "k429", "key": "contradiction", "reason": "Polyglycol (PAG) and silicone fluid are distinct, unblended synthetic lubricant chemistries."}
+{"id": "k430", "key": "arguable", "reason": "Contradictory for a single bushing's housing, but compatible on a transformer equipped with porcelain HV bushings and silicone-rubber LV/neutral bushings (or vice versa)."}
+{"id": "k431", "key": "compatible", "reason": "Large utility turbo-generators routinely use combined hydrogen-water cooling (hydrogen gas cooling the rotor/core and deionized water cooling the hollow stator windings)."}
+{"id": "k432", "key": "contradiction", "reason": "Viton (FKM) and Kalrez (FFKM) are alternative fluoroelastomer grades for a pump seal."}
+{"id": "k433", "key": "arguable", "reason": "Contradictory for one casing ring, but compatible in an aeroderivative gas turbine with an aluminum cold-section inlet casing and an Inconel hot-section turbine casing."}
+{"id": "k434", "key": "contradiction", "reason": "Water and carbon dioxide gas are mutually exclusive primary reactor coolants."}
+{"id": "k435", "key": "contradiction", "reason": "Closed-loop geothermal ground-coupled cooling and once-through seawater cooling are distinct chiller condenser systems."}
+{"id": "k436", "key": "arguable", "reason": "Contradictory as pure single metals, but compatible in standard silver-palladium (AgPd) alloy relay contact platings."}
+{"id": "k437", "key": "contradiction", "reason": "Helium (inert) and carbon dioxide (oxidizing at high temperature) are alternative furnace purge gases."}
+{"id": "k438", "key": "arguable", "reason": "Contradictory as separate AWS filler classes (BAu vs BAg), but compatible in gold-silver-copper brazing alloys."}
+{"id": "k439", "key": "arguable", "reason": "Contradictory as pure single-oxide bricks, but compatible in magnesia-alumina spinel (MgAl2O4) refractory furnace lining bricks."}
+{"id": "k440", "key": "contradiction", "reason": "Platinum and rhodium are alternative precious-metal contact platings."}
+{"id": "k441", "key": "arguable", "reason": "Contradictory for a single tube segment, but compatible across a single boiler using T22 in waterwall/primary superheater banks and TP304H in high-temperature finishing superheater banks."}
+{"id": "k442", "key": "contradiction", "reason": "A vessel holds a single IACS Polar Class notation and cannot be both PC1 and PC5."}
+{"id": "k443", "key": "compatible", "reason": "Oxygenated treatment (OT / combined water treatment) doses controlled oxygen together with ammonia (a volatile alkalizing agent) in the same feedwater program."}
+{"id": "k444", "key": "contradiction", "reason": "Platinum and palladium are alternative precious-metal contact platings."}
+{"id": "k445", "key": "contradiction", "reason": "Pumpdown and defrosting are distinct operating states of a chiller refrigeration circuit."}
+{"id": "k446", "key": "contradiction", "reason": "Liquid lead-bismuth eutectic and carbon dioxide gas are mutually exclusive primary reactor coolants."}
+{"id": "k447", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Gothenburg vs Bergen)."}
+{"id": "k448", "key": "contradiction", "reason": "120 VAC and 48 VDC are incompatible nominal relay coil voltages."}
+{"id": "k449", "key": "arguable", "reason": "Contradictory in standard air-cooled vs water-cooled chiller catalogs, but compatible in hybrid adiabatic/evaporative condensers and because a cooling tower rejects heat to air."}
+{"id": "k450", "key": "contradiction", "reason": "Liquid lead-bismuth eutectic and water are mutually exclusive primary reactor coolants."}
+{"id": "k451", "key": "contradiction", "reason": "Startup and defrosting are distinct operating states of a chiller refrigeration circuit."}
+{"id": "k452", "key": "arguable", "reason": "Contradictory as pure resin types, but compatible in a standard epoxy-polysiloxane (epoxy-silicone) hybrid marine topcoat."}
+{"id": "k453", "key": "contradiction", "reason": "Paraffin wax and beryllium are not combined as core moderators in a nuclear reactor."}
+{"id": "k454", "key": "contradiction", "reason": "A vessel cannot simultaneously hold Polar Class PC7 and have no ice class (noclass)."}
+{"id": "k455", "key": "arguable", "reason": "Contradictory for a single homogeneous material, but compatible in a resin-impregnated paper (epoxy) condenser bushing fitted with a porcelain weather housing."}
+{"id": "k456", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be wye (Yzn11) and delta (Dyn11)."}
+{"id": "k457", "key": "arguable", "reason": "Contradictory for a two-winding transformer, but compatible in a three-winding transformer with a wye HV winding, a zigzag winding (Yzn11), and a wye winding (Yyn0)."}
+{"id": "k458", "key": "arguable", "reason": "Contradictory for a single tube segment, but compatible across a single boiler using TP304H in finishing superheater banks and T22 in lower-temperature banks."}
+{"id": "k459", "key": "arguable", "reason": "Contradictory for a single homogeneous material, but compatible in a reactor combining a bulk concrete biological shield with localized tungsten gamma shielding."}
+{"id": "k460", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be delta (Dd0) and wye (Yzn11)."}
+{"id": "k461", "key": "arguable", "reason": "Contradictory as pure elements, but compatible because silver brazing fillers (BAg) and silver-bearing phos-copper fillers (BCuP) are alloys of silver and copper."}
+{"id": "k462", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Antwerp vs Rotterdam)."}
+{"id": "k463", "key": "contradiction", "reason": "R134a (HFC) and isobutane (HC) are distinct chiller refrigerants."}
+{"id": "k464", "key": "arguable", "reason": "Contradictory as pure single-oxide bricks, but compatible in zircon (ZrSiO4) or fused-cast AZS (alumina-zirconia-silica) refractory furnace lining bricks."}
+{"id": "k465", "key": "contradiction", "reason": "Startup and pumpdown (shutdown refrigerant evacuation) are opposite transition states of a chiller circuit."}
+{"id": "k466", "key": "arguable", "reason": "Contradictory for a two-winding transformer, but compatible in a three-winding transformer with a wye HV winding, a delta secondary (YNd1), and a zigzag tertiary (Yzn11)."}
+{"id": "k467", "key": "contradiction", "reason": "Strongly basic magnesia brick and acidic silica brick react chemically at high temperature and are alternative refractory classifications."}
+{"id": "k468", "key": "contradiction", "reason": "A vessel held fast by its anchor is not adrift."}
+{"id": "k469", "key": "contradiction", "reason": "Silicone fluid and mineral oil are immiscible, incompatible turbine lubricant grades."}
+{"id": "k470", "key": "contradiction", "reason": "A chiller circuit actively running a compressor pumpdown is not yet idle."}
+{"id": "k471", "key": "arguable", "reason": "Contradictory for a single casing casting, but compatible in a heavy-duty industrial gas turbine with a nodular cast-iron compressor casing and an Inconel hot-section casing."}
+{"id": "k472", "key": "arguable", "reason": "Contradictory as pure resin classes, but compatible in an epoxy-acrylic hybrid marine topcoat."}
+{"id": "k473", "key": "arguable", "reason": "Contradictory as pure single metals, but compatible in gold-flashed palladium (or Au-Pd alloy) signal relay contacts."}
+{"id": "k474", "key": "compatible", "reason": "A high-performance mechanical pump seal combines a carbon-graphite primary seal face with Kalrez (FFKM) secondary O-rings."}
+{"id": "k475", "key": "arguable", "reason": "Contradictory for LWRs, but compatible in graphite-moderated, boiling-light-water-cooled pressure-tube reactors (e.g., RBMK, EGP-6, N-Reactor) and pool research reactors where both moderate neutrons."}
+{"id": "k476", "key": "contradiction", "reason": "Outdoor utility pole mounting and indoor floor-standing cabinet mounting are mutually exclusive relay mount styles."}
+{"id": "k477", "key": "compatible", "reason": "Two-pack acrylic polyurethane is the standard marine topside topcoat and is chemically both acrylic and polyurethane."}
+{"id": "k478", "key": "arguable", "reason": "Contradictory for a single tube segment, but compatible across a single boiler using TP304H in high-temperature finishing superheaters and T11 in economizer/waterwall banks."}
+{"id": "k479", "key": "arguable", "reason": "Contradictory for one casting, but compatible in a heavy-duty industrial gas turbine with a cast-iron cold-section compressor casing and an Inconel hot-section casing."}
+{"id": "k480", "key": "arguable", "reason": "Contradictory for a single tube segment, but compatible across a single boiler using T11 in waterwall/economizer banks and TP304H in high-temperature superheater banks."}
+{"id": "k481", "key": "arguable", "reason": "Contradictory for a single fluid, but compatible in an oil-injected compressor where oil cools the gas internally and ambient air cools the external intercooler."}
+{"id": "k482", "key": "arguable", "reason": "Contradictory for a single cooling loop, but compatible in a nitrogen-cooled turbine that uses lubricating oil to cool its shaft bearings."}
+{"id": "k483", "key": "arguable", "reason": "Contradictory as pure elements, but compatible in standard gold-nickel brazing alloys (e.g., AWS BAu-4, 82Au-18Ni)."}
+{"id": "k484", "key": "arguable", "reason": "Contradictory as pure single metals, but compatible in standard silver-palladium (AgPd) alloy relay contact platings."}
+{"id": "k485", "key": "arguable", "reason": "Contradictory for a single fluid loop, but compatible in a multi-stage ammonia compressor using water-cooled intercoolers together with liquid-ammonia flash desuperheating."}
+{"id": "k486", "key": "compatible", "reason": "A standard mechanical pump seal combines a carbon-graphite primary seal face with Teflon (PTFE) secondary seals, and graphite-filled PTFE is a standard composite seal material."}
+{"id": "k487", "key": "arguable", "reason": "Contradictory for LWRs, but compatible in pressure-tube graphite/light-water reactors (e.g., RBMK) and pool research reactors with graphite reflector/moderator elements where both moderate neutrons."}
+{"id": "k488", "key": "contradiction", "reason": "Geothermal ground-coupled heat rejection and open cooling-tower heat rejection are distinct chiller condenser configurations."}
+{"id": "k489", "key": "contradiction", "reason": "Aluminum low-temperature research cladding and Zircaloy power-reactor cladding do not coexist in one reactor."}
+{"id": "k490", "key": "arguable", "reason": "Contradictory for a single-fluid chiller circuit, but compatible in an industrial NH3/CO2 cascade chiller using ammonia in the high stage and carbon dioxide in the low stage."}
+{"id": "k491", "key": "compatible", "reason": "A standard mechanical pump seal combines a carbon-graphite primary seal face with nitrile (NBR) secondary O-rings."}
+{"id": "k492", "key": "arguable", "reason": "Contradictory as pure elements, but compatible in standard gold-copper brazing alloys (e.g., AWS BAu-1, BAu-3)."}
+{"id": "k493", "key": "compatible", "reason": "Turbines routinely use lubricating oil to cool bearings and water in lube-oil coolers, casing jackets, or generator stator cooling."}
+{"id": "k494", "key": "contradiction", "reason": "Silicone fluid and polyglycol (PAG) are distinct, unblended synthetic lubricant grades."}
+{"id": "k495", "key": "contradiction", "reason": "A burner latched in safety lockout cannot simultaneously be running a prepurge sequence."}
+{"id": "k496", "key": "arguable", "reason": "Contradictory as pure silica vs high-alumina bricks, but compatible in aluminosilicate (fireclay or mullite, 3Al2O3-2SiO2) furnace lining bricks."}
+{"id": "k497", "key": "contradiction", "reason": "Lightoff (ignition trial) begins only after prepurge has completed."}
+{"id": "k498", "key": "contradiction", "reason": "Magnox and Zircaloy fuel claddings belong to different reactor technologies and are not used together."}
+{"id": "k499", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Antwerp vs Gothenburg)."}
+{"id": "k500", "key": "contradiction", "reason": "Synthetic ester and silicone fluid are distinct, unblended turbine lubricant base stocks."}
+{"id": "k501", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Antwerp vs Bergen)."}
+{"id": "k502", "key": "contradiction", "reason": "240 VAC and 125 VDC are distinct nominal relay coil voltage ratings."}
+{"id": "k503", "key": "contradiction", "reason": "A 19-inch rack-mount relay unit and a floor-standing relay cabinet are distinct mount styles."}
+{"id": "k504", "key": "arguable", "reason": "Contradictory for a single tube segment, but compatible across a single boiler using T22 in lower-temperature superheater banks and T91 in high-temperature superheater banks."}
+{"id": "k505", "key": "contradiction", "reason": "A vessel holds a single IACS Polar Class notation and cannot be both PC5 and PC1."}
+{"id": "k506", "key": "compatible", "reason": "Standard composite oil-impregnated paper (OIP) transformer bushings have an oil-paper condenser core inside a silicone rubber weather housing."}
+{"id": "k507", "key": "contradiction", "reason": "Single-pack vinyl and two-pack epoxy are distinct marine topcoat classes."}
+{"id": "k508", "key": "contradiction", "reason": "Acidic silica brick and basic magnesia brick react chemically at high temperature and are alternative refractory classifications."}
+{"id": "k509", "key": "arguable", "reason": "Contradictory for a single fluid, but compatible in a multi-stage propane compressor using an air-cooled intercooler together with liquid-propane flash desuperheating."}
+{"id": "k510", "key": "contradiction", "reason": "A vessel cannot simultaneously have no ice class (noclass) and hold Polar Class PC3."}
+{"id": "k511", "key": "contradiction", "reason": "Silicone and polyurethane are distinct marine topcoat polymer classes."}
+{"id": "k512", "key": "arguable", "reason": "Contradictory for a single fuel pin, but compatible in a reactor core with Zircaloy fuel-rod cladding and Inconel control/absorber-rod cladding or fuel assembly grids."}
+{"id": "k513", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Bergen vs Gothenburg)."}
+{"id": "k514", "key": "arguable", "reason": "Contradictory for a single pure elastomer, but compatible in a PTFE-encapsulated Viton O-ring or a mechanical seal combining PTFE wedges with Viton O-rings."}
+{"id": "k515", "key": "arguable", "reason": "Contradictory for a single fuel pin, but compatible in a reactor core with Inconel control/absorber-rod cladding and Zircaloy fuel-rod cladding."}
+{"id": "k516", "key": "contradiction", "reason": "A vessel holds a single IACS Polar Class notation and cannot be both PC1 and PC3."}
+{"id": "k517", "key": "arguable", "reason": "Contradictory for a single monolithic alloy, but compatible in a T11 boiler waterwall tube protected by an Inconel 625 fireside weld overlay."}
+{"id": "k518", "key": "arguable", "reason": "Contradictory for a single coat, but compatible in an epoxy-polyurethane hybrid system or across a vessel's epoxy deck/hold topcoat and polyurethane superstructure topcoat."}
+{"id": "k519", "key": "compatible", "reason": "A high-performance mechanical pump seal combines a carbon-graphite primary seal face with Kalrez (FFKM) secondary O-rings."}
+{"id": "k520", "key": "arguable", "reason": "Contradictory as pure homopolymers, but compatible in a vinyl-acrylic copolymer marine topcoat."}
+{"id": "k521", "key": "arguable", "reason": "Contradictory if comparing bulk insulator housings, but compatible in a composite hollow-core bushing with a glass-fiber tube core and silicone rubber sheds."}
+{"id": "k522", "key": "contradiction", "reason": "Silicone fluid and polyalphaolefin (PAO) are immiscible, unblended turbine lubricant grades."}
+{"id": "k523", "key": "arguable", "reason": "Contradictory for closed-loop tower vs once-through river cooling, but compatible in riverside plants using a river-water makeup/helper cooling tower."}
+{"id": "k524", "key": "arguable", "reason": "Contradictory as pure single-oxide bricks, but compatible in magnesia-alumina spinel (MgAl2O4) refractory furnace lining bricks."}
+{"id": "k525", "key": "arguable", "reason": "Incompatible as distinct mounting catalog options, but compatible when a DIN-rail relay is clipped to a rail mounted on a wall."}
+{"id": "k526", "key": "arguable", "reason": "Contradictory as separate catalog headings, but compatible because industrial fluid couplings routinely integrate a flexible disc/elastomeric shaft coupling element."}
+{"id": "k527", "key": "contradiction", "reason": "Acidic silica brick and basic/neutral chromite brick are distinct refractory classifications."}
+{"id": "k528", "key": "contradiction", "reason": "A wall-mounted relay enclosure and a 19-inch rack-mounted relay unit have distinct mount styles."}
+{"id": "k529", "key": "arguable", "reason": "Contradictory for a single-fluid chiller circuit, but compatible in an isobutane/CO2 (R600a/R744) cascade chiller."}
+{"id": "k530", "key": "contradiction", "reason": "Chromite brick and acidic silica brick are distinct refractory classifications."}
+{"id": "k531", "key": "arguable", "reason": "Contradictory as pure single-oxide bricks, but compatible in zirconia-toughened alumina or fused-cast AZS (alumina-zirconia-silica) furnace lining bricks."}
+{"id": "k532", "key": "contradiction", "reason": "A transformer's HV winding cannot simultaneously be delta (Dyn11) and grounded wye (YNd1)."}
+{"id": "k533", "key": "arguable", "reason": "Contradictory for a single unclad tube, but compatible in a T22 boiler tube clad with an Inconel 625 weld overlay or across sections of the same boiler."}
+{"id": "k534", "key": "arguable", "reason": "In narrow HVACR usage an electronic expansion valve (EEV) contrasts with a constant-pressure automatic expansion valve (AEV), but functionally an EEV is an automatic expansion valve."}
+{"id": "k535", "key": "arguable", "reason": "Contradictory as separate catalog headings, but compatible because an eddy-current drive coupling is non-rigid and incorporates a flexible shaft coupling element."}
+{"id": "k536", "key": "arguable", "reason": "Contradictory for a single casting, but compatible in a gas turbine with a steel mid/rear casing and a titanium front compressor casing."}
+{"id": "k537", "key": "compatible", "reason": "Large utility turbo-generators routinely use combined hydrogen-water cooling (deionized water cooling the hollow stator bars and hydrogen gas cooling the rotor/core)."}
+{"id": "k538", "key": "arguable", "reason": "Contradictory as pure single gases, but compatible when purging or backfilling a vacuum/welding furnace with an argon-helium inert gas blend."}
+{"id": "k539", "key": "contradiction", "reason": "Carbon dioxide and helium are alternative furnace purge gases."}
+{"id": "k540", "key": "arguable", "reason": "Contradictory for a single-fluid chiller circuit, but compatible in a CO2/isobutane (R744/R600a) cascade chiller."}
+{"id": "k541", "key": "contradiction", "reason": "Heavy stationary cast-iron casings and lightweight aluminum casings belong to incompatible turbine classes."}
+{"id": "k542", "key": "arguable", "reason": "Contradictory for a single-fluid tank, but compatible in heavy-water moderated, boiling-light-water cooled reactors (e.g., CANDU-BLW, Fugen) or spectral-shift D2O/H2O reactors where both moderate neutrons."}
+{"id": "k543", "key": "contradiction", "reason": "Polyurethane and silicone are distinct marine topcoat polymer classes."}
+{"id": "k544", "key": "contradiction", "reason": "Nitrile (NBR) and Kalrez (FFKM) are mutually exclusive elastomer grades for a pump seal."}
+{"id": "k545", "key": "arguable", "reason": "Contradictory for a single fluid loop, but compatible in a hydrogen-cooled turbo-generator that uses oil for bearing cooling and hydrogen shaft-seal cooling."}
+{"id": "k546", "key": "compatible", "reason": "Magnesia-chromite (mag-chrome) brick is a standard co-sintered refractory furnace lining brick composed of both chromite and magnesia."}
+{"id": "k547", "key": "contradiction", "reason": "Polyalphaolefin (PAO) and polyglycol (PAG) turbine lubricants are chemically immiscible and incompatible."}
