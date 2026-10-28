@@ -1,6 +1,7 @@
 {
   "authored": [
     ".github/",
+    "certification/",
     "examples/",
     "root"
   ],
@@ -18,72 +19,29 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 13,
-      "changed": 23,
-      "moved": 0,
-      "parts": 4,
+      "added": 18,
+      "changed": 0,
+      "moved": 6,
+      "parts": 1,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "LICENSE is now read by tests/fixtures/rnd-licences-registry-fb27d76.json.",
+        "kind": "part",
+        "sentence": "certification is a new part, drawn from `certification/**`.",
         "subjects": [
-          "LICENSE",
-          "tests/fixtures/rnd-licences-registry-fb27d76.json"
+          "certification"
         ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "README.md is now also read by tests/fixtures/rnd-licences-registry-fb27d76.json.",
-        "subjects": [
-          "README.md",
-          "tests/fixtures/rnd-licences-registry-fb27d76.json"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "tests/fixtures/rnd-licences-registry-fb27d76.json is now read by tests/test_pilot_b_value_certification.py.",
-        "subjects": [
-          "tests/fixtures/rnd-licences-registry-fb27d76.json",
-          "tests/test_pilot_b_value_certification.py"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "certification/r3/FINDINGS.md is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "certification/r3/FINDINGS.md"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "certification/r3/README.md is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "certification/r3/README.md"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "certification/r3/manifest-r3.json is new and belongs to no part, so atlas check fails on it against the previous map.",
-        "subjects": [
-          "certification/r3/manifest-r3.json"
-        ]
-      },
-      {
-        "kind": "unassigned",
-        "sentence": "And 3 more new files that belong to no part.",
-        "subjects": []
       },
       {
         "kind": "counts",
-        "sentence": "13 files added and 23 changed content, across 4 parts.",
+        "sentence": "18 files added and 6 moved, across 1 part.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "ab7c07ce8592296dd52de8d334206d60ae9d4f77",
-      "generatedAt": "2026-10-26T02:31:50.134Z"
+      "commit": "a5d507c66796740fd56c0123ec881151bb5d1e60",
+      "generatedAt": "2026-10-28T12:50:19.757Z"
     },
     "unchanged": false
   },
@@ -91,7 +49,7 @@
     {
       "a": "src/reasoning_dataset_lab/pilot_b/value_certification.py",
       "b": "tests/test_pilot_b_value_certification.py",
-      "either": 5,
+      "either": 8,
       "partLabels": [
         "src",
         "tests"
@@ -101,12 +59,12 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 5
+      "shared": 8
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "tests/test_pilot_b_ollama_adapters.py",
-      "either": 7,
+      "either": 10,
       "partLabels": [
         "src",
         "tests"
@@ -116,27 +74,12 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 6
-    },
-    {
-      "a": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
-      "b": "tests/test_pilot_b_sealing_seed.py",
-      "either": 7,
-      "partLabels": [
-        "src",
-        "tests"
-      ],
-      "parts": [
-        "src",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 5
+      "shared": 9
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
-      "either": 10,
+      "either": 13,
       "partLabels": [
         "src",
         "src"
@@ -146,22 +89,37 @@
         "src"
       ],
       "relation": "inside",
+      "shared": 9
+    },
+    {
+      "a": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
+      "b": "tests/test_pilot_b_sealing_seed.py",
+      "either": 9,
+      "partLabels": [
+        "src",
+        "tests"
+      ],
+      "parts": [
+        "src",
+        "tests"
+      ],
+      "relation": "b-imports-a",
       "shared": 6
     },
     {
       "a": "src/reasoning_dataset_lab/cli.py",
-      "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
-      "either": 10,
+      "b": "tests/test_pilot_b_ollama_adapters.py",
+      "either": 11,
       "partLabels": [
         "src",
-        "src"
+        "tests"
       ],
       "parts": [
         "src",
-        "src"
+        "tests"
       ],
-      "relation": "inside",
-      "shared": 5
+      "relation": "b-imports-a",
+      "shared": 7
     }
   ],
   "changesTogetherNote": [
@@ -169,9 +127,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "dbd63dd5d5916824d31937274b469c89ec01b387",
+  "commit": "5faf81152641afccc7e0be5fbef817f2c6b4cb79",
   "defaultBranch": "main",
-  "derived": "5 parts, mostly Python (39 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
+  "derived": "6 parts, mostly Python (39 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -242,23 +200,24 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-28T08:52:03.724Z",
+  "generatedAt": "2026-10-28T17:08:45.323Z",
   "limits": [
     "7 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "7 reads use paths built at run time and are not named here.",
-    "14 writes and 36 reads go to a path their caller passes, not to this repository.",
-    "7 files belong to no part: certification/r3/FINDINGS.md, certification/r3/README.md, certification/r3/manifest-r3.json and 4 more.",
+    "15 writes and 42 reads go to a path their caller passes, not to this repository.",
+    "1 file belongs to no part: docs/calibration-2026-10-25.md.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
   "partLabels": {
     ".github": ".github",
+    "certification": "certification",
     "examples": "examples",
     "root": "the repository root",
     "src": "src",
     "tests": "tests"
   },
-  "parts": 5,
+  "parts": 6,
   "readers": [],
   "repo": "mcp-tool-shop-org/reasoning-dataset-lab",
   "sequences": [],
@@ -269,8 +228,7 @@
     "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
     "src/reasoning_dataset_lab/pilot_b/__init__.py",
     "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
-    "src/reasoning_dataset_lab/map.py",
-    "src/reasoning_dataset_lab/config.py"
+    "src/reasoning_dataset_lab/map.py"
   ],
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
   "summary": "reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints.",

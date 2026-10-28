@@ -1,0 +1,60 @@
+{"id": "x001", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 75% step and the 25% step."}
+{"id": "x002", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 46 and ISO VG 150."}
+{"id": "x003", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 0% step and the 75% step."}
+{"id": "x004", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 25% step and the 75% step."}
+{"id": "x005", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 68 and ISO VG 46."}
+{"id": "x006", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 25% step and the 50% step."}
+{"id": "x007", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 50% step and the 0% step."}
+{"id": "x008", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 150 and ISO VG 32."}
+{"id": "x009", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 75% step and the 50% step."}
+{"id": "x010", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 150 and ISO VG 68."}
+{"id": "x011", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 10°C and 8°C."}
+{"id": "x012", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 4°C and 12°C."}
+{"id": "x013", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 50% step and the 100% step."}
+{"id": "x014", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 32 and ISO VG 46."}
+{"id": "x015", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 4°C and 10°C."}
+{"id": "x016", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 68 and ISO VG 32."}
+{"id": "x017", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 32 and ISO VG 150."}
+{"id": "x018", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 12°C and 10°C."}
+{"id": "x019", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 25% step and the 100% step."}
+{"id": "x020", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 0% step and the 50% step."}
+{"id": "x021", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 100 and ISO VG 32."}
+{"id": "x022", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 75% step and the 100% step."}
+{"id": "x023", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 100% step and the 50% step."}
+{"id": "x024", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 12°C and 4°C."}
+{"id": "x025", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 4°C and 8°C."}
+{"id": "x026", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 10°C and 6°C."}
+{"id": "x027", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 50% step and the 25% step."}
+{"id": "x028", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 0% step and the 25% step."}
+{"id": "x029", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 100% step and the 75% step."}
+{"id": "x030", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 8°C and 12°C."}
+{"id": "x031", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 32 and ISO VG 68."}
+{"id": "x032", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 6°C and 8°C."}
+{"id": "x033", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 8°C and 10°C."}
+{"id": "x034", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 0% step and the 100% step."}
+{"id": "x035", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 10°C and 12°C."}
+{"id": "x036", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 68 and ISO VG 150."}
+{"id": "x037", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 8°C and 6°C."}
+{"id": "x038", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 6°C and 4°C."}
+{"id": "x039", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 6°C and 12°C."}
+{"id": "x040", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 46 and ISO VG 68."}
+{"id": "x041", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 12°C and 6°C."}
+{"id": "x042", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 150 and ISO VG 46."}
+{"id": "x043", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 10°C and 4°C."}
+{"id": "x044", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 100% step and the 25% step."}
+{"id": "x045", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 100% step and the 0% step."}
+{"id": "x046", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 46 and ISO VG 100."}
+{"id": "x047", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 68 and ISO VG 100."}
+{"id": "x048", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 4°C and 6°C."}
+{"id": "x049", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 100 and ISO VG 68."}
+{"id": "x050", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 50% step and the 75% step."}
+{"id": "x051", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 12°C and 8°C."}
+{"id": "x052", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 100 and ISO VG 46."}
+{"id": "x053", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 32 and ISO VG 100."}
+{"id": "x054", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 75% step and the 0% step."}
+{"id": "x055", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 46 and ISO VG 32."}
+{"id": "x056", "key": "contradiction", "reason": "A boiler's sole continuous blowdown valve cannot simultaneously be at the 25% step and the 0% step."}
+{"id": "x057", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 6°C and 10°C."}
+{"id": "x058", "key": "contradiction", "reason": "A chiller's leaving chilled-water temperature setpoint cannot simultaneously be 8°C and 4°C."}
+{"id": "x059", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 100 and ISO VG 150."}
+{"id": "x060", "key": "contradiction", "reason": "An unblended crankcase oil charge in a single compressor sump cannot simultaneously be ISO VG 150 and ISO VG 100."}

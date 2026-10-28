@@ -1,0 +1,1000 @@
+{"id": "v0001", "key": "contradiction", "reason": "A two-winding transformer has a single fixed winding connection and phase-shift vector group (ynd1 vs dyn11)."}
+{"id": "v0002", "key": "contradiction", "reason": "A coal boiler's furnace is built for one primary coal firing system (pulverized-coal burner vs cyclone barrel)."}
+{"id": "v0003", "key": "contradiction", "reason": "A control thermocouple has a single junction alloy pair and ISA/IEC letter calibration (type-k vs type-j)."}
+{"id": "v0004", "key": "contradiction", "reason": "A chiller condenser rejects heat to one configured heat-sink loop (cooling tower loop vs once-through river water)."}
+{"id": "v0005", "key": "contradiction", "reason": "A single-component furnace purge gas is one pure chemical element or compound (neon vs argon)."}
+{"id": "v0006", "key": "arguable", "reason": "A porcelain bushing is frequently coated with RTV silicone rubber (or fitted with silicone booster sheds), or a transformer has HV porcelain and LV silicone bushings on the same unit."}
+{"id": "v0007", "key": "contradiction", "reason": "A burner management controller is in one discrete sequence state at a time (pilot spark vs safety lockout)."}
+{"id": "v0008", "key": "contradiction", "reason": "A turbine generator casing is charged with one rotor cooling gas medium (nitrogen vs hydrogen)."}
+{"id": "v0009", "key": "contradiction", "reason": "The outermost contact surface plating of a relay is a single top metal layer (palladium vs silver)."}
+{"id": "v0010", "key": "contradiction", "reason": "A finishing superheater tube bank is fabricated from a designated ASME tube alloy grade (TP304H austenitic stainless vs T11 low-alloy steel)."}
+{"id": "v0011", "key": "contradiction", "reason": "A monolithic turbine casing is cast or forged from a single base alloy (titanium vs cast iron)."}
+{"id": "v0012", "key": "contradiction", "reason": "A control thermocouple has one thermoelectric alloy calibration (type-j vs type-n)."}
+{"id": "v0013", "key": "contradiction", "reason": "The drive-end radial bearing of a pump shaft is a single bearing design (hydrostatic pocket bearing vs deep-groove ball bearing)."}
+{"id": "v0014", "key": "contradiction", "reason": "A turbine cannot be on slow turning gear and synchronized online at power simultaneously."}
+{"id": "v0015", "key": "contradiction", "reason": "A turbine rotor is either coasting down unpowered or engaged on the motor-driven turning gear, not both at once."}
+{"id": "v0016", "key": "contradiction", "reason": "A stepped damper actuator is at one discrete opening position at a time (25% vs 100%)."}
+{"id": "v0017", "key": "contradiction", "reason": "A monolithic turbine casing is made of one continuous metal alloy (Inconel vs titanium)."}
+{"id": "v0018", "key": "arguable", "reason": "A turbine governor with cascaded or multi-loop control can regulate exhaust backpressure while its speed loop is configured as isochronous, or 'governor control mode' can mean the single active primary control loop."}
+{"id": "v0019", "key": "contradiction", "reason": "A pump-to-driver shaft coupling is one mechanical coupling assembly (elastomeric jaw vs metallic disc)."}
+{"id": "v0020", "key": "arguable", "reason": "Furnace walls use rotary/deslagger blowers or sonic horns, and a boiler furnace wall can have both acoustic sonic horns and fixed rotary sootblowers installed unless referring to a single sootblower unit."}
+{"id": "v0021", "key": "contradiction", "reason": "A bushing weather shed is made of one insulating material (cycloaliphatic epoxy vs borosilicate glass)."}
+{"id": "v0022", "key": "contradiction", "reason": "A pump's drive-end radial bearing position holds one bearing type (deep-groove ball vs hydrostatic pocket)."}
+{"id": "v0023", "key": "contradiction", "reason": "A chiller's condenser heat rejection is either once-through river water or direct air-cooled, not both."}
+{"id": "v0024", "key": "contradiction", "reason": "A bushing weather shed is fabricated from one material (PTFE vs borosilicate glass)."}
+{"id": "v0025", "key": "arguable", "reason": "A backpressure turbine synchronized to a grid operates with speed droop while its pressure regulator controls exhaust backpressure, so both can describe the governor unless restricted to the active limiting loop."}
+{"id": "v0026", "key": "contradiction", "reason": "A pump's drive-end radial bearing is one bearing technology (active magnetic bearing vs cylindrical roller bearing)."}
+{"id": "v0027", "key": "arguable", "reason": "A DIN-rail relay is routinely mounted on a DIN rail inside a floor cabinet, making both true if 'enclosure' refers to the outer switchgear cabinet versus the relay housing itself."}
+{"id": "v0028", "key": "arguable", "reason": "A transformer can have silicone rubber HV outdoor bushings and cycloaliphatic epoxy LV/indoor bushings on the same unit, or silicone booster sheds fitted onto an epoxy bushing."}
+{"id": "v0029", "key": "contradiction", "reason": "An unblended lubricating base oil consists of a single chemical base stock class (silicone vs polyalphaolefin)."}
+{"id": "v0030", "key": "contradiction", "reason": "A turbine governor cannot be on fixed manual throttle and automatic inlet-pressure regulation at the same time."}
+{"id": "v0031", "key": "arguable", "reason": "A porcelain bushing is often coated with RTV silicone rubber (or fitted with silicone booster sheds), or a transformer has HV porcelain and LV silicone bushings, though a single un-coated shed body is one material."}
+{"id": "v0032", "key": "contradiction", "reason": "A drawout circuit breaker carriage is in one physical racked position at a time (completely removed from cell vs racked into service)."}
+{"id": "v0033", "key": "contradiction", "reason": "A chiller condenser rejects heat to one sink architecture (once-through seawater vs closed geothermal ground loop)."}
+{"id": "v0034", "key": "arguable", "reason": "A DIN-rail mounted relay can be installed on a DIN rail adapter bracket inside a 19-inch rack frame, though as a native device form factor they are distinct."}
+{"id": "v0035", "key": "contradiction", "reason": "A pump's drive-end radial bearing is a single bearing type (hydrostatic pocket vs cylindrical roller)."}
+{"id": "v0036", "key": "contradiction", "reason": "An unblended dielectric fluid is a single base fluid chemistry (paraffinic mineral oil vs polybutene)."}
+{"id": "v0037", "key": "contradiction", "reason": "A chiller refrigerant expansion metering device is one valve mechanism (float valve vs thermostatic expansion valve)."}
+{"id": "v0038", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one material-transport design (walking beam vs roller hearth)."}
+{"id": "v0039", "key": "contradiction", "reason": "A reactor primary loop is in one plant operational thermal mode at a time (cold shutdown vs hot standby)."}
+{"id": "v0040", "key": "contradiction", "reason": "A compressor is in one operational state at a time (running unloaded/idling vs pre-start prelubricating)."}
+{"id": "v0041", "key": "contradiction", "reason": "A generator rotor is cooled by one fill gas at a time (hydrogen vs argon)."}
+{"id": "v0042", "key": "contradiction", "reason": "A reactor's driver fuel cladding is fabricated from one designated alloy (Magnox magnesium alloy vs Inconel)."}
+{"id": "v0043", "key": "contradiction", "reason": "A single-layer compressor rotor coating consists of one coating material (aluminide vs diamond-like carbon)."}
+{"id": "v0044", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one pure gas medium (helium vs argon)."}
+{"id": "v0045", "key": "contradiction", "reason": "A turbine governor cannot be on fixed manual throttle and automatic isochronous speed control simultaneously."}
+{"id": "v0046", "key": "contradiction", "reason": "A single-component furnace purge gas has only one gas constituent (argon vs nitrogen)."}
+{"id": "v0047", "key": "contradiction", "reason": "The outermost plating layer on a relay contact is one metal (silver vs palladium)."}
+{"id": "v0048", "key": "contradiction", "reason": "The outermost contact plating metal is a single surface layer (gold vs palladium)."}
+{"id": "v0049", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is a single prime mover technology (steam turbine/engine vs diesel engine)."}
+{"id": "v0050", "key": "arguable", "reason": "A pump has multiple seals (shaft O-rings, bearing housing lip seals, casing gaskets) that often use different elastomers like Viton and nitrile simultaneously, unless 'seal material' means a single primary mechanical seal elastomer."}
+{"id": "v0051", "key": "contradiction", "reason": "A reactor's primary core moderator is one bulk moderating material (graphite vs zirconium hydride)."}
+{"id": "v0052", "key": "contradiction", "reason": "A monolithic turbine casing is made of one alloy (titanium vs Inconel)."}
+{"id": "v0053", "key": "contradiction", "reason": "A generator rotor cooling gas is one gas medium (nitrogen vs helium)."}
+{"id": "v0054", "key": "contradiction", "reason": "A pump is either spinning down after trip/stop (coasting down) or stationary ready for start (standby), not both."}
+{"id": "v0055", "key": "contradiction", "reason": "A vessel holds one assigned IACS Polar Class notation (PC1 vs PC3)."}
+{"id": "v0056", "key": "contradiction", "reason": "A two-winding transformer has one winding connection and phase displacement group (ynd1 vs dd0)."}
+{"id": "v0057", "key": "contradiction", "reason": "A single-oxide hot-face refractory brick is composed of one pure oxide ceramic (pure alumina vs pure chromia)."}
+{"id": "v0058", "key": "contradiction", "reason": "A single-oxide hot-face brick is a single pure oxide refractory (pure silica vs pure chromia)."}
+{"id": "v0059", "key": "contradiction", "reason": "An unblended turbine base oil is a single chemical base stock (mineral oil vs polyglycol)."}
+{"id": "v0060", "key": "contradiction", "reason": "A single-component purge gas is one pure gas species (argon vs krypton)."}
+{"id": "v0061", "key": "contradiction", "reason": "A reactor's primary core moderator is one moderator substance (heavy water vs zirconium hydride)."}
+{"id": "v0062", "key": "contradiction", "reason": "A boiler's coal firing system is one combustion architecture (traveling grate stoker vs cyclone barrel)."}
+{"id": "v0063", "key": "contradiction", "reason": "A finishing superheater tube alloy specification is one alloy grade (T91 vs T11)."}
+{"id": "v0064", "key": "contradiction", "reason": "A vessel is either ice-strengthened to Polar Class PC7 or has no ice class (noclass), not both."}
+{"id": "v0065", "key": "contradiction", "reason": "A chiller refrigerant metering device is one expansion mechanism (electronic stepper/pulse valve vs mechanical float valve)."}
+{"id": "v0066", "key": "contradiction", "reason": "A boiler's sole internal drum treatment chemical can only be one compound when specified as the sole treatment (trisodium phosphate vs sodium hydroxide)."}
+{"id": "v0067", "key": "contradiction", "reason": "A single-rated relay coil has one nominal operating voltage rating (240 VAC vs 120 VAC)."}
+{"id": "v0068", "key": "contradiction", "reason": "A chiller circuit cannot be evacuating refrigerant into the condenser (pumpdown) and actively chilling at the same time."}
+{"id": "v0069", "key": "contradiction", "reason": "A reactor primary loop cannot be at full thermal power and at zero-power hot standby simultaneously."}
+{"id": "v0070", "key": "contradiction", "reason": "A single-rated relay coil is wound and rated for one supply voltage and current type (48 VDC vs 120 VAC)."}
+{"id": "v0071", "key": "arguable", "reason": "A transformer can have cycloaliphatic epoxy LV/indoor bushings and silicone rubber HV outdoor bushings on the same unit, or silicone booster sheds on an epoxy bushing."}
+{"id": "v0072", "key": "contradiction", "reason": "A burner sequence is in one step at a time (post-shutdown postpurge vs pre-ignition pilot spark)."}
+{"id": "v0073", "key": "contradiction", "reason": "A turbine governor cannot be on manual fixed throttle and automatic exhaust backpressure control at the same time."}
+{"id": "v0074", "key": "contradiction", "reason": "Furnace waterwall sootblowers are short-stroke wall deslaggers whereas long retractable lance blowers are used in high-temperature pendant tube banks, or a single blower unit cannot be both."}
+{"id": "v0075", "key": "contradiction", "reason": "A finishing superheater tube bank alloy is a single specified stainless grade (TP304H vs TP347H)."}
+{"id": "v0076", "key": "contradiction", "reason": "A refrigerant metering device is either an electronic expansion valve or a bulb-driven thermostatic expansion valve, not both."}
+{"id": "v0077", "key": "contradiction", "reason": "A reactor primary loop is in one discrete operating mode (isothermal hot standby vs transient heatup)."}
+{"id": "v0078", "key": "contradiction", "reason": "A bushing weather shed is molded from one polymer (silicone rubber vs PTFE)."}
+{"id": "v0079", "key": "contradiction", "reason": "A pump shaft coupling is one coupling type (hydrokinetic fluid coupling vs elastomeric jaw coupling)."}
+{"id": "v0080", "key": "arguable", "reason": "Hydraulic and pneumatic compressor unloader actuators routinely include a manual handwheel override for startup or failure positioning, so a hydraulic actuator with an integral handwheel could be described as both."}
+{"id": "v0081", "key": "contradiction", "reason": "A merchant vessel has a single legal port of registry on its certificate of registry (Rotterdam vs Gothenburg)."}
+{"id": "v0082", "key": "contradiction", "reason": "An unblended base oil consists of one chemical base stock (polyalphaolefin vs synthetic ester)."}
+{"id": "v0083", "key": "contradiction", "reason": "A chiller circuit is either resting de-energized in idle or actively executing a refrigerant pumpdown sequence."}
+{"id": "v0084", "key": "contradiction", "reason": "A pump drive coupling is either a bolted rigid flange or a hydrodynamic fluid coupling, not both."}
+{"id": "v0085", "key": "contradiction", "reason": "A compressor is either stopped with its prelubrication pump running (prelubricating) or running unloaded (idling)."}
+{"id": "v0086", "key": "contradiction", "reason": "A sootblower unit is either a long retractable rotating lance or a non-rotating fixed rake blower, not both."}
+{"id": "v0087", "key": "contradiction", "reason": "A vessel has only one official port of registry at a time (Antwerp vs Hamburg)."}
+{"id": "v0088", "key": "arguable", "reason": "A pneumatic unloader actuator is frequently equipped with a manual handwheel jackscrew override, making both true if one statement names the power actuator and the other the manual drive."}
+{"id": "v0089", "key": "contradiction", "reason": "A chiller circuit cannot be pumping down refrigerant to stop and prelubricating for startup at the same instant."}
+{"id": "v0090", "key": "contradiction", "reason": "When a boiler uses a sole internal drum treatment chemical, it cannot be both EDTA chelant and polyacrylate dispersant."}
+{"id": "v0091", "key": "contradiction", "reason": "A two-winding transformer has one vector group designation (yzn11 zigzag-star vs dyn11 delta-star)."}
+{"id": "v0092", "key": "contradiction", "reason": "A refrigerant metering device is either an adjustable constant-pressure expansion valve or a non-adjustable fixed orifice."}
+{"id": "v0093", "key": "contradiction", "reason": "A nuclear reactor primary coolant is one fluid medium (liquid lead-bismuth eutectic vs carbon dioxide gas)."}
+{"id": "v0094", "key": "contradiction", "reason": "A transformer tap changer is set to one discrete tap step at a time (-2 vs +1)."}
+{"id": "v0095", "key": "arguable", "reason": "Small horizontal process pumps can combine a NEMA C-face motor adapter flange with centerline casing support lugs on pedestals, though standard API centerline pumps use foot-mounted motors."}
+{"id": "v0096", "key": "contradiction", "reason": "A damper actuator is positioned at one opening step at a time (25% vs 50%)."}
+{"id": "v0097", "key": "arguable", "reason": "A pump assembly contains multiple seals (e.g., a Kalrez mechanical seal O-ring and nitrile bearing housing seals), unless 'seal material' refers strictly to a single primary shaft seal."}
+{"id": "v0098", "key": "contradiction", "reason": "A compressor's process gas shaft seal is one seal design (braided packed gland vs segmented carbon ring seal)."}
+{"id": "v0099", "key": "contradiction", "reason": "A monolithic turbine casing is cast or forged from a single metal (steel vs aluminum)."}
+{"id": "v0100", "key": "contradiction", "reason": "A compressor is either compressing gas under load (loaded) or running unloaded (idling), not both."}
+{"id": "v0101", "key": "contradiction", "reason": "A single-oxide hot-face refractory brick is made of one pure oxide (pure silica vs pure magnesia)."}
+{"id": "v0102", "key": "arguable", "reason": "A boiler can have both steam/air fixed rake sootblowers and acoustic sonic horns installed on its walls, though a single sootblower device is one or the other."}
+{"id": "v0103", "key": "contradiction", "reason": "A coal boiler is fired by either suspension pulverized-coal burners or a mechanical traveling grate stoker."}
+{"id": "v0104", "key": "arguable", "reason": "Different seals within the same pump (gaskets, O-rings, bearing isolators) can be neoprene and nitrile simultaneously unless restricted to a single designated seal ring."}
+{"id": "v0105", "key": "arguable", "reason": "A flush-panel relay is commonly mounted flush in the door of a floor-standing relay cabinet, so both apply if one describes the relay bezel mount and the other the outer cabinet."}
+{"id": "v0106", "key": "contradiction", "reason": "The drive-end radial bearing of a pump is one bearing element (cylindrical roller vs deep-groove ball)."}
+{"id": "v0107", "key": "arguable", "reason": "A DIN-rail relay is often clipped onto a DIN rail inside a surface-mounted wall box, making both compatible if one refers to the relay clip and the other to the enclosure."}
+{"id": "v0108", "key": "contradiction", "reason": "A pump shaft coupling is one transmission device (mechanical elastomeric jaw vs electromagnetic eddy-current drive)."}
+{"id": "v0109", "key": "contradiction", "reason": "An enclosure is mounted either recessed flush into a panel cutout or bolted on the exterior surface of a wall, not both."}
+{"id": "v0110", "key": "contradiction", "reason": "An unblended base oil is a single synthetic chemical family (polyglycol vs ester)."}
+{"id": "v0111", "key": "contradiction", "reason": "A chiller circuit cannot be actively chilling water and pumping down its refrigerant charge for shutdown at the same time."}
+{"id": "v0112", "key": "contradiction", "reason": "A single-circuit chiller charged with a pure refrigerant contains one refrigerant fluid (R-134a vs isobutane)."}
+{"id": "v0113", "key": "arguable", "reason": "Ships moored Mediterranean-style or alongside a berth in a current/wind frequently keep an anchor deployed while moored alongside, though AIS navigational status allows only one code."}
+{"id": "v0114", "key": "contradiction", "reason": "A monolithic turbine casing is a single alloy casting or forging (titanium vs aluminum)."}
+{"id": "v0115", "key": "contradiction", "reason": "A compressor intercooler's coolant tubes circulate one cooling fluid (mineral oil vs silicone fluid)."}
+{"id": "v0116", "key": "contradiction", "reason": "A single-component furnace purge gas is one pure noble gas (krypton vs argon)."}
+{"id": "v0117", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport system (rotary hearth table vs rail-mounted car bottom)."}
+{"id": "v0118", "key": "contradiction", "reason": "A turbine is either latched and ready to start (standby) or unlatched in a protective shutdown state (tripped)."}
+{"id": "v0119", "key": "contradiction", "reason": "A compressor shaft seal is either a contact braided packed gland or a non-contact/bristle brush seal."}
+{"id": "v0120", "key": "contradiction", "reason": "An electrical unloader actuator is driven by either a discrete two-position solenoid coil or a multi-step stepper motor."}
+{"id": "v0121", "key": "contradiction", "reason": "A ship carries one assigned IACS Polar Class level (PC1 vs PC7)."}
+{"id": "v0122", "key": "contradiction", "reason": "A boiler's sole internal drum treatment chemical is a single additive (polyacrylate vs nitrilotriacetic acid NTA)."}
+{"id": "v0123", "key": "contradiction", "reason": "A gas-cooled reactor uses one primary coolant gas (helium vs carbon dioxide)."}
+{"id": "v0124", "key": "contradiction", "reason": "A single-oxide hot-face refractory brick consists of one pure oxide (pure chromia vs pure magnesia)."}
+{"id": "v0125", "key": "contradiction", "reason": "A burner controller must complete the air prepurge step before energizing the pilot spark step."}
+{"id": "v0126", "key": "contradiction", "reason": "A chiller condenser rejects heat either via a water-cooled cooling tower loop or by direct air cooling."}
+{"id": "v0127", "key": "contradiction", "reason": "A liquid-metal reactor uses one primary liquid metal coolant (liquid sodium vs lead-bismuth eutectic)."}
+{"id": "v0128", "key": "arguable", "reason": "Hybrid geothermal heat-rejection systems pair a closed ground loop with a supplemental cooling tower on the same condenser loop, though a standard single-sink chiller uses one or the other."}
+{"id": "v0129", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (75% vs 25%)."}
+{"id": "v0130", "key": "contradiction", "reason": "A chiller circuit is either dormant in idle or actively running its oil pump in prelubricating mode prior to compressor start."}
+{"id": "v0131", "key": "contradiction", "reason": "A reactor's driver fuel elements are clad in one alloy (Magnox vs Zircaloy)."}
+{"id": "v0132", "key": "contradiction", "reason": "A relay enclosure carrying a sole NEMA rating has only one rating (NEMA 3R outdoor rainproof vs NEMA 12 indoor dust-tight)."}
+{"id": "v0133", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant charge (propane R-290 vs isobutane R-600a)."}
+{"id": "v0134", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (platinum vs silver)."}
+{"id": "v0135", "key": "contradiction", "reason": "An unblended base oil is one synthetic fluid family (ester vs polyglycol)."}
+{"id": "v0136", "key": "contradiction", "reason": "An evaporator's brazed joints use one AWS brazing filler metal classification compatible with its base metal (BNi nickel filler for stainless vs BAlSi aluminum-silicon filler for aluminum)."}
+{"id": "v0137", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating is rated for one class (NEMA 4X corrosion-resistant hose-down vs NEMA 7 hazardous gas explosion-proof)."}
+{"id": "v0138", "key": "contradiction", "reason": "A vessel has one legal home port of registry at a time (Gothenburg vs Hamburg)."}
+{"id": "v0139", "key": "contradiction", "reason": "A single-oxide hot-face brick consists of one pure ceramic oxide (pure zirconia vs pure magnesia)."}
+{"id": "v0140", "key": "contradiction", "reason": "A single-circuit chiller is designed and charged for one refrigerant (high-pressure carbon dioxide R-744 vs propane R-290)."}
+{"id": "v0141", "key": "contradiction", "reason": "A refrigerant metering device is either a modulating electronic expansion valve or a fixed-geometry orifice."}
+{"id": "v0142", "key": "arguable", "reason": "A pump can use a NEMA C-face motor adapter flange while its casing is centerline-supported on pedestals, though normally these are distinct mounting classes."}
+{"id": "v0143", "key": "contradiction", "reason": "A generator rotor is cooled by one gas fill in operation (hydrogen vs nitrogen)."}
+{"id": "v0144", "key": "contradiction", "reason": "A reactor primary loop is either fueled and filled in cold shutdown or completely defueled and drained."}
+{"id": "v0145", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one gas species (nitrogen vs carbon dioxide)."}
+{"id": "v0146", "key": "contradiction", "reason": "A chiller metering device is either a liquid-level float valve or an evaporator-pressure-regulating constant-pressure valve."}
+{"id": "v0147", "key": "contradiction", "reason": "A pump shaft coupling is either a flexible metallic disc pack or a hydrokinetic fluid coupling."}
+{"id": "v0148", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (pusher tray vs walking beam)."}
+{"id": "v0149", "key": "arguable", "reason": "A boiler can have both acoustic sonic horns and long retractable sootblowers installed on its walls, though a single sootblower device can only be one type."}
+{"id": "v0150", "key": "contradiction", "reason": "A bushing weather shed is made of one insulating material (silicone rubber vs borosilicate glass)."}
+{"id": "v0151", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (Zircaloy vs 316 stainless steel)."}
+{"id": "v0152", "key": "contradiction", "reason": "A vessel superstructure's homopolymer finish topcoat is one polymer resin class (alkyd vs pure epoxy)."}
+{"id": "v0153", "key": "contradiction", "reason": "A refrigerant metering device is either a controller-driven electronic expansion valve or a self-acting constant-pressure expansion valve."}
+{"id": "v0154", "key": "contradiction", "reason": "A finishing superheater tube bank is made of one specified alloy (TP304H stainless vs T22 low-alloy steel)."}
+{"id": "v0155", "key": "contradiction", "reason": "A monolithic turbine casing is cast from a single metal (cast iron vs aluminum)."}
+{"id": "v0156", "key": "contradiction", "reason": "A control thermocouple has one calibration type (noble-metal Type S vs base-metal Type J)."}
+{"id": "v0157", "key": "contradiction", "reason": "A single-rated relay coil has one nominal DC voltage rating (24 VDC vs 48 VDC)."}
+{"id": "v0158", "key": "contradiction", "reason": "An AIS transceiver reports one navigational status code at a time (not under command vs aground)."}
+{"id": "v0159", "key": "contradiction", "reason": "A relay enclosure is mounted either on the exterior surface of a wall or recessed flush into a panel cutout."}
+{"id": "v0160", "key": "contradiction", "reason": "A furnace with a sole hearth conveyor mechanism uses one transport type (car bottom vs walking beam)."}
+{"id": "v0161", "key": "contradiction", "reason": "A reactor primary coolant is one gas species (carbon dioxide vs helium)."}
+{"id": "v0162", "key": "contradiction", "reason": "A vessel is registered in one home port at a time (Gothenburg vs Antwerp)."}
+{"id": "v0163", "key": "contradiction", "reason": "A transformer tap changer is on one discrete tap step at a time (+1 vs +2)."}
+{"id": "v0164", "key": "contradiction", "reason": "A nuclear reactor primary coolant is one fluid (liquid sodium vs water)."}
+{"id": "v0165", "key": "contradiction", "reason": "The outermost contact plating metal is a single top layer (silver vs gold), even if one is used as an underplate beneath the other."}
+{"id": "v0166", "key": "contradiction", "reason": "A monolithic cask gamma shield is made of one bulk metal or material (steel vs tungsten)."}
+{"id": "v0167", "key": "contradiction", "reason": "A generator rotor cooling gas is one gas fill (argon vs hydrogen)."}
+{"id": "v0168", "key": "arguable", "reason": "A pump can use Kalrez perfluoroelastomer in its mechanical shaft seal and nitrile rubber in its bearing housing or casing seals, unless 'seal material' denotes a single primary seal."}
+{"id": "v0169", "key": "contradiction", "reason": "A vessel has one assigned Polar Class notation (PC3 vs PC7)."}
+{"id": "v0170", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (316 stainless steel vs Inconel)."}
+{"id": "v0171", "key": "contradiction", "reason": "A coal boiler uses one primary coal firing system (underfeed retort stoker vs pulverized-coal burner)."}
+{"id": "v0172", "key": "contradiction", "reason": "A single-component furnace purge gas is one pure noble gas (helium vs neon)."}
+{"id": "v0173", "key": "contradiction", "reason": "A pump cannot be decelerating unpowered (coasting down) and accelerating under motor power (starting) simultaneously."}
+{"id": "v0174", "key": "contradiction", "reason": "An unblended base oil is one pure chemical base stock (polyglycol vs polyalphaolefin)."}
+{"id": "v0175", "key": "contradiction", "reason": "A chiller condenser rejects heat either directly to ambient air or to a once-through seawater loop."}
+{"id": "v0176", "key": "contradiction", "reason": "A furnace wall sootblower is either a rotating wall deslagger nozzle or a non-rotating multi-nozzle fixed rake."}
+{"id": "v0177", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (isobutane R-600a vs carbon dioxide R-744)."}
+{"id": "v0178", "key": "contradiction", "reason": "The outermost plating layer of a relay contact is one metal (silver vs rhodium)."}
+{"id": "v0179", "key": "contradiction", "reason": "A vessel holds one Polar Class rating (PC5 vs PC7)."}
+{"id": "v0180", "key": "arguable", "reason": "Immediately after a protection trip, a turbine is both in the latched 'tripped' state and physically 'coasting' down in speed for tens of minutes."}
+{"id": "v0181", "key": "contradiction", "reason": "A single-circuit chiller contains one refrigerant fluid (propane vs carbon dioxide)."}
+{"id": "v0182", "key": "contradiction", "reason": "A turbine cannot be tripped offline and synchronized online generating power simultaneously."}
+{"id": "v0183", "key": "contradiction", "reason": "A boiler's sole internal drum treatment chemical is a single compound (trisodium phosphate vs NTA)."}
+{"id": "v0184", "key": "arguable", "reason": "A pump often uses nitrile for bearing-housing oil seals and Viton for wetted process O-rings at the same time, unless referring to a single seal element."}
+{"id": "v0185", "key": "contradiction", "reason": "A single-oxide hot-face brick is composed of one pure oxide (pure alumina vs pure zirconia)."}
+{"id": "v0186", "key": "contradiction", "reason": "An intercooler tube bundle circulates one coolant medium (demineralized water vs mineral oil)."}
+{"id": "v0187", "key": "contradiction", "reason": "An intercooler tube coolant is one liquid medium (demineralized water vs silicone fluid)."}
+{"id": "v0188", "key": "contradiction", "reason": "A single-component purge gas consists of one pure gas (krypton vs neon)."}
+{"id": "v0189", "key": "contradiction", "reason": "A liquid-metal reactor primary loop uses one liquid metal coolant (lead-bismuth vs sodium)."}
+{"id": "v0190", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (nominal vs -2)."}
+{"id": "v0191", "key": "contradiction", "reason": "A relay enclosure with a sole NEMA rating carries one rating (NEMA 4X vs NEMA 9 hazardous dust)."}
+{"id": "v0192", "key": "contradiction", "reason": "A relay enclosure with a sole NEMA rating is certified to one rating (NEMA 9 vs NEMA 12)."}
+{"id": "v0193", "key": "contradiction", "reason": "A compressor shaft seal is either a non-contacting dry gas face seal or a contacting braided packed gland."}
+{"id": "v0194", "key": "arguable", "reason": "A multi-variable turbine governor can hold speed in isochronous mode on an isolated bus while an inlet-pressure limiter/controller is active, or 'governor control mode' can mean the single active control loop."}
+{"id": "v0195", "key": "contradiction", "reason": "A vessel has one legal port of registry (Rotterdam vs Antwerp)."}
+{"id": "v0196", "key": "contradiction", "reason": "A chiller condenser is cooled either by once-through seawater or directly by ambient air."}
+{"id": "v0197", "key": "contradiction", "reason": "An electrical unloader actuator is driven either by a stepper motor or by an on/off solenoid coil."}
+{"id": "v0198", "key": "contradiction", "reason": "An intercooler's tubes carry one coolant fluid (ambient air vs demineralized water)."}
+{"id": "v0199", "key": "contradiction", "reason": "A pump cannot be electrically locked out and actively starting at the same time."}
+{"id": "v0200", "key": "contradiction", "reason": "A transformer's main magnetic core is constructed from one magnetic material class (ceramic ferrite vs amorphous metal ribbon)."}
+{"id": "v0201", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BCuP copper-phosphorus vs BAu gold filler)."}
+{"id": "v0202", "key": "arguable", "reason": "A compressor shaft seal assembly can combine an inner labyrinth tooth section with an outer packed gland (or vice versa), though as primary seal classifications they are distinct."}
+{"id": "v0203", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (helium gas vs liquid lead-bismuth)."}
+{"id": "v0204", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (rotary table vs roller hearth)."}
+{"id": "v0205", "key": "contradiction", "reason": "A reactor's primary core moderator is one bulk moderator material (graphite vs beryllium)."}
+{"id": "v0206", "key": "arguable", "reason": "Pneumatic unloader actuators are almost universally piloted by an electro-pneumatic solenoid valve, so a solenoid-piloted pneumatic actuator is routinely described as both."}
+{"id": "v0207", "key": "arguable", "reason": "If an operator or protection relay engages lockout immediately upon tripping a running pump, the pump is simultaneously locked out electrically and coasting down mechanically."}
+{"id": "v0208", "key": "contradiction", "reason": "A drawout breaker cannot be in the disconnected position and the connected service position simultaneously."}
+{"id": "v0209", "key": "contradiction", "reason": "A chiller condenser rejects heat either via once-through seawater or via a recirculating cooling tower loop."}
+{"id": "v0210", "key": "arguable", "reason": "Research and test reactors (such as ATR or MTR types) use light water as the primary coolant/moderator alongside a beryllium reflector/moderator block in the core, though one is typically designated primary."}
+{"id": "v0211", "key": "contradiction", "reason": "A monolithic cask shield body is fabricated from a single material (tungsten vs steel)."}
+{"id": "v0212", "key": "contradiction", "reason": "A finishing superheater tube bank is specified as one alloy grade (T11 vs T91)."}
+{"id": "v0213", "key": "contradiction", "reason": "A turbine cannot be offline in standby and synchronized online at power at the same time."}
+{"id": "v0214", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (base-metal Type K vs platinum-rhodium Type R)."}
+{"id": "v0215", "key": "contradiction", "reason": "An intercooler tube bundle carries one cooling medium (ambient air vs mineral oil)."}
+{"id": "v0216", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating has one rating (NEMA 12 vs NEMA 3R)."}
+{"id": "v0217", "key": "contradiction", "reason": "A pump shaft coupling is one coupling mechanism (elastomeric jaw vs fluid coupling)."}
+{"id": "v0218", "key": "contradiction", "reason": "A superstructure homopolymer finish coat is one polymer resin chemistry (pure epoxy vs alkyd)."}
+{"id": "v0219", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (120 VAC vs 24 VDC)."}
+{"id": "v0220", "key": "contradiction", "reason": "An unblended base oil is one pure synthetic base stock (ester vs polyalphaolefin)."}
+{"id": "v0221", "key": "contradiction", "reason": "A reactor primary loop cannot be defueled and drained while at pressurized hot standby."}
+{"id": "v0222", "key": "contradiction", "reason": "An unblended base oil is one base fluid type (mineral oil vs silicone oil)."}
+{"id": "v0223", "key": "contradiction", "reason": "An evaporator is brazed with one filler metal family (BNi high-temp nickel vs BCuP copper-phosphorus)."}
+{"id": "v0224", "key": "arguable", "reason": "A pump can have a Kalrez mechanical seal O-ring and Viton casing or bearing housing seals simultaneously, unless 'seal material' refers to a single specified seal."}
+{"id": "v0225", "key": "contradiction", "reason": "A two-winding transformer has one vector group (yzn11 vs dd0)."}
+{"id": "v0226", "key": "contradiction", "reason": "A single-component purge gas is one pure noble gas (neon vs krypton)."}
+{"id": "v0227", "key": "contradiction", "reason": "A turbine governor is either actively regulating speed with droop or locked on fixed manual throttle, not both."}
+{"id": "v0228", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure refractory oxide (pure zirconia vs pure alumina)."}
+{"id": "v0229", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical additive (NTA chelant vs trisodium phosphate)."}
+{"id": "v0230", "key": "contradiction", "reason": "A burner controller cannot be actively running the air prepurge timer and halted in safety lockout at the same time."}
+{"id": "v0231", "key": "contradiction", "reason": "A monolithic turbine casing is made of one alloy (titanium vs steel)."}
+{"id": "v0232", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (R-134a vs carbon dioxide)."}
+{"id": "v0233", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified ferritic/martensitic alloy (T22 vs T91)."}
+{"id": "v0234", "key": "contradiction", "reason": "A transformer's main magnetic core is made of one magnetic alloy class (amorphous iron/cobalt ribbon vs crystalline nickel-iron permalloy)."}
+{"id": "v0235", "key": "arguable", "reason": "A grid-connected backpressure steam turbine runs with its speed governor in speed-droop mode while its pressure loop regulates exhaust backpressure."}
+{"id": "v0236", "key": "contradiction", "reason": "A vessel holds one Polar Class notation (PC5 vs PC3)."}
+{"id": "v0237", "key": "contradiction", "reason": "A two-winding transformer has one winding connection and phase shift (dd0 vs dyn11)."}
+{"id": "v0238", "key": "contradiction", "reason": "A single-circuit chiller contains one refrigerant (carbon dioxide vs ammonia)."}
+{"id": "v0239", "key": "contradiction", "reason": "A boiler with a sole internal drum treatment uses only one treatment compound (sodium hydroxide vs polyacrylate)."}
+{"id": "v0240", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one metal alloy (aluminum vs Zircaloy)."}
+{"id": "v0241", "key": "arguable", "reason": "Stepper-motor driven unloader actuators often incorporate a manual handwheel for unpowered positioning or maintenance override."}
+{"id": "v0242", "key": "contradiction", "reason": "A main magnetic core material is either nanocrystalline ribbon or crystalline nickel-iron permalloy."}
+{"id": "v0243", "key": "contradiction", "reason": "A transformer's main magnetic core is made of one magnetic material (ceramic ferrite vs grain-oriented silicon steel)."}
+{"id": "v0244", "key": "contradiction", "reason": "A monolithic cask shield is made of one heavy shielding metal (depleted uranium vs lead)."}
+{"id": "v0245", "key": "contradiction", "reason": "A single-component purge gas is one pure gas species (helium vs krypton)."}
+{"id": "v0246", "key": "contradiction", "reason": "A chiller condenser's once-through cooling loop draws from either a seawater source or a freshwater river source."}
+{"id": "v0247", "key": "contradiction", "reason": "A single-layer rotor coating is one coating chemistry (diffused aluminide vs resin-bonded MoS2)."}
+{"id": "v0248", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (polybutene vs silicone fluid)."}
+{"id": "v0249", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one engine type (gas turbine vs diesel engine)."}
+{"id": "v0250", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (car bottom vs pusher tray)."}
+{"id": "v0251", "key": "contradiction", "reason": "A single-component purge gas is one pure gas (nitrogen vs krypton)."}
+{"id": "v0252", "key": "contradiction", "reason": "A control thermocouple has one standard calibration (Type N vs Type J)."}
+{"id": "v0253", "key": "contradiction", "reason": "The outermost contact plating metal is a single surface metal (gold vs platinum)."}
+{"id": "v0254", "key": "contradiction", "reason": "A turbine speed governor is either in zero-droop isochronous mode or nonzero speed-droop mode, not both."}
+{"id": "v0255", "key": "contradiction", "reason": "A finishing superheater tube bank alloy is one specified grade (TP347H vs T22)."}
+{"id": "v0256", "key": "contradiction", "reason": "A single-layer rotor coating is a single polymer resin (epoxy-phenolic vs PTFE)."}
+{"id": "v0257", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (0% vs 50%)."}
+{"id": "v0258", "key": "contradiction", "reason": "A vessel holds one Polar Class rating (PC5 vs PC1)."}
+{"id": "v0259", "key": "contradiction", "reason": "A pump shaft coupling is either a flexible metallic disc coupling or a solid rigid flange coupling."}
+{"id": "v0260", "key": "contradiction", "reason": "A pump shaft coupling is either a metallic disc pack or an elastomeric jaw coupling."}
+{"id": "v0261", "key": "arguable", "reason": "After a turbine trips and coasts down, it is placed on turning gear while the trip latch remains unreset ('tripped') until operators clear the trip condition."}
+{"id": "v0262", "key": "arguable", "reason": "Close-coupled C-face pumps often bolt the motor/pump assembly to a mounting pedestal, making both 'pedestalmounted' and 'cfaceflange' applicable."}
+{"id": "v0263", "key": "contradiction", "reason": "An AIS unit reports one navigational status code at a time (aground vs at anchor)."}
+{"id": "v0264", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (isobutane vs ammonia)."}
+{"id": "v0265", "key": "contradiction", "reason": "A damper actuator is at one opening step at a time (50% vs 25%)."}
+{"id": "v0266", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one metal alloy (Zircaloy vs aluminum)."}
+{"id": "v0267", "key": "contradiction", "reason": "A vessel has one legal port of registry (Gothenburg vs Bergen)."}
+{"id": "v0268", "key": "contradiction", "reason": "A pump is either at full operating speed delivering flow or in its starting acceleration sequence."}
+{"id": "v0269", "key": "contradiction", "reason": "A reactor primary loop cannot be in cold shutdown and at full thermal power simultaneously."}
+{"id": "v0270", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (100% vs 25%)."}
+{"id": "v0271", "key": "contradiction", "reason": "A compressor is either running unloaded (idling) or compressing gas under load (loaded)."}
+{"id": "v0272", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk metal (lead vs depleted uranium)."}
+{"id": "v0273", "key": "contradiction", "reason": "A two-winding transformer has one vector group (dyn11 vs yyn0)."}
+{"id": "v0274", "key": "contradiction", "reason": "A superstructure homopolymer finish coat is one polymer resin (alkyd vs fluoropolymer)."}
+{"id": "v0275", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one power source (fuel cell vs diesel engine)."}
+{"id": "v0276", "key": "arguable", "reason": "A pump can have a centerline-supported casing on pedestals while its driver/frame is foot-mounted on the same skid, though for the bare pump casing alone these are distinct API/ANSI mount classes."}
+{"id": "v0277", "key": "contradiction", "reason": "A pump coupling is either an electromagnetic eddy-current drive or a mechanical elastomeric jaw coupling."}
+{"id": "v0278", "key": "contradiction", "reason": "A pump cannot be actively delivering fluid and electrically locked out at the same time."}
+{"id": "v0279", "key": "contradiction", "reason": "An unblended dielectric fluid is one base fluid (naphthenic mineral oil vs synthetic/natural ester)."}
+{"id": "v0280", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (helium gas vs water)."}
+{"id": "v0281", "key": "contradiction", "reason": "A chiller circuit cannot be prelubricating for startup and pumping down refrigerant for shutdown simultaneously."}
+{"id": "v0282", "key": "contradiction", "reason": "A refrigerant metering device is either a passive fixed orifice or a regulating constant-pressure expansion valve."}
+{"id": "v0283", "key": "contradiction", "reason": "An intercooler tube bundle carries one coolant liquid (silicone fluid vs ethylene glycol)."}
+{"id": "v0284", "key": "arguable", "reason": "A grid-synchronized steam turbine operates with its speed governor in speed-droop mode while an inlet-pressure regulator controls throttle valves to maintain header pressure."}
+{"id": "v0285", "key": "arguable", "reason": "A boiler's furnace walls can be equipped with both acoustic sonic horns and rotary wall deslaggers simultaneously, though a single sootblower unit is one or the other."}
+{"id": "v0286", "key": "contradiction", "reason": "A two-winding transformer has one vector group (ynd1 vs yzn11)."}
+{"id": "v0287", "key": "contradiction", "reason": "A turbine governor cannot be on fixed manual throttle and automatic speed-droop control simultaneously."}
+{"id": "v0288", "key": "contradiction", "reason": "A turbine governor is either regulating inlet pressure automatically or fixed on manual throttle, not both."}
+{"id": "v0289", "key": "contradiction", "reason": "A superstructure homopolymer finish is one polymer resin class (fluoropolymer vs alkyd)."}
+{"id": "v0290", "key": "contradiction", "reason": "A single-layer rotor coating is one material (PTFE polymer vs diffused aluminide)."}
+{"id": "v0291", "key": "contradiction", "reason": "A compressor cannot be running under load (loaded) and stopped in standby at the same time."}
+{"id": "v0292", "key": "arguable", "reason": "In IEC metal-clad switchgear, a drawout breaker or earthing truck is racked to the disconnected position before or as part of engaging the integral earthing switch, so a cell can be simultaneously disconnected and earthed."}
+{"id": "v0293", "key": "contradiction", "reason": "A transformer's main magnetic core is constructed of one magnetic material (crystalline silicon steel vs amorphous metal)."}
+{"id": "v0294", "key": "contradiction", "reason": "A pump cannot be actively pumping fluid (delivering) and stationary in standby simultaneously."}
+{"id": "v0295", "key": "contradiction", "reason": "A monolithic turbine casing is made of one alloy (Inconel vs steel)."}
+{"id": "v0296", "key": "arguable", "reason": "Hybrid geothermal condenser loops combine a ground heat-exchanger loop with a cooling tower on the same chiller condenser loop, though single-source systems use only one."}
+{"id": "v0297", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type J vs Type R)."}
+{"id": "v0298", "key": "contradiction", "reason": "A coal boiler furnace uses one firing method (mechanical traveling stoker vs bubbling/circulating fluidized bed)."}
+{"id": "v0299", "key": "contradiction", "reason": "A compressor cannot be inhibited in safety lockout and ready to start in standby at the same time."}
+{"id": "v0300", "key": "contradiction", "reason": "A vessel has one legal port of registry (Bergen vs Antwerp)."}
+{"id": "v0301", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish layer (rhodium vs gold)."}
+{"id": "v0302", "key": "arguable", "reason": "Compound compressor shaft seals can combine a bristle brush seal stage and a segmented carbon ring stage in the same seal assembly."}
+{"id": "v0303", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (roller hearth vs rotary table)."}
+{"id": "v0304", "key": "contradiction", "reason": "A vessel has one official port of registry (Bergen vs Hamburg)."}
+{"id": "v0305", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chelant compound (NTA vs EDTA)."}
+{"id": "v0306", "key": "contradiction", "reason": "A reactor primary loop is either at zero-power hot standby or at full thermal power, not both."}
+{"id": "v0307", "key": "contradiction", "reason": "A chiller circuit cannot be stopped in idle and actively chilling at the same time."}
+{"id": "v0308", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport system (car bottom vs rotary table)."}
+{"id": "v0309", "key": "contradiction", "reason": "An unblended base oil is one base fluid family (synthetic polyglycol vs mineral oil)."}
+{"id": "v0310", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (ester vs polybutene)."}
+{"id": "v0311", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one resin chemistry (pure epoxy vs polysiloxane)."}
+{"id": "v0312", "key": "contradiction", "reason": "A monolithic turbine casing is made of one metal (cast iron vs titanium)."}
+{"id": "v0313", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (25% vs 75%)."}
+{"id": "v0314", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (316 stainless steel vs Magnox)."}
+{"id": "v0315", "key": "contradiction", "reason": "A bushing weather shed is made of one insulator material (borosilicate glass vs PTFE)."}
+{"id": "v0316", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant fluid (carbon dioxide vs R-134a)."}
+{"id": "v0317", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BAu gold vs BAg silver)."}
+{"id": "v0318", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one propulsion type (wingsail vs steam plant)."}
+{"id": "v0319", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk material (tungsten vs concrete)."}
+{"id": "v0320", "key": "contradiction", "reason": "A single-circuit chiller contains one refrigerant (ammonia vs R-134a)."}
+{"id": "v0321", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one design (roller hearth vs pusher tray)."}
+{"id": "v0322", "key": "contradiction", "reason": "A pump is either actively accelerating in its starting sequence or stationary in standby."}
+{"id": "v0323", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical additive (polyacrylate vs trisodium phosphate)."}
+{"id": "v0324", "key": "arguable", "reason": "A pump can use neoprene and EPDM in different seals or gaskets within the same assembly unless 'seal material' refers strictly to a single primary mechanical seal."}
+{"id": "v0325", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one engine type (diesel engine vs gas turbine)."}
+{"id": "v0326", "key": "arguable", "reason": "A flush-panel relay is routinely mounted flush in a 19-inch rack panel filler plate, so both can describe the installation unless restricted to the bare relay chassis."}
+{"id": "v0327", "key": "contradiction", "reason": "A single-rated relay coil has one nominal DC voltage rating (125 VDC vs 24 VDC)."}
+{"id": "v0328", "key": "contradiction", "reason": "A refrigerant metering device is either a superheat-sensing thermostatic expansion valve or a liquid-level float valve."}
+{"id": "v0329", "key": "contradiction", "reason": "A bushing weather shed is made of one polymer (cycloaliphatic epoxy vs PTFE)."}
+{"id": "v0330", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (helium gas vs liquid sodium)."}
+{"id": "v0331", "key": "contradiction", "reason": "A reactor primary loop cannot be at full thermal power and in cold shutdown simultaneously."}
+{"id": "v0332", "key": "arguable", "reason": "Hybrid fluid-film bearings combine hydrostatic jacking/supply pockets with hydrodynamic wedge action in the same journal bearing, though pure hydrostatic and pure hydrodynamic bearings are distinct classes."}
+{"id": "v0333", "key": "contradiction", "reason": "The outermost contact plating metal is one top layer (rhodium vs palladium)."}
+{"id": "v0334", "key": "contradiction", "reason": "A superstructure homopolymer finish is one polymer resin (pure epoxy vs fluoropolymer)."}
+{"id": "v0335", "key": "contradiction", "reason": "A relay housing is mounted either on an internal DIN rail or flush through a panel door cutout, not both."}
+{"id": "v0336", "key": "contradiction", "reason": "A turbine cannot be synchronized online at speed and on slow turning gear at the same time."}
+{"id": "v0337", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type K vs Type N)."}
+{"id": "v0338", "key": "contradiction", "reason": "A transformer tap changer is at one discrete tap step at a time (-1 vs +1)."}
+{"id": "v0339", "key": "arguable", "reason": "A pump can contain both nitrile and neoprene seals in different locations (e.g., shaft lip seal vs casing O-ring) unless referring to a single designated seal."}
+{"id": "v0340", "key": "contradiction", "reason": "An evaporator is brazed with one filler metal family compatible with its tubing (BAlSi aluminum filler vs BCuP copper filler)."}
+{"id": "v0341", "key": "contradiction", "reason": "A pump shaft coupling is either a hydrokinetic fluid coupling or a flexible metallic disc coupling."}
+{"id": "v0342", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (paraffinic mineral oil vs silicone fluid)."}
+{"id": "v0343", "key": "contradiction", "reason": "An intercooler tube bundle carries one cooling medium (ambient air vs silicone fluid)."}
+{"id": "v0344", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either a fluid-film hydrodynamic journal bearing or a rolling-element deep-groove ball bearing."}
+{"id": "v0345", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one compound (EDTA vs sodium hydroxide)."}
+{"id": "v0346", "key": "contradiction", "reason": "A control thermocouple has one calibration (Type K vs Type S)."}
+{"id": "v0347", "key": "contradiction", "reason": "A chiller circuit cannot be actively defrosting the coil and pumping down refrigerant for shutdown simultaneously."}
+{"id": "v0348", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 7 explosion-proof vs NEMA 3R outdoor rainproof)."}
+{"id": "v0349", "key": "contradiction", "reason": "A chiller circuit is either running a compressor defrost cycle or stopped in pre-start prelubricating mode."}
+{"id": "v0350", "key": "contradiction", "reason": "A transformer's main magnetic core is either un-annealed amorphous ribbon or devitrified nanocrystalline ribbon."}
+{"id": "v0351", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one polymer resin (alkyd vs polyurethane)."}
+{"id": "v0352", "key": "contradiction", "reason": "A two-winding transformer has one vector group (dyn11 vs dd0)."}
+{"id": "v0353", "key": "contradiction", "reason": "A vessel has one legal port of registry (Hamburg vs Bergen)."}
+{"id": "v0354", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk material (depleted uranium vs concrete)."}
+{"id": "v0355", "key": "contradiction", "reason": "A coal boiler stoker is either an overfeed traveling grate stoker or an underfeed retort stoker."}
+{"id": "v0356", "key": "contradiction", "reason": "A pump cannot be stopped in standby and actively delivering flow at the same time."}
+{"id": "v0357", "key": "contradiction", "reason": "A vessel is either ice-classed PC7 or has no ice class (noclass)."}
+{"id": "v0358", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified alloy (T22 ferritic vs TP347H austenitic stainless)."}
+{"id": "v0359", "key": "contradiction", "reason": "A two-winding transformer has one vector group (yzn11 vs ynd1)."}
+{"id": "v0360", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one compound (sodium hydroxide vs trisodium phosphate)."}
+{"id": "v0361", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BAu gold vs BCuP copper-phosphorus)."}
+{"id": "v0362", "key": "contradiction", "reason": "A monolithic turbine casing is made of one metal alloy (aluminum vs steel)."}
+{"id": "v0363", "key": "contradiction", "reason": "An unblended dielectric fluid is one base oil class (ester vs naphthenic mineral oil)."}
+{"id": "v0364", "key": "contradiction", "reason": "A refrigerant metering device is either a passive fixed orifice or a modulating thermostatic expansion valve."}
+{"id": "v0365", "key": "contradiction", "reason": "A turbine cannot be synchronized online and tripped offline simultaneously."}
+{"id": "v0366", "key": "contradiction", "reason": "A vessel cannot be moored fast alongside a pier and underway making way through the water at the same time."}
+{"id": "v0367", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (water vs liquid sodium)."}
+{"id": "v0368", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical (NTA vs polyacrylate)."}
+{"id": "v0369", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (50% vs 100%)."}
+{"id": "v0370", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (silicone vs paraffinic mineral oil)."}
+{"id": "v0371", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (palladium vs rhodium)."}
+{"id": "v0372", "key": "contradiction", "reason": "A burner sequence is either in pre-ignition air prepurge or in post-ignition main flame, not both."}
+{"id": "v0373", "key": "contradiction", "reason": "A chiller circuit cannot be in heating/reverse defrost mode and normal chilling mode simultaneously."}
+{"id": "v0374", "key": "contradiction", "reason": "A turbine cannot be coasting down unpowered and synchronized online at power simultaneously."}
+{"id": "v0375", "key": "arguable", "reason": "TRIGA-type reactors use zirconium-hydride fuel-moderator elements immersed in a light-water core pool that also provides moderation, though one is typically named primary."}
+{"id": "v0376", "key": "contradiction", "reason": "A vessel cannot be underway making way and moored alongside a berth at the same time."}
+{"id": "v0377", "key": "contradiction", "reason": "A bushing weather shed is made of one insulator material (porcelain vs PTFE)."}
+{"id": "v0378", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (Zircaloy vs Magnox)."}
+{"id": "v0379", "key": "contradiction", "reason": "A single-layer rotor coating is one coating composition (epoxy-phenolic vs MoS2-bonded)."}
+{"id": "v0380", "key": "contradiction", "reason": "A burner cannot be shut down in safety lockout and firing its main flame simultaneously."}
+{"id": "v0381", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type J vs Type S)."}
+{"id": "v0382", "key": "contradiction", "reason": "A two-winding transformer has one vector group (yyn0 vs yzn11)."}
+{"id": "v0383", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (diamond-like carbon vs aluminide)."}
+{"id": "v0384", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (+2 vs nominal)."}
+{"id": "v0385", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one propulsion source (diesel engine vs wingsail)."}
+{"id": "v0386", "key": "contradiction", "reason": "A single-layer rotor coating is one coating type (MoS2-bonded dry film vs pure epoxy-phenolic)."}
+{"id": "v0387", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 3R vs NEMA 4X)."}
+{"id": "v0388", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (-2 vs nominal)."}
+{"id": "v0389", "key": "contradiction", "reason": "A vessel cannot be at anchor and underway making way at the same time."}
+{"id": "v0390", "key": "contradiction", "reason": "A single-layer rotor coating is one solid lubricant or polymer chemistry (PTFE vs MoS2-bonded)."}
+{"id": "v0391", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (walking beam vs pusher tray)."}
+{"id": "v0392", "key": "contradiction", "reason": "A burner sequence is either running the postpurge fan timer or halted in safety lockout."}
+{"id": "v0393", "key": "contradiction", "reason": "A chiller condenser rejects heat either directly to ambient air or to a water-cooled cooling tower loop."}
+{"id": "v0394", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical additive (polyacrylate vs EDTA)."}
+{"id": "v0395", "key": "contradiction", "reason": "A chiller circuit cannot be actively chilling and stopped in idle simultaneously."}
+{"id": "v0396", "key": "arguable", "reason": "A pump can use neoprene in bearing housing seals and Viton in process wetted O-rings at the same time, unless referring to a single designated seal."}
+{"id": "v0397", "key": "contradiction", "reason": "A manual handwheel unloader is a mechanical screw drive, whereas a solenoid unloader is an electromagnetic two-state coil without a handwheel."}
+{"id": "v0398", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide (pure silica vs pure alumina)."}
+{"id": "v0399", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk metal (depleted uranium vs steel)."}
+{"id": "v0400", "key": "contradiction", "reason": "A refrigerant metering device is either a modulating float valve or a static fixed orifice."}
+{"id": "v0401", "key": "contradiction", "reason": "An intercooler tube bundle circulates one coolant medium (ethylene glycol vs mineral oil)."}
+{"id": "v0402", "key": "contradiction", "reason": "An enclosure is either a free-standing floor cabinet or a surface-mounted wall box, not both."}
+{"id": "v0403", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BNi nickel vs BAu gold)."}
+{"id": "v0404", "key": "contradiction", "reason": "A monolithic turbine casing is made of one metal alloy (Inconel vs cast iron)."}
+{"id": "v0405", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either a rolling-element cylindrical roller bearing or a fluid-film hydrostatic pocket bearing."}
+{"id": "v0406", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 12 indoor dust-tight vs NEMA 4X corrosion-resistant hose-down)."}
+{"id": "v0407", "key": "contradiction", "reason": "A pump casing is either supported in-line by the piping or supported at its horizontal centerline on pedestals."}
+{"id": "v0408", "key": "contradiction", "reason": "An evaporator is brazed with one filler metal family (BAu gold vs BNi nickel)."}
+{"id": "v0409", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type N vs Type R)."}
+{"id": "v0410", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk material (concrete vs lead)."}
+{"id": "v0411", "key": "contradiction", "reason": "A chiller condenser rejects heat either directly to ambient air or to a geothermal ground loop."}
+{"id": "v0412", "key": "contradiction", "reason": "A finishing superheater tube bank is specified as one low-alloy steel grade (T11 vs T22)."}
+{"id": "v0413", "key": "contradiction", "reason": "A pump shaft coupling is either a hydrokinetic fluid coupling or a bolted rigid flange."}
+{"id": "v0414", "key": "contradiction", "reason": "A single-rated relay coil has one nominal DC voltage rating (125 VDC vs 48 VDC)."}
+{"id": "v0415", "key": "contradiction", "reason": "A compressor cannot be actively prelubricating for startup and inhibited in safety lockout at the same time."}
+{"id": "v0416", "key": "contradiction", "reason": "A two-winding transformer has one vector group (yyn0 vs dyn11)."}
+{"id": "v0417", "key": "contradiction", "reason": "An AIS transponder reports one navigational status code at a time, and a vessel moored fast to a berth is not 'not under command' (an underway condition under COLREGs)."}
+{"id": "v0418", "key": "arguable", "reason": "When a running pump trips on a protective lockout fault, the breaker locks out immediately while the pump rotor is still coasting down to rest."}
+{"id": "v0419", "key": "contradiction", "reason": "A furnace wall sootblower unit is either a short-stroke wall deslagger or a multi-nozzle fixed rotary element."}
+{"id": "v0420", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either a fluid-film hydrodynamic journal bearing or a rolling-element cylindrical roller bearing."}
+{"id": "v0421", "key": "contradiction", "reason": "A drawout circuit breaker cannot be earthed for maintenance and energized in the service position simultaneously."}
+{"id": "v0422", "key": "contradiction", "reason": "A bushing weather shed is made of one insulator material (PTFE vs porcelain)."}
+{"id": "v0423", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either a cylindrical roller bearing or a hydrodynamic journal bearing."}
+{"id": "v0424", "key": "contradiction", "reason": "A bushing weather shed is made of one ceramic/glass material (borosilicate glass vs porcelain)."}
+{"id": "v0425", "key": "arguable", "reason": "A grid-parallel steam turbine operates with its speed governor in speed-droop mode while an inlet-pressure loop modulates the control valves to hold upstream header pressure."}
+{"id": "v0426", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified alloy grade (T91 martensitic vs TP347H austenitic stainless)."}
+{"id": "v0427", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one propulsion technology (wingsail vs diesel engine)."}
+{"id": "v0428", "key": "arguable", "reason": "Hybrid fluid-film journal bearings use hydrostatic jacking/supply pockets together with a hydrodynamic oil wedge in the same bearing."}
+{"id": "v0429", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (diamond-like carbon vs epoxy-phenolic)."}
+{"id": "v0430", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chelant chemical (EDTA vs NTA)."}
+{"id": "v0431", "key": "contradiction", "reason": "A control thermocouple has one platinum-rhodium alloy calibration ratio (Type R vs Type S)."}
+{"id": "v0432", "key": "contradiction", "reason": "A pump's drive-end radial bearing is one rolling-element bearing type (deep-groove ball vs cylindrical roller)."}
+{"id": "v0433", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (rotary table vs pusher tray)."}
+{"id": "v0434", "key": "contradiction", "reason": "A vessel holds one Polar Class notation (PC7 vs PC3)."}
+{"id": "v0435", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one resin family (pure epoxy vs polyurethane)."}
+{"id": "v0436", "key": "arguable", "reason": "Hybrid brush-labyrinth shaft seals mount one or more bristle brush-seal stages directly inside a toothed labyrinth stator assembly."}
+{"id": "v0437", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (water vs helium gas)."}
+{"id": "v0438", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one pure gas (hydrogen vs helium)."}
+{"id": "v0439", "key": "contradiction", "reason": "A vessel holds one Polar Class rating (PC3 vs PC1)."}
+{"id": "v0440", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type R vs Type K)."}
+{"id": "v0441", "key": "contradiction", "reason": "A superstructure homopolymer finish is one resin class (polysiloxane vs pure epoxy)."}
+{"id": "v0442", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one metal alloy (aluminum vs 316 stainless steel)."}
+{"id": "v0443", "key": "contradiction", "reason": "A pump casing is either bolted to a baseplate pedestal or supported in-line by the suction/discharge piping."}
+{"id": "v0444", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type S vs Type K)."}
+{"id": "v0445", "key": "contradiction", "reason": "A control thermocouple has one base-metal alloy calibration (Type N vs Type K)."}
+{"id": "v0446", "key": "contradiction", "reason": "A compressor cannot be stopped in standby and running under load (loaded) simultaneously."}
+{"id": "v0447", "key": "contradiction", "reason": "A turbine governor is either automatically regulating exhaust backpressure or set to fixed manual throttle, not both."}
+{"id": "v0448", "key": "contradiction", "reason": "A pump shaft coupling is either a solid rigid flange or a flexible elastomeric jaw coupling."}
+{"id": "v0449", "key": "arguable", "reason": "Under COLREGs Rule 3(f), a vessel 'not under command' is unable to maneuver as required by the Rules and can still be making way through the water if her engines or momentum carry her forward, though AIS status codes force a single code choice."}
+{"id": "v0450", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (PTFE vs diamond-like carbon)."}
+{"id": "v0451", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical compound (trisodium phosphate vs EDTA)."}
+{"id": "v0452", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (naphthenic mineral oil vs silicone fluid)."}
+{"id": "v0453", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BCuP copper-phosphorus vs BAg silver)."}
+{"id": "v0454", "key": "arguable", "reason": "A vessel berthed alongside a shallow quay at low tide can rest on the bottom (aground) while moored alongside, though AIS navigational status allows only one code."}
+{"id": "v0455", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one pure gas (helium vs nitrogen)."}
+{"id": "v0456", "key": "contradiction", "reason": "A monolithic turbine casing is made of one ferrous alloy class (cast iron vs steel)."}
+{"id": "v0457", "key": "contradiction", "reason": "A coal boiler furnace uses one firing system (traveling grate stoker vs pulverized-coal burner)."}
+{"id": "v0458", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (-1 vs nominal)."}
+{"id": "v0459", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 3R vs NEMA 7)."}
+{"id": "v0460", "key": "contradiction", "reason": "A refrigerant metering device is either a superheat-controlled thermostatic expansion valve or an evaporator-pressure-controlled constant-pressure valve."}
+{"id": "v0461", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 7 vs NEMA 12)."}
+{"id": "v0462", "key": "contradiction", "reason": "A pump casing is either supported on horizontal centerline pedestals or suspended in-line by the piping."}
+{"id": "v0463", "key": "contradiction", "reason": "An electromagnetic solenoid unloader is a two-position coil actuator, whereas a handwheel is a manual screw drive."}
+{"id": "v0464", "key": "contradiction", "reason": "A monolithic turbine casing is made of one metal alloy (Inconel vs aluminum)."}
+{"id": "v0465", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified alloy (T22 vs TP304H)."}
+{"id": "v0466", "key": "contradiction", "reason": "A single-rated relay coil has one nominal AC voltage rating (120 VAC vs 240 VAC)."}
+{"id": "v0467", "key": "contradiction", "reason": "A monolithic cask shield body is made of one single metal (lead vs steel)."}
+{"id": "v0468", "key": "contradiction", "reason": "A bushing weather shed is made of one ceramic/glass insulator material (porcelain vs borosilicate glass)."}
+{"id": "v0469", "key": "contradiction", "reason": "A vessel is either unclassed for ice (noclass) or classed to Polar Class PC5."}
+{"id": "v0470", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (0% vs 25%)."}
+{"id": "v0471", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BNi nickel vs BAg silver)."}
+{"id": "v0472", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (pusher tray vs car bottom)."}
+{"id": "v0473", "key": "contradiction", "reason": "A reactor primary loop is either in subcritical/low-power plant heatup or at full thermal power."}
+{"id": "v0474", "key": "contradiction", "reason": "A pump cannot be electrically locked out and ready to start in standby simultaneously."}
+{"id": "v0475", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (75% vs 0%)."}
+{"id": "v0476", "key": "contradiction", "reason": "A sootblower unit is either a long retractable lance blower or a short-stroke wall deslagger."}
+{"id": "v0477", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (100% vs 0%)."}
+{"id": "v0478", "key": "contradiction", "reason": "A single-component purge gas is one pure noble gas (argon vs neon)."}
+{"id": "v0479", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (100% vs 50%)."}
+{"id": "v0480", "key": "contradiction", "reason": "A vessel holds one Polar Class notation (PC7 vs PC1)."}
+{"id": "v0481", "key": "contradiction", "reason": "A reactor primary loop is either actively heating up in temperature or held in cold shutdown."}
+{"id": "v0482", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (walking beam vs car bottom)."}
+{"id": "v0483", "key": "contradiction", "reason": "A bushing weather shed is molded from one polymer (PTFE vs silicone rubber)."}
+{"id": "v0484", "key": "contradiction", "reason": "A burner sequence is either in pre-ignition air prepurge or in the subsequent pilot spark ignition trial."}
+{"id": "v0485", "key": "arguable", "reason": "A 19-inch rack relay is routinely mounted inside an enclosed floor-standing relay cabinet that houses the 19-inch rack rails."}
+{"id": "v0486", "key": "contradiction", "reason": "A bushing weather shed body is made of one material (borosilicate glass vs silicone rubber)."}
+{"id": "v0487", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one power technology (steam plant vs fuel cell)."}
+{"id": "v0488", "key": "contradiction", "reason": "An intercooler tube bundle carries one cooling fluid (silicone fluid vs ambient air)."}
+{"id": "v0489", "key": "arguable", "reason": "A boiler furnace wall can have both rotary wall deslaggers and acoustic sonic horns installed on the walls, though a single sootblower device is one or the other."}
+{"id": "v0490", "key": "contradiction", "reason": "A drawout breaker cannot be in the connected service position and the disconnected position simultaneously."}
+{"id": "v0491", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one resin family (polysiloxane vs alkyd)."}
+{"id": "v0492", "key": "contradiction", "reason": "A burner controller cannot be igniting the pilot spark and running post-shutdown postpurge simultaneously."}
+{"id": "v0493", "key": "contradiction", "reason": "A coal boiler uses one primary coal firing system (cyclone barrel vs pulverized-coal burner)."}
+{"id": "v0494", "key": "contradiction", "reason": "A drawout breaker is either completely removed from the cubicle or inside the cubicle in the test position."}
+{"id": "v0495", "key": "contradiction", "reason": "A chiller circuit is either stopped in pre-start prelubricating mode or running in defrosting mode."}
+{"id": "v0496", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one polymer resin (polyurethane vs pure epoxy)."}
+{"id": "v0497", "key": "arguable", "reason": "A boiler can have both acoustic sonic horns and fixed rake sootblowers installed on its walls, though a single sootblower device is one or the other."}
+{"id": "v0498", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BCuP copper-phosphorus vs BAlSi aluminum-silicon)."}
+{"id": "v0499", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified alloy (T11 ferritic vs TP347H austenitic stainless)."}
+{"id": "v0500", "key": "contradiction", "reason": "A single-extraction/non-extraction turbine governor regulates either upstream inlet pressure or downstream exhaust backpressure as its pressure mode."}
+{"id": "v0501", "key": "contradiction", "reason": "A generator rotor is cooled by one gas fill in operation (hydrogen vs carbon dioxide), as CO2 is only used as an offline purge buffer between air and H2."}
+{"id": "v0502", "key": "contradiction", "reason": "An evaporator is brazed with one filler metal family (BAlSi aluminum-silicon vs BAg silver)."}
+{"id": "v0503", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one polymer resin (alkyd vs polysiloxane)."}
+{"id": "v0504", "key": "contradiction", "reason": "A drawout breaker is either completely withdrawn outside the enclosure (removed) or racked to the disconnected position inside the cell."}
+{"id": "v0505", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (+2 vs -1)."}
+{"id": "v0506", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (diffused aluminide vs PTFE polymer)."}
+{"id": "v0507", "key": "arguable", "reason": "A pump can use EPDM and Kalrez in different seals or O-rings within the same pump assembly unless 'seal material' denotes a single primary seal."}
+{"id": "v0508", "key": "arguable", "reason": "A 19-inch rack relay is commonly mounted on 19-inch rails inside a floor-standing relay cabinet, so both apply if one refers to the relay subrack and the other to the cabinet."}
+{"id": "v0509", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified alloy (T11 vs TP304H)."}
+{"id": "v0510", "key": "contradiction", "reason": "A single-component purge gas is one pure noble gas (argon vs helium)."}
+{"id": "v0511", "key": "contradiction", "reason": "A vessel cannot be immobilized aground on the bottom and underway making way at the same time."}
+{"id": "v0512", "key": "contradiction", "reason": "A transformer's main magnetic core is made of one alloy (nickel-iron permalloy vs iron-silicon steel)."}
+{"id": "v0513", "key": "arguable", "reason": "A pump can use Kalrez in its primary mechanical seal and Viton in secondary casing or bearing seals simultaneously."}
+{"id": "v0514", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (-2 vs +2)."}
+{"id": "v0515", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (liquid lead-bismuth vs water)."}
+{"id": "v0516", "key": "contradiction", "reason": "A turbine is either latched ready to start in standby or unlatched in a protective tripped state."}
+{"id": "v0517", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (50% vs 0%)."}
+{"id": "v0518", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 9 vs NEMA 3R)."}
+{"id": "v0519", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one gas species (carbon dioxide vs helium)."}
+{"id": "v0520", "key": "contradiction", "reason": "A single-component purge gas is one pure gas (nitrogen vs helium)."}
+{"id": "v0521", "key": "arguable", "reason": "A DIN-rail relay can be mounted on a DIN-rail carrier inside a 19-inch rack frame."}
+{"id": "v0522", "key": "contradiction", "reason": "A single-component purge gas is one pure gas species (helium vs nitrogen)."}
+{"id": "v0523", "key": "contradiction", "reason": "A vessel has one legal port of registry (Antwerp vs Rotterdam)."}
+{"id": "v0524", "key": "contradiction", "reason": "A generator rotor cooling gas is one pure gas fill (helium vs carbon dioxide)."}
+{"id": "v0525", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified alloy grade (T91 vs TP304H)."}
+{"id": "v0526", "key": "arguable", "reason": "Industrial closed-loop intercooler systems routinely use an ethylene glycol solution mixed in demineralized water, though unblended pure coolants are distinct."}
+{"id": "v0527", "key": "contradiction", "reason": "A transformer's main magnetic core is either ceramic ferrite or metallic nickel-iron permalloy."}
+{"id": "v0528", "key": "arguable", "reason": "Many C-face flange-mounted pumps bolt to a C-face adapter bracket that is itself foot/pedestal-mounted to the baseplate."}
+{"id": "v0529", "key": "contradiction", "reason": "A control thermocouple has one noble-metal alloy calibration (Type S vs Type R)."}
+{"id": "v0530", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide ceramic (pure silica vs pure zirconia)."}
+{"id": "v0531", "key": "contradiction", "reason": "A compressor cannot be running unloaded (idling) and stopped in safety lockout simultaneously."}
+{"id": "v0532", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk metal (lead vs tungsten)."}
+{"id": "v0533", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either a pressurized fluid hydrostatic pocket bearing or a contactless active magnetic bearing."}
+{"id": "v0534", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 4X vs NEMA 12)."}
+{"id": "v0535", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one metal alloy (Inconel vs aluminum)."}
+{"id": "v0536", "key": "contradiction", "reason": "A drawout breaker is either racked to the disconnected position inside its cell or completely removed from the cell."}
+{"id": "v0537", "key": "contradiction", "reason": "A two-winding transformer has one vector group (dd0 vs ynd1)."}
+{"id": "v0538", "key": "contradiction", "reason": "A reactor primary loop is either fueled and filled in cold shutdown or defueled and drained."}
+{"id": "v0539", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (+1 vs -1)."}
+{"id": "v0540", "key": "contradiction", "reason": "A coal boiler furnace uses one firing system (cyclone barrel vs traveling grate stoker)."}
+{"id": "v0541", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one resin chemistry (fluoropolymer vs polysiloxane)."}
+{"id": "v0542", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (240 VAC vs 125 VDC)."}
+{"id": "v0543", "key": "arguable", "reason": "A steam or gas turbine held in hot/warm standby ready for startup must be continuously rotated on its turning gear to prevent rotor bow, so it is both on turning gear and in standby."}
+{"id": "v0544", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide (pure zirconia vs pure chromia)."}
+{"id": "v0545", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (ammonia R-717 vs propane R-290)."}
+{"id": "v0546", "key": "contradiction", "reason": "A single-component purge gas is one pure gas (nitrogen vs neon)."}
+{"id": "v0547", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either a mechanical cylindrical roller bearing or an active magnetic bearing."}
+{"id": "v0548", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (car bottom vs roller hearth)."}
+{"id": "v0549", "key": "contradiction", "reason": "A single-circuit chiller uses one pure hydrocarbon refrigerant (isobutane R-600a vs propane R-290)."}
+{"id": "v0550", "key": "contradiction", "reason": "A two-winding transformer has one vector group (dd0 vs yzn11)."}
+{"id": "v0551", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (240 VAC vs 24 VDC)."}
+{"id": "v0552", "key": "contradiction", "reason": "A refrigerant metering device is either an evaporator-pressure-regulating constant-pressure valve or a superheat-sensing thermostatic valve."}
+{"id": "v0553", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 9 vs NEMA 4X)."}
+{"id": "v0554", "key": "contradiction", "reason": "A transformer's main magnetic core is either annealed nanocrystalline alloy ribbon or amorphous alloy ribbon."}
+{"id": "v0555", "key": "contradiction", "reason": "A monolithic turbine casing is made of one ferrous alloy class (steel vs cast iron)."}
+{"id": "v0556", "key": "contradiction", "reason": "A compressor is either stopped ready to start (standby) or running unloaded (idling), not both."}
+{"id": "v0557", "key": "contradiction", "reason": "A chiller circuit is either actively executing a refrigerant pumpdown cycle or resting stopped in idle."}
+{"id": "v0558", "key": "contradiction", "reason": "A chiller circuit cannot be cooling the process loop (chilling) and heating the evaporator to melt frost (defrosting) simultaneously."}
+{"id": "v0559", "key": "contradiction", "reason": "An unloader actuator is driven either by an electric stepper motor or by compressed air (pneumatic)."}
+{"id": "v0560", "key": "contradiction", "reason": "A vessel has one legal port of registry (Hamburg vs Rotterdam)."}
+{"id": "v0561", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one propulsion technology (steam plant vs wingsail)."}
+{"id": "v0562", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one metal alloy (aluminum vs Magnox)."}
+{"id": "v0563", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (R-134a vs propane)."}
+{"id": "v0564", "key": "contradiction", "reason": "A compressor cannot be running under load and shut down in safety lockout simultaneously."}
+{"id": "v0565", "key": "contradiction", "reason": "An unloader actuator is driven either by pressurized hydraulic oil or by an electric stepper motor."}
+{"id": "v0566", "key": "contradiction", "reason": "A monolithic cask shield is made of one single material (concrete vs steel)."}
+{"id": "v0567", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk material (concrete vs tungsten)."}
+{"id": "v0568", "key": "contradiction", "reason": "A compressor cannot be ready to start in standby and inhibited in safety lockout simultaneously."}
+{"id": "v0569", "key": "arguable", "reason": "A pump can use Kalrez for its process mechanical seal O-rings and neoprene for bearing housing or frame seals at the same time."}
+{"id": "v0570", "key": "arguable", "reason": "Dry gas face seal cartridges routinely incorporate an integral inner labyrinth seal stage in the same seal cartridge."}
+{"id": "v0571", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BAg silver filler vs BCuP copper-phosphorus filler)."}
+{"id": "v0572", "key": "arguable", "reason": "Vertical inline pumps (such as API OH3/OH4/OH5) have an inline-suspended casing in the piping while the motor/bracket mounts via a NEMA C-face flange."}
+{"id": "v0573", "key": "contradiction", "reason": "A transformer's main magnetic core is either laminated silicon steel or ceramic ferrite."}
+{"id": "v0574", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (0% vs 100%)."}
+{"id": "v0575", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one resin chemistry (polyurethane vs polysiloxane)."}
+{"id": "v0576", "key": "contradiction", "reason": "A single-rated relay coil has one nominal DC voltage rating (48 VDC vs 24 VDC)."}
+{"id": "v0577", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (liquid sodium vs carbon dioxide gas)."}
+{"id": "v0578", "key": "contradiction", "reason": "A coal boiler furnace uses one firing architecture (pulverized-coal suspension burner vs fluidized bed)."}
+{"id": "v0579", "key": "contradiction", "reason": "A reactor primary loop cannot be at operating temperature in hot standby and below 200°F in cold shutdown simultaneously."}
+{"id": "v0580", "key": "contradiction", "reason": "A vessel has one legal port of registry (Bergen vs Rotterdam)."}
+{"id": "v0581", "key": "contradiction", "reason": "An unblended base oil is one synthetic fluid class (ester vs silicone)."}
+{"id": "v0582", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide (pure alumina vs pure silica)."}
+{"id": "v0583", "key": "arguable", "reason": "Hydraulic unloader actuators are commonly piloted by an electro-hydraulic solenoid valve, so both can describe the actuator drive."}
+{"id": "v0584", "key": "contradiction", "reason": "A drawout breaker truck cannot be racked into the cell earthing switch and completely removed from the cell simultaneously."}
+{"id": "v0585", "key": "contradiction", "reason": "An intercooler tube bundle circulates one coolant medium (mineral oil vs ambient air)."}
+{"id": "v0586", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (+1 vs -2)."}
+{"id": "v0587", "key": "contradiction", "reason": "A pump coupling is either an electromagnetic eddy-current drive or a hydrokinetic fluid coupling."}
+{"id": "v0588", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (palladium vs platinum)."}
+{"id": "v0589", "key": "contradiction", "reason": "A reactor primary loop cannot be heating up with coolant and defueled/drained simultaneously."}
+{"id": "v0590", "key": "contradiction", "reason": "A refrigerant metering device is either a mechanical liquid-level float valve or an electrically driven electronic expansion valve."}
+{"id": "v0591", "key": "contradiction", "reason": "A monolithic cask shield is made of one single material (steel vs concrete)."}
+{"id": "v0592", "key": "contradiction", "reason": "A single-rated relay coil has one nominal DC voltage rating (24 VDC vs 125 VDC)."}
+{"id": "v0593", "key": "contradiction", "reason": "An unblended base oil is one pure base fluid (silicone vs ester)."}
+{"id": "v0594", "key": "arguable", "reason": "A boiler can have both long retractable lance sootblowers and acoustic sonic horns installed on its walls, though a single sootblower device is one or the other."}
+{"id": "v0595", "key": "arguable", "reason": "Closed-loop compressor intercoolers routinely circulate an aqueous ethylene glycol solution made with demineralized water."}
+{"id": "v0596", "key": "arguable", "reason": "Dry gas face seal cartridges frequently include a segmented carbon ring secondary/buffer seal within the same shaft seal assembly."}
+{"id": "v0597", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BAg silver vs BAu gold)."}
+{"id": "v0598", "key": "contradiction", "reason": "A relay enclosure is either a 19-inch rack-mounted unit or a surface-mounted wall box, not both."}
+{"id": "v0599", "key": "contradiction", "reason": "A two-winding transformer has one vector group (dd0 vs yyn0)."}
+{"id": "v0600", "key": "arguable", "reason": "Close-coupled vertical inline pumps are suspended in-line by the pipeline flanges while the pump cover/bracket bolts to a NEMA C-face motor flange."}
+{"id": "v0601", "key": "contradiction", "reason": "A bushing weather shed is made of one polymer (PTFE vs cycloaliphatic epoxy)."}
+{"id": "v0602", "key": "arguable", "reason": "A flush-panel relay is frequently mounted flush into a 19-inch rack panel plate, making both true if one describes the relay case and the other the rack panel."}
+{"id": "v0603", "key": "contradiction", "reason": "An intercooler tube bundle carries one cooling fluid (demineralized water vs ambient air)."}
+{"id": "v0604", "key": "contradiction", "reason": "An evaporator is brazed with one filler metal class (BAlSi aluminum-silicon vs BAu gold)."}
+{"id": "v0605", "key": "arguable", "reason": "Compressor shaft seals often combine a labyrinth tooth stage and a segmented carbon ring stage in a hybrid labyrinth-carbon ring seal assembly."}
+{"id": "v0606", "key": "contradiction", "reason": "An intercooler tube bundle carries one liquid coolant (ethylene glycol vs silicone fluid)."}
+{"id": "v0607", "key": "contradiction", "reason": "A pump casing is either suspended in-line by the piping or supported from below on a baseplate pedestal."}
+{"id": "v0608", "key": "contradiction", "reason": "An AIS transponder broadcasts one navigational status code at a time (at anchor vs aground)."}
+{"id": "v0609", "key": "contradiction", "reason": "A coal boiler furnace uses one firing technology (slagging cyclone barrel vs fluidized bed)."}
+{"id": "v0610", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type J vs Type K)."}
+{"id": "v0611", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (carbon dioxide gas vs liquid lead-bismuth)."}
+{"id": "v0612", "key": "contradiction", "reason": "A vessel has one legal port of registry (Antwerp vs Gothenburg)."}
+{"id": "v0613", "key": "contradiction", "reason": "An unblended dielectric mineral oil is refined as either a naphthenic grade or a paraffinic grade."}
+{"id": "v0614", "key": "contradiction", "reason": "A coal stoker is either an underfeed retort stoker or an overfeed traveling grate stoker."}
+{"id": "v0615", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical additive (sodium hydroxide vs EDTA)."}
+{"id": "v0616", "key": "contradiction", "reason": "A pump is either stationary in standby or still rotating while coasting down after shutdown."}
+{"id": "v0617", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (roller hearth vs walking beam)."}
+{"id": "v0618", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (Magnox magnesium alloy vs aluminum)."}
+{"id": "v0619", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type R vs Type N)."}
+{"id": "v0620", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (+2 vs +1)."}
+{"id": "v0621", "key": "contradiction", "reason": "A drawout breaker cannot be closed onto the safety earthing switch and operating in the un-earthed test position simultaneously."}
+{"id": "v0622", "key": "contradiction", "reason": "An intercooler tube bundle carries one cooling liquid (mineral oil vs demineralized water)."}
+{"id": "v0623", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (MoS2-bonded dry film vs diffused aluminide)."}
+{"id": "v0624", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide (pure chromia vs pure zirconia)."}
+{"id": "v0625", "key": "contradiction", "reason": "A monolithic turbine casing is made of one alloy (steel vs Inconel)."}
+{"id": "v0626", "key": "contradiction", "reason": "An unblended base oil is one base stock class (mineral oil vs synthetic ester)."}
+{"id": "v0627", "key": "arguable", "reason": "Close-coupled pumps routinely have a foot-mounted pump casing while the drive end bolts to the motor via a NEMA C-face flange."}
+{"id": "v0628", "key": "contradiction", "reason": "A relay housing is designed either for flush panel cutout mounting or internal DIN-rail clip mounting."}
+{"id": "v0629", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (aluminum vs Inconel)."}
+{"id": "v0630", "key": "contradiction", "reason": "A vessel holds one Polar Class rating (PC7 vs PC5)."}
+{"id": "v0631", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (nominal vs +1)."}
+{"id": "v0632", "key": "contradiction", "reason": "A transformer's main magnetic core is either metallic nickel-iron permalloy or ceramic ferrite."}
+{"id": "v0633", "key": "contradiction", "reason": "A vessel has one legal port of registry (Hamburg vs Antwerp)."}
+{"id": "v0634", "key": "contradiction", "reason": "A monolithic turbine casing is made of one metal (aluminum vs cast iron)."}
+{"id": "v0635", "key": "arguable", "reason": "Dry gas face seal cartridges sometimes incorporate an auxiliary brush-seal stage as a process-side labyrinth/barrier in the same seal assembly."}
+{"id": "v0636", "key": "contradiction", "reason": "A reactor's primary core moderator is one bulk material (graphite vs heavy water)."}
+{"id": "v0637", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical compound (NTA vs sodium hydroxide)."}
+{"id": "v0638", "key": "contradiction", "reason": "A sootblower unit is either a permanently inside-the-boiler fixed rotary element or an outside-retracting long retractable lance."}
+{"id": "v0639", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide ceramic (pure magnesia vs pure alumina)."}
+{"id": "v0640", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (240 VAC vs 48 VDC)."}
+{"id": "v0641", "key": "contradiction", "reason": "Under COLREGs, 'not under command' applies only to a vessel underway, whereas a vessel 'at anchor' is not underway, and AIS reports only one status code."}
+{"id": "v0642", "key": "contradiction", "reason": "A compressor cannot be inhibited in safety lockout and actively prelubricating for startup simultaneously."}
+{"id": "v0643", "key": "contradiction", "reason": "A reactor primary loop cannot be defueled and drained while operating at full power."}
+{"id": "v0644", "key": "contradiction", "reason": "A transformer's main magnetic core is either amorphous metal ribbon or ceramic ferrite."}
+{"id": "v0645", "key": "contradiction", "reason": "A reactor's primary core moderator is one bulk material (heavy water vs beryllium)."}
+{"id": "v0646", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (propane R-290 vs ammonia R-717)."}
+{"id": "v0647", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk metal (steel vs depleted uranium)."}
+{"id": "v0648", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (carbon dioxide gas vs liquid sodium)."}
+{"id": "v0649", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (pusher tray vs roller hearth)."}
+{"id": "v0650", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one power technology (fuel cell vs steam plant)."}
+{"id": "v0651", "key": "contradiction", "reason": "A drawout breaker is racked to one discrete carriage position at a time (disconnected with control circuits open vs test with control circuits connected)."}
+{"id": "v0652", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (-1 vs +2)."}
+{"id": "v0653", "key": "contradiction", "reason": "A chiller circuit is either running its compressor to chill water or stopped in pre-start prelubricating mode."}
+{"id": "v0654", "key": "contradiction", "reason": "An unblended base oil is one synthetic base stock (polyalphaolefin vs polyglycol)."}
+{"id": "v0655", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one prime mover type (diesel engine vs fuel cell)."}
+{"id": "v0656", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 12 vs NEMA 7)."}
+{"id": "v0657", "key": "contradiction", "reason": "An intercooler tube bundle carries one cooling fluid (silicone fluid vs mineral oil)."}
+{"id": "v0658", "key": "contradiction", "reason": "A vessel is either classed to Polar Class PC1 or has no ice class (noclass)."}
+{"id": "v0659", "key": "contradiction", "reason": "A compressor is either stopped in pre-start prelubricating mode or running under load (loaded)."}
+{"id": "v0660", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one resin family (fluoropolymer vs polyurethane)."}
+{"id": "v0661", "key": "contradiction", "reason": "A reactor's primary core moderator is one bulk material (zirconium hydride vs heavy water)."}
+{"id": "v0662", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (diamond-like carbon vs PTFE)."}
+{"id": "v0663", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (Zircaloy vs Inconel)."}
+{"id": "v0664", "key": "contradiction", "reason": "A monolithic turbine casing is made of one metal alloy (steel vs titanium)."}
+{"id": "v0665", "key": "arguable", "reason": "Compressor shaft seals can combine segmented carbon rings and labyrinth teeth in a single compound labyrinth-carbon ring seal assembly."}
+{"id": "v0666", "key": "contradiction", "reason": "A pump drive coupling is either a hydrokinetic fluid coupling or an electromagnetic eddy-current drive."}
+{"id": "v0667", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one polymer resin (polysiloxane vs polyurethane)."}
+{"id": "v0668", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (pusher tray vs rotary table)."}
+{"id": "v0669", "key": "contradiction", "reason": "A refrigerant metering device is either a passive fixed orifice or a modulating electronic expansion valve."}
+{"id": "v0670", "key": "contradiction", "reason": "An unloader actuator is powered either by compressed air (pneumatic) or by pressurized oil (hydraulic)."}
+{"id": "v0671", "key": "arguable", "reason": "A boiler furnace wall can have both fixed rotary sootblowers and acoustic sonic horns installed on its walls, though a single sootblower device is one or the other."}
+{"id": "v0672", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either an active magnetic bearing or a mechanical deep-groove ball bearing."}
+{"id": "v0673", "key": "contradiction", "reason": "An unloader actuator is powered either by hydraulic oil or by compressed air (pneumatic)."}
+{"id": "v0674", "key": "contradiction", "reason": "A burner sequence is either firing the main flame or running the post-shutdown postpurge fan timer."}
+{"id": "v0675", "key": "contradiction", "reason": "A refrigerant metering device is either a self-acting constant-pressure valve or an electrically driven electronic expansion valve."}
+{"id": "v0676", "key": "contradiction", "reason": "A pump shaft coupling is either a flexible elastomeric jaw coupling or a solid rigid flange coupling."}
+{"id": "v0677", "key": "arguable", "reason": "Hydraulic unloader actuators frequently include an integral manual handwheel override for maintenance or emergency positioning."}
+{"id": "v0678", "key": "contradiction", "reason": "A drawout breaker cannot be energized in the service position inside the cell and completely removed from the cell simultaneously."}
+{"id": "v0679", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 7 vs NEMA 4X)."}
+{"id": "v0680", "key": "contradiction", "reason": "A coal boiler furnace uses one firing system (underfeed retort stoker vs cyclone barrel)."}
+{"id": "v0681", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (diffused aluminide vs epoxy-phenolic resin)."}
+{"id": "v0682", "key": "contradiction", "reason": "A sootblower unit is either a rotating multi-nozzle lance (fixed rotary) or a non-rotating fixed rake."}
+{"id": "v0683", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (-1 vs -2)."}
+{"id": "v0684", "key": "contradiction", "reason": "A two-winding transformer has one vector group (yyn0 vs ynd1)."}
+{"id": "v0685", "key": "contradiction", "reason": "An unloader actuator is driven either by compressed air (pneumatic) or by an electric stepper motor."}
+{"id": "v0686", "key": "contradiction", "reason": "A reactor primary loop cannot be defueled and drained while heating up with coolant."}
+{"id": "v0687", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide (pure chromia vs pure silica)."}
+{"id": "v0688", "key": "contradiction", "reason": "A reactor's primary core moderator is one water isotope (light water H2O vs heavy water D2O)."}
+{"id": "v0689", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one pure gas (argon vs nitrogen)."}
+{"id": "v0690", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified austenitic stainless grade (TP347H vs TP304H)."}
+{"id": "v0691", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 3R vs NEMA 9)."}
+{"id": "v0692", "key": "contradiction", "reason": "An unblended base oil is either a synthetic polyalphaolefin or a refined mineral oil."}
+{"id": "v0693", "key": "contradiction", "reason": "A monolithic turbine casing is made of one metal alloy (cast iron vs Inconel)."}
+{"id": "v0694", "key": "contradiction", "reason": "A transformer's main magnetic core is either crystalline nickel-iron permalloy or nanocrystalline ribbon."}
+{"id": "v0695", "key": "contradiction", "reason": "A vessel has one legal port of registry (Gothenburg vs Rotterdam)."}
+{"id": "v0696", "key": "contradiction", "reason": "A drawout breaker is racked to one carriage position at a time (primary contacts connected in service vs primary contacts separated in test)."}
+{"id": "v0697", "key": "contradiction", "reason": "A reactor primary loop is either operating at full thermal power or in a subcritical/low-power plant heatup state."}
+{"id": "v0698", "key": "arguable", "reason": "Under COLREGs Rule 3(f), a vessel 'not under command' is an underway vessel that can still be 'making way' through the water if her propulsion or residual momentum moves her, though AIS transmits only a single status code."}
+{"id": "v0699", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one gas species (carbon dioxide vs argon)."}
+{"id": "v0700", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (Magnox vs 316 stainless steel)."}
+{"id": "v0701", "key": "contradiction", "reason": "A coal boiler furnace uses one firing system (pulverized-coal burner vs underfeed retort stoker)."}
+{"id": "v0702", "key": "arguable", "reason": "Ships in port frequently moor alongside a quay or Mediterranean-style while also having an anchor deployed ('moored alongside' with anchor down), though AIS broadcasts a single status code."}
+{"id": "v0703", "key": "contradiction", "reason": "A transformer's main magnetic core is either amorphous metal ribbon or crystalline silicon steel."}
+{"id": "v0704", "key": "contradiction", "reason": "A drawout breaker truck cannot be completely removed from the switchgear cell and engaging the cell earthing switch simultaneously."}
+{"id": "v0705", "key": "contradiction", "reason": "An unloader actuator is driven either by an electric stepper motor or by hydraulic oil."}
+{"id": "v0706", "key": "contradiction", "reason": "An unblended base oil is one synthetic fluid family (silicone vs polyglycol)."}
+{"id": "v0707", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (epoxy-phenolic vs aluminide)."}
+{"id": "v0708", "key": "contradiction", "reason": "A pump coupling is either a solid bolted rigid flange or an electromagnetic eddy-current drive."}
+{"id": "v0709", "key": "contradiction", "reason": "A single-component purge gas is one pure gas (neon vs nitrogen)."}
+{"id": "v0710", "key": "contradiction", "reason": "A pump cannot be electrically locked out and actively starting simultaneously."}
+{"id": "v0711", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (50% vs 75%)."}
+{"id": "v0712", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (rotary table vs walking beam)."}
+{"id": "v0713", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (125 VDC vs 240 VAC)."}
+{"id": "v0714", "key": "contradiction", "reason": "A burner sequence is either in pre-ignition prepurge or in post-shutdown postpurge, not both."}
+{"id": "v0715", "key": "contradiction", "reason": "A coal boiler furnace uses one firing system (fluidized bed vs pulverized-coal burner)."}
+{"id": "v0716", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (ammonia vs isobutane)."}
+{"id": "v0717", "key": "contradiction", "reason": "A turbine cannot be synchronized online generating power and offline in standby simultaneously."}
+{"id": "v0718", "key": "contradiction", "reason": "An unblended base oil is either a refined mineral oil or a synthetic polyalphaolefin."}
+{"id": "v0719", "key": "contradiction", "reason": "A sootblower unit is either an outside-retracting long retractable lance or an inside-mounted fixed rotary element."}
+{"id": "v0720", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one pure gas (carbon dioxide vs hydrogen)."}
+{"id": "v0721", "key": "arguable", "reason": "Compound compressor shaft seals can combine a segmented carbon ring stage and a bristle brush seal stage in the same seal cartridge."}
+{"id": "v0722", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (24 VDC vs 120 VAC)."}
+{"id": "v0723", "key": "arguable", "reason": "A steam or gas turbine held in hot/warm standby is continuously rotated on turning gear so the rotor stays straight and ready for immediate start."}
+{"id": "v0724", "key": "arguable", "reason": "A compressor shaft seal assembly can combine an inner labyrinth seal section with an outer packed gland in a compound stuffing box."}
+{"id": "v0725", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BAu gold vs BAlSi aluminum-silicon)."}
+{"id": "v0726", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one gas species (carbon dioxide vs nitrogen)."}
+{"id": "v0727", "key": "arguable", "reason": "A foot-mounted horizontal pump casing is routinely bolted onto a mounting pedestal (pedestal-mounted), making both terms applicable to the same pump support."}
+{"id": "v0728", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide (pure magnesia vs pure chromia), as magnesia-chrome brick is a two-oxide composite."}
+{"id": "v0729", "key": "contradiction", "reason": "A burner controller cannot be halted in safety lockout and actively running the air prepurge step simultaneously."}
+{"id": "v0730", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one gas species (argon vs carbon dioxide)."}
+{"id": "v0731", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (polybutene vs naphthenic mineral oil)."}
+{"id": "v0732", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (water vs carbon dioxide gas)."}
+{"id": "v0733", "key": "contradiction", "reason": "A pump coupling is either a mechanical metallic disc pack or an electromagnetic eddy-current drive."}
+{"id": "v0734", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one power technology (gas turbine vs fuel cell)."}
+{"id": "v0735", "key": "contradiction", "reason": "A burner cannot be firing its main flame and shut down in safety lockout simultaneously."}
+{"id": "v0736", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (gold vs rhodium)."}
+{"id": "v0737", "key": "arguable", "reason": "A flush-panel relay is commonly mounted flush into the door or front panel of a floor-standing relay cabinet."}
+{"id": "v0738", "key": "contradiction", "reason": "An enclosure is either bolted to the surface of a wall or free-standing as a floor cabinet."}
+{"id": "v0739", "key": "contradiction", "reason": "A chiller circuit cannot be pumping down refrigerant into the condenser for shutdown and actively defrosting the coil at the same time."}
+{"id": "v0740", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical additive (trisodium phosphate vs polyacrylate)."}
+{"id": "v0741", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (316 stainless steel vs Zircaloy)."}
+{"id": "v0742", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified low-alloy steel grade (T22 vs T11)."}
+{"id": "v0743", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (24 VDC vs 240 VAC)."}
+{"id": "v0744", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (silicone vs polybutene)."}
+{"id": "v0745", "key": "contradiction", "reason": "An unblended mineral dielectric oil is classified as either paraffinic or naphthenic."}
+{"id": "v0746", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one engine type (diesel engine vs steam plant)."}
+{"id": "v0747", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one power source (wingsail vs fuel cell)."}
+{"id": "v0748", "key": "contradiction", "reason": "A chiller condenser rejects heat either via once-through river water or via a recirculating cooling tower loop."}
+{"id": "v0749", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (120 VAC vs 125 VDC)."}
+{"id": "v0750", "key": "contradiction", "reason": "A single-layer rotor coating is one solid-lubricant polymer chemistry (MoS2-bonded vs PTFE)."}
+{"id": "v0751", "key": "contradiction", "reason": "A compressor shaft seal is either a contacting braided packed gland or a non-contacting dry gas face seal."}
+{"id": "v0752", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (platinum vs rhodium)."}
+{"id": "v0753", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one pure gas (nitrogen vs argon)."}
+{"id": "v0754", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (carbon dioxide vs isobutane)."}
+{"id": "v0755", "key": "contradiction", "reason": "A chiller condenser rejects heat either to a closed geothermal ground loop or directly to ambient air."}
+{"id": "v0756", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (25% vs 0%)."}
+{"id": "v0757", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 12 vs NEMA 9)."}
+{"id": "v0758", "key": "arguable", "reason": "Close-coupled horizontal pumps frequently have a foot-mounted pump casing while the adapter bracket bolts directly to a NEMA C-face motor flange."}
+{"id": "v0759", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either a rolling-element deep-groove ball bearing or a fluid-film hydrodynamic journal bearing."}
+{"id": "v0760", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one pure noble gas (argon vs helium)."}
+{"id": "v0761", "key": "contradiction", "reason": "A turbine speed governor is either in nonzero speed-droop mode or zero-droop isochronous mode, not both."}
+{"id": "v0762", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified alloy (TP347H vs T11)."}
+{"id": "v0763", "key": "contradiction", "reason": "A transformer's main magnetic core is either crystalline nickel-iron permalloy or amorphous metal ribbon."}
+{"id": "v0764", "key": "contradiction", "reason": "A chiller circuit cannot be resting stopped in idle and actively defrosting at the same time."}
+{"id": "v0765", "key": "contradiction", "reason": "A drawout breaker is either inside its cell in the test position or completely removed from the cell."}
+{"id": "v0766", "key": "contradiction", "reason": "Under COLREGs, 'not under command' applies only to a vessel underway, not a vessel moored fast alongside a berth, and AIS reports one status code."}
+{"id": "v0767", "key": "arguable", "reason": "Dry gas face seal cartridges can include an auxiliary brush seal ring as a process-side barrier within the same shaft seal assembly."}
+{"id": "v0768", "key": "arguable", "reason": "Dry gas face seal cartridges routinely incorporate an integral inner labyrinth seal stage within the same seal assembly."}
+{"id": "v0769", "key": "contradiction", "reason": "A transformer's main magnetic core is either metallic nanocrystalline ribbon or ceramic ferrite."}
+{"id": "v0770", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type R vs Type J)."}
+{"id": "v0771", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical additive (polyacrylate vs sodium hydroxide)."}
+{"id": "v0772", "key": "arguable", "reason": "In metal-clad drawout switchgear, a breaker is racked to the disconnected position where the integral earthing switch is closed, so the cell/breaker is both disconnected from the bus and earthed."}
+{"id": "v0773", "key": "contradiction", "reason": "A compressor shaft seal is either a segmented carbon ring seal or a braided packed gland."}
+{"id": "v0774", "key": "contradiction", "reason": "A sootblower unit is either a non-rotating fixed rake or a rotating fixed rotary lance."}
+{"id": "v0775", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk material (concrete vs depleted uranium)."}
+{"id": "v0776", "key": "arguable", "reason": "A DIN-rail relay is routinely clipped onto an internal DIN rail inside a floor-standing relay cabinet."}
+{"id": "v0777", "key": "contradiction", "reason": "A two-winding transformer has one vector group (ynd1 vs yyn0)."}
+{"id": "v0778", "key": "arguable", "reason": "Hydraulic unloader actuators are typically controlled by an integral electro-hydraulic solenoid pilot valve, so both can describe the actuator drive."}
+{"id": "v0779", "key": "contradiction", "reason": "A two-winding transformer has one vector group (dyn11 vs ynd1)."}
+{"id": "v0780", "key": "contradiction", "reason": "A compressor shaft seal is either a bristle brush seal or a braided packed gland."}
+{"id": "v0781", "key": "contradiction", "reason": "A vessel has one legal port of registry (Rotterdam vs Bergen)."}
+{"id": "v0782", "key": "contradiction", "reason": "A reactor's primary core moderator is one solid moderator material (beryllium vs graphite)."}
+{"id": "v0783", "key": "contradiction", "reason": "A pump casing is either bolted down on baseplate feet or suspended in-line by the piping."}
+{"id": "v0784", "key": "arguable", "reason": "After a turbine trips and coasts down, it operates on slow turning gear while the protective trip remains latched ('tripped') until reset."}
+{"id": "v0785", "key": "arguable", "reason": "A vessel moored alongside a tidal berth can sit on the harbor bottom (aground) at low water while remaining moored alongside, though AIS allows only one status code."}
+{"id": "v0786", "key": "contradiction", "reason": "An unblended base oil is either a synthetic silicone fluid or a refined mineral oil."}
+{"id": "v0787", "key": "contradiction", "reason": "A furnace wall sootblower is either a non-rotating multi-nozzle fixed rake or a rotating short-stroke wall deslagger."}
+{"id": "v0788", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk metal (steel vs lead)."}
+{"id": "v0789", "key": "contradiction", "reason": "A refrigerant metering device is either a bulb-actuated thermostatic expansion valve or a motor-actuated electronic expansion valve."}
+{"id": "v0790", "key": "contradiction", "reason": "A transformer's main magnetic core is either ceramic ferrite or metallic nanocrystalline ribbon."}
+{"id": "v0791", "key": "contradiction", "reason": "A burner sequence is either in post-shutdown postpurge or firing the main flame, not both."}
+{"id": "v0792", "key": "contradiction", "reason": "A turbine governor cannot be regulating speed in automatic isochronous mode and locked on fixed manual throttle simultaneously."}
+{"id": "v0793", "key": "contradiction", "reason": "A vessel has one legal port of registry (Bergen vs Gothenburg)."}
+{"id": "v0794", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (100% vs 75%)."}
+{"id": "v0795", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified alloy (TP304H vs T91)."}
+{"id": "v0796", "key": "contradiction", "reason": "A chiller condenser rejects heat either to a closed geothermal ground loop or to a once-through seawater loop."}
+{"id": "v0797", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide (pure magnesia vs pure silica)."}
+{"id": "v0798", "key": "contradiction", "reason": "An unblended base oil is one synthetic fluid family (polyglycol vs silicone)."}
+{"id": "v0799", "key": "contradiction", "reason": "A monolithic turbine casing is made of one metal alloy (aluminum vs Inconel)."}
+{"id": "v0800", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (isobutane R-600a vs R-134a)."}
+{"id": "v0801", "key": "arguable", "reason": "Pneumatic unloader actuators frequently include an integral manual handwheel override, so both can apply to the same actuator assembly."}
+{"id": "v0802", "key": "contradiction", "reason": "An unblended dielectric fluid is one base hydrocarbon class (synthetic polybutene vs paraffinic mineral oil)."}
+{"id": "v0803", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BCuP copper-phosphorus vs BNi nickel)."}
+{"id": "v0804", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either a contactless active magnetic bearing or a fluid-film hydrodynamic journal bearing."}
+{"id": "v0805", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (silicone fluid vs naphthenic mineral oil)."}
+{"id": "v0806", "key": "contradiction", "reason": "An intercooler tube bundle carries one cooling liquid (silicone fluid vs demineralized water)."}
+{"id": "v0807", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one resin chemistry (polyurethane vs alkyd)."}
+{"id": "v0808", "key": "contradiction", "reason": "A compressor is either running under load (loaded) or stopped in pre-start prelubricating mode."}
+{"id": "v0809", "key": "contradiction", "reason": "A turbine rotor is either driven at constant slow speed by the turning gear or coasting down unpowered before turning gear engagement."}
+{"id": "v0810", "key": "contradiction", "reason": "A two-winding transformer has one vector group (yyn0 vs dd0)."}
+{"id": "v0811", "key": "contradiction", "reason": "A turbine is either stationary/ready in standby or still decelerating (coasting) after a shutdown."}
+{"id": "v0812", "key": "contradiction", "reason": "A single-component purge gas is one pure noble gas (neon vs helium)."}
+{"id": "v0813", "key": "contradiction", "reason": "A transformer's main magnetic core is either grain-oriented silicon steel or nanocrystalline alloy ribbon."}
+{"id": "v0814", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (silver vs platinum)."}
+{"id": "v0815", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one propulsion technology (gas turbine vs wingsail)."}
+{"id": "v0816", "key": "arguable", "reason": "Hybrid brush-labyrinth compressor seals integrate one or more brush-seal bristle rings directly into a labyrinth seal stator."}
+{"id": "v0817", "key": "arguable", "reason": "A foot-mounted horizontal pump casing is frequently bolted onto a mounting pedestal, so both 'footmounted' and 'pedestalmounted' can describe the pump."}
+{"id": "v0818", "key": "contradiction", "reason": "A reactor primary loop is either in transient plant heatup or held at constant temperature in hot standby."}
+{"id": "v0819", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 4X vs NEMA 3R)."}
+{"id": "v0820", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (120 VAC vs 48 VDC)."}
+{"id": "v0821", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one power source (fuel cell vs gas turbine)."}
+{"id": "v0822", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified alloy grade (T91 vs T22)."}
+{"id": "v0823", "key": "contradiction", "reason": "An unblended base oil is one synthetic fluid family (polyalphaolefin vs silicone)."}
+{"id": "v0824", "key": "arguable", "reason": "During the main flame ignition trial (interrupted pilot), both the pilot spark/flame and the main flame are active simultaneously for several seconds, though BMS step registers index them as separate steps."}
+{"id": "v0825", "key": "contradiction", "reason": "A monolithic cask shield is made of one bulk material (lead vs concrete)."}
+{"id": "v0826", "key": "arguable", "reason": "A transformer can have porcelain HV bushings and cycloaliphatic epoxy LV/indoor bushings on the same unit, or a composite bushing with an epoxy core and porcelain weather sheds."}
+{"id": "v0827", "key": "contradiction", "reason": "A reactor's primary core moderator is one bulk material (heavy water vs graphite)."}
+{"id": "v0828", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either a mechanical deep-groove ball bearing or a contactless active magnetic bearing."}
+{"id": "v0829", "key": "contradiction", "reason": "A pump cannot be accelerating under power (starting) and decelerating unpowered (coasting down) simultaneously."}
+{"id": "v0830", "key": "arguable", "reason": "The feet of a centerline-supported pump's mounting pedestals bolt to the baseplate ('footmounted' pedestals supporting a 'centerlinesupported' casing), though as bare casing mounts they are distinct."}
+{"id": "v0831", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (ammonia vs carbon dioxide)."}
+{"id": "v0832", "key": "arguable", "reason": "A pump can use nitrile for bearing-housing oil seals and EPDM for process wetted O-rings at the same time."}
+{"id": "v0833", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (+1 vs nominal)."}
+{"id": "v0834", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BAlSi aluminum-silicon vs BNi nickel)."}
+{"id": "v0835", "key": "contradiction", "reason": "A pump coupling is either an electromagnetic eddy-current drive or a bolted rigid flange."}
+{"id": "v0836", "key": "contradiction", "reason": "A chiller circuit cannot be actively defrosting and stopped in idle simultaneously."}
+{"id": "v0837", "key": "contradiction", "reason": "A turbine is either decelerating after shutdown (coasting) or stationary/ready in standby."}
+{"id": "v0838", "key": "contradiction", "reason": "A drawout breaker is racked to one discrete carriage position at a time (test position with control plug engaged vs disconnected position)."}
+{"id": "v0839", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (48 VDC vs 240 VAC)."}
+{"id": "v0840", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (polybutene vs ester)."}
+{"id": "v0841", "key": "contradiction", "reason": "A pump cannot be electrically locked out and actively delivering flow simultaneously."}
+{"id": "v0842", "key": "contradiction", "reason": "An unblended base oil is either a synthetic ester or a refined mineral oil."}
+{"id": "v0843", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical additive (EDTA vs trisodium phosphate)."}
+{"id": "v0844", "key": "contradiction", "reason": "A two-winding transformer has one vector group (dyn11 vs yzn11)."}
+{"id": "v0845", "key": "contradiction", "reason": "A single-component purge gas is one pure noble gas (krypton vs helium)."}
+{"id": "v0846", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (walking beam vs rotary table)."}
+{"id": "v0847", "key": "arguable", "reason": "Pneumatic unloader actuators are almost always actuated via an electro-pneumatic solenoid pilot valve, so both can describe the unloader drive."}
+{"id": "v0848", "key": "contradiction", "reason": "A monolithic turbine casing is made of one metal alloy (aluminum vs titanium)."}
+{"id": "v0849", "key": "contradiction", "reason": "A coal boiler furnace uses one firing system (fluidized bed vs traveling grate stoker)."}
+{"id": "v0850", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide (pure zirconia vs pure silica)."}
+{"id": "v0851", "key": "contradiction", "reason": "A compressor is either actively running its pre-start prelubricating sequence or resting in standby."}
+{"id": "v0852", "key": "contradiction", "reason": "A vessel has one legal port of registry (Hamburg vs Gothenburg)."}
+{"id": "v0853", "key": "contradiction", "reason": "A coal boiler furnace uses one firing system (underfeed retort stoker vs fluidized bed)."}
+{"id": "v0854", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (rhodium vs platinum)."}
+{"id": "v0855", "key": "contradiction", "reason": "A pump is either stationary in standby or accelerating under motor power in starting mode."}
+{"id": "v0856", "key": "arguable", "reason": "Dry gas face seal cartridges frequently incorporate a segmented carbon ring secondary/buffer seal within the same shaft seal assembly."}
+{"id": "v0857", "key": "contradiction", "reason": "A reactor primary loop cannot be at full thermal power and defueled/drained simultaneously."}
+{"id": "v0858", "key": "contradiction", "reason": "A furnace wall sootblower unit is either a long-element fixed rotary blower or a short-stroke wall deslagger."}
+{"id": "v0859", "key": "contradiction", "reason": "A chiller circuit is either stopped in pre-start prelubricating mode or running in chilling mode."}
+{"id": "v0860", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BAg silver vs BNi nickel)."}
+{"id": "v0861", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (MoS2-bonded dry film vs diamond-like carbon)."}
+{"id": "v0862", "key": "contradiction", "reason": "A vessel has one legal port of registry (Rotterdam vs Hamburg)."}
+{"id": "v0863", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (carbon dioxide gas vs water)."}
+{"id": "v0864", "key": "contradiction", "reason": "A compressor cannot be shut down in safety lockout and running unloaded (idling) simultaneously."}
+{"id": "v0865", "key": "contradiction", "reason": "A vessel is either unclassed for ice (noclass) or classed to Polar Class PC1."}
+{"id": "v0866", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 9 hazardous dust vs NEMA 7 hazardous gas)."}
+{"id": "v0867", "key": "contradiction", "reason": "A single-component purge gas is one pure gas (nitrogen vs argon)."}
+{"id": "v0868", "key": "contradiction", "reason": "A single-component purge gas is one pure noble gas (helium vs argon)."}
+{"id": "v0869", "key": "contradiction", "reason": "A chiller condenser rejects heat either directly to ambient air or to once-through river water."}
+{"id": "v0870", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either a fluid-film hydrodynamic journal bearing or a contactless active magnetic bearing."}
+{"id": "v0871", "key": "contradiction", "reason": "A transformer's main magnetic core is either iron-silicon steel or nickel-iron permalloy."}
+{"id": "v0872", "key": "contradiction", "reason": "A refrigerant metering device is either a constant-pressure expansion valve or a liquid-level float valve."}
+{"id": "v0873", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one resin chemistry (polyurethane vs fluoropolymer)."}
+{"id": "v0874", "key": "contradiction", "reason": "A reactor's primary core moderator is one bulk moderator substance (graphite vs light water), even in RBMK reactors where light water is the coolant and graphite is the primary moderator."}
+{"id": "v0875", "key": "contradiction", "reason": "A two-winding transformer has one vector group (yzn11 vs yyn0)."}
+{"id": "v0876", "key": "contradiction", "reason": "A turbine cannot be synchronized online generating power and coasting down unpowered simultaneously."}
+{"id": "v0877", "key": "contradiction", "reason": "A relay enclosure is either a surface-mounted wall box or a 19-inch rack-mounted unit."}
+{"id": "v0878", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (0% vs 75%)."}
+{"id": "v0879", "key": "contradiction", "reason": "A single-layer rotor coating is one polymer resin chemistry (PTFE vs epoxy-phenolic)."}
+{"id": "v0880", "key": "contradiction", "reason": "A reactor's primary core moderator is one solid moderator material (beryllium vs zirconium hydride)."}
+{"id": "v0881", "key": "contradiction", "reason": "A burner sequence is either halted in safety lockout or actively running the postpurge fan timer."}
+{"id": "v0882", "key": "contradiction", "reason": "A pump coupling is either an electromagnetic eddy-current drive or a mechanical metallic disc pack."}
+{"id": "v0883", "key": "contradiction", "reason": "A vessel is either classed to Polar Class PC5 or has no ice class (noclass)."}
+{"id": "v0884", "key": "contradiction", "reason": "A chiller condenser rejects heat either to a closed geothermal ground loop or to once-through river water."}
+{"id": "v0885", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (-2 vs -1)."}
+{"id": "v0886", "key": "arguable", "reason": "A pump can use EPDM and Viton in different seals or O-rings within the same pump assembly unless referring to a single designated seal."}
+{"id": "v0887", "key": "contradiction", "reason": "A reactor's primary core moderator is one water isotope (heavy water D2O vs light water H2O)."}
+{"id": "v0888", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (water vs liquid lead-bismuth)."}
+{"id": "v0889", "key": "contradiction", "reason": "A reactor's primary core moderator is one solid moderator material (zirconium hydride vs graphite)."}
+{"id": "v0890", "key": "contradiction", "reason": "A vessel holds one Polar Class rating (PC3 vs PC5)."}
+{"id": "v0891", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide (pure magnesia vs pure zirconia)."}
+{"id": "v0892", "key": "contradiction", "reason": "A furnace's sole hearth conveyor mechanism is one transport design (roller hearth vs car bottom)."}
+{"id": "v0893", "key": "contradiction", "reason": "A single-pressure-loop turbine governor regulates either downstream exhaust backpressure or upstream inlet pressure."}
+{"id": "v0894", "key": "contradiction", "reason": "A coal boiler furnace uses one firing system (fluidized bed vs cyclone barrel)."}
+{"id": "v0895", "key": "contradiction", "reason": "An intercooler tube bundle carries one cooling liquid (mineral oil vs ethylene glycol)."}
+{"id": "v0896", "key": "contradiction", "reason": "A burner controller cannot be halted in safety lockout and energizing the pilot spark simultaneously."}
+{"id": "v0897", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type S vs Type N)."}
+{"id": "v0898", "key": "arguable", "reason": "A pump can use Viton and EPDM in different seals or gaskets within the same assembly unless 'seal material' denotes a single primary seal."}
+{"id": "v0899", "key": "contradiction", "reason": "An evaporator is brazed with one AWS filler metal class (BAg silver vs BAlSi aluminum-silicon)."}
+{"id": "v0900", "key": "arguable", "reason": "A DIN-rail relay is routinely mounted on a DIN rail inside a surface-mounted wall enclosure, making both true if one describes the outer box and the other the relay clip."}
+{"id": "v0901", "key": "contradiction", "reason": "A boiler's sole internal drum treatment is one chemical additive (sodium hydroxide vs NTA)."}
+{"id": "v0902", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (75% vs 50%)."}
+{"id": "v0903", "key": "contradiction", "reason": "An unblended dielectric fluid is one base hydrocarbon liquid (naphthenic mineral oil vs polybutene)."}
+{"id": "v0904", "key": "arguable", "reason": "TRIGA pool reactors use zirconium-hydride fuel-moderator elements together with light water in the core that contributes significant moderation, though one is typically named primary."}
+{"id": "v0905", "key": "contradiction", "reason": "A reactor's primary core moderator is one bulk substance (light water vs graphite)."}
+{"id": "v0906", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (palladium vs gold)."}
+{"id": "v0907", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide (pure chromia vs pure alumina)."}
+{"id": "v0908", "key": "contradiction", "reason": "A monolithic cask shield is made of one heavy metal (depleted uranium vs tungsten)."}
+{"id": "v0909", "key": "arguable", "reason": "A pump can use EPDM and neoprene in different seals or O-rings within the same pump assembly unless restricted to a single primary seal."}
+{"id": "v0910", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (synthetic/natural ester vs silicone fluid)."}
+{"id": "v0911", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (R-134a vs ammonia)."}
+{"id": "v0912", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one engine type (gas turbine vs steam plant)."}
+{"id": "v0913", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (silicone fluid vs ester)."}
+{"id": "v0914", "key": "contradiction", "reason": "A pump is either running under power delivering flow or decelerating unpowered (coasting down)."}
+{"id": "v0915", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (ester vs paraffinic mineral oil)."}
+{"id": "v0916", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (nominal vs -1)."}
+{"id": "v0917", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (epoxy-phenolic vs diamond-like carbon)."}
+{"id": "v0918", "key": "contradiction", "reason": "A generator rotor cooling gas fill is one pure gas (helium vs hydrogen)."}
+{"id": "v0919", "key": "arguable", "reason": "A pump can use EPDM in wetted process seals and nitrile in bearing housing oil seals at the same time."}
+{"id": "v0920", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (nominal vs +2)."}
+{"id": "v0921", "key": "contradiction", "reason": "A pump cannot be decelerating unpowered (coasting down) and running at speed delivering flow simultaneously."}
+{"id": "v0922", "key": "contradiction", "reason": "A single-circuit chiller uses one refrigerant (propane R-290 vs R-134a)."}
+{"id": "v0923", "key": "contradiction", "reason": "A compressor is either resting in standby or actively running its pre-start prelubricating sequence."}
+{"id": "v0924", "key": "arguable", "reason": "Immediately after a protective trip, a turbine is simultaneously in the latched 'tripped' state and physically 'coasting' down in speed."}
+{"id": "v0925", "key": "contradiction", "reason": "A coal boiler furnace uses one firing system (cyclone barrel vs underfeed retort stoker)."}
+{"id": "v0926", "key": "contradiction", "reason": "A sootblower unit is either a non-rotating fixed rake or a rotating long retractable lance."}
+{"id": "v0927", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (Inconel vs Zircaloy)."}
+{"id": "v0928", "key": "contradiction", "reason": "A reactor primary loop cannot be at pressurized hot standby and defueled/drained simultaneously."}
+{"id": "v0929", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (liquid sodium vs helium gas)."}
+{"id": "v0930", "key": "contradiction", "reason": "A transformer's main magnetic core is either nanocrystalline ribbon or grain-oriented silicon steel."}
+{"id": "v0931", "key": "contradiction", "reason": "A pump cannot be ready to start in standby and inhibited in electrical lockout simultaneously."}
+{"id": "v0932", "key": "contradiction", "reason": "A reactor's primary core moderator is one solid moderator material (zirconium hydride vs beryllium)."}
+{"id": "v0933", "key": "contradiction", "reason": "A transformer tap changer is at one discrete step position at a time (+2 vs -2)."}
+{"id": "v0934", "key": "contradiction", "reason": "A refrigerant metering device is either a static fixed orifice or a modulating float valve."}
+{"id": "v0935", "key": "arguable", "reason": "Centerline-supported process pumps (such as API 610 OH2) have their casing lugs bolted atop baseplate mounting pedestals, so both 'centerlinesupported' and 'pedestalmounted' describe the mount."}
+{"id": "v0936", "key": "contradiction", "reason": "A chiller condenser rejects heat either via once-through river water or via a closed geothermal ground loop."}
+{"id": "v0937", "key": "contradiction", "reason": "An intercooler tube bundle carries one cooling medium (ethylene glycol vs ambient air)."}
+{"id": "v0938", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (platinum vs palladium)."}
+{"id": "v0939", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (rhodium vs silver)."}
+{"id": "v0940", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one metal alloy (316 stainless steel vs aluminum)."}
+{"id": "v0941", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one propulsion technology (fuel cell vs wingsail)."}
+{"id": "v0942", "key": "contradiction", "reason": "A reactor primary coolant is one fluid (liquid lead-bismuth vs helium gas)."}
+{"id": "v0943", "key": "arguable", "reason": "A transformer often has cycloaliphatic epoxy LV/indoor bushings and porcelain HV outdoor bushings on the same transformer, though a single weather shed is one material."}
+{"id": "v0944", "key": "contradiction", "reason": "Under COLREGs, 'not under command' applies only to a vessel underway, whereas a vessel 'aground' is not underway, and AIS reports one status code."}
+{"id": "v0945", "key": "contradiction", "reason": "A drawout breaker is racked to one carriage position at a time (test position vs connected service position)."}
+{"id": "v0946", "key": "contradiction", "reason": "A damper actuator is at one discrete opening step at a time (75% vs 100%)."}
+{"id": "v0947", "key": "contradiction", "reason": "A single-rated relay coil is rated for one nominal supply voltage (125 VDC vs 120 VAC)."}
+{"id": "v0948", "key": "contradiction", "reason": "A drawout breaker cannot be energized in the service position and closed onto the safety earthing switch simultaneously."}
+{"id": "v0949", "key": "contradiction", "reason": "A refrigerant metering device is either a modulating thermostatic expansion valve or a passive fixed orifice."}
+{"id": "v0950", "key": "contradiction", "reason": "The outermost contact plating metal is one top layer (gold vs silver)."}
+{"id": "v0951", "key": "contradiction", "reason": "A compressor cannot be shut down in safety lockout and running under load simultaneously."}
+{"id": "v0952", "key": "contradiction", "reason": "A single-layer rotor coating is one coating material (diamond-like carbon vs MoS2-bonded resin)."}
+{"id": "v0953", "key": "contradiction", "reason": "A vessel cannot be underway making way through the water and immobilized aground simultaneously."}
+{"id": "v0954", "key": "contradiction", "reason": "Under COLREGs, a vessel at anchor is not underway and therefore not 'not under command', and AIS transmits a single status code."}
+{"id": "v0955", "key": "contradiction", "reason": "A reactor primary loop is either held in cold shutdown or actively heating up in temperature."}
+{"id": "v0956", "key": "arguable", "reason": "Research and test reactors (such as ATR/MTR) use light water in the fuel channels together with a beryllium moderator/reflector matrix in the core."}
+{"id": "v0957", "key": "contradiction", "reason": "A vessel cannot be underway making way and anchored at the same time."}
+{"id": "v0958", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one engine type (steam plant vs gas turbine)."}
+{"id": "v0959", "key": "contradiction", "reason": "A pump casing is either suspended in-line by the piping or bolted to a baseplate on feet."}
+{"id": "v0960", "key": "contradiction", "reason": "A single-oxide hot-face brick is one pure oxide ceramic (pure alumina vs pure magnesia), as spinel is a two-oxide compound."}
+{"id": "v0961", "key": "arguable", "reason": "An isolated-grid backpressure turbine generator can run with its speed loop in isochronous mode while a pressure loop regulates exhaust backpressure (or vice versa in multi-loop control)."}
+{"id": "v0962", "key": "contradiction", "reason": "A vessel has one legal port of registry (Antwerp vs Bergen)."}
+{"id": "v0963", "key": "contradiction", "reason": "A coal boiler furnace uses one firing system (fluidized bed vs underfeed retort stoker)."}
+{"id": "v0964", "key": "contradiction", "reason": "A drawout breaker cannot be in the un-earthed test position and the earthed position simultaneously."}
+{"id": "v0965", "key": "arguable", "reason": "A pump can use Viton and neoprene in different seals or gaskets within the same assembly unless referring to a single designated seal."}
+{"id": "v0966", "key": "arguable", "reason": "A pump can use Kalrez and EPDM in different seals or O-rings within the same pump assembly unless restricted to a single primary seal."}
+{"id": "v0967", "key": "arguable", "reason": "Stepper-motor unloader actuators frequently include a manual handwheel for unpowered override or maintenance positioning."}
+{"id": "v0968", "key": "contradiction", "reason": "A pump's drive-end radial bearing is either an active magnetic bearing or a pressurized fluid hydrostatic pocket bearing."}
+{"id": "v0969", "key": "contradiction", "reason": "A pump shaft coupling is either a solid bolted rigid flange or a flexible metallic disc coupling."}
+{"id": "v0970", "key": "contradiction", "reason": "A control thermocouple has one alloy calibration (Type N vs Type S)."}
+{"id": "v0971", "key": "contradiction", "reason": "A vessel holds one Polar Class rating (PC1 vs PC5)."}
+{"id": "v0972", "key": "contradiction", "reason": "The outermost contact plating metal is one surface finish (platinum vs gold)."}
+{"id": "v0973", "key": "contradiction", "reason": "A compressor is either running unloaded (idling) or stopped ready to start (standby)."}
+{"id": "v0974", "key": "contradiction", "reason": "A chiller condenser rejects heat either via a recirculating cooling tower loop or via once-through seawater."}
+{"id": "v0975", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one resin chemistry (fluoropolymer vs pure epoxy)."}
+{"id": "v0976", "key": "contradiction", "reason": "A bushing weather shed is made of one insulator material (borosilicate glass vs cycloaliphatic epoxy)."}
+{"id": "v0977", "key": "contradiction", "reason": "A chiller's once-through condenser cooling loop draws from either a freshwater river or the sea."}
+{"id": "v0978", "key": "arguable", "reason": "A pump can use neoprene in bearing housing seals and Kalrez in wetted mechanical seal O-rings at the same time."}
+{"id": "v0979", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (Inconel vs 316 stainless steel)."}
+{"id": "v0980", "key": "contradiction", "reason": "An enclosure with a sole NEMA rating carries one rating (NEMA 7 hazardous gas vs NEMA 9 hazardous dust)."}
+{"id": "v0981", "key": "contradiction", "reason": "A vessel is either classed to Polar Class PC3 or has no ice class (noclass)."}
+{"id": "v0982", "key": "contradiction", "reason": "A burner sequence is either in post-shutdown postpurge or pre-ignition prepurge, not both."}
+{"id": "v0983", "key": "contradiction", "reason": "A vessel is either unclassed for ice (noclass) or classed to Polar Class PC3."}
+{"id": "v0984", "key": "contradiction", "reason": "A chiller circuit is either dormant in idle or actively running its oil pump in prelubricating mode."}
+{"id": "v0985", "key": "arguable", "reason": "A multi-loop turbine governor can configure its speed channel as isochronous while an inlet-pressure loop limits or regulates throttle pressure."}
+{"id": "v0986", "key": "contradiction", "reason": "A pump is either in its starting acceleration sequence or at operating speed delivering flow."}
+{"id": "v0987", "key": "contradiction", "reason": "A reactor's driver fuel cladding is one alloy (Inconel vs Magnox)."}
+{"id": "v0988", "key": "arguable", "reason": "During the main flame trial-for-ignition period, both the pilot spark/flame and the main flame can be present simultaneously before the pilot is extinguished, though BMS step numbers are discrete."}
+{"id": "v0989", "key": "contradiction", "reason": "A monolithic cask shield is made of one heavy metal (tungsten vs lead)."}
+{"id": "v0990", "key": "contradiction", "reason": "A burner cannot be running pre-ignition air prepurge and firing its main flame simultaneously."}
+{"id": "v0991", "key": "contradiction", "reason": "A finishing superheater tube bank is one specified alloy grade (TP347H vs T91)."}
+{"id": "v0992", "key": "contradiction", "reason": "A single-rated relay coil has one nominal DC voltage rating (48 VDC vs 125 VDC)."}
+{"id": "v0993", "key": "contradiction", "reason": "A vessel's sole propulsion prime mover is one propulsion technology (wingsail vs gas turbine)."}
+{"id": "v0994", "key": "contradiction", "reason": "A monolithic cask shield is made of one heavy metal (tungsten vs depleted uranium)."}
+{"id": "v0995", "key": "contradiction", "reason": "A single-component purge gas is one pure gas (krypton vs nitrogen)."}
+{"id": "v0996", "key": "arguable", "reason": "Centerline-supported horizontal process pumps are mounted on bearing/casing pedestals, so both 'pedestalmounted' and 'centerlinesupported' apply to the same pump."}
+{"id": "v0997", "key": "contradiction", "reason": "An unblended dielectric fluid is one base liquid (paraffinic mineral oil vs synthetic/natural ester)."}
+{"id": "v0998", "key": "contradiction", "reason": "A superstructure homopolymer finish topcoat is one resin chemistry (polysiloxane vs fluoropolymer)."}
+{"id": "v0999", "key": "contradiction", "reason": "A reactor's primary core moderator is one bulk material (beryllium vs heavy water)."}
+{"id": "v1000", "key": "contradiction", "reason": "An intercooler tube bundle carries one cooling medium (ambient air vs liquid ethylene glycol)."}
