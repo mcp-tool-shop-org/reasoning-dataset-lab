@@ -415,29 +415,20 @@ def build_setting_tier(
             for r in parent_manifest.get("readers", [])
             if isinstance(r, Mapping)
         }
-        changed: list[str] = []
-        for r in readers:
-            fam = str(getattr(r.model, "family", "")).strip().lower()
-            actual_think, overridden = _reader_think_and_overridden(r)
-            if fam in parent_by_fam:
-                p_think = parent_by_fam[fam]
-                if not (type(actual_think) is type(p_think) and actual_think == p_think):
-                    changed.append(f"{fam}:think={_format_think_setting(actual_think)}")
-            elif overridden:
-                changed.append(f"{fam}:think={_format_think_setting(actual_think)}")
+        changed = [
+            f"{str(getattr(r.model, 'family', '')).strip().lower()}:think={_format_think_setting(_reader_think_and_overridden(r)[0])}"
+            for r in readers
+            if str(getattr(r.model, "family", "")).strip().lower() in parent_by_fam
+            and not (
+                type(_reader_think_and_overridden(r)[0])
+                is type(parent_by_fam[str(getattr(r.model, "family", "")).strip().lower()])
+                and _reader_think_and_overridden(r)[0]
+                == parent_by_fam[str(getattr(r.model, "family", "")).strip().lower()]
+            )
+        ]
         if changed:
             return ",".join(changed)
     if readers is not None:
-        overridden_parts = []
-        for r in readers:
-            fam = str(getattr(r.model, "family", "")).strip().lower()
-            actual_think, overridden = _reader_think_and_overridden(r)
-            if overridden:
-                overridden_parts.append(
-                    f"{fam}:think={_format_think_setting(actual_think)}"
-                )
-        if overridden_parts:
-            return ",".join(overridden_parts)
         return ",".join(
             f"{str(getattr(r.model, 'family', '')).strip().lower()}:think={_format_think_setting(_reader_think_and_overridden(r)[0])}"
             for r in readers
@@ -1089,11 +1080,8 @@ def _load_companion_review_queue(manifest_path: Path | None) -> list[dict[str, A
     for cand in candidates:
         if cand != manifest_path and cand.exists():
             raw = cand.read_text(encoding="utf-8").strip()
-            if not raw:
-                return []
             if raw.startswith("["):
-                data = json.loads(raw)
-                return list(data) if isinstance(data, list) else []
+                return list(json.loads(raw))
             return [json.loads(line) for line in raw.splitlines() if line.strip()]
     return []
 
@@ -1117,14 +1105,7 @@ def _extract_manifest_sets_and_pairs(
             first = str(pair.get("first") if "first" in pair else pair.get("a", ""))
             second = str(pair.get("second") if "second" in pair else pair.get("b", ""))
             verdicts = pair.get("verdicts") or {}
-            v = verdicts.get(reader_name)
-            if v is None:
-                v = verdicts.get(reader_family)
-            if v is None:
-                for k, val in verdicts.items():
-                    if str(k).strip().lower() in (reader_name.lower(), reader_family.lower()):
-                        v = val
-                        break
+            v = verdicts.get(reader_name) or verdicts.get(reader_family)
             pair_map[(first, second)] = str(v) if v is not None else "missing"
         sets_map[set_key] = pair_map
 
@@ -1135,22 +1116,13 @@ def _extract_manifest_sets_and_pairs(
         domain = str(q_entry.get("domain", ""))
         attr = str(q_entry.get("attribute") or q_entry.get("slot") or "")
         set_key = (domain, attr)
-        if set_key in sets_map:
-            continue
         values = [str(v) for v in q_entry.get("values", [])]
         failed_lookup: dict[tuple[str, str], str] = {}
         for fp in q_entry.get("failed_pairs", []):
             first = str(fp.get("first") if "first" in fp else fp.get("a", ""))
             second = str(fp.get("second") if "second" in fp else fp.get("b", ""))
             verdicts = fp.get("verdicts") or {}
-            v = verdicts.get(reader_name)
-            if v is None:
-                v = verdicts.get(reader_family)
-            if v is None:
-                for k, val in verdicts.items():
-                    if str(k).strip().lower() in (reader_name.lower(), reader_family.lower()):
-                        v = val
-                        break
+            v = verdicts.get(reader_name) or verdicts.get(reader_family)
             if v is not None:
                 failed_lookup[(first, second)] = str(v)
         pair_map = {}
@@ -1264,12 +1236,10 @@ def compare_arms(
             a_is_len = a_val in FAILED_DONE_REASONS
             p_bucket = "length" if p_is_len else p_val
             a_bucket = "length" if a_is_len else a_val
-            if p_bucket not in cross_table:
-                cross_table[p_bucket] = {k: 0 for k in CROSS_TABLE_OUTCOMES}
-            if a_bucket not in cross_table[p_bucket]:
-                for row_dict in cross_table.values():
-                    row_dict.setdefault(a_bucket, 0)
-            cross_table[p_bucket][a_bucket] += 1
+            row_buckets = cross_table.setdefault(
+                p_bucket, {k: 0 for k in CROSS_TABLE_OUTCOMES}
+            )
+            row_buckets[a_bucket] = row_buckets.get(a_bucket, 0) + 1
 
             if p_is_len:
                 parent_length_stops += 1

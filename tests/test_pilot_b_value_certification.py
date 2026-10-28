@@ -1760,14 +1760,15 @@ def test_compare_arms_on_two_fixture_manifests_gives_expected_table_and_separate
     )
     a_queue_path.write_text(
         json.dumps(
-            {
-                "domain": "pumps",
-                "attribute": "bearing_clearance",
-                "values": ["X", "Y"],
-                "failed_pairs": [],
-            }
-        )
-        + "\n",
+            [
+                {
+                    "domain": "pumps",
+                    "attribute": "bearing_clearance",
+                    "values": ["X", "Y"],
+                    "failed_pairs": [],
+                }
+            ]
+        ),
         encoding="utf-8",
     )
     comp_with_q = vc.compare_arms(
@@ -1782,6 +1783,14 @@ def test_compare_arms_on_two_fixture_manifests_gives_expected_table_and_separate
     assert comp_with_q["parent_length_stops"] == 3
     assert comp_with_q["addendum_length_stops"] == 1
     assert comp_with_q["addendum_sets_passed"] == 2
+    comp_swapped = vc.compare_arms(
+        addendum_doc,
+        parent_doc,
+        reader_family="nemotron",
+        parent_path=addendum_path,
+        addendum_path=parent_path,
+    )
+    assert comp_swapped["parent_sets_passed"] == 2
 
 
 def test_compare_arms_refuses_mismatched_manifests(tmp_path, capsys):
@@ -1862,6 +1871,36 @@ def test_nemotron_pin_is_think_medium_with_ollama_renderer_citation_and_r3_manif
             r_row["think"] = True
     r3_style_manifest["content_sha256"] = vc.content_hash(r3_style_manifest)
     assert vc.verify_manifest(r3_style_manifest, SMALL) == []
+
+    # Coverage for helper branches in parse_reader_think_overrides, build_setting_tier, check_parent_manifest, and compare_arms
+    assert vc.parse_reader_think_overrides({"nemotron": True}) == {"nemotron": True}
+    with pytest.raises(RdlabError) as bad_type_err:
+        vc.parse_reader_think_overrides({"nemotron": 123})
+    assert bad_type_err.value.code == "PILOT_B_CERT_INVALID_READER_THINK"
+
+    r_g = FakeReader(GRANITE, [])
+    r_n = FakeReader(NEMOTRON, [])
+    assert (
+        vc.build_setting_tier({}, readers=[r_g, r_n], parent_manifest=r3_style_manifest)
+        == "nemotron:think=medium"
+    )
+    assert vc.build_setting_tier({}, readers=[r_g, r_n], parent_manifest=None) == (
+        "granite:think=true,nemotron:think=medium"
+    )
+    assert vc.build_setting_tier({}) == ""
+
+    with pytest.raises(RdlabError) as missing_parent_err:
+        vc.check_parent_manifest(
+            tmp_path / "no-such-parent.json",
+            manifest_out=tmp_path / "m.json",
+            review_queue_out=tmp_path / "q.jsonl",
+        )
+    assert missing_parent_err.value.code == "PILOT_B_CERT_PARENT_MANIFEST_NOT_FOUND"
+
+    with pytest.raises(RdlabError) as missing_reader_err:
+        vc.compare_arms(r3_style_manifest, r3_style_manifest, reader_family="mistral")
+    assert missing_reader_err.value.code == "PILOT_B_COMPARE_ARMS_MISMATCH"
+
 
 
 
