@@ -248,6 +248,8 @@ DEFAULT_PILOT_B_MODEL_PINS: dict[str, PinnedModelSpec] = {
             "Ollama manifest carries no HF commit or weights hash; the HF card at 95a6d26c names apache-2.0 and the "
             "Ollama licence layer is the unmodified Apache-2.0 text."
         ),
+        # Mistral Small 3.2 has no thinking mode in Ollama: it answers directly, and a think=True request would fail.
+        think=False,
         max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["reader_3"],
     ),
 }

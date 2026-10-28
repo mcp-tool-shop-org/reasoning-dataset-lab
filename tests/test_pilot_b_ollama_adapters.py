@@ -2055,3 +2055,26 @@ def test_he_part_d_defaults_8192_6144_and_writer_max_num_ctx_9216(
 
 
 
+
+
+def test_the_reader_3_payload_sends_think_false_and_the_other_readers_send_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from reasoning_dataset_lab.pilot_b.ollama import OllamaBlindReaderAdapter
+
+    sent: dict[str, Any] = {}
+    for role in ("reader_1", "reader_2", "reader_3"):
+        pin = DEFAULT_PILOT_B_MODEL_PINS[role]
+        transport, requests = build_mock_ollama_http_transport()
+        monkeypatch.setattr(
+            "reasoning_dataset_lab.pilot_b.ollama.default_ollama_http_transport",
+            transport,
+        )
+        reader = OllamaBlindReaderAdapter(model=pin, num_predict=64)
+        assert reader.think is pin.think
+        reader.chat_raw(target_id="t", messages=[{"role": "user", "content": "x"}])
+        bodies = [b for _m, url, b in requests if url.endswith("/api/chat")]
+        assert len(bodies) == 1
+        sent[role] = bodies[0]
+    assert sent["reader_3"]["think"] is False
+    assert sent["reader_1"]["think"] is True and sent["reader_2"]["think"] is True

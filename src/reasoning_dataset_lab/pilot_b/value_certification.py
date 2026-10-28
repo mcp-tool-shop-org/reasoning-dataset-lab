@@ -331,6 +331,7 @@ def _assemble(
             "digest": r.model.digest,
             "num_ctx_cap": getattr(r, "max_num_ctx", None),
             "num_predict": getattr(r, "num_predict", None),
+            "think": getattr(r, "think", None),
         }
         for r in readers
     ]
@@ -607,8 +608,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return doc
 
 
-def _pinned_readers() -> set[tuple[str, str, str]]:
-    """(name, digest, family) of the reader models pinned for Pilot B: a manifest must come from these, not from a fake."""
+def _pinned_readers() -> dict[tuple[str, str, str], Any]:
+    """(name, digest, family) of the reader models pinned for Pilot B, each with its pinned think setting: a manifest must come from these, not from a fake."""
 
     from reasoning_dataset_lab.pilot_b.models_and_build import (
         DEFAULT_PILOT_B_MODEL_PINS,
@@ -619,7 +620,9 @@ def _pinned_readers() -> set[tuple[str, str, str]]:
         DEFAULT_PILOT_B_MODEL_PINS["reader_2"],
         DEFAULT_PILOT_B_MODEL_PINS["reader_3"],
     )
-    return {(s.ollama_tag, s.manifest_digest, s.family.strip().lower()) for s in pins}
+    return {
+        (s.ollama_tag, s.manifest_digest, s.family.strip().lower()): s.think for s in pins
+    }
 
 
 def _is_sha256(value: object) -> bool:
@@ -716,6 +719,14 @@ def verify_manifest(
         if key not in pinned:
             problems.append(
                 f"readers: {key[0]} @ {key[1][:12]} is not a pinned reader model"
+            )
+        elif "think" not in r:
+            problems.append(
+                f"readers: {key[0]} records no think setting, so the manifest cannot show how it answered"
+            )
+        elif not (type(r["think"]) is type(pinned[key]) and r["think"] == pinned[key]):
+            problems.append(
+                f"readers: {key[0]} recorded think={r['think']!r}, but its pin says think={pinned[key]!r}"
             )
     for domain, attribute, values in current:
         entry = entries.pop((domain, attribute), None)
