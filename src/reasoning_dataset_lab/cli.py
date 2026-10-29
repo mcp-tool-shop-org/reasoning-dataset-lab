@@ -24,6 +24,12 @@ from reasoning_dataset_lab.errors import (
 )
 from reasoning_dataset_lab.map import check_map_file
 from reasoning_dataset_lab.pilot_b import value_certification
+from reasoning_dataset_lab.pilot_b.bakeoff_part import (
+    DEFAULT_BAKEOFF_TRIADS,
+    DEFAULT_SPLIT_SEED,
+    DEFAULT_VRAM_HALT_MIB,
+    run_bakeoff_part_build,
+)
 from reasoning_dataset_lab.pilot_b.models_and_build import (
     DEFAULT_PILOT_B_MODEL_PINS,
     run_pilot_b_build,
@@ -269,6 +275,108 @@ def _build_parser() -> _StructuredArgumentParser:
         type=int,
         default=1,
         help="Random seed for --audit-sample (default: 1).",
+    )
+
+    # rdlab bakeoff-part --output-dir <dir> [--stub N] [--grant-id <id>] [--mock-writer]
+    bo_parser = subparsers.add_parser(
+        "bakeoff-part",
+        help="Build the writer-only Kind-D (T10) judge bake-off part from v3-certified value sets.",
+    )
+    bo_parser.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        type=Path,
+        required=True,
+        help="External output directory for the bake-off part, sealed store, and reports (must be outside the repo).",
+    )
+    bo_parser.add_argument(
+        "--stub",
+        dest="stub_count",
+        type=int,
+        default=None,
+        help=f"Build N triads for timing/stub mode instead of the full {DEFAULT_BAKEOFF_TRIADS} triads.",
+    )
+    bo_parser.add_argument(
+        "--seed",
+        dest="seed",
+        type=int,
+        default=1,
+        help="Base generation seed (default: 1).",
+    )
+    bo_parser.add_argument(
+        "--split-seed",
+        dest="split_seed",
+        type=int,
+        default=DEFAULT_SPLIT_SEED,
+        help=f"Seed for the 30%% dev / 70%% test value_set_id split (default: {DEFAULT_SPLIT_SEED}).",
+    )
+    bo_parser.add_argument(
+        "--grant-id",
+        dest="grant_id",
+        type=str,
+        default=None,
+        help="Publisher GPU grant identifier (or set RDLAB_GPU_GRANT_ID). Required for real-model runs.",
+    )
+    bo_parser.add_argument(
+        "--vram-halt-mib",
+        dest="vram_halt_mib",
+        type=int,
+        default=DEFAULT_VRAM_HALT_MIB,
+        help=f"VRAM ceiling in MiB above which the run halts and kills the PID tree (default: {DEFAULT_VRAM_HALT_MIB}).",
+    )
+    bo_parser.add_argument(
+        "--mock-writer",
+        dest="mock_writer",
+        action="store_true",
+        help="Use CPU mock writer transport (for dry runs and tests without loading a GPU model).",
+    )
+    bo_parser.add_argument(
+        "--manifest",
+        dest="manifest_path",
+        type=Path,
+        default=None,
+        help="Optional explicit path to certification/v3/manifest-v3.json.",
+    )
+    bo_parser.add_argument(
+        "--review-queue-v3",
+        dest="review_queue_v3_path",
+        type=Path,
+        default=None,
+        help="Optional explicit path to certification/v3/review_queue-v3.json.",
+    )
+    bo_parser.add_argument(
+        "--licence-registry",
+        dest="licence_registry",
+        type=Path,
+        default=None,
+        help="Optional explicit path to licences/registry.json.",
+    )
+    bo_parser.add_argument(
+        "--shuffle-seed",
+        dest="shuffle_seed",
+        type=int,
+        default=None,
+        help="Optional shuffle seed for sealed items (default: fresh 128-bit secret seed).",
+    )
+    bo_parser.add_argument(
+        "--table-secret",
+        dest="table_secret",
+        type=int,
+        default=None,
+        help="Test only: explicit table secret (requires --allow-weak-seed).",
+    )
+    bo_parser.add_argument(
+        "--allow-weak-seed",
+        dest="allow_weak_test_seed",
+        action="store_true",
+        help="Test only: allow a weak shuffle seed or explicit table secret.",
+    )
+    bo_parser.add_argument(
+        "--ollama-url",
+        dest="ollama_url",
+        type=str,
+        default="http://127.0.0.1:11434",
+        help="Loopback Ollama HTTP endpoint (default: http://127.0.0.1:11434).",
     )
 
     return parser
@@ -782,6 +890,33 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 if var_rep.get("gate_status") == "fail" or var_rep.get("leak")
                 else EXIT_CLEAN
             )
+
+        if args.command == "bakeoff-part":
+            triad_count = (
+                args.stub_count
+                if args.stub_count is not None
+                else DEFAULT_BAKEOFF_TRIADS
+            )
+            stub_mode = args.stub_count is not None
+            bo_res = run_bakeoff_part_build(
+                output_dir=args.output_dir,
+                triad_count=triad_count,
+                stub_mode=stub_mode,
+                mock_writer=args.mock_writer,
+                seed=args.seed,
+                split_seed=args.split_seed,
+                shuffle_seed=args.shuffle_seed,
+                table_secret=args.table_secret,
+                allow_weak_test_seed=args.allow_weak_test_seed,
+                grant_id=args.grant_id,
+                vram_halt_mib=args.vram_halt_mib,
+                manifest_path=args.manifest_path,
+                review_queue_v3_path=args.review_queue_v3_path,
+                licence_registry_path=args.licence_registry,
+                ollama_base_url=args.ollama_url,
+            )
+            print(json.dumps(bo_res, indent=2))
+            return EXIT_CLEAN
 
         raise usage_error(
             "CLI_USAGE_ERROR",

@@ -1521,11 +1521,34 @@ def _secret_int(secret: int | None, seed: int, tag: str) -> int:
     return int.from_bytes(digest[:8], "big")
 
 
-def _domain_role_map(spec: dict[str, object]) -> dict[str, tuple[str, str | None, tuple[str, ...]]]:
+def _domain_role_map(
+    spec: dict[str, object],
+    certified_value_set: tuple[str, str, tuple[str, ...]] | None = None,
+) -> dict[str, tuple[str, str | None, tuple[str, ...]]]:
     num_attr, num_unit = spec["number_attr"]  # type: ignore[misc]
     meas_attr, meas_unit = spec["measure_attr"]  # type: ignore[misc]
     date_attr = str(spec["date_attr"])
     int_attr, int_unit = spec["interval_attr"]  # type: ignore[misc]
+    if certified_value_set is not None:
+        cert_dom, cert_attr, cert_vals = certified_value_set
+        if str(cert_dom) != str(spec["domain"]):
+            raise refused_error(
+                "PILOT_B_VALUE_SET_DOMAIN_MISMATCH",
+                f"Value set domain '{cert_dom}' does not match table domain '{spec['domain']}'.",
+                "Bind each table only to a certified value set from its own domain.",
+            )
+        cat_entry = (str(cert_attr), None, tuple(str(v) for v in cert_vals))
+        return {
+            "N0": (str(num_attr), str(num_unit), ()),
+            "N1": (str(meas_attr), str(meas_unit), ()),
+            "N2": (str(int_attr), str(int_unit), ()),
+            "D0": (date_attr, None, ()),
+            "S0": cat_entry,
+            "A0": cat_entry,
+            "A1": cat_entry,
+            "A2": cat_entry,
+            "A3": cat_entry,
+        }
     state_attr, state_vals = spec["state_attr"]  # type: ignore[misc]
     attr_name, attr_vals = spec["attr_spec"]  # type: ignore[misc]
     open_list = spec["open_attrs"]  # type: ignore[index]
@@ -1561,9 +1584,11 @@ def _plan_visit_roles(
     visit: int,
     closure: ClosureTag,
     secret: int | None = None,
+    *,
+    single_categorical: bool = False,
 ) -> dict[str, object]:
     """Return the deterministic role assignment for a (domain, visit, closure) table and triad."""
-    if visit == 0 and secret is None and spec_idx in (0, 2, 7, 9):
+    if not single_categorical and visit == 0 and secret is None and spec_idx in (0, 2, 7, 9):
         if spec_idx == 0:
             stated = ("N1", "D0", "N2", "S0", "A0")
             open_r = ("A1", "A2", "A3")
@@ -1683,7 +1708,8 @@ def _plan_visit_roles(
             ]
         else:
             interval_role = "N2"
-            filler_3 = "A0" if target_role not in ("A0", "A1", "A2", "A3") else "D0"
+            cat_roles = ("S0", "A0", "A1", "A2", "A3") if single_categorical else ("A0", "A1", "A2", "A3")
+            filler_3 = "A0" if target_role not in cat_roles else "D0"
             raw_specs = [
                 (target_role, e_sup, False, 0),
                 (target_role, e_unsup, False, 1),
@@ -1737,12 +1763,37 @@ def build_sample_fact_table(
     closure: ClosureTag | None = None,
     *,
     secret: int | None = None,
+    domain_override: str | None = None,
+    certified_value_set: tuple[str, str, tuple[str, ...]] | None = None,
 ) -> FactTable:
     """Build a deterministic FactTable covering typed atomic facts."""
     n_dom = len(DOMAIN_CATALOGUE)
     s = max(0, abs(seed) - 1)
     visit = s // n_dom
-    spec_idx = (s + visit) % n_dom
+    resolved_domain_override = domain_override
+    if certified_value_set is not None:
+        cert_dom = str(certified_value_set[0])
+        if resolved_domain_override is not None and resolved_domain_override != cert_dom:
+            raise refused_error(
+                "PILOT_B_VALUE_SET_DOMAIN_MISMATCH",
+                f"Value set domain '{cert_dom}' does not match domain_override '{resolved_domain_override}'.",
+                "Use a certified value set from the requested domain.",
+            )
+        resolved_domain_override = cert_dom
+    if resolved_domain_override is not None:
+        matched_idx = next(
+            (i for i, sp in enumerate(DOMAIN_CATALOGUE) if str(sp["domain"]) == resolved_domain_override),
+            None,
+        )
+        if matched_idx is None:
+            raise refused_error(
+                "PILOT_B_UNKNOWN_DOMAIN",
+                f"Domain '{resolved_domain_override}' is not in DOMAIN_CATALOGUE.",
+                "Select a valid domain from DOMAIN_CATALOGUE.",
+            )
+        spec_idx = matched_idx
+    else:
+        spec_idx = (s + visit) % n_dom
     spec = DOMAIN_CATALOGUE[spec_idx]
     domain = str(spec["domain"])
     all_entities: tuple[str, ...] = tuple(spec["entities"])  # type: ignore[arg-type]
@@ -1758,14 +1809,20 @@ def build_sample_fact_table(
         else ("open" if s % 2 == 0 else "closed")
     )
 
-    plan = _plan_visit_roles(spec_idx, visit, resolved_closure, secret=secret)
+    plan = _plan_visit_roles(
+        spec_idx,
+        visit,
+        resolved_closure,
+        secret=secret,
+        single_categorical=certified_value_set is not None,
+    )
     e_sup_p, e_unsup_p, e_ct_p = plan["key_entities"]  # type: ignore[misc]
     ent_slots = ["", "", ""]
     ent_slots[e_sup_p] = cands[0]
     ent_slots[e_unsup_p] = cands[1]
     ent_slots[e_ct_p] = cands[2]
     entities: tuple[str, ...] = (ent_slots[0], ent_slots[1], ent_slots[2])
-    role_map = _domain_role_map(spec)
+    role_map = _domain_role_map(spec, certified_value_set=certified_value_set)
 
     if secret is None:
         if visit == 0:
@@ -1859,7 +1916,7 @@ def build_sample_fact_table(
             f_val = _role_value(r_key, val_slot=val_slot)
             f_unit = None
             f_op = "="
-        elif r_key == "S0":
+        elif attr_str == str(spec["state_attr"][0]):  # type: ignore[index]
             f_type = "state"
             f_val = _role_value(r_key, val_slot=val_slot)
             f_unit = None
@@ -1919,6 +1976,7 @@ def build_contrast_triad(
     seed: int = 1,
     *,
     secret: int | None = None,
+    certified_value_set: tuple[str, str, tuple[str, ...]] | None = None,
 ) -> ProvedTriad:
     """Build a ProvedTriad (supported, unsupported, cannot_tell) from a FactTable with proved keys."""
     if not table.facts:
@@ -1959,8 +2017,14 @@ def build_contrast_triad(
         (s + visit) % n_dom,
     )
     spec = DOMAIN_CATALOGUE[d_idx]
-    role_map = _domain_role_map(spec)
-    plan = _plan_visit_roles(d_idx, visit, table.closure, secret=secret)
+    role_map = _domain_role_map(spec, certified_value_set=certified_value_set)
+    plan = _plan_visit_roles(
+        d_idx,
+        visit,
+        table.closure,
+        secret=secret,
+        single_categorical=certified_value_set is not None,
+    )
     sup_attr_target = role_map[str(plan["sup_role"])][0]
     unsup_attr_target = role_map[str(plan["unsup_role"])][0]
     ct_role_target = str(plan["ct_role"])

@@ -404,8 +404,6 @@
         }
       },
       "required": [
-        "reader_1",
-        "reader_2",
         "writer"
       ],
       "type": "object"
@@ -461,6 +459,9 @@
     "split": {
       "const": "sealed"
     },
+    "split_counts": {
+      "type": "object"
+    },
     "test_only": {
       "type": "boolean"
     },
@@ -475,7 +476,7 @@
         "$ref": "#/$defs/wave"
       },
       "maxItems": 4,
-      "minItems": 4,
+      "minItems": 2,
       "type": "array"
     }
   },
