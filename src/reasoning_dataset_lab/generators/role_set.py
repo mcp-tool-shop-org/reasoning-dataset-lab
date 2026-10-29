@@ -32,6 +32,12 @@ from reasoning_dataset_lab.generators.base import (
 
 ROLE_SET_COMMIT: str = "d29499f"
 ROLE_SET_FULL_SHA: str = "d29499f77a81bda144ebd51885f3c167a04667aa"
+# Since 0.4.0 role-set comes from PyPI (role-set==0.3.0), not from a git commit, because PyPI refuses git-URL
+# dependencies. role-set 0.3.0 was built from ROLE_SET_RELEASE_COMMIT; its src/ is byte-identical to the d29499f pin
+# above except for __version__ (git diff d29499f ab77233 -- src, checked 2026-10-29), so the receipts keep naming
+# d29499f and the citations to its lines stay true.
+ROLE_SET_RELEASE: str = "0.3.0"
+ROLE_SET_RELEASE_COMMIT: str = "ab7723341d5b3c6a6ede6348b5290fe3834a1639"
 ASPIRE_SI_GATES_COMMIT: str = "8ed78f2"
 ASPIRE_SI_GATES_FULL_SHA: str = "8ed78f2fee388e81443953f8dd3753c73e1ff2bd"
 ASPIRE_SI_GATES_SHA256: str = (

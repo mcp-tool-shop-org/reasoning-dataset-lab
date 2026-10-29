@@ -8,7 +8,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 NL = chr(10)
-OLD_ROLE_SET = "2b268401f89437df3aa5226ac8579d90598f851b"  # role-set <=3.12 (requires-python >=3.12,<3.13)
 
 
 def test_requires_python_python_version_file_and_lock_agree_on_current_python():
@@ -19,11 +18,17 @@ def test_requires_python_python_version_file_and_lock_agree_on_current_python():
     assert lock["requires-python"] == ">=3.13"
 
 
-def test_role_set_is_pinned_to_a_commit_that_allows_current_python_and_the_lock_agrees():
+def test_role_set_is_pinned_to_a_pypi_release_that_allows_current_python_and_the_lock_agrees():
+    from reasoning_dataset_lab.generators import role_set as adapter
+
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    pins = re.findall(r"role-set @ git\+https://github.com/mcp-tool-shop-org/role-set@([0-9a-f]{40})", pyproject)
-    assert len(pins) == 1 and pins[0] != OLD_ROLE_SET
-    assert pins[0] in (ROOT / "uv.lock").read_text(encoding="utf-8")
+    assert "git+https://" not in pyproject  # PyPI refuses git-URL dependencies
+    assert re.findall(r'"role-set==([0-9.]+)"', pyproject) == [adapter.ROLE_SET_RELEASE]
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    (locked,) = [p for p in lock["package"] if p["name"] == "role-set"]
+    assert locked["version"] == adapter.ROLE_SET_RELEASE
+    assert "git" not in locked["source"]
+    assert locked["source"].get("registry") == "https://pypi.org/simple"
 
 
 def test_ci_runs_the_suite_on_3_15_with_the_check_name_kept_and_on_3_13_and_3_14():
@@ -52,19 +57,17 @@ def test_every_action_in_the_workflow_is_pinned_by_commit_sha_with_a_version_com
         assert re.search(r"# v\d", rest), f"{ref} has no version comment"
 
 
-def test_the_role_set_pin_has_one_value_in_pyproject_the_constants_and_the_installed_distribution():
+def test_the_installed_role_set_is_the_pinned_release_and_the_citations_name_the_source_commit():
     import importlib.metadata
-    import json
 
+    import role_set
     from reasoning_dataset_lab.generators import role_set as adapter
 
-    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    (pinned,) = re.findall(r"role-set @ git\+https://github.com/mcp-tool-shop-org/role-set@([0-9a-f]{40})", pyproject)
-    assert adapter.ROLE_SET_FULL_SHA == pinned
-    assert adapter.ROLE_SET_COMMIT == pinned[:7]
-    direct_url = json.loads(importlib.metadata.distribution("role-set").read_text("direct_url.json"))
-    assert direct_url["vcs_info"]["commit_id"] == pinned, "the installed role-set is not the pinned commit; run uv sync --frozen"
-    # the citations name the commit that is actually pinned
+    assert importlib.metadata.version("role-set") == adapter.ROLE_SET_RELEASE, "run uv sync --frozen"
+    assert role_set.__version__ == adapter.ROLE_SET_RELEASE
+    assert adapter.ROLE_SET_FULL_SHA.startswith(adapter.ROLE_SET_COMMIT)
+    assert len(adapter.ROLE_SET_RELEASE_COMMIT) == 40
+    # the citations name the source commit the receipts name (role-set 0.3.0's src is identical to it, see the adapter)
     for path in (ROOT / "src" / "reasoning_dataset_lab").rglob("*.py"):
-        for cited in re.findall(r"@([0-9a-f]{7})\b", path.read_text(encoding="utf-8")):
-            assert cited in (pinned[:7], adapter.ASPIRE_SI_GATES_COMMIT), f"{path.name} cites role-set@{cited}, not {pinned[:7]}"
+        for cited in re.findall(r"@([0-9a-f]{7})", path.read_text(encoding="utf-8")):
+            assert cited in (adapter.ROLE_SET_COMMIT, adapter.ASPIRE_SI_GATES_COMMIT), f"{path.name} cites {cited}"

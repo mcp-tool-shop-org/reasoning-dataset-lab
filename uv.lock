@@ -5,7 +5,11 @@ requires-python = ">=3.13"
 [[package]]
 name = "aspire-si-gates"
 version = "1.7.6"
-source = { git = "https://github.com/mcp-tool-shop-org/aspire-si-gates?rev=8ed78f2fee388e81443953f8dd3753c73e1ff2bd#8ed78f2fee388e81443953f8dd3753c73e1ff2bd" }
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f3/64/d3bd458fb015ba72202143ceb48bbd970cb333e8de53ca8d0dccf257333e/aspire_si_gates-1.7.6.tar.gz", hash = "sha256:569f916648ed559eab1a12943b17e19e4adca70aced0661c2e6417ffaf48ac5c", size = 46201, upload-time = "2026-10-29T19:56:03.97Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c0/b1/d34abf4ca45495c1c7f830ba9bdea32bf4cbf710e0dafe78beb27aa367ff/aspire_si_gates-1.7.6-py3-none-any.whl", hash = "sha256:ce70acbaa48d652a85404567a7ddac086f562cf152d783e62b0a83c51d2bc165", size = 35259, upload-time = "2026-10-29T19:56:02.542Z" },
+]
 
 [[package]]
 name = "colorama"
@@ -204,7 +208,7 @@ wheels = [
 
 [[package]]
 name = "reasoning-dataset-lab"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "aspire-si-gates" },
@@ -228,12 +232,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aspire-si-gates", git = "https://github.com/mcp-tool-shop-org/aspire-si-gates?rev=8ed78f2fee388e81443953f8dd3753c73e1ff2bd" },
+    { name = "aspire-si-gates", specifier = "==1.7.6" },
     { name = "coverage", marker = "extra == 'dev'", specifier = "==7.16.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = "==7.0.0" },
     { name = "pyyaml", specifier = "==6.0.3" },
-    { name = "role-set", git = "https://github.com/mcp-tool-shop-org/role-set?rev=d29499f77a81bda144ebd51885f3c167a04667aa" },
+    { name = "role-set", specifier = "==0.3.0" },
 ]
 provides-extras = ["dev"]
 
@@ -246,8 +250,12 @@ dev = [
 
 [[package]]
 name = "role-set"
-version = "0.2.0"
-source = { git = "https://github.com/mcp-tool-shop-org/role-set?rev=d29499f77a81bda144ebd51885f3c167a04667aa#d29499f77a81bda144ebd51885f3c167a04667aa" }
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aspire-si-gates" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7c/11/1d9a0cba5e1b9b040c2eb9788bc5b6ea9465d0f40d9f36b674a8a0fb7ecb/role_set-0.3.0.tar.gz", hash = "sha256:2ba1568fac12829350482650d505eb19bf00fa3050d2060357e4a8ad126e1534", size = 3268568, upload-time = "2026-10-29T21:20:12.516Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/94/69/1eaf708968b5fbe958c8edd8690b80cb021ae8ea320a65430a688d75376d/role_set-0.3.0-py3-none-any.whl", hash = "sha256:982053602967a04877c4f336e52ce118db8b6f46bb1a5a943e78ed452126e39e", size = 347779, upload-time = "2026-10-29T21:20:10.819Z" },
 ]

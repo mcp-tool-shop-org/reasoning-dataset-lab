@@ -1768,7 +1768,8 @@ def test_gs_defaults_are_4096_6144_2048(
     assert "docs/calibration-2026-10-25.md" in doc_text
 
     repo_root = Path(__file__).resolve().parent.parent
-    readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
+    # the Pilot B numbers live in the handbook page, which the README links to
+    readme_text = (repo_root / "site" / "src" / "content" / "docs" / "handbook" / "pilot-b.md").read_text(encoding="utf-8")
     assert "3,462" in readme_text
     assert "3,743" in readme_text
     assert "4,255" in readme_text

@@ -9,8 +9,16 @@
       "externals": 0,
       "files": [
         {
-          "hash": "82226eff92e9afdcf844c6ba3eb0ec6a473ef1d00e4194b201210644bca30cf6",
+          "hash": "473c20102ee33695fea8e3956afbb5c340e30f774ffc79b8b17c27522e041b42",
           "path": ".github/workflows/ci.yml"
+        },
+        {
+          "hash": "fe1db5f18ca42c6e2363f0860db9c117b03a6bff39b375189f7c9d2f1882b4a1",
+          "path": ".github/workflows/pages.yml"
+        },
+        {
+          "hash": "88610e25e2b501fa653504e068801b69e3a8fa69b68839366c8239c045826f1b",
+          "path": ".github/workflows/release.yml"
         }
       ],
       "globs": [
@@ -147,6 +155,29 @@
       "externals": 0,
       "files": [
         {
+          "hash": "2b7c7e75565178a5d9b7de497bbade83301c35245bd254c816ad280c16596d9f",
+          "path": "docs/calibration-2026-10-25.md"
+        }
+      ],
+      "globs": [
+        "docs/**"
+      ],
+      "importConfidence": "full",
+      "name": "docs",
+      "origin": "authored",
+      "role": "docs",
+      "testedBy": 0,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
           "hash": "e58eee096023fa7dfebe97de575b99814574ed8ea21cb6126d3d217e99deffb3",
           "path": "examples/t10-pilot-a.map.yaml"
         }
@@ -174,7 +205,7 @@
           "path": ".gitattributes"
         },
         {
-          "hash": "42ed94fd2244cb58d996e2f201f4abf86862a8762125c2d425f97e09e016156b",
+          "hash": "34c323e614bb57d9eff1b5a637d3632ecfef666314a96d47994f6b33295a2468",
           "path": ".gitignore"
         },
         {
@@ -182,7 +213,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "d0c1d451af77bf7e76f39613e259e0ae456bc67acf51c7aa2493dd4598138be8",
+          "hash": "71d8fb5298074ca8bfb6a1778d81609797e3ee297239cea3e813edbe55457f53",
           "path": "CHANGELOG.md"
         },
         {
@@ -190,19 +221,55 @@
           "path": "LICENSE"
         },
         {
-          "hash": "2d964ee6a7c789e7e22949ddc9675d492e70db0075c15b58931d31ac86f8e39d",
+          "hash": "e9ce2e54e72942d4d16e7239377c497d02f1b804b7c323147bda52167f4a6524",
+          "path": "README.es.md"
+        },
+        {
+          "hash": "7de17089640cf11a09f8cca05a9779164a4ff522dc2a16e47aa4d6f405674447",
+          "path": "README.fr.md"
+        },
+        {
+          "hash": "876b428f2f6daf09dba765363e20e5970468c6c305682d16be2aba36168f1116",
+          "path": "README.hi.md"
+        },
+        {
+          "hash": "807558bef9ac50deaea37681d464adf387bccd39dd4da6259a081c77877967fa",
+          "path": "README.it.md"
+        },
+        {
+          "hash": "2603f1a436f0f5c23ba2938d6112a77d830ce40f220b448730cae2da7f9d2d8e",
+          "path": "README.ja.md"
+        },
+        {
+          "hash": "472ee93e6e0589fc7a1fededd4d838fe27fded921580e17133d053438ace124c",
           "path": "README.md"
         },
         {
-          "hash": "b136a68580708b4f506b1414afa9098d4ea4142b1ebe79530977e697c42d2f29",
+          "hash": "34039df25f2866bce1dcb40c5ed7856ec150e17a180d07107e3f5a04dbd184d5",
+          "path": "README.pt-BR.md"
+        },
+        {
+          "hash": "a32e2b4ce2b206a6a364dba11dd962ab613efdcd7d689bb0e77d42ce5e0d860f",
+          "path": "README.zh.md"
+        },
+        {
+          "hash": "bf77d0b5a4cd6e599d978ff45b20b09f01820d10baea4714a93606a714cb4c09",
+          "path": "SCORECARD.md"
+        },
+        {
+          "hash": "40a51627a345a46518a06e99f2a939a8028ceb72fedb19c8710a3e2089e9a08d",
           "path": "SECURITY.md"
         },
         {
-          "hash": "14ca8fc08c766884694fb06d9b5bf6ceb72f2ee77f30f89c779e36c8a3715355",
+          "hash": "6a708bb10418cef83e50d93cc14a8866e4b6de4782eacaf59876d36206c66265",
+          "path": "SHIP_GATE.md"
+        },
+        {
+          "hash": "9aa98c53f7afeeefcb4078a2d66d27c2647cb7ffecf9e9586bf30691d06f8749",
           "path": "pyproject.toml"
         },
         {
-          "hash": "7476c5dec4ae72a954b53e33d191a275059e254c56f1dcfde612efe4cbf520fe",
+          "hash": "5269aab39cffaea905fe2f819de3b40db02b5d9ef021b58c16424afc5d63ab48",
           "path": "uv.lock"
         }
       ],
@@ -213,6 +280,126 @@
       "name": "root",
       "origin": "authored",
       "role": "config",
+      "testedBy": 0,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
+          "hash": "107334363935dda8ac8c3d0089322a0e432996eae4d15934589b4c956c933516",
+          "path": "scripts/verify.sh"
+        }
+      ],
+      "globs": [
+        "scripts/**"
+      ],
+      "importConfidence": "full",
+      "name": "scripts",
+      "origin": "authored",
+      "role": "code",
+      "testedBy": 0,
+      "unresolvedSites": 0
+    },
+    {
+      "dynamicReads": 0,
+      "dynamicSpawns": 0,
+      "dynamicSpawnsInTests": 0,
+      "dynamicWrites": 0,
+      "entryPoints": [],
+      "externals": 0,
+      "files": [
+        {
+          "hash": "289096342ac077dc8de719d90891d4ecbd22417396745b3712bb935943ab7e63",
+          "path": "site/astro.config.mjs"
+        },
+        {
+          "hash": "c16307bd9a485a2bbaa6b92f53fbe7e11de19cd24a73cbfed0104312b19638b2",
+          "path": "site/package-lock.json"
+        },
+        {
+          "hash": "9c39e620ebae2c5718ecd8c6188bd3451409a614ec8f5308dc15d5fd886e5b91",
+          "path": "site/package.json"
+        },
+        {
+          "hash": "db3c76ae1d22efa9f6c9a1cf3d8b1f45a5e94210d34e4b518006018e7d3d097d",
+          "path": "site/public/favicon.svg"
+        },
+        {
+          "constantOnly": true,
+          "hash": "ee756dfba4122d2acc94a39b2555d9f200fff56a87a8c0b10f9cd01df26a8b62",
+          "path": "site/src/content.config.ts"
+        },
+        {
+          "hash": "5dc42a2d125d14bb8d16c0a8660df1f0c0a52a5cf8ecdc282c3540e6583e3801",
+          "path": "site/src/content/docs/handbook/certification.md"
+        },
+        {
+          "hash": "e0343db7d99a2de21e357c0a04bd3c2afaf3e6b8ca17f4f6abd53475a32e3aa1",
+          "path": "site/src/content/docs/handbook/getting-started.md"
+        },
+        {
+          "hash": "62e63f491c7b74548ae50aa04250cd55fe37ee3a6cb30afe895953ff673651fa",
+          "path": "site/src/content/docs/handbook/index.md"
+        },
+        {
+          "hash": "634b10ef48a88c81f5e708ed726dd8cb10146cde10f371d2f137dd2af504ae24",
+          "path": "site/src/content/docs/handbook/map-first.md"
+        },
+        {
+          "hash": "962058073994bfb11e6bf6af421f65b9a3e0ad8de47c82b855c27f78be06bfe4",
+          "path": "site/src/content/docs/handbook/pilot-b.md"
+        },
+        {
+          "hash": "6669f37ea419810ffa12d489bbc65b7660018caa694e8d037ccbd1de048d8ed7",
+          "path": "site/src/content/docs/handbook/reference.md"
+        },
+        {
+          "hash": "84d74707032bcbb198919a3a830bb1854046640511e9154b1ad06e3ca7546cb4",
+          "path": "site/src/content/docs/handbook/security.md"
+        },
+        {
+          "hash": "4fb84a646c4d833c33f4058e1ed1775849e855c65e5adb7e45d2a633674bd603",
+          "importOrder": [
+            "site/src/styles/global.css",
+            "site/src/site-config.ts"
+          ],
+          "importsFiles": [
+            "site/src/site-config.ts",
+            "site/src/styles/global.css"
+          ],
+          "path": "site/src/pages/index.astro"
+        },
+        {
+          "constantOnly": true,
+          "hash": "5d42712e79c83d4256d359de0835e2f261ea348381e7c6fcc1b5d591d8d6e3ae",
+          "path": "site/src/site-config.ts"
+        },
+        {
+          "hash": "29ee8df91833e694bdba973126b34a6177de4cf01dab6d9ef7d3126e8e2b67fb",
+          "path": "site/src/styles/global.css"
+        },
+        {
+          "hash": "9c6d0b00ac90abe0eced42cacd36b8ce9a5b4e811a0437061a664f7ed26dd1d4",
+          "path": "site/src/styles/starlight-custom.css"
+        },
+        {
+          "hash": "b5b0a5b04a14cddd7713c5e1c82e86c79c17c2f86b170e26e9b170b3d5e01cd9",
+          "path": "site/tsconfig.json"
+        }
+      ],
+      "globs": [
+        "site/**"
+      ],
+      "importConfidence": "full",
+      "name": "site",
+      "origin": "authored",
+      "role": "docs",
       "testedBy": 0,
       "unresolvedSites": 0
     },
@@ -230,7 +417,7 @@
       "externals": 4,
       "files": [
         {
-          "hash": "70e1e62e144b112ff9c69ade4cc444b2058bcb4e6d3b5d0c7d5845b119b9d38e",
+          "hash": "6e8d10786c0db2c526cc1cac39825eb9424f6b6c41aa05ac372d8da0840e8c05",
           "path": "src/reasoning_dataset_lab/__init__.py"
         },
         {
@@ -1433,12 +1620,7 @@
             {
               "in": "validate_shortcut_join",
               "kind": "raise",
-              "line": 64
-            },
-            {
-              "in": "_validate_cell_for_role_set",
-              "kind": "raise",
-              "line": 77
+              "line": 70
             },
             {
               "in": "_validate_cell_for_role_set",
@@ -1461,14 +1643,14 @@
               "line": 101
             },
             {
-              "in": "__init__",
+              "in": "_validate_cell_for_role_set",
               "kind": "raise",
-              "line": 143
+              "line": 107
             },
             {
-              "in": "plan",
+              "in": "__init__",
               "kind": "raise",
-              "line": 161
+              "line": 149
             },
             {
               "in": "plan",
@@ -1478,40 +1660,45 @@
             {
               "in": "plan",
               "kind": "raise",
-              "line": 186
+              "line": 173
             },
             {
               "in": "plan",
               "kind": "raise",
-              "line": 252
+              "line": 192
+            },
+            {
+              "in": "plan",
+              "kind": "raise",
+              "line": 258
             },
             {
               "in": "build",
               "kind": "raise",
-              "line": 264
+              "line": 270
             },
             {
               "in": "build",
               "kind": "raise",
-              "line": 274
+              "line": 280
             },
             {
               "in": "build",
               "kind": "raise",
-              "line": 281
+              "line": 287
             },
             {
               "in": "build",
               "kind": "raise",
-              "line": 310
+              "line": 316
             },
             {
               "in": "build",
               "kind": "raise",
-              "line": 362
+              "line": 368
             }
           ],
-          "hash": "1768af8da9b3dfec6d62d7f6ccecf07edae2b1fc43355af6a4b82f98b50da2f9",
+          "hash": "7dae7b9ab43c0942f77b1e6cdb31fe27ea42777639f218da1b40e70eccc91d88",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/generators/base.py"
@@ -6695,7 +6882,7 @@
       "externalNames": [
         "role_set"
       ],
-      "externals": 3,
+      "externals": 4,
       "files": [
         {
           "hash": "596e7b3c0321849a00e5c31859aed2260475d6f4e25b9c8b20ee5edf5620bfef",
@@ -6828,7 +7015,7 @@
             "test_part_d_ollama_transport_verdict_parsing_and_properties",
             "test_the_reader_3_payload_sends_think_false_and_the_other_readers_send_true"
           ],
-          "hash": "61f5abb68cad2703a6bfe0065755093555805eb3393ab18fc4af74f39a9a9a0c",
+          "hash": "f1f58a2516d85380548918f81d2a3fb1ad3b6910543f3bedd90298d46477f0b9",
           "importOrder": [
             "tests/pilot_b_fakes.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -7408,10 +7595,10 @@
             "test_ci_runs_the_suite_on_3_15_with_the_check_name_kept_and_on_3_13_and_3_14",
             "test_every_action_in_the_workflow_is_pinned_by_commit_sha_with_a_version_comment",
             "test_requires_python_python_version_file_and_lock_agree_on_current_python",
-            "test_role_set_is_pinned_to_a_commit_that_allows_current_python_and_the_lock_agrees",
-            "test_the_role_set_pin_has_one_value_in_pyproject_the_constants_and_the_installed_distribution"
+            "test_role_set_is_pinned_to_a_pypi_release_that_allows_current_python_and_the_lock_agrees",
+            "test_the_installed_role_set_is_the_pinned_release_and_the_citations_name_the_source_commit"
           ],
-          "hash": "d322c57650e0ae0605546e8cc4b21fac9e586729a394ae2ef2f1908b522b1f32",
+          "hash": "b3af28685538708ae4eff13baf7ef53a8076b94956ddb895718b1c99dba772e7",
           "importsFiles": [
             "src/reasoning_dataset_lab/generators/__init__.py",
             "src/reasoning_dataset_lab/generators/role_set.py"
@@ -7423,7 +7610,7 @@
             "test_a_catalogue_without_the_floor_cells_is_refused_not_guessed",
             "test_a_role_set_without_target_shortcut_fails_loudly",
             "test_a_slot_whose_question_does_not_match_its_shortcut_is_refused",
-            "test_aspire_si_gates_single_install_matches_8ed78f2",
+            "test_aspire_si_gates_single_install_is_the_pinned_release_with_the_recorded_identity",
             "test_each_new_cell_allocates_its_target_and_every_item_differs_on_its_shortcut_only",
             "test_pilot_a_map_builds_all_24_buildable_cells_each_with_its_own_question",
             "test_pyproject_has_no_uv_override_dependencies",
@@ -7437,7 +7624,7 @@
             "test_the_question_and_operator_follow_the_shortcuts_from_operator",
             "test_the_twelve_exact_cells_build_byte_identically_to_before_the_floor_and_ceiling_change"
           ],
-          "hash": "d955d4df372f2cfc16c4f8f3b368a96d078dedf8846ef92d5b88a17921f65fa6",
+          "hash": "1397b8b2270ff3f937f77c546f5165727c4ed87d035e212d87780bbd9ffc3ade",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/generators/base.py",
@@ -7497,6 +7684,14 @@
             "npx"
           ],
           "step": "Atlas check"
+        },
+        {
+          "dir": "site",
+          "job": "test",
+          "programs": [
+            "npm"
+          ],
+          "step": "Audit the site's npm tree"
         },
         {
           "dir": "",
@@ -7730,6 +7925,7 @@
             "atlas/**",
             "examples/**",
             "pyproject.toml",
+            "site/package*.json",
             "src/**",
             "tests/**",
             "uv.lock"
@@ -7775,6 +7971,302 @@
         "codecov/codecov-action"
       ],
       "usesWorkflowToken": false
+    },
+    {
+      "checksCount": 0,
+      "commands": [
+        {
+          "dir": "site",
+          "job": "build",
+          "programs": [
+            "npm"
+          ],
+          "step": "Install site dependencies"
+        },
+        {
+          "dir": "site",
+          "job": "build",
+          "programs": [
+            "npm"
+          ],
+          "step": "Build site"
+        }
+      ],
+      "elsewhere": [],
+      "file": ".github/workflows/pages.yml",
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "build",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "22",
+                  "range": ">=22.0.0 <23.0.0-0"
+                }
+              ],
+              "step": "1",
+              "uses": "actions/setup-node",
+              "version": "22"
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "environment": {
+            "name": "github-pages"
+          },
+          "name": "deploy",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        }
+      ],
+      "landings": [],
+      "mentions": [],
+      "name": "Deploy site to GitHub Pages",
+      "permissions": [
+        "contents:read",
+        "id-token:write",
+        "pages:write"
+      ],
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "site",
+          "depth": 0,
+          "files": 5
+        }
+      ],
+      "readers": [],
+      "runs": [
+        {
+          "job": "build",
+          "matched": true,
+          "path": "site/astro.config.mjs",
+          "runKind": "executes",
+          "via": "astro build"
+        },
+        {
+          "directory": true,
+          "job": "build",
+          "matched": true,
+          "path": "site/src/",
+          "runKind": "executes",
+          "via": "astro build"
+        }
+      ],
+      "runsCount": 2,
+      "secrets": [],
+      "sends": {
+        "deploysPages": true,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": false,
+        "publishesTo": [],
+        "releases": false
+      },
+      "stages": [],
+      "triggers": [
+        {
+          "branches": [
+            "main"
+          ],
+          "event": "push",
+          "paths": [
+            ".github/workflows/pages.yml",
+            "site/**"
+          ]
+        },
+        {
+          "event": "workflow_dispatch"
+        }
+      ],
+      "uses": [
+        "actions/checkout",
+        "actions/deploy-pages",
+        "actions/setup-node",
+        "actions/upload-pages-artifact"
+      ],
+      "usesWorkflowToken": false
+    },
+    {
+      "checksCount": 1,
+      "commands": [
+        {
+          "dir": "",
+          "job": "build",
+          "programs": [
+            "python"
+          ],
+          "step": "The tag matches the version"
+        },
+        {
+          "dir": "",
+          "job": "build",
+          "programs": [
+            "uv"
+          ],
+          "step": "Build"
+        },
+        {
+          "dir": "",
+          "job": "upload",
+          "programs": [
+            "gh"
+          ],
+          "step": "Attach the wheel and the sdist"
+        }
+      ],
+      "elsewhere": [],
+      "file": ".github/workflows/release.yml",
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "build",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "environment": {
+            "name": "pypi"
+          },
+          "name": "publish",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "name": "upload",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        }
+      ],
+      "landings": [],
+      "mentions": [
+        {
+          "job": "build",
+          "path": "pyproject.toml"
+        }
+      ],
+      "name": "Release",
+      "permissions": [
+        "actions:read",
+        "contents:read",
+        "contents:write",
+        "id-token:write"
+      ],
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "src",
+          "depth": 0,
+          "files": 18
+        }
+      ],
+      "readers": [],
+      "runs": [
+        {
+          "directory": true,
+          "job": "build",
+          "path": "src/reasoning_dataset_lab/",
+          "runKind": "checks",
+          "via": "build pyproject.toml"
+        }
+      ],
+      "runsCount": 1,
+      "secrets": [],
+      "sends": {
+        "assets": [
+          "file:dist/*.tar.gz",
+          "file:dist/*.whl"
+        ],
+        "deploysPages": false,
+        "dispatchesTo": [],
+        "opensIssues": false,
+        "opensIssuesOnFailure": false,
+        "opensPullRequests": false,
+        "publishes": true,
+        "publishesTo": [
+          "pypi"
+        ],
+        "releases": false
+      },
+      "stages": [],
+      "triggers": [
+        {
+          "event": "release",
+          "types": [
+            "published"
+          ]
+        },
+        {
+          "event": "workflow_dispatch"
+        }
+      ],
+      "uses": [
+        "actions/checkout",
+        "actions/download-artifact",
+        "actions/upload-artifact",
+        "astral-sh/setup-uv",
+        "pypa/gh-action-pypi-publish"
+      ],
+      "usesWorkflowToken": true
     },
     {
       "checksCount": 0,
@@ -7829,12 +8321,17 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "5faf81152641afccc7e0be5fbef817f2c6b4cb79",
-    "tracked": 81
+    "commit": "17a9b8abf7c2a0d110eaef899f0b2ea2396db4b0",
+    "tracked": 110
   },
   "landings": [
     {
       "readers": [
+        {
+          "by": "pyproject.toml",
+          "call": "configuration",
+          "confidence": "config"
+        },
         {
           "by": "tests/fixtures/rnd-licences-registry-fb27d76.json",
           "call": "raw-url",
@@ -7949,12 +8446,6 @@
           "fromTests": true,
           "ref": "main",
           "repo": "yl4579/StyleTTS2"
-        },
-        {
-          "by": "tests/test_pilot_b_ollama_adapters.py",
-          "call": "read_text",
-          "confidence": "ast",
-          "fromTests": true
         }
       ],
       "target": "README.md",
@@ -7985,12 +8476,101 @@
           "confidence": "config"
         },
         {
+          "by": "README.es.md",
+          "call": "--map",
+          "confidence": "text"
+        },
+        {
+          "by": "README.fr.md",
+          "call": "--map",
+          "confidence": "text"
+        },
+        {
+          "by": "README.hi.md",
+          "call": "--map",
+          "confidence": "text"
+        },
+        {
+          "by": "README.it.md",
+          "call": "--map",
+          "confidence": "text"
+        },
+        {
+          "by": "README.ja.md",
+          "call": "--map",
+          "confidence": "text"
+        },
+        {
           "by": "README.md",
+          "call": "--map",
+          "confidence": "text"
+        },
+        {
+          "by": "README.pt-BR.md",
+          "call": "--map",
+          "confidence": "text"
+        },
+        {
+          "by": "README.zh.md",
+          "call": "--map",
+          "confidence": "text"
+        },
+        {
+          "by": "scripts/verify.sh",
+          "call": "literal",
+          "confidence": "text"
+        },
+        {
+          "by": "site/src/content/docs/handbook/getting-started.md",
           "call": "--map",
           "confidence": "text"
         }
       ],
       "target": "examples/t10-pilot-a.map.yaml",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": ".github/workflows/release.yml",
+          "confidence": "config"
+        }
+      ],
+      "target": "pyproject.toml",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "site/astro.config.mjs",
+          "call": "content-collection",
+          "confidence": "ast"
+        }
+      ],
+      "target": "site/src/content/docs",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "site/astro.config.mjs",
+          "call": "autogenerate",
+          "confidence": "ast"
+        }
+      ],
+      "target": "site/src/content/docs/handbook",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_pilot_b_ollama_adapters.py",
+          "call": "read_text",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "site/src/content/docs/handbook/pilot-b.md",
       "writers": []
     },
     {
@@ -8061,10 +8641,5 @@
   "submodules": [],
   "symlinks": [],
   "testFiles": 22,
-  "unassigned": [
-    {
-      "hash": "2b7c7e75565178a5d9b7de497bbade83301c35245bd254c816ad280c16596d9f",
-      "path": "docs/calibration-2026-10-25.md"
-    }
-  ]
+  "unassigned": []
 }
