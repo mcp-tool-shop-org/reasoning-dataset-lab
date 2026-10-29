@@ -6,6 +6,17 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+## [0.4.0] - 2026-10-29
+
+### Changed
+
+- **First PyPI release.** `pip install reasoning-dataset-lab`. The two git-URL dependencies are now PyPI packages,
+  `aspire-si-gates==1.7.6` and `role-set==0.3.0` (PyPI does not accept git URLs). 1.7.6 is the same source as the commit
+  that was pinned, so no gate changed. role-set 0.3.0 is the first PyPI release of that package.
+- Added PyPI metadata, a release workflow (trusted publishing), a landing page and handbook, README translations, a
+  rewritten README, and an audit of the site's npm tree in CI.
+- Everything below, under the previous Unreleased heading, ships in this release.
+
 ### Changed
 
 - **certify-values: `--reader-think FAMILY=SETTING`, `--parent-manifest PATH`, `rdlab pilot-b compare-arms`, and Nemotron pin `think="medium"`.** `rdlab pilot-b certify-values` gains repeatable `--reader-think FAMILY=SETTING` (`true`, `false`, `low`, `medium`, `high`, `max`) to override the pinned `think` for that reader family only (refusing unknown families or settings with exit code 2 before any Ollama call) and records `"think_overridden": true` on overridden reader rows. `--parent-manifest PATH` records `parent_manifest_sha256` (sha256 of the parent file's bytes) and `setting_tier` (e.g. `"nemotron:think=medium"`), refuses to overwrite the parent manifest or its companion review queue (`PILOT_B_CERT_PARENT_OVERWRITE_REFUSED`), and leaves `verify_manifest` verifying each addendum only as its own standalone manifest without merging verdicts across manifests. `rdlab pilot-b compare-arms PARENT ADDENDUM --reader nemotron --out PATH` writes a markdown comparison report with per-pair verdicts, a cross-table, exact-agreement counts, per-set reader pass at each setting, optional completion tokens and wall time, and length stops reported separately from verdicts (their own count per setting and their own row and column in the cross-table, never counted as a verdict or folded into disagree, with agreement rates labelled over all pairs and over pairs with a verdict at both settings). `DEFAULT_PILOT_B_MODEL_PINS["reader_1"]` (Nemotron) now pins `think="medium"` (citing Ollama v0.40.9 `model/renderers/nemotron3nano.go:30, 86-87`: `"medium"` is an effort hint the template knows, not a cap), while `verify_manifest` continues to accept r3's `think: true` manifest unchanged.

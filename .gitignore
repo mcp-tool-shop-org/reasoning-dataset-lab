@@ -12,3 +12,8 @@ venv/
 .coverage.*
 coverage.xml
 htmlcov/
+site/.astro/
+site/.astro/
+site/dist/
+site/node_modules/
+.polyglot-cache.json

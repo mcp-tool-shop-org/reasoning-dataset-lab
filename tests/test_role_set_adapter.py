@@ -36,7 +36,7 @@ def _canon_for_cell(cell: MapCell) -> tuple[CanonRef, ...]:
     )
 
 
-def test_aspire_si_gates_single_install_matches_8ed78f2() -> None:
+def test_aspire_si_gates_single_install_is_the_pinned_release_with_the_recorded_identity() -> None:
     dists = [
         d
         for d in importlib.metadata.distributions()
@@ -44,13 +44,10 @@ def test_aspire_si_gates_single_install_matches_8ed78f2() -> None:
     ]
     assert len(dists) == 1
     dist = dists[0]
-
-    direct_url_raw = dist.read_text("direct_url.json")
-    assert direct_url_raw is not None
-    direct_url = json.loads(direct_url_raw)
-    assert direct_url["url"] == "https://github.com/mcp-tool-shop-org/aspire-si-gates"
-    commit_id = direct_url["vcs_info"]["commit_id"]
-    assert commit_id.startswith(ASPIRE_SI_GATES_COMMIT)
+    # Since 0.4.0 the gates come from PyPI (aspire-si-gates==1.7.6). That release has the same source as the
+    # 8ed78f2 commit that was pinned before, so the identity sha256 below is unchanged.
+    assert dist.version == "1.7.6"
+    assert dist.read_text("direct_url.json") is None
 
     identity = aspire_si_gates.gates_identity()
     assert identity == {
@@ -235,14 +232,9 @@ def test_pyproject_has_no_uv_override_dependencies() -> None:
     text = pyproject_path.read_text(encoding="utf-8")
     assert "[tool.uv]" not in text
     assert "override-dependencies" not in text
-    assert (
-        "role-set @ git+https://github.com/mcp-tool-shop-org/role-set@d29499f77a81bda144ebd51885f3c167a04667aa"
-        in text
-    )
-    assert (
-        "aspire-si-gates @ git+https://github.com/mcp-tool-shop-org/aspire-si-gates@8ed78f2fee388e81443953f8dd3753c73e1ff2bd"
-        in text
-    )
+    assert '"role-set==0.3.0"' in text
+    assert '"aspire-si-gates==1.7.6"' in text
+    assert "git+https://" not in text
 
 
 def test_role_set_generator_multi_slot_determinism_and_refusals() -> None:
