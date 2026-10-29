@@ -10,7 +10,9 @@ on:
       - src/**
       - tests/**
       - examples/**
+      - docs/**
       - site/package*.json
+      - site/src/content/docs/handbook/pilot-b.md
       - atlas/**
       - .github/workflows/**
   pull_request:

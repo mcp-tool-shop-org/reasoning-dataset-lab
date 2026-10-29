@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-29 from commit 17a9b8a by Atlas 1.24.0.
+Mapped at 2026-10-29 from commit 0aabe5b by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,25 +8,17 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (39 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1) and shell (1). Work enters through 4 doors; the busiest is ci, which reaches 2 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-10-28 (5faf811)
+## What changed since 2026-10-29 (17a9b8a)
 
-- ci's push trigger now also names `site/package*.json`.
-- Deploy site to GitHub Pages (.github/workflows/pages.yml) is a new door. It starts on a push to main touching 2 paths; or by hand. It runs site/astro.config.mjs and site/src/.
-- Release (.github/workflows/release.yml) is a new door. It starts when a release is published; or by hand. It checks src/reasoning_dataset_lab/.
-- LICENSE is now also read by pyproject.toml.
-- examples/t10-pilot-a.map.yaml is now also read by README.es.md, README.fr.md, README.hi.md, README.it.md, README.ja.md, README.pt-BR.md, README.zh.md, scripts/verify.sh and site/src/content/docs/handbook/getting-started.md.
-- pyproject.toml is now read by .github/workflows/release.yml.
-- And 3 more new writers and readers of places.
-- docs is a new part, drawn from `docs/**`.
-- scripts is a new part, drawn from `scripts/**`.
-- site is a new part, drawn from `site/**`.
-- 29 files added, 1 moved and 12 changed content, across 7 parts.
+- ci's push trigger now also names `docs/**` and `site/src/content/docs/handbook/pilot-b.md`.
+- Release no longer starts by hand.
+- 6 files changed content, across 3 parts.
 
 ## What comes in
 
-1. **ci.** On a pull request; on a push to main touching 9 paths; or by hand. Runs tests/.
+1. **ci.** On a pull request; on a push to main touching 11 paths; or by hand. Runs tests/.
 2. **Deploy site to GitHub Pages.** On a push to main touching 2 paths; or by hand. Runs site/astro.config.mjs and site/src/.
-3. **Release.** When a release is published; or by hand. Checks src/reasoning_dataset_lab/.
+3. **Release.** When a release is published. Checks src/reasoning_dataset_lab/.
 4. **rdlab** (a command people run). Runs src/reasoning_dataset_lab/cli.py.
 
 ## What happens through ci

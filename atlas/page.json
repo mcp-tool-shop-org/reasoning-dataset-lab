@@ -21,104 +21,36 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 29,
-      "changed": 12,
-      "moved": 1,
-      "parts": 7,
+      "added": 0,
+      "changed": 6,
+      "moved": 0,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
         "kind": "door",
-        "sentence": "ci's push trigger now also names `site/package*.json`.",
+        "sentence": "ci's push trigger now also names `docs/**` and `site/src/content/docs/handbook/pilot-b.md`.",
         "subjects": [
           ".github/workflows/ci.yml"
         ]
       },
       {
         "kind": "door",
-        "sentence": "Deploy site to GitHub Pages (.github/workflows/pages.yml) is a new door. It starts on a push to main touching 2 paths; or by hand. It runs site/astro.config.mjs and site/src/.",
+        "sentence": "Release no longer starts by hand.",
         "subjects": [
-          ".github/workflows/pages.yml",
-          "site/astro.config.mjs",
-          "site/src/"
-        ]
-      },
-      {
-        "kind": "door",
-        "sentence": "Release (.github/workflows/release.yml) is a new door. It starts when a release is published; or by hand. It checks src/reasoning_dataset_lab/.",
-        "subjects": [
-          ".github/workflows/release.yml",
-          "src/reasoning_dataset_lab/"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "LICENSE is now also read by pyproject.toml.",
-        "subjects": [
-          "LICENSE",
-          "pyproject.toml"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "examples/t10-pilot-a.map.yaml is now also read by README.es.md, README.fr.md, README.hi.md, README.it.md, README.ja.md, README.pt-BR.md, README.zh.md, scripts/verify.sh and site/src/content/docs/handbook/getting-started.md.",
-        "subjects": [
-          "examples/t10-pilot-a.map.yaml",
-          "README.es.md",
-          "README.fr.md",
-          "README.hi.md",
-          "README.it.md",
-          "README.ja.md",
-          "README.pt-BR.md",
-          "README.zh.md",
-          "scripts/verify.sh",
-          "site/src/content/docs/handbook/getting-started.md"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "pyproject.toml is now read by .github/workflows/release.yml.",
-        "subjects": [
-          "pyproject.toml",
           ".github/workflows/release.yml"
         ]
       },
       {
-        "kind": "landing",
-        "sentence": "And 3 more new writers and readers of places.",
-        "subjects": []
-      },
-      {
-        "kind": "part",
-        "sentence": "docs is a new part, drawn from `docs/**`.",
-        "subjects": [
-          "docs"
-        ]
-      },
-      {
-        "kind": "part",
-        "sentence": "scripts is a new part, drawn from `scripts/**`.",
-        "subjects": [
-          "scripts"
-        ]
-      },
-      {
-        "kind": "part",
-        "sentence": "site is a new part, drawn from `site/**`.",
-        "subjects": [
-          "site"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "29 files added, 1 moved and 12 changed content, across 7 parts.",
+        "sentence": "6 files changed content, across 3 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "5faf81152641afccc7e0be5fbef817f2c6b4cb79",
-      "generatedAt": "2026-10-28T17:08:45.323Z"
+      "commit": "17a9b8abf7c2a0d110eaef899f0b2ea2396db4b0",
+      "generatedAt": "2026-10-29T21:43:38.066Z"
     },
     "unchanged": false
   },
@@ -204,7 +136,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "17a9b8abf7c2a0d110eaef899f0b2ea2396db4b0",
+  "commit": "0aabe5b06da40d79e9f10767481136d05c47938a",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (39 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1) and shell (1). Work enters through 4 doors; the busiest is ci, which reaches 2 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -240,7 +172,7 @@
       "stages": [],
       "triggers": [
         "on a pull request",
-        "on a push to main touching 9 paths",
+        "on a push to main touching 11 paths",
         "or by hand"
       ]
     },
@@ -302,8 +234,7 @@
       ],
       "stages": [],
       "triggers": [
-        "when a release is published",
-        "or by hand"
+        "when a release is published"
       ]
     },
     {
@@ -339,7 +270,7 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-29T21:43:38.066Z",
+  "generatedAt": "2026-10-29T22:03:57.444Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "7 reads use paths built at run time and are not named here.",

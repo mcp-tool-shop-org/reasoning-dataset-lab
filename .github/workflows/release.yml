@@ -3,8 +3,8 @@
 # used here: it must be referenced by tag, and this repository pins every action by commit sha (a test enforces it).
 # Trusted publishing: PyPI trusts this repository, this file name, and the
 # pypi environment. No API token is stored.
-# A workflow_dispatch on a tag runs the same check. A branch dispatch fails
-# the tag check and does not publish. This workflow is not push-triggered.
+# It runs only when a GitHub release is published: there is no manual trigger, so nothing
+# else can reach the publish job. It is not push-triggered.
 # Undo: delete the release asset. A PyPI file is yanked.
 # Owner: the Publisher.
 
@@ -13,7 +13,6 @@ name: Release
 on:
   release:
     types: [published]
-  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
