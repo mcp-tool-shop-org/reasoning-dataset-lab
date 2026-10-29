@@ -637,3 +637,482 @@ def test_writer_waves_render_and_word_failure_handling_and_edge_cases(tmp_path: 
     assert exc_sec.value.code == "PILOT_B_WEAK_TABLE_SECRET"
     assert require_gpu_grant(None, allow_ungranted_mock=True) == "mock-cpu-no-gpu"
     kill_pid_tree(-1)
+
+
+def test_fix1_non_mock_resolves_owned_runner_pid_and_refuses_unowned_process_table(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import reasoning_dataset_lab.pilot_b.bakeoff_part as bo_mod
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        build_fixture_licence_registry,
+    )
+
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2),
+        encoding="utf-8",
+    )
+
+    my_pid = os.getpid()
+    # Fake process table containing both another studio session's Ollama server (port 11434)
+    # and this session's owned Ollama server + writer runner (port 11435).
+    fake_process_table = [
+        {
+            "pid": 4100,
+            "ppid": 888,
+            "name": "ollama.exe",
+            "cmdline": "ollama serve",
+            "listening_ports": [11434],
+            "owned": False,
+        },
+        {
+            "pid": 4101,
+            "ppid": 4100,
+            "name": "ollama.exe",
+            "cmdline": "ollama runner --model qwen2.5vl:7b --port 54101",
+            "listening_ports": [54101],
+            "owned": False,
+        },
+        {
+            "pid": 5200,
+            "ppid": my_pid,
+            "name": "ollama.exe",
+            "cmdline": "ollama serve",
+            "listening_ports": [11435],
+            "owned": True,
+        },
+        {
+            "pid": 5201,
+            "ppid": 5200,
+            "name": "ollama.exe",
+            "cmdline": "ollama runner --model qwen3.6:35b --port 55201",
+            "listening_ports": [55201],
+            "owned": True,
+        },
+    ]
+
+    # 1a. Non-mock run against owned server (port 11435) resolves runner PID 5201 and kills it at VRAM cap
+    killed_pids: list[int] = []
+    with pytest.raises(RdlabError) as exc_halt:
+        run_bakeoff_part_build(
+            output_dir=tmp_path / "owned-halt-out",
+            triad_count=1,
+            stub_mode=True,
+            mock_writer=False,
+            grant_id="grant-fix1-owned",
+            licence_registry_path=reg_path,
+            ollama_base_url="http://127.0.0.1:11435",
+            vram_halt_mib=1,
+            vram_probe=lambda: 2,
+            pid_killer=killed_pids.append,
+            process_table=fake_process_table,
+            http_transport=build_mock_writer_ollama_http_transport(),
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_halt.value.code == "BAKEOFF_VRAM_HALT_EXCEEDED"
+    assert killed_pids == [5201]
+
+    # 1b. Non-mock run against another session's unowned server (port 11434) refuses to start and kills nothing
+    unowned_killed: list[int] = []
+    with pytest.raises(RdlabError) as exc_unowned:
+        run_bakeoff_part_build(
+            output_dir=tmp_path / "unowned-refuse-out",
+            triad_count=1,
+            stub_mode=True,
+            mock_writer=False,
+            grant_id="grant-fix1-unowned",
+            licence_registry_path=reg_path,
+            ollama_base_url="http://127.0.0.1:11434",
+            vram_halt_mib=1,
+            vram_probe=lambda: 2,
+            pid_killer=unowned_killed.append,
+            process_table=fake_process_table,
+            http_transport=build_mock_writer_ollama_http_transport(),
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_unowned.value.code == "BAKEOFF_HALT_PID_UNRESOLVED"
+    assert unowned_killed == []
+
+    # 1c. Additional resolution branches: ProcessEntry objects, parent-chain ownership via owner_pid,
+    # callable process_table, explicit ps_pid, generic runner fallback, and refusal when runner/model/port missing.
+    from reasoning_dataset_lab.pilot_b.bakeoff_part import (
+        ProcessEntry,
+        resolve_owned_ollama_halt_pid,
+    )
+    from reasoning_dataset_lab.pilot_b.models_and_build import DEFAULT_PILOT_B_MODEL_PINS
+
+    writer_spec = DEFAULT_PILOT_B_MODEL_PINS["writer"]
+
+    chain_table = [
+        ProcessEntry(pid=7000, ppid=1, name="bash", cmdline="bash", listening_ports=()),
+        ProcessEntry(pid=7001, ppid=7000, name="ollama", cmdline="ollama serve", listening_ports=(11436,)),
+        ProcessEntry(pid=7002, ppid=7001, name="ollama-runner", cmdline="ollama runner", listening_ports=()),
+    ]
+    resolved_generic = resolve_owned_ollama_halt_pid(
+        ollama_base_url="http://127.0.0.1:11436",
+        writer_tag=writer_spec.ollama_tag,
+        writer_digest=writer_spec.manifest_digest,
+        http_transport=build_mock_writer_ollama_http_transport(),
+        process_table=lambda: chain_table,
+        owner_pid=7000,
+    )
+    assert resolved_generic == 7002
+
+    # Explicit pid in /api/ps response (and fallback when ps_pid does not match any descendant)
+    resolved_ps_pid = resolve_owned_ollama_halt_pid(
+        ollama_base_url="http://127.0.0.1:11436",
+        writer_tag=writer_spec.ollama_tag,
+        writer_digest=writer_spec.manifest_digest,
+        http_transport=lambda m, u, b=None: {
+            "models": [
+                "not-a-dict",
+                {"name": "other:latest", "digest": "00"},
+                {"name": writer_spec.ollama_tag, "digest": "wrong_digest"},
+                {
+                    "name": writer_spec.ollama_tag,
+                    "digest": writer_spec.manifest_digest,
+                    "pid": 7002,
+                },
+            ]
+        },
+        process_table=chain_table,
+        owner_pid=7000,
+    )
+    assert resolved_ps_pid == 7002
+
+    monkeypatch.setattr(bo_mod, "query_system_process_table", lambda: chain_table)
+    resolved_default_table = resolve_owned_ollama_halt_pid(
+        ollama_base_url="http://127.0.0.1:11436",
+        writer_tag=writer_spec.ollama_tag,
+        writer_digest=writer_spec.manifest_digest,
+        http_transport=lambda m, u, b=None: {
+            "models": [
+                {
+                    "name": writer_spec.ollama_tag,
+                    "digest": writer_spec.manifest_digest,
+                    "pid": 999999,
+                }
+            ]
+        },
+        process_table=None,
+        owner_pid=7000,
+    )
+    assert resolved_default_table == 7002
+
+    # Refusal when parent chain reaches root without matching owner_pid
+    with pytest.raises(RdlabError):
+        resolve_owned_ollama_halt_pid(
+            ollama_base_url="http://127.0.0.1:11436",
+            writer_tag=writer_spec.ollama_tag,
+            http_transport=build_mock_writer_ollama_http_transport(),
+            process_table=chain_table,
+            owner_pid=88888,
+        )
+
+    # Refusal when no process listens on target port
+    with pytest.raises(RdlabError) as exc_noport:
+        resolve_owned_ollama_halt_pid(
+            ollama_base_url="http://127.0.0.1:19999",
+            writer_tag=writer_spec.ollama_tag,
+            http_transport=build_mock_writer_ollama_http_transport(),
+            process_table=chain_table,
+            owner_pid=7000,
+        )
+    assert exc_noport.value.code == "BAKEOFF_HALT_PID_UNRESOLVED"
+
+    # Refusal when /api/ps does not show writer model loaded
+    with pytest.raises(RdlabError) as exc_nomodel:
+        resolve_owned_ollama_halt_pid(
+            ollama_base_url="http://127.0.0.1:11436",
+            writer_tag=writer_spec.ollama_tag,
+            http_transport=lambda m, u, b=None: {"models": []},
+            process_table=chain_table,
+            owner_pid=7000,
+        )
+    assert exc_nomodel.value.code == "BAKEOFF_HALT_PID_UNRESOLVED"
+
+    # Refusal when server is owned but has no runner descendant
+    with pytest.raises(RdlabError) as exc_norunner:
+        resolve_owned_ollama_halt_pid(
+            ollama_base_url="http://127.0.0.1:11436",
+            writer_tag=writer_spec.ollama_tag,
+            http_transport=build_mock_writer_ollama_http_transport(),
+            process_table=chain_table[:2],
+            owner_pid=7000,
+        )
+    assert exc_norunner.value.code == "BAKEOFF_HALT_PID_UNRESOLVED"
+
+
+def test_fix2_records_real_ollama_prompt_eval_count_and_eval_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import reasoning_dataset_lab.pilot_b.bakeoff_part as bo_mod
+    from reasoning_dataset_lab.pilot_b.ollama import OllamaWriterAdapter
+
+    base_mock = build_mock_writer_ollama_http_transport(eval_tokens_per_call=89)
+
+    def _custom_transport(method: str, url: str, body=None):
+        resp = dict(base_mock(method, url, body))
+        if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+            resp["prompt_eval_count"] = 317
+            resp["eval_count"] = 89
+        return resp
+
+    monkeypatch.setattr(
+        bo_mod,
+        "build_mock_writer_ollama_http_transport",
+        lambda **kw: _custom_transport,
+    )
+
+    out_dir = tmp_path / "fix2-out"
+    res = run_bakeoff_part_build(
+        output_dir=out_dir,
+        triad_count=4,
+        stub_mode=True,
+        mock_writer=True,
+        shuffle_seed=1 << 127,
+        grant_id="grant-fix2",
+        repo_root=tmp_path / "fake-repo",
+    )
+
+    writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
+    adapter = OllamaWriterAdapter(
+        model=writer_pin,
+        http_transport=_custom_transport,
+    )
+    table = build_sample_fact_table(seed=1, closure="open")
+    adapter.render_material(table)
+    rec = adapter.last_call_record
+    assert rec is not None
+    assert rec.prompt_eval_count == 317
+    assert rec.eval_count == 89
+    assert rec.prompt_tokens_estimate != 317
+
+    from reasoning_dataset_lab.pilot_b.ollama import OllamaCallRecord
+
+    direct_rec = OllamaCallRecord(
+        model="m",
+        digest="d",
+        operation="render_material",
+        target_id="t",
+        prompt_sha256="p",
+        eval_tokens=42,
+        thinking_words=0,
+        num_predict=100,
+        wall_time_s=0.1,
+    )
+    assert direct_rec.eval_count == 42
+
+    reports_call_records = out_dir / "reports" / "call_records.jsonl"
+    assert reports_call_records.is_file()
+    rows = _jsonl(reports_call_records)
+    assert len(rows) == 16  # 4 render + 12 word
+    for row in rows:
+        assert row["prompt_eval_count"] == 317
+        assert row["eval_count"] == 89
+    assert Path(res["call_records_path"]) == reports_call_records
+
+
+def test_fix3_recomputes_realized_split_counts_on_kept_triads_after_waves(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import reasoning_dataset_lab.pilot_b.bakeoff_part as bo_mod
+
+    base_mock = build_mock_writer_ollama_http_transport()
+    render_call_idx = 0
+
+    def _drop_first_triad_transport(method: str, url: str, body=None):
+        nonlocal render_call_idx
+        resp = dict(base_mock(method, url, body))
+        if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+            messages = list((body or {}).get("messages") or [])
+            user_text = str(messages[-1].get("content") or "") if messages else ""
+            if "FACTS_JSON:\n" in user_text:
+                render_call_idx += 1
+                if render_call_idx == 1:
+                    resp["message"] = {
+                        "role": "assistant",
+                        "content": "1. corrupted render line",
+                        "thinking": "step0",
+                    }
+        return resp
+
+    monkeypatch.setattr(
+        bo_mod,
+        "build_mock_writer_ollama_http_transport",
+        lambda **kw: _drop_first_triad_transport,
+    )
+
+    out_dir = tmp_path / "fix3-out"
+    res = run_bakeoff_part_build(
+        output_dir=out_dir,
+        triad_count=20,
+        stub_mode=True,
+        mock_writer=True,
+        grant_id="grant-fix3",
+        repo_root=tmp_path / "fake-repo",
+    )
+    part_meta = json.loads(
+        (Path(res["part_dir"]) / "part.json").read_text(encoding="utf-8")
+    )
+    report_meta = json.loads(
+        Path(res["report_path"]).read_text(encoding="utf-8")
+    )
+    assert part_meta["triads_kept"] == 19
+    assert report_meta["triads_kept"] == 19
+
+    for sc in (part_meta["split_counts"], report_meta["split_counts"]):
+        assert sum(sc["triads_by_split"].values()) == 19
+        assert sum(sc["items_by_split"].values()) == 57
+        assert sum(c["total"] for c in sc["by_closure"].values()) == 19
+        assert sum(c["total"] for c in sc["by_domain_and_closure"].values()) == 19
+
+
+def test_fix4_non_mock_refuses_missing_licence_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
+
+    monkeypatch.setattr(
+        ollama_mod,
+        "default_ollama_http_transport",
+        build_mock_writer_ollama_http_transport(),
+    )
+    with pytest.raises(RdlabError) as exc_no_reg:
+        run_bakeoff_part_build(
+            output_dir=tmp_path / "fix4-out",
+            triad_count=1,
+            stub_mode=True,
+            mock_writer=False,
+            grant_id="grant-fix4",
+            vram_probe=lambda: 0,
+            licence_registry_path=None,
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_no_reg.value.code == "PILOT_B_LICENCE_REGISTRY_REQUIRED"
+
+    code = run_cli(
+        [
+            "bakeoff-part",
+            "--stub",
+            "1",
+            "--grant-id",
+            "grant-fix4",
+            "--output-dir",
+            str(tmp_path / "fix4-cli-out"),
+        ]
+    )
+    assert code == EXIT_REFUSED
+
+
+def test_fix5_byte_identity_regression_against_main_e0e3c04(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import secrets
+    import reasoning_dataset_lab.pilot_b.bakeoff_part as bo_mod
+    import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
+    from reasoning_dataset_lab.pilot_b.fact_tables import generate_fact_tables
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        OllamaBlindReaderAdapter,
+        OllamaWriterAdapter,
+    )
+    from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
+        run_pilot_b_waves,
+        write_sealed_part,
+    )
+    from test_pilot_b_ollama_adapters import build_mock_ollama_http_transport
+    from test_pilot_b_part_d import _setup_models
+
+    # Golden SHA-256 digests computed at main e0e3c04a5557c6c2057cb5328a5088e9b2878756
+    expected_golden = {
+        "tables_50_sha256": "51fc38cdaa2c2ed156ff3c620efc4fc36854883bb73297ebef06d435ad50a737",
+        "triads_50_sha256": "9b81587b3e0be84543d7aee5d6cb8565bdfae7b8bc0fb6be01c0fa0b205eb718",
+        "tables_10_sha256": "07eaecc3816200354febf9ec5489137e9f8fa0a9f4bef4e43d43e924c9a22ff3",
+        "triads_10_sha256": "900ac51c4e6ead753aeb46673780cedab872ec10d535d9c2442609f31250efa7",
+        "items.jsonl": "0bb24a768920d242e28f543bfe9b2f817a674000177f71153e24b9e25539b8e2",
+        "provenance.jsonl": "449ba2ea39242cb241e84163e0e4f2e90bdf7c186862e41134f66baba9a349bf",
+        "part.json": "0aa3318d3da4bd1825fe6cf6f066dfb887227575b5a7de0344cc0bfc4d0ab7b1",
+        "checksums.txt": "2666c9ef7eb4339639e93ab87188cb164ef697dd774dd7405ad922f481dad3f6",
+        "keys.sealed.jsonl": "dd87a3e28ccb718e8c8ee7da264f0e051b6190a697bccd19b997b912a5b52783",
+        "call_metrics.sealed.jsonl": "3cbeeb3be498c42c2230f48020d4f0d040fa533211fbb1dfe78fd7adecb7426b",
+        "render_inputs.sealed.json": "c6aa8270cdc0d332aa393aa2275aafe167ec190b7fe863e024fbcb228487ac8a",
+        "sealing.sealed.json": "d96d0e04e99607ebad29a601b64e0a2d2b58f5f50b26153f5f8e1a6e02e7f040",
+    }
+    assert getattr(bo_mod, "MAIN_E0E3C04_GOLDEN_SHA256", None) == expected_golden
+
+    tables_50 = generate_fact_tables(n=50, seed=1)
+    triads_50 = [build_contrast_triad(t, seed=1 + idx) for idx, t in enumerate(tables_50)]
+    assert (
+        hashlib.sha256(
+            json.dumps([t.to_dict() for t in tables_50], sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        == expected_golden["tables_50_sha256"]
+    )
+    assert (
+        hashlib.sha256(
+            json.dumps([tr.to_dict() for tr in triads_50], sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        == expected_golden["triads_50_sha256"]
+    )
+
+    tables_10 = generate_fact_tables(n=10, seed=1)
+    triads_10 = [build_contrast_triad(t, seed=1 + idx) for idx, t in enumerate(tables_10)]
+    assert (
+        hashlib.sha256(
+            json.dumps([t.to_dict() for t in tables_10], sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        == expected_golden["tables_10_sha256"]
+    )
+    assert (
+        hashlib.sha256(
+            json.dumps([tr.to_dict() for tr in triads_10], sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        == expected_golden["triads_10_sha256"]
+    )
+
+    monkeypatch.setattr(time, "perf_counter", lambda: 1000.0)
+    monkeypatch.setattr(secrets, "token_bytes", lambda n=32: bytes(range(1, n + 1)))
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(ollama_mod, "default_ollama_http_transport", transport)
+    writer_id, _r1, _r2 = _setup_models()
+    wave_res = run_pilot_b_waves(
+        triads=triads_10,
+        writer_model=writer_id,
+        writer_adapter=OllamaWriterAdapter(
+            model=DEFAULT_PILOT_B_MODEL_PINS["writer"], num_predict=256
+        ),
+        reader_1=OllamaBlindReaderAdapter(
+            model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"], num_predict=256
+        ),
+        reader_2=OllamaBlindReaderAdapter(
+            model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"], num_predict=256
+        ),
+        num_predict=256,
+        review_queue_path=tmp_path / "rq.jsonl",
+    )
+    assert wave_res.writer_only is False
+    part_dir = tmp_path / "part"
+    keys_path = tmp_path / "sealed" / "keys.sealed.jsonl"
+    write_sealed_part(
+        part_dir=part_dir,
+        keys_sealed_path=keys_path,
+        part_id="pilot-b-t10-sealed",
+        map_version=1,
+        map_sha256="a" * 64,
+        wave_result=wave_res,
+        shuffle_seed=1 << 127,
+        table_secret=1 << 127,
+        allow_weak_test_seed=True,
+    )
+    for name in ("items.jsonl", "provenance.jsonl", "part.json", "checksums.txt"):
+        digest = hashlib.sha256((part_dir / name).read_bytes()).hexdigest()
+        assert digest == expected_golden[name], f"Mismatch on {name}"
+    for name in (
+        "keys.sealed.jsonl",
+        "call_metrics.sealed.jsonl",
+        "render_inputs.sealed.json",
+        "sealing.sealed.json",
+    ):
+        digest = hashlib.sha256((keys_path.parent / name).read_bytes()).hexdigest()
+        assert digest == expected_golden[name], f"Mismatch on {name}"
+

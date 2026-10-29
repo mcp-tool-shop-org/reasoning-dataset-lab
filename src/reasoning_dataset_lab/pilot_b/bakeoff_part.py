@@ -23,6 +23,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,6 +97,33 @@ DEFAULT_DEV_SPLIT_RATIO = 0.30
 DEFAULT_SPLIT_SEED = 20261029
 DEFAULT_VRAM_HALT_MIB = 26_000
 BAKEOFF_PART_ID = "bakeoff-d-t10-sealed"
+
+MAIN_E0E3C04_GOLDEN_SHA256: dict[str, str] = {
+    "tables_50_sha256": "51fc38cdaa2c2ed156ff3c620efc4fc36854883bb73297ebef06d435ad50a737",
+    "triads_50_sha256": "9b81587b3e0be84543d7aee5d6cb8565bdfae7b8bc0fb6be01c0fa0b205eb718",
+    "tables_10_sha256": "07eaecc3816200354febf9ec5489137e9f8fa0a9f4bef4e43d43e924c9a22ff3",
+    "triads_10_sha256": "900ac51c4e6ead753aeb46673780cedab872ec10d535d9c2442609f31250efa7",
+    "items.jsonl": "0bb24a768920d242e28f543bfe9b2f817a674000177f71153e24b9e25539b8e2",
+    "provenance.jsonl": "449ba2ea39242cb241e84163e0e4f2e90bdf7c186862e41134f66baba9a349bf",
+    "part.json": "0aa3318d3da4bd1825fe6cf6f066dfb887227575b5a7de0344cc0bfc4d0ab7b1",
+    "checksums.txt": "2666c9ef7eb4339639e93ab87188cb164ef697dd774dd7405ad922f481dad3f6",
+    "keys.sealed.jsonl": "dd87a3e28ccb718e8c8ee7da264f0e051b6190a697bccd19b997b912a5b52783",
+    "call_metrics.sealed.jsonl": "3cbeeb3be498c42c2230f48020d4f0d040fa533211fbb1dfe78fd7adecb7426b",
+    "render_inputs.sealed.json": "c6aa8270cdc0d332aa393aa2275aafe167ec190b7fe863e024fbcb228487ac8a",
+    "sealing.sealed.json": "d96d0e04e99607ebad29a601b64e0a2d2b58f5f50b26153f5f8e1a6e02e7f040",
+}
+
+
+@dataclass(frozen=True)
+class ProcessEntry:
+    """Process-table entry for resolving an owned Ollama server or runner PID."""
+
+    pid: int
+    ppid: int = 0
+    name: str = ""
+    cmdline: str = ""
+    listening_ports: tuple[int, ...] = ()
+    owned: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -508,11 +536,19 @@ def plan_bakeoff_triads(
 def compute_split_counts(
     planned: Sequence[PlannedBakeoffTriad],
     *,
-    dev_sets: Sequence[CertifiedValueSetSpec],
-    test_sets: Sequence[CertifiedValueSetSpec],
+    dev_sets: Sequence[CertifiedValueSetSpec | str],
+    test_sets: Sequence[CertifiedValueSetSpec | str],
 ) -> dict[str, Any]:
     """Compute realized dev/test split and domain x closure stratification counts."""
     validate_value_set_split(dev_sets, test_sets)
+    dev_ids = [
+        s.value_set_id if isinstance(s, CertifiedValueSetSpec) else str(s)
+        for s in dev_sets
+    ]
+    test_ids = [
+        s.value_set_id if isinstance(s, CertifiedValueSetSpec) else str(s)
+        for s in test_sets
+    ]
     triads_by_split = {"dev": 0, "test": 0}
     items_by_split = {"dev": 0, "test": 0}
     by_closure: dict[str, dict[str, int]] = {
@@ -555,17 +591,17 @@ def compute_split_counts(
         "triads_by_split": triads_by_split,
         "items_by_split": items_by_split,
         "value_sets_allocated": {
-            "dev": len(dev_sets),
-            "test": len(test_sets),
-            "total": len(dev_sets) + len(test_sets),
+            "dev": len(dev_ids),
+            "test": len(test_ids),
+            "total": len(dev_ids) + len(test_ids),
         },
         "value_sets_realized": {
             "dev": len(realized_dev_vsets),
             "test": len(realized_test_vsets),
             "total": len(realized_dev_vsets) + len(realized_test_vsets),
         },
-        "dev_value_set_ids": [s.value_set_id for s in dev_sets],
-        "test_value_set_ids": [s.value_set_id for s in test_sets],
+        "dev_value_set_ids": dev_ids,
+        "test_value_set_ids": test_ids,
         "by_closure": by_closure,
         "by_domain_and_closure": dict(sorted(by_domain_and_closure.items())),
         "by_value_set_id": dict(sorted(by_value_set.items())),
@@ -686,6 +722,261 @@ def kill_pid_tree(pid: int) -> None:
         pass  # pragma: no cover
 
 
+def _coerce_process_entries(
+    raw_entries: Sequence[ProcessEntry | Mapping[str, Any]],
+) -> list[ProcessEntry]:
+    out: list[ProcessEntry] = []
+    for item in raw_entries:
+        if isinstance(item, ProcessEntry):
+            out.append(item)
+            continue
+        ports_raw = item.get("listening_ports") or ()
+        ports = tuple(
+            int(p)
+            for p in ports_raw
+            if isinstance(p, (int, str)) and str(p).strip().isdigit()
+        )
+        owned_raw = item.get("owned")
+        owned_val: bool | None = (
+            bool(owned_raw) if isinstance(owned_raw, bool) else None
+        )
+        out.append(
+            ProcessEntry(
+                pid=int(item["pid"]),
+                ppid=int(item.get("ppid") or 0),
+                name=str(item.get("name") or ""),
+                cmdline=str(item.get("cmdline") or ""),
+                listening_ports=ports,
+                owned=owned_val,
+            )
+        )
+    return out
+
+
+def query_system_process_table() -> list[ProcessEntry]:  # pragma: no cover
+    """Query the OS process table and listening TCP ports to resolve Ollama server/runner PIDs."""
+    ports_by_pid: dict[int, set[int]] = {}
+    entries: list[ProcessEntry] = []
+    if sys.platform == "win32":
+        try:
+            ns = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            for line in ns.stdout.splitlines():
+                parts = line.split()
+                if len(parts) >= 5 and parts[0].upper() == "TCP" and parts[3].upper() == "LISTENING":
+                    local_addr = parts[1]
+                    pid_str = parts[4]
+                    port_str = local_addr.rsplit(":", 1)[-1]
+                    if port_str.isdigit() and pid_str.isdigit():
+                        ports_by_pid.setdefault(int(pid_str), set()).add(int(port_str))
+        except Exception:
+            pass
+        try:
+            ps = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            if ps.returncode == 0 and ps.stdout.strip():
+                parsed = json.loads(ps.stdout)
+                rows = [parsed] if isinstance(parsed, dict) else list(parsed)
+                for row in rows:
+                    if not isinstance(row, Mapping) or row.get("ProcessId") is None:
+                        continue
+                    pid_val = int(row["ProcessId"])
+                    entries.append(
+                        ProcessEntry(
+                            pid=pid_val,
+                            ppid=int(row.get("ParentProcessId") or 0),
+                            name=str(row.get("Name") or ""),
+                            cmdline=str(row.get("CommandLine") or ""),
+                            listening_ports=tuple(sorted(ports_by_pid.get(pid_val, set()))),
+                        )
+                    )
+        except Exception:
+            pass
+        return entries
+
+    try:
+        ps = subprocess.run(
+            ["ps", "-eo", "pid=,ppid=,comm=,args="],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        for line in ps.stdout.splitlines():
+            parts = line.strip().split(None, 3)
+            if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
+                pid_val = int(parts[0])
+                ppid_val = int(parts[1])
+                comm_val = parts[2]
+                args_val = parts[3] if len(parts) >= 4 else comm_val
+                entries.append(
+                    ProcessEntry(
+                        pid=pid_val,
+                        ppid=ppid_val,
+                        name=comm_val,
+                        cmdline=args_val,
+                        listening_ports=(),
+                    )
+                )
+    except Exception:
+        pass
+    return entries
+
+
+def resolve_owned_ollama_halt_pid(
+    *,
+    ollama_base_url: str,
+    writer_tag: str,
+    writer_digest: str | None = None,
+    http_transport: OllamaHttpTransport = ollama_mod.default_ollama_http_transport,
+    process_table: Sequence[ProcessEntry | Mapping[str, Any]]
+    | Callable[[], Sequence[ProcessEntry | Mapping[str, Any]]]
+    | None = None,
+    owner_pid: int | None = None,
+) -> int:
+    """Resolve the owned Ollama runner PID serving the writer from `/api/ps` and the listening port's process.
+
+    Refuses to start if no owned server/runner can be resolved, and never returns an unowned PID.
+    """
+    parsed_url = urllib.parse.urlsplit(ollama_base_url)
+    target_port = int(parsed_url.port or 11434)
+    clean_base = ollama_base_url.rstrip("/")
+
+    env_owner = os.environ.get("RDLAB_OLLAMA_OWNER_PID", "").strip()
+    effective_owner_pid = (
+        int(owner_pid)
+        if owner_pid is not None
+        else (int(env_owner) if env_owner.isdigit() else os.getpid())
+    )
+
+    if process_table is None:
+        raw_table: Sequence[ProcessEntry | Mapping[str, Any]] = query_system_process_table()
+    elif callable(process_table):
+        raw_table = process_table()
+    else:
+        raw_table = process_table
+
+    entries = _coerce_process_entries(raw_table)
+    by_pid: dict[int, ProcessEntry] = {p.pid: p for p in entries}
+
+    def _is_owned(pid: int) -> bool:
+        visited: set[int] = set()
+        cur = by_pid.get(pid)
+        while cur is not None and cur.pid not in visited:
+            visited.add(cur.pid)
+            if cur.owned is False:
+                return False
+            if cur.owned is True:
+                return True
+            if cur.pid == effective_owner_pid or cur.ppid == effective_owner_pid:
+                return True
+            cur = by_pid.get(cur.ppid)
+        return False
+
+    def _is_descendant_of(pid: int, ancestor_pid: int) -> bool:
+        if pid == ancestor_pid:
+            return False
+        visited: set[int] = set()
+        cur = by_pid.get(pid)
+        while cur is not None and cur.pid not in visited:
+            visited.add(cur.pid)
+            if cur.ppid == ancestor_pid:
+                return True
+            cur = by_pid.get(cur.ppid)
+        return False
+
+    listening_servers = [p for p in entries if target_port in p.listening_ports]
+    if not listening_servers:
+        raise refused_error(
+            "BAKEOFF_HALT_PID_UNRESOLVED",
+            f"No Ollama server process found listening on port {target_port} ({clean_base}).",
+            "Start an Ollama server owned by this run before running bakeoff-part in non-mock mode.",
+        )
+
+    owned_servers = [p for p in listening_servers if _is_owned(p.pid)]
+    if not owned_servers:
+        raise refused_error(
+            "BAKEOFF_HALT_PID_UNRESOLVED",
+            f"Ollama server PID(s) {[p.pid for p in listening_servers]} listening on port {target_port} "
+            f"are not owned by this run (owner_pid={effective_owner_pid}); refusing to risk killing another session's process.",
+            "Run the writer under an Ollama server started and owned by this session.",
+        )
+
+    ps_resp = http_transport("GET", f"{clean_base}/api/ps", None)
+    raw_models = ps_resp.get("models") if isinstance(ps_resp, Mapping) else None
+    models_list = raw_models if isinstance(raw_models, list) else []
+    tag_candidates = {writer_tag, f"{writer_tag}:latest"}
+    norm_expected_digest = (
+        writer_digest.strip().lower().removeprefix("sha256:")
+        if writer_digest
+        else ""
+    )
+
+    matched_ps_model: Mapping[str, Any] | None = None
+    for m in models_list:
+        if not isinstance(m, Mapping):
+            continue
+        if m.get("name") in tag_candidates or m.get("model") in tag_candidates:
+            got_digest = str(m.get("digest") or "").strip().lower().removeprefix("sha256:")
+            if norm_expected_digest and got_digest and got_digest != norm_expected_digest:
+                continue
+            matched_ps_model = m
+            break
+
+    if matched_ps_model is None:
+        raise refused_error(
+            "BAKEOFF_HALT_PID_UNRESOLVED",
+            f"Ollama /api/ps at {clean_base}/api/ps does not show writer model '{writer_tag}' running on owned server PID {owned_servers[0].pid}.",
+            "Ensure the writer model is loaded on the owned Ollama server.",
+        )
+
+    owned_descendants = [
+        p
+        for p in entries
+        if any(_is_descendant_of(p.pid, srv.pid) for srv in owned_servers)
+        and _is_owned(p.pid)
+    ]
+
+    ps_pid = matched_ps_model.get("pid")
+    if isinstance(ps_pid, int) and not isinstance(ps_pid, bool):
+        for desc in owned_descendants:
+            if desc.pid == ps_pid:
+                return desc.pid
+
+    writer_base = writer_tag.split(":", 1)[0].lower()
+    runner_procs = [
+        p
+        for p in owned_descendants
+        if "runner" in p.cmdline.lower() or "runner" in p.name.lower()
+    ]
+    for proc in runner_procs:
+        if writer_base in proc.cmdline.lower() or writer_tag.lower() in proc.cmdline.lower():
+            return proc.pid
+    if runner_procs:
+        return runner_procs[0].pid
+
+    raise refused_error(
+        "BAKEOFF_HALT_PID_UNRESOLVED",
+        f"Could not resolve an owned Ollama runner child process under server PID(s) {[s.pid for s in owned_servers]} on port {target_port}.",
+        "Ensure the Ollama runner process serving the writer is running under this session's server.",
+    )
+
+
 class GpuGuardMonitor:
     """Monitors per-call timing, token counts, and VRAM peak, halting by PID-tree kill above cap."""
 
@@ -698,6 +989,7 @@ class GpuGuardMonitor:
         halt_pid: int | None = None,
         pid_killer: Callable[[int], None] = kill_pid_tree,
         records_path: Path | None = None,
+        mirror_records_path: Path | None = None,
     ) -> None:
         if vram_halt_mib <= 0:
             raise refused_error(
@@ -711,6 +1003,7 @@ class GpuGuardMonitor:
         self._halt_pid = halt_pid
         self._pid_killer = pid_killer
         self._records_path = records_path
+        self._mirror_records_path = mirror_records_path
         self._records: list[GpuCallRecord] = []
         self._peak_vram_mib: int = 0
 
@@ -763,10 +1056,12 @@ class GpuGuardMonitor:
             grant_id=self.grant_id,
         )
         self._records.append(rec)
-        if self._records_path is not None:
-            self._records_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._records_path.open("a", encoding="utf-8", newline="\n") as fh:
-                fh.write(json.dumps(rec.to_dict(), sort_keys=True) + "\n")
+        line = json.dumps(rec.to_dict(), sort_keys=True) + "\n"
+        for target_path in (self._records_path, self._mirror_records_path):
+            if target_path is not None:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with target_path.open("a", encoding="utf-8", newline="\n") as fh:
+                    fh.write(line)
         return rec
 
     def wrap_transport(self, inner: OllamaHttpTransport) -> OllamaHttpTransport:
@@ -814,7 +1109,7 @@ def build_mock_writer_ollama_http_transport(
         url: str,
         body: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
-        if method == "GET" and url.endswith("/api/tags"):
+        if method == "GET" and (url.endswith("/api/tags") or url.endswith("/api/ps")):
             return {"models": models_list}
         if method == "POST" and url.endswith("/api/chat"):
             payload = dict(body or {})
@@ -961,8 +1256,8 @@ def run_bakeoff_writer_waves(
                 raise
             last_rec = getattr(writer_adapter, "last_call_record", None)
             raw_out = str(getattr(writer_adapter, "last_raw_output", ""))
-            eval_tok = last_rec.eval_tokens if last_rec is not None else max(16, len(raw_out.split()))
-            prompt_tok = last_rec.prompt_tokens_estimate if last_rec is not None else 0
+            eval_tok = last_rec.eval_count if last_rec is not None else max(16, len(raw_out.split()))
+            prompt_tok = last_rec.prompt_eval_count if last_rec is not None else 0
             sec = last_rec.wall_time_s if last_rec is not None else 0.02
             tracker.record(
                 wave_name="render",
@@ -999,8 +1294,8 @@ def run_bakeoff_writer_waves(
             continue
 
         last_rec = getattr(writer_adapter, "last_call_record", None)
-        eval_tok = last_rec.eval_tokens if last_rec is not None else max(16, len(mat.split()))
-        prompt_tok = last_rec.prompt_tokens_estimate if last_rec is not None else 0
+        eval_tok = last_rec.eval_count if last_rec is not None else max(16, len(mat.split()))
+        prompt_tok = last_rec.prompt_eval_count if last_rec is not None else 0
         sec = last_rec.wall_time_s if last_rec is not None else 0.02
         tracker.record(
             wave_name="render",
@@ -1047,8 +1342,8 @@ def run_bakeoff_writer_waves(
                     raise
                 last_rec = getattr(writer_adapter, "last_call_record", None)
                 raw_out = str(getattr(writer_adapter, "last_raw_output", ""))
-                eval_tok = last_rec.eval_tokens if last_rec is not None else max(8, len(raw_out.split()))
-                prompt_tok = last_rec.prompt_tokens_estimate if last_rec is not None else 0
+                eval_tok = last_rec.eval_count if last_rec is not None else max(8, len(raw_out.split()))
+                prompt_tok = last_rec.prompt_eval_count if last_rec is not None else 0
                 sec = last_rec.wall_time_s if last_rec is not None else 0.01
                 tracker.record(
                     wave_name="word",
@@ -1073,8 +1368,8 @@ def run_bakeoff_writer_waves(
                 break
 
             last_rec = getattr(writer_adapter, "last_call_record", None)
-            eval_tok = last_rec.eval_tokens if last_rec is not None else max(8, len(w_text.split()))
-            prompt_tok = last_rec.prompt_tokens_estimate if last_rec is not None else 0
+            eval_tok = last_rec.eval_count if last_rec is not None else max(8, len(w_text.split()))
+            prompt_tok = last_rec.prompt_eval_count if last_rec is not None else 0
             sec = last_rec.wall_time_s if last_rec is not None else 0.01
             tracker.record(
                 wave_name="word",
@@ -1157,6 +1452,24 @@ def run_bakeoff_writer_waves(
             "Inspect review_queue.jsonl and writer num_predict budgets.",
         )
 
+    kept_triad_ids = {ev.worded.triad.triad_id for ev in kept}
+    kept_planned = [
+        item for item in planned_triads if item.triad.triad_id in kept_triad_ids
+    ]
+    dev_vset_ids = list(
+        split_counts.get("dev_value_set_ids")
+        or sorted({item.value_set.value_set_id for item in planned_triads if item.split == "dev"})
+    )
+    test_vset_ids = list(
+        split_counts.get("test_value_set_ids")
+        or sorted({item.value_set.value_set_id for item in planned_triads if item.split == "test"})
+    )
+    realized_split_counts = compute_split_counts(
+        kept_planned,
+        dev_sets=dev_vset_ids,
+        test_sets=test_vset_ids,
+    )
+
     triad_rate = round(len(kept) / len(evaluations), 4) if evaluations else 0.0
     rates: dict[VerdictKey, float] = {
         "supported": triad_rate,
@@ -1219,7 +1532,7 @@ def run_bakeoff_writer_waves(
         num_predict_config=np_config,
         writer_only=True,
         triad_metadata=triad_metadata,
-        split_counts=dict(split_counts),
+        split_counts=realized_split_counts,
     )
 
 
@@ -1239,6 +1552,11 @@ def run_bakeoff_part_build(
     vram_probe: Callable[[], int] | None = None,
     halt_pid: int | None = None,
     pid_killer: Callable[[int], None] = kill_pid_tree,
+    process_table: Sequence[ProcessEntry | Mapping[str, Any]]
+    | Callable[[], Sequence[ProcessEntry | Mapping[str, Any]]]
+    | None = None,
+    owner_pid: int | None = None,
+    http_transport: OllamaHttpTransport | None = None,
     manifest_path: Path | None = None,
     review_queue_v3_path: Path | None = None,
     licence_registry_path: Path | None = None,
@@ -1262,13 +1580,19 @@ def run_bakeoff_part_build(
         entries_map = load_licence_registry(licence_registry_path)
         reg_path_str = "licences/registry.json"
         reg_sha256 = hashlib.sha256(licence_registry_path.read_bytes()).hexdigest()
-    else:
+    elif mock_writer:
         fixture = build_fixture_licence_registry()
         entries_map = {str(e["id"]): e for e in fixture["entries"]}
         reg_path_str = "fixture:build_fixture_licence_registry"
         reg_sha256 = hashlib.sha256(
             json.dumps(fixture, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+    else:
+        raise refused_error(
+            "PILOT_B_LICENCE_REGISTRY_REQUIRED",
+            "Refused to start a non-mock bake-off build without an explicit --licence-registry <path>.",
+            "Pass --licence-registry <path> pointing to licences/registry.json.",
+        )
     validate_models_against_licence_registry(
         [writer_pin],
         registry_entries=entries_map,
@@ -1323,9 +1647,32 @@ def run_bakeoff_part_build(
     )
 
     resolved_out.mkdir(parents=True, exist_ok=True)
-    call_records_path = resolved_out / "call_records.jsonl"
-    if call_records_path.exists():
-        call_records_path.unlink()
+    call_records_path = resolved_out / "reports" / "call_records.jsonl"
+    legacy_call_records_path = resolved_out / "call_records.jsonl"
+    for p in (call_records_path, legacy_call_records_path):
+        if p.exists():
+            p.unlink()
+
+    base_transport = (
+        http_transport
+        if http_transport is not None
+        else (
+            build_mock_writer_ollama_http_transport()
+            if mock_writer
+            else ollama_mod.default_ollama_http_transport
+        )
+    )
+
+    resolved_halt_pid = halt_pid
+    if not mock_writer and resolved_halt_pid is None:
+        resolved_halt_pid = resolve_owned_ollama_halt_pid(
+            ollama_base_url=ollama_base_url,
+            writer_tag=writer_pin.ollama_tag,
+            writer_digest=writer_pin.manifest_digest,
+            http_transport=base_transport,
+            process_table=process_table,
+            owner_pid=owner_pid,
+        )
 
     resolved_vram_probe: Callable[[], int] = (
         vram_probe
@@ -1336,16 +1683,14 @@ def run_bakeoff_part_build(
         grant_id=resolved_grant,
         vram_halt_mib=vram_halt_mib,
         vram_probe=resolved_vram_probe,
-        halt_pid=halt_pid,
+        halt_pid=resolved_halt_pid,
         pid_killer=pid_killer,
         records_path=call_records_path,
+        mirror_records_path=legacy_call_records_path,
     )
+    if not mock_writer:
+        gpu_guard.check_vram()
 
-    base_transport = (
-        build_mock_writer_ollama_http_transport()
-        if mock_writer
-        else ollama_mod.default_ollama_http_transport
-    )
     guarded_transport = gpu_guard.wrap_transport(base_transport)
 
     saved_transport = ollama_mod.default_ollama_http_transport
@@ -1431,6 +1776,7 @@ def run_bakeoff_part_build(
     total_tokens = sum(w.completion_tokens_total for w in wave_result.wave_metrics)
     total_seconds = round(sum(w.seconds_total for w in wave_result.wave_metrics), 4)
     scale = (DEFAULT_BAKEOFF_TRIADS / triad_count) if triad_count > 0 else 1.0
+    realized_split_counts = dict(wave_result.split_counts or split_counts)
 
     report_payload: dict[str, object] = {
         "dataset": "bakeoff_part_t10",
@@ -1507,7 +1853,7 @@ def run_bakeoff_part_build(
             "auditor": None,
             "date": None,
         },
-        "split_counts": split_counts,
+        "split_counts": realized_split_counts,
         "v3_manifest": {
             "path": "certification/v3/manifest-v3.json",
             "sha256": v3_manifest_sha256,
@@ -1519,7 +1865,7 @@ def run_bakeoff_part_build(
             "vram_halt_mib": vram_halt_mib,
             "vram_peak_mib": gpu_guard.peak_vram_mib,
             "calls_recorded": len(gpu_guard.records),
-            "call_records_path": str(call_records_path.name),
+            "call_records_path": "reports/call_records.jsonl",
         },
     }
 
