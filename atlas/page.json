@@ -2,12 +2,14 @@
   "authored": [
     ".github/",
     "certification/",
+    "docs/",
     "examples/",
-    "root"
+    "root",
+    "site/"
   ],
   "breaks": [
     {
-      "doors": 2,
+      "doors": 3,
       "importedBy": [],
       "importedByTests": [
         "tests"
@@ -19,29 +21,36 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 18,
-      "changed": 0,
-      "moved": 6,
-      "parts": 1,
+      "added": 0,
+      "changed": 6,
+      "moved": 0,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "part",
-        "sentence": "certification is a new part, drawn from `certification/**`.",
+        "kind": "door",
+        "sentence": "ci's push trigger now also names `docs/**` and `site/src/content/docs/handbook/pilot-b.md`.",
         "subjects": [
-          "certification"
+          ".github/workflows/ci.yml"
+        ]
+      },
+      {
+        "kind": "door",
+        "sentence": "Release no longer starts by hand.",
+        "subjects": [
+          ".github/workflows/release.yml"
         ]
       },
       {
         "kind": "counts",
-        "sentence": "18 files added and 6 moved, across 1 part.",
+        "sentence": "6 files changed content, across 3 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "a5d507c66796740fd56c0123ec881151bb5d1e60",
-      "generatedAt": "2026-10-28T12:50:19.757Z"
+      "commit": "17a9b8abf7c2a0d110eaef899f0b2ea2396db4b0",
+      "generatedAt": "2026-10-29T21:43:38.066Z"
     },
     "unchanged": false
   },
@@ -62,9 +71,24 @@
       "shared": 8
     },
     {
+      "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
+      "b": "tests/test_pilot_b_part_b.py",
+      "either": 6,
+      "partLabels": [
+        "src",
+        "tests"
+      ],
+      "parts": [
+        "src",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 5
+    },
+    {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "tests/test_pilot_b_ollama_adapters.py",
-      "either": 10,
+      "either": 11,
       "partLabels": [
         "src",
         "tests"
@@ -79,7 +103,7 @@
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
-      "either": 13,
+      "either": 14,
       "partLabels": [
         "src",
         "src"
@@ -92,24 +116,9 @@
       "shared": 9
     },
     {
-      "a": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
-      "b": "tests/test_pilot_b_sealing_seed.py",
-      "either": 9,
-      "partLabels": [
-        "src",
-        "tests"
-      ],
-      "parts": [
-        "src",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 6
-    },
-    {
-      "a": "src/reasoning_dataset_lab/cli.py",
+      "a": "src/reasoning_dataset_lab/pilot_b/ollama.py",
       "b": "tests/test_pilot_b_ollama_adapters.py",
-      "either": 11,
+      "either": 13,
       "partLabels": [
         "src",
         "tests"
@@ -119,7 +128,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 7
+      "shared": 8
     }
   ],
   "changesTogetherNote": [
@@ -127,9 +136,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "5faf81152641afccc7e0be5fbef817f2c6b4cb79",
+  "commit": "0aabe5b06da40d79e9f10767481136d05c47938a",
   "defaultBranch": "main",
-  "derived": "6 parts, mostly Python (39 files). Work enters through 2 doors; the busiest is ci, which reaches 2 parts. People run rdlab.",
+  "derived": "9 parts, mostly Python (39 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1) and shell (1). Work enters through 4 doors; the busiest is ci, which reaches 2 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -163,8 +172,69 @@
       "stages": [],
       "triggers": [
         "on a pull request",
-        "on a push to main touching 8 paths",
+        "on a push to main touching 11 paths",
         "or by hand"
+      ]
+    },
+    {
+      "checks": [],
+      "checksCount": 0,
+      "checksMore": 0,
+      "file": ".github/workflows/pages.yml",
+      "id": ".github/workflows/pages.yml",
+      "landings": [],
+      "name": "Deploy site to GitHub Pages",
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "site",
+          "depth": 0,
+          "files": 5
+        }
+      ],
+      "runs": [
+        "site/astro.config.mjs",
+        "site/src/"
+      ],
+      "runsCount": 2,
+      "runsMore": 0,
+      "sends": [
+        "deploys the site"
+      ],
+      "stages": [],
+      "triggers": [
+        "on a push to main touching 2 paths",
+        "or by hand"
+      ]
+    },
+    {
+      "checks": [
+        "src/reasoning_dataset_lab/"
+      ],
+      "checksCount": 1,
+      "checksMore": 0,
+      "file": ".github/workflows/release.yml",
+      "id": ".github/workflows/release.yml",
+      "landings": [],
+      "name": "Release",
+      "pushes": false,
+      "reach": [
+        {
+          "boundary": "src",
+          "depth": 0,
+          "files": 18
+        }
+      ],
+      "runs": [],
+      "runsCount": 0,
+      "runsMore": 0,
+      "sends": [
+        "publishes to PyPI",
+        "uploads dist/*.tar.gz and dist/*.whl to the release"
+      ],
+      "stages": [],
+      "triggers": [
+        "when a release is published"
       ]
     },
     {
@@ -200,24 +270,26 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-28T17:08:45.323Z",
+  "generatedAt": "2026-10-29T22:03:57.444Z",
   "limits": [
-    "7 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
+    "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "7 reads use paths built at run time and are not named here.",
     "15 writes and 42 reads go to a path their caller passes, not to this repository.",
-    "1 file belongs to no part: docs/calibration-2026-10-25.md.",
     "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
   ],
   "mainDoor": ".github/workflows/ci.yml",
   "partLabels": {
     ".github": ".github",
     "certification": "certification",
+    "docs": "docs",
     "examples": "examples",
     "root": "the repository root",
+    "scripts": "scripts",
+    "site": "site",
     "src": "src",
     "tests": "tests"
   },
-  "parts": 6,
+  "parts": 9,
   "readers": [],
   "repo": "mcp-tool-shop-org/reasoning-dataset-lab",
   "sequences": [],
@@ -231,7 +303,7 @@
     "src/reasoning_dataset_lab/map.py"
   ],
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
-  "summary": "reasoning-dataset-lab validates dataset maps, loads the five-file project configuration, and computes deterministic configuration fingerprints.",
+  "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
   "testFiles": 22,
   "testedBy": {
@@ -239,9 +311,15 @@
   },
   "unnamedWrites": 0,
   "unread": [],
+  "unreadCode": [
+    "scripts"
+  ],
+  "unreadCodeUses": "scripts holds only shell files, which this map does not read, so what uses it cannot be seen.",
   "unreadFiles": 0,
   "unreadNote": [],
   "untested": [],
-  "untestedNote": [],
+  "untestedNote": [
+    "scripts holds only shell files, which this map does not read, so whether a test touches it cannot be seen."
+  ],
   "written": 0
 }

@@ -1702,10 +1702,10 @@ def test_gs_thinking_words_is_recorded_and_nothing_gates_on_it(
         assert rcall["thinking_words"] == 9999
 
 
-def test_gs_defaults_are_4096_6144_2048(
+def test_gs_defaults_are_8192_6144_6144_2560_and_the_handbook_page_states_them(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Card gs Acceptance 4 & Card gw Part A: defaults are render 4,096 (max_num_ctx 8,192), word_claim 4,255 (max_num_ctx 8,192), reader_1 Nemotron 6,144 (max_num_ctx 7,168), and reader_2 Granite 2,560 (max_num_ctx 8,192)."""
+    """Card gs Acceptance 4 & Card gw Part A, as the defaults stand now: render_material 8,192 (max_num_ctx 9,216), word_claim 6,144 (max_num_ctx 9,216), reader_1 Nemotron 6,144 (max_num_ctx 7,168), and reader_2 Granite 2,560 (max_num_ctx 8,192). The handbook page states each one in its own bullet."""
     import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
 
     transport, requests = build_mock_ollama_http_transport()
@@ -1768,7 +1768,15 @@ def test_gs_defaults_are_4096_6144_2048(
     assert "docs/calibration-2026-10-25.md" in doc_text
 
     repo_root = Path(__file__).resolve().parent.parent
-    readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
+    # the Pilot B numbers live in the handbook page, which the README links to
+    readme_text = (repo_root / "site" / "src" / "content" / "docs" / "handbook" / "pilot-b.md").read_text(encoding="utf-8")
+    for phrase in (
+        "**`render_material` (writer, `qwen3.6:35b`):** `num_predict` **`8,192`**, `max_num_ctx` **`9,216`**",
+        "**`word_claim` (writer, `qwen3.6:35b`):** `num_predict` **`6,144`**, `max_num_ctx` **`9,216`**",
+        "**`read_claim` on `reader_1` (`nemotron-3.5-lightning:30b`):** `num_predict` **`6,144`**, `max_num_ctx` **`7,168`**",
+        "**`read_claim` on `reader_2` (`granite4.2:8b`):** `num_predict` **`2,560`**, `max_num_ctx` **`8,192`**",
+    ):
+        assert phrase in readme_text, phrase
     assert "3,462" in readme_text
     assert "3,743" in readme_text
     assert "4,255" in readme_text

@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from reasoning_dataset_lab import __version__
 from reasoning_dataset_lab.errors import refused_error, usage_error
 from reasoning_dataset_lab.map import is_valid_sha256
 from reasoning_dataset_lab.pilot_b.fact_tables import (
@@ -580,7 +581,7 @@ def _default_fetch_ollama_manifest(ollama_tag: str) -> tuple[bytes, dict[str, st
         url,
         headers={
             "Accept": DOCKER_MANIFEST_V2_ACCEPT,
-            "User-Agent": "reasoning-dataset-lab/0.3.0",
+            "User-Agent": f"reasoning-dataset-lab/{__version__}",
         },
     )
     try:
