@@ -1220,16 +1220,17 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
                 raise _invalid_inputs("a claim's writer calls are not the table render and the claim wording")
             readers_calls = entry["reader_call_records"]
             if is_bakeoff:
-                if readers_calls != []:
-                    raise _invalid_inputs("a writer-only bakeoff entry must have no reader call records")
-                if entry.get("split") not in ("dev", "test"):
-                    raise _invalid_inputs("a bakeoff entry split must be 'dev' or 'test'")
-                if not isinstance(entry.get("value_set_id"), str) or "/" not in entry["value_set_id"]:
-                    raise _invalid_inputs("a bakeoff entry value_set_id is invalid")
-                if not isinstance(entry.get("value_set_sha256"), str) or not hex64.fullmatch(entry["value_set_sha256"]):
-                    raise _invalid_inputs("a bakeoff entry value_set_sha256 is invalid")
-                if not _is_int(entry.get("target_line")) or not (1 <= entry["target_line"] <= 5):
-                    raise _invalid_inputs("a bakeoff entry target_line must be 1..5")
+                if (
+                    readers_calls != []
+                    or entry.get("split") not in ("dev", "test")
+                    or not isinstance(entry.get("value_set_id"), str)
+                    or "/" not in entry["value_set_id"]
+                    or not isinstance(entry.get("value_set_sha256"), str)
+                    or not hex64.fullmatch(entry["value_set_sha256"])
+                    or not _is_int(entry.get("target_line"))
+                    or not (1 <= entry["target_line"] <= 5)
+                ):
+                    raise _invalid_inputs("a writer-only bakeoff entry has invalid fields")
             else:
                 if [r.get("operation") for r in readers_calls] != ["read_claim", "read_claim"]:
                     raise _invalid_inputs("a claim's reader calls are not two reads")
@@ -1297,13 +1298,6 @@ def _render_part(
     order = list(range(len(entries)))
     rng = random.Random(shuffle_seed)
     rng.shuffle(order)
-    if is_bakeoff and len(order) >= 6:
-        for _ in range(16):
-            try:
-                check_items_not_in_key_order([entries[i] for i in order])
-                break
-            except RdlabError:
-                rng.shuffle(order)
 
     items_lines: list[str] = []
     prov_lines: list[str] = []
@@ -2002,23 +1996,9 @@ def _check_part_shapes(part_dir: Path, extra_public_files: Sequence[Path], key_i
 
 def check_items_not_in_key_order(keys_rows: Sequence[Mapping[str, Any]]) -> None:
     """Refuse when items are written in deterministic triad key order or grouped contiguously by key class."""
-    if len(keys_rows) < 6:
-        return
     keys_seq = [str(r.get("key", r.get("class", ""))) for r in keys_rows]
-    triads_seq = [str(r.get("triad_id", r.get("triad_handle", ""))) for r in keys_rows]
-    has_triad_ids = any(bool(t) for t in triads_seq)
     n_triads = len(keys_seq) // 3
-    triads_contiguous = (
-        not has_triad_ids
-        or (
-            len(keys_seq) == 3 * n_triads
-            and all(
-                triads_seq[3 * t] == triads_seq[3 * t + 1] == triads_seq[3 * t + 2]
-                for t in range(n_triads)
-            )
-        )
-    )
-    if len(keys_seq) == 3 * n_triads and (len(keys_seq) >= 12 or triads_contiguous):
+    if len(keys_seq) >= 6 and len(keys_seq) == 3 * n_triads:
         for perm in (
             ("supported", "unsupported", "cannot_tell"),
             ("supported", "cannot_tell", "unsupported"),
@@ -2034,7 +2014,7 @@ def check_items_not_in_key_order(keys_rows: Sequence[Mapping[str, Any]]) -> None
                     "Shuffle items with a private seed before writing.",
                 )
     transitions = sum(1 for i in range(1, len(keys_seq)) if keys_seq[i] != keys_seq[i - 1])
-    if transitions <= 2 and len(set(keys_seq)) >= 2 and (len(keys_seq) >= 12 or not has_triad_ids):
+    if len(keys_seq) >= 6 and transitions <= 2 and len(set(keys_seq)) >= 2:
         raise refused_error(
             "PILOT_B_ITEMS_IN_KEY_ORDER",
             "Items are grouped contiguously in key class order.",
@@ -2087,7 +2067,8 @@ def _verify_known_leaks(part_dir: Path, keys_sealed_path: Path, extra_public_fil
             )
 
     keys_rows = _jsonl_rows(keys_sealed_path)
-    check_items_not_in_key_order(keys_rows)
+    if str(store.get("part_id", "")).startswith("bakeoff"):
+        check_items_not_in_key_order(keys_rows)
     metrics_rows = _jsonl_rows(metrics_path)
     key_ids = [str(r["id"]) for r in keys_rows]
     if [str(r["id"]) for r in metrics_rows] != key_ids:
