@@ -68,6 +68,7 @@ from reasoning_dataset_lab.pilot_b.rendering import (
     WordedTriad,
     check_rendered_material,
     check_worded_claim,
+    check_worded_triad,
     format_atomic_sentence,
 )
 from reasoning_dataset_lab.pilot_b.unanimity import (
@@ -120,17 +121,17 @@ SEALED_CHECKPOINT_FILENAME = "checkpoint.sealed.json"
 CHECKPOINT_GENESIS_HASH = "0" * 64
 
 MAIN_E0E3C04_GOLDEN_SHA256: dict[str, str] = {
-    "tables_50_sha256": "51fc38cdaa2c2ed156ff3c620efc4fc36854883bb73297ebef06d435ad50a737",
-    "triads_50_sha256": "9b81587b3e0be84543d7aee5d6cb8565bdfae7b8bc0fb6be01c0fa0b205eb718",
-    "tables_10_sha256": "07eaecc3816200354febf9ec5489137e9f8fa0a9f4bef4e43d43e924c9a22ff3",
-    "triads_10_sha256": "900ac51c4e6ead753aeb46673780cedab872ec10d535d9c2442609f31250efa7",
-    "items.jsonl": "94ecc025640a5173f947e62a906f44a1d064048f36d503c8d5e1d21e20d458fc",
-    "provenance.jsonl": "2ae8cdd821ca98bc49aba4f3e3c6a6871499e21609ff3b748d4e654fec294173",
-    "part.json": "fae357397ceeac0d1bfb27c0abb2115b9464271a1f348770563e85034ab8ac94",
-    "checksums.txt": "95a8776fc2d489a3422712ab49e0c0b61779a9e3699df05adadd23fdd203af26",
-    "keys.sealed.jsonl": "8e9a3ed88be6b53430f7661981df37e556208ddc0563b6f1c4b77430e4e26b0e",
-    "call_metrics.sealed.jsonl": "bc4bc901c044de653c5a7b1295bd725743f1ee166b31ad668ffe3a178198dd3a",
-    "render_inputs.sealed.json": "cd552f8e414c050c933f8b831d4919d1c5cedd21d61c95dddbf1c9e066b7afa5",
+    "tables_50_sha256": "1fe7ea0c7310675096e1d4ba6b45ccdf344015a6b70300d89c229aa23b04717c",
+    "triads_50_sha256": "79b454c61d13afff15ccbdff36569d0982cc137ac1b7776e1883a55a1d3acd67",
+    "tables_10_sha256": "baddf92127a8c19924784526d5cd03ca8b26627d34a6d2c80b3e85b99ef450aa",
+    "triads_10_sha256": "6fb120ef13e9fa679425df446fc5859bb513396d1fdee8d75ba01e7a1540e284",
+    "items.jsonl": "d39db099e695428e6f61d1f8e8004f72bd4616ab1f0dce009d9aff182abe44b1",
+    "provenance.jsonl": "de9b7c388a9b374c55b2c90a8c04356dce684a4d64117c02b33f5441ee8e626b",
+    "part.json": "3c804e083d24cd68ce6f07154410e84c7702c8354727dc68669df3e6f983f8cd",
+    "checksums.txt": "f8eea717429826b124068b3e2e210043b84d5fecdf4b51f529d86c5c5774086f",
+    "keys.sealed.jsonl": "64e6c4e4348c053a32e09fdd88274d5bb847bfa19eb24ddf02da03742c1dc9e4",
+    "call_metrics.sealed.jsonl": "2e7c0267828c16654ecc4f24e477a6f8e8da808164e4aeac92ff2ecf29776278",
+    "render_inputs.sealed.json": "420659fc5c1251e7990749331ae1b0a49e52f2fcbf6d23ce7e7e0946dc944d4b",
     "sealing.sealed.json": "d96d0e04e99607ebad29a601b64e0a2d2b58f5f50b26153f5f8e1a6e02e7f040",
 }
 
@@ -537,7 +538,7 @@ def plan_bakeoff_triads(
             secret=table_secret,
             certified_value_set=vset.as_tuple,
         )
-        verify_triad_against_table(table, triad)
+        verify_triad_against_table(table, triad, require_values_in_material=True)
         planned.append(
             PlannedBakeoffTriad(
                 index=idx + 1,
@@ -2654,6 +2655,7 @@ def run_bakeoff_writer_waves(
             material=mat,
             worded_claims=w_claims,
         )
+        check_worded_triad(worded, require_values_in_material=True)
         kept_ev = TriadGateEvaluation(
             worded=worded,
             claim_evals=_dummy_claim_evals_for_writer(t, writer_model, True),
@@ -3182,6 +3184,9 @@ def run_bakeoff_part_build(
         "render_failure_rate": wave_result.render_failure_rate,
         "max_render_failure_rate": wave_result.max_render_failure_rate,
         "key_proof_rate": 1.0,
+        "mutate_fact_value_fallbacks": sum(
+            ev.worded.triad.mutate_fact_value_fallbacks for ev in wave_result.kept_triads
+        ),
         "num_predict": wave_result.num_predict,
         "num_predict_source": wave_result.num_predict_source,
         "num_predict_config": (

@@ -1047,19 +1047,19 @@ def test_fix5_byte_identity_regression_against_main_e0e3c04(
     from test_pilot_b_part_d import _setup_models
 
     # Golden SHA-256 digests computed at main e0e3c04a5557c6c2057cb5328a5088e9b2878756
-    # (rendered text files updated in Card rm for value display forms; tables/triads/sealing remain byte-identical)
+    # (updated in Card rm for value display forms and Card rr for overlap repair; sealing remains byte-identical)
     expected_golden = {
-        "tables_50_sha256": "51fc38cdaa2c2ed156ff3c620efc4fc36854883bb73297ebef06d435ad50a737",
-        "triads_50_sha256": "9b81587b3e0be84543d7aee5d6cb8565bdfae7b8bc0fb6be01c0fa0b205eb718",
-        "tables_10_sha256": "07eaecc3816200354febf9ec5489137e9f8fa0a9f4bef4e43d43e924c9a22ff3",
-        "triads_10_sha256": "900ac51c4e6ead753aeb46673780cedab872ec10d535d9c2442609f31250efa7",
-        "items.jsonl": "94ecc025640a5173f947e62a906f44a1d064048f36d503c8d5e1d21e20d458fc",
-        "provenance.jsonl": "2ae8cdd821ca98bc49aba4f3e3c6a6871499e21609ff3b748d4e654fec294173",
-        "part.json": "fae357397ceeac0d1bfb27c0abb2115b9464271a1f348770563e85034ab8ac94",
-        "checksums.txt": "95a8776fc2d489a3422712ab49e0c0b61779a9e3699df05adadd23fdd203af26",
-        "keys.sealed.jsonl": "8e9a3ed88be6b53430f7661981df37e556208ddc0563b6f1c4b77430e4e26b0e",
-        "call_metrics.sealed.jsonl": "bc4bc901c044de653c5a7b1295bd725743f1ee166b31ad668ffe3a178198dd3a",
-        "render_inputs.sealed.json": "cd552f8e414c050c933f8b831d4919d1c5cedd21d61c95dddbf1c9e066b7afa5",
+        "tables_50_sha256": "1fe7ea0c7310675096e1d4ba6b45ccdf344015a6b70300d89c229aa23b04717c",
+        "triads_50_sha256": "79b454c61d13afff15ccbdff36569d0982cc137ac1b7776e1883a55a1d3acd67",
+        "tables_10_sha256": "baddf92127a8c19924784526d5cd03ca8b26627d34a6d2c80b3e85b99ef450aa",
+        "triads_10_sha256": "6fb120ef13e9fa679425df446fc5859bb513396d1fdee8d75ba01e7a1540e284",
+        "items.jsonl": "d39db099e695428e6f61d1f8e8004f72bd4616ab1f0dce009d9aff182abe44b1",
+        "provenance.jsonl": "de9b7c388a9b374c55b2c90a8c04356dce684a4d64117c02b33f5441ee8e626b",
+        "part.json": "3c804e083d24cd68ce6f07154410e84c7702c8354727dc68669df3e6f983f8cd",
+        "checksums.txt": "f8eea717429826b124068b3e2e210043b84d5fecdf4b51f529d86c5c5774086f",
+        "keys.sealed.jsonl": "64e6c4e4348c053a32e09fdd88274d5bb847bfa19eb24ddf02da03742c1dc9e4",
+        "call_metrics.sealed.jsonl": "2e7c0267828c16654ecc4f24e477a6f8e8da808164e4aeac92ff2ecf29776278",
+        "render_inputs.sealed.json": "420659fc5c1251e7990749331ae1b0a49e52f2fcbf6d23ce7e7e0946dc944d4b",
         "sealing.sealed.json": "d96d0e04e99607ebad29a601b64e0a2d2b58f5f50b26153f5f8e1a6e02e7f040",
     }
     assert getattr(bo_mod, "MAIN_E0E3C04_GOLDEN_SHA256", None) == expected_golden
@@ -2741,6 +2741,224 @@ def test_mock_writer_stub_build_has_no_slugs_in_rendered_material_lines(
         claim_tokens = {t.lower() for t in re.findall(r"[A-Za-z0-9-]+", item["claim"])}
         leaked_claim = claim_tokens & non_trivial_slugs
         assert not leaked_claim, f"Slug(s) {leaked_claim} appeared in worded claim: {item['claim']!r}"
+
+
+def test_claim_value_not_in_material_invariant_and_normalised_matching() -> None:
+    """Card rr Req 2: verify_triad_against_table and check_worded_triad enforce PILOT_B_CLAIM_VALUE_NOT_IN_MATERIAL using normalised value matching."""
+    import dataclasses
+    from reasoning_dataset_lab.pilot_b.fact_tables import (
+        prove_claim_against_table,
+        verify_triad_against_table,
+    )
+    from reasoning_dataset_lab.pilot_b.rendering import (
+        WordedTriad,
+        check_worded_triad,
+    )
+
+    certified, _queued, _ = verify_and_load_v3_value_sets()
+    reactors_vs = next(
+        c for c in certified if c.domain == "reactors" and "coolant" in c.attribute
+    )
+    table = build_sample_fact_table(
+        seed=5,
+        closure="open",
+        secret=1 << 127,
+        domain_override="reactors",
+        certified_value_set=reactors_vs.as_tuple,
+    )
+    triad = build_contrast_triad(
+        table,
+        seed=5,
+        secret=1 << 127,
+        certified_value_set=reactors_vs.as_tuple,
+    )
+    assert triad.mutate_fact_value_fallbacks == 0
+    verify_triad_against_table(table, triad, require_values_in_material=True)
+
+    # Render material and word claims using display forms
+    mat_lines = [
+        f"{f.line}. {format_atomic_sentence(entity=f.entity, attribute=f.attribute, fact_type=f.fact_type, value=f.value, unit=f.unit, op=f.op)}"
+        for f in sorted(table.facts, key=lambda x: x.line)
+    ]
+    material_str = "\n".join(mat_lines)
+    worded_claims = {
+        k: format_atomic_sentence(
+            entity=c.entity,
+            attribute=c.attribute,
+            fact_type=c.fact_type,
+            value=c.claimed_value,
+            unit=c.unit,
+            op=c.op,
+        )
+        for k, c in triad.claims.items()
+    }
+    worded = WordedTriad(
+        triad=triad,
+        material=material_str,
+        worded_claims=worded_claims,
+    )
+    check_worded_triad(worded, require_values_in_material=True)
+
+    # 1. Verify slug = display form = hyphen/case-normalised form all pass verify_triad_against_table & check_worded_triad
+    sup_claim = triad.claims["supported"]
+    for variant in ("coldshutdown", "cold shutdown", "Cold-Shutdown"):
+        # Construct a table where the state fact has slug 'coldshutdown' and claim uses `variant`
+        state_table = build_sample_fact_table(
+            seed=4,
+            closure="open",
+            secret=1 << 127,
+            domain_override="reactors",
+            certified_value_set=reactors_vs.as_tuple,
+        )
+        state_triad = build_contrast_triad(
+            state_table,
+            seed=4,
+            secret=1 << 127,
+            certified_value_set=reactors_vs.as_tuple,
+        )
+        sc = state_triad.claims["supported"]
+        if sc.fact_type == "state":
+            # Force fact value to 'coldshutdown' and claim value to `variant`
+            new_facts = tuple(
+                dataclasses.replace(f, value="coldshutdown") if f.fact_id == sc.fact_id else f
+                for f in state_table.facts
+            )
+            mod_table = dataclasses.replace(state_table, facts=new_facts)
+            mod_sc_draft = dataclasses.replace(sc, claimed_value=variant)
+            mod_sc = dataclasses.replace(
+                mod_sc_draft,
+                proof=prove_claim_against_table(mod_table, mod_sc_draft),
+            )
+            mod_claims = dict(state_triad.claims)
+            mod_claims["supported"] = mod_sc
+            mod_triad = dataclasses.replace(state_triad, table=mod_table, claims=mod_claims)
+            verify_triad_against_table(mod_table, mod_triad, require_values_in_material=True)
+
+    # 2. Mutating unsupported claim to an out-of-material value must fail with PILOT_B_CLAIM_VALUE_NOT_IN_MATERIAL
+    unsup_claim = triad.claims["unsupported"]
+    out_of_mat_val = (
+        999999
+        if unsup_claim.fact_type == "number"
+        else (900, 950)
+        if unsup_claim.fact_type == "interval"
+        else "28 December"
+        if unsup_claim.fact_type == "date"
+        else "refueling"
+    )
+    bad_unsup_draft = dataclasses.replace(unsup_claim, claimed_value=out_of_mat_val)
+    bad_unsup = dataclasses.replace(
+        bad_unsup_draft,
+        proof=prove_claim_against_table(table, bad_unsup_draft),
+    )
+    bad_claims = dict(triad.claims)
+    bad_claims["unsupported"] = bad_unsup
+    bad_triad = dataclasses.replace(triad, claims=bad_claims)
+    with pytest.raises(RdlabError) as exc_not_in_mat:
+        verify_triad_against_table(table, bad_triad, require_values_in_material=True)
+    assert exc_not_in_mat.value.code == "PILOT_B_CLAIM_VALUE_NOT_IN_MATERIAL"
+
+    # Also test check_worded_triad refusing when a claim's value is absent from worded.material
+    bad_worded_claims = dict(worded_claims)
+    bad_worded_claims["unsupported"] = format_atomic_sentence(
+        entity=bad_unsup.entity,
+        attribute=bad_unsup.attribute,
+        fact_type=bad_unsup.fact_type,
+        value=bad_unsup.claimed_value,
+        unit=bad_unsup.unit,
+        op=bad_unsup.op,
+    )
+    bad_worded = WordedTriad(
+        triad=bad_triad,
+        material=material_str,
+        worded_claims=bad_worded_claims,
+    )
+    with pytest.raises(RdlabError) as exc_worded_not_in_mat:
+        check_worded_triad(bad_worded, require_values_in_material=True)
+    assert exc_worded_not_in_mat.value.code == "PILOT_B_CLAIM_VALUE_NOT_IN_MATERIAL"
+
+    # Also test ProvedTriad.mutate_fact_value_fallbacks edge branches
+    assert bad_triad.mutate_fact_value_fallbacks == 1
+    no_fact_id_unsup = dataclasses.replace(unsup_claim, fact_id=None)
+    assert dataclasses.replace(triad, claims={**triad.claims, "unsupported": no_fact_id_unsup}).mutate_fact_value_fallbacks == 0
+    bad_fact_id_unsup = dataclasses.replace(unsup_claim, fact_id="nonexistent-fact-id")
+    assert dataclasses.replace(triad, claims={**triad.claims, "unsupported": bad_fact_id_unsup}).mutate_fact_value_fallbacks == 0
+
+    # Also exercise non-homogeneous seed mismatches and _claim_value_tokens / _compute_proximity_features edge cases for full branch coverage
+    for t_seed, tr_seed in ((1, 14), (2, 11), (5, 14), (6, 15), (11, 21), (12, 21)):
+        for cl in ("open", "closed"):
+            t_nh = build_sample_fact_table(seed=t_seed, closure=cl)
+            tr_nh = build_contrast_triad(t_nh, seed=tr_seed)
+            assert set(tr_nh.claims) == {"supported", "unsupported", "cannot_tell"}
+
+    from reasoning_dataset_lab.pilot_b.shortcut_probe import (
+        _claim_value_tokens,
+        _compute_proximity_features,
+    )
+
+    assert _claim_value_tokens(None) == []
+    assert _claim_value_tokens("") == []
+    assert _compute_proximity_features(
+        "1. The output capacity of Unit Alpha is 420 megawatts.",
+        "Unit Alpha",
+        None,
+        ["unit", "alpha", "output", "capacity", "420", "megawatts"],
+    ) == (1.0, 0.2)
+    assert _compute_proximity_features(
+        "1. The output capacity of Unit Alpha is 420 megawatts.",
+        "Unit Beta",
+        "999",
+        ["unit", "beta", "999"],
+    ) == (0.0, 1.0)
+
+
+def test_role_and_closure_class_shares_stay_exact_one_third_across_bakeoff_plan() -> None:
+    """Card rr Req 3 & REPAIR-REQUIREMENTS #1: Shares stay exactly 1/3 per attribute role and closure."""
+    from collections import Counter
+    from reasoning_dataset_lab.pilot_b.variety import DOMAIN_CATALOGUE, _attribute_role
+
+    certified, queued_digests, _ = verify_and_load_v3_value_sets()
+    planned, _ = plan_bakeoff_triads(
+        triad_count=DEFAULT_BAKEOFF_TRIADS,
+        seed=1,
+        split_seed=20261029,
+        table_secret=1 << 127,
+        certified_sets=certified,
+        queued_digests=queued_digests,
+    )
+    dom_by_name = {str(d["domain"]): d for d in DOMAIN_CATALOGUE}
+    role_counts: dict[str, Counter[str]] = {}
+    closure_counts: dict[str, Counter[str]] = {}
+
+    for p in planned:
+        assert p.triad.mutate_fact_value_fallbacks == 0
+        dom_spec = dom_by_name[p.domain]
+        closure_counts.setdefault(p.closure, Counter())
+        for key, claim in p.triad.claims.items():
+            role = _attribute_role(claim.attribute, dom_spec)
+            role_counts.setdefault(role, Counter())[key] += 1
+            closure_counts[p.closure][key] += 1
+
+    assert set(role_counts.keys()) == {"number", "date", "interval", "state", "spec", "open"}
+    assert set(closure_counts.keys()) == {"open", "closed"}
+
+    for r_name, counts in role_counts.items():
+        tot = sum(counts.values())
+        assert tot > 0
+        assert counts["supported"] == counts["unsupported"] == counts["cannot_tell"], (
+            f"Role {r_name} class counts are not equal: {counts}"
+        )
+        for lbl in ("supported", "unsupported", "cannot_tell"):
+            assert round(counts[lbl] / tot, 4) == 0.3333
+
+    for c_name, counts in closure_counts.items():
+        tot = sum(counts.values())
+        assert tot > 0
+        assert counts["supported"] == counts["unsupported"] == counts["cannot_tell"], (
+            f"Closure {c_name} class counts are not equal: {counts}"
+        )
+        for lbl in ("supported", "unsupported", "cannot_tell"):
+            assert round(counts[lbl] / tot, 4) == 0.3333
+
 
 
 

@@ -22,8 +22,10 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     ProvedClaim,
     ProvedTriad,
     VerdictKey,
+    _claim_value_in_table_facts,
     normalise_value_token,
     value_display_form,
+    verify_triad_against_table,
 )
 
 NUMBERED_LINE_RE: re.Pattern[str] = re.compile(r"^\s*(\d+)[.)]\s+(.+?)\s*$")
@@ -463,7 +465,11 @@ def check_worded_claim(
     _check_grounding_tokens(label, worded_text, whitelist)
 
 
-def check_worded_triad(worded: WordedTriad) -> None:
+def check_worded_triad(
+    worded: WordedTriad,
+    *,
+    require_values_in_material: bool | None = None,
+) -> None:
     """Validate both the rendered material and all three worded claims of a WordedTriad."""
     check_rendered_material(worded.triad.table, worded.material)
     expected: tuple[VerdictKey, ...] = ("supported", "unsupported", "cannot_tell")
@@ -477,6 +483,22 @@ def check_worded_triad(worded: WordedTriad) -> None:
         claim = worded.triad.claims[key]
         text = worded.worded_claims[key]
         check_worded_claim(worded.triad.table, claim, text)
+    verify_triad_against_table(
+        worded.triad.table,
+        worded.triad,
+        require_values_in_material=require_values_in_material,
+    )
+    for key in expected:
+        claim = worded.triad.claims[key]
+        if _claim_value_in_table_facts(worded.triad.table, claim) or bool(require_values_in_material):
+            for val_part in _value_strings(claim.claimed_value):
+                if not _named_value(claim.claimed_value, val_part, worded.material):  # pragma: no cover
+                    raise refused_error(
+                        "PILOT_B_CLAIM_VALUE_NOT_IN_MATERIAL",
+                        f"WordedTriad '{worded.triad.triad_id}' claim '{claim.claim_id}' ({key}) claims value '{val_part}', "
+                        "which is absent from the rendered material under normalised value matching.",
+                        "Draw every claim value (supported, unsupported, cannot_tell) from values present in the material.",
+                    )
 
 
 def format_atomic_sentence(

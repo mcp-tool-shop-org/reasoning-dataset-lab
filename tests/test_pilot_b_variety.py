@@ -322,7 +322,7 @@ def test_he_part_e_2_synthetic_build_matches_hand_computation(
     assert rep["leak"] == []
     assert rep["materials"] == {
         "sentences": 25,
-        "distinct_frames": 10,
+        "distinct_frames": 9,
         "top_frame_share": 0.32,
         "top_frame": "the <a> of <e> is <v>.",
         "status": "pass",
