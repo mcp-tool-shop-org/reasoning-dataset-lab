@@ -60,6 +60,16 @@ from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_secrets_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    import random
+    import secrets
+
+    prng = random.Random(0x5EED_2026_1030)
+    monkeypatch.setattr(secrets, "randbits", prng.getrandbits)
+    monkeypatch.setattr(secrets, "token_bytes", lambda n=32: prng.randbytes(n))
+
+
 def _jsonl(path: Path) -> list[dict]:
     return [
         json.loads(line)
@@ -232,6 +242,7 @@ def test_refuses_when_items_are_written_in_key_order(tmp_path: Path):
         triad_count=4,
         stub_mode=True,
         mock_writer=True,
+        shuffle_seed=(1 << 127) | 101,
         grant_id="test-grant-key-order",
         repo_root=tmp_path / "fake-repo",
     )
@@ -367,6 +378,7 @@ def test_writer_pin_calibration_and_one_load_wave_execution(tmp_path: Path):
         triad_count=10,
         stub_mode=True,
         mock_writer=True,
+        shuffle_seed=(1 << 127) | 201,
         grant_id="grant-stub-10",
         vram_probe=lambda: 18_432,
         repo_root=tmp_path / "fake-repo",
@@ -499,6 +511,8 @@ def test_cli_bakeoff_part_end_to_end_with_mock_writer(tmp_path: Path):
             "--stub",
             "4",
             "--mock-writer",
+            "--shuffle-seed",
+            str((1 << 127) | 301),
             "--grant-id",
             "cli-test-grant",
             "--output-dir",
@@ -957,6 +971,7 @@ def test_fix3_recomputes_realized_split_counts_on_kept_triads_after_waves(
         triad_count=20,
         stub_mode=True,
         mock_writer=True,
+        shuffle_seed=(1 << 127) | 501,
         grant_id="grant-fix3",
         repo_root=tmp_path / "fake-repo",
     )
@@ -1205,6 +1220,7 @@ def test_qc1_child_server_started_halt_pid_and_stopped_on_success_and_error(
         triad_count=1,
         stub_mode=True,
         mock_writer=False,
+        shuffle_seed=(1 << 127) | 801,
         grant_id="grant-qc1-success",
         licence_registry_path=reg_path,
         vram_probe=lambda: 14_000,
@@ -1702,10 +1718,10 @@ def _strip_named_report_timing_fields(doc: dict) -> dict:
     if isinstance(out.get("full_build_estimate_50_triads"), dict):
         out["full_build_estimate_50_triads"].pop("estimated_seconds_stub_rate", None)
     if isinstance(out.get("gpu_guard"), dict):
-        for k in ("server_started_at", "server_stopped_at", "server_start_time", "server_stop_time", "halt_pid", "server_pid"):
+        for k in ("server_started_at", "server_stopped_at", "server_start_time", "server_stop_time"):
             out["gpu_guard"].pop(k, None)
     if isinstance(out.get("ollama_server"), dict):
-        for k in ("started_at", "stopped_at", "start_time", "stop_time", "pid", "port", "host", "base_url", "owned", "version"):
+        for k in ("started_at", "stopped_at", "start_time", "stop_time"):
             out["ollama_server"].pop(k, None)
     return out
 
@@ -1731,6 +1747,7 @@ def test_resume_from_killed_and_halted_runs_is_byte_identical_to_uninterrupted_r
     fixed_table_secret = (1 << 127) | 0xDEADBEEF
     fixed_commitment_key = bytes(range(1, 33))
     monkeypatch.setattr(secrets, "token_bytes", lambda n=32: fixed_commitment_key[:n])
+    monkeypatch.setattr(secrets, "randbits", lambda k=128: fixed_shuffle_seed & ((1 << k) - 1))
     monkeypatch.setattr(time, "perf_counter", lambda: 1000.0)
 
     n_triads = 6
@@ -1919,6 +1936,8 @@ def test_resume_from_killed_and_halted_runs_is_byte_identical_to_uninterrupted_r
                 "--stub",
                 "2",
                 "--mock-writer",
+                "--shuffle-seed",
+                str(fixed_shuffle_seed),
                 "--grant-id",
                 "grant-cli-resume",
                 "--output-dir",
@@ -1936,6 +1955,8 @@ def test_resume_from_killed_and_halted_runs_is_byte_identical_to_uninterrupted_r
                 "2",
                 "--mock-writer",
                 "--resume",
+                "--shuffle-seed",
+                str(fixed_shuffle_seed),
                 "--grant-id",
                 "grant-cli-resume",
                 "--output-dir",
@@ -1971,6 +1992,9 @@ def test_resume_from_killed_and_halted_runs_is_byte_identical_to_uninterrupted_r
             triad_count=20,
             stub_mode=True,
             mock_writer=True,
+            shuffle_seed=fixed_shuffle_seed,
+            table_secret=fixed_table_secret,
+            allow_weak_test_seed=True,
             grant_id="grant-ft",
             http_transport=_fail_render_and_word_then_kill,
             repo_root=tmp_path / "fake-repo",
@@ -1980,6 +2004,9 @@ def test_resume_from_killed_and_halted_runs_is_byte_identical_to_uninterrupted_r
         triad_count=20,
         stub_mode=True,
         mock_writer=True,
+        shuffle_seed=fixed_shuffle_seed,
+        table_secret=fixed_table_secret,
+        allow_weak_test_seed=True,
         grant_id="grant-ft",
         http_transport=base_mock,
         repo_root=tmp_path / "fake-repo",
@@ -2042,6 +2069,9 @@ def test_resume_refuses_tampered_checkpoint_edited_item_or_truncated_chain(
             triad_count=4,
             stub_mode=True,
             mock_writer=True,
+            shuffle_seed=(1 << 127) | 601,
+            table_secret=(1 << 127) | 602,
+            allow_weak_test_seed=True,
             grant_id="grant-tamper",
             http_transport=_kill_after_2_triads,
             repo_root=tmp_path / "fake-repo",
@@ -2054,6 +2084,9 @@ def test_resume_refuses_tampered_checkpoint_edited_item_or_truncated_chain(
                 triad_count=4,
                 stub_mode=True,
                 mock_writer=True,
+                shuffle_seed=(1 << 127) | 601,
+                table_secret=(1 << 127) | 602,
+                allow_weak_test_seed=True,
                 grant_id="grant-tamper",
                 repo_root=tmp_path / "fake-repo",
                 resume=True,
@@ -2409,6 +2442,9 @@ def test_resume_recomputes_split_only_over_merged_set_with_zero_overlap(
             triad_count=10,
             stub_mode=True,
             mock_writer=True,
+            shuffle_seed=(1 << 127) | 701,
+            table_secret=(1 << 127) | 702,
+            allow_weak_test_seed=True,
             grant_id="grant-merged-split",
             http_transport=_kill_after_4_triads,
             repo_root=tmp_path / "fake-repo",
@@ -2431,6 +2467,9 @@ def test_resume_recomputes_split_only_over_merged_set_with_zero_overlap(
         triad_count=10,
         stub_mode=True,
         mock_writer=True,
+        shuffle_seed=(1 << 127) | 701,
+        table_secret=(1 << 127) | 702,
+        allow_weak_test_seed=True,
         grant_id="grant-merged-split",
         http_transport=base_mock,
         repo_root=tmp_path / "fake-repo",
@@ -2480,6 +2519,172 @@ def test_resume_recomputes_split_only_over_merged_set_with_zero_overlap(
             split_seed=20261029,
         )
     assert exc_rogue.value.code == "BAKEOFF_NON_V3_VALUE_SET_USED"
+
+
+def test_auto_drawn_shuffle_seed_resamples_and_never_refuses_across_200_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import random
+    import secrets
+    import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
+    from reasoning_dataset_lab.pilot_b.fact_tables import generate_fact_tables
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        build_fixture_licence_registry,
+    )
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        OllamaBlindReaderAdapter,
+        OllamaWriterAdapter,
+    )
+    from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
+        draw_valid_shuffle_seed,
+        run_pilot_b_waves,
+        write_sealed_part,
+    )
+    from test_pilot_b_ollama_adapters import build_mock_ollama_http_transport
+    from test_pilot_b_part_d import _setup_models
+
+    # Seed = 4 (with bit 127 set) produces [U, U, S, S, C, C] on 2 triads, which fails check_items_not_in_key_order.
+    bad_seed_2_triads = ((1 << 127) | 4) & ((1 << 128) - 1)
+    good_seed_2_triads = ((1 << 127) | 0xCAFEBABE) & ((1 << 128) - 1)
+
+    # 1. Verify draw_valid_shuffle_seed resamples past a colliding seed and refuses loudly if exhausted
+    samples = iter([bad_seed_2_triads, bad_seed_2_triads, good_seed_2_triads])
+    monkeypatch.setattr(secrets, "randbits", lambda k=128: next(samples))
+    drawn = draw_valid_shuffle_seed(2, max_attempts=5)
+    assert drawn == ((1 << 127) | 0xCAFEBABE)
+
+    monkeypatch.setattr(secrets, "randbits", lambda k=128: bad_seed_2_triads)
+    with pytest.raises(RdlabError) as exc_exhausted:
+        draw_valid_shuffle_seed(2, max_attempts=3)
+    assert exc_exhausted.value.code == "PILOT_B_SHUFFLE_SEED_EXHAUSTED"
+    assert exc_exhausted.value.exit_code == EXIT_REFUSED
+
+    # 2. Run 200 auto-seeded 2-triad builds (via draw_valid_shuffle_seed + end-to-end mock builds and resume)
+    # using a deterministic PRNG backing secrets.randbits that generates realistic 128-bit draws
+    # (including colliding ones, which occur ~13.3% of the time on 2-triad builds).
+    prng = random.Random(20261030)
+    monkeypatch.setattr(secrets, "randbits", prng.getrandbits)
+
+    raw_prng = random.Random(20261030)
+    raw_collisions = 0
+    for _ in range(200):
+        raw_s = raw_prng.getrandbits(128) | (1 << 127)
+        base_keys = ["supported", "unsupported", "cannot_tell"] * 2
+        order = list(range(6))
+        random.Random(raw_s).shuffle(order)
+        try:
+            check_items_not_in_key_order([{"key": base_keys[idx]} for idx in order])
+        except RdlabError:
+            raw_collisions += 1
+    assert raw_collisions >= 15  # confirms the stream contains many colliding draws
+
+    # 2a. 200 auto-seeded 2-triad mock builds (including killed+resumed auto-seeded build)
+    for run_idx in range(200):
+        seed_val = draw_valid_shuffle_seed(2, also_check_counts=(2,))
+        base_keys = ["supported", "unsupported", "cannot_tell"] * 2
+        order = list(range(6))
+        random.Random(seed_val).shuffle(order)
+        check_items_not_in_key_order([{"key": base_keys[idx]} for idx in order])
+
+    # Pre-load certified v3 sets once so 200 mock builds run quickly while exercising full run_bakeoff_part_build
+    certified_v3, queued_v3, _ = verify_and_load_v3_value_sets()
+    import reasoning_dataset_lab.pilot_b.bakeoff_part as bo_mod
+
+    orig_verify_v3 = bo_mod.verify_and_load_v3_value_sets
+    monkeypatch.setattr(
+        bo_mod,
+        "verify_and_load_v3_value_sets",
+        lambda manifest_path=None, review_queue_path=None: (
+            (certified_v3, queued_v3, EXPECTED_V3_MANIFEST_SHA256)
+            if manifest_path is None and review_queue_path is None
+            else orig_verify_v3(manifest_path=manifest_path, review_queue_path=review_queue_path)
+        ),
+    )
+
+    # Force the very first randbits call of a 2-triad build (with crash & resume) to hit bad_seed_2_triads
+    # so we prove an auto-seeded build resamples before writing checkpoint.sealed.json and resumes cleanly.
+    forced_draws = iter([bad_seed_2_triads])
+    monkeypatch.setattr(
+        secrets,
+        "randbits",
+        lambda k=128: next(forced_draws, prng.getrandbits(k)),
+    )
+    base_mock = build_mock_writer_ollama_http_transport()
+    for build_idx in range(200):
+        b_dir = tmp_path / f"auto-2triad-{build_idx}"
+        if build_idx == 0:
+            calls = 0
+
+            def _kill_after_1(method: str, url: str, body=None):
+                nonlocal calls
+                if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+                    calls += 1
+                    if calls == 5:
+                        raise RdlabError("PILOT_B_OLLAMA_HTTP_ERROR", "Crash after 1 triad", "Resume")
+                return base_mock(method, url, body)
+
+            with pytest.raises(RdlabError):
+                run_bakeoff_part_build(
+                    output_dir=b_dir,
+                    triad_count=2,
+                    stub_mode=True,
+                    mock_writer=True,
+                    grant_id=f"grant-auto-{build_idx}",
+                    http_transport=_kill_after_1,
+                    repo_root=tmp_path / "fake-repo",
+                )
+            res_b = run_bakeoff_part_build(
+                output_dir=b_dir,
+                triad_count=2,
+                stub_mode=True,
+                mock_writer=True,
+                grant_id=f"grant-auto-{build_idx}",
+                http_transport=base_mock,
+                repo_root=tmp_path / "fake-repo",
+                resume=True,
+            )
+        else:
+            res_b = run_bakeoff_part_build(
+                output_dir=b_dir,
+                triad_count=2,
+                stub_mode=True,
+                mock_writer=True,
+                grant_id=f"grant-auto-{build_idx}",
+                http_transport=base_mock,
+                repo_root=tmp_path / "fake-repo",
+            )
+        assert res_b["status"] == "ok"
+
+    # Also verify write_sealed_part with shuffle_seed=None resamples past bad_seed_2_triads on a 2-triad wave_result
+    tables_2 = generate_fact_tables(n=2, seed=1)
+    triads_2 = [build_contrast_triad(t, seed=1 + idx) for idx, t in enumerate(tables_2)]
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(ollama_mod, "default_ollama_http_transport", transport)
+    writer_id, _r1, _r2 = _setup_models()
+    wave_2 = run_pilot_b_waves(
+        triads=triads_2,
+        writer_model=writer_id,
+        writer_adapter=OllamaWriterAdapter(model=DEFAULT_PILOT_B_MODEL_PINS["writer"], num_predict=256),
+        reader_1=OllamaBlindReaderAdapter(model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"], num_predict=256),
+        reader_2=OllamaBlindReaderAdapter(model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"], num_predict=256),
+        num_predict=256,
+        review_queue_path=tmp_path / "rq2.jsonl",
+    )
+    w_draws = iter([bad_seed_2_triads, good_seed_2_triads])
+    monkeypatch.setattr(secrets, "randbits", lambda k=128: next(w_draws, prng.getrandbits(k)))
+    w_part_dir = tmp_path / "w-part-2"
+    w_keys_path = tmp_path / "w-sealed-2" / "keys.sealed.jsonl"
+    write_sealed_part(
+        part_dir=w_part_dir,
+        keys_sealed_path=w_keys_path,
+        part_id="pilot-b-t10-sealed",
+        map_version=1,
+        map_sha256="a" * 64,
+        wave_result=wave_2,
+        shuffle_seed=None,
+    )
+    verify_sealed_part(part_dir=w_part_dir, keys_sealed_path=w_keys_path)
+
 
 
 

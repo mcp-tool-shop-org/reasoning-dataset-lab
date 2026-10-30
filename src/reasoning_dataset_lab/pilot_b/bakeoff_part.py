@@ -99,6 +99,7 @@ from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
     _sha256_bytes,
     _triad_handle,
     check_items_not_in_key_order,
+    draw_valid_shuffle_seed,
     freeze_sealed_part,
     verify_sealed_part,
     write_public_report,
@@ -2950,7 +2951,10 @@ def run_bakeoff_part_build(
             )
 
         if shuffle_seed is None:
-            resolved_shuffle_seed = secrets.randbits(128) | (1 << 127)
+            resolved_shuffle_seed = draw_valid_shuffle_seed(
+                triad_count,
+                also_check_counts=range(2, triad_count + 1),
+            )
         else:
             resolved_shuffle_seed = shuffle_seed
         if (
