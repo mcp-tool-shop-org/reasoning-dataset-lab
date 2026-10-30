@@ -732,7 +732,10 @@ def score_bakeoff_outputs(
     three_way_row_files = sorted(rows_dir.glob("*.three_way.jsonl"))
 
     primary_summaries: list[dict[str, Any]] = []
+    dev_fit_summaries: list[dict[str, Any]] = []
+    dev_thresholds_by_judge: dict[str, float | None] = {}
     mu_judge_readings: dict[str, dict[str, Any]] = {}
+    mu_judge_dev_readings: dict[str, dict[str, Any]] = {}
     primary_item_outcomes_by_judge: dict[str, dict[str, int]] = {}
     all_sealed_rows: list[dict[str, Any]] = []
     evaluated_item_ids: set[str] = set()
@@ -764,7 +767,9 @@ def score_bakeoff_outputs(
             fitted_thresh = None
             primary_rule = "plain"
 
-        primary_sum, item_outcomes, sealed_rows = _evaluate_judge_at_rule(
+        dev_thresholds_by_judge[judge_id] = fitted_thresh
+
+        dev_sum, _, dev_sealed_rows = _evaluate_judge_at_rule(
             judge_id=judge_id,
             judge_label=judge_label,
             rule_name=primary_rule,
@@ -772,14 +777,29 @@ def score_bakeoff_outputs(
             rows_by_item_order=rows_by_item_order,
             first_order_by_item=first_order_by_item,
             keys_by_id=keys_by_id,
+            split_filter="dev",
+        )
+        dev_fit_summaries.append(dev_sum)
+
+        primary_sum, item_outcomes, test_sealed_rows = _evaluate_judge_at_rule(
+            judge_id=judge_id,
+            judge_label=judge_label,
+            rule_name=primary_rule,
+            threshold_value=fitted_thresh,
+            rows_by_item_order=rows_by_item_order,
+            first_order_by_item=first_order_by_item,
+            keys_by_id=keys_by_id,
+            split_filter="test",
         )
         primary_summaries.append(primary_sum)
         primary_item_outcomes_by_judge[judge_id] = item_outcomes
-        all_sealed_rows.extend(sealed_rows)
+        all_sealed_rows.extend(dev_sealed_rows)
+        all_sealed_rows.extend(test_sealed_rows)
 
         if judge_id == "mu-judge":
             mu_judge_readings["dev_fitted"] = primary_sum
-            sum_05, _, rows_05 = _evaluate_judge_at_rule(
+            mu_judge_dev_readings["dev_fitted"] = dev_sum
+            sum_05_dev, _, rows_05_dev = _evaluate_judge_at_rule(
                 judge_id=judge_id,
                 judge_label=judge_label,
                 rule_name="0.5",
@@ -787,8 +807,19 @@ def score_bakeoff_outputs(
                 rows_by_item_order=rows_by_item_order,
                 first_order_by_item=first_order_by_item,
                 keys_by_id=keys_by_id,
+                split_filter="dev",
             )
-            sum_card, _, rows_card = _evaluate_judge_at_rule(
+            sum_05, _, rows_05_test = _evaluate_judge_at_rule(
+                judge_id=judge_id,
+                judge_label=judge_label,
+                rule_name="0.5",
+                threshold_value=0.5,
+                rows_by_item_order=rows_by_item_order,
+                first_order_by_item=first_order_by_item,
+                keys_by_id=keys_by_id,
+                split_filter="test",
+            )
+            sum_card_dev, _, rows_card_dev = _evaluate_judge_at_rule(
                 judge_id=judge_id,
                 judge_label=judge_label,
                 rule_name="card_0.2_0.8",
@@ -796,14 +827,30 @@ def score_bakeoff_outputs(
                 rows_by_item_order=rows_by_item_order,
                 first_order_by_item=first_order_by_item,
                 keys_by_id=keys_by_id,
+                split_filter="dev",
+            )
+            sum_card, _, rows_card_test = _evaluate_judge_at_rule(
+                judge_id=judge_id,
+                judge_label=judge_label,
+                rule_name="card_0.2_0.8",
+                threshold_value=None,
+                rows_by_item_order=rows_by_item_order,
+                first_order_by_item=first_order_by_item,
+                keys_by_id=keys_by_id,
+                split_filter="test",
             )
             mu_judge_readings["0.5"] = sum_05
             mu_judge_readings["card_0.2_0.8"] = sum_card
-            all_sealed_rows.extend(rows_05)
-            all_sealed_rows.extend(rows_card)
+            mu_judge_dev_readings["0.5"] = sum_05_dev
+            mu_judge_dev_readings["card_0.2_0.8"] = sum_card_dev
+            all_sealed_rows.extend(rows_05_dev)
+            all_sealed_rows.extend(rows_05_test)
+            all_sealed_rows.extend(rows_card_dev)
+            all_sealed_rows.extend(rows_card_test)
 
-    # Optional separate 3-way pass summaries
+    # Optional separate 3-way pass summaries (evaluated on test split only, with dev split recorded in dev_fit)
     three_way_summaries: list[dict[str, Any]] = []
+    three_way_dev_summaries: list[dict[str, Any]] = []
     for twf in three_way_row_files:
         tw_rows = [
             json.loads(line)
@@ -816,25 +863,37 @@ def score_bakeoff_outputs(
         by_item_ord: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         for r in tw_rows:
             by_item_ord[str(r["item_id"])][str(r["order"])] = r
-        tw_corr = 0
-        tw_tot = 0
+        tw_corr_test = 0
+        tw_tot_test = 0
+        tw_corr_dev = 0
+        tw_tot_dev = 0
         for iid, omap in by_item_ord.items():
             rec = keys_by_id.get(iid)
             if rec is None or "AB" not in omap or "BA" not in omap:
                 continue
-            tw_tot += 1
             v_ab = omap["AB"].get("raw_verdict")
             v_ba = omap["BA"].get("raw_verdict")
-            if v_ab == rec.key and v_ba == rec.key:
-                tw_corr += 1
+            is_both_ok = int(v_ab == rec.key and v_ba == rec.key)
+            if rec.split == "dev":
+                tw_tot_dev += 1
+                tw_corr_dev += is_both_ok
+            elif rec.split == "test":
+                tw_tot_test += 1
+                tw_corr_test += is_both_ok
         three_way_summaries.append(
             {
                 "judge_id": j_id,
-                "three_way_accuracy": wilson_interval(tw_corr, tw_tot),
+                "three_way_accuracy": wilson_interval(tw_corr_test, tw_tot_test),
+            }
+        )
+        three_way_dev_summaries.append(
+            {
+                "judge_id": j_id,
+                "three_way_accuracy": wilson_interval(tw_corr_dev, tw_tot_dev),
             }
         )
 
-    # Pairwise against mu-judge (reported descriptively; pilot banner states decision rule not applied)
+    # Pairwise against mu-judge on split == "test" ONLY (reported descriptively; pilot banner states decision rule not applied)
     pairwise_vs_mu: list[dict[str, Any]] = []
     if "mu-judge" in primary_item_outcomes_by_judge:
         mu_outcomes = primary_item_outcomes_by_judge["mu-judge"]
@@ -866,7 +925,7 @@ def score_bakeoff_outputs(
             st["holm_mcnemar_p"] = holm_map[rival_id]
             pairwise_vs_mu.append(st)
 
-    # Public-safe disagreement table (aggregate counts per class x closure, never item text or item keys)
+    # Public-safe disagreement table on split == "test" ONLY (aggregate counts per class x closure, never item text or item keys)
     disagreement_by_stratum: list[dict[str, Any]] = []
     judge_ids_sorted = sorted(primary_item_outcomes_by_judge.keys())
     for cl_name in ("supported", "unsupported", "cannot_tell"):
@@ -875,6 +934,7 @@ def score_bakeoff_outputs(
                 iid
                 for iid in sorted(evaluated_item_ids)
                 if iid in keys_by_id
+                and keys_by_id[iid].split == "test"
                 and keys_by_id[iid].item_class == cl_name
                 and keys_by_id[iid].closure == clos_name
             ]
@@ -906,6 +966,30 @@ def score_bakeoff_outputs(
     sealed_csv_path = sealed_rows_out_path.with_suffix(".csv")
     _write_sealed_scored_rows(sealed_rows_out_path, sealed_csv_path, all_sealed_rows)
 
+    disagreement_table_doc = {
+        "public_safe": True,
+        "split": "test",
+        "contains_item_text": False,
+        "by_class_and_closure": disagreement_by_stratum,
+    }
+    dev_fit_block: dict[str, Any] = {
+        "split": "dev",
+        "items_n": dev_count,
+        "fitted_thresholds": dev_thresholds_by_judge,
+        "judges": dev_fit_summaries,
+        "mu_judge_three_readings": mu_judge_dev_readings,
+        "three_way_pass": three_way_dev_summaries,
+    }
+    test_only_block: dict[str, Any] = {
+        "split": "test",
+        "items_n": test_count,
+        "judges": primary_summaries,
+        "mu_judge_three_readings": mu_judge_readings,
+        "three_way_pass": three_way_summaries,
+        "pairwise_vs_mu_judge": pairwise_vs_mu,
+        "disagreement_table": disagreement_table_doc,
+    }
+
     public_report: dict[str, Any] = {
         "status": "ok",
         "pilot_banner": PILOT_BANNER,
@@ -919,15 +1003,13 @@ def score_bakeoff_outputs(
             "test": test_count,
             "total": dev_count + test_count,
         },
+        "dev_fit": dev_fit_block,
+        "test_only": test_only_block,
         "judges": primary_summaries,
         "mu_judge_three_readings": mu_judge_readings,
         "three_way_pass": three_way_summaries,
         "pairwise_vs_mu_judge": pairwise_vs_mu,
-        "disagreement_table": {
-            "public_safe": True,
-            "contains_item_text": False,
-            "by_class_and_closure": disagreement_by_stratum,
-        },
+        "disagreement_table": disagreement_table_doc,
     }
     _assert_public_summary_clean(public_report)
 

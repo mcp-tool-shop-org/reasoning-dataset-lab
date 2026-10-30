@@ -39,11 +39,20 @@ dev = [
     "pytest-cov==7.0.0",
 ]
 judge = [
-    "torch==2.11.0",
+    # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
+    "torch==2.14.1+cu132",
     "transformers==5.19.0",
     "accelerate==1.15.0",
     "safetensors==0.8.0",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu132", extra = "judge" }
 
 [project.scripts]
 rdlab = "reasoning_dataset_lab.cli:main"

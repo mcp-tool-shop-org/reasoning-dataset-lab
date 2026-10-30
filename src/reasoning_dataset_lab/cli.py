@@ -477,6 +477,27 @@ def _build_parser() -> _StructuredArgumentParser:
         help="Use deterministic CPU fake judge transport (no model loaded).",
     )
     bj_parser.add_argument(
+        "--receipts-dir",
+        dest="receipts_dir",
+        type=Path,
+        default=None,
+        help="Directory containing <owner>__<repo>.sha256.json receipts (required for real-model transport).",
+    )
+    bj_parser.add_argument(
+        "--hf-home",
+        dest="hf_home",
+        type=Path,
+        default=None,
+        help="Local Hugging Face cache directory (defaults to HF_HOME env var).",
+    )
+    bj_parser.add_argument(
+        "--device",
+        dest="device",
+        type=str,
+        default="cpu",
+        help="Torch device for TransformersJudgeTransport (default: cpu).",
+    )
+    bj_parser.add_argument(
         "--allow-remote-code-reviewed",
         dest="allow_remote_code_reviewed",
         type=str,
@@ -1104,6 +1125,9 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                     pass_mode=args.pass_mode,
                     limit_items=args.limit_items,
                     fake_transport=args.fake_transport,
+                    receipts_dir=args.receipts_dir,
+                    hf_home=args.hf_home,
+                    device=args.device,
                     allow_remote_code_reviewed=args.allow_remote_code_reviewed,
                     vram_halt_mib=args.vram_halt_mib,
                     force_length_stop_items=args.force_length_stop_items,

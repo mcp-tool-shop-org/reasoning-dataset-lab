@@ -147,6 +147,13 @@ def test_five_judge_adapters_distinct_classes_and_formats() -> None:
             assert p_ba.structured_payload is not None
             assert p_ab.structured_payload["state"] == EXAMPLE_MATERIAL_AB
             assert p_ba.structured_payload["state"] == EXAMPLE_MATERIAL_BA
+        elif adapter.spec.judge_id == "granite-guardian-4.1-8b":
+            assert p_ab.structured_payload is not None
+            assert p_ba.structured_payload is not None
+            assert p_ab.structured_payload["documents"] == [{"doc_id": "0", "text": EXAMPLE_MATERIAL_AB}]
+            assert p_ba.structured_payload["documents"] == [{"doc_id": "0", "text": EXAMPLE_MATERIAL_BA}]
+            assert json.dumps({"doc_id": "0", "text": EXAMPLE_MATERIAL_AB}, ensure_ascii=False) in p_ab.prompt_text
+            assert json.dumps({"doc_id": "0", "text": EXAMPLE_MATERIAL_BA}, ensure_ascii=False) in p_ba.prompt_text
         else:
             assert EXAMPLE_MATERIAL_AB in p_ab.prompt_text
             assert EXAMPLE_MATERIAL_BA in p_ba.prompt_text
@@ -826,7 +833,7 @@ def test_additional_error_branches_and_edge_cases(tmp_path: Path, monkeypatch: p
             judge="mu-judge",
             fake_transport=False,
         )
-    assert exc_real_dis.value.code == "BAKEOFF_JUDGE_REAL_MODEL_DISABLED"
+    assert exc_real_dis.value.code == "BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED"
 
     # close_bakeoff_outputs incomplete
     with pytest.raises(RdlabError):
@@ -1107,6 +1114,610 @@ def test_additional_error_branches_and_edge_cases(tmp_path: Path, monkeypatch: p
     )
     mu_combo = next(j for j in combo_rep["judges"] if j["judge_id"] == "mu-judge")
     assert mu_combo["flip_rate"]["point"] > 0.0
+
+
+def test_tl_item1_transformers_judge_transport_cpu_tiny_model_and_snapshot_receipt_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card tl Item 1: Real-model TransformersJudgeTransport on CPU tiny random model + receipt SHA-256 verification."""
+    assert hasattr(bakeoff_judge, "TransformersJudgeTransport"), (
+        "bakeoff_judge is missing TransformersJudgeTransport (only DeterministicFakeJudgeTransport exists at 35bc9be9)"
+    )
+    assert hasattr(bakeoff_judge, "verify_snapshot_against_receipt"), (
+        "bakeoff_judge is missing verify_snapshot_against_receipt"
+    )
+    import os
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    spec = BAKEOFF_JUDGE_SPECS["mu-judge"]
+    owner, repo = spec.repo_id.split("/", 1)
+    hf_home = tmp_path / "hf_home"
+    snapshot_dir = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
+    snapshot_dir.mkdir(parents=True)
+
+    vocab = {
+        "<unk>": 0,
+        "<s>": 1,
+        "</s>": 2,
+        "yes": 3,
+        "no": 4,
+        "Yes": 5,
+        "No": 6,
+        "A": 7,
+        "B": 8,
+        "C": 9,
+    }
+
+    try:
+        import torch
+        from tokenizers import Tokenizer
+        from tokenizers.models import WordLevel
+        from tokenizers.pre_tokenizers import Whitespace
+        from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
+
+        has_real_torch_hf = True
+    except ImportError:
+        has_real_torch_hf = False
+
+    if has_real_torch_hf:
+        tok_obj = Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>"))
+        tok_obj.pre_tokenizer = Whitespace()
+        fast_tok = PreTrainedTokenizerFast(
+            tokenizer_object=tok_obj,
+            unk_token="<unk>",
+            bos_token="<s>",
+            eos_token="</s>",
+        )
+        fast_tok.save_pretrained(snapshot_dir)
+
+        torch.manual_seed(0)
+        cfg = LlamaConfig(
+            vocab_size=len(vocab),
+            hidden_size=16,
+            intermediate_size=32,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            bos_token_id=1,
+            eos_token_id=2,
+        )
+        tiny_model = LlamaForCausalLM(cfg).eval()
+        with torch.no_grad():
+            tiny_model.lm_head.weight.zero_()
+            tiny_model.lm_head.weight[3].fill_(5.0)  # "yes" highest logit
+            tiny_model.lm_head.weight[4].fill_(1.0)  # "no"
+        tiny_model.save_pretrained(snapshot_dir)
+    else:
+        # Stub tiny CPU torch + transformers in sys.modules when running in the default CI venv without the judge extra
+        import types
+
+        (snapshot_dir / "config.json").write_text(json.dumps({"model_type": "llama", "vocab_size": len(vocab)}), encoding="utf-8")
+        (snapshot_dir / "tokenizer.json").write_text(json.dumps({"vocab": vocab}), encoding="utf-8")
+
+        class _FakeTensor:
+            def __init__(self, vals: list[float] | list[list[int]]) -> None:
+                self.vals = vals
+
+            @property
+            def shape(self) -> tuple[int, int]:
+                if isinstance(self.vals[0], list):
+                    return (len(self.vals), len(self.vals[0]))
+                return (len(self.vals), len(self.vals))
+
+            def to(self, _dev: str) -> "_FakeTensor":
+                return self
+
+            def float(self) -> "_FakeTensor":
+                return self
+
+            def tolist(self) -> Any:
+                return self.vals
+
+            def item(self) -> float:
+                return float(self.vals[0])  # type: ignore[arg-type]
+
+            def __getitem__(self, idx: Any) -> Any:
+                if isinstance(idx, tuple):
+                    row, sl = idx
+                    return _FakeTensor(self.vals[row][sl])  # type: ignore[index]
+                val = self.vals[idx]
+                return _FakeTensor([val]) if isinstance(val, (int, float)) else _FakeTensor(val)
+
+        class _FakeTokenizer:
+            pad_token_id = 0
+            eos_token_id = 2
+
+            @classmethod
+            def from_pretrained(cls, *_a: Any, **_kw: Any) -> "_FakeTokenizer":
+                return cls()
+
+            def get_vocab(self) -> dict[str, int]:
+                return dict(vocab)
+
+            def convert_tokens_to_string(self, toks: list[str]) -> str:
+                return "".join(toks)
+
+            def __call__(self, _text: str, **_kw: Any) -> dict[str, _FakeTensor]:
+                return {"input_ids": _FakeTensor([[1, 3]]), "attention_mask": _FakeTensor([[1, 1]])}
+
+            def convert_ids_to_tokens(self, ids: int | list[int]) -> Any:
+                inv = {v: k for k, v in vocab.items()}
+                if isinstance(ids, int):
+                    return inv.get(ids, "<unk>")
+                return [inv.get(i, "<unk>") for i in ids]
+
+            def decode(self, ids: list[int], **_kw: Any) -> str:
+                return " ".join(self.convert_ids_to_tokens(ids))
+
+        class _FakeGenConfig:
+            eos_token_id = [2]
+
+        class _FakeModel:
+            generation_config = _FakeGenConfig()
+
+            @classmethod
+            def from_pretrained(cls, *_a: Any, **_kw: Any) -> "_FakeModel":
+                return cls()
+
+            def to(self, _dev: str) -> "_FakeModel":
+                return self
+
+            def eval(self) -> "_FakeModel":
+                return self
+
+            def generate(self, **kw: Any) -> Any:
+                max_new = int(kw.get("max_new_tokens", 1))
+                seq = [1, 3] + ([3] * max_new)
+                logits = [-5.0] * len(vocab)
+                logits[3] = -0.15
+                logits[4] = -2.0
+                return types.SimpleNamespace(sequences=_FakeTensor([seq]), scores=[_FakeTensor([logits])])
+
+        class _NoGrad:
+            def __enter__(self) -> None:
+                return None
+
+            def __exit__(self, *_a: Any) -> None:
+                return None
+
+        fake_torch = types.ModuleType("torch")
+        fake_torch.__version__ = "2.14.1+cu132"  # type: ignore[attr-defined]
+        fake_torch.float32 = "float32"  # type: ignore[attr-defined]
+        fake_torch.manual_seed = lambda _s: None  # type: ignore[attr-defined]
+        fake_torch.no_grad = _NoGrad  # type: ignore[attr-defined]
+        fake_torch.log_softmax = lambda t, dim=-1: t  # type: ignore[attr-defined]
+        fake_torch.topk = lambda t, k=5: (_FakeTensor(t.vals[:k]), _FakeTensor(list(range(k))))  # type: ignore[attr-defined]
+
+        fake_tf = types.ModuleType("transformers")
+        fake_tf.__version__ = "5.19.0"  # type: ignore[attr-defined]
+        fake_tf.AutoTokenizer = _FakeTokenizer  # type: ignore[attr-defined]
+        fake_tf.AutoModelForCausalLM = _FakeModel  # type: ignore[attr-defined]
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "transformers", fake_tf)
+
+    # Write matching receipt <owner>__<repo>.sha256.json
+    files_manifest: dict[str, dict[str, object]] = {}
+    for fpath in sorted(p for p in snapshot_dir.rglob("*") if p.is_file()):
+        rel = fpath.relative_to(snapshot_dir).as_posix()
+        raw = fpath.read_bytes()
+        files_manifest[rel] = {
+            "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    receipts_dir = tmp_path / "receipts"
+    receipts_dir.mkdir()
+    receipt_path = receipts_dir / f"{owner}__{repo}.sha256.json"
+    receipt_doc = {
+        "repo": spec.repo_id,
+        "revision": spec.revision,
+        "files": files_manifest,
+    }
+    receipt_path.write_text(json.dumps(receipt_doc, indent=2) + "\n", encoding="utf-8")
+
+    transport = bakeoff_judge.TransformersJudgeTransport(
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cpu",
+    )
+    digest = transport.verify_ready(spec)
+    assert spec.revision in digest
+
+    adapter = MuJudgeAdapter()
+    prompt = adapter.assemble_prompt(_sample_item(), order="AB", pass_mode="binary")
+    resp = transport.generate(spec, prompt, seed=20261030)
+    readout = adapter.parse_response(resp, pass_mode="binary")
+    assert readout.state == "parsed"
+    assert readout.raw_verdict in ("yes", "no")
+    assert readout.p_yes is not None and 0.0 <= readout.p_yes <= 1.0
+
+    # Tamper one byte in a snapshot file -> verify_ready refuses before loading
+    cfg_file = snapshot_dir / "config.json"
+    orig_cfg = cfg_file.read_bytes()
+    cfg_file.write_bytes(orig_cfg + b"\n")
+    tampered_transport = bakeoff_judge.TransformersJudgeTransport(
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cpu",
+    )
+    with pytest.raises(RdlabError) as exc_sha:
+        tampered_transport.verify_ready(spec)
+    assert exc_sha.value.code == "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH"
+    cfg_file.write_bytes(orig_cfg)
+
+    # Extra file in snapshot -> verify_ready refuses
+    extra_f = snapshot_dir / "unlisted.txt"
+    extra_f.write_text("extra", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_extra:
+        tampered_transport.verify_ready(spec)
+    assert exc_extra.value.code == "BAKEOFF_JUDGE_SNAPSHOT_EXTRA_FILE"
+    extra_f.unlink()
+
+    # Missing file in snapshot -> verify_ready refuses
+    cfg_file.unlink()
+    with pytest.raises(RdlabError) as exc_miss:
+        tampered_transport.verify_ready(spec)
+    assert exc_miss.value.code == "BAKEOFF_JUDGE_SNAPSHOT_MISSING_FILE"
+    cfg_file.write_bytes(orig_cfg)
+
+    # Second generate call reuses already-loaded model, plus multi-token judge length_stop check
+    resp_second = transport.generate(spec, prompt, seed=20261030)
+    assert resp_second.raw_text == resp.raw_text
+
+    flow_spec = BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"]
+    f_owner, f_repo = flow_spec.repo_id.split("/", 1)
+    f_snap = hf_home / f"models--{f_owner}--{f_repo}" / "snapshots" / flow_spec.revision
+    f_snap.mkdir(parents=True)
+    for src_f in snapshot_dir.iterdir():
+        if src_f.is_file():
+            (f_snap / src_f.name).write_bytes(src_f.read_bytes())
+    (receipts_dir / f"{f_owner}__{f_repo}.sha256.json").write_text(
+        json.dumps({"repo": flow_spec.repo_id, "revision": flow_spec.revision, "files": files_manifest}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    flow_transport = bakeoff_judge.TransformersJudgeTransport(
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cpu",
+        torch_dtype="float32",
+    )
+    flow_prompt = FlowJudgeAdapter().assemble_prompt(_sample_item(), order="AB")
+    flow_prompt_short = bakeoff_judge.AssembledPrompt(
+        judge_id=flow_prompt.judge_id,
+        item_id=flow_prompt.item_id,
+        order=flow_prompt.order,
+        pass_mode=flow_prompt.pass_mode,
+        prompt_text=flow_prompt.prompt_text,
+        messages=flow_prompt.messages,
+        structured_payload={"max_new_tokens": 2},
+    )
+    flow_resp = flow_transport.generate(flow_spec, flow_prompt_short, seed=20261030)
+    assert flow_resp.done_reason in ("length", "stop")
+
+    # Verify error branches of verify_snapshot_against_receipt and TransformersJudgeTransport
+    d3_spec = BAKEOFF_JUDGE_SPECS["d3-mini"]
+    with pytest.raises(RdlabError) as exc_d3_exec:
+        transport.verify_ready(d3_spec, allow_remote_code_reviewed=d3_spec.revision)
+    assert exc_d3_exec.value.code == "BAKEOFF_JUDGE_REMOTE_CODE_EXECUTION_FORBIDDEN"
+
+    old_hf_home = os.environ.pop("HF_HOME", None)
+    try:
+        with pytest.raises(RdlabError) as exc_no_hf:
+            bakeoff_judge.verify_snapshot_against_receipt(spec, receipts_dir=receipts_dir, hf_home=None)
+        assert exc_no_hf.value.code == "BAKEOFF_JUDGE_HF_HOME_MISSING"
+        os.environ["HF_HOME"] = str(hf_home)
+        _, dig_env = bakeoff_judge.verify_snapshot_against_receipt(spec, receipts_dir=receipts_dir, hf_home=None)
+        assert spec.revision in dig_env
+    finally:
+        if old_hf_home is not None:
+            os.environ["HF_HOME"] = old_hf_home
+        else:
+            os.environ.pop("HF_HOME", None)
+
+    with pytest.raises(RdlabError) as exc_no_snap:
+        bakeoff_judge.verify_snapshot_against_receipt(
+            BAKEOFF_JUDGE_SPECS["nemotron-3-nano-4b"],
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+        )
+    assert exc_no_snap.value.code == "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND"
+
+    nem_spec = BAKEOFF_JUDGE_SPECS["nemotron-3-nano-4b"]
+    n_owner, n_repo = nem_spec.repo_id.split("/", 1)
+    n_rec_path = receipts_dir / f"{n_owner}__{n_repo}.sha256.json"
+    n_rec_path.write_text("{bad_json", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_bad_rec:
+        bakeoff_judge.verify_snapshot_against_receipt(nem_spec, receipts_dir=receipts_dir, hf_home=hf_home)
+    assert exc_bad_rec.value.code == "BAKEOFF_JUDGE_RECEIPT_INVALID"
+
+    n_rec_path.write_text(json.dumps({"repo": nem_spec.repo_id}), encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_no_files:
+        bakeoff_judge.verify_snapshot_against_receipt(nem_spec, receipts_dir=receipts_dir, hf_home=hf_home)
+    assert exc_no_files.value.code == "BAKEOFF_JUDGE_RECEIPT_INVALID"
+
+    n_rec_path.write_text(json.dumps({"repo": "wrong/repo", "revision": "wrong", "files": {}}), encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_rec_mis:
+        bakeoff_judge.verify_snapshot_against_receipt(nem_spec, receipts_dir=receipts_dir, hf_home=hf_home)
+    assert exc_rec_mis.value.code == "BAKEOFF_JUDGE_RECEIPT_MISMATCH"
+
+    n_rec_path.write_text(json.dumps({"repo": nem_spec.repo_id, "revision": nem_spec.revision, "files": {}}), encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_snap_nf:
+        bakeoff_judge.verify_snapshot_against_receipt(nem_spec, receipts_dir=receipts_dir, hf_home=hf_home)
+    assert exc_snap_nf.value.code == "BAKEOFF_JUDGE_SNAPSHOT_NOT_FOUND"
+
+    # Corrupt SHA-256 while keeping exact same byte length
+    cfg_corrupt = bytearray(orig_cfg)
+    cfg_corrupt[0] = (cfg_corrupt[0] + 1) % 128
+    cfg_file.write_bytes(bytes(cfg_corrupt))
+    with pytest.raises(RdlabError) as exc_same_len_sha:
+        bakeoff_judge.verify_snapshot_against_receipt(spec, receipts_dir=receipts_dir, hf_home=hf_home)
+    assert exc_same_len_sha.value.code == "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH"
+    cfg_file.write_bytes(orig_cfg)
+
+    # Also run via run_bakeoff_judge with receipts_dir + hf_home (real transport path on tiny CPU model)
+    two_items_file = tmp_path / "tiny_two_items.jsonl"
+    two_items_file.write_text(
+        json.dumps({"id": "t1", "material": EXAMPLE_MATERIAL_AB, "claim": EXAMPLE_CLAIM})
+        + "\n"
+        + json.dumps({"id": "t2", "material": EXAMPLE_MATERIAL_AB.replace("120", "175"), "claim": EXAMPLE_CLAIM})
+        + "\n",
+        encoding="utf-8",
+    )
+    real_cpu_res = run_bakeoff_judge(
+        part_dir=two_items_file,
+        output_dir=tmp_path / "tiny_real_out",
+        judge="mu-judge",
+        fake_transport=False,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cpu",
+    )
+    assert real_cpu_res["status"] == "ok"
+    assert real_cpu_res["parsed_count"] == 4
+
+
+def test_tl_item2_granite_guardian_chat_template_score_prefill_and_inversion() -> None:
+    """Card tl Item 2: Granite Guardian prompt matches ab01ccca chat_template.jinja, <score> prefill/parser consistent, p_yes = 1 - p_unsafe."""
+    adapter = GraniteGuardianAdapter()
+    item = _sample_item()
+    prompt_ab = adapter.assemble_prompt(item, order="AB")
+    prompt_ba = adapter.assemble_prompt(item, order="BA")
+
+    expected_doc_ab = json.dumps({"doc_id": "0", "text": EXAMPLE_MATERIAL_AB}, ensure_ascii=False)
+    expected_doc_ba = json.dumps({"doc_id": "0", "text": EXAMPLE_MATERIAL_BA}, ensure_ascii=False)
+
+    assert prompt_ab.prompt_text.startswith(
+        "<|start_of_role|>system<|end_of_role|>You are a helpful assistant with access to the following documents. "
+        "You may use one or more documents to assist with the user query.\n\n"
+        "You are given a list of documents within <documents></documents> XML tags:\n"
+        f"<documents>\n{expected_doc_ab}\n</documents>\n\n"
+        "Write the response to the user's input by strictly aligning with the facts in the provided documents. "
+        "If the information needed to answer the question is not available in the documents, inform the user that "
+        "the question cannot be answered based on the available data.<|end_of_text|>\n"
+        f"<|start_of_role|>assistant<|end_of_role|>{EXAMPLE_CLAIM}<|end_of_text|>\n"
+        f"<|start_of_role|>user<|end_of_role|>{GraniteGuardianAdapter.build_guardian_block()}<|end_of_text|>\n"
+        "<|start_of_role|>assistant<|end_of_role|>"
+    )
+    assert f"<documents>\n{expected_doc_ba}\n</documents>" in prompt_ba.prompt_text
+    assert prompt_ab.prompt_text.endswith("<|start_of_role|>assistant<|end_of_role|><think>\n</think>\n<score>")
+
+    # Parser must accept prefilled generation "yes</score>" or "no</score>" as well as full "<score>yes</score>"
+    resp_prefilled_no = JudgeTransportResponse(
+        raw_text="no</score>",
+        tokens=("no", "</score>"),
+        verdict_top_logprobs=(
+            TopLogprobEntry(token="no", logprob=math.log(0.85)),
+            TopLogprobEntry(token="yes", logprob=math.log(0.15)),
+        ),
+        done_reason="stop",
+        seconds=0.01,
+        model_digest="sha256:test",
+        server_binary="test",
+        library_pins={},
+    )
+    readout_prefilled = adapter.parse_response(resp_prefilled_no)
+    assert readout_prefilled.state == "parsed"
+    assert readout_prefilled.p_yes == pytest.approx(0.85, abs=1e-6)
+    assert readout_prefilled.raw_verdict == "yes"
+
+
+def test_tl_item3_flow_judge_pinned_chat_template_bos_and_endoftext() -> None:
+    """Card tl Item 3: Flow-Judge prompt uses pinned tokenizer_config.json chat_template (<s>...<|endoftext|>)."""
+    adapter = FlowJudgeAdapter()
+    item = _sample_item()
+    prompt_ab = adapter.assemble_prompt(item, order="AB")
+    prompt_ba = adapter.assemble_prompt(item, order="BA")
+
+    for p in (prompt_ab, prompt_ba):
+        assert p.prompt_text.startswith("<s><|user|>\n# GOAL\n")
+        assert "<|endoftext|>\n<|assistant|>\n" in p.prompt_text
+        assert p.prompt_text.endswith("<|endoftext|>\n<|assistant|>\n")
+        assert "<|end|>" not in p.prompt_text
+
+
+def test_tl_item4_p_yes_summed_over_full_distribution_not_top5_slice() -> None:
+    """Card tl Item 4: P(yes) is summed over all case/whitespace variants in the full distribution, not [:5]."""
+    # Place 5 non-verdict tokens in ranks 1..5 and "yes"/" Yes"/"no" in ranks 6..8
+    full_dist_entries = (
+        TopLogprobEntry(token="<think>", logprob=math.log(0.20)),
+        TopLogprobEntry(token="\n", logprob=math.log(0.18)),
+        TopLogprobEntry(token="The", logprob=math.log(0.16)),
+        TopLogprobEntry(token="Claim", logprob=math.log(0.14)),
+        TopLogprobEntry(token=":", logprob=math.log(0.12)),
+        TopLogprobEntry(token="yes", logprob=math.log(0.10)),
+        TopLogprobEntry(token=" Yes", logprob=math.log(0.05)),
+        TopLogprobEntry(token="no", logprob=math.log(0.05)),
+    )
+    resp = JudgeTransportResponse(
+        raw_text="yes",
+        tokens=("yes",),
+        verdict_top_logprobs=full_dist_entries,
+        done_reason="stop",
+        seconds=0.01,
+        model_digest="sha256:test",
+        server_binary="test",
+        library_pins={},
+    )
+    for adapter in (MuJudgeAdapter(), NemotronNanoBaseAdapter()):
+        readout = adapter.parse_response(resp, pass_mode="binary")
+        assert readout.state == "parsed"
+        # P(yes) = (0.10 + 0.05) / (0.10 + 0.05 + 0.05) = 0.75
+        assert readout.p_yes == pytest.approx(0.75, abs=1e-6)
+        assert readout.raw_verdict == "yes"
+        # Display top_logprobs remains top-5
+        assert len(readout.verdict_top_logprobs) == 5
+
+    # Granite Guardian with yes/no at ranks 6..7
+    granite_resp = JudgeTransportResponse(
+        raw_text="<think>\n</think>\n<score>no</score>",
+        tokens=("no", "</score>"),
+        verdict_top_logprobs=full_dist_entries,
+        done_reason="stop",
+        seconds=0.01,
+        model_digest="sha256:test",
+        server_binary="test",
+        library_pins={},
+    )
+    g_readout = GraniteGuardianAdapter().parse_response(granite_resp)
+    assert g_readout.state == "parsed"
+    # p_unsafe = 0.75 -> p_yes = 1 - 0.75 = 0.25 -> raw_verdict = "no"
+    assert g_readout.p_yes == pytest.approx(0.25, abs=1e-6)
+    assert g_readout.raw_verdict == "no"
+    assert len(g_readout.verdict_top_logprobs) == 5
+
+
+def test_tl_item5_nemotron_pair_max_new_tokens_1_use_cache_false_and_cpu_invariance() -> None:
+    """Card tl Item 5: Nemotron pair sets max_new_tokens=1, use_cache=False, plus NemotronH CPU invariance test."""
+    for jid in ("mu-judge", "nemotron-3-nano-4b"):
+        spec = BAKEOFF_JUDGE_SPECS[jid]
+        assert spec.max_new_tokens == 1, f"{jid} spec.max_new_tokens is {spec.max_new_tokens}, expected 1"
+        adapter = build_judge_adapter(spec)
+        prompt = adapter.assemble_prompt(_sample_item(), order="AB")
+        assert prompt.structured_payload is not None
+        assert prompt.structured_payload.get("max_new_tokens") == 1
+        assert prompt.structured_payload.get("use_cache") is False
+
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    import os
+    import torch
+    from transformers.models.nemotron_h import NemotronHConfig, NemotronHForCausalLM
+
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+    torch.manual_seed(0)
+    cfg = NemotronHConfig(
+        vocab_size=64,
+        hidden_size=32,
+        layers_block_type=["mamba", "attention", "mlp"],
+        num_hidden_layers=3,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=8,
+        mamba_num_heads=4,
+        mamba_head_dim=8,
+        ssm_state_size=8,
+        n_groups=2,
+        chunk_size=8,
+        intermediate_size=64,
+        use_cache=False,
+    )
+    model = NemotronHForCausalLM(cfg).eval()
+    input_ids = torch.tensor([[1, 5, 9, 12, 3]], dtype=torch.long)
+
+    with torch.no_grad():
+        out_no_cache = model(input_ids=input_ids, use_cache=False)
+        out_with_cache = model(input_ids=input_ids, use_cache=True)
+
+    assert torch.allclose(out_no_cache.logits[:, -1, :], out_with_cache.logits[:, -1, :], atol=1e-6)
+
+
+def test_tl_item6_scoring_fits_dev_only_and_reports_test_only_never_pooled(tmp_path: Path) -> None:
+    """Card tl Item 6: Threshold fitted on split=='dev' only; test metrics reported on split=='test' only; separate dev_fit and test_only blocks."""
+    out_dir = tmp_path / "judge_out_split"
+    items_path = tmp_path / "split_items.jsonl"
+    keys_path = tmp_path / "split_keys.jsonl"
+
+    # Create 2 dev items and 2 test items with distinct materials
+    items_rows = []
+    keys_rows = []
+    for idx, split_name in enumerate(("dev", "dev", "test", "test"), start=1):
+        iid = f"item-{idx:03d}"
+        mat = EXAMPLE_MATERIAL_AB.replace("120", str(200 + idx))
+        items_rows.append({"id": iid, "material": mat, "claim": EXAMPLE_CLAIM})
+        keys_rows.append(
+            {
+                "id": iid,
+                "key": "supported" if idx % 2 == 1 else "unsupported",
+                "class": "supported" if idx % 2 == 1 else "unsupported",
+                "triad_id": f"T-{idx}",
+                "split": split_name,
+                "closure": "closed",
+                "value_set_id": f"vs-{idx}",
+            }
+        )
+    items_path.write_text("\n".join(json.dumps(r) for r in items_rows) + "\n", encoding="utf-8")
+    keys_path.write_text("\n".join(json.dumps(r) for r in keys_rows) + "\n", encoding="utf-8")
+
+    # Custom transport:
+    # - On dev items (item-001 supported, item-002 unsupported): judge is 100% accurate (p_yes=0.90 on item-001, p_yes=0.10 on item-002)
+    # - On test items (item-003 supported, item-004 unsupported): judge is 0% accurate (p_yes=0.10 on item-003, p_yes=0.90 on item-004)
+    class _SplitContrastTransport(DeterministicFakeJudgeTransport):
+        def generate(self, spec: bakeoff_judge.JudgeSpec, prompt: bakeoff_judge.AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
+            p_map = {
+                "item-001": 0.90,
+                "item-002": 0.10,
+                "item-003": 0.10,
+                "item-004": 0.90,
+            }
+            p_y = p_map[prompt.item_id]
+            p_n = 1.0 - p_y
+            tok = "yes" if p_y >= 0.5 else "no"
+            return JudgeTransportResponse(
+                raw_text=tok,
+                tokens=(tok,),
+                verdict_top_logprobs=(
+                    TopLogprobEntry(token="yes", logprob=math.log(p_y)),
+                    TopLogprobEntry(token="no", logprob=math.log(p_n)),
+                ),
+                done_reason="stop",
+                seconds=0.001,
+                model_digest=f"fake-sha256:{spec.revision}",
+                server_binary="test",
+                library_pins={},
+            )
+
+    run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=out_dir,
+        judge="mu-judge",
+        transport=_SplitContrastTransport(),
+    )
+    close_bakeoff_outputs(out_dir)
+
+    report = score_bakeoff_outputs(
+        judge_output_dir=out_dir,
+        keys_path=keys_path,
+        public_out_path=tmp_path / "score_out" / "score_summary.json",
+        sealed_rows_out_path=tmp_path / "score_out" / "sealed" / "scored.sealed.jsonl",
+    )
+
+    assert "dev_fit" in report, "score_summary.json must carry a 'dev_fit' block"
+    assert "test_only" in report, "score_summary.json must carry a 'test_only' block"
+
+    test_mu = next(j for j in report["test_only"]["judges"] if j["judge_id"] == "mu-judge")
+    dev_mu = next(j for j in report["dev_fit"]["judges"] if j["judge_id"] == "mu-judge")
+    top_mu = next(j for j in report["judges"] if j["judge_id"] == "mu-judge")
+
+    # Test metrics must be computed over split == "test" ONLY (2 items, 0% accuracy), NEVER pooled dev+test (4 items, 50% accuracy)
+    assert test_mu["items_n"] == 2
+    assert test_mu["accuracy"]["point"] == pytest.approx(0.0, abs=1e-6)
+    assert top_mu["items_n"] == 2
+    assert top_mu["accuracy"]["point"] == pytest.approx(0.0, abs=1e-6)
+
+    # Dev fit block reflects the 2 dev items (100% accuracy)
+    assert dev_mu["items_n"] == 2
+    assert dev_mu["accuracy"]["point"] == pytest.approx(1.0, abs=1e-6)
+
 
 
 

@@ -161,7 +161,7 @@ BAKEOFF_JUDGE_SPECS: dict[str, JudgeSpec] = {
         supports_three_way=True,
         has_probability=True,
         verdict_position="first_token",
-        max_new_tokens=4,
+        max_new_tokens=1,
         card_snapshot_path="cards/qybaihe_mu-judge-nemotron-nano-4b.md",
         card_snapshot_sha256="6e9bf4e186d6a47bbd5919ced725366562dbcb611732e63e5f36f46591567e1e",
     ),
@@ -182,7 +182,7 @@ BAKEOFF_JUDGE_SPECS: dict[str, JudgeSpec] = {
         supports_three_way=True,
         has_probability=True,
         verdict_position="first_token",
-        max_new_tokens=4,
+        max_new_tokens=1,
         card_snapshot_path="cards/nvidia_NVIDIA-Nemotron-3-Nano-4B-BF16.md",
         card_snapshot_sha256="06f349f02b364c5ff6d92562be82ddd190e00b7e161a749c297766d372068c18",
     ),
@@ -1122,7 +1122,7 @@ class MuJudgeAdapter(BaseJudgeAdapter):
             pass_mode=pass_mode,
             prompt_text=rendered,
             messages=msgs,
-            structured_payload={"enable_thinking": False},
+            structured_payload={"enable_thinking": False, "max_new_tokens": 1, "use_cache": False},
         )
 
     def _parse_non_length_response(
@@ -1133,7 +1133,7 @@ class MuJudgeAdapter(BaseJudgeAdapter):
     ) -> ParsedJudgeReadout:
         top5 = response.verdict_top_logprobs[:5]
         if pass_mode == "binary":
-            p_yes, verdict = compute_binary_token_p_yes(top5, invert=False)
+            p_yes, verdict = compute_binary_token_p_yes(response.verdict_top_logprobs, invert=False)
             if p_yes is None or verdict is None:
                 return ParsedJudgeReadout(
                     state="unparseable",
@@ -1142,7 +1142,7 @@ class MuJudgeAdapter(BaseJudgeAdapter):
                     p_yes=None,
                     choice_probabilities=None,
                     verdict_top_logprobs=top5,
-                    parse_note="neither yes nor no token found in first-token top logprobs",
+                    parse_note="neither yes nor no token found in first-token logprob distribution",
                 )
             return ParsedJudgeReadout(
                 state="parsed",
@@ -1154,7 +1154,7 @@ class MuJudgeAdapter(BaseJudgeAdapter):
             )
 
         probs, best_cls = compute_three_way_choice_probs(
-            top5,
+            response.verdict_top_logprobs,
             label_map={"a": "supported", "b": "unsupported", "c": "cannot_tell"},
         )
         if probs is None or best_cls is None:
@@ -1165,7 +1165,7 @@ class MuJudgeAdapter(BaseJudgeAdapter):
                 p_yes=None,
                 choice_probabilities=None,
                 verdict_top_logprobs=top5,
-                parse_note="no A/B/C option token found in first-token top logprobs",
+                parse_note="no A/B/C option token found in first-token logprob distribution",
             )
         return ParsedJudgeReadout(
             state="parsed",
@@ -1236,7 +1236,12 @@ class NemotronNanoBaseAdapter(BaseJudgeAdapter):
             pass_mode=pass_mode,
             prompt_text=rendered,
             messages=msgs,
-            structured_payload={"enable_thinking": False, "reasoning_mode": "off"},
+            structured_payload={
+                "enable_thinking": False,
+                "reasoning_mode": "off",
+                "max_new_tokens": 1,
+                "use_cache": False,
+            },
         )
 
     def _parse_non_length_response(
@@ -1247,7 +1252,7 @@ class NemotronNanoBaseAdapter(BaseJudgeAdapter):
     ) -> ParsedJudgeReadout:
         top5 = response.verdict_top_logprobs[:5]
         if pass_mode == "binary":
-            p_yes, verdict = compute_binary_token_p_yes(top5, invert=False)
+            p_yes, verdict = compute_binary_token_p_yes(response.verdict_top_logprobs, invert=False)
             if p_yes is None or verdict is None:
                 return ParsedJudgeReadout(
                     state="unparseable",
@@ -1256,7 +1261,7 @@ class NemotronNanoBaseAdapter(BaseJudgeAdapter):
                     p_yes=None,
                     choice_probabilities=None,
                     verdict_top_logprobs=top5,
-                    parse_note="neither yes nor no token found in first-token top logprobs",
+                    parse_note="neither yes nor no token found in first-token logprob distribution",
                 )
             return ParsedJudgeReadout(
                 state="parsed",
@@ -1268,7 +1273,7 @@ class NemotronNanoBaseAdapter(BaseJudgeAdapter):
             )
 
         probs, best_cls = compute_three_way_choice_probs(
-            top5,
+            response.verdict_top_logprobs,
             label_map={"a": "supported", "b": "unsupported", "c": "cannot_tell"},
         )
         if probs is None or best_cls is None:
@@ -1279,7 +1284,7 @@ class NemotronNanoBaseAdapter(BaseJudgeAdapter):
                 p_yes=None,
                 choice_probabilities=None,
                 verdict_top_logprobs=top5,
-                parse_note="no A/B/C option token found in first-token top logprobs",
+                parse_note="no A/B/C option token found in first-token logprob distribution",
             )
         return ParsedJudgeReadout(
             state="parsed",
@@ -1371,8 +1376,8 @@ class D3MiniAdapter(BaseJudgeAdapter):
                             noul_prob = float(q_ans["noul"])
                         except (TypeError, ValueError):
                             noul_prob = None
-            if noul_prob is None and top5:
-                noul_prob, _ = compute_binary_token_p_yes(top5, invert=False)
+            if noul_prob is None and response.verdict_top_logprobs:
+                noul_prob, _ = compute_binary_token_p_yes(response.verdict_top_logprobs, invert=False)
             if noul_prob is None or math.isnan(noul_prob) or not (0.0 <= noul_prob <= 1.0):
                 return ParsedJudgeReadout(
                     state="unparseable",
@@ -1430,13 +1435,23 @@ class D3MiniAdapter(BaseJudgeAdapter):
 class GraniteGuardianAdapter(BaseJudgeAdapter):
     """Adapter for `ibm-granite/granite-guardian-4.1-8b` in `<no-think>` Groundedness mode (Appendix A lines 145-202, card lines 264-293).
 
-    Per DESIGN §3b & §5 [C4]:
+    Per DESIGN §3b & §5 [C4] and pinned snapshot `ab01ccca5dcfb80246369a086a4a87a29198f5af/chat_template.jinja`:
     - Document = the material (`documents=[{"doc_id": "0", "text": material}]`);
     - Assistant's text = the claim;
     - User turn = `build_guardian_block(criteria=GROUNDEDNESS_CRITERIA, think=False, schema=PROMPT_RESPONSE_SCHEMA)`;
-    - `<score>yes</score>` means the risk (ungrounded) is present, so `supported = "no"`.
+    - Generation prompt prefill ends with `<think>\\n</think>\\n<score>` so the first generated token is at the `<score>` position;
+    - `<score>yes</score>` means the risk (ungrounded) is present, so `p_yes = 1 - p_unsafe` and `supported = "no"`.
     """
 
+    DOCUMENTS_SYSTEM_PREFIX: str = (
+        "You are a helpful assistant with access to the following documents. You may use one or more documents to assist "
+        "with the user query.\n\nYou are given a list of documents within <documents></documents> XML tags:\n<documents>"
+    )
+    DOCUMENTS_SYSTEM_SUFFIX: str = (
+        "\n</documents>\n\nWrite the response to the user's input by strictly aligning with the facts in the provided "
+        "documents. If the information needed to answer the question is not available in the documents, inform the user "
+        "that the question cannot be answered based on the available data."
+    )
     GUARDIAN_JUDGE_NOTHINK: str = (
         "<no-think>As a judge agent, assess whether the provided text meets the given "
         "judging criteria using all available information, including conversations, "
@@ -1453,6 +1468,7 @@ class GraniteGuardianAdapter(BaseJudgeAdapter):
     PROMPT_RESPONSE_SCHEMA: str = (
         "If the last assistant's text meets the criteria, return 'yes'; otherwise, return 'no'."
     )
+    SCORE_PREFILL_SUFFIX: str = "<think>\n</think>\n<score>"
 
     def __init__(self) -> None:
         super().__init__(BAKEOFF_JUDGE_SPECS["granite-guardian-4.1-8b"])
@@ -1475,15 +1491,17 @@ class GraniteGuardianAdapter(BaseJudgeAdapter):
     ) -> AssembledPrompt:
         guardian_block = self.build_guardian_block()
         documents = [{"doc_id": "0", "text": ordered_material}]
+        doc_json = json.dumps(documents[0], ensure_ascii=False)
+        system_message = f"{self.DOCUMENTS_SYSTEM_PREFIX}\n{doc_json}{self.DOCUMENTS_SYSTEM_SUFFIX}"
         msgs = (
             {"role": "assistant", "content": item.claim},
             {"role": "user", "content": guardian_block},
         )
         rendered = (
-            f"<|start_of_role|>documents<|end_of_role|>Document 0\n{ordered_material}<|end_of_text|>\n"
+            f"<|start_of_role|>system<|end_of_role|>{system_message}<|end_of_text|>\n"
             f"<|start_of_role|>assistant<|end_of_role|>{item.claim}<|end_of_text|>\n"
             f"<|start_of_role|>user<|end_of_role|>{guardian_block}<|end_of_text|>\n"
-            "<|start_of_role|>assistant<|end_of_role|>"
+            f"<|start_of_role|>assistant<|end_of_role|>{self.SCORE_PREFILL_SUFFIX}"
         )
         return AssembledPrompt(
             judge_id=self.spec.judge_id,
@@ -1492,7 +1510,7 @@ class GraniteGuardianAdapter(BaseJudgeAdapter):
             pass_mode=pass_mode,
             prompt_text=rendered,
             messages=msgs,
-            structured_payload={"documents": documents, "think": False},
+            structured_payload={"documents": documents, "think": False, "score_prefill": self.SCORE_PREFILL_SUFFIX},
         )
 
     def _parse_non_length_response(
@@ -1504,17 +1522,14 @@ class GraniteGuardianAdapter(BaseJudgeAdapter):
         top5 = response.verdict_top_logprobs[:5]
         cleaned = THINK_TAG_RE.sub("", response.raw_text).strip()
         matches = SCORE_TAG_RE.findall(cleaned)
-        if not matches:
-            return ParsedJudgeReadout(
-                state="unparseable",
-                done_reason=response.done_reason,
-                raw_verdict=None,
-                p_yes=None,
-                choice_probabilities=None,
-                verdict_top_logprobs=top5,
-                parse_note="missing <score>...</score> tag in Granite Guardian output",
-            )
-        score_token = matches[0].strip().lower()
+        if matches:
+            score_token = matches[0].strip().lower()
+        else:
+            # Consistent with `<think>\n</think>\n<score>` prefill at the end of `_build_prompt`,
+            # where the model generates `<verdict></score>` or `<verdict>`.
+            prefill_candidate = re.sub(r"\s*</score>.*$", "", cleaned, flags=re.IGNORECASE | re.DOTALL).strip().lower()
+            score_token = prefill_candidate if prefill_candidate in ("yes", "no") else ""
+
         if score_token not in ("yes", "no"):
             return ParsedJudgeReadout(
                 state="unparseable",
@@ -1523,10 +1538,10 @@ class GraniteGuardianAdapter(BaseJudgeAdapter):
                 p_yes=None,
                 choice_probabilities=None,
                 verdict_top_logprobs=top5,
-                parse_note=f"invalid <score> token {score_token!r} in Granite Guardian output",
+                parse_note="neither yes nor no at <score> position in Granite Guardian output",
             )
-        p_yes, _ = compute_binary_token_p_yes(top5, invert=True)
-        if p_yes is None:
+        p_unsafe, _ = compute_binary_token_p_yes(response.verdict_top_logprobs, invert=False)
+        if p_unsafe is None:
             return ParsedJudgeReadout(
                 state="unparseable",
                 done_reason=response.done_reason,
@@ -1534,9 +1549,10 @@ class GraniteGuardianAdapter(BaseJudgeAdapter):
                 p_yes=None,
                 choice_probabilities=None,
                 verdict_top_logprobs=top5,
-                parse_note="neither yes nor no token found in <score> position top logprobs",
+                parse_note="neither yes nor no token found in <score> position logprob distribution",
             )
-        inverted_verdict = "no" if score_token == "yes" else "yes"
+        p_yes = 1.0 - p_unsafe
+        inverted_verdict = "yes" if p_yes >= 0.5 else "no"
         return ParsedJudgeReadout(
             state="parsed",
             done_reason=response.done_reason,
@@ -1612,7 +1628,7 @@ class FlowJudgeAdapter(BaseJudgeAdapter):
             RUBRIC=rubric,
         )
         msgs = ({"role": "user", "content": user_content},)
-        rendered = f"<|user|>\n{user_content}<|end|>\n<|assistant|>\n"
+        rendered = f"<s><|user|>\n{user_content}<|endoftext|>\n<|assistant|>\n"
         return AssembledPrompt(
             judge_id=self.spec.judge_id,
             item_id=item.item_id,
@@ -1753,10 +1769,11 @@ class DeterministicFakeJudgeTransport:
 
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         digest = f"fake-sha256:{spec.revision}"
+        # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
         library_pins = {
             "transport": "DeterministicFakeJudgeTransport",
             "python": sys.version.split()[0],
-            "torch": "2.11.0+cu128 (pinned-not-loaded)",
+            "torch": "2.14.1+cu132 (pinned-not-loaded)",
             "transformers": "5.19.0 (pinned-not-loaded)",
         }
         server_binary = "rdlab-fake-judge-cpu/1.0"
@@ -1969,6 +1986,353 @@ class DeterministicFakeJudgeTransport:
         )
 
 
+def _resolve_snapshot_dir(spec: JudgeSpec, *, hf_home: Path | None = None) -> Path:
+    """Resolve `<hf_home>/hub/models--<owner>--<repo>/snapshots/<revision>` from `spec` without hardcoded paths."""
+    base_home = hf_home
+    if base_home is None:
+        env_home = os.environ.get("HF_HOME", "").strip()
+        if env_home:
+            base_home = Path(env_home)
+    if base_home is None:
+        raise refused_error(
+            "BAKEOFF_JUDGE_HF_HOME_MISSING",
+            f"Cannot locate local HF cache for '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}): "
+            "neither --hf-home nor HF_HOME is set.",
+            "Pass --hf-home <dir> or set the HF_HOME environment variable pointing to the local Hugging Face cache.",
+        )
+    owner, repo = spec.repo_id.split("/", 1)
+    model_dir_name = f"models--{owner}--{repo}"
+    resolved_base = base_home.resolve()
+    cand_hub = resolved_base / "hub" / model_dir_name / "snapshots" / spec.revision
+    if cand_hub.is_dir():
+        return cand_hub
+    cand_direct = resolved_base / model_dir_name / "snapshots" / spec.revision
+    if cand_direct.is_dir():
+        return cand_direct
+    raise refused_error(
+        "BAKEOFF_JUDGE_SNAPSHOT_NOT_FOUND",
+        f"Local snapshot directory not found for '{spec.judge_id}' ({spec.repo_id} @ {spec.revision}) under '{resolved_base}'.",
+        f"Ensure '{cand_hub}' exists on disk before running.",
+    )
+
+
+def verify_snapshot_against_receipt(
+    spec: JudgeSpec,
+    *,
+    receipts_dir: Path,
+    hf_home: Path | None = None,
+) -> tuple[Path, str]:
+    """Verify every file in a local HF snapshot against `<receipts_dir>/<owner>__<repo>.sha256.json` before loading."""
+    owner, repo = spec.repo_id.split("/", 1)
+    receipt_path = receipts_dir.resolve() / f"{owner}__{repo}.sha256.json"
+    if not receipt_path.is_file():
+        raise refused_error(
+            "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND",
+            f"Download receipt '{receipt_path}' not found for '{spec.judge_id}' ({spec.repo_id}).",
+            "Provide --receipts-dir containing <owner>__<repo>.sha256.json for each pinned judge snapshot.",
+        )
+    try:
+        receipt_doc = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise refused_error(
+            "BAKEOFF_JUDGE_RECEIPT_INVALID",
+            f"Malformed JSON in receipt '{receipt_path}': {exc}.",
+            "Verify the receipt file is valid JSON.",
+        ) from exc
+
+    if not isinstance(receipt_doc, Mapping) or not isinstance(receipt_doc.get("files"), Mapping):
+        raise refused_error(
+            "BAKEOFF_JUDGE_RECEIPT_INVALID",
+            f"Receipt '{receipt_path}' is missing 'files' mapping.",
+            "Ensure the receipt follows the <owner>__<repo>.sha256.json schema.",
+        )
+
+    rec_repo = str(receipt_doc.get("repo") or "")
+    rec_rev = str(receipt_doc.get("revision") or "")
+    if rec_repo != spec.repo_id or rec_rev != spec.revision:
+        raise refused_error(
+            "BAKEOFF_JUDGE_RECEIPT_MISMATCH",
+            f"Receipt '{receipt_path}' ({rec_repo} @ {rec_rev}) does not match pinned JudgeSpec "
+            f"({spec.repo_id} @ {spec.revision}).",
+            "Ensure receipt revision matches BAKEOFF_JUDGE_SPECS.",
+        )
+
+    snapshot_dir = _resolve_snapshot_dir(spec, hf_home=hf_home)
+    expected_files: Mapping[str, Any] = receipt_doc["files"]
+    expected_rels = set(expected_files.keys())
+
+    actual_files: dict[str, Path] = {
+        p.relative_to(snapshot_dir).as_posix(): p
+        for p in snapshot_dir.rglob("*")
+        if p.is_file()
+    }
+    actual_rels = set(actual_files.keys())
+
+    missing_rels = sorted(expected_rels - actual_rels)
+    if missing_rels:
+        raise refused_error(
+            "BAKEOFF_JUDGE_SNAPSHOT_MISSING_FILE",
+            f"Snapshot '{snapshot_dir}' is missing {len(missing_rels)} file(s) listed in receipt: {missing_rels[:5]}.",
+            "Re-verify the local model snapshot against its download receipt.",
+        )
+
+    extra_rels = sorted(actual_rels - expected_rels)
+    if extra_rels:
+        raise refused_error(
+            "BAKEOFF_JUDGE_SNAPSHOT_EXTRA_FILE",
+            f"Snapshot '{snapshot_dir}' contains {len(extra_rels)} unlisted extra file(s) not in receipt: {extra_rels[:5]}.",
+            "Remove untracked files from the pinned snapshot directory.",
+        )
+
+    digest_hasher = hashlib.sha256()
+    digest_hasher.update(f"{spec.repo_id}@{spec.revision}\n".encode("utf-8"))
+    for rel in sorted(expected_rels):
+        entry = expected_files[rel]
+        exp_sha = str(entry.get("sha256") or "").lower()
+        exp_bytes = entry.get("bytes")
+        fpath = actual_files[rel]
+        size_on_disk = fpath.stat().st_size
+        if exp_bytes is not None and int(exp_bytes) != size_on_disk:
+            raise refused_error(
+                "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH",
+                f"Snapshot file '{rel}' byte length mismatch in '{snapshot_dir}': expected {exp_bytes}, got {size_on_disk}.",
+                "Restore the unmodified snapshot file matching the download receipt.",
+            )
+        file_hasher = hashlib.sha256()
+        with fpath.open("rb") as fh:
+            while chunk := fh.read(1024 * 1024):
+                file_hasher.update(chunk)
+        actual_sha = file_hasher.hexdigest().lower()
+        if actual_sha != exp_sha:
+            raise refused_error(
+                "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH",
+                f"Snapshot file '{rel}' SHA-256 mismatch in '{snapshot_dir}': expected {exp_sha}, got {actual_sha}.",
+                "Restore the unmodified snapshot file matching the download receipt.",
+            )
+        digest_hasher.update(f"{rel}:{actual_sha}:{size_on_disk}\n".encode("utf-8"))
+
+    verified_digest = f"sha256:{spec.revision}:{digest_hasher.hexdigest()[:16]}"
+    return snapshot_dir, verified_digest
+
+
+class TransformersJudgeTransport:
+    """Real-model local Hugging Face `transformers` transport with receipt SHA-256 verification and `trust_remote_code=False`.
+
+    - Verifies every file in `<hf_home>/hub/models--<owner>--<repo>/snapshots/<revision>` against
+      `<receipts_dir>/<owner>__<repo>.sha256.json` before any tokenizer or model file is opened by `transformers`.
+    - Loads `AutoTokenizer` and `AutoModelForCausalLM` with `local_files_only=True, trust_remote_code=False`.
+    - Never imports or executes any `.py` file from a model snapshot.
+    - Enforces `max_new_tokens=1, use_cache=False` for the Nemotron pair (`mu-judge`, `nemotron-3-nano-4b`).
+    - Computes `log_softmax` over the full vocabulary at the verdict token position so `compute_binary_token_p_yes`
+      and `compute_three_way_choice_probs` sum case and whitespace variants over the full vocabulary distribution.
+    """
+
+    VERDICT_CANDIDATE_NORMS: frozenset[str] = frozenset({"yes", "no", "a", "b", "c", "1", "2", "3", "pass", "fail"})
+
+    def __init__(
+        self,
+        *,
+        receipts_dir: Path,
+        hf_home: Path | None = None,
+        device: str = "cpu",
+        torch_dtype: str | Any = "auto",
+    ) -> None:
+        self.receipts_dir = Path(receipts_dir)
+        self.hf_home = Path(hf_home) if hf_home is not None else None
+        self.device = device
+        self.torch_dtype = torch_dtype
+        self._loaded_spec_id: str | None = None
+        self._verified_digest: str | None = None
+        self._snapshot_dir: Path | None = None
+        self._tokenizer: Any = None
+        self._model: Any = None
+        self._candidate_token_ids: dict[int, str] = {}
+
+    def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
+        check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+        if spec.requires_remote_code:
+            raise refused_error(
+                "BAKEOFF_JUDGE_REMOTE_CODE_EXECUTION_FORBIDDEN",
+                f"Judge '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}) requires custom repo Python files "
+                f"({', '.join(spec.remote_code_files)}), and TransformersJudgeTransport enforces trust_remote_code=False.",
+                "Do not execute snapshot .py files until the dedicated remote-code review and runner are approved.",
+            )
+        snapshot_dir, verified_digest = verify_snapshot_against_receipt(
+            spec,
+            receipts_dir=self.receipts_dir,
+            hf_home=self.hf_home,
+        )
+        self._snapshot_dir = snapshot_dir
+        self._verified_digest = verified_digest
+        return verified_digest
+
+    def _ensure_loaded(self, spec: JudgeSpec) -> None:
+        if self._model is not None and self._loaded_spec_id == spec.judge_id:
+            return
+        if self._snapshot_dir is None or self._verified_digest is None:
+            self.verify_ready(spec)
+        assert self._snapshot_dir is not None
+
+        try:
+            import torch
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+        except ImportError as exc:  # pragma: no cover
+            raise refused_error(
+                "BAKEOFF_JUDGE_DEPS_MISSING",
+                f"Missing torch/transformers dependency for TransformersJudgeTransport: {exc}.",
+                "Install the optional 'judge' extra into the judge venv.",
+            ) from exc
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(self._snapshot_dir),
+            local_files_only=True,
+            trust_remote_code=False,
+        )
+        dtype_arg = self.torch_dtype
+        if isinstance(dtype_arg, str) and dtype_arg != "auto" and hasattr(torch, dtype_arg):
+            dtype_arg = getattr(torch, dtype_arg)
+        model = AutoModelForCausalLM.from_pretrained(
+            str(self._snapshot_dir),
+            local_files_only=True,
+            trust_remote_code=False,
+            dtype=dtype_arg,
+        )
+        model.to(self.device)
+        model.eval()
+
+        # Pre-index all vocabulary token IDs whose decoded string normalizes to a verdict candidate
+        # so full-distribution logprobs include every case/whitespace variant in the vocabulary regardless of rank.
+        candidate_ids: dict[int, str] = {}
+        vocab_map = tokenizer.get_vocab()
+        for tok_str, tok_id in vocab_map.items():
+            decoded = tokenizer.convert_tokens_to_string([tok_str])
+            if decoded.strip().lower() in self.VERDICT_CANDIDATE_NORMS:
+                candidate_ids[int(tok_id)] = decoded
+
+        self._tokenizer = tokenizer
+        self._model = model
+        self._candidate_token_ids = candidate_ids
+        self._loaded_spec_id = spec.judge_id
+
+    def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
+        self._ensure_loaded(spec)
+        assert self._tokenizer is not None and self._model is not None and self._verified_digest is not None
+
+        import torch
+        import transformers
+
+        torch.manual_seed(int(seed))
+        t0 = time.monotonic()
+
+        payload = prompt.structured_payload or {}
+        max_new_tokens = int(payload.get("max_new_tokens", spec.max_new_tokens))
+        use_cache = bool(payload.get("use_cache", False if spec.judge_id in ("mu-judge", "nemotron-3-nano-4b") else True))
+        if spec.judge_id in ("mu-judge", "nemotron-3-nano-4b"):
+            max_new_tokens = 1
+            use_cache = False
+
+        enc = self._tokenizer(
+            prompt.prompt_text,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )
+        input_ids = enc["input_ids"].to(self.device)
+        attention_mask = enc.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(self.device)
+        prompt_len = int(input_ids.shape[1])
+
+        gen_kwargs: dict[str, Any] = {
+            "input_ids": input_ids,
+            "max_new_tokens": max_new_tokens,
+            "do_sample": False,
+            "use_cache": use_cache,
+            "return_dict_in_generate": True,
+            "output_scores": True,
+            "pad_token_id": (
+                self._tokenizer.pad_token_id
+                if self._tokenizer.pad_token_id is not None
+                else self._tokenizer.eos_token_id
+            ),
+        }
+        if attention_mask is not None:
+            gen_kwargs["attention_mask"] = attention_mask
+
+        with torch.no_grad():
+            out = self._model.generate(**gen_kwargs)
+
+        elapsed = max(0.0001, time.monotonic() - t0)
+        gen_token_ids = [int(t) for t in out.sequences[0, prompt_len:].tolist()]
+        tokens_str = tuple(self._tokenizer.convert_ids_to_tokens(gen_token_ids))
+        raw_text = self._tokenizer.decode(gen_token_ids, skip_special_tokens=False)
+
+        eos_ids: set[int] = set()
+        raw_eos = getattr(self._model.generation_config, "eos_token_id", None)
+        if isinstance(raw_eos, int):
+            eos_ids.add(raw_eos)
+        elif isinstance(raw_eos, Sequence):
+            eos_ids.update(int(x) for x in raw_eos)
+        if self._tokenizer.eos_token_id is not None:
+            eos_ids.add(int(self._tokenizer.eos_token_id))
+
+        hit_eos = bool(gen_token_ids and gen_token_ids[-1] in eos_ids)
+        if spec.max_new_tokens == 1 or max_new_tokens == 1:
+            done_reason: DoneReason = "stop"
+        elif len(gen_token_ids) >= max_new_tokens and not hit_eos:
+            done_reason = "length"
+        else:
+            done_reason = "stop"
+
+        # Full-vocabulary log_softmax at the verdict token position (step 0 for first_token and score-prefilled Granite)
+        verdict_entries: list[TopLogprobEntry] = []
+        if out.scores:
+            step_logits = out.scores[0][0].float()
+            full_logprobs = torch.log_softmax(step_logits, dim=-1)
+            vocab_size = int(full_logprobs.shape[-1])
+            k_top = min(5, vocab_size)
+            top_vals, top_idxs = torch.topk(full_logprobs, k=k_top)
+
+            included_ids: set[int] = set()
+            for lp_val, idx_t in zip(top_vals.tolist(), top_idxs.tolist(), strict=True):
+                tid = int(idx_t)
+                tok_decoded = self._candidate_token_ids.get(tid)
+                if tok_decoded is None:
+                    raw_tok = self._tokenizer.convert_ids_to_tokens(tid)
+                    tok_decoded = self._tokenizer.convert_tokens_to_string([raw_tok]) if isinstance(raw_tok, str) else str(raw_tok)
+                verdict_entries.append(TopLogprobEntry(token=tok_decoded, logprob=float(lp_val)))
+                included_ids.add(tid)
+
+            # Append all remaining case/whitespace variants across the full vocabulary so full-distribution P(yes) is exact
+            for tid, tok_decoded in sorted(
+                self._candidate_token_ids.items(),
+                key=lambda kv: float(full_logprobs[kv[0]].item()),
+                reverse=True,
+            ):
+                if tid not in included_ids and 0 <= tid < vocab_size:
+                    verdict_entries.append(
+                        TopLogprobEntry(token=tok_decoded, logprob=float(full_logprobs[tid].item()))
+                    )
+                    included_ids.add(tid)
+
+        # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
+        library_pins = {
+            "transport": "TransformersJudgeTransport",
+            "python": sys.version.split()[0],
+            "torch": getattr(torch, "__version__", "unknown"),
+            "transformers": getattr(transformers, "__version__", "unknown"),
+        }
+        return JudgeTransportResponse(
+            raw_text=raw_text,
+            tokens=tokens_str,
+            verdict_top_logprobs=tuple(verdict_entries),
+            done_reason=done_reason,
+            seconds=elapsed,
+            model_digest=self._verified_digest,
+            server_binary=f"transformers/{library_pins['transformers']};torch/{library_pins['torch']};{self.device}",
+            library_pins=library_pins,
+        )
+
+
 def _canonical_json_line(obj: Mapping[str, Any]) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -1983,9 +2347,12 @@ def run_bakeoff_judge(
     limit_items: int | None = None,
     fake_transport: bool = False,
     transport: JudgeTransport | None = None,
+    receipts_dir: Path | None = None,
+    hf_home: Path | None = None,
+    device: str = "cpu",
     allow_remote_code_reviewed: str | None = None,
     vram_halt_mib: int = DEFAULT_VRAM_HALT_MIB,
-    vram_probe: Callable[[], int] = query_gpu_vram_peak_mib,
+    vram_probe: Callable[[], int] | None = None,
     halt_pid: int | None = None,
     pid_killer: Callable[[int], None] = kill_judge_pid_tree,
     error_rate_stop: float = DEFAULT_ERROR_RATE_STOP,
@@ -1999,6 +2366,13 @@ def run_bakeoff_judge(
     spec = resolve_judge_spec(judge)
     adapter = build_judge_adapter(spec)
 
+    if vram_probe is None:
+        vram_probe = (
+            (lambda: 0)
+            if (fake_transport or str(device).lower().startswith("cpu"))
+            else query_gpu_vram_peak_mib
+        )
+
     if transport is None:
         if fake_transport:
             transport = DeterministicFakeJudgeTransport(
@@ -2007,11 +2381,17 @@ def run_bakeoff_judge(
             )
         else:
             check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
-            raise refused_error(
-                "BAKEOFF_JUDGE_REAL_MODEL_DISABLED",
-                f"Real-model loading for '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}) requires an active "
-                "5090 GPU grant and local HF snapshot.",
-                "Use --fake-transport for CPU validation or run under an authorized GPU grant with local weights.",
+            if receipts_dir is None:
+                raise refused_error(
+                    "BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED",
+                    f"Real-model loading for '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}) requires "
+                    "--receipts-dir containing the pinned <owner>__<repo>.sha256.json receipt.",
+                    "Pass --receipts-dir <dir> (and --hf-home <dir> or set HF_HOME), or use --fake-transport for CPU validation.",
+                )
+            transport = TransformersJudgeTransport(
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                device=device,
             )
 
     verified_digest = transport.verify_ready(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
