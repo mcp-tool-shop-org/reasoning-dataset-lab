@@ -1524,6 +1524,7 @@ def write_sealed_part(
     shuffle_seed: int | None = None,
     table_secret: int | None = None,
     _generated_table_secret: int | None = None,
+    _commitment_key: bytes | None = None,
     licence_registry: Mapping[str, Any] | None = None,
     allow_weak_test_seed: bool = False,
 ) -> dict[str, Any]:
@@ -1560,7 +1561,7 @@ def write_sealed_part(
         )
 
     if shuffle_seed is None:
-        shuffle_seed = secrets.randbits(128) | (1 << 127)
+        shuffle_seed = draw_valid_shuffle_seed(len(wave_result.kept_triads))
     elif not isinstance(shuffle_seed, int) or isinstance(shuffle_seed, bool) or shuffle_seed <= 0:
         raise refused_error(
             "PILOT_B_WEAK_SHUFFLE_SEED",
@@ -1609,7 +1610,9 @@ def write_sealed_part(
         or resolved_table_secret.bit_length() < MIN_TABLE_SECRET_BITS
     )
     # The commitment key is its own random secret, never derived from the seed.
-    commitment_key = secrets.token_bytes(32)
+    commitment_key = (
+        _commitment_key if _commitment_key is not None else secrets.token_bytes(32)
+    )
 
     part_dir.mkdir(parents=True, exist_ok=True)
     keys_sealed_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1992,6 +1995,42 @@ def _check_part_shapes(part_dir: Path, extra_public_files: Sequence[Path], key_i
                 "Pass only the build report as an extra public file.",
             )
         _schema_errors(extra.name, schema_check.validate(json.loads(extra.read_text(encoding="utf-8")), "report"))
+
+
+MAX_SHUFFLE_SEED_DRAW_ATTEMPTS = 256
+
+
+def _shuffle_seed_passes_key_order_for_counts(seed: int, triad_counts: Sequence[int]) -> bool:
+    """Return True when shuffling ``k`` triads with ``seed`` satisfies ``check_items_not_in_key_order`` for every ``k`` in ``triad_counts``."""
+    for k in triad_counts:
+        base_keys = list(VERDICT_CLASSES) * k
+        order = list(range(len(base_keys)))
+        random.Random(seed).shuffle(order)
+        rows = [{"key": base_keys[idx]} for idx in order]
+        try:
+            check_items_not_in_key_order(rows)
+        except RdlabError:
+            return False
+    return True
+
+
+def draw_valid_shuffle_seed(
+    triad_count: int,
+    *,
+    also_check_counts: Sequence[int] = (),
+    max_attempts: int = MAX_SHUFFLE_SEED_DRAW_ATTEMPTS,
+) -> int:
+    """Draw a 128-bit shuffle seed whose item permutation never triggers ``check_items_not_in_key_order``."""
+    counts_to_check = tuple(dict.fromkeys(c for c in (triad_count, *also_check_counts) if c >= 2))
+    for _ in range(max(1, max_attempts)):
+        candidate = secrets.randbits(128) | (1 << 127)
+        if _shuffle_seed_passes_key_order_for_counts(candidate, counts_to_check):
+            return candidate
+    raise refused_error(
+        "PILOT_B_SHUFFLE_SEED_EXHAUSTED",
+        f"Failed to draw a shuffle seed passing key-order checks within {max_attempts} attempts.",
+        "Check random number generator entropy or pass an explicit valid shuffle seed.",
+    )
 
 
 def check_items_not_in_key_order(keys_rows: Sequence[Mapping[str, Any]]) -> None:

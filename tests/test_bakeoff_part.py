@@ -60,6 +60,16 @@ from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _deterministic_secrets_in_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    import random
+    import secrets
+
+    prng = random.Random(0x5EED_2026_1030)
+    monkeypatch.setattr(secrets, "randbits", prng.getrandbits)
+    monkeypatch.setattr(secrets, "token_bytes", lambda n=32: prng.randbytes(n))
+
+
 def _jsonl(path: Path) -> list[dict]:
     return [
         json.loads(line)
@@ -232,6 +242,7 @@ def test_refuses_when_items_are_written_in_key_order(tmp_path: Path):
         triad_count=4,
         stub_mode=True,
         mock_writer=True,
+        shuffle_seed=(1 << 127) | 101,
         grant_id="test-grant-key-order",
         repo_root=tmp_path / "fake-repo",
     )
@@ -367,6 +378,7 @@ def test_writer_pin_calibration_and_one_load_wave_execution(tmp_path: Path):
         triad_count=10,
         stub_mode=True,
         mock_writer=True,
+        shuffle_seed=(1 << 127) | 201,
         grant_id="grant-stub-10",
         vram_probe=lambda: 18_432,
         repo_root=tmp_path / "fake-repo",
@@ -499,6 +511,8 @@ def test_cli_bakeoff_part_end_to_end_with_mock_writer(tmp_path: Path):
             "--stub",
             "4",
             "--mock-writer",
+            "--shuffle-seed",
+            str((1 << 127) | 301),
             "--grant-id",
             "cli-test-grant",
             "--output-dir",
@@ -957,6 +971,7 @@ def test_fix3_recomputes_realized_split_counts_on_kept_triads_after_waves(
         triad_count=20,
         stub_mode=True,
         mock_writer=True,
+        shuffle_seed=(1 << 127) | 501,
         grant_id="grant-fix3",
         repo_root=tmp_path / "fake-repo",
     )
@@ -1205,6 +1220,7 @@ def test_qc1_child_server_started_halt_pid_and_stopped_on_success_and_error(
         triad_count=1,
         stub_mode=True,
         mock_writer=False,
+        shuffle_seed=(1 << 127) | 801,
         grant_id="grant-qc1-success",
         licence_registry_path=reg_path,
         vram_probe=lambda: 14_000,
@@ -1652,6 +1668,1024 @@ def test_qc4_refuses_missing_grant_or_registry_and_rejects_owner_pid_override_an
     first_stop = ok_srv.stopped_at
     ok_srv.stop()
     assert ok_srv.stopped_at == first_stop
+
+
+TIMING_FIELDS_PART = (
+    "waves[].seconds_total",
+    "waves[].wall_time_s_total",
+    "call_distributions.writer.render_material.wall_time_s",
+    "call_distributions.writer.word_claim.wall_time_s",
+    "frozen_mac",
+)
+TIMING_FIELDS_REPORT = (
+    "waves[].seconds_total",
+    "waves[].wall_time_s_total",
+    "totals.seconds",
+    "totals.wall_time_s",
+    "full_build_estimate_50_triads.estimated_seconds_stub_rate",
+    "gpu_guard.server_started_at",
+    "gpu_guard.server_stopped_at",
+    "gpu_guard.server_start_time",
+    "gpu_guard.server_stop_time",
+    "ollama_server.started_at",
+    "ollama_server.stopped_at",
+    "ollama_server.start_time",
+    "ollama_server.stop_time",
+)
+
+
+def _strip_named_part_timing_fields(doc: dict) -> dict:
+    out = json.loads(json.dumps(doc))
+    for w in out.get("waves", []):
+        w.pop("seconds_total", None)
+        w.pop("wall_time_s_total", None)
+    writer_dist = (out.get("call_distributions") or {}).get("writer") or {}
+    for op in ("render_material", "word_claim"):
+        if op in writer_dist and isinstance(writer_dist[op], dict):
+            writer_dist[op].pop("wall_time_s", None)
+    out.pop("frozen_mac", None)
+    return out
+
+
+def _strip_named_report_timing_fields(doc: dict) -> dict:
+    out = json.loads(json.dumps(doc))
+    for w in out.get("waves", []):
+        w.pop("seconds_total", None)
+        w.pop("wall_time_s_total", None)
+    if isinstance(out.get("totals"), dict):
+        out["totals"].pop("seconds", None)
+        out["totals"].pop("wall_time_s", None)
+    if isinstance(out.get("full_build_estimate_50_triads"), dict):
+        out["full_build_estimate_50_triads"].pop("estimated_seconds_stub_rate", None)
+    if isinstance(out.get("gpu_guard"), dict):
+        for k in ("server_started_at", "server_stopped_at", "server_start_time", "server_stop_time"):
+            out["gpu_guard"].pop(k, None)
+    if isinstance(out.get("ollama_server"), dict):
+        for k in ("started_at", "stopped_at", "start_time", "stop_time"):
+            out["ollama_server"].pop(k, None)
+    return out
+
+
+def test_resume_from_killed_and_halted_runs_is_byte_identical_to_uninterrupted_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import secrets
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        build_fixture_licence_registry,
+    )
+
+    assert len(TIMING_FIELDS_PART) == 5
+    assert len(TIMING_FIELDS_REPORT) == 13
+
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2),
+        encoding="utf-8",
+    )
+
+    fixed_shuffle_seed = (1 << 127) | 0xCAFEBABE
+    fixed_table_secret = (1 << 127) | 0xDEADBEEF
+    fixed_commitment_key = bytes(range(1, 33))
+    monkeypatch.setattr(secrets, "token_bytes", lambda n=32: fixed_commitment_key[:n])
+    monkeypatch.setattr(secrets, "randbits", lambda k=128: fixed_shuffle_seed & ((1 << k) - 1))
+    monkeypatch.setattr(time, "perf_counter", lambda: 1000.0)
+
+    n_triads = 6
+    k_kill = 3
+    base_mock = build_mock_writer_ollama_http_transport()
+
+    # 1. Uninterrupted run of N=6 triads
+    uninterrupted_dir = tmp_path / "uninterrupted"
+    res_full = run_bakeoff_part_build(
+        output_dir=uninterrupted_dir,
+        triad_count=n_triads,
+        stub_mode=True,
+        mock_writer=True,
+        seed=7,
+        split_seed=20261029,
+        shuffle_seed=fixed_shuffle_seed,
+        table_secret=fixed_table_secret,
+        allow_weak_test_seed=True,
+        grant_id="grant-resume-test",
+        licence_registry_path=reg_path,
+        vram_probe=lambda: 18_000,
+        repo_root=tmp_path / "fake-repo",
+    )
+    assert res_full["status"] == "ok"
+    assert (uninterrupted_dir / "checkpoint.json").is_file()
+    assert (uninterrupted_dir / "sealed_store" / "checkpoint.sealed.json").is_file()
+
+    # 2a. Simulated exception after k=3 triads (each triad makes 4 chat calls: 1 render + 3 word = 12 calls)
+    exc_dir = tmp_path / "killed-exc"
+    chat_calls_exc = 0
+
+    def _kill_after_k_transport(method: str, url: str, body=None):
+        nonlocal chat_calls_exc
+        if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+            chat_calls_exc += 1
+            if chat_calls_exc == k_kill * 4 + 1:
+                raise RdlabError("PILOT_B_OLLAMA_HTTP_ERROR", "Simulated crash after k triads", "Resume")
+        return base_mock(method, url, body)
+
+    with pytest.raises(RdlabError) as exc_crash:
+        run_bakeoff_part_build(
+            output_dir=exc_dir,
+            triad_count=n_triads,
+            stub_mode=True,
+            mock_writer=True,
+            seed=7,
+            split_seed=20261029,
+            shuffle_seed=fixed_shuffle_seed,
+            table_secret=fixed_table_secret,
+            allow_weak_test_seed=True,
+            grant_id="grant-resume-test",
+            licence_registry_path=reg_path,
+            vram_probe=lambda: 18_000,
+            http_transport=_kill_after_k_transport,
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_crash.value.code == "PILOT_B_OLLAMA_HTTP_ERROR"
+    ckpt_after_crash = json.loads((exc_dir / "checkpoint.json").read_text(encoding="utf-8"))
+    assert ckpt_after_crash["triads_completed"] == k_kill
+    assert len(ckpt_after_crash["triads"]) == k_kill
+
+    # Resume the killed run
+    res_exc_resumed = run_bakeoff_part_build(
+        output_dir=exc_dir,
+        triad_count=n_triads,
+        stub_mode=True,
+        mock_writer=True,
+        seed=7,
+        split_seed=20261029,
+        shuffle_seed=fixed_shuffle_seed,
+        table_secret=fixed_table_secret,
+        allow_weak_test_seed=True,
+        grant_id="grant-resume-test",
+        licence_registry_path=reg_path,
+        vram_probe=lambda: 18_000,
+        http_transport=base_mock,
+        repo_root=tmp_path / "fake-repo",
+        resume=True,
+    )
+    assert res_exc_resumed["status"] == "ok"
+
+    # 2b. Simulated owned-server VRAM halt after k=3 triads, then resume
+    halt_dir = tmp_path / "killed-halt"
+    chat_calls_halt = 0
+    killed_pids: list[int] = []
+
+    def _vram_probe_halt_after_k() -> int:
+        if chat_calls_halt > k_kill * 4:
+            return 27_500
+        return 18_000
+
+    def _counting_halt_transport(method: str, url: str, body=None):
+        nonlocal chat_calls_halt
+        if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+            chat_calls_halt += 1
+        return base_mock(method, url, body)
+
+    with pytest.raises(RdlabError) as exc_halt:
+        run_bakeoff_part_build(
+            output_dir=halt_dir,
+            triad_count=n_triads,
+            stub_mode=True,
+            mock_writer=False,
+            seed=7,
+            split_seed=20261029,
+            shuffle_seed=fixed_shuffle_seed,
+            table_secret=fixed_table_secret,
+            allow_weak_test_seed=True,
+            grant_id="grant-resume-test",
+            licence_registry_path=reg_path,
+            vram_halt_mib=26_000,
+            vram_probe=_vram_probe_halt_after_k,
+            pid_killer=killed_pids.append,
+            popen_factory=lambda args, **kw: _FakeChildPopen(args, pid=5800, **kw),
+            http_transport=_counting_halt_transport,
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_halt.value.code == "BAKEOFF_VRAM_HALT_EXCEEDED"
+    assert killed_pids == [5800]
+    ckpt_after_halt = json.loads((halt_dir / "checkpoint.json").read_text(encoding="utf-8"))
+    assert ckpt_after_halt["triads_completed"] == k_kill
+
+    res_halt_resumed = run_bakeoff_part_build(
+        output_dir=halt_dir,
+        triad_count=n_triads,
+        stub_mode=True,
+        mock_writer=True,
+        seed=7,
+        split_seed=20261029,
+        shuffle_seed=fixed_shuffle_seed,
+        table_secret=fixed_table_secret,
+        allow_weak_test_seed=True,
+        grant_id="grant-resume-test",
+        licence_registry_path=reg_path,
+        vram_probe=lambda: 18_000,
+        http_transport=base_mock,
+        repo_root=tmp_path / "fake-repo",
+        resume=True,
+    )
+    assert res_halt_resumed["status"] == "ok"
+
+    # Compare both resumed runs against uninterrupted run
+    full_keys_sha = hashlib.sha256((uninterrupted_dir / "sealed_store" / "keys.sealed.jsonl").read_bytes()).hexdigest()
+    for resumed_dir in (exc_dir, halt_dir):
+        for fname in ("items.jsonl", "provenance.jsonl", "part.json", "checksums.txt"):
+            assert (resumed_dir / "part_bakeoff_sealed" / fname).read_bytes() == (
+                uninterrupted_dir / "part_bakeoff_sealed" / fname
+            ).read_bytes(), f"Mismatch in {fname} for {resumed_dir.name}"
+        resumed_keys_bytes = (resumed_dir / "sealed_store" / "keys.sealed.jsonl").read_bytes()
+        assert hashlib.sha256(resumed_keys_bytes).hexdigest() == full_keys_sha
+        assert resumed_keys_bytes == (uninterrupted_dir / "sealed_store" / "keys.sealed.jsonl").read_bytes()
+        assert (resumed_dir / "reports" / "bakeoff_part_report.json").read_bytes() == (
+            uninterrupted_dir / "reports" / "bakeoff_part_report.json"
+        ).read_bytes()
+        assert _strip_named_part_timing_fields(
+            json.loads((resumed_dir / "part_bakeoff_sealed" / "part.json").read_text(encoding="utf-8"))
+        ) == _strip_named_part_timing_fields(
+            json.loads((uninterrupted_dir / "part_bakeoff_sealed" / "part.json").read_text(encoding="utf-8"))
+        )
+        assert _strip_named_report_timing_fields(
+            json.loads((resumed_dir / "reports" / "bakeoff_part_report.json").read_text(encoding="utf-8"))
+        ) == _strip_named_report_timing_fields(
+            json.loads((uninterrupted_dir / "reports" / "bakeoff_part_report.json").read_text(encoding="utf-8"))
+        )
+
+    # 3. Also test CLI `--resume` flag and checkpointing/resuming when a triad fails render or word check
+    cli_dir = tmp_path / "cli-resume"
+    cli_calls = 0
+
+    def _cli_kill_transport(method: str, url: str, body=None):
+        nonlocal cli_calls
+        if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+            cli_calls += 1
+            if cli_calls == 5:
+                raise RdlabError("PILOT_B_OLLAMA_HTTP_ERROR", "CLI crash after 1 triad", "Resume")
+        return base_mock(method, url, body)
+
+    import reasoning_dataset_lab.pilot_b.bakeoff_part as bo_mod
+
+    monkeypatch.setattr(bo_mod, "build_mock_writer_ollama_http_transport", lambda **kw: _cli_kill_transport)
+    monkeypatch.setattr(bo_mod, "check_output_dir_outside_repo", lambda p, repo_root=None: Path(p).resolve())
+    assert (
+        run_cli(
+            [
+                "bakeoff-part",
+                "--stub",
+                "2",
+                "--mock-writer",
+                "--shuffle-seed",
+                str(fixed_shuffle_seed),
+                "--grant-id",
+                "grant-cli-resume",
+                "--output-dir",
+                str(cli_dir),
+            ]
+        )
+        == EXIT_REFUSED
+    )
+    monkeypatch.setattr(bo_mod, "build_mock_writer_ollama_http_transport", lambda **kw: base_mock)
+    assert (
+        run_cli(
+            [
+                "bakeoff-part",
+                "--stub",
+                "2",
+                "--mock-writer",
+                "--resume",
+                "--shuffle-seed",
+                str(fixed_shuffle_seed),
+                "--grant-id",
+                "grant-cli-resume",
+                "--output-dir",
+                str(cli_dir),
+            ]
+        )
+        == 0
+    )
+
+    # 4. Failed render and failed word triads are checkpointed and verified on resume
+    fail_triad_dir = tmp_path / "failed-triads-resume"
+    ft_calls = 0
+
+    def _fail_render_and_word_then_kill(method: str, url: str, body=None):
+        nonlocal ft_calls
+        resp = dict(base_mock(method, url, body))
+        if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+            ft_calls += 1
+            # Triad 1 call 1 is render -> corrupt render line
+            if ft_calls == 1:
+                resp["message"] = {"role": "assistant", "content": "1. corrupt render", "thinking": "t"}
+            # Triad 2 call 2 is first word_claim (ft_calls == 3) -> corrupt word claim (multiple sentences)
+            elif ft_calls == 3:
+                resp["message"] = {"role": "assistant", "content": "Bad claim one. Bad claim two.", "thinking": "t"}
+            # Kill at start of Triad 4 (ft_calls == 8)
+            elif ft_calls == 8:
+                raise RdlabError("PILOT_B_OLLAMA_HTTP_ERROR", "Kill after failed triads", "Resume")
+        return resp
+
+    with pytest.raises(RdlabError):
+        run_bakeoff_part_build(
+            output_dir=fail_triad_dir,
+            triad_count=20,
+            stub_mode=True,
+            mock_writer=True,
+            shuffle_seed=fixed_shuffle_seed,
+            table_secret=fixed_table_secret,
+            allow_weak_test_seed=True,
+            grant_id="grant-ft",
+            http_transport=_fail_render_and_word_then_kill,
+            repo_root=tmp_path / "fake-repo",
+        )
+    res_ft = run_bakeoff_part_build(
+        output_dir=fail_triad_dir,
+        triad_count=20,
+        stub_mode=True,
+        mock_writer=True,
+        shuffle_seed=fixed_shuffle_seed,
+        table_secret=fixed_table_secret,
+        allow_weak_test_seed=True,
+        grant_id="grant-ft",
+        http_transport=base_mock,
+        repo_root=tmp_path / "fake-repo",
+        resume=True,
+    )
+    assert res_ft["report"]["triads_kept"] == 18
+
+
+def _rechain_checkpoints(pub_doc: dict, sealed_doc: dict) -> None:
+    """Helper for tests: recompute the hash chain across both checkpoint docs after mutating triad contents."""
+    from reasoning_dataset_lab.pilot_b.bakeoff_part import (
+        CHECKPOINT_GENESIS_HASH,
+        _compute_checkpoint_chain_hash,
+    )
+    from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
+        _canonical_json_line,
+        _sha256_bytes,
+    )
+
+    prev = CHECKPOINT_GENESIS_HASH
+    for pub_rec, sealed_rec in zip(pub_doc["triads"], sealed_doc["triads"], strict=True):
+        pub_rec["prev_hash"] = prev
+        sealed_rec["prev_hash"] = prev
+        sealed_payload = {
+            k: v for k, v in sealed_rec.items() if k not in ("sealed_entry_sha256", "chain_hash")
+        }
+        s_sha = _sha256_bytes(_canonical_json_line(sealed_payload).encode("ascii"))
+        sealed_rec["sealed_entry_sha256"] = s_sha
+        pub_payload = {k: v for k, v in pub_rec.items() if k != "chain_hash"}
+        c_hash = _compute_checkpoint_chain_hash(prev, pub_payload, s_sha)
+        pub_rec["chain_hash"] = c_hash
+        sealed_rec["chain_hash"] = c_hash
+        prev = c_hash
+    pub_doc["chain_head_sha256"] = prev
+    sealed_doc["chain_head_sha256"] = prev
+    pub_doc["triads_completed"] = len(pub_doc["triads"])
+    sealed_doc["triads_completed"] = len(sealed_doc["triads"])
+
+
+def test_resume_refuses_tampered_checkpoint_edited_item_or_truncated_chain(
+    tmp_path: Path,
+):
+    import shutil
+
+    base_mock = build_mock_writer_ollama_http_transport()
+    chat_calls = 0
+
+    def _kill_after_2_triads(method: str, url: str, body=None):
+        nonlocal chat_calls
+        if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+            chat_calls += 1
+            if chat_calls == 9:  # after 2 triads (8 calls)
+                raise RdlabError("PILOT_B_OLLAMA_HTTP_ERROR", "Crash after 2 triads", "Resume")
+        return base_mock(method, url, body)
+
+    base_dir = tmp_path / "base-ckpt"
+    with pytest.raises(RdlabError):
+        run_bakeoff_part_build(
+            output_dir=base_dir,
+            triad_count=4,
+            stub_mode=True,
+            mock_writer=True,
+            shuffle_seed=(1 << 127) | 601,
+            table_secret=(1 << 127) | 602,
+            allow_weak_test_seed=True,
+            grant_id="grant-tamper",
+            http_transport=_kill_after_2_triads,
+            repo_root=tmp_path / "fake-repo",
+        )
+
+    def _attempt_resume(target_dir: Path) -> RdlabError:
+        with pytest.raises(RdlabError) as exc_info:
+            run_bakeoff_part_build(
+                output_dir=target_dir,
+                triad_count=4,
+                stub_mode=True,
+                mock_writer=True,
+                shuffle_seed=(1 << 127) | 601,
+                table_secret=(1 << 127) | 602,
+                allow_weak_test_seed=True,
+                grant_id="grant-tamper",
+                repo_root=tmp_path / "fake-repo",
+                resume=True,
+            )
+        assert exc_info.value.exit_code == EXIT_REFUSED
+        return exc_info.value
+
+    # 1a. Edited item in checkpoint.json (caught by hash chain)
+    edited_item_dir = tmp_path / "edited-item"
+    shutil.copytree(base_dir, edited_item_dir)
+    ckpt_path = edited_item_dir / "checkpoint.json"
+    ckpt_doc = json.loads(ckpt_path.read_text(encoding="utf-8"))
+    ckpt_doc["triads"][0]["items"][0]["claim"] = "Tampered claim text."
+    ckpt_path.write_text(json.dumps(ckpt_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    assert _attempt_resume(edited_item_dir).code == "BAKEOFF_CHECKPOINT_CHAIN_BROKEN"
+
+    # 1b. Edited item in checkpoint.json WITH recomputed hash chain (caught by canonical verify_sealed_part)
+    rechained_item_dir = tmp_path / "edited-item-rechained"
+    shutil.copytree(base_dir, rechained_item_dir)
+    p_doc = json.loads((rechained_item_dir / "checkpoint.json").read_text(encoding="utf-8"))
+    s_doc = json.loads((rechained_item_dir / "sealed_store" / "checkpoint.sealed.json").read_text(encoding="utf-8"))
+    p_doc["triads"][0]["items"][0]["claim"] = "Tampered claim text with valid chain."
+    _rechain_checkpoints(p_doc, s_doc)
+    (rechained_item_dir / "checkpoint.json").write_text(json.dumps(p_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (rechained_item_dir / "sealed_store" / "checkpoint.sealed.json").write_text(
+        json.dumps(s_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    assert _attempt_resume(rechained_item_dir).code in (
+        "PILOT_B_SEALED_SCHEMA_MISMATCH",
+        "PILOT_B_SEAL_DIGEST_MISMATCH",
+    )
+
+    # 1c. Edited sealed key in checkpoint.sealed.json WITH recomputed hash chain (caught by canonical verify_sealed_part)
+    rechained_key_dir = tmp_path / "edited-key-rechained"
+    shutil.copytree(base_dir, rechained_key_dir)
+    p_doc = json.loads((rechained_key_dir / "checkpoint.json").read_text(encoding="utf-8"))
+    s_doc = json.loads((rechained_key_dir / "sealed_store" / "checkpoint.sealed.json").read_text(encoding="utf-8"))
+    s_doc["triads"][0]["keys"][0]["key"] = (
+        "unsupported" if s_doc["triads"][0]["keys"][0]["key"] == "supported" else "supported"
+    )
+    _rechain_checkpoints(p_doc, s_doc)
+    (rechained_key_dir / "checkpoint.json").write_text(json.dumps(p_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    (rechained_key_dir / "sealed_store" / "checkpoint.sealed.json").write_text(
+        json.dumps(s_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    assert _attempt_resume(rechained_key_dir).code == "PILOT_B_SEALED_KEYS_MISMATCH"
+
+    # 1d. Edited triad metadata / render_inputs / missing fields / tampered failed triad WITH recomputed chain
+    for case_name, mutator in (
+        ("meta-mismatch", lambda p, s: s["triads"][0].__setitem__("triad_id", "wrong-triad")),
+        ("missing-fields", lambda p, s: s["triads"][0].__setitem__("render_inputs", "bad")),
+        ("entry-mismatch", lambda p, s: s["triads"][0]["render_inputs"]["entries"][0].__setitem__("key", "unsupported")),
+        (
+            "bad-failed-triad",
+            lambda p, s: (
+                p["triads"][0].__setitem__("passed", False),
+                s["triads"][0].__setitem__("passed", False),
+            ),
+        ),
+    ):
+        c_dir = tmp_path / f"case-{case_name}"
+        shutil.copytree(base_dir, c_dir)
+        p_doc = json.loads((c_dir / "checkpoint.json").read_text(encoding="utf-8"))
+        s_doc = json.loads((c_dir / "sealed_store" / "checkpoint.sealed.json").read_text(encoding="utf-8"))
+        mutator(p_doc, s_doc)
+        _rechain_checkpoints(p_doc, s_doc)
+        (c_dir / "checkpoint.json").write_text(json.dumps(p_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (c_dir / "sealed_store" / "checkpoint.sealed.json").write_text(
+            json.dumps(s_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        assert _attempt_resume(c_dir).code == "BAKEOFF_CHECKPOINT_VERIFY_FAILED"
+
+    # 2. Truncated chain and broken hash chain variants
+    trunc_dir = tmp_path / "truncated-chain"
+    shutil.copytree(base_dir, trunc_dir)
+    trunc_ckpt_path = trunc_dir / "checkpoint.json"
+    trunc_doc = json.loads(trunc_ckpt_path.read_text(encoding="utf-8"))
+    trunc_doc["triads"].pop()
+    trunc_ckpt_path.write_text(json.dumps(trunc_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    assert _attempt_resume(trunc_dir).code == "BAKEOFF_CHECKPOINT_CHAIN_BROKEN"
+
+    for chain_case, chain_mutator in (
+        ("bad-index", lambda p, s: p["triads"][0].__setitem__("triad_index", 99)),
+        ("bad-sealed-sha", lambda p, s: s["triads"][0].__setitem__("sealed_entry_sha256", "0" * 64)),
+        (
+            "bad-chain-head",
+            lambda p, s: (
+                _rechain_checkpoints(p, s),
+                p.__setitem__("chain_head_sha256", "f" * 64),
+            ),
+        ),
+    ):
+        cc_dir = tmp_path / f"chain-{chain_case}"
+        shutil.copytree(base_dir, cc_dir)
+        p_doc = json.loads((cc_dir / "checkpoint.json").read_text(encoding="utf-8"))
+        s_doc = json.loads((cc_dir / "sealed_store" / "checkpoint.sealed.json").read_text(encoding="utf-8"))
+        chain_mutator(p_doc, s_doc)
+        (cc_dir / "checkpoint.json").write_text(json.dumps(p_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        (cc_dir / "sealed_store" / "checkpoint.sealed.json").write_text(
+            json.dumps(s_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        assert _attempt_resume(cc_dir).code == "BAKEOFF_CHECKPOINT_CHAIN_BROKEN"
+
+    # Missing checkpoint file, corrupt JSON, non-dict JSON, missing header
+    assert _attempt_resume(tmp_path / "nonexistent-ckpt-dir").code == "BAKEOFF_CHECKPOINT_NOT_FOUND"
+
+    corrupt_dir = tmp_path / "corrupt-json"
+    shutil.copytree(base_dir, corrupt_dir)
+    (corrupt_dir / "checkpoint.json").write_text("{corrupt", encoding="utf-8")
+    assert _attempt_resume(corrupt_dir).code == "BAKEOFF_CHECKPOINT_CHAIN_BROKEN"
+
+    list_root_dir = tmp_path / "list-root"
+    shutil.copytree(base_dir, list_root_dir)
+    (list_root_dir / "checkpoint.json").write_text("[]", encoding="utf-8")
+    assert _attempt_resume(list_root_dir).code == "BAKEOFF_CHECKPOINT_CHAIN_BROKEN"
+
+    no_hdr_dir = tmp_path / "no-header"
+    shutil.copytree(base_dir, no_hdr_dir)
+    (no_hdr_dir / "checkpoint.json").write_text("{}", encoding="utf-8")
+    assert _attempt_resume(no_hdr_dir).code == "BAKEOFF_CHECKPOINT_CHAIN_BROKEN"
+
+
+def test_resume_refuses_on_plan_seed_manifest_writer_or_registry_mismatch(
+    tmp_path: Path,
+):
+    import shutil
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        build_fixture_licence_registry,
+    )
+
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2),
+        encoding="utf-8",
+    )
+
+    base_mock = build_mock_writer_ollama_http_transport()
+    chat_calls = 0
+
+    def _kill_after_1_triad(method: str, url: str, body=None):
+        nonlocal chat_calls
+        if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+            chat_calls += 1
+            if chat_calls == 5:
+                raise RdlabError("PILOT_B_OLLAMA_HTTP_ERROR", "Crash after 1 triad", "Resume")
+        return base_mock(method, url, body)
+
+    base_dir = tmp_path / "mismatch-base"
+    (base_dir / "reports").mkdir(parents=True, exist_ok=True)
+    (base_dir / "reports" / "call_records.jsonl").write_text("stale\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_fresh_weak_shuf:
+        run_bakeoff_part_build(
+            output_dir=base_dir,
+            triad_count=4,
+            stub_mode=True,
+            mock_writer=True,
+            shuffle_seed=7,
+            allow_weak_test_seed=False,
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_fresh_weak_shuf.value.code == "PILOT_B_WEAK_SHUFFLE_SEED"
+    with pytest.raises(RdlabError):
+        run_bakeoff_part_build(
+            output_dir=base_dir,
+            triad_count=4,
+            stub_mode=True,
+            mock_writer=True,
+            seed=1,
+            split_seed=20261029,
+            shuffle_seed=(1 << 127) | 11,
+            table_secret=(1 << 127) | 22,
+            allow_weak_test_seed=True,
+            grant_id="grant-mismatch",
+            licence_registry_path=reg_path,
+            http_transport=_kill_after_1_triad,
+            repo_root=tmp_path / "fake-repo",
+        )
+
+    # 1. Plan mismatch (triad_count=5 != 4, or tampered plan_sha256 in header)
+    d_plan = tmp_path / "m-plan"
+    shutil.copytree(base_dir, d_plan)
+    with pytest.raises(RdlabError) as exc_plan:
+        run_bakeoff_part_build(
+            output_dir=d_plan,
+            triad_count=5,
+            stub_mode=True,
+            mock_writer=True,
+            seed=1,
+            split_seed=20261029,
+            licence_registry_path=reg_path,
+            repo_root=tmp_path / "fake-repo",
+            resume=True,
+        )
+    assert exc_plan.value.code == "BAKEOFF_RESUME_PLAN_MISMATCH"
+
+    d_plan_sha = tmp_path / "m-plan-sha"
+    shutil.copytree(base_dir, d_plan_sha)
+    p_doc = json.loads((d_plan_sha / "checkpoint.json").read_text(encoding="utf-8"))
+    p_doc["header"]["plan_sha256"] = "0" * 64
+    (d_plan_sha / "checkpoint.json").write_text(json.dumps(p_doc, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_plan_sha:
+        run_bakeoff_part_build(
+            output_dir=d_plan_sha,
+            triad_count=4,
+            stub_mode=True,
+            mock_writer=True,
+            seed=1,
+            split_seed=20261029,
+            licence_registry_path=reg_path,
+            repo_root=tmp_path / "fake-repo",
+            resume=True,
+        )
+    assert exc_plan_sha.value.code == "BAKEOFF_RESUME_PLAN_MISMATCH"
+
+    # 2. Seed mismatch (seed, split_seed, shuffle_seed, table_secret, weak seed, invalid sealed seed)
+    d_seed = tmp_path / "m-seed"
+    shutil.copytree(base_dir, d_seed)
+    with pytest.raises(RdlabError) as exc_seed:
+        run_bakeoff_part_build(
+            output_dir=d_seed,
+            triad_count=4,
+            stub_mode=True,
+            mock_writer=True,
+            seed=2,
+            split_seed=20261029,
+            licence_registry_path=reg_path,
+            repo_root=tmp_path / "fake-repo",
+            resume=True,
+        )
+    assert exc_seed.value.code == "BAKEOFF_RESUME_SEED_MISMATCH"
+
+    with pytest.raises(RdlabError) as exc_shuf:
+        run_bakeoff_part_build(
+            output_dir=d_seed,
+            triad_count=4,
+            stub_mode=True,
+            mock_writer=True,
+            seed=1,
+            split_seed=20261029,
+            shuffle_seed=(1 << 127) | 999,
+            licence_registry_path=reg_path,
+            repo_root=tmp_path / "fake-repo",
+            resume=True,
+        )
+    assert exc_shuf.value.code == "BAKEOFF_RESUME_SEED_MISMATCH"
+
+    with pytest.raises(RdlabError) as exc_tsec:
+        run_bakeoff_part_build(
+            output_dir=d_seed,
+            triad_count=4,
+            stub_mode=True,
+            mock_writer=True,
+            seed=1,
+            split_seed=20261029,
+            table_secret=(1 << 127) | 999,
+            allow_weak_test_seed=True,
+            licence_registry_path=reg_path,
+            repo_root=tmp_path / "fake-repo",
+            resume=True,
+        )
+    assert exc_tsec.value.code == "BAKEOFF_RESUME_SEED_MISMATCH"
+
+    d_weak = tmp_path / "m-weak"
+    shutil.copytree(base_dir, d_weak)
+    s_doc = json.loads((d_weak / "sealed_store" / "checkpoint.sealed.json").read_text(encoding="utf-8"))
+    s_doc["header"]["test_only"] = False
+    s_doc["header"]["shuffle_seed"] = 12345
+    (d_weak / "sealed_store" / "checkpoint.sealed.json").write_text(json.dumps(s_doc, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_weak:
+        run_bakeoff_part_build(
+            output_dir=d_weak,
+            triad_count=4,
+            stub_mode=True,
+            mock_writer=True,
+            seed=1,
+            split_seed=20261029,
+            licence_registry_path=reg_path,
+            repo_root=tmp_path / "fake-repo",
+            resume=True,
+        )
+    assert exc_weak.value.code == "PILOT_B_WEAK_TABLE_SECRET"
+
+    d_bad_shuf = tmp_path / "m-bad-shuf"
+    shutil.copytree(base_dir, d_bad_shuf)
+    s_doc = json.loads((d_bad_shuf / "sealed_store" / "checkpoint.sealed.json").read_text(encoding="utf-8"))
+    s_doc["header"]["shuffle_seed"] = 0
+    (d_bad_shuf / "sealed_store" / "checkpoint.sealed.json").write_text(json.dumps(s_doc, indent=2) + "\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_bad_shuf:
+        run_bakeoff_part_build(
+            output_dir=d_bad_shuf,
+            triad_count=4,
+            stub_mode=True,
+            mock_writer=True,
+            seed=1,
+            split_seed=20261029,
+            licence_registry_path=reg_path,
+            repo_root=tmp_path / "fake-repo",
+            resume=True,
+        )
+    assert exc_bad_shuf.value.code == "BAKEOFF_CHECKPOINT_CHAIN_BROKEN"
+
+    # 3. Manifest sha, writer digest, and licence registry sha mismatch
+    for header_key, expected_code in (
+        ("v3_manifest_sha256", "BAKEOFF_RESUME_MANIFEST_MISMATCH"),
+        ("writer_digest", "BAKEOFF_RESUME_WRITER_MISMATCH"),
+        ("licence_registry_sha256", "BAKEOFF_RESUME_REGISTRY_MISMATCH"),
+    ):
+        d_hdr = tmp_path / f"m-{header_key}"
+        shutil.copytree(base_dir, d_hdr)
+        p_doc = json.loads((d_hdr / "checkpoint.json").read_text(encoding="utf-8"))
+        p_doc["header"][header_key] = "deadbeef" * 8
+        (d_hdr / "checkpoint.json").write_text(json.dumps(p_doc, indent=2) + "\n", encoding="utf-8")
+        with pytest.raises(RdlabError) as exc_hdr:
+            run_bakeoff_part_build(
+                output_dir=d_hdr,
+                triad_count=4,
+                stub_mode=True,
+                mock_writer=True,
+                seed=1,
+                split_seed=20261029,
+                licence_registry_path=reg_path,
+                repo_root=tmp_path / "fake-repo",
+                resume=True,
+            )
+        assert exc_hdr.value.code == expected_code
+
+
+def test_resume_recomputes_split_only_over_merged_set_with_zero_overlap(
+    tmp_path: Path,
+):
+    from reasoning_dataset_lab.pilot_b.bakeoff_part import (
+        CertifiedValueSetSpec,
+        PlannedBakeoffTriad,
+        recompute_merged_split,
+        verify_and_load_v3_value_sets,
+    )
+
+    base_mock = build_mock_writer_ollama_http_transport()
+    chat_calls = 0
+
+    def _kill_after_4_triads(method: str, url: str, body=None):
+        nonlocal chat_calls
+        if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+            chat_calls += 1
+            if chat_calls == 17:
+                raise RdlabError("PILOT_B_OLLAMA_HTTP_ERROR", "Crash after 4 triads", "Resume")
+        return base_mock(method, url, body)
+
+    out_dir = tmp_path / "merged-split-out"
+    with pytest.raises(RdlabError):
+        run_bakeoff_part_build(
+            output_dir=out_dir,
+            triad_count=10,
+            stub_mode=True,
+            mock_writer=True,
+            shuffle_seed=(1 << 127) | 701,
+            table_secret=(1 << 127) | 702,
+            allow_weak_test_seed=True,
+            grant_id="grant-merged-split",
+            http_transport=_kill_after_4_triads,
+            repo_root=tmp_path / "fake-repo",
+        )
+
+    # Tamper the initial split label in the checkpoint's triad_metadata to prove merged split overwrites it
+    s_path = out_dir / "sealed_store" / "checkpoint.sealed.json"
+    p_path = out_dir / "checkpoint.json"
+    p_doc = json.loads(p_path.read_text(encoding="utf-8"))
+    s_doc = json.loads(s_path.read_text(encoding="utf-8"))
+    s_doc["triads"][0]["triad_metadata"]["split"] = (
+        "test" if s_doc["triads"][0]["triad_metadata"]["split"] == "dev" else "dev"
+    )
+    _rechain_checkpoints(p_doc, s_doc)
+    p_path.write_text(json.dumps(p_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    s_path.write_text(json.dumps(s_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    res = run_bakeoff_part_build(
+        output_dir=out_dir,
+        triad_count=10,
+        stub_mode=True,
+        mock_writer=True,
+        shuffle_seed=(1 << 127) | 701,
+        table_secret=(1 << 127) | 702,
+        allow_weak_test_seed=True,
+        grant_id="grant-merged-split",
+        http_transport=base_mock,
+        repo_root=tmp_path / "fake-repo",
+        resume=True,
+    )
+    keys_rows = _jsonl(Path(res["keys_sealed_path"]))
+    validate_rows_value_set_split(keys_rows)
+    dev_vsets = {r["value_set_id"] for r in keys_rows if r["split"] == "dev"}
+    test_vsets = {r["value_set_id"] for r in keys_rows if r["split"] == "test"}
+    assert dev_vsets.isdisjoint(test_vsets)
+
+    # Also verify recompute_merged_split refuses an uncertified value_set_id
+    c_sets, q_digests, _ = verify_and_load_v3_value_sets()
+    planned, _ = plan_bakeoff_triads(
+        triad_count=2,
+        seed=1,
+        split_seed=20261029,
+        table_secret=1 << 127,
+        certified_sets=c_sets,
+        queued_digests=q_digests,
+    )
+    import dataclasses
+
+    rogue_vs = dataclasses.replace(planned[0].value_set, attribute="uncertified-attr")
+    rogue_planned = [
+        PlannedBakeoffTriad(
+            index=1,
+            seed=1,
+            domain=planned[0].domain,
+            closure=planned[0].closure,
+            split="dev",
+            value_set=rogue_vs,
+            triad=planned[0].triad,
+        )
+    ]
+    fake_ev = type(
+        "_Ev",
+        (),
+        {"worded": type("_W", (), {"triad": planned[0].triad})()},
+    )()
+    with pytest.raises(RdlabError) as exc_rogue:
+        recompute_merged_split(
+            planned_triads=rogue_planned,
+            kept_evaluations=[fake_ev],  # type: ignore[list-item]
+            triad_metadata={},
+            certified_sets=c_sets,
+            split_seed=20261029,
+        )
+    assert exc_rogue.value.code == "BAKEOFF_NON_V3_VALUE_SET_USED"
+
+
+def test_auto_drawn_shuffle_seed_resamples_and_never_refuses_across_200_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    import random
+    import secrets
+    import reasoning_dataset_lab.pilot_b.ollama as ollama_mod
+    from reasoning_dataset_lab.pilot_b.fact_tables import generate_fact_tables
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        build_fixture_licence_registry,
+    )
+    from reasoning_dataset_lab.pilot_b.ollama import (
+        OllamaBlindReaderAdapter,
+        OllamaWriterAdapter,
+    )
+    from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
+        draw_valid_shuffle_seed,
+        run_pilot_b_waves,
+        write_sealed_part,
+    )
+    from test_pilot_b_ollama_adapters import build_mock_ollama_http_transport
+    from test_pilot_b_part_d import _setup_models
+
+    # Seed = 4 (with bit 127 set) produces [U, U, S, S, C, C] on 2 triads, which fails check_items_not_in_key_order.
+    bad_seed_2_triads = ((1 << 127) | 4) & ((1 << 128) - 1)
+    good_seed_2_triads = ((1 << 127) | 0xCAFEBABE) & ((1 << 128) - 1)
+
+    # 1. Verify draw_valid_shuffle_seed resamples past a colliding seed and refuses loudly if exhausted
+    samples = iter([bad_seed_2_triads, bad_seed_2_triads, good_seed_2_triads])
+    monkeypatch.setattr(secrets, "randbits", lambda k=128: next(samples))
+    drawn = draw_valid_shuffle_seed(2, max_attempts=5)
+    assert drawn == ((1 << 127) | 0xCAFEBABE)
+
+    monkeypatch.setattr(secrets, "randbits", lambda k=128: bad_seed_2_triads)
+    with pytest.raises(RdlabError) as exc_exhausted:
+        draw_valid_shuffle_seed(2, max_attempts=3)
+    assert exc_exhausted.value.code == "PILOT_B_SHUFFLE_SEED_EXHAUSTED"
+    assert exc_exhausted.value.exit_code == EXIT_REFUSED
+
+    # 2. Run 200 auto-seeded 2-triad builds (via draw_valid_shuffle_seed + end-to-end mock builds and resume)
+    # using a deterministic PRNG backing secrets.randbits that generates realistic 128-bit draws
+    # (including colliding ones, which occur ~13.3% of the time on 2-triad builds).
+    prng = random.Random(20261030)
+    monkeypatch.setattr(secrets, "randbits", prng.getrandbits)
+
+    raw_prng = random.Random(20261030)
+    raw_collisions = 0
+    for _ in range(200):
+        raw_s = raw_prng.getrandbits(128) | (1 << 127)
+        base_keys = ["supported", "unsupported", "cannot_tell"] * 2
+        order = list(range(6))
+        random.Random(raw_s).shuffle(order)
+        try:
+            check_items_not_in_key_order([{"key": base_keys[idx]} for idx in order])
+        except RdlabError:
+            raw_collisions += 1
+    assert raw_collisions >= 15  # confirms the stream contains many colliding draws
+
+    # 2a. 200 auto-seeded 2-triad mock builds (including killed+resumed auto-seeded build)
+    for run_idx in range(200):
+        seed_val = draw_valid_shuffle_seed(2, also_check_counts=(2,))
+        base_keys = ["supported", "unsupported", "cannot_tell"] * 2
+        order = list(range(6))
+        random.Random(seed_val).shuffle(order)
+        check_items_not_in_key_order([{"key": base_keys[idx]} for idx in order])
+
+    # Pre-load certified v3 sets once so 200 mock builds run quickly while exercising full run_bakeoff_part_build
+    certified_v3, queued_v3, _ = verify_and_load_v3_value_sets()
+    import reasoning_dataset_lab.pilot_b.bakeoff_part as bo_mod
+
+    orig_verify_v3 = bo_mod.verify_and_load_v3_value_sets
+    monkeypatch.setattr(
+        bo_mod,
+        "verify_and_load_v3_value_sets",
+        lambda manifest_path=None, review_queue_path=None: (
+            (certified_v3, queued_v3, EXPECTED_V3_MANIFEST_SHA256)
+            if manifest_path is None and review_queue_path is None
+            else orig_verify_v3(manifest_path=manifest_path, review_queue_path=review_queue_path)
+        ),
+    )
+
+    # Force the very first randbits call of a 2-triad build (with crash & resume) to hit bad_seed_2_triads
+    # so we prove an auto-seeded build resamples before writing checkpoint.sealed.json and resumes cleanly.
+    forced_draws = iter([bad_seed_2_triads])
+    monkeypatch.setattr(
+        secrets,
+        "randbits",
+        lambda k=128: next(forced_draws, prng.getrandbits(k)),
+    )
+    base_mock = build_mock_writer_ollama_http_transport()
+    for build_idx in range(200):
+        b_dir = tmp_path / f"auto-2triad-{build_idx}"
+        if build_idx == 0:
+            calls = 0
+
+            def _kill_after_1(method: str, url: str, body=None):
+                nonlocal calls
+                if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+                    calls += 1
+                    if calls == 5:
+                        raise RdlabError("PILOT_B_OLLAMA_HTTP_ERROR", "Crash after 1 triad", "Resume")
+                return base_mock(method, url, body)
+
+            with pytest.raises(RdlabError):
+                run_bakeoff_part_build(
+                    output_dir=b_dir,
+                    triad_count=2,
+                    stub_mode=True,
+                    mock_writer=True,
+                    grant_id=f"grant-auto-{build_idx}",
+                    http_transport=_kill_after_1,
+                    repo_root=tmp_path / "fake-repo",
+                )
+            res_b = run_bakeoff_part_build(
+                output_dir=b_dir,
+                triad_count=2,
+                stub_mode=True,
+                mock_writer=True,
+                grant_id=f"grant-auto-{build_idx}",
+                http_transport=base_mock,
+                repo_root=tmp_path / "fake-repo",
+                resume=True,
+            )
+        else:
+            res_b = run_bakeoff_part_build(
+                output_dir=b_dir,
+                triad_count=2,
+                stub_mode=True,
+                mock_writer=True,
+                grant_id=f"grant-auto-{build_idx}",
+                http_transport=base_mock,
+                repo_root=tmp_path / "fake-repo",
+            )
+        assert res_b["status"] == "ok"
+
+    # Also verify write_sealed_part with shuffle_seed=None resamples past bad_seed_2_triads on a 2-triad wave_result
+    tables_2 = generate_fact_tables(n=2, seed=1)
+    triads_2 = [build_contrast_triad(t, seed=1 + idx) for idx, t in enumerate(tables_2)]
+    transport, _ = build_mock_ollama_http_transport()
+    monkeypatch.setattr(ollama_mod, "default_ollama_http_transport", transport)
+    writer_id, _r1, _r2 = _setup_models()
+    wave_2 = run_pilot_b_waves(
+        triads=triads_2,
+        writer_model=writer_id,
+        writer_adapter=OllamaWriterAdapter(model=DEFAULT_PILOT_B_MODEL_PINS["writer"], num_predict=256),
+        reader_1=OllamaBlindReaderAdapter(model=DEFAULT_PILOT_B_MODEL_PINS["reader_1"], num_predict=256),
+        reader_2=OllamaBlindReaderAdapter(model=DEFAULT_PILOT_B_MODEL_PINS["reader_2"], num_predict=256),
+        num_predict=256,
+        review_queue_path=tmp_path / "rq2.jsonl",
+    )
+    w_draws = iter([bad_seed_2_triads, good_seed_2_triads])
+    monkeypatch.setattr(secrets, "randbits", lambda k=128: next(w_draws, prng.getrandbits(k)))
+    w_part_dir = tmp_path / "w-part-2"
+    w_keys_path = tmp_path / "w-sealed-2" / "keys.sealed.jsonl"
+    write_sealed_part(
+        part_dir=w_part_dir,
+        keys_sealed_path=w_keys_path,
+        part_id="pilot-b-t10-sealed",
+        map_version=1,
+        map_sha256="a" * 64,
+        wave_result=wave_2,
+        shuffle_seed=None,
+    )
+    verify_sealed_part(part_dir=w_part_dir, keys_sealed_path=w_keys_path)
+
+
 
 
 
