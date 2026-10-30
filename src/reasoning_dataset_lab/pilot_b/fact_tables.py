@@ -1061,6 +1061,25 @@ class ProvedTriad:
     claims: dict[VerdictKey, ProvedClaim]
     seed: int
 
+    @property
+    def mutate_fact_value_fallbacks(self) -> int:
+        """Count how many claims in this triad fell back to `mutate_fact_value` instead of a same-attribute peer."""
+        unsup = self.claims.get("unsupported")
+        if unsup is None or unsup.fact_id is None:
+            return 0
+        try:
+            unsup_fact = self.table.get_fact(unsup.fact_id)
+        except Exception:
+            return 0
+        has_peer = any(
+            f.fact_id != unsup_fact.fact_id
+            and f.attribute == unsup_fact.attribute
+            and f.fact_type == unsup.fact_type
+            and f.value == unsup.claimed_value
+            for f in self.table.facts
+        )
+        return 0 if has_peer else 1
+
     def to_dict(self) -> dict[str, object]:
         return {
             "triad_id": self.triad_id,
@@ -1082,12 +1101,19 @@ def is_disjoint_value(fact_type: FactType, fact_val: FactValue, claimed_val: Fac
             return False
         return fact_val != claimed_val
 
-    if fact_type in ("date", "state", "attribute"):
+    if fact_type == "date":
         if not isinstance(fact_val, str) or not isinstance(claimed_val, str):
             return False
         norm_a = " ".join(fact_val.strip().lower().split())
         norm_b = " ".join(claimed_val.strip().lower().split())
         return bool(norm_a and norm_b and norm_a != norm_b)
+
+    if fact_type in ("state", "attribute"):
+        if not isinstance(fact_val, str) or not isinstance(claimed_val, str):
+            return False
+        forms_a = _normalised_value_forms(fact_val)
+        forms_b = _normalised_value_forms(claimed_val)
+        return bool(forms_a and forms_b and forms_a.isdisjoint(forms_b))
 
     if fact_type == "interval":
         if not (isinstance(fact_val, tuple) and len(fact_val) == 2):
@@ -1168,6 +1194,48 @@ def mutate_fact_value(fact: AtomicFact, step: int = 1) -> FactValue:
 
 def _normalize_str_value(val: str) -> str:
     return " ".join(val.strip().lower().split())
+
+
+_NORM_VALUE_EQUIV_MAP: dict[str, frozenset[str]] | None = None
+
+
+def _get_norm_value_equiv_map() -> dict[str, frozenset[str]]:
+    global _NORM_VALUE_EQUIV_MAP
+    if _NORM_VALUE_EQUIV_MAP is not None:
+        return _NORM_VALUE_EQUIV_MAP
+    buckets: dict[str, set[str]] = {}
+    for slug, disp_val in VALUE_DISPLAY_EXCEPTIONS.items():
+        n_s = normalise_value_token(slug)
+        n_d = normalise_value_token(disp_val)
+        grp = (buckets.get(n_s) or set()) | (buckets.get(n_d) or set()) | {n_s, n_d}
+        for k in grp:
+            buckets[k] = grp
+    for _dom, _attr, vals in value_sets():
+        for cat_v in vals:
+            n_s = normalise_value_token(cat_v)
+            n_d = normalise_value_token(str(value_display_form(cat_v)))
+            grp = (buckets.get(n_s) or set()) | (buckets.get(n_d) or set()) | {n_s, n_d}
+            for k in grp:
+                buckets[k] = grp
+    _NORM_VALUE_EQUIV_MAP = {k: frozenset(v - {""}) for k, v in buckets.items() if k}
+    return _NORM_VALUE_EQUIV_MAP
+
+
+def _normalised_value_forms(val: str) -> set[str]:
+    """Return the normalised forms for `val`: slug, display form (card rm), and whitespace/case/hyphen-normalised form."""
+    forms: set[str] = set()
+    eq_map = _get_norm_value_equiv_map()
+    for cand in (val, str(value_display_form(val))):
+        norm_c = normalise_value_token(cand)
+        if norm_c:
+            forms.add(norm_c)
+            forms |= eq_map.get(norm_c, frozenset())
+    return forms
+
+
+def _str_values_equivalent(val_a: str, val_b: str) -> bool:
+    """Return True iff `val_a` and `val_b` match under normalised value matching (slug = display form = normalised form)."""
+    return bool(_normalised_value_forms(val_a) & _normalised_value_forms(val_b))
 
 
 def _is_valid_type_op_value(fact_type: FactType, op: FactOp, val: FactValue) -> bool:
@@ -1253,8 +1321,7 @@ def _enumerate_finite_world_domain(
             break
     for extra in (fact.value, claim.claimed_value):
         if isinstance(extra, str):
-            norm_e = _normalize_str_value(extra)
-            if norm_e and all(_normalize_str_value(v) != norm_e for v in cat_vals):
+            if extra.strip() and all(not _str_values_equivalent(v, extra) for v in cat_vals):
                 cat_vals.append(extra.strip())
     return tuple(cat_vals)
 
@@ -1297,12 +1364,11 @@ def _world_value_satisfies(
         return False
 
     if isinstance(world_val, str) and isinstance(target_val, str):
-        norm_w = _normalize_str_value(world_val)
-        norm_t = _normalize_str_value(target_val)
+        is_eq = _str_values_equivalent(world_val, target_val)
         if op == "=":
-            return norm_w == norm_t
+            return is_eq
         if op == "not":
-            return norm_w != norm_t
+            return not is_eq
     return False
 
 
@@ -1398,11 +1464,16 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
                 f"fact=({fact.fact_type}, {fact.op!r}) -> claim=({claim.fact_type}, {claim.op!r}).",
                 "Supported claims require fact.op == '=' (or 'between' for interval facts) and matching claim op/type.",
             )
+        val_matches = (
+            _str_values_equivalent(fact.value, claim.claimed_value)
+            if isinstance(fact.value, str) and isinstance(claim.claimed_value, str)
+            else fact.value == claim.claimed_value
+        )
         if (
             fact.entity != claim.entity
             or fact.attribute != claim.attribute
             or fact.fact_type != claim.fact_type
-            or fact.value != claim.claimed_value
+            or not val_matches
             or fact.op != claim.op
         ):
             raise refused_error(
@@ -1617,8 +1688,47 @@ def prove_claim_against_table(table: FactTable, claim: ProvedClaim) -> ClaimProo
     )
 
 
-def verify_triad_against_table(table: FactTable, triad: ProvedTriad) -> None:
-    """Verify that a ProvedTriad contains all three verdict classes and each proof holds."""
+def _claim_value_in_table_facts(table: FactTable, claim: ProvedClaim) -> bool:
+    """Return True iff every value part of `claim.claimed_value` appears in `table.facts` under rm's normalised matcher."""
+    parts = (
+        (str(claim.claimed_value[0]), str(claim.claimed_value[1]))
+        if isinstance(claim.claimed_value, tuple)
+        else (str(claim.claimed_value),)
+    )
+    if claim.fact_type in ("number", "interval"):
+        table_num_parts: set[str] = set()
+        for f in table.facts:
+            if isinstance(f.value, tuple):
+                table_num_parts.add(str(f.value[0]))
+                table_num_parts.add(str(f.value[1]))
+            elif f.fact_type == "number":
+                table_num_parts.add(str(f.value))
+        return all(p in table_num_parts for p in parts)
+
+    table_norm_tokens: set[str] = set()
+    for f in table.facts:
+        if isinstance(f.value, str):
+            table_norm_tokens |= _normalised_value_forms(f.value)
+    for p in parts:
+        if not (_normalised_value_forms(p) & table_norm_tokens):
+            return False
+    return True
+
+
+def _is_legacy_non_homogeneous_table(table: FactTable) -> bool:
+    return (
+        len(table.facts) == 5
+        and len({f.attribute.lower() for f in table.facts}) == 5
+    )
+
+
+def verify_triad_against_table(
+    table: FactTable,
+    triad: ProvedTriad,
+    *,
+    require_values_in_material: bool | None = None,
+) -> None:
+    """Verify that a ProvedTriad contains all three verdict classes, each proof holds, and every claim value appears in table.facts."""
     expected_classes: tuple[VerdictKey, ...] = ("supported", "unsupported", "cannot_tell")
     if set(triad.claims.keys()) != set(expected_classes):
         raise refused_error(
@@ -1641,6 +1751,19 @@ def verify_triad_against_table(table: FactTable, triad: ProvedTriad) -> None:
                 f"Triad '{triad.triad_id}' claim '{claim.claim_id}' proof hash does not match recomputed proof.",
                 "Rebuild the claim proof using prove_claim_against_table.",
             )
+        if not _claim_value_in_table_facts(table, claim):
+            must_be_in_material = (
+                bool(require_values_in_material)
+                if require_values_in_material is not None
+                else (key == "supported" or not _is_legacy_non_homogeneous_table(table))
+            )
+            if must_be_in_material:
+                raise refused_error(
+                    "PILOT_B_CLAIM_VALUE_NOT_IN_MATERIAL",
+                    f"Triad '{triad.triad_id}' claim '{claim.claim_id}' ({key}) claims value {claim.claimed_value!r}, "
+                    f"which does not appear in table '{table.table_id}' facts under normalised value matching.",
+                    "Draw every claim value (supported, unsupported, cannot_tell) from values present in the material.",
+                )
 
 
 _OPEN_NON_INT_6: tuple[str, ...] = ("A1", "A2", "A3", "A0", "S0", "D0")
@@ -2012,43 +2135,65 @@ def build_sample_fact_table(
 
     if resolved_closure == "closed" and bool(plan.get("homogeneous")):
         m_step = (visit // 2) % 3
+        span_int = max(1, int_hi - int_lo - 1)
+        sec_int_off = _secret_int(secret, seed, "interior")
+        interior_val_plan = int_lo + 1 + ((visit * 3 + spec_idx + abs(seed) + sec_int_off) % span_int)
         if m_step == 1:
             num_val = int_lo
+            num_val_alt = interior_val_plan
         elif m_step == 2:
             num_val = int_hi
+            num_val_alt = interior_val_plan
+        else:
+            num_val = interior_val_plan
+            if int_lo < num_val_alt < int_hi:
+                num_val_alt = int_hi + 5 + ((abs(seed) + visit) % 11)
     if num_val_alt == num_val:
         num_val_alt = num_val + 3
 
     date_val = f"{day_val} {month_val}"
     date_val_alt = f"{((day_val + 3) % 26) + 2} {month_val}"
+    is_homogeneous = bool(plan.get("homogeneous"))
 
     def _role_value(r_key: str, *, for_open: bool = False, val_slot: int = 0) -> FactValue:
         _, _, vals = role_map[r_key]
         sec_off = _secret_int(secret, seed, f"val:{r_key}")
+        open_peer_slot = (visit + spec_idx + _secret_int(secret, seed, f"open_slot:{r_key}")) % 2
         if r_key in ("N0", "N1", "N2"):
             if for_open and r_key == "N2":
+                if is_homogeneous:
+                    return (
+                        f"{int_lo} and {int_hi}"
+                        if open_peer_slot == 0
+                        else f"{int_hi + 6} and {int_hi + 16}"
+                    )
                 return f"{int_lo} and {int_hi + 12}"
+            if for_open and is_homogeneous:
+                return num_val if open_peer_slot == 0 else num_val_alt
             return num_val if val_slot == 0 else num_val_alt
         if r_key == "D0":
             if for_open:
+                if is_homogeneous:
+                    return date_val if open_peer_slot == 0 else date_val_alt
                 o_day = ((day_val + 7 + visit) % 26) + 2
                 o_mon = MONTH_NAMES[(abs(seed) + visit * 3 + 4 + (sec_off % 12)) % len(MONTH_NAMES)]
                 return f"{o_day} {o_mon}"
             return date_val if val_slot == 0 else date_val_alt
         b5 = (0, 1, 3, 2)[(visit // 5) % 4]
+        eff_slot = open_peer_slot if (for_open and is_homogeneous) else val_slot
         if r_key == "S0":
-            base_idx = abs(seed) + visit + b5 + sec_off + val_slot
-            if for_open:
+            base_idx = abs(seed) + visit + b5 + sec_off + eff_slot
+            if for_open and not is_homogeneous:
                 base_idx += 2 + (visit // 2)
             return str(vals[base_idx % len(vals)])
         if r_key == "A0":
-            base_idx = abs(seed) + 1 + visit + b5 + sec_off + val_slot
-            if for_open:
+            base_idx = abs(seed) + 1 + visit + b5 + sec_off + eff_slot
+            if for_open and not is_homogeneous:
                 base_idx += 2 + (visit // 2)
             return str(vals[base_idx % len(vals)])
         b5_open = (0, 1, 2, 2)[(visit // 5) % 4]
-        base_idx = visit + spec_idx + b5_open + sec_off + val_slot
-        if for_open:
+        base_idx = visit + spec_idx + b5_open + sec_off + eff_slot
+        if for_open and not is_homogeneous:
             base_idx += 2 + (visit // 2)
         return str(vals[base_idx % len(vals)])
 
@@ -2069,7 +2214,7 @@ def build_sample_fact_table(
 
         if is_interval:
             f_type: FactType = "interval"
-            f_val: FactValue = (int_lo, int_hi) if val_slot == 0 else (int_lo, int_hi + 6)
+            f_val: FactValue = (int_lo, int_hi) if val_slot == 0 else (int_hi + 6, int_hi + 16)
             f_unit: str | None = unit_str
             f_op: FactOp = "between"
         elif r_key in ("N0", "N1", "N2"):
@@ -2219,6 +2364,27 @@ def build_contrast_triad(
             ),
             None,
         )
+        or next(
+            (
+                f
+                for f in provable_sup_facts
+                if f.attribute == sup_attr_target
+                and (table.closure == "open" or f.fact_type != "interval")
+            ),
+            None,
+        )
+        or next(
+            (
+                f
+                for f in provable_sup_facts
+                if (table.closure == "open" or f.fact_type != "interval")
+                and any(
+                    f2.fact_id != f.fact_id and f2.attribute.lower() == f.attribute.lower()
+                    for f2 in provable_sup_facts
+                )
+            ),
+            None,
+        )
         if len(table.entities) >= 2
         else None
     )
@@ -2230,6 +2396,32 @@ def build_contrast_triad(
                 if f.entity == table.entities[e_unsup_idx % len(table.entities)]
                 and f.attribute == unsup_attr_target
                 and (table.closure == "open" or f.fact_type != "interval")
+                and (sup_ent_cand is None or f.fact_id != sup_ent_cand.fact_id)
+            ),
+            None,
+        )
+        or next(
+            (
+                f
+                for f in provable_unsup_facts
+                if f.attribute == unsup_attr_target
+                and (table.closure == "open" or f.fact_type != "interval")
+                and (sup_ent_cand is None or f.fact_id != sup_ent_cand.fact_id)
+            ),
+            None,
+        )
+        or next(
+            (
+                f
+                for f in provable_unsup_facts
+                if (table.closure == "open" or f.fact_type != "interval")
+                and (sup_ent_cand is None or f.fact_id != sup_ent_cand.fact_id)
+                and any(
+                    f2.fact_id != f.fact_id
+                    and f2.attribute.lower() == f.attribute.lower()
+                    and is_disjoint_value(f.fact_type, f.value, f2.value)
+                    for f2 in table.facts
+                )
             ),
             None,
         )
@@ -2322,17 +2514,26 @@ def build_contrast_triad(
         proof=sup_proof,
     )
 
-    # 2. Unsupported claim: applies a provably disjoint typed mutation to unsup_fact with op='='
-    mutated_val = (
-        unsup_mutated_override
-        if unsup_mutated_override is not None
-        else mutate_fact_value(unsup_fact, step=mut_step)
-    )
+    # 2. Unsupported claim: prefer a same-attribute peer value from table.facts; fall back to mutate_fact_value only when there is no peer
     resolved_unsup_type: FactType = (
         unsup_claim_fact_type
         if unsup_claim_fact_type is not None
         else unsup_fact.fact_type
     )
+    unsup_peers = [
+        f
+        for f in table.facts
+        if f.fact_id != unsup_fact.fact_id
+        and f.attribute.lower() == unsup_fact.attribute.lower()
+        and f.fact_type == resolved_unsup_type
+        and is_disjoint_value(unsup_fact.fact_type, unsup_fact.value, f.value)
+    ]
+    if unsup_peers:
+        mutated_val: FactValue = unsup_peers[0].value
+    elif unsup_mutated_override is not None:
+        mutated_val = unsup_mutated_override
+    else:
+        mutated_val = mutate_fact_value(unsup_fact, step=mut_step)
     unsup_claim_draft = ProvedClaim(
         claim_id=opaque_claim_ids["unsupported"],
         table_id=table.table_id,
@@ -2373,12 +2574,19 @@ def build_contrast_triad(
     use_open_attr = table.closure == "open" and bool(table.open_attributes)
     if use_open_attr:
         oa_names = [a for a, _ in table.open_attributes]
+        table_fact_attrs_lower = {f.attribute.lower() for f in table.facts}
         if ct_attr_target in oa_names:
             oa_idx = oa_names.index(ct_attr_target)
         elif d_idx == 0 and visit == 0:
             oa_idx = 0
         else:
             oa_idx = (visit + (visit // 3) + d_idx) % len(table.open_attributes)
+        if oa_names[oa_idx].lower() not in table_fact_attrs_lower:
+            in_fact_oa_indices = [
+                idx for idx, name in enumerate(oa_names) if name.lower() in table_fact_attrs_lower
+            ]
+            if in_fact_oa_indices:
+                oa_idx = in_fact_oa_indices[(visit + d_idx) % len(in_fact_oa_indices)]
         open_attr, open_val = table.open_attributes[oa_idx]
         target_entity = (
             table.entities[e_ct_idx % len(table.entities)]
@@ -2394,24 +2602,37 @@ def build_contrast_triad(
                 target_entity,
             )
 
-        int_attr_name, int_unit_str = spec["interval_attr"]  # type: ignore[misc]
-        m_btw_open = re.match(r"^(\d+)\s+and\s+(\d+)$", str(open_val).strip())
-        if open_attr == str(int_attr_name) and m_btw_open is not None:
-            ct_fact_type: FactType = "interval"
-            ct_val: FactValue = (int(m_btw_open.group(1)), int(m_btw_open.group(2)))
-            ct_unit: str | None = str(int_unit_str)
-        elif open_attr == str(spec["date_attr"]):
-            ct_fact_type = "date"
-            ct_val = open_val
-            ct_unit = None
-        elif open_attr == str(spec["state_attr"][0]):  # type: ignore[index]
-            ct_fact_type = "state"
-            ct_val = open_val
-            ct_unit = None
-        else:
-            ct_fact_type = "attribute"
-            ct_val = open_val
-            ct_unit = None
+        open_peers = [
+            f
+            for f in table.facts
+            if f.attribute.lower() == open_attr.lower()
+            and f.entity.lower() != target_entity.lower()
+        ]
+        if open_peers:
+            peer_idx = (visit + d_idx + _secret_int(secret, seed, f"open_slot:{ct_role_target}")) % len(open_peers)
+            chosen_peer = open_peers[peer_idx]
+            ct_fact_type: FactType = chosen_peer.fact_type
+            ct_val: FactValue = chosen_peer.value
+            ct_unit: str | None = chosen_peer.unit
+        else:  # pragma: no cover
+            int_attr_name, int_unit_str = spec["interval_attr"]  # type: ignore[misc]
+            m_btw_open = re.match(r"^(\d+)\s+and\s+(\d+)$", str(open_val).strip())
+            if open_attr == str(int_attr_name) and m_btw_open is not None:
+                ct_fact_type = "interval"
+                ct_val = (int(m_btw_open.group(1)), int(m_btw_open.group(2)))
+                ct_unit = str(int_unit_str)
+            elif open_attr == str(spec["date_attr"]):
+                ct_fact_type = "date"
+                ct_val = open_val
+                ct_unit = None
+            elif open_attr == str(spec["state_attr"][0]):  # type: ignore[index]
+                ct_fact_type = "state"
+                ct_val = open_val
+                ct_unit = None
+            else:
+                ct_fact_type = "attribute"
+                ct_val = open_val
+                ct_unit = None
 
         ct_claim_draft = ProvedClaim(
             claim_id=opaque_claim_ids["cannot_tell"],
@@ -2439,7 +2660,18 @@ def build_contrast_triad(
         )
         assert isinstance(int_fact.value, tuple)
         lo, hi = int(int_fact.value[0]), int(int_fact.value[1])
-        if hi - lo >= 2:
+        interior_peers = [
+            f.value
+            for f in table.facts
+            if f.fact_id != int_fact.fact_id
+            and f.fact_type == "number"
+            and isinstance(f.value, int)
+            and not isinstance(f.value, bool)
+            and lo < f.value < hi
+        ]
+        if interior_peers:
+            interior_val = int(interior_peers[0])
+        elif hi - lo >= 2:
             span = hi - lo - 1
             sec_int_off = _secret_int(secret, seed, "interior")
             interior_val = lo + 1 + ((visit * 3 + d_idx + abs(seed) + sec_int_off) % span)
@@ -2489,5 +2721,9 @@ def build_contrast_triad(
         claims=ordered_claims,
         seed=seed,
     )
-    verify_triad_against_table(table, triad)
+    verify_triad_against_table(
+        table,
+        triad,
+        require_values_in_material=(True if certified_value_set is not None else None),
+    )
     return triad

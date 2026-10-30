@@ -37,6 +37,12 @@ import re
 from typing import Any
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error, usage_error
+from reasoning_dataset_lab.pilot_b.fact_tables import (
+    VALUE_DISPLAY_EXCEPTIONS,
+    normalise_value_token,
+    value_display_form,
+    value_sets,
+)
 from reasoning_dataset_lab.pilot_b.variety import (
     DOMAIN_CATALOGUE,
     ParsedClaim,
@@ -49,8 +55,10 @@ from reasoning_dataset_lab.pilot_b.variety import (
 WORD_RE = re.compile(r"[a-z0-9']+", re.IGNORECASE)
 THREE_CLASS_LABELS: tuple[str, str, str] = ("supported", "unsupported", "cannot_tell")
 BINARY_LABELS: tuple[str, str] = ("supported", "not_supported")
+NOT_SUPPORTED_LABELS: tuple[str, str] = ("unsupported", "cannot_tell")
 BASE_3CLASS: float = 1.0 / 3.0
 BASE_BINARY: float = 2.0 / 3.0
+BASE_NOT_SUPPORTED: float = 0.50
 DEFAULT_MAX_MARGIN: float = 0.05
 SHARE_MIN: float = 0.25
 SHARE_MAX: float = 0.42
@@ -58,6 +66,60 @@ SHARE_MAX: float = 0.42
 _DOMAIN_BY_NAME: dict[str, dict[str, Any]] = {
     str(spec["domain"]): spec for spec in DOMAIN_CATALOGUE
 }
+
+
+def _build_value_normalisation_patterns() -> tuple[tuple[str, re.Pattern[str], str], ...]:
+    """Build longest-first regex patterns mapping every catalogue slug and display form to its canonical slug."""
+    pairs: dict[str, str] = {}
+    for _dom, _attr, vals in value_sets():
+        for v in vals:
+            slug = normalise_value_token(v)
+            pairs[v.lower()] = slug
+            disp = str(value_display_form(v))
+            pairs[disp.lower()] = slug
+            words = [w for w in re.split(r"[\s-]+", disp.strip().lower()) if w]
+            if len(words) > 1:
+                pairs[" ".join(words)] = slug
+                pairs["-".join(words)] = slug
+                pairs["".join(words)] = slug
+    for raw_k, disp_v in VALUE_DISPLAY_EXCEPTIONS.items():
+        slug = normalise_value_token(raw_k)
+        pairs[raw_k.lower()] = slug
+        pairs[disp_v.lower()] = slug
+        words = [w for w in re.split(r"[\s-]+", disp_v.strip().lower()) if w]
+        if len(words) > 1:
+            pairs[" ".join(words)] = slug
+            pairs["-".join(words)] = slug
+            pairs["".join(words)] = slug
+
+    compiled_by_surf: dict[str, tuple[str, re.Pattern[str], str]] = {}
+    for surface, slug in sorted(pairs.items(), key=lambda kv: (-len(kv[0]), kv[0])):
+        norm_surf = normalise_value_token(surface)
+        if not norm_surf or norm_surf in compiled_by_surf:
+            continue
+        pat = re.compile(
+            r"(?<![a-z0-9])"
+            + r"[\s-]*".join(re.escape(ch) for ch in norm_surf)
+            + r"(?![a-z0-9])",
+            re.IGNORECASE,
+        )
+        compiled_by_surf[norm_surf] = (norm_surf, pat, slug)
+    return tuple(compiled_by_surf.values())
+
+
+_VALUE_NORM_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
+    _build_value_normalisation_patterns()
+)
+
+
+def _normalise_text_values(text: str) -> str:
+    """Replace any slug, display form, or whitespace/case/hyphen variant of a catalogue value with its canonical token."""
+    out = text
+    norm_text = normalise_value_token(out)
+    for norm_surf, pat, slug in _VALUE_NORM_PATTERNS:
+        if norm_surf in norm_text:
+            out = pat.sub(f" {slug} ", out)
+    return out
 
 
 @dataclass(frozen=True)
@@ -97,16 +159,24 @@ class ProbeResult:
     binary: TaskProbeMetrics
     degenerate: bool
     passed: bool
+    gated: bool = True
+    within_not_supported: TaskProbeMetrics | None = None
+    within_not_supported_gated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "probe_id": self.probe_id,
             "description": self.description,
+            "gated": self.gated,
             "three_class": self.three_class.to_dict(),
             "binary": self.binary.to_dict(),
             "degenerate": self.degenerate,
             "passed": self.passed,
         }
+        if self.within_not_supported is not None:
+            out["within_not_supported"] = self.within_not_supported.to_dict()
+            out["within_not_supported_gated"] = self.within_not_supported_gated
+        return out
 
 
 @dataclass(frozen=True)
@@ -142,6 +212,9 @@ class ShortcutProbeReport:
     gate_1_oof_passed: bool
     gate_2_shares_passed: bool
     passed: bool
+    overlap_means_by_class: dict[str, float] = None  # type: ignore[assignment]
+    claim_value_in_material_means_by_class: dict[str, float] = None  # type: ignore[assignment]
+    proximity_probes: tuple[ProbeResult, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -151,7 +224,12 @@ class ShortcutProbeReport:
             "num_triads": self.num_triads,
             "max_allowed_margin": self.max_allowed_margin,
             "share_bounds": list(self.share_bounds),
+            "overlap_means_by_class": dict(self.overlap_means_by_class or {}),
+            "claim_value_in_material_means_by_class": dict(
+                self.claim_value_in_material_means_by_class or {}
+            ),
             "probes": [p.to_dict() for p in self.probes],
+            "proximity_probes": [p.to_dict() for p in self.proximity_probes],
             "role_shares": [r.to_dict() for r in self.role_shares],
             "closure_shares": [c.to_dict() for c in self.closure_shares],
             "gate_1_oof_passed": self.gate_1_oof_passed,
@@ -162,6 +240,55 @@ class ShortcutProbeReport:
 
 def _tokenize(text: str) -> list[str]:
     return [m.group(0).lower() for m in WORD_RE.finditer(text)]
+
+
+def _tokenize_normalised(text: str) -> list[str]:
+    return _tokenize(_normalise_text_values(text))
+
+
+def _claim_value_tokens(val: Any) -> list[str]:
+    if isinstance(val, tuple):
+        return [str(val[0]).lower(), str(val[1]).lower()]
+    if val is None or val == "":
+        return []
+    return _tokenize_normalised(str(val))
+
+
+def _compute_proximity_features(
+    material_str: str,
+    entity_str: str,
+    claimed_val: Any,
+    claim_norm_toks: Sequence[str],
+) -> tuple[float, float]:
+    """Return `(same_line_cooccurrence, min_entity_value_token_distance)` in `material_str`."""
+    ent_toks = _tokenize_normalised(entity_str)
+    val_toks = _claim_value_tokens(claimed_val)
+    if not val_toks:
+        val_toks = [t for t in claim_norm_toks if t not in set(ent_toks)]
+
+    mat_lines = [line.strip() for line in material_str.splitlines() if line.strip()]
+    same_line = 0.0
+    for line in mat_lines:
+        line_tok_set = set(_tokenize_normalised(line))
+        ent_in_line = bool(ent_toks) and all(t in line_tok_set for t in ent_toks)
+        val_in_line = bool(val_toks) and all(t in line_tok_set for t in val_toks)
+        if ent_in_line and val_in_line:
+            same_line = 1.0
+            break
+
+    mat_toks = _tokenize_normalised(material_str)
+    n_mat = max(len(mat_toks), 1)
+    ent_set = set(ent_toks)
+    val_set = set(val_toks)
+    ent_positions = [i for i, t in enumerate(mat_toks) if t in ent_set]
+    val_positions = [i for i, t in enumerate(mat_toks) if t in val_set]
+    if ent_positions and val_positions:
+        min_dist = min(abs(ep - vp) for ep in ent_positions for vp in val_positions)
+        norm_dist = min(1.0, float(min_dist) / float(n_mat))
+    else:
+        norm_dist = 1.0
+
+    return same_line, norm_dist
 
 
 def _ngrams(tokens: Sequence[str], max_n: int = 2) -> list[str]:
@@ -255,8 +382,21 @@ def _within_triad_permutation_hits(
     classes: Sequence[str],
     c_to_idx: dict[str, int],
 ) -> int:
-    """Score within-triad joint assignment for a single triad's 3 items."""
+    """Score within-triad joint assignment for a single triad's items."""
     n_classes = len(classes)
+    if (
+        len(t_items) == 2
+        and n_classes == 2
+        and "unsupported" in c_to_idx
+        and "cannot_tell" in c_to_idx
+    ):
+        u_idx = c_to_idx["unsupported"]
+        ct_idx = c_to_idx["cannot_tell"]
+        score_u_first = t_items[0][0][u_idx] + t_items[1][0][ct_idx]
+        score_ct_first = t_items[0][0][ct_idx] + t_items[1][0][u_idx]
+        pred_pair = (u_idx, ct_idx) if score_u_first >= score_ct_first else (ct_idx, u_idx)
+        return sum(1 for i in range(2) if pred_pair[i] == t_items[i][1])
+
     if len(t_items) != 3:
         hits = 0
         for scores, true_y in t_items:
@@ -825,6 +965,9 @@ def run_bakeoff_shortcut_probe(
     feats_a_tokens: list[list[str]] = []
     feats_b_tokens: list[list[str]] = []
     feats_c_num: list[tuple[float, ...]] = []
+    feats_claim_all_in_mat_num: list[tuple[float, ...]] = []
+    feats_same_line_num: list[tuple[float, ...]] = []
+    feats_min_dist_num: list[tuple[float, ...]] = []
     feats_d_tokens: list[list[str]] = []
     feats_e_num: list[tuple[float, ...]] = []
     feats_f_tokens: list[list[str]] = []
@@ -832,6 +975,8 @@ def run_bakeoff_shortcut_probe(
     feats_h_tokens: list[list[str]] = []
     feats_i_num: list[tuple[float, ...]] = []
 
+    overlap_by_class: dict[str, list[float]] = defaultdict(list)
+    val_in_mat_by_class: dict[str, list[float]] = defaultdict(list)
     role_label_counts: dict[str, Counter[str]] = defaultdict(Counter)
     closure_label_counts: dict[str, Counter[str]] = defaultdict(Counter)
 
@@ -847,7 +992,7 @@ def run_bakeoff_shortcut_probe(
         material_str = str(it["material"])
         closure_str = str(it.get("closure", ""))
         dom_spec = _DOMAIN_BY_NAME[str(it["domain"])]
-        _, attr_name, ftype, _, unit, role = parsed_meta[idx]
+        ent_name, attr_name, ftype, claimed_val, unit, role = parsed_meta[idx]
 
         role_label_counts[role][lbl3] += 1
         closure_label_counts[closure_str][lbl3] += 1
@@ -860,10 +1005,30 @@ def run_bakeoff_shortcut_probe(
         t_line = int(sealed_entry["target_line"])
         feats_b_tokens.append([f"target_line_{t_line}"])
 
-        # (c) Numeric/unit vs string formatting, and naive claim-material token overlap
+        # (c) Numeric/unit vs string formatting, and normalised claim-material token overlap
         c_toks = _tokenize(claim_str)
-        m_tok_set = set(_tokenize(material_str))
-        overlap_ratio = sum(1 for t in c_toks if t in m_tok_set) / max(len(c_toks), 1)
+        c_norm_toks = _tokenize_normalised(claim_str)
+        m_norm_tok_set = set(_tokenize_normalised(material_str))
+        overlap_ratio = sum(1 for t in c_norm_toks if t in m_norm_tok_set) / max(
+            len(c_norm_toks), 1
+        )
+        overlap_by_class[lbl3].append(overlap_ratio)
+
+        val_toks = _claim_value_tokens(claimed_val)
+        if val_toks:
+            val_in_mat = float(all(vt in m_norm_tok_set for vt in val_toks))
+        else:
+            val_in_mat = float(all(t in m_norm_tok_set for t in c_norm_toks))
+        val_in_mat_by_class[lbl3].append(val_in_mat)
+        all_claim_toks_in_mat = float(all(t in m_norm_tok_set for t in c_norm_toks))
+        feats_claim_all_in_mat_num.append((val_in_mat, all_claim_toks_in_mat))
+
+        same_line_coocc, min_ent_val_dist = _compute_proximity_features(
+            material_str, ent_name, claimed_val, c_norm_toks
+        )
+        feats_same_line_num.append((same_line_coocc,))
+        feats_min_dist_num.append((min_ent_val_dist,))
+
         has_digits = float(any(ch.isdigit() for ch in claim_str))
         has_unit_tok = float(unit is not None and unit.lower() in c_toks)
         is_string_fmt = float(ftype in ("state", "attribute"))
@@ -1007,6 +1172,80 @@ def run_bakeoff_shortcut_probe(
             binary=m2,
             degenerate=is_deg,
             passed=m3.passed and m2.passed,
+            gated=True,
+        )
+
+    def _eval_proximity_probe(
+        probe_id: str,
+        description: str,
+        num_list: Sequence[tuple[float, ...]],
+    ) -> ProbeResult:
+        s3 = [
+            (str(items[i]["triad_id"]), num_list[i], labels_3[i])
+            for i in range(num_items)
+        ]
+        s2 = [
+            (str(items[i]["triad_id"]), num_list[i], labels_2[i])
+            for i in range(num_items)
+        ]
+        s_ns = [
+            (str(items[i]["triad_id"]), num_list[i], labels_3[i])
+            for i in range(num_items)
+            if labels_3[i] in NOT_SUPPORTED_LABELS
+        ]
+        gd3, cent3, perm3, deg3 = _oof_numeric_classifier_detailed(
+            s3, n_folds=n_folds, triad_meta=triad_meta
+        )
+        gd2, cent2, perm2, deg2 = _oof_numeric_classifier_detailed(
+            s2, n_folds=n_folds, triad_meta=triad_meta
+        )
+        gd_ns, cent_ns, perm_ns, deg_ns = _oof_numeric_classifier_detailed(
+            s_ns, n_folds=n_folds, triad_meta=triad_meta
+        )
+        m3 = _build_task_metrics(
+            "three_class",
+            num_items,
+            num_triads,
+            BASE_3CLASS,
+            gd3,
+            cent3,
+            perm3,
+            deg3,
+            max_margin,
+        )
+        m2 = _build_task_metrics(
+            "binary",
+            num_items,
+            num_triads,
+            BASE_BINARY,
+            gd2,
+            cent2,
+            perm2,
+            deg2,
+            max_margin,
+        )
+        ns_triads = len({s[0] for s in s_ns}) or num_triads
+        m_ns = _build_task_metrics(
+            "within_not_supported",
+            len(s_ns),
+            ns_triads,
+            BASE_NOT_SUPPORTED,
+            gd_ns,
+            cent_ns,
+            perm_ns,
+            deg_ns,
+            max_margin,
+        )
+        return ProbeResult(
+            probe_id=probe_id,
+            description=description,
+            three_class=m3,
+            binary=m2,
+            degenerate=deg_ns,
+            passed=m_ns.passed,
+            gated=False,
+            within_not_supported=m_ns,
+            within_not_supported_gated=True,
         )
 
     probes = (
@@ -1024,6 +1263,11 @@ def run_bakeoff_shortcut_probe(
             "c_formatting_and_overlap",
             "(c) Numeric/unit vs string formatting and naive claim-material token overlap",
             feats_c_num,
+        ),
+        _eval_numeric_probe(
+            "claim_all_tokens_in_material",
+            "Claim all tokens in material (normalised value & token presence, gated)",
+            feats_claim_all_in_mat_num,
         ),
         _eval_token_probe(
             "d_closure_phrasing",
@@ -1056,6 +1300,32 @@ def run_bakeoff_shortcut_probe(
             feats_i_num,
         ),
     )
+
+    proximity_probes = (
+        _eval_proximity_probe(
+            "same_line_cooccurrence",
+            "Entity-value same-line co-occurrence (overall reported; within not-supported gated at base + 0.05)",
+            feats_same_line_num,
+        ),
+        _eval_proximity_probe(
+            "min_entity_value_token_distance",
+            "Minimum entity-value token distance normalised by material length (overall reported; within not-supported gated at base + 0.05)",
+            feats_min_dist_num,
+        ),
+    )
+
+    overlap_means_by_class = {
+        lbl: round(
+            sum(overlap_by_class[lbl]) / max(len(overlap_by_class[lbl]), 1), 4
+        )
+        for lbl in THREE_CLASS_LABELS
+    }
+    claim_value_in_material_means_by_class = {
+        lbl: round(
+            sum(val_in_mat_by_class[lbl]) / max(len(val_in_mat_by_class[lbl]), 1), 4
+        )
+        for lbl in THREE_CLASS_LABELS
+    }
 
     low_bound, high_bound = share_bounds
 
@@ -1094,7 +1364,9 @@ def run_bakeoff_shortcut_probe(
     role_shares = _build_group_shares("role", role_label_counts)
     closure_shares = _build_group_shares("closure", closure_label_counts)
 
-    gate_1_passed = all(p.passed for p in probes)
+    gate_1_passed = all(p.passed for p in probes) and all(
+        p.passed for p in proximity_probes
+    )
     gate_2_passed = all(r.passed for r in role_shares) and all(
         c.passed for c in closure_shares
     )
@@ -1113,6 +1385,9 @@ def run_bakeoff_shortcut_probe(
         gate_1_oof_passed=gate_1_passed,
         gate_2_shares_passed=gate_2_passed,
         passed=overall_passed,
+        overlap_means_by_class=overlap_means_by_class,
+        claim_value_in_material_means_by_class=claim_value_in_material_means_by_class,
+        proximity_probes=proximity_probes,
     )
 
 

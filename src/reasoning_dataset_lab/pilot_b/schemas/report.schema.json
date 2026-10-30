@@ -464,6 +464,9 @@
     "max_render_failure_rate": {
       "type": "number"
     },
+    "mutate_fact_value_fallbacks": {
+      "type": "integer"
+    },
     "num_ctx_policy": {
       "additionalProperties": false,
       "properties": {

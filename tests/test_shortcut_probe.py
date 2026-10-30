@@ -159,6 +159,7 @@ def test_clean_fixture_passes_all_probes_and_both_gates() -> None:
         "a_claim_lexical_ngrams",
         "b_target_material_line",
         "c_formatting_and_overlap",
+        "claim_all_tokens_in_material",
         "d_closure_phrasing",
         "e_lengths_and_triad_rank",
         "f_item_index_mod3",
@@ -167,11 +168,24 @@ def test_clean_fixture_passes_all_probes_and_both_gates() -> None:
         "i_claim_length",
     }
     for pid, probe in by_id.items():
+        assert probe.gated is True
         assert probe.passed is True, f"Probe {pid} failed on clean fixture: {probe}"
         assert probe.three_class.abs_margin_over_base <= 0.05 + 1e-9
         assert probe.three_class.in_cluster_ci95 is True
         assert probe.binary.abs_margin_over_base <= 0.05 + 1e-9
         assert probe.binary.in_cluster_ci95 is True
+
+    prox_by_id = {p.probe_id: p for p in report.proximity_probes}
+    assert set(prox_by_id.keys()) == {
+        "same_line_cooccurrence",
+        "min_entity_value_token_distance",
+    }
+    for pid, p_probe in prox_by_id.items():
+        assert p_probe.gated is False
+        assert p_probe.within_not_supported_gated is True
+        assert p_probe.within_not_supported is not None
+        assert p_probe.within_not_supported.passed is True
+        assert p_probe.passed is True
 
 
 def test_lesson_1_two_sided_check_fails_reliably_wrong_classifier() -> None:
@@ -535,3 +549,146 @@ def test_error_handling_and_edge_branches(tmp_path: Path) -> None:
     ) == 3
     dom0 = DOMAIN_CATALOGUE[0]
     assert _parse_claim_metadata("Unrecognized sentence with no domain attribute.", dom0)[5] == "open"
+
+
+def test_leak_fixture_old_construction_fails_overlap_and_repaired_construction_passes() -> None:
+    """Card rr Req 5(a)-(b): Old construction (out-of-material unsupported & cannot_tell) fails overlap probe; repaired construction passes."""
+    # Repaired construction: all claim values in material -> passes both c_formatting_and_overlap and claim_all_tokens_in_material
+    repaired_items, repaired_keys = _build_clean_fixture(180)
+    repaired_report = run_bakeoff_shortcut_probe(repaired_items, repaired_keys)
+    rep_by_id = {p.probe_id: p for p in repaired_report.probes}
+    assert rep_by_id["c_formatting_and_overlap"].passed is True
+    assert rep_by_id["claim_all_tokens_in_material"].passed is True
+    assert repaired_report.overlap_means_by_class == {
+        "supported": 1.0,
+        "unsupported": 1.0,
+        "cannot_tell": 1.0,
+    }
+    assert repaired_report.claim_value_in_material_means_by_class == {
+        "supported": 1.0,
+        "unsupported": 1.0,
+        "cannot_tell": 1.0,
+    }
+    assert repaired_report.passed is True
+
+    # Old construction: unsupported and cannot_tell synthesize out-of-material values (e.g., mutate_fact_value / shifted open values)
+    old_items = copy.deepcopy(repaired_items)
+    for it in old_items:
+        lbl = str(repaired_keys[it["id"]]["key"])
+        if lbl == "unsupported":
+            it["claim"] = (
+                it["claim"]
+                .replace("420", "425")
+                .replace("between 50 and 90", "between 110 and 150")
+                .replace("standby", "accelerating")
+                .replace("steel", "titanium")
+                .replace("helium", "nitrogen")
+                .replace("14 March", "21 March")
+            )
+        elif lbl == "cannot_tell":
+            it["claim"] = (
+                it["claim"]
+                .replace("420", "437")
+                .replace("between 50 and 90", "between 102 and 142")
+                .replace("standby", "online")
+                .replace("steel", "inconel")
+                .replace("helium", "hydrogen")
+                .replace("14 March", "19 March")
+            )
+
+    old_report = run_bakeoff_shortcut_probe(old_items, repaired_keys)
+    old_by_id = {p.probe_id: p for p in old_report.probes}
+    assert old_by_id["c_formatting_and_overlap"].passed is False
+    assert old_by_id["claim_all_tokens_in_material"].passed is False
+    assert old_report.claim_value_in_material_means_by_class["supported"] == 1.0
+    assert old_report.claim_value_in_material_means_by_class["unsupported"] == 0.0
+    assert old_report.claim_value_in_material_means_by_class["cannot_tell"] == 0.0
+    assert old_report.gate_1_oof_passed is False
+    assert old_report.passed is False
+
+
+def test_normalised_value_forms_do_not_hide_or_create_overlap() -> None:
+    """Card rr Req 4 & REPAIR-REQUIREMENTS #3: Slug, display form, and case/whitespace/hyphen-normalised forms count as one value."""
+    items, sealed_keys = _build_clean_fixture(36)
+    dom_reactors = next(d for d in DOMAIN_CATALOGUE if d["domain"] == "reactors")
+    ent0, ent1, ent2 = [str(e) for e in dom_reactors["entities"][:3]]
+    state_attr = str(dom_reactors["state_attr"][0])
+
+    for idx, it in enumerate(items):
+        it["domain"] = "reactors"
+        # Material uses display form "cold shutdown"
+        it["material"] = (
+            f"1. For {ent0}, the {state_attr} is cold shutdown.\n"
+            f"2. The {state_attr} of {ent1} is cold shutdown.\n"
+            f"3. In {ent2}, the {state_attr} is cold shutdown."
+        )
+        # Rotate slug ("coldshutdown"), display form ("cold shutdown"), and hyphen/case ("Cold-Shutdown") across items
+        form = ("coldshutdown", "cold shutdown", "Cold-Shutdown")[idx % 3]
+        it["claim"] = f"For {ent0}, the {state_attr} is {form}."
+
+    report = run_bakeoff_shortcut_probe(items, sealed_keys)
+    by_id = {p.probe_id: p for p in report.probes}
+    assert by_id["c_formatting_and_overlap"].passed is True
+    assert by_id["claim_all_tokens_in_material"].passed is True
+    assert report.overlap_means_by_class == {
+        "supported": 1.0,
+        "unsupported": 1.0,
+        "cannot_tell": 1.0,
+    }
+    assert report.claim_value_in_material_means_by_class == {
+        "supported": 1.0,
+        "unsupported": 1.0,
+        "cannot_tell": 1.0,
+    }
+
+
+def test_leak_fixture_proximity_solvable_within_not_supported_fails_gate() -> None:
+    """Card rr Req 5(c): A fixture making unsupported vs cannot_tell solvable by line position / entity-value proximity fails the within-not-supported proximity gate."""
+    items, sealed_keys = _build_clean_fixture(60)
+    dom_spec = DOMAIN_CATALOGUE[0]
+    e0, e1, e2 = [str(e) for e in dom_spec["entities"][:3]]
+    num_attr, num_unit = dom_spec["number_attr"]
+
+    # Every claim's value ('420' or '580') appears in the material so whole-material overlap is 1.0 across all 3 classes,
+    # but for 'unsupported' the claimed value is placed on the queried entity's own line (distance ~ 0, same_line=1),
+    # whereas for 'cannot_tell' the claimed value is placed on line 3 far from the queried entity on line 1 (same_line=0, large distance).
+    for it in items:
+        lbl = str(sealed_keys[it["id"]]["key"])
+        it["material"] = (
+            f"1. For {e0}, the {num_attr} is 420 {num_unit}.\n"
+            f"2. The {num_attr} of {e1} is 510 {num_unit}.\n"
+            f"3. In {e2}, the {num_attr} is 580 {num_unit}."
+        )
+        if lbl == "supported":
+            it["claim"] = f"For {e0}, the {num_attr} is 420 {num_unit}."
+        elif lbl == "unsupported":
+            # Same-line co-occurrence with e0 and small token distance
+            it["claim"] = f"For {e0}, the {num_attr} is 420 {num_unit}."
+        else:
+            # e0 is on line 1, but claimed value 580 is on line 3 -> solvable by line position / proximity!
+            it["claim"] = f"For {e0}, the {num_attr} is 580 {num_unit}."
+
+    report = run_bakeoff_shortcut_probe(items, sealed_keys)
+    by_id = {p.probe_id: p for p in report.probes}
+    # Whole-material token overlap is still 100% across all 3 classes:
+    assert by_id["claim_all_tokens_in_material"].passed is True
+    assert report.overlap_means_by_class == {
+        "supported": 1.0,
+        "unsupported": 1.0,
+        "cannot_tell": 1.0,
+    }
+
+    # Yet both proximity probes catch the within-not-supported leak and fail Gate 1!
+    prox_by_id = {p.probe_id: p for p in report.proximity_probes}
+    for pid in ("same_line_cooccurrence", "min_entity_value_token_distance"):
+        p_res = prox_by_id[pid]
+        assert p_res.gated is False
+        assert p_res.within_not_supported_gated is True
+        assert p_res.within_not_supported is not None
+        assert p_res.within_not_supported.oof_accuracy > 0.90
+        assert p_res.within_not_supported.passed is False
+        assert p_res.passed is False
+
+    assert report.gate_1_oof_passed is False
+    assert report.passed is False
+

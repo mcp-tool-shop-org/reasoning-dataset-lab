@@ -188,6 +188,50 @@ class UnanimousReaderFake:
         if any(claim_clean.lower() == ln.lower() for ln in mat_lines):
             return "supported"
 
+        m_claim_btw = re.match(
+            r"^(?:The\s+(.+?)\s+of\s+(.+?)\s+is\s+between\s+(\d+)\s+and\s+(\d+)(?:\s+[a-zA-Z]+)?|(.+?)\s+has\s+between\s+(\d+)\s+and\s+(\d+)\s+(.+?))\.$",
+            claim_clean,
+            re.IGNORECASE,
+        )
+        if m_claim_btw:
+            if m_claim_btw.group(1) is not None:
+                c_attr = m_claim_btw.group(1).strip().lower()
+                c_ent = m_claim_btw.group(2).strip().lower()
+                c_lo, c_hi = int(m_claim_btw.group(3)), int(m_claim_btw.group(4))
+            else:
+                c_ent = m_claim_btw.group(5).strip().lower()
+                c_lo, c_hi = int(m_claim_btw.group(6)), int(m_claim_btw.group(7))
+                c_attr = m_claim_btw.group(8).strip().lower()
+            for ln in mat_lines:
+                m_int = re.search(
+                    r"The\s+(.+?)\s+of\s+(.+?)\s+is\s+between\s+(\d+)\s+and\s+(\d+)",
+                    ln,
+                    re.IGNORECASE,
+                )
+                m_int_has = re.search(
+                    r"^(.+?)\s+has\s+between\s+(\d+)\s+and\s+(\d+)\s+(.+?)\.$",
+                    ln,
+                    re.IGNORECASE,
+                )
+                if m_int:
+                    f_attr = m_int.group(1).strip().lower()
+                    f_ent = m_int.group(2).strip().lower()
+                    lo, hi = int(m_int.group(3)), int(m_int.group(4))
+                elif m_int_has:
+                    f_ent = m_int_has.group(1).strip().lower()
+                    lo, hi = int(m_int_has.group(2)), int(m_int_has.group(3))
+                    f_attr = m_int_has.group(4).strip().lower()
+                else:
+                    continue
+                if f_attr == c_attr and f_ent == c_ent:
+                    if (c_lo, c_hi) == (lo, hi):
+                        return "supported"
+                    if c_hi < lo or c_lo > hi:
+                        return "unsupported"
+                    return "cannot_tell"
+            if prompt.closure == "open":
+                return "cannot_tell"
+
         m_claim_num = re.match(
             r"^(?:The\s+(.+?)\s+of\s+(.+?)\s+is\s+(\d+)(?:\s+[a-zA-Z]+)?|(.+?)\s+has\s+(\d+)(?:(?:\s+\w+)?\s+of\s+(.+?)|\s+(.+?)))\.$",
             claim_clean,
