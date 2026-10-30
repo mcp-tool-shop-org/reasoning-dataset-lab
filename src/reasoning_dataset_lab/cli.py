@@ -50,6 +50,14 @@ from reasoning_dataset_lab.pilot_b.variety import (
 from reasoning_dataset_lab.pilot_b.shortcut_probe import (
     evaluate_bakeoff_probe_files,
 )
+from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
+    DEFAULT_SCHEDULE_SEED,
+    close_bakeoff_outputs,
+    run_bakeoff_judge,
+)
+from reasoning_dataset_lab.pilot_b.bakeoff_judge_score import (
+    score_bakeoff_outputs,
+)
 
 
 class _StructuredArgumentParser(argparse.ArgumentParser):
@@ -413,6 +421,149 @@ def _build_parser() -> _StructuredArgumentParser:
         type=Path,
         required=True,
         help="Output path for the JSON shortcut probe report.",
+    )
+
+    # rdlab bakeoff-judge --output-dir <dir> [--part-dir <dir> --judge <id>] [--outputs-closed]
+    bj_parser = subparsers.add_parser(
+        "bakeoff-judge",
+        help="Run one judge over part_bakeoff_sealed/items.jsonl without opening sealed_store/, or close outputs into outputs-closed.json.",
+    )
+    bj_parser.add_argument(
+        "--part-dir",
+        dest="part_dir",
+        type=Path,
+        default=None,
+        help="Bake-off part directory containing part_bakeoff_sealed/items.jsonl (or direct path to items.jsonl).",
+    )
+    bj_parser.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        type=Path,
+        required=True,
+        help="External output directory for per-judge rows, generations.jsonl, schedule.json, and outputs-closed.json.",
+    )
+    bj_parser.add_argument(
+        "--judge",
+        dest="judge",
+        type=str,
+        default=None,
+        help="Judge identifier (mu-judge, nemotron-3-nano-4b, d3-mini, granite-guardian-4.1-8b, flow-judge-v0.1).",
+    )
+    bj_parser.add_argument(
+        "--schedule-seed",
+        dest="schedule_seed",
+        type=int,
+        default=DEFAULT_SCHEDULE_SEED,
+        help=f"Seed for the shared two-pass schedule (default: {DEFAULT_SCHEDULE_SEED}).",
+    )
+    bj_parser.add_argument(
+        "--pass-mode",
+        dest="pass_mode",
+        choices=["binary", "three_way"],
+        default="binary",
+        help="Pass mode: binary (primary) or three_way (separate pass for capable judges).",
+    )
+    bj_parser.add_argument(
+        "--limit",
+        dest="limit_items",
+        type=int,
+        default=None,
+        help="Optional cap on the number of items read from items.jsonl (e.g. 10 for CPU validation).",
+    )
+    bj_parser.add_argument(
+        "--fake-transport",
+        dest="fake_transport",
+        action="store_true",
+        help="Use deterministic CPU fake judge transport (no model loaded).",
+    )
+    bj_parser.add_argument(
+        "--receipts-dir",
+        dest="receipts_dir",
+        type=Path,
+        default=None,
+        help="Directory containing <owner>__<repo>.sha256.json receipts (required for real-model transport).",
+    )
+    bj_parser.add_argument(
+        "--hf-home",
+        dest="hf_home",
+        type=Path,
+        default=None,
+        help="Local Hugging Face cache directory (defaults to HF_HOME env var).",
+    )
+    bj_parser.add_argument(
+        "--device",
+        dest="device",
+        type=str,
+        default="cpu",
+        help="Torch device for TransformersJudgeTransport (default: cpu).",
+    )
+    bj_parser.add_argument(
+        "--allow-remote-code-reviewed",
+        dest="allow_remote_code_reviewed",
+        type=str,
+        default=None,
+        help="Reviewed commit SHA required before loading any judge that needs trust_remote_code=True.",
+    )
+    bj_parser.add_argument(
+        "--vram-halt-mib",
+        dest="vram_halt_mib",
+        type=int,
+        default=DEFAULT_VRAM_HALT_MIB,
+        help=f"VRAM ceiling in MiB above which the judge kills its own PID tree (default: {DEFAULT_VRAM_HALT_MIB}).",
+    )
+    bj_parser.add_argument(
+        "--force-length-stop-item",
+        dest="force_length_stop_items",
+        action="append",
+        default=[],
+        help="Test/validation only: force a length_stop on this item_id in --fake-transport mode (repeatable).",
+    )
+    bj_parser.add_argument(
+        "--force-unparseable-item",
+        dest="force_unparseable_items",
+        action="append",
+        default=[],
+        help="Test/validation only: force an unparseable response on this item_id in --fake-transport mode (repeatable).",
+    )
+    bj_parser.add_argument(
+        "--outputs-closed",
+        dest="outputs_closed",
+        action="store_true",
+        help="Hash every output file in --output-dir into outputs-closed.json.",
+    )
+
+    # rdlab bakeoff-judge-score --judge-dir <dir> --keys <keys.sealed.jsonl> --out <summary.json> --sealed-out <scored_rows.sealed.jsonl>
+    bjs_parser = subparsers.add_parser(
+        "bakeoff-judge-score",
+        help="Verify outputs-closed.json, join judge rows with sealed_store/keys.sealed.jsonl, and write sealed rows + public aggregates.",
+    )
+    bjs_parser.add_argument(
+        "--judge-dir",
+        dest="judge_dir",
+        type=Path,
+        required=True,
+        help="Judge output directory containing outputs-closed.json, schedule.json, generations.jsonl, and rows/.",
+    )
+    bjs_parser.add_argument(
+        "--keys",
+        dest="keys_path",
+        type=Path,
+        required=True,
+        help="Path to sealed_store/keys.sealed.jsonl.",
+    )
+    bjs_parser.add_argument(
+        "--out",
+        dest="out_path",
+        type=Path,
+        required=True,
+        help="Public aggregate output JSON path (also writes .md beside it).",
+    )
+    bjs_parser.add_argument(
+        "--sealed-out",
+        dest="sealed_out_path",
+        type=Path,
+        required=True,
+        help="Sealed per-row output path (writes .jsonl and .csv with verdict, correct, key, class, triad_id).",
     )
 
     return parser
@@ -963,6 +1114,49 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(probe_rep, indent=2))
             return EXIT_CLEAN if probe_rep.get("passed") else EXIT_REFUSED
+
+        if args.command == "bakeoff-judge":
+            if args.judge is not None and args.part_dir is not None:
+                judge_res = run_bakeoff_judge(
+                    part_dir=args.part_dir,
+                    output_dir=args.output_dir,
+                    judge=args.judge,
+                    schedule_seed=args.schedule_seed,
+                    pass_mode=args.pass_mode,
+                    limit_items=args.limit_items,
+                    fake_transport=args.fake_transport,
+                    receipts_dir=args.receipts_dir,
+                    hf_home=args.hf_home,
+                    device=args.device,
+                    allow_remote_code_reviewed=args.allow_remote_code_reviewed,
+                    vram_halt_mib=args.vram_halt_mib,
+                    force_length_stop_items=args.force_length_stop_items,
+                    force_unparseable_items=args.force_unparseable_items,
+                )
+                if args.outputs_closed:
+                    closed_doc = close_bakeoff_outputs(args.output_dir)
+                    judge_res["outputs_closed"] = closed_doc
+                print(json.dumps(judge_res, indent=2))
+                return EXIT_CLEAN
+            if args.outputs_closed:
+                closed_doc = close_bakeoff_outputs(args.output_dir)
+                print(json.dumps(closed_doc, indent=2))
+                return EXIT_CLEAN
+            raise usage_error(
+                "CLI_USAGE_ERROR",
+                "Specify both --part-dir and --judge to run a judge, or --outputs-closed to seal outputs.",
+                "Run 'rdlab bakeoff-judge --help' for usage.",
+            )
+
+        if args.command == "bakeoff-judge-score":
+            score_rep = score_bakeoff_outputs(
+                judge_output_dir=args.judge_dir,
+                keys_path=args.keys_path,
+                public_out_path=args.out_path,
+                sealed_rows_out_path=args.sealed_out_path,
+            )
+            print(json.dumps(score_rep, indent=2))
+            return EXIT_CLEAN
 
         raise usage_error(
             "CLI_USAGE_ERROR",
