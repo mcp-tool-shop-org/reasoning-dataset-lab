@@ -38,6 +38,12 @@ dev = [
     "pytest==9.0.3",
     "pytest-cov==7.0.0",
 ]
+judge = [
+    "torch==2.11.0",
+    "transformers==5.19.0",
+    "accelerate==1.15.0",
+    "safetensors==0.8.0",
+]
 
 [project.scripts]
 rdlab = "reasoning_dataset_lab.cli:main"
