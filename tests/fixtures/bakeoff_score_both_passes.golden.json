@@ -1,0 +1,2201 @@
+{
+  "decision_rule_applied": false,
+  "dev_fit": {
+    "fitted_thresholds": {
+      "flow-judge-v0.1": null,
+      "mu-judge": 0.5
+    },
+    "items_n": 6,
+    "judges": [
+      {
+        "abstain_items": 0,
+        "accuracy": {
+          "high": 0.969947,
+          "low": 0.436497,
+          "n": 6,
+          "point": 0.833333
+        },
+        "balanced_accuracy": 0.875,
+        "calls_n": 12,
+        "conditional_accuracy": null,
+        "coverage": 0.833333,
+        "ece": null,
+        "ece_reason": "plain-label judge (pass/fail) without verdict token probability",
+        "error_rate": 0.083333,
+        "first_slot_yes_rate": 0.333333,
+        "flip_rate": {
+          "high": 0.434482,
+          "low": 0.0,
+          "n": 5,
+          "point": 0.0
+        },
+        "items_n": 6,
+        "judge_id": "flow-judge-v0.1",
+        "judge_label": "Flow-Judge",
+        "length_stops": 1,
+        "per_class_accuracy": {
+          "cannot_tell": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "supported": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "unsupported": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          }
+        },
+        "per_closure_accuracy": {
+          "closed": {
+            "high": 1.0,
+            "low": 0.438503,
+            "n": 3,
+            "point": 1.0
+          },
+          "open": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          }
+        },
+        "reliability_bins": [],
+        "second_slot_yes_rate": 0.333333,
+        "seconds_mean": 0.001,
+        "seconds_total": 0.012,
+        "threshold_rule": "plain",
+        "threshold_value": null,
+        "triad_consistency": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        },
+        "unparseable": 0,
+        "vram_peak_mib": 0
+      },
+      {
+        "abstain_items": 0,
+        "accuracy": {
+          "high": 0.969947,
+          "low": 0.436497,
+          "n": 6,
+          "point": 0.833333
+        },
+        "balanced_accuracy": 0.875,
+        "calls_n": 12,
+        "conditional_accuracy": null,
+        "coverage": 0.833333,
+        "ece": 0.149091,
+        "ece_reason": null,
+        "error_rate": 0.083333,
+        "first_slot_yes_rate": 0.333333,
+        "flip_rate": {
+          "high": 0.434482,
+          "low": 0.0,
+          "n": 5,
+          "point": 0.0
+        },
+        "items_n": 6,
+        "judge_id": "mu-judge",
+        "judge_label": "mu-judge",
+        "length_stops": 1,
+        "per_class_accuracy": {
+          "cannot_tell": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "supported": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "unsupported": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          }
+        },
+        "per_closure_accuracy": {
+          "closed": {
+            "high": 1.0,
+            "low": 0.438503,
+            "n": 3,
+            "point": 1.0
+          },
+          "open": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          }
+        },
+        "reliability_bins": [
+          {
+            "bin_high": 0.1,
+            "bin_low": 0.0,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.2,
+            "bin_low": 0.1,
+            "count": 7,
+            "empirical_yes": 0.0,
+            "mean_confidence": 0.145714
+          },
+          {
+            "bin_high": 0.3,
+            "bin_low": 0.2,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.4,
+            "bin_low": 0.3,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.5,
+            "bin_low": 0.4,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.6,
+            "bin_low": 0.5,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.7,
+            "bin_low": 0.6,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.8,
+            "bin_low": 0.7,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.9,
+            "bin_low": 0.8,
+            "count": 4,
+            "empirical_yes": 1.0,
+            "mean_confidence": 0.845
+          },
+          {
+            "bin_high": 1.0,
+            "bin_low": 0.9,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          }
+        ],
+        "second_slot_yes_rate": 0.333333,
+        "seconds_mean": 0.001,
+        "seconds_total": 0.012,
+        "threshold_rule": "dev_fitted",
+        "threshold_value": 0.5,
+        "triad_consistency": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        },
+        "unparseable": 0,
+        "vram_peak_mib": 0
+      }
+    ],
+    "mu_judge_three_readings": {
+      "0.5": {
+        "abstain_items": 0,
+        "accuracy": {
+          "high": 0.969947,
+          "low": 0.436497,
+          "n": 6,
+          "point": 0.833333
+        },
+        "balanced_accuracy": 0.875,
+        "calls_n": 12,
+        "conditional_accuracy": null,
+        "coverage": 0.833333,
+        "ece": 0.149091,
+        "ece_reason": null,
+        "error_rate": 0.083333,
+        "first_slot_yes_rate": 0.333333,
+        "flip_rate": {
+          "high": 0.434482,
+          "low": 0.0,
+          "n": 5,
+          "point": 0.0
+        },
+        "items_n": 6,
+        "judge_id": "mu-judge",
+        "judge_label": "mu-judge",
+        "length_stops": 1,
+        "per_class_accuracy": {
+          "cannot_tell": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "supported": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "unsupported": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          }
+        },
+        "per_closure_accuracy": {
+          "closed": {
+            "high": 1.0,
+            "low": 0.438503,
+            "n": 3,
+            "point": 1.0
+          },
+          "open": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          }
+        },
+        "reliability_bins": [
+          {
+            "bin_high": 0.1,
+            "bin_low": 0.0,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.2,
+            "bin_low": 0.1,
+            "count": 7,
+            "empirical_yes": 0.0,
+            "mean_confidence": 0.145714
+          },
+          {
+            "bin_high": 0.3,
+            "bin_low": 0.2,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.4,
+            "bin_low": 0.3,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.5,
+            "bin_low": 0.4,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.6,
+            "bin_low": 0.5,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.7,
+            "bin_low": 0.6,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.8,
+            "bin_low": 0.7,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.9,
+            "bin_low": 0.8,
+            "count": 4,
+            "empirical_yes": 1.0,
+            "mean_confidence": 0.845
+          },
+          {
+            "bin_high": 1.0,
+            "bin_low": 0.9,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          }
+        ],
+        "second_slot_yes_rate": 0.333333,
+        "seconds_mean": 0.001,
+        "seconds_total": 0.012,
+        "threshold_rule": "0.5",
+        "threshold_value": 0.5,
+        "triad_consistency": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        },
+        "unparseable": 0,
+        "vram_peak_mib": 0
+      },
+      "card_0.2_0.8": {
+        "abstain_items": 0,
+        "accuracy": {
+          "high": 0.969947,
+          "low": 0.436497,
+          "n": 6,
+          "point": 0.833333
+        },
+        "balanced_accuracy": 0.875,
+        "calls_n": 12,
+        "conditional_accuracy": {
+          "high": 1.0,
+          "low": 0.565518,
+          "n": 5,
+          "point": 1.0
+        },
+        "coverage": 0.833333,
+        "ece": 0.149091,
+        "ece_reason": null,
+        "error_rate": 0.083333,
+        "first_slot_yes_rate": 0.333333,
+        "flip_rate": {
+          "high": 0.434482,
+          "low": 0.0,
+          "n": 5,
+          "point": 0.0
+        },
+        "items_n": 6,
+        "judge_id": "mu-judge",
+        "judge_label": "mu-judge",
+        "length_stops": 1,
+        "per_class_accuracy": {
+          "cannot_tell": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "supported": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "unsupported": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          }
+        },
+        "per_closure_accuracy": {
+          "closed": {
+            "high": 1.0,
+            "low": 0.438503,
+            "n": 3,
+            "point": 1.0
+          },
+          "open": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          }
+        },
+        "reliability_bins": [
+          {
+            "bin_high": 0.1,
+            "bin_low": 0.0,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.2,
+            "bin_low": 0.1,
+            "count": 7,
+            "empirical_yes": 0.0,
+            "mean_confidence": 0.145714
+          },
+          {
+            "bin_high": 0.3,
+            "bin_low": 0.2,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.4,
+            "bin_low": 0.3,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.5,
+            "bin_low": 0.4,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.6,
+            "bin_low": 0.5,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.7,
+            "bin_low": 0.6,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.8,
+            "bin_low": 0.7,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.9,
+            "bin_low": 0.8,
+            "count": 4,
+            "empirical_yes": 1.0,
+            "mean_confidence": 0.845
+          },
+          {
+            "bin_high": 1.0,
+            "bin_low": 0.9,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          }
+        ],
+        "second_slot_yes_rate": 0.333333,
+        "seconds_mean": 0.001,
+        "seconds_total": 0.012,
+        "threshold_rule": "card_0.2_0.8",
+        "threshold_value": null,
+        "triad_consistency": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        },
+        "unparseable": 0,
+        "vram_peak_mib": 0
+      },
+      "dev_fitted": {
+        "abstain_items": 0,
+        "accuracy": {
+          "high": 0.969947,
+          "low": 0.436497,
+          "n": 6,
+          "point": 0.833333
+        },
+        "balanced_accuracy": 0.875,
+        "calls_n": 12,
+        "conditional_accuracy": null,
+        "coverage": 0.833333,
+        "ece": 0.149091,
+        "ece_reason": null,
+        "error_rate": 0.083333,
+        "first_slot_yes_rate": 0.333333,
+        "flip_rate": {
+          "high": 0.434482,
+          "low": 0.0,
+          "n": 5,
+          "point": 0.0
+        },
+        "items_n": 6,
+        "judge_id": "mu-judge",
+        "judge_label": "mu-judge",
+        "length_stops": 1,
+        "per_class_accuracy": {
+          "cannot_tell": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "supported": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "unsupported": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          }
+        },
+        "per_closure_accuracy": {
+          "closed": {
+            "high": 1.0,
+            "low": 0.438503,
+            "n": 3,
+            "point": 1.0
+          },
+          "open": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          }
+        },
+        "reliability_bins": [
+          {
+            "bin_high": 0.1,
+            "bin_low": 0.0,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.2,
+            "bin_low": 0.1,
+            "count": 7,
+            "empirical_yes": 0.0,
+            "mean_confidence": 0.145714
+          },
+          {
+            "bin_high": 0.3,
+            "bin_low": 0.2,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.4,
+            "bin_low": 0.3,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.5,
+            "bin_low": 0.4,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.6,
+            "bin_low": 0.5,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.7,
+            "bin_low": 0.6,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.8,
+            "bin_low": 0.7,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.9,
+            "bin_low": 0.8,
+            "count": 4,
+            "empirical_yes": 1.0,
+            "mean_confidence": 0.845
+          },
+          {
+            "bin_high": 1.0,
+            "bin_low": 0.9,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          }
+        ],
+        "second_slot_yes_rate": 0.333333,
+        "seconds_mean": 0.001,
+        "seconds_total": 0.012,
+        "threshold_rule": "dev_fitted",
+        "threshold_value": 0.5,
+        "triad_consistency": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        },
+        "unparseable": 0,
+        "vram_peak_mib": 0
+      }
+    },
+    "split": "dev",
+    "three_way_pass": [
+      {
+        "judge_id": "mu-judge",
+        "three_way_accuracy": {
+          "high": 0.969947,
+          "low": 0.436497,
+          "n": 6,
+          "point": 0.833333
+        }
+      }
+    ]
+  },
+  "disagreement_table": {
+    "by_class_and_closure": [
+      {
+        "all_judges_correct": 1,
+        "all_judges_wrong": 0,
+        "closure": "open",
+        "item_class": "supported",
+        "items_n": 1,
+        "judges_disagree": 0
+      },
+      {
+        "all_judges_correct": 1,
+        "all_judges_wrong": 0,
+        "closure": "closed",
+        "item_class": "supported",
+        "items_n": 1,
+        "judges_disagree": 0
+      },
+      {
+        "all_judges_correct": 1,
+        "all_judges_wrong": 0,
+        "closure": "open",
+        "item_class": "unsupported",
+        "items_n": 1,
+        "judges_disagree": 0
+      },
+      {
+        "all_judges_correct": 0,
+        "all_judges_wrong": 1,
+        "closure": "closed",
+        "item_class": "unsupported",
+        "items_n": 1,
+        "judges_disagree": 0
+      },
+      {
+        "all_judges_correct": 0,
+        "all_judges_wrong": 1,
+        "closure": "open",
+        "item_class": "cannot_tell",
+        "items_n": 1,
+        "judges_disagree": 0
+      },
+      {
+        "all_judges_correct": 1,
+        "all_judges_wrong": 0,
+        "closure": "closed",
+        "item_class": "cannot_tell",
+        "items_n": 1,
+        "judges_disagree": 0
+      }
+    ],
+    "contains_item_text": false,
+    "public_safe": true,
+    "split": "test"
+  },
+  "judges": [
+    {
+      "abstain_items": 0,
+      "accuracy": {
+        "high": 0.903229,
+        "low": 0.299993,
+        "n": 6,
+        "point": 0.666667
+      },
+      "balanced_accuracy": 0.75,
+      "calls_n": 12,
+      "conditional_accuracy": null,
+      "coverage": 1.0,
+      "ece": null,
+      "ece_reason": "plain-label judge (pass/fail) without verdict token probability",
+      "error_rate": 0.0,
+      "first_slot_yes_rate": 0.5,
+      "flip_rate": {
+        "high": 0.563503,
+        "low": 0.030053,
+        "n": 6,
+        "point": 0.166667
+      },
+      "items_n": 6,
+      "judge_id": "flow-judge-v0.1",
+      "judge_label": "Flow-Judge",
+      "length_stops": 0,
+      "per_class_accuracy": {
+        "cannot_tell": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        },
+        "supported": {
+          "high": 1.0,
+          "low": 0.34238,
+          "n": 2,
+          "point": 1.0
+        },
+        "unsupported": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        }
+      },
+      "per_closure_accuracy": {
+        "closed": {
+          "high": 0.938508,
+          "low": 0.20766,
+          "n": 3,
+          "point": 0.666667
+        },
+        "open": {
+          "high": 0.938508,
+          "low": 0.20766,
+          "n": 3,
+          "point": 0.666667
+        }
+      },
+      "reliability_bins": [],
+      "second_slot_yes_rate": 0.666667,
+      "seconds_mean": 0.001,
+      "seconds_total": 0.012,
+      "threshold_rule": "plain",
+      "threshold_value": null,
+      "triad_consistency": {
+        "high": 0.65762,
+        "low": 0.0,
+        "n": 2,
+        "point": 0.0
+      },
+      "unparseable": 0,
+      "vram_peak_mib": 0
+    },
+    {
+      "abstain_items": 0,
+      "accuracy": {
+        "high": 0.903229,
+        "low": 0.299993,
+        "n": 6,
+        "point": 0.666667
+      },
+      "balanced_accuracy": 0.75,
+      "calls_n": 12,
+      "conditional_accuracy": null,
+      "coverage": 1.0,
+      "ece": 0.24,
+      "ece_reason": null,
+      "error_rate": 0.0,
+      "first_slot_yes_rate": 0.5,
+      "flip_rate": {
+        "high": 0.563503,
+        "low": 0.030053,
+        "n": 6,
+        "point": 0.166667
+      },
+      "items_n": 6,
+      "judge_id": "mu-judge",
+      "judge_label": "mu-judge",
+      "length_stops": 0,
+      "per_class_accuracy": {
+        "cannot_tell": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        },
+        "supported": {
+          "high": 1.0,
+          "low": 0.34238,
+          "n": 2,
+          "point": 1.0
+        },
+        "unsupported": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        }
+      },
+      "per_closure_accuracy": {
+        "closed": {
+          "high": 0.938508,
+          "low": 0.20766,
+          "n": 3,
+          "point": 0.666667
+        },
+        "open": {
+          "high": 0.938508,
+          "low": 0.20766,
+          "n": 3,
+          "point": 0.666667
+        }
+      },
+      "reliability_bins": [
+        {
+          "bin_high": 0.1,
+          "bin_low": 0.0,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.2,
+          "bin_low": 0.1,
+          "count": 5,
+          "empirical_yes": 0.0,
+          "mean_confidence": 0.166
+        },
+        {
+          "bin_high": 0.3,
+          "bin_low": 0.2,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.4,
+          "bin_low": 0.3,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.5,
+          "bin_low": 0.4,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.6,
+          "bin_low": 0.5,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.7,
+          "bin_low": 0.6,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.8,
+          "bin_low": 0.7,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.9,
+          "bin_low": 0.8,
+          "count": 7,
+          "empirical_yes": 0.571429,
+          "mean_confidence": 0.864286
+        },
+        {
+          "bin_high": 1.0,
+          "bin_low": 0.9,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        }
+      ],
+      "second_slot_yes_rate": 0.666667,
+      "seconds_mean": 0.001,
+      "seconds_total": 0.012,
+      "threshold_rule": "dev_fitted",
+      "threshold_value": 0.5,
+      "triad_consistency": {
+        "high": 0.65762,
+        "low": 0.0,
+        "n": 2,
+        "point": 0.0
+      },
+      "unparseable": 0,
+      "vram_peak_mib": 0
+    }
+  ],
+  "mu_judge_three_readings": {
+    "0.5": {
+      "abstain_items": 0,
+      "accuracy": {
+        "high": 0.903229,
+        "low": 0.299993,
+        "n": 6,
+        "point": 0.666667
+      },
+      "balanced_accuracy": 0.75,
+      "calls_n": 12,
+      "conditional_accuracy": null,
+      "coverage": 1.0,
+      "ece": 0.24,
+      "ece_reason": null,
+      "error_rate": 0.0,
+      "first_slot_yes_rate": 0.5,
+      "flip_rate": {
+        "high": 0.563503,
+        "low": 0.030053,
+        "n": 6,
+        "point": 0.166667
+      },
+      "items_n": 6,
+      "judge_id": "mu-judge",
+      "judge_label": "mu-judge",
+      "length_stops": 0,
+      "per_class_accuracy": {
+        "cannot_tell": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        },
+        "supported": {
+          "high": 1.0,
+          "low": 0.34238,
+          "n": 2,
+          "point": 1.0
+        },
+        "unsupported": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        }
+      },
+      "per_closure_accuracy": {
+        "closed": {
+          "high": 0.938508,
+          "low": 0.20766,
+          "n": 3,
+          "point": 0.666667
+        },
+        "open": {
+          "high": 0.938508,
+          "low": 0.20766,
+          "n": 3,
+          "point": 0.666667
+        }
+      },
+      "reliability_bins": [
+        {
+          "bin_high": 0.1,
+          "bin_low": 0.0,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.2,
+          "bin_low": 0.1,
+          "count": 5,
+          "empirical_yes": 0.0,
+          "mean_confidence": 0.166
+        },
+        {
+          "bin_high": 0.3,
+          "bin_low": 0.2,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.4,
+          "bin_low": 0.3,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.5,
+          "bin_low": 0.4,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.6,
+          "bin_low": 0.5,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.7,
+          "bin_low": 0.6,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.8,
+          "bin_low": 0.7,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.9,
+          "bin_low": 0.8,
+          "count": 7,
+          "empirical_yes": 0.571429,
+          "mean_confidence": 0.864286
+        },
+        {
+          "bin_high": 1.0,
+          "bin_low": 0.9,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        }
+      ],
+      "second_slot_yes_rate": 0.666667,
+      "seconds_mean": 0.001,
+      "seconds_total": 0.012,
+      "threshold_rule": "0.5",
+      "threshold_value": 0.5,
+      "triad_consistency": {
+        "high": 0.65762,
+        "low": 0.0,
+        "n": 2,
+        "point": 0.0
+      },
+      "unparseable": 0,
+      "vram_peak_mib": 0
+    },
+    "card_0.2_0.8": {
+      "abstain_items": 0,
+      "accuracy": {
+        "high": 0.903229,
+        "low": 0.299993,
+        "n": 6,
+        "point": 0.666667
+      },
+      "balanced_accuracy": 0.75,
+      "calls_n": 12,
+      "conditional_accuracy": {
+        "high": 0.903229,
+        "low": 0.299993,
+        "n": 6,
+        "point": 0.666667
+      },
+      "coverage": 1.0,
+      "ece": 0.24,
+      "ece_reason": null,
+      "error_rate": 0.0,
+      "first_slot_yes_rate": 0.5,
+      "flip_rate": {
+        "high": 0.563503,
+        "low": 0.030053,
+        "n": 6,
+        "point": 0.166667
+      },
+      "items_n": 6,
+      "judge_id": "mu-judge",
+      "judge_label": "mu-judge",
+      "length_stops": 0,
+      "per_class_accuracy": {
+        "cannot_tell": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        },
+        "supported": {
+          "high": 1.0,
+          "low": 0.34238,
+          "n": 2,
+          "point": 1.0
+        },
+        "unsupported": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        }
+      },
+      "per_closure_accuracy": {
+        "closed": {
+          "high": 0.938508,
+          "low": 0.20766,
+          "n": 3,
+          "point": 0.666667
+        },
+        "open": {
+          "high": 0.938508,
+          "low": 0.20766,
+          "n": 3,
+          "point": 0.666667
+        }
+      },
+      "reliability_bins": [
+        {
+          "bin_high": 0.1,
+          "bin_low": 0.0,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.2,
+          "bin_low": 0.1,
+          "count": 5,
+          "empirical_yes": 0.0,
+          "mean_confidence": 0.166
+        },
+        {
+          "bin_high": 0.3,
+          "bin_low": 0.2,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.4,
+          "bin_low": 0.3,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.5,
+          "bin_low": 0.4,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.6,
+          "bin_low": 0.5,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.7,
+          "bin_low": 0.6,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.8,
+          "bin_low": 0.7,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.9,
+          "bin_low": 0.8,
+          "count": 7,
+          "empirical_yes": 0.571429,
+          "mean_confidence": 0.864286
+        },
+        {
+          "bin_high": 1.0,
+          "bin_low": 0.9,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        }
+      ],
+      "second_slot_yes_rate": 0.666667,
+      "seconds_mean": 0.001,
+      "seconds_total": 0.012,
+      "threshold_rule": "card_0.2_0.8",
+      "threshold_value": null,
+      "triad_consistency": {
+        "high": 0.65762,
+        "low": 0.0,
+        "n": 2,
+        "point": 0.0
+      },
+      "unparseable": 0,
+      "vram_peak_mib": 0
+    },
+    "dev_fitted": {
+      "abstain_items": 0,
+      "accuracy": {
+        "high": 0.903229,
+        "low": 0.299993,
+        "n": 6,
+        "point": 0.666667
+      },
+      "balanced_accuracy": 0.75,
+      "calls_n": 12,
+      "conditional_accuracy": null,
+      "coverage": 1.0,
+      "ece": 0.24,
+      "ece_reason": null,
+      "error_rate": 0.0,
+      "first_slot_yes_rate": 0.5,
+      "flip_rate": {
+        "high": 0.563503,
+        "low": 0.030053,
+        "n": 6,
+        "point": 0.166667
+      },
+      "items_n": 6,
+      "judge_id": "mu-judge",
+      "judge_label": "mu-judge",
+      "length_stops": 0,
+      "per_class_accuracy": {
+        "cannot_tell": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        },
+        "supported": {
+          "high": 1.0,
+          "low": 0.34238,
+          "n": 2,
+          "point": 1.0
+        },
+        "unsupported": {
+          "high": 0.905469,
+          "low": 0.094531,
+          "n": 2,
+          "point": 0.5
+        }
+      },
+      "per_closure_accuracy": {
+        "closed": {
+          "high": 0.938508,
+          "low": 0.20766,
+          "n": 3,
+          "point": 0.666667
+        },
+        "open": {
+          "high": 0.938508,
+          "low": 0.20766,
+          "n": 3,
+          "point": 0.666667
+        }
+      },
+      "reliability_bins": [
+        {
+          "bin_high": 0.1,
+          "bin_low": 0.0,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.2,
+          "bin_low": 0.1,
+          "count": 5,
+          "empirical_yes": 0.0,
+          "mean_confidence": 0.166
+        },
+        {
+          "bin_high": 0.3,
+          "bin_low": 0.2,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.4,
+          "bin_low": 0.3,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.5,
+          "bin_low": 0.4,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.6,
+          "bin_low": 0.5,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.7,
+          "bin_low": 0.6,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.8,
+          "bin_low": 0.7,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        },
+        {
+          "bin_high": 0.9,
+          "bin_low": 0.8,
+          "count": 7,
+          "empirical_yes": 0.571429,
+          "mean_confidence": 0.864286
+        },
+        {
+          "bin_high": 1.0,
+          "bin_low": 0.9,
+          "count": 0,
+          "empirical_yes": null,
+          "mean_confidence": null
+        }
+      ],
+      "second_slot_yes_rate": 0.666667,
+      "seconds_mean": 0.001,
+      "seconds_total": 0.012,
+      "threshold_rule": "dev_fitted",
+      "threshold_value": 0.5,
+      "triad_consistency": {
+        "high": 0.65762,
+        "low": 0.0,
+        "n": 2,
+        "point": 0.0
+      },
+      "unparseable": 0,
+      "vram_peak_mib": 0
+    }
+  },
+  "outputs_closed_sha256": "650cb09164dc5555bd8105365cb737bd0bed4a5e78d31acd4a448ad99847a5a4",
+  "pairwise_vs_mu_judge": [
+    {
+      "decision": "shakedown, decision rule not applied",
+      "holm_mcnemar_p": 1.0,
+      "items_n": 6,
+      "mcnemar_p": 1.0,
+      "mean_accuracy_diff_mu_minus_rival": 0.0,
+      "mu_wins": 0,
+      "rival_judge_id": "flow-judge-v0.1",
+      "rival_wins": 0,
+      "ties": 6,
+      "triad_bootstrap_p": 1.0
+    }
+  ],
+  "pilot_banner": "shakedown, decision rule not applied",
+  "public_safe": true,
+  "schedule_seed": 20261030,
+  "schedule_sha256": "cd9a450e705ca0d4b4f8d492b4953d3434276df879c4602629188c611955be52",
+  "split_item_counts": {
+    "dev": 6,
+    "test": 6,
+    "total": 12
+  },
+  "status": "ok",
+  "test_only": {
+    "disagreement_table": {
+      "by_class_and_closure": [
+        {
+          "all_judges_correct": 1,
+          "all_judges_wrong": 0,
+          "closure": "open",
+          "item_class": "supported",
+          "items_n": 1,
+          "judges_disagree": 0
+        },
+        {
+          "all_judges_correct": 1,
+          "all_judges_wrong": 0,
+          "closure": "closed",
+          "item_class": "supported",
+          "items_n": 1,
+          "judges_disagree": 0
+        },
+        {
+          "all_judges_correct": 1,
+          "all_judges_wrong": 0,
+          "closure": "open",
+          "item_class": "unsupported",
+          "items_n": 1,
+          "judges_disagree": 0
+        },
+        {
+          "all_judges_correct": 0,
+          "all_judges_wrong": 1,
+          "closure": "closed",
+          "item_class": "unsupported",
+          "items_n": 1,
+          "judges_disagree": 0
+        },
+        {
+          "all_judges_correct": 0,
+          "all_judges_wrong": 1,
+          "closure": "open",
+          "item_class": "cannot_tell",
+          "items_n": 1,
+          "judges_disagree": 0
+        },
+        {
+          "all_judges_correct": 1,
+          "all_judges_wrong": 0,
+          "closure": "closed",
+          "item_class": "cannot_tell",
+          "items_n": 1,
+          "judges_disagree": 0
+        }
+      ],
+      "contains_item_text": false,
+      "public_safe": true,
+      "split": "test"
+    },
+    "items_n": 6,
+    "judges": [
+      {
+        "abstain_items": 0,
+        "accuracy": {
+          "high": 0.903229,
+          "low": 0.299993,
+          "n": 6,
+          "point": 0.666667
+        },
+        "balanced_accuracy": 0.75,
+        "calls_n": 12,
+        "conditional_accuracy": null,
+        "coverage": 1.0,
+        "ece": null,
+        "ece_reason": "plain-label judge (pass/fail) without verdict token probability",
+        "error_rate": 0.0,
+        "first_slot_yes_rate": 0.5,
+        "flip_rate": {
+          "high": 0.563503,
+          "low": 0.030053,
+          "n": 6,
+          "point": 0.166667
+        },
+        "items_n": 6,
+        "judge_id": "flow-judge-v0.1",
+        "judge_label": "Flow-Judge",
+        "length_stops": 0,
+        "per_class_accuracy": {
+          "cannot_tell": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          },
+          "supported": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "unsupported": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          }
+        },
+        "per_closure_accuracy": {
+          "closed": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          },
+          "open": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          }
+        },
+        "reliability_bins": [],
+        "second_slot_yes_rate": 0.666667,
+        "seconds_mean": 0.001,
+        "seconds_total": 0.012,
+        "threshold_rule": "plain",
+        "threshold_value": null,
+        "triad_consistency": {
+          "high": 0.65762,
+          "low": 0.0,
+          "n": 2,
+          "point": 0.0
+        },
+        "unparseable": 0,
+        "vram_peak_mib": 0
+      },
+      {
+        "abstain_items": 0,
+        "accuracy": {
+          "high": 0.903229,
+          "low": 0.299993,
+          "n": 6,
+          "point": 0.666667
+        },
+        "balanced_accuracy": 0.75,
+        "calls_n": 12,
+        "conditional_accuracy": null,
+        "coverage": 1.0,
+        "ece": 0.24,
+        "ece_reason": null,
+        "error_rate": 0.0,
+        "first_slot_yes_rate": 0.5,
+        "flip_rate": {
+          "high": 0.563503,
+          "low": 0.030053,
+          "n": 6,
+          "point": 0.166667
+        },
+        "items_n": 6,
+        "judge_id": "mu-judge",
+        "judge_label": "mu-judge",
+        "length_stops": 0,
+        "per_class_accuracy": {
+          "cannot_tell": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          },
+          "supported": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "unsupported": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          }
+        },
+        "per_closure_accuracy": {
+          "closed": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          },
+          "open": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          }
+        },
+        "reliability_bins": [
+          {
+            "bin_high": 0.1,
+            "bin_low": 0.0,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.2,
+            "bin_low": 0.1,
+            "count": 5,
+            "empirical_yes": 0.0,
+            "mean_confidence": 0.166
+          },
+          {
+            "bin_high": 0.3,
+            "bin_low": 0.2,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.4,
+            "bin_low": 0.3,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.5,
+            "bin_low": 0.4,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.6,
+            "bin_low": 0.5,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.7,
+            "bin_low": 0.6,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.8,
+            "bin_low": 0.7,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.9,
+            "bin_low": 0.8,
+            "count": 7,
+            "empirical_yes": 0.571429,
+            "mean_confidence": 0.864286
+          },
+          {
+            "bin_high": 1.0,
+            "bin_low": 0.9,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          }
+        ],
+        "second_slot_yes_rate": 0.666667,
+        "seconds_mean": 0.001,
+        "seconds_total": 0.012,
+        "threshold_rule": "dev_fitted",
+        "threshold_value": 0.5,
+        "triad_consistency": {
+          "high": 0.65762,
+          "low": 0.0,
+          "n": 2,
+          "point": 0.0
+        },
+        "unparseable": 0,
+        "vram_peak_mib": 0
+      }
+    ],
+    "mu_judge_three_readings": {
+      "0.5": {
+        "abstain_items": 0,
+        "accuracy": {
+          "high": 0.903229,
+          "low": 0.299993,
+          "n": 6,
+          "point": 0.666667
+        },
+        "balanced_accuracy": 0.75,
+        "calls_n": 12,
+        "conditional_accuracy": null,
+        "coverage": 1.0,
+        "ece": 0.24,
+        "ece_reason": null,
+        "error_rate": 0.0,
+        "first_slot_yes_rate": 0.5,
+        "flip_rate": {
+          "high": 0.563503,
+          "low": 0.030053,
+          "n": 6,
+          "point": 0.166667
+        },
+        "items_n": 6,
+        "judge_id": "mu-judge",
+        "judge_label": "mu-judge",
+        "length_stops": 0,
+        "per_class_accuracy": {
+          "cannot_tell": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          },
+          "supported": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "unsupported": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          }
+        },
+        "per_closure_accuracy": {
+          "closed": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          },
+          "open": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          }
+        },
+        "reliability_bins": [
+          {
+            "bin_high": 0.1,
+            "bin_low": 0.0,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.2,
+            "bin_low": 0.1,
+            "count": 5,
+            "empirical_yes": 0.0,
+            "mean_confidence": 0.166
+          },
+          {
+            "bin_high": 0.3,
+            "bin_low": 0.2,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.4,
+            "bin_low": 0.3,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.5,
+            "bin_low": 0.4,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.6,
+            "bin_low": 0.5,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.7,
+            "bin_low": 0.6,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.8,
+            "bin_low": 0.7,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.9,
+            "bin_low": 0.8,
+            "count": 7,
+            "empirical_yes": 0.571429,
+            "mean_confidence": 0.864286
+          },
+          {
+            "bin_high": 1.0,
+            "bin_low": 0.9,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          }
+        ],
+        "second_slot_yes_rate": 0.666667,
+        "seconds_mean": 0.001,
+        "seconds_total": 0.012,
+        "threshold_rule": "0.5",
+        "threshold_value": 0.5,
+        "triad_consistency": {
+          "high": 0.65762,
+          "low": 0.0,
+          "n": 2,
+          "point": 0.0
+        },
+        "unparseable": 0,
+        "vram_peak_mib": 0
+      },
+      "card_0.2_0.8": {
+        "abstain_items": 0,
+        "accuracy": {
+          "high": 0.903229,
+          "low": 0.299993,
+          "n": 6,
+          "point": 0.666667
+        },
+        "balanced_accuracy": 0.75,
+        "calls_n": 12,
+        "conditional_accuracy": {
+          "high": 0.903229,
+          "low": 0.299993,
+          "n": 6,
+          "point": 0.666667
+        },
+        "coverage": 1.0,
+        "ece": 0.24,
+        "ece_reason": null,
+        "error_rate": 0.0,
+        "first_slot_yes_rate": 0.5,
+        "flip_rate": {
+          "high": 0.563503,
+          "low": 0.030053,
+          "n": 6,
+          "point": 0.166667
+        },
+        "items_n": 6,
+        "judge_id": "mu-judge",
+        "judge_label": "mu-judge",
+        "length_stops": 0,
+        "per_class_accuracy": {
+          "cannot_tell": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          },
+          "supported": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "unsupported": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          }
+        },
+        "per_closure_accuracy": {
+          "closed": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          },
+          "open": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          }
+        },
+        "reliability_bins": [
+          {
+            "bin_high": 0.1,
+            "bin_low": 0.0,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.2,
+            "bin_low": 0.1,
+            "count": 5,
+            "empirical_yes": 0.0,
+            "mean_confidence": 0.166
+          },
+          {
+            "bin_high": 0.3,
+            "bin_low": 0.2,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.4,
+            "bin_low": 0.3,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.5,
+            "bin_low": 0.4,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.6,
+            "bin_low": 0.5,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.7,
+            "bin_low": 0.6,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.8,
+            "bin_low": 0.7,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.9,
+            "bin_low": 0.8,
+            "count": 7,
+            "empirical_yes": 0.571429,
+            "mean_confidence": 0.864286
+          },
+          {
+            "bin_high": 1.0,
+            "bin_low": 0.9,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          }
+        ],
+        "second_slot_yes_rate": 0.666667,
+        "seconds_mean": 0.001,
+        "seconds_total": 0.012,
+        "threshold_rule": "card_0.2_0.8",
+        "threshold_value": null,
+        "triad_consistency": {
+          "high": 0.65762,
+          "low": 0.0,
+          "n": 2,
+          "point": 0.0
+        },
+        "unparseable": 0,
+        "vram_peak_mib": 0
+      },
+      "dev_fitted": {
+        "abstain_items": 0,
+        "accuracy": {
+          "high": 0.903229,
+          "low": 0.299993,
+          "n": 6,
+          "point": 0.666667
+        },
+        "balanced_accuracy": 0.75,
+        "calls_n": 12,
+        "conditional_accuracy": null,
+        "coverage": 1.0,
+        "ece": 0.24,
+        "ece_reason": null,
+        "error_rate": 0.0,
+        "first_slot_yes_rate": 0.5,
+        "flip_rate": {
+          "high": 0.563503,
+          "low": 0.030053,
+          "n": 6,
+          "point": 0.166667
+        },
+        "items_n": 6,
+        "judge_id": "mu-judge",
+        "judge_label": "mu-judge",
+        "length_stops": 0,
+        "per_class_accuracy": {
+          "cannot_tell": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          },
+          "supported": {
+            "high": 1.0,
+            "low": 0.34238,
+            "n": 2,
+            "point": 1.0
+          },
+          "unsupported": {
+            "high": 0.905469,
+            "low": 0.094531,
+            "n": 2,
+            "point": 0.5
+          }
+        },
+        "per_closure_accuracy": {
+          "closed": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          },
+          "open": {
+            "high": 0.938508,
+            "low": 0.20766,
+            "n": 3,
+            "point": 0.666667
+          }
+        },
+        "reliability_bins": [
+          {
+            "bin_high": 0.1,
+            "bin_low": 0.0,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.2,
+            "bin_low": 0.1,
+            "count": 5,
+            "empirical_yes": 0.0,
+            "mean_confidence": 0.166
+          },
+          {
+            "bin_high": 0.3,
+            "bin_low": 0.2,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.4,
+            "bin_low": 0.3,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.5,
+            "bin_low": 0.4,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.6,
+            "bin_low": 0.5,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.7,
+            "bin_low": 0.6,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.8,
+            "bin_low": 0.7,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          },
+          {
+            "bin_high": 0.9,
+            "bin_low": 0.8,
+            "count": 7,
+            "empirical_yes": 0.571429,
+            "mean_confidence": 0.864286
+          },
+          {
+            "bin_high": 1.0,
+            "bin_low": 0.9,
+            "count": 0,
+            "empirical_yes": null,
+            "mean_confidence": null
+          }
+        ],
+        "second_slot_yes_rate": 0.666667,
+        "seconds_mean": 0.001,
+        "seconds_total": 0.012,
+        "threshold_rule": "dev_fitted",
+        "threshold_value": 0.5,
+        "triad_consistency": {
+          "high": 0.65762,
+          "low": 0.0,
+          "n": 2,
+          "point": 0.0
+        },
+        "unparseable": 0,
+        "vram_peak_mib": 0
+      }
+    },
+    "pairwise_vs_mu_judge": [
+      {
+        "decision": "shakedown, decision rule not applied",
+        "holm_mcnemar_p": 1.0,
+        "items_n": 6,
+        "mcnemar_p": 1.0,
+        "mean_accuracy_diff_mu_minus_rival": 0.0,
+        "mu_wins": 0,
+        "rival_judge_id": "flow-judge-v0.1",
+        "rival_wins": 0,
+        "ties": 6,
+        "triad_bootstrap_p": 1.0
+      }
+    ],
+    "split": "test",
+    "three_way_pass": [
+      {
+        "judge_id": "mu-judge",
+        "three_way_accuracy": {
+          "high": 0.969947,
+          "low": 0.436497,
+          "n": 6,
+          "point": 0.833333
+        }
+      }
+    ]
+  },
+  "three_way_pass": [
+    {
+      "judge_id": "mu-judge",
+      "three_way_accuracy": {
+        "high": 0.969947,
+        "low": 0.436497,
+        "n": 6,
+        "point": 0.833333
+      }
+    }
+  ]
+}
