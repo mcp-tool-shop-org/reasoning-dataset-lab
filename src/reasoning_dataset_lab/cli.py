@@ -47,6 +47,9 @@ from reasoning_dataset_lab.pilot_b.variety import (
     evaluate_build_variety,
     format_variety_report_text,
 )
+from reasoning_dataset_lab.pilot_b.shortcut_probe import (
+    evaluate_bakeoff_probe_files,
+)
 
 
 class _StructuredArgumentParser(argparse.ArgumentParser):
@@ -383,6 +386,33 @@ def _build_parser() -> _StructuredArgumentParser:
         dest="resume",
         action="store_true",
         help="Resume an interrupted bake-off build from the per-triad checkpoint in --output-dir.",
+    )
+
+    # rdlab bakeoff-probe --part-dir <dir> --keys <keys.sealed.jsonl> --out <report.json>
+    bp_parser = subparsers.add_parser(
+        "bakeoff-probe",
+        help="Run the out-of-fold shortcut probe and role/closure class-share gates on a judge bake-off part.",
+    )
+    bp_parser.add_argument(
+        "--part-dir",
+        dest="part_dir",
+        type=Path,
+        required=True,
+        help="Directory containing part_bakeoff_sealed/items.jsonl (or items.jsonl), or direct path to items.jsonl.",
+    )
+    bp_parser.add_argument(
+        "--keys",
+        dest="keys_path",
+        type=Path,
+        required=True,
+        help="Path to sealed_store/keys.sealed.jsonl.",
+    )
+    bp_parser.add_argument(
+        "--out",
+        dest="out_path",
+        type=Path,
+        required=True,
+        help="Output path for the JSON shortcut probe report.",
     )
 
     return parser
@@ -924,6 +954,15 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(bo_res, indent=2))
             return EXIT_CLEAN
+
+        if args.command == "bakeoff-probe":
+            probe_rep = evaluate_bakeoff_probe_files(
+                part_dir=args.part_dir,
+                keys_path=args.keys_path,
+                out_path=args.out_path,
+            )
+            print(json.dumps(probe_rep, indent=2))
+            return EXIT_CLEAN if probe_rep.get("passed") else EXIT_REFUSED
 
         raise usage_error(
             "CLI_USAGE_ERROR",
