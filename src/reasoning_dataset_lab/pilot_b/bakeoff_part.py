@@ -14,12 +14,14 @@ and canonical sealing/verification pipeline:
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
 import random
 import secrets
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -671,12 +673,12 @@ def query_gpu_vram_peak_mib() -> int:
 
 
 def kill_pid_tree(pid: int) -> None:
-    """Terminate a process and all of its descendants by PID tree."""
-    if pid <= 0:
+    """Terminate a process and all of its descendants by PID tree (`taskkill /PID <pid> /T /F` on Windows, process-group kill on POSIX)."""
+    if pid <= 4:
         return
-    if sys.platform == "win32":  # pragma: no cover
+    if sys.platform == "win32":
         subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -688,7 +690,30 @@ def kill_pid_tree(pid: int) -> None:
             pass
         return
 
-    # POSIX: recursively kill child processes before killing parent
+    # POSIX: process-group kill for owned child server session/group, plus recursive child cleanup
+    sig_kill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    killpg_fn = getattr(os, "killpg", None)
+    getpgid_fn = getattr(os, "getpgid", None)
+    getpgrp_fn = getattr(os, "getpgrp", None)
+    own_pgrp = int(getpgrp_fn()) if callable(getpgrp_fn) else -1
+    if callable(killpg_fn):
+        pgid = pid
+        if callable(getpgid_fn):
+            try:
+                pgid = int(getpgid_fn(pid))
+            except OSError:  # pragma: no cover
+                pgid = pid
+        if pgid > 4 and pgid != own_pgrp:
+            try:
+                killpg_fn(pgid, sig_kill)
+            except OSError:  # pragma: no cover
+                pass
+        if pid != pgid and pid != own_pgrp:  # pragma: no cover
+            try:
+                killpg_fn(pid, sig_kill)
+            except OSError:
+                pass
+
     child_pids: set[int] = set()  # pragma: no cover
     proc_root = Path("/proc")  # pragma: no cover
     if proc_root.is_dir():  # pragma: no cover
@@ -716,10 +741,180 @@ def kill_pid_tree(pid: int) -> None:
     for cpid in sorted(child_pids):  # pragma: no cover
         if cpid != pid:  # pragma: no cover
             kill_pid_tree(cpid)  # pragma: no cover
-    try:  # pragma: no cover
-        os.kill(pid, signal.SIGKILL)  # pragma: no cover
+    try:
+        os.kill(pid, sig_kill)
     except OSError:  # pragma: no cover
-        pass  # pragma: no cover
+        pass
+
+
+def _pick_free_localhost_port() -> int:
+    """Bind an ephemeral TCP socket on 127.0.0.1 and return its free port number."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@dataclass
+class OwnedOllamaServer:
+    """Child `ollama serve` process started and owned by `run_bakeoff_part_build`."""
+
+    process: Any
+    pid: int
+    port: int
+    host: str
+    base_url: str
+    models_dir: str | None
+    started_at: str
+    stopped_at: str | None = None
+    version: str | None = None
+    unloaded: bool = False
+
+    def stop(self) -> None:
+        """Stop the child `ollama serve` process and record its UTC stop timestamp."""
+        if self.stopped_at is not None:
+            return
+        try:
+            if self.process is not None and self.process.poll() is None:
+                try:
+                    self.process.terminate()
+                    self.process.wait(timeout=3)
+                except Exception:  # pragma: no cover
+                    pass
+                if self.process.poll() is None:  # pragma: no cover
+                    try:
+                        self.process.kill()
+                        self.process.wait(timeout=3)
+                    except Exception:
+                        pass
+        finally:
+            self.stopped_at = datetime.datetime.now(datetime.UTC).isoformat()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "pid": self.pid,
+            "port": self.port,
+            "host": self.host,
+            "base_url": self.base_url,
+            "models_dir": self.models_dir,
+            "started_at": self.started_at,
+            "stopped_at": self.stopped_at,
+            "start_time": self.started_at,
+            "stop_time": self.stopped_at,
+            "version": self.version,
+            "owned": True,
+            "unloaded": self.unloaded,
+        }
+
+
+def wait_for_ollama_version(
+    *,
+    base_url: str,
+    process: Any,
+    http_transport: OllamaHttpTransport = ollama_mod.default_ollama_http_transport,
+    timeout_s: float = 30.0,
+    poll_interval_s: float = 0.05,
+) -> str:
+    """Wait for `GET <base_url>/api/version` on the owned child server."""
+    clean_base = base_url.rstrip("/")
+    version_url = f"{clean_base}/api/version"
+    deadline = time.monotonic() + max(0.0, timeout_s)
+    last_exc: Exception | None = None
+    while True:
+        if process is not None and process.poll() is not None:
+            raise refused_error(
+                "BAKEOFF_OLLAMA_SERVER_START_FAILED",
+                f"Owned Ollama server process (PID {getattr(process, 'pid', None)}) exited with code "
+                f"{process.returncode} before {version_url} became ready.",
+                "Ensure 'ollama serve' can start on a free localhost port.",
+            )
+        try:
+            resp = http_transport("GET", version_url, None)
+            if isinstance(resp, Mapping):
+                return str(resp.get("version") or "unknown")
+        except Exception as exc:
+            last_exc = exc
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(poll_interval_s)
+    raise refused_error(
+        "BAKEOFF_OLLAMA_SERVER_START_FAILED",
+        f"Timed out waiting for owned Ollama server (PID {getattr(process, 'pid', None)}) at {version_url}: {last_exc}",
+        "Ensure 'ollama serve' is installed and can bind to 127.0.0.1.",
+    )
+
+
+def start_owned_ollama_server(
+    *,
+    http_transport: OllamaHttpTransport = ollama_mod.default_ollama_http_transport,
+    popen_factory: Callable[..., Any] | None = None,
+    port: int | None = None,
+    startup_timeout_s: float = 30.0,
+    poll_interval_s: float = 0.05,
+    ollama_models_dir: Path | str | None = None,
+) -> OwnedOllamaServer:
+    """Launch `ollama serve` as a child process on a free localhost port and wait for `/api/version`."""
+    resolved_port = int(port) if port is not None else _pick_free_localhost_port()
+    host = f"127.0.0.1:{resolved_port}"
+    base_url = f"http://{host}"
+
+    env = dict(os.environ)
+    env.pop("RDLAB_OLLAMA_OWNER_PID", None)
+    env["OLLAMA_HOST"] = host
+    if ollama_models_dir is not None:
+        env["OLLAMA_MODELS"] = str(ollama_models_dir)
+    elif os.environ.get("OLLAMA_MODELS", "").strip():
+        env["OLLAMA_MODELS"] = os.environ["OLLAMA_MODELS"].strip()
+    models_dir = env.get("OLLAMA_MODELS")
+
+    popen_kwargs: dict[str, Any] = {
+        "env": env,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if sys.platform == "win32":
+        create_group = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        if create_group:
+            popen_kwargs["creationflags"] = create_group
+    else:  # pragma: no cover
+        popen_kwargs["start_new_session"] = True
+
+    started_at = datetime.datetime.now(datetime.UTC).isoformat()
+    launcher = popen_factory if popen_factory is not None else subprocess.Popen
+    proc = launcher(["ollama", "serve"], **popen_kwargs)
+    raw_pid = getattr(proc, "pid", None)
+    if not isinstance(raw_pid, int) or isinstance(raw_pid, bool) or raw_pid <= 4:
+        try:
+            proc.terminate()
+        except Exception:  # pragma: no cover
+            pass
+        raise refused_error(
+            "BAKEOFF_OLLAMA_SERVER_START_FAILED",
+            f"Owned Ollama child process returned invalid PID {raw_pid!r}.",
+            "Ensure subprocess.Popen(['ollama', 'serve']) returns a valid child process PID.",
+        )
+
+    server = OwnedOllamaServer(
+        process=proc,
+        pid=int(raw_pid),
+        port=resolved_port,
+        host=host,
+        base_url=base_url,
+        models_dir=models_dir,
+        started_at=started_at,
+    )
+    try:
+        server.version = wait_for_ollama_version(
+            base_url=base_url,
+            process=proc,
+            http_transport=http_transport,
+            timeout_s=startup_timeout_s,
+            poll_interval_s=poll_interval_s,
+        )
+    except Exception:
+        server.stop()
+        raise
+    return server
 
 
 def _coerce_process_entries(
@@ -753,91 +948,6 @@ def _coerce_process_entries(
     return out
 
 
-def query_system_process_table() -> list[ProcessEntry]:  # pragma: no cover
-    """Query the OS process table and listening TCP ports to resolve Ollama server/runner PIDs."""
-    ports_by_pid: dict[int, set[int]] = {}
-    entries: list[ProcessEntry] = []
-    if sys.platform == "win32":
-        try:
-            ns = subprocess.run(
-                ["netstat", "-ano", "-p", "tcp"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            for line in ns.stdout.splitlines():
-                parts = line.split()
-                if len(parts) >= 5 and parts[0].upper() == "TCP" and parts[3].upper() == "LISTENING":
-                    local_addr = parts[1]
-                    pid_str = parts[4]
-                    port_str = local_addr.rsplit(":", 1)[-1]
-                    if port_str.isdigit() and pid_str.isdigit():
-                        ports_by_pid.setdefault(int(pid_str), set()).add(int(port_str))
-        except Exception:
-            pass
-        try:
-            ps = subprocess.run(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-Command",
-                    "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-                check=False,
-            )
-            if ps.returncode == 0 and ps.stdout.strip():
-                parsed = json.loads(ps.stdout)
-                rows = [parsed] if isinstance(parsed, dict) else list(parsed)
-                for row in rows:
-                    if not isinstance(row, Mapping) or row.get("ProcessId") is None:
-                        continue
-                    pid_val = int(row["ProcessId"])
-                    entries.append(
-                        ProcessEntry(
-                            pid=pid_val,
-                            ppid=int(row.get("ParentProcessId") or 0),
-                            name=str(row.get("Name") or ""),
-                            cmdline=str(row.get("CommandLine") or ""),
-                            listening_ports=tuple(sorted(ports_by_pid.get(pid_val, set()))),
-                        )
-                    )
-        except Exception:
-            pass
-        return entries
-
-    try:
-        ps = subprocess.run(
-            ["ps", "-eo", "pid=,ppid=,comm=,args="],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        for line in ps.stdout.splitlines():
-            parts = line.strip().split(None, 3)
-            if len(parts) >= 3 and parts[0].isdigit() and parts[1].isdigit():
-                pid_val = int(parts[0])
-                ppid_val = int(parts[1])
-                comm_val = parts[2]
-                args_val = parts[3] if len(parts) >= 4 else comm_val
-                entries.append(
-                    ProcessEntry(
-                        pid=pid_val,
-                        ppid=ppid_val,
-                        name=comm_val,
-                        cmdline=args_val,
-                        listening_ports=(),
-                    )
-                )
-    except Exception:
-        pass
-    return entries
-
-
 def resolve_owned_ollama_halt_pid(
     *,
     ollama_base_url: str,
@@ -849,32 +959,56 @@ def resolve_owned_ollama_halt_pid(
     | None = None,
     owner_pid: int | None = None,
 ) -> int:
-    """Resolve the owned Ollama runner PID serving the writer from `/api/ps` and the listening port's process.
+    """Resolve an owned Ollama runner PID from an explicit process table.
 
-    Refuses to start if no owned server/runner can be resolved, and never returns an unowned PID.
+    Never reads `RDLAB_OLLAMA_OWNER_PID`, never queries `netstat`/`Win32_Process`, and never returns
+    PID 0, PID 4, or any PID whose ancestry reaches 0 or 4.
     """
     parsed_url = urllib.parse.urlsplit(ollama_base_url)
     target_port = int(parsed_url.port or 11434)
     clean_base = ollama_base_url.rstrip("/")
 
-    env_owner = os.environ.get("RDLAB_OLLAMA_OWNER_PID", "").strip()
-    effective_owner_pid = (
-        int(owner_pid)
-        if owner_pid is not None
-        else (int(env_owner) if env_owner.isdigit() else os.getpid())
-    )
+    effective_owner_pid = int(owner_pid) if owner_pid is not None else os.getpid()
+    if effective_owner_pid <= 4:
+        raise refused_error(
+            "BAKEOFF_HALT_PID_UNRESOLVED",
+            f"Invalid owner_pid={effective_owner_pid}; PID 0, PID 4, and system root PIDs are forbidden.",
+            "Use a positive non-system session owner PID.",
+        )
 
     if process_table is None:
-        raw_table: Sequence[ProcessEntry | Mapping[str, Any]] = query_system_process_table()
-    elif callable(process_table):
-        raw_table = process_table()
-    else:
-        raw_table = process_table
+        raise refused_error(
+            "BAKEOFF_HALT_PID_UNRESOLVED",
+            "No explicit process_table provided to resolve_owned_ollama_halt_pid.",
+            "Launch an owned Ollama child server with start_owned_ollama_server instead of port discovery.",
+        )
+    raw_table = process_table() if callable(process_table) else process_table
 
     entries = _coerce_process_entries(raw_table)
     by_pid: dict[int, ProcessEntry] = {p.pid: p for p in entries}
 
+    def _ancestry_reaches_zero_or_four(pid: int) -> bool:
+        if pid <= 4:
+            return True
+        visited: set[int] = set()
+        cur = by_pid.get(pid)
+        while cur is not None and cur.pid not in visited:
+            visited.add(cur.pid)
+            if cur.pid <= 4 or cur.ppid in (0, 4) or cur.ppid < 0:
+                return True
+            cur = by_pid.get(cur.ppid)
+        return False
+
+    if _ancestry_reaches_zero_or_four(effective_owner_pid):
+        raise refused_error(
+            "BAKEOFF_HALT_PID_UNRESOLVED",
+            f"owner_pid={effective_owner_pid} has ancestry reaching PID 0 or PID 4.",
+            "Refusing to resolve a process whose ancestry reaches PID 0 or 4.",
+        )
+
     def _is_owned(pid: int) -> bool:
+        if _ancestry_reaches_zero_or_four(pid):
+            return False
         visited: set[int] = set()
         cur = by_pid.get(pid)
         while cur is not None and cur.pid not in visited:
@@ -889,7 +1023,7 @@ def resolve_owned_ollama_halt_pid(
         return False
 
     def _is_descendant_of(pid: int, ancestor_pid: int) -> bool:
-        if pid == ancestor_pid:
+        if pid == ancestor_pid or _ancestry_reaches_zero_or_four(pid) or _ancestry_reaches_zero_or_four(ancestor_pid):
             return False
         visited: set[int] = set()
         cur = by_pid.get(pid)
@@ -955,14 +1089,16 @@ def resolve_owned_ollama_halt_pid(
     ps_pid = matched_ps_model.get("pid")
     if isinstance(ps_pid, int) and not isinstance(ps_pid, bool):
         for desc in owned_descendants:
-            if desc.pid == ps_pid:
+            if desc.pid == ps_pid and desc.pid > 4 and not _ancestry_reaches_zero_or_four(desc.pid):
                 return desc.pid
 
     writer_base = writer_tag.split(":", 1)[0].lower()
     runner_procs = [
         p
         for p in owned_descendants
-        if "runner" in p.cmdline.lower() or "runner" in p.name.lower()
+        if ("runner" in p.cmdline.lower() or "runner" in p.name.lower())
+        and p.pid > 4
+        and not _ancestry_reaches_zero_or_four(p.pid)
     ]
     for proc in runner_procs:
         if writer_base in proc.cmdline.lower() or writer_tag.lower() in proc.cmdline.lower():
@@ -1006,6 +1142,7 @@ class GpuGuardMonitor:
         self._mirror_records_path = mirror_records_path
         self._records: list[GpuCallRecord] = []
         self._peak_vram_mib: int = 0
+        self._halted: bool = False
 
     @property
     def records(self) -> tuple[GpuCallRecord, ...]:
@@ -1015,19 +1152,72 @@ class GpuGuardMonitor:
     def peak_vram_mib(self) -> int:
         return self._peak_vram_mib
 
+    @property
+    def halted(self) -> bool:
+        return self._halted
+
+    def _write_record_line(self, rec: GpuCallRecord) -> None:
+        line = json.dumps(rec.to_dict(), sort_keys=True) + "\n"
+        for target_path in (self._records_path, self._mirror_records_path):
+            if target_path is not None:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with target_path.open("a", encoding="utf-8", newline="\n") as fh:
+                    fh.write(line)
+
+    def _flush_records(self) -> None:
+        lines = "".join(json.dumps(r.to_dict(), sort_keys=True) + "\n" for r in self._records)
+        for target_path in (self._records_path, self._mirror_records_path):
+            if target_path is not None:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                target_path.write_text(lines, encoding="utf-8", newline="\n")
+
+    def _raise_halted(self, current_mib: int) -> None:
+        raise refused_error(
+            "BAKEOFF_VRAM_HALT_EXCEEDED",
+            f"VRAM usage {current_mib} MiB exceeded halt ceiling {self.vram_halt_mib} MiB "
+            f"(killed PID tree {self._halt_pid}).",
+            f"Keep VRAM at or below {self.vram_halt_mib} MiB.",
+        )
+
+    def _trigger_halt(
+        self,
+        current_mib: int,
+        *,
+        halt_model: str | None = None,
+        halt_seconds: float = 0.0,
+        halt_eval_count: int = 0,
+        halt_prompt_eval_count: int = 0,
+    ) -> None:
+        if not self._halted:
+            self._halted = True
+            if self._halt_pid is not None:
+                self._pid_killer(self._halt_pid)
+            if halt_model is not None or not self._records:
+                rec = GpuCallRecord(
+                    call_index=len(self._records) + 1,
+                    wave_name="halt",
+                    operation="vram_halt",
+                    target_id="halt",
+                    model=halt_model or DEFAULT_PILOT_B_MODEL_PINS["writer"].ollama_tag,
+                    seconds=halt_seconds,
+                    eval_count=halt_eval_count,
+                    prompt_eval_count=halt_prompt_eval_count,
+                    vram_peak_mib=max(current_mib, self._peak_vram_mib),
+                    vram_halt_mib=self.vram_halt_mib,
+                    grant_id=self.grant_id,
+                )
+                self._records.append(rec)
+            self._flush_records()
+        self._raise_halted(current_mib)
+
     def check_vram(self) -> int:
+        if self._halted:
+            self._raise_halted(self._peak_vram_mib)
         current_mib = int(self._vram_probe())
         if current_mib > self._peak_vram_mib:
             self._peak_vram_mib = current_mib
         if current_mib > self.vram_halt_mib:
-            if self._halt_pid is not None:
-                self._pid_killer(self._halt_pid)
-            raise refused_error(
-                "BAKEOFF_VRAM_HALT_EXCEEDED",
-                f"VRAM usage {current_mib} MiB exceeded halt ceiling {self.vram_halt_mib} MiB "
-                f"(killed PID tree {self._halt_pid}).",
-                f"Keep VRAM at or below {self.vram_halt_mib} MiB.",
-            )
+            self._trigger_halt(current_mib)
         return current_mib
 
     def record_call(
@@ -1041,6 +1231,8 @@ class GpuGuardMonitor:
         eval_count: int,
         prompt_eval_count: int,
     ) -> GpuCallRecord:
+        if self._halted:
+            self._raise_halted(self._peak_vram_mib)
         vram_mib = self.check_vram()
         rec = GpuCallRecord(
             call_index=len(self._records) + 1,
@@ -1056,12 +1248,7 @@ class GpuGuardMonitor:
             grant_id=self.grant_id,
         )
         self._records.append(rec)
-        line = json.dumps(rec.to_dict(), sort_keys=True) + "\n"
-        for target_path in (self._records_path, self._mirror_records_path):
-            if target_path is not None:
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                with target_path.open("a", encoding="utf-8", newline="\n") as fh:
-                    fh.write(line)
+        self._write_record_line(rec)
         return rec
 
     def wrap_transport(self, inner: OllamaHttpTransport) -> OllamaHttpTransport:
@@ -1072,14 +1259,43 @@ class GpuGuardMonitor:
             url: str,
             payload: Mapping[str, object] | None = None,
         ) -> dict[str, object]:
+            if self._halted:
+                self._raise_halted(self._peak_vram_mib)
+            if url.endswith("/api/pull"):
+                raise refused_error(
+                    "PILOT_B_OLLAMA_PULL_FORBIDDEN",
+                    f"Auto-pull is forbidden ({method} {url}); refuse when the pinned writer digest is missing.",
+                    "Ensure the pinned writer model is present in OLLAMA_MODELS.",
+                )
+            model_name = (
+                str(payload.get("model") or DEFAULT_PILOT_B_MODEL_PINS["writer"].ollama_tag)
+                if isinstance(payload, Mapping)
+                else DEFAULT_PILOT_B_MODEL_PINS["writer"].ollama_tag
+            )
             if method.upper() == "POST" and url.endswith("/api/chat"):
-                self.check_vram()
+                current_pre = int(self._vram_probe())
+                if current_pre > self._peak_vram_mib:
+                    self._peak_vram_mib = current_pre
+                if current_pre > self.vram_halt_mib:
+                    self._trigger_halt(current_pre, halt_model=model_name)
             t0 = time.perf_counter()
             resp = inner(method, url, payload)
             elapsed = time.perf_counter() - t0
             if method.upper() == "POST" and url.endswith("/api/chat") and payload is not None:
                 if payload.get("keep_alive") != 0 and payload.get("messages"):
-                    self.check_vram()
+                    current_post = int(self._vram_probe())
+                    if current_post > self._peak_vram_mib:
+                        self._peak_vram_mib = current_post
+                    if current_post > self.vram_halt_mib:
+                        raw_eval = resp.get("eval_count") if isinstance(resp, Mapping) else 0
+                        raw_prompt = resp.get("prompt_eval_count") if isinstance(resp, Mapping) else 0
+                        self._trigger_halt(
+                            current_post,
+                            halt_model=model_name,
+                            halt_seconds=elapsed,
+                            halt_eval_count=int(raw_eval) if isinstance(raw_eval, int) else 0,
+                            halt_prompt_eval_count=int(raw_prompt) if isinstance(raw_prompt, int) else 0,
+                        )
                     resp_out = dict(resp)
                     resp_out.setdefault("_guard_elapsed_s", round(elapsed, 4))
                     return resp_out
@@ -1109,6 +1325,8 @@ def build_mock_writer_ollama_http_transport(
         url: str,
         body: Mapping[str, object] | None = None,
     ) -> dict[str, object]:
+        if method == "GET" and url.endswith("/api/version"):
+            return {"version": "0.6.0-mock"}
         if method == "GET" and (url.endswith("/api/tags") or url.endswith("/api/ps")):
             return {"models": models_list}
         if method == "POST" and url.endswith("/api/chat"):
@@ -1556,6 +1774,9 @@ def run_bakeoff_part_build(
     | Callable[[], Sequence[ProcessEntry | Mapping[str, Any]]]
     | None = None,
     owner_pid: int | None = None,
+    popen_factory: Callable[..., Any] | None = None,
+    server_port: int | None = None,
+    ollama_models_dir: Path | str | None = None,
     http_transport: OllamaHttpTransport | None = None,
     manifest_path: Path | None = None,
     review_queue_v3_path: Path | None = None,
@@ -1663,16 +1884,18 @@ def run_bakeoff_part_build(
         )
     )
 
+    owned_server: OwnedOllamaServer | None = None
+    active_ollama_url = ollama_base_url
     resolved_halt_pid = halt_pid
-    if not mock_writer and resolved_halt_pid is None:
-        resolved_halt_pid = resolve_owned_ollama_halt_pid(
-            ollama_base_url=ollama_base_url,
-            writer_tag=writer_pin.ollama_tag,
-            writer_digest=writer_pin.manifest_digest,
+    if not mock_writer:
+        owned_server = start_owned_ollama_server(
             http_transport=base_transport,
-            process_table=process_table,
-            owner_pid=owner_pid,
+            popen_factory=popen_factory,
+            port=server_port,
+            ollama_models_dir=ollama_models_dir,
         )
+        active_ollama_url = owned_server.base_url
+        resolved_halt_pid = owned_server.pid if halt_pid is None else halt_pid
 
     resolved_vram_probe: Callable[[], int] = (
         vram_probe
@@ -1688,34 +1911,50 @@ def run_bakeoff_part_build(
         records_path=call_records_path,
         mirror_records_path=legacy_call_records_path,
     )
-    if not mock_writer:
-        gpu_guard.check_vram()
-
     guarded_transport = gpu_guard.wrap_transport(base_transport)
 
     saved_transport = ollama_mod.default_ollama_http_transport
     ollama_mod.default_ollama_http_transport = guarded_transport
+    writer_adapter: OllamaWriterAdapter | None = None
+    writer_verified = False
     try:
-        writer_adapter = OllamaWriterAdapter(
-            model=writer_identity,
-            base_url=ollama_base_url,
-            num_predict=writer_np_config,
-            max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["writer"],
-            http_transport=guarded_transport,
-        )
-        review_queue_out = resolved_out / "review_queue.jsonl"
-        if review_queue_out.exists():
-            review_queue_out.unlink()
+        try:
+            writer_adapter = OllamaWriterAdapter(
+                model=writer_identity,
+                base_url=active_ollama_url,
+                num_predict=writer_np_config,
+                max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["writer"],
+                http_transport=guarded_transport,
+            )
+            if not mock_writer:
+                writer_adapter._ensure_verified()
+                writer_verified = True
+                gpu_guard.check_vram()
 
-        wave_result = run_bakeoff_writer_waves(
-            planned_triads=planned_triads,
-            writer_model=writer_identity,
-            writer_adapter=writer_adapter,
-            review_queue_path=review_queue_out,
-            gpu_guard=gpu_guard,
-            split_counts=split_counts,
-            num_predict=writer_np_config,
-        )
+            review_queue_out = resolved_out / "review_queue.jsonl"
+            if review_queue_out.exists():
+                review_queue_out.unlink()
+
+            wave_result = run_bakeoff_writer_waves(
+                planned_triads=planned_triads,
+                writer_model=writer_identity,
+                writer_adapter=writer_adapter,
+                review_queue_path=review_queue_out,
+                gpu_guard=gpu_guard,
+                split_counts=split_counts,
+                num_predict=writer_np_config,
+            )
+        finally:
+            if writer_verified and writer_adapter is not None and not writer_adapter.unload_records:
+                try:
+                    writer_adapter.unload_model()
+                except Exception:
+                    pass
+            if owned_server is not None:
+                owned_server.unloaded = bool(
+                    writer_adapter is not None and writer_adapter.unload_records
+                )
+                owned_server.stop()
 
         map_sha = hashlib.sha256(b"verifier-t10-pilot-b:v1").hexdigest()
 
@@ -1866,7 +2105,31 @@ def run_bakeoff_part_build(
             "vram_peak_mib": gpu_guard.peak_vram_mib,
             "calls_recorded": len(gpu_guard.records),
             "call_records_path": "reports/call_records.jsonl",
+            "halt_pid": resolved_halt_pid,
+            "server_pid": owned_server.pid if owned_server is not None else None,
+            "server_started_at": owned_server.started_at if owned_server is not None else None,
+            "server_stopped_at": owned_server.stopped_at if owned_server is not None else None,
+            "server_start_time": owned_server.started_at if owned_server is not None else None,
+            "server_stop_time": owned_server.stopped_at if owned_server is not None else None,
         },
+        "ollama_server": (
+            owned_server.to_dict()
+            if owned_server is not None
+            else {
+                "pid": None,
+                "port": None,
+                "host": None,
+                "base_url": active_ollama_url,
+                "models_dir": None,
+                "started_at": None,
+                "stopped_at": None,
+                "start_time": None,
+                "stop_time": None,
+                "version": None,
+                "owned": False,
+                "unloaded": bool(writer_adapter is not None and writer_adapter.unload_records),
+            }
+        ),
     }
 
     report_path = resolved_out / "reports" / "bakeoff_part_report.json"

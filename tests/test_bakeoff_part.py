@@ -691,7 +691,7 @@ def test_fix1_non_mock_resolves_owned_runner_pid_and_refuses_unowned_process_tab
         },
     ]
 
-    # 1a. Non-mock run against owned server (port 11435) resolves runner PID 5201 and kills it at VRAM cap
+    # 1a. Non-mock run starts its own child server (PID 5200) and kills its PID tree at VRAM cap
     killed_pids: list[int] = []
     with pytest.raises(RdlabError) as exc_halt:
         run_bakeoff_part_build(
@@ -701,40 +701,17 @@ def test_fix1_non_mock_resolves_owned_runner_pid_and_refuses_unowned_process_tab
             mock_writer=False,
             grant_id="grant-fix1-owned",
             licence_registry_path=reg_path,
-            ollama_base_url="http://127.0.0.1:11435",
             vram_halt_mib=1,
             vram_probe=lambda: 2,
             pid_killer=killed_pids.append,
-            process_table=fake_process_table,
+            popen_factory=lambda args, **kw: _FakeChildPopen(args, pid=5200, **kw),
             http_transport=build_mock_writer_ollama_http_transport(),
             repo_root=tmp_path / "fake-repo",
         )
     assert exc_halt.value.code == "BAKEOFF_VRAM_HALT_EXCEEDED"
-    assert killed_pids == [5201]
+    assert killed_pids == [5200]
 
-    # 1b. Non-mock run against another session's unowned server (port 11434) refuses to start and kills nothing
-    unowned_killed: list[int] = []
-    with pytest.raises(RdlabError) as exc_unowned:
-        run_bakeoff_part_build(
-            output_dir=tmp_path / "unowned-refuse-out",
-            triad_count=1,
-            stub_mode=True,
-            mock_writer=False,
-            grant_id="grant-fix1-unowned",
-            licence_registry_path=reg_path,
-            ollama_base_url="http://127.0.0.1:11434",
-            vram_halt_mib=1,
-            vram_probe=lambda: 2,
-            pid_killer=unowned_killed.append,
-            process_table=fake_process_table,
-            http_transport=build_mock_writer_ollama_http_transport(),
-            repo_root=tmp_path / "fake-repo",
-        )
-    assert exc_unowned.value.code == "BAKEOFF_HALT_PID_UNRESOLVED"
-    assert unowned_killed == []
-
-    # 1c. Additional resolution branches: ProcessEntry objects, parent-chain ownership via owner_pid,
-    # callable process_table, explicit ps_pid, generic runner fallback, and refusal when runner/model/port missing.
+    # 1b. Ownership-walk helper against owned (11435) vs unowned (11434) entries in fake_process_table
     from reasoning_dataset_lab.pilot_b.bakeoff_part import (
         ProcessEntry,
         resolve_owned_ollama_halt_pid,
@@ -742,7 +719,30 @@ def test_fix1_non_mock_resolves_owned_runner_pid_and_refuses_unowned_process_tab
     from reasoning_dataset_lab.pilot_b.models_and_build import DEFAULT_PILOT_B_MODEL_PINS
 
     writer_spec = DEFAULT_PILOT_B_MODEL_PINS["writer"]
+    assert (
+        resolve_owned_ollama_halt_pid(
+            ollama_base_url="http://127.0.0.1:11435",
+            writer_tag=writer_spec.ollama_tag,
+            writer_digest=writer_spec.manifest_digest,
+            http_transport=build_mock_writer_ollama_http_transport(),
+            process_table=fake_process_table,
+            owner_pid=my_pid,
+        )
+        == 5201
+    )
+    with pytest.raises(RdlabError) as exc_unowned:
+        resolve_owned_ollama_halt_pid(
+            ollama_base_url="http://127.0.0.1:11434",
+            writer_tag=writer_spec.ollama_tag,
+            writer_digest=writer_spec.manifest_digest,
+            http_transport=build_mock_writer_ollama_http_transport(),
+            process_table=fake_process_table,
+            owner_pid=my_pid,
+        )
+    assert exc_unowned.value.code == "BAKEOFF_HALT_PID_UNRESOLVED"
 
+    # 1c. Additional resolution branches: ProcessEntry objects, parent-chain ownership via owner_pid,
+    # callable process_table, explicit ps_pid, generic runner fallback, and refusal when runner/model/port missing.
     chain_table = [
         ProcessEntry(pid=7000, ppid=1, name="bash", cmdline="bash", listening_ports=()),
         ProcessEntry(pid=7001, ppid=7000, name="ollama", cmdline="ollama serve", listening_ports=(11436,)),
@@ -780,8 +780,7 @@ def test_fix1_non_mock_resolves_owned_runner_pid_and_refuses_unowned_process_tab
     )
     assert resolved_ps_pid == 7002
 
-    monkeypatch.setattr(bo_mod, "query_system_process_table", lambda: chain_table)
-    resolved_default_table = resolve_owned_ollama_halt_pid(
+    resolved_fallback_pid = resolve_owned_ollama_halt_pid(
         ollama_base_url="http://127.0.0.1:11436",
         writer_tag=writer_spec.ollama_tag,
         writer_digest=writer_spec.manifest_digest,
@@ -794,10 +793,19 @@ def test_fix1_non_mock_resolves_owned_runner_pid_and_refuses_unowned_process_tab
                 }
             ]
         },
-        process_table=None,
+        process_table=chain_table,
         owner_pid=7000,
     )
-    assert resolved_default_table == 7002
+    assert resolved_fallback_pid == 7002
+
+    with pytest.raises(RdlabError) as exc_none_table:
+        resolve_owned_ollama_halt_pid(
+            ollama_base_url="http://127.0.0.1:11436",
+            writer_tag=writer_spec.ollama_tag,
+            process_table=None,
+            owner_pid=7000,
+        )
+    assert exc_none_table.value.code == "BAKEOFF_HALT_PID_UNRESOLVED"
 
     # Refusal when parent chain reaches root without matching owner_pid
     with pytest.raises(RdlabError):
@@ -1115,4 +1123,535 @@ def test_fix5_byte_identity_regression_against_main_e0e3c04(
     ):
         digest = hashlib.sha256((keys_path.parent / name).read_bytes()).hexdigest()
         assert digest == expected_golden[name], f"Mismatch on {name}"
+
+
+class _FakeChildPopen:
+    """Fake subprocess.Popen handle for testing owned `ollama serve` lifecycle without spawning a binary."""
+
+    def __init__(
+        self,
+        args,
+        *,
+        pid: int,
+        env: dict[str, str] | None = None,
+        **kwargs,
+    ) -> None:
+        self.args = list(args) if isinstance(args, (list, tuple)) else [str(args)]
+        self.pid = pid
+        self.env = dict(env or {})
+        self.kwargs = kwargs
+        self.returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+        self.wait_calls = 0
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self, timeout: float | None = None) -> int:
+        self.wait_calls += 1
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+
+def test_qc1_child_server_started_halt_pid_and_stopped_on_success_and_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        build_fixture_licence_registry,
+    )
+
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2),
+        encoding="utf-8",
+    )
+
+    spawned: list[_FakeChildPopen] = []
+    next_pid = 5250
+
+    def _fake_popen(args, **kwargs):
+        nonlocal next_pid
+        proc = _FakeChildPopen(args, pid=next_pid, **kwargs)
+        next_pid += 1
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    monkeypatch.setenv("OLLAMA_MODELS", str(tmp_path / "rig-models"))
+
+    base_mock = build_mock_writer_ollama_http_transport()
+    seen_requests: list[tuple[str, str, dict | None]] = []
+
+    def _recording_transport(method: str, url: str, body=None):
+        seen_requests.append((method, url, dict(body) if isinstance(body, dict) else None))
+        if method == "GET" and url.endswith("/api/version"):
+            return {"version": "0.6.0-fake"}
+        return base_mock(method, url, body)
+
+    # 1. Success path: starts child `ollama serve`, waits for /api/version, uses child PID as halt_pid,
+    # unloads with keep_alive: 0, stops child server, and records start/stop times and PID in report.
+    res = run_bakeoff_part_build(
+        output_dir=tmp_path / "qc1-success-out",
+        triad_count=1,
+        stub_mode=True,
+        mock_writer=False,
+        grant_id="grant-qc1-success",
+        licence_registry_path=reg_path,
+        vram_probe=lambda: 14_000,
+        http_transport=_recording_transport,
+        repo_root=tmp_path / "fake-repo",
+    )
+    assert len(spawned) == 1
+    srv = spawned[0]
+    assert srv.args == ["ollama", "serve"]
+    assert srv.pid == 5250
+    assert srv.terminated is True
+    host_env = srv.env.get("OLLAMA_HOST", "")
+    assert host_env.startswith("127.0.0.1:")
+    expected_base = f"http://{host_env}"
+    assert srv.env.get("OLLAMA_MODELS") == str(tmp_path / "rig-models")
+
+    assert seen_requests[0][0] == "GET"
+    assert seen_requests[0][1] == f"{expected_base}/api/version"
+    assert all(url.startswith(expected_base) for _, url, _ in seen_requests)
+    unload_calls = [
+        b for m, u, b in seen_requests if m == "POST" and u.endswith("/api/chat") and (b or {}).get("keep_alive") == 0
+    ]
+    assert len(unload_calls) == 1
+
+    report_doc = json.loads(Path(res["report_path"]).read_text(encoding="utf-8"))
+    assert report_doc["gpu_guard"]["halt_pid"] == 5250
+    assert report_doc["ollama_server"]["pid"] == 5250
+    assert isinstance(report_doc["ollama_server"]["started_at"], str) and report_doc["ollama_server"]["started_at"]
+    assert isinstance(report_doc["ollama_server"]["stopped_at"], str) and report_doc["ollama_server"]["stopped_at"]
+
+    # 2. Error path: when an error occurs during writer waves, finally still sends keep_alive: 0 and stops child server.
+    err_requests: list[tuple[str, str, dict | None]] = []
+
+    def _failing_wave_transport(method: str, url: str, body=None):
+        err_requests.append((method, url, dict(body) if isinstance(body, dict) else None))
+        if method == "GET" and url.endswith("/api/version"):
+            return {"version": "0.6.0-fake"}
+        if method == "POST" and url.endswith("/api/chat") and (body or {}).get("keep_alive") != 0:
+            raise RdlabError("PILOT_B_OLLAMA_HTTP_ERROR", "Simulated wave failure", "Check server")
+        return base_mock(method, url, body)
+
+    with pytest.raises(RdlabError) as exc_err:
+        run_bakeoff_part_build(
+            output_dir=tmp_path / "qc1-error-out",
+            triad_count=1,
+            stub_mode=True,
+            mock_writer=False,
+            grant_id="grant-qc1-error",
+            licence_registry_path=reg_path,
+            vram_probe=lambda: 14_000,
+            http_transport=_failing_wave_transport,
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_err.value.code == "PILOT_B_OLLAMA_HTTP_ERROR"
+    assert len(spawned) == 2
+    err_srv = spawned[1]
+    assert err_srv.pid == 5251
+    assert err_srv.terminated is True
+    err_unloads = [
+        b for m, u, b in err_requests if m == "POST" and u.endswith("/api/chat") and (b or {}).get("keep_alive") == 0
+    ]
+    assert len(err_unloads) == 1
+
+
+def test_qc2_halt_kills_only_child_server_tree_writes_records_and_refuses_further_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        build_fixture_licence_registry,
+    )
+
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2),
+        encoding="utf-8",
+    )
+
+    spawned: list[_FakeChildPopen] = []
+
+    def _fake_popen(args, **kwargs):
+        proc = _FakeChildPopen(args, pid=5260, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+
+    base_mock = build_mock_writer_ollama_http_transport()
+
+    def _transport(method: str, url: str, body=None):
+        if method == "GET" and url.endswith("/api/version"):
+            return {"version": "0.6.0-fake"}
+        return base_mock(method, url, body)
+
+    # First check_vram at startup + first call succeed (20,000 MiB <= 26,000 MiB);
+    # second call spikes to 26,500 MiB > 26,000 MiB and triggers halt.
+    vram_samples = iter([10_000, 18_000, 20_000, 20_000, 26_500, 12_000, 12_000])
+    killed_pids: list[int] = []
+    out_dir = tmp_path / "qc2-halt-out"
+
+    with pytest.raises(RdlabError) as exc_halt:
+        run_bakeoff_part_build(
+            output_dir=out_dir,
+            triad_count=1,
+            stub_mode=True,
+            mock_writer=False,
+            grant_id="grant-qc2-halt",
+            licence_registry_path=reg_path,
+            vram_halt_mib=26_000,
+            vram_probe=lambda: next(vram_samples, 12_000),
+            pid_killer=killed_pids.append,
+            http_transport=_transport,
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_halt.value.code == "BAKEOFF_VRAM_HALT_EXCEEDED"
+    assert len(spawned) == 1
+    assert killed_pids == [5260]
+    assert 4100 not in killed_pids
+    assert spawned[0].terminated is True
+
+    # Call records were written on halt
+    records_path = out_dir / "reports" / "call_records.jsonl"
+    assert records_path.is_file()
+    rows = _jsonl(records_path)
+    assert len(rows) >= 1
+
+    # Direct monitor verification: once halted, writes call records and refuses all further calls
+    # even if VRAM probe subsequently drops below cap.
+    direct_killed: list[int] = []
+    direct_records = tmp_path / "direct_halt_records.jsonl"
+    probe_vals = iter([27_000, 1_000, 1_000])
+    mon = GpuGuardMonitor(
+        grant_id="grant-direct-halt",
+        vram_halt_mib=26_000,
+        vram_probe=lambda: next(probe_vals, 1_000),
+        halt_pid=5260,
+        pid_killer=direct_killed.append,
+        records_path=direct_records,
+    )
+    inner_calls = 0
+
+    def _counting_inner(method: str, url: str, payload=None):
+        nonlocal inner_calls
+        inner_calls += 1
+        return base_mock(method, url, payload)
+
+    guarded = mon.wrap_transport(_counting_inner)
+    with pytest.raises(RdlabError) as exc_first:
+        guarded(
+            "POST",
+            "http://127.0.0.1:11434/api/chat",
+            {"model": "qwen3.6:35b", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert exc_first.value.code == "BAKEOFF_VRAM_HALT_EXCEEDED"
+    assert direct_killed == [5260]
+    assert direct_records.is_file()
+    assert len(_jsonl(direct_records)) == 1
+
+    # Subsequent calls are refused immediately without calling inner or pid_killer again
+    with pytest.raises(RdlabError) as exc_second:
+        guarded(
+            "POST",
+            "http://127.0.0.1:11434/api/chat",
+            {"model": "qwen3.6:35b", "messages": [{"role": "user", "content": "hi again"}]},
+        )
+    assert exc_second.value.code == "BAKEOFF_VRAM_HALT_EXCEEDED"
+    assert inner_calls == 0
+    assert direct_killed == [5260]
+    assert mon.halted is True
+    with pytest.raises(RdlabError):
+        mon.check_vram()
+    with pytest.raises(RdlabError):
+        mon.record_call(
+            wave_name="render",
+            operation="render_material",
+            target_id="t1",
+            model="qwen3.6:35b",
+            seconds=0.1,
+            eval_count=1,
+            prompt_eval_count=1,
+        )
+
+    # Post-call VRAM halt branch (pre-call below cap, post-call above cap) and /api/pull refusal
+    post_killed: list[int] = []
+    post_vals = iter([10_000, 27_500])
+    post_mon = GpuGuardMonitor(
+        grant_id="grant-post-halt",
+        vram_halt_mib=26_000,
+        vram_probe=lambda: next(post_vals, 10_000),
+        halt_pid=5261,
+        pid_killer=post_killed.append,
+        records_path=tmp_path / "post_halt_records.jsonl",
+    )
+    post_guarded = post_mon.wrap_transport(base_mock)
+    with pytest.raises(RdlabError) as exc_pull:
+        post_guarded("POST", "http://127.0.0.1:11434/api/pull", {"name": "qwen3.6:35b"})
+    assert exc_pull.value.code == "PILOT_B_OLLAMA_PULL_FORBIDDEN"
+    with pytest.raises(RdlabError) as exc_post:
+        post_guarded(
+            "POST",
+            "http://127.0.0.1:11434/api/chat",
+            {"model": "qwen3.6:35b", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert exc_post.value.code == "BAKEOFF_VRAM_HALT_EXCEEDED"
+    assert post_killed == [5261]
+
+    # Verify kill_pid_tree uses `taskkill /PID <pid> /T /F` on Windows and process-group kill on POSIX
+    win_cmds: list[list[str]] = []
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, **kw: win_cmds.append(list(cmd)),
+    )
+    monkeypatch.setattr(os, "kill", lambda p, s: None)
+    kill_pid_tree(5260)
+    assert win_cmds == [["taskkill", "/PID", "5260", "/T", "/F"]]
+
+    pg_kills: list[tuple[int, int]] = []
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: pg_kills.append((pgid, int(sig))), raising=False)
+    monkeypatch.setattr(os, "getpgid", lambda pid: pid, raising=False)
+    monkeypatch.setattr(os, "getpgrp", lambda: 99999, raising=False)
+    kill_pid_tree(5260)
+    assert pg_kills and pg_kills[0][0] == 5260
+
+
+def test_qc3_refuses_when_writer_digest_missing_without_pull_and_stops_child_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        build_fixture_licence_registry,
+    )
+
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2),
+        encoding="utf-8",
+    )
+
+    spawned: list[_FakeChildPopen] = []
+
+    def _fake_popen(args, **kwargs):
+        proc = _FakeChildPopen(args, pid=5300 + len(spawned), **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", _fake_popen)
+    rig_models_dir = str(tmp_path / "shared-ollama-models")
+    monkeypatch.setenv("OLLAMA_MODELS", rig_models_dir)
+
+    requests_seen: list[tuple[str, str]] = []
+
+    def _missing_model_transport(method: str, url: str, body=None):
+        requests_seen.append((method, url))
+        if method == "GET" and url.endswith("/api/version"):
+            return {"version": "0.6.0-fake"}
+        if method == "GET" and url.endswith("/api/tags"):
+            return {"models": []}
+        raise AssertionError(f"Unexpected request when model is missing: {method} {url}")
+
+    with pytest.raises(RdlabError) as exc_missing:
+        run_bakeoff_part_build(
+            output_dir=tmp_path / "qc3-missing-out",
+            triad_count=1,
+            stub_mode=True,
+            mock_writer=False,
+            grant_id="grant-qc3-missing",
+            licence_registry_path=reg_path,
+            vram_probe=lambda: 0,
+            http_transport=_missing_model_transport,
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_missing.value.code == "PILOT_B_OLLAMA_MODEL_MISSING"
+    assert len(spawned) == 1
+    assert spawned[0].env.get("OLLAMA_MODELS") == rig_models_dir
+    assert spawned[0].terminated is True
+    assert not any("/api/pull" in u or "/api/chat" in u for _, u in requests_seen)
+
+    # Wrong digest in /api/tags is also refused without pull and stops child server
+    writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
+
+    def _wrong_digest_transport(method: str, url: str, body=None):
+        requests_seen.append((method, url))
+        if method == "GET" and url.endswith("/api/version"):
+            return {"version": "0.6.0-fake"}
+        if method == "GET" and url.endswith("/api/tags"):
+            return {
+                "models": [
+                    {
+                        "name": writer_pin.ollama_tag,
+                        "model": writer_pin.ollama_tag,
+                        "digest": "0" * 64,
+                    }
+                ]
+            }
+        raise AssertionError(f"Unexpected request on digest mismatch: {method} {url}")
+
+    with pytest.raises(RdlabError) as exc_mismatch:
+        run_bakeoff_part_build(
+            output_dir=tmp_path / "qc3-mismatch-out",
+            triad_count=1,
+            stub_mode=True,
+            mock_writer=False,
+            grant_id="grant-qc3-mismatch",
+            licence_registry_path=reg_path,
+            vram_probe=lambda: 0,
+            http_transport=_wrong_digest_transport,
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_mismatch.value.code == "PILOT_B_OLLAMA_DIGEST_MISMATCH"
+    assert len(spawned) == 2
+    assert spawned[1].terminated is True
+    assert not any("/api/pull" in u or "/api/chat" in u for _, u in requests_seen)
+
+
+def test_qc4_refuses_missing_grant_or_registry_and_rejects_owner_pid_override_and_zero_ancestry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from reasoning_dataset_lab.pilot_b.bakeoff_part import (
+        ProcessEntry,
+        resolve_owned_ollama_halt_pid,
+    )
+    from reasoning_dataset_lab.pilot_b.models_and_build import (
+        build_fixture_licence_registry,
+    )
+
+    spawned: list[_FakeChildPopen] = []
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda args, **kw: spawned.append(_FakeChildPopen(args, pid=5400, **kw)) or spawned[-1],
+    )
+
+    reg_path = tmp_path / "registry.json"
+    reg_path.write_text(
+        json.dumps(build_fixture_licence_registry(), indent=2),
+        encoding="utf-8",
+    )
+
+    # 1. Missing GPU grant is refused before starting any child server
+    monkeypatch.delenv("RDLAB_GPU_GRANT_ID", raising=False)
+    with pytest.raises(RdlabError) as exc_no_grant:
+        run_bakeoff_part_build(
+            output_dir=tmp_path / "qc4-no-grant",
+            triad_count=1,
+            stub_mode=True,
+            mock_writer=False,
+            grant_id=None,
+            licence_registry_path=reg_path,
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_no_grant.value.code == "BAKEOFF_GPU_GRANT_REQUIRED"
+    assert spawned == []
+
+    # 2. Missing licence registry is refused before starting any child server
+    with pytest.raises(RdlabError) as exc_no_reg:
+        run_bakeoff_part_build(
+            output_dir=tmp_path / "qc4-no-reg",
+            triad_count=1,
+            stub_mode=True,
+            mock_writer=False,
+            grant_id="grant-qc4",
+            licence_registry_path=None,
+            repo_root=tmp_path / "fake-repo",
+        )
+    assert exc_no_reg.value.code == "PILOT_B_LICENCE_REGISTRY_REQUIRED"
+    assert spawned == []
+
+    # 3. RDLAB_OLLAMA_OWNER_PID override is removed, and resolve_owned_ollama_halt_pid
+    # never returns PID 0, PID 4, or a PID whose ancestry reaches 0.
+    writer_spec = DEFAULT_PILOT_B_MODEL_PINS["writer"]
+    zero_ancestry_table = [
+        ProcessEntry(pid=0, ppid=0, name="System Idle Process", cmdline="", listening_ports=(11434,)),
+        ProcessEntry(pid=4, ppid=0, name="System", cmdline="", listening_ports=(11434,)),
+        ProcessEntry(pid=4100, ppid=0, name="ollama.exe", cmdline="ollama serve", listening_ports=(11434,)),
+        ProcessEntry(pid=4101, ppid=4100, name="ollama.exe", cmdline="ollama runner --model qwen3.6:35b", listening_ports=()),
+    ]
+    monkeypatch.setenv("RDLAB_OLLAMA_OWNER_PID", "0")
+    with pytest.raises(RdlabError) as exc_env_zero:
+        resolve_owned_ollama_halt_pid(
+            ollama_base_url="http://127.0.0.1:11434",
+            writer_tag=writer_spec.ollama_tag,
+            writer_digest=writer_spec.manifest_digest,
+            http_transport=build_mock_writer_ollama_http_transport(),
+            process_table=zero_ancestry_table,
+        )
+    assert exc_env_zero.value.code == "BAKEOFF_HALT_PID_UNRESOLVED"
+
+    monkeypatch.setenv("RDLAB_OLLAMA_OWNER_PID", "4100")
+    with pytest.raises(RdlabError) as exc_env_foreign:
+        resolve_owned_ollama_halt_pid(
+            ollama_base_url="http://127.0.0.1:11434",
+            writer_tag=writer_spec.ollama_tag,
+            writer_digest=writer_spec.manifest_digest,
+            http_transport=build_mock_writer_ollama_http_transport(),
+            process_table=zero_ancestry_table,
+        )
+    assert exc_env_foreign.value.code == "BAKEOFF_HALT_PID_UNRESOLVED"
+
+    for bad_owner in (0, 4, 4100):
+        with pytest.raises(RdlabError):
+            resolve_owned_ollama_halt_pid(
+                ollama_base_url="http://127.0.0.1:11434",
+                writer_tag=writer_spec.ollama_tag,
+                writer_digest=writer_spec.manifest_digest,
+                http_transport=build_mock_writer_ollama_http_transport(),
+                process_table=zero_ancestry_table,
+                owner_pid=bad_owner,
+            )
+
+    # Also test start_owned_ollama_server failure branches (invalid PID, early exit, version timeout, idempotent stop)
+    from reasoning_dataset_lab.pilot_b.bakeoff_part import start_owned_ollama_server
+
+    with pytest.raises(RdlabError) as exc_bad_pid:
+        start_owned_ollama_server(
+            popen_factory=lambda args, **kw: _FakeChildPopen(args, pid=0, **kw),
+            ollama_models_dir=tmp_path / "explicit-models",
+        )
+    assert exc_bad_pid.value.code == "BAKEOFF_OLLAMA_SERVER_START_FAILED"
+
+    def _exited_popen(args, **kw):
+        p = _FakeChildPopen(args, pid=5500, **kw)
+        p.returncode = 1
+        return p
+
+    with pytest.raises(RdlabError) as exc_exited:
+        start_owned_ollama_server(popen_factory=_exited_popen)
+    assert exc_exited.value.code == "BAKEOFF_OLLAMA_SERVER_START_FAILED"
+
+    with pytest.raises(RdlabError) as exc_timeout:
+        start_owned_ollama_server(
+            popen_factory=lambda args, **kw: _FakeChildPopen(args, pid=5501, **kw),
+            http_transport=lambda m, u, b=None: (_ for _ in ()).throw(RuntimeError("not ready")),
+            startup_timeout_s=0.01,
+            poll_interval_s=0.005,
+        )
+    assert exc_timeout.value.code == "BAKEOFF_OLLAMA_SERVER_START_FAILED"
+
+    ok_srv = start_owned_ollama_server(
+        popen_factory=lambda args, **kw: _FakeChildPopen(args, pid=5502, **kw),
+        http_transport=lambda m, u, b=None: {"version": "0.6.0"},
+        ollama_models_dir=tmp_path / "explicit-models",
+    )
+    ok_srv.stop()
+    first_stop = ok_srv.stopped_at
+    ok_srv.stop()
+    assert ok_srv.stopped_at == first_stop
+
+
 

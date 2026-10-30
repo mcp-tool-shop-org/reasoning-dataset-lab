@@ -633,6 +633,12 @@
     },
     "gpu_guard": {
       "type": "object"
+    },
+    "ollama_server": {
+      "type": [
+        "object",
+        "null"
+      ]
     }
   },
   "required": [
