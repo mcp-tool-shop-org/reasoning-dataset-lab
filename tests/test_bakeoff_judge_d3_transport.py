@@ -168,8 +168,8 @@ def test_d3_gate_refuses_missing_flag_wrong_sha_prefix_and_revision_mismatch() -
         check_d3_mini_remote_code_gate(D3_SPEC, allow_remote_code_reviewed=REVIEWED[:12])
     assert exc_prefix.value.code == "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED"
 
-    # Exact SHA, case-insensitive, surrounding whitespace tolerated.
-    check_d3_mini_remote_code_gate(D3_SPEC, allow_remote_code_reviewed=f"  {REVIEWED.upper()} ")
+    # Exact SHA only.
+    check_d3_mini_remote_code_gate(D3_SPEC, allow_remote_code_reviewed=REVIEWED)
 
     # Spec pinned to another revision while the flag carries the reviewed SHA -> refuse.
     moved_spec = dataclasses.replace(D3_SPEC, revision="0123456789abcdef0123456789abcdef01234567")
@@ -181,6 +181,48 @@ def test_d3_gate_refuses_missing_flag_wrong_sha_prefix_and_revision_mismatch() -
     with pytest.raises(RdlabError) as exc_judge:
         check_d3_mini_remote_code_gate(BAKEOFF_JUDGE_SPECS["mu-judge"], allow_remote_code_reviewed=REVIEWED)
     assert exc_judge.value.code == "BAKEOFF_JUDGE_D3_TRANSPORT_WRONG_JUDGE"
+
+
+def test_d3_gate_is_byte_exact_forty_lowercase_hex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round (un) item 2: no case folding, no whitespace trimming; the 40 lowercase hex characters or nothing."""
+    assert len(REVIEWED) == 40 and REVIEWED == REVIEWED.lower() and all(c in "0123456789abcdef" for c in REVIEWED)
+    _offline(monkeypatch)
+    hf_home, receipts_dir, _ = _write_fake_snapshot(tmp_path)
+    transport = D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home)
+    for bad in (
+        REVIEWED.upper(),
+        REVIEWED[:20] + REVIEWED[20:].upper(),
+        f" {REVIEWED}",
+        f"{REVIEWED} ",
+        f"{REVIEWED}\n",
+        f"\t{REVIEWED}",
+        REVIEWED[:39],
+        REVIEWED + "0",
+        REVIEWED[:20] + " " + REVIEWED[20:],
+        REVIEWED.replace("a", "A", 1),
+        "",
+        None,
+    ):
+        with pytest.raises(RdlabError) as exc:
+            check_d3_mini_remote_code_gate(D3_SPEC, allow_remote_code_reviewed=bad)
+        assert exc.value.code == "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED", repr(bad)
+        if isinstance(bad, str) and bad and bad.strip().lower() == REVIEWED:
+            # The generic prefix gate would have let these through; the transport must not.
+            assert bakeoff_judge.check_remote_code_gate(D3_SPEC, allow_remote_code_reviewed=bad) is True
+            with pytest.raises(RdlabError) as exc_t:
+                transport.verify_ready(D3_SPEC, allow_remote_code_reviewed=bad)
+            assert exc_t.value.code == "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED", repr(bad)
+    assert transport._snapshot_dir is None
+
+    # The spec side is byte-exact too: an upper-cased pin is a mismatch even though it is the same digits.
+    upper_spec = dataclasses.replace(D3_SPEC, revision=REVIEWED.upper())
+    with pytest.raises(RdlabError) as exc_spec:
+        check_d3_mini_remote_code_gate(upper_spec, allow_remote_code_reviewed=REVIEWED)
+    assert exc_spec.value.code == "BAKEOFF_JUDGE_REMOTE_CODE_REVISION_MISMATCH"
+
+    check_d3_mini_remote_code_gate(D3_SPEC, allow_remote_code_reviewed=REVIEWED)
+    assert transport.verify_ready(D3_SPEC, allow_remote_code_reviewed=REVIEWED).startswith("sha256:")
+    assert transport._reviewed_sha == REVIEWED
 
 
 def test_d3_transport_verify_ready_enforces_gate_before_any_file_is_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -547,6 +589,192 @@ def test_d3_receipt_verification_covers_all_eight_py_files(tmp_path: Path, monke
     with pytest.raises(RdlabError) as exc_rec:
         D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home).verify_ready(D3_SPEC, allow_remote_code_reviewed=REVIEWED)
     assert exc_rec.value.code == "BAKEOFF_JUDGE_RECEIPT_MISMATCH"
+
+
+# ---------------------------------------------------------------------------------------------
+# Fix round (un): no bytecode into the snapshot, bytecode refused by the receipt check, main-thread weight loading
+# ---------------------------------------------------------------------------------------------
+
+
+def _exec_snapshot_module(snapshot_dir: Path, name: str = "modeling_d3") -> Any:
+    """Import one snapshot .py the way d3's `load_file_module` does (spec_from_file_location + exec_module)."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(f"snapshot_probe_{name}", snapshot_dir / f"{name}.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _bytecode_entries(snapshot_dir: Path) -> list[str]:
+    return sorted(p.relative_to(snapshot_dir).as_posix() for p in snapshot_dir.rglob("*") if p.name == "__pycache__" or p.suffix == ".pyc")
+
+
+def test_d3_transport_turns_bytecode_writing_off_before_snapshot_code_is_imported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round (un) item 1: a stubbed load that execs .py files from the fake snapshot leaves no __pycache__ behind."""
+    _offline(monkeypatch)
+    monkeypatch.setattr(sys, "dont_write_bytecode", False)
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+
+    # Negative control: with bytecode writing on, exec_module of a snapshot file does write __pycache__.
+    control_dir = tmp_path / "control_snapshot"
+    control_dir.mkdir()
+    (control_dir / "modeling_d3.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _exec_snapshot_module(control_dir)
+    assert _bytecode_entries(control_dir), "control: bytecode writing was expected to produce __pycache__"
+
+    hf_home, receipts_dir, snapshot_dir = _write_fake_snapshot(tmp_path)
+    stub = _StubD3Model()
+    executed: list[str] = []
+    recorder: dict[str, Any] = {"calls": []}
+
+    class _AutoModel:
+        @classmethod
+        def from_pretrained(cls, path: str, **kwargs: Any) -> Any:
+            recorder["calls"].append((path, kwargs))
+            # Like d3's runtime: execute snapshot files by path at load time.
+            for name in ("modeling_d3", "d3_runtime", "d3_fast"):
+                _exec_snapshot_module(Path(path), name)
+                executed.append(name)
+            assert sys.dont_write_bytecode is True
+            assert os.environ.get("PYTHONDONTWRITEBYTECODE") == "1"
+            return stub
+
+    _install_stub_modules(monkeypatch, model=stub)
+    sys.modules["transformers"].AutoModel = _AutoModel  # type: ignore[attr-defined]
+
+    transport = D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home)
+    assert sys.dont_write_bytecode is True and os.environ.get("PYTHONDONTWRITEBYTECODE") == "1"
+    transport.verify_ready(D3_SPEC, allow_remote_code_reviewed=REVIEWED)
+    prompt = D3MiniAdapter().assemble_prompt(_item(), order="AB", pass_mode="binary")
+    transport.generate(D3_SPEC, prompt, seed=1)
+    assert executed == ["modeling_d3", "d3_runtime", "d3_fast"]
+    assert _bytecode_entries(snapshot_dir) == [], "snapshot code import wrote bytecode into the verified snapshot"
+
+    # The snapshot still verifies afterwards, which is the point: the next run's receipt check passes.
+    D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home).verify_ready(D3_SPEC, allow_remote_code_reviewed=REVIEWED)
+
+
+def test_snapshot_receipt_check_refuses_bytecode_with_its_own_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round (un) item 5: any __pycache__ or .pyc in a judge snapshot is BAKEOFF_JUDGE_SNAPSHOT_BYTECODE, never silent."""
+    _offline(monkeypatch)
+    hf_home, receipts_dir, snapshot_dir = _write_fake_snapshot(tmp_path)
+    transport = D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home)
+    transport.verify_ready(D3_SPEC, allow_remote_code_reviewed=REVIEWED)
+
+    def refused() -> RdlabError:
+        with pytest.raises(RdlabError) as exc:
+            bakeoff_judge.verify_snapshot_against_receipt(D3_SPEC, receipts_dir=receipts_dir, hf_home=hf_home)
+        return exc.value
+
+    # (a) the incident shape: __pycache__/<module>.cpython-315.pyc
+    cache = snapshot_dir / "__pycache__"
+    cache.mkdir()
+    pyc = cache / "d3_fast.cpython-315.pyc"
+    pyc.write_bytes(b"\x00" * 16)
+    err = refused()
+    assert err.code == "BAKEOFF_JUDGE_SNAPSHOT_BYTECODE"
+    assert "__pycache__" in err.message and "__pycache__" in err.hint
+    assert "d3_fast.cpython-315.pyc" in err.message
+    with pytest.raises(RdlabError) as exc_t:
+        D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home).verify_ready(D3_SPEC, allow_remote_code_reviewed=REVIEWED)
+    assert exc_t.value.code == "BAKEOFF_JUDGE_SNAPSHOT_BYTECODE"
+
+    # (b) an empty __pycache__ directory alone is refused too (rglob("*") lists directories).
+    pyc.unlink()
+    assert refused().code == "BAKEOFF_JUDGE_SNAPSHOT_BYTECODE"
+    cache.rmdir()
+
+    # (c) a bare .pyc beside the sources, even when listed in the receipt, is refused before the hash loop.
+    stray = snapshot_dir / "d3_runtime.pyc"
+    stray.write_bytes(b"\x01" * 8)
+    owner, repo = D3_SPEC.repo_id.split("/", 1)
+    receipt_path = receipts_dir / f"{owner}__{repo}.sha256.json"
+    doc = json.loads(receipt_path.read_text(encoding="utf-8"))
+    doc["files"]["d3_runtime.pyc"] = {"bytes": 8, "sha256": hashlib.sha256(b"\x01" * 8).hexdigest()}
+    receipt_path.write_text(json.dumps(doc), encoding="utf-8")
+    assert refused().code == "BAKEOFF_JUDGE_SNAPSHOT_BYTECODE"
+    stray.unlink()
+    del doc["files"]["d3_runtime.pyc"]
+    receipt_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    # (d) the same check guards every judge, not only d3-mini.
+    mu = BAKEOFF_JUDGE_SPECS["mu-judge"]
+    m_owner, m_repo = mu.repo_id.split("/", 1)
+    mu_dir = hf_home / "hub" / f"models--{m_owner}--{m_repo}" / "snapshots" / mu.revision
+    mu_dir.mkdir(parents=True)
+    (mu_dir / "config.json").write_text("{}", encoding="utf-8")
+    (mu_dir / "__pycache__").mkdir()
+    (mu_dir / "__pycache__" / "x.cpython-315.pyc").write_bytes(b"\x00")
+    raw = (mu_dir / "config.json").read_bytes()
+    (receipts_dir / f"{m_owner}__{m_repo}.sha256.json").write_text(
+        json.dumps({"repo": mu.repo_id, "revision": mu.revision, "files": {"config.json": {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_mu:
+        bakeoff_judge.TransformersJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home).verify_ready(mu)
+    assert exc_mu.value.code == "BAKEOFF_JUDGE_SNAPSHOT_BYTECODE"
+
+    # Clean again: passes.
+    bakeoff_judge.verify_snapshot_against_receipt(D3_SPEC, receipts_dir=receipts_dir, hf_home=hf_home)
+
+
+def test_both_transports_set_and_require_hf_deactivate_async_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round (un) item 4: HF_DEACTIVATE_ASYNC_LOAD=1 is set when unset and anything else is refused, at construction and before each load."""
+    from reasoning_dataset_lab.pilot_b.bakeoff_judge import ASYNC_LOAD_ENV_VAR, ensure_sync_weight_loading
+
+    assert ASYNC_LOAD_ENV_VAR == "HF_DEACTIVATE_ASYNC_LOAD"
+    _offline(monkeypatch)
+    hf_home, receipts_dir, _ = _write_fake_snapshot(tmp_path)
+
+    for make in (
+        lambda: bakeoff_judge.TransformersJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home),
+        lambda: D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home),
+    ):
+        monkeypatch.delenv(ASYNC_LOAD_ENV_VAR, raising=False)
+        make()
+        assert os.environ.get(ASYNC_LOAD_ENV_VAR) == "1"
+        for ok in ("1", "true", "YES", "on", " 1 "):
+            monkeypatch.setenv(ASYNC_LOAD_ENV_VAR, ok)
+            make()
+        for bad in ("0", "false", "", "off", "no", "2"):
+            monkeypatch.setenv(ASYNC_LOAD_ENV_VAR, bad)
+            with pytest.raises(RdlabError) as exc:
+                make()
+            assert exc.value.code == "BAKEOFF_JUDGE_ASYNC_LOAD_NOT_DISABLED", bad
+    monkeypatch.setenv(ASYNC_LOAD_ENV_VAR, "1")
+    assert ensure_sync_weight_loading() == "1"
+
+    # Flipped off after construction: refused right before the load, before anything from transformers is called.
+    stub = _StubD3Model()
+    recorder = _install_stub_modules(monkeypatch, model=stub)
+    d3 = D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home)
+    d3.verify_ready(D3_SPEC, allow_remote_code_reviewed=REVIEWED)
+    prompt = D3MiniAdapter().assemble_prompt(_item(), order="AB", pass_mode="binary")
+    monkeypatch.setenv(ASYNC_LOAD_ENV_VAR, "0")
+    with pytest.raises(RdlabError) as exc_d3:
+        d3.generate(D3_SPEC, prompt, seed=1)
+    assert exc_d3.value.code == "BAKEOFF_JUDGE_ASYNC_LOAD_NOT_DISABLED"
+    assert recorder["calls"] == [] and d3._model is None
+
+    class _Boom:
+        @classmethod
+        def from_pretrained(cls, *_a: Any, **_k: Any) -> Any:
+            raise AssertionError("transformers must not be reached with async loading on")
+
+    sys.modules["transformers"].AutoTokenizer = _Boom  # type: ignore[attr-defined]
+    sys.modules["transformers"].AutoModelForCausalLM = _Boom  # type: ignore[attr-defined]
+    monkeypatch.setenv(ASYNC_LOAD_ENV_VAR, "1")
+    tf = bakeoff_judge.TransformersJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home)
+    tf._snapshot_dir = tmp_path
+    tf._verified_digest = "sha256:test"
+    monkeypatch.setenv(ASYNC_LOAD_ENV_VAR, "false")
+    with pytest.raises(RdlabError) as exc_tf:
+        tf._ensure_loaded(BAKEOFF_JUDGE_SPECS["mu-judge"])
+    assert exc_tf.value.code == "BAKEOFF_JUDGE_ASYNC_LOAD_NOT_DISABLED"
+    assert tf._model is None
+    monkeypatch.setenv(ASYNC_LOAD_ENV_VAR, "1")
 
 
 # ---------------------------------------------------------------------------------------------

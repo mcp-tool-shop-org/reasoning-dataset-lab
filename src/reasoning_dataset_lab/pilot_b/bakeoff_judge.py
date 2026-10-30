@@ -2078,6 +2078,22 @@ def verify_snapshot_against_receipt(
             "Re-verify the local model snapshot against its download receipt.",
         )
 
+    # Bytecode in a judge snapshot has its own refusal, so a repeat of the 2026-10-30 `__pycache__` incident (snapshot
+    # code imported with bytecode writing on) is named, never folded into a generic extra-file message.
+    bytecode_rels = sorted(
+        p.relative_to(snapshot_dir).as_posix()
+        for p in snapshot_dir.rglob("*")
+        if p.name == "__pycache__" or p.suffix.lower() in (".pyc", ".pyo")
+    )
+    if bytecode_rels:
+        raise refused_error(
+            "BAKEOFF_JUDGE_SNAPSHOT_BYTECODE",
+            f"Snapshot '{snapshot_dir}' contains Python bytecode not in the receipt: {bytecode_rels[:5]}"
+            f"{' ...' if len(bytecode_rels) > 5 else ''}.",
+            "Remove every __pycache__ directory and .pyc file from the pinned snapshot; import snapshot code only with "
+            "sys.dont_write_bytecode = True (the transports set it) or `python -B`.",
+        )
+
     extra_rels = sorted(actual_rels - expected_rels)
     if extra_rels:
         raise refused_error(
@@ -2149,6 +2165,8 @@ class TransformersJudgeTransport:
         self._tokenizer: Any = None
         self._model: Any = None
         self._candidate_token_ids: dict[int, str] = {}
+        # Weights load on the main thread (see `ensure_sync_weight_loading`); checked again before each load.
+        ensure_sync_weight_loading()
 
     def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
         check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
@@ -2185,6 +2203,7 @@ class TransformersJudgeTransport:
                 "Install the optional 'judge' extra into the judge venv.",
             ) from exc
 
+        ensure_sync_weight_loading()
         tokenizer = AutoTokenizer.from_pretrained(
             str(self._snapshot_dir),
             local_files_only=True,
@@ -2341,6 +2360,7 @@ D3_MINI_REVIEWED_REVISION = "bd0090dd758d32ba59ef5c749910a8e87fc4391f"
 # d3-mini's requirements.txt pins this; the shared judge venv carries 5.19.0, so d3 runs in its own venv.
 D3_MINI_TRANSFORMERS_VERSION = "5.17.0"
 OFFLINE_ENV_VARS: tuple[str, ...] = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+ASYNC_LOAD_ENV_VAR = "HF_DEACTIVATE_ASYNC_LOAD"
 _OFFLINE_TRUE_VALUES: frozenset[str] = frozenset({"1", "true", "yes", "on"})
 # Keys that would put d3's `system_one` on its image/video path (network, PIL/cv2 and temp files).
 D3_MEDIA_INPUT_KEYS: frozenset[str] = frozenset(
@@ -2357,15 +2377,16 @@ def check_d3_mini_remote_code_gate(spec: JudgeSpec, *, allow_remote_code_reviewe
             f"D3MiniTransport only runs judge '{D3_MINI_JUDGE_ID}', not '{spec.judge_id}' ({spec.repo_id}).",
             "Use TransformersJudgeTransport for every other judge.",
         )
-    reviewed = (allow_remote_code_reviewed or "").strip().lower()
-    if reviewed != D3_MINI_REVIEWED_REVISION:
+    # Byte-exact: the 40 lowercase hex characters and nothing else (no case folding, no whitespace trimming).
+    if not isinstance(allow_remote_code_reviewed, str) or allow_remote_code_reviewed != D3_MINI_REVIEWED_REVISION:
+        shown = repr(allow_remote_code_reviewed[:16]) if isinstance(allow_remote_code_reviewed, str) else "nothing"
         raise refused_error(
             "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED",
             f"Judge '{spec.judge_id}' ({spec.repo_id}) executes repo Python files ({', '.join(spec.remote_code_files)}); "
-            f"--allow-remote-code-reviewed must equal the reviewed revision exactly (got {reviewed[:12] or 'nothing'!r}).",
+            f"--allow-remote-code-reviewed must be exactly the reviewed revision, 40 lowercase hex characters (got {shown}).",
             f"Pass --allow-remote-code-reviewed {D3_MINI_REVIEWED_REVISION} (the full 40-character reviewed SHA).",
         )
-    if spec.revision.lower() != D3_MINI_REVIEWED_REVISION:
+    if spec.revision != D3_MINI_REVIEWED_REVISION:
         raise refused_error(
             "BAKEOFF_JUDGE_REMOTE_CODE_REVISION_MISMATCH",
             f"Judge '{spec.judge_id}' is pinned to {spec.revision}, but only {D3_MINI_REVIEWED_REVISION} was reviewed.",
@@ -2389,6 +2410,33 @@ def ensure_offline_env(*, set_if_unset: bool) -> dict[str, str]:
             )
         seen[name] = value
     return seen
+
+
+def disable_bytecode_writing() -> None:
+    """Turn bytecode writing off for this process so imported snapshot code never drops `__pycache__` into a snapshot."""
+    sys.dont_write_bytecode = True
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+
+
+def ensure_sync_weight_loading() -> str:
+    """Require `HF_DEACTIVATE_ASYNC_LOAD=1` (set it when unset) so transformers loads weights on the main thread.
+
+    Why: on CPython 3.15.1 with torch 2.14.1+cu132 on Windows, slicing an `UntypedStorage` from a `ThreadPoolExecutor`
+    worker access-violates; transformers' default async weight loading (`core_model_loading.py` `_materialize_copy`)
+    does exactly that and crashes every `from_pretrained`. transformers reads the variable at load time, so it is set
+    at transport construction and re-checked right before each load. See docs/judge-runtime.md.
+    """
+    value = os.environ.get(ASYNC_LOAD_ENV_VAR)
+    if value is None:
+        os.environ[ASYNC_LOAD_ENV_VAR] = "1"
+        value = "1"
+    if value.strip().lower() not in _OFFLINE_TRUE_VALUES:
+        raise refused_error(
+            "BAKEOFF_JUDGE_ASYNC_LOAD_NOT_DISABLED",
+            f"{ASYNC_LOAD_ENV_VAR} is {value!r}; the judge transports only load weights on the main thread.",
+            f"Unset {ASYNC_LOAD_ENV_VAR} or set it to 1 (torch 2.14.1+cu132 on CPython 3.15 crashes on threaded loads).",
+        )
+    return value
 
 
 def _walk_d3_input(value: Any, *, path: str) -> None:
@@ -2516,6 +2564,13 @@ class D3MiniTransport:
         self._snapshot_dir: Path | None = None
         self._reviewed_sha: str | None = None
         self._model: Any = None
+        # The receipt lists every file in the snapshot. d3 executes `d3_fast.py` from the snapshot directory
+        # (`d3_runtime.py` `load_file_module`) and transformers copies then imports the other modules; with bytecode
+        # writing on, the loader would drop `__pycache__/*.pyc` into the verified directory and the next receipt
+        # check would refuse it. Off before anything from the snapshot can be imported.
+        disable_bytecode_writing()
+        # Weights load on the main thread (see `ensure_sync_weight_loading`).
+        ensure_sync_weight_loading()
         # Condition 4: the env must be set before transformers (or huggingface_hub) reads it at import time.
         already_imported = [m for m in ("transformers", "huggingface_hub") if m in sys.modules]
         unset_before = [n for n in OFFLINE_ENV_VARS if os.environ.get(n) is None]
@@ -2548,7 +2603,7 @@ class D3MiniTransport:
             )
         self._snapshot_dir = snapshot_dir
         self._verified_digest = verified_digest
-        self._reviewed_sha = (allow_remote_code_reviewed or "").strip().lower()
+        self._reviewed_sha = allow_remote_code_reviewed  # raw: the gate above proved it is the exact reviewed SHA
         return verified_digest
 
     def _ensure_loaded(self, spec: JudgeSpec) -> None:
@@ -2575,6 +2630,8 @@ class D3MiniTransport:
                 f"transformers {tf_version} loaded, but d3-mini pins {self.expected_transformers_version}.",
                 "Run d3-mini from its own venv (transformers==5.17.0), never from the shared judge venv.",
             )
+        disable_bytecode_writing()
+        ensure_sync_weight_loading()
         # Condition 1: the local snapshot directory, never a repo id; AutoModel is the only entry in d3's auto_map.
         model = AutoModel.from_pretrained(
             str(self._snapshot_dir),
