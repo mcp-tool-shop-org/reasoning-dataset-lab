@@ -1047,18 +1047,19 @@ def test_fix5_byte_identity_regression_against_main_e0e3c04(
     from test_pilot_b_part_d import _setup_models
 
     # Golden SHA-256 digests computed at main e0e3c04a5557c6c2057cb5328a5088e9b2878756
+    # (rendered text files updated in Card rm for value display forms; tables/triads/sealing remain byte-identical)
     expected_golden = {
         "tables_50_sha256": "51fc38cdaa2c2ed156ff3c620efc4fc36854883bb73297ebef06d435ad50a737",
         "triads_50_sha256": "9b81587b3e0be84543d7aee5d6cb8565bdfae7b8bc0fb6be01c0fa0b205eb718",
         "tables_10_sha256": "07eaecc3816200354febf9ec5489137e9f8fa0a9f4bef4e43d43e924c9a22ff3",
         "triads_10_sha256": "900ac51c4e6ead753aeb46673780cedab872ec10d535d9c2442609f31250efa7",
-        "items.jsonl": "0bb24a768920d242e28f543bfe9b2f817a674000177f71153e24b9e25539b8e2",
-        "provenance.jsonl": "449ba2ea39242cb241e84163e0e4f2e90bdf7c186862e41134f66baba9a349bf",
-        "part.json": "0aa3318d3da4bd1825fe6cf6f066dfb887227575b5a7de0344cc0bfc4d0ab7b1",
-        "checksums.txt": "2666c9ef7eb4339639e93ab87188cb164ef697dd774dd7405ad922f481dad3f6",
-        "keys.sealed.jsonl": "dd87a3e28ccb718e8c8ee7da264f0e051b6190a697bccd19b997b912a5b52783",
-        "call_metrics.sealed.jsonl": "3cbeeb3be498c42c2230f48020d4f0d040fa533211fbb1dfe78fd7adecb7426b",
-        "render_inputs.sealed.json": "c6aa8270cdc0d332aa393aa2275aafe167ec190b7fe863e024fbcb228487ac8a",
+        "items.jsonl": "94ecc025640a5173f947e62a906f44a1d064048f36d503c8d5e1d21e20d458fc",
+        "provenance.jsonl": "2ae8cdd821ca98bc49aba4f3e3c6a6871499e21609ff3b748d4e654fec294173",
+        "part.json": "fae357397ceeac0d1bfb27c0abb2115b9464271a1f348770563e85034ab8ac94",
+        "checksums.txt": "95a8776fc2d489a3422712ab49e0c0b61779a9e3699df05adadd23fdd203af26",
+        "keys.sealed.jsonl": "8e9a3ed88be6b53430f7661981df37e556208ddc0563b6f1c4b77430e4e26b0e",
+        "call_metrics.sealed.jsonl": "bc4bc901c044de653c5a7b1295bd725743f1ee166b31ad668ffe3a178198dd3a",
+        "render_inputs.sealed.json": "cd552f8e414c050c933f8b831d4919d1c5cedd21d61c95dddbf1c9e066b7afa5",
         "sealing.sealed.json": "d96d0e04e99607ebad29a601b64e0a2d2b58f5f50b26153f5f8e1a6e02e7f040",
     }
     assert getattr(bo_mod, "MAIN_E0E3C04_GOLDEN_SHA256", None) == expected_golden
@@ -2684,6 +2685,63 @@ def test_auto_drawn_shuffle_seed_resamples_and_never_refuses_across_200_runs(
         shuffle_seed=None,
     )
     verify_sealed_part(part_dir=w_part_dir, keys_sealed_path=w_keys_path)
+
+
+def test_mock_writer_stub_build_has_no_slugs_in_rendered_material_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Card rm: Re-run the mock-writer stub build and verify no slug appears in any rendered material line."""
+    import re
+    from reasoning_dataset_lab.pilot_b.fact_tables import (
+        value_display_form,
+        value_sets,
+    )
+
+    out_dir = tmp_path / "stub-rm-10"
+    res = run_bakeoff_part_build(
+        output_dir=out_dir,
+        triad_count=10,
+        stub_mode=True,
+        mock_writer=True,
+        grant_id="grant-rm-stub-10",
+        shuffle_seed=1 << 127,
+        table_secret=1 << 127,
+        allow_weak_test_seed=True,
+        http_transport=build_mock_writer_ollama_http_transport(),
+        repo_root=tmp_path / "fake-repo",
+    )
+    assert res["status"] == "ok"
+
+    # Collect all canonical slugs that differ from their display form (case-insensitively)
+    # and ensure none of those unspaced slugs appear as a token in any rendered material line or claim.
+    non_trivial_slugs: set[str] = set()
+    for _dom, _attr, vals in value_sets():
+        for v in vals:
+            disp = str(value_display_form(v))
+            if disp.lower() != v.lower():
+                non_trivial_slugs.add(v.lower())
+    assert "taperedroller" in non_trivial_slugs
+    assert "bil350kv" in non_trivial_slugs
+    assert "mainflame" in non_trivial_slugs
+    assert "underfeedretort" in non_trivial_slugs
+    assert "coldshutdown" in non_trivial_slugs
+
+    items_path = Path(res["part_dir"]) / "items.jsonl"
+    items = [
+        json.loads(line)
+        for line in items_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(items) == 30
+    for item in items:
+        for line in item["material"].splitlines():
+            tokens = {t.lower() for t in re.findall(r"[A-Za-z0-9-]+", line)}
+            leaked = tokens & non_trivial_slugs
+            assert not leaked, f"Slug(s) {leaked} appeared in rendered material line: {line!r}"
+        claim_tokens = {t.lower() for t in re.findall(r"[A-Za-z0-9-]+", item["claim"])}
+        leaked_claim = claim_tokens & non_trivial_slugs
+        assert not leaked_claim, f"Slug(s) {leaked_claim} appeared in worded claim: {item['claim']!r}"
+
 
 
 

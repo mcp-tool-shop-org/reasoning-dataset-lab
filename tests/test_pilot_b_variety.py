@@ -565,6 +565,7 @@ def test_hs_part_b_200_pregate_triads_roles_attributes_frames_and_positions_bala
     from reasoning_dataset_lab.pilot_b.variety import (
         _attribute_role,
         _claim_length_bucket,
+        build_amendment1_masker,
         evaluate_pregate_variety,
     )
 
@@ -602,8 +603,15 @@ def test_hs_part_b_200_pregate_triads_roles_attributes_frames_and_positions_bala
             sent = format_atomic_sentence(
                 c.entity, c.attribute, c.fact_type, c.claimed_value, c.unit, c.op
             )
+            sent_slug = (
+                format_atomic_sentence(
+                    c.entity, c.attribute, "date", c.claimed_value, c.unit, c.op
+                )
+                if c.fact_type in ("state", "attribute")
+                else sent
+            )
             triad_roles.add(_attribute_role(c.attribute, dom_spec))
-            triad_len_buckets.add(_claim_length_bucket(sent))
+            triad_len_buckets.add(_claim_length_bucket(sent_slug))
         assert len(triad_roles) == 1, f"Triad {tr.triad_id} mixed roles: {triad_roles}"
         assert len(triad_len_buckets) == 1, (
             f"Triad {tr.triad_id} mixed length buckets: {triad_len_buckets}"
