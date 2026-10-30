@@ -563,7 +563,16 @@ def _build_parser() -> _StructuredArgumentParser:
         dest="sealed_out_path",
         type=Path,
         required=True,
-        help="Sealed per-row output path (writes .jsonl and .csv with verdict, correct, key, class, triad_id).",
+        help=(
+            "Sealed per-row output stem: writes <stem>.jsonl and <stem>.csv (verdict, correct, key, class, triad_id). "
+            "Dots in the stem are kept (judge-v0.1-binary -> judge-v0.1-binary.jsonl); a value ending in .jsonl keeps that name."
+        ),
+    )
+    bjs_parser.add_argument(
+        "--overwrite",
+        dest="overwrite",
+        action="store_true",
+        help="Replace existing <stem>.jsonl / <stem>.csv sealed outputs instead of refusing.",
     )
 
     return parser
@@ -1154,6 +1163,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 keys_path=args.keys_path,
                 public_out_path=args.out_path,
                 sealed_rows_out_path=args.sealed_out_path,
+                overwrite=bool(getattr(args, "overwrite", False)),
             )
             print(json.dumps(score_rep, indent=2))
             return EXIT_CLEAN

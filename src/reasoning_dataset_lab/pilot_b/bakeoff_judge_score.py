@@ -25,7 +25,7 @@ import random
 from statistics import NormalDist
 from typing import Any
 
-from reasoning_dataset_lab.errors import refused_error, usage_error
+from reasoning_dataset_lab.errors import RdlabError, refused_error, usage_error
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     BAKEOFF_JUDGE_SPECS,
     GENERATIONS_FILENAME,
@@ -620,6 +620,46 @@ def _evaluate_judge_at_rule(
     return summary, item_correct_map, sealed_scored_rows
 
 
+def resolve_sealed_out_paths(sealed_out: Path) -> tuple[Path, Path]:
+    """Resolve `--sealed-out` as a stem: `<stem>.jsonl` and `<stem>.csv`, by appending.
+
+    Never `with_suffix`: a stem such as `flow-judge-v0.1-binary` would have had `.1-binary` cut off and written
+    `flow-judge-v0.csv`. A value that already ends in `.jsonl` keeps that exact name (and its `.csv` sibling), so
+    `scored_rows.sealed.jsonl` still writes `scored_rows.sealed.jsonl` and `scored_rows.sealed.csv`.
+    """
+    stem_str = str(sealed_out)
+    if stem_str.endswith(".jsonl"):
+        stem_str = stem_str[: -len(".jsonl")]
+    return Path(stem_str + ".jsonl"), Path(stem_str + ".csv")
+
+
+def check_sealed_out_targets_free(sealed_jsonl_path: Path, sealed_csv_path: Path, *, overwrite: bool) -> None:
+    """Refuse to score when either sealed target already exists, unless `overwrite` is set."""
+    if overwrite:
+        return
+    existing = [p for p in (sealed_jsonl_path, sealed_csv_path) if p.exists()]
+    if existing:
+        raise refused_error(
+            "BAKEOFF_SCORE_SEALED_OUT_EXISTS",
+            "Sealed output target(s) already exist: " + ", ".join(f"'{p}'" for p in existing) + ".",
+            "Pass a different --sealed-out stem, or --overwrite to replace the existing sealed outputs.",
+        )
+
+
+def _load_rows_file(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _refuse_zero_scored(rows_file: Path, *, judge_id: str | None, keys_n: int) -> RdlabError:
+    who = f" (judge '{judge_id}')" if judge_id else ""
+    return refused_error(
+        "BAKEOFF_SCORE_NO_SCORED_ITEMS",
+        f"Rows file '{rows_file.name}'{who} yielded 0 scored items against {keys_n} key records.",
+        "Every rows file present must score at least one item with both AB and BA rows whose item_id is in keys.sealed.jsonl; "
+        "check that --keys matches the part the judge was run on.",
+    )
+
+
 def _write_sealed_scored_rows(
     sealed_jsonl_path: Path,
     sealed_csv_path: Path,
@@ -713,13 +753,22 @@ def score_bakeoff_outputs(
     public_out_path: Path,
     sealed_rows_out_path: Path,
     repo_root: Path | None = None,
+    overwrite: bool = False,
 ) -> dict[str, Any]:
-    """Verify `outputs-closed.json`, join against `keys.sealed.jsonl`, and write sealed rows + public aggregates."""
+    """Verify `outputs-closed.json`, join against `keys.sealed.jsonl`, and write sealed rows + public aggregates.
+
+    `sealed_rows_out_path` is a stem (see `resolve_sealed_out_paths`); existing targets are refused unless `overwrite`.
+    Item splits come from the scheduled item set (`schedule.json`, covered by outputs-closed) joined to the sealed keys,
+    never from whichever rows files happen to be present, so a dir holding only a `*.three_way.jsonl` pass scores it.
+    """
     resolved_judge_dir = check_output_dir_outside_repo(judge_output_dir, repo_root=repo_root)
     check_output_dir_outside_repo(public_out_path.parent, repo_root=repo_root)
     check_output_dir_outside_repo(sealed_rows_out_path.parent, repo_root=repo_root)
+    sealed_jsonl_path, sealed_csv_path = resolve_sealed_out_paths(sealed_rows_out_path)
 
     closed_doc = verify_outputs_closed(resolved_judge_dir)
+    # After the tamper check (so a modified dir is reported as such) and before any key is read or any byte is written.
+    check_sealed_out_targets_free(sealed_jsonl_path, sealed_csv_path, overwrite=overwrite)
     keys_by_id = load_sealed_keys(keys_path)
 
     schedule_doc = json.loads((resolved_judge_dir / SCHEDULE_FILENAME).read_text(encoding="utf-8"))
@@ -731,6 +780,13 @@ def score_bakeoff_outputs(
     )
     three_way_row_files = sorted(rows_dir.glob("*.three_way.jsonl"))
 
+    # The item universe: every scheduled item plus every item any rows file (binary or 3-way) mentions.
+    # The split of each item is read from the sealed keys, keyed by item_id. Nothing here depends on binary rows existing.
+    rows_by_file: dict[Path, list[dict[str, Any]]] = {p: _load_rows_file(p) for p in (*binary_row_files, *three_way_row_files)}
+    evaluated_item_ids: set[str] = set(first_order_by_item)
+    for file_rows in rows_by_file.values():
+        evaluated_item_ids.update(str(r["item_id"]) for r in file_rows)
+
     primary_summaries: list[dict[str, Any]] = []
     dev_fit_summaries: list[dict[str, Any]] = []
     dev_thresholds_by_judge: dict[str, float | None] = {}
@@ -738,16 +794,11 @@ def score_bakeoff_outputs(
     mu_judge_dev_readings: dict[str, dict[str, Any]] = {}
     primary_item_outcomes_by_judge: dict[str, dict[str, int]] = {}
     all_sealed_rows: list[dict[str, Any]] = []
-    evaluated_item_ids: set[str] = set()
 
     for rf in binary_row_files:
-        raw_rows = [
-            json.loads(line)
-            for line in rf.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        raw_rows = rows_by_file[rf]
         if not raw_rows:
-            continue
+            raise _refuse_zero_scored(rf, judge_id=None, keys_n=len(keys_by_id))
         judge_id = str(raw_rows[0]["judge_id"])
         judge_label = str(raw_rows[0].get("judge_label") or judge_id)
         spec = BAKEOFF_JUDGE_SPECS.get(judge_id)
@@ -758,7 +809,6 @@ def score_bakeoff_outputs(
             iid = str(r["item_id"])
             ord_mode = str(r["order"])
             rows_by_item_order[iid][ord_mode] = r
-            evaluated_item_ids.add(iid)
 
         if has_prob:
             fitted_thresh = fit_dev_threshold_youden(raw_rows, keys_by_id)
@@ -791,6 +841,8 @@ def score_bakeoff_outputs(
             keys_by_id=keys_by_id,
             split_filter="test",
         )
+        if int(dev_sum["items_n"]) + int(primary_sum["items_n"]) == 0:
+            raise _refuse_zero_scored(rf, judge_id=judge_id, keys_n=len(keys_by_id))
         primary_summaries.append(primary_sum)
         primary_item_outcomes_by_judge[judge_id] = item_outcomes
         all_sealed_rows.extend(dev_sealed_rows)
@@ -852,13 +904,9 @@ def score_bakeoff_outputs(
     three_way_summaries: list[dict[str, Any]] = []
     three_way_dev_summaries: list[dict[str, Any]] = []
     for twf in three_way_row_files:
-        tw_rows = [
-            json.loads(line)
-            for line in twf.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
+        tw_rows = rows_by_file[twf]
         if not tw_rows:
-            continue
+            raise _refuse_zero_scored(twf, judge_id=None, keys_n=len(keys_by_id))
         j_id = str(tw_rows[0]["judge_id"])
         by_item_ord: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         for r in tw_rows:
@@ -880,6 +928,8 @@ def score_bakeoff_outputs(
             elif rec.split == "test":
                 tw_tot_test += 1
                 tw_corr_test += is_both_ok
+        if tw_tot_dev + tw_tot_test == 0:
+            raise _refuse_zero_scored(twf, judge_id=j_id, keys_n=len(keys_by_id))
         three_way_summaries.append(
             {
                 "judge_id": j_id,
@@ -963,8 +1013,7 @@ def score_bakeoff_outputs(
     dev_count = sum(1 for iid in evaluated_item_ids if iid in keys_by_id and keys_by_id[iid].split == "dev")
     test_count = sum(1 for iid in evaluated_item_ids if iid in keys_by_id and keys_by_id[iid].split == "test")
 
-    sealed_csv_path = sealed_rows_out_path.with_suffix(".csv")
-    _write_sealed_scored_rows(sealed_rows_out_path, sealed_csv_path, all_sealed_rows)
+    _write_sealed_scored_rows(sealed_jsonl_path, sealed_csv_path, all_sealed_rows)
 
     disagreement_table_doc = {
         "public_safe": True,
