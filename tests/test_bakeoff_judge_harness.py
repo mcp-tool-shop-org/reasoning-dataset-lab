@@ -925,5 +925,189 @@ def test_additional_error_branches_and_edge_cases(tmp_path: Path, monkeypatch: p
     with pytest.raises(RdlabError):
         bakeoff_judge_score.load_sealed_keys(empty_keys_f)
 
+    # Cover directory forms of load_sealed_keys and resolve_items_jsonl_path
+    dir_with_items = tmp_path / "direct_items_dir"
+    dir_with_items.mkdir()
+    (dir_with_items / "items.jsonl").write_text(json.dumps(row_ok) + "\n", encoding="utf-8")
+    assert resolve_items_jsonl_path(dir_with_items) == (dir_with_items / "items.jsonl").resolve()
+
+    dir_with_sealed_sub = tmp_path / "dir_sealed_sub"
+    (dir_with_sealed_sub / "sealed_store").mkdir(parents=True)
+    key_row_str = json.dumps({"id": "item-1", "key": "supported", "class": "supported", "triad_id": "T1", "split": "test"}) + "\n"
+    (dir_with_sealed_sub / "sealed_store" / "keys.sealed.jsonl").write_text(key_row_str, encoding="utf-8")
+    assert "item-1" in bakeoff_judge_score.load_sealed_keys(dir_with_sealed_sub)
+
+    dir_with_direct_keys = tmp_path / "dir_direct_keys"
+    dir_with_direct_keys.mkdir()
+    (dir_with_direct_keys / "keys.sealed.jsonl").write_text(key_row_str, encoding="utf-8")
+    assert "item-1" in bakeoff_judge_score.load_sealed_keys(dir_with_direct_keys)
+
+    # Cover kill_judge_pid_tree on Windows with mocked subprocess.run and os.kill
+    import os
+    monkeypatch.setattr(os, "kill", lambda pid, sig: (_ for _ in ()).throw(OSError("already dead")))
+    bakeoff_judge.kill_judge_pid_tree(12345)
+
+    # Cover _spread_pass_items_by_material greedy repair and impossibility error
+    import random
+    m1 = EXAMPLE_MATERIAL_AB
+    m2 = EXAMPLE_MATERIAL_AB.replace("120", "191")
+    # 3 items of m1 and 1 item of m2 -> impossible to avoid adjacency
+    impossible_items = [
+        _sample_item("imp-1", m1),
+        _sample_item("imp-2", m1),
+        _sample_item("imp-3", m1),
+        _sample_item("imp-4", m2),
+    ]
+    with pytest.raises(RdlabError) as exc_adj_imp:
+        bakeoff_judge._spread_pass_items_by_material(impossible_items, rng=random.Random(1))
+    assert exc_adj_imp.value.code == "BAKEOFF_JUDGE_SCHEDULE_ADJACENCY"
+
+    # 3 items of m1 and 2 items of m2 -> triggers greedy repair to M1, M2, M1, M2, M1
+    repairable_items = [
+        _sample_item("rep-1", m1),
+        _sample_item("rep-2", m1),
+        _sample_item("rep-3", m1),
+        _sample_item("rep-4", m2),
+        _sample_item("rep-5", m2),
+    ]
+    repaired_sched = bakeoff_judge._spread_pass_items_by_material(
+        repairable_items,
+        rng=random.Random(7),
+        avoid_first_material_sha=impossible_items[3].material_sha256,
+    )
+    assert len(repaired_sched) == 5
+    for idx_r in range(len(repaired_sched) - 1):
+        assert repaired_sched[idx_r].material_sha256 != repaired_sched[idx_r + 1].material_sha256
+
+    # Cover D3MiniAdapter malformed JSON, invalid noul, and fallback to top5
+    d3_bad_json = JudgeTransportResponse(
+        raw_text="{bad_json",
+        tokens=(),
+        verdict_top_logprobs=(TopLogprobEntry(token="yes", logprob=math.log(0.8)), TopLogprobEntry(token="no", logprob=math.log(0.2))),
+        done_reason="stop",
+        seconds=0.01,
+        model_digest="sha256:test",
+        server_binary="test",
+        library_pins={},
+        system_one_result=None,
+    )
+    assert d3_ad.parse_response(d3_bad_json, pass_mode="binary").raw_verdict == "yes"
+
+    d3_bad_noul = JudgeTransportResponse(
+        raw_text="{}",
+        tokens=(),
+        verdict_top_logprobs=(),
+        done_reason="stop",
+        seconds=0.01,
+        model_digest="sha256:test",
+        server_binary="test",
+        library_pins={},
+        system_one_result={"answers": {"supported": {"noul": "not_a_float"}}},
+    )
+    assert d3_ad.parse_response(d3_bad_noul, pass_mode="binary").state == "unparseable"
+
+    # Cover GraniteGuardianAdapter missing <score> tag
+    granite_no_tag = JudgeTransportResponse(
+        raw_text="<think></think>no score tag here",
+        tokens=(),
+        verdict_top_logprobs=(),
+        done_reason="stop",
+        seconds=0.01,
+        model_digest="sha256:test",
+        server_binary="test",
+        library_pins={},
+    )
+    assert granite_ad.parse_response(granite_no_tag).state == "unparseable"
+
+    # Cover run_bakeoff_judge mid-run digest mismatch and explicit transport
+    class _MidRunMismatchTransport(DeterministicFakeJudgeTransport):
+        def generate(self, spec: bakeoff_judge.JudgeSpec, prompt: bakeoff_judge.AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
+            resp = super().generate(spec, prompt, seed=seed)
+            return replace(resp, model_digest="changed_mid_run")
+
+    with pytest.raises(RdlabError) as exc_mid:
+        run_bakeoff_judge(
+            part_dir=two_items_p,
+            output_dir=tmp_path / "mid_mismatch_out",
+            judge="mu-judge",
+            transport=_MidRunMismatchTransport(),
+        )
+    assert exc_mid.value.code == "BAKEOFF_JUDGE_DIGEST_MISMATCH"
+
+    # Cover close_bakeoff_outputs when rows dir is empty
+    empty_rows_out = tmp_path / "empty_rows_out"
+    (empty_rows_out / "rows").mkdir(parents=True)
+    (empty_rows_out / "schedule.json").write_text("{}\n", encoding="utf-8")
+    (empty_rows_out / "generations.jsonl").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_no_rows:
+        close_bakeoff_outputs(empty_rows_out)
+    assert exc_no_rows.value.code == "BAKEOFF_OUTPUTS_NO_ROWS"
+
+    # Cover CLI bakeoff-judge with --judge AND --outputs-closed in one invocation, plus flip items in scoring
+    combo_out = tmp_path / "combo_out"
+    flip_transport = DeterministicFakeJudgeTransport(force_Flip_items=["1"])
+    run_bakeoff_judge(
+        part_dir=two_items_p,
+        output_dir=combo_out,
+        judge="mu-judge",
+        transport=flip_transport,
+    )
+    assert (
+        run_cli(
+            [
+                "bakeoff-judge",
+                "--part-dir",
+                str(two_items_p),
+                "--output-dir",
+                str(combo_out),
+                "--judge",
+                "nemotron-3-nano-4b",
+                "--fake-transport",
+                "--outputs-closed",
+            ]
+        )
+        == 0
+    )
+
+    # Cover verify_outputs_closed when an untracked row file is added or a tracked file is deleted
+    extra_row = combo_out / "rows" / "untracked.jsonl"
+    extra_row.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_untracked:
+        verify_outputs_closed(combo_out)
+    assert exc_untracked.value.code == "BAKEOFF_SCORE_OUTPUTS_MODIFIED"
+    extra_row.unlink()
+
+    sched_bak = (combo_out / "schedule.json").read_bytes()
+    (combo_out / "schedule.json").unlink()
+    with pytest.raises(RdlabError) as exc_del:
+        verify_outputs_closed(combo_out)
+    assert exc_del.value.code == "BAKEOFF_SCORE_OUTPUTS_MODIFIED"
+    (combo_out / "schedule.json").write_bytes(sched_bak)
+
+    # Cover fit_dev_threshold_youden when samples is empty or all one class, and triad_clustered_bootstrap_p edge cases
+    assert fit_dev_threshold_youden([], dev_keys) == 0.5
+    assert fit_dev_threshold_youden([{"item_id": "d1", "state": "parsed", "confidence": 0.9}], dev_keys) == 0.5
+    assert bakeoff_judge_score.triad_clustered_bootstrap_p({}, {}, dev_keys)["p_two_sided"] == 1.0
+    assert bakeoff_judge_score.triad_clustered_bootstrap_p({"d1": 1}, {"d1": 1}, dev_keys)["p_two_sided"] == 1.0
+
+    # Score combo_out (which has a flip on item "1" and high confidence for card_0.2_0.8)
+    two_keys_p = tmp_path / "two_keys.jsonl"
+    two_keys_p.write_text(
+        json.dumps({"id": "1", "key": "supported", "class": "supported", "triad_id": "T1", "split": "test"})
+        + "\n"
+        + json.dumps({"id": "2", "key": "unsupported", "class": "unsupported", "triad_id": "T2", "split": "dev"})
+        + "\n",
+        encoding="utf-8",
+    )
+    combo_rep = score_bakeoff_outputs(
+        judge_output_dir=combo_out,
+        keys_path=two_keys_p,
+        public_out_path=tmp_path / "combo_score" / "summary.json",
+        sealed_rows_out_path=tmp_path / "combo_score" / "sealed" / "rows.sealed.jsonl",
+    )
+    mu_combo = next(j for j in combo_rep["judges"] if j["judge_id"] == "mu-judge")
+    assert mu_combo["flip_rate"]["point"] > 0.0
+
+
 
 

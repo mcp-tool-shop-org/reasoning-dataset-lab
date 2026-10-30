@@ -1037,7 +1037,7 @@ class BaseJudgeAdapter:
         order: OrderMode,
         pass_mode: PassMode,
     ) -> AssembledPrompt:
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
 
     def parse_response(
         self,
@@ -1063,7 +1063,7 @@ class BaseJudgeAdapter:
         *,
         pass_mode: PassMode,
     ) -> ParsedJudgeReadout:
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover
 
 
 class MuJudgeAdapter(BaseJudgeAdapter):
@@ -1807,14 +1807,15 @@ class DeterministicFakeJudgeTransport:
                 library_pins=library_pins,
             )
 
-        # Deterministic score from item_id + judge_id (and order if item is in force_flip_items)
-        order_salt = prompt.order if prompt.item_id in self.force_flip_items else "BOTH"
+        # Deterministic score from item_id + judge_id (inverted on BA when item is in force_flip_items)
         h_bytes = hashlib.sha256(
-            f"fake-judge-v1:{seed}:{spec.judge_id}:{prompt.item_id}:{order_salt}:{prompt.pass_mode}".encode("utf-8")
+            f"fake-judge-v1:{seed}:{spec.judge_id}:{prompt.item_id}:BOTH:{prompt.pass_mode}".encode("utf-8")
         ).digest()
         u = int.from_bytes(h_bytes[:4], "big") / 0xFFFFFFFF
         # Map u into [0.05, 0.95]
         p_yes_target = round(0.05 + 0.90 * u, 4)
+        if prompt.item_id in self.force_flip_items and prompt.order == "BA":
+            p_yes_target = round(1.0 - p_yes_target, 4)
         is_yes = p_yes_target >= 0.5
 
         if prompt.pass_mode == "three_way":
