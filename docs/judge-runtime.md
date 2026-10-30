@@ -16,13 +16,16 @@ pure-torch reproduction (no transformers) is a storage slice from a worker threa
 
 ## Retest when torch or transformers moves
 
+The pure-torch reproduction, no model and no transformers, CPU only (run it in the judge venv):
+
 ```
-HF_DEACTIVATE_ASYNC_LOAD=0 CUDA_VISIBLE_DEVICES=-1 python -m pytest --no-cov "tests/test_bakeoff_judge_harness.py::test_tl_item1_transformers_judge_transport_cpu_tiny_model_and_snapshot_receipt_gate"
+CUDA_VISIBLE_DEVICES=-1 python -c "import faulthandler,torch;faulthandler.enable(all_threads=True);from concurrent.futures import ThreadPoolExecutor as P;s=torch.UntypedStorage(256*64);print('main ok',s[8:1032].nbytes());print('worker ok',[o.nbytes() for o in P(2).map(lambda st: st[8:1032],[s,s])])"
 ```
 
-With the variable forced off the harness refuses before loading, so to retest the crash itself run the same test with
-the variable unset and `ensure_sync_weight_loading` temporarily made a no-op, in a scratch copy of the venv. If it
-passes on the new torch, the variable can go; until then it stays.
+On the broken combination it prints `main ok 1024` and then dies with `Windows fatal exception: access violation`
+(exit 139) in the worker thread; on a fixed torch it prints `worker ok [1024, 1024]` and exits 0. When it exits 0
+on the new torch, the variable and `ensure_sync_weight_loading` can go; until then they stay. Measured 2026-10-30
+on CPython 3.15.1, torch 2.14.1+cu132: exit 139.
 
 ## Snapshots and bytecode
 
