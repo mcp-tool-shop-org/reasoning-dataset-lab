@@ -50,6 +50,12 @@
     "proof_basis": {
       "const": "proved"
     },
+    "split": {
+      "enum": [
+        "dev",
+        "test"
+      ]
+    },
     "trait": {
       "const": "T10"
     },

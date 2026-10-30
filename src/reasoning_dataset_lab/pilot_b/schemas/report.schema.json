@@ -304,8 +304,6 @@
         }
       },
       "required": [
-        "reader_1",
-        "reader_2",
         "writer"
       ],
       "type": "object"
@@ -486,8 +484,6 @@
             }
           },
           "required": [
-            "reader_1",
-            "reader_2",
             "writer"
           ],
           "type": "object"
@@ -521,6 +517,9 @@
     },
     "split": {
       "const": "sealed"
+    },
+    "split_counts": {
+      "type": "object"
     },
     "stub_mode": {
       "type": "boolean"
@@ -626,8 +625,20 @@
         "$ref": "#/$defs/wave"
       },
       "maxItems": 4,
-      "minItems": 4,
+      "minItems": 2,
       "type": "array"
+    },
+    "v3_manifest": {
+      "type": "object"
+    },
+    "gpu_guard": {
+      "type": "object"
+    },
+    "ollama_server": {
+      "type": [
+        "object",
+        "null"
+      ]
     }
   },
   "required": [

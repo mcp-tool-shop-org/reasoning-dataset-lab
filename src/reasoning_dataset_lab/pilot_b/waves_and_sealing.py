@@ -205,6 +205,9 @@ class PilotBWaveRunResult:
     reader_2_call_records: Mapping[str, dict[str, object]] | None = None
     num_predict_source: NumPredictSource = "default"
     num_predict_config: NumPredictConfig | None = None
+    writer_only: bool = False
+    triad_metadata: Mapping[str, Mapping[str, Any]] | None = None
+    split_counts: Mapping[str, Any] | None = None
 
 
 class WaveCallTracker:
@@ -871,9 +874,16 @@ def _render_inputs(
     w_calls = dict(wave_result.writer_call_records or {})
     r1_calls = dict(wave_result.reader_1_call_records or {})
     r2_calls = dict(wave_result.reader_2_call_records or {})
+    writer_only = bool(wave_result.writer_only)
+    triad_meta_map = dict(wave_result.triad_metadata or {})
 
     default_read_dates: dict[str, str] = {}
-    for m in (wave_result.writer_model, wave_result.reader_1_model, wave_result.reader_2_model):
+    models_for_dates = (
+        (wave_result.writer_model,)
+        if writer_only
+        else (wave_result.writer_model, wave_result.reader_1_model, wave_result.reader_2_model)
+    )
+    for m in models_for_dates:
         if m.licence_id:
             default_read_dates.setdefault(m.licence_id, m.licence_read_date)
         if m.bundled_licence_id:
@@ -893,6 +903,7 @@ def _render_inputs(
     for ev in wave_result.kept_triads:
         wt = ev.worded
         table = wt.triad.table
+        t_meta = dict(triad_meta_map.get(wt.triad.triad_id, {}))
         for key in VERDICT_CLASSES:
             claim = wt.triad.claims[key]
             claim_ev = ev.claim_evals[key]
@@ -902,26 +913,36 @@ def _render_inputs(
             if claim.claim_id in w_calls:
                 w_recs.append(dict(w_calls[claim.claim_id]))
             r_recs: list[dict[str, object]] = []
-            if claim.claim_id in r1_calls:
-                r_recs.append(dict(r1_calls[claim.claim_id]))
-            if claim.claim_id in r2_calls:
-                r_recs.append(dict(r2_calls[claim.claim_id]))
-            entries.append(
-                {
-                    "triad_id": wt.triad.triad_id,
-                    "table_id": table.table_id,
-                    "domain": table.domain,
-                    "closure": table.closure,
-                    "material": wt.material,
-                    "claim_text": wt.worded_claims[key],
-                    "key": key,
-                    "proof": claim.proof.to_dict(),
-                    "read_1": claim_ev.read_1.to_dict(),
-                    "read_2": claim_ev.read_2.to_dict(),
-                    "writer_call_records": w_recs,
-                    "reader_call_records": r_recs,
-                }
-            )
+            if not writer_only:
+                if claim.claim_id in r1_calls:
+                    r_recs.append(dict(r1_calls[claim.claim_id]))
+                if claim.claim_id in r2_calls:
+                    r_recs.append(dict(r2_calls[claim.claim_id]))
+            entry_dict: dict[str, Any] = {
+                "triad_id": wt.triad.triad_id,
+                "table_id": table.table_id,
+                "domain": table.domain,
+                "closure": table.closure,
+                "material": wt.material,
+                "claim_text": wt.worded_claims[key],
+                "key": key,
+                "proof": claim.proof.to_dict(),
+                "read_1": claim_ev.read_1.to_dict(),
+                "read_2": claim_ev.read_2.to_dict(),
+                "writer_call_records": w_recs,
+                "reader_call_records": r_recs,
+            }
+            if writer_only:
+                default_t_line = (
+                    table.get_fact(claim.fact_id).line
+                    if claim.fact_id is not None
+                    else next(f.line for f in table.facts if f.entity == claim.entity)
+                )
+                entry_dict["value_set_id"] = str(t_meta.get("value_set_id", ""))
+                entry_dict["value_set_sha256"] = str(t_meta.get("value_set_sha256", ""))
+                entry_dict["split"] = str(t_meta.get("split", "test"))
+                entry_dict["target_line"] = int(t_meta.get(f"target_line_{key}", default_t_line))
+            entries.append(entry_dict)
 
     def role(adapter_class: str, model: Any, adapter: Any) -> dict[str, Any]:
         return {
@@ -930,16 +951,20 @@ def _render_inputs(
             "max_num_ctx": int(getattr(adapter, "max_num_ctx", model.max_num_ctx)),
         }
 
-    inputs = {
+    inputs: dict[str, Any] = {
         "part_id": part_id,
         "map_version": map_version,
         "map_sha256": map_sha256,
         "registry": reg_meta,
         "writer": role(wave_result.writer_adapter_class, wave_result.writer_model, wave_result.writer_adapter),
-        "readers": [
-            role(wave_result.reader_1_adapter_class, wave_result.reader_1_model, wave_result.reader_1_adapter),
-            role(wave_result.reader_2_adapter_class, wave_result.reader_2_model, wave_result.reader_2_adapter),
-        ],
+        "readers": (
+            []
+            if writer_only
+            else [
+                role(wave_result.reader_1_adapter_class, wave_result.reader_1_model, wave_result.reader_1_adapter),
+                role(wave_result.reader_2_adapter_class, wave_result.reader_2_model, wave_result.reader_2_adapter),
+            ]
+        ),
         "num_predict": wave_result.num_predict,
         "num_predict_source": wave_result.num_predict_source,
         "num_predict_config": (
@@ -958,10 +983,15 @@ def _render_inputs(
         "triads_kept": len(wave_result.kept_triads),
         "triads_failed": len(wave_result.failed_triads),
         "call_distributions": _call_distributions(
-            {"writer": w_calls, "reader_1": r1_calls, "reader_2": r2_calls}, kept_targets
+            {"writer": w_calls}
+            if writer_only
+            else {"writer": w_calls, "reader_1": r1_calls, "reader_2": r2_calls},
+            kept_targets,
         ),
         "entries": entries,
     }
+    if writer_only and wave_result.split_counts is not None:
+        inputs["split_counts"] = dict(wave_result.split_counts)
     inputs = _normalise(inputs)
     _check_render_inputs(inputs)
     return inputs
@@ -1043,7 +1073,15 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
     from reasoning_dataset_lab.pilot_b.ollama import _canonical_prompt_sha256, build_reader_read_messages
     from reasoning_dataset_lab.pilot_b.unanimity import build_blind_read_prompt
 
-    if not isinstance(inputs, Mapping) or set(inputs) != _INPUT_KEYS:
+    if not isinstance(inputs, Mapping):
+        raise _invalid_inputs("the top-level fields are not the expected ones")
+    is_bakeoff = (
+        isinstance(inputs.get("part_id"), str)
+        and str(inputs["part_id"]).startswith("bakeoff")
+        and inputs.get("readers") == []
+    )
+    expected_top_keys = _INPUT_KEYS | ({"split_counts"} if is_bakeoff and "split_counts" in inputs else set())
+    if set(inputs) != expected_top_keys:
         raise _invalid_inputs("the top-level fields are not the expected ones")
     if not isinstance(inputs["part_id"], str) or not inputs["part_id"]:
         raise _invalid_inputs("part_id")
@@ -1057,6 +1095,8 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
         isinstance(k, str) and isinstance(v, str) and _DATE.match(v) for k, v in dates.items()
     ):
         raise _invalid_inputs("the licence read dates are not dates")
+    if not isinstance(inputs.get("readers"), list):
+        raise _invalid_inputs("readers is not a list")
     licence_ids = {
         role["model"][field]
         for role in (inputs["writer"], *inputs["readers"])
@@ -1073,7 +1113,7 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
             raise _invalid_inputs("a model's fields")
         if not all(v is None or isinstance(v, str) for v in role["model"].values()):
             raise _invalid_inputs("a model field is not text")
-    if len(inputs["readers"]) != 2:
+    if not is_bakeoff and len(inputs["readers"]) != 2:
         raise _invalid_inputs("there are not exactly two readers")
     if not _is_int(inputs["num_predict"]) or inputs["num_predict"] < 1 or not isinstance(inputs["num_predict_source"], str):
         raise _invalid_inputs("num_predict")
@@ -1082,8 +1122,9 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
     if not isinstance(by_op, Mapping) or not set(by_op) <= set(_OPERATIONS):
         raise _invalid_inputs("num_predict_config operations")
     waves = inputs["waves"]
-    if not isinstance(waves, list) or [w.get("wave_name") for w in waves if isinstance(w, Mapping)] != list(_WAVE_ORDER):
-        raise _invalid_inputs("the waves are not the four waves in order")
+    expected_waves = ("render", "word") if is_bakeoff else _WAVE_ORDER
+    if not isinstance(waves, list) or [w.get("wave_name") for w in waves if isinstance(w, Mapping)] != list(expected_waves):
+        raise _invalid_inputs("the waves are not the expected waves in order")
     rates = inputs["pass_rate_per_class"]
     if not isinstance(rates, Mapping) or set(rates) != set(VERDICT_CLASSES) or not all(_is_rate(v) for v in rates.values()):
         raise _invalid_inputs("the pass rates")
@@ -1095,7 +1136,8 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
     if inputs["triads_kept"] != len(entries) // 3 or not _is_int(inputs["triads_failed"]) or inputs["triads_failed"] < 0:
         raise _invalid_inputs("the triad counts")
     distributions = inputs["call_distributions"]
-    if not isinstance(distributions, Mapping) or set(distributions) != set(_CALL_OPERATIONS):
+    expected_dist_roles = {"writer"} if is_bakeoff else set(_CALL_OPERATIONS)
+    if not isinstance(distributions, Mapping) or set(distributions) != expected_dist_roles:
         raise _invalid_inputs("the call distributions' roles")
     for role_name, per_op in distributions.items():
         if not isinstance(per_op, Mapping) or not set(per_op) <= _CALL_OPERATIONS[role_name]:
@@ -1115,9 +1157,14 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
     constant_calls: dict[tuple[str, int], tuple[Any, ...]] = {}
     prover_version: set[tuple[Any, Any]] = set()
     hex64 = re.compile(r"[0-9a-f]{64}")
+    expected_entry_keys = (
+        _ENTRY_KEYS | {"value_set_id", "value_set_sha256", "split", "target_line"}
+        if is_bakeoff
+        else _ENTRY_KEYS
+    )
     for start in range(0, len(entries), 3):
         group = entries[start : start + 3]
-        if not all(isinstance(e, Mapping) and set(e) == _ENTRY_KEYS for e in group):
+        if not all(isinstance(e, Mapping) and set(e) == expected_entry_keys for e in group):
             raise _invalid_inputs("an entry's fields")
         if [e["key"] for e in group] != list(VERDICT_CLASSES):
             raise _invalid_inputs("a triad does not hold one entry per class in class order")
@@ -1172,27 +1219,41 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
             if [r.get("operation") for r in entry["writer_call_records"]] != ["render_material", "word_claim"]:
                 raise _invalid_inputs("a claim's writer calls are not the table render and the claim wording")
             readers_calls = entry["reader_call_records"]
-            if [r.get("operation") for r in readers_calls] != ["read_claim", "read_claim"]:
-                raise _invalid_inputs("a claim's reader calls are not two reads")
-            expected = _canonical_prompt_sha256(
-                build_reader_read_messages(
-                    build_blind_read_prompt(
-                        triad_id=triad_id, claim_id="", closure=closure, material=material, claim_text=claim
+            if is_bakeoff:
+                if (
+                    readers_calls != []
+                    or entry.get("split") not in ("dev", "test")
+                    or not isinstance(entry.get("value_set_id"), str)
+                    or "/" not in entry["value_set_id"]
+                    or not isinstance(entry.get("value_set_sha256"), str)
+                    or not hex64.fullmatch(entry["value_set_sha256"])
+                    or not _is_int(entry.get("target_line"))
+                    or not (1 <= entry["target_line"] <= 5)
+                ):
+                    raise _invalid_inputs("a writer-only bakeoff entry has invalid fields")
+            else:
+                if [r.get("operation") for r in readers_calls] != ["read_claim", "read_claim"]:
+                    raise _invalid_inputs("a claim's reader calls are not two reads")
+                expected = _canonical_prompt_sha256(
+                    build_reader_read_messages(
+                        build_blind_read_prompt(
+                            triad_id=triad_id, claim_id="", closure=closure, material=material, claim_text=claim
+                        )
                     )
                 )
-            )
-            if any(r.get("prompt_sha256") != expected for r in readers_calls):
-                raise _invalid_inputs("a reader's prompt is not the blind prompt for the claim and material shown")
+                if any(r.get("prompt_sha256") != expected for r in readers_calls):
+                    raise _invalid_inputs("a reader's prompt is not the blind prompt for the claim and material shown")
     if prover_version and prover_version != {(PILOT_B_PROVER_NAME, PILOT_B_PROVER_VERSION)}:
         raise _invalid_inputs("the prover or its version is not the one this code pins")
-    for slot, role in ((2, inputs["readers"][0]), (3, inputs["readers"][1])):
-        fields = constant_calls.get(("r", slot))
-        if fields is not None and (
-            fields[0] != role["model"]["name"]
-            or fields[1] != role["model"]["digest"]
-            or fields[2] != role["max_num_ctx"]
-        ):
-            raise _invalid_inputs("a reader's calls do not match the reader recorded")
+    if not is_bakeoff:
+        for slot, role in ((2, inputs["readers"][0]), (3, inputs["readers"][1])):
+            fields = constant_calls.get(("r", slot))
+            if fields is not None and (
+                fields[0] != role["model"]["name"]
+                or fields[1] != role["model"]["digest"]
+                or fields[2] != role["max_num_ctx"]
+            ):
+                raise _invalid_inputs("a reader's calls do not match the reader recorded")
     writer_fields = [constant_calls.get(("w", slot)) for slot in (0, 1)]
     for fields in writer_fields:
         if fields is not None and (
@@ -1231,10 +1292,12 @@ def _render_part(
     registry = inputs["registry"]
     writer = inputs["writer"]
     readers = inputs["readers"]
+    is_bakeoff = len(readers) == 0 and str(part_id).startswith("bakeoff")
 
     # Shuffle items with the seed so triad position cannot hint at the key (§2.1)
     order = list(range(len(entries)))
-    random.Random(shuffle_seed).shuffle(order)
+    rng = random.Random(shuffle_seed)
+    rng.shuffle(order)
 
     items_lines: list[str] = []
     prov_lines: list[str] = []
@@ -1248,108 +1311,136 @@ def _render_part(
         msg_sha = _sha256_bytes(_canonical_json_line(msg_obj).encode("ascii"))
         handle = _triad_handle(commitment_key, entry["triad_id"])
 
-        items_lines.append(
-            _canonical_json_line(
-                {
-                    "id": item_id,
-                    "triad_id": handle,
-                    "trait": "T10",
-                    "kind": "D",
-                    "domain": entry["domain"],
-                    "closure": entry["closure"],
-                    "proof_basis": "proved",
-                    "key_basis": "construction",
-                    "material": entry["material"],
-                    "claim": entry["claim_text"],
-                    "messages": msg_obj,
-                }
-            )
-        )
+        item_obj: dict[str, Any] = {
+            "id": item_id,
+            "triad_id": handle,
+            "trait": "T10",
+            "kind": "D",
+            "domain": entry["domain"],
+            "closure": entry["closure"],
+            "proof_basis": "proved",
+            "key_basis": "construction",
+            "material": entry["material"],
+            "claim": entry["claim_text"],
+            "messages": msg_obj,
+        }
+        if "split" in entry:
+            item_obj["split"] = entry["split"]
+        items_lines.append(_canonical_json_line(item_obj))
         m = writer["model"]
-        prov_lines.append(
-            _canonical_json_line(
-                {
-                    "id": item_id,
-                    "map": {
-                        "version": inputs["map_version"],
-                        "sha256": inputs["map_sha256"],
-                        "cell": f"T10/D/{entry['domain']}",
-                    },
-                    "licence_registry_path": str(registry.get("path", "")),
-                    "licence_registry_sha256": str(registry.get("sha256", "")),
-                    "licence_registry": registry,
-                    "proof_basis": "proved",
-                    "key_basis": "construction",
-                    "proof": {
-                        "prover": entry["proof"]["prover"],
-                        "version": entry["proof"]["version"],
-                        "trace_commitment": _commit(commitment_key, "trace", entry["proof"]["trace_sha256"]),
-                    },
-                    "writer": {
-                        "adapter": writer["adapter_class"],
-                        "model": m["name"],
-                        "family": m["normalized_family"],
-                        "digest": m["digest"],
-                        "licence_id": m["licence_id"],
-                        "licence_read_date": m["licence_read_date"],
-                        "bundled_licence_id": m["bundled_licence_id"],
-                        "bundled_licence_read_date": m["bundled_licence_read_date"],
-                        "licence_layer_digest": m["licence_layer_digest"],
-                        "source_match": m["source_match"],
-                        "source_match_reason": m["source_match_reason"],
-                        "messages_sha256": msg_sha,
-                        "num_predict": inputs["num_predict"],
-                        "num_predict_source": inputs["num_predict_source"],
-                        "num_predict_config": inputs["num_predict_config"],
-                        "max_num_ctx": writer["max_num_ctx"],
-                        "call_records": [
-                            _public_call_record(commitment_key, rec, writer=True)
-                            for rec in entry["writer_call_records"]
+        prov_obj: dict[str, Any] = {
+            "id": item_id,
+            "map": {
+                "version": inputs["map_version"],
+                "sha256": inputs["map_sha256"],
+                "cell": f"T10/D/{entry['domain']}",
+            },
+            "licence_registry_path": str(registry.get("path", "")),
+            "licence_registry_sha256": str(registry.get("sha256", "")),
+            "licence_registry": registry,
+            "proof_basis": "proved",
+            "key_basis": "construction",
+            "proof": {
+                "prover": entry["proof"]["prover"],
+                "version": entry["proof"]["version"],
+                "trace_commitment": _commit(commitment_key, "trace", entry["proof"]["trace_sha256"]),
+            },
+            "writer": {
+                "adapter": writer["adapter_class"],
+                "model": m["name"],
+                "family": m["normalized_family"],
+                "digest": m["digest"],
+                "licence_id": m["licence_id"],
+                "licence_read_date": m["licence_read_date"],
+                "bundled_licence_id": m["bundled_licence_id"],
+                "bundled_licence_read_date": m["bundled_licence_read_date"],
+                "licence_layer_digest": m["licence_layer_digest"],
+                "source_match": m["source_match"],
+                "source_match_reason": m["source_match_reason"],
+                "messages_sha256": msg_sha,
+                "num_predict": inputs["num_predict"],
+                "num_predict_source": inputs["num_predict_source"],
+                "num_predict_config": inputs["num_predict_config"],
+                "max_num_ctx": writer["max_num_ctx"],
+                "call_records": [
+                    _public_call_record(commitment_key, rec, writer=True)
+                    for rec in entry["writer_call_records"]
+                ],
+            },
+            "checks": (
+                [{"name": "pilot_b.rendering_check", "version": "0.3.0", "result": "pass"}]
+                if is_bakeoff
+                else [
+                    {"name": "pilot_b.rendering_check", "version": "0.3.0", "result": "pass"},
+                    {"name": "pilot_b.unanimity_gate", "version": "0.3.0", "result": "pass"},
+                ]
+            ),
+            "judgments": (
+                []
+                if is_bakeoff
+                else [
+                    {
+                        "kind": "blind_read_unanimity_aggregate",
+                        "reader_adapters": [r["adapter_class"] for r in readers],
+                        "readers": [f"model:{r['model']['name']}@{r['model']['digest']}" for r in readers],
+                        "families": [r["model"]["normalized_family"] for r in readers],
+                        "reader_licence_ids": [r["model"]["licence_id"] for r in readers],
+                        "reader_licence_read_dates": [r["model"]["licence_read_date"] for r in readers],
+                        "reader_bundled_licence_ids": [r["model"]["bundled_licence_id"] for r in readers],
+                        "reader_bundled_licence_read_dates": [
+                            r["model"]["bundled_licence_read_date"] for r in readers
                         ],
-                    },
-                    "checks": [
-                        {"name": "pilot_b.rendering_check", "version": "0.3.0", "result": "pass"},
-                        {"name": "pilot_b.unanimity_gate", "version": "0.3.0", "result": "pass"},
-                    ],
-                    "judgments": [
-                        {
-                            "kind": "blind_read_unanimity_aggregate",
-                            "reader_adapters": [r["adapter_class"] for r in readers],
-                            "readers": [f"model:{r['model']['name']}@{r['model']['digest']}" for r in readers],
-                            "families": [r["model"]["normalized_family"] for r in readers],
-                            "reader_licence_ids": [r["model"]["licence_id"] for r in readers],
-                            "reader_licence_read_dates": [r["model"]["licence_read_date"] for r in readers],
-                            "reader_bundled_licence_ids": [r["model"]["bundled_licence_id"] for r in readers],
-                            "reader_bundled_licence_read_dates": [
-                                r["model"]["bundled_licence_read_date"] for r in readers
-                            ],
-                            "reader_licence_layer_digests": [r["model"]["licence_layer_digest"] for r in readers],
-                            "reader_source_matches": [r["model"]["source_match"] for r in readers],
-                            "reader_source_match_reasons": [r["model"]["source_match_reason"] for r in readers],
-                            "reader_max_num_ctx": [r["max_num_ctx"] for r in readers],
-                            "call_records": [
-                                _public_call_record(commitment_key, rec, writer=False)
-                                for rec in entry["reader_call_records"]
-                            ],
-                            "agrees_all_readers": True,
-                            "ambiguous_count": 0,
-                        }
-                    ],
-                }
+                        "reader_licence_layer_digests": [r["model"]["licence_layer_digest"] for r in readers],
+                        "reader_source_matches": [r["model"]["source_match"] for r in readers],
+                        "reader_source_match_reasons": [r["model"]["source_match_reason"] for r in readers],
+                        "reader_max_num_ctx": [r["max_num_ctx"] for r in readers],
+                        "call_records": [
+                            _public_call_record(commitment_key, rec, writer=False)
+                            for rec in entry["reader_call_records"]
+                        ],
+                        "agrees_all_readers": True,
+                        "ambiguous_count": 0,
+                    }
+                ]
+            ),
+        }
+        if "split" in entry:
+            prov_obj["split"] = entry["split"]
+        prov_lines.append(_canonical_json_line(prov_obj))
+        if is_bakeoff:
+            key_lines.append(
+                _canonical_json_line(
+                    {
+                        "id": item_id,
+                        "triad_id": entry["triad_id"],
+                        "triad_handle": handle,
+                        "key": entry["key"],
+                        "class": entry["key"],
+                        "key_source": "construction",
+                        "value_set_id": entry["value_set_id"],
+                        "value_set_sha256": entry["value_set_sha256"],
+                        "closure": entry["closure"],
+                        "target_line": entry["target_line"],
+                        "split": entry["split"],
+                        "proof": entry["proof"],
+                        "provenance": prov_obj,
+                        "blind_reads": [],
+                    }
+                )
             )
-        )
-        key_lines.append(
-            _canonical_json_line(
-                {
-                    "id": item_id,
-                    "triad_id": entry["triad_id"],
-                    "triad_handle": handle,
-                    "key": entry["key"],
-                    "proof": entry["proof"],
-                    "blind_reads": [entry["read_1"], entry["read_2"]],
-                }
+        else:
+            key_lines.append(
+                _canonical_json_line(
+                    {
+                        "id": item_id,
+                        "triad_id": entry["triad_id"],
+                        "triad_handle": handle,
+                        "key": entry["key"],
+                        "proof": entry["proof"],
+                        "blind_reads": [entry["read_1"], entry["read_2"]],
+                    }
+                )
             )
-        )
         metric_lines.append(
             _canonical_json_line(
                 {
@@ -1388,6 +1479,8 @@ def _render_part(
         },
         "waves": inputs["waves"],
     }
+    if "split_counts" in inputs:
+        meta["split_counts"] = inputs["split_counts"]
     if is_test_only:
         meta["test_only"] = True
     if frozen and not is_test_only:
@@ -1444,14 +1537,20 @@ def write_sealed_part(
     w = wave_result.writer_adapter
     r1 = wave_result.reader_1_adapter
     r2 = wave_result.reader_2_adapter
-    if wave_result.has_fake_adapter or not (
+    adapters_valid = (
         type(w) is OllamaWriterAdapter
-        and type(r1) is OllamaBlindReaderAdapter
-        and type(r2) is OllamaBlindReaderAdapter
         and w.http_transport is ollama_mod.default_ollama_http_transport
-        and r1.http_transport is ollama_mod.default_ollama_http_transport
-        and r2.http_transport is ollama_mod.default_ollama_http_transport
-    ):
+        and (
+            bool(wave_result.writer_only)
+            or (
+                type(r1) is OllamaBlindReaderAdapter
+                and type(r2) is OllamaBlindReaderAdapter
+                and r1.http_transport is ollama_mod.default_ollama_http_transport
+                and r2.http_transport is ollama_mod.default_ollama_http_transport
+            )
+        )
+    )
+    if wave_result.has_fake_adapter or not adapters_valid:
         raise refused_error(
             "PILOT_B_FAKE_ADAPTER_SEAL_REFUSED",
             f"Refused to seal Pilot B part '{part_id}' because adapters or transports are not allow-listed "
@@ -1730,10 +1829,14 @@ def _verify_provenance_digests(
         if writer.get("messages_sha256") != expected_messages:
             raise _digest_mismatch("provenance.jsonl", rid, "writer.messages_sha256")
         judgments = row.get("judgments")
-        if not isinstance(judgments, Sequence) or isinstance(judgments, (str, bytes)) or len(judgments) != 1:
+        sealed_readers = metric_row.get("readers") or []
+        if not isinstance(judgments, Sequence) or isinstance(judgments, (str, bytes)):
+            raise _digest_mismatch("provenance.jsonl", rid, "judgments")
+        if len(sealed_readers) == 0 and len(judgments) == 0:
+            continue
+        if len(judgments) != 1:
             raise _digest_mismatch("provenance.jsonl", rid, "judgments")
         reader_calls = judgments[0].get("call_records") or []
-        sealed_readers = metric_row.get("readers") or []
         if len(reader_calls) != len(sealed_readers):
             raise _digest_mismatch("provenance.jsonl", rid, "judgments[].call_records")
         for public_call, sealed_call in zip(reader_calls, sealed_readers, strict=True):
@@ -1882,13 +1985,41 @@ def _check_part_shapes(part_dir: Path, extra_public_files: Sequence[Path], key_i
         )
     for extra in extra_public_files:
         extra = Path(extra)
-        if extra.name != "pilot_b_report.json":
+        if extra.name not in ("pilot_b_report.json", "bakeoff_part_report.json"):
             raise refused_error(
                 "PILOT_B_SEALED_SCHEMA_MISMATCH",
                 f"Public file '{extra.name}' is not a file of a sealed part or its report.",
                 "Pass only the build report as an extra public file.",
             )
         _schema_errors(extra.name, schema_check.validate(json.loads(extra.read_text(encoding="utf-8")), "report"))
+
+
+def check_items_not_in_key_order(keys_rows: Sequence[Mapping[str, Any]]) -> None:
+    """Refuse when items are written in deterministic triad key order or grouped contiguously by key class."""
+    keys_seq = [str(r.get("key", r.get("class", ""))) for r in keys_rows]
+    n_triads = len(keys_seq) // 3
+    if len(keys_seq) >= 6 and len(keys_seq) == 3 * n_triads:
+        for perm in (
+            ("supported", "unsupported", "cannot_tell"),
+            ("supported", "cannot_tell", "unsupported"),
+            ("unsupported", "supported", "cannot_tell"),
+            ("unsupported", "cannot_tell", "supported"),
+            ("cannot_tell", "supported", "unsupported"),
+            ("cannot_tell", "unsupported", "supported"),
+        ):
+            if keys_seq == list(perm) * n_triads:
+                raise refused_error(
+                    "PILOT_B_ITEMS_IN_KEY_ORDER",
+                    "Items are written in deterministic triad key order.",
+                    "Shuffle items with a private seed before writing.",
+                )
+    transitions = sum(1 for i in range(1, len(keys_seq)) if keys_seq[i] != keys_seq[i - 1])
+    if len(keys_seq) >= 6 and transitions <= 2 and len(set(keys_seq)) >= 2:
+        raise refused_error(
+            "PILOT_B_ITEMS_IN_KEY_ORDER",
+            "Items are grouped contiguously in key class order.",
+            "Shuffle items with a private seed before writing.",
+        )
 
 
 def _verify_known_leaks(part_dir: Path, keys_sealed_path: Path, extra_public_files: Sequence[Path] = ()) -> None:
@@ -1936,6 +2067,8 @@ def _verify_known_leaks(part_dir: Path, keys_sealed_path: Path, extra_public_fil
             )
 
     keys_rows = _jsonl_rows(keys_sealed_path)
+    if str(store.get("part_id", "")).startswith("bakeoff"):
+        check_items_not_in_key_order(keys_rows)
     metrics_rows = _jsonl_rows(metrics_path)
     key_ids = [str(r["id"]) for r in keys_rows]
     if [str(r["id"]) for r in metrics_rows] != key_ids:

@@ -700,6 +700,12 @@ class OllamaCallRecord:
     max_num_ctx: int = 0
     prompt_tokens_estimate: int = 0
     done_reason: str = "stop"
+    prompt_eval_count: int = 0
+    eval_count: int = 0
+
+    def __post_init__(self) -> None:
+        if self.eval_count == 0 and self.eval_tokens != 0:
+            object.__setattr__(self, "eval_count", self.eval_tokens)
 
     def to_dict(self, *, include_target_id: bool = True) -> dict[str, object]:
         out: dict[str, object] = {
@@ -991,6 +997,18 @@ def _extract_token_counts(
     return eval_tokens, thinking_words
 
 
+def _extract_prompt_eval_count(resp: Mapping[str, Any]) -> int:
+    """Extract Ollama's real `prompt_eval_count` from an `/api/chat` response."""
+    raw_prompt_eval = resp.get("prompt_eval_count")
+    if (
+        isinstance(raw_prompt_eval, int)
+        and not isinstance(raw_prompt_eval, bool)
+        and raw_prompt_eval >= 0
+    ):
+        return raw_prompt_eval
+    return 0
+
+
 class OllamaWriterAdapter:
     """Real loopback Ollama writer adapter implementing `PilotBWriterAdapter` (Card gk Part A, Card gp, Card gs)."""
 
@@ -1166,6 +1184,7 @@ class OllamaWriterAdapter:
         thinking_text = str(msg.get("thinking") or "")
         done_reason = str(resp.get("done_reason") or "stop").strip()
         eval_tokens, thinking_words = _extract_token_counts(resp, content, thinking_text)
+        prompt_eval_count = _extract_prompt_eval_count(resp)
 
         record = OllamaCallRecord(
             model=self.ollama_tag,
@@ -1183,6 +1202,8 @@ class OllamaWriterAdapter:
             max_num_ctx=self._max_num_ctx,
             prompt_tokens_estimate=prompt_tokens_estimate,
             done_reason=done_reason,
+            prompt_eval_count=prompt_eval_count,
+            eval_count=eval_tokens,
         )
         self._call_records.append(record)
         self._last_raw_output = content
@@ -1460,6 +1481,7 @@ class OllamaBlindReaderAdapter:
         thinking_text = str(msg.get("thinking") or "")
         done_reason = str(resp.get("done_reason") or "stop").strip()
         eval_tokens, thinking_words = _extract_token_counts(resp, raw_text, thinking_text)
+        prompt_eval_count = _extract_prompt_eval_count(resp)
 
         record = OllamaCallRecord(
             model=self.ollama_tag,
@@ -1477,6 +1499,8 @@ class OllamaBlindReaderAdapter:
             max_num_ctx=self._max_num_ctx,
             prompt_tokens_estimate=prompt_tokens_estimate,
             done_reason=done_reason,
+            prompt_eval_count=prompt_eval_count,
+            eval_count=eval_tokens,
         )
         self._call_records.append(record)
         return raw_text, record

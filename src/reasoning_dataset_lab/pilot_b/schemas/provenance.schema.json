@@ -188,7 +188,7 @@
         "type": "object"
       },
       "maxItems": 2,
-      "minItems": 2,
+      "minItems": 1,
       "type": "array"
     },
     "id": {
@@ -386,7 +386,7 @@
         "type": "object"
       },
       "maxItems": 1,
-      "minItems": 1,
+      "minItems": 0,
       "type": "array"
     },
     "key_basis": {
@@ -444,6 +444,12 @@
     },
     "proof_basis": {
       "const": "proved"
+    },
+    "split": {
+      "enum": [
+        "dev",
+        "test"
+      ]
     },
     "writer": {
       "additionalProperties": false,
