@@ -743,6 +743,172 @@ def value_sets() -> tuple[tuple[str, str, tuple[str, ...]], ...]:
             found.append((domain, attribute, tuple(values)))
     return tuple(found)
 
+
+# ── Value display forms (Card rm) ──────────────────────────────────────────────────────────────────────────────────
+#
+# Every categorical value keeps its canonical slug in ``DOMAIN_CATALOGUE``, ``FactTable``, ``AtomicFact``,
+# ``ProvedClaim``, ``values_hash``, and ``certification/v3/manifest-v3.json`` so the certified v3 manifest does not
+# need re-certification. For the writer prompt and any rendered material line or worded claim, ``value_display_form``
+# maps each string value to its natural English / engineering display form via a deterministic rule plus a reviewed
+# exceptions table:
+#
+# 1. Reviewed exceptions table (``VALUE_DISPLAY_EXCEPTIONS``): acronym/standard codes and multi-word compound slugs
+#    that do not follow a parameterized family pattern or the prefix/suffix splitter.
+# 2. Deterministic parameterized family rules (``_DISPLAY_FAMILY_PATTERNS``): regex patterns for structured families
+#    (``droop<N>pct``, ``group<N>``, ``height<N>u``, ``dc<N>``/``ac<N>``, ``pc<N>``, ``type-<x>``, ``isovg<N>``,
+#    ``cap<N>pct``, ``minus<N>``/``plus<N>``, ``bil<N>kv``, ``blowdown<N>pct``, ``setpoint<N>c``).
+# 3. Deterministic compound prefix/suffix rule (``_COMPOUND_PREFIXES`` / ``_COMPOUND_SUFFIXES``): splits multi-word
+#    compound slugs with common engineering prefixes (``cold``, ``hot``, ``full``, ``half``, ``pure``, ``once-through``,
+#    ``deep-groove``, ``underfeed``) or suffixes (``roller``, ``ball``, ``sleeve``, ``coupling``, ``hearth``, ``water``,
+#    ``oil``, ``air``, ``fluid``, ``steel``, ``iron``, ``dioxide``).
+# 4. Identity fallback: single natural English words and proper nouns return unchanged.
+
+VALUE_DISPLAY_EXCEPTIONS: dict[str, str] = {
+    # relays / sole NEMA enclosure rating
+    "nema3r": "NEMA 3R",
+    "nema4x": "NEMA 4X",
+    "nema7": "NEMA 7",
+    "nema9": "NEMA 9",
+    "nema12": "NEMA 12",
+    # vessels
+    "stopengine": "stop engine",
+    "noclass": "unclassed",
+    "fullsailrig": "full sail rig",
+    "gasturbine": "gas turbine",
+    "fuelcell": "fuel cell",
+    # furnaces
+    "twentyfive": "twenty-five",
+    "seventyfive": "seventy-five",
+    "walkingbeam": "walking beam",
+    "pushertray": "pusher tray",
+    "rotarytable": "rotary table",
+    "carbottom": "car bottom",
+    # reactors
+    "criticalstartup": "critical startup",
+    "ss316": "SS 316",
+    "pwr": "PWR",
+    "bwr": "BWR",
+    "phwr": "PHWR",
+    "htgr": "HTGR",
+    "sfr": "SFR",
+    "depleteduranium": "depleted uranium",
+    "leadbismuth": "lead-bismuth",
+    # compressors
+    "ptfe": "PTFE",
+    "diamondlike": "diamond-like",
+    "electrolessnickel": "electroless nickel",
+    # transformers / two-winding vector group
+    "dyn11": "Dyn11",
+    "yyn0": "Yyn0",
+    "ynd1": "YNd1",
+    "dd0": "Dd0",
+    "yzn11": "Yzn11",
+    # boilers
+    "prepurge": "pre-purge",
+    "mainflame": "main flame",
+    "postpurge": "post-purge",
+    "t11": "T11",
+    "t22": "T22",
+    "t91": "T91",
+    "tp304h": "TP304H",
+    "tp347h": "TP347H",
+    "steamjet": "steam jet",
+    "compressedair": "compressed air",
+    "waterlance": "water lance",
+    "sonichorn": "sonic horn",
+    "pulsedetonation": "pulse detonation",
+    "pulverizedburner": "pulverized burner",
+    "travelingstoker": "traveling stoker",
+    "fluidizedbed": "fluidized bed",
+    "cyclonebarrel": "cyclone barrel",
+    # chillers
+    "pumpdown": "pump-down",
+    "r134a": "R-134a",
+    "constantpressure": "constant pressure",
+    "fixedorifice": "fixed orifice",
+    "directair": "direct air",
+    "coolingtower": "cooling tower",
+    # pumps
+    "coastingdown": "coasting down",
+    "stoppedlockedout": "stopped locked-out",
+    "epdm": "EPDM",
+    "rigidflange": "rigid flange",
+    "elastomericjaw": "elastomeric jaw",
+    "metallicdisc": "metallic disc",
+    "oh1": "OH1",
+    "oh2": "OH2",
+    "oh3": "OH3",
+    "bb1": "BB1",
+    "vs1": "VS1",
+}
+
+_DISPLAY_FAMILY_PATTERNS: tuple[tuple[re.Pattern[str], Any], ...] = (
+    (re.compile(r"^droop(\d+)pct$"), lambda m: f"{m.group(1)}% droop"),
+    (re.compile(r"^group(\d+)$"), lambda m: f"group {m.group(1)}"),
+    (re.compile(r"^height(\d+)u$"), lambda m: f"{m.group(1)}U height"),
+    (re.compile(r"^(dc|ac)(\d+)$"), lambda m: f"{m.group(1).upper()} {m.group(2)} V"),
+    (re.compile(r"^pc(\d+)$"), lambda m: f"PC {m.group(1)}"),
+    (re.compile(r"^type-([a-z])$"), lambda m: f"Type {m.group(1).upper()}"),
+    (re.compile(r"^isovg(\d+)$"), lambda m: f"ISO VG {m.group(1)}"),
+    (re.compile(r"^cap(\d+)pct$"), lambda m: f"{m.group(1)}% capacity"),
+    (re.compile(r"^(minus|plus)(\d+)$"), lambda m: f"{m.group(1)} {m.group(2)}"),
+    (re.compile(r"^bil(\d+)kv$"), lambda m: f"BIL {m.group(1)} kV"),
+    (re.compile(r"^blowdown(\d+)pct$"), lambda m: f"{m.group(1)}% blowdown"),
+    (re.compile(r"^setpoint(\d+)c$"), lambda m: f"{m.group(1)} deg C setpoint"),
+)
+
+_COMPOUND_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("oncethrough", "once-through"),
+    ("deepgroove", "deep-groove"),
+    ("underfeed", "underfeed"),
+    ("pure", "pure"),
+    ("cold", "cold"),
+    ("hot", "hot"),
+    ("full", "full"),
+    ("half", "half"),
+)
+
+_COMPOUND_SUFFIXES: tuple[str, ...] = (
+    "coupling",
+    "dioxide",
+    "roller",
+    "sleeve",
+    "hearth",
+    "water",
+    "fluid",
+    "steel",
+    "ball",
+    "iron",
+    "oil",
+    "air",
+)
+
+
+def value_display_form(value: FactValue) -> FactValue:
+    """Return the natural display form for a string value, leaving numeric and interval values unchanged."""
+    if not isinstance(value, str):
+        return value
+    low = value.strip().lower()
+    if low in VALUE_DISPLAY_EXCEPTIONS:
+        return VALUE_DISPLAY_EXCEPTIONS[low]
+    for rx, fmt in _DISPLAY_FAMILY_PATTERNS:
+        m = rx.match(low)
+        if m is not None:
+            return str(fmt(m))
+    for raw_pref, disp_pref in _COMPOUND_PREFIXES:
+        if low.startswith(raw_pref) and len(low) > len(raw_pref) + 2:
+            return f"{disp_pref} {low[len(raw_pref):]}"
+    for suf in _COMPOUND_SUFFIXES:
+        if low.endswith(suf) and len(low) > len(suf) + 2:
+            return f"{low[:-len(suf)]} {suf}"
+    return value
+
+
+def normalise_value_token(text: str) -> str:
+    """Normalise a value string by stripping whitespace and hyphens and lowercasing."""
+    return re.sub(r"[\s-]+", "", text).lower()
+
+
 SLOT_SCHEDULES: tuple[tuple[int, int, int, int, int], ...] = (
     (0, 2, 1, 3, 2),
     (1, 3, 2, 0, 2),

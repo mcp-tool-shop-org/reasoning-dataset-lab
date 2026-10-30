@@ -52,6 +52,7 @@ from reasoning_dataset_lab.errors import refused_error, usage_error
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     FactTable,
     ProvedClaim,
+    value_display_form,
 )
 from reasoning_dataset_lab.pilot_b.rendering import (
     StyleIssue,
@@ -822,9 +823,24 @@ def derive_key_blind_phrasing_cue(claim_id: str) -> str:
 
 
 def build_writer_render_messages(table: FactTable) -> list[dict[str, str]]:
-    """Build the `/api/chat` messages payload for `render_material`."""
+    """Build the `/api/chat` messages payload for `render_material` using display forms for string values."""
+    t_dict = table.to_dict()
+    t_dict["facts"] = [
+        {
+            **f_dict,
+            "value": (
+                value_display_form(f.value)
+                if f.fact_type in ("state", "attribute")
+                else f_dict["value"]
+            ),
+        }
+        for f, f_dict in zip(table.facts, t_dict["facts"], strict=True)  # type: ignore[arg-type]
+    ]
+    t_dict["open_attributes"] = [
+        [k, str(value_display_form(v))] for k, v in table.open_attributes
+    ]
     table_json = json.dumps(
-        table.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        t_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
     return [
         {
@@ -870,7 +886,12 @@ def normalise_claim(text: str) -> str:
 
 
 def build_writer_word_messages(claim: ProvedClaim) -> list[dict[str, str]]:
-    """Build the `/api/chat` messages payload for `word_claim`."""
+    """Build the `/api/chat` messages payload for `word_claim` using display forms for string values."""
+    disp_claimed = (
+        value_display_form(claim.claimed_value)
+        if claim.fact_type in ("state", "attribute")
+        else claim.claimed_value
+    )
     claim_spec = {
         "claim_id": claim.claim_id,
         "table_id": claim.table_id,
@@ -878,9 +899,9 @@ def build_writer_word_messages(claim: ProvedClaim) -> list[dict[str, str]]:
         "attribute": claim.attribute,
         "fact_type": claim.fact_type,
         "claimed_value": (
-            [int(claim.claimed_value[0]), int(claim.claimed_value[1])]
-            if isinstance(claim.claimed_value, tuple)
-            else claim.claimed_value
+            [int(disp_claimed[0]), int(disp_claimed[1])]
+            if isinstance(disp_claimed, tuple)
+            else disp_claimed
         ),
         "unit": claim.unit,
         "op": claim.op,
@@ -938,16 +959,17 @@ def format_reference_material(table: FactTable) -> str:
     lines: list[str] = []
     for idx, f in enumerate(table.facts, start=1):
         unit_suffix = f" {f.unit}" if f.unit else ""
+        disp_val = value_display_form(f.value) if f.fact_type in ("state", "attribute") else f.value
         if f.op == "between" and isinstance(f.value, tuple):
             phrase = f"is between {f.value[0]} and {f.value[1]}{unit_suffix}"
         elif f.op == "at_least":
-            phrase = f"is at least {f.value}{unit_suffix}"
+            phrase = f"is at least {disp_val}{unit_suffix}"
         elif f.op == "at_most":
-            phrase = f"is at most {f.value}{unit_suffix}"
+            phrase = f"is at most {disp_val}{unit_suffix}"
         elif f.op == "not_equal":
-            phrase = f"is not {f.value}{unit_suffix}"
+            phrase = f"is not {disp_val}{unit_suffix}"
         else:
-            phrase = f"is {f.value}{unit_suffix}"
+            phrase = f"is {disp_val}{unit_suffix}"
         lines.append(f"{idx}. {f.entity} {f.attribute} {phrase}.")
     return "\n".join(lines)
 
@@ -955,16 +977,21 @@ def format_reference_material(table: FactTable) -> str:
 def format_reference_claim(claim: ProvedClaim) -> str:
     """Format a `ProvedClaim` into one sentence for `read_claim` calibration prompts."""
     unit_suffix = f" {claim.unit}" if claim.unit else ""
+    disp_val = (
+        value_display_form(claim.claimed_value)
+        if claim.fact_type in ("state", "attribute")
+        else claim.claimed_value
+    )
     if claim.op == "between" and isinstance(claim.claimed_value, tuple):
         phrase = f"is between {claim.claimed_value[0]} and {claim.claimed_value[1]}{unit_suffix}"
     elif claim.op == "at_least":
-        phrase = f"is at least {claim.claimed_value}{unit_suffix}"
+        phrase = f"is at least {disp_val}{unit_suffix}"
     elif claim.op == "at_most":
-        phrase = f"is at most {claim.claimed_value}{unit_suffix}"
+        phrase = f"is at most {disp_val}{unit_suffix}"
     elif claim.op == "not_equal":
-        phrase = f"is not {claim.claimed_value}{unit_suffix}"
+        phrase = f"is not {disp_val}{unit_suffix}"
     else:
-        phrase = f"is {claim.claimed_value}{unit_suffix}"
+        phrase = f"is {disp_val}{unit_suffix}"
     return f"{claim.entity} {claim.attribute} {phrase}."
 
 

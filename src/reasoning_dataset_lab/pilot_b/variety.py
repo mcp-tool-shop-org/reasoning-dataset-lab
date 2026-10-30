@@ -28,6 +28,7 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     DOMAIN_CATALOGUE,
     MONTH_NAMES,
     ProvedTriad,
+    value_display_form,
 )
 from reasoning_dataset_lab.pilot_b.rendering import format_atomic_sentence
 
@@ -122,25 +123,32 @@ def build_amendment1_masker(
             return
         toks.setdefault(str(s).lower(), token)
 
+    def add_val(s: Any) -> None:
+        add(s, "<V>")
+        if isinstance(s, str):
+            disp = str(value_display_form(s))
+            if disp != s:
+                add(disp, "<V>")
+
     for f in table.facts:
         add(f.entity, "<E>")
         add(f.attribute, "<A>")
         add(f.unit, "<U>")
         if f.fact_type in ("state", "attribute"):
-            add(f.value, "<V>")
+            add_val(f.value)
     for ent in table.entities:
         add(ent, "<E>")
     for oa_name, oa_val in table.open_attributes:
         add(oa_name, "<A>")
-        add(oa_val, "<V>")
+        add_val(oa_val)
     if claim is not None:
         add(claim.attribute, "<A>")
         add(claim.unit, "<U>")
         if isinstance(claim.claimed_value, (tuple, list)):
             for elem in claim.claimed_value:
-                add(elem, "<V>")
+                add_val(elem)
         else:
-            add(claim.claimed_value, "<V>")
+            add_val(claim.claimed_value)
 
     keys = sorted(toks, key=lambda k: -len(k))
     rx = (
@@ -216,14 +224,20 @@ def _claim_length_bucket(text: str) -> str:
 
 
 def _domain_value_candidates(dom_spec: Mapping[str, Any]) -> list[str]:
-    """Return all known string values (state, attribute, and open_attrs) for a domain."""
+    """Return all known string values (both canonical slugs and display forms) for a domain."""
     _, state_vals = dom_spec["state_attr"]
     _, attr_vals = dom_spec["attr_spec"]
-    out: list[str] = [str(v) for v in state_vals] + [str(v) for v in attr_vals]
+    raw_vals: list[str] = [str(v) for v in state_vals] + [str(v) for v in attr_vals]
     for _, oa_vals in dom_spec["open_attrs"]:
         for v in oa_vals:
             if not isinstance(v, (tuple, list)):
-                out.append(str(v))
+                raw_vals.append(str(v))
+    out: list[str] = []
+    for v in raw_vals:
+        out.append(v)
+        disp = str(value_display_form(v))
+        if disp != v:
+            out.append(disp)
     return out
 
 
@@ -285,14 +299,8 @@ def _parse_sentence_against_domain(
             val_found = m_date.group(1)
             fact_type = "date"
         else:
-            m_num = _NUM_RE.search(s)
-            if m_num:
-                raw_num = m_num.group(0)
-                val_found = int(raw_num) if raw_num.isdigit() else float(raw_num)
-                if fact_type == "interval":
-                    fact_type = "number"
-            else:
-                candidates = _domain_value_candidates(dom_spec)
+            candidates = _domain_value_candidates(dom_spec)
+            if fact_type in ("state", "attribute"):
                 for cval in sorted(set(candidates), key=len, reverse=True):
                     if re.search(
                         r"(?<![A-Za-z0-9])" + re.escape(cval) + r"(?![A-Za-z0-9])",
@@ -301,6 +309,13 @@ def _parse_sentence_against_domain(
                     ):
                         val_found = cval
                         break
+            if val_found == "":
+                m_num = _NUM_RE.search(s)
+                if m_num:
+                    raw_num = m_num.group(0)
+                    val_found = int(raw_num) if raw_num.isdigit() else float(raw_num)
+                    if fact_type == "interval":
+                        fact_type = "number"
 
     return ent_found, attr_found, fact_type, val_found, unit_found
 

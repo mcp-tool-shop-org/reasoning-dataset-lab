@@ -22,6 +22,8 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     ProvedClaim,
     ProvedTriad,
     VerdictKey,
+    normalise_value_token,
+    value_display_form,
 )
 
 NUMBERED_LINE_RE: re.Pattern[str] = re.compile(r"^\s*(\d+)[.)]\s+(.+?)\s*$")
@@ -109,9 +111,17 @@ def _value_strings(val: FactValue) -> tuple[str, ...]:
     return (str(val),)
 
 
+def _value_grounding_strings(val: FactValue) -> tuple[str, ...]:
+    if isinstance(val, tuple):
+        return (str(val[0]), str(val[1]))
+    disp = str(value_display_form(val))
+    raw = str(val)
+    return (raw, disp) if disp != raw else (raw,)
+
+
 def _value_numbers(val: FactValue) -> set[str]:
     nums: set[str] = set()
-    for s in _value_strings(val):
+    for s in _value_grounding_strings(val):
         for m in NUMBER_TOKEN_RE.finditer(s):
             nums.add(m.group(0))
     return nums
@@ -119,7 +129,7 @@ def _value_numbers(val: FactValue) -> set[str]:
 
 def _value_proper_nouns(val: FactValue) -> set[str]:
     nouns: set[str] = set()
-    for s in _value_strings(val):
+    for s in _value_grounding_strings(val):
         for m in PROPER_NOUN_TOKEN_RE.finditer(s):
             nouns.add(m.group(0))
     return nouns
@@ -127,9 +137,15 @@ def _value_proper_nouns(val: FactValue) -> set[str]:
 
 def _value_word_tokens(val: FactValue) -> set[str]:
     tokens: set[str] = set()
-    for s in _value_strings(val):
+    for s in _value_grounding_strings(val):
         for m in WORD_TOKEN_RE.finditer(s):
             tokens.add(m.group(0))
+        words = [w for w in re.split(r"[\s-]+", s.strip()) if w]
+        for w in words:
+            tokens.add(w)
+        if len(words) > 1:
+            tokens.add("-".join(words))
+            tokens.add("".join(words))
     return tokens
 
 
@@ -204,6 +220,23 @@ def _named(token: str, text: str) -> bool:
         re.search(r"(?<!\w)" + re.escape(token) + r"(?!\w)", text, re.IGNORECASE)
         is not None
     )
+
+
+def _named_value(val: FactValue, val_part: str, text: str) -> bool:
+    """Return True if ``text`` names ``val_part``, its display form, or a whitespace-, case- and hyphen-normalised equal of either."""
+    if _named(val_part, text):
+        return True
+    if not isinstance(val, str):
+        return False
+    disp = str(value_display_form(val_part))
+    if disp != val_part and _named(disp, text):
+        return True
+    for cand in {val_part, disp}:
+        norm_cand = normalise_value_token(cand)
+        char_pat = r"(?<!\w)" + r"[\s-]*".join(re.escape(ch) for ch in norm_cand) + r"(?!\w)"
+        if re.search(char_pat, text, re.IGNORECASE) is not None:
+            return True
+    return False
 
 
 
@@ -362,7 +395,7 @@ def check_rendered_material(table: FactTable, material: str) -> dict[int, str]:
                 "Every bound sentence must name its fact's attribute.",
             )
         for val_part in _value_strings(fact.value):
-            if not _named(val_part, sent):
+            if not _named_value(fact.value, val_part, sent):
                 raise refused_error(
                     "PILOT_B_RENDER_MISSING_FACT_VALUE",
                     f"{line_label} does not state its bound value '{val_part}': {sent!r}.",
@@ -409,7 +442,7 @@ def check_worded_claim(
             "Name the claim's target attribute in the worded claim.",
         )
     for val_part in _value_strings(claim.claimed_value):
-        if not _named(val_part, worded_text):
+        if not _named_value(claim.claimed_value, val_part, worded_text):
             raise refused_error(
                 "PILOT_B_RENDER_MISSING_FACT_VALUE",
                 f"{label} does not state its claimed value '{val_part}': {worded_text!r}.",
@@ -454,8 +487,9 @@ def format_atomic_sentence(
     unit: str | None,
     op: FactOp,
 ) -> str:
-    """Format a single atomic fact or claim into canonical English prose."""
+    """Format a single atomic fact or claim into canonical English prose using the display form for string values."""
     unit_suffix = f" {unit}" if unit else ""
+    disp_val = value_display_form(value) if fact_type in ("state", "attribute") else value
     if op == "between" or isinstance(value, tuple):
         assert isinstance(value, tuple)
         if unit and attribute.lower().endswith(unit.lower()):
@@ -464,14 +498,14 @@ def format_atomic_sentence(
             f"The {attribute} of {entity} is between {value[0]} and {value[1]}{unit_suffix}."
         )
     if op == "at_least":
-        return f"The {attribute} of {entity} is at least {value}{unit_suffix}."
+        return f"The {attribute} of {entity} is at least {disp_val}{unit_suffix}."
     if op == "at_most":
-        return f"The {attribute} of {entity} is at most {value}{unit_suffix}."
+        return f"The {attribute} of {entity} is at most {disp_val}{unit_suffix}."
     if op == "not":
-        return f"The {attribute} of {entity} is not {value}{unit_suffix}."
+        return f"The {attribute} of {entity} is not {disp_val}{unit_suffix}."
     if fact_type == "number" and unit and attribute.lower().endswith(unit.lower()):
-        return f"{entity} has {value} {attribute}."
-    return f"The {attribute} of {entity} is {value}{unit_suffix}."
+        return f"{entity} has {disp_val} {attribute}."
+    return f"The {attribute} of {entity} is {disp_val}{unit_suffix}."
 
 
 STYLE_EQUALS_RE: re.Pattern[str] = re.compile(
