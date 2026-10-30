@@ -11,12 +11,15 @@ permutation check):
 - (f) item index mod 3;
 - (g) attribute role (`number`, `date`, `interval`, `state`, `spec`, `open`);
 - (h) attribute name;
-- (i) claim length.
+- (i) claim length;
+- `claim_all_tokens_in_material` (normalised value & token presence, gated);
+- `same_line_cooccurrence` and `min_entity_value_token_distance` (reported overall; gated within `not_supported`).
 
 Hard gates:
-- Gate 1: every non-degenerate probe passes on both 3-class and binary tasks under the
-  two-sided rule (`abs(oof - base) <= 0.05` AND `base` lies inside the triad-clustered
-  95% Wilson interval `[cluster_ci95_low, cluster_ci95_high]`).
+- Gate 1 (Option 1, `cluster_wilson_holm_v1`): a gated probe-task passes iff the base rate lies
+  inside its Holm-adjusted triad-clustered Wilson interval, with family-wise `alpha = 0.05`
+  across all non-degenerate gated probe-tasks (Wilson 1927; Holm 1979). The flat `+/-0.05`
+  margin is removed.
 - Gate 2: every attribute role's and every closure's 3-class share falls within
   `[0.25, 0.42]`.
 
@@ -28,12 +31,13 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 import itertools
 import json
 import math
 from pathlib import Path
 import re
+from statistics import NormalDist
 from typing import Any
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error, usage_error
@@ -59,13 +63,45 @@ NOT_SUPPORTED_LABELS: tuple[str, str] = ("unsupported", "cannot_tell")
 BASE_3CLASS: float = 1.0 / 3.0
 BASE_BINARY: float = 2.0 / 3.0
 BASE_NOT_SUPPORTED: float = 0.50
-DEFAULT_MAX_MARGIN: float = 0.05
+GATE_1_NAME: str = "triad_clustered_wilson_holm"
+GATE_1_VERSION: str = "1.0"
+DEFAULT_GATE_ALPHA: float = 0.05
 SHARE_MIN: float = 0.25
 SHARE_MAX: float = 0.42
+_STD_NORMAL = NormalDist()
 
 _DOMAIN_BY_NAME: dict[str, dict[str, Any]] = {
     str(spec["domain"]): spec for spec in DOMAIN_CATALOGUE
 }
+
+
+def _build_domain_reconstructed_tables() -> dict[str, ReconstructedTable]:
+    """Precompute an open-world `ReconstructedTable` per domain for claim token masking."""
+    tables: dict[str, ReconstructedTable] = {}
+    for spec in DOMAIN_CATALOGUE:
+        dom_name = str(spec["domain"])
+        open_attrs: list[tuple[str, Any]] = []
+        for oa_name, oa_vals in spec["open_attrs"]:
+            for oa_val in oa_vals:
+                open_attrs.append((str(oa_name), oa_val))
+        for key_name in ("state_attr", "attr_spec"):
+            a_name, a_vals = spec[key_name]
+            for a_val in a_vals:
+                open_attrs.append((str(a_name), a_val))
+        tables[dom_name] = ReconstructedTable(
+            table_id="",
+            domain=dom_name,
+            closure="open",
+            entities=tuple(str(e) for e in spec["entities"]),
+            facts=(),
+            open_attributes=tuple(open_attrs),
+        )
+    return tables
+
+
+_DOMAIN_RECONSTRUCTED_TABLES: dict[str, ReconstructedTable] = (
+    _build_domain_reconstructed_tables()
+)
 
 
 def _build_value_normalisation_patterns() -> tuple[tuple[str, re.Pattern[str], str], ...]:
@@ -124,7 +160,7 @@ def _normalise_text_values(text: str) -> str:
 
 @dataclass(frozen=True)
 class TaskProbeMetrics:
-    """Out-of-fold metrics for a single task (3-class or binary) on one probe."""
+    """Out-of-fold metrics for a single task (`three_class`, `binary`, or `within_not_supported`) on one probe."""
 
     task: str
     num_samples: int
@@ -133,7 +169,6 @@ class TaskProbeMetrics:
     oof_accuracy: float
     margin_over_base: float
     abs_margin_over_base: float
-    max_allowed_margin: float
     within_triad_permutation_accuracy: float
     degenerate: bool
     gd_accuracy: float
@@ -143,6 +178,13 @@ class TaskProbeMetrics:
     cluster_ci95_low: float
     cluster_ci95_high: float
     in_cluster_ci95: bool
+    z_score: float
+    raw_p: float
+    holm_adjusted_p: float | None
+    holm_alpha: float | None
+    holm_cluster_ci_low: float | None
+    holm_cluster_ci_high: float | None
+    in_holm_cluster_ci: bool
     passed: bool
 
     def to_dict(self) -> dict[str, Any]:
@@ -204,7 +246,6 @@ class ShortcutProbeReport:
     keys_path: str
     num_items: int
     num_triads: int
-    max_allowed_margin: float
     share_bounds: tuple[float, float]
     probes: tuple[ProbeResult, ...]
     role_shares: tuple[GroupClassShare, ...]
@@ -212,17 +253,62 @@ class ShortcutProbeReport:
     gate_1_oof_passed: bool
     gate_2_shares_passed: bool
     passed: bool
+    gate_name: str = GATE_1_NAME
+    gate_version: str = GATE_1_VERSION
+    alpha: float = DEFAULT_GATE_ALPHA
+    family_size: int = 0
+    min_detectable_single_probe_margin: float = 0.0
+    min_detectable_within_not_supported_margin: float = 0.0
+    triads_needed_for_14pt_leak: int = 0
+    triads_needed_for_7pt_leak: int = 0
+    pass_meaning_note: str = ""
+    header: dict[str, Any] = None  # type: ignore[assignment]
     overlap_means_by_class: dict[str, float] = None  # type: ignore[assignment]
     claim_value_in_material_means_by_class: dict[str, float] = None  # type: ignore[assignment]
     proximity_probes: tuple[ProbeResult, ...] = ()
 
+    @property
+    def n_triads(self) -> int:
+        return self.num_triads
+
+    @property
+    def n_items(self) -> int:
+        return self.num_items
+
     def to_dict(self) -> dict[str, Any]:
+        hdr = dict(
+            self.header
+            or {
+                "n_triads": self.num_triads,
+                "n_items": self.num_items,
+                "gate_name": self.gate_name,
+                "gate_version": self.gate_version,
+                "alpha": self.alpha,
+                "family_size": self.family_size,
+                "min_detectable_single_probe_margin": self.min_detectable_single_probe_margin,
+                "min_detectable_within_not_supported_margin": self.min_detectable_within_not_supported_margin,
+                "triads_needed_for_14pt_leak": self.triads_needed_for_14pt_leak,
+                "triads_needed_for_7pt_leak": self.triads_needed_for_7pt_leak,
+                "pass_meaning_note": self.pass_meaning_note,
+            }
+        )
         return {
+            "header": hdr,
             "part_items_path": self.part_items_path,
             "keys_path": self.keys_path,
+            "n_triads": self.num_triads,
+            "n_items": self.num_items,
             "num_items": self.num_items,
             "num_triads": self.num_triads,
-            "max_allowed_margin": self.max_allowed_margin,
+            "gate_name": self.gate_name,
+            "gate_version": self.gate_version,
+            "alpha": self.alpha,
+            "family_size": self.family_size,
+            "min_detectable_single_probe_margin": self.min_detectable_single_probe_margin,
+            "min_detectable_within_not_supported_margin": self.min_detectable_within_not_supported_margin,
+            "triads_needed_for_14pt_leak": self.triads_needed_for_14pt_leak,
+            "triads_needed_for_7pt_leak": self.triads_needed_for_7pt_leak,
+            "pass_meaning_note": self.pass_meaning_note,
             "share_bounds": list(self.share_bounds),
             "overlap_means_by_class": dict(self.overlap_means_by_class or {}),
             "claim_value_in_material_means_by_class": dict(
@@ -298,11 +384,10 @@ def _ngrams(tokens: Sequence[str], max_n: int = 2) -> list[str]:
     return feats
 
 
-def _wilson_ci95(p_hat: float, n: int) -> tuple[float, float]:
-    """Compute the 95% Wilson score interval for proportion `p_hat` over `n` samples."""
+def _wilson_ci(p_hat: float, n: int, z: float = 1.959963984540054) -> tuple[float, float]:
+    """Compute the two-sided Wilson (1927) score interval for proportion `p_hat` over `n` samples at critical value `z`."""
     if n <= 0:
         return 0.0, 1.0
-    z = 1.959963984540054
     z2 = z * z
     denom = 1.0 + z2 / n
     center = (p_hat + z2 / (2.0 * n)) / denom
@@ -315,9 +400,54 @@ def _wilson_ci95(p_hat: float, n: int) -> tuple[float, float]:
     )
 
 
+def _wilson_ci95(p_hat: float, n: int) -> tuple[float, float]:
+    """Compute the 95% Wilson score interval for proportion `p_hat` over `n` samples."""
+    return _wilson_ci(p_hat, n, 1.959963984540054)
+
+
 def _cluster_ci95(p_hat: float, n_clusters: int) -> tuple[float, float]:
     """Compute the 95% triad-clustered Wilson interval using `n_clusters` triads as the unit."""
     return _wilson_ci95(p_hat, max(n_clusters, 1))
+
+
+def _two_sided_z_from_alpha(alpha_level: float) -> float:
+    """Return the two-sided standard normal critical value `z` for significance level `alpha_level`."""
+    clamped = max(1e-15, min(1.0 - 1e-15, alpha_level))
+    return float(_STD_NORMAL.inv_cdf(1.0 - clamped / 2.0))
+
+
+def _two_sided_p_from_z(z_val: float) -> float:
+    """Return the two-sided standard normal p-value for test statistic `z_val >= 0`."""
+    return float(max(0.0, min(1.0, 2.0 * (1.0 - _STD_NORMAL.cdf(abs(z_val))))))
+
+
+def compute_min_detectable_margin(
+    n_triads: int,
+    family_size: int,
+    *,
+    alpha: float = DEFAULT_GATE_ALPHA,
+    base_rate: float = BASE_3CLASS,
+) -> float:
+    """Compute the minimum detectable single-probe margin at `n_triads` under Holm step-1 (`alpha / family_size`)."""
+    eff_n = max(n_triads, 1)
+    eff_m = max(family_size, 1)
+    z_crit = _two_sided_z_from_alpha(alpha / eff_m)
+    se_triad = math.sqrt(base_rate * (1.0 - base_rate) / eff_n)
+    return round(z_crit * se_triad, 4)
+
+
+def compute_triads_needed_for_margin(
+    target_margin: float,
+    family_size: int,
+    *,
+    alpha: float = DEFAULT_GATE_ALPHA,
+    base_rate: float = BASE_3CLASS,
+) -> int:
+    """Compute the triad count required to detect a single-probe leak of `target_margin` under Holm step-1."""
+    eff_m = max(family_size, 1)
+    z_crit = _two_sided_z_from_alpha(alpha / eff_m)
+    raw_n = ((z_crit / target_margin) ** 2) * base_rate * (1.0 - base_rate)
+    return int(math.ceil(raw_n - 1e-12))
 
 
 def _assign_triad_folds(
@@ -730,7 +860,8 @@ def _build_task_metrics(
     cent_acc: float,
     perm_acc: float,
     is_deg: bool,
-    max_margin: float,
+    *,
+    alpha: float = DEFAULT_GATE_ALPHA,
 ) -> TaskProbeMetrics:
     oof = _select_oof_accuracy(gd_acc, cent_acc, base, is_deg)
     margin = oof - base
@@ -738,7 +869,26 @@ def _build_task_metrics(
     ci_low, ci_high = _wilson_ci95(oof, num_samples)
     cl_low, cl_high = _cluster_ci95(oof, num_triads)
     in_cluster_ci = (cl_low - 1e-9) <= base <= (cl_high + 1e-9)
-    passed = True if is_deg else (abs_margin <= max_margin + 1e-9 and in_cluster_ci)
+    eff_triads = max(num_triads, 1)
+    se_triad = math.sqrt(base * (1.0 - base) / eff_triads)
+    z_val = 0.0 if (is_deg or se_triad <= 0.0) else (abs_margin / se_triad)
+    raw_p = 1.0 if is_deg else _two_sided_p_from_z(z_val)
+    if is_deg:
+        holm_p: float | None = 1.0
+        holm_alpha: float | None = alpha
+        holm_low: float | None = cl_low
+        holm_high: float | None = cl_high
+        in_holm_ci = True
+        passed = True
+    else:
+        z_crit = _two_sided_z_from_alpha(alpha)
+        h_low, h_high = _wilson_ci(oof, eff_triads, z_crit)
+        in_holm_ci = (z_val <= z_crit + 1e-12) and ((h_low - 1e-9) <= base <= (h_high + 1e-9))
+        holm_p = round(raw_p, 6)
+        holm_alpha = round(alpha, 6)
+        holm_low = h_low
+        holm_high = h_high
+        passed = in_holm_ci
     return TaskProbeMetrics(
         task=task,
         num_samples=num_samples,
@@ -747,7 +897,6 @@ def _build_task_metrics(
         oof_accuracy=round(oof, 4),
         margin_over_base=round(margin, 4),
         abs_margin_over_base=round(abs_margin, 4),
-        max_allowed_margin=max_margin,
         within_triad_permutation_accuracy=round(perm_acc, 4),
         degenerate=is_deg,
         gd_accuracy=round(gd_acc, 4),
@@ -757,8 +906,145 @@ def _build_task_metrics(
         cluster_ci95_low=cl_low,
         cluster_ci95_high=cl_high,
         in_cluster_ci95=in_cluster_ci,
+        z_score=round(z_val, 4),
+        raw_p=round(raw_p, 6),
+        holm_adjusted_p=holm_p,
+        holm_alpha=holm_alpha,
+        holm_cluster_ci_low=holm_low,
+        holm_cluster_ci_high=holm_high,
+        in_holm_cluster_ci=in_holm_ci,
         passed=passed,
     )
+
+
+def _apply_holm_gate1(
+    probes: Sequence[ProbeResult],
+    proximity_probes: Sequence[ProbeResult],
+    *,
+    alpha: float = DEFAULT_GATE_ALPHA,
+) -> tuple[tuple[ProbeResult, ...], tuple[ProbeResult, ...], int]:
+    """Apply Holm (1979) step-down multiplicity correction across all non-degenerate gated probe-tasks."""
+    gated_refs: list[tuple[str, int, str, TaskProbeMetrics]] = []
+    for idx, pr in enumerate(probes):
+        if pr.gated:
+            if not pr.three_class.degenerate:
+                gated_refs.append(("probes", idx, "three_class", pr.three_class))
+            if not pr.binary.degenerate:
+                gated_refs.append(("probes", idx, "binary", pr.binary))
+    for idx, pr in enumerate(proximity_probes):
+        if (
+            pr.within_not_supported_gated
+            and pr.within_not_supported is not None
+            and not pr.within_not_supported.degenerate
+        ):
+            gated_refs.append(
+                ("proximity_probes", idx, "within_not_supported", pr.within_not_supported)
+            )
+
+    family_size = len(gated_refs)
+    # Sort by decreasing z_score (increasing raw_p); tie-break deterministically by list index
+    order = sorted(
+        range(family_size),
+        key=lambda i: (
+            -abs(gated_refs[i][3].oof_accuracy - gated_refs[i][3].base_rate)
+            / math.sqrt(
+                gated_refs[i][3].base_rate
+                * (1.0 - gated_refs[i][3].base_rate)
+                / max(gated_refs[i][3].num_triads, 1)
+            ),
+            gated_refs[i][3].raw_p,
+            i,
+        ),
+    )
+
+    updated_tasks: dict[tuple[str, int, str], TaskProbeMetrics] = {}
+    running_max_adj_p = 0.0
+    still_rejecting = True
+
+    for rank_zero, ref_idx in enumerate(order):
+        group_name, probe_idx, task_field, tm = gated_refs[ref_idx]
+        denom = family_size - rank_zero
+        alpha_k = alpha / denom
+        z_crit_k = _two_sided_z_from_alpha(alpha_k)
+        eff_triads = max(tm.num_triads, 1)
+        se_triad = math.sqrt(tm.base_rate * (1.0 - tm.base_rate) / eff_triads)
+        exact_z = abs(tm.oof_accuracy - tm.base_rate) / se_triad
+        exact_raw_p = _two_sided_p_from_z(exact_z)
+        running_max_adj_p = max(running_max_adj_p, min(1.0, exact_raw_p * denom))
+        holm_low, holm_high = _wilson_ci(tm.oof_accuracy, eff_triads, z_crit_k)
+        in_holm_ci = (exact_z <= z_crit_k + 1e-12) and (
+            (holm_low - 1e-9) <= tm.base_rate <= (holm_high + 1e-9)
+        )
+        if still_rejecting and not in_holm_ci:
+            task_passed = False
+        else:
+            still_rejecting = False
+            task_passed = True
+
+        updated_tasks[(group_name, probe_idx, task_field)] = replace(
+            tm,
+            z_score=round(exact_z, 4),
+            raw_p=round(exact_raw_p, 6),
+            holm_adjusted_p=round(running_max_adj_p, 6),
+            holm_alpha=round(alpha_k, 6),
+            holm_cluster_ci_low=holm_low,
+            holm_cluster_ci_high=holm_high,
+            in_holm_cluster_ci=in_holm_ci,
+            passed=task_passed,
+        )
+
+    out_probes: list[ProbeResult] = []
+    for idx, pr in enumerate(probes):
+        m3 = updated_tasks.get(("probes", idx, "three_class"), pr.three_class)
+        m2 = updated_tasks.get(("probes", idx, "binary"), pr.binary)
+        out_probes.append(
+            replace(
+                pr,
+                three_class=m3,
+                binary=m2,
+                passed=(m3.passed and m2.passed) if pr.gated else True,
+            )
+        )
+
+    out_prox: list[ProbeResult] = []
+    for idx, pr in enumerate(proximity_probes):
+        m3 = replace(
+            pr.three_class,
+            holm_adjusted_p=None,
+            holm_alpha=None,
+            holm_cluster_ci_low=None,
+            holm_cluster_ci_high=None,
+            in_holm_cluster_ci=pr.three_class.in_cluster_ci95,
+            passed=pr.three_class.in_cluster_ci95,
+        )
+        m2 = replace(
+            pr.binary,
+            holm_adjusted_p=None,
+            holm_alpha=None,
+            holm_cluster_ci_low=None,
+            holm_cluster_ci_high=None,
+            in_holm_cluster_ci=pr.binary.in_cluster_ci95,
+            passed=pr.binary.in_cluster_ci95,
+        )
+        m_ns = (
+            updated_tasks.get(
+                ("proximity_probes", idx, "within_not_supported"),
+                pr.within_not_supported,
+            )
+            if pr.within_not_supported is not None
+            else None
+        )
+        out_prox.append(
+            replace(
+                pr,
+                three_class=m3,
+                binary=m2,
+                within_not_supported=m_ns,
+                passed=m_ns.passed if (pr.within_not_supported_gated and m_ns is not None) else True,
+            )
+        )
+
+    return tuple(out_probes), tuple(out_prox), family_size
 
 
 def _mask_claim_tokens(claim_text: str, domain_spec: dict[str, Any]) -> list[str]:
@@ -770,22 +1056,7 @@ def _mask_claim_tokens(claim_text: str, domain_spec: dict[str, Any]) -> list[str
     ent, attr, ftype, val, unit = _parse_sentence_against_domain(
         claim_text, domain_spec
     )
-    open_attrs: list[tuple[str, Any]] = []
-    for oa_name, oa_vals in domain_spec["open_attrs"]:
-        for oa_val in oa_vals:
-            open_attrs.append((str(oa_name), oa_val))
-    for key_name in ("state_attr", "attr_spec"):
-        a_name, a_vals = domain_spec[key_name]
-        for a_val in a_vals:
-            open_attrs.append((str(a_name), a_val))
-    tbl = ReconstructedTable(
-        table_id="",
-        domain=str(domain_spec["domain"]),
-        closure="open",
-        entities=tuple(str(e) for e in domain_spec["entities"]),
-        facts=(),
-        open_attributes=tuple(open_attrs),
-    )
+    tbl = _DOMAIN_RECONSTRUCTED_TABLES[str(domain_spec["domain"])]
     pc = ParsedClaim(
         entity=ent,
         attribute=attr,
@@ -911,11 +1182,11 @@ def run_bakeoff_shortcut_probe(
     *,
     part_items_path: str = "",
     keys_path: str = "",
-    max_margin: float = DEFAULT_MAX_MARGIN,
+    alpha: float = DEFAULT_GATE_ALPHA,
     share_bounds: tuple[float, float] = (SHARE_MIN, SHARE_MAX),
     n_folds: int = 5,
 ) -> ShortcutProbeReport:
-    """Evaluate all 9 shortcut probes (a)-(i) on 3-class and binary tasks plus role/closure shares."""
+    """Evaluate all shortcut probes on 3-class, binary, and within-not-supported tasks under Holm-adjusted triad-clustered Wilson intervals (Option 1) plus role/closure shares."""
     if not items:
         raise ValueError("items must not be empty")
 
@@ -957,7 +1228,7 @@ def run_bakeoff_shortcut_probe(
         for rank_i, (orig_idx, _) in enumerate(sorted_grp):
             claim_len_rank_by_idx[orig_idx] = float(rank_i)
 
-    # Build feature sequences for each of the 9 probes.
+    # Build feature sequences for each of the probes.
     # Sealed keys are accessed ONLY for `key` (labels) and `target_line` (in probe (b) only).
     labels_3: list[str] = []
     labels_2: list[str] = []
@@ -1100,7 +1371,7 @@ def run_bakeoff_shortcut_probe(
             nb3,
             perm3,
             deg3,
-            max_margin,
+            alpha=alpha,
         )
         m2 = _build_task_metrics(
             "binary",
@@ -1111,7 +1382,7 @@ def run_bakeoff_shortcut_probe(
             nb2,
             perm2,
             deg2,
-            max_margin,
+            alpha=alpha,
         )
         is_deg = deg3 and deg2
         return ProbeResult(
@@ -1151,7 +1422,7 @@ def run_bakeoff_shortcut_probe(
             cent3,
             perm3,
             deg3,
-            max_margin,
+            alpha=alpha,
         )
         m2 = _build_task_metrics(
             "binary",
@@ -1162,7 +1433,7 @@ def run_bakeoff_shortcut_probe(
             cent2,
             perm2,
             deg2,
-            max_margin,
+            alpha=alpha,
         )
         is_deg = deg3 and deg2
         return ProbeResult(
@@ -1211,7 +1482,7 @@ def run_bakeoff_shortcut_probe(
             cent3,
             perm3,
             deg3,
-            max_margin,
+            alpha=alpha,
         )
         m2 = _build_task_metrics(
             "binary",
@@ -1222,7 +1493,7 @@ def run_bakeoff_shortcut_probe(
             cent2,
             perm2,
             deg2,
-            max_margin,
+            alpha=alpha,
         )
         ns_triads = len({s[0] for s in s_ns}) or num_triads
         m_ns = _build_task_metrics(
@@ -1234,7 +1505,7 @@ def run_bakeoff_shortcut_probe(
             cent_ns,
             perm_ns,
             deg_ns,
-            max_margin,
+            alpha=alpha,
         )
         return ProbeResult(
             probe_id=probe_id,
@@ -1248,7 +1519,7 @@ def run_bakeoff_shortcut_probe(
             within_not_supported_gated=True,
         )
 
-    probes = (
+    raw_probes = (
         _eval_token_probe(
             "a_claim_lexical_ngrams",
             "(a) Claim-only lexical n-gram classifier",
@@ -1301,18 +1572,54 @@ def run_bakeoff_shortcut_probe(
         ),
     )
 
-    proximity_probes = (
+    raw_proximity_probes = (
         _eval_proximity_probe(
             "same_line_cooccurrence",
-            "Entity-value same-line co-occurrence (overall reported; within not-supported gated at base + 0.05)",
+            "Entity-value same-line co-occurrence (overall reported; within not-supported gated via Holm cluster Wilson CI)",
             feats_same_line_num,
         ),
         _eval_proximity_probe(
             "min_entity_value_token_distance",
-            "Minimum entity-value token distance normalised by material length (overall reported; within not-supported gated at base + 0.05)",
+            "Minimum entity-value token distance normalised by material length (overall reported; within not-supported gated via Holm cluster Wilson CI)",
             feats_min_dist_num,
         ),
     )
+
+    probes, proximity_probes, family_size = _apply_holm_gate1(
+        raw_probes, raw_proximity_probes, alpha=alpha
+    )
+
+    min_detectable_margin = compute_min_detectable_margin(
+        num_triads, family_size, alpha=alpha, base_rate=BASE_3CLASS
+    )
+    min_detectable_wns_margin = compute_min_detectable_margin(
+        num_triads, family_size, alpha=alpha, base_rate=BASE_NOT_SUPPORTED
+    )
+    triads_14pt = compute_triads_needed_for_margin(
+        0.14, family_size, alpha=alpha, base_rate=BASE_3CLASS
+    )
+    triads_7pt = compute_triads_needed_for_margin(
+        0.07, family_size, alpha=alpha, base_rate=BASE_3CLASS
+    )
+    pts_approx = int(round(min_detectable_margin * 100.0))
+    pass_meaning_note = (
+        f"A pass means no single-probe leak above about {pts_approx} points at {num_triads} triads. "
+        f"It is a coarse screen, not a clean bill. "
+        f"Detecting a 14-point leak requires {triads_14pt} triads; detecting a 7-point leak requires {triads_7pt} triads."
+    )
+    header = {
+        "n_triads": num_triads,
+        "n_items": num_items,
+        "gate_name": GATE_1_NAME,
+        "gate_version": GATE_1_VERSION,
+        "alpha": alpha,
+        "family_size": family_size,
+        "min_detectable_single_probe_margin": min_detectable_margin,
+        "min_detectable_within_not_supported_margin": min_detectable_wns_margin,
+        "triads_needed_for_14pt_leak": triads_14pt,
+        "triads_needed_for_7pt_leak": triads_7pt,
+        "pass_meaning_note": pass_meaning_note,
+    }
 
     overlap_means_by_class = {
         lbl: round(
@@ -1377,7 +1684,6 @@ def run_bakeoff_shortcut_probe(
         keys_path=keys_path,
         num_items=num_items,
         num_triads=num_triads,
-        max_allowed_margin=max_margin,
         share_bounds=share_bounds,
         probes=probes,
         role_shares=role_shares,
@@ -1385,6 +1691,16 @@ def run_bakeoff_shortcut_probe(
         gate_1_oof_passed=gate_1_passed,
         gate_2_shares_passed=gate_2_passed,
         passed=overall_passed,
+        gate_name=GATE_1_NAME,
+        gate_version=GATE_1_VERSION,
+        alpha=alpha,
+        family_size=family_size,
+        min_detectable_single_probe_margin=min_detectable_margin,
+        min_detectable_within_not_supported_margin=min_detectable_wns_margin,
+        triads_needed_for_14pt_leak=triads_14pt,
+        triads_needed_for_7pt_leak=triads_7pt,
+        pass_meaning_note=pass_meaning_note,
+        header=header,
         overlap_means_by_class=overlap_means_by_class,
         claim_value_in_material_means_by_class=claim_value_in_material_means_by_class,
         proximity_probes=proximity_probes,
@@ -1396,7 +1712,7 @@ def evaluate_bakeoff_probe_files(
     keys_path: Path,
     out_path: Path,
     *,
-    max_margin: float = DEFAULT_MAX_MARGIN,
+    alpha: float = DEFAULT_GATE_ALPHA,
 ) -> dict[str, Any]:
     """Load `items.jsonl` and `keys.sealed.jsonl`, run the shortcut probe, and write `out_path`."""
     items_path, items, sealed_keys = load_items_and_keys(part_dir, keys_path)
@@ -1405,7 +1721,7 @@ def evaluate_bakeoff_probe_files(
         sealed_keys,
         part_items_path=str(items_path),
         keys_path=str(keys_path),
-        max_margin=max_margin,
+        alpha=alpha,
     )
     payload = report.to_dict()
     out_path.parent.mkdir(parents=True, exist_ok=True)
