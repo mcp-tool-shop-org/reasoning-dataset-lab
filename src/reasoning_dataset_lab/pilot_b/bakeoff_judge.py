@@ -14,7 +14,9 @@ Runs one judge at a time over `part_bakeoff_sealed/items.jsonl` without ever rea
 - Implements per-judge adapters for the five bake-off entrants (`mu-judge`, `nemotron-3-nano-4b`, `d3-mini`,
   `granite-guardian-4.1-8b`, `flow-judge-v0.1`) in the quoted formats of Appendix A and §3b.
 - Refuses to load any model requiring `trust_remote_code` unless `--allow-remote-code-reviewed <sha>` matches the
-  pinned revision SHA.
+  pinned revision SHA. `TransformersJudgeTransport` never executes snapshot code; the one judge that needs it
+  (`d3-mini`) runs through the dedicated `D3MiniTransport`, which loads `AutoModel` from the receipt-verified local
+  snapshot directory, text-only and offline, and only when the reviewed SHA matches exactly.
 - Writes unsealed per-judge rows (`rows/<judge_id>.jsonl`) and `generations.jsonl` to an external output directory,
   and seals all output file hashes into `outputs-closed.json` before any scoring module can read `keys.sealed.jsonl`.
 """
@@ -2155,7 +2157,7 @@ class TransformersJudgeTransport:
                 "BAKEOFF_JUDGE_REMOTE_CODE_EXECUTION_FORBIDDEN",
                 f"Judge '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}) requires custom repo Python files "
                 f"({', '.join(spec.remote_code_files)}), and TransformersJudgeTransport enforces trust_remote_code=False.",
-                "Do not execute snapshot .py files until the dedicated remote-code review and runner are approved.",
+                "Run d3-mini through D3MiniTransport (its own venv, offline, text only); nothing else executes snapshot .py files.",
             )
         snapshot_dir, verified_digest = verify_snapshot_against_receipt(
             spec,
@@ -2333,6 +2335,312 @@ class TransformersJudgeTransport:
         )
 
 
+D3_MINI_JUDGE_ID = "d3-mini"
+# The one d3-mini revision whose eight repo .py files passed the remote-code security review (card ug).
+D3_MINI_REVIEWED_REVISION = "bd0090dd758d32ba59ef5c749910a8e87fc4391f"
+# d3-mini's requirements.txt pins this; the shared judge venv carries 5.19.0, so d3 runs in its own venv.
+D3_MINI_TRANSFORMERS_VERSION = "5.17.0"
+OFFLINE_ENV_VARS: tuple[str, ...] = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+_OFFLINE_TRUE_VALUES: frozenset[str] = frozenset({"1", "true", "yes", "on"})
+# Keys that would put d3's `system_one` on its image/video path (network, PIL/cv2 and temp files).
+D3_MEDIA_INPUT_KEYS: frozenset[str] = frozenset(
+    {"images", "videos", "image", "video", "image_url", "video_url", "frames", "media", "attachments", "files"}
+)
+D3_URL_VALUE_RE: re.Pattern[str] = re.compile(r"^\s*(?:https?|file|ftp|data)\s*:", re.IGNORECASE)
+
+
+def check_d3_mini_remote_code_gate(spec: JudgeSpec, *, allow_remote_code_reviewed: str | None) -> None:
+    """Strict gate for `D3MiniTransport`: exact reviewed SHA on both the flag and the spec's pinned revision."""
+    if spec.judge_id != D3_MINI_JUDGE_ID:
+        raise refused_error(
+            "BAKEOFF_JUDGE_D3_TRANSPORT_WRONG_JUDGE",
+            f"D3MiniTransport only runs judge '{D3_MINI_JUDGE_ID}', not '{spec.judge_id}' ({spec.repo_id}).",
+            "Use TransformersJudgeTransport for every other judge.",
+        )
+    reviewed = (allow_remote_code_reviewed or "").strip().lower()
+    if reviewed != D3_MINI_REVIEWED_REVISION:
+        raise refused_error(
+            "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED",
+            f"Judge '{spec.judge_id}' ({spec.repo_id}) executes repo Python files ({', '.join(spec.remote_code_files)}); "
+            f"--allow-remote-code-reviewed must equal the reviewed revision exactly (got {reviewed[:12] or 'nothing'!r}).",
+            f"Pass --allow-remote-code-reviewed {D3_MINI_REVIEWED_REVISION} (the full 40-character reviewed SHA).",
+        )
+    if spec.revision.lower() != D3_MINI_REVIEWED_REVISION:
+        raise refused_error(
+            "BAKEOFF_JUDGE_REMOTE_CODE_REVISION_MISMATCH",
+            f"Judge '{spec.judge_id}' is pinned to {spec.revision}, but only {D3_MINI_REVIEWED_REVISION} was reviewed.",
+            "Re-run the remote-code review for the new revision before changing the pin.",
+        )
+
+
+def ensure_offline_env(*, set_if_unset: bool) -> dict[str, str]:
+    """Require `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`; optionally set them when unset. Returns the values."""
+    seen: dict[str, str] = {}
+    for name in OFFLINE_ENV_VARS:
+        value = os.environ.get(name)
+        if value is None and set_if_unset:
+            os.environ[name] = "1"
+            value = "1"
+        if value is None or value.strip().lower() not in _OFFLINE_TRUE_VALUES:
+            raise refused_error(
+                "BAKEOFF_JUDGE_OFFLINE_REQUIRED",
+                f"{name} is {'unset' if value is None else value!r}; D3MiniTransport only runs with Hub access off.",
+                f"Set {' and '.join(f'{n}=1' for n in OFFLINE_ENV_VARS)} in the judge process before loading.",
+            )
+        seen[name] = value
+    return seen
+
+
+def _walk_d3_input(value: Any, *, path: str) -> None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise refused_error(
+                    "BAKEOFF_JUDGE_D3_INPUT_NOT_TEXT",
+                    f"d3-mini input key at '{path}' is {type(key).__name__}, not str.",
+                    "Pass only string keys and string values to system_one.",
+                )
+            if key.strip().lower() in D3_MEDIA_INPUT_KEYS:
+                raise refused_error(
+                    "BAKEOFF_JUDGE_D3_MEDIA_INPUT_REFUSED",
+                    f"d3-mini input carries media field '{key}' at '{path}'; the bake-off is text only.",
+                    "Remove image/video fields; D3MiniTransport never passes images or videos to system_one.",
+                )
+            _walk_d3_input(child, path=f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for idx, child in enumerate(value):
+            _walk_d3_input(child, path=f"{path}[{idx}]")
+        return
+    if isinstance(value, str):
+        if D3_URL_VALUE_RE.match(value):
+            raise refused_error(
+                "BAKEOFF_JUDGE_D3_URL_INPUT_REFUSED",
+                f"d3-mini input at '{path}' looks like a URL ({value[:24]!r}...); d3 would fetch or decode it.",
+                "Pass plain text only; no http(s), file, ftp or data URLs in state or questions.",
+            )
+        return
+    if value is None or isinstance(value, (bool, int, float)):
+        return
+    raise refused_error(
+        "BAKEOFF_JUDGE_D3_INPUT_NOT_TEXT",
+        f"d3-mini input at '{path}' is {type(value).__name__}; only text, numbers, lists and mappings are allowed.",
+        "Pass only JSON text to system_one; never PIL images, arrays or file objects.",
+    )
+
+
+def check_d3_text_only_inputs(payload: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Return `(state, questions)` from an adapter payload after refusing any media field or URL-looking value."""
+    state = payload.get("state")
+    questions = payload.get("questions")
+    if not isinstance(state, str) or not state.strip():
+        raise refused_error(
+            "BAKEOFF_JUDGE_D3_INPUT_NOT_TEXT",
+            f"d3-mini state must be a non-empty string, got {type(state).__name__}.",
+            "D3MiniAdapter passes the ordered material as the state string.",
+        )
+    if not isinstance(questions, Mapping) or not questions:
+        raise refused_error(
+            "BAKEOFF_JUDGE_D3_INPUT_NOT_TEXT",
+            "d3-mini questions must be a non-empty mapping of question ids to typed questions.",
+            "D3MiniAdapter builds one 'supported' question per prompt.",
+        )
+    for key in payload:
+        if isinstance(key, str) and key.strip().lower() in D3_MEDIA_INPUT_KEYS:
+            raise refused_error(
+                "BAKEOFF_JUDGE_D3_MEDIA_INPUT_REFUSED",
+                f"d3-mini payload carries media field '{key}'; the bake-off is text only.",
+                "Remove image/video fields; D3MiniTransport never passes images or videos to system_one.",
+            )
+    _walk_d3_input(state, path="state")
+    _walk_d3_input(questions, path="questions")
+    return state, dict(questions)
+
+
+def _d3_answer_entries(answer: Mapping[str, Any]) -> tuple[tuple[str, ...], tuple[TopLogprobEntry, ...]]:
+    """Verdict token(s) and option logprobs from one d3 answer object (`noul` or `choice`)."""
+    floor = 1e-12
+    if "noul" in answer:
+        p_true = float(answer["noul"])
+        p_true = min(1.0, max(0.0, p_true))
+        entries = (
+            TopLogprobEntry(token="yes", logprob=math.log(max(p_true, floor))),
+            TopLogprobEntry(token="no", logprob=math.log(max(1.0 - p_true, floor))),
+        )
+        verdict = "yes" if p_true >= 0.5 else "no"
+        return (verdict,), tuple(sorted(entries, key=lambda e: e.logprob, reverse=True))
+    probs = answer.get("probabilities")
+    if isinstance(probs, Mapping) and probs:
+        entries = tuple(
+            TopLogprobEntry(token=str(k), logprob=math.log(max(float(v), floor))) for k, v in probs.items()
+        )
+        choice = str(answer.get("choice") or max(probs.items(), key=lambda kv: float(kv[1]))[0])
+        return (choice,), tuple(sorted(entries, key=lambda e: e.logprob, reverse=True))
+    return (), ()
+
+
+class D3MiniTransport:
+    """Dedicated transport for `vllm-sr/d3-mini`, the one judge whose `auto_map` needs `trust_remote_code=True`.
+
+    Conditions from the remote-code review (card ug), all enforced here:
+    1. Loads `AutoModel.from_pretrained(<snapshot dir>, local_files_only=True, trust_remote_code=True)` from the
+       receipt-verified local snapshot directory only, after `verify_snapshot_against_receipt` has hashed every
+       file (so every `.py` file) and the snapshot's `.py` set equals `spec.remote_code_files`.
+    2. `trust_remote_code=True` only when `--allow-remote-code-reviewed` equals `D3_MINI_REVIEWED_REVISION`
+       exactly and the spec's pinned revision is that same SHA (`check_d3_mini_remote_code_gate`).
+    3. Text only: `system_one(state=<str>, questions=<mapping>)` with no `images`/`videos` argument, after
+       `check_d3_text_only_inputs` refused media fields and URL-looking values.
+    4. Offline: sets `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1` at construction (before `transformers` is
+       imported) when unset, and refuses at load time if either is unset or off.
+    5. Its own venv: refuses unless `transformers.__version__` equals `D3_MINI_TRANSFORMERS_VERSION` (5.17.0, the
+       pin in d3-mini's `requirements.txt`). Build it with `uv venv --python 3.13` plus `-e .[dev]`,
+       `torch==2.14.1+cu132`, `transformers==5.17.0`, `accelerate==1.15.0`, `safetensors==0.8.0`,
+       `huggingface_hub>=1.0`, `einops`. Python 3.13, like the judge venv: on 3.15 the same torch build
+       access-violates inside transformers' threaded weight copy on Windows (measured 2026-10-30, 5.17.0 and 5.19.0).
+    6. Reads nothing under `sealed_store/` and no keys; outputs flow through the same rows/generations path.
+    """
+
+    def __init__(
+        self,
+        *,
+        receipts_dir: Path,
+        hf_home: Path | None = None,
+        device: str = "cpu",
+        expected_transformers_version: str | None = D3_MINI_TRANSFORMERS_VERSION,
+    ) -> None:
+        self.receipts_dir = Path(receipts_dir)
+        self.hf_home = Path(hf_home) if hf_home is not None else None
+        self.device = device
+        self.expected_transformers_version = expected_transformers_version
+        self._verified_digest: str | None = None
+        self._snapshot_dir: Path | None = None
+        self._reviewed_sha: str | None = None
+        self._model: Any = None
+        # Condition 4: the env must be set before transformers (or huggingface_hub) reads it at import time.
+        already_imported = [m for m in ("transformers", "huggingface_hub") if m in sys.modules]
+        unset_before = [n for n in OFFLINE_ENV_VARS if os.environ.get(n) is None]
+        if already_imported and unset_before:
+            raise refused_error(
+                "BAKEOFF_JUDGE_OFFLINE_TOO_LATE",
+                f"{', '.join(already_imported)} already imported while {', '.join(unset_before)} unset; "
+                "offline mode cannot be guaranteed for this process.",
+                f"Set {' and '.join(f'{n}=1' for n in OFFLINE_ENV_VARS)} before the first transformers import.",
+            )
+        ensure_offline_env(set_if_unset=True)
+
+    def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
+        check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+        check_d3_mini_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+        ensure_offline_env(set_if_unset=False)
+        snapshot_dir, verified_digest = verify_snapshot_against_receipt(
+            spec,
+            receipts_dir=self.receipts_dir,
+            hf_home=self.hf_home,
+        )
+        # Every file in the snapshot was just hashed against the receipt; the repo code set must be the reviewed one.
+        py_files = sorted(p.relative_to(snapshot_dir).as_posix() for p in snapshot_dir.rglob("*.py") if p.is_file())
+        if set(py_files) != set(spec.remote_code_files):
+            raise refused_error(
+                "BAKEOFF_JUDGE_REMOTE_CODE_FILES_MISMATCH",
+                f"Snapshot '{snapshot_dir}' has Python files {py_files}, but the reviewed set is "
+                f"{sorted(spec.remote_code_files)}.",
+                "Only the eight reviewed d3-mini .py files may be present; re-review before changing the set.",
+            )
+        self._snapshot_dir = snapshot_dir
+        self._verified_digest = verified_digest
+        self._reviewed_sha = (allow_remote_code_reviewed or "").strip().lower()
+        return verified_digest
+
+    def _ensure_loaded(self, spec: JudgeSpec) -> None:
+        if self._model is not None:
+            return
+        # The gate is re-checked with the SHA that verify_ready saw; without a verify_ready call it sees nothing.
+        check_d3_mini_remote_code_gate(spec, allow_remote_code_reviewed=self._reviewed_sha)
+        ensure_offline_env(set_if_unset=False)
+        assert self._snapshot_dir is not None and self._verified_digest is not None
+
+        try:
+            import transformers
+            from transformers import AutoModel
+        except ImportError as exc:  # pragma: no cover
+            raise refused_error(
+                "BAKEOFF_JUDGE_DEPS_MISSING",
+                f"Missing transformers dependency for D3MiniTransport: {exc}.",
+                "Install the d3 venv (transformers==5.17.0) described in D3MiniTransport's docstring.",
+            ) from exc
+        tf_version = str(getattr(transformers, "__version__", "unknown"))
+        if self.expected_transformers_version is not None and tf_version != self.expected_transformers_version:
+            raise refused_error(
+                "BAKEOFF_JUDGE_D3_TRANSFORMERS_PIN",
+                f"transformers {tf_version} loaded, but d3-mini pins {self.expected_transformers_version}.",
+                "Run d3-mini from its own venv (transformers==5.17.0), never from the shared judge venv.",
+            )
+        # Condition 1: the local snapshot directory, never a repo id; AutoModel is the only entry in d3's auto_map.
+        model = AutoModel.from_pretrained(
+            str(self._snapshot_dir),
+            local_files_only=True,
+            trust_remote_code=True,
+            device=self.device,
+        )
+        if not callable(getattr(model, "system_one", None)):
+            raise refused_error(
+                "BAKEOFF_JUDGE_D3_MODEL_SHAPE",
+                f"Loaded object {type(model).__name__} has no system_one(); the snapshot did not load as D3Model.",
+                "Check decision_config.json is present in the receipt-verified snapshot.",
+            )
+        self._model = model
+
+    def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
+        self._ensure_loaded(spec)
+        assert self._model is not None and self._verified_digest is not None
+
+        # Condition 3 runs before anything reaches the model.
+        state, questions = check_d3_text_only_inputs(prompt.structured_payload or {})
+
+        import torch
+        import transformers
+
+        torch.manual_seed(int(seed))
+        t0 = time.monotonic()
+        with torch.inference_mode():
+            result = self._model.system_one(state=state, questions=questions)
+        elapsed = max(0.0001, time.monotonic() - t0)
+
+        answers = result.get("answers", {}) if isinstance(result, Mapping) else {}
+        answer = answers.get("supported") if isinstance(answers, Mapping) else None
+        done_reason: DoneReason = "stop"
+        tokens: tuple[str, ...] = ()
+        entries: tuple[TopLogprobEntry, ...] = ()
+        if isinstance(answer, Mapping):
+            if answer.get("error") == "max_length_exceeded":
+                done_reason = "length"
+            elif "error" in answer:
+                done_reason = "error"
+            else:
+                tokens, entries = _d3_answer_entries(answer)
+        else:
+            done_reason = "error"
+
+        library_pins = {
+            "transport": "D3MiniTransport",
+            "python": sys.version.split()[0],
+            "torch": getattr(torch, "__version__", "unknown"),
+            "transformers": getattr(transformers, "__version__", "unknown"),
+        }
+        sys_one = dict(result) if isinstance(result, Mapping) else {"raw": str(result)}
+        return JudgeTransportResponse(
+            raw_text=json.dumps(sys_one, sort_keys=True, ensure_ascii=False, default=str),
+            tokens=tokens,
+            verdict_top_logprobs=entries,
+            done_reason=done_reason,
+            seconds=elapsed,
+            model_digest=self._verified_digest,
+            server_binary=f"transformers/{library_pins['transformers']};torch/{library_pins['torch']};{self.device}",
+            library_pins=library_pins,
+            system_one_result=sys_one,
+        )
+
+
 def _canonical_json_line(obj: Mapping[str, Any]) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
@@ -2388,11 +2696,18 @@ def run_bakeoff_judge(
                     "--receipts-dir containing the pinned <owner>__<repo>.sha256.json receipt.",
                     "Pass --receipts-dir <dir> (and --hf-home <dir> or set HF_HOME), or use --fake-transport for CPU validation.",
                 )
-            transport = TransformersJudgeTransport(
-                receipts_dir=receipts_dir,
-                hf_home=hf_home,
-                device=device,
-            )
+            if spec.judge_id == D3_MINI_JUDGE_ID:
+                transport = D3MiniTransport(
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    device=device,
+                )
+            else:
+                transport = TransformersJudgeTransport(
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    device=device,
+                )
 
     verified_digest = transport.verify_ready(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
     items, items_sha256 = load_judge_items(part_dir, limit=limit_items)
