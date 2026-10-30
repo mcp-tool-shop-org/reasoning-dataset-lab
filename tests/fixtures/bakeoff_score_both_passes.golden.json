@@ -1410,7 +1410,7 @@
       "vram_peak_mib": 0
     }
   },
-  "outputs_closed_sha256": "650cb09164dc5555bd8105365cb737bd0bed4a5e78d31acd4a448ad99847a5a4",
+  "outputs_closed_sha256": "307a5510329fb3d80af678bc07f1ab9f42276b19c4a29f48c73938a78eb1c283",
   "pairwise_vs_mu_judge": [
     {
       "decision": "shakedown, decision rule not applied",

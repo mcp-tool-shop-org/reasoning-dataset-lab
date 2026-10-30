@@ -55,7 +55,7 @@ def _key_rows() -> list[dict[str, object]]:
 
 def write_keys(keys_path: Path) -> Path:
     keys_path.parent.mkdir(parents=True, exist_ok=True)
-    keys_path.write_text("\n".join(json.dumps(r, sort_keys=True) for r in _key_rows()) + "\n", encoding="utf-8")
+    keys_path.write_text("\n".join(json.dumps(r, sort_keys=True) for r in _key_rows()) + "\n", encoding="utf-8", newline="\n")
     return keys_path
 
 
@@ -140,8 +140,13 @@ def build_judge_dir(
     three_way_judges: Sequence[str] = ("mu-judge",),
     item_ids_override: Sequence[str] | None = None,
     empty_binary_file: str | None = None,
+    drop_binary_items: Sequence[str] = (),
 ) -> Path:
-    """Write a closed judge dir by hand. `item_ids_override` rewrites the row item ids (to simulate ids absent from the keys)."""
+    """Write a closed judge dir by hand, every file LF so the outputs-closed hash is the same on every platform.
+
+    `item_ids_override` rewrites the row item ids (to simulate ids absent from the keys); `drop_binary_items` leaves
+    those scheduled items out of every binary rows file (a partial binary run).
+    """
     rows_dir = out_dir / "rows"
     rows_dir.mkdir(parents=True, exist_ok=True)
     ids = _item_ids()
@@ -154,8 +159,8 @@ def build_judge_dir(
         "entries": [],
         "schedule_sha256": hashlib.sha256(b"fixture-schedule").hexdigest(),
     }
-    (out_dir / "schedule.json").write_text(json.dumps(schedule, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    (out_dir / "generations.jsonl").write_text(_canon({"arm": "fixture", "prompt": "fixture"}) + "\n", encoding="utf-8")
+    (out_dir / "schedule.json").write_text(json.dumps(schedule, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    (out_dir / "generations.jsonl").write_text(_canon({"arm": "fixture", "prompt": "fixture"}) + "\n", encoding="utf-8", newline="\n")
 
     def _rewrite(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         if item_ids_override is None:
@@ -164,13 +169,13 @@ def build_judge_dir(
         return [{**r, "item_id": mapping[str(r["item_id"])]} for r in rows]
 
     for judge_id, label, has_prob in binary_judges:
-        rows = _rewrite(_binary_rows(judge_id, label, has_probability=has_prob))
-        (rows_dir / f"{judge_id}.jsonl").write_text("\n".join(_canon(r) for r in rows) + "\n", encoding="utf-8")
+        rows = _rewrite([r for r in _binary_rows(judge_id, label, has_probability=has_prob) if r["item_id"] not in drop_binary_items])
+        (rows_dir / f"{judge_id}.jsonl").write_text("\n".join(_canon(r) for r in rows) + "\n", encoding="utf-8", newline="\n")
     for judge_id in three_way_judges:
         rows = _rewrite(_three_way_rows(judge_id))
-        (rows_dir / f"{judge_id}.three_way.jsonl").write_text("\n".join(_canon(r) for r in rows) + "\n", encoding="utf-8")
+        (rows_dir / f"{judge_id}.three_way.jsonl").write_text("\n".join(_canon(r) for r in rows) + "\n", encoding="utf-8", newline="\n")
     if empty_binary_file is not None:
-        (rows_dir / empty_binary_file).write_text("", encoding="utf-8")
+        (rows_dir / empty_binary_file).write_text("", encoding="utf-8", newline="\n")
     close_bakeoff_outputs(out_dir)
     return out_dir
 
@@ -231,6 +236,20 @@ def test_three_way_only_dir_scores_its_three_way_pass_fully(tmp_path: Path) -> N
     # dev split: item-23 wrong in AB -> 5/6
     assert tw_dev["three_way_accuracy"]["n"] == 6
     assert tw_dev["three_way_accuracy"]["point"] == pytest.approx(5 / 6, abs=1e-6)
+
+
+def test_partial_binary_run_split_counts_report_the_scheduled_universe(tmp_path: Path) -> None:
+    """Case C (review uo): the binary rows miss scheduled item-11 (dev). The universe is schedule ∪ rows, so
+    `split_item_counts` stays 6/6/12 while every judge's dev `items_n` drops to 5. Before the fix this reported 5/6/11."""
+    judge_dir = build_judge_dir(tmp_path / "judge", drop_binary_items=("item-11",))
+    rep, _ = _score(tmp_path, judge_dir)
+    assert rep["split_item_counts"] == {"dev": 6, "test": 6, "total": 12}
+    for j in rep["dev_fit"]["judges"]:
+        assert j["items_n"] == 5
+    for j in rep["test_only"]["judges"]:
+        assert j["items_n"] == 6
+    # the 3-way file still covers item-11, so its dev reading is over all 6
+    assert rep["dev_fit"]["three_way_pass"][0]["three_way_accuracy"]["n"] == 6
 
 
 def test_three_way_only_dir_scores_via_cli_with_dotted_stem(tmp_path: Path) -> None:
