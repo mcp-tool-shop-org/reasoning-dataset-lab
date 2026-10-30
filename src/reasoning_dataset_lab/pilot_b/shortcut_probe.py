@@ -41,6 +41,16 @@ from statistics import NormalDist
 from typing import Any
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error, usage_error
+from reasoning_dataset_lab.pilot_b.anchored_two_hop import (
+    CURRENT_EXACT_RE,
+    MARKER_RE,
+    NUM_RE,
+    anchor_of_line,
+    lines_naming,
+    material_body,
+    range_of,
+    reporting_rules,
+)
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     VALUE_DISPLAY_EXCEPTIONS,
     normalise_value_token,
@@ -204,6 +214,8 @@ class ProbeResult:
     gated: bool = True
     within_not_supported: TaskProbeMetrics | None = None
     within_not_supported_gated: bool = False
+    # The anchored probes gate the binary task alone (not three-class) beside within-not-supported.
+    binary_gated: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -218,6 +230,7 @@ class ProbeResult:
         if self.within_not_supported is not None:
             out["within_not_supported"] = self.within_not_supported.to_dict()
             out["within_not_supported_gated"] = self.within_not_supported_gated
+            out["binary_gated"] = self.binary_gated
         return out
 
 
@@ -266,6 +279,10 @@ class ShortcutProbeReport:
     overlap_means_by_class: dict[str, float] = None  # type: ignore[assignment]
     claim_value_in_material_means_by_class: dict[str, float] = None  # type: ignore[assignment]
     proximity_probes: tuple[ProbeResult, ...] = ()
+    # Construction A (anchored two-hop) probes: gated on binary and within-not-supported in the same Holm family,
+    # plus the diagnostic-only one-hop key oracles, and every anchored feature's per-class mean.
+    anchored_probes: tuple[ProbeResult, ...] = ()
+    anchored_feature_means_by_class: dict[str, dict[str, float]] = None  # type: ignore[assignment]
 
     @property
     def n_triads(self) -> int:
@@ -316,6 +333,10 @@ class ShortcutProbeReport:
             ),
             "probes": [p.to_dict() for p in self.probes],
             "proximity_probes": [p.to_dict() for p in self.proximity_probes],
+            "anchored_probes": [p.to_dict() for p in self.anchored_probes],
+            "anchored_feature_means_by_class": {
+                name: dict(means) for name, means in (self.anchored_feature_means_by_class or {}).items()
+            },
             "role_shares": [r.to_dict() for r in self.role_shares],
             "closure_shares": [c.to_dict() for c in self.closure_shares],
             "gate_1_oof_passed": self.gate_1_oof_passed,
@@ -920,10 +941,15 @@ def _build_task_metrics(
 def _apply_holm_gate1(
     probes: Sequence[ProbeResult],
     proximity_probes: Sequence[ProbeResult],
+    anchored_probes: Sequence[ProbeResult] = (),
     *,
     alpha: float = DEFAULT_GATE_ALPHA,
-) -> tuple[tuple[ProbeResult, ...], tuple[ProbeResult, ...], int]:
-    """Apply Holm (1979) step-down multiplicity correction across all non-degenerate gated probe-tasks."""
+) -> tuple[tuple[ProbeResult, ...], tuple[ProbeResult, ...], tuple[ProbeResult, ...], int]:
+    """Apply Holm (1979) step-down multiplicity correction across all non-degenerate gated probe-tasks.
+
+    Three groups share one family: the numeric and token probes (three-class and binary gated), the proximity
+    probes (within-not-supported gated), and the anchored two-hop probes (binary and within-not-supported gated).
+    """
     gated_refs: list[tuple[str, int, str, TaskProbeMetrics]] = []
     for idx, pr in enumerate(probes):
         if pr.gated:
@@ -939,6 +965,17 @@ def _apply_holm_gate1(
         ):
             gated_refs.append(
                 ("proximity_probes", idx, "within_not_supported", pr.within_not_supported)
+            )
+    for idx, pr in enumerate(anchored_probes):
+        if pr.binary_gated and not pr.binary.degenerate:
+            gated_refs.append(("anchored_probes", idx, "binary", pr.binary))
+        if (
+            pr.within_not_supported_gated
+            and pr.within_not_supported is not None
+            and not pr.within_not_supported.degenerate
+        ):
+            gated_refs.append(
+                ("anchored_probes", idx, "within_not_supported", pr.within_not_supported)
             )
 
     family_size = len(gated_refs)
@@ -1044,7 +1081,47 @@ def _apply_holm_gate1(
             )
         )
 
-    return tuple(out_probes), tuple(out_prox), family_size
+    def _ungated(tm: TaskProbeMetrics) -> TaskProbeMetrics:
+        return replace(
+            tm,
+            holm_adjusted_p=None,
+            holm_alpha=None,
+            holm_cluster_ci_low=None,
+            holm_cluster_ci_high=None,
+            in_holm_cluster_ci=tm.in_cluster_ci95,
+            passed=tm.in_cluster_ci95,
+        )
+
+    out_anchored: list[ProbeResult] = []
+    for idx, pr in enumerate(anchored_probes):
+        m3 = _ungated(pr.three_class)
+        m2 = (
+            updated_tasks.get(("anchored_probes", idx, "binary"), pr.binary)
+            if pr.binary_gated
+            else _ungated(pr.binary)
+        )
+        m_ns = (
+            updated_tasks.get(("anchored_probes", idx, "within_not_supported"), pr.within_not_supported)
+            if pr.within_not_supported is not None
+            else None
+        )
+        if pr.within_not_supported is not None and not pr.within_not_supported_gated:
+            m_ns = _ungated(pr.within_not_supported)
+        gated_passes = [
+            *([m2.passed] if pr.binary_gated else []),
+            *([m_ns.passed] if (pr.within_not_supported_gated and m_ns is not None) else []),
+        ]
+        out_anchored.append(
+            replace(
+                pr,
+                three_class=m3,
+                binary=m2,
+                within_not_supported=m_ns,
+                passed=all(gated_passes) if gated_passes else True,
+            )
+        )
+
+    return tuple(out_probes), tuple(out_prox), tuple(out_anchored), family_size
 
 
 def _mask_claim_tokens(claim_text: str, domain_spec: dict[str, Any]) -> list[str]:
@@ -1077,6 +1154,127 @@ def _parse_claim_metadata(
     )
     role = _attribute_role(attr, domain_spec) if attr else "open"
     return ent, attr or "unknown", ftype, val, unit, role
+
+
+ANCHORED_FEATURE_NAMES: tuple[str, ...] = (
+    "claim_value_on_marker_line",
+    "claim_value_inside_some_range",
+    "value_rank_among_distinct_nums",
+    "value_is_max_current_exact",
+    "range_hi_minus_value",
+    "value_minus_range_lo",
+    "claim_value_shared_in_triad",
+)
+ANCHORED_DIAGNOSTIC_FEATURE_NAMES: tuple[str, ...] = (
+    "DIAG_claim_value_inside_own_anchor_range",
+    "DIAG_marker_anchor_is_own",
+)
+NUMBERS_ONLY_BAG_DIMS = 20
+ANCHORED_DIAGNOSTIC_NOTE = (
+    "DIAGNOSTIC ONLY, never gated: a one-hop key oracle. It needs the entity-to-anchor hop to compute, "
+    "so it reads the key by construction (0/0/1 or 0/1/0 is the task, not a shortcut)."
+)
+
+
+def _anchored_int_value(val: Any) -> int | None:
+    """The claim's integer value when it has one; the anchored features read 0 for every other claim shape."""
+    if isinstance(val, bool) or not isinstance(val, (int, float)):
+        return None
+    if isinstance(val, float) and not val.is_integer():
+        return None
+    return int(val)
+
+
+def _anchored_zero_hop_features(material: str, entity: str, val: int | None) -> dict[str, float]:
+    """Zero-hop features of the anchored two-hop construction, from the public material and claim only.
+
+    Line kinds are read from the words the construction uses (``currently records``, ``between``, ``superseded``,
+    ``does not record``); on a material without them every feature is 0 and the probe is degenerate.
+    The two ``DIAG_`` features resolve the entity's anchor first: they are one-hop key oracles, reported and
+    never gated.
+    """
+    out: dict[str, float] = {name: 0.0 for name in (*ANCHORED_FEATURE_NAMES, *ANCHORED_DIAGNOSTIC_FEATURE_NAMES)}
+    out.pop("claim_value_shared_in_triad")  # triad-level, filled by the caller
+    if val is None:
+        return out
+    body = material_body(material)
+    vt = re.compile(rf"\b{val}\b")
+    nums = sorted({int(n) for ln in body for n in NUM_RE.findall(ln)})
+    ranges = [r for ln in body for r in [range_of(ln)] if r is not None]
+    cur_exact = [
+        int(m.group(1))
+        for ln in body
+        for m in [CURRENT_EXACT_RE.search(ln)]
+        if m is not None and not MARKER_RE.search(ln)
+    ]
+    hop1 = lines_naming(entity, body) if entity else []
+    anchor = anchor_of_line(hop1[0]) if len(hop1) == 1 else None
+    first_range = ranges[0] if ranges else None
+    marker_with_val = [ln for ln in body if vt.search(ln) and MARKER_RE.search(ln)]
+    out["claim_value_on_marker_line"] = float(bool(marker_with_val))
+    out["claim_value_inside_some_range"] = float(any(lo <= val <= hi for lo, hi in ranges))
+    out["value_rank_among_distinct_nums"] = float(nums.index(val) + 1) if val in nums else 0.0
+    out["value_is_max_current_exact"] = float(bool(cur_exact) and val == max(cur_exact))
+    out["range_hi_minus_value"] = float(first_range[1] - val) if first_range else 0.0
+    out["value_minus_range_lo"] = float(val - first_range[0]) if first_range else 0.0
+    if anchor is not None:
+        own = lines_naming(anchor, body)
+        out["DIAG_claim_value_inside_own_anchor_range"] = float(
+            any(r is not None and r[0] <= val <= r[1] for ln in own for r in [range_of(ln)])
+        )
+        out["DIAG_marker_anchor_is_own"] = float(any(ln in own for ln in marker_with_val))
+    return out
+
+
+def _numbers_only_bag(material: str, val: int | None, shared_in_triad: bool) -> tuple[float, ...]:
+    """The 20-dimension numbers-only bag: the claim's number against the material's numbers, with no entity,
+    anchor or line-kind resolution beyond the ``between`` and ``currently records`` words."""
+    if val is None:
+        return (0.0,) * NUMBERS_ONLY_BAG_DIMS
+    body = material_body(material)
+    n_lines = max(len(body), 1)
+    occ = [(i, int(n)) for i, ln in enumerate(body) for n in NUM_RE.findall(ln)]
+    all_nums = [n for _, n in occ]
+    distinct = sorted(set(all_nums))
+    if not distinct:
+        return (0.0,) * NUMBERS_ONLY_BAG_DIMS
+    ranges = [r for ln in body for r in [range_of(ln)] if r is not None]
+    bounds = {b for r in ranges for b in r}
+    non_bound = sorted(set(all_nums) - bounds) or distinct
+    v_lines = [i for i, n in occ if n == val]
+    larger = [n for n in distinct if n > val]
+    smaller = [n for n in distinct if n < val]
+    k = len(distinct)
+    rel_gaps = [abs(n - val) / val for n in distinct if n != val] if val else []
+    cur_exact = sorted(
+        int(m.group(1))
+        for ln in body
+        for m in [CURRENT_EXACT_RE.search(ln)]
+        if m is not None and not MARKER_RE.search(ln)
+    )
+    safe_val = float(val) if val else 1.0
+    return (
+        (distinct.index(val) / max(k - 1, 1)) if val in distinct else 0.5,
+        float(val == distinct[-1]),
+        float(val == distinct[0]),
+        (non_bound.index(val) / max(len(non_bound) - 1, 1)) if val in non_bound else 0.5,
+        float(val == max(non_bound)),
+        float(val == min(non_bound)),
+        float(all_nums.count(val)),
+        (min(v_lines) / n_lines) if v_lines else 1.0,
+        (sum(v_lines) / len(v_lines) / n_lines) if v_lines else 1.0,
+        float(shared_in_triad),
+        ((larger[0] - val) / safe_val) if larger else 1.0,
+        ((val - smaller[-1]) / safe_val) if smaller else 1.0,
+        min(((val - lo) / safe_val for lo, _ in ranges), default=1.0),
+        min(((hi - val) / safe_val for _, hi in ranges), default=1.0),
+        float(any(lo <= val <= hi for lo, hi in ranges)),
+        float(len(ranges)),
+        float(k),
+        float(len(all_nums)),
+        float(any(0.02 <= g <= 0.05 for g in rel_gaps)),
+        float(len(cur_exact) >= 3 and val == cur_exact[len(cur_exact) // 2]),
+    )
 
 
 def resolve_part_items_path(part_dir_or_file: Path) -> Path:
@@ -1245,6 +1443,19 @@ def run_bakeoff_shortcut_probe(
     feats_g_tokens: list[list[str]] = []
     feats_h_tokens: list[list[str]] = []
     feats_i_num: list[tuple[float, ...]] = []
+    feats_anchored: list[dict[str, float]] = []
+    feats_numbers_bag: list[tuple[float, ...]] = []
+
+    # Triad-level: whether a claim's number is also another item's claimed number in the same triad.
+    claim_int_by_idx: dict[int, int | None] = {
+        idx: _anchored_int_value(parsed_meta[idx][3]) for idx in range(num_items)
+    }
+    shared_in_triad_by_idx: dict[int, bool] = {}
+    for tid, grp in items_by_tid.items():
+        vals = [claim_int_by_idx[i] for i, _ in grp]
+        for i, _ in grp:
+            v = claim_int_by_idx[i]
+            shared_in_triad_by_idx[i] = v is not None and vals.count(v) > 1
 
     overlap_by_class: dict[str, list[float]] = defaultdict(list)
     val_in_mat_by_class: dict[str, list[float]] = defaultdict(list)
@@ -1342,6 +1553,15 @@ def run_bakeoff_shortcut_probe(
 
         # (i) Claim length
         feats_i_num.append((c_words, c_chars))
+
+        # Anchored two-hop features (zero-hop readings of the material against the claim's number) and the
+        # numbers-only bag; the triad-level 'shared' feature joins the zero-hop set.
+        a_feats = _anchored_zero_hop_features(material_str, ent_name, claim_int_by_idx[idx])
+        a_feats["claim_value_shared_in_triad"] = float(shared_in_triad_by_idx[idx])
+        feats_anchored.append(a_feats)
+        feats_numbers_bag.append(
+            _numbers_only_bag(material_str, claim_int_by_idx[idx], shared_in_triad_by_idx[idx])
+        )
 
     def _eval_token_probe(
         probe_id: str,
@@ -1585,8 +1805,77 @@ def run_bakeoff_shortcut_probe(
         ),
     )
 
-    probes, proximity_probes, family_size = _apply_holm_gate1(
-        raw_probes, raw_proximity_probes, alpha=alpha
+    def _eval_anchored_probe(
+        probe_id: str,
+        description: str,
+        num_list: Sequence[tuple[float, ...]],
+        *,
+        diagnostic: bool = False,
+    ) -> ProbeResult:
+        """An anchored two-hop probe: binary and within-not-supported gated in the Holm family, three-class
+        reported. A diagnostic probe is reported on every task and gated on none."""
+        s3 = [(str(items[i]["triad_id"]), num_list[i], labels_3[i]) for i in range(num_items)]
+        s2 = [(str(items[i]["triad_id"]), num_list[i], labels_2[i]) for i in range(num_items)]
+        s_ns = [
+            (str(items[i]["triad_id"]), num_list[i], labels_3[i])
+            for i in range(num_items)
+            if labels_3[i] in NOT_SUPPORTED_LABELS
+        ]
+        gd3, cent3, perm3, deg3 = _oof_numeric_classifier_detailed(s3, n_folds=n_folds, triad_meta=triad_meta)
+        gd2, cent2, perm2, deg2 = _oof_numeric_classifier_detailed(s2, n_folds=n_folds, triad_meta=triad_meta)
+        gd_ns, cent_ns, perm_ns, deg_ns = _oof_numeric_classifier_detailed(
+            s_ns, n_folds=n_folds, triad_meta=triad_meta
+        )
+        m3 = _build_task_metrics("three_class", num_items, num_triads, BASE_3CLASS, gd3, cent3, perm3, deg3, alpha=alpha)
+        m2 = _build_task_metrics("binary", num_items, num_triads, BASE_BINARY, gd2, cent2, perm2, deg2, alpha=alpha)
+        ns_triads = len({s[0] for s in s_ns}) or num_triads
+        m_ns = _build_task_metrics(
+            "within_not_supported", len(s_ns), ns_triads, BASE_NOT_SUPPORTED, gd_ns, cent_ns, perm_ns, deg_ns,
+            alpha=alpha,
+        )
+        return ProbeResult(
+            probe_id=probe_id,
+            description=(f"{ANCHORED_DIAGNOSTIC_NOTE} {description}" if diagnostic else description),
+            three_class=m3,
+            binary=m2,
+            degenerate=deg2 and deg_ns,
+            passed=True if diagnostic else (m2.passed and m_ns.passed),
+            gated=False,
+            within_not_supported=m_ns,
+            within_not_supported_gated=not diagnostic,
+            binary_gated=not diagnostic,
+        )
+
+    anchored_descriptions = {
+        "claim_value_on_marker_line": "The claimed number sits on a superseded or negated line (zero-hop)",
+        "claim_value_inside_some_range": "The claimed number lies inside some 'between lo and hi' range (zero-hop)",
+        "value_rank_among_distinct_nums": "Rank of the claimed number among the material's distinct numbers (zero-hop)",
+        "value_is_max_current_exact": "The claimed number is the largest current exact reading (zero-hop)",
+        "range_hi_minus_value": "Range top minus the claimed number (zero-hop)",
+        "value_minus_range_lo": "Claimed number minus range bottom (zero-hop)",
+        "claim_value_shared_in_triad": "The claimed number is another item's claimed number in the same triad (triad-level)",
+        "DIAG_claim_value_inside_own_anchor_range": "the claimed number lies inside the range under the entity's own anchor",
+        "DIAG_marker_anchor_is_own": "the marker line carrying the claimed number is under the entity's own anchor",
+    }
+    raw_anchored_probes = tuple(
+        _eval_anchored_probe(
+            name,
+            anchored_descriptions[name],
+            [(f[name],) for f in feats_anchored],
+            diagnostic=name.startswith("DIAG_"),
+        )
+        for name in (*ANCHORED_FEATURE_NAMES, *ANCHORED_DIAGNOSTIC_FEATURE_NAMES)
+    ) + (
+        _eval_anchored_probe(
+            "numbers_only_bag",
+            f"The {NUMBERS_ONLY_BAG_DIMS}-dimension numbers-only bag: the claim's number against the material's "
+            "numbers with no entity, anchor or line-kind resolution",
+            feats_numbers_bag,
+        ),
+    )
+
+    probes, proximity_probes, anchored_probes, family_size = _apply_holm_gate1(
+        raw_probes, raw_proximity_probes, raw_anchored_probes, alpha=alpha
     )
 
     min_detectable_margin = compute_min_detectable_margin(
@@ -1619,7 +1908,19 @@ def run_bakeoff_shortcut_probe(
         "triads_needed_for_14pt_leak": triads_14pt,
         "triads_needed_for_7pt_leak": triads_7pt,
         "pass_meaning_note": pass_meaning_note,
+        # Reporting rules (construction A, design v5, item 8): the ceiling-claim minimum, stratum B, and bank C.
+        **reporting_rules(num_triads),
+        "anchored_diagnostic_note": ANCHORED_DIAGNOSTIC_NOTE,
     }
+
+    anchored_feature_means_by_class: dict[str, dict[str, float]] = {}
+    for name in (*ANCHORED_FEATURE_NAMES, *ANCHORED_DIAGNOSTIC_FEATURE_NAMES):
+        by_lbl: dict[str, list[float]] = defaultdict(list)
+        for i in range(num_items):
+            by_lbl[labels_3[i]].append(feats_anchored[i][name])
+        anchored_feature_means_by_class[name] = {
+            lbl: round(sum(by_lbl[lbl]) / max(len(by_lbl[lbl]), 1), 4) for lbl in THREE_CLASS_LABELS
+        }
 
     overlap_means_by_class = {
         lbl: round(
@@ -1671,8 +1972,10 @@ def run_bakeoff_shortcut_probe(
     role_shares = _build_group_shares("role", role_label_counts)
     closure_shares = _build_group_shares("closure", closure_label_counts)
 
-    gate_1_passed = all(p.passed for p in probes) and all(
-        p.passed for p in proximity_probes
+    gate_1_passed = (
+        all(p.passed for p in probes)
+        and all(p.passed for p in proximity_probes)
+        and all(p.passed for p in anchored_probes)
     )
     gate_2_passed = all(r.passed for r in role_shares) and all(
         c.passed for c in closure_shares
@@ -1704,6 +2007,8 @@ def run_bakeoff_shortcut_probe(
         overlap_means_by_class=overlap_means_by_class,
         claim_value_in_material_means_by_class=claim_value_in_material_means_by_class,
         proximity_probes=proximity_probes,
+        anchored_probes=anchored_probes,
+        anchored_feature_means_by_class=anchored_feature_means_by_class,
     )
 
 

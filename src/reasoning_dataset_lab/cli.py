@@ -395,6 +395,17 @@ def _build_parser() -> _StructuredArgumentParser:
         action="store_true",
         help="Resume an interrupted bake-off build from the per-triad checkpoint in --output-dir.",
     )
+    bo_parser.add_argument(
+        "--construction",
+        dest="construction",
+        choices=("writer", "anchored-two-hop"),
+        default="writer",
+        help=(
+            "Triad construction: 'writer' (default; one fact per line, rendered by the pinned writer model) or "
+            "'anchored-two-hop' (construction A v5: template only, no model, no GPU; the value of a claim is never "
+            "on the line that names its entity)."
+        ),
+    )
 
     # rdlab bakeoff-probe --part-dir <dir> --keys <keys.sealed.jsonl> --out <report.json>
     bp_parser = subparsers.add_parser(
@@ -1102,6 +1113,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 licence_registry_path=args.licence_registry,
                 ollama_base_url=args.ollama_url,
                 resume=args.resume,
+                construction=args.construction.replace("-", "_"),
             )
             print(json.dumps(bo_res, indent=2))
             return EXIT_CLEAN

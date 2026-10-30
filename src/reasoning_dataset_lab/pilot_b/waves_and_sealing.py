@@ -42,6 +42,7 @@ from reasoning_dataset_lab.pilot_b.ollama import (
     OllamaWriterAdapter,
     coerce_num_predict_config,
 )
+from reasoning_dataset_lab.pilot_b.anchored_two_hop import AnchoredTemplateWriterAdapter
 from reasoning_dataset_lab.pilot_b.rendering import (
     PilotBWriterAdapter,
     WordedTriad,
@@ -1228,7 +1229,9 @@ def _check_render_inputs(inputs: Mapping[str, Any]) -> None:
                     or not isinstance(entry.get("value_set_sha256"), str)
                     or not hex64.fullmatch(entry["value_set_sha256"])
                     or not _is_int(entry.get("target_line"))
-                    or not (1 <= entry["target_line"] <= 5)
+                    # the writer construction renders one fact per line (five lines); a template construction's
+                    # target is the material line that binds the entity, anywhere in its material
+                    or not (1 <= entry["target_line"] <= max(5, len(material.splitlines())))
                 ):
                     raise _invalid_inputs("a writer-only bakeoff entry has invalid fields")
             else:
@@ -1538,7 +1541,9 @@ def write_sealed_part(
     w = wave_result.writer_adapter
     r1 = wave_result.reader_1_adapter
     r2 = wave_result.reader_2_adapter
-    adapters_valid = (
+    # A template construction's writer is code, not a model: it is allow-listed beside the real Ollama writer.
+    template_writer_valid = type(w) is AnchoredTemplateWriterAdapter and bool(wave_result.writer_only)
+    adapters_valid = template_writer_valid or (
         type(w) is OllamaWriterAdapter
         and w.http_transport is ollama_mod.default_ollama_http_transport
         and (
