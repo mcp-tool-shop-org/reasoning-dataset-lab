@@ -9,6 +9,7 @@ any relational swap or flipped bound, and whitelists structural tokens (§2.4).
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -469,9 +470,15 @@ def check_worded_triad(
     worded: WordedTriad,
     *,
     require_values_in_material: bool | None = None,
+    material_checker: Callable[[FactTable, str], object] = check_rendered_material,
 ) -> None:
-    """Validate both the rendered material and all three worded claims of a WordedTriad."""
-    check_rendered_material(worded.triad.table, worded.material)
+    """Validate both the rendered material and all three worded claims of a WordedTriad.
+
+    ``material_checker`` is the rule set the material is held to: ``check_rendered_material`` (one fact per line)
+    by default, or a construction's own validator (the anchored two-hop construction binds a fact to a value-free
+    hop-1 line and an entity-free current line, which the default checker refuses by design).
+    """
+    material_checker(worded.triad.table, worded.material)
     expected: tuple[VerdictKey, ...] = ("supported", "unsupported", "cannot_tell")
     if set(worded.worded_claims.keys()) != set(expected):
         raise refused_error(

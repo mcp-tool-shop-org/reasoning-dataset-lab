@@ -642,6 +642,52 @@
         "object",
         "null"
       ]
+    },
+    "construction": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "enum": [
+            "writer",
+            "anchored_two_hop"
+          ]
+        },
+        "version": {
+          "type": "string"
+        },
+        "templates_sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "triads": {
+          "type": "integer"
+        },
+        "ceiling_claim_min_triads": {
+          "type": "integer"
+        },
+        "ceiling_claim": {
+          "type": "string"
+        },
+        "stratum_b_unit_change": {
+          "type": "string"
+        },
+        "paraphrase_bank_c": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "templates_sha256",
+        "triads",
+        "ceiling_claim_min_triads",
+        "ceiling_claim",
+        "stratum_b_unit_change",
+        "paraphrase_bank_c"
+      ],
+      "type": "object"
     }
   },
   "required": [

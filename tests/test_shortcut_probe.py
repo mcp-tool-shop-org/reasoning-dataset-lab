@@ -489,7 +489,9 @@ def test_clean_fixture_passes_all_probes_and_both_gates() -> None:
     assert report.gate_name == GATE_1_NAME
     assert report.gate_version == GATE_1_VERSION
     assert report.alpha == DEFAULT_GATE_ALPHA
-    assert report.family_size == 19
+    # 19 tasks from the twelve probes, plus the anchored two-hop probes that are not degenerate on this fixture
+    # (rank among numbers, shared-in-triad, the numbers-only bag: binary and within-not-supported each).
+    assert report.family_size == 25
     assert report.gate_1_oof_passed is True
     assert report.gate_2_shares_passed is True
     assert report.passed is True
@@ -768,19 +770,23 @@ def test_old_flat_margin_behaviour_is_gone_and_header_reports_mde() -> None:
     assert hdr["gate_name"] == "triad_clustered_wilson_holm"
     assert hdr["gate_version"] == "1.0"
     assert hdr["alpha"] == 0.05
-    assert hdr["family_size"] == 19
-    assert hdr["min_detectable_single_probe_margin"] == pytest.approx(0.2432, abs=1e-4)
-    assert hdr["min_detectable_within_not_supported_margin"] == pytest.approx(0.2579, abs=1e-4)
-    assert hdr["triads_needed_for_14pt_leak"] == 103
-    assert hdr["triads_needed_for_7pt_leak"] == 411
+    # The family is 25 on this fixture (19 plus the non-degenerate anchored two-hop probe tasks).
+    assert hdr["family_size"] == 25
+    assert hdr["min_detectable_single_probe_margin"] == pytest.approx(0.2498, abs=1e-4)
+    assert hdr["min_detectable_within_not_supported_margin"] == pytest.approx(0.2650, abs=1e-4)
+    assert hdr["triads_needed_for_14pt_leak"] == 109
+    assert hdr["triads_needed_for_7pt_leak"] == 434
     assert (
-        "A pass means no single-probe leak above about 24 points at 34 triads. "
+        "A pass means no single-probe leak above about 25 points at 34 triads. "
         "It is a coarse screen, not a clean bill."
     ) in hdr["pass_meaning_note"]
     assert (
-        "Detecting a 14-point leak requires 103 triads; detecting a 7-point leak requires 411 triads."
+        "Detecting a 14-point leak requires 109 triads; detecting a 7-point leak requires 434 triads."
         in hdr["pass_meaning_note"]
     )
+    # Reporting rules (construction A, design v5): below 88 triads no ceiling or discrimination claim is made.
+    assert hdr["ceiling_claim_min_triads"] == 88
+    assert hdr["ceiling_claim"].startswith("no ceiling or discrimination claim")
 
     # 3. Verify MDE table helper values at 34, 40, 106, and 430 triads (M = 18 and M = 19)
     assert compute_min_detectable_margin(34, 18) == pytest.approx(0.2418, abs=1e-4)
