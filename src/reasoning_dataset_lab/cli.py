@@ -378,6 +378,12 @@ def _build_parser() -> _StructuredArgumentParser:
         default="http://127.0.0.1:11434",
         help="Loopback Ollama HTTP endpoint (default: http://127.0.0.1:11434).",
     )
+    bo_parser.add_argument(
+        "--resume",
+        dest="resume",
+        action="store_true",
+        help="Resume an interrupted bake-off build from the per-triad checkpoint in --output-dir.",
+    )
 
     return parser
 
@@ -914,6 +920,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 review_queue_v3_path=args.review_queue_v3_path,
                 licence_registry_path=args.licence_registry,
                 ollama_base_url=args.ollama_url,
+                resume=args.resume,
             )
             print(json.dumps(bo_res, indent=2))
             return EXIT_CLEAN

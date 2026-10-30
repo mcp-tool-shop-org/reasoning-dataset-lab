@@ -1524,6 +1524,7 @@ def write_sealed_part(
     shuffle_seed: int | None = None,
     table_secret: int | None = None,
     _generated_table_secret: int | None = None,
+    _commitment_key: bytes | None = None,
     licence_registry: Mapping[str, Any] | None = None,
     allow_weak_test_seed: bool = False,
 ) -> dict[str, Any]:
@@ -1609,7 +1610,9 @@ def write_sealed_part(
         or resolved_table_secret.bit_length() < MIN_TABLE_SECRET_BITS
     )
     # The commitment key is its own random secret, never derived from the seed.
-    commitment_key = secrets.token_bytes(32)
+    commitment_key = (
+        _commitment_key if _commitment_key is not None else secrets.token_bytes(32)
+    )
 
     part_dir.mkdir(parents=True, exist_ok=True)
     keys_sealed_path.parent.mkdir(parents=True, exist_ok=True)
