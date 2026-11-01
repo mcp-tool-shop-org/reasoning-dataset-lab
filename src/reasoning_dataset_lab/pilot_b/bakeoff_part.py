@@ -3374,8 +3374,8 @@ def run_bakeoff_part_build(
         "dataset": "bakeoff_part_t10",
         "part_id": part_id,
         "split": "sealed",
-        # The construction and the reporting rules it is held to (design v5, item 8): no ceiling or
-        # discrimination claim below 88 triads; stratum B on its own row; bank C on all classes.
+        # The construction and the reporting rules it is held to (design v5, item 8): the ceiling claim is deferred
+        # to the shortcut-probe report, which holds the computed requirement; stratum B on its own row; bank C on all classes.
         "construction": {
             "name": construction,
             "version": ANCHORED_CONSTRUCTION_VERSION if anchored else WRITER_CONSTRUCTION_VERSION,

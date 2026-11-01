@@ -20,7 +20,7 @@ import pytest
 from reasoning_dataset_lab.cli import run_cli
 from reasoning_dataset_lab.errors import RdlabError
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import close_bakeoff_outputs
-from reasoning_dataset_lab.pilot_b.bakeoff_judge_score import score_bakeoff_outputs
+from reasoning_dataset_lab.pilot_b.bakeoff_judge_score import _write_sealed_scored_rows, score_bakeoff_outputs
 
 GOLDEN_PATH = Path(__file__).parent / "fixtures" / "bakeoff_score_both_passes.golden.json"
 
@@ -383,3 +383,127 @@ def test_cli_refuses_existing_sealed_target_and_overwrite_flag_allows_it(tmp_pat
     assert run_cli(base_args) == 0
     assert run_cli(base_args) == 1
     assert run_cli([*base_args, "--overwrite"]) == 0
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Defect 2: the sealed per-row files carry the 3-way pass, and are never written empty
+# ---------------------------------------------------------------------------------------------------------------------
+
+_FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def _sealed_rows(stem: Path) -> list[dict[str, object]]:
+    return [json.loads(line) for line in stem.with_name(stem.name + ".jsonl").read_text(encoding="utf-8").splitlines() if line]
+
+
+def _lf(data: bytes) -> bytes:
+    """The csv module writes CRLF and git may rewrite fixture line endings; compare content, not the platform's newline."""
+    return data.replace(b"\r\n", b"\n")
+
+
+def test_three_way_only_dir_writes_one_sealed_row_per_scored_item_per_order(tmp_path: Path) -> None:
+    judge_dir = build_judge_dir(tmp_path / "judge", binary_judges=(), three_way_judges=("mu-judge",))
+    stem = tmp_path / "sealed" / "three-way-only"
+    rep, _ = _score(tmp_path, judge_dir, sealed_out=stem)
+
+    items_scored = rep["split_item_counts"]["total"]  # type: ignore[index]
+    assert items_scored == 12
+    rows = _sealed_rows(stem)
+    # the expected count is items scored x 2 orders, and it is what the scorer reported scoring
+    assert len(rows) == items_scored * 2 == 24
+    assert {(r["item_id"], r["order"]) for r in rows} == {(i, o) for i in _item_ids() for o in ("AB", "BA")}
+    assert all(r["pass_mode"] == "three_way" and r["judge_id"] == "mu-judge" for r in rows)
+    assert all(r["verdict"] == r["three_way_label"] for r in rows)
+    by_key = {(r["item_id"], r["order"]): r for r in rows}
+    assert by_key[("item-23", "AB")]["correct"] is False and by_key[("item-23", "BA")]["correct"] is True
+    assert by_key[("item-41", "AB")]["correct"] is False and by_key[("item-41", "BA")]["correct"] is False
+    assert by_key[("item-11", "AB")]["key"] == "supported" and by_key[("item-11", "AB")]["split"] == "dev"
+
+    csv_lines = stem.with_name(stem.name + ".csv").read_text(encoding="utf-8").splitlines()
+    assert csv_lines[0].endswith(",pass_mode,three_way_label")
+    assert len(csv_lines) == 1 + 24
+
+
+def test_scored_three_way_rows_equal_the_three_way_accuracy_counts(tmp_path: Path) -> None:
+    judge_dir = build_judge_dir(tmp_path / "judge", binary_judges=(), three_way_judges=("mu-judge",))
+    stem = tmp_path / "sealed" / "tw"
+    rep, _ = _score(tmp_path, judge_dir, sealed_out=stem)
+    rows = _sealed_rows(stem)
+    for split in ("dev", "test"):
+        split_rows = [r for r in rows if r["split"] == split]
+        both_ok_items = {
+            iid for iid in {r["item_id"] for r in split_rows} if all(r["correct"] for r in split_rows if r["item_id"] == iid)
+        }
+        block = "dev_fit" if split == "dev" else "test_only"
+        (tw,) = rep[block]["three_way_pass"]  # type: ignore[index]
+        assert tw["three_way_accuracy"]["n"] == len({r["item_id"] for r in split_rows})
+        assert len(both_ok_items) == round(tw["three_way_accuracy"]["point"] * tw["three_way_accuracy"]["n"])
+
+
+def test_both_passes_sealed_jsonl_keeps_the_binary_bytes_and_appends_the_three_way_rows(tmp_path: Path) -> None:
+    judge_dir = build_judge_dir(tmp_path / "judge")
+    stem = tmp_path / "sealed" / "both"
+    _score(tmp_path, judge_dir, sealed_out=stem)
+    new_bytes = stem.with_name("both.jsonl").read_bytes()
+    golden = (_FIXTURES / "bakeoff_score_both_passes.sealed.golden.jsonl").read_bytes()  # made before this fix: binary rows only
+    assert new_bytes.startswith(golden)
+    tail = [json.loads(line) for line in new_bytes[len(golden):].decode("utf-8").splitlines()]
+    assert len(tail) == 24 and all(r["pass_mode"] == "three_way" for r in tail)
+    assert not any("pass_mode" in json.loads(line) for line in golden.decode("utf-8").splitlines())
+
+
+def test_binary_only_sealed_outputs_are_byte_identical_to_golden(tmp_path: Path) -> None:
+    judge_dir = build_judge_dir(tmp_path / "judge", three_way_judges=())
+    stem = tmp_path / "sealed" / "bin"
+    _score(tmp_path, judge_dir, sealed_out=stem)
+    assert stem.with_name("bin.jsonl").read_bytes() == (_FIXTURES / "bakeoff_score_binary_only.sealed.golden.jsonl").read_bytes()
+    assert _lf(stem.with_name("bin.csv").read_bytes()) == _lf((_FIXTURES / "bakeoff_score_binary_only.sealed.golden.csv").read_bytes())
+
+
+@pytest.mark.parametrize(
+    ("binary_judges", "three_way_judges"),
+    [
+        ((("mu-judge", "mu-judge", True),), ()),
+        ((), ("mu-judge",)),
+        ((("mu-judge", "mu-judge", True),), ("mu-judge",)),
+    ],
+)
+def test_no_scored_pass_writes_an_empty_sealed_file(tmp_path: Path, binary_judges: Sequence[tuple[str, str, bool]], three_way_judges: Sequence[str]) -> None:
+    judge_dir = build_judge_dir(tmp_path / "judge", binary_judges=binary_judges, three_way_judges=three_way_judges)
+    stem = tmp_path / "sealed" / "any"
+    _score(tmp_path, judge_dir, sealed_out=stem)
+    jsonl, csv_path = stem.with_name("any.jsonl"), stem.with_name("any.csv")
+    assert jsonl.stat().st_size > 0
+    assert len(csv_path.read_text(encoding="utf-8").splitlines()) > 1
+
+
+def test_writer_refuses_to_write_empty_sealed_files(tmp_path: Path) -> None:
+    jsonl, csv_path = tmp_path / "e.jsonl", tmp_path / "e.csv"
+    with pytest.raises(RdlabError) as exc:
+        _write_sealed_scored_rows(jsonl, csv_path, [])
+    assert "BAKEOFF_SCORE_EMPTY_SEALED_ROWS" in str(exc.value) or getattr(exc.value, "code", "") == "BAKEOFF_SCORE_EMPTY_SEALED_ROWS"
+    assert not jsonl.exists() and not csv_path.exists()
+
+
+def test_three_way_items_outside_dev_and_test_get_no_sealed_rows_and_are_not_counted(tmp_path: Path) -> None:
+    """An item whose key carries another split is neither scored nor sealed, so rows still equal items scored."""
+    judge_dir = build_judge_dir(tmp_path / "judge", binary_judges=(), three_way_judges=("mu-judge",))
+    keys = write_keys(tmp_path / "keys" / "keys.sealed.jsonl")
+    lines = [json.loads(line) for line in keys.read_text(encoding="utf-8").splitlines() if line]
+    for rec in lines:
+        if rec["id"] == "item-11":
+            rec["split"] = "holdout"
+    keys.write_text("\n".join(json.dumps(r, sort_keys=True) for r in lines) + "\n", encoding="utf-8", newline="\n")
+    stem = tmp_path / "sealed" / "holdout"
+    rep = score_bakeoff_outputs(
+        judge_output_dir=judge_dir,
+        keys_path=keys,
+        public_out_path=tmp_path / "public" / "holdout.json",
+        sealed_rows_out_path=stem,
+    )
+    rows = _sealed_rows(stem)
+    assert {r["item_id"] for r in rows} == set(_item_ids()) - {"item-11"}
+    assert len(rows) == 2 * 11
+    (tw_dev,) = rep["dev_fit"]["three_way_pass"]
+    assert tw_dev["three_way_accuracy"]["n"] == 5
+    assert all(r["split"] in ("dev", "test") for r in rows)
