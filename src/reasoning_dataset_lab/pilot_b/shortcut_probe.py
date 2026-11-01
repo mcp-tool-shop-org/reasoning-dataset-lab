@@ -1909,7 +1909,7 @@ def run_bakeoff_shortcut_probe(
         "triads_needed_for_7pt_leak": triads_7pt,
         "pass_meaning_note": pass_meaning_note,
         # Reporting rules (construction A, design v5, item 8): the ceiling-claim minimum, stratum B, and bank C.
-        **reporting_rules(num_triads),
+        **reporting_rules(num_triads, triads_needed_for_14pt_leak=triads_14pt),
         "anchored_diagnostic_note": ANCHORED_DIAGNOSTIC_NOTE,
     }
 

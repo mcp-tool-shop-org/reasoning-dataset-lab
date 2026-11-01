@@ -16,6 +16,8 @@ from reasoning_dataset_lab.errors import EXIT_CLEAN, RdlabError
 from reasoning_dataset_lab.pilot_b.anchored_two_hop import (
     ANCHORED_TEMPLATE_WRITER_IDENTITY,
     CEILING_CLAIM_MIN_TRIADS,
+    CEILING_FLOOR_SOURCE_COMPUTED,
+    CEILING_FLOOR_SOURCE_DESIGN,
     NO_CEILING_CLAIM_TEXT,
     OPTIONS,
     AnchoredTemplateWriterAdapter,
@@ -25,6 +27,7 @@ from reasoning_dataset_lab.pilot_b.anchored_two_hop import (
     count_own_anchor_marker_defects,
     material_body,
     rederive_anchored_key,
+    ceiling_claim_floor,
     reporting_rules,
     templates_sha256,
     validate_anchored_material,
@@ -157,8 +160,9 @@ def test_gate_run_v1_to_v4_fail_and_v5_passes(n_triads: int) -> None:
         else:
             assert report.passed and not defects
             assert bag.within_not_supported.oof_accuracy < 0.75
-            assert report.header["ceiling_claim_min_triads"] == CEILING_CLAIM_MIN_TRIADS
-            if n_triads < CEILING_CLAIM_MIN_TRIADS:
+            floor = max(CEILING_CLAIM_MIN_TRIADS, report.header["triads_needed_for_14pt_leak"])
+            assert report.header["ceiling_claim_min_triads"] == floor
+            if n_triads < floor:
                 assert report.header["ceiling_claim"].startswith(NO_CEILING_CLAIM_TEXT)
             else:
                 assert not report.header["ceiling_claim"].startswith(NO_CEILING_CLAIM_TEXT)
@@ -439,3 +443,60 @@ def test_cli_bakeoff_part_anchored_two_hop(tmp_path: Path) -> None:
     part = json.loads((out / "part_bakeoff_sealed" / "part.json").read_text(encoding="utf-8"))
     assert part["part_id"] == BAKEOFF_ANCHORED_PART_ID and part["items_count"] == 12
     assert (out / "sealed_store" / "keys.sealed.jsonl").is_file()
+
+
+def test_ceiling_floor_is_the_larger_of_design_and_computed_and_says_which() -> None:
+    assert ceiling_claim_floor(105) == (105, CEILING_FLOOR_SOURCE_COMPUTED)
+    assert ceiling_claim_floor(70) == (CEILING_CLAIM_MIN_TRIADS, CEILING_FLOOR_SOURCE_DESIGN)
+    assert ceiling_claim_floor(CEILING_CLAIM_MIN_TRIADS) == (CEILING_CLAIM_MIN_TRIADS, CEILING_FLOOR_SOURCE_DESIGN)
+    assert ceiling_claim_floor(None) == (CEILING_CLAIM_MIN_TRIADS, CEILING_FLOOR_SOURCE_DESIGN)
+
+
+def test_computed_requirement_above_88_governs_and_the_text_never_says_88_needed() -> None:
+    rules = reporting_rules(10, triads_needed_for_14pt_leak=105)
+    assert rules["ceiling_claim_min_triads"] == 105
+    assert rules["ceiling_claim_floor_source"] == "computed_14pt_leak"
+    assert rules["ceiling_claim"] == (
+        "no ceiling or discrimination claim: 10 triads is below the 105-triad floor "
+        "(the computed 14-point-leak requirement, which exceeds the 88-triad design minimum)"
+    )
+    assert "needs 88" not in rules["ceiling_claim"]
+
+
+def test_computed_requirement_below_88_leaves_the_design_minimum_in_force() -> None:
+    rules = reporting_rules(10, triads_needed_for_14pt_leak=70)
+    assert rules["ceiling_claim_min_triads"] == 88
+    assert rules["ceiling_claim_floor_source"] == "design_minimum_88"
+    assert rules["ceiling_claim"] == (
+        "no ceiling or discrimination claim: 10 triads is below the 88-triad floor "
+        "(the 88-triad design minimum, which is at least the computed 70-triad 14-point-leak requirement)"
+    )
+
+
+def test_ceiling_claim_text_numbers_are_only_the_applied_floor_the_computed_figure_and_the_design_minimum() -> None:
+    import re
+
+    for n_triads, computed in ((10, 105), (10, 70), (104, 105), (105, 105), (87, 70), (88, 70), (200, 105)):
+        rules = reporting_rules(n_triads, triads_needed_for_14pt_leak=computed)
+        allowed = {str(n_triads), str(rules["ceiling_claim_min_triads"]), str(computed), str(CEILING_CLAIM_MIN_TRIADS), "14"}
+        assert set(re.findall(r"\d+", rules["ceiling_claim"])) <= allowed, (n_triads, computed, rules["ceiling_claim"])
+
+
+def test_part_at_or_above_the_applied_floor_may_claim_and_names_the_floor_and_source() -> None:
+    below = reporting_rules(104, triads_needed_for_14pt_leak=105)
+    at = reporting_rules(105, triads_needed_for_14pt_leak=105)
+    design_at = reporting_rules(88, triads_needed_for_14pt_leak=70)
+    assert below["ceiling_claim"].startswith(NO_CEILING_CLAIM_TEXT)
+    assert at["ceiling_claim"] == (
+        "ceiling or discrimination claims may be made: 105 triads meets the 105-triad floor "
+        "(the computed 14-point-leak requirement, which exceeds the 88-triad design minimum)"
+    )
+    assert at["ceiling_claim_floor_source"] == "computed_14pt_leak"
+    assert design_at["ceiling_claim"].startswith("ceiling or discrimination claims may be made: 88 triads meets the 88-triad floor")
+    assert design_at["ceiling_claim_floor_source"] == "design_minimum_88"
+
+
+def test_reporting_rules_without_a_computed_figure_keeps_the_design_minimum() -> None:
+    rules = reporting_rules(15)
+    assert rules["ceiling_claim_min_triads"] == 88 and rules["ceiling_claim_floor_source"] == "design_minimum_88"
+    assert "no computed 14-point-leak requirement was supplied" in rules["ceiling_claim"]

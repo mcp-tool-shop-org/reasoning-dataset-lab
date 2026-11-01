@@ -784,9 +784,12 @@ def test_old_flat_margin_behaviour_is_gone_and_header_reports_mde() -> None:
         "Detecting a 14-point leak requires 109 triads; detecting a 7-point leak requires 434 triads."
         in hdr["pass_meaning_note"]
     )
-    # Reporting rules (construction A, design v5): below 88 triads no ceiling or discrimination claim is made.
-    assert hdr["ceiling_claim_min_triads"] == 88
+    # Reporting rules (construction A, design v5): the larger of 88 and the computed 14-point-leak requirement (109 here)
+    # governs, so 34 triads is below the 109-triad floor and the header says the computed figure applied.
+    assert hdr["ceiling_claim_min_triads"] == 109
+    assert hdr["ceiling_claim_floor_source"] == "computed_14pt_leak"
     assert hdr["ceiling_claim"].startswith("no ceiling or discrimination claim")
+    assert "below the 109-triad floor" in hdr["ceiling_claim"]
 
     # 3. Verify MDE table helper values at 34, 40, 106, and 430 triads (M = 18 and M = 19)
     assert compute_min_detectable_margin(34, 18) == pytest.approx(0.2418, abs=1e-4)

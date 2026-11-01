@@ -104,6 +104,8 @@ RANGE_MARGIN = (2, 25)
 # Reporting rules (um4, Publisher summary item 8). The 88-triad figure is the design's minimum for a
 # 14-point leak in the twelve-probe family; a smaller part supports no ceiling or discrimination claim.
 CEILING_CLAIM_MIN_TRIADS = 88
+CEILING_FLOOR_SOURCE_DESIGN = "design_minimum_88"
+CEILING_FLOOR_SOURCE_COMPUTED = "computed_14pt_leak"
 NO_CEILING_CLAIM_TEXT = "no ceiling or discrimination claim"
 
 
@@ -127,25 +129,48 @@ ANCHORED_TEMPLATE_WRITER_IDENTITY = ModelIdentity(
 )
 
 
+def ceiling_claim_floor(triads_needed_for_14pt_leak: int | None = None) -> tuple[int, str]:
+    """The triad floor for a ceiling or discrimination claim, and where it came from.
+
+    The larger of the design's fixed minimum and the report's own computed 14-point-leak requirement governs
+    (Publisher, 2026-11-01); a tie, or no computed figure, reports the design minimum.
+    """
+    if triads_needed_for_14pt_leak is not None and triads_needed_for_14pt_leak > CEILING_CLAIM_MIN_TRIADS:
+        return triads_needed_for_14pt_leak, CEILING_FLOOR_SOURCE_COMPUTED
+    return CEILING_CLAIM_MIN_TRIADS, CEILING_FLOOR_SOURCE_DESIGN
+
+
 def reporting_rules(
     n_triads: int,
     *,
     stratum_b_built: bool = False,
     paraphrase_bank_built: bool = False,
+    triads_needed_for_14pt_leak: int | None = None,
 ) -> dict[str, Any]:
-    """The three reporting lines every probe and part report carries (design v5, item 8)."""
-    if n_triads < CEILING_CLAIM_MIN_TRIADS:
-        ceiling = (
-            f"{NO_CEILING_CLAIM_TEXT}: {n_triads} triads is below the {CEILING_CLAIM_MIN_TRIADS}-triad "
-            f"minimum (a 14-point leak needs {CEILING_CLAIM_MIN_TRIADS} triads)"
+    """The three reporting lines every probe and part report carries (design v5, item 8).
+
+    Pass `triads_needed_for_14pt_leak` when the report computes it: the ceiling-claim floor is then the larger of that
+    and the design's 88, and the text and `ceiling_claim_floor_source` say which applied.
+    """
+    floor, source = ceiling_claim_floor(triads_needed_for_14pt_leak)
+    if source == CEILING_FLOOR_SOURCE_COMPUTED:
+        why = (
+            f"the computed 14-point-leak requirement, which exceeds the {CEILING_CLAIM_MIN_TRIADS}-triad design minimum"
         )
+    elif triads_needed_for_14pt_leak is None:
+        why = f"the {CEILING_CLAIM_MIN_TRIADS}-triad design minimum; no computed 14-point-leak requirement was supplied"
     else:
-        ceiling = (
-            f"ceiling or discrimination claims may be made: {n_triads} triads meets the "
-            f"{CEILING_CLAIM_MIN_TRIADS}-triad minimum for a 14-point leak"
+        why = (
+            f"the {CEILING_CLAIM_MIN_TRIADS}-triad design minimum, which is at least the computed "
+            f"{triads_needed_for_14pt_leak}-triad 14-point-leak requirement"
         )
+    if n_triads < floor:
+        ceiling = f"{NO_CEILING_CLAIM_TEXT}: {n_triads} triads is below the {floor}-triad floor ({why})"
+    else:
+        ceiling = f"ceiling or discrimination claims may be made: {n_triads} triads meets the {floor}-triad floor ({why})"
     return {
-        "ceiling_claim_min_triads": CEILING_CLAIM_MIN_TRIADS,
+        "ceiling_claim_min_triads": floor,
+        "ceiling_claim_floor_source": source,
         "ceiling_claim": ceiling,
         "stratum_b_unit_change": (
             "built: reported on its own row, never pooled into the headline"

@@ -667,6 +667,12 @@
         "ceiling_claim_min_triads": {
           "type": "integer"
         },
+        "ceiling_claim_floor_source": {
+          "enum": [
+            "design_minimum_88",
+            "computed_14pt_leak"
+          ]
+        },
         "ceiling_claim": {
           "type": "string"
         },
