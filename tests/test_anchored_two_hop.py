@@ -14,16 +14,22 @@ from anchored_fixtures import FIXTURE_BUILDERS
 from reasoning_dataset_lab.cli import run_cli
 from reasoning_dataset_lab.errors import EXIT_CLEAN, RdlabError
 from reasoning_dataset_lab.pilot_b.anchored_two_hop import (
+    ALL_ANCHORED_ENTITIES,
+    ANCHORED_ELIGIBLE_DOMAINS,
     ANCHORED_TEMPLATE_WRITER_IDENTITY,
     CEILING_CLAIM_MIN_TRIADS,
     NO_CEILING_CLAIM_TEXT,
     OPTIONS,
     AnchoredTemplateWriterAdapter,
+    _domain_is_eligible,
     build_anchored_probe_items,
     build_anchored_triad,
     claim_entity_and_value,
+    compute_anchored_variety,
     count_own_anchor_marker_defects,
+    eligible_anchored_domains,
     material_body,
+    plan_anchored_schedule,
     rederive_anchored_key,
     reporting_rules,
     templates_sha256,
@@ -46,7 +52,8 @@ from reasoning_dataset_lab.pilot_b.shortcut_probe import (
 )
 from reasoning_dataset_lab.pilot_b.waves_and_sealing import part_status, verify_sealed_part
 
-ENTITIES = ("Chiller North", "Chiller South", "Chiller East", "Chiller West", "Chiller Central")
+CHILLER_ENTITIES = ("Chiller North", "Chiller South", "Chiller East", "Chiller West", "Chiller Central")
+ENTITIES = ALL_ANCHORED_ENTITIES
 STRONG_SHUFFLE_SEED = (1 << 127) | 4242
 
 
@@ -108,6 +115,112 @@ def test_generator_refuses_a_domain_whose_entities_carry_digits_or_are_too_few()
     with pytest.raises(RdlabError) as exc:
         build_anchored_triad(0, seed=1, table_secret=1, table_id="x", triad_id="y", domain="no-such-domain")
     assert exc.value.code == "ANCHORED_UNKNOWN_DOMAIN"
+    with pytest.raises(RdlabError) as exc:
+        build_anchored_triad(0, seed=1, table_secret=1, table_id="x", triad_id="y", closure="half")  # type: ignore[arg-type]
+    assert exc.value.code == "ANCHORED_INVALID_CLOSURE"
+    with pytest.raises(RdlabError) as exc:
+        build_anchored_triad(
+            0,
+            seed=1,
+            table_secret=1,
+            table_id="x",
+            triad_id="y",
+            domain="chillers",
+            entities=("Chiller North", "Chiller North", "Chiller East", "Chiller West"),
+        )
+    assert exc.value.code == "ANCHORED_INVALID_ENTITIES"
+    with pytest.raises(RdlabError) as exc:
+        build_anchored_triad(
+            0,
+            seed=1,
+            table_secret=1,
+            table_id="x",
+            triad_id="y",
+            domain="chillers",
+            anchors=("Log BBB", "Log BBB", "Log BBD", "Log BBF"),
+        )
+    assert exc.value.code == "ANCHORED_INVALID_ANCHORS"
+
+
+def test_eligible_domains_and_open_closure_key_proof_equivalence() -> None:
+    assert eligible_anchored_domains() == ANCHORED_ELIGIBLE_DOMAINS
+    assert len(ANCHORED_ELIGIBLE_DOMAINS) == 10
+    assert not _domain_is_eligible({"entities": ("A", "B", "C"), "interval_attr": ("flow", "gallons")})
+    assert not _domain_is_eligible({"entities": ("A1", "B", "C", "D"), "interval_attr": ("flow", "gallons")})
+    assert not _domain_is_eligible({"entities": ("A", "B", "C", "D"), "interval_attr": ("flow",)})
+    assert not _domain_is_eligible({"entities": ("A", "B", "C", "D"), "interval_attr": ("flow2", "gallons")})
+    for idx, domain in enumerate(ANCHORED_ELIGIBLE_DOMAINS):
+        closed_spec = build_anchored_triad(
+            idx,
+            seed=1,
+            table_secret=77,
+            table_id=f"T10-D-{domain}-closed-{idx:03d}",
+            triad_id=f"T10-D-{domain}-closed-{idx:03d}-triad",
+            domain=domain,
+            closure="closed",
+        )
+        open_spec = build_anchored_triad(
+            idx,
+            seed=1,
+            table_secret=77,
+            table_id=f"T10-D-{domain}-open-{idx:03d}",
+            triad_id=f"T10-D-{domain}-open-{idx:03d}-triad",
+            domain=domain,
+            closure="open",
+            entities=closed_spec.table.entities,
+            anchors=tuple(closed_spec.anchors_by_entity[e] for e in closed_spec.table.entities),
+        )
+        assert closed_spec.table.closure == "closed" and open_spec.table.closure == "open"
+        verify_triad_against_table(closed_spec.table, closed_spec.triad, require_values_in_material=True)
+        verify_triad_against_table(open_spec.table, open_spec.triad, require_values_in_material=True)
+        for key in ("supported", "unsupported", "cannot_tell"):
+            c_claim = closed_spec.claims[key]
+            o_claim = open_spec.claims[key]
+            assert c_claim.proof.key == o_claim.proof.key == key
+            assert c_claim.proof.method == o_claim.proof.method
+            assert c_claim.entity == o_claim.entity
+            assert c_claim.claimed_value == o_claim.claimed_value
+            assert rederive_anchored_key(open_spec.material, o_claim.entity, int(o_claim.claimed_value)) == key
+
+
+def test_variety_at_10_and_90_triads() -> None:
+    _, _, specs_10 = build_anchored_probe_items(10, seed=1, table_secret=12345)
+    var_10 = compute_anchored_variety(specs_10)
+    assert var_10["variety_ok"] is True
+    assert var_10["triads"] == 10 and var_10["items"] == 30
+    assert var_10["distinct_domains"] == 10
+    assert set(var_10["domains_by_table"]) == set(ANCHORED_ELIGIBLE_DOMAINS)
+    assert var_10["closures_by_table"] == {"closed": 5, "open": 5}
+    assert var_10["closures_by_item"] == {"closed": 15, "open": 15}
+    assert var_10["closures_by_class"] == {
+        "supported": {"closed": 5, "open": 5},
+        "unsupported": {"closed": 5, "open": 5},
+        "cannot_tell": {"closed": 5, "open": 5},
+    }
+    assert var_10["distinct_entities"] == 40 and var_10["entity_slots_total"] == 40
+    assert var_10["entity_overlap_triad_pairs"] == 0
+    assert var_10["distinct_anchor_labels"] == 40 and var_10["anchor_slots_total"] == 40
+    assert var_10["anchor_overlap_triad_pairs"] == 0
+
+    _, _, specs_90 = build_anchored_probe_items(90, seed=1, table_secret=12345)
+    var_90 = compute_anchored_variety(specs_90)
+    assert var_90["variety_ok"] is True
+    assert var_90["triads"] == 90 and var_90["items"] == 270
+    assert var_90["distinct_domains"] == 10
+    assert var_90["domains_by_table"] == {d: 9 for d in sorted(ANCHORED_ELIGIBLE_DOMAINS)}
+    assert var_90["closures_by_table"] == {"closed": 45, "open": 45}
+    assert var_90["closures_by_item"] == {"closed": 135, "open": 135}
+    assert var_90["closures_by_class"] == {
+        "supported": {"closed": 45, "open": 45},
+        "unsupported": {"closed": 45, "open": 45},
+        "cannot_tell": {"closed": 45, "open": 45},
+    }
+    assert var_90["distinct_entities"] == 50 and var_90["entity_slots_total"] == 360
+    assert var_90["distinct_anchor_labels"] == 360 and var_90["anchor_slots_total"] == 360
+    assert var_90["anchor_overlap_triad_pairs"] == 0
+    assert compute_anchored_variety([])["triads"] == 0
+    assert compute_anchored_variety(specs_90[:15])["variety_ok"] is True
+    assert compute_anchored_variety(specs_10[:2] + [specs_10[0]])["variety_ok"] is False
 
 
 # ── the gate run: v1-v4 must FAIL, v5 must PASS, at 15 and at 90 triads ──────────────────────────────────────────
@@ -283,7 +396,7 @@ def test_back_parser_refuses_prose_it_cannot_follow() -> None:
             re.sub(rf"{anchor} currently records \d+", f"{anchor} currently records none", spec.material), ent, val
         )
     assert exc.value.code == "ANCHORED_BACK_PARSE"
-    assert claim_entity_and_value("The coolant flow of nobody is unknown.", ENTITIES) == (None, None)
+    assert claim_entity_and_value("The coolant flow of nobody is unknown.", CHILLER_ENTITIES) == (None, None)
     assert count_own_anchor_marker_defects(
         [{"domain": "chillers", "claim": "no entity here", "material": "", "id": "x", "triad_id": "t"}], {"x": {"key": "supported"}}
     ) == []
@@ -352,7 +465,8 @@ def test_plan_anchored_triads_splits_by_triad_with_one_pseudo_value_set_per_spli
     assert counts["triads_by_split"] == {"dev": 3, "test": 7}
     assert set(counts["dev_value_set_ids"]).isdisjoint(counts["test_value_set_ids"])
     assert {p.value_set.value_set_id for p in planned if p.split == "dev"} == set(counts["dev_value_set_ids"])
-    assert all(p.closure == "closed" and p.domain == "chillers" for p in planned)
+    assert {p.domain for p in planned} == set(ANCHORED_ELIGIBLE_DOMAINS)
+    assert Counter(p.closure for p in planned) == {"closed": 5, "open": 5}
     single, single_counts, _ = plan_anchored_bakeoff_triads(triad_count=1, seed=1, table_secret=9)
     assert single_counts["triads_by_split"] == {"dev": 0, "test": 1}
     with pytest.raises(RdlabError) as exc:
@@ -381,6 +495,11 @@ def test_anchored_build_seals_verifies_freezes_probes_and_resumes(tmp_path: Path
     assert construction["templates_sha256"] == templates_sha256() and construction["triads"] == 12
     assert construction["ceiling_claim"].startswith(NO_CEILING_CLAIM_TEXT)
     assert "not built" in construction["stratum_b_unit_change"] and "not built" in construction["paraphrase_bank_c"]
+    assert report["split_counts"]["variety_ok"] is True
+    assert report["split_counts"]["variety"]["distinct_domains"] == 10
+    assert report["split_counts"]["variety"]["closures_by_table"] == {"closed": 6, "open": 6}
+    assert report["split_counts"]["distinct_entities"] == 42
+    assert report["split_counts"]["distinct_anchor_labels"] == 48
     assert report["adapters"] == {"writer": "AnchoredTemplateWriterAdapter"}
     assert report["v3_manifest"]["used"] is False and report["licence_registry_path"] == "none:template-construction"
     assert [w["model_name"] for w in report["waves"]] == [ANCHORED_TEMPLATE_WRITER_IDENTITY.name] * 2
