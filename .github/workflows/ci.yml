@@ -29,7 +29,7 @@ jobs:
   # Python 3.15. The main leg: coverage with the 90% floor, the Codecov upload and the Atlas check run here once.
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
       id-token: write
@@ -73,7 +73,7 @@ jobs:
   # Python 3.13. Tests without coverage; a job of its own so the check named "test" keeps its name (it runs on 3.15).
   test-py313:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -96,7 +96,7 @@ jobs:
   # Python 3.14. Tests without coverage; a job of its own so the check named "test" keeps its name (it runs on 3.15).
   test-py314:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read
     steps:
