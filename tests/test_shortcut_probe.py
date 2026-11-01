@@ -762,7 +762,8 @@ def test_gate_1_null_permutation_pins_sum_to_unsplit_and_combined_rate_le_2pct()
     assert comb_old_rate == _NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE
     assert comb_old_rate >= 0.80
 
-    # Also verify that the pre-drawn 4-chunk permutation slices match the unsplit 200-permutation RNG stream.
+    # The pre-draw yields one key set per permutation. This does not check the RNG sequence: the independent anchor to
+    # the original unsplit loop is tests/tools/compute_null_perm_pins.py plus the live per-chunk tests' exact counts.
     items, sealed_keys = _build_clean_fixture(34)
     items_by_tid: dict[str, list[str]] = defaultdict(list)
     for it in items:
@@ -774,12 +775,6 @@ def test_gate_1_null_permutation_pins_sum_to_unsplit_and_combined_rate_le_2pct()
         seed=_NULL_PERM_SEED,
     )
     assert len(all_perm_keys) == _NULL_PERM_TOTAL
-    reconstructed = [
-        pk
-        for k in range(_NULL_PERM_NUM_CHUNKS)
-        for pk in all_perm_keys[_NULL_PERM_CHUNK_SIZE * k : _NULL_PERM_CHUNK_SIZE * (k + 1)]
-    ]
-    assert reconstructed == all_perm_keys
 
 
 @pytest.mark.parametrize("chunk_idx", (0, 1, 2, 3))
