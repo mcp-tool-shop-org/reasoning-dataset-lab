@@ -685,6 +685,9 @@
         },
         "paraphrase_bank_c": {
           "type": "string"
+        },
+        "value_set_note": {
+          "type": "string"
         }
       },
       "required": [

@@ -108,7 +108,6 @@ from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
     write_sealed_part,
 )
 from reasoning_dataset_lab.pilot_b.anchored_two_hop import (
-    ANCHORED_DOMAIN,
     ANCHORED_TEMPLATE_WRITER_IDENTITY,
     CONSTRUCTION_NAME as ANCHORED_CONSTRUCTION_NAME,
     CONSTRUCTION_VERSION as ANCHORED_CONSTRUCTION_VERSION,
@@ -651,6 +650,19 @@ def compute_split_counts(
     }
 
 
+# The anchored construction has no certified value set; the dev/test grouping key is one pseudo set per split. Its
+# identity names no single domain (domains rotate across the whole catalogue), so every item shares it:
+#   value_set_id  = "anchored-two-hop/all-domains [<construction> <version>, <split>]"
+#   values_sha256 = sha256("rdlab-<construction>-<version>:anchored-two-hop:all-domains:<split>")
+ANCHORED_VALUE_SET_DOMAIN = "anchored-two-hop"
+ANCHORED_VALUE_SET_ATTRIBUTE = "all-domains"
+ANCHORED_VALUE_SET_NOTE = (
+    "The anchored pseudo value set is domain-neutral (anchored-two-hop/all-domains). Anchored parts built before this "
+    "change carry the old value_set_id and will not resume under it; none are in use. The two local read parts "
+    "(part-anchored-read-10 and part-anchored-read-v2) are plumbing and read material only, never counted."
+)
+
+
 def plan_anchored_bakeoff_triads(
     *,
     triad_count: int = DEFAULT_BAKEOFF_TRIADS,
@@ -696,15 +708,14 @@ def plan_anchored_bakeoff_triads(
         specs_by_table_id[table_id] = spec
         built.append((idx, "dev" if idx in dev_indices else "test", spec))
 
-    attribute = "coolant flow"
     value_sets = {
         split: CertifiedValueSetSpec(
-            domain=ANCHORED_DOMAIN,
-            attribute=f"{attribute} [{ANCHORED_CONSTRUCTION_NAME} {ANCHORED_CONSTRUCTION_VERSION}, {split}]",
+            domain=ANCHORED_VALUE_SET_DOMAIN,
+            attribute=f"{ANCHORED_VALUE_SET_ATTRIBUTE} [{ANCHORED_CONSTRUCTION_NAME} {ANCHORED_CONSTRUCTION_VERSION}, {split}]",
             values=(),
             values_sha256=hashlib.sha256(
                 f"rdlab-{ANCHORED_CONSTRUCTION_NAME}-{ANCHORED_CONSTRUCTION_VERSION}:"
-                f"{ANCHORED_DOMAIN}:{attribute}:{split}".encode("utf-8")
+                f"{ANCHORED_VALUE_SET_DOMAIN}:{ANCHORED_VALUE_SET_ATTRIBUTE}:{split}".encode("utf-8")
             ).hexdigest(),
         )
         for split in ("dev", "test")
@@ -3371,6 +3382,7 @@ def run_bakeoff_part_build(
             "templates_sha256": templates_sha256() if anchored else None,
             "triads": len(wave_result.kept_triads),
             **reporting_rules(len(wave_result.kept_triads)),
+            **({"value_set_note": ANCHORED_VALUE_SET_NOTE} if anchored else {}),
         },
         "stub_mode": stub_mode,
         "triads_requested": triad_count,

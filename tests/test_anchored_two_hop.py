@@ -517,7 +517,7 @@ def test_anchored_build_seals_verifies_freezes_probes_and_resumes(tmp_path: Path
     assert len(items) == len(keys) == 36
     for item, key in zip(items, keys, strict=True):
         assert item["id"] == key["id"] and "key" not in item and "value_set_id" not in item
-        assert key["value_set_id"].startswith("chillers/coolant flow [anchored_two_hop v5, ")
+        assert key["value_set_id"].startswith("anchored-two-hop/all-domains [anchored_two_hop v5, ")
         assert key["value_set_id"].endswith(f"{key['split']}]")
         ent, val = claim_entity_and_value(item["claim"], ENTITIES)
         body = material_body(item["material"])
