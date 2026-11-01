@@ -1,0 +1,122 @@
+[
+ {
+  "closure": "closed",
+  "domain": "relays",
+  "index": 1,
+  "seed": 7,
+  "split": "test",
+  "triad_sha256": "07ec293a906cd1a5e52ca3a7fc4477eed17460ec37e55989be23fcc78b2ae76b",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, test]",
+  "values_sha256": "0fe620c71f9c8ae799245a51b429838b4d2a92ee9911dc761e07cff49b3ede51"
+ },
+ {
+  "closure": "open",
+  "domain": "turbines",
+  "index": 2,
+  "seed": 8,
+  "split": "test",
+  "triad_sha256": "9cb16ff3c28e959944381df7a8271130176e321f1ba825f1774213eef534d5b2",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, test]",
+  "values_sha256": "0fe620c71f9c8ae799245a51b429838b4d2a92ee9911dc761e07cff49b3ede51"
+ },
+ {
+  "closure": "closed",
+  "domain": "pumps",
+  "index": 3,
+  "seed": 9,
+  "split": "dev",
+  "triad_sha256": "069c5e5a53960d66621270a82bc1bafc075ba19c7d62a9f7406ab0c52ab8398e",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, dev]",
+  "values_sha256": "e8016f079c41753dc3dc436e9dfd8701f64aa6b395fcf2ed5264011d37e9340f"
+ },
+ {
+  "closure": "open",
+  "domain": "boilers",
+  "index": 4,
+  "seed": 10,
+  "split": "test",
+  "triad_sha256": "c55ce38aaa12fba9b10e4f87175cc876d443732824612c3ebf46613cd76d43ad",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, test]",
+  "values_sha256": "0fe620c71f9c8ae799245a51b429838b4d2a92ee9911dc761e07cff49b3ede51"
+ },
+ {
+  "closure": "closed",
+  "domain": "compressors",
+  "index": 5,
+  "seed": 11,
+  "split": "dev",
+  "triad_sha256": "18a309ac4fadf73b42b27778eba1af04a730b9e41b45da49cacb0c9d132ea409",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, dev]",
+  "values_sha256": "e8016f079c41753dc3dc436e9dfd8701f64aa6b395fcf2ed5264011d37e9340f"
+ },
+ {
+  "closure": "open",
+  "domain": "reactors",
+  "index": 6,
+  "seed": 12,
+  "split": "test",
+  "triad_sha256": "b0a2653c5343b48c1572f510b471623666942ddbed1cded320ba4ffaaa1c3c56",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, test]",
+  "values_sha256": "0fe620c71f9c8ae799245a51b429838b4d2a92ee9911dc761e07cff49b3ede51"
+ },
+ {
+  "closure": "closed",
+  "domain": "furnaces",
+  "index": 7,
+  "seed": 13,
+  "split": "test",
+  "triad_sha256": "0f371ede7f4d98cc7651e203b4f8c37f92642199372b37e4116c87a257d9e482",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, test]",
+  "values_sha256": "0fe620c71f9c8ae799245a51b429838b4d2a92ee9911dc761e07cff49b3ede51"
+ },
+ {
+  "closure": "open",
+  "domain": "vessels",
+  "index": 8,
+  "seed": 14,
+  "split": "test",
+  "triad_sha256": "2df3c134884970a223dff658e78dfbea7e204554fd4d99d49066b42290cec78c",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, test]",
+  "values_sha256": "0fe620c71f9c8ae799245a51b429838b4d2a92ee9911dc761e07cff49b3ede51"
+ },
+ {
+  "closure": "closed",
+  "domain": "chillers",
+  "index": 9,
+  "seed": 15,
+  "split": "dev",
+  "triad_sha256": "db765c7470ce41d98f58d9e22b9eb7e3fc37f83b70971c1d4b4c9f48f0a10bbe",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, dev]",
+  "values_sha256": "e8016f079c41753dc3dc436e9dfd8701f64aa6b395fcf2ed5264011d37e9340f"
+ },
+ {
+  "closure": "open",
+  "domain": "transformers",
+  "index": 10,
+  "seed": 16,
+  "split": "test",
+  "triad_sha256": "bf99b0c9820afe7c10b7f3ec040c39ec8976cec2199f74b942ba9723f921cb2a",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, test]",
+  "values_sha256": "0fe620c71f9c8ae799245a51b429838b4d2a92ee9911dc761e07cff49b3ede51"
+ },
+ {
+  "closure": "closed",
+  "domain": "compressors",
+  "index": 11,
+  "seed": 17,
+  "split": "dev",
+  "triad_sha256": "fac1f1be9f76c04dd5e5841a18b6d714141d9a6f82722aade39059322920ddf1",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, dev]",
+  "values_sha256": "e8016f079c41753dc3dc436e9dfd8701f64aa6b395fcf2ed5264011d37e9340f"
+ },
+ {
+  "closure": "open",
+  "domain": "relays",
+  "index": 12,
+  "seed": 18,
+  "split": "test",
+  "triad_sha256": "eac648ac3e499df4ad38bc54e637286ca85fefdbe78f0f7dd742e7a821cc9419",
+  "value_set_id": "chillers/coolant flow [anchored_two_hop v5, test]",
+  "values_sha256": "0fe620c71f9c8ae799245a51b429838b4d2a92ee9911dc761e07cff49b3ede51"
+ }
+]
