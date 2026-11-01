@@ -483,3 +483,27 @@ def test_writer_refuses_to_write_empty_sealed_files(tmp_path: Path) -> None:
         _write_sealed_scored_rows(jsonl, csv_path, [])
     assert "BAKEOFF_SCORE_EMPTY_SEALED_ROWS" in str(exc.value) or getattr(exc.value, "code", "") == "BAKEOFF_SCORE_EMPTY_SEALED_ROWS"
     assert not jsonl.exists() and not csv_path.exists()
+
+
+def test_three_way_items_outside_dev_and_test_get_no_sealed_rows_and_are_not_counted(tmp_path: Path) -> None:
+    """An item whose key carries another split is neither scored nor sealed, so rows still equal items scored."""
+    judge_dir = build_judge_dir(tmp_path / "judge", binary_judges=(), three_way_judges=("mu-judge",))
+    keys = write_keys(tmp_path / "keys" / "keys.sealed.jsonl")
+    lines = [json.loads(line) for line in keys.read_text(encoding="utf-8").splitlines() if line]
+    for rec in lines:
+        if rec["id"] == "item-11":
+            rec["split"] = "holdout"
+    keys.write_text("\n".join(json.dumps(r, sort_keys=True) for r in lines) + "\n", encoding="utf-8", newline="\n")
+    stem = tmp_path / "sealed" / "holdout"
+    rep = score_bakeoff_outputs(
+        judge_output_dir=judge_dir,
+        keys_path=keys,
+        public_out_path=tmp_path / "public" / "holdout.json",
+        sealed_rows_out_path=stem,
+    )
+    rows = _sealed_rows(stem)
+    assert {r["item_id"] for r in rows} == set(_item_ids()) - {"item-11"}
+    assert len(rows) == 2 * 11
+    (tw_dev,) = rep["dev_fit"]["three_way_pass"]
+    assert tw_dev["three_way_accuracy"]["n"] == 5
+    assert all(r["split"] in ("dev", "test") for r in rows)
