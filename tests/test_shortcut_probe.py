@@ -671,31 +671,118 @@ def test_all_12_sh_leak_fixtures_fail_new_gate_and_print_margin_and_z(
     assert report.passed is False
 
 
-def test_gate_1_null_within_triad_permutation_false_fail_rate_le_2pct() -> None:
-    """Card so Req 4(b): Within-triad label permutation of a mock part (fixed seed, >=200 permutations) has false-fail rate <= 2%."""
-    items, sealed_keys = _build_clean_fixture(34)
-    items_by_tid: dict[str, list[str]] = defaultdict(list)
-    for it in items:
-        items_by_tid[str(it["triad_id"])].append(str(it["id"]))
+_NULL_PERM_TOTAL = 200
+_NULL_PERM_CHUNK_SIZE = 50
+_NULL_PERM_NUM_CHUNKS = 4
+_NULL_PERM_SEED = 20261030
+_NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK: tuple[int, int, int, int] = (0, 0, 0, 0)
+_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK: tuple[int, int, int, int] = (42, 43, 42, 47)
+_NULL_PERM_UNSPLIT_NEW_FAILS = 0
+_NULL_PERM_UNSPLIT_OLD_FAILS = 174
+_NULL_PERM_UNSPLIT_FALSE_FAIL_RATE = _NULL_PERM_UNSPLIT_NEW_FAILS / _NULL_PERM_TOTAL
+_NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE = _NULL_PERM_UNSPLIT_OLD_FAILS / _NULL_PERM_TOTAL
 
-    n_perms = 200
-    seed = 20261030
+
+def _pre_draw_null_permutation_keys(
+    sealed_keys: dict[str, dict[str, Any]],
+    items_by_tid: dict[str, list[str]],
+    n_perms: int = _NULL_PERM_TOTAL,
+    seed: int = _NULL_PERM_SEED,
+) -> list[dict[str, dict[str, Any]]]:
     rng = random.Random(seed)
-
-    new_gate_fails = 0
-    old_flat_margin_fails = 0
-    max_z_across_perms: list[float] = []
-
+    sorted_tids = sorted(items_by_tid.keys())
+    all_perm_keys: list[dict[str, dict[str, Any]]] = []
     for _ in range(n_perms):
         perm_keys = copy.deepcopy(sealed_keys)
-        for tid in sorted(items_by_tid.keys()):
+        for tid in sorted_tids:
             iids = items_by_tid[tid]
             orig_labels = [str(sealed_keys[iid]["key"]) for iid in iids]
             shuffled_labels = list(orig_labels)
             rng.shuffle(shuffled_labels)
             for iid, new_lbl in zip(iids, shuffled_labels, strict=True):
                 perm_keys[iid]["key"] = new_lbl
+        all_perm_keys.append(perm_keys)
+    return all_perm_keys
 
+
+def _combine_null_permutation_chunk_stats(
+    chunk_new_fails: tuple[int, ...],
+    chunk_old_fails: tuple[int, ...],
+    chunk_sizes: tuple[int, ...] = (_NULL_PERM_CHUNK_SIZE,) * _NULL_PERM_NUM_CHUNKS,
+) -> tuple[int, float, int, float]:
+    total_perms = sum(chunk_sizes)
+    assert total_perms == _NULL_PERM_TOTAL
+    combined_new_fails = sum(chunk_new_fails)
+    combined_old_fails = sum(chunk_old_fails)
+    return (
+        combined_new_fails,
+        combined_new_fails / total_perms,
+        combined_old_fails,
+        combined_old_fails / total_perms,
+    )
+
+
+def _assert_null_permutation_split_exact_equality() -> None:
+    assert _NULL_PERM_NUM_CHUNKS * _NULL_PERM_CHUNK_SIZE == _NULL_PERM_TOTAL
+    # Verify exact equality (==, not tolerance) between the 4-chunk combined statistics and the unsplit statistics.
+    comb_new, comb_rate, comb_old, comb_old_rate = _combine_null_permutation_chunk_stats(
+        _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK,
+        _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK,
+    )
+    assert comb_new == _NULL_PERM_UNSPLIT_NEW_FAILS
+    assert comb_rate == _NULL_PERM_UNSPLIT_FALSE_FAIL_RATE
+    assert comb_old == _NULL_PERM_UNSPLIT_OLD_FAILS
+    assert comb_old_rate == _NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE
+    # Verify that the <= 2% threshold is judged on the combined 200-permutation count, not per chunk
+    # (e.g., 2 fails in chunk 0 is 4.0% in that chunk, but 2/200 == 0.01 <= 0.02 combined).
+    unsplit_indicator = [1, 1] + [0] * (_NULL_PERM_TOTAL - 2)
+    chunk_indicators = tuple(
+        sum(unsplit_indicator[_NULL_PERM_CHUNK_SIZE * k : _NULL_PERM_CHUNK_SIZE * (k + 1)])
+        for k in range(_NULL_PERM_NUM_CHUNKS)
+    )
+    assert chunk_indicators == (2, 0, 0, 0)
+    synth_new, synth_rate, _, _ = _combine_null_permutation_chunk_stats(
+        chunk_indicators,
+        _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK,
+    )
+    assert synth_new == sum(unsplit_indicator)
+    assert synth_rate == sum(unsplit_indicator) / len(unsplit_indicator)
+    assert synth_rate <= 0.02
+
+
+_assert_null_permutation_split_exact_equality()
+
+
+@pytest.mark.parametrize("chunk_idx", (0, 1, 2, 3))
+def test_gate_1_null_within_triad_permutation_false_fail_rate_le_2pct(chunk_idx: int) -> None:
+    """Card so Req 4(b): Within-triad label permutation of a mock part (fixed seed, >=200 permutations) has false-fail rate <= 2%."""
+    items, sealed_keys = _build_clean_fixture(34)
+    items_by_tid: dict[str, list[str]] = defaultdict(list)
+    for it in items:
+        items_by_tid[str(it["triad_id"])].append(str(it["id"]))
+
+    all_perm_keys = _pre_draw_null_permutation_keys(
+        sealed_keys,
+        items_by_tid,
+        n_perms=_NULL_PERM_TOTAL,
+        seed=_NULL_PERM_SEED,
+    )
+    assert [
+        pk
+        for k in range(_NULL_PERM_NUM_CHUNKS)
+        for pk in all_perm_keys[_NULL_PERM_CHUNK_SIZE * k : _NULL_PERM_CHUNK_SIZE * (k + 1)]
+    ] == all_perm_keys
+
+    start = _NULL_PERM_CHUNK_SIZE * chunk_idx
+    end = start + _NULL_PERM_CHUNK_SIZE
+    chunk_perm_keys = all_perm_keys[start:end]
+    assert len(chunk_perm_keys) == _NULL_PERM_CHUNK_SIZE
+
+    new_gate_fails = 0
+    old_flat_margin_fails = 0
+    max_z_across_perms: list[float] = []
+
+    for perm_keys in chunk_perm_keys:
         rep = run_bakeoff_shortcut_probe(items, perm_keys)
         if not rep.gate_1_oof_passed:
             new_gate_fails += 1
@@ -721,19 +808,35 @@ def test_gate_1_null_within_triad_permutation_false_fail_rate_le_2pct() -> None:
             old_flat_margin_fails += 1
         max_z_across_perms.append(perm_max_z)
 
-    false_fail_rate = new_gate_fails / n_perms
-    old_false_fail_rate = old_flat_margin_fails / n_perms
+    assert new_gate_fails == _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK[chunk_idx]
+    assert old_flat_margin_fails == _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK[chunk_idx]
+
+    live_new_by_chunk = tuple(
+        new_gate_fails if k == chunk_idx else _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK[k]
+        for k in range(_NULL_PERM_NUM_CHUNKS)
+    )
+    live_old_by_chunk = tuple(
+        old_flat_margin_fails if k == chunk_idx else _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK[k]
+        for k in range(_NULL_PERM_NUM_CHUNKS)
+    )
+    combined_new_fails, false_fail_rate, combined_old_fails, old_false_fail_rate = (
+        _combine_null_permutation_chunk_stats(live_new_by_chunk, live_old_by_chunk)
+    )
     mean_max_z = sum(max_z_across_perms) / len(max_z_across_perms)
     print(
-        f"[NULL PERMUTATION TEST] n_triads=34 n_perms={n_perms} seed={seed} "
-        f"| new_gate_fails={new_gate_fails}/{n_perms} ({100.0 * false_fail_rate:.2f}%) "
-        f"| old_flat_0.05_fails={old_flat_margin_fails}/{n_perms} ({100.0 * old_false_fail_rate:.2f}%) "
-        f"| mean_max_z={mean_max_z:.2f}"
+        f"[NULL PERMUTATION TEST] chunk={chunk_idx}[{start}:{end}] n_triads=34 n_perms={_NULL_PERM_TOTAL} seed={_NULL_PERM_SEED} "
+        f"| chunk_new_fails={new_gate_fails}/{_NULL_PERM_CHUNK_SIZE} combined_new_gate_fails={combined_new_fails}/{_NULL_PERM_TOTAL} ({100.0 * false_fail_rate:.2f}%) "
+        f"| chunk_old_fails={old_flat_margin_fails}/{_NULL_PERM_CHUNK_SIZE} combined_old_flat_0.05_fails={combined_old_fails}/{_NULL_PERM_TOTAL} ({100.0 * old_false_fail_rate:.2f}%) "
+        f"| chunk_mean_max_z={mean_max_z:.2f}"
     )
 
+    assert combined_new_fails == _NULL_PERM_UNSPLIT_NEW_FAILS
+    assert false_fail_rate == _NULL_PERM_UNSPLIT_FALSE_FAIL_RATE
     assert false_fail_rate <= 0.02, (
-        f"Expected null false-fail rate <= 2.0%, got {new_gate_fails}/{n_perms} ({100.0 * false_fail_rate:.2f}%)"
+        f"Expected combined null false-fail rate <= 2.0%, got {combined_new_fails}/{_NULL_PERM_TOTAL} ({100.0 * false_fail_rate:.2f}%)"
     )
+    assert combined_old_fails == _NULL_PERM_UNSPLIT_OLD_FAILS
+    assert old_false_fail_rate == _NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE
     assert old_false_fail_rate >= 0.80
 
 
