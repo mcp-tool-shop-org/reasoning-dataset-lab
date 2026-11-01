@@ -660,11 +660,53 @@ def _refuse_zero_scored(rows_file: Path, *, judge_id: str | None, keys_n: int) -
     )
 
 
+def _three_way_sealed_rows(judge_id: str, rec: SealedKeyRecord, order_map: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """One sealed row per order for a 3-way item. `pass_mode == "three_way"` tells it from a binary row, which has no
+    `pass_mode`; `key` and `verdict` are the three-class values and `three_way_label` repeats the judge's label."""
+    out: list[dict[str, Any]] = []
+    for ord_name in ("AB", "BA"):
+        r = order_map[ord_name]
+        label = r.get("raw_verdict")
+        out.append(
+            {
+                "judge_id": judge_id,
+                "judge_label": r.get("judge_label", judge_id),
+                "item_id": rec.item_id,
+                "order": ord_name,
+                "key": rec.key,
+                "key_source": rec.key_source,
+                "verdict": label,
+                "correct": label == rec.key,
+                "confidence": r.get("confidence"),
+                "seconds": r.get("seconds"),
+                "vram_peak_mib": r.get("vram_peak_mib"),
+                "prompt_sha256": r.get("prompt_sha256"),
+                "model_digest": r.get("model_digest"),
+                "split": rec.split,
+                "class": rec.item_class,
+                "closure": rec.closure,
+                "value_set_id": rec.value_set_id,
+                "triad_id": rec.triad_id,
+                "threshold_rule": None,
+                "done_reason": r.get("done_reason"),
+                "pass_mode": "three_way",
+                "three_way_label": label,
+            }
+        )
+    return out
+
+
 def _write_sealed_scored_rows(
     sealed_jsonl_path: Path,
     sealed_csv_path: Path,
     rows: Sequence[Mapping[str, Any]],
 ) -> None:
+    if not rows:
+        raise refused_error(
+            "BAKEOFF_SCORE_EMPTY_SEALED_ROWS",
+            "The scorer scored a pass but produced 0 sealed per-row records; refusing to write empty sealed files.",
+            "Every scored pass (binary or 3-way) must contribute one sealed row per scored item per order.",
+        )
     sealed_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [_canonical_json_line(r) for r in rows]
     sealed_jsonl_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8", newline="\n")
@@ -691,6 +733,8 @@ def _write_sealed_scored_rows(
         "threshold_rule",
         "done_reason",
     ]
+    if any("pass_mode" in r for r in rows):
+        fieldnames += ["pass_mode", "three_way_label"]
     with sealed_csv_path.open("w", encoding="utf-8", newline="") as cf:
         writer = csv.DictWriter(cf, fieldnames=fieldnames)
         writer.writeheader()
@@ -922,6 +966,8 @@ def score_bakeoff_outputs(
             v_ab = omap["AB"].get("raw_verdict")
             v_ba = omap["BA"].get("raw_verdict")
             is_both_ok = int(v_ab == rec.key and v_ba == rec.key)
+            if rec.split in ("dev", "test"):
+                all_sealed_rows.extend(_three_way_sealed_rows(j_id, rec, omap))
             if rec.split == "dev":
                 tw_tot_dev += 1
                 tw_corr_dev += is_both_ok
