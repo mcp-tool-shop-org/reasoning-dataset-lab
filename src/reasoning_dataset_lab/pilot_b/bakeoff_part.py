@@ -115,6 +115,8 @@ from reasoning_dataset_lab.pilot_b.anchored_two_hop import (
     AnchoredTemplateWriterAdapter,
     AnchoredTriadSpec,
     build_anchored_triad,
+    compute_anchored_variety,
+    plan_anchored_schedule,
     reporting_rules,
     templates_sha256,
     validate_anchored_material,
@@ -674,21 +676,27 @@ def plan_anchored_bakeoff_triads(
     random.Random(f"rdlab-{ANCHORED_CONSTRUCTION_NAME}-split-v1:{split_seed}").shuffle(order)
     dev_indices = set(order[:n_dev])
 
+    schedule = plan_anchored_schedule(triad_count, seed=seed, table_secret=table_secret)
     specs_by_table_id: dict[str, AnchoredTriadSpec] = {}
     built: list[tuple[int, str, AnchoredTriadSpec]] = []
-    for idx in range(triad_count):
-        table_id = f"T10-D-{ANCHORED_DOMAIN}-anchored-{idx + 1:03d}"
+    for slot in schedule:
+        idx = slot.index
+        table_id = f"T10-D-{slot.domain}-anchored-{idx + 1:03d}"
         spec = build_anchored_triad(
             idx,
             seed=seed,
             table_secret=table_secret,
             table_id=table_id,
             triad_id=f"{table_id}-triad",
+            domain=slot.domain,
+            closure=slot.closure,
+            entities=slot.entities,
+            anchors=slot.anchors,
         )
         specs_by_table_id[table_id] = spec
         built.append((idx, "dev" if idx in dev_indices else "test", spec))
 
-    attribute = built[0][2].attribute
+    attribute = "coolant flow"
     value_sets = {
         split: CertifiedValueSetSpec(
             domain=ANCHORED_DOMAIN,
@@ -705,8 +713,8 @@ def plan_anchored_bakeoff_triads(
         PlannedBakeoffTriad(
             index=idx + 1,
             seed=seed + idx,
-            domain=ANCHORED_DOMAIN,
-            closure="closed",
+            domain=spec.table.domain,
+            closure=spec.table.closure,
             split=split,
             value_set=value_sets[split],
             triad=spec.triad,
@@ -716,6 +724,12 @@ def plan_anchored_bakeoff_triads(
     split_counts = compute_split_counts(
         planned, dev_sets=[value_sets["dev"]], test_sets=[value_sets["test"]]
     )
+    variety = compute_anchored_variety([spec for _, _, spec in built])
+    split_counts["variety"] = variety
+    split_counts["variety_ok"] = variety["variety_ok"]
+    split_counts["by_domain"] = variety["by_domain"]
+    split_counts["distinct_entities"] = variety["distinct_entities"]
+    split_counts["distinct_anchor_labels"] = variety["distinct_anchor_labels"]
     return planned, split_counts, specs_by_table_id
 
 
@@ -3335,6 +3349,15 @@ def run_bakeoff_part_build(
     total_seconds = round(sum(w.seconds_total for w in wave_result.wave_metrics), 4)
     scale = (DEFAULT_BAKEOFF_TRIADS / triad_count) if triad_count > 0 else 1.0
     realized_split_counts = dict(wave_result.split_counts or split_counts)
+    if anchored:
+        anchored_variety = compute_anchored_variety(
+            [anchored_specs[ev.worded.triad.table.table_id] for ev in wave_result.kept_triads]
+        )
+        realized_split_counts["variety"] = anchored_variety
+        realized_split_counts["variety_ok"] = anchored_variety["variety_ok"]
+        realized_split_counts["by_domain"] = anchored_variety["by_domain"]
+        realized_split_counts["distinct_entities"] = anchored_variety["distinct_entities"]
+        realized_split_counts["distinct_anchor_labels"] = anchored_variety["distinct_anchor_labels"]
 
     report_payload: dict[str, object] = {
         "dataset": "bakeoff_part_t10",
