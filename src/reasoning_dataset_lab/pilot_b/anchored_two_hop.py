@@ -42,6 +42,7 @@ from reasoning_dataset_lab.pilot_b.fact_tables import (
     PILOT_B_PROVER_VERSION,
     AtomicFact,
     ClaimProof,
+    ClosureTag,
     FactTable,
     ProvedClaim,
     ProvedTriad,
@@ -61,7 +62,15 @@ from reasoning_dataset_lab.pilot_b.unanimity import VERDICT_CLASSES, ModelIdenti
 CONSTRUCTION_NAME = "anchored_two_hop"
 CONSTRUCTION_VERSION = "v5"
 ANCHORED_DOMAIN = "chillers"
+ANCHORED_CLOSURES: tuple[ClosureTag, ...] = ("closed", "open")
 ANCHOR_LABELS: tuple[str, ...] = ("Log K", "Log M", "Log P", "Log R", "Log T", "Log V")
+_ANCHOR_CONSONANTS = "BCDFGHJKLMNPQRSTVWXZ"
+ANCHOR_LABEL_POOL: tuple[str, ...] = tuple(
+    f"Log {a}{b}{c}"
+    for a in _ANCHOR_CONSONANTS
+    for b in _ANCHOR_CONSONANTS
+    for c in _ANCHOR_CONSONANTS[:5]
+)
 ENTITIES_PER_TRIAD = 4
 LINES_PER_ANCHOR = 3
 
@@ -171,6 +180,117 @@ def _domain_spec(domain: str) -> dict[str, Any]:
     )
 
 
+def _domain_is_eligible(spec: Mapping[str, Any]) -> bool:
+    entities = [str(e) for e in spec.get("entities", ())]  # type: ignore[arg-type]
+    interval_attr = spec.get("interval_attr")
+    if len(entities) < ENTITIES_PER_TRIAD or any(re.search(r"\d", e) for e in entities):
+        return False
+    if not isinstance(interval_attr, (tuple, list)) or len(interval_attr) != 2:
+        return False
+    attr, unit = str(interval_attr[0]).strip(), str(interval_attr[1]).strip()
+    return bool(attr and unit and not re.search(r"\d", attr) and not re.search(r"\d", unit))
+
+
+def eligible_anchored_domains() -> tuple[str, ...]:
+    """Every domain in ``DOMAIN_CATALOGUE`` that ``build_anchored_triad`` accepts: at least four digit-free entities
+    and a numeric ``interval_attr`` with a unit."""
+    return tuple(str(spec["domain"]) for spec in DOMAIN_CATALOGUE if _domain_is_eligible(spec))
+
+
+ANCHORED_ELIGIBLE_DOMAINS: tuple[str, ...] = eligible_anchored_domains()
+ALL_ANCHORED_ENTITIES: tuple[str, ...] = tuple(
+    str(e) for dom in ANCHORED_ELIGIBLE_DOMAINS for e in _domain_spec(dom)["entities"]
+)
+
+
+@dataclass(frozen=True)
+class AnchoredTriadSlot:
+    """The planned domain, closure, four entities and four anchor labels for triad ``index``."""
+
+    index: int
+    domain: str
+    closure: ClosureTag
+    entities: tuple[str, str, str, str]
+    anchors: tuple[str, str, str, str]
+
+
+def anchored_triad_anchors(index: int, *, seed: int, table_secret: int) -> tuple[str, str, str, str]:
+    """Four distinct anchor labels for triad ``index``, drawn from ``ANCHOR_LABEL_POOL`` without repeats across triads
+    in any cycle of ``len(ANCHOR_LABEL_POOL) // ENTITIES_PER_TRIAD`` (500) triads."""
+    pool_triads = len(ANCHOR_LABEL_POOL) // ENTITIES_PER_TRIAD
+    cycle = index // pool_triads
+    offset = (index % pool_triads) * ENTITIES_PER_TRIAD
+    pool = list(ANCHOR_LABEL_POOL)
+    random.Random(f"rdlab-{CONSTRUCTION_NAME}-{CONSTRUCTION_VERSION}-anchors:{seed}:{table_secret}:{cycle}").shuffle(
+        pool
+    )
+    a0, a1, a2, a3 = pool[offset : offset + ENTITIES_PER_TRIAD]
+    return (a0, a1, a2, a3)
+
+
+def anchored_triad_entities(domain: str, visit: int, *, index: int, seed: int, table_secret: int) -> tuple[str, str, str, str]:
+    """Four distinct entities from ``domain`` for its ``visit``-th appearance in a part.
+
+    Each catalogue domain has 5 entities while a triad needs 4: distinct-domain triads share no entities, and within
+    a domain each cycle of 5 visits omits a different entity before repeating any 4-entity subset.
+    """
+    entities_all = [str(e) for e in _domain_spec(domain)["entities"]]
+    n_cat = len(entities_all)
+    if n_cat > ENTITIES_PER_TRIAD:
+        perm = list(entities_all)
+        random.Random(
+            f"rdlab-{CONSTRUCTION_NAME}-{CONSTRUCTION_VERSION}-entities:{seed}:{table_secret}:{domain}:{visit // n_cat}"
+        ).shuffle(perm)
+        omitted = perm[visit % n_cat]
+        chosen = [e for e in perm if e != omitted][:ENTITIES_PER_TRIAD]
+    else:  # pragma: no cover
+        chosen = list(entities_all[:ENTITIES_PER_TRIAD])
+    random.Random(f"rdlab-{CONSTRUCTION_NAME}-{CONSTRUCTION_VERSION}-ent-order:{seed}:{table_secret}:{index}").shuffle(
+        chosen
+    )
+    return (chosen[0], chosen[1], chosen[2], chosen[3])
+
+
+def anchored_triad_slot(index: int, *, seed: int, table_secret: int) -> AnchoredTriadSlot:
+    """Seeded, balanced rotation slot for triad ``index``.
+
+    - Domains: the 10 eligible domains are shuffled into 5 disjoint pairs ``P_0..P_4``. In 10-triad block ``b``,
+      option slot ``o = pos % 5`` (positions ``o`` and ``o + 5``) holds pair ``P_{(o - b) % 5}``. Every block of 10
+      visits all 10 domains once; adjacent positions inside a block belong to disjoint pairs, and ``pos = 9`` of
+      block ``b`` (``P_{(4 - b) % 5}[1]``) never equals ``pos = 0`` of block ``b + 1`` (``P_{(4 - b) % 5}[0]``),
+      so no two adjacent triads ever share a domain; across 5 blocks every domain visits all 5 options ``O1..O5``.
+    - Closures: alternates ``"closed"`` and ``"open"`` in 1:1 proportion (``ANCHORED_CLOSURES[index % 2]``).
+    - Names: entities cycle through each domain's 4-entity subsets; anchor labels come from ``ANCHOR_LABEL_POOL``
+      without repeats across triads.
+    """
+    domains = list(ANCHORED_ELIGIBLE_DOMAINS)
+    random.Random(f"rdlab-{CONSTRUCTION_NAME}-{CONSTRUCTION_VERSION}-schedule:{seed}:{table_secret}").shuffle(domains)
+    n_dom = len(domains)
+    block = index // n_dom
+    pos = index % n_dom
+    half_span = len(OPTIONS)
+    if n_dom == 2 * half_span:
+        pairs = [(domains[2 * p], domains[2 * p + 1]) for p in range(half_span)]
+        domain = pairs[((pos % half_span) - block) % half_span][pos // half_span]
+    else:  # pragma: no cover
+        domain = domains[(pos + block) % n_dom]
+    closure: ClosureTag = ANCHORED_CLOSURES[index % len(ANCHORED_CLOSURES)]
+    entities = anchored_triad_entities(domain, block, index=index, seed=seed, table_secret=table_secret)
+    anchors = anchored_triad_anchors(index, seed=seed, table_secret=table_secret)
+    return AnchoredTriadSlot(
+        index=index,
+        domain=domain,
+        closure=closure,
+        entities=entities,
+        anchors=anchors,
+    )
+
+
+def plan_anchored_schedule(n_triads: int, *, seed: int = 1, table_secret: int = 1) -> tuple[AnchoredTriadSlot, ...]:
+    """Plan the rotated domain, closure, entity and anchor schedule for ``n_triads`` anchored triads."""
+    return tuple(anchored_triad_slot(t, seed=seed, table_secret=table_secret) for t in range(n_triads))
+
+
 def strip_line_number(line: str) -> str:
     m = NUMBERED_LINE_RE.match(line.strip())
     return m.group(2).strip() if m else line.strip()
@@ -241,6 +361,9 @@ def build_anchored_triad(
     table_id: str,
     triad_id: str,
     domain: str = ANCHORED_DOMAIN,
+    closure: ClosureTag = "closed",
+    entities: Sequence[str] | None = None,
+    anchors: Sequence[str] | None = None,
 ) -> AnchoredTriadSpec:
     """Build triad ``index`` of construction A v5. Options and the near-value sign cycle by index; every number is
     drawn from one seeded window under the table secret; the key of every claim is proved on the resolved table,
@@ -248,16 +371,50 @@ def build_anchored_triad(
     spec = _domain_spec(domain)
     entities_all = [str(e) for e in spec["entities"]]
     attr, unit = (str(x) for x in spec["interval_attr"])
-    if len(entities_all) < ENTITIES_PER_TRIAD or any(NUM_RE.search(e) for e in entities_all):
+    if len(entities_all) < ENTITIES_PER_TRIAD or any(re.search(r"\d", e) for e in entities_all):
         raise refused_error(
             "ANCHORED_DOMAIN_UNSUITABLE",
             f"Domain {domain!r} needs at least {ENTITIES_PER_TRIAD} entities without digits in their names.",
             "Use a domain whose entity names carry no numbers (the hop-1 line must carry none).",
         )
+    if closure not in ANCHORED_CLOSURES:
+        raise refused_error(
+            "ANCHORED_INVALID_CLOSURE",
+            f"Closure {closure!r} is not one of {list(ANCHORED_CLOSURES)}.",
+            "Use 'closed' or 'open'.",
+        )
 
     rng = random.Random(f"rdlab-{CONSTRUCTION_NAME}-{CONSTRUCTION_VERSION}:{seed}:{table_secret}:{index}")
-    e_sup, e_unsup, e_ct, e_fill = rng.sample(entities_all, ENTITIES_PER_TRIAD)
-    a_sup, a_unsup, a_ct, a_fill = rng.sample(list(ANCHOR_LABELS), ENTITIES_PER_TRIAD)
+    sampled_entities = rng.sample(entities_all, ENTITIES_PER_TRIAD)
+    _ = rng.sample(list(ANCHOR_LABELS), ENTITIES_PER_TRIAD)
+    if entities is not None:
+        ent_list = [str(e) for e in entities]
+        if len(ent_list) != ENTITIES_PER_TRIAD or len(set(ent_list)) != ENTITIES_PER_TRIAD or any(
+            e not in entities_all for e in ent_list
+        ):
+            raise refused_error(
+                "ANCHORED_INVALID_ENTITIES",
+                f"Entities {ent_list!r} are not {ENTITIES_PER_TRIAD} distinct entities of domain {domain!r}.",
+                f"Pass {ENTITIES_PER_TRIAD} distinct entities from the domain catalogue.",
+            )
+        e_sup, e_unsup, e_ct, e_fill = ent_list
+    else:
+        e_sup, e_unsup, e_ct, e_fill = sampled_entities
+
+    if anchors is not None:
+        anc_list = [str(a) for a in anchors]
+        if len(anc_list) != ENTITIES_PER_TRIAD or len(set(anc_list)) != ENTITIES_PER_TRIAD or any(
+            re.search(r"\d", a) for a in anc_list
+        ):
+            raise refused_error(
+                "ANCHORED_INVALID_ANCHORS",
+                f"Anchors {anc_list!r} must be {ENTITIES_PER_TRIAD} distinct digit-free labels.",
+                f"Pass {ENTITIES_PER_TRIAD} distinct anchor labels without digits.",
+            )
+        a_sup, a_unsup, a_ct, a_fill = anc_list
+    else:
+        a_sup, a_unsup, a_ct, a_fill = anchored_triad_anchors(index, seed=seed, table_secret=table_secret)
+
     base = rng.randint(150, 900)
     used: set[int] = set()
 
@@ -358,7 +515,7 @@ def build_anchored_triad(
         AtomicFact(f"{table_id}-f3", hop1_position(e_ct), e_ct, attr, "interval", (lo, hi), unit, "between"),
         AtomicFact(f"{table_id}-f4", hop1_position(e_fill), e_fill, attr, "number", v_f, unit, "="),
     )
-    table = FactTable(table_id, domain, "closed", (e_sup, e_unsup, e_ct, e_fill), facts)
+    table = FactTable(table_id, domain, closure, (e_sup, e_unsup, e_ct, e_fill), facts)
     drafts: dict[VerdictKey, ProvedClaim] = {
         "supported": ProvedClaim(
             f"{table_id}-c1", table_id, "supported", f"{table_id}-f1", e_sup, attr, "number", v_s, unit, "=",
@@ -643,7 +800,9 @@ def rederive_anchored_key(material: str, entity: str, claimed_value: int) -> Ver
     return "supported" if int(m.group(1)) == claimed_value else "unsupported"
 
 
-def claim_entity_and_value(claim_text: str, entities: Sequence[str]) -> tuple[str | None, int | None]:
+def claim_entity_and_value(
+    claim_text: str, entities: Sequence[str] = ALL_ANCHORED_ENTITIES
+) -> tuple[str | None, int | None]:
     """The entity and the integer value a claim sentence names, from its text alone (no sealed field)."""
     ent = next((e for e in sorted(entities, key=len, reverse=True) if lines_naming(e, [claim_text])), None)
     nums = NUM_RE.findall(claim_text)
@@ -797,6 +956,133 @@ class AnchoredTemplateWriterAdapter:
 # ── in-memory items for probes and tests ────────────────────────────────────────────────────────────────────────
 
 
+def compute_anchored_variety(specs: Sequence[AnchoredTriadSpec]) -> dict[str, Any]:
+    """Count domain, closure, entity-name, anchor-label and option variety across ``specs``, plus ``variety_ok``."""
+    n = len(specs)
+    eligible = list(ANCHORED_ELIGIBLE_DOMAINS)
+    n_elig = len(eligible)
+    all_dom_counts = {d: sum(1 for s in specs if s.table.domain == d) for d in eligible}
+    triads_per_domain = {d: c for d, c in all_dom_counts.items() if c > 0}
+    domains_count = len(triads_per_domain)
+    adjacent_same_domain = sum(1 for i in range(n - 1) if specs[i].table.domain == specs[i + 1].table.domain)
+
+    triads_per_closure = {
+        cl: sum(1 for s in specs if s.table.closure == cl) for cl in ANCHORED_CLOSURES
+    }
+    closures_count = sum(1 for c in triads_per_closure.values() if c > 0)
+
+    distinct_entities = len({e for s in specs for e in s.table.entities})
+    entity_sets = [set(s.table.entities) for s in specs]
+    entity_overlap_pairs = sum(
+        1 for i in range(n) for j in range(i + 1, n) if entity_sets[i] & entity_sets[j]
+    )
+    same_domain_pairs = sum(
+        1 for i in range(n) for j in range(i + 1, n) if specs[i].table.domain == specs[j].table.domain
+    )
+    total_pairs = n * (n - 1) // 2
+
+    distinct_anchors = len({a for s in specs for a in s.anchors_by_entity.values()})
+    anchor_sets = [set(s.anchors_by_entity.values()) for s in specs]
+    anchor_overlap_pairs = sum(
+        1 for i in range(n) for j in range(i + 1, n) if anchor_sets[i] & anchor_sets[j]
+    )
+
+    options_per_domain = {
+        d: {o: sum(1 for s in specs if s.table.domain == d and s.option == o) for o in OPTIONS}
+        for d in eligible
+        if all_dom_counts[d] > 0
+    }
+
+    min_domains_req = min(n, n_elig)
+    max_dom_spread = (max(all_dom_counts.values()) - min(all_dom_counts.values())) if all_dom_counts else 0
+    req_closures = 2 if n >= 2 else (1 if n == 1 else 0)
+    closure_spread = abs(triads_per_closure["closed"] - triads_per_closure["open"])
+    if n <= n_elig:
+        min_entities_req = ENTITIES_PER_TRIAD * n
+    elif n >= 2 * n_elig:
+        min_entities_req = len(ALL_ANCHORED_ENTITIES)
+    else:
+        min_entities_req = ENTITIES_PER_TRIAD * n_elig + (n - n_elig)
+    min_anchors_req = min(n * ENTITIES_PER_TRIAD, len(ANCHOR_LABEL_POOL))
+    max_anchor_overlap_req = 0 if n * ENTITIES_PER_TRIAD <= len(ANCHOR_LABEL_POOL) else total_pairs
+    min_opts_per_dom_req = min(n // n_elig, len(OPTIONS)) if n >= n_elig else (1 if n >= 1 else 0)
+    min_opts_observed = (
+        min(sum(1 for c in opts.values() if c > 0) for opts in options_per_domain.values())
+        if options_per_domain
+        else 0
+    )
+
+    thresholds = {
+        "min_domains": min_domains_req,
+        "max_domain_count_spread": 1,
+        "max_adjacent_same_domain_pairs": 0,
+        "required_closures": req_closures,
+        "max_closure_count_spread": 1,
+        "min_distinct_entity_names": min_entities_req,
+        "max_entity_overlap_triad_pairs": same_domain_pairs,
+        "min_distinct_anchor_labels": min_anchors_req,
+        "max_anchor_overlap_triad_pairs": max_anchor_overlap_req,
+        "min_options_per_domain": min_opts_per_dom_req,
+    }
+    variety_ok = bool(
+        domains_count >= min_domains_req
+        and max_dom_spread <= 1
+        and adjacent_same_domain == 0
+        and closures_count >= req_closures
+        and closure_spread <= 1
+        and distinct_entities >= min_entities_req
+        and entity_overlap_pairs <= same_domain_pairs
+        and distinct_anchors >= min_anchors_req
+        and anchor_overlap_pairs <= max_anchor_overlap_req
+        and min_opts_observed >= min_opts_per_dom_req
+    )
+    items_per_domain = {d: c * 3 for d, c in triads_per_domain.items()}
+    by_domain = {d: {"triads": c, "items": c * 3} for d, c in sorted(triads_per_domain.items())}
+    items_per_closure = {cl: c * 3 for cl, c in triads_per_closure.items()}
+    by_closure = {cl: {"triads": c, "items": c * 3} for cl, c in triads_per_closure.items()}
+    closures_by_class = {
+        k: {cl: sum(1 for s in specs if s.table.closure == cl and k in s.claims) for cl in ANCHORED_CLOSURES}
+        for k in ("supported", "unsupported", "cannot_tell")
+    }
+    return {
+        "variety_ok": variety_ok,
+        "triads": n,
+        "items": n * 3,
+        "eligible_domains": eligible,
+        "eligible_domains_count": n_elig,
+        "domains_count": domains_count,
+        "distinct_domains": domains_count,
+        "triads_per_domain": triads_per_domain,
+        "items_per_domain": items_per_domain,
+        "domains_by_table": dict(sorted(triads_per_domain.items())),
+        "by_domain": by_domain,
+        "adjacent_same_domain_pairs": adjacent_same_domain,
+        "closures_count": closures_count,
+        "triads_per_closure": triads_per_closure,
+        "items_per_closure": items_per_closure,
+        "closures_by_table": dict(triads_per_closure),
+        "closures_by_item": items_per_closure,
+        "closures_by_class": closures_by_class,
+        "by_closure": by_closure,
+        "distinct_entities": distinct_entities,
+        "distinct_entity_names": distinct_entities,
+        "catalogue_entity_names_total": len(ALL_ANCHORED_ENTITIES),
+        "entity_slots_total": n * ENTITIES_PER_TRIAD,
+        "entity_overlap_triad_pairs": entity_overlap_pairs,
+        "same_domain_triad_pairs": same_domain_pairs,
+        "total_triad_pairs": total_pairs,
+        "entity_catalogue_note": (
+            "Each catalogue domain has 5 digit-free entities and each triad requires 4, so distinct-domain triads "
+            "share 0 entities while same-domain triad pairs share at least 3 of 5 entities by pigeonhole."
+        ),
+        "distinct_anchor_labels": distinct_anchors,
+        "anchor_slots_total": n * ENTITIES_PER_TRIAD,
+        "anchor_overlap_triad_pairs": anchor_overlap_pairs,
+        "options_per_domain": options_per_domain,
+        "thresholds": thresholds,
+    }
+
+
 def build_anchored_probe_items(
     n_triads: int,
     *,
@@ -809,10 +1095,21 @@ def build_anchored_probe_items(
     items: list[dict[str, Any]] = []
     keys: dict[str, dict[str, Any]] = {}
     specs: list[AnchoredTriadSpec] = []
-    for t in range(n_triads):
-        table_id = f"{id_prefix}-T10-D-{ANCHORED_DOMAIN}-{t + 1:03d}"
-        spec = build_anchored_triad(t, seed=seed, table_secret=table_secret, table_id=table_id,
-                                    triad_id=f"{table_id}-triad")
+    schedule = plan_anchored_schedule(n_triads, seed=seed, table_secret=table_secret)
+    for slot in schedule:
+        t = slot.index
+        table_id = f"{id_prefix}-T10-D-{slot.domain}-{t + 1:03d}"
+        spec = build_anchored_triad(
+            t,
+            seed=seed,
+            table_secret=table_secret,
+            table_id=table_id,
+            triad_id=f"{table_id}-triad",
+            domain=slot.domain,
+            closure=slot.closure,
+            entities=slot.entities,
+            anchors=slot.anchors,
+        )
         specs.append(spec)
         triad_id = f"{id_prefix}-triad-{t:03d}"
         order = list(VERDICT_CLASSES)
