@@ -21,36 +21,38 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 0,
-      "changed": 6,
+      "added": 10,
+      "changed": 16,
       "moved": 0,
-      "parts": 3,
+      "parts": 5,
       "removed": 0
     },
     "items": [
       {
-        "kind": "door",
-        "sentence": "ci's push trigger now also names `docs/**` and `site/src/content/docs/handbook/pilot-b.md`.",
+        "kind": "landing",
+        "sentence": "certification/v3/manifest-v3.json is now read by src/reasoning_dataset_lab/pilot_b/bakeoff_part.py.",
         "subjects": [
-          ".github/workflows/ci.yml"
+          "certification/v3/manifest-v3.json",
+          "src/reasoning_dataset_lab/pilot_b/bakeoff_part.py"
         ]
       },
       {
-        "kind": "door",
-        "sentence": "Release no longer starts by hand.",
+        "kind": "landing",
+        "sentence": "certification/v3/review_queue-v3.json is now read by src/reasoning_dataset_lab/pilot_b/bakeoff_part.py.",
         "subjects": [
-          ".github/workflows/release.yml"
+          "certification/v3/review_queue-v3.json",
+          "src/reasoning_dataset_lab/pilot_b/bakeoff_part.py"
         ]
       },
       {
         "kind": "counts",
-        "sentence": "6 files changed content, across 3 parts.",
+        "sentence": "10 files added and 16 changed content, across 5 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "17a9b8abf7c2a0d110eaef899f0b2ea2396db4b0",
-      "generatedAt": "2026-10-29T21:43:38.066Z"
+      "commit": "0aabe5b06da40d79e9f10767481136d05c47938a",
+      "generatedAt": "2026-10-29T22:03:57.444Z"
     },
     "unchanged": false
   },
@@ -71,21 +73,6 @@
       "shared": 8
     },
     {
-      "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
-      "b": "tests/test_pilot_b_part_b.py",
-      "either": 6,
-      "partLabels": [
-        "src",
-        "tests"
-      ],
-      "parts": [
-        "src",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 5
-    },
-    {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "tests/test_pilot_b_ollama_adapters.py",
       "either": 11,
@@ -101,9 +88,39 @@
       "shared": 9
     },
     {
+      "a": "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
+      "b": "tests/test_pilot_b_variety.py",
+      "either": 7,
+      "partLabels": [
+        "src",
+        "tests"
+      ],
+      "parts": [
+        "src",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 5
+    },
+    {
+      "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
+      "b": "tests/test_pilot_b_part_b.py",
+      "either": 8,
+      "partLabels": [
+        "src",
+        "tests"
+      ],
+      "parts": [
+        "src",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 5
+    },
+    {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
-      "either": 14,
+      "either": 16,
       "partLabels": [
         "src",
         "src"
@@ -114,31 +131,16 @@
       ],
       "relation": "inside",
       "shared": 9
-    },
-    {
-      "a": "src/reasoning_dataset_lab/pilot_b/ollama.py",
-      "b": "tests/test_pilot_b_ollama_adapters.py",
-      "either": 13,
-      "partLabels": [
-        "src",
-        "tests"
-      ],
-      "parts": [
-        "src",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 8
     }
   ],
   "changesTogetherNote": [
-    "Confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions.",
-    "Window: 180 days; a pair counts from 3 shared commits, since the window holds fewer than 30 qualifying commits."
+    "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
+    "Window: 180 days; a pair counts from 3 shared commits, since 4 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "0aabe5b06da40d79e9f10767481136d05c47938a",
+  "commit": "64641c7ad767e09e8b8ab5edc76e07b01bbbd515",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (39 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1) and shell (1). Work enters through 4 doors; the busiest is ci, which reaches 2 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (47 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1) and shell (1). Work enters through 4 doors; the busiest is ci, which reaches 2 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -153,12 +155,12 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 21
+          "files": 25
         },
         {
           "boundary": "src",
           "depth": 1,
-          "files": 18
+          "files": 22
         }
       ],
       "runs": [
@@ -222,7 +224,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 18
+          "files": 22
         }
       ],
       "runs": [],
@@ -251,7 +253,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 15
+          "files": 19
         }
       ],
       "runs": [
@@ -270,12 +272,14 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-29T22:03:57.444Z",
+  "generatedAt": "2026-10-30T18:19:29.626Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
-    "7 reads use paths built at run time and are not named here.",
-    "15 writes and 42 reads go to a path their caller passes, not to this repository.",
-    "Statistics confidence is low: fewer than 30 qualifying commits in the window, and fewer than 25 source files reach 10 revisions."
+    "1 import could not be resolved: `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
+    "10 writes and 13 reads use paths built at run time and are not named here.",
+    "24 writes and 69 reads go to a path their caller passes, not to this repository.",
+    "1 read goes to the directory the command is run in (certification/), not to this repository.",
+    "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
   "mainDoor": ".github/workflows/ci.yml",
   "partLabels": {
@@ -299,17 +303,16 @@
     "src/reasoning_dataset_lab/errors.py",
     "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
     "src/reasoning_dataset_lab/pilot_b/__init__.py",
-    "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
-    "src/reasoning_dataset_lab/map.py"
+    "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
   ],
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 22,
+  "testFiles": 26,
   "testedBy": {
-    "src": 20
+    "src": 24
   },
-  "unnamedWrites": 0,
+  "unnamedWrites": 10,
   "unread": [],
   "unreadCode": [
     "scripts"
