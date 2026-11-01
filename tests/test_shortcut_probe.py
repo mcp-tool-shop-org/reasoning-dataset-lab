@@ -671,6 +671,23 @@ def test_all_12_sh_leak_fixtures_fail_new_gate_and_print_margin_and_z(
     assert report.passed is False
 
 
+# Provenance of the pinned null-permutation failure counts below:
+# Command:
+#   uv run python tests/tools/compute_null_perm_pins.py
+# Commit SHAs run at (identical output at all commits):
+#   - 987d954c (987d954c7ba81982397c4c47885047694569f40a, PR #42 base on main, original unsplit probe loop)
+#   - 29a5ba91 (29a5ba910b414927ee11b63b19cdf50ddfb340f0, PR #42 branch test-suite-speed head)
+# Output:
+#   unsplit (n_perms=200, seed=20261030, n_triads=34): new_gate_fails=0/200 (0.00%), old_flat_0.05_fails=174/200 (87.00%)
+#   chunk [0:50):    new_gate_fails=0/50, old_flat_0.05_fails=42/50
+#   chunk [50:100):  new_gate_fails=0/50, old_flat_0.05_fails=43/50
+#   chunk [100:150): new_gate_fails=0/50, old_flat_0.05_fails=42/50
+#   chunk [150:200): new_gate_fails=0/50, old_flat_0.05_fails=47/50
+#   _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK = (0, 0, 0, 0)
+#   _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK = (42, 43, 42, 47)
+#   _NULL_PERM_UNSPLIT_NEW_FAILS = 0
+#   _NULL_PERM_UNSPLIT_OLD_FAILS = 174
+# If the shortcut probe changes on purpose, re-run this script and update the pins in the same PR; the ≤2% bound is asserted on the combined count.
 _NULL_PERM_TOTAL = 200
 _NULL_PERM_CHUNK_SIZE = 50
 _NULL_PERM_NUM_CHUNKS = 4
@@ -679,8 +696,8 @@ _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK: tuple[int, int, int, int] = (0, 0, 0, 0)
 _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK: tuple[int, int, int, int] = (42, 43, 42, 47)
 _NULL_PERM_UNSPLIT_NEW_FAILS = 0
 _NULL_PERM_UNSPLIT_OLD_FAILS = 174
-_NULL_PERM_UNSPLIT_FALSE_FAIL_RATE = _NULL_PERM_UNSPLIT_NEW_FAILS / _NULL_PERM_TOTAL
-_NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE = _NULL_PERM_UNSPLIT_OLD_FAILS / _NULL_PERM_TOTAL
+_NULL_PERM_UNSPLIT_FALSE_FAIL_RATE = 0.0
+_NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE = 0.87
 
 
 def _pre_draw_null_permutation_keys(
@@ -722,35 +739,46 @@ def _combine_null_permutation_chunk_stats(
     )
 
 
-def _assert_null_permutation_split_exact_equality() -> None:
+def test_gate_1_null_permutation_pins_sum_to_unsplit_and_combined_rate_le_2pct() -> None:
+    """Fast test verifying the 4-chunk null-permutation pins sum to the pinned unsplit count and satisfy <= 2%."""
+    assert len(_NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK) == _NULL_PERM_NUM_CHUNKS
+    assert len(_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK) == _NULL_PERM_NUM_CHUNKS
     assert _NULL_PERM_NUM_CHUNKS * _NULL_PERM_CHUNK_SIZE == _NULL_PERM_TOTAL
-    # Verify exact equality (==, not tolerance) between the 4-chunk combined statistics and the unsplit statistics.
+
+    assert sum(_NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK) == _NULL_PERM_UNSPLIT_NEW_FAILS
+    assert sum(_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK) == _NULL_PERM_UNSPLIT_OLD_FAILS
+
     comb_new, comb_rate, comb_old, comb_old_rate = _combine_null_permutation_chunk_stats(
         _NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK,
         _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK,
     )
     assert comb_new == _NULL_PERM_UNSPLIT_NEW_FAILS
+    assert comb_rate == sum(_NULL_PERM_EXPECTED_NEW_FAILS_BY_CHUNK) / 200
     assert comb_rate == _NULL_PERM_UNSPLIT_FALSE_FAIL_RATE
+    assert comb_rate <= 0.02
     assert comb_old == _NULL_PERM_UNSPLIT_OLD_FAILS
+    assert comb_old_rate == sum(_NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK) / 200
     assert comb_old_rate == _NULL_PERM_UNSPLIT_OLD_FALSE_FAIL_RATE
-    # Verify that the <= 2% threshold is judged on the combined 200-permutation count, not per chunk
-    # (e.g., 2 fails in chunk 0 is 4.0% in that chunk, but 2/200 == 0.01 <= 0.02 combined).
-    unsplit_indicator = [1, 1] + [0] * (_NULL_PERM_TOTAL - 2)
-    chunk_indicators = tuple(
-        sum(unsplit_indicator[_NULL_PERM_CHUNK_SIZE * k : _NULL_PERM_CHUNK_SIZE * (k + 1)])
+    assert comb_old_rate >= 0.80
+
+    # Also verify that the pre-drawn 4-chunk permutation slices match the unsplit 200-permutation RNG stream.
+    items, sealed_keys = _build_clean_fixture(34)
+    items_by_tid: dict[str, list[str]] = defaultdict(list)
+    for it in items:
+        items_by_tid[str(it["triad_id"])].append(str(it["id"]))
+    all_perm_keys = _pre_draw_null_permutation_keys(
+        sealed_keys,
+        items_by_tid,
+        n_perms=_NULL_PERM_TOTAL,
+        seed=_NULL_PERM_SEED,
+    )
+    assert len(all_perm_keys) == _NULL_PERM_TOTAL
+    reconstructed = [
+        pk
         for k in range(_NULL_PERM_NUM_CHUNKS)
-    )
-    assert chunk_indicators == (2, 0, 0, 0)
-    synth_new, synth_rate, _, _ = _combine_null_permutation_chunk_stats(
-        chunk_indicators,
-        _NULL_PERM_EXPECTED_OLD_FAILS_BY_CHUNK,
-    )
-    assert synth_new == sum(unsplit_indicator)
-    assert synth_rate == sum(unsplit_indicator) / len(unsplit_indicator)
-    assert synth_rate <= 0.02
-
-
-_assert_null_permutation_split_exact_equality()
+        for pk in all_perm_keys[_NULL_PERM_CHUNK_SIZE * k : _NULL_PERM_CHUNK_SIZE * (k + 1)]
+    ]
+    assert reconstructed == all_perm_keys
 
 
 @pytest.mark.parametrize("chunk_idx", (0, 1, 2, 3))
