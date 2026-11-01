@@ -676,7 +676,8 @@ def test_all_12_sh_leak_fixtures_fail_new_gate_and_print_margin_and_z(
 #   uv run python tests/tools/compute_null_perm_pins.py
 # Commit SHAs run at (identical output at all commits):
 #   - 987d954c (987d954c7ba81982397c4c47885047694569f40a, PR #42 base on main, original unsplit probe loop)
-#   - 29a5ba91 (29a5ba910b414927ee11b63b19cdf50ddfb340f0, PR #42 branch test-suite-speed head)
+#   - 29a5ba91 (29a5ba910b414927ee11b63b19cdf50ddfb340f0, PR #42 branch test-suite-speed initial head)
+#   - cced6dac (cced6dac8d7563aedfae204f8cfba9dbd459f4c9, PR #42 fix round commit)
 # Output:
 #   unsplit (n_perms=200, seed=20261030, n_triads=34): new_gate_fails=0/200 (0.00%), old_flat_0.05_fails=174/200 (87.00%)
 #   chunk [0:50):    new_gate_fails=0/50, old_flat_0.05_fails=42/50
