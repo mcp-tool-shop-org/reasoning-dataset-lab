@@ -15,6 +15,7 @@ from reasoning_dataset_lab.cli import run_cli
 from reasoning_dataset_lab.errors import EXIT_CLEAN, RdlabError
 from reasoning_dataset_lab.pilot_b.anchored_two_hop import (
     ANCHORED_TEMPLATE_WRITER_IDENTITY,
+    CEILING_CLAIM_DEFERRED_TEXT,
     CEILING_CLAIM_MIN_TRIADS,
     CEILING_FLOOR_SOURCE_COMPUTED,
     CEILING_FLOOR_SOURCE_DESIGN,
@@ -309,8 +310,8 @@ def test_probe_feature_helpers_read_zero_on_non_numeric_claims() -> None:
 
 
 def test_reporting_rules_text() -> None:
-    below = reporting_rules(15)
-    above = reporting_rules(CEILING_CLAIM_MIN_TRIADS, stratum_b_built=True, paraphrase_bank_built=True)
+    below = reporting_rules(15, triads_needed_for_14pt_leak=105)
+    above = reporting_rules(105, stratum_b_built=True, paraphrase_bank_built=True, triads_needed_for_14pt_leak=105)
     assert below["ceiling_claim"].startswith(NO_CEILING_CLAIM_TEXT)
     assert "not built" in below["stratum_b_unit_change"] and "never pooled" in below["stratum_b_unit_change"]
     assert "not built" in below["paraphrase_bank_c"] and "all three classes" in below["paraphrase_bank_c"]
@@ -383,7 +384,9 @@ def test_anchored_build_seals_verifies_freezes_probes_and_resumes(tmp_path: Path
     construction = report["construction"]
     assert construction["name"] == "anchored_two_hop" and construction["version"] == "v5"
     assert construction["templates_sha256"] == templates_sha256() and construction["triads"] == 12
-    assert construction["ceiling_claim"].startswith(NO_CEILING_CLAIM_TEXT)
+    # a part report is written before the probe runs: it defers the floor to the probe report and prints no 88
+    assert construction["ceiling_claim"] == CEILING_CLAIM_DEFERRED_TEXT
+    assert construction["ceiling_claim_floor_source"] == "probe_report" and construction["ceiling_claim_min_triads"] is None
     assert "not built" in construction["stratum_b_unit_change"] and "not built" in construction["paraphrase_bank_c"]
     assert report["adapters"] == {"writer": "AnchoredTemplateWriterAdapter"}
     assert report["v3_manifest"]["used"] is False and report["licence_registry_path"] == "none:template-construction"
@@ -449,7 +452,6 @@ def test_ceiling_floor_is_the_larger_of_design_and_computed_and_says_which() -> 
     assert ceiling_claim_floor(105) == (105, CEILING_FLOOR_SOURCE_COMPUTED)
     assert ceiling_claim_floor(70) == (CEILING_CLAIM_MIN_TRIADS, CEILING_FLOOR_SOURCE_DESIGN)
     assert ceiling_claim_floor(CEILING_CLAIM_MIN_TRIADS) == (CEILING_CLAIM_MIN_TRIADS, CEILING_FLOOR_SOURCE_DESIGN)
-    assert ceiling_claim_floor(None) == (CEILING_CLAIM_MIN_TRIADS, CEILING_FLOOR_SOURCE_DESIGN)
 
 
 def test_computed_requirement_above_88_governs_and_the_text_never_says_88_needed() -> None:
@@ -496,7 +498,12 @@ def test_part_at_or_above_the_applied_floor_may_claim_and_names_the_floor_and_so
     assert design_at["ceiling_claim_floor_source"] == "design_minimum_88"
 
 
-def test_reporting_rules_without_a_computed_figure_keeps_the_design_minimum() -> None:
-    rules = reporting_rules(15)
-    assert rules["ceiling_claim_min_triads"] == 88 and rules["ceiling_claim_floor_source"] == "design_minimum_88"
-    assert "no computed 14-point-leak requirement was supplied" in rules["ceiling_claim"]
+def test_part_report_built_without_the_computed_figure_never_claims_88_as_the_applied_floor() -> None:
+    for n_triads in (10, 87, 88, 105, 200):
+        rules = reporting_rules(n_triads)
+        assert rules["ceiling_claim_min_triads"] is None
+        assert rules["ceiling_claim_floor_source"] == "probe_report"
+        assert rules["ceiling_claim"] == CEILING_CLAIM_DEFERRED_TEXT
+        assert not rules["ceiling_claim"].startswith(("ceiling or discrimination claims may be made", NO_CEILING_CLAIM_TEXT))
+        assert "below the" not in rules["ceiling_claim"] and "meets the" not in rules["ceiling_claim"]
+        assert "shortcut-probe report header" in rules["ceiling_claim"]

@@ -106,6 +106,11 @@ RANGE_MARGIN = (2, 25)
 CEILING_CLAIM_MIN_TRIADS = 88
 CEILING_FLOOR_SOURCE_DESIGN = "design_minimum_88"
 CEILING_FLOOR_SOURCE_COMPUTED = "computed_14pt_leak"
+CEILING_FLOOR_SOURCE_PROBE_REPORT = "probe_report"
+CEILING_CLAIM_DEFERRED_TEXT = (
+    "deferred: the applied floor, max(88, the computed 14-point-leak requirement), "
+    "is printed in the shortcut-probe report header"
+)
 NO_CEILING_CLAIM_TEXT = "no ceiling or discrimination claim"
 
 
@@ -129,15 +134,30 @@ ANCHORED_TEMPLATE_WRITER_IDENTITY = ModelIdentity(
 )
 
 
-def ceiling_claim_floor(triads_needed_for_14pt_leak: int | None = None) -> tuple[int, str]:
+def ceiling_claim_floor(triads_needed_for_14pt_leak: int) -> tuple[int, str]:
     """The triad floor for a ceiling or discrimination claim, and where it came from.
 
     The larger of the design's fixed minimum and the report's own computed 14-point-leak requirement governs
-    (Publisher, 2026-11-01); a tie, or no computed figure, reports the design minimum.
+    (Publisher, 2026-11-01); a tie reports the design minimum.
     """
-    if triads_needed_for_14pt_leak is not None and triads_needed_for_14pt_leak > CEILING_CLAIM_MIN_TRIADS:
+    if triads_needed_for_14pt_leak > CEILING_CLAIM_MIN_TRIADS:
         return triads_needed_for_14pt_leak, CEILING_FLOOR_SOURCE_COMPUTED
     return CEILING_CLAIM_MIN_TRIADS, CEILING_FLOOR_SOURCE_DESIGN
+
+
+def _other_reporting_lines(stratum_b_built: bool, paraphrase_bank_built: bool) -> dict[str, Any]:
+    return {
+        "stratum_b_unit_change": (
+            "built: reported on its own row, never pooled into the headline"
+            if stratum_b_built
+            else "not built in this part; when built it is reported on its own row and never pooled into the headline"
+        ),
+        "paraphrase_bank_c": (
+            "built: applied to the claims of all three classes"
+            if paraphrase_bank_built
+            else "not built in this part; when built it applies to the claims of all three classes"
+        ),
+    }
 
 
 def reporting_rules(
@@ -149,16 +169,23 @@ def reporting_rules(
 ) -> dict[str, Any]:
     """The three reporting lines every probe and part report carries (design v5, item 8).
 
-    Pass `triads_needed_for_14pt_leak` when the report computes it: the ceiling-claim floor is then the larger of that
-    and the design's 88, and the text and `ceiling_claim_floor_source` say which applied.
+    Pass `triads_needed_for_14pt_leak` when the report computes it (the shortcut-probe report): the ceiling-claim floor
+    is then the larger of that and the design's 88, and the text and `ceiling_claim_floor_source` say which applied.
+    Without it (a part report, written before the probe runs) no floor applies here: the claim is deferred to the
+    probe report, `ceiling_claim_min_triads` is None, and the source is `probe_report`, so 88 is never printed as applied.
     """
+    if triads_needed_for_14pt_leak is None:
+        return {
+            "ceiling_claim_min_triads": None,
+            "ceiling_claim_floor_source": CEILING_FLOOR_SOURCE_PROBE_REPORT,
+            "ceiling_claim": CEILING_CLAIM_DEFERRED_TEXT,
+            **_other_reporting_lines(stratum_b_built, paraphrase_bank_built),
+        }
     floor, source = ceiling_claim_floor(triads_needed_for_14pt_leak)
     if source == CEILING_FLOOR_SOURCE_COMPUTED:
         why = (
             f"the computed 14-point-leak requirement, which exceeds the {CEILING_CLAIM_MIN_TRIADS}-triad design minimum"
         )
-    elif triads_needed_for_14pt_leak is None:
-        why = f"the {CEILING_CLAIM_MIN_TRIADS}-triad design minimum; no computed 14-point-leak requirement was supplied"
     else:
         why = (
             f"the {CEILING_CLAIM_MIN_TRIADS}-triad design minimum, which is at least the computed "
@@ -172,16 +199,7 @@ def reporting_rules(
         "ceiling_claim_min_triads": floor,
         "ceiling_claim_floor_source": source,
         "ceiling_claim": ceiling,
-        "stratum_b_unit_change": (
-            "built: reported on its own row, never pooled into the headline"
-            if stratum_b_built
-            else "not built in this part; when built it is reported on its own row and never pooled into the headline"
-        ),
-        "paraphrase_bank_c": (
-            "built: applied to the claims of all three classes"
-            if paraphrase_bank_built
-            else "not built in this part; when built it applies to the claims of all three classes"
-        ),
+        **_other_reporting_lines(stratum_b_built, paraphrase_bank_built),
     }
 
 
