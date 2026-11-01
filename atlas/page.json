@@ -21,40 +21,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 10,
-      "changed": 16,
+      "added": 2,
+      "changed": 2,
       "moved": 0,
-      "parts": 5,
+      "parts": 4,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "certification/v3/manifest-v3.json is now read by src/reasoning_dataset_lab/pilot_b/bakeoff_part.py.",
-        "subjects": [
-          "certification/v3/manifest-v3.json",
-          "src/reasoning_dataset_lab/pilot_b/bakeoff_part.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "certification/v3/review_queue-v3.json is now read by src/reasoning_dataset_lab/pilot_b/bakeoff_part.py.",
-        "subjects": [
-          "certification/v3/review_queue-v3.json",
-          "src/reasoning_dataset_lab/pilot_b/bakeoff_part.py"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "10 files added and 16 changed content, across 5 parts.",
+        "sentence": "Nothing structural changed since 2026-10-30; 2 files added and 2 changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "0aabe5b06da40d79e9f10767481136d05c47938a",
-      "generatedAt": "2026-10-29T22:03:57.444Z"
+      "commit": "1ce24bd2e8e3003952295fee251eb34251b5810d",
+      "generatedAt": "2026-10-30T18:27:09.693Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -103,21 +87,6 @@
       "shared": 5
     },
     {
-      "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
-      "b": "tests/test_pilot_b_part_b.py",
-      "either": 8,
-      "partLabels": [
-        "src",
-        "tests"
-      ],
-      "parts": [
-        "src",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 5
-    },
-    {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
       "either": 16,
@@ -131,6 +100,21 @@
       ],
       "relation": "inside",
       "shared": 9
+    },
+    {
+      "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
+      "b": "tests/test_pilot_b_part_b.py",
+      "either": 9,
+      "partLabels": [
+        "src",
+        "tests"
+      ],
+      "parts": [
+        "src",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 5
     }
   ],
   "changesTogetherNote": [
@@ -138,9 +122,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 4 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 0,
-  "commit": "64641c7ad767e09e8b8ab5edc76e07b01bbbd515",
+  "commit": "9285d752fdd80731c35efac778559907f95ab09c",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (47 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1) and shell (1). Work enters through 4 doors; the busiest is ci, which reaches 2 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (50 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1) and shell (1). Work enters through 4 doors; the busiest is ci, which reaches 2 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -155,12 +139,12 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 25
+          "files": 27
         },
         {
           "boundary": "src",
           "depth": 1,
-          "files": 22
+          "files": 23
         }
       ],
       "runs": [
@@ -224,7 +208,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 22
+          "files": 23
         }
       ],
       "runs": [],
@@ -253,7 +237,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 19
+          "files": 20
         }
       ],
       "runs": [
@@ -272,7 +256,7 @@
   "edges": [],
   "engine": "1.24.0",
   "generated": [],
-  "generatedAt": "2026-10-30T18:19:29.626Z",
+  "generatedAt": "2026-11-01T18:37:34.945Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "1 import could not be resolved: `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
@@ -308,9 +292,9 @@
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 26,
+  "testFiles": 28,
   "testedBy": {
-    "src": 24
+    "src": 26
   },
   "unnamedWrites": 10,
   "unread": [],

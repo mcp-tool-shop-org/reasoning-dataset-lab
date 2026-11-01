@@ -38,6 +38,7 @@ from reasoning_dataset_lab.map import check_map_file
 from reasoning_dataset_lab.pilot_b.fact_tables import (
     DOMAIN_CATALOGUE,
     ClosureTag,
+    FactTable,
     ProvedTriad,
     VerdictKey,
     build_contrast_triad,
@@ -106,6 +107,18 @@ from reasoning_dataset_lab.pilot_b.waves_and_sealing import (
     write_public_report,
     write_sealed_part,
 )
+from reasoning_dataset_lab.pilot_b.anchored_two_hop import (
+    ANCHORED_DOMAIN,
+    ANCHORED_TEMPLATE_WRITER_IDENTITY,
+    CONSTRUCTION_NAME as ANCHORED_CONSTRUCTION_NAME,
+    CONSTRUCTION_VERSION as ANCHORED_CONSTRUCTION_VERSION,
+    AnchoredTemplateWriterAdapter,
+    AnchoredTriadSpec,
+    build_anchored_triad,
+    reporting_rules,
+    templates_sha256,
+    validate_anchored_material,
+)
 
 EXPECTED_V3_MANIFEST_SHA256 = "62cbd66cee277223db25713f49e7886e43d51744ba24217d62b36afd8bad1a2e"
 EXPECTED_V3_MANIFEST_SHA256_PREFIX = "62cbd66cee277223"
@@ -116,6 +129,12 @@ DEFAULT_DEV_SPLIT_RATIO = 0.30
 DEFAULT_SPLIT_SEED = 20261029
 DEFAULT_VRAM_HALT_MIB = 26_000
 BAKEOFF_PART_ID = "bakeoff-d-t10-sealed"
+# Construction choice for `rdlab bakeoff-part`. "writer" is the default and the existing part: one fact per line,
+# rendered by the pinned writer model. "anchored_two_hop" is construction A v5: template only, no model.
+WRITER_CONSTRUCTION_NAME = "writer"
+WRITER_CONSTRUCTION_VERSION = "v1"
+BAKEOFF_CONSTRUCTIONS: tuple[str, ...] = (WRITER_CONSTRUCTION_NAME, ANCHORED_CONSTRUCTION_NAME)
+BAKEOFF_ANCHORED_PART_ID = "bakeoff-d-t10-anchored-sealed"
 CHECKPOINT_FILENAME = "checkpoint.json"
 SEALED_CHECKPOINT_FILENAME = "checkpoint.sealed.json"
 CHECKPOINT_GENESIS_HASH = "0" * 64
@@ -628,6 +647,94 @@ def compute_split_counts(
         "by_domain_and_closure": dict(sorted(by_domain_and_closure.items())),
         "by_value_set_id": dict(sorted(by_value_set.items())),
     }
+
+
+def plan_anchored_bakeoff_triads(
+    *,
+    triad_count: int = DEFAULT_BAKEOFF_TRIADS,
+    seed: int = 1,
+    split_seed: int = DEFAULT_SPLIT_SEED,
+    table_secret: int,
+    dev_ratio: float = DEFAULT_DEV_SPLIT_RATIO,
+) -> tuple[tuple[PlannedBakeoffTriad, ...], dict[str, Any], dict[str, AnchoredTriadSpec]]:
+    """Plan ``triad_count`` anchored two-hop triads (construction A v5) with a 30 % dev / 70 % test split by triad.
+
+    The construction draws numbers, not catalogue values, so it has no certified value set. The dev/test grouping
+    key the sealed keys carry is one pseudo value set per split, named after the construction, so the split can
+    never land one id in both halves.
+    """
+    if triad_count <= 0:
+        raise refused_error(
+            "BAKEOFF_INVALID_TRIAD_COUNT",
+            f"triad_count must be >= 1, got {triad_count}.",
+            "Pass a positive triad count (default 430, or --stub N).",
+        )
+    n_dev = 0 if triad_count == 1 else max(1, min(triad_count - 1, round(dev_ratio * triad_count)))
+    order = list(range(triad_count))
+    random.Random(f"rdlab-{ANCHORED_CONSTRUCTION_NAME}-split-v1:{split_seed}").shuffle(order)
+    dev_indices = set(order[:n_dev])
+
+    specs_by_table_id: dict[str, AnchoredTriadSpec] = {}
+    built: list[tuple[int, str, AnchoredTriadSpec]] = []
+    for idx in range(triad_count):
+        table_id = f"T10-D-{ANCHORED_DOMAIN}-anchored-{idx + 1:03d}"
+        spec = build_anchored_triad(
+            idx,
+            seed=seed,
+            table_secret=table_secret,
+            table_id=table_id,
+            triad_id=f"{table_id}-triad",
+        )
+        specs_by_table_id[table_id] = spec
+        built.append((idx, "dev" if idx in dev_indices else "test", spec))
+
+    attribute = built[0][2].attribute
+    value_sets = {
+        split: CertifiedValueSetSpec(
+            domain=ANCHORED_DOMAIN,
+            attribute=f"{attribute} [{ANCHORED_CONSTRUCTION_NAME} {ANCHORED_CONSTRUCTION_VERSION}, {split}]",
+            values=(),
+            values_sha256=hashlib.sha256(
+                f"rdlab-{ANCHORED_CONSTRUCTION_NAME}-{ANCHORED_CONSTRUCTION_VERSION}:"
+                f"{ANCHORED_DOMAIN}:{attribute}:{split}".encode("utf-8")
+            ).hexdigest(),
+        )
+        for split in ("dev", "test")
+    }
+    planned = tuple(
+        PlannedBakeoffTriad(
+            index=idx + 1,
+            seed=seed + idx,
+            domain=ANCHORED_DOMAIN,
+            closure="closed",
+            split=split,
+            value_set=value_sets[split],
+            triad=spec.triad,
+        )
+        for idx, split, spec in built
+    )
+    split_counts = compute_split_counts(
+        planned, dev_sets=[value_sets["dev"]], test_sets=[value_sets["test"]]
+    )
+    return planned, split_counts, specs_by_table_id
+
+
+def anchored_material_checker(
+    specs_by_table_id: Mapping[str, AnchoredTriadSpec],
+) -> Callable[[FactTable, str], object]:
+    """The material rule set for an anchored build: every decidability rule, against the planned triad's claims."""
+
+    def _check(table: FactTable, material: str) -> object:
+        spec = specs_by_table_id.get(table.table_id)
+        if spec is None:
+            raise refused_error(
+                "ANCHORED_UNPLANNED_TABLE",
+                f"Table {table.table_id!r} is not one the anchored plan built.",
+                "Render only tables from plan_anchored_bakeoff_triads.",
+            )
+        return validate_anchored_material(table, spec.claims, material, extra_numbers=spec.extra_numbers)
+
+    return _check
 
 
 def check_output_dir_outside_repo(output_dir: Path, *, repo_root: Path | None = None) -> Path:
@@ -1605,8 +1712,10 @@ class BakeoffCheckpointManager:
         num_predict_config: NumPredictConfig,
         planned_triads: Sequence[PlannedBakeoffTriad],
         split_counts: Mapping[str, Any],
+        material_checker: Callable[[FactTable, str], object] = check_rendered_material,
     ) -> None:
         self.output_dir = output_dir
+        self.material_checker = material_checker
         self.public_path = output_dir / CHECKPOINT_FILENAME
         self.sealed_path = output_dir / "sealed_store" / SEALED_CHECKPOINT_FILENAME
         self.part_id = part_id
@@ -1999,7 +2108,7 @@ class BakeoffCheckpointManager:
                 "Rebuild from scratch.",
             )
 
-        check_rendered_material(t.table, material)
+        self.material_checker(t.table, material)
         for k in VERDICT_CLASSES:
             check_worded_claim(t.table, t.claims[k], str(worded_claims[k]))
 
@@ -2415,8 +2524,13 @@ def run_bakeoff_writer_waves(
     checkpoint: BakeoffCheckpointManager | None = None,
     certified_sets: Sequence[CertifiedValueSetSpec] | None = None,
     split_seed: int = DEFAULT_SPLIT_SEED,
+    material_checker: Callable[[FactTable, str], object] = check_rendered_material,
 ) -> PilotBWaveRunResult:
-    """Execute writer-only waves (render + word) in a single model load, checkpointing per finished triad."""
+    """Execute writer-only waves (render + word) in a single model load, checkpointing per finished triad.
+
+    ``material_checker`` holds each rendered material to its construction's rules: ``check_rendered_material``
+    for the writer construction, the anchored validator for construction A.
+    """
     for item in planned_triads:
         verify_triad_against_table(item.triad.table, item.triad)
 
@@ -2459,7 +2573,7 @@ def run_bakeoff_writer_waves(
         # Wave 1 (render_material) for this triad
         try:
             mat = writer_adapter.render_material(t.table)
-            check_rendered_material(t.table, mat)
+            material_checker(t.table, mat)
         except RdlabError as err:
             if not (
                 err.code.startswith("PILOT_B_RENDER_")
@@ -2655,7 +2769,7 @@ def run_bakeoff_writer_waves(
             material=mat,
             worded_claims=w_claims,
         )
-        check_worded_triad(worded, require_values_in_material=True)
+        check_worded_triad(worded, require_values_in_material=True, material_checker=material_checker)
         kept_ev = TriadGateEvaluation(
             worded=worded,
             claim_evals=_dummy_claim_evals_for_writer(t, writer_model, True),
@@ -2765,9 +2879,13 @@ def run_bakeoff_writer_waves(
     }
 
     w_cls = type(writer_adapter).__name__
+    # The template writer of a template construction is code, not a fake: it is allow-listed beside the real writer.
     has_fake = not (
-        type(writer_adapter) is OllamaWriterAdapter
-        and writer_adapter.http_transport is ollama_mod.default_ollama_http_transport
+        type(writer_adapter) is AnchoredTemplateWriterAdapter
+        or (
+            type(writer_adapter) is OllamaWriterAdapter
+            and writer_adapter.http_transport is ollama_mod.default_ollama_http_transport
+        )
     )
     w_max_ctx = int(getattr(writer_adapter, "max_num_ctx", writer_model.max_num_ctx))
 
@@ -2849,54 +2967,79 @@ def run_bakeoff_part_build(
     ollama_base_url: str = "http://127.0.0.1:11434",
     repo_root: Path | None = None,
     resume: bool = False,
+    construction: str = WRITER_CONSTRUCTION_NAME,
 ) -> dict[str, object]:
-    """Build (or --resume), seal, verify, and freeze the writer-only Kind-D bake-off part."""
+    """Build (or --resume), seal, verify, and freeze the writer-only Kind-D bake-off part.
+
+    ``construction`` picks the triad construction: ``"writer"`` (the default; nothing changes for existing parts)
+    or ``"anchored_two_hop"`` (construction A v5: template only, no model, no GPU, no licence registry, no
+    certified value sets; the part id is ``BAKEOFF_ANCHORED_PART_ID``).
+    """
+    if construction not in BAKEOFF_CONSTRUCTIONS:
+        raise refused_error(
+            "BAKEOFF_UNKNOWN_CONSTRUCTION",
+            f"Unknown construction {construction!r}; expected one of {list(BAKEOFF_CONSTRUCTIONS)}.",
+            "Pass --construction writer or --construction anchored-two-hop.",
+        )
+    anchored = construction == ANCHORED_CONSTRUCTION_NAME
+    part_id = BAKEOFF_ANCHORED_PART_ID if anchored else BAKEOFF_PART_ID
     resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
     resolved_grant = require_gpu_grant(
         grant_id,
-        allow_ungranted_mock=mock_writer,
+        allow_ungranted_mock=mock_writer or anchored,
     )
 
-    certified_sets, queued_digests, v3_manifest_sha256 = verify_and_load_v3_value_sets(
-        manifest_path=manifest_path,
-        review_queue_path=review_queue_v3_path,
-    )
-
-    writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
-    if licence_registry_path is not None:
-        entries_map = load_licence_registry(licence_registry_path)
-        reg_path_str = "licences/registry.json"
-        reg_sha256 = hashlib.sha256(licence_registry_path.read_bytes()).hexdigest()
-    elif mock_writer:
-        fixture = build_fixture_licence_registry()
-        entries_map = {str(e["id"]): e for e in fixture["entries"]}
-        reg_path_str = "fixture:build_fixture_licence_registry"
-        reg_sha256 = hashlib.sha256(
-            json.dumps(fixture, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+    if anchored:
+        # The anchored construction draws its numbers; it uses no certified value set and no model licence.
+        certified_sets, queued_digests, v3_manifest_sha256 = (), frozenset(), ""
+        reg_sha256 = "0" * 64
+        licence_registry_meta: dict[str, object] = {
+            "path": "none:template-construction",
+            "sha256": reg_sha256,
+            "read_dates": {},
+        }
+        writer_identity = ANCHORED_TEMPLATE_WRITER_IDENTITY
     else:
-        raise refused_error(
-            "PILOT_B_LICENCE_REGISTRY_REQUIRED",
-            "Refused to start a non-mock bake-off build without an explicit --licence-registry <path>.",
-            "Pass --licence-registry <path> pointing to licences/registry.json.",
+        certified_sets, queued_digests, v3_manifest_sha256 = verify_and_load_v3_value_sets(
+            manifest_path=manifest_path,
+            review_queue_path=review_queue_v3_path,
         )
-    validate_models_against_licence_registry(
-        [writer_pin],
-        registry_entries=entries_map,
-    )
-    reg_read_dates: dict[str, str] = {}
-    for lid in (writer_pin.licence_id, writer_pin.bundled_licence_id):
-        if lid and lid not in reg_read_dates:
-            reg_read_dates[lid] = str(entries_map[lid].get("read_date", "")).strip()
-    licence_registry_meta: dict[str, object] = {
-        "path": reg_path_str,
-        "sha256": reg_sha256,
-        "read_dates": reg_read_dates,
-    }
-    writer_identity = writer_pin.to_model_identity(
-        licence_read_date=reg_read_dates.get(writer_pin.licence_id, ""),
-        bundled_licence_read_date=reg_read_dates.get(writer_pin.bundled_licence_id, ""),
-    )
+
+        writer_pin = DEFAULT_PILOT_B_MODEL_PINS["writer"]
+        if licence_registry_path is not None:
+            entries_map = load_licence_registry(licence_registry_path)
+            reg_path_str = "licences/registry.json"
+            reg_sha256 = hashlib.sha256(licence_registry_path.read_bytes()).hexdigest()
+        elif mock_writer:
+            fixture = build_fixture_licence_registry()
+            entries_map = {str(e["id"]): e for e in fixture["entries"]}
+            reg_path_str = "fixture:build_fixture_licence_registry"
+            reg_sha256 = hashlib.sha256(
+                json.dumps(fixture, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+        else:
+            raise refused_error(
+                "PILOT_B_LICENCE_REGISTRY_REQUIRED",
+                "Refused to start a non-mock bake-off build without an explicit --licence-registry <path>.",
+                "Pass --licence-registry <path> pointing to licences/registry.json.",
+            )
+        validate_models_against_licence_registry(
+            [writer_pin],
+            registry_entries=entries_map,
+        )
+        reg_read_dates: dict[str, str] = {}
+        for lid in (writer_pin.licence_id, writer_pin.bundled_licence_id):
+            if lid and lid not in reg_read_dates:
+                reg_read_dates[lid] = str(entries_map[lid].get("read_date", "")).strip()
+        licence_registry_meta = {
+            "path": reg_path_str,
+            "sha256": reg_sha256,
+            "read_dates": reg_read_dates,
+        }
+        writer_identity = writer_pin.to_model_identity(
+            licence_read_date=reg_read_dates.get(writer_pin.licence_id, ""),
+            bundled_licence_read_date=reg_read_dates.get(writer_pin.bundled_licence_id, ""),
+        )
 
     writer_np_config = coerce_num_predict_config(
         {
@@ -2978,18 +3121,31 @@ def run_bakeoff_part_build(
         )
         commitment_key = secrets.token_bytes(32)
 
-    planned_triads, split_counts = plan_bakeoff_triads(
-        triad_count=triad_count,
-        seed=seed,
-        split_seed=split_seed,
-        table_secret=resolved_table_secret,
-        certified_sets=certified_sets,
-        queued_digests=queued_digests,
+    anchored_specs: dict[str, AnchoredTriadSpec] = {}
+    if anchored:
+        planned_triads, split_counts, anchored_specs = plan_anchored_bakeoff_triads(
+            triad_count=triad_count,
+            seed=seed,
+            split_seed=split_seed,
+            table_secret=resolved_table_secret,
+        )
+    else:
+        planned_triads, split_counts = plan_bakeoff_triads(
+            triad_count=triad_count,
+            seed=seed,
+            split_seed=split_seed,
+            table_secret=resolved_table_secret,
+            certified_sets=certified_sets,
+            queued_digests=queued_digests,
+        )
+    writer_max_num_ctx = writer_identity.max_num_ctx if anchored else DEFAULT_ROLE_MAX_NUM_CTX["writer"]
+    material_checker: Callable[[FactTable, str], object] = (
+        anchored_material_checker(anchored_specs) if anchored else check_rendered_material
     )
 
     checkpoint = BakeoffCheckpointManager(
         output_dir=resolved_out,
-        part_id=BAKEOFF_PART_ID,
+        part_id=part_id,
         triad_count=triad_count,
         stub_mode=stub_mode,
         seed=seed,
@@ -3000,14 +3156,15 @@ def run_bakeoff_part_build(
         test_only=is_test_only,
         v3_manifest_sha256=v3_manifest_sha256,
         writer_model=writer_identity,
-        writer_adapter_class="OllamaWriterAdapter",
-        max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["writer"],
+        writer_adapter_class=AnchoredTemplateWriterAdapter.__name__ if anchored else "OllamaWriterAdapter",
+        max_num_ctx=writer_max_num_ctx,
         licence_registry=licence_registry_meta,
         map_version=1,
         map_sha256=map_sha,
         num_predict_config=writer_np_config,
         planned_triads=planned_triads,
         split_counts=split_counts,
+        material_checker=material_checker,
     )
     if resume and resume_pub_doc is not None and resume_sealed_doc is not None:
         checkpoint.load_and_verify(
@@ -3036,7 +3193,8 @@ def run_bakeoff_part_build(
     owned_server: OwnedOllamaServer | None = None
     active_ollama_url = ollama_base_url
     resolved_halt_pid = halt_pid
-    if not mock_writer:
+    needs_model = not mock_writer and not anchored
+    if needs_model:
         owned_server = start_owned_ollama_server(
             http_transport=base_transport,
             popen_factory=popen_factory,
@@ -3049,7 +3207,7 @@ def run_bakeoff_part_build(
     resolved_vram_probe: Callable[[], int] = (
         vram_probe
         if vram_probe is not None
-        else ((lambda: 0) if mock_writer else query_gpu_vram_peak_mib)
+        else (query_gpu_vram_peak_mib if needs_model else (lambda: 0))
     )
     gpu_guard = GpuGuardMonitor(
         grant_id=resolved_grant,
@@ -3066,19 +3224,26 @@ def run_bakeoff_part_build(
 
     saved_transport = ollama_mod.default_ollama_http_transport
     ollama_mod.default_ollama_http_transport = guarded_transport
-    writer_adapter: OllamaWriterAdapter | None = None
+    writer_adapter: OllamaWriterAdapter | AnchoredTemplateWriterAdapter | None = None
     writer_verified = False
     try:
         try:
-            writer_adapter = OllamaWriterAdapter(
-                model=writer_identity,
-                base_url=active_ollama_url,
-                num_predict=writer_np_config,
-                max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["writer"],
-                http_transport=guarded_transport,
-            )
-            if not mock_writer:
-                writer_adapter._ensure_verified()
+            if anchored:
+                writer_adapter = AnchoredTemplateWriterAdapter(
+                    anchored_specs,
+                    model=writer_identity,
+                    num_predict=writer_np_config,
+                )
+            else:
+                writer_adapter = OllamaWriterAdapter(
+                    model=writer_identity,
+                    base_url=active_ollama_url,
+                    num_predict=writer_np_config,
+                    max_num_ctx=DEFAULT_ROLE_MAX_NUM_CTX["writer"],
+                    http_transport=guarded_transport,
+                )
+            if needs_model:
+                writer_adapter._ensure_verified()  # type: ignore[union-attr]
                 writer_verified = True
                 gpu_guard.check_vram()
 
@@ -3095,8 +3260,9 @@ def run_bakeoff_part_build(
                 split_counts=split_counts,
                 num_predict=writer_np_config,
                 checkpoint=checkpoint,
-                certified_sets=certified_sets,
+                certified_sets=None if anchored else certified_sets,
                 split_seed=split_seed,
+                material_checker=material_checker,
             )
         finally:
             if writer_verified and writer_adapter is not None and not writer_adapter.unload_records:
@@ -3115,7 +3281,7 @@ def run_bakeoff_part_build(
         write_sealed_part(
             part_dir=part_dir,
             keys_sealed_path=keys_sealed_path,
-            part_id=BAKEOFF_PART_ID,
+            part_id=part_id,
             map_version=1,
             map_sha256=map_sha,
             wave_result=wave_result,
@@ -3172,8 +3338,17 @@ def run_bakeoff_part_build(
 
     report_payload: dict[str, object] = {
         "dataset": "bakeoff_part_t10",
-        "part_id": BAKEOFF_PART_ID,
+        "part_id": part_id,
         "split": "sealed",
+        # The construction and the reporting rules it is held to (design v5, item 8): no ceiling or
+        # discrimination claim below 88 triads; stratum B on its own row; bank C on all classes.
+        "construction": {
+            "name": construction,
+            "version": ANCHORED_CONSTRUCTION_VERSION if anchored else WRITER_CONSTRUCTION_VERSION,
+            "templates_sha256": templates_sha256() if anchored else None,
+            "triads": len(wave_result.kept_triads),
+            **reporting_rules(len(wave_result.kept_triads)),
+        },
         "stub_mode": stub_mode,
         "triads_requested": triad_count,
         "triads_kept": len(wave_result.kept_triads),
@@ -3250,10 +3425,11 @@ def run_bakeoff_part_build(
         },
         "split_counts": realized_split_counts,
         "v3_manifest": {
-            "path": "certification/v3/manifest-v3.json",
+            "path": "" if anchored else "certification/v3/manifest-v3.json",
             "sha256": v3_manifest_sha256,
             "certified_sets_count": len(certified_sets),
             "excluded_queued_sets_count": len(queued_digests),
+            "used": not anchored,
         },
         "gpu_guard": {
             "grant_id": resolved_grant,

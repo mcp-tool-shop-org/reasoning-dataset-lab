@@ -1,18 +1,16 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-10-30 from commit 64641c7 by Atlas 1.24.0.
+Mapped at 2026-11-01 from commit 9285d75 by Atlas 1.24.0.
 
 ## What this is
 
 reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item. (written by a person)
 
-9 parts, mostly Python (47 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1) and shell (1). Work enters through 4 doors; the busiest is ci, which reaches 2 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
+9 parts, mostly Python (50 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1) and shell (1). Work enters through 4 doors; the busiest is ci, which reaches 2 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-10-29 (0aabe5b)
+## What changed since 2026-10-30 (1ce24bd)
 
-- certification/v3/manifest-v3.json is now read by src/reasoning_dataset_lab/pilot_b/bakeoff_part.py.
-- certification/v3/review_queue-v3.json is now read by src/reasoning_dataset_lab/pilot_b/bakeoff_part.py.
-- 10 files added and 16 changed content, across 5 parts.
+Nothing structural changed since 2026-10-30; 2 files added and 2 changed content.
 
 ## What comes in
 
@@ -24,7 +22,7 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 ## What happens through ci
 
 1. The workflow runs tests/ in tests.
-2. That reaches src (22 files).
+2. That reaches src (23 files).
 3. It uploads coverage to Codecov.
 
 ## Who reads the results
@@ -50,8 +48,8 @@ scripts holds only shell files, which this map does not read, so what uses it ca
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 9 of 11 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/fact_tables.py** and **tests/test_pilot_b_variety.py** changed together in 5 of 7 commits, and the tests part imports the src part.
-- **src/reasoning_dataset_lab/pilot_b/rendering.py** and **tests/test_pilot_b_part_b.py** changed together in 5 of 8 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **src/reasoning_dataset_lab/pilot_b/ollama.py** changed together in 9 of 16 commits, inside the src part.
+- **src/reasoning_dataset_lab/pilot_b/rendering.py** and **tests/test_pilot_b_part_b.py** changed together in 5 of 9 commits, and the tests part imports the src part.
 
 Confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
