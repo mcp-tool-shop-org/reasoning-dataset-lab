@@ -37,6 +37,7 @@ dev = [
     "coverage==7.16.2",
     "pytest==9.0.3",
     "pytest-cov==7.0.0",
+    "pytest-xdist==3.8.0",
 ]
 judge = [
     # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
@@ -62,6 +63,7 @@ dev = [
     "coverage==7.16.2",
     "pytest==9.0.3",
     "pytest-cov==7.0.0",
+    "pytest-xdist==3.8.0",
 ]
 
 [tool.hatch.build.targets.wheel]

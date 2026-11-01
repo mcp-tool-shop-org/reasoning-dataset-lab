@@ -88,7 +88,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Run pytest (no coverage on this leg)
-        run: uv run pytest -v --no-cov
+        run: uv run pytest -v --no-cov -n auto
 
       - name: Validate example map
         run: uv run rdlab map check examples/t10-pilot-a.map.yaml
@@ -111,7 +111,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Run pytest (no coverage on this leg)
-        run: uv run pytest -v --no-cov
+        run: uv run pytest -v --no-cov -n auto
 
       - name: Validate example map
         run: uv run rdlab map check examples/t10-pilot-a.map.yaml

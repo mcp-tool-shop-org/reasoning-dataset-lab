@@ -79,17 +79,15 @@ def test_the_version_is_the_same_in_pyproject_the_package_and_the_installed_dist
     assert importlib.metadata.version("reasoning-dataset-lab") == reasoning_dataset_lab.__version__
 
 
-def test_the_built_wheel_carries_the_runtime_data_files():
+def test_the_built_wheel_carries_the_runtime_data_files(tmp_path: Path):
     import shutil
     import subprocess
     import zipfile
 
     uv = shutil.which("uv")
     assert uv, "uv is required to build the wheel for this check"
-    out = ROOT / "build" / "wheel-check"
+    out = tmp_path / "wheel-check"
     out.mkdir(parents=True, exist_ok=True)
-    for old in out.glob("*.whl"):
-        old.unlink()
     subprocess.run([uv, "build", "--wheel", "--out-dir", str(out), str(ROOT)], check=True, capture_output=True)
     (wheel,) = list(out.glob("reasoning_dataset_lab-*.whl"))
     names = set(zipfile.ZipFile(wheel).namelist())
