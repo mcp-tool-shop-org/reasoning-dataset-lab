@@ -620,8 +620,9 @@ def _build_parser() -> _StructuredArgumentParser:
     bjs_parser.add_argument(
         "--count-all-non-canary",
         dest="count_all_non_canary",
-        action="store_true",
-        help="Score primary and pairwise tables on all non-canary triads (420 counted triads).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Score primary and pairwise tables on all non-canary triads (420 counted triads; default: True).",
     )
     bjs_parser.add_argument(
         "--bootstrap-resamples",
@@ -697,6 +698,20 @@ def _build_parser() -> _StructuredArgumentParser:
         type=float,
         default=0.99,
         help="Minimum required yes+no variant probability mass per binary call (default: 0.99).",
+    )
+    blm_parser.add_argument(
+        "--part-id",
+        dest="part_id",
+        type=str,
+        default=None,
+        help="Part identifier (must be in the burned pilot-40b allow-set).",
+    )
+    blm_parser.add_argument(
+        "--part-dir",
+        dest="part_dir",
+        type=Path,
+        default=None,
+        help="Optional part directory to resolve part_id from manifest.json.",
     )
 
     return parser
@@ -1293,7 +1308,7 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 sealed_rows_out_path=args.sealed_out_path,
                 overwrite=bool(getattr(args, "overwrite", False)),
                 canary_config_path=getattr(args, "canary_config_path", None),
-                count_all_non_canary=bool(getattr(args, "count_all_non_canary", False)),
+                count_all_non_canary=bool(getattr(args, "count_all_non_canary", True)),
                 bootstrap_resamples=getattr(args, "bootstrap_resamples", None),
                 sesoi=float(getattr(args, "sesoi", DEFAULT_SESOI)),
             )
@@ -1319,6 +1334,8 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             mass_rep = check_bakeoff_logprob_mass(
                 args.judge_dir,
                 threshold=args.threshold,
+                part_id=getattr(args, "part_id", None),
+                part_dir=getattr(args, "part_dir", None),
             )
             if args.out_path is not None:
                 args.out_path.parent.mkdir(parents=True, exist_ok=True)

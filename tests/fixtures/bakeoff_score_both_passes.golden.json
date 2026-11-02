@@ -6,7 +6,7 @@
   "counted_set": {
     "canary_seed": 20261029,
     "canary_triads_excluded_n": 0,
-    "count_all_non_canary": false,
+    "count_all_non_canary": true,
     "counted_items_n": 12,
     "counted_triads_n": 4,
     "domain_strata_sizes": {
@@ -298,12 +298,7 @@
     "tost_statistic": "paired triad-level TOST at +-SESOI (+-0.04) on triad strict-accuracy differences d_t = a_t - b_t using the unbiased sample variance estimator s_d^2 = (1/(T-1)) * sum((d_t - d_bar)^2) and SE = sqrt(s_d^2 / T)",
     "tost_variance_estimator": "unbiased_paired_triad_sample_variance_ddof1"
   },
-  "depth_3_tree_probe_status": "not present",
   "dev_fit": {
-    "fitted_thresholds": {
-      "flow-judge-v0.1": null,
-      "mu-judge": 0.5
-    },
     "items_n": 6,
     "judges": [
       {
@@ -578,526 +573,6 @@
         "yes_vs_not_yes_balanced_accuracy": 0.875
       }
     ],
-    "mu_judge_three_readings": {
-      "0.5": {
-        "abstain_items": 0,
-        "accuracy": {
-          "high": 0.969947,
-          "low": 0.436497,
-          "n": 6,
-          "point": 0.833333
-        },
-        "balanced_accuracy": 0.875,
-        "calls_n": 12,
-        "class_balanced_strict_accuracy": {
-          "high": 1.0,
-          "low": 0.666667,
-          "n": 6,
-          "point": 0.833333
-        },
-        "conditional_accuracy": null,
-        "coverage": 0.833333,
-        "ece": 0.149091,
-        "ece_reason": null,
-        "error_rate": 0.083333,
-        "first_slot_yes_rate": 0.333333,
-        "flip_rate": {
-          "high": 0.563503,
-          "low": 0.030053,
-          "n": 6,
-          "point": 0.166667
-        },
-        "items_n": 6,
-        "judge_id": "mu-judge",
-        "judge_label": "mu-judge",
-        "length_stops": 1,
-        "mean_order_auroc": 1.0,
-        "net_affirmative_bias": -0.0,
-        "per_class_accuracy": {
-          "cannot_tell": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "supported": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "unsupported": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          }
-        },
-        "per_closure_accuracy": {
-          "closed": {
-            "high": 1.0,
-            "low": 0.438503,
-            "n": 3,
-            "point": 1.0
-          },
-          "open": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          }
-        },
-        "pred_yes_rate": 0.333333,
-        "reliability_bins": [
-          {
-            "bin_high": 0.1,
-            "bin_low": 0.0,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.2,
-            "bin_low": 0.1,
-            "count": 7,
-            "empirical_yes": 0.0,
-            "mean_confidence": 0.145714
-          },
-          {
-            "bin_high": 0.3,
-            "bin_low": 0.2,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.4,
-            "bin_low": 0.3,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.5,
-            "bin_low": 0.4,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.6,
-            "bin_low": 0.5,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.7,
-            "bin_low": 0.6,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.8,
-            "bin_low": 0.7,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.9,
-            "bin_low": 0.8,
-            "count": 4,
-            "empirical_yes": 1.0,
-            "mean_confidence": 0.845
-          },
-          {
-            "bin_high": 1.0,
-            "bin_low": 0.9,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          }
-        ],
-        "screening_rule": "both_orders_yes_and_gate",
-        "screening_yes_precision": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "screening_yes_recall": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "second_slot_yes_rate": 0.333333,
-        "seconds_mean": 0.001,
-        "seconds_median": 0.001,
-        "seconds_total": 0.012,
-        "strict_ceiling": 0.833333,
-        "threshold_rule": "0.5",
-        "threshold_value": 0.5,
-        "triad_consistency": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
-        },
-        "unparseable": 0,
-        "vram_peak_mib": 0,
-        "yes_vs_not_yes_balanced_accuracy": 0.875
-      },
-      "card_0.2_0.8": {
-        "abstain_items": 0,
-        "accuracy": {
-          "high": 0.969947,
-          "low": 0.436497,
-          "n": 6,
-          "point": 0.833333
-        },
-        "balanced_accuracy": 0.875,
-        "calls_n": 12,
-        "class_balanced_strict_accuracy": {
-          "high": 1.0,
-          "low": 0.666667,
-          "n": 6,
-          "point": 0.833333
-        },
-        "conditional_accuracy": {
-          "high": 1.0,
-          "low": 0.565518,
-          "n": 5,
-          "point": 1.0
-        },
-        "coverage": 0.833333,
-        "ece": 0.149091,
-        "ece_reason": null,
-        "error_rate": 0.083333,
-        "first_slot_yes_rate": 0.333333,
-        "flip_rate": {
-          "high": 0.563503,
-          "low": 0.030053,
-          "n": 6,
-          "point": 0.166667
-        },
-        "items_n": 6,
-        "judge_id": "mu-judge",
-        "judge_label": "mu-judge",
-        "length_stops": 1,
-        "mean_order_auroc": 1.0,
-        "net_affirmative_bias": -0.0,
-        "per_class_accuracy": {
-          "cannot_tell": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "supported": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "unsupported": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          }
-        },
-        "per_closure_accuracy": {
-          "closed": {
-            "high": 1.0,
-            "low": 0.438503,
-            "n": 3,
-            "point": 1.0
-          },
-          "open": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          }
-        },
-        "pred_yes_rate": 0.333333,
-        "reliability_bins": [
-          {
-            "bin_high": 0.1,
-            "bin_low": 0.0,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.2,
-            "bin_low": 0.1,
-            "count": 7,
-            "empirical_yes": 0.0,
-            "mean_confidence": 0.145714
-          },
-          {
-            "bin_high": 0.3,
-            "bin_low": 0.2,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.4,
-            "bin_low": 0.3,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.5,
-            "bin_low": 0.4,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.6,
-            "bin_low": 0.5,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.7,
-            "bin_low": 0.6,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.8,
-            "bin_low": 0.7,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.9,
-            "bin_low": 0.8,
-            "count": 4,
-            "empirical_yes": 1.0,
-            "mean_confidence": 0.845
-          },
-          {
-            "bin_high": 1.0,
-            "bin_low": 0.9,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          }
-        ],
-        "screening_rule": "both_orders_yes_and_gate",
-        "screening_yes_precision": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "screening_yes_recall": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "second_slot_yes_rate": 0.333333,
-        "seconds_mean": 0.001,
-        "seconds_median": 0.001,
-        "seconds_total": 0.012,
-        "strict_ceiling": 0.833333,
-        "threshold_rule": "card_0.2_0.8",
-        "threshold_value": null,
-        "triad_consistency": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
-        },
-        "unparseable": 0,
-        "vram_peak_mib": 0,
-        "yes_vs_not_yes_balanced_accuracy": 0.875
-      },
-      "dev_fitted": {
-        "abstain_items": 0,
-        "accuracy": {
-          "high": 0.969947,
-          "low": 0.436497,
-          "n": 6,
-          "point": 0.833333
-        },
-        "balanced_accuracy": 0.875,
-        "calls_n": 12,
-        "class_balanced_strict_accuracy": {
-          "high": 1.0,
-          "low": 0.666667,
-          "n": 6,
-          "point": 0.833333
-        },
-        "conditional_accuracy": null,
-        "coverage": 0.833333,
-        "ece": 0.149091,
-        "ece_reason": null,
-        "error_rate": 0.083333,
-        "first_slot_yes_rate": 0.333333,
-        "flip_rate": {
-          "high": 0.563503,
-          "low": 0.030053,
-          "n": 6,
-          "point": 0.166667
-        },
-        "items_n": 6,
-        "judge_id": "mu-judge",
-        "judge_label": "mu-judge",
-        "length_stops": 1,
-        "mean_order_auroc": 1.0,
-        "net_affirmative_bias": -0.0,
-        "per_class_accuracy": {
-          "cannot_tell": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "supported": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "unsupported": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          }
-        },
-        "per_closure_accuracy": {
-          "closed": {
-            "high": 1.0,
-            "low": 0.438503,
-            "n": 3,
-            "point": 1.0
-          },
-          "open": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          }
-        },
-        "pred_yes_rate": 0.333333,
-        "reliability_bins": [
-          {
-            "bin_high": 0.1,
-            "bin_low": 0.0,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.2,
-            "bin_low": 0.1,
-            "count": 7,
-            "empirical_yes": 0.0,
-            "mean_confidence": 0.145714
-          },
-          {
-            "bin_high": 0.3,
-            "bin_low": 0.2,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.4,
-            "bin_low": 0.3,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.5,
-            "bin_low": 0.4,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.6,
-            "bin_low": 0.5,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.7,
-            "bin_low": 0.6,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.8,
-            "bin_low": 0.7,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.9,
-            "bin_low": 0.8,
-            "count": 4,
-            "empirical_yes": 1.0,
-            "mean_confidence": 0.845
-          },
-          {
-            "bin_high": 1.0,
-            "bin_low": 0.9,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          }
-        ],
-        "screening_rule": "both_orders_yes_and_gate",
-        "screening_yes_precision": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "screening_yes_recall": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "second_slot_yes_rate": 0.333333,
-        "seconds_mean": 0.001,
-        "seconds_median": 0.001,
-        "seconds_total": 0.012,
-        "strict_ceiling": 0.833333,
-        "threshold_rule": "dev_fitted",
-        "threshold_value": 0.5,
-        "triad_consistency": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
-        },
-        "unparseable": 0,
-        "vram_peak_mib": 0,
-        "yes_vs_not_yes_balanced_accuracy": 0.875
-      }
-    },
     "split": "dev",
     "three_way_pass": [
       {
@@ -1168,527 +643,7 @@
   },
   "exploratory": {
     "exploratory": true,
-    "mu_judge_three_readings": {
-      "0.5": {
-        "abstain_items": 0,
-        "accuracy": {
-          "high": 0.903229,
-          "low": 0.299993,
-          "n": 6,
-          "point": 0.666667
-        },
-        "balanced_accuracy": 0.75,
-        "calls_n": 12,
-        "class_balanced_strict_accuracy": {
-          "high": 0.666667,
-          "low": 0.666667,
-          "n": 6,
-          "point": 0.666667
-        },
-        "conditional_accuracy": null,
-        "coverage": 1.0,
-        "ece": 0.24,
-        "ece_reason": null,
-        "error_rate": 0.0,
-        "first_slot_yes_rate": 0.5,
-        "flip_rate": {
-          "high": 0.563503,
-          "low": 0.030053,
-          "n": 6,
-          "point": 0.166667
-        },
-        "items_n": 6,
-        "judge_id": "mu-judge",
-        "judge_label": "mu-judge",
-        "length_stops": 0,
-        "mean_order_auroc": 0.9375,
-        "net_affirmative_bias": 0.25,
-        "per_class_accuracy": {
-          "cannot_tell": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          },
-          "supported": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "unsupported": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          }
-        },
-        "per_closure_accuracy": {
-          "closed": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          },
-          "open": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          }
-        },
-        "pred_yes_rate": 0.583333,
-        "reliability_bins": [
-          {
-            "bin_high": 0.1,
-            "bin_low": 0.0,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.2,
-            "bin_low": 0.1,
-            "count": 5,
-            "empirical_yes": 0.0,
-            "mean_confidence": 0.166
-          },
-          {
-            "bin_high": 0.3,
-            "bin_low": 0.2,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.4,
-            "bin_low": 0.3,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.5,
-            "bin_low": 0.4,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.6,
-            "bin_low": 0.5,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.7,
-            "bin_low": 0.6,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.8,
-            "bin_low": 0.7,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.9,
-            "bin_low": 0.8,
-            "count": 7,
-            "empirical_yes": 0.571429,
-            "mean_confidence": 0.864286
-          },
-          {
-            "bin_high": 1.0,
-            "bin_low": 0.9,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          }
-        ],
-        "screening_rule": "both_orders_yes_and_gate",
-        "screening_yes_precision": {
-          "high": 1.0,
-          "low": 0.5,
-          "n": 6,
-          "point": 0.666667
-        },
-        "screening_yes_recall": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "second_slot_yes_rate": 0.666667,
-        "seconds_mean": 0.001,
-        "seconds_median": 0.001,
-        "seconds_total": 0.012,
-        "strict_ceiling": 0.833333,
-        "threshold_rule": "0.5",
-        "threshold_value": 0.5,
-        "triad_consistency": {
-          "high": 0.65762,
-          "low": 0.0,
-          "n": 2,
-          "point": 0.0
-        },
-        "unparseable": 0,
-        "vram_peak_mib": 0,
-        "yes_vs_not_yes_balanced_accuracy": 0.75
-      },
-      "card_0.2_0.8": {
-        "abstain_items": 0,
-        "accuracy": {
-          "high": 0.903229,
-          "low": 0.299993,
-          "n": 6,
-          "point": 0.666667
-        },
-        "balanced_accuracy": 0.75,
-        "calls_n": 12,
-        "class_balanced_strict_accuracy": {
-          "high": 0.666667,
-          "low": 0.666667,
-          "n": 6,
-          "point": 0.666667
-        },
-        "conditional_accuracy": {
-          "high": 0.903229,
-          "low": 0.299993,
-          "n": 6,
-          "point": 0.666667
-        },
-        "coverage": 1.0,
-        "ece": 0.24,
-        "ece_reason": null,
-        "error_rate": 0.0,
-        "first_slot_yes_rate": 0.5,
-        "flip_rate": {
-          "high": 0.563503,
-          "low": 0.030053,
-          "n": 6,
-          "point": 0.166667
-        },
-        "items_n": 6,
-        "judge_id": "mu-judge",
-        "judge_label": "mu-judge",
-        "length_stops": 0,
-        "mean_order_auroc": 0.9375,
-        "net_affirmative_bias": 0.25,
-        "per_class_accuracy": {
-          "cannot_tell": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          },
-          "supported": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "unsupported": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          }
-        },
-        "per_closure_accuracy": {
-          "closed": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          },
-          "open": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          }
-        },
-        "pred_yes_rate": 0.583333,
-        "reliability_bins": [
-          {
-            "bin_high": 0.1,
-            "bin_low": 0.0,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.2,
-            "bin_low": 0.1,
-            "count": 5,
-            "empirical_yes": 0.0,
-            "mean_confidence": 0.166
-          },
-          {
-            "bin_high": 0.3,
-            "bin_low": 0.2,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.4,
-            "bin_low": 0.3,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.5,
-            "bin_low": 0.4,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.6,
-            "bin_low": 0.5,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.7,
-            "bin_low": 0.6,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.8,
-            "bin_low": 0.7,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.9,
-            "bin_low": 0.8,
-            "count": 7,
-            "empirical_yes": 0.571429,
-            "mean_confidence": 0.864286
-          },
-          {
-            "bin_high": 1.0,
-            "bin_low": 0.9,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          }
-        ],
-        "screening_rule": "both_orders_yes_and_gate",
-        "screening_yes_precision": {
-          "high": 1.0,
-          "low": 0.5,
-          "n": 6,
-          "point": 0.666667
-        },
-        "screening_yes_recall": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "second_slot_yes_rate": 0.666667,
-        "seconds_mean": 0.001,
-        "seconds_median": 0.001,
-        "seconds_total": 0.012,
-        "strict_ceiling": 0.833333,
-        "threshold_rule": "card_0.2_0.8",
-        "threshold_value": null,
-        "triad_consistency": {
-          "high": 0.65762,
-          "low": 0.0,
-          "n": 2,
-          "point": 0.0
-        },
-        "unparseable": 0,
-        "vram_peak_mib": 0,
-        "yes_vs_not_yes_balanced_accuracy": 0.75
-      },
-      "dev_fitted": {
-        "abstain_items": 0,
-        "accuracy": {
-          "high": 0.903229,
-          "low": 0.299993,
-          "n": 6,
-          "point": 0.666667
-        },
-        "balanced_accuracy": 0.75,
-        "calls_n": 12,
-        "class_balanced_strict_accuracy": {
-          "high": 0.666667,
-          "low": 0.666667,
-          "n": 6,
-          "point": 0.666667
-        },
-        "conditional_accuracy": null,
-        "coverage": 1.0,
-        "ece": 0.24,
-        "ece_reason": null,
-        "error_rate": 0.0,
-        "first_slot_yes_rate": 0.5,
-        "flip_rate": {
-          "high": 0.563503,
-          "low": 0.030053,
-          "n": 6,
-          "point": 0.166667
-        },
-        "items_n": 6,
-        "judge_id": "mu-judge",
-        "judge_label": "mu-judge",
-        "length_stops": 0,
-        "mean_order_auroc": 0.9375,
-        "net_affirmative_bias": 0.25,
-        "per_class_accuracy": {
-          "cannot_tell": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          },
-          "supported": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "unsupported": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          }
-        },
-        "per_closure_accuracy": {
-          "closed": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          },
-          "open": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          }
-        },
-        "pred_yes_rate": 0.583333,
-        "reliability_bins": [
-          {
-            "bin_high": 0.1,
-            "bin_low": 0.0,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.2,
-            "bin_low": 0.1,
-            "count": 5,
-            "empirical_yes": 0.0,
-            "mean_confidence": 0.166
-          },
-          {
-            "bin_high": 0.3,
-            "bin_low": 0.2,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.4,
-            "bin_low": 0.3,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.5,
-            "bin_low": 0.4,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.6,
-            "bin_low": 0.5,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.7,
-            "bin_low": 0.6,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.8,
-            "bin_low": 0.7,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.9,
-            "bin_low": 0.8,
-            "count": 7,
-            "empirical_yes": 0.571429,
-            "mean_confidence": 0.864286
-          },
-          {
-            "bin_high": 1.0,
-            "bin_low": 0.9,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          }
-        ],
-        "screening_rule": "both_orders_yes_and_gate",
-        "screening_yes_precision": {
-          "high": 1.0,
-          "low": 0.5,
-          "n": 6,
-          "point": 0.666667
-        },
-        "screening_yes_recall": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "second_slot_yes_rate": 0.666667,
-        "seconds_mean": 0.001,
-        "seconds_median": 0.001,
-        "seconds_total": 0.012,
-        "strict_ceiling": 0.833333,
-        "threshold_rule": "dev_fitted",
-        "threshold_value": 0.5,
-        "triad_consistency": {
-          "high": 0.65762,
-          "low": 0.0,
-          "n": 2,
-          "point": 0.0
-        },
-        "unparseable": 0,
-        "vram_peak_mib": 0,
-        "yes_vs_not_yes_balanced_accuracy": 0.75
-      }
-    },
-    "note": "Thresholded readings (dev_fitted, 0.5, card_0.2_0.8), ECE, reliability bins, per-closure accuracy, and 3-way pass metrics are exploratory only.",
+    "note": "ECE, reliability bins, per-closure accuracy, and 3-way pass metrics are exploratory only.",
     "three_way_pass": [
       {
         "judge_id": "mu-judge",
@@ -1755,172 +710,172 @@
     {
       "abstain_items": 0,
       "accuracy": {
-        "high": 0.903229,
-        "low": 0.299993,
-        "n": 6,
-        "point": 0.666667
+        "high": 0.911058,
+        "low": 0.467695,
+        "n": 12,
+        "point": 0.75
       },
-      "balanced_accuracy": 0.75,
-      "calls_n": 12,
+      "balanced_accuracy": 0.8125,
+      "calls_n": 24,
       "class_balanced_strict_accuracy": {
-        "high": 0.666667,
+        "high": 0.916667,
         "low": 0.666667,
-        "n": 6,
-        "point": 0.666667
+        "n": 12,
+        "point": 0.75
       },
       "conditional_accuracy": null,
-      "coverage": 1.0,
+      "coverage": 0.916667,
       "ece": null,
       "ece_reason": "plain-label judge (pass/fail) without verdict token probability",
-      "error_rate": 0.0,
-      "first_slot_yes_rate": 0.5,
+      "error_rate": 0.041667,
+      "first_slot_yes_rate": 0.416667,
       "flip_rate": {
-        "high": 0.563503,
-        "low": 0.030053,
-        "n": 6,
+        "high": 0.448031,
+        "low": 0.046965,
+        "n": 12,
         "point": 0.166667
       },
-      "items_n": 6,
+      "items_n": 12,
       "judge_id": "flow-judge-v0.1",
       "judge_label": "Flow-Judge",
-      "length_stops": 0,
+      "length_stops": 1,
       "mean_order_auroc": null,
-      "net_affirmative_bias": 0.25,
+      "net_affirmative_bias": 0.125,
       "per_class_accuracy": {
         "cannot_tell": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
+          "high": 0.954413,
+          "low": 0.300642,
+          "n": 4,
+          "point": 0.75
         },
         "supported": {
           "high": 1.0,
-          "low": 0.34238,
-          "n": 2,
+          "low": 0.510109,
+          "n": 4,
           "point": 1.0
         },
         "unsupported": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
+          "high": 0.849961,
+          "low": 0.150039,
+          "n": 4,
           "point": 0.5
         }
       },
       "per_closure_accuracy": {
         "closed": {
-          "high": 0.938508,
-          "low": 0.20766,
-          "n": 3,
-          "point": 0.666667
+          "high": 0.969947,
+          "low": 0.436497,
+          "n": 6,
+          "point": 0.833333
         },
         "open": {
-          "high": 0.938508,
-          "low": 0.20766,
-          "n": 3,
+          "high": 0.903229,
+          "low": 0.299993,
+          "n": 6,
           "point": 0.666667
         }
       },
-      "pred_yes_rate": 0.583333,
+      "pred_yes_rate": 0.458333,
       "reliability_bins": [],
       "screening_rule": "both_orders_yes_and_gate",
       "screening_yes_precision": {
         "high": 1.0,
-        "low": 0.5,
-        "n": 6,
-        "point": 0.666667
+        "low": 0.571429,
+        "n": 12,
+        "point": 0.8
       },
       "screening_yes_recall": {
         "high": 1.0,
         "low": 1.0,
-        "n": 6,
+        "n": 12,
         "point": 1.0
       },
-      "second_slot_yes_rate": 0.666667,
+      "second_slot_yes_rate": 0.5,
       "seconds_mean": 0.001,
       "seconds_median": 0.001,
-      "seconds_total": 0.012,
+      "seconds_total": 0.024,
       "strict_ceiling": 0.833333,
       "threshold_rule": "plain",
       "threshold_value": null,
       "triad_consistency": {
-        "high": 0.65762,
-        "low": 0.0,
-        "n": 2,
-        "point": 0.0
+        "high": 0.699358,
+        "low": 0.045587,
+        "n": 4,
+        "point": 0.25
       },
       "unparseable": 0,
       "vram_peak_mib": 0,
-      "yes_vs_not_yes_balanced_accuracy": 0.75
+      "yes_vs_not_yes_balanced_accuracy": 0.8125
     },
     {
       "abstain_items": 0,
       "accuracy": {
-        "high": 0.903229,
-        "low": 0.299993,
-        "n": 6,
-        "point": 0.666667
+        "high": 0.911058,
+        "low": 0.467695,
+        "n": 12,
+        "point": 0.75
       },
-      "balanced_accuracy": 0.75,
-      "calls_n": 12,
+      "balanced_accuracy": 0.8125,
+      "calls_n": 24,
       "class_balanced_strict_accuracy": {
-        "high": 0.666667,
+        "high": 0.916667,
         "low": 0.666667,
-        "n": 6,
-        "point": 0.666667
+        "n": 12,
+        "point": 0.75
       },
       "conditional_accuracy": null,
-      "coverage": 1.0,
-      "ece": 0.24,
+      "coverage": 0.916667,
+      "ece": 0.142609,
       "ece_reason": null,
-      "error_rate": 0.0,
-      "first_slot_yes_rate": 0.5,
+      "error_rate": 0.041667,
+      "first_slot_yes_rate": 0.416667,
       "flip_rate": {
-        "high": 0.563503,
-        "low": 0.030053,
-        "n": 6,
+        "high": 0.448031,
+        "low": 0.046965,
+        "n": 12,
         "point": 0.166667
       },
-      "items_n": 6,
+      "items_n": 12,
       "judge_id": "mu-judge",
       "judge_label": "mu-judge",
-      "length_stops": 0,
-      "mean_order_auroc": 0.9375,
-      "net_affirmative_bias": 0.25,
+      "length_stops": 1,
+      "mean_order_auroc": 0.921875,
+      "net_affirmative_bias": 0.125,
       "per_class_accuracy": {
         "cannot_tell": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
+          "high": 0.954413,
+          "low": 0.300642,
+          "n": 4,
+          "point": 0.75
         },
         "supported": {
           "high": 1.0,
-          "low": 0.34238,
-          "n": 2,
+          "low": 0.510109,
+          "n": 4,
           "point": 1.0
         },
         "unsupported": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
+          "high": 0.849961,
+          "low": 0.150039,
+          "n": 4,
           "point": 0.5
         }
       },
       "per_closure_accuracy": {
         "closed": {
-          "high": 0.938508,
-          "low": 0.20766,
-          "n": 3,
-          "point": 0.666667
+          "high": 0.969947,
+          "low": 0.436497,
+          "n": 6,
+          "point": 0.833333
         },
         "open": {
-          "high": 0.938508,
-          "low": 0.20766,
-          "n": 3,
+          "high": 0.903229,
+          "low": 0.299993,
+          "n": 6,
           "point": 0.666667
         }
       },
-      "pred_yes_rate": 0.583333,
+      "pred_yes_rate": 0.458333,
       "reliability_bins": [
         {
           "bin_high": 0.1,
@@ -1932,9 +887,9 @@
         {
           "bin_high": 0.2,
           "bin_low": 0.1,
-          "count": 5,
+          "count": 12,
           "empirical_yes": 0.0,
-          "mean_confidence": 0.166
+          "mean_confidence": 0.154167
         },
         {
           "bin_high": 0.3,
@@ -1981,9 +936,9 @@
         {
           "bin_high": 0.9,
           "bin_low": 0.8,
-          "count": 7,
-          "empirical_yes": 0.571429,
-          "mean_confidence": 0.864286
+          "count": 11,
+          "empirical_yes": 0.727273,
+          "mean_confidence": 0.857273
         },
         {
           "bin_high": 1.0,
@@ -1996,554 +951,34 @@
       "screening_rule": "both_orders_yes_and_gate",
       "screening_yes_precision": {
         "high": 1.0,
-        "low": 0.5,
-        "n": 6,
-        "point": 0.666667
+        "low": 0.571429,
+        "n": 12,
+        "point": 0.8
       },
       "screening_yes_recall": {
         "high": 1.0,
         "low": 1.0,
-        "n": 6,
+        "n": 12,
         "point": 1.0
       },
-      "second_slot_yes_rate": 0.666667,
+      "second_slot_yes_rate": 0.5,
       "seconds_mean": 0.001,
       "seconds_median": 0.001,
-      "seconds_total": 0.012,
+      "seconds_total": 0.024,
       "strict_ceiling": 0.833333,
       "threshold_rule": "plain",
       "threshold_value": null,
       "triad_consistency": {
-        "high": 0.65762,
-        "low": 0.0,
-        "n": 2,
-        "point": 0.0
+        "high": 0.699358,
+        "low": 0.045587,
+        "n": 4,
+        "point": 0.25
       },
       "unparseable": 0,
       "vram_peak_mib": 0,
-      "yes_vs_not_yes_balanced_accuracy": 0.75
+      "yes_vs_not_yes_balanced_accuracy": 0.8125
     }
   ],
-  "mu_judge_three_readings": {
-    "0.5": {
-      "abstain_items": 0,
-      "accuracy": {
-        "high": 0.903229,
-        "low": 0.299993,
-        "n": 6,
-        "point": 0.666667
-      },
-      "balanced_accuracy": 0.75,
-      "calls_n": 12,
-      "class_balanced_strict_accuracy": {
-        "high": 0.666667,
-        "low": 0.666667,
-        "n": 6,
-        "point": 0.666667
-      },
-      "conditional_accuracy": null,
-      "coverage": 1.0,
-      "ece": 0.24,
-      "ece_reason": null,
-      "error_rate": 0.0,
-      "first_slot_yes_rate": 0.5,
-      "flip_rate": {
-        "high": 0.563503,
-        "low": 0.030053,
-        "n": 6,
-        "point": 0.166667
-      },
-      "items_n": 6,
-      "judge_id": "mu-judge",
-      "judge_label": "mu-judge",
-      "length_stops": 0,
-      "mean_order_auroc": 0.9375,
-      "net_affirmative_bias": 0.25,
-      "per_class_accuracy": {
-        "cannot_tell": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
-        },
-        "supported": {
-          "high": 1.0,
-          "low": 0.34238,
-          "n": 2,
-          "point": 1.0
-        },
-        "unsupported": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
-        }
-      },
-      "per_closure_accuracy": {
-        "closed": {
-          "high": 0.938508,
-          "low": 0.20766,
-          "n": 3,
-          "point": 0.666667
-        },
-        "open": {
-          "high": 0.938508,
-          "low": 0.20766,
-          "n": 3,
-          "point": 0.666667
-        }
-      },
-      "pred_yes_rate": 0.583333,
-      "reliability_bins": [
-        {
-          "bin_high": 0.1,
-          "bin_low": 0.0,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.2,
-          "bin_low": 0.1,
-          "count": 5,
-          "empirical_yes": 0.0,
-          "mean_confidence": 0.166
-        },
-        {
-          "bin_high": 0.3,
-          "bin_low": 0.2,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.4,
-          "bin_low": 0.3,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.5,
-          "bin_low": 0.4,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.6,
-          "bin_low": 0.5,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.7,
-          "bin_low": 0.6,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.8,
-          "bin_low": 0.7,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.9,
-          "bin_low": 0.8,
-          "count": 7,
-          "empirical_yes": 0.571429,
-          "mean_confidence": 0.864286
-        },
-        {
-          "bin_high": 1.0,
-          "bin_low": 0.9,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        }
-      ],
-      "screening_rule": "both_orders_yes_and_gate",
-      "screening_yes_precision": {
-        "high": 1.0,
-        "low": 0.5,
-        "n": 6,
-        "point": 0.666667
-      },
-      "screening_yes_recall": {
-        "high": 1.0,
-        "low": 1.0,
-        "n": 6,
-        "point": 1.0
-      },
-      "second_slot_yes_rate": 0.666667,
-      "seconds_mean": 0.001,
-      "seconds_median": 0.001,
-      "seconds_total": 0.012,
-      "strict_ceiling": 0.833333,
-      "threshold_rule": "0.5",
-      "threshold_value": 0.5,
-      "triad_consistency": {
-        "high": 0.65762,
-        "low": 0.0,
-        "n": 2,
-        "point": 0.0
-      },
-      "unparseable": 0,
-      "vram_peak_mib": 0,
-      "yes_vs_not_yes_balanced_accuracy": 0.75
-    },
-    "card_0.2_0.8": {
-      "abstain_items": 0,
-      "accuracy": {
-        "high": 0.903229,
-        "low": 0.299993,
-        "n": 6,
-        "point": 0.666667
-      },
-      "balanced_accuracy": 0.75,
-      "calls_n": 12,
-      "class_balanced_strict_accuracy": {
-        "high": 0.666667,
-        "low": 0.666667,
-        "n": 6,
-        "point": 0.666667
-      },
-      "conditional_accuracy": {
-        "high": 0.903229,
-        "low": 0.299993,
-        "n": 6,
-        "point": 0.666667
-      },
-      "coverage": 1.0,
-      "ece": 0.24,
-      "ece_reason": null,
-      "error_rate": 0.0,
-      "first_slot_yes_rate": 0.5,
-      "flip_rate": {
-        "high": 0.563503,
-        "low": 0.030053,
-        "n": 6,
-        "point": 0.166667
-      },
-      "items_n": 6,
-      "judge_id": "mu-judge",
-      "judge_label": "mu-judge",
-      "length_stops": 0,
-      "mean_order_auroc": 0.9375,
-      "net_affirmative_bias": 0.25,
-      "per_class_accuracy": {
-        "cannot_tell": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
-        },
-        "supported": {
-          "high": 1.0,
-          "low": 0.34238,
-          "n": 2,
-          "point": 1.0
-        },
-        "unsupported": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
-        }
-      },
-      "per_closure_accuracy": {
-        "closed": {
-          "high": 0.938508,
-          "low": 0.20766,
-          "n": 3,
-          "point": 0.666667
-        },
-        "open": {
-          "high": 0.938508,
-          "low": 0.20766,
-          "n": 3,
-          "point": 0.666667
-        }
-      },
-      "pred_yes_rate": 0.583333,
-      "reliability_bins": [
-        {
-          "bin_high": 0.1,
-          "bin_low": 0.0,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.2,
-          "bin_low": 0.1,
-          "count": 5,
-          "empirical_yes": 0.0,
-          "mean_confidence": 0.166
-        },
-        {
-          "bin_high": 0.3,
-          "bin_low": 0.2,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.4,
-          "bin_low": 0.3,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.5,
-          "bin_low": 0.4,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.6,
-          "bin_low": 0.5,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.7,
-          "bin_low": 0.6,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.8,
-          "bin_low": 0.7,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.9,
-          "bin_low": 0.8,
-          "count": 7,
-          "empirical_yes": 0.571429,
-          "mean_confidence": 0.864286
-        },
-        {
-          "bin_high": 1.0,
-          "bin_low": 0.9,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        }
-      ],
-      "screening_rule": "both_orders_yes_and_gate",
-      "screening_yes_precision": {
-        "high": 1.0,
-        "low": 0.5,
-        "n": 6,
-        "point": 0.666667
-      },
-      "screening_yes_recall": {
-        "high": 1.0,
-        "low": 1.0,
-        "n": 6,
-        "point": 1.0
-      },
-      "second_slot_yes_rate": 0.666667,
-      "seconds_mean": 0.001,
-      "seconds_median": 0.001,
-      "seconds_total": 0.012,
-      "strict_ceiling": 0.833333,
-      "threshold_rule": "card_0.2_0.8",
-      "threshold_value": null,
-      "triad_consistency": {
-        "high": 0.65762,
-        "low": 0.0,
-        "n": 2,
-        "point": 0.0
-      },
-      "unparseable": 0,
-      "vram_peak_mib": 0,
-      "yes_vs_not_yes_balanced_accuracy": 0.75
-    },
-    "dev_fitted": {
-      "abstain_items": 0,
-      "accuracy": {
-        "high": 0.903229,
-        "low": 0.299993,
-        "n": 6,
-        "point": 0.666667
-      },
-      "balanced_accuracy": 0.75,
-      "calls_n": 12,
-      "class_balanced_strict_accuracy": {
-        "high": 0.666667,
-        "low": 0.666667,
-        "n": 6,
-        "point": 0.666667
-      },
-      "conditional_accuracy": null,
-      "coverage": 1.0,
-      "ece": 0.24,
-      "ece_reason": null,
-      "error_rate": 0.0,
-      "first_slot_yes_rate": 0.5,
-      "flip_rate": {
-        "high": 0.563503,
-        "low": 0.030053,
-        "n": 6,
-        "point": 0.166667
-      },
-      "items_n": 6,
-      "judge_id": "mu-judge",
-      "judge_label": "mu-judge",
-      "length_stops": 0,
-      "mean_order_auroc": 0.9375,
-      "net_affirmative_bias": 0.25,
-      "per_class_accuracy": {
-        "cannot_tell": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
-        },
-        "supported": {
-          "high": 1.0,
-          "low": 0.34238,
-          "n": 2,
-          "point": 1.0
-        },
-        "unsupported": {
-          "high": 0.905469,
-          "low": 0.094531,
-          "n": 2,
-          "point": 0.5
-        }
-      },
-      "per_closure_accuracy": {
-        "closed": {
-          "high": 0.938508,
-          "low": 0.20766,
-          "n": 3,
-          "point": 0.666667
-        },
-        "open": {
-          "high": 0.938508,
-          "low": 0.20766,
-          "n": 3,
-          "point": 0.666667
-        }
-      },
-      "pred_yes_rate": 0.583333,
-      "reliability_bins": [
-        {
-          "bin_high": 0.1,
-          "bin_low": 0.0,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.2,
-          "bin_low": 0.1,
-          "count": 5,
-          "empirical_yes": 0.0,
-          "mean_confidence": 0.166
-        },
-        {
-          "bin_high": 0.3,
-          "bin_low": 0.2,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.4,
-          "bin_low": 0.3,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.5,
-          "bin_low": 0.4,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.6,
-          "bin_low": 0.5,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.7,
-          "bin_low": 0.6,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.8,
-          "bin_low": 0.7,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        },
-        {
-          "bin_high": 0.9,
-          "bin_low": 0.8,
-          "count": 7,
-          "empirical_yes": 0.571429,
-          "mean_confidence": 0.864286
-        },
-        {
-          "bin_high": 1.0,
-          "bin_low": 0.9,
-          "count": 0,
-          "empirical_yes": null,
-          "mean_confidence": null
-        }
-      ],
-      "screening_rule": "both_orders_yes_and_gate",
-      "screening_yes_precision": {
-        "high": 1.0,
-        "low": 0.5,
-        "n": 6,
-        "point": 0.666667
-      },
-      "screening_yes_recall": {
-        "high": 1.0,
-        "low": 1.0,
-        "n": 6,
-        "point": 1.0
-      },
-      "second_slot_yes_rate": 0.666667,
-      "seconds_mean": 0.001,
-      "seconds_median": 0.001,
-      "seconds_total": 0.012,
-      "strict_ceiling": 0.833333,
-      "threshold_rule": "dev_fitted",
-      "threshold_value": 0.5,
-      "triad_consistency": {
-        "high": 0.65762,
-        "low": 0.0,
-        "n": 2,
-        "point": 0.0
-      },
-      "unparseable": 0,
-      "vram_peak_mib": 0,
-      "yes_vs_not_yes_balanced_accuracy": 0.75
-    }
-  },
   "outputs_closed_sha256": "307a5510329fb3d80af678bc07f1ab9f42276b19c4a29f48c73938a78eb1c283",
   "pairwise_all_pairs": [
     {
@@ -2551,27 +986,27 @@
       "diff_bootstrap_ci": {
         "high": 0.0,
         "low": 0.0,
-        "n": 6,
+        "n": 12,
         "point": 0.0
       },
       "equivalence_status": "equivalent",
       "holm_mcnemar_p": 1.0,
       "holm_sign_flip_p": 1.0,
       "holm_tost_p": 0.0,
-      "items_n": 6,
+      "items_n": 12,
       "judge_a": "flow-judge-v0.1",
       "judge_b": "mu-judge",
       "mcnemar_p": 1.0,
       "mean_diff_a_minus_b": 0.0,
       "sign_flip_p": 1.0,
-      "ties": 6,
+      "ties": 12,
       "tost_holm_adjusted": true,
       "tost_p": 0.0,
       "tost_sample_variance_ddof1": 0.0,
       "tost_se": 0.0,
       "tost_sesoi": 0.04,
       "tost_variance_estimator": "unbiased_paired_triad_sample_variance_ddof1",
-      "triads_n": 2,
+      "triads_n": 4,
       "wins_a": 0,
       "wins_b": 0
     }
@@ -2931,526 +1366,6 @@
         "yes_vs_not_yes_balanced_accuracy": 0.75
       }
     ],
-    "mu_judge_three_readings": {
-      "0.5": {
-        "abstain_items": 0,
-        "accuracy": {
-          "high": 0.903229,
-          "low": 0.299993,
-          "n": 6,
-          "point": 0.666667
-        },
-        "balanced_accuracy": 0.75,
-        "calls_n": 12,
-        "class_balanced_strict_accuracy": {
-          "high": 0.666667,
-          "low": 0.666667,
-          "n": 6,
-          "point": 0.666667
-        },
-        "conditional_accuracy": null,
-        "coverage": 1.0,
-        "ece": 0.24,
-        "ece_reason": null,
-        "error_rate": 0.0,
-        "first_slot_yes_rate": 0.5,
-        "flip_rate": {
-          "high": 0.563503,
-          "low": 0.030053,
-          "n": 6,
-          "point": 0.166667
-        },
-        "items_n": 6,
-        "judge_id": "mu-judge",
-        "judge_label": "mu-judge",
-        "length_stops": 0,
-        "mean_order_auroc": 0.9375,
-        "net_affirmative_bias": 0.25,
-        "per_class_accuracy": {
-          "cannot_tell": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          },
-          "supported": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "unsupported": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          }
-        },
-        "per_closure_accuracy": {
-          "closed": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          },
-          "open": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          }
-        },
-        "pred_yes_rate": 0.583333,
-        "reliability_bins": [
-          {
-            "bin_high": 0.1,
-            "bin_low": 0.0,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.2,
-            "bin_low": 0.1,
-            "count": 5,
-            "empirical_yes": 0.0,
-            "mean_confidence": 0.166
-          },
-          {
-            "bin_high": 0.3,
-            "bin_low": 0.2,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.4,
-            "bin_low": 0.3,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.5,
-            "bin_low": 0.4,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.6,
-            "bin_low": 0.5,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.7,
-            "bin_low": 0.6,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.8,
-            "bin_low": 0.7,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.9,
-            "bin_low": 0.8,
-            "count": 7,
-            "empirical_yes": 0.571429,
-            "mean_confidence": 0.864286
-          },
-          {
-            "bin_high": 1.0,
-            "bin_low": 0.9,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          }
-        ],
-        "screening_rule": "both_orders_yes_and_gate",
-        "screening_yes_precision": {
-          "high": 1.0,
-          "low": 0.5,
-          "n": 6,
-          "point": 0.666667
-        },
-        "screening_yes_recall": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "second_slot_yes_rate": 0.666667,
-        "seconds_mean": 0.001,
-        "seconds_median": 0.001,
-        "seconds_total": 0.012,
-        "strict_ceiling": 0.833333,
-        "threshold_rule": "0.5",
-        "threshold_value": 0.5,
-        "triad_consistency": {
-          "high": 0.65762,
-          "low": 0.0,
-          "n": 2,
-          "point": 0.0
-        },
-        "unparseable": 0,
-        "vram_peak_mib": 0,
-        "yes_vs_not_yes_balanced_accuracy": 0.75
-      },
-      "card_0.2_0.8": {
-        "abstain_items": 0,
-        "accuracy": {
-          "high": 0.903229,
-          "low": 0.299993,
-          "n": 6,
-          "point": 0.666667
-        },
-        "balanced_accuracy": 0.75,
-        "calls_n": 12,
-        "class_balanced_strict_accuracy": {
-          "high": 0.666667,
-          "low": 0.666667,
-          "n": 6,
-          "point": 0.666667
-        },
-        "conditional_accuracy": {
-          "high": 0.903229,
-          "low": 0.299993,
-          "n": 6,
-          "point": 0.666667
-        },
-        "coverage": 1.0,
-        "ece": 0.24,
-        "ece_reason": null,
-        "error_rate": 0.0,
-        "first_slot_yes_rate": 0.5,
-        "flip_rate": {
-          "high": 0.563503,
-          "low": 0.030053,
-          "n": 6,
-          "point": 0.166667
-        },
-        "items_n": 6,
-        "judge_id": "mu-judge",
-        "judge_label": "mu-judge",
-        "length_stops": 0,
-        "mean_order_auroc": 0.9375,
-        "net_affirmative_bias": 0.25,
-        "per_class_accuracy": {
-          "cannot_tell": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          },
-          "supported": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "unsupported": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          }
-        },
-        "per_closure_accuracy": {
-          "closed": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          },
-          "open": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          }
-        },
-        "pred_yes_rate": 0.583333,
-        "reliability_bins": [
-          {
-            "bin_high": 0.1,
-            "bin_low": 0.0,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.2,
-            "bin_low": 0.1,
-            "count": 5,
-            "empirical_yes": 0.0,
-            "mean_confidence": 0.166
-          },
-          {
-            "bin_high": 0.3,
-            "bin_low": 0.2,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.4,
-            "bin_low": 0.3,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.5,
-            "bin_low": 0.4,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.6,
-            "bin_low": 0.5,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.7,
-            "bin_low": 0.6,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.8,
-            "bin_low": 0.7,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.9,
-            "bin_low": 0.8,
-            "count": 7,
-            "empirical_yes": 0.571429,
-            "mean_confidence": 0.864286
-          },
-          {
-            "bin_high": 1.0,
-            "bin_low": 0.9,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          }
-        ],
-        "screening_rule": "both_orders_yes_and_gate",
-        "screening_yes_precision": {
-          "high": 1.0,
-          "low": 0.5,
-          "n": 6,
-          "point": 0.666667
-        },
-        "screening_yes_recall": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "second_slot_yes_rate": 0.666667,
-        "seconds_mean": 0.001,
-        "seconds_median": 0.001,
-        "seconds_total": 0.012,
-        "strict_ceiling": 0.833333,
-        "threshold_rule": "card_0.2_0.8",
-        "threshold_value": null,
-        "triad_consistency": {
-          "high": 0.65762,
-          "low": 0.0,
-          "n": 2,
-          "point": 0.0
-        },
-        "unparseable": 0,
-        "vram_peak_mib": 0,
-        "yes_vs_not_yes_balanced_accuracy": 0.75
-      },
-      "dev_fitted": {
-        "abstain_items": 0,
-        "accuracy": {
-          "high": 0.903229,
-          "low": 0.299993,
-          "n": 6,
-          "point": 0.666667
-        },
-        "balanced_accuracy": 0.75,
-        "calls_n": 12,
-        "class_balanced_strict_accuracy": {
-          "high": 0.666667,
-          "low": 0.666667,
-          "n": 6,
-          "point": 0.666667
-        },
-        "conditional_accuracy": null,
-        "coverage": 1.0,
-        "ece": 0.24,
-        "ece_reason": null,
-        "error_rate": 0.0,
-        "first_slot_yes_rate": 0.5,
-        "flip_rate": {
-          "high": 0.563503,
-          "low": 0.030053,
-          "n": 6,
-          "point": 0.166667
-        },
-        "items_n": 6,
-        "judge_id": "mu-judge",
-        "judge_label": "mu-judge",
-        "length_stops": 0,
-        "mean_order_auroc": 0.9375,
-        "net_affirmative_bias": 0.25,
-        "per_class_accuracy": {
-          "cannot_tell": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          },
-          "supported": {
-            "high": 1.0,
-            "low": 0.34238,
-            "n": 2,
-            "point": 1.0
-          },
-          "unsupported": {
-            "high": 0.905469,
-            "low": 0.094531,
-            "n": 2,
-            "point": 0.5
-          }
-        },
-        "per_closure_accuracy": {
-          "closed": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          },
-          "open": {
-            "high": 0.938508,
-            "low": 0.20766,
-            "n": 3,
-            "point": 0.666667
-          }
-        },
-        "pred_yes_rate": 0.583333,
-        "reliability_bins": [
-          {
-            "bin_high": 0.1,
-            "bin_low": 0.0,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.2,
-            "bin_low": 0.1,
-            "count": 5,
-            "empirical_yes": 0.0,
-            "mean_confidence": 0.166
-          },
-          {
-            "bin_high": 0.3,
-            "bin_low": 0.2,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.4,
-            "bin_low": 0.3,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.5,
-            "bin_low": 0.4,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.6,
-            "bin_low": 0.5,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.7,
-            "bin_low": 0.6,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.8,
-            "bin_low": 0.7,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          },
-          {
-            "bin_high": 0.9,
-            "bin_low": 0.8,
-            "count": 7,
-            "empirical_yes": 0.571429,
-            "mean_confidence": 0.864286
-          },
-          {
-            "bin_high": 1.0,
-            "bin_low": 0.9,
-            "count": 0,
-            "empirical_yes": null,
-            "mean_confidence": null
-          }
-        ],
-        "screening_rule": "both_orders_yes_and_gate",
-        "screening_yes_precision": {
-          "high": 1.0,
-          "low": 0.5,
-          "n": 6,
-          "point": 0.666667
-        },
-        "screening_yes_recall": {
-          "high": 1.0,
-          "low": 1.0,
-          "n": 6,
-          "point": 1.0
-        },
-        "second_slot_yes_rate": 0.666667,
-        "seconds_mean": 0.001,
-        "seconds_median": 0.001,
-        "seconds_total": 0.012,
-        "strict_ceiling": 0.833333,
-        "threshold_rule": "dev_fitted",
-        "threshold_value": 0.5,
-        "triad_consistency": {
-          "high": 0.65762,
-          "low": 0.0,
-          "n": 2,
-          "point": 0.0
-        },
-        "unparseable": 0,
-        "vram_peak_mib": 0,
-        "yes_vs_not_yes_balanced_accuracy": 0.75
-      }
-    },
     "pairwise_vs_mu_judge": [
       {
         "decision": "shakedown, decision rule not applied",

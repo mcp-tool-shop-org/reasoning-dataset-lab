@@ -71,5 +71,8 @@
     "bakeoff-d-t10-anchored-sealed-item-1030",
     "bakeoff-d-t10-anchored-sealed-item-1069"
   ],
-  "canary_logprob_tolerance": 0.0
+  "measured_max_logprob_deviation": 0.0,
+  "canary_logprob_tolerance_floor": 1e-05,
+  "canary_logprob_tolerance_floor_reason": "10x the 1e-6 logprob serialization rounding quantum",
+  "canary_logprob_tolerance": 1e-05
 }

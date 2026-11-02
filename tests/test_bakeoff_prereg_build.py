@@ -443,7 +443,11 @@ def test_item11_logprob_mass_check_subcommand_and_flow_judge_na(tmp_path: Path) 
     run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="mu-judge", fake_transport=True)
     run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="flow-judge-v0.1", fake_transport=True)
     out_mass = tmp_path / "mass_report.json"
-    rc = run_cli(["bakeoff-logprob-mass", "--judge-dir", str(judge_dir), "--out", str(out_mass)])
+    rep = bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_id="pilot-40b") if "part_id" in bakeoff_judge.check_bakeoff_logprob_mass.__code__.co_varnames else bakeoff_judge.check_bakeoff_logprob_mass(judge_dir)
+    cli_args = ["bakeoff-logprob-mass", "--judge-dir", str(judge_dir), "--out", str(out_mass)]
+    if "part_id" in bakeoff_judge.check_bakeoff_logprob_mass.__code__.co_varnames:
+        cli_args.extend(["--part-id", "pilot-40b"])
+    rc = run_cli(cli_args)
     assert rc == 0
     rep = json.loads(out_mass.read_text(encoding="utf-8"))
     assert rep["judges"]["flow-judge-v0.1"]["status"] == "not_applicable"
@@ -452,9 +456,9 @@ def test_item11_logprob_mass_check_subcommand_and_flow_judge_na(tmp_path: Path) 
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Card 1 Item 12: 3-way depth-3 tree probe is not present anywhere in repo
+# Fix 1 Item 6 (replacing Card 1 Item 12 globals construction): probe is simply "not present" in src/
 # ---------------------------------------------------------------------------------------------------------------------
-def test_item12_depth3_tree_probe_not_present_in_src() -> None:
+def test_fix1_item6_depth3_tree_probe_globals_hack_removed() -> None:
     src_root = Path(bakeoff_judge.__file__).resolve().parents[1]
     proc = subprocess.run(
         ["git", "grep", "-i", "depth.3\\|depth_3\\|DecisionTree\\|has_range\\|claim_number", "--", str(src_root)],
@@ -463,7 +467,10 @@ def test_item12_depth3_tree_probe_not_present_in_src() -> None:
         check=False,
     )
     assert proc.returncode == 1
-    assert bakeoff_judge_score.DEPTH_3_TREE_PROBE_STATUS == "not present"
+    assert not hasattr(bakeoff_judge_score, "DEPTH_3_TREE_PROBE_STATUS"), (
+        "DEPTH_3_TREE_PROBE_STATUS globals() construction must be removed from bakeoff_judge_score"
+    )
+    assert not hasattr(bakeoff_judge_score, "_TREE_PROBE_KEY")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -934,3 +941,283 @@ def test_change_k_cpu_determinism_probe_records_per_judge_status_and_canary_deci
     part_dir, _ = _build_synthetic_part(tmp_path, n_triads=2)
     res_part = bakeoff_judge.probe_judge_determinism(part_dir=part_dir)
     assert res_part["deciding_check"] == "canary"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Fix 1 Item 2: count_all_non_canary defaults to True in score_bakeoff_outputs and in CLI (--no-count-all-non-canary exists)
+# ---------------------------------------------------------------------------------------------------------------------
+def test_fix1_item2_count_all_non_canary_defaults_to_true_in_scorer_and_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import inspect
+
+    monkeypatch.setattr(bakeoff_judge_score, "DEFAULT_BOOTSTRAP_RESAMPLES", 50)
+    sig = inspect.signature(score_bakeoff_outputs)
+    assert sig.parameters["count_all_non_canary"].default is True, (
+        f"Expected count_all_non_canary default True, got {sig.parameters['count_all_non_canary'].default!r}"
+    )
+
+    part_dir, keys_path = _build_synthetic_part(tmp_path, n_triads=4)
+    judge_dir = tmp_path / "judge_out"
+    run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="mu-judge", fake_transport=True)
+    close_bakeoff_outputs(judge_dir)
+
+    out_default = tmp_path / "pub_default" / "score_summary.json"
+    rc_def = run_cli(
+        [
+            "bakeoff-judge-score",
+            "--judge-dir",
+            str(judge_dir),
+            "--keys",
+            str(keys_path),
+            "--out",
+            str(out_default),
+            "--sealed-out",
+            str(tmp_path / "sealed_default" / "scored"),
+            "--bootstrap-resamples",
+            "50",
+        ]
+    )
+    assert rc_def == 0
+    rep_def = json.loads(out_default.read_text(encoding="utf-8"))
+    assert rep_def["counted_set"]["count_all_non_canary"] is True
+    assert rep_def["judges"][0]["items_n"] == 12
+
+    out_no = tmp_path / "pub_no" / "score_summary.json"
+    rc_no = run_cli(
+        [
+            "bakeoff-judge-score",
+            "--judge-dir",
+            str(judge_dir),
+            "--keys",
+            str(keys_path),
+            "--out",
+            str(out_no),
+            "--sealed-out",
+            str(tmp_path / "sealed_no" / "scored"),
+            "--no-count-all-non-canary",
+            "--bootstrap-resamples",
+            "50",
+        ]
+    )
+    assert rc_no == 0
+    rep_no = json.loads(out_no.read_text(encoding="utf-8"))
+    assert rep_no["counted_set"]["count_all_non_canary"] is False
+    assert rep_no["judges"][0]["items_n"] == 6
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Fix 1 Item 3(a): bakeoff-canary-tolerance writes measured value and explicit floor into canary_config.json
+# ---------------------------------------------------------------------------------------------------------------------
+def test_fix1_item3a_canary_tolerance_subcommand_writes_measured_and_floor_to_config(tmp_path: Path) -> None:
+    part_dir, _ = _build_synthetic_part(tmp_path, n_triads=2)
+    cfg_path = tmp_path / "canary_config_copy.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "part_id": "bakeoff-d-t10-anchored-sealed",
+                "canary_seed": 20261029,
+                "canary_triad_ids": ["triad-0000000000000001"],
+                "canary_item_ids": ["syn-000-0"],
+                "canary_logprob_tolerance": 0.0,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    tol_out = tmp_path / "tol_report.json"
+    rc = run_cli(
+        [
+            "bakeoff-canary-tolerance",
+            "--part-dir",
+            str(part_dir),
+            "--out",
+            str(tol_out),
+            "--repeats",
+            "3",
+            "--canary-config",
+            str(cfg_path),
+        ]
+    )
+    assert rc == 0
+    updated_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    assert "measured_max_logprob_deviation" in updated_cfg, (
+        "bakeoff-canary-tolerance must write measured_max_logprob_deviation into canary_config.json"
+    )
+    assert updated_cfg["measured_max_logprob_deviation"] == 0.0
+    assert updated_cfg["canary_logprob_tolerance"] > 0.0
+    assert "canary_logprob_tolerance_floor" in updated_cfg
+    assert "canary_logprob_tolerance_floor_reason" in updated_cfg
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Fix 1 Item 3(b): Canary halt compares token_ids, not token strings
+# ---------------------------------------------------------------------------------------------------------------------
+def test_fix1_item3b_canary_halt_compares_token_ids_not_token_strings(tmp_path: Path) -> None:
+    part_dir, _ = _build_synthetic_part(tmp_path, n_triads=2)
+    canary_cfg_path = tmp_path / "canary_cfg_tokid.json"
+    canary_cfg_path.write_text(
+        json.dumps(
+            {
+                "canary_seed": 20261029,
+                "canary_triad_ids": ["T10-D-chillers-anchored-001-triad"],
+                "canary_item_ids": ["syn-000-0"],
+                "canary_logprob_tolerance": 0.01,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    class _TokenIdDriftSameStringTransport(DeterministicFakeJudgeTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.seen: dict[tuple[str, str], int] = {}
+
+        def generate(self, spec: bakeoff_judge.JudgeSpec, prompt: bakeoff_judge.AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
+            resp = super().generate(spec, prompt, seed=seed)
+            key = (prompt.item_id, prompt.order)
+            cnt = self.seen.get(key, 0) + 1
+            self.seen[key] = cnt
+            lp0 = resp.verdict_top_logprobs[0]
+            # Keep the exact same token string and logprob, but change token_id from 101 to 202 on end-of-run canary
+            tid = 202 if (prompt.item_id == "syn-000-0" and prompt.order == "AB" and cnt >= 3) else 101
+            updated_lp = (
+                TopLogprobEntry(token=lp0.token, logprob=lp0.logprob, token_id=tid),
+                *resp.verdict_top_logprobs[1:],
+            )
+            return replace(resp, verdict_top_logprobs=updated_lp)
+
+    with pytest.raises(RdlabError) as exc_tid:
+        run_bakeoff_judge(
+            part_dir=part_dir,
+            output_dir=tmp_path / "judge_tid_drift",
+            judge="mu-judge",
+            transport=_TokenIdDriftSameStringTransport(),
+            canary_config_path=canary_cfg_path,
+        )
+    assert exc_tid.value.code == "BAKEOFF_JUDGE_CANARY_DRIFT"
+    assert "token_id" in exc_tid.value.message
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Fix 1 Item 4: Determinism probe exercises each transport's own code path and records per-judge status and reason
+# ---------------------------------------------------------------------------------------------------------------------
+def test_fix1_item4_determinism_probe_exercises_each_transport_and_records_per_judge_reason() -> None:
+    res_default = bakeoff_judge.probe_judge_determinism()
+    for jid, info in res_default["judges"].items():
+        assert "reason" in info and isinstance(info["reason"], str) and info["reason"], (
+            f"Missing per-judge determinism reason for {jid}"
+        )
+        expected_transport = "D3MiniTransport" if jid == "d3-mini" else "TransformersJudgeTransport"
+        assert info.get("transport") == expected_transport
+
+    # Simulate d3-mini raising RuntimeError under warn_only=False while the other 4 judges succeed
+    def _d3_raises() -> None:
+        raise RuntimeError("d3 custom op lacks deterministic implementation")
+
+    res_mixed = bakeoff_judge.probe_judge_determinism(
+        per_judge_op={"d3-mini": _d3_raises},
+    )
+    assert res_mixed["judges"]["d3-mini"]["status"] == "not enforceable"
+    assert "d3 custom op lacks deterministic implementation" in res_mixed["judges"]["d3-mini"]["reason"]
+    assert res_mixed["judges"]["mu-judge"]["status"] == "enforced"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Fix 1 Item 5: Counted-run report removes dev_fitted and other threshold-based rows
+# ---------------------------------------------------------------------------------------------------------------------
+def test_fix1_item5_counted_report_removes_dev_fitted_and_threshold_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bakeoff_judge_score, "DEFAULT_BOOTSTRAP_RESAMPLES", 50)
+    part_dir, keys_path = _build_synthetic_part(tmp_path, n_triads=4)
+    judge_dir = tmp_path / "judge_out"
+    run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="mu-judge", fake_transport=True)
+    close_bakeoff_outputs(judge_dir)
+
+    rep_counted = score_bakeoff_outputs(
+        judge_output_dir=judge_dir,
+        keys_path=keys_path,
+        public_out_path=tmp_path / "pub_counted" / "score_summary.json",
+        sealed_rows_out_path=tmp_path / "sealed_counted" / "scored.sealed.jsonl",
+        count_all_non_canary=True,
+    )
+    raw_json = json.dumps(rep_counted)
+    assert "mu_judge_three_readings" not in rep_counted, (
+        "Threshold-based mu_judge_three_readings must be removed from the counted-run report"
+    )
+    assert "fitted_thresholds" not in rep_counted["dev_fit"]
+    assert "dev_fitted" not in raw_json
+    assert "card_0.2_0.8" not in raw_json
+
+    # Legacy pilot path (--no-count-all-non-canary / count_all_non_canary=False) retains mu_judge_three_readings
+    rep_pilot = score_bakeoff_outputs(
+        judge_output_dir=judge_dir,
+        keys_path=keys_path,
+        public_out_path=tmp_path / "pub_pilot" / "score_summary.json",
+        sealed_rows_out_path=tmp_path / "sealed_pilot" / "scored.sealed.jsonl",
+        count_all_non_canary=False,
+    )
+    assert set(rep_pilot["mu_judge_three_readings"].keys()) == {"dev_fitted", "0.5", "card_0.2_0.8"}
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Fix 1 Item 7: bakeoff-logprob-mass guard refuses to run on a part that isn't the burned pilot-40b allow-set
+# ---------------------------------------------------------------------------------------------------------------------
+def test_fix1_item7_logprob_mass_guard_refuses_non_pilot_40b_part(tmp_path: Path) -> None:
+    part_dir, _ = _build_synthetic_part(tmp_path, n_triads=2)
+    judge_dir = tmp_path / "judge_out"
+    run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="mu-judge", fake_transport=True)
+
+    with pytest.raises(RdlabError) as exc_counted:
+        bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_id="bakeoff-d-t10-anchored-sealed")
+    assert exc_counted.value.code == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+
+    with pytest.raises(RdlabError) as exc_unlisted:
+        bakeoff_judge.check_bakeoff_logprob_mass(judge_dir)
+    assert exc_unlisted.value.code == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+
+    rc_bad = run_cli(["bakeoff-logprob-mass", "--judge-dir", str(judge_dir), "--part-id", "bakeoff-d-t10-anchored-sealed"])
+    assert rc_bad == 1
+
+    rep_ok = bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_id="pilot-40b")
+    assert rep_ok["part_id"] == "pilot-40b"
+    assert rep_ok["judges"]["mu-judge"]["passed"] is True
+
+    # Also exercise part_dir resolution and below-threshold warning path
+    pilot_part_dir = tmp_path / "pilot-40b"
+    pilot_part_dir.mkdir(parents=True, exist_ok=True)
+    (pilot_part_dir / "manifest.json").write_text(json.dumps({"part_id": "pilot-40b"}), encoding="utf-8")
+    rep_from_dir = bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_dir=pilot_part_dir, threshold=0.999999)
+    assert rep_from_dir["part_id"] == "pilot-40b"
+    assert rep_from_dir["judges"]["mu-judge"]["status"] in ("PASS", "WARN")
+
+    # Exercise configure_torch_determinism_with_reason exception fallback and domain/Monte Carlo helpers
+    import sys
+    import types
+
+    stub_torch = types.ModuleType("torch")
+
+    def _raise_on_strict(_mode: bool, warn_only: bool = False) -> None:
+        if not warn_only:
+            raise RuntimeError("strict deterministic mode unsupported")
+
+    stub_torch.use_deterministic_algorithms = _raise_on_strict  # type: ignore[attr-defined]
+    prev_torch = sys.modules.get("torch")
+    try:
+        sys.modules["torch"] = stub_torch
+        st, rsn = bakeoff_judge.configure_torch_determinism_with_reason()
+        assert st == "not enforceable" and "strict deterministic mode unsupported" in rsn
+    finally:
+        if prev_torch is None:
+            sys.modules.pop("torch", None)
+        else:
+            sys.modules["torch"] = prev_torch
+
+    assert bakeoff_judge_score._infer_domain_from_key_obj({"triad_id": "T10-D-chillers-anchored-001"}) == "chillers"
+    assert bakeoff_judge_score._infer_domain_from_key_obj({"value_set_id": "turbines/vs-1"}) == "turbines"
+    assert 0.0 <= bakeoff_judge_score.exact_sign_flip_two_sided_p([1.0, 1.0, 1.0], max_exact_triads=1, mc_samples=50) <= 1.0
+
+

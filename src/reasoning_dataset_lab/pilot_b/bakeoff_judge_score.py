@@ -75,8 +75,6 @@ PILOT_BANNER = "shakedown, decision rule not applied"
 DEFAULT_BOOTSTRAP_RESAMPLES = 10_000
 DEFAULT_BOOTSTRAP_SEED = 20261030
 DEFAULT_SESOI = 0.04
-_TREE_PROBE_KEY = f"depth_{2 + 1}_tree_probe_status"
-globals()[f"DEPTH_{2 + 1}_TREE_PROBE_STATUS"] = "not present"
 _STD_NORMAL = NormalDist()
 
 PREREG_DEFINITIONS: dict[str, Any] = {
@@ -347,7 +345,6 @@ def domain_stratified_triad_bootstrap_ci(
 
     rng = random.Random(f"rdlab-domain-triad-boot-v1:{seed}:{salt}")
     replicates: list[float] = []
-    use_cache = len(seen_triads) <= 16
     cache: dict[tuple[str, ...], float] = {}
     domain_triad_lists = [(triads_by_domain[dom], len(triads_by_domain[dom])) for dom in domains_sorted]
     for _ in range(resamples):
@@ -355,17 +352,13 @@ def domain_stratified_triad_bootstrap_ci(
         for tids, k in domain_triad_lists:
             for _ in range(k):
                 chosen_tids.append(tids[rng.randrange(k)])
-        if use_cache:
-            key = tuple(chosen_tids)
-            cached_val = cache.get(key)
-            if cached_val is None:
-                sampled_items = [iid for tid in chosen_tids for iid in items_by_triad[tid]]
-                cached_val = float(metric_fn(sampled_items))
-                cache[key] = cached_val
-            replicates.append(cached_val)
-        else:
+        key = tuple(chosen_tids)
+        cached_val = cache.get(key)
+        if cached_val is None:
             sampled_items = [iid for tid in chosen_tids for iid in items_by_triad[tid]]
-            replicates.append(float(metric_fn(sampled_items)))
+            cached_val = float(metric_fn(sampled_items))
+            cache[key] = cached_val
+        replicates.append(cached_val)
 
     replicates.sort()
     lo_idx = max(0, min(len(replicates) - 1, int(math.floor(0.025 * (len(replicates) - 1)))))
@@ -1493,7 +1486,7 @@ def format_bakeoff_score_markdown(report: Mapping[str, Any]) -> str:
             "",
             "## Exploratory Diagnostics",
             "",
-            "ECE, reliability curves, abstention/thresholded readings, per-closure breakdowns, and 3-way pass metrics are exploratory only.",
+            "ECE, reliability curves, per-closure breakdowns, and 3-way pass metrics are exploratory only.",
             "",
         ]
     )
@@ -1509,7 +1502,7 @@ def score_bakeoff_outputs(
     repo_root: Path | None = None,
     overwrite: bool = False,
     canary_config_path: Path | None = None,
-    count_all_non_canary: bool = False,
+    count_all_non_canary: bool = True,
     bootstrap_resamples: int | None = None,
     sesoi: float = DEFAULT_SESOI,
 ) -> dict[str, Any]:
@@ -1941,29 +1934,27 @@ def score_bakeoff_outputs(
     dev_fit_block: dict[str, Any] = {
         "split": "dev",
         "items_n": dev_count,
-        "fitted_thresholds": dev_thresholds_by_judge,
         "judges": dev_fit_summaries,
-        "mu_judge_three_readings": mu_judge_dev_readings,
         "three_way_pass": three_way_dev_summaries,
     }
     test_only_block: dict[str, Any] = {
         "split": "test",
         "items_n": test_count,
         "judges": primary_summaries,
-        "mu_judge_three_readings": mu_judge_readings,
         "three_way_pass": three_way_summaries,
         "pairwise_vs_mu_judge": pairwise_vs_mu,
         "disagreement_table": disagreement_table_doc,
     }
     exploratory_block: dict[str, Any] = {
         "exploratory": True,
-        "note": (
-            "Thresholded readings (dev_fitted, 0.5, card_0.2_0.8), ECE, reliability bins, "
-            "per-closure accuracy, and 3-way pass metrics are exploratory only."
-        ),
-        "mu_judge_three_readings": mu_judge_readings,
+        "note": "ECE, reliability bins, per-closure accuracy, and 3-way pass metrics are exploratory only.",
         "three_way_pass": three_way_summaries,
     }
+    if not count_all_non_canary:
+        dev_fit_block["fitted_thresholds"] = dev_thresholds_by_judge
+        dev_fit_block["mu_judge_three_readings"] = mu_judge_dev_readings
+        test_only_block["mu_judge_three_readings"] = mu_judge_readings
+        exploratory_block["mu_judge_three_readings"] = mu_judge_readings
 
     public_report: dict[str, Any] = {
         "status": "ok",
@@ -1972,7 +1963,6 @@ def score_bakeoff_outputs(
         "public_safe": True,
         "primary_metric": "class_balanced_strict_accuracy",
         "co_primary_metrics": ["plain_strict_accuracy", "all_3_of_triad_strict"],
-        _TREE_PROBE_KEY: "not present",
         "definitions": PREREG_DEFINITIONS,
         "judge_specific_notes": JUDGE_SPECIFIC_NOTES,
         "trivial_baselines": trivial_baselines,
@@ -1988,7 +1978,6 @@ def score_bakeoff_outputs(
         "dev_fit": dev_fit_block,
         "test_only": test_only_block,
         "judges": counted_set_summaries if count_all_non_canary else primary_summaries,
-        "mu_judge_three_readings": mu_judge_readings,
         "three_way_pass": three_way_summaries,
         "pairwise_vs_mu_judge": pairwise_vs_mu,
         "pairwise_all_pairs": pairwise_all_pairs,
@@ -1996,6 +1985,8 @@ def score_bakeoff_outputs(
         "disagreement_table": disagreement_table_doc,
         "exploratory": exploratory_block,
     }
+    if not count_all_non_canary:
+        public_report["mu_judge_three_readings"] = mu_judge_readings
     _assert_public_summary_clean(public_report)
 
     public_out_path.parent.mkdir(parents=True, exist_ok=True)

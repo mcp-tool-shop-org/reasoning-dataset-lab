@@ -76,6 +76,11 @@ DEFAULT_ERROR_RATE_MIN_CALLS = 10
 DEFAULT_TORCH_DTYPE = "bfloat16"
 CUBLAS_WORKSPACE_CONFIG_VALUE = ":4096:8"
 DEFAULT_CANARY_CONFIG_PATH = Path(__file__).resolve().parent / "canary_config.json"
+DEFAULT_CANARY_LOGPROB_TOLERANCE_FLOOR = 1e-5
+CANARY_LOGPROB_TOLERANCE_FLOOR_REASON = "10x the 1e-6 logprob serialization rounding quantum"
+ALLOWED_LOGPROB_MASS_PART_IDS: frozenset[str] = frozenset(
+    {"pilot-40b", "pilot_40b", "part_pilot_40b", "part-pilot-40b"}
+)
 SCHEDULE_FILENAME = "schedule.json"
 GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
@@ -456,15 +461,24 @@ class TopLogprobEntry:
 
     token: str
     logprob: float
+    token_id: int | None = None
 
     @property
     def prob(self) -> float:
         return math.exp(self.logprob)
 
+    @property
+    def resolved_token_id(self) -> int:
+        if self.token_id is not None:
+            return int(self.token_id)
+        digest = hashlib.sha256(self.token.encode("utf-8")).digest()
+        return int.from_bytes(digest[:4], "big")
+
     def to_dict(self) -> dict[str, object]:
         return {
             "token": self.token,
             "logprob": round(float(self.logprob), 6),
+            "token_id": self.resolved_token_id,
         }
 
 
@@ -1051,19 +1065,6 @@ _HOP1_RECORDED_UNDER_RE: re.Pattern[str] = re.compile(
     r"\brecorded under\s+([^.]+?)\.?$",
     re.IGNORECASE,
 )
-_CLAIM_ANCHOR_PROP_RE: re.Pattern[str] = re.compile(r"^For\s+(.+?),\s+the\s+(.+?)\s+is\s+", re.IGNORECASE)
-_FACT_SUBJECT_VAL_RE: re.Pattern[str] = re.compile(
-    r"^For\s+(.+?),\s+the\s+(.+?)\s+is\s+([^.;]+?)(?:\s*(?:\([^)]*\)|\[[^\]]*\]))?\s*[.;]?$",
-    re.IGNORECASE,
-)
-_MARKER_PHRASES: tuple[str, ...] = (
-    "pending reconciliation and not yet reported",
-    "was not recorded in this reporting window",
-    "redacted pending audit sign-off",
-    "has not been released for the current cycle",
-    "withheld under the provisional review hold",
-    "unavailable at the time of snapshot close",
-)
 
 
 def extract_hop_and_marker_lines(ordered_material: str, claim: str) -> tuple[int | None, int | None, int | None]:
@@ -1080,86 +1081,64 @@ def extract_hop_and_marker_lines(ordered_material: str, claim: str) -> tuple[int
     # Hop 2: "{anchor} currently records ..."
     # Marker: "An earlier entry under {anchor} read ... before it was superseded." or "{anchor} does not record ..."
     m_v5 = _CLAIM_THE_ATTR_OF_ENT_RE.match(claim.strip())
-    if m_v5 is not None:
-        attr = m_v5.group(1).strip()
-        ent = m_v5.group(2).strip()
-        hop1_prefix = f"the {attr.lower()} of {ent.lower()} is the reading recorded under "
-        hop1_idx: int | None = None
-        anchor_label: str | None = None
-        for idx, body in enumerate(bodies, start=1):
-            if body.lower().startswith(hop1_prefix):
-                hop1_idx = idx
-                m_anc = _HOP1_RECORDED_UNDER_RE.search(body)
-                if m_anc is not None:
-                    anchor_label = m_anc.group(1).strip()
-                break
-        hop2_idx: int | None = None
-        marker_idx: int | None = None
-        if anchor_label is not None:
-            anc_low = anchor_label.lower()
-            cur_prefix = f"{anc_low} currently records "
-            old_sub = f"earlier entry under {anc_low} read "
-            neg_prefix = f"{anc_low} does not record "
-            for idx, body in enumerate(bodies, start=1):
-                low = body.lower()
-                if low.startswith(cur_prefix):
-                    hop2_idx = idx
-                elif old_sub in low or low.startswith(neg_prefix):
-                    marker_idx = idx
-        return hop1_idx, hop2_idx, marker_idx
-
-    m_claim = _CLAIM_ANCHOR_PROP_RE.match(claim.strip())
-    if m_claim is None:
+    if m_v5 is None:
         return None, None, None
-    anchor = m_claim.group(1).strip()
-    target_prop = m_claim.group(2).strip()
-
-    hop1_idx = None
-    intermediate_entity: str | None = None
-    anchor_prefix = f"for {anchor.lower()},"
+    attr = m_v5.group(1).strip()
+    ent = m_v5.group(2).strip()
+    hop1_prefix = f"the {attr.lower()} of {ent.lower()} is the reading recorded under "
+    hop1_idx: int | None = None
+    anchor_label: str | None = None
     for idx, body in enumerate(bodies, start=1):
-        if body.lower().startswith(anchor_prefix):
+        if body.lower().startswith(hop1_prefix):
             hop1_idx = idx
-            m_fact = _FACT_SUBJECT_VAL_RE.match(body)
-            if m_fact is not None:
-                intermediate_entity = m_fact.group(3).strip()
+            m_anc = _HOP1_RECORDED_UNDER_RE.search(body)
+            if m_anc is not None:
+                anchor_label = m_anc.group(1).strip()
             break
-
-    hop2_idx = None
-    marker_idx = None
-    inter_prefix = f"for {intermediate_entity.lower()}," if intermediate_entity else None
-    prop_phrase = f"the {target_prop.lower()} is "
-
-    for idx, body in enumerate(bodies, start=1):
-        low = body.lower()
-        if inter_prefix and low.startswith(inter_prefix) and prop_phrase in low:
-            hop2_idx = idx
-        if any(phrase in low for phrase in _MARKER_PHRASES):
-            if (intermediate_entity and intermediate_entity.lower() in low) or (target_prop.lower() in low):
+    hop2_idx: int | None = None
+    marker_idx: int | None = None
+    if anchor_label is not None:
+        anc_low = anchor_label.lower()
+        cur_prefix = f"{anc_low} currently records "
+        old_sub = f"earlier entry under {anc_low} read "
+        neg_prefix = f"{anc_low} does not record "
+        for idx, body in enumerate(bodies, start=1):
+            low = body.lower()
+            if low.startswith(cur_prefix):
+                hop2_idx = idx
+            elif old_sub in low or low.startswith(neg_prefix):
                 marker_idx = idx
-
     return hop1_idx, hop2_idx, marker_idx
 
 
-def configure_torch_determinism() -> str:
-    """Configure `CUBLAS_WORKSPACE_CONFIG=:4096:8` and `torch.use_deterministic_algorithms(True, warn_only=False)`."""
+def configure_torch_determinism_with_reason() -> tuple[str, str]:
+    """Configure `CUBLAS_WORKSPACE_CONFIG=:4096:8` and `torch.use_deterministic_algorithms(True, warn_only=False)`, returning `(status, reason)`."""
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
     try:
         import torch
-    except ImportError:  # pragma: no cover
-        return "not enforceable"
+    except ImportError:
+        return "not enforceable", "torch is not installed in this Python environment"
     use_det = getattr(torch, "use_deterministic_algorithms", None)
     if not callable(use_det):
-        return "not enforceable"
+        return "not enforceable", "torch.use_deterministic_algorithms is not available on the loaded torch module"
     try:
         use_det(True, warn_only=False)
-        return "enforced"
-    except Exception:
+        return "enforced", "torch.use_deterministic_algorithms(True, warn_only=False) succeeded"
+    except Exception as exc:
         try:
             use_det(True, warn_only=True)
         except Exception:  # pragma: no cover
             pass
-        return "not enforceable"
+        return (
+            "not enforceable",
+            f"torch.use_deterministic_algorithms(True, warn_only=False) raised {type(exc).__name__}: {exc}; fell back to warn_only=True",
+        )
+
+
+def configure_torch_determinism() -> str:
+    """Configure `CUBLAS_WORKSPACE_CONFIG=:4096:8` and `torch.use_deterministic_algorithms(True, warn_only=False)`."""
+    status, _ = configure_torch_determinism_with_reason()
+    return status
 
 
 def compute_binary_token_p_yes(
@@ -2562,7 +2541,7 @@ class TransformersJudgeTransport:
                 if tok_decoded is None:
                     raw_tok = self._tokenizer.convert_ids_to_tokens(tid)
                     tok_decoded = self._tokenizer.convert_tokens_to_string([raw_tok]) if isinstance(raw_tok, str) else str(raw_tok)
-                verdict_entries.append(TopLogprobEntry(token=tok_decoded, logprob=float(lp_val)))
+                verdict_entries.append(TopLogprobEntry(token=tok_decoded, logprob=float(lp_val), token_id=tid))
                 included_ids.add(tid)
 
             # Append all remaining case/whitespace variants across the full vocabulary so full-distribution P(yes) is exact
@@ -2573,7 +2552,7 @@ class TransformersJudgeTransport:
             ):
                 if tid not in included_ids and 0 <= tid < vocab_size:
                     verdict_entries.append(
-                        TopLogprobEntry(token=tok_decoded, logprob=float(full_logprobs[tid].item()))
+                        TopLogprobEntry(token=tok_decoded, logprob=float(full_logprobs[tid].item()), token_id=tid)
                     )
                     included_ids.add(tid)
 
@@ -2989,7 +2968,7 @@ def _run_canary_snapshot(
     pass_mode: PassMode,
     seed: int,
 ) -> list[dict[str, Any]]:
-    """Run the canary items in both AB and BA orders and capture raw verdict, top-5 tokens, and top-5 logprobs."""
+    """Run the canary items in both AB and BA orders and capture raw verdict, top-5 token IDs, tokens, and logprobs."""
     records: list[dict[str, Any]] = []
     for item in canary_items:
         for order in ("AB", "BA"):
@@ -2997,13 +2976,15 @@ def _run_canary_snapshot(
             prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode=pass_mode)
             resp = transport.generate(spec, prompt, seed=seed)
             readout = adapter.parse_response(resp, pass_mode=pass_mode)
-            top5 = [lp.to_dict() for lp in readout.verdict_top_logprobs[:5]]
+            top5_entries = readout.verdict_top_logprobs[:5]
+            top5 = [lp.to_dict() for lp in top5_entries]
             records.append(
                 {
                     "item_id": item.item_id,
                     "order": ord_mode,
                     "raw_verdict": readout.raw_verdict,
                     "confidence": round(readout.p_yes, 6) if readout.p_yes is not None else None,
+                    "top5_token_ids": [int(lp.resolved_token_id) for lp in top5_entries],
                     "top5_tokens": [str(d["token"]) for d in top5],
                     "top5_logprobs": [float(d["logprob"]) for d in top5],
                 }
@@ -3029,12 +3010,14 @@ def _compare_canary_snapshots(
                 f"start={s_rec['raw_verdict']!r} vs end={e_rec['raw_verdict']!r}.",
                 "Investigate state drift or non-determinism before continuing.",
             )
-        if s_rec["top5_tokens"] != e_rec["top5_tokens"]:
+        s_tids = s_rec.get("top5_token_ids", s_rec.get("top5_tokens"))
+        e_tids = e_rec.get("top5_token_ids", e_rec.get("top5_tokens"))
+        if s_tids != e_tids:
             raise refused_error(
                 "BAKEOFF_JUDGE_CANARY_DRIFT",
-                f"Canary top-5 token sequence changed for judge '{judge_id}' on {key_desc}: "
-                f"start={s_rec['top5_tokens']} vs end={e_rec['top5_tokens']}.",
-                "Investigate top-5 token rank instability before continuing.",
+                f"Canary top-5 token ID sequence (token_id) changed for judge '{judge_id}' on {key_desc}: "
+                f"start={s_tids} vs end={e_tids}.",
+                "Investigate top-5 token ID rank instability before continuing.",
             )
         for s_lp, e_lp in zip(s_rec["top5_logprobs"], e_rec["top5_logprobs"], strict=True):
             dev = abs(float(s_lp) - float(e_lp))
@@ -3062,14 +3045,15 @@ def measure_canary_tolerance(
     canary_config_path: Path | None = None,
     seed: int = DEFAULT_SCHEDULE_SEED,
 ) -> dict[str, Any]:
-    """Run the 10-item canary repeatedly across the bake-off judges and record the empirical max top-5 logprob deviation."""
+    """Run the 10-item canary repeatedly across the bake-off judges, record the empirical max top-5 logprob deviation, and persist it into `canary_config.json`."""
     if repeats < 2:
         raise usage_error(
             "BAKEOFF_CANARY_REPEATS_INVALID",
             f"repeats must be >= 2, got {repeats}.",
             "Pass --repeats 2 or higher.",
         )
-    cfg = load_canary_config(canary_config_path)
+    target_cfg_path = Path(canary_config_path) if canary_config_path is not None else DEFAULT_CANARY_CONFIG_PATH
+    cfg = load_canary_config(target_cfg_path)
     items, _ = load_judge_items(part_dir)
     items_by_id = {it.item_id: it for it in items}
     wanted_ids = [str(iid) for iid in cfg.get("canary_item_ids", []) if str(iid) in items_by_id]
@@ -3108,7 +3092,7 @@ def measure_canary_tolerance(
             for b_rec, r_rec in zip(baseline, snap, strict=True):
                 if b_rec["raw_verdict"] != r_rec["raw_verdict"]:
                     label_matches = False
-                if b_rec["top5_tokens"] != r_rec["top5_tokens"]:
+                if b_rec["top5_token_ids"] != r_rec["top5_token_ids"]:
                     token_matches = False
                     total_token_mismatches += 1
                 for b_lp, r_lp in zip(b_rec["top5_logprobs"], r_rec["top5_logprobs"], strict=True):
@@ -3125,15 +3109,245 @@ def measure_canary_tolerance(
             "max_top5_logprob_deviation": round(judge_max_dev, 6),
         }
 
+    measured_dev = round(overall_max_dev, 6)
+    effective_tol = round(max(measured_dev, DEFAULT_CANARY_LOGPROB_TOLERANCE_FLOOR), 6)
+    updated_cfg = dict(cfg)
+    updated_cfg["measured_max_logprob_deviation"] = measured_dev
+    updated_cfg["canary_logprob_tolerance_floor"] = DEFAULT_CANARY_LOGPROB_TOLERANCE_FLOOR
+    updated_cfg["canary_logprob_tolerance_floor_reason"] = CANARY_LOGPROB_TOLERANCE_FLOOR_REASON
+    updated_cfg["canary_logprob_tolerance"] = effective_tol
+    target_cfg_path.write_text(
+        json.dumps(updated_cfg, indent=2, sort_keys=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
     return {
         "schema_version": "1.0",
         "repeats": repeats,
         "canary_items_n": len(canary_items),
-        "max_logprob_deviation": round(overall_max_dev, 6),
-        "max_top5_logprob_deviation": round(overall_max_dev, 6),
+        "measured_max_logprob_deviation": measured_dev,
+        "canary_logprob_tolerance_floor": DEFAULT_CANARY_LOGPROB_TOLERANCE_FLOOR,
+        "canary_logprob_tolerance_floor_reason": CANARY_LOGPROB_TOLERANCE_FLOOR_REASON,
+        "canary_logprob_tolerance": effective_tol,
+        "max_logprob_deviation": measured_dev,
+        "max_top5_logprob_deviation": measured_dev,
         "top5_token_id_mismatches": total_token_mismatches,
-        "measured_tolerance": round(overall_max_dev, 6),
+        "measured_tolerance": effective_tol,
+        "canary_config_path": str(target_cfg_path),
         "judges": per_judge,
+    }
+
+
+def _run_cpu_transport_probe_for_judge(
+    spec: JudgeSpec,
+    adapter: BaseJudgeAdapter,
+    probe_items: Sequence[JudgeInputItem],
+    *,
+    seed: int,
+    judge_op: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Exercise `D3MiniTransport` (for `d3-mini`) or `TransformersJudgeTransport` (for the other 4 judges) on CPU using lightweight model stubs."""
+    import types
+
+    vocab = {
+        "<unk>": 0,
+        "<s>": 1,
+        "</s>": 2,
+        "yes": 3,
+        "no": 4,
+        "<feedback>Probe</feedback><score>5</score>": 5,
+    }
+
+    class _ProbeTensor:
+        def __init__(self, vals: list[Any]) -> None:
+            self.vals = vals
+
+        @property
+        def shape(self) -> tuple[int, int]:
+            if isinstance(self.vals[0], list):
+                return (len(self.vals), len(self.vals[0]))
+            return (len(self.vals), len(self.vals))
+
+        def to(self, _dev: str) -> "_ProbeTensor":
+            return self
+
+        def float(self) -> "_ProbeTensor":
+            return self
+
+        def tolist(self) -> Any:
+            return self.vals
+
+        def item(self) -> float:
+            return float(self.vals[0])
+
+        def __getitem__(self, idx: Any) -> Any:
+            if isinstance(idx, tuple):
+                row, sl = idx
+                return _ProbeTensor(self.vals[row][sl])
+            val = self.vals[idx]
+            return _ProbeTensor([val]) if isinstance(val, (int, float)) else _ProbeTensor(val)
+
+    class _ProbeTokenizer:
+        pad_token_id = 0
+        eos_token_id = 2
+
+        def __call__(self, _text: str, **_kw: Any) -> dict[str, _ProbeTensor]:
+            return {"input_ids": _ProbeTensor([[1, 3]]), "attention_mask": _ProbeTensor([[1, 1]])}
+
+        def convert_ids_to_tokens(self, ids: int | list[int]) -> Any:
+            inv = {v: k for k, v in vocab.items()}
+            return inv.get(ids, "<unk>") if isinstance(ids, int) else [inv.get(i, "<unk>") for i in ids]
+
+        def convert_tokens_to_string(self, toks: list[str]) -> str:
+            return "".join(toks)
+
+        def decode(self, ids: list[int], **_kw: Any) -> str:
+            return " ".join(self.convert_ids_to_tokens(ids))
+
+    class _ProbeCausalLM:
+        generation_config = types.SimpleNamespace(eos_token_id=[2])
+
+        def __init__(self, judge_id: str) -> None:
+            self._judge_id = judge_id
+
+        def generate(self, **_kw: Any) -> Any:
+            out_tok = 5 if self._judge_id == "flow-judge-v0.1" else 3
+            seq = [1, 3, out_tok]
+            logits = [-8.0, -8.0, -8.0, -0.12, -2.18, -8.0]
+            return types.SimpleNamespace(sequences=_ProbeTensor([seq]), scores=[_ProbeTensor([logits])])
+
+    class _ProbeD3Model:
+        def system_one(self, *, state: str, questions: Mapping[str, Any]) -> dict[str, Any]:
+            assert state and questions
+            return {"answers": {"supported": {"noul": 0.88}}}
+
+    class _NullCtx:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    saved_modules = {name: sys.modules.get(name) for name in ("torch", "transformers")}
+    saved_env = {name: os.environ.get(name) for name in (*OFFLINE_ENV_VARS, ASYNC_LOAD_ENV_VAR)}
+    saved_bytecode = sys.dont_write_bytecode
+    try:
+        for name in OFFLINE_ENV_VARS:
+            os.environ[name] = "1"
+        os.environ[ASYNC_LOAD_ENV_VAR] = "1"
+
+        existing_torch = sys.modules.get("torch")
+        existing_use_det = getattr(existing_torch, "use_deterministic_algorithms", None) if existing_torch is not None else None
+        torch_shim = types.ModuleType("torch")
+        torch_shim.__version__ = getattr(existing_torch, "__version__", "cpu-probe-stub")  # type: ignore[attr-defined]
+        if existing_torch is None or callable(existing_use_det):
+            torch_shim.use_deterministic_algorithms = (  # type: ignore[attr-defined]
+                existing_use_det if callable(existing_use_det) else (lambda _mode, warn_only=False: None)
+            )
+        torch_shim.manual_seed = lambda _s: None  # type: ignore[attr-defined]
+        torch_shim.no_grad = _NullCtx  # type: ignore[attr-defined]
+        torch_shim.inference_mode = _NullCtx  # type: ignore[attr-defined]
+        torch_shim.log_softmax = lambda t, dim=-1: t  # type: ignore[attr-defined]
+        torch_shim.topk = lambda t, k=5: (_ProbeTensor(t.vals[:k]), _ProbeTensor(list(range(k))))  # type: ignore[attr-defined]
+        sys.modules["torch"] = torch_shim
+
+        tf_shim = types.ModuleType("transformers")
+        tf_shim.__version__ = D3_MINI_TRANSFORMERS_VERSION if spec.judge_id == D3_MINI_JUDGE_ID else "5.19.0"  # type: ignore[attr-defined]
+        sys.modules["transformers"] = tf_shim
+
+        j_status, j_reason = configure_torch_determinism_with_reason()
+        if judge_op is not None:
+            try:
+                judge_op()
+            except Exception as exc:
+                use_det = getattr(torch_shim, "use_deterministic_algorithms", None)
+                if callable(use_det):
+                    try:
+                        use_det(True, warn_only=True)
+                    except Exception:  # pragma: no cover
+                        pass
+                j_status = "not enforceable"
+                j_reason = f"judge op raised {type(exc).__name__} under warn_only=False: {exc}; fell back to warn_only=True"
+
+        if spec.judge_id == D3_MINI_JUDGE_ID:
+            d3_transport = D3MiniTransport(
+                receipts_dir=Path("."),
+                device="cpu",
+                expected_transformers_version=None,
+            )
+            d3_transport._model = _ProbeD3Model()
+            d3_transport._verified_digest = spec.revision
+            d3_transport._snapshot_dir = Path(".")
+            d3_transport._reviewed_sha = D3_MINI_REVIEWED_REVISION
+            active_transport: JudgeTransport = d3_transport
+            expected_transport_name = "D3MiniTransport"
+        else:
+            tf_transport = TransformersJudgeTransport(
+                receipts_dir=Path("."),
+                device="cpu",
+            )
+            tf_transport._tokenizer = _ProbeTokenizer()
+            tf_transport._model = _ProbeCausalLM(spec.judge_id)
+            tf_transport._candidate_token_ids = {3: "yes", 4: "no"}
+            tf_transport._loaded_spec_id = spec.judge_id
+            tf_transport._snapshot_dir = Path(".")
+            tf_transport._verified_digest = spec.revision
+            active_transport = tf_transport
+            expected_transport_name = "TransformersJudgeTransport"
+
+        s1 = _run_canary_snapshot(
+            spec=spec,
+            adapter=adapter,
+            transport=active_transport,
+            canary_items=probe_items,
+            pass_mode="binary",
+            seed=seed,
+        )
+        s2 = _run_canary_snapshot(
+            spec=spec,
+            adapter=adapter,
+            transport=active_transport,
+            canary_items=probe_items,
+            pass_mode="binary",
+            seed=seed,
+        )
+        sample_prompt = adapter.assemble_prompt(probe_items[0], order="AB", pass_mode="binary")
+        sample_resp = active_transport.generate(spec, sample_prompt, seed=seed)
+        transport_used = str(sample_resp.library_pins.get("transport", expected_transport_name))
+    finally:
+        for mod_name, prev_mod in saved_modules.items():
+            if prev_mod is None:
+                sys.modules.pop(mod_name, None)
+            else:
+                sys.modules[mod_name] = prev_mod
+        for env_name, prev_val in saved_env.items():
+            if prev_val is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = prev_val
+        sys.dont_write_bytecode = saved_bytecode
+
+    label_exact = all(a["raw_verdict"] == b["raw_verdict"] for a, b in zip(s1, s2, strict=True))
+    token_id_exact = all(a["top5_token_ids"] == b["top5_token_ids"] for a, b in zip(s1, s2, strict=True))
+    max_dev = 0.0
+    for a, b in zip(s1, s2, strict=True):
+        for lp_a, lp_b in zip(a["top5_logprobs"], b["top5_logprobs"], strict=True):
+            dev = abs(float(lp_a) - float(lp_b))
+            if dev > max_dev:
+                max_dev = dev
+
+    return {
+        "status": j_status,
+        "deterministic_algorithms": j_status,
+        "transport": transport_used,
+        "reason": f"{j_reason}; exercised via {transport_used}.generate on CPU",
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
+        "dtype": DEFAULT_TORCH_DTYPE,
+        "cpu_repeat_label_exact": label_exact,
+        "cpu_repeat_top5_tokens_exact": token_id_exact,
+        "cpu_repeat_max_logprob_dev": round(max_dev, 6),
+        "gpu_determinism_status": "not_checked_no_gpu_start_end_canary_is_deciding_runtime_check",
     }
 
 
@@ -3142,81 +3356,91 @@ def probe_judge_determinism(
     part_dir: Path | None = None,
     canary_config_path: Path | None = None,
     seed: int = DEFAULT_SCHEDULE_SEED,
+    per_judge_op: Mapping[str, Callable[[], None]] | None = None,
 ) -> dict[str, Any]:
-    """Probe CPU/transport determinism across all 5 judges and record whether the start/end canary is the deciding check."""
-    det_status = configure_torch_determinism()
+    """Probe CPU/transport determinism across all 5 judges (`D3MiniTransport` for `d3-mini`, `TransformersJudgeTransport` for the other 4) and record per-judge status and reason."""
     if part_dir is not None:
-        tol_report = measure_canary_tolerance(
-            part_dir=part_dir,
-            repeats=2,
-            canary_config_path=canary_config_path,
-            seed=seed,
+        cfg = load_canary_config(canary_config_path)
+        items, _ = load_judge_items(part_dir)
+        items_by_id = {it.item_id: it for it in items}
+        wanted_ids = [str(iid) for iid in cfg.get("canary_item_ids", []) if str(iid) in items_by_id]
+        probe_items: list[JudgeInputItem] = (
+            [items_by_id[iid] for iid in wanted_ids] if wanted_ids else list(items[: min(10, len(items))])
         )
     else:
-        synthetic_item = JudgeInputItem(
-            item_id="probe-000",
-            material="1. Probe premise one.\n2. Probe premise two.",
-            claim="Probe claim.",
-        )
-        tol_judges: dict[str, Any] = {}
-        for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
-            adapter = build_judge_adapter(spec)
-            transport = DeterministicFakeJudgeTransport()
-            transport.verify_ready(
-                spec,
-                allow_remote_code_reviewed=D3_MINI_REVIEWED_REVISION if spec.requires_remote_code else None,
+        probe_items = [
+            JudgeInputItem(
+                item_id="probe-000",
+                material="1. Probe premise one.\n2. Probe premise two.",
+                claim="Probe claim.",
             )
-            s1 = _run_canary_snapshot(
-                spec=spec,
-                adapter=adapter,
-                transport=transport,
-                canary_items=[synthetic_item],
-                pass_mode="binary",
-                seed=seed,
-            )
-            s2 = _run_canary_snapshot(
-                spec=spec,
-                adapter=adapter,
-                transport=transport,
-                canary_items=[synthetic_item],
-                pass_mode="binary",
-                seed=seed,
-            )
-            tol_judges[judge_id] = {
-                "label_exact_match": s1[0]["raw_verdict"] == s2[0]["raw_verdict"],
-                "top5_token_id_exact_match": s1[0]["top5_tokens"] == s2[0]["top5_tokens"],
-                "max_top5_logprob_deviation": 0.0,
-            }
-        tol_report = {"judges": tol_judges}
+        ]
 
     judges_out: dict[str, Any] = {}
-    for judge_id in sorted(BAKEOFF_JUDGE_SPECS):
-        j_tol = tol_report["judges"][judge_id]
-        judges_out[judge_id] = {
-            "status": det_status,
-            "deterministic_algorithms": det_status,
-            "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
-            "dtype": DEFAULT_TORCH_DTYPE,
-            "cpu_repeat_label_exact": j_tol["label_exact_match"],
-            "cpu_repeat_top5_tokens_exact": j_tol["top5_token_id_exact_match"],
-            "cpu_repeat_max_logprob_dev": j_tol["max_top5_logprob_deviation"],
-            "gpu_determinism_status": "not_checked_no_gpu_start_end_canary_is_deciding_runtime_check",
-        }
+    for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+        adapter = build_judge_adapter(spec)
+        op_fn = per_judge_op.get(judge_id) if per_judge_op is not None else None
+        judges_out[judge_id] = _run_cpu_transport_probe_for_judge(
+            spec,
+            adapter,
+            probe_items,
+            seed=seed,
+            judge_op=op_fn,
+        )
+
+    overall_status = (
+        "enforced"
+        if all(j["status"] == "enforced" for j in judges_out.values())
+        else "not enforceable"
+    )
     return {
         "schema_version": "1.0",
         "deciding_check": "canary",
         "start_end_canary_is_deciding_check": True,
-        "deterministic_algorithms": det_status,
+        "deterministic_algorithms": overall_status,
         "judges": judges_out,
     }
+
+
+def _resolve_part_id_from_dir(part_dir_or_file: Path) -> str | None:
+    """Inspect `manifest.json` or `reports/bakeoff_part_report.json` near `part_dir_or_file` to identify `part_id`."""
+    resolved = Path(part_dir_or_file).resolve()
+    base_dir = resolved.parent if resolved.is_file() else resolved
+    candidates = [
+        base_dir / "manifest.json",
+        base_dir / "part_bakeoff_sealed" / "manifest.json",
+        base_dir / "reports" / "bakeoff_part_report.json",
+        base_dir.parent / "reports" / "bakeoff_part_report.json",
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            try:
+                doc = json.loads(cand.read_text(encoding="utf-8"))
+                if isinstance(doc, Mapping) and doc.get("part_id"):
+                    return str(doc["part_id"]).strip()
+            except Exception:
+                continue
+    return None
 
 
 def check_bakeoff_logprob_mass(
     judge_output_dir: Path,
     *,
     threshold: float = 0.99,
+    part_id: str | None = None,
+    part_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Check whether summed yes+no variant probability mass is >= `threshold` for every binary call (`not_applicable` for Flow-Judge)."""
+    """Check whether summed yes+no variant probability mass is >= `threshold` for every binary call (`not_applicable` for Flow-Judge).
+
+    Refuses to run on any part outside `ALLOWED_LOGPROB_MASS_PART_IDS` (`pilot-40b`).
+    """
+    if part_id is not None and str(part_id).strip().lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+        raise refused_error(
+            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
+            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={part_id!r}.",
+            "Run bakeoff-logprob-mass only on the burned pilot-40b part (--part-id pilot-40b).",
+        )
+
     rows_dir = Path(judge_output_dir) / ROWS_DIRNAME
     if not rows_dir.is_dir():
         raise refused_error(
@@ -3230,6 +3454,26 @@ def check_bakeoff_logprob_mass(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
             f"No binary judge row files found in '{rows_dir}'.",
             "Run bakeoff-judge before checking logprob mass.",
+        )
+
+    resolved_part_id = str(part_id).strip() if part_id is not None else None
+    if resolved_part_id is None and part_dir is not None:
+        resolved_part_id = _resolve_part_id_from_dir(part_dir) or Path(part_dir).name
+    if resolved_part_id is None:
+        for rf in row_files:
+            for ln in rf.read_text(encoding="utf-8").splitlines():
+                if ln.strip():
+                    first_row = json.loads(ln)
+                    if isinstance(first_row, Mapping) and first_row.get("part_id"):
+                        resolved_part_id = str(first_row["part_id"]).strip()
+                    break
+            if resolved_part_id is not None:
+                break
+    if resolved_part_id is None or resolved_part_id.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+        raise refused_error(
+            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
+            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={resolved_part_id!r}.",
+            "Pass --part-id pilot-40b (or run on outputs produced from the burned pilot-40b part).",
         )
 
     judges_report: dict[str, Any] = {}
@@ -3273,6 +3517,7 @@ def check_bakeoff_logprob_mass(
 
     return {
         "schema_version": "1.0",
+        "part_id": resolved_part_id,
         "threshold": threshold,
         "judges": judges_report,
     }

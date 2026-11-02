@@ -516,6 +516,7 @@ def test_end_to_end_cpu_validation_10_items_mock_part_sealing_and_tamper_refusal
             str(pub_summary_path),
             "--sealed-out",
             str(sealed_scored_path),
+            "--no-count-all-non-canary",
         ]
     )
     assert rc_before_close == 1
@@ -548,6 +549,7 @@ def test_end_to_end_cpu_validation_10_items_mock_part_sealing_and_tamper_refusal
             str(pub_summary_path),
             "--sealed-out",
             str(sealed_scored_path),
+            "--no-count-all-non-canary",
         ]
     )
     assert rc_score == 0
@@ -587,6 +589,7 @@ def test_end_to_end_cpu_validation_10_items_mock_part_sealing_and_tamper_refusal
             str(pub_summary_path),
             "--sealed-out",
             str(sealed_scored_path),
+            "--no-count-all-non-canary",
         ]
     )
     assert rc_tampered == 1
@@ -1699,6 +1702,7 @@ def test_tl_item6_scoring_fits_dev_only_and_reports_test_only_never_pooled(tmp_p
         keys_path=keys_path,
         public_out_path=tmp_path / "score_out" / "score_summary.json",
         sealed_rows_out_path=tmp_path / "score_out" / "sealed" / "scored.sealed.jsonl",
+        count_all_non_canary=False,
     )
 
     assert "dev_fit" in report, "score_summary.json must carry a 'dev_fit' block"
