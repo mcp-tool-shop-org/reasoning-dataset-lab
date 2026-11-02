@@ -152,12 +152,24 @@ def read_file_access_log(state_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
+DEFAULT_FAKE_UV_PYTHON_315_PATH = (
+    "/usr/local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15"
+)
+DEFAULT_FAKE_UV_MISSING_315_STDERR = (
+    "error: No interpreter found for Python 3.15 in managed installations or search path"
+)
+HERMETIC_SYSTEM_PATH = "/usr/bin:/bin"
+
+
 def setup_fake_colab_environment(
     base_dir: Path,
     *,
     neighbour_sessions: list[dict[str, str]] | None = None,
+    uv_python_315_found: bool = True,
+    uv_python_315_path: str = DEFAULT_FAKE_UV_PYTHON_315_PATH,
+    uv_python_315_stderr: str = DEFAULT_FAKE_UV_MISSING_315_STDERR,
 ) -> dict[str, Path]:
-    """Create a front-of-PATH fake `colab` wrapper and a sentinel real-colab trap in `base_dir`."""
+    """Create a hermetic fake `colab` + fake `uv` bin directory and a sentinel real-binary trap in `base_dir`."""
     fake_bin = base_dir / "fake_bin"
     sentinel_bin = base_dir / "sentinel_real_bin"
     state_dir = base_dir / "fake_colab_state"
@@ -179,14 +191,45 @@ def setup_fake_colab_environment(
         newline="\n",
     )
 
+    uv_state_file = state_dir / "uv_state.json"
+    uv_state_file.write_text(
+        json.dumps(
+            {
+                "version": "uv 0.11.18",
+                "python_315_found": bool(uv_python_315_found),
+                "python_315_path": uv_python_315_path,
+                "python_315_stderr": uv_python_315_stderr,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
     sentinel_called = state_dir / "REAL_COLAB_CALLED"
     sentinel_script = sentinel_bin / "colab"
     sentinel_script.write_text(
-        f"#!/usr/bin/env bash\ntouch '{_to_posix(sentinel_called)}'\nexit 99\n",
+        "#!/usr/bin/env bash\n"
+        f"touch '{_to_posix(sentinel_called)}'\n"
+        "echo 'SENTINEL_REAL_BINARY_REACHED: colab' >&2\n"
+        "exit 99\n",
         encoding="utf-8",
         newline="\n",
     )
     sentinel_script.chmod(sentinel_script.stat().st_mode | stat.S_IEXEC)
+
+    sentinel_uv_called = state_dir / "REAL_UV_CALLED"
+    sentinel_uv_script = sentinel_bin / "uv"
+    sentinel_uv_script.write_text(
+        "#!/usr/bin/env bash\n"
+        f"touch '{_to_posix(sentinel_uv_called)}'\n"
+        "echo 'SENTINEL_REAL_BINARY_REACHED: uv' >&2\n"
+        "exit 99\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    sentinel_uv_script.chmod(sentinel_uv_script.stat().st_mode | stat.S_IEXEC)
 
     fake_colab_py_posix = _to_posix(Path(__file__).resolve())
     fake_colab_sh = fake_bin / "colab"
@@ -199,17 +242,135 @@ def setup_fake_colab_environment(
     )
     fake_colab_sh.chmod(fake_colab_sh.stat().st_mode | stat.S_IEXEC)
 
+    fake_uv_sh = fake_bin / "uv"
+    fake_uv_sh.write_text(
+        "#!/usr/bin/env bash\n"
+        f"export FAKE_COLAB_STATE_DIR=\"${{FAKE_COLAB_STATE_DIR:-{_to_posix(state_dir)}}}\"\n"
+        f"exec python3 '{fake_colab_py_posix}' --fake-uv \"$@\"\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_uv_sh.chmod(fake_uv_sh.stat().st_mode | stat.S_IEXEC)
+
     return {
         "fake_bin": fake_bin,
         "sentinel_bin": sentinel_bin,
         "state_dir": state_dir,
         "colab_locks_dir": colab_locks_dir,
         "sentinel_called": sentinel_called,
+        "sentinel_uv_called": sentinel_uv_called,
+        "uv_state_file": uv_state_file,
+        "uv_calls_log": state_dir / "uv_calls.jsonl",
         "calls_log": state_dir / "calls.jsonl",
         "file_access_log": state_dir / "file_access.jsonl",
         "sessions_file": sessions_file,
         "stopped_file": state_dir / "stopped_sessions.jsonl",
     }
+
+
+def build_hermetic_path(env_paths: dict[str, Path]) -> str:
+    """Return a hermetic PATH containing `fake_bin`, `sentinel_bin`, and minimal system directories (`/usr/bin:/bin`)."""
+    return (
+        f"{_to_posix(env_paths['fake_bin'])}:"
+        f"{_to_posix(env_paths['sentinel_bin'])}:"
+        f"{HERMETIC_SYSTEM_PATH}"
+    )
+
+
+def set_fake_uv_python_315_state(
+    state_dir_or_env: Path | dict[str, Path],
+    *,
+    found: bool,
+    python_path: str = DEFAULT_FAKE_UV_PYTHON_315_PATH,
+    stderr_message: str = DEFAULT_FAKE_UV_MISSING_315_STDERR,
+) -> Path:
+    """Update the fake `uv` state file controlling whether `uv python find 3.15` succeeds or exits 2."""
+    state_dir = (
+        state_dir_or_env["state_dir"]
+        if isinstance(state_dir_or_env, dict)
+        else state_dir_or_env
+    )
+    state_dir.mkdir(parents=True, exist_ok=True)
+    uv_state_file = state_dir / "uv_state.json"
+    uv_state_file.write_text(
+        json.dumps(
+            {
+                "version": "uv 0.11.18",
+                "python_315_found": bool(found),
+                "python_315_path": python_path,
+                "python_315_stderr": stderr_message,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return uv_state_file
+
+
+def run_fake_uv(argv: list[str]) -> int:
+    """Execute the standalone fake `uv` CLI placed in `fake_bin/uv`."""
+    state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR")
+    state_dir = (
+        Path(state_dir_raw) if state_dir_raw else Path("/tmp/rdlab-fake-colab-state")
+    )
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    uv_state: dict[str, Any] = {
+        "version": "uv 0.11.18",
+        "python_315_found": True,
+        "python_315_path": DEFAULT_FAKE_UV_PYTHON_315_PATH,
+        "python_315_stderr": DEFAULT_FAKE_UV_MISSING_315_STDERR,
+    }
+    uv_state_file = state_dir / "uv_state.json"
+    if uv_state_file.is_file():
+        try:
+            loaded = json.loads(uv_state_file.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                uv_state.update(loaded)
+        except Exception:
+            pass
+
+    uv_calls_log = state_dir / "uv_calls.jsonl"
+    with uv_calls_log.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"args": list(argv), "ts": time.time()}) + "\n")
+
+    plant = os.environ.get("FAKE_COLAB_PROBE_PLANT_STDOUT", "")
+    plant_sfx = f" {plant}" if plant else ""
+
+    if argv == ["--version"]:
+        ver = str(uv_state.get("version") or "uv 0.11.18")
+        sys.stdout.write(f"{ver}{plant_sfx}\n")
+        return 0
+
+    if argv == ["python", "find", "3.15"]:
+        no_315_env = os.environ.get("FAKE_COLAB_UV_NO_PYTHON_315")
+        if no_315_env is not None:
+            found = no_315_env != "1"
+        else:
+            found = bool(uv_state.get("python_315_found", True))
+        if not found:
+            err_msg = os.environ.get(
+                "FAKE_COLAB_UV_STDERR",
+                str(
+                    uv_state.get("python_315_stderr")
+                    or DEFAULT_FAKE_UV_MISSING_315_STDERR
+                ),
+            )
+            if not err_msg.endswith("\n"):
+                err_msg += "\n"
+            sys.stderr.write(err_msg)
+            return 2
+        py_path = os.environ.get(
+            "FAKE_COLAB_UV_PYTHON_315_PATH",
+            str(uv_state.get("python_315_path") or DEFAULT_FAKE_UV_PYTHON_315_PATH),
+        )
+        sys.stdout.write(f"{py_path}{plant_sfx}\n")
+        return 0
+
+    sys.stderr.write(f"fake uv: unexpected arguments: {argv!r}\n")
+    return 98
 
 
 def _to_posix(path: Path) -> str:
@@ -229,6 +390,10 @@ def _check_stdin_is_devnull() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args[:1] == ["--fake-uv"]:
+        return run_fake_uv(raw_args[1:])
+
     os.environ["RDLAB_COLAB_IS_FAKE"] = "1"
     contract = load_and_verify_contract()
     commands_contract: dict[str, Any] = contract["commands"]
@@ -248,8 +413,6 @@ def main(argv: list[str] | None = None) -> int:
 
     lock_file = Path(os.environ.get("RDLAB_OPEN_LOCK", "/tmp/colab-window-open.lock"))
     reconcile_lock_dir = Path(os.environ.get("COLAB_LOCK_DIR", "/tmp/colab-locks"))
-
-    raw_args = list(sys.argv[1:] if argv is None else argv)
 
     idx = 0
     top_help_requested = False
@@ -602,6 +765,9 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         exec_env = os.environ.copy()
+        for k_existing in list(exec_env):
+            if k_existing.startswith("HF_TOKEN") or k_existing == "HUGGING_FACE_HUB_TOKEN":
+                exec_env.pop(k_existing, None)
         for rig_only_key in (
             "HF_HOME",
             "RDLAB_ITEMS_FILE",
@@ -679,7 +845,7 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stderr.write(f"Execution timed out after {timeout_s}s\n")
                 return 124
             kernel_code = (
-                "import os, pathlib, shutil, sys\n"
+                "import json, os, pathlib, shutil, subprocess, sys\n"
                 "def _fake_disk_usage(p):\n"
                 "    ps = os.path.abspath(os.fspath(p))\n"
                 "    vm_root = os.path.abspath(os.environ['RDLAB_VM_CONTENT_DIR'])\n"
@@ -687,6 +853,85 @@ def main(argv: list[str] | None = None) -> int:
                 "    free_b = int(os.environ.get('FAKE_COLAB_CONTENT_DISK_FREE_BYTES', str(dflt))) if ps == vm_root else int(os.environ.get('FAKE_COLAB_HF_DISK_FREE_BYTES', str(dflt)))\n"
                 "    return shutil._ntuple_diskusage(max(free_b, 200000000000), 1000000000, free_b)\n"
                 "shutil.disk_usage = _fake_disk_usage\n"
+                "_real_which = shutil.which\n"
+                "def _fake_which(cmd, *a, **kw):\n"
+                "    if cmd == 'uv':\n"
+                "        if os.environ.get('FAKE_COLAB_UV_ABSENT') == '1':\n"
+                "            return None\n"
+                "        return '/usr/local/bin/uv'\n"
+                "    return _real_which(cmd, *a, **kw)\n"
+                "shutil.which = _fake_which\n"
+                "_real_subproc_run = subprocess.run\n"
+                "def _fake_subproc_run(cmd, *a, **kw):\n"
+                "    cmd_list = [str(x) for x in cmd] if isinstance(cmd, (list, tuple)) else [str(cmd)]\n"
+                "    call_env = kw.get('env') or os.environ\n"
+                "    st_dir = os.environ.get('FAKE_COLAB_STATE_DIR', '')\n"
+                "    if st_dir:\n"
+                "        rec_p = pathlib.Path(st_dir) / 'vm_subprocesses.jsonl'\n"
+                "        rec = {\n"
+                "            'step': os.environ.get('RDLAB_STEP', ''),\n"
+                "            'cmd': cmd_list,\n"
+                "            'env_keys': sorted(list(call_env.keys())),\n"
+                "            'uv_cache_dir': call_env.get('UV_CACHE_DIR'),\n"
+                "            'uv_python_install_dir': call_env.get('UV_PYTHON_INSTALL_DIR'),\n"
+                "        }\n"
+                "        with rec_p.open('a', encoding='utf-8', newline='\\n') as fh:\n"
+                "            fh.write(json.dumps(rec) + '\\n')\n"
+                "    plant = os.environ.get('FAKE_COLAB_PROBE_PLANT_STDOUT', '')\n"
+                "    plant_sfx = (' ' + plant) if plant else ''\n"
+                "    if cmd_list[:2] == ['uv', '--version']:\n"
+                "        if os.environ.get('FAKE_COLAB_UV_ABSENT') == '1':\n"
+                "            raise FileNotFoundError(2, 'No such file or directory', 'uv')\n"
+                "        return _real_subproc_run(['uv', '--version'], *a, **kw)\n"
+                "    if cmd_list[:3] == ['uv', 'python', 'find'] and '--no-python-downloads' not in cmd_list:\n"
+                "        return _real_subproc_run(cmd_list, *a, **kw)\n"
+                "    if cmd_list[:3] == ['uv', 'python', 'find']:\n"
+                "        if os.environ.get('FAKE_COLAB_UV_NO_PYTHON_315') == '1':\n"
+                "            err_msg = os.environ.get('FAKE_COLAB_UV_STDERR', 'error: No interpreter found for Python 3.15 in managed installations or search path\\n')\n"
+                "            return subprocess.CompletedProcess(cmd_list, 2, stdout='', stderr=err_msg)\n"
+                "        return subprocess.CompletedProcess(cmd_list, 0, stdout='/usr/local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15' + plant_sfx + '\\n', stderr='')\n"
+                "    if cmd_list[:2] == ['uv', 'venv']:\n"
+                "        if os.environ.get('FAKE_COLAB_FAIL_UV_VENV') == '1':\n"
+                "            err_msg = os.environ.get('FAKE_COLAB_UV_STDERR', 'error: Failed to create virtualenv\\n')\n"
+                "            out_msg = os.environ.get('FAKE_COLAB_UV_STDOUT', 'Creating virtual environment\\n')\n"
+                "            return subprocess.CompletedProcess(cmd_list, 2, stdout=out_msg, stderr=err_msg)\n"
+                "    if os.environ.get('RDLAB_STEP') == 'probe':\n"
+                "        if cmd_list[:4] == ['uv', 'python', 'install', '--help']:\n"
+                "            if os.environ.get('FAKE_COLAB_UV_SUPPORTS_DRY_RUN') == '1':\n"
+                "                return subprocess.CompletedProcess(cmd_list, 0, stdout='Usage: uv python install --dry-run' + plant_sfx + '\\n', stderr='')\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='Usage: uv python install [OPTIONS] [TARGETS]...' + plant_sfx + '\\n', stderr='')\n"
+                "        if cmd_list[:3] == ['uv', 'python', 'list'] and '--only-downloads' in cmd_list:\n"
+                "            dl_url = 'https://releases.astral.sh/github/python-build-standalone/releases/download/20260510/cpython-3.15.0b1%2B20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz'\n"
+                "            if plant:\n"
+                "                dl_url = dl_url + '?' + plant\n"
+                "            payload = json.dumps([{'key': 'cpython-3.15.0b1-linux-x86_64-gnu', 'version': '3.15.0b1', 'url': dl_url}])\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout=payload + '\\n', stderr='')\n"
+                "        if cmd_list[:3] == ['uv', 'python', 'list']:\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='cpython-3.12.13-linux-x86_64-gnu /usr/bin/python3.12' + plant_sfx + '\\n', stderr='')\n"
+                "        if cmd_list[:3] == ['uv', 'python', 'install']:\n"
+                "            inst_dir = call_env.get('UV_PYTHON_INSTALL_DIR', '/tmp/probe-py')\n"
+                "            if '--dry-run' not in cmd_list:\n"
+                "                p_dir = pathlib.Path(inst_dir) / 'cpython-3.15.0b1' / 'include' / 'python3.15'\n"
+                "                p_dir.mkdir(parents=True, exist_ok=True)\n"
+                "                (p_dir / 'Python.h').write_text('/* Python.h */\\n', encoding='utf-8')\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='Installed Python 3.15.0b1 in 0.42s' + plant_sfx + '\\n', stderr='Downloading https://releases.astral.sh/cpython-3.15.tar.gz' + plant_sfx + '\\n')\n"
+                "        if cmd_list[0] == 'curl' and '-I' in cmd_list:\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='HTTP/2 200\\r\\ncontent-length: 32505856\\r\\n' + plant_sfx + '\\n', stderr='')\n"
+                "        if cmd_list[0] == 'curl':\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='206 5242880 0.125000' + plant_sfx + '\\n', stderr='')\n"
+                "        if cmd_list == ['which', 'uv']:\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='/usr/local/bin/uv' + plant_sfx + '\\n', stderr='')\n"
+                "        if cmd_list[:4] == ['python3', '-m', 'pip', 'show']:\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='Name: uv\\nVersion: 0.11.18\\nLocation: /usr/local/lib/python3.12/dist-packages' + plant_sfx + '\\n', stderr='')\n"
+                "        if cmd_list[0].startswith('python3') and cmd_list[1:] == ['--version']:\n"
+                "            if cmd_list[0] in ('python3', 'python3.12'):\n"
+                "                return subprocess.CompletedProcess(cmd_list, 0, stdout='Python 3.12.13' + plant_sfx + '\\n', stderr='')\n"
+                "            return subprocess.CompletedProcess(cmd_list, 127, stdout='', stderr='not found' + plant_sfx + '\\n')\n"
+                "        if cmd_list[0].startswith('python3') and len(cmd_list) >= 2 and cmd_list[1] == '-c':\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout=json.dumps({'include_dir': '/usr/include/python3.12', 'python_h': '/usr/include/python3.12/Python.h', 'exists': True}) + plant_sfx + '\\n', stderr='')\n"
+                "        return subprocess.CompletedProcess(cmd_list, 0, stdout='ok' + plant_sfx + '\\n', stderr='')\n"
+                "    return _real_subproc_run(cmd, *a, **kw)\n"
+                "subprocess.run = _fake_subproc_run\n"
                 "sys.argv = ['colab_kernel_launcher.py', '-f', '/tmp/kernel-fake.json']\n"
                 f"src = pathlib.Path({str(py_path.resolve())!r}).read_text(encoding='utf-8')\n"
                 "ns = {'__name__': '__main__', '_PRIOR_EXEC_COUNT': "

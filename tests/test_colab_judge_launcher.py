@@ -131,6 +131,32 @@ def _make_synthetic_public_items(base_dir: Path, count: int = 12) -> Path:
     return items_path
 
 
+def _hermetic_path_for(env_paths: dict[str, Path]) -> str:
+    return fake_colab.build_hermetic_path(env_paths)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_fake_colab_and_uv_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Replace PATH with the shared fake `colab` + fake `uv` bin, sentinel stubs, and `/usr/bin:/bin`,
+    and fail the test if any sentinel stub (`REAL_COLAB_CALLED` or `REAL_UV_CALLED`) is reached.
+    """
+    auto_env = fake_colab.setup_fake_colab_environment(
+        tmp_path / "_hermetic_shared_fake_env"
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(auto_env))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(auto_env["state_dir"]))
+    yield auto_env
+    assert not auto_env["sentinel_called"].exists(), (
+        "Sentinel real-colab trap fired during test"
+    )
+    assert not auto_env["sentinel_uv_called"].exists(), (
+        "Sentinel real-uv trap fired during test"
+    )
+
+
 def _base_launcher_exports(
     env_paths: dict[str, Path],
     *,
@@ -142,7 +168,7 @@ def _base_launcher_exports(
     d3_lock_sha: str = EXPECTED_D3_LOCK_SHA256,
 ) -> str:
     return (
-        f"export PATH='{_to_wsl_path(env_paths['fake_bin'])}:{_to_wsl_path(env_paths['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_paths)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_paths['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_paths['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(open_lock)}'; "
@@ -994,7 +1020,7 @@ def test_colab_message_line_is_not_a_session(tmp_path: Path) -> None:
     )
     out_a = tmp_path / "out_msg_a"
     cmd_a = (
-        f"export PATH='{_to_wsl_path(env_a['fake_bin'])}:{_to_wsl_path(env_a['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_a)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_a['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_a['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'msg_a.lock')}'; "
@@ -1021,7 +1047,7 @@ def test_colab_message_line_is_not_a_session(tmp_path: Path) -> None:
     )
     out_b = tmp_path / "out_msg_b"
     cmd_b = (
-        f"export PATH='{_to_wsl_path(env_b['fake_bin'])}:{_to_wsl_path(env_b['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_b)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_b['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_b['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'msg_b.lock')}'; "
@@ -1044,7 +1070,7 @@ def test_outcome_format_verified_flag_is_false_under_fake(tmp_path: Path) -> Non
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path)
     out_dir = tmp_path / "out_fake_flag"
     cmd = (
-        f"export PATH='{_to_wsl_path(env_paths['fake_bin'])}:{_to_wsl_path(env_paths['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_paths)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_paths['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_paths['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'flag.lock')}'; "
@@ -1469,6 +1495,12 @@ def test_kernel_exec_without_dunder_file_fails_when_dunder_file_used(
 ) -> None:
     import shutil as _shutil
 
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_kernel_dunder", uv_python_315_found=True
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_paths))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_paths["state_dir"]))
+
     vm_src = VM_JUDGES_PY.read_text(encoding="utf-8")
     status_file = tmp_path / "gate_status.json"
     monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "vm_content"))
@@ -1493,6 +1525,7 @@ def test_kernel_exec_without_dunder_file_fails_when_dunder_file_used(
     assert status_doc["step"] == "gate"
     assert status_doc["rc"] == 0
     assert status_doc["status"] == "ok"
+    assert status_doc["python_315"] == fake_colab.DEFAULT_FAKE_UV_PYTHON_315_PATH
 
 
 def test_kernel_exec_gate_and_run_steps_complete(tmp_path: Path) -> None:
@@ -2075,6 +2108,10 @@ def test_exec_env_quoting_persistence_timeout_and_shared_kernel_gate_to_run(
     # 5. Execute vm_judges.py `--step gate` then `--step run` in the EXACT SAME Python kernel namespace (`ns`)
     import shutil as _shutil
 
+    fake_colab.set_fake_uv_python_315_state(env_paths, found=True)
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_paths))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", wsl_state)
+
     shared_vm_fs = tmp_path / "shared_kernel_vm_fs"
     shared_vm_fs.mkdir(parents=True, exist_ok=True)
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
@@ -2148,7 +2185,7 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
         )
         out_lag1 = tmp_path / f"out_lag1_{idx}"
         cmd_lag1 = (
-            f"export PATH='{_to_wsl_path(env_lag1['fake_bin'])}:{_to_wsl_path(env_lag1['sentinel_bin'])}':\"$PATH\"; "
+            f"export PATH='{_hermetic_path_for(env_lag1)}'; "
             f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_lag1['state_dir'])}'; "
             f"export COLAB_LOCK_DIR='{_to_wsl_path(env_lag1['colab_locks_dir'])}'; "
             f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / f'lag1_{idx}.lock')}'; "
@@ -2180,7 +2217,7 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
     )
     out_keep = tmp_path / "out_keep"
     cmd_keep = (
-        f"export PATH='{_to_wsl_path(env_keep['fake_bin'])}:{_to_wsl_path(env_keep['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_keep)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_keep['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_keep['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'keep.lock')}'; "
@@ -2209,7 +2246,7 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
     )
     out_orphan = tmp_path / "out_orphan"
     cmd_orphan = (
-        f"export PATH='{_to_wsl_path(env_orphan['fake_bin'])}:{_to_wsl_path(env_orphan['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_orphan)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_orphan['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_orphan['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'orphan.lock')}'; "
@@ -2239,7 +2276,7 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
     )
     out_pre_q = tmp_path / "out_pre_q"
     cmd_pre_q = (
-        f"export PATH='{_to_wsl_path(env_pre_q['fake_bin'])}:{_to_wsl_path(env_pre_q['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_pre_q)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_pre_q['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_pre_q['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'pre_q.lock')}'; "
@@ -2262,7 +2299,7 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
     )
     out_prefix = tmp_path / "out_prefix"
     cmd_prefix = (
-        f"export PATH='{_to_wsl_path(env_prefix['fake_bin'])}:{_to_wsl_path(env_prefix['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_prefix)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_prefix['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_prefix['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'prefix.lock')}'; "
@@ -2299,7 +2336,7 @@ def test_stop_poll_config_clamps_zero_and_refuses_non_integer(
     )
     out_zero = tmp_path / "out_max_reads_zero"
     cmd_zero = (
-        f"export PATH='{_to_wsl_path(env_zero['fake_bin'])}:{_to_wsl_path(env_zero['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_zero)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_zero['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_zero['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'zero.lock')}'; "
@@ -2334,7 +2371,7 @@ def test_stop_poll_config_clamps_zero_and_refuses_non_integer(
     )
     out_cap = tmp_path / "out_max_reads_cap"
     cmd_cap = (
-        f"export PATH='{_to_wsl_path(env_cap['fake_bin'])}:{_to_wsl_path(env_cap['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_cap)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_cap['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_cap['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'cap.lock')}'; "
@@ -2368,7 +2405,7 @@ def test_stop_poll_config_clamps_zero_and_refuses_non_integer(
         )
         out_bad = tmp_path / f"out_bad_poll_{idx}"
         cmd_bad = (
-            f"export PATH='{_to_wsl_path(env_bad['fake_bin'])}:{_to_wsl_path(env_bad['sentinel_bin'])}':\"$PATH\"; "
+            f"export PATH='{_hermetic_path_for(env_bad)}'; "
             f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_bad['state_dir'])}'; "
             f"export COLAB_LOCK_DIR='{_to_wsl_path(env_bad['colab_locks_dir'])}'; "
             f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / f'bad_{idx}.lock')}'; "
@@ -2448,10 +2485,7 @@ def test_stop_poll_config_octal_and_fuzz_table(
         )
         out_case = tmp_path / f"out_fuzz_max_{idx}"
         run_env = os.environ.copy()
-        run_env["PATH"] = (
-            f"{_to_wsl_path(env_case['fake_bin'])}:{_to_wsl_path(env_case['sentinel_bin'])}:"
-            + run_env.get("PATH", "")
-        )
+        run_env["PATH"] = _hermetic_path_for(env_case)
         run_env["FAKE_COLAB_STATE_DIR"] = _to_wsl_path(env_case["state_dir"])
         run_env["COLAB_LOCK_DIR"] = _to_wsl_path(env_case["colab_locks_dir"])
         run_env["RDLAB_OPEN_LOCK"] = _to_wsl_path(tmp_path / f"fuzz_max_{idx}.lock")
@@ -2543,10 +2577,7 @@ def test_stop_poll_config_octal_and_fuzz_table(
 
         out_case = tmp_path / f"out_fuzz_sleep_{idx}"
         run_env = os.environ.copy()
-        run_env["PATH"] = (
-            f"{_to_wsl_path(env_case['fake_bin'])}:{_to_wsl_path(env_case['sentinel_bin'])}:"
-            + run_env.get("PATH", "")
-        )
+        run_env["PATH"] = _hermetic_path_for(env_case)
         run_env["FAKE_COLAB_STATE_DIR"] = _to_wsl_path(env_case["state_dir"])
         run_env["COLAB_LOCK_DIR"] = _to_wsl_path(env_case["colab_locks_dir"])
         run_env["RDLAB_OPEN_LOCK"] = _to_wsl_path(tmp_path / f"fuzz_sleep_{idx}.lock")
@@ -3122,8 +3153,12 @@ def test_real_service_assumptions_doc_table_and_line_citations(
     assert len(table_rows) == 20
     enforced_rows = [ln for ln in table_rows if "**Fake now enforces**" in ln]
     stub_rows = [ln for ln in table_rows if "**Left for the stub**" in ln]
+    probe_rows = [ln for ln in table_rows if "probe answers it" in ln.lower()]
     assert len(enforced_rows) == 10
-    assert len(stub_rows) == 10
+    assert len(stub_rows) == 9
+    assert len(probe_rows) == 1
+    assert table_rows[-1].lstrip().startswith("| 20 |")
+    assert "probe answers it" in table_rows[-1].lower()
 
     # Verify the "Known test hooks in production code" section and its required hooks
     assert "## Known test hooks in production code" in text
@@ -3190,6 +3225,11 @@ def test_real_service_assumptions_doc_table_and_line_citations(
     )
 
     # `main(["--step", "gate", ...])` refusal and success paths writing status.json directly via injected shutil.disk_usage
+    env_doc_gate = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_doc_gate", uv_python_315_found=True
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_doc_gate))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_doc_gate["state_dir"]))
     monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "gate_content"))
     monkeypatch.setattr(
         _shutil,
@@ -3409,6 +3449,1253 @@ def test_real_service_assumptions_env_var_classification_table() -> None:
     )
     assert "RDLAB_UNDOCUMENTED_BASH_VAR" in (b_injected - set(var_to_classifications))
     assert "RDLAB_UNDOCUMENTED_PY_VAR" in (p_injected - set(var_to_classifications))
+
+
+def test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `run_vm_subprocess` captures stdout and stderr with `check=True`, tails to 4 KB,
+    scrubs `hf_[A-Za-z0-9]+` and `colab-runtime-proxy-token=`, and writes the scrubbed output
+    to `logs/vm.log`, `status.json` (`reason` carrying the scrubbed stderr tail), and `vm_receipt.json`.
+    """
+    # 1. Direct unit test of `run_vm_subprocess` tailing (> 4 KB) and token scrubbing on failure, timeout, CalledProcessError, and OSError
+    vm_log = tmp_path / "logs" / "vm.log"
+    monkeypatch.setattr(vm_judges, "_ACTIVE_VM_LOG_PATH", vm_log)
+
+    prefix_pad = "X" * 5000
+    raw_out = (
+        f"{prefix_pad}\nstdout line with hf_OutSecretTok99 and "
+        "https://8080.colab.dev/api?colab-runtime-proxy-token=OutProxySecret88\n"
+    )
+    raw_err = (
+        f"{prefix_pad}\nerror: Failed to install cpython-3.15.0 token=hf_ErrSecretTok77 "
+        "url=https://8080.colab.dev/api?colab-runtime-proxy-token=ErrProxySecret66\n"
+    )
+
+    def _fake_fail_run(cmd: Any, *a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(list(cmd), 2, stdout=raw_out, stderr=raw_err)
+
+    monkeypatch.setattr(subprocess, "run", _fake_fail_run)
+    with pytest.raises(vm_judges.VmSubprocessError) as exc_info:
+        vm_judges.run_vm_subprocess(
+            ["uv", "venv", "--python", "3.15", "/content/rdlab_work/venv-judge"],
+            check=True,
+        )
+
+    err = exc_info.value
+    assert err.returncode == 2
+    assert err.failure_class == "VM_SUBPROCESS_FAILED"
+    assert len(err.stdout_tail.encode("utf-8")) <= vm_judges.SUBPROCESS_TAIL_BYTES
+    assert len(err.stderr_tail.encode("utf-8")) <= vm_judges.SUBPROCESS_TAIL_BYTES
+    assert "hf_[REDACTED]" in err.stdout_tail
+    assert "colab-runtime-proxy-token=[REDACTED]" in err.stdout_tail
+    assert "hf_[REDACTED]" in err.stderr_tail
+    assert "colab-runtime-proxy-token=[REDACTED]" in err.stderr_tail
+    assert "error: Failed to install cpython-3.15.0" in err.detail
+    for raw_secret in (
+        "hf_OutSecretTok99",
+        "OutProxySecret88",
+        "hf_ErrSecretTok77",
+        "ErrProxySecret66",
+    ):
+        assert raw_secret not in err.stdout_tail
+        assert raw_secret not in err.stderr_tail
+        assert raw_secret not in err.detail
+
+    log_text = vm_log.read_text(encoding="utf-8")
+    assert "VM_SUBPROCESS_STDOUT_TAIL:" in log_text
+    assert "VM_SUBPROCESS_STDERR_TAIL:" in log_text
+    assert "error: Failed to install cpython-3.15.0" in log_text
+    assert "hf_[REDACTED]" in log_text
+    assert "colab-runtime-proxy-token=[REDACTED]" in log_text
+    for raw_secret in (
+        "hf_OutSecretTok99",
+        "OutProxySecret88",
+        "hf_ErrSecretTok77",
+        "ErrProxySecret66",
+    ):
+        assert raw_secret not in log_text
+
+    # Exercise CalledProcessError, TimeoutExpired, and OSError branches in `run_vm_subprocess`
+    def _raise_cpe(cmd: Any, *a: Any, **kw: Any) -> Any:
+        raise subprocess.CalledProcessError(
+            2, list(cmd), output=b"cpe_out hf_CpeTok1", stderr=b"cpe_err hf_CpeTok2"
+        )
+
+    monkeypatch.setattr(subprocess, "run", _raise_cpe)
+    res_cpe = vm_judges.run_vm_subprocess(["uv", "venv"], check=False)
+    assert res_cpe.returncode == 2
+    assert "hf_[REDACTED]" in res_cpe.stdout_tail
+    assert "hf_[REDACTED]" in res_cpe.stderr_tail
+    assert "hf_CpeTok1" not in res_cpe.stdout_tail
+    assert "hf_CpeTok2" not in res_cpe.stderr_tail
+
+    def _raise_timeout(cmd: Any, *a: Any, **kw: Any) -> Any:
+        raise subprocess.TimeoutExpired(
+            list(cmd), 10.0, output=b"to_out hf_ToTok1", stderr=b"to_err hf_ToTok2"
+        )
+
+    monkeypatch.setattr(subprocess, "run", _raise_timeout)
+    res_to = vm_judges.run_vm_subprocess(["uv", "venv"], timeout=10.0, check=False)
+    assert res_to.returncode == 124
+    assert "subprocess timed out after 10.0s" in res_to.stderr_tail
+    assert "hf_[REDACTED]" in res_to.stderr_tail
+    assert "hf_ToTok2" not in res_to.stderr_tail
+
+    def _raise_oserror(cmd: Any, *a: Any, **kw: Any) -> Any:
+        raise FileNotFoundError(2, "No such file or directory", "uv_missing_bin")
+
+    monkeypatch.setattr(subprocess, "run", _raise_oserror)
+    res_os = vm_judges.run_vm_subprocess(["uv_missing_bin"], check=False)
+    assert res_os.returncode == 127
+    assert "FileNotFoundError" in res_os.stderr_tail
+
+    monkeypatch.undo()
+
+    # 2. End-to-end launcher test against fake_colab: `uv venv --python 3.15` fails in `--step run` (`VM_DRYRUN=0`)
+    env_fail = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_subproc_fail", neighbour_sessions=[]
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "subproc_fail_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "subproc_fail_data", count=4)
+    out_fail = tmp_path / "out_subproc_fail"
+    exports_fail = _base_launcher_exports(
+        env_fail,
+        open_lock=tmp_path / "subproc_fail.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    planted_err = (
+        "error: Failed to create virtualenv for Python 3.15: "
+        "auth=hf_SubprocLeak99123 proxy=https://8080.colab.dev/?colab-runtime-proxy-token=ProxySubproc88123"
+    )
+    planted_out = "Creating virtual environment with token hf_StdoutLeak44556"
+    proc_fail = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_fail} "
+            f"export VM_DRYRUN=0; "
+            f"export FAKE_COLAB_FAIL_UV_VENV=1; "
+            f"export FAKE_COLAB_UV_STDERR='{planted_err}'; "
+            f"export FAKE_COLAB_UV_STDOUT='{planted_out}'; "
+            f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_fail)}' --run-id subproc-fail-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_fail.returncode != 0
+
+    status_doc = json.loads((out_fail / "status.json").read_text(encoding="utf-8"))
+    receipt_doc = json.loads((out_fail / "vm_receipt.json").read_text(encoding="utf-8"))
+    cli_log_text = (out_fail / "colab-cli.log").read_text(encoding="utf-8")
+    vm_log_in_state = (
+        env_fail["state_dir"] / "vm_fs" / "rdlab_run" / "logs" / "vm.log"
+    ).read_text(encoding="utf-8")
+
+    assert status_doc["step"] == "sync_judge_venvs"
+    assert status_doc["rc"] == 2
+    assert "error: Failed to create virtualenv for Python 3.15" in status_doc["reason"]
+    assert "hf_[REDACTED]" in status_doc["reason"]
+    assert "colab-runtime-proxy-token=[REDACTED]" in status_doc["reason"]
+    assert "hf_[REDACTED]" in status_doc["stderr_tail"]
+    assert "hf_[REDACTED]" in status_doc["stdout_tail"]
+    assert status_doc["subprocess"]["returncode"] == 2
+
+    assert receipt_doc["status"] in ("refused", "failed")
+    assert "error: Failed to create virtualenv for Python 3.15" in receipt_doc["reason"]
+    assert "hf_[REDACTED]" in receipt_doc["stderr_tail"]
+    assert "colab-runtime-proxy-token=[REDACTED]" in receipt_doc["stderr_tail"]
+    assert "error: Failed to create virtualenv for Python 3.15" in vm_log_in_state
+    assert "error: Failed to create virtualenv for Python 3.15" in cli_log_text
+
+    for combined_text in (
+        json.dumps(status_doc),
+        json.dumps(receipt_doc),
+        cli_log_text,
+        vm_log_in_state,
+    ):
+        assert "hf_SubprocLeak99123" not in combined_text
+        assert "ProxySubproc88123" not in combined_text
+        assert "hf_StdoutLeak44556" not in combined_text
+
+
+def test_gate_python_315_preflight_refuses_when_uv_absent_or_cannot_provide_315(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `--step gate` checks `uv --version`, `shutil.which("uv")`, and `uv python find 3.15`
+    using `build_vm_uv_env()` without installing anything, and refuses with `VM_PYTHON_UNAVAILABLE`
+    carrying scrubbed output before any upload.
+    """
+    import shutil as _shutil
+
+    monkeypatch.setattr(
+        _shutil,
+        "disk_usage",
+        lambda _p: _shutil._ntuple_diskusage(
+            200_000_000_000, 80_000_000_000, 120_000_000_000
+        ),
+    )
+
+    # 1. `build_vm_uv_env` is shared by gate and run
+    uv_env = vm_judges.build_vm_uv_env({"PATH": "/usr/bin"})
+    assert uv_env["HF_DEACTIVATE_ASYNC_LOAD"] == "1"
+
+    # 2. Direct unit test: `uv` is absent (`shutil.which("uv") -> None`)
+    monkeypatch.setattr(_shutil, "which", lambda _cmd: None)
+    with pytest.raises(vm_judges.RefusalError) as exc_absent:
+        vm_judges.check_vm_python_preflight()
+    assert exc_absent.value.failure_class == "VM_PYTHON_UNAVAILABLE"
+    assert "uv_path=absent" in exc_absent.value.detail
+
+    # 3. Direct unit test: `uv --version` exits non-zero
+    monkeypatch.setattr(_shutil, "which", lambda _cmd: "/usr/local/bin/uv")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda cmd, *a, **kw: subprocess.CompletedProcess(
+            list(cmd), 2, stdout="", stderr="uv broken hf_UvBroken123\n"
+        ),
+    )
+    with pytest.raises(vm_judges.VmSubprocessError) as exc_ver:
+        vm_judges.check_vm_python_preflight()
+    assert exc_ver.value.failure_class == "VM_PYTHON_UNAVAILABLE"
+    assert "hf_[REDACTED]" in exc_ver.value.detail
+    assert "hf_UvBroken123" not in exc_ver.value.detail
+
+    # 4. Direct unit test: `uv python find 3.15` exits 2 with error on stderr
+    def _fake_find_315_fail(cmd: Any, *a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
+        cmd_l = list(cmd)
+        if cmd_l[:2] == ["uv", "--version"]:
+            return subprocess.CompletedProcess(cmd_l, 0, stdout="uv 0.11.18\n", stderr="")
+        return subprocess.CompletedProcess(
+            cmd_l,
+            2,
+            stdout="",
+            stderr="error: No interpreter found for Python 3.15 token=hf_GateTok555 proxy=colab-runtime-proxy-token=GateProxy444\n",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_find_315_fail)
+    gate_dir = tmp_path / "gate_py_fail"
+    gate_status = tmp_path / "gate_py_fail_status.json"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(gate_dir))
+    rc_gate = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(gate_status),
+        ]
+    )
+    assert rc_gate == 2
+    status_doc = json.loads(gate_status.read_text(encoding="utf-8"))
+    assert status_doc["step"] == "gate"
+    assert status_doc["rc"] == 2
+    assert status_doc["failure_class"] == "VM_PYTHON_UNAVAILABLE"
+    assert "uv_path=/usr/local/bin/uv" in status_doc["reason"]
+    assert "uv_version=uv 0.11.18" in status_doc["reason"]
+    assert "No interpreter found for Python 3.15" in status_doc["reason"]
+    assert "hf_[REDACTED]" in status_doc["reason"]
+    assert "colab-runtime-proxy-token=[REDACTED]" in status_doc["reason"]
+    assert "hf_GateTok555" not in json.dumps(status_doc)
+    assert "GateProxy444" not in json.dumps(status_doc)
+
+    # 5. End-to-end launcher test against fake_colab: `uv python find 3.15` fails at gate -> refuses in seconds before any upload
+    monkeypatch.undo()
+    env_no315 = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_no315", neighbour_sessions=[]
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "no315_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "no315_data", count=4)
+    out_no315 = tmp_path / "out_no315"
+    exports_no315 = _base_launcher_exports(
+        env_no315,
+        open_lock=tmp_path / "no315.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    t0 = time.monotonic()
+    proc_no315 = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_no315} "
+            f"export FAKE_COLAB_UV_NO_PYTHON_315=1; "
+            f"export FAKE_COLAB_UV_STDERR='error: No interpreter found for Python 3.15 in managed installations or search path (hf_GateE2ESecret)'; "
+            f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_no315)}' --run-id no315-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    elapsed = time.monotonic() - t0
+    assert elapsed < 15.0
+    assert proc_no315.returncode == 2
+    assert "VM_PYTHON_UNAVAILABLE" in proc_no315.stderr
+    assert "No interpreter found for Python 3.15" in proc_no315.stderr
+    assert "hf_[REDACTED]" in proc_no315.stderr
+    assert "hf_GateE2ESecret" not in proc_no315.stderr
+
+    outcome_no315 = json.loads(
+        (out_no315 / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_no315["outcome"] == "failed"
+    assert "VM_PYTHON_UNAVAILABLE" in outcome_no315["why"]
+    assert "hf_GateE2ESecret" not in outcome_no315["why"]
+
+    calls_no315 = [
+        json.loads(ln)["subcmd"]
+        for ln in env_no315["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert "upload" not in calls_no315
+    assert "stop" in calls_no315
+
+
+def test_probe_mode_dry_and_live_sequence_no_upload_no_hf_token_scrubs_and_isolates_run_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `--probe --dry` and live `--probe` against `fake_colab`:
+    1. Exact 6-call Colab CLI sequence: `sessions`, `new` (CPU), `exec` (`RDLAB_STEP=probe`, `RDLAB_WALL_SECONDS=240`, `--timeout=270`), `download` (`/content/probe.json`), `stop`, `sessions`.
+    2. No upload of repo, receipts, or items.
+    3. With `HF_TOKEN_GGUF_READ`, `HF_TOKEN`, and `HUGGING_FACE_HUB_TOKEN` set in rig env, no `--env` carries them and `probe.json` does not contain them.
+    4. Never calls `snapshot_download`, `uv venv`, `uv pip`, or a model; does at most ONE interpreter install into `UV_PYTHON_INSTALL_DIR=/tmp/probe-py` with `UV_CACHE_DIR=/tmp/probe-uv-cache`.
+    5. Does not create or touch `/content/rdlab_work` or any venv/uv-cache path used by `--step run`.
+    6. Records route (`real_install` or `dry-run`), `download_size_bytes`, and `source_url`, all scrubbed.
+    7. Timed `curl` fetches stay at 5 MB (`0-5242879`) each with no token.
+    8. Planted fake stdout containing `hf_...` and `colab-runtime-proxy-token=...` is redacted across every command in `probe.json`.
+    9. Writes `outcome.draft.json` with `outcome == "probe"`, `hardware == "CPU"`, `wall_seconds == 300`, `cap == 0.01`.
+    """
+    wsl_launch = _to_wsl_path(LAUNCH_JUDGES_SH)
+    env_probe = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_probe", neighbour_sessions=[]
+    )
+    out_dry = tmp_path / "out_probe_dry"
+    out_live = tmp_path / "out_probe_live"
+
+    base_probe_exports = (
+        f"export PATH='{_hermetic_path_for(env_probe)}'; "
+        f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_probe['state_dir'])}'; "
+        f"export COLAB_LOCK_DIR='{_to_wsl_path(env_probe['colab_locks_dir'])}'; "
+        f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'probe.lock')}'; "
+        f"export RDLAB_STOP_POLL_SLEEP_SECONDS=0; "
+        f"export HF_TOKEN_GGUF_READ='hf_RigSecretGGUF12345'; "
+        f"export HF_TOKEN='hf_RigSecretMain67890'; "
+        f"export HUGGING_FACE_HUB_TOKEN='hf_RigSecretHub11223'; "
+    )
+
+    # 1. `--probe --dry` prints exact 6-command sequence and never forwards any HF token
+    proc_dry = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{base_probe_exports} "
+            f"bash '{wsl_launch}' --probe --dry --out-dir '{_to_wsl_path(out_dry)}' --run-id probe-dry-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_dry.returncode == 0, f"stderr={proc_dry.stderr}"
+    dry_lines = [ln.strip() for ln in proc_dry.stdout.splitlines() if ln.strip()]
+    wsl_out_dry = _to_wsl_path(out_dry)
+    assert dry_lines == [
+        "colab sessions",
+        "colab new -s rdlab-probe-dry-01",
+        "colab exec -s rdlab-probe-dry-01 --env RDLAB_STEP=probe --env RDLAB_WALL_SECONDS=240 -f scripts/colab/vm_judges.py --timeout=270",
+        f"colab download -s rdlab-probe-dry-01 /content/probe.json {wsl_out_dry}/probe.json",
+        "colab stop -s rdlab-probe-dry-01",
+        "colab sessions",
+    ]
+    assert "HF_TOKEN" not in proc_dry.stdout
+    assert "hf_RigSecret" not in proc_dry.stdout
+    assert not env_probe["calls_log"].exists()
+
+    # 2. Live `--probe` against `fake_colab` with planted `hf_...` and `colab-runtime-proxy-token=...`
+    planted_leak = (
+        "leak_hf=hf_PlantedProbeLeak998877 "
+        "leak_proxy=https://8080-m-s.colab.dev/api?colab-runtime-proxy-token=PlantedProxyToken665544"
+    )
+    proc_live = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{base_probe_exports} "
+            f"export FAKE_COLAB_PROBE_PLANT_STDOUT='{planted_leak}'; "
+            f"bash '{wsl_launch}' --probe --out-dir '{_to_wsl_path(out_live)}' --run-id probe-live-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_live.returncode == 0, f"stderr={proc_live.stderr}"
+
+    # Verify exact 6-call Colab CLI sequence: sessions, new, exec, download, stop, sessions
+    call_records = [
+        json.loads(ln)
+        for ln in env_probe["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert [r["subcmd"] for r in call_records] == [
+        "sessions",
+        "new",
+        "exec",
+        "download",
+        "stop",
+        "sessions",
+    ]
+    assert "--gpu" not in call_records[1]["args"]
+    exec_argv = call_records[2]["args"]
+    assert "--timeout=270" in exec_argv
+    assert "RDLAB_STEP=probe" in exec_argv
+    assert "RDLAB_WALL_SECONDS=240" in exec_argv
+    for arg in exec_argv:
+        assert "HF_TOKEN" not in arg
+        assert "HUGGING_FACE" not in arg
+        assert "hf_RigSecret" not in arg
+
+    # Verify VM subprocess log: no uv venv, no uv pip, no snapshot_download, no HF_TOKEN in env,
+    # UV_CACHE_DIR=/tmp/probe-uv-cache on every call, and at most ONE `uv python install` into /tmp/probe-py
+    vm_subprocs = [
+        json.loads(ln)
+        for ln in (env_probe["state_dir"] / "vm_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(vm_subprocs) >= 15
+    install_calls = [
+        s for s in vm_subprocs if s["cmd"][:3] == ["uv", "python", "install"] and "--help" not in s["cmd"]
+    ]
+    assert len(install_calls) == 1
+    assert install_calls[0]["uv_python_install_dir"] == "/tmp/probe-py"
+    assert install_calls[0]["uv_cache_dir"] == "/tmp/probe-uv-cache"
+    assert "--no-bin" in install_calls[0]["cmd"]
+
+    for sub in vm_subprocs:
+        cmd_s = " ".join(sub["cmd"])
+        assert sub["cmd"][:2] != ["uv", "venv"]
+        assert sub["cmd"][:2] != ["uv", "pip"]
+        assert "snapshot_download" not in cmd_s
+        assert sub["uv_cache_dir"] == "/tmp/probe-uv-cache"
+        for ek in sub["env_keys"]:
+            assert not ek.startswith("HF_TOKEN")
+            assert ek != "HUGGING_FACE_HUB_TOKEN"
+
+    # Verify Addendum (c): probe did NOT create or touch /content/rdlab_work, venvs, or leave throwaway dirs behind
+    vm_fs = env_probe["state_dir"] / "vm_fs"
+    assert not (vm_fs / "rdlab_work").exists()
+    assert not (vm_fs / "rdlab_run").exists()
+    assert not (vm_fs / "rdlab").exists()
+    assert not (vm_fs / "rdlab_items").exists()
+    assert not Path("/tmp/probe-py").exists()
+    assert not Path("/tmp/probe-py-bin").exists()
+    assert not Path("/tmp/probe-uv-cache").exists()
+
+    # Verify downloaded probe.json structure, route, download_size_bytes, source_url, 5 MB curl range, and scrubbing
+    probe_json_path = out_live / "probe.json"
+    assert probe_json_path.is_file()
+    raw_probe_text = probe_json_path.read_text(encoding="utf-8")
+    probe_doc = json.loads(raw_probe_text)
+    assert probe_doc["step"] == "probe"
+    assert probe_doc["status"] == "ok"
+    assert probe_doc["rc"] == 0
+
+    py_inst = probe_doc["python_315_install"]
+    assert py_inst["route"] == "real_install"
+    assert py_inst["interpreter_install_count"] == 1
+    assert py_inst["install_dir"] == "/tmp/probe-py"
+    assert py_inst["uv_cache_dir"] == "/tmp/probe-uv-cache"
+    assert py_inst["download_size_bytes"] == 32505856
+    assert py_inst["source_url"].startswith(
+        "https://releases.astral.sh/github/python-build-standalone/releases/download/"
+    )
+    assert "hf_[REDACTED]" in py_inst["source_url"]
+    assert "colab-runtime-proxy-token=[REDACTED]" in py_inst["source_url"]
+
+    for curl_key in ("curl_huggingface", "curl_pythonhosted", "curl_pytorch_cu132"):
+        curl_cmd = probe_doc["commands"][curl_key]["cmd"]
+        assert "-r" in curl_cmd
+        assert "0-5242879" in curl_cmd
+        assert "--max-filesize" in curl_cmd
+        assert "5242880" in curl_cmd
+        assert probe_doc["commands"][curl_key]["bytes_received"] <= 5242880
+        assert probe_doc["fetches"][curl_key]["bytes_received"] <= 5242880
+
+    for cmd_name, cmd_entry in probe_doc["commands"].items():
+        combined_cmd_out = cmd_entry["stdout"] + "\n" + cmd_entry["stderr"]
+        assert "hf_[REDACTED]" in combined_cmd_out, f"Missing redacted hf token in {cmd_name}"
+        assert (
+            "colab-runtime-proxy-token=[REDACTED]" in combined_cmd_out
+        ), f"Missing redacted proxy token in {cmd_name}"
+
+    for secret in (
+        "hf_PlantedProbeLeak998877",
+        "PlantedProxyToken665544",
+        "hf_RigSecretGGUF12345",
+        "hf_RigSecretMain67890",
+        "hf_RigSecretHub11223",
+    ):
+        assert secret not in raw_probe_text
+        assert secret not in (out_live / "colab-cli.log").read_text(encoding="utf-8")
+
+    # Verify outcome.draft.json has outcome: "probe", hardware: "CPU", wall_seconds: 300, cap: 0.01
+    outcome_live = json.loads(
+        (out_live / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_live["outcome"] == "probe"
+    assert outcome_live["hardware"] == "CPU"
+    assert outcome_live["wall_seconds"] == 300
+    assert outcome_live["cap"] == 0.01
+    assert outcome_live["explicit_cap"] == 0.01
+
+    # 3. Also verify the `dry-run` route in `run_probe` when `uv python install --help` advertises `--dry-run`
+    env_dry_uv = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_probe_dry_uv", neighbour_sessions=[]
+    )
+    out_dry_uv = tmp_path / "out_probe_dry_uv"
+    proc_dry_uv = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export PATH='{_hermetic_path_for(env_dry_uv)}'; "
+            f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_dry_uv['state_dir'])}'; "
+            f"export COLAB_LOCK_DIR='{_to_wsl_path(env_dry_uv['colab_locks_dir'])}'; "
+            f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'probe_dry_uv.lock')}'; "
+            f"export RDLAB_STOP_POLL_SLEEP_SECONDS=0; "
+            f"export FAKE_COLAB_UV_SUPPORTS_DRY_RUN=1; "
+            f"bash '{wsl_launch}' --probe --out-dir '{_to_wsl_path(out_dry_uv)}' --run-id probe-dry-uv-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_dry_uv.returncode == 0, f"stderr={proc_dry_uv.stderr}"
+    dry_uv_doc = json.loads((out_dry_uv / "probe.json").read_text(encoding="utf-8"))
+    assert dry_uv_doc["python_315_install"]["route"] == "dry-run"
+    assert dry_uv_doc["python_315_install"]["interpreter_install_count"] == 0
+    assert "--dry-run" in dry_uv_doc["commands"]["uv_python_install_3_15"]["cmd"]
+
+    # 4. Direct in-process coverage of `vm_judges.main(["--step", "probe"])` (both `real_install` and `dry-run` routes)
+    #    and `vm_judges.main(["--step", "run", ...])` when `sync_judge_venvs` fails with `VmSubprocessError`.
+    inproc_probe_dir = tmp_path / "inproc_probe_content"
+    inproc_probe_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(inproc_probe_dir))
+
+    def _inproc_probe_subproc_real(
+        cmd: Any, *a: Any, **kw: Any
+    ) -> subprocess.CompletedProcess[str]:
+        cmd_l = [str(x) for x in cmd]
+        call_env = kw.get("env") or {}
+        if cmd_l[:4] == ["uv", "python", "install", "--help"]:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="Usage: uv python install [OPTIONS]\n", stderr=""
+            )
+        if cmd_l[:3] == ["uv", "python", "list"] and "--only-downloads" in cmd_l:
+            return subprocess.CompletedProcess(cmd_l, 0, stdout="not-json\n", stderr="")
+        if cmd_l[:3] == ["uv", "python", "install"]:
+            inst_dir = Path(call_env.get("UV_PYTHON_INSTALL_DIR", "/tmp/probe-py"))
+            inst_dir.mkdir(parents=True, exist_ok=True)
+            (inst_dir / "dummy_py315.bin").write_bytes(b"x" * 1024)
+            return subprocess.CompletedProcess(
+                cmd_l,
+                0,
+                stdout="Installed Python 3.15.0b1 in 0.42s\n",
+                stderr="Downloading https://releases.astral.sh/cpython-3.15.tar.gz?colab-runtime-proxy-token=InprocSec123\n",
+            )
+        if cmd_l[0] == "curl" and "-I" in cmd_l:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="HTTP/2 200\r\n", stderr=""
+            )
+        if cmd_l == ["which", "uv"]:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="/usr/local/bin/uv\n", stderr=""
+            )
+        if cmd_l[:4] == ["python3", "-m", "pip", "show"]:
+            return subprocess.CompletedProcess(
+                cmd_l, 1, stdout="", stderr="WARNING: Package(s) not found: uv\n"
+            )
+        return subprocess.CompletedProcess(
+            cmd_l, 0, stdout="ok hf_InprocTok999\n", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", _inproc_probe_subproc_real)
+    assert vm_judges.main(["--step", "probe"]) == 0
+    inproc_doc1 = json.loads((inproc_probe_dir / "probe.json").read_text(encoding="utf-8"))
+    assert inproc_doc1["python_315_install"]["route"] == "real_install"
+    assert inproc_doc1["python_315_install"]["download_size_bytes"] is None
+    assert inproc_doc1["python_315_install"]["download_size_source"] == "unavailable"
+    assert inproc_doc1["python_315_install"]["installed_size_bytes"] == 1024
+    assert inproc_doc1["uv"]["how_installed"] == "image"
+    assert "colab-runtime-proxy-token=[REDACTED]" in inproc_doc1["python_315_install"]["source_url"]
+    assert "hf_InprocTok999" not in json.dumps(inproc_doc1)
+
+    def _inproc_probe_subproc_dry(
+        cmd: Any, *a: Any, **kw: Any
+    ) -> subprocess.CompletedProcess[str]:
+        cmd_l = [str(x) for x in cmd]
+        if cmd_l[:4] == ["uv", "python", "install", "--help"]:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="Usage: uv python install --dry-run\n", stderr=""
+            )
+        if cmd_l[:3] == ["uv", "python", "list"] and "--only-downloads" in cmd_l:
+            return subprocess.CompletedProcess(
+                cmd_l,
+                0,
+                stdout=json.dumps(
+                    [{"key": "cpython-3.15", "url": "https://releases.astral.sh/py315.tar.gz"}]
+                ),
+                stderr="",
+            )
+        if cmd_l[0] == "curl" and "-I" in cmd_l:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="HTTP/2 200\r\ncontent-length: 4096\r\n", stderr=""
+            )
+        if cmd_l == ["which", "uv"]:
+            return subprocess.CompletedProcess(cmd_l, 1, stdout="", stderr="")
+        if cmd_l[:4] == ["python3", "-m", "pip", "show"]:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="Location: /usr/lib/python3/dist-packages\n", stderr=""
+            )
+        return subprocess.CompletedProcess(cmd_l, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _inproc_probe_subproc_dry)
+    assert vm_judges.main(["--step", "probe"]) == 0
+    inproc_doc2 = json.loads((inproc_probe_dir / "probe.json").read_text(encoding="utf-8"))
+    assert inproc_doc2["python_315_install"]["route"] == "dry-run"
+    assert inproc_doc2["python_315_install"]["download_size_bytes"] == 4096
+    assert inproc_doc2["uv"]["how_installed"].startswith("pip:")
+
+    # Direct in-process `vm_judges.main(["--step", "run", ...])` when `sync_judge_venvs` fails with `VmSubprocessError`
+    inproc_run_dir = tmp_path / "inproc_run"
+    inproc_work_dir = tmp_path / "inproc_work"
+    inproc_status = tmp_path / "inproc_status.json"
+    inproc_result_tar = tmp_path / "inproc_result.tar.gz"
+    r_dir, h_dir = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "inproc_data")
+    i_file = _make_synthetic_public_items(tmp_path / "inproc_data", count=2)
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "0")
+
+    def _inproc_fail_venv(
+        cmd: Any, *a: Any, **kw: Any
+    ) -> subprocess.CompletedProcess[str]:
+        cmd_l = [str(x) for x in cmd]
+        if cmd_l[:2] == ["uv", "venv"]:
+            return subprocess.CompletedProcess(
+                cmd_l,
+                2,
+                stdout="venv_out hf_InprocVenvOut1\n",
+                stderr="venv_err hf_InprocVenvErr2\n",
+            )
+        return subprocess.CompletedProcess(cmd_l, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _inproc_fail_venv)
+    rc_inproc_run = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "stub",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(r_dir),
+            "--items-file",
+            str(i_file),
+            "--run-dir",
+            str(inproc_run_dir),
+            "--work-dir",
+            str(inproc_work_dir),
+            "--hf-home",
+            str(h_dir),
+            "--result-tar",
+            str(inproc_result_tar),
+            "--status-file",
+            str(inproc_status),
+        ]
+    )
+    assert rc_inproc_run == 2
+    inproc_st_doc = json.loads(inproc_status.read_text(encoding="utf-8"))
+    assert inproc_st_doc["failure_class"] == "VM_SUBPROCESS_FAILED"
+    assert "hf_[REDACTED]" in inproc_st_doc["stderr_tail"]
+    assert "hf_InprocVenvErr2" not in json.dumps(inproc_st_doc)
+
+
+def test_probe_fetch_5mb_hard_cap_when_server_or_curl_ignores_range_and_offers_50mb(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the 5 MB (`5,242,880` bytes) cap holds on all three probe fetches when:
+    1. A server ignores `Range` and offers 50 MB (`52,428,800` bytes) without `Content-Length` to real `curl`.
+    2. A fake `curl` ignores `-r`, `--max-filesize`, and `SIGPIPE` and offers 50 MB (`52,428,800` bytes).
+    3. A server returns a small (< 5 MB) payload (`1,234` bytes).
+    Each fetch records `bytes_received <= 5,242,880` in `probe.json`.
+    """
+    import http.server
+    import shutil
+    import threading
+
+    fifty_mb = 50 * 1024 * 1024
+    cap_bytes = 5_242_880
+    chunk_64k = b"A" * 65536
+
+    class _IgnoreRange50MBHandler(http.server.BaseHTTPRequestHandler):
+        def do_HEAD(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+
+        def do_GET(self) -> None:
+            # Deliberately ignore Range header and omit Content-Length while offering 50 MB
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+            sent = 0
+            try:
+                while sent < fifty_mb:
+                    to_send = min(len(chunk_64k), fifty_mb - sent)
+                    self.wfile.write(chunk_64k[:to_send])
+                    self.wfile.flush()
+                    sent += to_send
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _IgnoreRange50MBHandler)
+    port = server.server_address[1]
+    srv_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    srv_thread.start()
+
+    try:
+        probe_content_srv = tmp_path / "probe_srv_content"
+        probe_content_srv.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(probe_content_srv))
+        monkeypatch.setattr(
+            vm_judges, "PROBE_HF_RESOLVE_URL", f"http://127.0.0.1:{port}/hf_50mb.bin"
+        )
+        monkeypatch.setattr(
+            vm_judges, "PROBE_PYYAML_SDIST_URL", f"http://127.0.0.1:{port}/pyyaml_50mb.tar.gz"
+        )
+        monkeypatch.setattr(
+            vm_judges, "PROBE_PYTORCH_WHEEL_URL", f"http://127.0.0.1:{port}/torch_50mb.whl"
+        )
+
+        # Provide fast stub `uv` on PATH while using real `curl` and real pipe streaming
+        stub_bin = tmp_path / "stub_bin_srv"
+        stub_bin.mkdir(parents=True, exist_ok=True)
+        uv_stub = stub_bin / "uv"
+        uv_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"$1\" == \"--version\" ]]; then echo 'uv 0.11.18'; exit 0; fi\n"
+            "if [[ \"$1\" == \"python\" && \"$2\" == \"install\" && \"$3\" == \"--help\" ]]; then echo 'Usage: uv python install --dry-run'; exit 0; fi\n"
+            "if [[ \"$1\" == \"python\" && \"$2\" == \"list\" && \"$*\" == *\"--only-downloads\"* ]]; then echo '[{\"url\":\"http://127.0.0.1:"
+            + str(port)
+            + "/py315.tar.gz\"}]'; exit 0; fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        uv_stub.chmod(0o755)
+        monkeypatch.setenv(
+            "PATH", f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+        )
+
+        assert vm_judges.main(["--step", "probe"]) == 0
+        srv_doc = json.loads((probe_content_srv / "probe.json").read_text(encoding="utf-8"))
+        for key in ("curl_huggingface", "curl_pythonhosted", "curl_pytorch_cu132"):
+            cmd_entry = srv_doc["commands"][key]
+            assert "-r" in cmd_entry["cmd"]
+            assert "0-5242879" in cmd_entry["cmd"]
+            assert "--max-filesize" in cmd_entry["cmd"]
+            assert "5242880" in cmd_entry["cmd"]
+            assert cmd_entry["bytes_received"] == cap_bytes
+            assert cmd_entry["max_bytes"] == cap_bytes
+            assert srv_doc["fetches"][key]["bytes_received"] == cap_bytes
+            assert srv_doc["fetches"][key]["max_bytes"] == cap_bytes
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # 2. Fake `curl` executable that ignores `-r`, `--max-filesize`, and `SIGPIPE`, offering 50 MB
+    probe_content_fake_curl = tmp_path / "probe_fake_curl_content"
+    probe_content_fake_curl.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(probe_content_fake_curl))
+
+    fake_curl_bin = tmp_path / "fake_curl_bin"
+    fake_curl_bin.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(stub_bin / "uv", fake_curl_bin / "uv")
+    fake_curl_script = fake_curl_bin / "curl"
+    fake_curl_script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import signal, sys, time\n"
+        "if '-I' in sys.argv:\n"
+        "    sys.stdout.write('HTTP/2 200\\r\\ncontent-length: 32505856\\r\\n\\r\\n')\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGPIPE, signal.SIG_IGN)\n"
+        "buf = b'B' * 65536\n"
+        "remaining = 50 * 1024 * 1024\n"
+        "try:\n"
+        "    while remaining > 0:\n"
+        "        n = min(len(buf), remaining)\n"
+        "        sys.stdout.buffer.write(buf[:n])\n"
+        "        sys.stdout.buffer.flush()\n"
+        "        remaining -= n\n"
+        "except BaseException:\n"
+        "    time.sleep(5)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_curl_script.chmod(0o755)
+    monkeypatch.setenv(
+        "PATH", f"{fake_curl_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    )
+
+    assert vm_judges.main(["--step", "probe"]) == 0
+    fc_doc = json.loads(
+        (probe_content_fake_curl / "probe.json").read_text(encoding="utf-8")
+    )
+    for key in ("curl_huggingface", "curl_pythonhosted", "curl_pytorch_cu132"):
+        assert fc_doc["commands"][key]["bytes_received"] == cap_bytes
+        assert fc_doc["fetches"][key]["bytes_received"] == cap_bytes
+
+    # 3. Also verify a short response (< 5 MB) hits clean EOF and records exact byte count
+    short_res = vm_judges.run_vm_subprocess(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'Z' * 1234)"],
+        max_stdout_bytes=cap_bytes,
+        check=False,
+        log_output=False,
+    )
+    assert short_res.returncode == 0
+    assert short_res.bytes_received == 1234
+
+
+def test_token_scrubber_redacts_all_hf_and_proxy_token_forms_and_keeps_exceptions(
+    tmp_path: Path,
+) -> None:
+    """Verify `scrub_log_text`, `HF_TOKEN_RE`, and `UNREDACTED_PROXY_TOKEN_RE` redact:
+    1. Standard `hf_<token>`
+    2. `hf_` token preceded by `_` (`x_hf_...`, `_hf_...`)
+    3. `hf_` token followed by `_` (`hf_..._x`, `x_hf_..._y`)
+    4. URL-encoded `hf%5F...` and `hf%5f...` (including `x%5Fhf%5F..._z`)
+    5. Proxy token query form `colab-runtime-proxy-token=<value>`
+    6. Proxy token header form `X-Colab-Runtime-Proxy-Token: <value>` (case-insensitive)
+    7. Existing Bearer, OAuth (`ya29.`, `1//`, KV), JWT, and `HF_TOKEN*` / `HUGGING_FACE_HUB_TOKEN` forms
+    While preserving `hf_home`, `hf_cache`, `hf_low`, `hf_match`, and `hf_deactivate_async_load`.
+    """
+    samples = [
+        ("tok=hf_StandardSecret111", "hf_StandardSecret111", "hf_[REDACTED]"),
+        ("prefix=x_hf_PrecededUnderscore222", "PrecededUnderscore222", "x_hf_[REDACTED]"),
+        ("lead=_hf_LeadingUnderscore333", "LeadingUnderscore333", "_hf_[REDACTED]"),
+        ("suffix=hf_FollowedUnderscore444_x", "FollowedUnderscore444", "hf_[REDACTED]_x"),
+        ("both=x_hf_BothUnderscores555_y", "BothUnderscores555", "x_hf_[REDACTED]_y"),
+        ("url_upper=hf%5FUrlEncodedUpper666", "UrlEncodedUpper666", "hf_[REDACTED]"),
+        ("url_lower=hf%5fUrlEncodedLower777", "UrlEncodedLower777", "hf_[REDACTED]"),
+        ("url_both=x%5Fhf%5FUrlBoth888_z", "UrlBoth888", "x%5Fhf_[REDACTED]_z"),
+        (
+            "https://8080-m-s.colab.dev/api?colab-runtime-proxy-token=QueryProxyTok999",
+            "QueryProxyTok999",
+            "colab-runtime-proxy-token=[REDACTED]",
+        ),
+        (
+            "X-Colab-Runtime-Proxy-Token: HeaderProxyTokAAA",
+            "HeaderProxyTokAAA",
+            "X-Colab-Runtime-Proxy-Token: [REDACTED]",
+        ),
+        (
+            "x-colab-runtime-proxy-token: HeaderLowerTokBBB",
+            "HeaderLowerTokBBB",
+            "x-colab-runtime-proxy-token: [REDACTED]",
+        ),
+        ("Authorization: Bearer BearerSecretCCC", "BearerSecretCCC", "Bearer [REDACTED]"),
+        ("oauth=ya29.OAuthAccessDDD", "OAuthAccessDDD", "[REDACTED_OAUTH_TOKEN]"),
+        ("refresh=1//OAuthRefreshEEE", "OAuthRefreshEEE", "[REDACTED_OAUTH_TOKEN]"),
+        ('{"access_token": "OAuthKvFFF"}', "OAuthKvFFF", '{"access_token": "[REDACTED]"}'),
+        (
+            "jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+            "[REDACTED_JWT]",
+        ),
+        ("HF_TOKEN=EnvTokGGG", "EnvTokGGG", "HF_TOKEN=[REDACTED]"),
+        ("HF_TOKEN_GGUF_READ=EnvTokHHH", "EnvTokHHH", "HF_TOKEN_GGUF_READ=[REDACTED]"),
+        ("HUGGING_FACE_HUB_TOKEN=EnvTokIII", "EnvTokIII", "HUGGING_FACE_HUB_TOKEN=[REDACTED]"),
+    ]
+
+    for raw_line, secret_substr, expected_redacted in samples:
+        scrubbed = vm_judges.scrub_log_text(raw_line)
+        assert secret_substr not in scrubbed, f"Leaked {secret_substr!r} in {scrubbed!r}"
+        assert expected_redacted in scrubbed, f"Missing {expected_redacted!r} in {scrubbed!r}"
+        # Idempotent on second pass
+        assert vm_judges.scrub_log_text(scrubbed) == scrubbed
+
+        # Log guard must refuse the unredacted line and accept the scrubbed line
+        log_file = tmp_path / "guard_check.log"
+        log_file.write_text(raw_line + "\n", encoding="utf-8")
+        if not raw_line.startswith(("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")) and "access_token" not in raw_line:
+            with pytest.raises(vm_judges.RefusalError) as exc_info:
+                vm_judges.verify_rig_logs_and_outputs_clean([log_file], claim_ngram_sha256s=set())
+            assert exc_info.value.failure_class == "LOG_GUARD_UNREDACTED_TOKEN"
+        log_file.write_text(scrubbed + "\n", encoding="utf-8")
+        vm_judges.verify_rig_logs_and_outputs_clean([log_file], claim_ngram_sha256s=set())
+
+    # Verify path exceptions (`home|cache|low|match` and `deactivate_async_load`) are never redacted
+    safe_text = (
+        "/content/hf_home hf_home_free_bytes=120000000000 "
+        "/content/hf_cache env_hf_low out_hf_low "
+        "env_hf_match hf_match_data out_hf_match "
+        "hf_deactivate_async_load"
+    )
+    assert vm_judges.scrub_log_text(safe_text) == safe_text
+    safe_file = tmp_path / "safe_paths.log"
+    safe_file.write_text(safe_text + "\n", encoding="utf-8")
+    vm_judges.verify_rig_logs_and_outputs_clean([safe_file], claim_ngram_sha256s=set())
+
+
+def test_probe_size_fallback_labels_installed_size_and_unavailable_download_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `run_probe` size reporting in both cases:
+    1. When HEAD `Content-Length` is present and > 0: records `download_size_bytes` from `Content-Length`,
+       `download_size_source: "head_content_length"`, and `installed_size_bytes` separately.
+    2. When HEAD `Content-Length` is 0 or missing: records `installed_size_bytes` (~2160),
+       `download_size_bytes: null`, and `download_size_source: "unavailable"`, never putting the
+       installed size under the download label.
+    """
+    probe_dir = tmp_path / "probe_size_content"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(probe_dir))
+
+    head_response_state = {"stdout": "HTTP/2 200\r\nContent-Length: 32505856\r\n\r\n"}
+
+    def _fake_probe_subproc(
+        cmd: Any, *a: Any, **kw: Any
+    ) -> subprocess.CompletedProcess[str]:
+        cmd_l = [str(x) for x in cmd]
+        call_env = kw.get("env") or {}
+        if cmd_l[:4] == ["uv", "python", "install", "--help"]:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="Usage: uv python install [OPTIONS]\n", stderr=""
+            )
+        if cmd_l[:3] == ["uv", "python", "list"] and "--only-downloads" in cmd_l:
+            return subprocess.CompletedProcess(
+                cmd_l,
+                0,
+                stdout=json.dumps(
+                    [{"key": "cpython-3.15", "url": "https://releases.astral.sh/cpython-3.15.tar.gz"}]
+                ),
+                stderr="",
+            )
+        if cmd_l[:3] == ["uv", "python", "install"]:
+            inst_dir = Path(call_env.get("UV_PYTHON_INSTALL_DIR", "/tmp/probe-py"))
+            inst_dir.mkdir(parents=True, exist_ok=True)
+            (inst_dir / "installed_py315.bin").write_bytes(b"P" * 2160)
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="Installed Python 3.15.0b1\n", stderr=""
+            )
+        if cmd_l[0] == "curl" and "-I" in cmd_l:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout=head_response_state["stdout"], stderr=""
+            )
+        return subprocess.CompletedProcess(cmd_l, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_probe_subproc)
+
+    # Case 1: HEAD Content-Length > 0
+    assert vm_judges.main(["--step", "probe"]) == 0
+    doc_present = json.loads((probe_dir / "probe.json").read_text(encoding="utf-8"))
+    assert doc_present["python_315_install"]["download_size_bytes"] == 32505856
+    assert doc_present["python_315_install"]["download_size_source"] == "head_content_length"
+    assert doc_present["python_315_install"]["installed_size_bytes"] == 2160
+    assert doc_present["uv"]["python_install_3_15_download_size_bytes"] == 32505856
+    assert doc_present["uv"]["python_install_3_15_download_size_source"] == "head_content_length"
+    assert doc_present["uv"]["python_install_3_15_installed_size_bytes"] == 2160
+
+    # Case 2a: HEAD Content-Length is 0
+    head_response_state["stdout"] = "HTTP/2 200\r\nContent-Length: 0\r\n\r\n"
+    assert vm_judges.main(["--step", "probe"]) == 0
+    raw_zero = (probe_dir / "probe.json").read_text(encoding="utf-8")
+    doc_zero = json.loads(raw_zero)
+    assert doc_zero["python_315_install"]["installed_size_bytes"] == 2160
+    assert doc_zero["python_315_install"]["download_size_bytes"] is None
+    assert doc_zero["python_315_install"]["download_size_source"] == "unavailable"
+    assert doc_zero["uv"]["python_install_3_15_installed_size_bytes"] == 2160
+    assert doc_zero["uv"]["python_install_3_15_download_size_bytes"] is None
+    assert doc_zero["uv"]["python_install_3_15_download_size_source"] == "unavailable"
+    assert '"download_size_bytes": null' in raw_zero
+    assert '"download_size_source": "unavailable"' in raw_zero
+
+    # Case 2b: HEAD Content-Length is missing
+    head_response_state["stdout"] = "HTTP/2 200\r\nServer: test\r\n\r\n"
+    assert vm_judges.main(["--step", "probe"]) == 0
+    raw_missing = (probe_dir / "probe.json").read_text(encoding="utf-8")
+    doc_missing = json.loads(raw_missing)
+    assert doc_missing["python_315_install"]["installed_size_bytes"] == 2160
+    assert doc_missing["python_315_install"]["download_size_bytes"] is None
+    assert doc_missing["python_315_install"]["download_size_source"] == "unavailable"
+    assert doc_missing["uv"]["python_install_3_15_installed_size_bytes"] == 2160
+    assert doc_missing["uv"]["python_install_3_15_download_size_bytes"] is None
+    assert doc_missing["uv"]["python_install_3_15_download_size_source"] == "unavailable"
+
+
+def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the shared fake `uv` executable in `fake_bin/uv`:
+    1. Answers `uv --version`.
+    2. Answers `uv python find 3.15` from test-controlled state (`uv_state.json`), returning a path when found
+       and exiting `2` with `uv`'s stderr message when not found.
+    3. Fails loudly with exit code `98` on any unexpected arguments.
+    4. Causes `--step gate` (both direct kernel/CLI gate execution and end-to-end launcher gate) to refuse
+       with `VM_PYTHON_UNAVAILABLE` and exit code `2` when fake `uv` reports no Python 3.15.
+    """
+    import shutil as _shutil
+
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_fake_uv_refusal",
+        neighbour_sessions=[],
+        uv_python_315_found=True,
+        uv_python_315_path="/opt/fake-uv/python-3.15/bin/python3.15",
+    )
+    hermetic_path = _hermetic_path_for(env_paths)
+    monkeypatch.setenv("PATH", hermetic_path)
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_paths["state_dir"]))
+    monkeypatch.setattr(
+        _shutil,
+        "disk_usage",
+        lambda _p: _shutil._ntuple_diskusage(
+            200_000_000_000, 80_000_000_000, 120_000_000_000
+        ),
+    )
+
+    # 1. `uv --version` and `uv python find 3.15` when found
+    res_ver = subprocess.run(
+        ["uv", "--version"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_ver.returncode == 0
+    assert res_ver.stdout.strip() == "uv 0.11.18"
+
+    res_find_ok = subprocess.run(
+        ["uv", "python", "find", "3.15"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_find_ok.returncode == 0
+    assert res_find_ok.stdout.strip() == "/opt/fake-uv/python-3.15/bin/python3.15"
+
+    # 2. Anything else asked of fake `uv` fails loudly with nonzero exit code (98)
+    for bad_uv_cmd in (
+        ["uv", "python", "find", "3.14"],
+        ["uv", "venv", "/tmp/unexpected"],
+        ["uv", "pip", "list"],
+    ):
+        res_unexpected = subprocess.run(
+            bad_uv_cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert res_unexpected.returncode == 98
+        assert "fake uv: unexpected arguments" in res_unexpected.stderr
+
+    # 3. Switch fake `uv` state to not-found (no Python 3.15) and verify direct `--step gate` refuses with VM_PYTHON_UNAVAILABLE and rc=2
+    fake_colab.set_fake_uv_python_315_state(
+        env_paths,
+        found=False,
+        stderr_message=(
+            "error: No interpreter found for Python 3.15 in managed installations or search path "
+            "(token=hf_FakeUvRefusalSecret777)"
+        ),
+    )
+    res_find_missing = subprocess.run(
+        ["uv", "python", "find", "3.15"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_find_missing.returncode == 2
+    assert "No interpreter found for Python 3.15" in res_find_missing.stderr
+
+    gate_content = tmp_path / "gate_content_no315"
+    gate_status = tmp_path / "gate_status_no315.json"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(gate_content))
+    rc_gate = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(gate_status),
+        ]
+    )
+    assert rc_gate == 2
+    gate_doc = json.loads(gate_status.read_text(encoding="utf-8"))
+    assert gate_doc["step"] == "gate"
+    assert gate_doc["rc"] == 2
+    assert gate_doc["status"] == "refused"
+    assert gate_doc["failure_class"] == "VM_PYTHON_UNAVAILABLE"
+    assert "No interpreter found for Python 3.15" in gate_doc["reason"]
+    assert "hf_[REDACTED]" in gate_doc["reason"]
+    assert "hf_FakeUvRefusalSecret777" not in json.dumps(gate_doc)
+
+    # 4. Also verify end-to-end launcher `--stub` against the same `uv_state.json` refusal
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "e2e_fake_uv_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "e2e_fake_uv_data", count=4)
+    out_e2e = tmp_path / "out_e2e_fake_uv_refusal"
+    exports_e2e = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "e2e_fake_uv.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_e2e = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_e2e} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_e2e)}' --run-id fake-uv-refuse-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_e2e.returncode == 2
+    assert "VM_PYTHON_UNAVAILABLE" in proc_e2e.stderr
+    assert "No interpreter found for Python 3.15" in proc_e2e.stderr
+    assert "hf_[REDACTED]" in proc_e2e.stderr
+    assert "hf_FakeUvRefusalSecret777" not in proc_e2e.stderr
+    outcome_e2e = json.loads(
+        (out_e2e / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_e2e["outcome"] == "failed"
+    assert "VM_PYTHON_UNAVAILABLE" in outcome_e2e["why"]
+    assert not env_paths["sentinel_called"].exists()
+    assert not env_paths["sentinel_uv_called"].exists()
+
+
+def test_hermetic_path_guard_blocks_real_binaries_and_fires_sentinel_when_fake_absent(
+    tmp_path: Path,
+) -> None:
+    """Verify the hermetic PATH guard:
+    1. `build_hermetic_path` replaces PATH with `fake_bin:sentinel_bin:/usr/bin:/bin` (never inheriting host
+       or runner directories where real `uv` or `colab` live).
+    2. When `fake_bin/uv` or `fake_bin/colab` is present, commands resolve to `fake_bin` and sentinels stay untouched.
+    3. When `fake_bin/uv` is absent, invoking `uv` hits `sentinel_bin/uv`, exits `99`, and creates `REAL_UV_CALLED`
+       (causing `vm_judges.check_vm_python_preflight()` to refuse with `VM_PYTHON_UNAVAILABLE`).
+    4. When `fake_bin/colab` is absent, invoking `colab` hits `sentinel_bin/colab`, exits `99`, and creates `REAL_COLAB_CALLED`.
+    """
+    import shutil as _shutil
+
+    guard_env = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_sentinel_guard", neighbour_sessions=[]
+    )
+    hermetic_path = _hermetic_path_for(guard_env)
+    path_parts = hermetic_path.split(":")
+    assert path_parts == [
+        _to_wsl_path(guard_env["fake_bin"]),
+        _to_wsl_path(guard_env["sentinel_bin"]),
+        "/usr/bin",
+        "/bin",
+    ]
+
+    # Verify neither `/usr/bin` nor `/bin` contains a real `uv` or `colab`
+    assert _shutil.which("uv", path="/usr/bin:/bin") is None
+    assert _shutil.which("colab", path="/usr/bin:/bin") is None
+
+    # With fakes present, `which` resolves to `fake_bin` and sentinels are not touched
+    assert _shutil.which("uv", path=hermetic_path) == str(guard_env["fake_bin"] / "uv")
+    assert _shutil.which("colab", path=hermetic_path) == str(
+        guard_env["fake_bin"] / "colab"
+    )
+    assert not guard_env["sentinel_uv_called"].exists()
+    assert not guard_env["sentinel_called"].exists()
+
+    # Remove `fake_bin/uv`: `uv` now resolves to `sentinel_bin/uv`, exits 99, and touches `REAL_UV_CALLED`
+    (guard_env["fake_bin"] / "uv").unlink()
+    assert _shutil.which("uv", path=hermetic_path) == str(
+        guard_env["sentinel_bin"] / "uv"
+    )
+    sub_env = {**os.environ, "PATH": hermetic_path, "FAKE_COLAB_STATE_DIR": str(guard_env["state_dir"])}
+    res_uv_sentinel = subprocess.run(
+        ["uv", "--version"],
+        stdin=subprocess.DEVNULL,
+        env=sub_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_uv_sentinel.returncode == 99
+    assert "SENTINEL_REAL_BINARY_REACHED: uv" in res_uv_sentinel.stderr
+    assert guard_env["sentinel_uv_called"].is_file()
+
+    # Remove `fake_bin/colab`: `colab` now resolves to `sentinel_bin/colab`, exits 99, and touches `REAL_COLAB_CALLED`
+    (guard_env["fake_bin"] / "colab").unlink()
+    assert _shutil.which("colab", path=hermetic_path) == str(
+        guard_env["sentinel_bin"] / "colab"
+    )
+    res_colab_sentinel = subprocess.run(
+        ["colab", "sessions"],
+        stdin=subprocess.DEVNULL,
+        env=sub_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_colab_sentinel.returncode == 99
+    assert "SENTINEL_REAL_BINARY_REACHED: colab" in res_colab_sentinel.stderr
+    assert guard_env["sentinel_called"].is_file()
+
+
+
+
 
 
 
