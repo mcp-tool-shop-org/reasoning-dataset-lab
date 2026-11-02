@@ -117,7 +117,6 @@ def _make_synthetic_public_items(base_dir: Path, count: int = 12) -> Path:
             json.dumps(
                 {
                     "id": f"item-{idx:04d}",
-                    "part_id": "pilot-40b",
                     "material": (
                         f"1. Alpha premise {idx} establishes the first hop for entity {idx}.\n"
                         f"2. Beta premise {idx} links the first hop to outcome {idx}."
@@ -1192,3 +1191,370 @@ def test_fake_colab_contract_and_time_one_mode_summary_and_mass_readout(
     assert mass_readout["is_result"] is False
     assert mass_readout["part_id"] == "pilot-40b"
     assert set(mass_readout["judges"].keys()) == set(BAKEOFF_JUDGE_SPECS.keys())
+
+
+def _write_single_item_file(path: Path, row: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def _assert_rig_dry_and_live_refuse_items_file(
+    tmp_path: Path,
+    items_file: Path,
+    *,
+    expected_field: str,
+    forbidden_marker: str,
+    tag: str,
+) -> None:
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{tag}")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / f"snap_{tag}"
+    )
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / f"{tag}.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    wsl_launch = _to_wsl_path(LAUNCH_JUDGES_SH)
+    out_dry = tmp_path / f"out_dry_{tag}"
+    proc_dry = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{wsl_launch}' --stub --dry --out-dir '{_to_wsl_path(out_dry)}' --run-id dry-{tag}",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_dry.returncode != 0
+    assert proc_dry.stdout.strip() == ""
+    assert "ITEMS_FIELD_NOT_ALLOWED" in proc_dry.stderr
+    assert expected_field in proc_dry.stderr
+    assert forbidden_marker not in proc_dry.stdout
+    assert forbidden_marker not in proc_dry.stderr
+    assert not env_paths["calls_log"].exists()
+
+    out_live = tmp_path / f"out_live_{tag}"
+    proc_live = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{wsl_launch}' --stub --out-dir '{_to_wsl_path(out_live)}' --run-id live-{tag}",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_live.returncode != 0
+    assert "ITEMS_FIELD_NOT_ALLOWED" in proc_live.stderr
+    assert expected_field in proc_live.stderr
+    assert forbidden_marker not in proc_live.stdout
+    assert forbidden_marker not in proc_live.stderr
+    assert not env_paths["calls_log"].exists()
+
+
+def test_items_allowlist_row_with_key_basis_refuses(tmp_path: Path) -> None:
+    marker = "PLANTED_KEY_BASIS_SECRET_VALUE_7001"
+    items_file = _write_single_item_file(
+        tmp_path / "part_public" / "items.jsonl",
+        {
+            "id": "item-0001",
+            "material": "1. Alpha premise.\n2. Beta premise.",
+            "claim": "Alpha beta claim.",
+            "key_basis": marker,
+        },
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_info:
+        vm_judges.collect_claim_ngram_sha256s(items_file)
+    assert exc_info.value.failure_class == "ITEMS_FIELD_NOT_ALLOWED"
+    assert "key_basis" in str(exc_info.value)
+    assert marker not in str(exc_info.value)
+
+    _assert_rig_dry_and_live_refuse_items_file(
+        tmp_path,
+        items_file,
+        expected_field="key_basis",
+        forbidden_marker=marker,
+        tag="key-basis",
+    )
+
+
+def test_items_allowlist_row_with_proof_basis_refuses(tmp_path: Path) -> None:
+    marker = "PLANTED_PROOF_BASIS_SECRET_VALUE_7002"
+    items_file = _write_single_item_file(
+        tmp_path / "part_public" / "items.jsonl",
+        {
+            "id": "item-0001",
+            "material": "1. Alpha premise.\n2. Beta premise.",
+            "claim": "Alpha beta claim.",
+            "proof_basis": marker,
+        },
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_info:
+        vm_judges.collect_claim_ngram_sha256s(items_file)
+    assert exc_info.value.failure_class == "ITEMS_FIELD_NOT_ALLOWED"
+    assert "proof_basis" in str(exc_info.value)
+    assert marker not in str(exc_info.value)
+
+    _assert_rig_dry_and_live_refuse_items_file(
+        tmp_path,
+        items_file,
+        expected_field="proof_basis",
+        forbidden_marker=marker,
+        tag="proof-basis",
+    )
+
+
+def test_items_allowlist_row_with_triad_id_refuses(tmp_path: Path) -> None:
+    marker = "PLANTED_TRIAD_ID_SECRET_VALUE_7003"
+    items_file = _write_single_item_file(
+        tmp_path / "part_public" / "items.jsonl",
+        {
+            "id": "item-0001",
+            "material": "1. Alpha premise.\n2. Beta premise.",
+            "claim": "Alpha beta claim.",
+            "triad_id": marker,
+        },
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_info:
+        vm_judges.collect_claim_ngram_sha256s(items_file)
+    assert exc_info.value.failure_class == "ITEMS_FIELD_NOT_ALLOWED"
+    assert "triad_id" in str(exc_info.value)
+    assert marker not in str(exc_info.value)
+
+    _assert_rig_dry_and_live_refuse_items_file(
+        tmp_path,
+        items_file,
+        expected_field="triad_id",
+        forbidden_marker=marker,
+        tag="triad-id",
+    )
+
+
+def test_items_allowlist_row_missing_claim_refuses(tmp_path: Path) -> None:
+    marker = "PLANTED_MISSING_CLAIM_ROW_SECRET_7004"
+    items_file = _write_single_item_file(
+        tmp_path / "part_public" / "items.jsonl",
+        {
+            "id": "item-0001",
+            "material": marker,
+        },
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_info:
+        vm_judges.collect_claim_ngram_sha256s(items_file)
+    assert exc_info.value.failure_class == "ITEMS_FIELD_NOT_ALLOWED"
+    assert "claim" in str(exc_info.value)
+    assert marker not in str(exc_info.value)
+
+    _assert_rig_dry_and_live_refuse_items_file(
+        tmp_path,
+        items_file,
+        expected_field="claim",
+        forbidden_marker=marker,
+        tag="missing-claim",
+    )
+
+    non_obj_marker = "PLANTED_NON_OBJECT_SECRET_7005"
+    non_obj_file = _write_single_item_file(
+        tmp_path / "part_non_obj" / "items.jsonl",
+        [non_obj_marker],
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_non_obj:
+        vm_judges.collect_claim_ngram_sha256s(non_obj_file)
+    assert exc_non_obj.value.failure_class == "ITEMS_FIELD_NOT_ALLOWED"
+    assert non_obj_marker not in str(exc_non_obj.value)
+
+
+def test_items_allowlist_exact_id_material_claim_row_passes(tmp_path: Path) -> None:
+    items_file = _write_single_item_file(
+        tmp_path / "part_public" / "items.jsonl",
+        {
+            "id": "item-0001",
+            "material": "1. Alpha premise establishes hop one.\n2. Beta premise links hop one to hop two.",
+            "claim": "Alpha beta projection claim with only three fields.",
+        },
+    )
+    assert vm_judges.ALLOWED_ITEM_FIELDS == frozenset({"id", "material", "claim"})
+    assert vm_judges.verify_items_allowlist(items_file) == 1
+    hashes = vm_judges.collect_claim_ngram_sha256s(items_file)
+    assert len(hashes) >= 2
+
+
+def test_items_allowlist_refusal_message_contains_field_name_and_not_value(
+    tmp_path: Path,
+) -> None:
+    planted_marker = "MARKER_NEVER_PRINT_THIS_VALUE_9918273645"
+    for bad_field in ("key_basis", "proof_basis", "triad_id", "key", "class", "verdict"):
+        f_path = _write_single_item_file(
+            tmp_path / f"case_{bad_field}" / "items.jsonl",
+            {
+                "id": "item-0001",
+                "material": "1. Alpha premise.\n2. Beta premise.",
+                "claim": "Alpha beta claim.",
+                bad_field: planted_marker,
+            },
+        )
+        with pytest.raises(vm_judges.RefusalError) as exc_info:
+            vm_judges.collect_claim_ngram_sha256s(f_path)
+        assert exc_info.value.failure_class == "ITEMS_FIELD_NOT_ALLOWED"
+        assert bad_field in str(exc_info.value)
+        assert planted_marker not in str(exc_info.value)
+        assert planted_marker not in exc_info.value.detail
+        with pytest.raises(vm_judges.RefusalError) as exc_allow:
+            vm_judges.verify_items_allowlist(f_path)
+        assert exc_allow.value.failure_class == "ITEMS_FIELD_NOT_ALLOWED"
+        assert bad_field in str(exc_allow.value)
+        assert planted_marker not in str(exc_allow.value)
+
+    # Defence-in-depth on VM side: vm_judges.main("--step run") refuses an unverified items file
+    # and never writes the marker value into status.json or vm_receipt.json.
+    vm_dir = tmp_path / "vm_defence"
+    vm_items = _write_single_item_file(
+        vm_dir / "items" / "items.jsonl",
+        {
+            "id": "item-0001",
+            "material": "1. Alpha premise.\n2. Beta premise.",
+            "claim": "Alpha beta claim.",
+            "key_basis": planted_marker,
+        },
+    )
+    vm_run_dir = vm_dir / "run"
+    vm_status = vm_dir / "status.json"
+    rc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "stub",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--items-file",
+            str(vm_items),
+            "--run-dir",
+            str(vm_run_dir),
+            "--work-dir",
+            str(vm_dir / "work"),
+            "--receipts-dir",
+            str(vm_dir / "receipts"),
+            "--hf-home",
+            str(vm_dir / "hf"),
+            "--result-tar",
+            str(vm_dir / "result.tar.gz"),
+            "--status-file",
+            str(vm_status),
+            "--dryrun",
+        ]
+    )
+    assert rc == 2
+    status_text = vm_status.read_text(encoding="utf-8")
+    receipt_text = (vm_run_dir / "vm_receipt.json").read_text(encoding="utf-8")
+    assert "ITEMS_FIELD_NOT_ALLOWED" in status_text
+    assert "key_basis" in status_text
+    assert planted_marker not in status_text
+    assert planted_marker not in receipt_text
+    assert not vm_items.exists()
+
+
+def test_kernel_exec_without_dunder_file_fails_when_dunder_file_used(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    vm_src = VM_JUDGES_PY.read_text(encoding="utf-8")
+    status_file = tmp_path / "gate_status.json"
+    monkeypatch.setenv("RDLAB_STEP", "gate")
+    monkeypatch.setenv("RDLAB_STATUS_FILE", str(status_file))
+    monkeypatch.setattr(
+        sys, "argv", ["ipykernel_launcher.py", "-f", "/tmp/kernel-cell.json"]
+    )
+    ns: dict[str, Any] = {"__name__": "__main__"}
+    assert "__file__" not in ns
+    exec(compile(vm_src, "<cell>", "exec"), ns)
+    assert "__file__" not in vm_src
+    assert ns.get("CELL_EXIT_CODE") == 0
+    status_doc = json.loads(status_file.read_text(encoding="utf-8"))
+    assert status_doc["step"] == "gate"
+    assert status_doc["rc"] == 0
+    assert status_doc["status"] == "ok"
+
+
+def test_kernel_exec_gate_and_run_steps_complete(tmp_path: Path) -> None:
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path, neighbour_sessions=[]
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path, count=4)
+    out_dir = tmp_path / "out_kernel_exec"
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "kernel.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    wsl_fake_colab = _to_wsl_path(env_paths["fake_bin"] / "colab")
+    wsl_vm_script = _to_wsl_path(VM_JUDGES_PY)
+
+    # Verify fake_colab's `exec -f` runs in a fresh namespace without `__file__`
+    probe_script = tmp_path / "probe_no_dunder_file.py"
+    probe_script.write_text(
+        'if "__file__" in globals():\n'
+        '    raise RuntimeError("__file__ must not be defined in kernel exec")\n'
+        'print("KERNEL_CELL_NO_FILE_OK")\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    proc_probe = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} '{wsl_fake_colab}' new -s rdlab-probe </dev/null && "
+            f"'{wsl_fake_colab}' exec -s rdlab-probe -f '{_to_wsl_path(probe_script)}' --timeout=30 </dev/null && "
+            f"'{wsl_fake_colab}' stop -s rdlab-probe </dev/null",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_probe.returncode == 0, f"stderr={proc_probe.stderr}"
+    assert "KERNEL_CELL_NO_FILE_OK" in proc_probe.stdout
+
+    # Run full launcher --stub pipeline (both gate step before repo bundle upload and run step) under kernel-exec
+    proc_stub = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id kernel-stub-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_stub.returncode == 0, (
+        f"stdout={proc_stub.stdout}\nstderr={proc_stub.stderr}\n"
+        f"cli_log={(out_dir / 'colab-cli.log').read_text(encoding='utf-8') if (out_dir / 'colab-cli.log').is_file() else ''}"
+    )
+    cli_log_text = (out_dir / "colab-cli.log").read_text(encoding="utf-8")
+    assert "VM_GATE_OK" in cli_log_text
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    assert status_doc["status"] == "ok"
+    assert status_doc["rc"] == 0
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert receipt_doc["status"] == "ok"
+    outcome_doc = json.loads(
+        (out_dir / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_doc["outcome"] == "ok"
+    assert Path(wsl_vm_script).is_file()
+

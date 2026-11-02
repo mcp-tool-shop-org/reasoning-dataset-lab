@@ -300,11 +300,11 @@
       "externals": 0,
       "files": [
         {
-          "hash": "0a0aa3cca72fc4612ecb4ea48ce221944d88d3065f4f41f5d14d20d99c454ee2",
+          "hash": "5ac2dde042dab758c2c744dc798248a4b212f1a563ba7ba346579f8e2da460c5",
           "path": "scripts/colab/README.md"
         },
         {
-          "hash": "f0921b483e0b01a0691a24d738708d0a898692f85f6b0226812933539204ec91",
+          "hash": "d276787a7bfd160338de573fb3bc666616c1b5cc8b65dc4c03dfe4befa20a184",
           "path": "scripts/colab/launch_judges.sh"
         },
         {
@@ -330,7 +330,9 @@
             "main",
             "parse_args",
             "resolve_remote_code_arg_for_judge",
+            "resolve_repo_dir",
             "run_judges_pipeline",
+            "run_kernel_or_cli_entry",
             "scrub_log_file_in_place",
             "scrub_log_text",
             "sha256_file",
@@ -338,6 +340,7 @@
             "unpack_uploaded_archives",
             "validate_tar_file",
             "verify_all_judge_snapshots",
+            "verify_items_allowlist",
             "verify_lock_digests",
             "verify_lock_sdist_and_hashes",
             "verify_rig_logs_and_outputs_clean",
@@ -346,216 +349,266 @@
           ],
           "failurePaths": [
             {
+              "kind": "except",
+              "line": 132
+            },
+            {
               "in": "ensure_not_drive_path",
               "kind": "raise",
-              "line": 142
+              "line": 206
             },
             {
               "in": "verify_lock_sdist_and_hashes",
               "kind": "raise",
-              "line": 183
+              "line": 247
             },
             {
               "in": "verify_lock_sdist_and_hashes",
               "kind": "raise",
-              "line": 221
+              "line": 285
             },
             {
               "in": "verify_lock_sdist_and_hashes",
               "kind": "raise",
-              "line": 231
+              "line": 295
             },
             {
               "in": "verify_lock_sdist_and_hashes",
-              "kind": "raise",
-              "line": 236
-            },
-            {
-              "in": "verify_lock_sdist_and_hashes",
-              "kind": "raise",
-              "line": 246
-            },
-            {
-              "in": "verify_lock_sdist_and_hashes",
-              "kind": "raise",
-              "line": 257
-            },
-            {
-              "in": "verify_lock_sdist_and_hashes",
-              "kind": "raise",
-              "line": 262
-            },
-            {
-              "in": "verify_lock_digests",
-              "kind": "raise",
-              "line": 289
-            },
-            {
-              "in": "verify_lock_digests",
-              "kind": "raise",
-              "line": 294
-            },
-            {
-              "in": "verify_lock_digests",
               "kind": "raise",
               "line": 300
             },
             {
-              "in": "verify_lock_digests",
+              "in": "verify_lock_sdist_and_hashes",
               "kind": "raise",
-              "line": 305
+              "line": 310
+            },
+            {
+              "in": "verify_lock_sdist_and_hashes",
+              "kind": "raise",
+              "line": 321
+            },
+            {
+              "in": "verify_lock_sdist_and_hashes",
+              "kind": "raise",
+              "line": 326
             },
             {
               "in": "verify_lock_digests",
               "kind": "raise",
-              "line": 316
+              "line": 353
             },
             {
               "in": "verify_lock_digests",
               "kind": "raise",
-              "line": 322
+              "line": 358
+            },
+            {
+              "in": "verify_lock_digests",
+              "kind": "raise",
+              "line": 364
+            },
+            {
+              "in": "verify_lock_digests",
+              "kind": "raise",
+              "line": 369
+            },
+            {
+              "in": "verify_lock_digests",
+              "kind": "raise",
+              "line": 380
+            },
+            {
+              "in": "verify_lock_digests",
+              "kind": "raise",
+              "line": 386
             },
             {
               "in": "verify_all_judge_snapshots",
               "kind": "raise",
-              "line": 492
+              "line": 560
             },
             {
               "in": "check_upload_path_allowed",
               "kind": "raise",
-              "line": 532
+              "line": 602
             },
             {
               "in": "check_upload_path_allowed",
               "kind": "raise",
-              "line": 540
+              "line": 610
             },
             {
               "in": "check_upload_path_allowed",
               "kind": "raise",
-              "line": 545
+              "line": 615
             },
             {
               "in": "check_upload_path_allowed",
               "kind": "raise",
-              "line": 558
+              "line": 628
             },
             {
               "in": "delete_uploaded_items_and_record_receipt",
               "kind": "except",
-              "line": 575
+              "line": 645
             },
             {
               "in": "delete_uploaded_items_and_record_receipt",
               "kind": "raise",
-              "line": 590
+              "line": 660
             },
             {
               "in": "write_outputs_closed",
               "kind": "raise",
-              "line": 621
+              "line": 691
+            },
+            {
+              "in": "_validate_item_row_allowlist",
+              "kind": "raise",
+              "line": 779
+            },
+            {
+              "in": "_validate_item_row_allowlist",
+              "kind": "raise",
+              "line": 797
+            },
+            {
+              "in": "_validate_item_row_allowlist",
+              "kind": "raise",
+              "line": 804
+            },
+            {
+              "in": "verify_items_allowlist",
+              "kind": "raise",
+              "line": 818
+            },
+            {
+              "in": "verify_items_allowlist",
+              "kind": "except",
+              "line": 828
+            },
+            {
+              "in": "verify_items_allowlist",
+              "kind": "raise",
+              "line": 829
+            },
+            {
+              "in": "verify_items_allowlist",
+              "kind": "raise",
+              "line": 840
             },
             {
               "in": "collect_claim_ngram_sha256s",
               "kind": "raise",
-              "line": 704
+              "line": 854
+            },
+            {
+              "in": "collect_claim_ngram_sha256s",
+              "kind": "except",
+              "line": 865
             },
             {
               "in": "collect_claim_ngram_sha256s",
               "kind": "raise",
-              "line": 715
+              "line": 866
+            },
+            {
+              "in": "collect_claim_ngram_sha256s",
+              "kind": "raise",
+              "line": 882
             },
             {
               "in": "verify_rig_logs_and_outputs_clean",
               "kind": "raise",
-              "line": 746
+              "line": 908
             },
             {
               "in": "verify_rig_logs_and_outputs_clean",
               "kind": "raise",
-              "line": 758
+              "line": 920
             },
             {
               "in": "verify_rig_logs_and_outputs_clean",
               "kind": "raise",
-              "line": 771
+              "line": 933
             },
             {
               "in": "validate_tar_file",
               "kind": "raise",
-              "line": 815
+              "line": 977
             },
             {
               "in": "validate_tar_file",
               "kind": "raise",
-              "line": 826
+              "line": 988
             },
             {
               "in": "build_allowlisted_result_tar",
               "kind": "raise",
-              "line": 842
+              "line": 1004
             },
             {
               "in": "build_allowlisted_result_tar",
               "kind": "raise",
-              "line": 847
+              "line": 1009
             },
             {
               "in": "build_allowlisted_result_tar",
               "kind": "raise",
-              "line": 853
+              "line": 1015
             },
             {
               "in": "_sample_once",
               "kind": "except",
-              "line": 917
+              "line": 1079
             },
             {
               "in": "unpack_uploaded_archives",
               "kind": "raise",
-              "line": 1097
+              "line": 1260
             },
             {
               "in": "unpack_uploaded_archives",
               "kind": "except",
-              "line": 1105
+              "line": 1268
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 1252
+              "line": 1422
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 1399
+              "line": 1574
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 1409
+              "line": 1584
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 1425
+              "line": 1600
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 1438
+              "line": 1613
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 1445
+              "line": 1620
             },
             {
+              "in": "run_kernel_or_cli_entry",
               "kind": "raise",
-              "line": 1462
+              "line": 1639
             }
           ],
-          "hash": "2d8813e3581178a271bc43d82a43edf1c5f58baf7444ad7d3bc05357f19a1120",
+          "hash": "8a13cf9a482decfb01a60b9919d0548d104c59c91ab74d075677881e033552d2",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -575,14 +628,14 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 8,
+          "reads": 9,
           "where": [
             "caller"
           ],
           "writes": 8
         }
       ],
-      "outsideReads": 8,
+      "outsideReads": 9,
       "outsideWrites": 8,
       "role": "code",
       "testRunners": [
@@ -10887,7 +10940,7 @@
             "record_file_access",
             "setup_fake_colab_environment"
           ],
-          "hash": "91689e5cafb70ee5d743f19c2610ffe2239fd8d4fc999e568da9cc1c7be0d809",
+          "hash": "e8ac21a8d1dc9f03744d32bd032ebd3923d7cef004a3e47354eec521b9a8cc35",
           "path": "tests/fixtures/fake_colab.py"
         },
         {
@@ -11258,6 +11311,14 @@
             "test_colab_message_line_is_not_a_session",
             "test_dry_mode_matches_live_mode_command_list_against_fake",
             "test_fake_colab_contract_and_time_one_mode_summary_and_mass_readout",
+            "test_items_allowlist_exact_id_material_claim_row_passes",
+            "test_items_allowlist_refusal_message_contains_field_name_and_not_value",
+            "test_items_allowlist_row_missing_claim_refuses",
+            "test_items_allowlist_row_with_key_basis_refuses",
+            "test_items_allowlist_row_with_proof_basis_refuses",
+            "test_items_allowlist_row_with_triad_id_refuses",
+            "test_kernel_exec_gate_and_run_steps_complete",
+            "test_kernel_exec_without_dunder_file_fails_when_dunder_file_used",
             "test_key_path_upload_refuses_and_deleted_items_receipt_recorded",
             "test_lock_sha_missing_or_mismatch_and_weights_sha_mismatch_extra_or_missing_file_refuse",
             "test_locks_pin_pyyaml_sdist_and_wheels_only_for_all_others",
@@ -11270,7 +11331,7 @@
             "test_static_guard_all_colab_calls_have_stdin_devnull",
             "test_status_json_overrides_exec_rc_zero"
           ],
-          "hash": "abc5e0323d58270ba4f414271c41782853a6181d36cca517952ce5484757e696",
+          "hash": "ed02540877a50023375004ee033ff8cffe37c68b898d4a5fc7319611abc9feba",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -12790,7 +12851,7 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "2bc4ace459074bed25390bc8a3cc4f9bf196e990",
+    "commit": "e8aa37a6c44d6f481d8c3ce7d3c767abe77ab41b",
     "tracked": 144
   },
   "landings": [

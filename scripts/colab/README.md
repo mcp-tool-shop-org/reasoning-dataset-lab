@@ -4,6 +4,13 @@ Per-window Google Colab launcher (`scripts/colab/launch_judges.sh`) and VM runne
 
 Keys and the scorer never leave the rig. Only public item files (`items.jsonl`), weight SHA-256 receipts (`<owner>__<repo>.sha256.json`), and the judge runner code are uploaded to the Colab VM.
 
+### Item Projection Allow-List (`{id, material, claim}`)
+
+The uploaded `items.jsonl` file is a strict projection containing **only** the three fields `{id, material, claim}` on every JSON object row:
+- Before any upload or `--dry` command print on the rig (and again on the VM before the judge run), every row of `items.jsonl` is checked against the exact allow-list `{id, material, claim}`.
+- Any extra field (such as `key`, `class`, `verdict`, `key_basis`, `proof_basis`, or `triad_id`), any missing field among `{id, material, claim}`, or any non-object row refuses with `ITEMS_FIELD_NOT_ALLOWED`.
+- The refusal message names the offending or missing field(s) and **never** prints any field value.
+
 ---
 
 ## Modes and Command Lines
@@ -38,7 +45,8 @@ bash scripts/colab/launch_judges.sh --stub --run-id stub-01 --out-dir /tmp/rdlab
 
 **Acceptance list (`--stub`):**
 - Verifies `scripts/colab/locks/judge.lock.txt` and `scripts/colab/locks/d3.lock.txt` SHA-256 digests against both the launcher config constants and the required `RDLAB_JUDGE_LOCK_SHA256` and `RDLAB_D3_LOCK_SHA256` environment variables (refusing if missing or mismatched).
-- Refuses any upload path matching `sealed_store/`, `keys`, or `*.sealed.*` (`FORBIDDEN_KEY_OR_SEALED_UPLOAD`).
+- Refuses any upload path matching `sealed_store/`, `keys`, or `*.sealed.*` (`FORBIDDEN_KEY_OR_SEALED_UPLOAD`), and refuses any `items.jsonl` row whose fields are not **exactly** `{id, material, claim}` (`ITEMS_FIELD_NOT_ALLOWED`, naming the field without printing its value).
+- Executes `scripts/colab/vm_judges.py` inside the Colab IPython kernel cell (`colab exec -f`, where `__file__` is undefined), running a self-contained `--step gate` check before repo upload and resolving the repo directory from `RDLAB_REPO_DIR` (default `/content/rdlab`).
 - Runs the CPython 3.15 `pyyaml==6.0.3` sdist build (`sha256:d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f`) under `--only-binary :all: --no-binary pyyaml --require-hashes` so a paid GPU window never meets the sdist build first.
 - Deletes uploaded item files on the VM after the run and records `test ! -e` per file in `vm_receipt.json` (`deleted_items_receipt`).
 - Downloads `result.tar.gz`, `status.json`, and `vm_receipt.json` before stopping the session; `status.json` decides the outcome even if `colab exec` exits `0`.

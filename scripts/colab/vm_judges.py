@@ -13,8 +13,11 @@ Enforces:
   SHA mismatch, extra file, bytecode file, or missing file.
 - Remote code allowed only for `d3-mini` at `D3_MINI_REVIEWED_REVISION` behind
   `--allow-remote-code-reviewed`.
-- Public item upload path guard (refusing `sealed_store/`, `keys`, `*.sealed.*`) and
-  post-run VM deletion receipt (`test ! -e` per file).
+- Public item upload path guard (refusing `sealed_store/`, `keys`, `*.sealed.*`),
+  strict `{id, material, claim}` item field allow-list (`ITEMS_FIELD_NOT_ALLOWED`),
+  and post-run VM deletion receipt (`test ! -e` per file).
+- Kernel-cell execution compatibility (`colab exec -f`): self-contained `--step gate`
+  before repo upload, and repo resolution from `RDLAB_REPO_DIR` (default `/content/rdlab`).
 - Rig-side `outputs-closed.json` written before any key path is touched.
 - Rig-side log and output guard checking for `sealed_store`, `keys.sealed`, tokens,
   and SHA-256 hashed item claim n-grams without printing claim text.
@@ -43,30 +46,91 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT_DEFAULT = SCRIPT_DIR.parents[1]
-if str(REPO_ROOT_DEFAULT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT_DEFAULT / "src"))
+DEFAULT_REPO_DIR = Path("/content/rdlab")
+DEFAULT_SCHEDULE_SEED = 20261030
+DEFAULT_VRAM_HALT_MIB = 26_000
+DEFAULT_TORCH_DTYPE = "bfloat16"
+D3_MINI_JUDGE_ID = "d3-mini"
+D3_MINI_REVIEWED_REVISION = "bd0090dd758d32ba59ef5c749910a8e87fc4391f"
+SCHEDULE_FILENAME = "schedule.json"
+GENERATIONS_FILENAME = "generations.jsonl"
+OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
+ROWS_DIRNAME = "rows"
 
-from reasoning_dataset_lab.errors import RdlabError  # noqa: E402
-from reasoning_dataset_lab.pilot_b.bakeoff_judge import (  # noqa: E402
-    BAKEOFF_JUDGE_SPECS,
-    D3_MINI_JUDGE_ID,
-    D3_MINI_REVIEWED_REVISION,
-    DEFAULT_SCHEDULE_SEED,
-    DEFAULT_TORCH_DTYPE,
-    DEFAULT_VRAM_HALT_MIB,
-    GENERATIONS_FILENAME,
-    OUTPUTS_CLOSED_FILENAME,
-    ROWS_DIRNAME,
-    SCHEDULE_FILENAME,
-    JudgeSpec,
-    check_bakeoff_logprob_mass,
-    check_d3_mini_remote_code_gate,
-    check_remote_code_gate,
-    run_bakeoff_judge,
-    verify_snapshot_against_receipt,
-)
+ALLOWED_ITEM_FIELDS: frozenset[str] = frozenset({"id", "material", "claim"})
+REQUIRED_ITEM_FIELDS_ORDERED: tuple[str, str, str] = ("id", "material", "claim")
+
+RdlabError: type[BaseException] = RuntimeError
+BAKEOFF_JUDGE_SPECS: dict[str, Any] = {}
+JudgeSpec: Any = Any
+check_bakeoff_logprob_mass: Any = None
+check_d3_mini_remote_code_gate: Any = None
+check_remote_code_gate: Any = None
+run_bakeoff_judge: Any = None
+verify_snapshot_against_receipt: Any = None
+
+
+def resolve_repo_dir(repo_dir: Path | None = None) -> Path:
+    """Resolve the repository directory from `repo_dir`, `RDLAB_REPO_DIR`, or `/content/rdlab`."""
+    if repo_dir is not None:
+        return Path(repo_dir)
+    env_repo = os.environ.get("RDLAB_REPO_DIR", "").strip()
+    if env_repo:
+        return Path(env_repo)
+    return DEFAULT_REPO_DIR
+
+
+def _ensure_repo_imports(repo_dir: Path | None = None) -> None:
+    """Add `RDLAB_REPO_DIR/src` to `sys.path` and load `reasoning_dataset_lab` symbols."""
+    global RdlabError
+    global BAKEOFF_JUDGE_SPECS
+    global JudgeSpec
+    global check_bakeoff_logprob_mass
+    global check_d3_mini_remote_code_gate
+    global check_remote_code_gate
+    global run_bakeoff_judge
+    global verify_snapshot_against_receipt
+
+    candidate_roots = [resolve_repo_dir(repo_dir)]
+    if repo_dir is not None:
+        candidate_roots.insert(0, Path(repo_dir))
+    cwd_path = Path.cwd()
+    if (cwd_path / "src" / "reasoning_dataset_lab").is_dir():
+        candidate_roots.append(cwd_path)
+
+    for root in candidate_roots:
+        src_dir = root / "src"
+        if src_dir.is_dir():
+            src_str = str(src_dir)
+            if src_str not in sys.path:
+                sys.path.insert(0, src_str)
+
+    from reasoning_dataset_lab.errors import RdlabError as _RdlabError
+    from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
+        BAKEOFF_JUDGE_SPECS as _BAKEOFF_JUDGE_SPECS,
+        JudgeSpec as _JudgeSpec,
+        check_bakeoff_logprob_mass as _check_bakeoff_logprob_mass,
+        check_d3_mini_remote_code_gate as _check_d3_mini_remote_code_gate,
+        check_remote_code_gate as _check_remote_code_gate,
+        run_bakeoff_judge as _run_bakeoff_judge,
+        verify_snapshot_against_receipt as _verify_snapshot_against_receipt,
+    )
+
+    RdlabError = _RdlabError
+    BAKEOFF_JUDGE_SPECS = _BAKEOFF_JUDGE_SPECS
+    JudgeSpec = _JudgeSpec
+    check_bakeoff_logprob_mass = _check_bakeoff_logprob_mass
+    check_d3_mini_remote_code_gate = _check_d3_mini_remote_code_gate
+    check_remote_code_gate = _check_remote_code_gate
+    run_bakeoff_judge = _run_bakeoff_judge
+    verify_snapshot_against_receipt = _verify_snapshot_against_receipt
+
+
+if os.environ.get("RDLAB_STEP") != "gate":
+    try:
+        _ensure_repo_imports()
+    except ModuleNotFoundError:
+        pass
 
 EXPECTED_JUDGE_LOCK_SHA256 = (
     "608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
@@ -466,6 +530,7 @@ def sync_judge_venvs(
 
 def resolve_remote_code_arg_for_judge(spec: JudgeSpec) -> str | None:
     """Return `--allow-remote-code-reviewed` SHA only for `d3-mini` at its reviewed revision."""
+    _ensure_repo_imports()
     if spec.judge_id == D3_MINI_JUDGE_ID:
         check_d3_mini_remote_code_gate(
             spec, allow_remote_code_reviewed=D3_MINI_REVIEWED_REVISION
@@ -478,11 +543,14 @@ def resolve_remote_code_arg_for_judge(spec: JudgeSpec) -> str | None:
 def verify_all_judge_snapshots(
     receipts_dir: Path,
     hf_home: Path,
+    *,
+    repo_dir: Path | None = None,
 ) -> dict[str, str]:
     """Verify every file of all 5 judges in `BAKEOFF_JUDGE_SPECS` against `<owner>__<repo>.sha256.json`.
 
     Refuses the whole run on any SHA mismatch, extra file, bytecode file, or missing file.
     """
+    _ensure_repo_imports(repo_dir)
     ensure_not_drive_path(receipts_dir)
     ensure_not_drive_path(hf_home)
     verified: dict[str, str] = {}
@@ -507,8 +575,10 @@ def download_and_verify_all_judge_weights(
     hf_home: Path,
     *,
     dryrun: bool = False,
+    repo_dir: Path | None = None,
 ) -> dict[str, str]:
     """Download each judge at its pinned 40-char revision (when not dryrun) and verify all snapshots against receipts."""
+    _ensure_repo_imports(repo_dir)
     ensure_not_drive_path(receipts_dir)
     ensure_not_drive_path(hf_home)
     if not dryrun:
@@ -522,7 +592,7 @@ def download_and_verify_all_judge_weights(
                 revision=spec.revision,
                 cache_dir=str(hub_cache),
             )
-    return verify_all_judge_snapshots(receipts_dir, hf_home)
+    return verify_all_judge_snapshots(receipts_dir, hf_home, repo_dir=repo_dir)
 
 
 def check_upload_path_allowed(path: str | Path) -> None:
@@ -694,33 +764,125 @@ def _extract_word_ngram_hashes(text: str, ngram_words: int = CLAIM_NGRAM_WORDS) 
     return hashes
 
 
+def _validate_item_row_allowlist(
+    obj: Any,
+    *,
+    source_name: str,
+    line_no: int,
+) -> dict[str, str]:
+    """Verify a parsed JSON item row is a JSON object with exactly `{id, material, claim}`.
+
+    Refuses with `ITEMS_FIELD_NOT_ALLOWED` on any extra field, missing field, or non-object row.
+    Names the offending or missing field(s), and never includes any field value in the message.
+    """
+    if not isinstance(obj, Mapping) or isinstance(obj, (list, tuple, bytes, str)):
+        raise RefusalError(
+            "ITEMS_FIELD_NOT_ALLOWED",
+            f"Items file {source_name} line {line_no}: row must be a JSON object, got {type(obj).__name__}",
+        )
+    row_keys = {str(k) for k in obj.keys()}
+    extra_fields = sorted(row_keys - ALLOWED_ITEM_FIELDS)
+    missing_fields = sorted(ALLOWED_ITEM_FIELDS - row_keys)
+    if extra_fields or missing_fields:
+        problems: list[str] = []
+        if extra_fields:
+            problems.append(
+                "disallowed field(s) " + ", ".join(repr(k) for k in extra_fields)
+            )
+        if missing_fields:
+            problems.append(
+                "missing required field(s) "
+                + ", ".join(repr(k) for k in missing_fields)
+            )
+        raise RefusalError(
+            "ITEMS_FIELD_NOT_ALLOWED",
+            f"Items file {source_name} line {line_no}: {'; '.join(problems)}",
+        )
+    for field_name in REQUIRED_ITEM_FIELDS_ORDERED:
+        val = obj.get(field_name)
+        if not isinstance(val, str) or not val.strip():
+            raise RefusalError(
+                "ITEMS_FIELD_NOT_ALLOWED",
+                f"Items file {source_name} line {line_no}: field {field_name!r} must be a non-empty string",
+            )
+    return {
+        "id": str(obj["id"]),
+        "material": str(obj["material"]),
+        "claim": str(obj["claim"]),
+    }
+
+
+def verify_items_allowlist(items_file: Path) -> int:
+    """Verify every row of `items_file` has speaking-only fields `{id, material, claim}`."""
+    if not items_file.is_file():
+        raise RefusalError("ITEMS_FILE_MISSING", f"Items file not found: {items_file}")
+    row_count = 0
+    for lineno, raw_line in enumerate(
+        items_file.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RefusalError(
+                "ITEMS_FIELD_NOT_ALLOWED",
+                f"Items file {items_file.name} line {lineno}: invalid JSON row ({exc.msg})",
+            ) from exc
+        _validate_item_row_allowlist(
+            obj,
+            source_name=items_file.name,
+            line_no=lineno,
+        )
+        row_count += 1
+    if row_count == 0:
+        raise RefusalError(
+            "ITEMS_FIELD_NOT_ALLOWED",
+            f"Items file {items_file.name} contains no item rows",
+        )
+    return row_count
+
+
 def collect_claim_ngram_sha256s(
     items_file: Path,
     *,
     ngram_words: int = CLAIM_NGRAM_WORDS,
 ) -> set[str]:
-    """Read `claim` from each item in `items_file` and return SHA-256 hashes of normalized word n-grams."""
+    """Enforce the `{id, material, claim}` allow-list on `items_file` and return SHA-256 hashes of normalized word n-grams."""
     if not items_file.is_file():
         raise RefusalError("ITEMS_FILE_MISSING", f"Items file not found: {items_file}")
     hashes: set[str] = set()
-    for raw_line in items_file.read_text(encoding="utf-8").splitlines():
+    row_count = 0
+    for lineno, raw_line in enumerate(
+        items_file.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         line = raw_line.strip()
         if not line:
             continue
-        obj = json.loads(line)
-        if not isinstance(obj, Mapping):
-            continue
-        for bad_key in ("key", "class", "verdict", "keys.sealed", "sealed_store"):
-            if bad_key in obj:
-                raise RefusalError(
-                    "FORBIDDEN_KEY_OR_SEALED_UPLOAD",
-                    f"Items file {items_file.name} contains forbidden key field {bad_key!r}",
-                )
-        claim = obj.get("claim")
-        if isinstance(claim, str) and claim.strip():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RefusalError(
+                "ITEMS_FIELD_NOT_ALLOWED",
+                f"Items file {items_file.name} line {lineno}: invalid JSON row ({exc.msg})",
+            ) from exc
+        validated = _validate_item_row_allowlist(
+            obj,
+            source_name=items_file.name,
+            line_no=lineno,
+        )
+        row_count += 1
+        claim = validated["claim"]
+        if claim.strip():
             norm_claim = " ".join(claim.lower().split())
             hashes.add(hashlib.sha256(norm_claim.encode("utf-8")).hexdigest())
             hashes.update(_extract_word_ngram_hashes(claim, ngram_words=ngram_words))
+    if row_count == 0:
+        raise RefusalError(
+            "ITEMS_FIELD_NOT_ALLOWED",
+            f"Items file {items_file.name} contains no item rows",
+        )
     return hashes
 
 
@@ -951,6 +1113,7 @@ def run_judges_pipeline(
     repo_root: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run all 5 judges (10 pilot items in both AB and BA orders in time-one mode) and compute readouts."""
+    _ensure_repo_imports(repo_root)
     limit_items = TIME_ONE_ITEMS_LIMIT if mode == "time-one" else 2
     part_manifest = part_dir / "manifest.json"
     if not part_manifest.is_file():
@@ -1107,20 +1270,27 @@ def unpack_uploaded_archives(
 
 
 def is_kernel_env(argv: list[str] | None = None) -> bool:
-    """Return True when running inside a Jupyter/Colab kernel."""
-    if "ipykernel" in sys.modules or "google.colab" in sys.modules:
+    """Return True when running inside a Jupyter/Colab kernel cell."""
+    if argv is None and ("ipykernel" in sys.modules or "google.colab" in sys.modules):
         return True
     check_argv = sys.argv if argv is None else argv
-    if check_argv:
-        prog = Path(str(check_argv[0])).name.lower()
-        if "kernel_launcher" in prog or "ipykernel" in prog:
-            return True
-        if (
-            len(check_argv) >= 3
-            and str(check_argv[1]) == "-f"
-            and str(check_argv[2]).lower().endswith(".json")
-        ):
-            return True
+    if not check_argv:
+        return argv is None
+    prog = Path(str(check_argv[0])).name.lower()
+    if prog in ("-c", "", "<cell>") or "kernel_launcher" in prog or "ipykernel" in prog:
+        return True
+    if (
+        len(check_argv) >= 2
+        and str(check_argv[0]) == "-f"
+        and str(check_argv[1]).lower().endswith(".json")
+    ):
+        return True
+    if (
+        len(check_argv) >= 3
+        and str(check_argv[1]) == "-f"
+        and str(check_argv[2]).lower().endswith(".json")
+    ):
+        return True
     return False
 
 
@@ -1180,7 +1350,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--repo-dir",
         type=Path,
-        default=env_path("RDLAB_REPO_DIR", Path("/content/rdlab")),
+        default=resolve_repo_dir(),
     )
     parser.add_argument(
         "--repo-tar",
@@ -1302,6 +1472,9 @@ def main(argv: list[str] | None = None) -> int:
         current_step = "check_upload_path_allowed"
         check_upload_path_allowed(args.items_file)
 
+        current_step = "verify_items_allowlist"
+        verify_items_allowlist(args.items_file)
+
         current_step = "unpack_uploaded_archives"
         unpack_uploaded_archives(
             repo_tar=args.repo_tar,
@@ -1311,6 +1484,7 @@ def main(argv: list[str] | None = None) -> int:
             resume_tar=args.resume_tar,
             run_dir=args.run_dir,
         )
+        _ensure_repo_imports(args.repo_dir)
 
         current_step = "verify_lock_digests"
         judge_lock = args.repo_dir / "scripts" / "colab" / "locks" / "judge.lock.txt"
@@ -1335,6 +1509,7 @@ def main(argv: list[str] | None = None) -> int:
             args.receipts_dir,
             args.hf_home,
             dryrun=dryrun,
+            repo_dir=args.repo_dir,
         )
 
         current_step = "run_judges_pipeline"
@@ -1456,7 +1631,14 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
 
+def run_kernel_or_cli_entry(argv: list[str] | None = None) -> int:
+    """Explicit entrypoint for both Colab IPython kernel cells (`colab exec -f`) and CLI invocation."""
+    rc = main(argv)
+    globals()["CELL_EXIT_CODE"] = rc
+    if not is_kernel_env(argv):
+        raise SystemExit(rc)
+    return rc
+
+
 if __name__ == "__main__":
-    _rc = main()
-    if not is_kernel_env():
-        raise SystemExit(_rc)
+    run_kernel_or_cli_entry()

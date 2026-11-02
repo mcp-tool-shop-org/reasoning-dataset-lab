@@ -234,7 +234,24 @@ build_exec_env_args() {
 
 if [[ "$DRY_FLAG" == "1" ]]; then
   if [[ -n "$ITEMS_FILE" ]]; then
-    "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.check_upload_path_allowed(sys.argv[2])" "$REPO_ROOT" "$ITEMS_FILE"
+    "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$SESSION_SMOKE_FLAG" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+items_file = Path(sys.argv[2])
+is_smoke = sys.argv[3] == "1"
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+try:
+    vm_judges.check_upload_path_allowed(items_file)
+    if not is_smoke or items_file.is_file():
+        vm_judges.verify_items_allowlist(items_file)
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
   fi
   if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
     printf 'colab sessions\n'
@@ -604,6 +621,25 @@ if [[ ! -f "$ITEMS_FILE" ]]; then
   echo "ITEMS_FILE_MISSING: $ITEMS_FILE" >&2
   exit 2
 fi
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+items_file = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+try:
+    vm_judges.verify_items_allowlist(items_file)
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+then
+  RUN_WHY="items file refused by field allow-list guard: $ITEMS_FILE"
+  exit 2
+fi
 
 if [[ -z "$RECEIPTS_DIR" ]] || [[ ! -d "$RECEIPTS_DIR" ]]; then
   RUN_WHY="RDLAB_RECEIPTS_DIR or --receipts-dir is missing"
@@ -656,6 +692,7 @@ import vm_judges
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import BAKEOFF_JUDGE_SPECS
 
 vm_judges.check_upload_path_allowed(items_src)
+vm_judges.verify_items_allowlist(items_src)
 _ = vm_judges.collect_claim_ngram_sha256s(items_src)
 shutil.copyfile(items_src, items_dst)
 

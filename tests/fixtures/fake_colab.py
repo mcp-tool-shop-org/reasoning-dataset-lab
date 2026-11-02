@@ -535,14 +535,19 @@ def main(argv: list[str] | None = None) -> int:
                 sys.stderr.write(f"Execution timed out after {timeout_s}s\n")
                 return 124
             kernel_code = (
-                "import sys,runpy; "
-                "sys.argv=['colab_kernel_launcher.py','-f','/tmp/kernel-fake.json']; "
-                f"runpy.run_path({str(py_path)!r}, run_name='__main__')"
+                "import pathlib, sys; "
+                "sys.argv = ['colab_kernel_launcher.py', '-f', '/tmp/kernel-fake.json']; "
+                f"src = pathlib.Path({str(py_path.resolve())!r}).read_text(encoding='utf-8'); "
+                "ns = {'__name__': '__main__'}; "
+                "exec(compile(src, '<cell>', 'exec'), ns); "
+                "rc = ns.get('CELL_EXIT_CODE', 0); "
+                "raise SystemExit(int(rc) if isinstance(rc, int) else 0)"
             )
             proc = subprocess.run(
                 [sys.executable, "-c", kernel_code],
                 stdin=subprocess.DEVNULL,
                 env=exec_env,
+                cwd=str(vm_fs),
                 timeout=timeout_s,
                 check=False,
             )

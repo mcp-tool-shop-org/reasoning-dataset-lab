@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-02 from commit 2bc4ace by Atlas 1.24.0.
+Mapped at 2026-11-02 from commit e8aa37a by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,16 +8,9 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (59 files), CSS (2), TypeScript (2), shell (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-01 (9285d75)
+## What changed since 2026-11-02 (2bc4ace)
 
-- scripts now imports src.
-- tests now imports scripts.
-- src/reasoning_dataset_lab/pilot_b/canary_config.json is now written by src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py.
-- README.md is now also read by scripts/colab/launch_judges.sh.
-- pyproject.toml is now also read by scripts/colab/launch_judges.sh.
-- And 12 more new writers and readers of places.
-- src was authored and is now mixed.
-- 21 files added and 14 changed content, across 5 parts.
+Nothing structural changed since 2026-11-02; 5 files changed content.
 
 ## What comes in
 
@@ -95,7 +88,7 @@ Read those in order to follow one run of rdlab end to end. This path follows rdl
 - 8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
 - 1 import could not be resolved: `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.
 - 10 writes and 15 reads use paths built at run time and are not named here.
-- 33 writes and 82 reads go to a path their caller passes, not to this repository.
+- 33 writes and 83 reads go to a path their caller passes, not to this repository.
 - 1 read goes to the directory the command is run in (certification/), not to this repository.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
