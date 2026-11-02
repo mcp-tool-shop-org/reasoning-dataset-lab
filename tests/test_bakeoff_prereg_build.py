@@ -2016,7 +2016,7 @@ def test_winner_no_lenient_item7_empty_judge_id_raises() -> None:
 
 
 def test_winner_no_lenient_item8_no_timings_writes_null_seconds_median_and_selector_refuses() -> None:
-    """Item 8: _evaluate_judge_at_rule writes seconds_median: null when there are no timings, and select_bakeoff_winner refuses it."""
+    """Item 8: _evaluate_judge_at_rule writes seconds_median: null when there are no timings at all, and select_bakeoff_winner refuses it."""
     keys_by_id = {
         "item-1": bakeoff_judge_score.SealedKeyRecord(
             item_id="item-1",
@@ -2031,18 +2031,12 @@ def test_winner_no_lenient_item8_no_timings_writes_null_seconds_median_and_selec
             domain="chillers",
         )
     }
-    rows_no_timings = {
-        "item-1": {
-            "AB": {"item_id": "item-1", "order": "AB", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9},
-            "BA": {"item_id": "item-1", "order": "BA", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9},
-        }
-    }
     summary, _, _ = bakeoff_judge_score._evaluate_judge_at_rule(
         judge_id="mu-judge",
         judge_label="mu-judge",
         rule_name="plain",
         threshold_value=None,
-        rows_by_item_order=rows_no_timings,
+        rows_by_item_order={},
         first_order_by_item={"item-1": "AB"},
         keys_by_id=keys_by_id,
         registered_domains=_REGISTERED_DOMAINS_10,
@@ -2128,6 +2122,200 @@ def test_winner_no_lenient_fix1_counted_fixture_domain_mismatch_refuses(
     assert bakeoff_judge_score._resolve_registered_domains_for_part(full_anchored_keys) == tuple(
         sorted(bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS)
     )
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Card 2026-11-02 (two strict follow-ups): Refuse untimed rows and strict anchored-part detection
+# ---------------------------------------------------------------------------------------------------------------------
+def _single_item_keys() -> dict[str, bakeoff_judge_score.SealedKeyRecord]:
+    return {
+        "item-1": bakeoff_judge_score.SealedKeyRecord(
+            item_id="item-1",
+            triad_id="T1",
+            triad_handle="h-T1",
+            key="supported",
+            item_class="supported",
+            key_source="construction",
+            value_set_id="vs-1",
+            closure="open",
+            split="test",
+            domain="chillers",
+        )
+    }
+
+
+def test_winner_strict_followup_item1_missing_row_seconds_raises() -> None:
+    """Follow-up Item 1: A row with missing seconds raises BAKEOFF_SCORE_MISSING_ROW_SECONDS naming the judge and item."""
+    keys_by_id = _single_item_keys()
+    rows_missing = {
+        "item-1": {
+            "AB": {"item_id": "item-1", "order": "AB", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9, "seconds": 0.01},
+            "BA": {"item_id": "item-1", "order": "BA", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9},
+        }
+    }
+    with pytest.raises(RdlabError) as exc_missing:
+        bakeoff_judge_score._evaluate_judge_at_rule(
+            judge_id="mu-judge",
+            judge_label="mu-judge",
+            rule_name="plain",
+            threshold_value=None,
+            rows_by_item_order=rows_missing,
+            first_order_by_item={"item-1": "AB"},
+            keys_by_id=keys_by_id,
+            registered_domains=_REGISTERED_DOMAINS_10,
+            bootstrap_resamples=10,
+        )
+    assert exc_missing.value.code == "BAKEOFF_SCORE_MISSING_ROW_SECONDS"
+    assert "mu-judge" in exc_missing.value.message
+    assert "item-1" in exc_missing.value.message
+    assert exc_missing.value.hint
+
+
+def test_winner_strict_followup_item1_nan_row_seconds_raises() -> None:
+    """Follow-up Item 1: A row with NaN seconds raises BAKEOFF_SCORE_MISSING_ROW_SECONDS naming the judge and item."""
+    keys_by_id = _single_item_keys()
+    rows_nan = {
+        "item-1": {
+            "AB": {"item_id": "item-1", "order": "AB", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9, "seconds": float("nan")},
+            "BA": {"item_id": "item-1", "order": "BA", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9, "seconds": 0.02},
+        }
+    }
+    with pytest.raises(RdlabError) as exc_nan:
+        bakeoff_judge_score._evaluate_judge_at_rule(
+            judge_id="mu-judge",
+            judge_label="mu-judge",
+            rule_name="plain",
+            threshold_value=None,
+            rows_by_item_order=rows_nan,
+            first_order_by_item={"item-1": "AB"},
+            keys_by_id=keys_by_id,
+            registered_domains=_REGISTERED_DOMAINS_10,
+            bootstrap_resamples=10,
+        )
+    assert exc_nan.value.code == "BAKEOFF_SCORE_MISSING_ROW_SECONDS"
+    assert "mu-judge" in exc_nan.value.message
+    assert "item-1" in exc_nan.value.message
+    assert exc_nan.value.hint
+
+
+def test_winner_strict_followup_item1_bool_row_seconds_raises_and_timed_rows_unchanged() -> None:
+    """Follow-up Item 1: A row with boolean seconds raises BAKEOFF_SCORE_MISSING_ROW_SECONDS; a judge whose rows are all timed is unchanged."""
+    keys_by_id = _single_item_keys()
+    rows_bool = {
+        "item-1": {
+            "AB": {"item_id": "item-1", "order": "AB", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9, "seconds": True},
+            "BA": {"item_id": "item-1", "order": "BA", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9, "seconds": 0.02},
+        }
+    }
+    with pytest.raises(RdlabError) as exc_bool:
+        bakeoff_judge_score._evaluate_judge_at_rule(
+            judge_id="mu-judge",
+            judge_label="mu-judge",
+            rule_name="plain",
+            threshold_value=None,
+            rows_by_item_order=rows_bool,
+            first_order_by_item={"item-1": "AB"},
+            keys_by_id=keys_by_id,
+            registered_domains=_REGISTERED_DOMAINS_10,
+            bootstrap_resamples=10,
+        )
+    assert exc_bool.value.code == "BAKEOFF_SCORE_MISSING_ROW_SECONDS"
+    assert "mu-judge" in exc_bool.value.message
+    assert "item-1" in exc_bool.value.message
+    assert exc_bool.value.hint
+
+    rows_timed = {
+        "item-1": {
+            "AB": {"item_id": "item-1", "order": "AB", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9, "seconds": 0.01},
+            "BA": {"item_id": "item-1", "order": "BA", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9, "seconds": 0.03},
+        }
+    }
+    sum_timed, _, sealed_timed = bakeoff_judge_score._evaluate_judge_at_rule(
+        judge_id="mu-judge",
+        judge_label="mu-judge",
+        rule_name="plain",
+        threshold_value=None,
+        rows_by_item_order=rows_timed,
+        first_order_by_item={"item-1": "AB"},
+        keys_by_id=keys_by_id,
+        registered_domains=_REGISTERED_DOMAINS_10,
+        bootstrap_resamples=10,
+    )
+    assert sum_timed["seconds_total"] == 0.04
+    assert sum_timed["seconds_mean"] == 0.02
+    assert sum_timed["seconds_median"] == 0.02
+    assert [r["seconds"] for r in sealed_timed] == [0.01, 0.03]
+
+
+def test_winner_strict_followup_item2_mixed_part_raises_and_pure_parts_resolve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Follow-up Item 2: A mixed part raises BAKEOFF_SCORE_MIXED_PART; a fully anchored part resolves to ANCHORED_ELIGIBLE_DOMAINS; a fully non-anchored part resolves to its own key domains."""
+    mixed_keys = {
+        f"item-{i}": bakeoff_judge_score.SealedKeyRecord(
+            item_id=f"item-{i}",
+            triad_id=f"T-{i}",
+            triad_handle=f"h-{i}",
+            key="supported",
+            item_class="supported",
+            key_source="construction",
+            value_set_id=(
+                "anchored-two-hop/all-domains [anchored_two_hop v5, test]"
+                if i < 5
+                else f"{dom}/interval"
+            ),
+            closure="open",
+            split="test",
+            domain=dom,
+        )
+        for i, dom in enumerate(bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS)
+    }
+    with pytest.raises(RdlabError) as exc_mixed:
+        bakeoff_judge_score._resolve_registered_domains_for_part(mixed_keys)
+    assert exc_mixed.value.code == "BAKEOFF_SCORE_MIXED_PART"
+    assert exc_mixed.value.hint
+
+    monkeypatch.setattr(bakeoff_judge_score, "DEFAULT_BOOTSTRAP_RESAMPLES", 20)
+    part_dir, keys_path = _build_synthetic_part(tmp_path, n_triads=4)
+    judge_dir = tmp_path / "judge_out"
+    run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="mu-judge", fake_transport=True)
+    close_bakeoff_outputs(judge_dir)
+
+    mixed_keys_path = tmp_path / "keys_mixed" / "keys.sealed.jsonl"
+    mixed_keys_path.parent.mkdir(parents=True, exist_ok=True)
+    mixed_lines = []
+    for idx, ln in enumerate(keys_path.read_text(encoding="utf-8").splitlines()):
+        if not ln.strip():
+            continue
+        obj = json.loads(ln)
+        if idx == 0:
+            obj["value_set_id"] = f"anchored-two-hop/all-domains [anchored_two_hop v5, {obj['split']}]"
+        mixed_lines.append(json.dumps(obj, sort_keys=True))
+    mixed_keys_path.write_text("\n".join(mixed_lines) + "\n", encoding="utf-8", newline="\n")
+
+    with pytest.raises(RdlabError) as exc_mixed_score:
+        score_bakeoff_outputs(
+            judge_output_dir=judge_dir,
+            keys_path=mixed_keys_path,
+            public_out_path=tmp_path / "pub_mixed" / "score_summary.json",
+            sealed_rows_out_path=tmp_path / "sealed_mixed" / "scored.sealed.jsonl",
+        )
+    assert exc_mixed_score.value.code == "BAKEOFF_SCORE_MIXED_PART"
+
+    anchored_keys = {
+        k: replace(v, value_set_id="anchored-two-hop/all-domains [anchored_two_hop v5, test]")
+        for k, v in mixed_keys.items()
+    }
+    assert bakeoff_judge_score._resolve_registered_domains_for_part(anchored_keys) == tuple(
+        sorted(bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS)
+    )
+
+    non_anchored_keys = {
+        "item-a": replace(mixed_keys["item-0"], item_id="item-a", value_set_id="vs-a", domain="chillers"),
+        "item-b": replace(mixed_keys["item-1"], item_id="item-b", value_set_id="vs-b", domain="boilers"),
+    }
+    assert bakeoff_judge_score._resolve_registered_domains_for_part(non_anchored_keys) == ("boilers", "chillers")
+
 
 
 
