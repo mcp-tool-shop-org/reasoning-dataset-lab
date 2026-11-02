@@ -1,0 +1,960 @@
+#!/usr/bin/env bash
+# Per-window Google Colab launcher for the reasoning-dataset-lab five-judge bake-off.
+# Modes: --session-smoke, --stub (CPU), --time-one (A100), --dry, --resume.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [[ "$(pwd)" == "$REPO_ROOT" ]]; then
+  VM_SCRIPT="${RDLAB_VM_SCRIPT:-scripts/colab/vm_judges.py}"
+else
+  VM_SCRIPT="${RDLAB_VM_SCRIPT:-$SCRIPT_DIR/vm_judges.py}"
+fi
+
+MODE="${RDLAB_MODE:-stub}"
+SESSION_SMOKE_FLAG=0
+DRY_FLAG="${RDLAB_DRY:-0}"
+RESUME_FLAG=0
+OUT_DIR="${RDLAB_OUT_DIR:-}"
+RUN_ID="${RDLAB_RUN_ID:-judges-$(date -u +%Y%m%dT%H%M%SZ)}"
+ITEMS_FILE="${RDLAB_ITEMS_FILE:-}"
+RECEIPTS_DIR="${RDLAB_RECEIPTS_DIR:-}"
+EXPLICIT_CAP="${RDLAB_CAP_UNITS:-}"
+
+EXPECTED_JUDGE_LOCK_SHA256="608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
+EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--stub] [--time-one] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--receipts-dir DIR] [--cap UNITS]
+
+Options:
+  --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
+  --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
+  --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
+  --dry                Print every colab CLI command in order with resolved arguments and exit
+  --resume             Resume from existing schedule/generations state in --out-dir
+  --run-id ID          Run identifier (session name is rdlab-<ID>)
+  --out-dir DIR        Rig output directory (default: /tmp/rdlab-colab-runs/<ID>)
+  --items-file FILE    Public item JSONL file to upload (or set RDLAB_ITEMS_FILE)
+  --receipts-dir DIR   Directory containing <owner>__<repo>.sha256.json receipts (or RDLAB_RECEIPTS_DIR)
+  --cap UNITS          Explicit compute-unit cap override (or set RDLAB_CAP_UNITS)
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --session-smoke)
+      SESSION_SMOKE_FLAG=1
+      MODE="stub"
+      shift
+      ;;
+    --stub)
+      MODE="stub"
+      SESSION_SMOKE_FLAG=0
+      shift
+      ;;
+    --time-one)
+      MODE="time-one"
+      SESSION_SMOKE_FLAG=0
+      shift
+      ;;
+    --dry|--dry-run)
+      DRY_FLAG=1
+      shift
+      ;;
+    --resume)
+      RESUME_FLAG=1
+      shift
+      ;;
+    --run-id)
+      RUN_ID="$2"
+      shift 2
+      ;;
+    --out-dir)
+      OUT_DIR="$2"
+      shift 2
+      ;;
+    --items-file)
+      ITEMS_FILE="$2"
+      shift 2
+      ;;
+    --receipts-dir)
+      RECEIPTS_DIR="$2"
+      shift 2
+      ;;
+    --cap)
+      EXPLICIT_CAP="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+# --- Card and rate per mode ---
+if [[ "$MODE" == "time-one" ]]; then
+  CARD="A100"
+  COLAB_NEW_FLAGS=(--gpu A100)
+  WALL_SECONDS="${RDLAB_WALL_SECONDS:-1500}"
+  RATE_UNITS_PER_HOUR="5.30"
+  if [[ -z "$EXPLICIT_CAP" ]]; then
+    EXPLICIT_CAP="2.5"
+  fi
+  VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
+else
+  CARD="CPU"
+  COLAB_NEW_FLAGS=()
+  WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
+  RATE_UNITS_PER_HOUR="0.08"
+  VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-0}"
+fi
+
+OPEN_LOCK="${RDLAB_OPEN_LOCK:-/tmp/colab-window-open.lock}"
+LOCK_DIR="${COLAB_LOCK_DIR:-/tmp/colab-locks}"
+MAIN=$$
+PYTHON_BIN="${RDLAB_PYTHON:-python3}"
+GATE_TIMEOUT_SECONDS="${RDLAB_GATE_TIMEOUT_SECONDS:-180}"
+UPLOAD_TIMEOUT_SECONDS="${RDLAB_UPLOAD_TIMEOUT_SECONDS:-600}"
+DOWNLOAD_TIMEOUT_SECONDS="${RDLAB_DOWNLOAD_TIMEOUT_SECONDS:-300}"
+
+# --- Ordered timeout hierarchy derived in one place from WALL_SECONDS ---
+# Order: VM_WALL_SECONDS < EXEC_TIMEOUT_SECONDS < WATCHDOG_SLEEP_SECONDS < RIG_TIMEOUT
+FETCH_MARGIN="${RDLAB_FETCH_MARGIN_SECONDS:-180}"
+EXEC_MARGIN="${RDLAB_EXEC_MARGIN_SECONDS:-60}"
+VM_SELF_STOP_MARGIN="${RDLAB_VM_SELF_STOP_MARGIN_SECONDS:-60}"
+RIG_GRACE_SECONDS="${RDLAB_RIG_GRACE_SECONDS:-5}"
+WATCHDOG_FETCH_TIMEOUT="${RDLAB_WATCHDOG_FETCH_TIMEOUT_SECONDS:-$(( FETCH_MARGIN > 10 ? FETCH_MARGIN - 5 : (FETCH_MARGIN > 0 ? FETCH_MARGIN : 1) ))}"
+
+if [[ "$WALL_SECONDS" -gt "$FETCH_MARGIN" ]]; then
+  WATCHDOG_SLEEP_SECONDS=$(( WALL_SECONDS - FETCH_MARGIN ))
+else
+  WATCHDOG_SLEEP_SECONDS=1
+fi
+if [[ "$WATCHDOG_SLEEP_SECONDS" -gt "$EXEC_MARGIN" ]]; then
+  EXEC_TIMEOUT_SECONDS=$(( WATCHDOG_SLEEP_SECONDS - EXEC_MARGIN ))
+else
+  EXEC_TIMEOUT_SECONDS=$(( WATCHDOG_SLEEP_SECONDS > 1 ? WATCHDOG_SLEEP_SECONDS - 1 : 1 ))
+fi
+if [[ "$EXEC_TIMEOUT_SECONDS" -gt "$VM_SELF_STOP_MARGIN" ]]; then
+  VM_WALL_SECONDS=$(( EXEC_TIMEOUT_SECONDS - VM_SELF_STOP_MARGIN ))
+else
+  VM_WALL_SECONDS=$(( EXEC_TIMEOUT_SECONDS > 1 ? EXEC_TIMEOUT_SECONDS - 1 : 1 ))
+fi
+RIG_TIMEOUT=$(( WALL_SECONDS + RIG_GRACE_SECONDS ))
+if [[ "$RIG_TIMEOUT" -le "$WATCHDOG_SLEEP_SECONDS" ]]; then
+  RIG_TIMEOUT=$(( WATCHDOG_SLEEP_SECONDS + 1 ))
+fi
+
+if [[ "$RUN_ID" == rdlab-* ]]; then
+  SESSION_NAME="$RUN_ID"
+else
+  SESSION_NAME="rdlab-$RUN_ID"
+fi
+
+if [[ -z "$OUT_DIR" ]]; then
+  OUT_DIR="/tmp/rdlab-colab-runs/$RUN_ID"
+fi
+
+if [[ "$OUT_DIR" == *"/content/drive"* ]] || [[ "$OUT_DIR" == *"/gdrive"* ]]; then
+  echo "FORBIDDEN_STORAGE_PATH: Google Drive paths are forbidden: $OUT_DIR" >&2
+  exit 2
+fi
+
+WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
+if [[ -n "$EXPLICIT_CAP" ]]; then
+  CAP_UNITS="$EXPLICIT_CAP"
+else
+  CAP_UNITS="$WALL_X_RATE"
+fi
+
+scrub_stream() {
+  sed -E \
+    -e 's/colab-runtime-proxy-token=[^ "'"'"'&;]+/colab-runtime-proxy-token=[REDACTED]/g' \
+    -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/g' \
+    -e 's/ya29\.[A-Za-z0-9._-]+/[REDACTED_OAUTH_TOKEN]/g' \
+    -e 's/1\/\/[A-Za-z0-9._-]+/[REDACTED_OAUTH_TOKEN]/g' \
+    -e 's/eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/[REDACTED_JWT]/g' \
+    -e 's/hf_[A-Za-z0-9]{10,}/hf_[REDACTED]/g' \
+    -e 's/(HF_TOKEN|HUGGING_FACE_HUB_TOKEN)=[^ "'"'"';]+/\1=[REDACTED]/g'
+}
+
+STAGE_DIR="$OUT_DIR/stage"
+REPO_TAR="$STAGE_DIR/repo_bundle.tar.gz"
+RECEIPTS_TAR="$STAGE_DIR/receipts_bundle.tar.gz"
+STAGED_ITEMS_FILE="$STAGE_DIR/items.jsonl"
+RESUME_TAR="$STAGE_DIR/resume_state.tar.gz"
+
+EFFECTIVE_RESUME=0
+if [[ "$RESUME_FLAG" -eq 1 ]] || [[ -f "$OUT_DIR/schedule.json" ]]; then
+  EFFECTIVE_RESUME=1
+fi
+
+build_exec_env_args() {
+  local j_sha="${RDLAB_JUDGE_LOCK_SHA256:-$EXPECTED_JUDGE_LOCK_SHA256}"
+  local d_sha="${RDLAB_D3_LOCK_SHA256:-$EXPECTED_D3_LOCK_SHA256}"
+  EXEC_ENV_ARGS=(
+    --env "RDLAB_STEP=run"
+    --env "RDLAB_MODE=$MODE"
+    --env "RDLAB_WALL_SECONDS=$VM_WALL_SECONDS"
+    --env "RDLAB_VRAM_HALT_MIB=$VRAM_HALT_MIB"
+    --env "RDLAB_JUDGE_LOCK_SHA256=$j_sha"
+    --env "RDLAB_D3_LOCK_SHA256=$d_sha"
+    --env "RDLAB_REPO_DIR=/content/rdlab"
+    --env "RDLAB_REPO_TAR=/content/repo_bundle.tar.gz"
+    --env "RDLAB_RECEIPTS_DIR=/content/rdlab_receipts"
+    --env "RDLAB_RECEIPTS_TAR=/content/receipts_bundle.tar.gz"
+    --env "RDLAB_ITEMS_FILE=/content/rdlab_items/items.jsonl"
+    --env "RDLAB_RUN_DIR=/content/rdlab_run"
+    --env "RDLAB_RESULT_TAR=/content/result.tar.gz"
+    --env "RDLAB_STATUS_FILE=/content/status.json"
+    --env "RDLAB_RESUME=$EFFECTIVE_RESUME"
+  )
+  if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=/content/resume_state.tar.gz")
+  fi
+  if [[ "${VM_DRYRUN:-0}" == "1" ]]; then
+    EXEC_ENV_ARGS+=(--env "VM_DRYRUN=1")
+  fi
+  if [[ -n "${HF_HOME:-}" ]]; then
+    EXEC_ENV_ARGS+=(--env "HF_HOME=$HF_HOME")
+  fi
+  if [[ -n "${RDLAB_TEST_PLANT_LOG_LEAK:-}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_TEST_PLANT_LOG_LEAK=$RDLAB_TEST_PLANT_LOG_LEAK")
+  fi
+}
+
+if [[ "$DRY_FLAG" == "1" ]]; then
+  if [[ -n "$ITEMS_FILE" ]]; then
+    "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.check_upload_path_allowed(sys.argv[2])" "$REPO_ROOT" "$ITEMS_FILE"
+  fi
+  if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
+    printf 'colab sessions\n'
+    printf 'colab new -s %s\n' "$SESSION_NAME"
+    printf 'colab sessions\n'
+    printf 'colab stop -s %s\n' "$SESSION_NAME"
+    printf 'colab sessions\n'
+    exit 0
+  fi
+
+  DRY_NEW_OPTS=""
+  if [[ "${#COLAB_NEW_FLAGS[@]}" -gt 0 ]]; then
+    DRY_NEW_OPTS=" ${COLAB_NEW_FLAGS[*]}"
+  fi
+  build_exec_env_args
+  DRY_ENV_STR="${EXEC_ENV_ARGS[*]}"
+
+  {
+    printf 'colab sessions\n'
+    printf 'colab new%s -s %s\n' "$DRY_NEW_OPTS" "$SESSION_NAME"
+    printf 'colab sessions\n'
+    printf 'colab exec -s %s --env RDLAB_STEP=gate -f %s --timeout=%s\n' "$SESSION_NAME" "$VM_SCRIPT" "$GATE_TIMEOUT_SECONDS"
+    printf 'colab upload -s %s %s /content/repo_bundle.tar.gz\n' "$SESSION_NAME" "$REPO_TAR"
+    printf 'colab upload -s %s %s /content/receipts_bundle.tar.gz\n' "$SESSION_NAME" "$RECEIPTS_TAR"
+    printf 'colab upload -s %s %s /content/rdlab_items/items.jsonl\n' "$SESSION_NAME" "$STAGED_ITEMS_FILE"
+    if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
+      printf 'colab upload -s %s %s /content/resume_state.tar.gz\n' "$SESSION_NAME" "$RESUME_TAR"
+    fi
+    printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_ENV_STR" "$VM_SCRIPT" "$EXEC_TIMEOUT_SECONDS"
+    printf 'colab download -s %s /content/result.tar.gz %s/result.tar.gz\n' "$SESSION_NAME" "$OUT_DIR"
+    printf 'colab download -s %s /content/status.json %s/status.json\n' "$SESSION_NAME" "$OUT_DIR"
+    printf 'colab download -s %s /content/rdlab_run/vm_receipt.json %s/vm_receipt.json\n' "$SESSION_NAME" "$OUT_DIR"
+    printf 'colab stop -s %s\n' "$SESSION_NAME"
+    printf 'colab sessions\n'
+  } | scrub_stream
+  exit 0
+fi
+
+mkdir -p "$OUT_DIR"
+CLI_LOG="$OUT_DIR/colab-cli.log"
+OUTCOME_FILE="$OUT_DIR/outcome.draft.json"
+FETCH_CLAIM_DIR="$OUT_DIR/.rig_fetch_claim"
+FETCH_DONE_MARKER="$OUT_DIR/.rig_fetched"
+DEADLINE_MARKER="$OUT_DIR/.rig_deadline_exceeded"
+touch "$CLI_LOG"
+
+log_msg() {
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | scrub_stream | tee -a "$CLI_LOG" >/dev/null
+}
+
+run_colab() {
+  local out err_file err rc=0
+  err_file="$(mktemp)"
+  out="$(colab "$@" </dev/null 2>"$err_file")" || rc=$?
+  err="$(cat "$err_file" 2>/dev/null || true)"
+  rm -f "$err_file"
+  if [[ -n "$err" ]]; then
+    printf '%s\n' "$err" | scrub_stream >> "$CLI_LOG"
+  fi
+  if [[ -n "$out" ]] && [[ "${1:-}" != "sessions" ]]; then
+    printf '%s\n' "$out" | scrub_stream >> "$CLI_LOG"
+  fi
+  printf '%s\n' "$out" | scrub_stream
+  return $rc
+}
+
+S=""
+NEW_SUCCEEDED=0
+PRE_SESSIONS=""
+MID_SESSIONS=""
+POST_SESSIONS=""
+FETCHED=0
+STOPPED=0
+WATCHDOG_PID=""
+RUN_OUTCOME="failed"
+RUN_WHY="window exited before completion"
+START_EPOCH="$(date +%s)"
+
+cleanup_stage() {
+  if [[ -n "$STAGE_DIR" ]] && [[ -d "$STAGE_DIR" ]]; then
+    rm -rf "$STAGE_DIR" 2>/dev/null || true
+  fi
+}
+
+wait_for_fetch_done() {
+  local wait_timeout="${1:-${WATCHDOG_FETCH_TIMEOUT:-175}}"
+  if [[ "$wait_timeout" -le 0 ]]; then
+    wait_timeout=175
+  fi
+  local deadline=$(( $(date +%s) + wait_timeout ))
+  while [[ ! -f "$FETCH_DONE_MARKER" ]]; do
+    if [[ "$(date +%s)" -ge "$deadline" ]]; then
+      break
+    fi
+    sleep 0.05
+  done
+}
+
+fetch_results_once() {
+  local fetch_timeout="${1:-0}"
+  local wait_timeout="$fetch_timeout"
+  if [[ "$wait_timeout" -le 0 ]]; then
+    wait_timeout="${WATCHDOG_FETCH_TIMEOUT:-175}"
+  fi
+  if [[ "$NEW_SUCCEEDED" -ne 1 ]] || [[ -z "$S" ]] || [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
+    return 0
+  fi
+  if [[ -f "$FETCH_DONE_MARKER" ]]; then
+    FETCHED=1
+    return 0
+  fi
+  if ! mkdir "$FETCH_CLAIM_DIR" 2>/dev/null; then
+    wait_for_fetch_done "$wait_timeout"
+    FETCHED=1
+    return 0
+  fi
+  FETCHED=1
+  log_msg "FETCH_START session=$S"
+  local eff_timeout="$DOWNLOAD_TIMEOUT_SECONDS"
+  if [[ "$fetch_timeout" -gt 0 ]]; then
+    eff_timeout="$fetch_timeout"
+  fi
+  timeout "$eff_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
+  timeout "$eff_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
+  timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
+  log_msg "FETCH_DONE session=$S"
+  touch "$FETCH_DONE_MARKER"
+}
+
+write_outcome_draft() {
+  local end_epoch runtime_s
+  end_epoch="$(date +%s)"
+  runtime_s=$(( end_epoch - START_EPOCH ))
+  if [[ "$runtime_s" -lt 0 ]]; then
+    runtime_s=0
+  fi
+  RDLAB_SMOKE_SESSION_NAME="$SESSION_NAME" \
+  RDLAB_SMOKE_PRE_SESSIONS="$PRE_SESSIONS" \
+  RDLAB_SMOKE_MID_SESSIONS="$MID_SESSIONS" \
+  RDLAB_SMOKE_POST_SESSIONS="$POST_SESSIONS" \
+  "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "$CARD" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" <<'PY'
+import datetime
+import json
+import os
+import re
+import shutil
+import sys
+from pathlib import Path
+
+SESSION_ROW_SHAPE = "[<SESSION>] <TOKEN> | <TOKEN>: <TOKEN> | <TOKEN>: <TOKEN> | <TOKEN>: <TOKEN>"
+
+out_path = Path(sys.argv[1])
+run_id = sys.argv[2]
+hardware = sys.argv[3]
+cap = float(sys.argv[4])
+rate = float(sys.argv[5])
+wall_seconds = int(sys.argv[6])
+explicit_cap_raw = sys.argv[7].strip()
+runtime_seconds = int(sys.argv[8])
+outcome = sys.argv[9]
+why = sys.argv[10]
+
+wall_x_rate = round((wall_seconds / 3600.0) * rate, 4)
+explicit_cap = float(explicit_cap_raw) if explicit_cap_raw else None
+if explicit_cap is not None:
+    binding_cap = min(wall_x_rate, explicit_cap)
+    cap_binds = "explicit_cap" if explicit_cap <= wall_x_rate else "wall_x_rate"
+    cap_source = "explicit_cap"
+else:
+    binding_cap = wall_x_rate
+    cap_binds = "wall_x_rate"
+    cap_source = "wall_x_rate"
+
+cost = round((runtime_seconds / 3600.0) * rate, 4)
+target_session = os.environ.get("RDLAB_SMOKE_SESSION_NAME", "")
+
+
+def _mask_line_shape(line: str, session_name: str) -> str:
+    def _repl(m: re.Match[str]) -> str:
+        tok = m.group(0)
+        return "<SESSION>" if (session_name and tok == session_name) else "<TOKEN>"
+
+    return re.sub(r"[A-Za-z0-9_.-]+", _repl, line.strip())
+
+
+def _stage_shape(raw_text: str, session_name: str) -> dict[str, object]:
+    non_empty = [ln for ln in raw_text.splitlines() if ln.strip()]
+    shapes = [_mask_line_shape(ln, session_name) for ln in non_empty]
+    matches_prefix = bool(
+        session_name and any(ln.startswith(f"[{session_name}]") for ln in non_empty)
+    )
+    matches_row_shape = SESSION_ROW_SHAPE in shapes
+    return {
+        "line_count": len(non_empty),
+        "line_shapes": shapes,
+        "contains_bracketed_session": bool(
+            session_name and f"[{session_name}]" in raw_text
+        ),
+        "matches_bracket_prefix": matches_prefix,
+        "matches_session_row_shape": matches_row_shape,
+    }
+
+
+def _detect_is_fake_cli() -> bool:
+    if os.environ.get("RDLAB_COLAB_IS_FAKE", "").strip() == "1":
+        return True
+    if os.environ.get("FAKE_COLAB_STATE_DIR", "").strip():
+        return True
+    colab_bin = shutil.which("colab")
+    if colab_bin:
+        try:
+            content = Path(colab_bin).read_text(encoding="utf-8", errors="ignore")
+            if "RDLAB_COLAB_IS_FAKE" in content or "fake_colab" in content:
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _is_format_verified_on_real_cli(
+    mid_matches_row: bool,
+    is_fake_cli: bool,
+) -> bool:
+    return bool(mid_matches_row) and not bool(is_fake_cli)
+
+
+pre_stage = _stage_shape(os.environ.get("RDLAB_SMOKE_PRE_SESSIONS", ""), target_session)
+mid_stage = _stage_shape(os.environ.get("RDLAB_SMOKE_MID_SESSIONS", ""), target_session)
+post_stage = _stage_shape(os.environ.get("RDLAB_SMOKE_POST_SESSIONS", ""), target_session)
+is_fake = _detect_is_fake_cli()
+verified_flag = _is_format_verified_on_real_cli(
+    bool(mid_stage["matches_session_row_shape"] and mid_stage["matches_bracket_prefix"]),
+    is_fake,
+)
+
+sessions_shape = {
+    "format_verified_on_real_cli": verified_flag,
+    "pre_sessions": pre_stage,
+    "mid_sessions": mid_stage,
+    "post_sessions": post_stage,
+}
+
+payload: dict[str, object] = {
+    "id": run_id,
+    "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+    "venue": "colab",
+    "hardware": hardware,
+    "rate_per_hour": rate,
+    "wall_seconds": wall_seconds,
+    "wall_x_rate": wall_x_rate,
+    "explicit_cap": explicit_cap,
+    "cap": cap,
+    "binding_cap": binding_cap,
+    "cap_binds": cap_binds,
+    "cap_source": cap_source,
+    "cost": cost,
+    "runtime": runtime_seconds,
+    "runtime_seconds": runtime_seconds,
+    "outcome": outcome,
+    "why": why,
+    "format_verified_on_real_cli": verified_flag,
+    "sessions_output_shape": sessions_shape,
+}
+out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+PY
+}
+
+stop_all() {
+  local exit_code=$?
+  set +e
+  cleanup_stage
+  if [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]] && [[ "$STOPPED" -eq 0 ]] && [[ ! -f "$OUT_DIR/.rig_stopped" ]]; then
+    fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
+  fi
+  if [[ -n "$WATCHDOG_PID" ]]; then
+    if [[ -f "$DEADLINE_MARKER" ]]; then
+      wait "$WATCHDOG_PID" 2>/dev/null || true
+    else
+      pkill -P "$WATCHDOG_PID" 2>/dev/null || true
+      kill "$WATCHDOG_PID" 2>/dev/null || true
+      wait "$WATCHDOG_PID" 2>/dev/null || true
+    fi
+    WATCHDOG_PID=""
+  fi
+  if [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]] && [[ "$STOPPED" -eq 0 ]] && [[ ! -f "$OUT_DIR/.rig_stopped" ]]; then
+    log_msg "STOP_SESSION session=$S"
+    run_colab stop -s "$S" </dev/null >/dev/null 2>&1 || true
+    rm -f "$LOCK_DIR/$S.lock"
+    STOPPED=1
+    touch "$OUT_DIR/.rig_stopped"
+    POST_SESSIONS="$(run_colab sessions </dev/null || true)"
+    log_msg "SESSIONS_AFTER_STOP session=$S"
+    if printf '%s\n' "$POST_SESSIONS" | grep -q "^\[$S\]"; then
+      RUN_OUTCOME="failed"
+      RUN_WHY="session $S still present after colab stop"
+      exit_code=1
+    fi
+  elif [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]]; then
+    rm -f "$LOCK_DIR/$S.lock"
+  fi
+  rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$OUT_DIR/.rig_stopped" 2>/dev/null || true
+  "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.scrub_log_file_in_place(Path(sys.argv[2]))" "$REPO_ROOT" "$CLI_LOG" >/dev/null 2>&1 || true
+  write_outcome_draft
+  exit "$exit_code"
+}
+
+trap stop_all EXIT
+trap 'RUN_WHY="interrupted by signal"; exit 143' TERM INT
+
+if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
+  log_msg "SESSION_SMOKE_START id=$RUN_ID session=$SESSION_NAME card=$CARD"
+  mkdir -p "$(dirname "$OPEN_LOCK")"
+  exec 9>"$OPEN_LOCK"
+  flock -w 300 9 || {
+    RUN_WHY="failed to acquire open lock $OPEN_LOCK"
+    exit 1
+  }
+  log_msg "LOCK_ACQUIRED lock=$OPEN_LOCK"
+  PRE_SESSIONS="$(run_colab sessions </dev/null || true)"
+  # Live session row shape: `[<SESSION>] <TOKEN> | <TOKEN>: <TOKEN> | <TOKEN>: <TOKEN> | <TOKEN>: <TOKEN>`
+  # Empty list CLI message: `[colab] No active sessions found on server.` (never a session row).
+  if printf '%s\n' "$PRE_SESSIONS" | grep -Fq "[$SESSION_NAME]"; then
+    flock -u 9 || true
+    RUN_WHY="session $SESSION_NAME already exists in colab sessions; refusing to reuse name"
+    log_msg "SESSION_NAME_IN_USE session=$SESSION_NAME"
+    echo "SESSION_NAME_IN_USE: session [$SESSION_NAME] already exists in colab sessions" >&2
+    exit 1
+  fi
+  if ! run_colab new -s "$SESSION_NAME" </dev/null >/dev/null; then
+    flock -u 9 || true
+    RUN_WHY="colab new failed for $SESSION_NAME"
+    exit 1
+  fi
+  S="$SESSION_NAME"
+  NEW_SUCCEEDED=1
+  mkdir -p "$LOCK_DIR"
+  printf '%s\n' "$MAIN" > "$LOCK_DIR/$S.lock"
+  log_msg "SESSION_LOCK_WRITTEN lock_file=$LOCK_DIR/$S.lock pid=$MAIN"
+  MID_SESSIONS="$(run_colab sessions </dev/null || true)"
+  log_msg "SESSION_OPENED session=$S"
+  if ! printf '%s\n' "$MID_SESSIONS" | grep -q "^\[$S\]"; then
+    flock -u 9 || true
+    RUN_WHY="colab sessions did not list [$S] after colab new"
+    exit 1
+  fi
+  flock -u 9 || true
+  log_msg "LOCK_RELEASED session=$S"
+  RUN_OUTCOME="ok"
+  RUN_WHY="completed CPU session-smoke check for $S"
+  log_msg "SESSION_SMOKE_OK id=$RUN_ID session=$S"
+  exit 0
+fi
+
+log_msg "WINDOW_START id=$RUN_ID mode=$MODE card=$CARD wall_s=$WALL_SECONDS vm_wall_s=$VM_WALL_SECONDS exec_timeout_s=$EXEC_TIMEOUT_SECONDS watchdog_sleep_s=$WATCHDOG_SLEEP_SECONDS rig_timeout_s=$RIG_TIMEOUT rate_uh=$RATE_UNITS_PER_HOUR cap_units=$CAP_UNITS vram_halt_mib=$VRAM_HALT_MIB"
+
+if [[ -z "$ITEMS_FILE" ]]; then
+  RUN_WHY="RDLAB_ITEMS_FILE or --items-file is required"
+  echo "ITEMS_FILE_MISSING: RDLAB_ITEMS_FILE or --items-file is required" >&2
+  exit 2
+fi
+if ! "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.check_upload_path_allowed(sys.argv[2])" "$REPO_ROOT" "$ITEMS_FILE"; then
+  RUN_WHY="upload path refused by key/sealed-store guard: $ITEMS_FILE"
+  exit 2
+fi
+if [[ ! -f "$ITEMS_FILE" ]]; then
+  RUN_WHY="items file does not exist: $ITEMS_FILE"
+  echo "ITEMS_FILE_MISSING: $ITEMS_FILE" >&2
+  exit 2
+fi
+
+if [[ -z "$RECEIPTS_DIR" ]] || [[ ! -d "$RECEIPTS_DIR" ]]; then
+  RUN_WHY="RDLAB_RECEIPTS_DIR or --receipts-dir is missing"
+  echo "RECEIPTS_DIR_MISSING: RDLAB_RECEIPTS_DIR must point to the weight sha256 receipts directory" >&2
+  exit 2
+fi
+
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$EXPECTED_JUDGE_LOCK_SHA256" "$EXPECTED_D3_LOCK_SHA256" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+exp_judge = sys.argv[2]
+exp_d3 = sys.argv[3]
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+vm_judges.verify_lock_digests(
+    repo_root / "scripts" / "colab" / "locks" / "judge.lock.txt",
+    repo_root / "scripts" / "colab" / "locks" / "d3.lock.txt",
+    env_judge_sha256=os.environ.get("RDLAB_JUDGE_LOCK_SHA256"),
+    env_d3_sha256=os.environ.get("RDLAB_D3_LOCK_SHA256"),
+    expected_judge_sha256=exp_judge,
+    expected_d3_sha256=exp_d3,
+)
+PY
+then
+  RUN_WHY="lock file SHA-256 verification failed before session open"
+  exit 2
+fi
+
+mkdir -p "$STAGE_DIR"
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" <<'PY'
+import shutil
+import sys
+import tarfile
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+items_src = Path(sys.argv[2])
+items_dst = Path(sys.argv[3])
+receipts_dir = Path(sys.argv[4])
+receipts_tar = Path(sys.argv[5])
+repo_tar = Path(sys.argv[6])
+
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+sys.path.insert(0, str(repo_root / "src"))
+import vm_judges
+from reasoning_dataset_lab.pilot_b.bakeoff_judge import BAKEOFF_JUDGE_SPECS
+
+vm_judges.check_upload_path_allowed(items_src)
+_ = vm_judges.collect_claim_ngram_sha256s(items_src)
+shutil.copyfile(items_src, items_dst)
+
+with tarfile.open(receipts_tar, "w:gz") as tf:
+    for _, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+        owner, repo = spec.repo_id.split("/", 1)
+        rname = f"{owner}__{repo}.sha256.json"
+        rpath = receipts_dir / rname
+        if not rpath.is_file():
+            raise SystemExit(f"RECEIPT_MISSING: missing {rname} in {receipts_dir}")
+        tf.add(rpath, arcname=rname, recursive=False)
+
+include_paths = [
+    "pyproject.toml",
+    "uv.lock",
+    "README.md",
+    "src",
+    "scripts/colab",
+]
+with tarfile.open(repo_tar, "w:gz") as tf:
+    for rel in include_paths:
+        target = repo_root / rel
+        if not target.exists():
+            continue
+        if target.is_file():
+            tf.add(target, arcname=rel, recursive=False)
+        else:
+            for child in sorted(target.rglob("*")):
+                if "__pycache__" in child.parts or child.suffix in (".pyc", ".pyo"):
+                    continue
+                if child.is_file():
+                    tf.add(child, arcname=child.relative_to(repo_root).as_posix(), recursive=False)
+PY
+then
+  RUN_WHY="staging of items, receipts, or repo bundle failed on rig"
+  exit 2
+fi
+
+if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
+  "$PYTHON_BIN" - "$OUT_DIR" "$RESUME_TAR" <<'PY'
+import sys
+import tarfile
+from pathlib import Path
+
+out_dir = Path(sys.argv[1])
+tar_path = Path(sys.argv[2])
+with tarfile.open(tar_path, "w:gz") as tf:
+    for exact in ("schedule.json", "generations.jsonl"):
+        p = out_dir / exact
+        if p.is_file():
+            tf.add(p, arcname=exact, recursive=False)
+    rows_dir = out_dir / "rows"
+    if rows_dir.is_dir():
+        for rf in sorted(rows_dir.glob("*.jsonl")):
+            if rf.is_file():
+                tf.add(rf, arcname=f"rows/{rf.name}", recursive=False)
+PY
+fi
+
+mkdir -p "$(dirname "$OPEN_LOCK")"
+exec 9>"$OPEN_LOCK"
+flock -w 300 9 || {
+  RUN_WHY="failed to acquire open lock $OPEN_LOCK"
+  exit 1
+}
+log_msg "LOCK_ACQUIRED lock=$OPEN_LOCK"
+
+PRE_SESSIONS="$(run_colab sessions </dev/null || true)"
+if printf '%s\n' "$PRE_SESSIONS" | grep -Fq "[$SESSION_NAME]"; then
+  flock -u 9 || true
+  RUN_WHY="session $SESSION_NAME already exists in colab sessions; refusing to reuse name"
+  log_msg "SESSION_NAME_IN_USE session=$SESSION_NAME"
+  echo "SESSION_NAME_IN_USE: session [$SESSION_NAME] already exists in colab sessions" >&2
+  exit 1
+fi
+if ! run_colab new "${COLAB_NEW_FLAGS[@]+"${COLAB_NEW_FLAGS[@]}"}" -s "$SESSION_NAME" </dev/null >/dev/null; then
+  flock -u 9 || true
+  RUN_WHY="colab new failed for $SESSION_NAME"
+  exit 1
+fi
+S="$SESSION_NAME"
+NEW_SUCCEEDED=1
+
+mkdir -p "$LOCK_DIR"
+printf '%s\n' "$MAIN" > "$LOCK_DIR/$S.lock"
+log_msg "SESSION_LOCK_WRITTEN lock_file=$LOCK_DIR/$S.lock pid=$MAIN"
+
+MID_SESSIONS="$(run_colab sessions </dev/null || true)"
+log_msg "SESSION_OPENED session=$S"
+if ! printf '%s\n' "$MID_SESSIONS" | grep -q "^\[$S\]"; then
+  flock -u 9 || true
+  RUN_WHY="colab sessions did not list [$S] after colab new"
+  exit 1
+fi
+
+GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=gate -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || {
+  flock -u 9 || true
+  RUN_WHY="VM liveness gate failed on session $S"
+  exit 1
+}
+if ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
+  flock -u 9 || true
+  RUN_WHY="VM liveness gate did not print VM_GATE_OK on session $S"
+  exit 1
+fi
+flock -u 9 || true
+log_msg "LOCK_RELEASED session=$S"
+
+rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$OUT_DIR/.rig_stopped" "$OUT_DIR/status.json"
+(
+  SLEEP_PID=""
+  trap 'if [[ -n "$SLEEP_PID" ]]; then kill "$SLEEP_PID" 2>/dev/null || true; fi; exit 0' TERM INT
+  sleep "$WATCHDOG_SLEEP_SECONDS" &
+  SLEEP_PID="$!"
+  wait "$SLEEP_PID" 2>/dev/null || exit 0
+  SLEEP_PID=""
+  touch "$DEADLINE_MARKER"
+  printf '%s RIG_DEADLINE_EXCEEDED session=%s wall_s=%s fetch_margin_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$WALL_SECONDS" "$FETCH_MARGIN" >> "$CLI_LOG"
+  fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
+  printf '%s WATCHDOG_STOP_SESSION session=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" >> "$CLI_LOG"
+  colab stop -s "$S" </dev/null >/dev/null 2>&1 || true
+  rm -f "$LOCK_DIR/$S.lock"
+  touch "$OUT_DIR/.rig_stopped"
+) </dev/null >/dev/null 2>&1 9>&- &
+WATCHDOG_PID="$!"
+
+timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
+timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
+timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
+if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
+  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
+fi
+cleanup_stage
+
+build_exec_env_args
+EXEC_RC=0
+timeout --signal=TERM --kill-after=15 "${RIG_TIMEOUT}s" \
+  colab exec -s "$S" "${EXEC_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || EXEC_RC=$?
+
+if [[ -f "$DEADLINE_MARKER" ]]; then
+  if [[ -n "$WATCHDOG_PID" ]]; then
+    wait "$WATCHDOG_PID" 2>/dev/null || true
+    WATCHDOG_PID=""
+  fi
+  rm -f "$DEADLINE_MARKER"
+  EXEC_RC=124
+fi
+
+fetch_results_once
+
+if [[ "$EXEC_RC" -eq 124 ]] || [[ "$EXEC_RC" -eq 137 ]]; then
+  RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
+  exit "$EXEC_RC"
+fi
+
+if [[ ! -f "$OUT_DIR/status.json" ]]; then
+  RUN_WHY="status.json missing after VM run (exec_rc=$EXEC_RC)"
+  if [[ "$EXEC_RC" -ne 0 ]]; then
+    exit "$EXEC_RC"
+  fi
+  exit 1
+fi
+
+STATUS_CHECK_OUT=""
+STATUS_CHECK_RC=0
+STATUS_CHECK_OUT="$("$PYTHON_BIN" - "$OUT_DIR/status.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+status_path = Path(sys.argv[1])
+try:
+    data = json.loads(status_path.read_text(encoding="utf-8"))
+except Exception as exc:
+    print(f"invalid_json|{type(exc).__name__}")
+    raise SystemExit(2)
+
+if not isinstance(data, dict):
+    print("invalid_payload|not_a_dict")
+    raise SystemExit(2)
+
+step = str(data.get("step") or "unknown")
+rc = data.get("rc")
+reason = str(data.get("reason") or "")
+if not isinstance(rc, int) or isinstance(rc, bool):
+    print(f"{step}|invalid_rc|{reason}")
+    raise SystemExit(2)
+
+print(f"{step}|{rc}|{reason}")
+if rc != 0:
+    raise SystemExit(rc if 1 <= rc <= 255 else 2)
+PY
+)" || STATUS_CHECK_RC=$?
+
+if [[ "$STATUS_CHECK_RC" -ne 0 ]]; then
+  RUN_WHY="VM status.json reported failure (${STATUS_CHECK_OUT})"
+  exit "$STATUS_CHECK_RC"
+fi
+
+if [[ "$EXEC_RC" -ne 0 ]]; then
+  RUN_WHY="colab exec exited non-zero ($EXEC_RC)"
+  exit "$EXEC_RC"
+fi
+
+if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
+  RUN_WHY="result.tar.gz missing after VM run"
+  exit 1
+fi
+
+# Extract result.tar.gz, run log guard on all kept logs and outputs, and write outputs-closed.json before any key read.
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" "$ITEMS_FILE" "$CLI_LOG" <<'PY'
+import json
+import shutil
+import sys
+import tarfile
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+out_dir = Path(sys.argv[2])
+items_file = Path(sys.argv[3])
+cli_log = Path(sys.argv[4])
+
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+tar_path = out_dir / "result.tar.gz"
+extract_dir = out_dir / "extracted"
+extract_dir.mkdir(parents=True, exist_ok=True)
+
+vm_judges.validate_tar_file(tar_path)
+with tarfile.open(tar_path, "r:*") as tf:
+    tf.extractall(extract_dir)
+
+for rel_name in ("schedule.json", "generations.jsonl", "time_one_summary.json", "vm_receipt.json"):
+    src = extract_dir / rel_name
+    if src.is_file():
+        shutil.copyfile(src, out_dir / rel_name)
+
+src_rows = extract_dir / "rows"
+if src_rows.is_dir():
+    dst_rows = out_dir / "rows"
+    dst_rows.mkdir(parents=True, exist_ok=True)
+    for rf in sorted(src_rows.glob("*.jsonl")):
+        if rf.is_file():
+            shutil.copyfile(rf, dst_rows / rf.name)
+
+vm_judges.scrub_log_file_in_place(cli_log)
+for lf in (extract_dir / "logs").glob("*.log"):
+    vm_judges.scrub_log_file_in_place(lf)
+
+claim_hashes = vm_judges.collect_claim_ngram_sha256s(items_file)
+paths_to_check: list[Path] = [cli_log]
+for p in sorted(extract_dir.rglob("*")):
+    if p.is_file():
+        paths_to_check.append(p)
+
+try:
+    vm_judges.verify_rig_logs_and_outputs_clean(
+        paths_to_check,
+        claim_ngram_sha256s=claim_hashes,
+    )
+except vm_judges.RefusalError as exc:
+    # Quarantine outputs and keep files out of any receipt that leaves the rig
+    for q in (
+        out_dir / "result.tar.gz",
+        out_dir / "schedule.json",
+        out_dir / "generations.jsonl",
+        out_dir / "time_one_summary.json",
+        out_dir / "outputs-closed.json",
+    ):
+        if q.is_file():
+            q.unlink()
+    shutil.rmtree(extract_dir, ignore_errors=True)
+    shutil.rmtree(out_dir / "rows", ignore_errors=True)
+    receipt_p = out_dir / "vm_receipt.json"
+    receipt_p.write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "failure_class": exc.failure_class,
+                "detail": exc.detail,
+                "quarantined_files_excluded": True,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    raise SystemExit(f"LOG_GUARD_FAILED: {exc.failure_class}: {exc.detail}") from exc
+
+vm_judges.write_outputs_closed(out_dir)
+PY
+then
+  RUN_WHY="rig log guard or result tar verification failed"
+  exit 2
+fi
+
+RUN_OUTCOME="ok"
+RUN_WHY="completed judge bake-off window in ${MODE} mode"
+log_msg "WINDOW_OK id=$RUN_ID session=$S"
+exit 0
