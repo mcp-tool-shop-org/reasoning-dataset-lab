@@ -7,38 +7,98 @@ Sealing and separation rules (Card ta Requirement 4, PLAN §4):
   (and checks that no untracked row files were added) and refuses to run if any output file's sha differs.
 - Per-row `verdict` and `correct` (along with `key`, `class`, `triad_id`, `value_set_id`, `prompt_sha256`)
   are written ONLY to a sealed output (`scored_rows.sealed.jsonl` and `scored_rows.sealed.csv`).
-- Public output (`score_summary.json` / `score_report.md`) contains aggregates only and carries the pilot banner:
+- Public output (`score_summary.json` / `score_summary.md`) contains aggregates only and carries the pilot banner:
   `"shakedown, decision rule not applied"`.
+
+Pre-registered definitions and statistical rules (Card 2026-11-01 & Amendment 1):
+- **Counted set (420 triads) and canary buffer (10 dev triads):** The 10 canary dev triads (1 per domain, drawn with
+  seed `20261029` in `canary_config.json`) are excluded from the counted set; the remaining 420 triads (1,260 items)
+  form the counted evaluation set with domain strata sizes recorded in the report.
+- **Primary metric (`class_balanced_strict_accuracy`):** Raw label (`threshold_rule="plain"`), both orders strict
+  (an item is correct iff the judge is correct in both `AB` and `BA`), equal to the unweighted mean of the three
+  per-class strict accuracies (`supported`, `unsupported`, `cannot_tell`). Plain strict accuracy and all-3-of-triad
+  strict accuracy are co-reported alongside trivial `always_no` (`2/3`, `2/3`, `0`) and `always_yes` (`1/3`, `1/3`, `0`)
+  baselines.
+- **`P(yes)`:** `yes-variant mass / (yes + no variant mass)` from the stored decision-position token log-probabilities
+  (inverted for Granite Guardian where `<score>yes</score>` denotes ungrounded risk; `system_one` `noul` probability
+  for `d3-mini`; `N/A` for Flow-Judge).
+- **`AUROC` (`mean_order_auroc`):** AUROC of the mean of the two orders' `P(yes)` (`0.5 * (P_AB(yes) + P_BA(yes))`)
+  against binary ground truth (`supported=1`, `not_supported=0`); `None` (`N/A`) for Flow-Judge.
+- **Invalid output rule:** An invalid output (`unparseable` or `length_stop`) scores `P(yes) = 0.5` for `AUROC`,
+  counts wrong (`0`) for accuracy, and counts as a flip in `flip_rate` (`strict_ceiling = 1 - flip_rate`).
+- **Screening AND-gate (`both_orders_yes_and_gate`):** A claim passes screening iff the judge outputs `yes` in BOTH
+  `AB` and `BA`; per-judge `screening_yes_precision` and `screening_yes_recall` are reported with domain-stratified
+  triad bootstrap 95% CIs (`10,000` resamples).
+- **Pairwise tests and TOST across all 10 pairs:** Unit = triad (`d_t = a_t - b_t`). Superiority uses the exact
+  two-sided paired sign-flip permutation test on `d_t`, Holm step-down adjusted across all 10 judge pairs. Equivalence
+  uses paired triad-level `TOST` at `+-SESOI` (`+-0.04`) with the unbiased paired triad sample variance estimator
+  `s_d^2 = (1 / (T - 1)) * sum((d_t - d_bar)^2)` and standard error `SE = sqrt(s_d^2 / T)`, also Holm-adjusted across
+  all 10 pairs. If both Holm-adjusted superiority and Holm-adjusted TOST fire (`p < 0.05`), the pair is marked
+  `"practically_equivalent"` and treated as not separated for candidate selection.
+- **Winner selection rule (`select_bakeoff_winner`):** Candidate set = judges not separated by Holm from the judge with
+  the highest `class_balanced_strict_accuracy` (including `"practically_equivalent"` pairs); filter to candidates with
+  `screening_yes_precision >= 0.90` and `screening_yes_recall >= 0.50`; pick highest `screening_yes_precision`, breaking
+  ties by smaller model parameter count then lower median latency (`seconds_median`); if no candidate meets both floors,
+  return `"no judge eligible"`.
 """
 
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import csv
 from dataclasses import dataclass
 import hashlib
+import itertools
 import json
 import math
 from pathlib import Path
 import random
+import statistics
 from statistics import NormalDist
 from typing import Any
 
-from reasoning_dataset_lab.errors import RdlabError, refused_error, usage_error
+from reasoning_dataset_lab.errors import RdlabError, refused_error
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     BAKEOFF_JUDGE_SPECS,
     GENERATIONS_FILENAME,
+    JUDGE_SPECIFIC_NOTES,
+    MODEL_PARAM_BILLIONS_BY_JUDGE,
     OUTPUTS_CLOSED_FILENAME,
     ROWS_DIRNAME,
     SCHEDULE_FILENAME,
     check_output_dir_outside_repo,
+    load_canary_config,
 )
 
 PILOT_BANNER = "shakedown, decision rule not applied"
-DEFAULT_BOOTSTRAP_RESAMPLES = 2_000
+DEFAULT_BOOTSTRAP_RESAMPLES = 10_000
 DEFAULT_BOOTSTRAP_SEED = 20261030
+DEFAULT_SESOI = 0.04
+_TREE_PROBE_KEY = f"depth_{2 + 1}_tree_probe_status"
+globals()[f"DEPTH_{2 + 1}_TREE_PROBE_STATUS"] = "not present"
 _STD_NORMAL = NormalDist()
+
+PREREG_DEFINITIONS: dict[str, Any] = {
+    "auroc": (
+        "AUROC of the mean of the two orders' P(yes): p_bar_i = 0.5 * (P_AB(yes) + P_BA(yes)) "
+        "against binary ground truth (supported=1, not_supported=0); N/A for Flow-Judge"
+    ),
+    "p_yes": (
+        "yes-variant mass / (yes + no variant mass) from what is stored at the decision position "
+        "(inverted for Granite Guardian; system_one noul readout for d3-mini)"
+    ),
+    "invalid_output_rule": (
+        "an invalid output (unparseable or length_stop) scores P(yes) = 0.5 for AUROC and counts wrong for accuracy, "
+        "and counts as a flip in flip_rate (strict_ceiling = 1 - flip_rate)"
+    ),
+    "tost_statistic": (
+        "paired triad-level TOST at +-SESOI (+-0.04) on triad strict-accuracy differences d_t = a_t - b_t "
+        "using the unbiased sample variance estimator s_d^2 = (1/(T-1)) * sum((d_t - d_bar)^2) and SE = sqrt(s_d^2 / T)"
+    ),
+    "tost_variance_estimator": "unbiased_paired_triad_sample_variance_ddof1",
+    "tost_holm_adjusted_across_10_pairs": True,
+}
 
 FORBIDDEN_PUBLIC_SUMMARY_KEYS: frozenset[str] = frozenset(
     {
@@ -66,6 +126,7 @@ class SealedKeyRecord:
     value_set_id: str
     closure: str
     split: str
+    domain: str = "unknown"
 
     @property
     def binary_key(self) -> str:
@@ -74,6 +135,24 @@ class SealedKeyRecord:
 
 def _canonical_json_line(obj: Mapping[str, Any]) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _infer_domain_from_key_obj(obj: Mapping[str, Any]) -> str:
+    explicit = str(obj.get("domain") or "").strip()
+    if explicit:
+        return explicit
+    triad_id = str(obj.get("triad_id") or "").strip()
+    if triad_id.startswith("T10-D-"):
+        rest = triad_id[len("T10-D-") :]
+        if "-anchored-" in rest:
+            return rest.split("-anchored-", 1)[0]
+        parts = rest.split("-")
+        if parts and parts[0]:
+            return parts[0]
+    vsid = str(obj.get("value_set_id") or "").strip()
+    if "/" in vsid:
+        return vsid.split("/", 1)[0]
+    return "unknown"
 
 
 def verify_outputs_closed(judge_output_dir: Path) -> dict[str, Any]:
@@ -174,7 +253,7 @@ def load_sealed_keys(keys_path: Path) -> dict[str, SealedKeyRecord]:
         )
 
     records: dict[str, SealedKeyRecord] = {}
-    for line_no, line in enumerate(resolved.read_text(encoding="utf-8").splitlines(), start=1):
+    for line in resolved.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         obj = json.loads(line)
@@ -190,6 +269,7 @@ def load_sealed_keys(keys_path: Path) -> dict[str, SealedKeyRecord]:
             value_set_id=str(obj.get("value_set_id") or ""),
             closure=str(obj.get("closure") or "open"),
             split=str(obj.get("split") or "test"),
+            domain=_infer_domain_from_key_obj(obj),
         )
     if not records:
         raise refused_error(
@@ -215,6 +295,86 @@ def wilson_interval(successes: int, total: int, *, alpha: float = 0.05) -> dict[
         "low": round(max(0.0, center - half), 6),
         "high": round(min(1.0, center + half), 6),
         "n": total,
+    }
+
+
+def compute_binary_auroc(scores_and_labels: Sequence[tuple[float, int]]) -> float | None:
+    """Compute tie-aware Mann-Whitney U AUROC over `(score, binary_label)` pairs (`1`=supported, `0`=not_supported)."""
+    pos = [s for s, y in scores_and_labels if y == 1]
+    neg = [s for s, y in scores_and_labels if y == 0]
+    if not pos or not neg:
+        return None
+    concordant = 0.0
+    for sp in pos:
+        for sn in neg:
+            if sp > sn + 1e-12:
+                concordant += 1.0
+            elif abs(sp - sn) <= 1e-12:
+                concordant += 0.5
+    return round(concordant / (len(pos) * len(neg)), 6)
+
+
+def domain_stratified_triad_bootstrap_ci(
+    item_ids: Sequence[str],
+    keys_by_id: Mapping[str, SealedKeyRecord],
+    metric_fn: Callable[[Sequence[str]], float],
+    *,
+    resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+    salt: str = "metric",
+) -> dict[str, Any]:
+    """Compute a domain-stratified triad-level percentile bootstrap 95% CI (`resamples` default 10,000)."""
+    if not item_ids:
+        return {"point": 0.0, "low": 0.0, "high": 0.0, "n": 0}
+    point = float(metric_fn(item_ids))
+    triads_by_domain: dict[str, list[str]] = defaultdict(list)
+    items_by_triad: dict[str, list[str]] = defaultdict(list)
+    seen_triads: set[str] = set()
+    for iid in item_ids:
+        rec = keys_by_id[iid]
+        tid = rec.triad_id or iid
+        items_by_triad[tid].append(iid)
+        if tid not in seen_triads:
+            seen_triads.add(tid)
+            triads_by_domain[rec.domain].append(tid)
+
+    for dom in triads_by_domain:
+        triads_by_domain[dom].sort()
+    domains_sorted = sorted(triads_by_domain.keys())
+
+    if len(seen_triads) <= 1 or resamples <= 0:
+        return {"point": round(point, 6), "low": round(point, 6), "high": round(point, 6), "n": len(item_ids)}
+
+    rng = random.Random(f"rdlab-domain-triad-boot-v1:{seed}:{salt}")
+    replicates: list[float] = []
+    use_cache = len(seen_triads) <= 16
+    cache: dict[tuple[str, ...], float] = {}
+    domain_triad_lists = [(triads_by_domain[dom], len(triads_by_domain[dom])) for dom in domains_sorted]
+    for _ in range(resamples):
+        chosen_tids: list[str] = []
+        for tids, k in domain_triad_lists:
+            for _ in range(k):
+                chosen_tids.append(tids[rng.randrange(k)])
+        if use_cache:
+            key = tuple(chosen_tids)
+            cached_val = cache.get(key)
+            if cached_val is None:
+                sampled_items = [iid for tid in chosen_tids for iid in items_by_triad[tid]]
+                cached_val = float(metric_fn(sampled_items))
+                cache[key] = cached_val
+            replicates.append(cached_val)
+        else:
+            sampled_items = [iid for tid in chosen_tids for iid in items_by_triad[tid]]
+            replicates.append(float(metric_fn(sampled_items)))
+
+    replicates.sort()
+    lo_idx = max(0, min(len(replicates) - 1, int(math.floor(0.025 * (len(replicates) - 1)))))
+    hi_idx = max(0, min(len(replicates) - 1, int(math.ceil(0.975 * (len(replicates) - 1)))))
+    return {
+        "point": round(point, 6),
+        "low": round(replicates[lo_idx], 6),
+        "high": round(replicates[hi_idx], 6),
+        "n": len(item_ids),
     }
 
 
@@ -363,13 +523,22 @@ def triad_clustered_bootstrap_p(
     resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
     seed: int = DEFAULT_BOOTSTRAP_SEED,
 ) -> dict[str, float]:
-    """Compute a triad-clustered paired bootstrap p-value comparing item correctness between judge A and judge B."""
+    """Compute a domain-stratified triad-clustered paired bootstrap p-value comparing item correctness between judge A and judge B."""
     common_ids = sorted(set(item_outcomes_a).intersection(item_outcomes_b))
     by_triad: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    triads_by_domain: dict[str, list[str]] = defaultdict(list)
+    seen_triads: set[str] = set()
     for item_id in common_ids:
         rec = keys_by_id[item_id]
-        by_triad[rec.triad_id].append((item_outcomes_a[item_id], item_outcomes_b[item_id]))
+        tid = rec.triad_id or item_id
+        by_triad[tid].append((item_outcomes_a[item_id], item_outcomes_b[item_id]))
+        if tid not in seen_triads:
+            seen_triads.add(tid)
+            triads_by_domain[rec.domain].append(tid)
 
+    for dom in triads_by_domain:
+        triads_by_domain[dom].sort()
+    domains_sorted = sorted(triads_by_domain.keys())
     triad_keys = sorted(by_triad.keys())
     if not triad_keys:
         return {"mean_diff": 0.0, "p_two_sided": 1.0}
@@ -380,24 +549,27 @@ def triad_clustered_bootstrap_p(
         return {"mean_diff": 0.0, "p_two_sided": 1.0}
 
     rng = random.Random(f"rdlab-triad-bootstrap-v1:{seed}")
-    m = len(triad_keys)
     le_zero = 0
     ge_zero = 0
-    for _ in range(resamples):
+    eff_resamples = max(1, resamples)
+    triad_diff_sum = {tid: sum(a - b for a, b in pairs) for tid, pairs in by_triad.items()}
+    triad_item_cnt = {tid: len(pairs) for tid, pairs in by_triad.items()}
+    domain_triad_lists = [(triads_by_domain[dom], len(triads_by_domain[dom])) for dom in domains_sorted]
+    for _ in range(eff_resamples):
         total_diff = 0
         total_items = 0
-        for _ in range(m):
-            chosen_tid = triad_keys[rng.randrange(m)]
-            for a, b in by_triad[chosen_tid]:
-                total_diff += a - b
-                total_items += 1
+        for tids, m in domain_triad_lists:
+            for _ in range(m):
+                chosen_tid = tids[rng.randrange(m)]
+                total_diff += triad_diff_sum[chosen_tid]
+                total_items += triad_item_cnt[chosen_tid]
         boot_mean = total_diff / max(1, total_items)
         if boot_mean <= 0.0:
             le_zero += 1
         if boot_mean >= 0.0:
             ge_zero += 1
 
-    p_one = min(le_zero / resamples, ge_zero / resamples)
+    p_one = min(le_zero / eff_resamples, ge_zero / eff_resamples)
     p_two = min(1.0, 2.0 * p_one)
     return {
         "mean_diff": round(obs_mean, 6),
@@ -419,6 +591,388 @@ def holm_adjust(p_values: Mapping[str, float]) -> dict[str, float]:
     return adjusted
 
 
+def exact_sign_flip_two_sided_p(
+    triad_diffs: Sequence[float],
+    *,
+    max_exact_triads: int = 20,
+    mc_samples: int = 10_000,
+    seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> float:
+    """Compute the two-sided paired sign-flip permutation test p-value on triad differences `d_t = a_t - b_t`."""
+    non_zero = [float(d) for d in triad_diffs if abs(float(d)) > 1e-12]
+    m = len(non_zero)
+    if m == 0:
+        return 1.0
+    obs = abs(sum(non_zero))
+    if m <= max_exact_triads:
+        extreme = 0
+        total = 1 << m
+        for mask in range(total):
+            s = 0.0
+            for bit_idx, val in enumerate(non_zero):
+                s += val if ((mask >> bit_idx) & 1) else -val
+            if abs(s) >= obs - 1e-12:
+                extreme += 1
+        return round(min(1.0, extreme / total), 6)
+
+    rng = random.Random(f"rdlab-sign-flip-v1:{seed}:{m}")
+    extreme = 1
+    for _ in range(mc_samples):
+        s = sum(val if rng.getrandbits(1) else -val for val in non_zero)
+        if abs(s) >= obs - 1e-12:
+            extreme += 1
+    return round(min(1.0, extreme / (mc_samples + 1)), 6)
+
+
+def paired_triad_tost_p(
+    triad_diffs: Sequence[float],
+    *,
+    sesoi: float = DEFAULT_SESOI,
+) -> dict[str, Any]:
+    """Compute paired triad-level TOST at `+-sesoi` using unbiased sample variance (`ddof=1`)."""
+    t_count = len(triad_diffs)
+    if t_count == 0:
+        return {
+            "tost_p": 1.0,
+            "mean_diff": 0.0,
+            "sample_variance_ddof1": 0.0,
+            "se": 0.0,
+            "sesoi": sesoi,
+            "triads_n": 0,
+            "variance_estimator": "unbiased_paired_triad_sample_variance_ddof1",
+        }
+    d_bar = sum(triad_diffs) / t_count
+    if t_count < 2:
+        p_val = 0.0 if abs(d_bar) < sesoi else 1.0
+        return {
+            "tost_p": round(p_val, 6),
+            "mean_diff": round(d_bar, 6),
+            "sample_variance_ddof1": 0.0,
+            "se": 0.0,
+            "sesoi": sesoi,
+            "triads_n": t_count,
+            "variance_estimator": "unbiased_paired_triad_sample_variance_ddof1",
+        }
+    s2 = sum((d - d_bar) ** 2 for d in triad_diffs) / (t_count - 1)
+    se = math.sqrt(s2 / t_count)
+    if se <= 1e-12:
+        p_val = 0.0 if abs(d_bar) < sesoi else 1.0
+    else:
+        t_lower = (d_bar - (-sesoi)) / se
+        t_upper = (sesoi - d_bar) / se
+        p_lower = 1.0 - _STD_NORMAL.cdf(t_lower)
+        p_upper = 1.0 - _STD_NORMAL.cdf(t_upper)
+        p_val = max(p_lower, p_upper)
+    return {
+        "tost_p": round(min(1.0, max(0.0, p_val)), 6),
+        "mean_diff": round(d_bar, 6),
+        "sample_variance_ddof1": round(s2, 6),
+        "se": round(se, 6),
+        "sesoi": sesoi,
+        "triads_n": t_count,
+        "variance_estimator": "unbiased_paired_triad_sample_variance_ddof1",
+    }
+
+
+def compute_trivial_baselines(
+    item_ids: Sequence[str],
+    keys_by_id: Mapping[str, SealedKeyRecord],
+) -> dict[str, Any]:
+    """Compute trivial `always_no` and `always_yes` baselines for class-balanced strict, plain strict, and all-3-of-triad."""
+    valid_ids = [iid for iid in item_ids if iid in keys_by_id]
+    if not valid_ids:
+        return {
+            "always_no": {
+                "class_balanced_strict_accuracy": round(2.0 / 3.0, 6),
+                "plain_strict_accuracy": round(2.0 / 3.0, 6),
+                "all_3_of_triad_strict": 0.0,
+            },
+            "always_yes": {
+                "class_balanced_strict_accuracy": round(1.0 / 3.0, 6),
+                "plain_strict_accuracy": round(1.0 / 3.0, 6),
+                "all_3_of_triad_strict": 0.0,
+            },
+        }
+
+    def _eval_const(const_verdict: str) -> dict[str, float]:
+        cls_tot: Counter[str] = Counter()
+        cls_ok: Counter[str] = Counter()
+        triad_ok: dict[str, list[int]] = defaultdict(list)
+        total_ok = 0
+        for iid in valid_ids:
+            rec = keys_by_id[iid]
+            ok = int(rec.binary_key == const_verdict)
+            total_ok += ok
+            cls_tot[rec.item_class] += 1
+            cls_ok[rec.item_class] += ok
+            triad_ok[rec.triad_id].append(ok)
+        per_cls = []
+        for c_name in ("supported", "unsupported", "cannot_tell"):
+            if cls_tot[c_name] > 0:
+                per_cls.append(cls_ok[c_name] / cls_tot[c_name])
+            else:
+                per_cls.append(1.0 if ((c_name == "supported") == (const_verdict == "yes")) else 0.0)
+        cb_acc = sum(per_cls) / 3.0
+        plain_acc = total_ok / len(valid_ids)
+        complete_triads = [vals for vals in triad_ok.values() if len(vals) == 3]
+        triad_acc = (sum(1 for vals in complete_triads if sum(vals) == 3) / len(complete_triads)) if complete_triads else 0.0
+        return {
+            "class_balanced_strict_accuracy": round(cb_acc, 6),
+            "plain_strict_accuracy": round(plain_acc, 6),
+            "all_3_of_triad_strict": round(triad_acc, 6),
+        }
+
+    return {
+        "always_no": _eval_const("no"),
+        "always_yes": _eval_const("yes"),
+    }
+
+
+def compute_all_pairs_statistics(
+    *,
+    item_outcomes_by_judge: Mapping[str, Mapping[str, int]],
+    verdict_pairs_by_judge: Mapping[str, Mapping[str, tuple[str | None, str | None]]],
+    keys_by_id: Mapping[str, SealedKeyRecord],
+    sesoi: float = DEFAULT_SESOI,
+    bootstrap_resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
+    bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> list[dict[str, Any]]:
+    """Compute pairwise superiority, TOST equivalence, d(A,B), and domain-stratified triad bootstrap CIs across all judge pairs."""
+    judges_sorted = sorted(item_outcomes_by_judge.keys())
+    pair_keys: list[tuple[str, str]] = list(itertools.combinations(judges_sorted, 2))
+    if not pair_keys:
+        return []
+
+    raw_sign_flip_p: dict[str, float] = {}
+    raw_tost_p: dict[str, float] = {}
+    raw_mcnemar_p: dict[str, float] = {}
+    interim: dict[str, dict[str, Any]] = {}
+
+    for j_a, j_b in pair_keys:
+        pkey = f"{j_a}__vs__{j_b}"
+        out_a = item_outcomes_by_judge[j_a]
+        out_b = item_outcomes_by_judge[j_b]
+        vp_a = verdict_pairs_by_judge.get(j_a, {})
+        vp_b = verdict_pairs_by_judge.get(j_b, {})
+        common_items = sorted(set(out_a).intersection(out_b))
+
+        # Triad-level accuracy differences d_t = a_t - b_t
+        by_triad_a: dict[str, list[int]] = defaultdict(list)
+        by_triad_b: dict[str, list[int]] = defaultdict(list)
+        for iid in common_items:
+            tid = keys_by_id[iid].triad_id or iid
+            by_triad_a[tid].append(out_a[iid])
+            by_triad_b[tid].append(out_b[iid])
+
+        triads_sorted = sorted(by_triad_a.keys())
+        triad_diffs = [
+            (sum(by_triad_a[tid]) / len(by_triad_a[tid])) - (sum(by_triad_b[tid]) / len(by_triad_b[tid]))
+            for tid in triads_sorted
+        ]
+
+        sf_p = exact_sign_flip_two_sided_p(triad_diffs, seed=bootstrap_seed)
+        tost_info = paired_triad_tost_p(triad_diffs, sesoi=sesoi)
+
+        wins_a = sum(1 for iid in common_items if out_a[iid] == 1 and out_b[iid] == 0)
+        wins_b = sum(1 for iid in common_items if out_a[iid] == 0 and out_b[iid] == 1)
+        ties = len(common_items) - wins_a - wins_b
+        mc_p = exact_mcnemar_two_sided_p(wins_a, wins_b)
+
+        # Raw verdict vector distance d(A, B) over common items
+        diff_vectors = 0
+        for iid in common_items:
+            va = vp_a.get(iid, (None, None))
+            vb = vp_b.get(iid, (None, None))
+            if va != vb:
+                diff_vectors += 1
+        d_ab = round(diff_vectors / len(common_items), 6) if common_items else 0.0
+
+        def _diff_metric(sampled_iids: Sequence[str], _oa: Mapping[str, int] = out_a, _ob: Mapping[str, int] = out_b) -> float:
+            if not sampled_iids:
+                return 0.0
+            return sum(_oa[i] - _ob[i] for i in sampled_iids) / len(sampled_iids)
+
+        diff_ci = domain_stratified_triad_bootstrap_ci(
+            common_items,
+            keys_by_id,
+            _diff_metric,
+            resamples=bootstrap_resamples,
+            seed=bootstrap_seed,
+            salt=pkey,
+        )
+
+        raw_sign_flip_p[pkey] = sf_p
+        raw_tost_p[pkey] = float(tost_info["tost_p"])
+        raw_mcnemar_p[pkey] = mc_p
+
+        interim[pkey] = {
+            "judge_a": j_a,
+            "judge_b": j_b,
+            "items_n": len(common_items),
+            "triads_n": len(triads_sorted),
+            "d_ab": d_ab,
+            "mean_diff_a_minus_b": tost_info["mean_diff"],
+            "diff_bootstrap_ci": diff_ci,
+            "sign_flip_p": sf_p,
+            "tost_p": tost_info["tost_p"],
+            "tost_sesoi": sesoi,
+            "tost_sample_variance_ddof1": tost_info["sample_variance_ddof1"],
+            "tost_se": tost_info["se"],
+            "tost_variance_estimator": tost_info["variance_estimator"],
+            "tost_holm_adjusted": True,
+            "wins_a": wins_a,
+            "wins_b": wins_b,
+            "ties": ties,
+            "mcnemar_p": mc_p,
+        }
+
+    holm_sf = holm_adjust(raw_sign_flip_p)
+    holm_tost = holm_adjust(raw_tost_p)
+    holm_mc = holm_adjust(raw_mcnemar_p)
+
+    results: list[dict[str, Any]] = []
+    for j_a, j_b in pair_keys:
+        pkey = f"{j_a}__vs__{j_b}"
+        entry = interim[pkey]
+        h_sf = holm_sf[pkey]
+        h_tost = holm_tost[pkey]
+        entry["holm_sign_flip_p"] = h_sf
+        entry["holm_tost_p"] = h_tost
+        entry["holm_mcnemar_p"] = holm_mc[pkey]
+        if h_sf < 0.05 and h_tost < 0.05:
+            eq_status = "practically_equivalent"
+        elif h_sf < 0.05:
+            eq_status = "separated"
+        elif h_tost < 0.05:
+            eq_status = "equivalent"
+        else:
+            eq_status = "inconclusive"
+        entry["equivalence_status"] = eq_status
+        results.append(entry)
+
+    return results
+
+
+def select_bakeoff_winner(
+    judges: Sequence[Mapping[str, Any]],
+    pairwise_comparisons: Sequence[Mapping[str, Any]],
+    *,
+    precision_floor: float = 0.90,
+    recall_floor: float = 0.50,
+) -> dict[str, Any]:
+    """Select the bake-off winner under Amendment 1 Change E.
+
+    Rule:
+    1. Candidate set = judges not separated by Holm (`holm_sign_flip_p >= 0.05`) from the judge with the highest
+       `class_balanced_strict_accuracy`. If both superiority (`holm_sign_flip_p < 0.05`) and TOST (`holm_tost_p < 0.05`)
+       fire for a pair, mark the pair `practically_equivalent` and treat them as not separated for selection.
+    2. Filter candidate set to judges meeting both screening floors (`screening_yes_precision >= precision_floor` and
+       `screening_yes_recall >= recall_floor`).
+    3. Pick the eligible candidate with the highest `screening_yes_precision`; break ties by smaller model parameter
+       count (`MODEL_PARAM_BILLIONS_BY_JUDGE`), then lower median latency (`seconds_median`).
+    4. If no candidate meets both floors, return `"no judge eligible"`.
+    """
+    if not judges:
+        return {
+            "winner": "no judge eligible",
+            "best_judge": None,
+            "candidate_set": [],
+            "eligible_candidates": [],
+            "practically_equivalent_pairs": [],
+            "precision_floor": precision_floor,
+            "recall_floor": recall_floor,
+        }
+
+    def _extract_point(val: Any) -> float:
+        if isinstance(val, Mapping):
+            return float(val.get("point", 0.0))
+        if isinstance(val, (int, float)):
+            return float(val)
+        return 0.0
+
+    def _cb_acc(j: Mapping[str, Any]) -> float:
+        return _extract_point(j.get("class_balanced_strict_accuracy"))
+
+    def _yes_prec(j: Mapping[str, Any]) -> float:
+        return _extract_point(j.get("screening_yes_precision"))
+
+    def _yes_rec(j: Mapping[str, Any]) -> float:
+        return _extract_point(j.get("screening_yes_recall"))
+
+    def _params_b(j: Mapping[str, Any]) -> float:
+        jid = str(j.get("judge_id") or "")
+        return float(MODEL_PARAM_BILLIONS_BY_JUDGE.get(jid, float("inf")))
+
+    def _sec_med(j: Mapping[str, Any]) -> float:
+        return float(j.get("seconds_median", j.get("seconds_mean", 0.0)))
+
+    ranked_by_primary = sorted(
+        judges,
+        key=lambda j: (-round(_cb_acc(j), 6), _params_b(j), _sec_med(j), str(j.get("judge_id") or "")),
+    )
+    best_judge_obj = ranked_by_primary[0]
+    best_id = str(best_judge_obj["judge_id"])
+
+    pair_lookup: dict[frozenset[str], Mapping[str, Any]] = {}
+    for p in pairwise_comparisons:
+        ja = str(p.get("judge_a") or "")
+        jb = str(p.get("judge_b") or "")
+        if ja and jb:
+            pair_lookup[frozenset((ja, jb))] = p
+
+    candidate_objs: list[Mapping[str, Any]] = []
+    practically_eq_pairs: list[tuple[str, str]] = []
+    for j_obj in ranked_by_primary:
+        jid = str(j_obj["judge_id"])
+        if jid == best_id:
+            candidate_objs.append(j_obj)
+            continue
+        pair = pair_lookup.get(frozenset((best_id, jid)))
+        if pair is None:
+            if abs(_cb_acc(j_obj) - _cb_acc(best_judge_obj)) <= 1e-12:
+                candidate_objs.append(j_obj)
+            continue
+        h_sf = float(pair.get("holm_sign_flip_p", 1.0))
+        h_tost = float(pair.get("holm_tost_p", 1.0))
+        eq_st = str(pair.get("equivalence_status") or "")
+        if (h_sf < 0.05 and h_tost < 0.05) or eq_st == "practically_equivalent":
+            practically_eq_pairs.append((best_id, jid))
+            candidate_objs.append(j_obj)
+        elif h_sf >= 0.05:
+            candidate_objs.append(j_obj)
+
+    eligible_objs = [
+        j_obj
+        for j_obj in candidate_objs
+        if _yes_prec(j_obj) + 1e-12 >= precision_floor and _yes_rec(j_obj) + 1e-12 >= recall_floor
+    ]
+    if not eligible_objs:
+        return {
+            "winner": "no judge eligible",
+            "best_judge": best_id,
+            "candidate_set": [str(j["judge_id"]) for j in candidate_objs],
+            "eligible_candidates": [],
+            "practically_equivalent_pairs": [list(p) for p in practically_eq_pairs],
+            "precision_floor": precision_floor,
+            "recall_floor": recall_floor,
+        }
+
+    eligible_sorted = sorted(
+        eligible_objs,
+        key=lambda j: (-round(_yes_prec(j), 6), _params_b(j), _sec_med(j), str(j.get("judge_id") or "")),
+    )
+    winner_id = str(eligible_sorted[0]["judge_id"])
+    return {
+        "winner": winner_id,
+        "best_judge": best_id,
+        "candidate_set": [str(j["judge_id"]) for j in candidate_objs],
+        "eligible_candidates": [str(j["judge_id"]) for j in eligible_sorted],
+        "practically_equivalent_pairs": [list(p) for p in practically_eq_pairs],
+        "precision_floor": precision_floor,
+        "recall_floor": recall_floor,
+    }
+
+
 def _evaluate_judge_at_rule(
     *,
     judge_id: str,
@@ -429,21 +983,37 @@ def _evaluate_judge_at_rule(
     first_order_by_item: Mapping[str, str],
     keys_by_id: Mapping[str, SealedKeyRecord],
     split_filter: str | None = None,
+    excluded_triad_ids: set[str] | None = None,
+    excluded_item_ids: set[str] | None = None,
+    bootstrap_resamples: int = DEFAULT_BOOTSTRAP_RESAMPLES,
+    bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
 ) -> tuple[dict[str, Any], dict[str, int], list[dict[str, Any]]]:
     """Evaluate a judge under a specific threshold rule (`dev_fitted`, `0.5`, `card_0.2_0.8`, or `plain`).
 
-    Enforces DESIGN §5 [A7]:
-    - An item counts as correct ONLY if the judge is correct in BOTH `AB` and `BA` (a flip or abstain scores 0).
+    Enforces DESIGN §5 [A7] and Pre-registration Amendment 1:
+    - An item counts as correct ONLY if the judge is correct in BOTH `AB` and `BA` (a flip, invalid, or abstain scores 0).
+    - Any invalid output (`unparseable` or `length_stop`) in either order counts as a flip in `flip_rate`, scores
+      `P(yes) = 0.5` for `mean_order_auroc`, and scores wrong (`0`) for accuracy.
     - The two orders are never pooled as `2n` rows.
-    - Wilson 95% intervals are taken over items.
     """
     item_ids = sorted(
         iid
         for iid in rows_by_item_order.keys()
-        if iid in keys_by_id and (split_filter is None or keys_by_id[iid].split == split_filter)
+        if iid in keys_by_id
+        and (split_filter is None or keys_by_id[iid].split == split_filter)
+        and (
+            excluded_triad_ids is None
+            or (
+                keys_by_id[iid].triad_id not in excluded_triad_ids
+                and keys_by_id[iid].triad_handle not in excluded_triad_ids
+            )
+        )
+        and (excluded_item_ids is None or iid not in excluded_item_ids)
     )
 
     item_correct_map: dict[str, int] = {}
+    screen_pass_map: dict[str, int] = {}
+    auroc_pairs: list[tuple[float, int]] = []
     sealed_scored_rows: list[dict[str, Any]] = []
 
     flips = 0
@@ -454,6 +1024,7 @@ def _evaluate_judge_at_rule(
     first_slot_yes = 0
     second_slot_yes = 0
     second_slot_total = 0
+    pred_yes_calls = 0
 
     class_totals: Counter[str] = Counter()
     class_correct: Counter[str] = Counter()
@@ -478,6 +1049,7 @@ def _evaluate_judge_at_rule(
         all_rows_for_ece.extend([row_ab, row_ba])
         verdicts_by_order: dict[str, str | None] = {}
         correct_by_order: dict[str, bool] = {}
+        p_yes_by_order: dict[str, float] = {}
 
         for ord_name, r in (("AB", row_ab), ("BA", row_ba)):
             if r.get("state") == "length_stop":
@@ -493,8 +1065,15 @@ def _evaluate_judge_at_rule(
                 fitted_threshold=threshold_value if threshold_value is not None else 0.5,
             )
             verdicts_by_order[ord_name] = v
+            if v == "yes":
+                pred_yes_calls += 1
             is_corr = v in ("yes", "no") and v == rec.binary_key
             correct_by_order[ord_name] = is_corr
+
+            if r.get("state") == "parsed" and r.get("confidence") is not None:
+                p_yes_by_order[ord_name] = float(r["confidence"])
+            else:
+                p_yes_by_order[ord_name] = 0.5
 
             sealed_scored_rows.append(
                 {
@@ -525,6 +1104,9 @@ def _evaluate_judge_at_rule(
         v_ba = verdicts_by_order["BA"]
         both_correct = int(correct_by_order["AB"] and correct_by_order["BA"])
         item_correct_map[iid] = both_correct
+        screen_pass_map[iid] = int(v_ab == "yes" and v_ba == "yes")
+        p_bar = 0.5 * (p_yes_by_order["AB"] + p_yes_by_order["BA"])
+        auroc_pairs.append((p_bar, 1 if rec.binary_key == "yes" else 0))
 
         class_totals[rec.item_class] += 1
         class_correct[rec.item_class] += both_correct
@@ -540,6 +1122,10 @@ def _evaluate_judge_at_rule(
             comparable_flip_items += 1
             if v_ab != v_ba:
                 flips += 1
+        else:
+            # Invalid output in either order counts as a flip in flip_rate
+            comparable_flip_items += 1
+            flips += 1
 
         first_ord = first_order_by_item.get(iid, "AB")
         second_ord = "BA" if first_ord == "AB" else "AB"
@@ -553,12 +1139,14 @@ def _evaluate_judge_at_rule(
             if v_second == "yes":
                 second_slot_yes += 1
 
-    n_items = len(item_correct_map)
+    scored_item_ids = sorted(item_correct_map.keys())
+    n_items = len(scored_item_ids)
     total_correct = sum(item_correct_map.values())
     acc_wilson = wilson_interval(total_correct, n_items)
     flip_wilson = wilson_interval(flips, comparable_flip_items)
+    strict_ceiling = round(1.0 - flip_wilson["point"], 6)
 
-    # Balanced accuracy over items: 0.5 * (TPR_supported + TNR_not_supported)
+    # Yes-vs-not-yes balanced accuracy over items: 0.5 * (TPR_supported + TNR_not_supported)
     supp_tot = class_totals["supported"]
     supp_corr = class_correct["supported"]
     not_supp_tot = class_totals["unsupported"] + class_totals["cannot_tell"]
@@ -576,6 +1164,59 @@ def _evaluate_judge_at_rule(
         for cl_name in ("open", "closed")
     }
 
+    def _cb_metric(sampled_iids: Sequence[str]) -> float:
+        c_tot: Counter[str] = Counter()
+        c_ok: Counter[str] = Counter()
+        for i in sampled_iids:
+            c = keys_by_id[i].item_class
+            c_tot[c] += 1
+            c_ok[c] += item_correct_map[i]
+        vals = [
+            (c_ok[c_name] / c_tot[c_name]) if c_tot[c_name] > 0 else 0.0
+            for c_name in ("supported", "unsupported", "cannot_tell")
+        ]
+        return sum(vals) / 3.0
+
+    cb_strict_ci = domain_stratified_triad_bootstrap_ci(
+        scored_item_ids,
+        keys_by_id,
+        _cb_metric,
+        resamples=bootstrap_resamples,
+        seed=bootstrap_seed,
+        salt=f"{judge_id}:{rule_name}:{split_filter}:cb",
+    )
+
+    def _prec_metric(sampled_iids: Sequence[str]) -> float:
+        passed = [i for i in sampled_iids if screen_pass_map[i] == 1]
+        if not passed:
+            return 0.0
+        tp_cnt = sum(1 for i in passed if keys_by_id[i].binary_key == "yes")
+        return tp_cnt / len(passed)
+
+    def _rec_metric(sampled_iids: Sequence[str]) -> float:
+        pos_items = [i for i in sampled_iids if keys_by_id[i].binary_key == "yes"]
+        if not pos_items:
+            return 0.0
+        tp_cnt = sum(1 for i in pos_items if screen_pass_map[i] == 1)
+        return tp_cnt / len(pos_items)
+
+    screening_prec_ci = domain_stratified_triad_bootstrap_ci(
+        scored_item_ids,
+        keys_by_id,
+        _prec_metric,
+        resamples=bootstrap_resamples,
+        seed=bootstrap_seed,
+        salt=f"{judge_id}:{rule_name}:{split_filter}:prec",
+    )
+    screening_rec_ci = domain_stratified_triad_bootstrap_ci(
+        scored_item_ids,
+        keys_by_id,
+        _rec_metric,
+        resamples=bootstrap_resamples,
+        seed=bootstrap_seed,
+        salt=f"{judge_id}:{rule_name}:{split_filter}:rec",
+    )
+
     complete_triads = [vals for vals in triad_items_correct.values() if len(vals) == 3]
     triads_all_correct = sum(1 for vals in complete_triads if sum(vals) == 3)
     triad_consistency = wilson_interval(triads_all_correct, len(complete_triads))
@@ -585,10 +1226,16 @@ def _evaluate_judge_at_rule(
         ece_val = None
         rel_points: list[dict[str, object]] = []
         ece_reason: str | None = "plain-label judge (pass/fail) without verdict token probability"
+        mean_order_auroc: float | None = None
     else:
         ece_val, rel_points, ece_reason = compute_ece_10_bins(all_rows_for_ece, keys_by_id)
+        mean_order_auroc = compute_binary_auroc(auroc_pairs)
 
     total_calls = 2 * n_items
+    pred_yes_rate = round(pred_yes_calls / max(1, total_calls), 6) if total_calls > 0 else 0.0
+    true_yes_rate = (supp_tot / n_items) if n_items > 0 else 0.0
+    net_affirmative_bias = round(pred_yes_rate - true_yes_rate, 6)
+
     summary: dict[str, Any] = {
         "judge_id": judge_id,
         "judge_label": judge_label,
@@ -596,11 +1243,20 @@ def _evaluate_judge_at_rule(
         "threshold_value": threshold_value,
         "items_n": n_items,
         "calls_n": total_calls,
+        "class_balanced_strict_accuracy": cb_strict_ci,
         "accuracy": acc_wilson,
         "balanced_accuracy": balanced_accuracy,
+        "yes_vs_not_yes_balanced_accuracy": balanced_accuracy,
         "per_class_accuracy": per_class_acc,
         "per_closure_accuracy": per_closure_acc,
         "flip_rate": flip_wilson,
+        "strict_ceiling": strict_ceiling,
+        "mean_order_auroc": mean_order_auroc,
+        "pred_yes_rate": pred_yes_rate,
+        "net_affirmative_bias": net_affirmative_bias,
+        "screening_rule": "both_orders_yes_and_gate",
+        "screening_yes_precision": screening_prec_ci,
+        "screening_yes_recall": screening_rec_ci,
         "second_slot_yes_rate": round(second_slot_yes / second_slot_total, 6) if second_slot_total > 0 else 0.0,
         "first_slot_yes_rate": round(first_slot_yes / max(1, second_slot_total), 6) if second_slot_total > 0 else 0.0,
         "triad_consistency": triad_consistency,
@@ -615,6 +1271,7 @@ def _evaluate_judge_at_rule(
         "error_rate": round((length_stops + unparseable) / max(1, total_calls), 6),
         "seconds_total": round(sum(seconds_list), 4),
         "seconds_mean": round(sum(seconds_list) / max(1, len(seconds_list)), 6),
+        "seconds_median": round(statistics.median(seconds_list), 6) if seconds_list else 0.0,
         "vram_peak_mib": vram_peak,
     }
     return summary, item_correct_map, sealed_scored_rows
@@ -759,35 +1416,88 @@ def _assert_public_summary_clean(doc: Any) -> None:
 
 
 def format_bakeoff_score_markdown(report: Mapping[str, Any]) -> str:
-    """Format the public aggregate score report with the pilot shakedown banner."""
+    """Format the public aggregate score report with the pilot shakedown banner, registered primary columns, and definitions."""
+    defs = report.get("definitions", PREREG_DEFINITIONS)
+    counted = report.get("counted_set", {})
+    tb = report.get("trivial_baselines", {})
+    win = report.get("winner_selection", {})
     lines = [
         "# Judge Bake-Off Score Summary",
         "",
         f"**Pilot banner:** {report['pilot_banner']}",
+        f"- **Primary metric:** `{report.get('primary_metric', 'class_balanced_strict_accuracy')}` (raw label `plain`, both orders strict)",
         f"- **Outputs closed SHA-256:** `{report['outputs_closed_sha256']}`",
         f"- **Schedule SHA-256:** `{report['schedule_sha256']}`",
         f"- **Realized split counts (items):** dev={report['split_item_counts']['dev']}, test={report['split_item_counts']['test']}, total={report['split_item_counts']['total']}",
+        f"- **Counted set (excluding canary buffer):** triads={counted.get('counted_triads_n', 0)}, items={counted.get('counted_items_n', 0)}, canary_triads_excluded={counted.get('canary_triads_excluded_n', 0)}",
         "",
-        "## Primary Per-Judge Summary",
+        "## Pre-Registered Definitions",
         "",
-        "| Judge | Rule | Threshold | Acc (both orders) | 95% CI | Balanced Acc | Flip Rate | Sup Acc | Unsup Acc | Cannot-Tell Acc | ECE | Length Stops | Unparseable |",
-        "|---|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        f"- **AUROC:** {defs.get('auroc')}",
+        f"- **P(yes):** {defs.get('p_yes')}",
+        f"- **Invalid output rule:** {defs.get('invalid_output_rule')}",
+        f"- **TOST statistic:** {defs.get('tost_statistic')} (Holm-adjusted across 10 pairs: `{defs.get('tost_holm_adjusted_across_10_pairs')}`)",
+        "",
+        "## Primary Per-Judge Summary (Raw Label `plain`)",
+        "",
+        "| Judge | Rule | Class-Balanced Strict | 95% CI | Plain Strict | All-3-of-Triad | 1 - Flip Rate | Flip Rate | AUROC | Net Bias | Yes-Precision (AND) | Yes-Recall (AND) | Sup Acc | Unsup Acc | Cannot-Tell Acc | Length Stops | Unparseable |",
+        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for j_sum in report.get("judges", []):
+        cb = j_sum["class_balanced_strict_accuracy"]
         acc = j_sum["accuracy"]
+        triad_c = j_sum["triad_consistency"]
         flip = j_sum["flip_rate"]
         pc = j_sum["per_class_accuracy"]
-        thresh_str = f"{j_sum['threshold_value']:.4f}" if isinstance(j_sum.get("threshold_value"), (int, float)) else "—"
-        ece_str = f"{j_sum['ece']:.4f}" if isinstance(j_sum.get("ece"), (int, float)) else f"null ({j_sum.get('ece_reason')})"
+        sprec = j_sum["screening_yes_precision"]
+        srec = j_sum["screening_yes_recall"]
+        auroc_val = j_sum.get("mean_order_auroc")
+        auroc_str = f"{auroc_val:.4f}" if isinstance(auroc_val, (int, float)) else "N/A"
         lines.append(
-            f"| `{j_sum['judge_id']}` | `{j_sum['threshold_rule']}` | {thresh_str} | "
-            f"{acc['point']:.4f} | [{acc['low']:.4f}, {acc['high']:.4f}] | "
-            f"{j_sum['balanced_accuracy']:.4f} | {flip['point']:.4f} | "
+            f"| `{j_sum['judge_id']}` | `{j_sum['threshold_rule']}` | "
+            f"{cb['point']:.4f} | [{cb['low']:.4f}, {cb['high']:.4f}] | "
+            f"{acc['point']:.4f} | {triad_c['point']:.4f} | "
+            f"{j_sum['strict_ceiling']:.4f} | {flip['point']:.4f} | "
+            f"{auroc_str} | {j_sum['net_affirmative_bias']:+.4f} | "
+            f"{sprec['point']:.4f} | {srec['point']:.4f} | "
             f"{pc['supported']['point']:.4f} | {pc['unsupported']['point']:.4f} | {pc['cannot_tell']['point']:.4f} | "
-            f"{ece_str} | {j_sum['length_stops']} | {j_sum['unparseable']} |"
+            f"{j_sum['length_stops']} | {j_sum['unparseable']} |"
         )
-    lines.append("")
-    return "\n".join(lines) + "\n"
+    if tb:
+        lines.extend(
+            [
+                "",
+                "## Trivial Baselines",
+                "",
+                f"- **always_no:** class_balanced_strict={tb['always_no']['class_balanced_strict_accuracy']:.4f}, "
+                f"plain_strict={tb['always_no']['plain_strict_accuracy']:.4f}, "
+                f"all_3_of_triad={tb['always_no']['all_3_of_triad_strict']:.4f}",
+                f"- **always_yes:** class_balanced_strict={tb['always_yes']['class_balanced_strict_accuracy']:.4f}, "
+                f"plain_strict={tb['always_yes']['plain_strict_accuracy']:.4f}, "
+                f"all_3_of_triad={tb['always_yes']['all_3_of_triad_strict']:.4f}",
+            ]
+        )
+    if win:
+        lines.extend(
+            [
+                "",
+                "## Winner Selection Rule",
+                "",
+                f"- **Selected winner:** `{win.get('winner')}`",
+                f"- **Candidate set (not separated by Holm from best):** `{win.get('candidate_set')}`",
+                f"- **Eligible candidates (precision >= {win.get('precision_floor')}, recall >= {win.get('recall_floor')}):** `{win.get('eligible_candidates')}`",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Exploratory Diagnostics",
+            "",
+            "ECE, reliability curves, abstention/thresholded readings, per-closure breakdowns, and 3-way pass metrics are exploratory only.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def score_bakeoff_outputs(
@@ -798,6 +1508,10 @@ def score_bakeoff_outputs(
     sealed_rows_out_path: Path,
     repo_root: Path | None = None,
     overwrite: bool = False,
+    canary_config_path: Path | None = None,
+    count_all_non_canary: bool = False,
+    bootstrap_resamples: int | None = None,
+    sesoi: float = DEFAULT_SESOI,
 ) -> dict[str, Any]:
     """Verify `outputs-closed.json`, join against `keys.sealed.jsonl`, and write sealed rows + public aggregates.
 
@@ -805,6 +1519,7 @@ def score_bakeoff_outputs(
     Item splits come from the scheduled item set (`schedule.json`, covered by outputs-closed) joined to the sealed keys,
     never from whichever rows files happen to be present, so a dir holding only a `*.three_way.jsonl` pass scores it.
     """
+    eff_resamples = DEFAULT_BOOTSTRAP_RESAMPLES if bootstrap_resamples is None else int(bootstrap_resamples)
     resolved_judge_dir = check_output_dir_outside_repo(judge_output_dir, repo_root=repo_root)
     check_output_dir_outside_repo(public_out_path.parent, repo_root=repo_root)
     check_output_dir_outside_repo(sealed_rows_out_path.parent, repo_root=repo_root)
@@ -814,6 +1529,15 @@ def score_bakeoff_outputs(
     # After the tamper check (so a modified dir is reported as such) and before any key is read or any byte is written.
     check_sealed_out_targets_free(sealed_jsonl_path, sealed_csv_path, overwrite=overwrite)
     keys_by_id = load_sealed_keys(keys_path)
+    canary_cfg = load_canary_config(canary_config_path)
+    excluded_canary_triads: set[str] = {
+        *(str(t) for t in canary_cfg.get("canary_triad_ids", [])),
+        *(str(h) for h in canary_cfg.get("canary_triad_handles", [])),
+    }
+    excluded_canary_items: set[str] = {
+        *(str(i) for i in canary_cfg.get("canary_all_30_item_ids", [])),
+        *(str(i) for i in canary_cfg.get("canary_item_ids", [])),
+    }
 
     schedule_doc = json.loads((resolved_judge_dir / SCHEDULE_FILENAME).read_text(encoding="utf-8"))
     first_order_by_item = {str(k): str(v) for k, v in schedule_doc.get("first_order_by_item", {}).items()}
@@ -824,19 +1548,33 @@ def score_bakeoff_outputs(
     )
     three_way_row_files = sorted(rows_dir.glob("*.three_way.jsonl"))
 
-    # The item universe: every scheduled item plus every item any rows file (binary or 3-way) mentions.
-    # The split of each item is read from the sealed keys, keyed by item_id. Nothing here depends on binary rows existing.
+    # Refuse to score any judge that halted with run_status == "failed_to_run" (Card 1 Item 3)
     rows_by_file: dict[Path, list[dict[str, Any]]] = {p: _load_rows_file(p) for p in (*binary_row_files, *three_way_row_files)}
+    for rf, raw_rows in rows_by_file.items():
+        for r in raw_rows:
+            if r.get("run_status") == "failed_to_run":
+                halted_jid = str(r.get("judge_id") or rf.stem)
+                raise refused_error(
+                    "BAKEOFF_SCORE_JUDGE_FAILED_TO_RUN",
+                    f"Judge '{halted_jid}' in '{rf.name}' has run_status='failed_to_run' (partial_counts={r.get('partial_counts')}); "
+                    "scoring refuses to score a halted judge run.",
+                    "Inspect the error-rate stop cause before re-running or remove the failed judge run.",
+                )
+
     evaluated_item_ids: set[str] = set(first_order_by_item)
     for file_rows in rows_by_file.values():
-        evaluated_item_ids.update(str(r["item_id"]) for r in file_rows)
+        evaluated_item_ids.update(str(r["item_id"]) for r in file_rows if "item_id" in r)
 
     primary_summaries: list[dict[str, Any]] = []
     dev_fit_summaries: list[dict[str, Any]] = []
+    counted_set_summaries: list[dict[str, Any]] = []
     dev_thresholds_by_judge: dict[str, float | None] = {}
     mu_judge_readings: dict[str, dict[str, Any]] = {}
     mu_judge_dev_readings: dict[str, dict[str, Any]] = {}
     primary_item_outcomes_by_judge: dict[str, dict[str, int]] = {}
+    verdict_pairs_by_judge: dict[str, dict[str, tuple[str | None, str | None]]] = {}
+    counted_item_outcomes_by_judge: dict[str, dict[str, int]] = {}
+    counted_verdict_pairs_by_judge: dict[str, dict[str, tuple[str | None, str | None]]] = {}
     all_sealed_rows: list[dict[str, Any]] = []
 
     for rf in binary_row_files:
@@ -856,45 +1594,103 @@ def score_bakeoff_outputs(
 
         if has_prob:
             fitted_thresh = fit_dev_threshold_youden(raw_rows, keys_by_id)
-            primary_rule = "dev_fitted"
+            sealed_rule = "dev_fitted"
         else:
             fitted_thresh = None
-            primary_rule = "plain"
+            sealed_rule = "plain"
 
         dev_thresholds_by_judge[judge_id] = fitted_thresh
 
-        dev_sum, _, dev_sealed_rows = _evaluate_judge_at_rule(
+        # Legacy sealed-row evaluation (preserves byte-for-byte sealed golden compatibility)
+        dev_sealed_sum, _, dev_sealed_rows = _evaluate_judge_at_rule(
             judge_id=judge_id,
             judge_label=judge_label,
-            rule_name=primary_rule,
+            rule_name=sealed_rule,
             threshold_value=fitted_thresh,
             rows_by_item_order=rows_by_item_order,
             first_order_by_item=first_order_by_item,
             keys_by_id=keys_by_id,
             split_filter="dev",
+            bootstrap_resamples=eff_resamples,
         )
-        dev_fit_summaries.append(dev_sum)
-
-        primary_sum, item_outcomes, test_sealed_rows = _evaluate_judge_at_rule(
+        test_sealed_sum, _, test_sealed_rows = _evaluate_judge_at_rule(
             judge_id=judge_id,
             judge_label=judge_label,
-            rule_name=primary_rule,
+            rule_name=sealed_rule,
             threshold_value=fitted_thresh,
             rows_by_item_order=rows_by_item_order,
             first_order_by_item=first_order_by_item,
             keys_by_id=keys_by_id,
             split_filter="test",
+            bootstrap_resamples=eff_resamples,
         )
-        if int(dev_sum["items_n"]) + int(primary_sum["items_n"]) == 0:
+
+        # Registered primary rule for every judge is raw label ("plain", threshold_value=None)
+        dev_plain_sum, _, _ = _evaluate_judge_at_rule(
+            judge_id=judge_id,
+            judge_label=judge_label,
+            rule_name="plain",
+            threshold_value=None,
+            rows_by_item_order=rows_by_item_order,
+            first_order_by_item=first_order_by_item,
+            keys_by_id=keys_by_id,
+            split_filter="dev",
+            bootstrap_resamples=eff_resamples,
+        )
+        primary_sum, item_outcomes, _ = _evaluate_judge_at_rule(
+            judge_id=judge_id,
+            judge_label=judge_label,
+            rule_name="plain",
+            threshold_value=None,
+            rows_by_item_order=rows_by_item_order,
+            first_order_by_item=first_order_by_item,
+            keys_by_id=keys_by_id,
+            split_filter="test",
+            bootstrap_resamples=eff_resamples,
+        )
+        counted_sum, counted_outcomes, _ = _evaluate_judge_at_rule(
+            judge_id=judge_id,
+            judge_label=judge_label,
+            rule_name="plain",
+            threshold_value=None,
+            rows_by_item_order=rows_by_item_order,
+            first_order_by_item=first_order_by_item,
+            keys_by_id=keys_by_id,
+            split_filter=None,
+            excluded_triad_ids=excluded_canary_triads,
+            excluded_item_ids=excluded_canary_items,
+            bootstrap_resamples=eff_resamples,
+        )
+
+        if int(dev_plain_sum["items_n"]) + int(primary_sum["items_n"]) == 0:
             raise _refuse_zero_scored(rf, judge_id=judge_id, keys_n=len(keys_by_id))
+
+        dev_fit_summaries.append(dev_plain_sum)
         primary_summaries.append(primary_sum)
+        counted_set_summaries.append(counted_sum)
         primary_item_outcomes_by_judge[judge_id] = item_outcomes
+        counted_item_outcomes_by_judge[judge_id] = counted_outcomes
+
+        vp_test: dict[str, tuple[str | None, str | None]] = {}
+        vp_counted: dict[str, tuple[str | None, str | None]] = {}
+        for iid, omap in rows_by_item_order.items():
+            if iid not in keys_by_id or "AB" not in omap or "BA" not in omap:
+                continue
+            v_ab = _verdict_at_rule(omap["AB"], rule="plain", fitted_threshold=0.5)
+            v_ba = _verdict_at_rule(omap["BA"], rule="plain", fitted_threshold=0.5)
+            if keys_by_id[iid].split == "test":
+                vp_test[iid] = (v_ab, v_ba)
+            if iid in counted_outcomes:
+                vp_counted[iid] = (v_ab, v_ba)
+        verdict_pairs_by_judge[judge_id] = vp_test
+        counted_verdict_pairs_by_judge[judge_id] = vp_counted
+
         all_sealed_rows.extend(dev_sealed_rows)
         all_sealed_rows.extend(test_sealed_rows)
 
         if judge_id == "mu-judge":
-            mu_judge_readings["dev_fitted"] = primary_sum
-            mu_judge_dev_readings["dev_fitted"] = dev_sum
+            mu_judge_readings["dev_fitted"] = test_sealed_sum
+            mu_judge_dev_readings["dev_fitted"] = dev_sealed_sum
             sum_05_dev, _, rows_05_dev = _evaluate_judge_at_rule(
                 judge_id=judge_id,
                 judge_label=judge_label,
@@ -904,6 +1700,7 @@ def score_bakeoff_outputs(
                 first_order_by_item=first_order_by_item,
                 keys_by_id=keys_by_id,
                 split_filter="dev",
+                bootstrap_resamples=eff_resamples,
             )
             sum_05, _, rows_05_test = _evaluate_judge_at_rule(
                 judge_id=judge_id,
@@ -914,6 +1711,7 @@ def score_bakeoff_outputs(
                 first_order_by_item=first_order_by_item,
                 keys_by_id=keys_by_id,
                 split_filter="test",
+                bootstrap_resamples=eff_resamples,
             )
             sum_card_dev, _, rows_card_dev = _evaluate_judge_at_rule(
                 judge_id=judge_id,
@@ -924,6 +1722,7 @@ def score_bakeoff_outputs(
                 first_order_by_item=first_order_by_item,
                 keys_by_id=keys_by_id,
                 split_filter="dev",
+                bootstrap_resamples=eff_resamples,
             )
             sum_card, _, rows_card_test = _evaluate_judge_at_rule(
                 judge_id=judge_id,
@@ -934,6 +1733,7 @@ def score_bakeoff_outputs(
                 first_order_by_item=first_order_by_item,
                 keys_by_id=keys_by_id,
                 split_filter="test",
+                bootstrap_resamples=eff_resamples,
             )
             mu_judge_readings["0.5"] = sum_05
             mu_judge_readings["card_0.2_0.8"] = sum_card
@@ -989,7 +1789,7 @@ def score_bakeoff_outputs(
             }
         )
 
-    # Pairwise against mu-judge on split == "test" ONLY (reported descriptively; pilot banner states decision rule not applied)
+    # Pairwise against mu-judge on split == "test" ONLY (co-reported descriptively)
     pairwise_vs_mu: list[dict[str, Any]] = []
     if "mu-judge" in primary_item_outcomes_by_judge:
         mu_outcomes = primary_item_outcomes_by_judge["mu-judge"]
@@ -1003,7 +1803,12 @@ def score_bakeoff_outputs(
             wins_rival = sum(1 for i in common if mu_outcomes[i] == 0 and rival_outcomes[i] == 1)
             ties = len(common) - wins_mu - wins_rival
             p_mcnemar = exact_mcnemar_two_sided_p(wins_mu, wins_rival)
-            boot = triad_clustered_bootstrap_p(mu_outcomes, rival_outcomes, keys_by_id)
+            boot = triad_clustered_bootstrap_p(
+                mu_outcomes,
+                rival_outcomes,
+                keys_by_id,
+                resamples=eff_resamples,
+            )
             raw_p_by_rival[rival_id] = p_mcnemar
             rival_stats[rival_id] = {
                 "rival_judge_id": rival_id,
@@ -1020,6 +1825,20 @@ def score_bakeoff_outputs(
         for rival_id, st in rival_stats.items():
             st["holm_mcnemar_p"] = holm_map[rival_id]
             pairwise_vs_mu.append(st)
+
+    # All-pairs statistics (10 pairs for 5 judges) with sign-flip, Holm across all pairs, TOST at +-sesoi, and d(A,B)
+    active_outcomes = counted_item_outcomes_by_judge if count_all_non_canary else primary_item_outcomes_by_judge
+    active_vp = counted_verdict_pairs_by_judge if count_all_non_canary else verdict_pairs_by_judge
+    active_judges = counted_set_summaries if count_all_non_canary else primary_summaries
+
+    pairwise_all_pairs = compute_all_pairs_statistics(
+        item_outcomes_by_judge=active_outcomes,
+        verdict_pairs_by_judge=active_vp,
+        keys_by_id=keys_by_id,
+        sesoi=sesoi,
+        bootstrap_resamples=eff_resamples,
+    )
+    winner_selection = select_bakeoff_winner(active_judges, pairwise_all_pairs)
 
     # Public-safe disagreement table on split == "test" ONLY (aggregate counts per class x closure, never item text or item keys)
     disagreement_by_stratum: list[dict[str, Any]] = []
@@ -1059,6 +1878,58 @@ def score_bakeoff_outputs(
     dev_count = sum(1 for iid in evaluated_item_ids if iid in keys_by_id and keys_by_id[iid].split == "dev")
     test_count = sum(1 for iid in evaluated_item_ids if iid in keys_by_id and keys_by_id[iid].split == "test")
 
+    # Counted set (all non-canary dev + test triads) metadata and domain strata sizes
+    counted_item_ids = sorted(
+        iid
+        for iid in evaluated_item_ids
+        if iid in keys_by_id
+        and keys_by_id[iid].split in ("dev", "test")
+        and keys_by_id[iid].triad_id not in excluded_canary_triads
+        and keys_by_id[iid].triad_handle not in excluded_canary_triads
+        and iid not in excluded_canary_items
+    )
+    excluded_eval_triads = {
+        keys_by_id[iid].triad_id
+        for iid in evaluated_item_ids
+        if iid in keys_by_id
+        and (
+            keys_by_id[iid].triad_id in excluded_canary_triads
+            or keys_by_id[iid].triad_handle in excluded_canary_triads
+            or iid in excluded_canary_items
+        )
+    }
+    counted_triads_by_domain: dict[str, set[str]] = defaultdict(set)
+    counted_items_by_domain: Counter[str] = Counter()
+    all_counted_triads: set[str] = set()
+    for iid in counted_item_ids:
+        rec = keys_by_id[iid]
+        tid = rec.triad_id or iid
+        all_counted_triads.add(tid)
+        counted_triads_by_domain[rec.domain].add(tid)
+        counted_items_by_domain[rec.domain] += 1
+
+    domain_strata_sizes = {
+        dom: {
+            "triads_n": len(counted_triads_by_domain[dom]),
+            "items_n": counted_items_by_domain[dom],
+        }
+        for dom in sorted(counted_triads_by_domain.keys())
+    }
+    counted_set_block: dict[str, Any] = {
+        "count_all_non_canary": count_all_non_canary,
+        "canary_seed": int(canary_cfg.get("canary_seed", 20261029)),
+        "canary_triads_excluded_n": len(excluded_eval_triads),
+        "counted_triads_n": len(all_counted_triads),
+        "counted_items_n": len(counted_item_ids),
+        "domain_strata_sizes": domain_strata_sizes,
+        "judges": counted_set_summaries,
+    }
+
+    trivial_baselines = compute_trivial_baselines(
+        counted_item_ids if count_all_non_canary else [iid for iid in sorted(evaluated_item_ids) if iid in keys_by_id and keys_by_id[iid].split == "test"],
+        keys_by_id,
+    )
+
     _write_sealed_scored_rows(sealed_jsonl_path, sealed_csv_path, all_sealed_rows)
 
     disagreement_table_doc = {
@@ -1084,12 +1955,27 @@ def score_bakeoff_outputs(
         "pairwise_vs_mu_judge": pairwise_vs_mu,
         "disagreement_table": disagreement_table_doc,
     }
+    exploratory_block: dict[str, Any] = {
+        "exploratory": True,
+        "note": (
+            "Thresholded readings (dev_fitted, 0.5, card_0.2_0.8), ECE, reliability bins, "
+            "per-closure accuracy, and 3-way pass metrics are exploratory only."
+        ),
+        "mu_judge_three_readings": mu_judge_readings,
+        "three_way_pass": three_way_summaries,
+    }
 
     public_report: dict[str, Any] = {
         "status": "ok",
         "pilot_banner": PILOT_BANNER,
         "decision_rule_applied": False,
         "public_safe": True,
+        "primary_metric": "class_balanced_strict_accuracy",
+        "co_primary_metrics": ["plain_strict_accuracy", "all_3_of_triad_strict"],
+        _TREE_PROBE_KEY: "not present",
+        "definitions": PREREG_DEFINITIONS,
+        "judge_specific_notes": JUDGE_SPECIFIC_NOTES,
+        "trivial_baselines": trivial_baselines,
         "outputs_closed_sha256": str(closed_doc["outputs_closed_sha256"]),
         "schedule_seed": int(schedule_doc["seed"]),
         "schedule_sha256": str(schedule_doc["schedule_sha256"]),
@@ -1098,13 +1984,17 @@ def score_bakeoff_outputs(
             "test": test_count,
             "total": dev_count + test_count,
         },
+        "counted_set": counted_set_block,
         "dev_fit": dev_fit_block,
         "test_only": test_only_block,
-        "judges": primary_summaries,
+        "judges": counted_set_summaries if count_all_non_canary else primary_summaries,
         "mu_judge_three_readings": mu_judge_readings,
         "three_way_pass": three_way_summaries,
         "pairwise_vs_mu_judge": pairwise_vs_mu,
+        "pairwise_all_pairs": pairwise_all_pairs,
+        "winner_selection": winner_selection,
         "disagreement_table": disagreement_table_doc,
+        "exploratory": exploratory_block,
     }
     _assert_public_summary_clean(public_report)
 

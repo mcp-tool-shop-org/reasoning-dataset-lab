@@ -52,10 +52,15 @@ from reasoning_dataset_lab.pilot_b.shortcut_probe import (
 )
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     DEFAULT_SCHEDULE_SEED,
+    DEFAULT_TORCH_DTYPE,
+    check_bakeoff_logprob_mass,
     close_bakeoff_outputs,
+    measure_canary_tolerance,
     run_bakeoff_judge,
 )
 from reasoning_dataset_lab.pilot_b.bakeoff_judge_score import (
+    DEFAULT_BOOTSTRAP_RESAMPLES,
+    DEFAULT_SESOI,
     score_bakeoff_outputs,
 )
 
@@ -464,8 +469,28 @@ def _build_parser() -> _StructuredArgumentParser:
         "--schedule-seed",
         dest="schedule_seed",
         type=int,
-        default=DEFAULT_SCHEDULE_SEED,
-        help=f"Seed for the shared two-pass schedule (default: {DEFAULT_SCHEDULE_SEED}).",
+        default=None,
+        help="Optional explicit seed for the shared two-pass schedule (default: draw fresh 31-bit seed via secrets).",
+    )
+    bj_parser.add_argument(
+        "--dtype",
+        dest="torch_dtype",
+        type=str,
+        default=DEFAULT_TORCH_DTYPE,
+        help=f"Explicit torch dtype for judge loading (default: {DEFAULT_TORCH_DTYPE}; 'auto' is normalized to {DEFAULT_TORCH_DTYPE}).",
+    )
+    bj_parser.add_argument(
+        "--canary-config",
+        dest="canary_config_path",
+        type=Path,
+        default=None,
+        help="Optional path to canary_config.json for start/end canary runs.",
+    )
+    bj_parser.add_argument(
+        "--no-canary",
+        dest="no_canary",
+        action="store_true",
+        help="Skip start/end canary check.",
     )
     bj_parser.add_argument(
         "--pass-mode",
@@ -584,6 +609,94 @@ def _build_parser() -> _StructuredArgumentParser:
         dest="overwrite",
         action="store_true",
         help="Replace existing <stem>.jsonl / <stem>.csv sealed outputs instead of refusing.",
+    )
+    bjs_parser.add_argument(
+        "--canary-config",
+        dest="canary_config_path",
+        type=Path,
+        default=None,
+        help="Optional path to canary_config.json listing the 10 canary dev triads excluded from the counted set.",
+    )
+    bjs_parser.add_argument(
+        "--count-all-non-canary",
+        dest="count_all_non_canary",
+        action="store_true",
+        help="Score primary and pairwise tables on all non-canary triads (420 counted triads).",
+    )
+    bjs_parser.add_argument(
+        "--bootstrap-resamples",
+        dest="bootstrap_resamples",
+        type=int,
+        default=None,
+        help=f"Number of domain-stratified triad bootstrap resamples (default: {DEFAULT_BOOTSTRAP_RESAMPLES}).",
+    )
+    bjs_parser.add_argument(
+        "--sesoi",
+        dest="sesoi",
+        type=float,
+        default=DEFAULT_SESOI,
+        help=f"TOST equivalence margin +-SESOI (default: {DEFAULT_SESOI}).",
+    )
+
+    # rdlab bakeoff-canary-tolerance --part-dir <dir> --out <json> [--repeats N] [--canary-config <path>]
+    bct_parser = subparsers.add_parser(
+        "bakeoff-canary-tolerance",
+        help="Run the 10-item canary set repeatedly on fake/CPU transport and write the empirical maximum log-prob deviation.",
+    )
+    bct_parser.add_argument(
+        "--part-dir",
+        dest="part_dir",
+        type=Path,
+        required=True,
+        help="Bake-off part directory containing part_bakeoff_sealed/items.jsonl (or direct path to items.jsonl).",
+    )
+    bct_parser.add_argument(
+        "--out",
+        dest="out_path",
+        type=Path,
+        required=True,
+        help="Output JSON path for the canary tolerance measurement report.",
+    )
+    bct_parser.add_argument(
+        "--repeats",
+        dest="repeats",
+        type=int,
+        default=3,
+        help="Number of repeated canary passes per judge (default: 3).",
+    )
+    bct_parser.add_argument(
+        "--canary-config",
+        dest="canary_config_path",
+        type=Path,
+        default=None,
+        help="Optional path to canary_config.json.",
+    )
+
+    # rdlab bakeoff-logprob-mass --judge-dir <dir> [--out <json>] [--threshold 0.99]
+    blm_parser = subparsers.add_parser(
+        "bakeoff-logprob-mass",
+        help="Verify that summed yes+no variant probability mass is >= threshold (0.99) for binary calls (not_applicable for Flow-Judge).",
+    )
+    blm_parser.add_argument(
+        "--judge-dir",
+        dest="judge_dir",
+        type=Path,
+        required=True,
+        help="Judge output directory containing rows/*.jsonl.",
+    )
+    blm_parser.add_argument(
+        "--out",
+        dest="out_path",
+        type=Path,
+        default=None,
+        help="Optional output JSON path for the log-prob mass check report.",
+    )
+    blm_parser.add_argument(
+        "--threshold",
+        dest="threshold",
+        type=float,
+        default=0.99,
+        help="Minimum required yes+no variant probability mass per binary call (default: 0.99).",
     )
 
     return parser
@@ -1149,10 +1262,13 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                     receipts_dir=args.receipts_dir,
                     hf_home=args.hf_home,
                     device=args.device,
+                    torch_dtype=args.torch_dtype,
                     allow_remote_code_reviewed=args.allow_remote_code_reviewed,
                     vram_halt_mib=args.vram_halt_mib,
                     force_length_stop_items=args.force_length_stop_items,
                     force_unparseable_items=args.force_unparseable_items,
+                    canary_config_path=args.canary_config_path,
+                    run_canary=not bool(getattr(args, "no_canary", False)),
                 )
                 if args.outputs_closed:
                     closed_doc = close_bakeoff_outputs(args.output_dir)
@@ -1176,8 +1292,42 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
                 public_out_path=args.out_path,
                 sealed_rows_out_path=args.sealed_out_path,
                 overwrite=bool(getattr(args, "overwrite", False)),
+                canary_config_path=getattr(args, "canary_config_path", None),
+                count_all_non_canary=bool(getattr(args, "count_all_non_canary", False)),
+                bootstrap_resamples=getattr(args, "bootstrap_resamples", None),
+                sesoi=float(getattr(args, "sesoi", DEFAULT_SESOI)),
             )
             print(json.dumps(score_rep, indent=2))
+            return EXIT_CLEAN
+
+        if args.command == "bakeoff-canary-tolerance":
+            tol_rep = measure_canary_tolerance(
+                part_dir=args.part_dir,
+                repeats=args.repeats,
+                canary_config_path=args.canary_config_path,
+            )
+            args.out_path.parent.mkdir(parents=True, exist_ok=True)
+            args.out_path.write_text(
+                json.dumps(tol_rep, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            print(json.dumps(tol_rep, indent=2))
+            return EXIT_CLEAN
+
+        if args.command == "bakeoff-logprob-mass":
+            mass_rep = check_bakeoff_logprob_mass(
+                args.judge_dir,
+                threshold=args.threshold,
+            )
+            if args.out_path is not None:
+                args.out_path.parent.mkdir(parents=True, exist_ok=True)
+                args.out_path.write_text(
+                    json.dumps(mass_rep, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+            print(json.dumps(mass_rep, indent=2))
             return EXIT_CLEAN
 
         raise usage_error(

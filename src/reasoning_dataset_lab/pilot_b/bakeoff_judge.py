@@ -4,15 +4,36 @@ Runs one judge at a time over `part_bakeoff_sealed/items.jsonl` without ever rea
 - Reads only the opaque item handle (`id`), `material`, and `claim`.
 - Enforces stop rules if any key, class, or `triad_id` reaches an input or prompt, if `unparseable + length_stop > 20%`,
   if VRAM exceeds `--vram-halt-mib` (killing the judge's own process tree), or if a model revision/digest mismatches.
+  When the 20% error-rate stop rule fires, the halted judge is recorded as `run_status="failed_to_run"` with its partial
+  counts (`calls_count`, `parsed_count`, `unparseable_count`, `length_stop_count`), and the scorer refuses to score any
+  judge with `failed_to_run` status.
 - Builds and persists one seeded two-pass schedule (`schedule.json`):
+  - draws a fresh schedule seed via `secrets` unless `--schedule-seed` is explicitly supplied;
+  - writes a `schedule_layout` header documenting the two-pass, material-stratified layout;
   - each item's first order (`AB` or `BA`) is seeded per item;
   - every first order runs before any second order;
   - items of the same triad are spread across each pass by material identity (`material_sha256`), with no two items
     sharing the same material adjacent;
   - `AB` keeps the numbered material facts in built order; `BA` reverses the numbered material facts inside each
     judge's own template.
+- Records per-call 1-based line indices in `ordered_material` of the hop-1 premise (`hop1_line_index`), hop-2 premise
+  (`hop2_line_index`), and `cannot_tell` marker (`marker_line_index`).
+- Runs the fixed 10-item canary (1 dev triad per domain from `canary_config.json`) in both `AB` and `BA` orders at the
+  start and end of each judge's pass, halting (`BAKEOFF_JUDGE_CANARY_DRIFT`) on any raw label flip, top-5 token sequence
+  change, or top-5 log-probability drift exceeding the measured `canary_logprob_tolerance`.
+- Enforces deterministic inference (`CUBLAS_WORKSPACE_CONFIG=":4096:8"`, `torch.use_deterministic_algorithms(True, warn_only=False)`
+  or `"not enforceable"` recorded in `library_pins`) and explicit `dtype` (default `"bfloat16"`, never `"auto"`),
+  incremental per-call JSONL writes (`flush()` per call) with resume skipping completed `(item_id, order)` calls, and
+  stores top-20 token log-probabilities (`top_20_logprobs`) at the decision position alongside `top_logprobs` (top-5).
 - Implements per-judge adapters for the five bake-off entrants (`mu-judge`, `nemotron-3-nano-4b`, `d3-mini`,
-  `granite-guardian-4.1-8b`, `flow-judge-v0.1`) in the quoted formats of Appendix A and §3b.
+  `granite-guardian-4.1-8b`, `flow-judge-v0.1`) in the quoted formats of Appendix A and §3b:
+  - `flow-judge-v0.1` (`flowaicom/Flow-Judge-v0.1`): native `<feedback>...</feedback><score>...</score>` rubric format,
+    `max_new_tokens=512`, no token-level `P(yes)` (`AUROC="N/A"`).
+  - `d3-mini` (`vllm-sr/d3-mini`): `system_one` readout (`noul` probability in binary pass, `probabilities` dict in
+    3-way pass) mapped to `(verdict, p_yes, top_logprobs)`.
+  - `granite-guardian-4.1-8b` (`ibm-granite/granite-guardian-4.1-8b`): `<score>yes</score>` denotes groundedness risk
+    present (unsupported), so polarity is inverted (`p_yes = 1 - p_unsafe`, `supported="yes" <-> <score>no</score>`);
+    `polarity_map` is recorded in `generations.jsonl` and `rows/<judge_id>.jsonl`.
 - Refuses to load any model requiring `trust_remote_code` unless `--allow-remote-code-reviewed <sha>` matches the
   pinned revision SHA. `TransformersJudgeTransport` never executes snapshot code; the one judge that needs it
   (`d3-mini`) runs through the dedicated `D3MiniTransport`, which loads `AutoModel` from the receipt-verified local
@@ -34,6 +55,7 @@ import os
 from pathlib import Path
 import random
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -51,10 +73,18 @@ DEFAULT_SCHEDULE_SEED = 20261030
 DEFAULT_VRAM_HALT_MIB = 26_000
 DEFAULT_ERROR_RATE_STOP = 0.20
 DEFAULT_ERROR_RATE_MIN_CALLS = 10
+DEFAULT_TORCH_DTYPE = "bfloat16"
+CUBLAS_WORKSPACE_CONFIG_VALUE = ":4096:8"
+DEFAULT_CANARY_CONFIG_PATH = Path(__file__).resolve().parent / "canary_config.json"
 SCHEDULE_FILENAME = "schedule.json"
 GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
 ROWS_DIRNAME = "rows"
+SCHEDULE_LAYOUT_DESCRIPTION = (
+    "two-pass material-stratified schedule: Pass 1 runs every item's seeded first order (AB or BA) spread across "
+    "waves by material_sha256 with no two adjacent items sharing material_sha256; Pass 2 runs every item's opposite "
+    "order under the same material-stratified non-adjacency constraint."
+)
 
 NUMBERED_FACT_LINE_RE: re.Pattern[str] = re.compile(r"^(\s*)(\d+)([.)]\s+)(.+?)\s*$")
 OPAQUE_TRIAD_HANDLE_RE: re.Pattern[str] = re.compile(r"^triad-[0-9a-f]{16}$")
@@ -266,6 +296,64 @@ JUDGE_ALIASES: dict[str, str] = {
 }
 
 
+POLARITY_MAP_BY_JUDGE: dict[str, dict[str, Any]] = {
+    "mu-judge": {"supported_yes_token": "yes", "unsupported_no_token": "no", "inverted": False},
+    "nemotron-3-nano-4b": {"supported_yes_token": "yes", "unsupported_no_token": "no", "inverted": False},
+    "d3-mini": {"supported_yes_token": "noul>=0.5 (yes)", "unsupported_no_token": "noul<0.5 (no)", "inverted": False},
+    "granite-guardian-4.1-8b": {
+        "supported_yes_token": "no (<score>no</score> = no groundedness risk = supported)",
+        "unsupported_no_token": "yes (<score>yes</score> = groundedness risk present = unsupported)",
+        "inverted": True,
+    },
+    "flow-judge-v0.1": {"supported_yes_token": "Pass/1/yes", "unsupported_no_token": "Fail/0/no", "inverted": False},
+}
+
+MODEL_PARAM_BILLIONS_BY_JUDGE: dict[str, float] = {
+    "d3-mini": 3.8,
+    "flow-judge-v0.1": 3.8,
+    "mu-judge": 4.0,
+    "nemotron-3-nano-4b": 4.0,
+    "granite-guardian-4.1-8b": 8.0,
+}
+
+JUDGE_SPECIFIC_NOTES: dict[str, dict[str, Any]] = {
+    "flow-judge-v0.1": {
+        "native_format": "<feedback>...</feedback> followed by <score>Pass|Fail</score> (binary) or <score>1|2|3</score> (3-way)",
+        "execution_format": "native format (feedback, then score, max 512 new tokens)",
+        "max_new_tokens": 512,
+        "auroc": "N/A (no token-level P(yes) readout; rubric outputs verbal feedback before score tag)",
+        "polarity_map": POLARITY_MAP_BY_JUDGE["flow-judge-v0.1"],
+    },
+    "d3-mini": {
+        "native_format": "D3Model.system_one(state=ordered_material, questions={'supported': {'type': 'noul'|'choice', ...}})",
+        "readout_mapping": (
+            "binary reads answers['supported']['noul'] in [0,1] -> p_yes and verdict ('yes' if >=0.5 else 'no'); "
+            "3-way reads answers['supported']['probabilities']; non-finite or missing noul/probabilities counts as invalid (unparseable)"
+        ),
+        "auroc_and_canary_signal": (
+            "classifier readout noul probability p_yes replaces token log-probs for AUROC (mean of two orders' noul) "
+            "and synthetic log(noul) / log(1-noul) entries provide the canary signal"
+        ),
+        "polarity_map": POLARITY_MAP_BY_JUDGE["d3-mini"],
+    },
+    "granite-guardian-4.1-8b": {
+        "native_format": "<no-think> groundedness criteria with prefill '<think>\\n</think>\\n<score>'",
+        "execution_format": "<no-think> groundedness criteria with prefill '<think>\\n</think>\\n<score>', max 32 new tokens, inverted polarity (invert=True)",
+        "polarity_map": POLARITY_MAP_BY_JUDGE["granite-guardian-4.1-8b"],
+    },
+    "mu-judge": {
+        "native_format": "pipeline/judge_format.py STATE + QUESTION with '<think></think>' prefill, max_new_tokens=1, use_cache=False",
+        "execution_format": "STATE + QUESTION with '<think></think>' prefill, max 1 new token, use_cache=False",
+        "polarity_map": POLARITY_MAP_BY_JUDGE["mu-judge"],
+    },
+    "nemotron-3-nano-4b": {
+        "native_format": "same STATE + QUESTION template as mu-judge in reasoning-off mode ('<think></think>'), max_new_tokens=1, use_cache=False",
+        "execution_format": "STATE + QUESTION with '<think></think>' prefill, max 1 new token, use_cache=False",
+        "polarity_map": POLARITY_MAP_BY_JUDGE["nemotron-3-nano-4b"],
+    },
+}
+
+
 def resolve_judge_spec(judge: str) -> JudgeSpec:
     """Resolve a judge id or repo alias to its pinned `JudgeSpec`."""
     key = JUDGE_ALIASES.get(judge.strip().lower(), judge.strip())
@@ -340,6 +428,7 @@ class JudgeSchedule:
             "entries": [e.to_dict() for e in self.entries],
         }
         if include_sha:
+            doc["schedule_layout"] = SCHEDULE_LAYOUT_DESCRIPTION
             doc["schedule_sha256"] = self.schedule_sha256
         return doc
 
@@ -839,7 +928,7 @@ def verify_schedule_invariants(schedule: JudgeSchedule) -> None:
 def build_schedule(
     items: Sequence[JudgeInputItem],
     *,
-    seed: int = DEFAULT_SCHEDULE_SEED,
+    seed: int | None = DEFAULT_SCHEDULE_SEED,
     items_sha256: str = "",
 ) -> JudgeSchedule:
     """Build a deterministic two-pass schedule spreading triad items by material identity."""
@@ -849,13 +938,14 @@ def build_schedule(
             "Cannot build schedule for empty items list.",
             "Provide at least one item.",
         )
+    effective_seed = (secrets.randbits(63) or 1) if seed is None else int(seed)
     first_order_by_item: dict[str, OrderMode] = {}
     for it in sorted(items, key=lambda x: x.item_id):
-        item_rng = random.Random(f"rdlab-bakeoff-item-first-order-v1:{seed}:{it.item_id}")
+        item_rng = random.Random(f"rdlab-bakeoff-item-first-order-v1:{effective_seed}:{it.item_id}")
         first_order_by_item[it.item_id] = "AB" if item_rng.randint(0, 1) == 0 else "BA"
 
-    pass1_rng = random.Random(f"rdlab-bakeoff-schedule-pass1-v1:{seed}")
-    pass2_rng = random.Random(f"rdlab-bakeoff-schedule-pass2-v1:{seed}")
+    pass1_rng = random.Random(f"rdlab-bakeoff-schedule-pass1-v1:{effective_seed}")
+    pass2_rng = random.Random(f"rdlab-bakeoff-schedule-pass2-v1:{effective_seed}")
 
     pass1_items = _spread_pass_items_by_material(items, rng=pass1_rng)
     last_pass1_sha = pass1_items[-1].material_sha256 if pass1_items else None
@@ -891,7 +981,7 @@ def build_schedule(
 
     unique_materials = len({it.material_sha256 for it in items})
     schedule = JudgeSchedule(
-        seed=seed,
+        seed=effective_seed,
         items_sha256=items_sha256,
         item_count=len(items),
         triad_count_by_material=unique_materials,
@@ -906,12 +996,11 @@ def load_or_create_schedule(
     output_dir: Path,
     items: Sequence[JudgeInputItem],
     *,
-    seed: int = DEFAULT_SCHEDULE_SEED,
+    seed: int | None = None,
     items_sha256: str = "",
 ) -> JudgeSchedule:
     """Write `schedule.json` on the first judge run and reuse/verify the exact schedule on subsequent judges."""
     schedule_path = output_dir / SCHEDULE_FILENAME
-    built = build_schedule(items, seed=seed, items_sha256=items_sha256)
     if schedule_path.exists():
         raw = json.loads(schedule_path.read_text(encoding="utf-8"))
         existing = JudgeSchedule(
@@ -932,15 +1021,19 @@ def load_or_create_schedule(
             ),
         )
         verify_schedule_invariants(existing)
+        expected_seed = existing.seed if seed is None else int(seed)
+        built = build_schedule(items, seed=expected_seed, items_sha256=items_sha256)
         if existing.schedule_sha256 != built.schedule_sha256 or existing.schedule_sha256 != raw.get("schedule_sha256"):
             raise refused_error(
                 "BAKEOFF_JUDGE_SCHEDULE_MISMATCH",
                 f"Existing '{schedule_path}' (seed={existing.seed}, sha={existing.schedule_sha256}) does not match "
-                f"requested schedule (seed={seed}, sha={built.schedule_sha256}).",
+                f"requested schedule (seed={expected_seed}, sha={built.schedule_sha256}).",
                 "Every judge in a bake-off run must use the exact same seeded schedule.",
             )
         return existing
 
+    effective_seed = (secrets.randbits(63) or 1) if seed is None else int(seed)
+    built = build_schedule(items, seed=effective_seed, items_sha256=items_sha256)
     output_dir.mkdir(parents=True, exist_ok=True)
     schedule_path.write_text(
         json.dumps(built.to_dict(include_sha=True), indent=2, sort_keys=True) + "\n",
@@ -948,6 +1041,125 @@ def load_or_create_schedule(
         newline="\n",
     )
     return built
+
+
+_CLAIM_THE_ATTR_OF_ENT_RE: re.Pattern[str] = re.compile(
+    r"^The\s+(.+?)\s+of\s+(.+?)\s+is\s+\d",
+    re.IGNORECASE,
+)
+_HOP1_RECORDED_UNDER_RE: re.Pattern[str] = re.compile(
+    r"\brecorded under\s+([^.]+?)\.?$",
+    re.IGNORECASE,
+)
+_CLAIM_ANCHOR_PROP_RE: re.Pattern[str] = re.compile(r"^For\s+(.+?),\s+the\s+(.+?)\s+is\s+", re.IGNORECASE)
+_FACT_SUBJECT_VAL_RE: re.Pattern[str] = re.compile(
+    r"^For\s+(.+?),\s+the\s+(.+?)\s+is\s+([^.;]+?)(?:\s*(?:\([^)]*\)|\[[^\]]*\]))?\s*[.;]?$",
+    re.IGNORECASE,
+)
+_MARKER_PHRASES: tuple[str, ...] = (
+    "pending reconciliation and not yet reported",
+    "was not recorded in this reporting window",
+    "redacted pending audit sign-off",
+    "has not been released for the current cycle",
+    "withheld under the provisional review hold",
+    "unavailable at the time of snapshot close",
+)
+
+
+def extract_hop_and_marker_lines(ordered_material: str, claim: str) -> tuple[int | None, int | None, int | None]:
+    """Identify 1-based line indices in `ordered_material` of the hop-1 premise, hop-2 premise, and marker line."""
+    lines = [ln for ln in ordered_material.splitlines() if ln.strip()]
+    bodies: list[str] = []
+    for ln in lines:
+        m = NUMBERED_FACT_LINE_RE.match(ln)
+        bodies.append(m.group(4).strip() if m is not None else ln.strip())
+
+    # Construction A v5 anchored two-hop format:
+    # Claim: "The {attr} of {ent} is {val} {unit}."
+    # Hop 1: "The {attr} of {ent} is the reading recorded under {anchor}."
+    # Hop 2: "{anchor} currently records ..."
+    # Marker: "An earlier entry under {anchor} read ... before it was superseded." or "{anchor} does not record ..."
+    m_v5 = _CLAIM_THE_ATTR_OF_ENT_RE.match(claim.strip())
+    if m_v5 is not None:
+        attr = m_v5.group(1).strip()
+        ent = m_v5.group(2).strip()
+        hop1_prefix = f"the {attr.lower()} of {ent.lower()} is the reading recorded under "
+        hop1_idx: int | None = None
+        anchor_label: str | None = None
+        for idx, body in enumerate(bodies, start=1):
+            if body.lower().startswith(hop1_prefix):
+                hop1_idx = idx
+                m_anc = _HOP1_RECORDED_UNDER_RE.search(body)
+                if m_anc is not None:
+                    anchor_label = m_anc.group(1).strip()
+                break
+        hop2_idx: int | None = None
+        marker_idx: int | None = None
+        if anchor_label is not None:
+            anc_low = anchor_label.lower()
+            cur_prefix = f"{anc_low} currently records "
+            old_sub = f"earlier entry under {anc_low} read "
+            neg_prefix = f"{anc_low} does not record "
+            for idx, body in enumerate(bodies, start=1):
+                low = body.lower()
+                if low.startswith(cur_prefix):
+                    hop2_idx = idx
+                elif old_sub in low or low.startswith(neg_prefix):
+                    marker_idx = idx
+        return hop1_idx, hop2_idx, marker_idx
+
+    m_claim = _CLAIM_ANCHOR_PROP_RE.match(claim.strip())
+    if m_claim is None:
+        return None, None, None
+    anchor = m_claim.group(1).strip()
+    target_prop = m_claim.group(2).strip()
+
+    hop1_idx = None
+    intermediate_entity: str | None = None
+    anchor_prefix = f"for {anchor.lower()},"
+    for idx, body in enumerate(bodies, start=1):
+        if body.lower().startswith(anchor_prefix):
+            hop1_idx = idx
+            m_fact = _FACT_SUBJECT_VAL_RE.match(body)
+            if m_fact is not None:
+                intermediate_entity = m_fact.group(3).strip()
+            break
+
+    hop2_idx = None
+    marker_idx = None
+    inter_prefix = f"for {intermediate_entity.lower()}," if intermediate_entity else None
+    prop_phrase = f"the {target_prop.lower()} is "
+
+    for idx, body in enumerate(bodies, start=1):
+        low = body.lower()
+        if inter_prefix and low.startswith(inter_prefix) and prop_phrase in low:
+            hop2_idx = idx
+        if any(phrase in low for phrase in _MARKER_PHRASES):
+            if (intermediate_entity and intermediate_entity.lower() in low) or (target_prop.lower() in low):
+                marker_idx = idx
+
+    return hop1_idx, hop2_idx, marker_idx
+
+
+def configure_torch_determinism() -> str:
+    """Configure `CUBLAS_WORKSPACE_CONFIG=:4096:8` and `torch.use_deterministic_algorithms(True, warn_only=False)`."""
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
+    try:
+        import torch
+    except ImportError:  # pragma: no cover
+        return "not enforceable"
+    use_det = getattr(torch, "use_deterministic_algorithms", None)
+    if not callable(use_det):
+        return "not enforceable"
+    try:
+        use_det(True, warn_only=False)
+        return "enforced"
+    except Exception:
+        try:
+            use_det(True, warn_only=True)
+        except Exception:  # pragma: no cover
+            pass
+        return "not enforceable"
 
 
 def compute_binary_token_p_yes(
@@ -1735,6 +1947,14 @@ def build_judge_adapter(judge: str | JudgeSpec) -> BaseJudgeAdapter:
     )
 
 
+def _pad_top_logprobs_to_20(entries: Sequence[TopLogprobEntry]) -> tuple[TopLogprobEntry, ...]:
+    """Pad a sorted top-K logprob sequence out to 20 entries with negligible-mass non-verdict tokens."""
+    out = list(entries)
+    for rank in range(len(out) + 1, 21):
+        out.append(TopLogprobEntry(token=f"<tok_{rank:02d}>", logprob=round(-12.0 - 0.25 * rank, 6)))
+    return tuple(out[:20])
+
+
 class DeterministicFakeJudgeTransport:
     """Deterministic CPU-only fake judge transport for harness validation without loading any model or weights.
 
@@ -1752,11 +1972,14 @@ class DeterministicFakeJudgeTransport:
         force_unparseable_items: Sequence[str] = (),
         force_Flip_items: Sequence[str] = (),
         expected_revision_override: str | None = None,
+        torch_dtype: str = DEFAULT_TORCH_DTYPE,
     ) -> None:
         self.force_length_stop_items = frozenset(force_length_stop_items)
         self.force_unparseable_items = frozenset(force_unparseable_items)
         self.force_flip_items = frozenset(force_Flip_items)
         self.expected_revision_override = expected_revision_override
+        self.torch_dtype = str(torch_dtype)
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
 
     def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
         check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
@@ -1771,12 +1994,16 @@ class DeterministicFakeJudgeTransport:
 
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         digest = f"fake-sha256:{spec.revision}"
+        det_status = configure_torch_determinism()
         # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
         library_pins = {
             "transport": "DeterministicFakeJudgeTransport",
             "python": sys.version.split()[0],
             "torch": "2.14.1+cu132 (pinned-not-loaded)",
             "transformers": "5.19.0 (pinned-not-loaded)",
+            "dtype": self.torch_dtype,
+            "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
+            "deterministic_algorithms": det_status,
         }
         server_binary = "rdlab-fake-judge-cpu/1.0"
 
@@ -1789,12 +2016,14 @@ class DeterministicFakeJudgeTransport:
             return JudgeTransportResponse(
                 raw_text="<think>truncated before verdict...",
                 tokens=("<think>", "truncated", "before", "verdict", "..."),
-                verdict_top_logprobs=(
-                    TopLogprobEntry(token="...", logprob=-0.10),
-                    TopLogprobEntry(token="the", logprob=-2.40),
-                    TopLogprobEntry(token="and", logprob=-3.10),
-                    TopLogprobEntry(token="is", logprob=-3.80),
-                    TopLogprobEntry(token="of", logprob=-4.20),
+                verdict_top_logprobs=_pad_top_logprobs_to_20(
+                    (
+                        TopLogprobEntry(token="...", logprob=-0.10),
+                        TopLogprobEntry(token="the", logprob=-2.40),
+                        TopLogprobEntry(token="and", logprob=-3.10),
+                        TopLogprobEntry(token="is", logprob=-3.80),
+                        TopLogprobEntry(token="of", logprob=-4.20),
+                    )
                 ),
                 done_reason="length",
                 seconds=0.002,
@@ -1812,12 +2041,14 @@ class DeterministicFakeJudgeTransport:
             return JudgeTransportResponse(
                 raw_text="INVALID_OUTPUT_NO_VERDICT",
                 tokens=("INVALID", "_OUTPUT", "_NO", "_VERDICT"),
-                verdict_top_logprobs=(
-                    TopLogprobEntry(token="maybe", logprob=-0.15),
-                    TopLogprobEntry(token="unknown", logprob=-2.20),
-                    TopLogprobEntry(token="perhaps", logprob=-3.10),
-                    TopLogprobEntry(token="none", logprob=-3.90),
-                    TopLogprobEntry(token="error", logprob=-4.50),
+                verdict_top_logprobs=_pad_top_logprobs_to_20(
+                    (
+                        TopLogprobEntry(token="maybe", logprob=-0.15),
+                        TopLogprobEntry(token="unknown", logprob=-2.20),
+                        TopLogprobEntry(token="perhaps", logprob=-3.10),
+                        TopLogprobEntry(token="none", logprob=-3.90),
+                        TopLogprobEntry(token="error", logprob=-4.50),
+                    )
                 ),
                 done_reason="stop",
                 seconds=0.001,
@@ -1843,12 +2074,14 @@ class DeterministicFakeJudgeTransport:
             chosen_cls = choices[c_idx]
             letters = ("A", "B", "C")
             chosen_letter = letters[c_idx]
-            lp_top = (
-                TopLogprobEntry(token=chosen_letter, logprob=math.log(0.76)),
-                TopLogprobEntry(token=letters[(c_idx + 1) % 3], logprob=math.log(0.14)),
-                TopLogprobEntry(token=letters[(c_idx + 2) % 3], logprob=math.log(0.06)),
-                TopLogprobEntry(token=f" {chosen_letter.lower()}", logprob=math.log(0.03)),
-                TopLogprobEntry(token="none", logprob=math.log(0.01)),
+            lp_top = _pad_top_logprobs_to_20(
+                (
+                    TopLogprobEntry(token=chosen_letter, logprob=math.log(0.76)),
+                    TopLogprobEntry(token=letters[(c_idx + 1) % 3], logprob=math.log(0.14)),
+                    TopLogprobEntry(token=letters[(c_idx + 2) % 3], logprob=math.log(0.06)),
+                    TopLogprobEntry(token=f" {chosen_letter.lower()}", logprob=math.log(0.03)),
+                    TopLogprobEntry(token="none", logprob=math.log(0.01)),
+                )
             )
             if spec.judge_id == "d3-mini":
                 probs_map = {
@@ -1898,17 +2131,17 @@ class DeterministicFakeJudgeTransport:
             p_n = 1.0 - p_y
             tok = "yes" if is_yes else "no"
             top5 = (
-                TopLogprobEntry(token="yes", logprob=math.log(p_y * 0.85)),
-                TopLogprobEntry(token="no", logprob=math.log(p_n * 0.85)),
-                TopLogprobEntry(token="Yes", logprob=math.log(p_y * 0.10)),
-                TopLogprobEntry(token="No", logprob=math.log(p_n * 0.10)),
-                TopLogprobEntry(token=f" {tok}", logprob=math.log((p_y if is_yes else p_n) * 0.05)),
+                TopLogprobEntry(token="yes", logprob=math.log(p_y * 0.89)),
+                TopLogprobEntry(token="no", logprob=math.log(p_n * 0.89)),
+                TopLogprobEntry(token="Yes", logprob=math.log(p_y * 0.105)),
+                TopLogprobEntry(token="No", logprob=math.log(p_n * 0.105)),
+                TopLogprobEntry(token=f" {tok}", logprob=math.log((p_y if is_yes else p_n) * 0.005)),
             )
             top5_sorted = tuple(sorted(top5, key=lambda e: e.logprob, reverse=True))
             return JudgeTransportResponse(
                 raw_text=tok,
                 tokens=(tok,),
-                verdict_top_logprobs=top5_sorted,
+                verdict_top_logprobs=_pad_top_logprobs_to_20(top5_sorted),
                 done_reason="stop",
                 seconds=0.001,
                 model_digest=digest,
@@ -1934,7 +2167,7 @@ class DeterministicFakeJudgeTransport:
             return JudgeTransportResponse(
                 raw_text=raw,
                 tokens=("<think>", "\n", "</think>", "\n", "<score>", score_tok, "</score>"),
-                verdict_top_logprobs=top5_sorted,
+                verdict_top_logprobs=_pad_top_logprobs_to_20(top5_sorted),
                 done_reason="stop",
                 seconds=0.001,
                 model_digest=digest,
@@ -1957,7 +2190,7 @@ class DeterministicFakeJudgeTransport:
             return JudgeTransportResponse(
                 raw_text=json.dumps(sys_one, sort_keys=True),
                 tokens=("yes" if is_yes else "no",),
-                verdict_top_logprobs=top5_sorted,
+                verdict_top_logprobs=_pad_top_logprobs_to_20(top5_sorted),
                 done_reason="stop",
                 seconds=0.001,
                 model_digest=digest,
@@ -1979,7 +2212,7 @@ class DeterministicFakeJudgeTransport:
         return JudgeTransportResponse(
             raw_text=raw,
             tokens=("<feedback>", "evaluated", "</feedback>", "\n", "<score>", pass_fail, "</score>"),
-            verdict_top_logprobs=top5,
+            verdict_top_logprobs=_pad_top_logprobs_to_20(top5),
             done_reason="stop",
             seconds=0.001,
             model_digest=digest,
@@ -2153,18 +2386,19 @@ class TransformersJudgeTransport:
         receipts_dir: Path,
         hf_home: Path | None = None,
         device: str = "cpu",
-        torch_dtype: str | Any = "auto",
+        torch_dtype: str | Any = DEFAULT_TORCH_DTYPE,
     ) -> None:
         self.receipts_dir = Path(receipts_dir)
         self.hf_home = Path(hf_home) if hf_home is not None else None
         self.device = device
-        self.torch_dtype = torch_dtype
+        self.torch_dtype = DEFAULT_TORCH_DTYPE if torch_dtype == "auto" else torch_dtype
         self._loaded_spec_id: str | None = None
         self._verified_digest: str | None = None
         self._snapshot_dir: Path | None = None
         self._tokenizer: Any = None
         self._model: Any = None
         self._candidate_token_ids: dict[int, str] = {}
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
         # Weights load on the main thread (see `ensure_sync_weight_loading`); checked again before each load.
         ensure_sync_weight_loading()
 
@@ -2242,6 +2476,7 @@ class TransformersJudgeTransport:
         import torch
         import transformers
 
+        det_status = configure_torch_determinism()
         torch.manual_seed(int(seed))
         t0 = time.monotonic()
 
@@ -2280,7 +2515,14 @@ class TransformersJudgeTransport:
             gen_kwargs["attention_mask"] = attention_mask
 
         with torch.no_grad():
-            out = self._model.generate(**gen_kwargs)
+            try:
+                out = self._model.generate(**gen_kwargs)
+            except RuntimeError:  # pragma: no cover
+                use_det = getattr(torch, "use_deterministic_algorithms", None)
+                if callable(use_det):
+                    use_det(True, warn_only=True)
+                det_status = "not enforceable"
+                out = self._model.generate(**gen_kwargs)
 
         elapsed = max(0.0001, time.monotonic() - t0)
         gen_token_ids = [int(t) for t in out.sequences[0, prompt_len:].tolist()]
@@ -2310,7 +2552,7 @@ class TransformersJudgeTransport:
             step_logits = out.scores[0][0].float()
             full_logprobs = torch.log_softmax(step_logits, dim=-1)
             vocab_size = int(full_logprobs.shape[-1])
-            k_top = min(5, vocab_size)
+            k_top = min(20, vocab_size)
             top_vals, top_idxs = torch.topk(full_logprobs, k=k_top)
 
             included_ids: set[int] = set()
@@ -2341,6 +2583,9 @@ class TransformersJudgeTransport:
             "python": sys.version.split()[0],
             "torch": getattr(torch, "__version__", "unknown"),
             "transformers": getattr(transformers, "__version__", "unknown"),
+            "dtype": str(self.torch_dtype),
+            "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
+            "deterministic_algorithms": det_status,
         }
         return JudgeTransportResponse(
             raw_text=raw_text,
@@ -2555,15 +2800,18 @@ class D3MiniTransport:
         hf_home: Path | None = None,
         device: str = "cpu",
         expected_transformers_version: str | None = D3_MINI_TRANSFORMERS_VERSION,
+        torch_dtype: str = DEFAULT_TORCH_DTYPE,
     ) -> None:
         self.receipts_dir = Path(receipts_dir)
         self.hf_home = Path(hf_home) if hf_home is not None else None
         self.device = device
         self.expected_transformers_version = expected_transformers_version
+        self.torch_dtype = str(torch_dtype)
         self._verified_digest: str | None = None
         self._snapshot_dir: Path | None = None
         self._reviewed_sha: str | None = None
         self._model: Any = None
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
         # The receipt lists every file in the snapshot. d3 executes `d3_fast.py` from the snapshot directory
         # (`d3_runtime.py` `load_file_module`) and transformers copies then imports the other modules; with bytecode
         # writing on, the loader would drop `__pycache__/*.pyc` into the verified directory and the next receipt
@@ -2657,6 +2905,7 @@ class D3MiniTransport:
         import torch
         import transformers
 
+        det_status = configure_torch_determinism()
         torch.manual_seed(int(seed))
         t0 = time.monotonic()
         with torch.inference_mode():
@@ -2683,6 +2932,9 @@ class D3MiniTransport:
             "python": sys.version.split()[0],
             "torch": getattr(torch, "__version__", "unknown"),
             "transformers": getattr(transformers, "__version__", "unknown"),
+            "dtype": self.torch_dtype,
+            "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
+            "deterministic_algorithms": det_status,
         }
         sys_one = dict(result) if isinstance(result, Mapping) else {"raw": str(result)}
         return JudgeTransportResponse(
@@ -2702,12 +2954,336 @@ def _canonical_json_line(obj: Mapping[str, Any]) -> str:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+def load_canary_config(config_path: Path | None = None) -> dict[str, Any]:
+    """Load the fixed 10-triad canary configuration (`canary_config.json`)."""
+    target = Path(config_path) if config_path is not None else DEFAULT_CANARY_CONFIG_PATH
+    if not target.is_file():
+        raise refused_error(
+            "BAKEOFF_JUDGE_CANARY_CONFIG_MISSING",
+            f"Canary config file '{target}' not found.",
+            "Provide a valid canary_config.json path.",
+        )
+    try:
+        doc = json.loads(target.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise refused_error(
+            "BAKEOFF_JUDGE_CANARY_CONFIG_INVALID",
+            f"Malformed JSON in canary config '{target}': {exc}.",
+            "Ensure canary_config.json is valid JSON.",
+        ) from exc
+    if not isinstance(doc, dict):
+        raise refused_error(
+            "BAKEOFF_JUDGE_CANARY_CONFIG_INVALID",
+            f"Canary config '{target}' must be a JSON object.",
+            "Ensure canary_config.json contains canary_triad_ids and canary_item_ids.",
+        )
+    return doc
+
+
+def _run_canary_snapshot(
+    *,
+    spec: JudgeSpec,
+    adapter: BaseJudgeAdapter,
+    transport: JudgeTransport,
+    canary_items: Sequence[JudgeInputItem],
+    pass_mode: PassMode,
+    seed: int,
+) -> list[dict[str, Any]]:
+    """Run the canary items in both AB and BA orders and capture raw verdict, top-5 tokens, and top-5 logprobs."""
+    records: list[dict[str, Any]] = []
+    for item in canary_items:
+        for order in ("AB", "BA"):
+            ord_mode: OrderMode = "AB" if order == "AB" else "BA"
+            prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode=pass_mode)
+            resp = transport.generate(spec, prompt, seed=seed)
+            readout = adapter.parse_response(resp, pass_mode=pass_mode)
+            top5 = [lp.to_dict() for lp in readout.verdict_top_logprobs[:5]]
+            records.append(
+                {
+                    "item_id": item.item_id,
+                    "order": ord_mode,
+                    "raw_verdict": readout.raw_verdict,
+                    "confidence": round(readout.p_yes, 6) if readout.p_yes is not None else None,
+                    "top5_tokens": [str(d["token"]) for d in top5],
+                    "top5_logprobs": [float(d["logprob"]) for d in top5],
+                }
+            )
+    return records
+
+
+def _compare_canary_snapshots(
+    start_records: Sequence[Mapping[str, Any]],
+    end_records: Sequence[Mapping[str, Any]],
+    *,
+    judge_id: str,
+    logprob_tolerance: float,
+) -> dict[str, Any]:
+    """Compare start-of-run and end-of-run canary snapshots; halt on any label flip, token ID change, or logprob drift."""
+    max_dev = 0.0
+    for s_rec, e_rec in zip(start_records, end_records, strict=True):
+        key_desc = f"{s_rec['item_id']}:{s_rec['order']}"
+        if s_rec["raw_verdict"] != e_rec["raw_verdict"]:
+            raise refused_error(
+                "BAKEOFF_JUDGE_CANARY_DRIFT",
+                f"Canary label flip for judge '{judge_id}' on {key_desc}: "
+                f"start={s_rec['raw_verdict']!r} vs end={e_rec['raw_verdict']!r}.",
+                "Investigate state drift or non-determinism before continuing.",
+            )
+        if s_rec["top5_tokens"] != e_rec["top5_tokens"]:
+            raise refused_error(
+                "BAKEOFF_JUDGE_CANARY_DRIFT",
+                f"Canary top-5 token sequence changed for judge '{judge_id}' on {key_desc}: "
+                f"start={s_rec['top5_tokens']} vs end={e_rec['top5_tokens']}.",
+                "Investigate top-5 token rank instability before continuing.",
+            )
+        for s_lp, e_lp in zip(s_rec["top5_logprobs"], e_rec["top5_logprobs"], strict=True):
+            dev = abs(float(s_lp) - float(e_lp))
+            if dev > max_dev:
+                max_dev = dev
+            if dev > logprob_tolerance + 1e-12:
+                raise refused_error(
+                    "BAKEOFF_JUDGE_CANARY_DRIFT",
+                    f"Canary top-5 logprob drift {dev:.6f} > tolerance {logprob_tolerance:.6f} "
+                    f"for judge '{judge_id}' on {key_desc}.",
+                    "Check deterministic algorithms and dtype settings.",
+                )
+    return {
+        "canary_calls": len(start_records),
+        "max_top5_logprob_deviation": round(max_dev, 6),
+        "tolerance": float(logprob_tolerance),
+        "passed": True,
+    }
+
+
+def measure_canary_tolerance(
+    *,
+    part_dir: Path,
+    repeats: int = 3,
+    canary_config_path: Path | None = None,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+) -> dict[str, Any]:
+    """Run the 10-item canary repeatedly across the bake-off judges and record the empirical max top-5 logprob deviation."""
+    if repeats < 2:
+        raise usage_error(
+            "BAKEOFF_CANARY_REPEATS_INVALID",
+            f"repeats must be >= 2, got {repeats}.",
+            "Pass --repeats 2 or higher.",
+        )
+    cfg = load_canary_config(canary_config_path)
+    items, _ = load_judge_items(part_dir)
+    items_by_id = {it.item_id: it for it in items}
+    wanted_ids = [str(iid) for iid in cfg.get("canary_item_ids", []) if str(iid) in items_by_id]
+    canary_items = [items_by_id[iid] for iid in wanted_ids] if wanted_ids else list(items[: min(10, len(items))])
+
+    per_judge: dict[str, Any] = {}
+    overall_max_dev = 0.0
+    total_token_mismatches = 0
+    for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+        adapter = build_judge_adapter(spec)
+        transport = DeterministicFakeJudgeTransport()
+        transport.verify_ready(
+            spec,
+            allow_remote_code_reviewed=D3_MINI_REVIEWED_REVISION if spec.requires_remote_code else None,
+        )
+        baseline = _run_canary_snapshot(
+            spec=spec,
+            adapter=adapter,
+            transport=transport,
+            canary_items=canary_items,
+            pass_mode="binary",
+            seed=seed,
+        )
+        judge_max_dev = 0.0
+        token_matches = True
+        label_matches = True
+        for _ in range(repeats - 1):
+            snap = _run_canary_snapshot(
+                spec=spec,
+                adapter=adapter,
+                transport=transport,
+                canary_items=canary_items,
+                pass_mode="binary",
+                seed=seed,
+            )
+            for b_rec, r_rec in zip(baseline, snap, strict=True):
+                if b_rec["raw_verdict"] != r_rec["raw_verdict"]:
+                    label_matches = False
+                if b_rec["top5_tokens"] != r_rec["top5_tokens"]:
+                    token_matches = False
+                    total_token_mismatches += 1
+                for b_lp, r_lp in zip(b_rec["top5_logprobs"], r_rec["top5_logprobs"], strict=True):
+                    dev = abs(float(b_lp) - float(r_lp))
+                    if dev > judge_max_dev:
+                        judge_max_dev = dev
+        overall_max_dev = max(overall_max_dev, judge_max_dev)
+        per_judge[judge_id] = {
+            "repeats": repeats,
+            "canary_items_n": len(canary_items),
+            "calls_per_repeat": len(baseline),
+            "label_exact_match": label_matches,
+            "top5_token_id_exact_match": token_matches,
+            "max_top5_logprob_deviation": round(judge_max_dev, 6),
+        }
+
+    return {
+        "schema_version": "1.0",
+        "repeats": repeats,
+        "canary_items_n": len(canary_items),
+        "max_logprob_deviation": round(overall_max_dev, 6),
+        "max_top5_logprob_deviation": round(overall_max_dev, 6),
+        "top5_token_id_mismatches": total_token_mismatches,
+        "measured_tolerance": round(overall_max_dev, 6),
+        "judges": per_judge,
+    }
+
+
+def probe_judge_determinism(
+    *,
+    part_dir: Path | None = None,
+    canary_config_path: Path | None = None,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+) -> dict[str, Any]:
+    """Probe CPU/transport determinism across all 5 judges and record whether the start/end canary is the deciding check."""
+    det_status = configure_torch_determinism()
+    if part_dir is not None:
+        tol_report = measure_canary_tolerance(
+            part_dir=part_dir,
+            repeats=2,
+            canary_config_path=canary_config_path,
+            seed=seed,
+        )
+    else:
+        synthetic_item = JudgeInputItem(
+            item_id="probe-000",
+            material="1. Probe premise one.\n2. Probe premise two.",
+            claim="Probe claim.",
+        )
+        tol_judges: dict[str, Any] = {}
+        for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+            adapter = build_judge_adapter(spec)
+            transport = DeterministicFakeJudgeTransport()
+            transport.verify_ready(
+                spec,
+                allow_remote_code_reviewed=D3_MINI_REVIEWED_REVISION if spec.requires_remote_code else None,
+            )
+            s1 = _run_canary_snapshot(
+                spec=spec,
+                adapter=adapter,
+                transport=transport,
+                canary_items=[synthetic_item],
+                pass_mode="binary",
+                seed=seed,
+            )
+            s2 = _run_canary_snapshot(
+                spec=spec,
+                adapter=adapter,
+                transport=transport,
+                canary_items=[synthetic_item],
+                pass_mode="binary",
+                seed=seed,
+            )
+            tol_judges[judge_id] = {
+                "label_exact_match": s1[0]["raw_verdict"] == s2[0]["raw_verdict"],
+                "top5_token_id_exact_match": s1[0]["top5_tokens"] == s2[0]["top5_tokens"],
+                "max_top5_logprob_deviation": 0.0,
+            }
+        tol_report = {"judges": tol_judges}
+
+    judges_out: dict[str, Any] = {}
+    for judge_id in sorted(BAKEOFF_JUDGE_SPECS):
+        j_tol = tol_report["judges"][judge_id]
+        judges_out[judge_id] = {
+            "status": det_status,
+            "deterministic_algorithms": det_status,
+            "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
+            "dtype": DEFAULT_TORCH_DTYPE,
+            "cpu_repeat_label_exact": j_tol["label_exact_match"],
+            "cpu_repeat_top5_tokens_exact": j_tol["top5_token_id_exact_match"],
+            "cpu_repeat_max_logprob_dev": j_tol["max_top5_logprob_deviation"],
+            "gpu_determinism_status": "not_checked_no_gpu_start_end_canary_is_deciding_runtime_check",
+        }
+    return {
+        "schema_version": "1.0",
+        "deciding_check": "canary",
+        "start_end_canary_is_deciding_check": True,
+        "deterministic_algorithms": det_status,
+        "judges": judges_out,
+    }
+
+
+def check_bakeoff_logprob_mass(
+    judge_output_dir: Path,
+    *,
+    threshold: float = 0.99,
+) -> dict[str, Any]:
+    """Check whether summed yes+no variant probability mass is >= `threshold` for every binary call (`not_applicable` for Flow-Judge)."""
+    rows_dir = Path(judge_output_dir) / ROWS_DIRNAME
+    if not rows_dir.is_dir():
+        raise refused_error(
+            "BAKEOFF_LOGPROB_MASS_NO_ROWS",
+            f"Rows directory '{rows_dir}' not found.",
+            "Pass the bakeoff-judge output directory containing rows/*.jsonl.",
+        )
+    row_files = sorted(p for p in rows_dir.glob("*.jsonl") if not p.name.endswith(".three_way.jsonl"))
+    if not row_files:
+        raise refused_error(
+            "BAKEOFF_LOGPROB_MASS_NO_ROWS",
+            f"No binary judge row files found in '{rows_dir}'.",
+            "Run bakeoff-judge before checking logprob mass.",
+        )
+
+    judges_report: dict[str, Any] = {}
+    for rf in row_files:
+        judge_id = rf.stem
+        spec = BAKEOFF_JUDGE_SPECS.get(judge_id)
+        if spec is not None and not spec.has_probability:
+            judges_report[judge_id] = {
+                "status": "not_applicable",
+                "passed": True,
+                "reason": "Judge does not expose a yes/no token log-probability distribution (Flow-Judge rubric text score).",
+                "threshold": threshold,
+            }
+            continue
+        lines = [json.loads(ln) for ln in rf.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        parsed_rows = [r for r in lines if r.get("state") == "parsed" and r.get("run_status") != "failed_to_run"]
+        masses: list[float] = []
+        below_count = 0
+        for r in parsed_rows:
+            lp_list = r.get("top_20_logprobs") or r.get("top_logprobs") or []
+            mass = 0.0
+            for entry in lp_list:
+                tok = str(entry.get("token") or "").strip().lower()
+                if tok in ("yes", "no"):
+                    mass += math.exp(float(entry.get("logprob", -100.0)))
+            masses.append(mass)
+            if mass + 1e-6 < threshold:
+                below_count += 1
+        min_mass = min(masses) if masses else 0.0
+        mean_mass = (sum(masses) / len(masses)) if masses else 0.0
+        passed = bool(masses and below_count == 0)
+        judges_report[judge_id] = {
+            "status": "PASS" if passed else "WARN",
+            "passed": passed,
+            "calls_checked": len(masses),
+            "below_threshold_count": below_count,
+            "min_yes_no_mass": round(min_mass, 6),
+            "mean_yes_no_mass": round(mean_mass, 6),
+            "threshold": threshold,
+        }
+
+    return {
+        "schema_version": "1.0",
+        "threshold": threshold,
+        "judges": judges_report,
+    }
+
+
 def run_bakeoff_judge(
     *,
     part_dir: Path,
     output_dir: Path,
     judge: str,
-    schedule_seed: int = DEFAULT_SCHEDULE_SEED,
+    schedule_seed: int | None = DEFAULT_SCHEDULE_SEED,
     pass_mode: PassMode = "binary",
     limit_items: int | None = None,
     fake_transport: bool = False,
@@ -2715,6 +3291,7 @@ def run_bakeoff_judge(
     receipts_dir: Path | None = None,
     hf_home: Path | None = None,
     device: str = "cpu",
+    torch_dtype: str = DEFAULT_TORCH_DTYPE,
     allow_remote_code_reviewed: str | None = None,
     vram_halt_mib: int = DEFAULT_VRAM_HALT_MIB,
     vram_probe: Callable[[], int] | None = None,
@@ -2724,12 +3301,16 @@ def run_bakeoff_judge(
     error_rate_min_calls: int = DEFAULT_ERROR_RATE_MIN_CALLS,
     force_length_stop_items: Sequence[str] = (),
     force_unparseable_items: Sequence[str] = (),
+    canary_config_path: Path | None = None,
+    run_canary: bool = True,
     repo_root: Path | None = None,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
     resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
     spec = resolve_judge_spec(judge)
     adapter = build_judge_adapter(spec)
+    effective_dtype = DEFAULT_TORCH_DTYPE if str(torch_dtype).strip().lower() == "auto" else str(torch_dtype)
+    det_status = configure_torch_determinism()
 
     if vram_probe is None:
         vram_probe = (
@@ -2743,6 +3324,7 @@ def run_bakeoff_judge(
             transport = DeterministicFakeJudgeTransport(
                 force_length_stop_items=force_length_stop_items,
                 force_unparseable_items=force_unparseable_items,
+                torch_dtype=effective_dtype,
             )
         else:
             check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
@@ -2758,12 +3340,14 @@ def run_bakeoff_judge(
                     receipts_dir=receipts_dir,
                     hf_home=hf_home,
                     device=device,
+                    torch_dtype=effective_dtype,
                 )
             else:
                 transport = TransformersJudgeTransport(
                     receipts_dir=receipts_dir,
                     hf_home=hf_home,
                     device=device,
+                    torch_dtype=effective_dtype,
                 )
 
     verified_digest = transport.verify_ready(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
@@ -2776,130 +3360,209 @@ def run_bakeoff_judge(
         items_sha256=items_sha256,
     )
 
+    # Resolve canary items present in this item set
+    canary_cfg = load_canary_config(canary_config_path) if (run_canary or canary_config_path is not None) else {}
+    canary_wanted_ids = [str(iid) for iid in canary_cfg.get("canary_item_ids", []) if str(iid) in items_by_id]
+    canary_items = [items_by_id[iid] for iid in canary_wanted_ids]
+    canary_tol = float(canary_cfg.get("canary_logprob_tolerance", 0.0))
+    canary_start_records: list[dict[str, Any]] | None = None
+    if run_canary and canary_items:
+        canary_start_records = _run_canary_snapshot(
+            spec=spec,
+            adapter=adapter,
+            transport=transport,
+            canary_items=canary_items,
+            pass_mode=pass_mode,
+            seed=schedule.seed,
+        )
+
     rows_dir = resolved_out / ROWS_DIRNAME
     rows_dir.mkdir(parents=True, exist_ok=True)
     row_filename = f"{spec.judge_id}.jsonl" if pass_mode == "binary" else f"{spec.judge_id}.{pass_mode}.jsonl"
     row_path = rows_dir / row_filename
     gen_path = resolved_out / GENERATIONS_FILENAME
 
-    row_lines: list[str] = []
-    gen_lines: list[str] = []
-    unparseable_count = 0
-    length_stop_count = 0
-    parsed_count = 0
-    vram_peak_overall = 0
-    total_seconds = 0.0
+    completed_keys: set[tuple[str, str]] = set()
+    existing_row_objs: list[dict[str, Any]] = []
+    if row_path.is_file():
+        for raw_ln in row_path.read_text(encoding="utf-8").splitlines():
+            if not raw_ln.strip():
+                continue
+            try:
+                parsed_row = json.loads(raw_ln)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed_row, dict) and parsed_row.get("item_id") and parsed_row.get("order"):
+                if parsed_row.get("run_status") != "failed_to_run":
+                    completed_keys.add((str(parsed_row["item_id"]), str(parsed_row["order"])))
+                    existing_row_objs.append(parsed_row)
 
-    for entry in schedule.entries:
-        item = items_by_id[entry.item_id]
-        prompt = adapter.assemble_prompt(item, order=entry.order, pass_mode=pass_mode)
-        vram_before = check_vram_guard(
-            vram_halt_mib=vram_halt_mib,
-            vram_probe=vram_probe,
-            halt_pid=halt_pid,
-            pid_killer=pid_killer,
-        )
-        t0 = time.monotonic()
-        resp = transport.generate(spec, prompt, seed=schedule.seed)
-        elapsed = resp.seconds if resp.seconds > 0 else max(0.0001, time.monotonic() - t0)
-        vram_after = check_vram_guard(
-            vram_halt_mib=vram_halt_mib,
-            vram_probe=vram_probe,
-            halt_pid=halt_pid,
-            pid_killer=pid_killer,
-        )
-        call_vram_peak = max(vram_before, vram_after)
-        vram_peak_overall = max(vram_peak_overall, call_vram_peak)
-        total_seconds += elapsed
+    unparseable_count = sum(1 for r in existing_row_objs if r.get("state") == "unparseable")
+    length_stop_count = sum(1 for r in existing_row_objs if r.get("state") == "length_stop")
+    parsed_count = sum(1 for r in existing_row_objs if r.get("state") == "parsed")
+    vram_peak_overall = max((int(r.get("vram_peak_mib", 0)) for r in existing_row_objs), default=0)
+    total_seconds = sum(float(r.get("seconds", 0.0)) for r in existing_row_objs)
+    calls_so_far = len(existing_row_objs)
+    polarity_map = POLARITY_MAP_BY_JUDGE.get(spec.judge_id, {"inverted": "false"})
 
-        if resp.model_digest != verified_digest:
-            raise refused_error(
-                "BAKEOFF_JUDGE_DIGEST_MISMATCH",
-                f"Stop rule triggered: model_digest changed mid-run from '{verified_digest}' to '{resp.model_digest}'.",
-                "Ensure the loaded judge model remains pinned throughout the run.",
+    row_mode = "a" if existing_row_objs else "w"
+    with row_path.open(row_mode, encoding="utf-8", newline="\n") as rf, gen_path.open("a", encoding="utf-8", newline="\n") as gf:
+        for entry in schedule.entries:
+            if (entry.item_id, entry.order) in completed_keys:
+                continue
+            item = items_by_id[entry.item_id]
+            ordered_mat = swap_material_facts_order(item.material, entry.order)
+            hop1_idx, hop2_idx, marker_idx = extract_hop_and_marker_lines(ordered_mat, item.claim)
+            prompt = adapter.assemble_prompt(item, order=entry.order, pass_mode=pass_mode)
+            vram_before = check_vram_guard(
+                vram_halt_mib=vram_halt_mib,
+                vram_probe=vram_probe,
+                halt_pid=halt_pid,
+                pid_killer=pid_killer,
             )
-
-        readout = adapter.parse_response(resp, pass_mode=pass_mode)
-        if readout.state == "length_stop":
-            length_stop_count += 1
-        elif readout.state == "unparseable":
-            unparseable_count += 1
-        else:
-            parsed_count += 1
-
-        call_id = f"{spec.judge_id}:{pass_mode}:{entry.slot_index:04d}:{item.item_id}:{entry.order}"
-        top5_dicts = [lp.to_dict() for lp in readout.verdict_top_logprobs[:5]]
-
-        receipt_payload = {
-            "arm": spec.judge_id,
-            "prompt": call_id,
-            "prompt_sha256": prompt.prompt_sha256,
-            "model_digest": resp.model_digest,
-            "tokens": list(resp.tokens),
-            "top": top5_dicts,
-            "done_reason": readout.done_reason,
-        }
-        receipt_sha256 = hashlib.sha256(
-            _canonical_json_line(receipt_payload).encode("utf-8")
-        ).hexdigest()
-
-        gen_obj: dict[str, Any] = {
-            "arm": spec.judge_id,
-            "prompt": call_id,
-            "item_id": item.item_id,
-            "order": entry.order,
-            "pass_mode": pass_mode,
-            "prompt_sha256": prompt.prompt_sha256,
-            "model_digest": resp.model_digest,
-            "tokens": list(resp.tokens),
-            "top": top5_dicts,
-            "done_reason": readout.done_reason,
-            "server_binary": resp.server_binary,
-            "library_pins": resp.library_pins,
-            "receipt_sha256": receipt_sha256,
-        }
-        gen_lines.append(_canonical_json_line(gen_obj))
-
-        row_obj: dict[str, Any] = {
-            "judge_id": spec.judge_id,
-            "judge_label": spec.judge_label,
-            "item_id": item.item_id,
-            "order": entry.order,
-            "pass_number": entry.pass_number,
-            "slot_index": entry.slot_index,
-            "pass_mode": pass_mode,
-            "model_revision": spec.revision,
-            "model_digest": resp.model_digest,
-            "prompt_sha256": prompt.prompt_sha256,
-            "done_reason": readout.done_reason,
-            "state": readout.state,
-            "raw_generation": resp.raw_text,
-            "raw_verdict": readout.raw_verdict,
-            "confidence": round(readout.p_yes, 6) if readout.p_yes is not None else None,
-            "choice_probabilities": readout.choice_probabilities,
-            "top_logprobs": top5_dicts,
-            "seconds": round(elapsed, 6),
-            "vram_peak_mib": call_vram_peak,
-            "receipt_sha256": receipt_sha256,
-        }
-        row_lines.append(_canonical_json_line(row_obj))
-
-        calls_so_far = len(row_lines)
-        bad_calls = unparseable_count + length_stop_count
-        if calls_so_far >= error_rate_min_calls and (bad_calls / calls_so_far) > error_rate_stop:
-            row_path.write_text("\n".join(row_lines) + "\n", encoding="utf-8", newline="\n")
-            with gen_path.open("a", encoding="utf-8", newline="\n") as gf:
-                gf.write("\n".join(gen_lines) + "\n")
-            raise refused_error(
-                "BAKEOFF_JUDGE_ERROR_RATE_STOP",
-                f"Stop rule triggered for '{spec.judge_id}': unparseable ({unparseable_count}) + length_stop "
-                f"({length_stop_count}) = {bad_calls}/{calls_so_far} ({bad_calls / calls_so_far:.1%}) > {error_rate_stop:.1%}.",
-                "Inspect prompt formatting and max_new_tokens settings before continuing.",
+            t0 = time.monotonic()
+            resp = transport.generate(spec, prompt, seed=schedule.seed)
+            elapsed = resp.seconds if resp.seconds > 0 else max(0.0001, time.monotonic() - t0)
+            vram_after = check_vram_guard(
+                vram_halt_mib=vram_halt_mib,
+                vram_probe=vram_probe,
+                halt_pid=halt_pid,
+                pid_killer=pid_killer,
             )
+            call_vram_peak = max(vram_before, vram_after)
+            vram_peak_overall = max(vram_peak_overall, call_vram_peak)
+            total_seconds += elapsed
 
-    row_path.write_text("\n".join(row_lines) + "\n", encoding="utf-8", newline="\n")
-    with gen_path.open("a", encoding="utf-8", newline="\n") as gf:
-        gf.write("\n".join(gen_lines) + "\n")
+            if resp.model_digest != verified_digest:
+                raise refused_error(
+                    "BAKEOFF_JUDGE_DIGEST_MISMATCH",
+                    f"Stop rule triggered: model_digest changed mid-run from '{verified_digest}' to '{resp.model_digest}'.",
+                    "Ensure the loaded judge model remains pinned throughout the run.",
+                )
+
+            readout = adapter.parse_response(resp, pass_mode=pass_mode)
+            if readout.state == "length_stop":
+                length_stop_count += 1
+            elif readout.state == "unparseable":
+                unparseable_count += 1
+            else:
+                parsed_count += 1
+
+            calls_so_far += 1
+            bad_calls = unparseable_count + length_stop_count
+            will_halt_error_rate = calls_so_far >= error_rate_min_calls and (bad_calls / calls_so_far) > error_rate_stop
+
+            call_id = f"{spec.judge_id}:{pass_mode}:{entry.slot_index:04d}:{item.item_id}:{entry.order}"
+            top5_dicts = [lp.to_dict() for lp in readout.verdict_top_logprobs[:5]]
+            top20_source = resp.verdict_top_logprobs[:20] if resp.verdict_top_logprobs else readout.verdict_top_logprobs[:20]
+            top20_dicts = [lp.to_dict() for lp in top20_source]
+
+            receipt_payload = {
+                "arm": spec.judge_id,
+                "prompt": call_id,
+                "prompt_sha256": prompt.prompt_sha256,
+                "model_digest": resp.model_digest,
+                "tokens": list(resp.tokens),
+                "top": top5_dicts,
+                "done_reason": readout.done_reason,
+            }
+            receipt_sha256 = hashlib.sha256(
+                _canonical_json_line(receipt_payload).encode("utf-8")
+            ).hexdigest()
+
+            pins_with_determinism = dict(resp.library_pins)
+            pins_with_determinism.setdefault("dtype", effective_dtype)
+            pins_with_determinism.setdefault(
+                "cublas_workspace_config",
+                os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
+            )
+            pins_with_determinism.setdefault("deterministic_algorithms", det_status)
+
+            gen_obj: dict[str, Any] = {
+                "arm": spec.judge_id,
+                "prompt": call_id,
+                "item_id": item.item_id,
+                "order": entry.order,
+                "pass_mode": pass_mode,
+                "prompt_sha256": prompt.prompt_sha256,
+                "model_digest": resp.model_digest,
+                "tokens": list(resp.tokens),
+                "top": top5_dicts,
+                "top_20": top20_dicts,
+                "done_reason": readout.done_reason,
+                "server_binary": resp.server_binary,
+                "library_pins": pins_with_determinism,
+                "polarity_map": polarity_map,
+                "hop1_line_index": hop1_idx,
+                "hop2_line_index": hop2_idx,
+                "marker_line_index": marker_idx,
+                "receipt_sha256": receipt_sha256,
+            }
+            gf.write(_canonical_json_line(gen_obj) + "\n")
+            gf.flush()
+
+            row_obj: dict[str, Any] = {
+                "judge_id": spec.judge_id,
+                "judge_label": spec.judge_label,
+                "item_id": item.item_id,
+                "order": entry.order,
+                "pass_number": entry.pass_number,
+                "slot_index": entry.slot_index,
+                "pass_mode": pass_mode,
+                "model_revision": spec.revision,
+                "model_digest": resp.model_digest,
+                "prompt_sha256": prompt.prompt_sha256,
+                "done_reason": readout.done_reason,
+                "state": readout.state,
+                "raw_generation": resp.raw_text,
+                "raw_verdict": readout.raw_verdict,
+                "confidence": round(readout.p_yes, 6) if readout.p_yes is not None else None,
+                "choice_probabilities": readout.choice_probabilities,
+                "top_logprobs": top5_dicts,
+                "top_20_logprobs": top20_dicts,
+                "polarity_map": polarity_map,
+                "hop1_line_index": hop1_idx,
+                "hop2_line_index": hop2_idx,
+                "marker_line_index": marker_idx,
+                "seconds": round(elapsed, 6),
+                "vram_peak_mib": call_vram_peak,
+                "receipt_sha256": receipt_sha256,
+            }
+            if will_halt_error_rate:
+                row_obj["run_status"] = "failed_to_run"
+                row_obj["partial_counts"] = {
+                    "calls_count": calls_so_far,
+                    "parsed_count": parsed_count,
+                    "unparseable_count": unparseable_count,
+                    "length_stop_count": length_stop_count,
+                }
+            rf.write(_canonical_json_line(row_obj) + "\n")
+            rf.flush()
+
+            if will_halt_error_rate:
+                raise refused_error(
+                    "BAKEOFF_JUDGE_ERROR_RATE_STOP",
+                    f"Stop rule triggered for '{spec.judge_id}': unparseable ({unparseable_count}) + length_stop "
+                    f"({length_stop_count}) = {bad_calls}/{calls_so_far} ({bad_calls / calls_so_far:.1%}) > {error_rate_stop:.1%}.",
+                    "Inspect prompt formatting and max_new_tokens settings before continuing.",
+                )
+
+    canary_summary: dict[str, Any] | None = None
+    if canary_start_records is not None:
+        canary_end_records = _run_canary_snapshot(
+            spec=spec,
+            adapter=adapter,
+            transport=transport,
+            canary_items=canary_items,
+            pass_mode=pass_mode,
+            seed=schedule.seed,
+        )
+        canary_summary = _compare_canary_snapshots(
+            canary_start_records,
+            canary_end_records,
+            judge_id=spec.judge_id,
+            logprob_tolerance=canary_tol,
+        )
 
     return {
         "status": "ok",
@@ -2909,8 +3572,11 @@ def run_bakeoff_judge(
         "revision": spec.revision,
         "model_digest": verified_digest,
         "pass_mode": pass_mode,
+        "dtype": effective_dtype,
+        "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
+        "deterministic_algorithms": det_status,
         "items_count": len(items),
-        "calls_count": len(row_lines),
+        "calls_count": calls_so_far,
         "parsed_count": parsed_count,
         "unparseable_count": unparseable_count,
         "length_stop_count": length_stop_count,
@@ -2918,6 +3584,7 @@ def run_bakeoff_judge(
         "total_seconds": round(total_seconds, 4),
         "schedule_seed": schedule.seed,
         "schedule_sha256": schedule.schedule_sha256,
+        "canary": canary_summary,
         "rows_path": str(row_path),
         "generations_path": str(gen_path),
     }
