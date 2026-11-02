@@ -2284,6 +2284,112 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
     assert outcome_prefix["outcome"] == "ok"
 
 
+def test_stop_poll_config_clamps_zero_and_refuses_non_integer(
+    tmp_path: Path,
+) -> None:
+    """Verify `RDLAB_STOP_POLL_MAX_READS=0` clamps to 1 read (failing a session that persists)
+    and non-integer `RDLAB_STOP_POLL_MAX_READS` or `RDLAB_STOP_POLL_SLEEP_SECONDS` refuses with
+    `BAD_STOP_POLL_CONFIG` before any session is opened.
+    """
+    wsl_launch = _to_wsl_path(LAUNCH_JUDGES_SH)
+
+    # 1. RDLAB_STOP_POLL_MAX_READS=0 clamps to 1 read and still fails when session persists after stop
+    env_zero = fake_colab.setup_fake_colab_environment(
+        tmp_path / "max_reads_zero", neighbour_sessions=[]
+    )
+    out_zero = tmp_path / "out_max_reads_zero"
+    cmd_zero = (
+        f"export PATH='{_to_wsl_path(env_zero['fake_bin'])}:{_to_wsl_path(env_zero['sentinel_bin'])}':\"$PATH\"; "
+        f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_zero['state_dir'])}'; "
+        f"export COLAB_LOCK_DIR='{_to_wsl_path(env_zero['colab_locks_dir'])}'; "
+        f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'zero.lock')}'; "
+        f"export RDLAB_STOP_POLL_MAX_READS=0; "
+        f"export RDLAB_STOP_POLL_SLEEP_SECONDS=-5; "
+        f"export FAKE_COLAB_STOP_LAG_READS=1; "
+        f"bash '{wsl_launch}' --session-smoke --out-dir '{_to_wsl_path(out_zero)}' --run-id clamp-zero-01"
+    )
+    proc_zero = subprocess.run(
+        ["bash", "-c", cmd_zero],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_zero.returncode == 1
+    cli_log_zero = (out_zero / "colab-cli.log").read_text(encoding="utf-8")
+    assert "attempt=1/1" in cli_log_zero
+    outcome_zero = json.loads(
+        (out_zero / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_zero["outcome"] == "failed"
+    assert (
+        "session rdlab-clamp-zero-01 still present after colab stop (1 reads; rows_seen=[rdlab-clamp-zero-01])"
+        in outcome_zero["why"]
+    )
+
+    # 2. Upper-bound clamping: MAX_READS=99 clamps to 10, SLEEP_SECONDS=99 clamps to 30
+    env_cap = fake_colab.setup_fake_colab_environment(
+        tmp_path / "max_reads_cap", neighbour_sessions=[]
+    )
+    out_cap = tmp_path / "out_max_reads_cap"
+    cmd_cap = (
+        f"export PATH='{_to_wsl_path(env_cap['fake_bin'])}:{_to_wsl_path(env_cap['sentinel_bin'])}':\"$PATH\"; "
+        f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_cap['state_dir'])}'; "
+        f"export COLAB_LOCK_DIR='{_to_wsl_path(env_cap['colab_locks_dir'])}'; "
+        f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'cap.lock')}'; "
+        f"export RDLAB_STOP_POLL_MAX_READS=99; "
+        f"export RDLAB_STOP_POLL_SLEEP_SECONDS=99; "
+        f"bash '{wsl_launch}' --session-smoke --out-dir '{_to_wsl_path(out_cap)}' --run-id clamp-cap-01"
+    )
+    proc_cap = subprocess.run(
+        ["bash", "-c", cmd_cap],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_cap.returncode == 0
+    cli_log_cap = (out_cap / "colab-cli.log").read_text(encoding="utf-8")
+    assert "attempt=1/10" in cli_log_cap
+
+    # 3. Non-integer RDLAB_STOP_POLL_MAX_READS and non-integer RDLAB_STOP_POLL_SLEEP_SECONDS each refuse with BAD_STOP_POLL_CONFIG before any session is opened
+    for idx, bad_env in enumerate(
+        (
+            "export RDLAB_STOP_POLL_MAX_READS='abc';",
+            "export RDLAB_STOP_POLL_MAX_READS='2.5';",
+            "export RDLAB_STOP_POLL_SLEEP_SECONDS='fast';",
+            "export RDLAB_STOP_POLL_SLEEP_SECONDS='0.5';",
+        )
+    ):
+        env_bad = fake_colab.setup_fake_colab_environment(
+            tmp_path / f"bad_poll_{idx}", neighbour_sessions=[]
+        )
+        out_bad = tmp_path / f"out_bad_poll_{idx}"
+        cmd_bad = (
+            f"export PATH='{_to_wsl_path(env_bad['fake_bin'])}:{_to_wsl_path(env_bad['sentinel_bin'])}':\"$PATH\"; "
+            f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_bad['state_dir'])}'; "
+            f"export COLAB_LOCK_DIR='{_to_wsl_path(env_bad['colab_locks_dir'])}'; "
+            f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / f'bad_{idx}.lock')}'; "
+            f"{bad_env} "
+            f"bash '{wsl_launch}' --session-smoke --out-dir '{_to_wsl_path(out_bad)}' --run-id bad-poll-{idx}"
+        )
+        proc_bad = subprocess.run(
+            ["bash", "-c", cmd_bad],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert proc_bad.returncode == 2
+        assert "BAD_STOP_POLL_CONFIG" in proc_bad.stderr
+        assert not env_bad["calls_log"].exists() or (
+            env_bad["calls_log"].read_text(encoding="utf-8").strip() == ""
+        )
+
+
 def test_real_service_assumptions_weights_table_matches_receipts(
     tmp_path: Path,
 ) -> None:
@@ -2543,8 +2649,11 @@ def test_gate_checks_disk_at_run_hf_home(tmp_path: Path) -> None:
 def test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_run_fails(
     tmp_path: Path,
 ) -> None:
-    """Failing-first regression test: at 6243174e, a stale `step='gate'` status.json passed the run status check;
-    after the fix, `verify_run_status_file` and `launch_judges.sh` reject it as `stale_status`.
+    """Failing-first regression test: load the real `6243174e` code (`scripts/colab/vm_judges.py`
+    and `scripts/colab/launch_judges.sh`) via `git show 6243174e:...` to show that `6243174e`
+    had no `verify_run_status_file` in `vm_judges.py` and its status check in `launch_judges.sh`
+    accepted a `step='gate'` `status.json` (allowing a crashed `run` step to pass the status check at `6243174e`),
+    whereas head rejects `step='gate'` as `stale_status`.
     """
     stale_gate_status = tmp_path / "stale_gate_status.json"
     stale_gate_status.write_text(
@@ -2562,22 +2671,90 @@ def test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_ru
         newline="\n",
     )
 
-    # 1. Show 6243174e's status checker logic accepted `step="gate"` with `rc=0` and `status="ok"`
-    def _legacy_6243174e_status_check(status_path: Path) -> tuple[int, str]:
-        data = json.loads(status_path.read_text(encoding="utf-8"))
-        rc = data.get("rc")
-        status = str(data.get("status") or "")
-        step = str(data.get("step") or "unknown")
-        reason = str(data.get("reason") or "")
-        if not isinstance(rc, int) or rc != 0 or status not in ("ok", "passed"):
-            return (rc if isinstance(rc, int) and 1 <= rc <= 255 else 2), f"{step}|{rc}|{reason}"
-        return 0, f"{step}|0|{reason}"
+    # 1. Load real `6243174e:scripts/colab/vm_judges.py` and `6243174e:scripts/colab/launch_judges.sh` via `git show`
+    old_commit = "6243174ef48418228e1a925677bee63291eeb686"
+    if (
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit}^{{commit}}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        ).returncode
+        != 0
+    ):
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "fetch", "--depth=10", "origin", old_commit],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    old_vm_src = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "show", "6243174e:scripts/colab/vm_judges.py"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    ).stdout
+    old_vm_py = tmp_path / "vm_judges_6243174e.py"
+    old_vm_py.write_text(old_vm_src, encoding="utf-8", newline="\n")
 
-    legacy_rc, legacy_msg = _legacy_6243174e_status_check(stale_gate_status)
-    assert legacy_rc == 0
-    assert legacy_msg == "gate|0|VM_GATE_OK"
+    old_vm_ns: dict[str, Any] = {"__name__": "vm_judges_6243174e"}
+    exec(compile(old_vm_src, str(old_vm_py), "exec"), old_vm_ns)
+    assert "verify_run_status_file" not in old_vm_ns
 
-    # 2. Fixed `vm_judges.verify_run_status_file` rejects `step="gate"` (and any non-completed-run step)
+    # Run the real `6243174e` `write_vm_status_file` for `step="gate"` and verify what it writes
+    old_vm_ns["write_vm_status_file"](
+        stale_gate_status,
+        step="gate",
+        rc=0,
+        reason="VM_GATE_OK",
+        status="ok",
+    )
+
+    old_launch_src = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "show", "6243174e:scripts/colab/launch_judges.sh"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    ).stdout
+    old_launch_sh = tmp_path / "scripts" / "colab" / "launch_judges_6243174e.sh"
+    old_launch_sh.parent.mkdir(parents=True, exist_ok=True)
+    old_launch_sh.write_text(
+        old_launch_src.replace(
+            'REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"',
+            f'REPO_ROOT="{_to_wsl_path(REPO_ROOT)}"',
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    # Extract the real status-checker block from `6243174e:scripts/colab/launch_judges.sh` and run it against `step="gate"`
+    marker_start = 'STATUS_CHECK_OUT="$("$PYTHON_BIN" - "$OUT_DIR/status.json" <<\'PY\'\n'
+    marker_end = "\nPY\n)"
+    assert marker_start in old_launch_src
+    checker_body = old_launch_src.split(marker_start, 1)[1].split(marker_end, 1)[0]
+    old_checker_py = tmp_path / "status_checker_6243174e.py"
+    old_checker_py.write_text(checker_body + "\n", encoding="utf-8", newline="\n")
+
+    proc_old_checker = subprocess.run(
+        [sys.executable, str(old_checker_py), str(stale_gate_status)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert proc_old_checker.returncode == 0
+    assert proc_old_checker.stdout.strip() == "gate|0|VM_GATE_OK"
+
+    # 2. Fixed `vm_judges.verify_run_status_file` at head rejects `step="gate"` (and any non-completed-run step)
     fixed_rc, fixed_msg = vm_judges.verify_run_status_file(stale_gate_status)
     assert fixed_rc == 2
     assert fixed_msg == "stale_status|step=gate|rc=0|VM_GATE_OK"
@@ -2600,14 +2777,50 @@ def test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_ru
     assert ok_rc == 0
     assert ok_msg == "build_allowlisted_result_tar|0|ok"
 
-    # 3. End-to-end launcher test: run cell crashes before writing its own status.json (leaving gate's status.json)
-    env_crash = fake_colab.setup_fake_colab_environment(
-        tmp_path / "env_crash_run", neighbour_sessions=[]
-    )
+    # 3. End-to-end launcher comparison: when run cell crashes before writing its own status.json
+    #    (leaving gate's status.json on the VM), the real `6243174e` launcher accepts the stale gate
+    #    status (`STATUS_CHECK_RC=0`), whereas head rejects it with `rc == 2` and `stale_status|step=gate|rc=0|VM_GATE_OK`.
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
         tmp_path / "crash_data"
     )
     items_file = _make_synthetic_public_items(tmp_path / "crash_data", count=4)
+
+    env_old_crash = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_old_crash", neighbour_sessions=[]
+    )
+    out_old_crash = tmp_path / "out_old_crash"
+    exports_old_crash = _base_launcher_exports(
+        env_old_crash,
+        open_lock=tmp_path / "old_crash.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_old_crash = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_old_crash} export RDLAB_VM_SCRIPT='{_to_wsl_path(old_vm_py)}'; "
+            f"export FAKE_COLAB_CRASH_RUN_BEFORE_STATUS=1; "
+            f"bash '{_to_wsl_path(old_launch_sh)}' --stub --out-dir '{_to_wsl_path(out_old_crash)}' --run-id old-crash-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    outcome_old_crash = json.loads(
+        (out_old_crash / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    # At 6243174e, the status check passed on the stale gate status (it did NOT fail on status.json; it only failed later on missing result.tar.gz)
+    assert proc_old_crash.returncode == 1
+    assert outcome_old_crash["why"] == "result.tar.gz missing after VM run"
+    assert "status.json" not in outcome_old_crash["why"]
+
+    env_crash = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_crash_run", neighbour_sessions=[]
+    )
     out_crash = tmp_path / "out_crash_run"
     exports_crash = _base_launcher_exports(
         env_crash,
@@ -2677,6 +2890,22 @@ def test_real_service_assumptions_doc_table_and_line_citations(
     stub_rows = [ln for ln in table_rows if "**Left for the stub**" in ln]
     assert len(enforced_rows) == 10
     assert len(stub_rows) == 10
+
+    # Verify the "Known test hooks in production code" section and its required hooks
+    assert "## Known test hooks in production code" in text
+    hooks_section = text.split("## Known test hooks in production code", 1)[1]
+    for required_hook in (
+        "FAKE_COLAB_STATE_DIR",
+        "RDLAB_COLAB_IS_FAKE",
+        "_detect_is_fake_cli",
+        "RDLAB_TEST_PLANT_LOG_LEAK",
+        "VM_DRYRUN",
+        "RDLAB_VM_CONTENT_DIR",
+        "RDLAB_VM_SCRIPT",
+    ):
+        assert required_hook in hooks_section, (
+            f"Missing {required_hook!r} in Known test hooks section"
+        )
 
     # Verify every `path:line` or `path:start-end` citation in REAL_SERVICE_ASSUMPTIONS.md is valid
     citations = re.findall(

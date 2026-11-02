@@ -169,6 +169,27 @@ if [[ "$OUT_DIR" == *"/content/drive"* ]] || [[ "$OUT_DIR" == *"/gdrive"* ]]; th
   exit 2
 fi
 
+STOP_POLL_MAX_READS="${RDLAB_STOP_POLL_MAX_READS:-3}"
+STOP_POLL_SLEEP_SECONDS="${RDLAB_STOP_POLL_SLEEP_SECONDS:-5}"
+if [[ ! "$STOP_POLL_MAX_READS" =~ ^-?[0-9]+$ ]]; then
+  echo "BAD_STOP_POLL_CONFIG: RDLAB_STOP_POLL_MAX_READS must be an integer, got '$STOP_POLL_MAX_READS'" >&2
+  exit 2
+fi
+if [[ ! "$STOP_POLL_SLEEP_SECONDS" =~ ^-?[0-9]+$ ]]; then
+  echo "BAD_STOP_POLL_CONFIG: RDLAB_STOP_POLL_SLEEP_SECONDS must be an integer, got '$STOP_POLL_SLEEP_SECONDS'" >&2
+  exit 2
+fi
+if (( STOP_POLL_MAX_READS < 1 )); then
+  STOP_POLL_MAX_READS=1
+elif (( STOP_POLL_MAX_READS > 10 )); then
+  STOP_POLL_MAX_READS=10
+fi
+if (( STOP_POLL_SLEEP_SECONDS < 0 )); then
+  STOP_POLL_SLEEP_SECONDS=0
+elif (( STOP_POLL_SLEEP_SECONDS > 30 )); then
+  STOP_POLL_SLEEP_SECONDS=30
+fi
+
 WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
 if [[ -n "$EXPLICIT_CAP" ]]; then
   CAP_UNITS="$EXPLICIT_CAP"
@@ -553,8 +574,6 @@ stop_all() {
     rm -f "$LOCK_DIR/$S.lock"
     STOPPED=1
     touch "$OUT_DIR/.rig_stopped"
-    STOP_POLL_MAX_READS="${RDLAB_STOP_POLL_MAX_READS:-3}"
-    STOP_POLL_SLEEP_SECONDS="${RDLAB_STOP_POLL_SLEEP_SECONDS:-5}"
     PRE_ORPHAN_COUNT="$(printf '%s\n' "$PRE_SESSIONS" | grep -Ec '^\[\?\]' || true)"
     STOP_POLL_ATTEMPT=0
     SESSION_STILL_PRESENT=0
