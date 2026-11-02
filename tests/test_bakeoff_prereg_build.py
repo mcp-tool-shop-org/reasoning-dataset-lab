@@ -631,15 +631,15 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
             "equivalence_status": "inconclusive",
         }
     ]
-    res_1 = select_winner(judges_1, pairs_1, precision_floor=0.90, recall_floor=0.50)
+    res_1 = select_winner(judges_1, pairs_1)
     assert res_1["winner"] == "mu-judge"
 
     # Case 2: Both superiority (holm_sign_flip_p < 0.05) and TOST (holm_tost_p < 0.05) fire -> marked practically_equivalent
-    # and treated as NOT separated for candidate selection; tie in precision broken by smaller model then lower median latency.
+    # and treated as NOT separated for candidate selection; within precision band and CB_TIE (< 0.01), tie broken by smaller model.
     judges_2 = [
         {
             "judge_id": "granite-guardian-4.1-8b",
-            "class_balanced_strict_accuracy": {"point": 0.86},
+            "class_balanced_strict_accuracy": {"point": 0.855},
             "screening_yes_precision": {"point": 0.94},
             "screening_yes_recall": {"point": 0.60},
             "seconds_median": 0.05,
@@ -661,25 +661,25 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
             "equivalence_status": "practically_equivalent",
         }
     ]
-    res_2 = select_winner(judges_2, pairs_2, precision_floor=0.90, recall_floor=0.50)
+    res_2 = select_winner(judges_2, pairs_2)
     assert "mu-judge" in res_2["candidate_set"]
     assert res_2["winner"] == "mu-judge"  # 4B < 8B smaller model tie-breaker
 
-    # Case 3: No candidate meets both precision >= 0.90 and recall >= 0.50 -> "no judge eligible"
+    # Case 3: No judge meets LCB floors (LCB precision < 0.86 and LCB recall < 0.45) -> "no_judge_eligible"
     judges_3 = [
         {
             "judge_id": "mu-judge",
             "class_balanced_strict_accuracy": {"point": 0.80},
-            "screening_yes_precision": {"point": 0.88},
-            "screening_yes_recall": {"point": 0.45},
+            "screening_yes_precision": {"point": 0.88, "lcb": 0.84},
+            "screening_yes_recall": {"point": 0.45, "lcb": 0.40},
             "seconds_median": 0.02,
         }
     ]
-    res_3 = select_winner(judges_3, [], precision_floor=0.90, recall_floor=0.50)
-    assert res_3["winner"] == "no judge eligible"
+    res_3 = select_winner(judges_3, [])
+    assert res_3["winner"] == "no_judge_eligible"
 
     # Empty judges list, scalar float metrics, and pairwise statistical helper edge cases
-    assert select_winner([], [])["winner"] == "no judge eligible"
+    assert select_winner([], [])["winner"] == "no_judge_eligible"
     res_scalar = select_winner(
         [
             {
@@ -1221,5 +1221,344 @@ def test_fix1_item7_logprob_mass_guard_refuses_non_pilot_40b_part(tmp_path: Path
     assert bakeoff_judge_score._infer_domain_from_key_obj({"triad_id": "T10-D-chillers-anchored-001"}) == "chillers"
     assert bakeoff_judge_score._infer_domain_from_key_obj({"value_set_id": "turbines/vs-1"}) == "turbines"
     assert 0.0 <= bakeoff_judge_score.exact_sign_flip_two_sided_p([1.0, 1.0, 1.0], max_exact_triads=1, mc_samples=50) <= 1.0
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Card 2026-11-02: Winner rule, floors first (7 required constructed-summary tests)
+# ---------------------------------------------------------------------------------------------------------------------
+def _ten_domains(default_recall: float = 0.65, overrides: dict[str, float] | None = None) -> dict[str, float]:
+    out = {f"dom_{i}": default_recall for i in range(10)}
+    if overrides:
+        out.update(overrides)
+    return out
+
+
+def test_winner_rule_spoiler_argon_counterexample() -> None:
+    """Spoiler (Argon's counterexample): high-CB ineligible judge A separated by Holm from eligible judge B -> B selected."""
+    judges = [
+        {
+            "judge_id": "judge-a",
+            "class_balanced_strict_accuracy": {"point": round((0.90 + 0.88 + 0.88) / 3.0, 6), "lcb": 0.86},
+            "screening_yes_precision": {"point": round(0.90 / (0.90 + 2.0 * 0.10), 6), "lcb": 0.78},
+            "screening_yes_recall": {"point": 0.90, "lcb": 0.86},
+            "screening_per_class_precision": {
+                "unsupported": round(0.90 / (0.90 + 2.0 * 0.10), 6),
+                "cannot_tell": round(0.90 / (0.90 + 2.0 * 0.10), 6),
+            },
+            "screening_domain_recall": _ten_domains(0.90),
+            "seconds_median": 0.03,
+        },
+        {
+            "judge_id": "judge-b",
+            "class_balanced_strict_accuracy": {"point": round((0.60 + 0.95 + 0.95) / 3.0, 6), "lcb": 0.80},
+            "screening_yes_precision": {"point": round(0.60 / (0.60 + 2.0 * 0.015), 6), "lcb": 0.92},
+            "screening_yes_recall": {"point": 0.60, "lcb": 0.55},
+            "screening_per_class_precision": {
+                "unsupported": round(0.60 / (0.60 + 2.0 * 0.015), 6),
+                "cannot_tell": round(0.60 / (0.60 + 2.0 * 0.015), 6),
+            },
+            "screening_domain_recall": _ten_domains(0.60),
+            "seconds_median": 0.03,
+        },
+    ]
+    pairs = [
+        {
+            "judge_a": "judge-a",
+            "judge_b": "judge-b",
+            "holm_sign_flip_p": 0.001,
+            "holm_tost_p": 0.80,
+            "equivalence_status": "separated",
+        }
+    ]
+    res = bakeoff_judge_score.select_bakeoff_winner(judges, pairs)
+    assert res["winner"] == "judge-b"
+    assert res["eligible_judges"] == ["judge-b"]
+    assert res["eligibility_by_judge"]["judge-a"]["eligible"] is False
+    assert res["eligibility_by_judge"]["judge-b"]["eligible"] is True
+
+
+def test_winner_rule_precision_band_prefers_higher_cb_accuracy() -> None:
+    """Band: two eligible candidates with precision 0.931 and 0.934 (within 0.015), CB 0.88 and 0.85 -> 0.88 judge selected."""
+    judges = [
+        {
+            "judge_id": "mu-judge",
+            "class_balanced_strict_accuracy": {"point": 0.88, "lcb": 0.85},
+            "screening_yes_precision": {"point": 0.931, "lcb": 0.90},
+            "screening_yes_recall": {"point": 0.70, "lcb": 0.64},
+            "screening_per_class_precision": {"unsupported": 0.931, "cannot_tell": 0.931},
+            "screening_domain_recall": _ten_domains(0.70),
+            "seconds_median": 0.04,
+        },
+        {
+            "judge_id": "granite-guardian-4.1-8b",
+            "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.934, "lcb": 0.90},
+            "screening_yes_recall": {"point": 0.70, "lcb": 0.64},
+            "screening_per_class_precision": {"unsupported": 0.934, "cannot_tell": 0.934},
+            "screening_domain_recall": _ten_domains(0.70),
+            "seconds_median": 0.04,
+        },
+        {
+            "judge_id": "flow-judge-v0.1",
+            "class_balanced_strict_accuracy": {"point": 0.78, "lcb": 0.74},
+            "screening_yes_precision": {"point": 0.96, "lcb": 0.92},
+            "screening_yes_recall": {"point": 0.60, "lcb": 0.54},
+            "screening_per_class_precision": {"unsupported": 0.96, "cannot_tell": 0.96},
+            "screening_domain_recall": _ten_domains(0.60),
+            "seconds_median": 0.01,
+        },
+    ]
+    pairs = [
+        {
+            "judge_a": "mu-judge",
+            "judge_b": "granite-guardian-4.1-8b",
+            "holm_sign_flip_p": 0.12,
+            "holm_tost_p": 0.25,
+            "equivalence_status": "inconclusive",
+        },
+        {
+            "judge_a": "mu-judge",
+            "judge_b": "flow-judge-v0.1",
+            "holm_sign_flip_p": 0.002,
+            "holm_tost_p": 0.80,
+            "equivalence_status": "separated",
+        },
+    ]
+    res = bakeoff_judge_score.select_bakeoff_winner(judges, pairs)
+    assert res["winner"] == "mu-judge"
+    assert res["eligible_judges"] == ["mu-judge", "granite-guardian-4.1-8b", "flow-judge-v0.1"]
+    assert res["candidate_set"] == ["mu-judge", "granite-guardian-4.1-8b"]
+    assert set(res["precision_tier"]) == {"mu-judge", "granite-guardian-4.1-8b"}
+
+
+def test_winner_rule_lcb_floor_rejects_wide_bootstrap_and_accepts_tight_bootstrap() -> None:
+    """LCB: point precision 0.90 with wide bootstrap (LCB < 0.86) is ineligible; point 0.895 with LCB >= 0.86 is eligible."""
+    judges = [
+        {
+            "judge_id": "wide-boot-judge",
+            "class_balanced_strict_accuracy": {"point": 0.86, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.90, "lcb": 0.84, "low": 0.82, "high": 0.96},
+            "screening_yes_recall": {"point": 0.65, "lcb": 0.58},
+            "screening_per_class_precision": {"unsupported": 0.90, "cannot_tell": 0.90},
+            "screening_domain_recall": _ten_domains(0.65),
+            "seconds_median": 0.03,
+        },
+        {
+            "judge_id": "tight-boot-judge",
+            "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.895, "lcb": 0.87, "low": 0.86, "high": 0.93},
+            "screening_yes_recall": {"point": 0.65, "lcb": 0.58},
+            "screening_per_class_precision": {"unsupported": 0.895, "cannot_tell": 0.895},
+            "screening_domain_recall": _ten_domains(0.65),
+            "seconds_median": 0.03,
+        },
+    ]
+    pairs = [
+        {
+            "judge_a": "wide-boot-judge",
+            "judge_b": "tight-boot-judge",
+            "holm_sign_flip_p": 0.30,
+            "holm_tost_p": 0.20,
+            "equivalence_status": "inconclusive",
+        }
+    ]
+    res = bakeoff_judge_score.select_bakeoff_winner(judges, pairs)
+    assert res["winner"] == "tight-boot-judge"
+    assert res["eligibility_by_judge"]["wide-boot-judge"]["eligible"] is False
+    assert res["eligibility_by_judge"]["wide-boot-judge"]["conditions"]["lcb_precision"] is False
+    assert res["eligibility_by_judge"]["tight-boot-judge"]["eligible"] is True
+    assert res["removed_by_condition"]["lcb_precision"] == 1
+
+
+def test_winner_rule_per_negative_class_precision_hand_worked_and_concentrated_fp() -> None:
+    """Per-class (hand-worked): TP=300, FP_unsupported=0, FP_cannot_tell=30 -> pooled 300/330=0.909, unsup=1.000, cannot_tell=300/360=0.833 < 0.85 -> ineligible."""
+    hand_worked_judge = {
+        "judge_id": "concentrated-fp-judge",
+        "class_balanced_strict_accuracy": {"point": 0.88, "lcb": 0.85},
+        "screening_yes_precision": {"point": round(300.0 / 330.0, 6), "lcb": 0.88},
+        "screening_yes_recall": {"point": round(300.0 / 420.0, 6), "lcb": 0.66},
+        "screening_tp": 300,
+        "screening_fp_by_class": {"unsupported": 0, "cannot_tell": 30},
+        "screening_domain_recall": _ten_domains(round(300.0 / 420.0, 6)),
+        "seconds_median": 0.02,
+    }
+    res_single = bakeoff_judge_score.select_bakeoff_winner([hand_worked_judge], [])
+    assert res_single["winner"] == "no_judge_eligible"
+    elig = res_single["eligibility_by_judge"]["concentrated-fp-judge"]
+    assert elig["eligible"] is False
+    assert elig["precision_point"] == pytest.approx(300.0 / 330.0, abs=1e-6)
+    assert elig["per_class_precision"]["unsupported"] == pytest.approx(1.0, abs=1e-6)
+    assert elig["per_class_precision"]["cannot_tell"] == pytest.approx(300.0 / 360.0, abs=1e-6)
+    assert elig["conditions"]["per_class_precision_unsupported"] is True
+    assert elig["conditions"]["per_class_precision_cannot_tell"] is False
+    assert res_single["removed_by_condition"]["per_class_precision_cannot_tell"] == 1
+
+    # Equal pooled FPR (total FP=30 -> 15 each), so both per-class precisions are 300/330 = 0.909 >= 0.85 -> eligible
+    balanced_fp_judge = {
+        **hand_worked_judge,
+        "judge_id": "balanced-fp-judge",
+        "class_balanced_strict_accuracy": {"point": 0.86, "lcb": 0.83},
+        "screening_fp_by_class": {"unsupported": 15, "cannot_tell": 15},
+    }
+    res_pair = bakeoff_judge_score.select_bakeoff_winner([hand_worked_judge, balanced_fp_judge], [])
+    assert res_pair["winner"] == "balanced-fp-judge"
+    assert bakeoff_judge_score.compute_per_negative_class_precision(0, 0) == 0.0
+
+
+def test_winner_rule_domain_coverage_requires_8_of_10_domains_at_least_025() -> None:
+    """Domain coverage: recall >= 0.50 overall but < 0.25 in 3 domains (only 7/10 pass) -> ineligible."""
+    dom_recalls = _ten_domains(0.75, overrides={"dom_0": 0.10, "dom_1": 0.20, "dom_2": 0.24})
+    judge = {
+        "judge_id": "domain-gap-judge",
+        "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
+        "screening_yes_precision": {"point": 0.93, "lcb": 0.89},
+        "screening_yes_recall": {"point": 0.581, "lcb": 0.52},
+        "screening_per_class_precision": {"unsupported": 0.93, "cannot_tell": 0.93},
+        "screening_domain_recall": dom_recalls,
+        "seconds_median": 0.02,
+    }
+    res = bakeoff_judge_score.select_bakeoff_winner([judge], [])
+    assert res["winner"] == "no_judge_eligible"
+    assert res["eligibility_by_judge"]["domain-gap-judge"]["eligible"] is False
+    assert res["eligibility_by_judge"]["domain-gap-judge"]["domains_passing_recall_floor"] == 7
+    assert res["eligibility_by_judge"]["domain-gap-judge"]["conditions"]["domain_coverage"] is False
+    assert res["removed_by_condition"]["domain_coverage"] == 1
+
+
+def test_winner_rule_no_judge_eligible_records_per_condition_removal_counts() -> None:
+    """No judge eligible: all fail -> no_judge_eligible with exact per-condition removal counts."""
+    judges = [
+        {
+            "judge_id": "fail-lcb-prec",
+            "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.91, "lcb": 0.84},
+            "screening_yes_recall": {"point": 0.65, "lcb": 0.55},
+            "screening_per_class_precision": {"unsupported": 0.91, "cannot_tell": 0.91},
+            "screening_domain_recall": _ten_domains(0.65),
+        },
+        {
+            "judge_id": "fail-lcb-rec",
+            "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.92, "lcb": 0.89},
+            "screening_yes_recall": {"point": 0.51, "lcb": 0.42},
+            "screening_per_class_precision": {"unsupported": 0.92, "cannot_tell": 0.92},
+            "screening_domain_recall": _ten_domains(0.51),
+        },
+        {
+            "judge_id": "fail-unsup-prec",
+            "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.909091, "lcb": 0.88},
+            "screening_yes_recall": {"point": 0.714286, "lcb": 0.66},
+            "screening_tp": 300,
+            "screening_fp_by_class": {"unsupported": 30, "cannot_tell": 0},
+            "screening_domain_recall": _ten_domains(0.714286),
+        },
+        {
+            "judge_id": "fail-ct-prec",
+            "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.909091, "lcb": 0.88},
+            "screening_yes_recall": {"point": 0.714286, "lcb": 0.66},
+            "screening_tp": 300,
+            "screening_fp_by_class": {"unsupported": 0, "cannot_tell": 30},
+            "screening_domain_recall": _ten_domains(0.714286),
+        },
+        {
+            "judge_id": "fail-domain-cov",
+            "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.93, "lcb": 0.89},
+            "screening_yes_recall": {"point": 0.55, "lcb": 0.49},
+            "screening_per_class_precision": {"unsupported": 0.93, "cannot_tell": 0.93},
+            "screening_domain_recall": _ten_domains(0.70, overrides={"dom_0": 0.10, "dom_1": 0.15, "dom_2": 0.20}),
+        },
+        {
+            "judge_id": "halted-judge",
+            "run_status": "failed_to_run",
+            "class_balanced_strict_accuracy": {"point": 0.99, "lcb": 0.99},
+            "screening_yes_precision": {"point": 0.99, "lcb": 0.99},
+            "screening_yes_recall": {"point": 0.99, "lcb": 0.99},
+        },
+    ]
+    res = bakeoff_judge_score.select_bakeoff_winner(judges, [])
+    assert res["winner"] == "no_judge_eligible"
+    assert res["eligible_judges"] == []
+    assert res["candidate_set"] == []
+    assert res["removed_by_condition"] == {
+        "lcb_precision": 1,
+        "lcb_recall": 1,
+        "per_class_precision_unsupported": 1,
+        "per_class_precision_cannot_tell": 1,
+        "domain_coverage": 1,
+        "failed_to_run": 1,
+    }
+
+
+def test_winner_rule_cb_tie_within_band_falls_to_params_then_latency() -> None:
+    """Ties: a CB difference < 0.01 inside the precision band falls to parameter count, then median latency."""
+    # 1. Parameter count tie-break: granite (8B, CB=0.858, prec=0.940) vs mu-judge (4B, CB=0.852, prec=0.935)
+    judges_params = [
+        {
+            "judge_id": "granite-guardian-4.1-8b",
+            "class_balanced_strict_accuracy": {"point": 0.858, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.940, "lcb": 0.90},
+            "screening_yes_recall": {"point": 0.68, "lcb": 0.62},
+            "screening_per_class_precision": {"unsupported": 0.940, "cannot_tell": 0.940},
+            "screening_domain_recall": _ten_domains(0.68),
+            "seconds_median": 0.01,
+        },
+        {
+            "judge_id": "mu-judge",
+            "class_balanced_strict_accuracy": {"point": 0.852, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.935, "lcb": 0.90},
+            "screening_yes_recall": {"point": 0.68, "lcb": 0.62},
+            "screening_per_class_precision": {"unsupported": 0.935, "cannot_tell": 0.935},
+            "screening_domain_recall": _ten_domains(0.68),
+            "seconds_median": 0.05,
+        },
+    ]
+    pairs_params = [
+        {
+            "judge_a": "granite-guardian-4.1-8b",
+            "judge_b": "mu-judge",
+            "holm_sign_flip_p": 0.25,
+            "holm_tost_p": 0.02,
+            "equivalence_status": "equivalent",
+        }
+    ]
+    res_params = bakeoff_judge_score.select_bakeoff_winner(judges_params, pairs_params)
+    assert res_params["winner"] == "mu-judge"
+
+    # 2. Latency tie-break when parameter count is equal (both 4.0B: mu-judge vs nemotron-3-nano-4b)
+    judges_latency = [
+        {
+            "judge_id": "mu-judge",
+            "class_balanced_strict_accuracy": {"point": 0.858, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.940, "lcb": 0.90},
+            "screening_yes_recall": {"point": 0.68, "lcb": 0.62},
+            "screening_per_class_precision": {"unsupported": 0.940, "cannot_tell": 0.940},
+            "screening_domain_recall": _ten_domains(0.68),
+            "seconds_median": 0.05,
+        },
+        {
+            "judge_id": "nemotron-3-nano-4b",
+            "class_balanced_strict_accuracy": {"point": 0.852, "lcb": 0.82},
+            "screening_yes_precision": {"point": 0.935, "lcb": 0.90},
+            "screening_yes_recall": {"point": 0.68, "lcb": 0.62},
+            "screening_per_class_precision": {"unsupported": 0.935, "cannot_tell": 0.935},
+            "screening_domain_recall": _ten_domains(0.68),
+            "seconds_median": 0.02,
+        },
+    ]
+    pairs_latency = [
+        {
+            "judge_a": "mu-judge",
+            "judge_b": "nemotron-3-nano-4b",
+            "holm_sign_flip_p": 0.25,
+            "holm_tost_p": 0.02,
+            "equivalence_status": "equivalent",
+        }
+    ]
+    res_latency = bakeoff_judge_score.select_bakeoff_winner(judges_latency, pairs_latency)
+    assert res_latency["winner"] == "nemotron-3-nano-4b"
+
 
 

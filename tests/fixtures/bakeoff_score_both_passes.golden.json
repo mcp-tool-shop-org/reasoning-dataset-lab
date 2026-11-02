@@ -28,6 +28,7 @@
         "calls_n": 24,
         "class_balanced_strict_accuracy": {
           "high": 0.916667,
+          "lcb": 0.666667,
           "low": 0.666667,
           "n": 12,
           "point": 0.75
@@ -86,15 +87,29 @@
         },
         "pred_yes_rate": 0.458333,
         "reliability_bins": [],
+        "screening_domain_recall": {
+          "unknown": 1.0
+        },
+        "screening_fp_by_class": {
+          "cannot_tell": 1,
+          "unsupported": 0
+        },
+        "screening_per_class_precision": {
+          "cannot_tell": 0.666667,
+          "unsupported": 1.0
+        },
         "screening_rule": "both_orders_yes_and_gate",
+        "screening_tp": 4,
         "screening_yes_precision": {
           "high": 1.0,
+          "lcb": 0.571429,
           "low": 0.571429,
           "n": 12,
           "point": 0.8
         },
         "screening_yes_recall": {
           "high": 1.0,
+          "lcb": 1.0,
           "low": 1.0,
           "n": 12,
           "point": 1.0
@@ -128,6 +143,7 @@
         "calls_n": 24,
         "class_balanced_strict_accuracy": {
           "high": 0.916667,
+          "lcb": 0.666667,
           "low": 0.666667,
           "n": 12,
           "point": 0.75
@@ -257,15 +273,29 @@
             "mean_confidence": null
           }
         ],
+        "screening_domain_recall": {
+          "unknown": 1.0
+        },
+        "screening_fp_by_class": {
+          "cannot_tell": 1,
+          "unsupported": 0
+        },
+        "screening_per_class_precision": {
+          "cannot_tell": 0.666667,
+          "unsupported": 1.0
+        },
         "screening_rule": "both_orders_yes_and_gate",
+        "screening_tp": 4,
         "screening_yes_precision": {
           "high": 1.0,
+          "lcb": 0.666667,
           "low": 0.571429,
           "n": 12,
           "point": 0.8
         },
         "screening_yes_recall": {
           "high": 1.0,
+          "lcb": 1.0,
           "low": 1.0,
           "n": 12,
           "point": 1.0
@@ -294,9 +324,12 @@
     "auroc": "AUROC of the mean of the two orders' P(yes): p_bar_i = 0.5 * (P_AB(yes) + P_BA(yes)) against binary ground truth (supported=1, not_supported=0); N/A for Flow-Judge",
     "invalid_output_rule": "an invalid output (unparseable or length_stop) scores P(yes) = 0.5 for AUROC and counts wrong for accuracy, and counts as a flip in flip_rate (strict_ceiling = 1 - flip_rate)",
     "p_yes": "yes-variant mass / (yes + no variant mass) from what is stored at the decision position (inverted for Granite Guardian; system_one noul readout for d3-mini)",
+    "per_negative_class_precision": "TP / (TP + 2*FP_c) for each negative class c in {unsupported, cannot_tell}, meaning the precision the judge would have if the other negative class failed as badly as this one (>= 0.85 point estimate)",
+    "screening_lcb": "one-sided 95% lower confidence bound (lcb = 5th percentile) of the domain-stratified triad bootstrap (10,000 resamples, seed 20261030) on AND-gate precision and recall (intersection-union, no multiplicity correction)",
     "tost_holm_adjusted_across_10_pairs": true,
     "tost_statistic": "paired triad-level TOST at +-SESOI (+-0.04) on triad strict-accuracy differences d_t = a_t - b_t using the unbiased sample variance estimator s_d^2 = (1/(T-1)) * sum((d_t - d_bar)^2) and SE = sqrt(s_d^2 / T)",
-    "tost_variance_estimator": "unbiased_paired_triad_sample_variance_ddof1"
+    "tost_variance_estimator": "unbiased_paired_triad_sample_variance_ddof1",
+    "winner_selection_rule": "floors first over all judges that ran (failed_to_run never eligible): LCB(precision) >= 0.86, LCB(recall) >= 0.45, per-negative-class precision TP / (TP + 2*FP_c) >= 0.85 for unsupported and cannot_tell, and AND-gate recall >= 0.25 in at least 8 of 10 domains; Holm candidate set formed among eligible judges only relative to highest class_balanced_strict_accuracy eligible judge B (including practically_equivalent pairs); within PRECISION_BAND = 0.015 of best candidate point precision, pick highest class_balanced_strict_accuracy (differences < CB_TIE = 0.01 are ties), then smaller parameter count, then lower median latency; otherwise no_judge_eligible"
   },
   "dev_fit": {
     "items_n": 6,
@@ -313,6 +346,7 @@
         "calls_n": 12,
         "class_balanced_strict_accuracy": {
           "high": 1.0,
+          "lcb": 0.666667,
           "low": 0.666667,
           "n": 6,
           "point": 0.833333
@@ -371,15 +405,29 @@
         },
         "pred_yes_rate": 0.333333,
         "reliability_bins": [],
+        "screening_domain_recall": {
+          "unknown": 1.0
+        },
+        "screening_fp_by_class": {
+          "cannot_tell": 0,
+          "unsupported": 0
+        },
+        "screening_per_class_precision": {
+          "cannot_tell": 1.0,
+          "unsupported": 1.0
+        },
         "screening_rule": "both_orders_yes_and_gate",
+        "screening_tp": 2,
         "screening_yes_precision": {
           "high": 1.0,
+          "lcb": 1.0,
           "low": 1.0,
           "n": 6,
           "point": 1.0
         },
         "screening_yes_recall": {
           "high": 1.0,
+          "lcb": 1.0,
           "low": 1.0,
           "n": 6,
           "point": 1.0
@@ -413,6 +461,7 @@
         "calls_n": 12,
         "class_balanced_strict_accuracy": {
           "high": 1.0,
+          "lcb": 0.666667,
           "low": 0.666667,
           "n": 6,
           "point": 0.833333
@@ -542,15 +591,29 @@
             "mean_confidence": null
           }
         ],
+        "screening_domain_recall": {
+          "unknown": 1.0
+        },
+        "screening_fp_by_class": {
+          "cannot_tell": 0,
+          "unsupported": 0
+        },
+        "screening_per_class_precision": {
+          "cannot_tell": 1.0,
+          "unsupported": 1.0
+        },
         "screening_rule": "both_orders_yes_and_gate",
+        "screening_tp": 2,
         "screening_yes_precision": {
           "high": 1.0,
+          "lcb": 1.0,
           "low": 1.0,
           "n": 6,
           "point": 1.0
         },
         "screening_yes_recall": {
           "high": 1.0,
+          "lcb": 1.0,
           "low": 1.0,
           "n": 6,
           "point": 1.0
@@ -719,6 +782,7 @@
       "calls_n": 24,
       "class_balanced_strict_accuracy": {
         "high": 0.916667,
+        "lcb": 0.666667,
         "low": 0.666667,
         "n": 12,
         "point": 0.75
@@ -777,15 +841,29 @@
       },
       "pred_yes_rate": 0.458333,
       "reliability_bins": [],
+      "screening_domain_recall": {
+        "unknown": 1.0
+      },
+      "screening_fp_by_class": {
+        "cannot_tell": 1,
+        "unsupported": 0
+      },
+      "screening_per_class_precision": {
+        "cannot_tell": 0.666667,
+        "unsupported": 1.0
+      },
       "screening_rule": "both_orders_yes_and_gate",
+      "screening_tp": 4,
       "screening_yes_precision": {
         "high": 1.0,
+        "lcb": 0.571429,
         "low": 0.571429,
         "n": 12,
         "point": 0.8
       },
       "screening_yes_recall": {
         "high": 1.0,
+        "lcb": 1.0,
         "low": 1.0,
         "n": 12,
         "point": 1.0
@@ -819,6 +897,7 @@
       "calls_n": 24,
       "class_balanced_strict_accuracy": {
         "high": 0.916667,
+        "lcb": 0.666667,
         "low": 0.666667,
         "n": 12,
         "point": 0.75
@@ -948,15 +1027,29 @@
           "mean_confidence": null
         }
       ],
+      "screening_domain_recall": {
+        "unknown": 1.0
+      },
+      "screening_fp_by_class": {
+        "cannot_tell": 1,
+        "unsupported": 0
+      },
+      "screening_per_class_precision": {
+        "cannot_tell": 0.666667,
+        "unsupported": 1.0
+      },
       "screening_rule": "both_orders_yes_and_gate",
+      "screening_tp": 4,
       "screening_yes_precision": {
         "high": 1.0,
+        "lcb": 0.666667,
         "low": 0.571429,
         "n": 12,
         "point": 0.8
       },
       "screening_yes_recall": {
         "high": 1.0,
+        "lcb": 1.0,
         "low": 1.0,
         "n": 12,
         "point": 1.0
@@ -985,6 +1078,7 @@
       "d_ab": 0.0,
       "diff_bootstrap_ci": {
         "high": 0.0,
+        "lcb": 0.0,
         "low": 0.0,
         "n": 12,
         "point": 0.0
@@ -1106,6 +1200,7 @@
         "calls_n": 12,
         "class_balanced_strict_accuracy": {
           "high": 0.666667,
+          "lcb": 0.666667,
           "low": 0.666667,
           "n": 6,
           "point": 0.666667
@@ -1164,15 +1259,29 @@
         },
         "pred_yes_rate": 0.583333,
         "reliability_bins": [],
+        "screening_domain_recall": {
+          "unknown": 1.0
+        },
+        "screening_fp_by_class": {
+          "cannot_tell": 1,
+          "unsupported": 0
+        },
+        "screening_per_class_precision": {
+          "cannot_tell": 0.5,
+          "unsupported": 1.0
+        },
         "screening_rule": "both_orders_yes_and_gate",
+        "screening_tp": 2,
         "screening_yes_precision": {
           "high": 1.0,
+          "lcb": 0.5,
           "low": 0.5,
           "n": 6,
           "point": 0.666667
         },
         "screening_yes_recall": {
           "high": 1.0,
+          "lcb": 1.0,
           "low": 1.0,
           "n": 6,
           "point": 1.0
@@ -1206,6 +1315,7 @@
         "calls_n": 12,
         "class_balanced_strict_accuracy": {
           "high": 0.666667,
+          "lcb": 0.666667,
           "low": 0.666667,
           "n": 6,
           "point": 0.666667
@@ -1335,15 +1445,29 @@
             "mean_confidence": null
           }
         ],
+        "screening_domain_recall": {
+          "unknown": 1.0
+        },
+        "screening_fp_by_class": {
+          "cannot_tell": 1,
+          "unsupported": 0
+        },
+        "screening_per_class_precision": {
+          "cannot_tell": 0.5,
+          "unsupported": 1.0
+        },
         "screening_rule": "both_orders_yes_and_gate",
+        "screening_tp": 2,
         "screening_yes_precision": {
           "high": 1.0,
+          "lcb": 0.5,
           "low": 0.5,
           "n": 6,
           "point": 0.666667
         },
         "screening_yes_recall": {
           "high": 1.0,
+          "lcb": 1.0,
           "low": 1.0,
           "n": 6,
           "point": 1.0
@@ -1417,15 +1541,97 @@
     }
   },
   "winner_selection": {
-    "best_judge": "flow-judge-v0.1",
-    "candidate_set": [
-      "flow-judge-v0.1",
-      "mu-judge"
-    ],
+    "best_eligible_judge": null,
+    "best_judge": null,
+    "candidate_set": [],
+    "cb_tie": 0.01,
+    "cb_top_tier": [],
+    "domain_coverage_min": 8,
+    "domain_recall_floor": 0.25,
+    "eligibility_by_judge": {
+      "flow-judge-v0.1": {
+        "conditions": {
+          "domain_coverage": false,
+          "lcb_precision": false,
+          "lcb_recall": true,
+          "not_failed_to_run": true,
+          "per_class_precision_cannot_tell": false,
+          "per_class_precision_unsupported": true
+        },
+        "domains_passing_recall_floor": 1,
+        "domains_total": 1,
+        "eligible": false,
+        "failed_conditions": [
+          "lcb_precision",
+          "per_class_precision_cannot_tell",
+          "domain_coverage"
+        ],
+        "failed_to_run": false,
+        "judge_id": "flow-judge-v0.1",
+        "passed_conditions": [
+          "lcb_recall",
+          "per_class_precision_unsupported",
+          "not_failed_to_run"
+        ],
+        "per_class_precision": {
+          "cannot_tell": 0.666667,
+          "unsupported": 1.0
+        },
+        "precision_lcb": 0.571429,
+        "precision_point": 0.8,
+        "recall_lcb": 1.0,
+        "recall_point": 1.0
+      },
+      "mu-judge": {
+        "conditions": {
+          "domain_coverage": false,
+          "lcb_precision": false,
+          "lcb_recall": true,
+          "not_failed_to_run": true,
+          "per_class_precision_cannot_tell": false,
+          "per_class_precision_unsupported": true
+        },
+        "domains_passing_recall_floor": 1,
+        "domains_total": 1,
+        "eligible": false,
+        "failed_conditions": [
+          "lcb_precision",
+          "per_class_precision_cannot_tell",
+          "domain_coverage"
+        ],
+        "failed_to_run": false,
+        "judge_id": "mu-judge",
+        "passed_conditions": [
+          "lcb_recall",
+          "per_class_precision_unsupported",
+          "not_failed_to_run"
+        ],
+        "per_class_precision": {
+          "cannot_tell": 0.666667,
+          "unsupported": 1.0
+        },
+        "precision_lcb": 0.666667,
+        "precision_point": 0.8,
+        "recall_lcb": 1.0,
+        "recall_point": 1.0
+      }
+    },
     "eligible_candidates": [],
+    "eligible_judges": [],
+    "per_class_precision_floor": 0.85,
     "practically_equivalent_pairs": [],
-    "precision_floor": 0.9,
-    "recall_floor": 0.5,
-    "winner": "no judge eligible"
+    "precision_band": 0.015,
+    "precision_lcb_floor": 0.86,
+    "precision_tier": [],
+    "recall_lcb_floor": 0.45,
+    "removed_by_condition": {
+      "domain_coverage": 2,
+      "failed_to_run": 0,
+      "lcb_precision": 2,
+      "lcb_recall": 0,
+      "per_class_precision_cannot_tell": 2,
+      "per_class_precision_unsupported": 0
+    },
+    "winner": "no_judge_eligible"
   }
 }
