@@ -1,0 +1,72 @@
+{
+ "files": {
+  ".gitattributes": {
+   "bytes": 1519,
+   "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361"
+  },
+  "README.md": {
+   "bytes": 28113,
+   "sha256": "b8d7ae89ebac9ce04dfb5389b04fb76a8659fe521b8ee5d4ec8126f7d871efa8"
+  },
+  "chat_template.jinja": {
+   "bytes": 6099,
+   "sha256": "fed2756d2d24e127b951dcf139d0b03ab7db8ef23a456128ebc9c2db4901d476"
+  },
+  "config.json": {
+   "bytes": 804,
+   "sha256": "b01471824b394683b560a19b4ad9d6f236a852187605285c784bb12056844711"
+  },
+  "generation_config.json": {
+   "bytes": 147,
+   "sha256": "2a2a7b5027af1a88613c77f4d09f54824ba55a74e65a2647b5aec6c13c07c81f"
+  },
+  "merges.txt": {
+   "bytes": 916646,
+   "sha256": "b6fe424e334903f7fb84d3a106d9730455f4744b9fe3c21ee136d97a00e72502"
+  },
+  "model-00001-of-00004.safetensors": {
+   "bytes": 4995591048,
+   "sha256": "3e86d76012837843bca528e55eba3e6d9d272ec2b7f0125a101eda2d4c426913"
+  },
+  "model-00002-of-00004.safetensors": {
+   "bytes": 4991447808,
+   "sha256": "d767e1fdc433da8cc6004480494d247a051c92e42dfed0d5d16a4aa1eb6e4e4d"
+  },
+  "model-00003-of-00004.safetensors": {
+   "bytes": 4970460032,
+   "sha256": "5e38424223c61de3338fcc75fdee43e7b935b613e9605d952d1a87c3ce9c6212"
+  },
+  "model-00004-of-00004.safetensors": {
+   "bytes": 1803645576,
+   "sha256": "36510c58b890dfa132426bf6d47e72d5ac2c759c9c8e7526db8183c08108582d"
+  },
+  "model.safetensors.index.json": {
+   "bytes": 29836,
+   "sha256": "03a117cc17f992592c673b6deb9e3c023707cd658c59b41d2135a2882c28d4db"
+  },
+  "model.sig": {
+   "bytes": 11265,
+   "sha256": "a17c17aadc26c1af89e1d326a5b9f38b5df6e5e0388f14c66f454355e80fea1b"
+  },
+  "special_tokens_map.json": {
+   "bytes": 579,
+   "sha256": "c08676c49fd7969a3130f72be6d4bf34da66aa484a6e21dffe359893a1bd5f2e"
+  },
+  "tokenizer.json": {
+   "bytes": 7153421,
+   "sha256": "e2bad66439538cb4d5a7580680932432ed9ece9d3b8577e675512bdf11599253"
+  },
+  "tokenizer_config.json": {
+   "bytes": 17693,
+   "sha256": "f1da9cc34387f40fcffff71074520b079772209c30d79756f66140cd7d0bf04e"
+  },
+  "vocab.json": {
+   "bytes": 1612704,
+   "sha256": "8af71076de8b0b626eed0f4c984faf0a7c062479164b2a31308a948524d4f69c"
+  }
+ },
+ "repo": "ibm-granite/granite-guardian-4.1-8b",
+ "revision": "ab01ccca5dcfb80246369a086a4a87a29198f5af",
+ "seconds": 264.8,
+ "total_bytes": 16770923290
+}

@@ -169,6 +169,37 @@ if [[ "$OUT_DIR" == *"/content/drive"* ]] || [[ "$OUT_DIR" == *"/gdrive"* ]]; th
   exit 2
 fi
 
+STOP_POLL_MAX_READS="${RDLAB_STOP_POLL_MAX_READS-3}"
+STOP_POLL_SLEEP_SECONDS="${RDLAB_STOP_POLL_SLEEP_SECONDS-5}"
+if [[ "$STOP_POLL_MAX_READS" == *$'\n'* || ! "$STOP_POLL_MAX_READS" =~ ^-?[0123456789]{1,9}$ ]]; then
+  echo "BAD_STOP_POLL_CONFIG: RDLAB_STOP_POLL_MAX_READS must be an integer, got '$STOP_POLL_MAX_READS'" >&2
+  exit 2
+fi
+if [[ "$STOP_POLL_SLEEP_SECONDS" == *$'\n'* || ! "$STOP_POLL_SLEEP_SECONDS" =~ ^-?[0123456789]{1,9}$ ]]; then
+  echo "BAD_STOP_POLL_CONFIG: RDLAB_STOP_POLL_SLEEP_SECONDS must be an integer, got '$STOP_POLL_SLEEP_SECONDS'" >&2
+  exit 2
+fi
+if [[ "$STOP_POLL_MAX_READS" == -* ]]; then
+  STOP_POLL_MAX_READS=$(( -10#${STOP_POLL_MAX_READS#-} ))
+else
+  STOP_POLL_MAX_READS=$(( 10#$STOP_POLL_MAX_READS ))
+fi
+if [[ "$STOP_POLL_SLEEP_SECONDS" == -* ]]; then
+  STOP_POLL_SLEEP_SECONDS=$(( -10#${STOP_POLL_SLEEP_SECONDS#-} ))
+else
+  STOP_POLL_SLEEP_SECONDS=$(( 10#$STOP_POLL_SLEEP_SECONDS ))
+fi
+if (( STOP_POLL_MAX_READS < 1 )); then
+  STOP_POLL_MAX_READS=1
+elif (( STOP_POLL_MAX_READS > 10 )); then
+  STOP_POLL_MAX_READS=10
+fi
+if (( STOP_POLL_SLEEP_SECONDS < 0 )); then
+  STOP_POLL_SLEEP_SECONDS=0
+elif (( STOP_POLL_SLEEP_SECONDS > 30 )); then
+  STOP_POLL_SLEEP_SECONDS=30
+fi
+
 WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
 if [[ -n "$EXPLICIT_CAP" ]]; then
   CAP_UNITS="$EXPLICIT_CAP"
@@ -197,6 +228,15 @@ EFFECTIVE_RESUME=0
 if [[ "$RESUME_FLAG" -eq 1 ]] || [[ -f "$OUT_DIR/schedule.json" ]]; then
   EFFECTIVE_RESUME=1
 fi
+
+build_gate_env_args() {
+  GATE_ENV_ARGS=(
+    --env "RDLAB_STEP=gate"
+  )
+  if [[ -n "${HF_HOME:-}" ]]; then
+    GATE_ENV_ARGS+=(--env "HF_HOME=$HF_HOME")
+  fi
+}
 
 build_exec_env_args() {
   local j_sha="${RDLAB_JUDGE_LOCK_SHA256:-$EXPECTED_JUDGE_LOCK_SHA256}"
@@ -266,6 +306,8 @@ PY
   if [[ "${#COLAB_NEW_FLAGS[@]}" -gt 0 ]]; then
     DRY_NEW_OPTS=" ${COLAB_NEW_FLAGS[*]}"
   fi
+  build_gate_env_args
+  DRY_GATE_ENV_STR="${GATE_ENV_ARGS[*]}"
   build_exec_env_args
   DRY_ENV_STR="${EXEC_ENV_ARGS[*]}"
 
@@ -273,7 +315,7 @@ PY
     printf 'colab sessions\n'
     printf 'colab new%s -s %s\n' "$DRY_NEW_OPTS" "$SESSION_NAME"
     printf 'colab sessions\n'
-    printf 'colab exec -s %s --env RDLAB_STEP=gate -f %s --timeout=%s\n' "$SESSION_NAME" "$VM_SCRIPT" "$GATE_TIMEOUT_SECONDS"
+    printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_GATE_ENV_STR" "$VM_SCRIPT" "$GATE_TIMEOUT_SECONDS"
     printf 'colab upload -s %s %s /content/repo_bundle.tar.gz\n' "$SESSION_NAME" "$REPO_TAR"
     printf 'colab upload -s %s %s /content/receipts_bundle.tar.gz\n' "$SESSION_NAME" "$RECEIPTS_TAR"
     printf 'colab upload -s %s %s /content/rdlab_items/items.jsonl\n' "$SESSION_NAME" "$STAGED_ITEMS_FILE"
@@ -542,11 +584,42 @@ stop_all() {
     rm -f "$LOCK_DIR/$S.lock"
     STOPPED=1
     touch "$OUT_DIR/.rig_stopped"
-    POST_SESSIONS="$(run_colab sessions </dev/null || true)"
-    log_msg "SESSIONS_AFTER_STOP session=$S"
-    if printf '%s\n' "$POST_SESSIONS" | grep -q "^\[$S\]"; then
+    PRE_ORPHAN_COUNT="$(printf '%s\n' "$PRE_SESSIONS" | grep -Ec '^\[\?\]' || true)"
+    STOP_POLL_ATTEMPT=0
+    SESSION_STILL_PRESENT=0
+    ORPHAN_STILL_PRESENT=0
+    while [[ "$STOP_POLL_ATTEMPT" -lt "$STOP_POLL_MAX_READS" ]]; do
+      STOP_POLL_ATTEMPT=$(( STOP_POLL_ATTEMPT + 1 ))
+      POST_SESSIONS="$(run_colab sessions </dev/null || true)"
+      log_msg "SESSIONS_AFTER_STOP session=$S attempt=${STOP_POLL_ATTEMPT}/${STOP_POLL_MAX_READS}"
+      SESSION_STILL_PRESENT=0
+      ORPHAN_STILL_PRESENT=0
+      if printf '%s\n' "$POST_SESSIONS" | grep -q "^\[$S\]"; then
+        SESSION_STILL_PRESENT=1
+      else
+        POST_ORPHAN_COUNT="$(printf '%s\n' "$POST_SESSIONS" | grep -Ec '^\[\?\]' || true)"
+        if [[ "$POST_ORPHAN_COUNT" -gt "$PRE_ORPHAN_COUNT" ]]; then
+          ORPHAN_STILL_PRESENT=1
+        fi
+      fi
+      if [[ "$SESSION_STILL_PRESENT" -eq 0 ]] && [[ "$ORPHAN_STILL_PRESENT" -eq 0 ]]; then
+        break
+      fi
+      if [[ "$STOP_POLL_ATTEMPT" -lt "$STOP_POLL_MAX_READS" ]]; then
+        sleep "$STOP_POLL_SLEEP_SECONDS"
+      fi
+    done
+    if [[ "$SESSION_STILL_PRESENT" -eq 1 ]] || [[ "$ORPHAN_STILL_PRESENT" -eq 1 ]]; then
+      SEEN_SESSION_IDS="$(printf '%s\n' "$POST_SESSIONS" | sed -nE 's/^\[([^]]+)\][[:space:]].*/[\1]/p' | grep -vx '\[colab\]' | paste -sd, - || true)"
+      if [[ -z "$SEEN_SESSION_IDS" ]]; then
+        SEEN_SESSION_IDS="none"
+      fi
       RUN_OUTCOME="failed"
-      RUN_WHY="session $S still present after colab stop"
+      if [[ "$SESSION_STILL_PRESENT" -eq 1 ]]; then
+        RUN_WHY="session $S still present after colab stop (${STOP_POLL_ATTEMPT} reads; rows_seen=${SEEN_SESSION_IDS})"
+      else
+        RUN_WHY="session $S still present as [?] on server after colab stop (${STOP_POLL_ATTEMPT} reads; rows_seen=${SEEN_SESSION_IDS})"
+      fi
       exit_code=1
     fi
   elif [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]]; then
@@ -788,14 +861,22 @@ if ! printf '%s\n' "$MID_SESSIONS" | grep -q "^\[$S\]"; then
   exit 1
 fi
 
-GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=gate -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || {
+build_gate_env_args
+GATE_RC=0
+GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
+if [[ "$GATE_RC" -ne 0 ]] || ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
   flock -u 9 || true
-  RUN_WHY="VM liveness gate failed on session $S"
-  exit 1
-}
-if ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
-  flock -u 9 || true
-  RUN_WHY="VM liveness gate did not print VM_GATE_OK on session $S"
+  if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH'; then
+    GATE_REASON="$(printf '%s\n' "$GATE_OUT" | grep -m1 -E 'VM_DISK_INSUFFICIENT|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH' || true)"
+    RUN_WHY="VM gate refused on session $S: $GATE_REASON"
+    printf '%s\n' "$GATE_REASON" >&2
+    exit 2
+  fi
+  if [[ "$GATE_RC" -ne 0 ]]; then
+    RUN_WHY="VM liveness gate failed on session $S"
+  else
+    RUN_WHY="VM liveness gate did not print VM_GATE_OK on session $S"
+  fi
   exit 1
 fi
 flock -u 9 || true
@@ -819,11 +900,23 @@ rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$OUT_DIR/.rig
 ) </dev/null >/dev/null 2>&1 9>&- &
 WATCHDOG_PID="$!"
 
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
+timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  RUN_WHY="colab upload failed for /content/repo_bundle.tar.gz on session $S"
+  exit 1
+}
+timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  RUN_WHY="colab upload failed for /content/receipts_bundle.tar.gz on session $S"
+  exit 1
+}
+timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  RUN_WHY="colab upload failed for /content/rdlab_items/items.jsonl on session $S"
+  exit 1
+}
 if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
+  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    RUN_WHY="colab upload failed for /content/resume_state.tar.gz on session $S"
+    exit 1
+  }
 fi
 cleanup_stage
 
@@ -858,37 +951,28 @@ fi
 
 STATUS_CHECK_OUT=""
 STATUS_CHECK_RC=0
-STATUS_CHECK_OUT="$("$PYTHON_BIN" - "$OUT_DIR/status.json" <<'PY'
-import json
+STATUS_CHECK_OUT="$("$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR/status.json" <<'PY'
 import sys
 from pathlib import Path
 
-status_path = Path(sys.argv[1])
-try:
-    data = json.loads(status_path.read_text(encoding="utf-8"))
-except Exception as exc:
-    print(f"invalid_json|{type(exc).__name__}")
-    raise SystemExit(2)
+repo_root = Path(sys.argv[1])
+status_path = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
 
-if not isinstance(data, dict):
-    print("invalid_payload|not_a_dict")
-    raise SystemExit(2)
-
-step = str(data.get("step") or "unknown")
-rc = data.get("rc")
-reason = str(data.get("reason") or "")
-if not isinstance(rc, int) or isinstance(rc, bool):
-    print(f"{step}|invalid_rc|{reason}")
-    raise SystemExit(2)
-
-print(f"{step}|{rc}|{reason}")
+rc, msg = vm_judges.verify_run_status_file(status_path)
+print(msg)
 if rc != 0:
-    raise SystemExit(rc if 1 <= rc <= 255 else 2)
+    raise SystemExit(rc)
 PY
 )" || STATUS_CHECK_RC=$?
 
 if [[ "$STATUS_CHECK_RC" -ne 0 ]]; then
-  RUN_WHY="VM status.json reported failure (${STATUS_CHECK_OUT})"
+  if [[ "$STATUS_CHECK_OUT" == stale_status\|* ]]; then
+    RUN_WHY="VM status.json is stale (${STATUS_CHECK_OUT})"
+  else
+    RUN_WHY="VM status.json reported failure (${STATUS_CHECK_OUT})"
+  fi
   exit "$STATUS_CHECK_RC"
 fi
 

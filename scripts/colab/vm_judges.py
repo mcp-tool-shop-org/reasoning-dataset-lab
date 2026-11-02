@@ -46,6 +46,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
+DEFAULT_CONTENT_DIR = Path("/content")
+DEFAULT_ITEMS_DIR = Path("/content/rdlab_items")
 DEFAULT_REPO_DIR = Path("/content/rdlab")
 DEFAULT_SCHEDULE_SEED = 20261030
 DEFAULT_VRAM_HALT_MIB = 26_000
@@ -56,6 +58,34 @@ SCHEDULE_FILENAME = "schedule.json"
 GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
 ROWS_DIRNAME = "rows"
+
+# Disk preflight constants for the 5 bake-off judges and 2 CPython 3.15 venvs:
+# - Weights total (sum of `total_bytes` across the 5 `<owner>__<repo>.sha256.json` receipts):
+#   7,644,593,918 + 16,770,923,290 + 7,964,584,688 + 7,964,239,519 + 9,107,255,624 = 49,451,597,039 bytes (46.06 GiB)
+# - Rig download time across the 5 receipts: 123.9 + 264.8 + 130.1 + 128.5 + 150.1 = 797.4 s (797 s)
+# - Venvs compressed wheel/sdist sums:
+#   `judge.lock.txt` (54 packages) = 2,779,391,889 bytes (2.59 GiB)
+#   `d3.lock.txt`    (55 packages) = 2,779,228,374 bytes (2.59 GiB)
+#   Combined compressed wheels     = 5,558,620,263 bytes (5.18 GiB)
+# - Installed size estimate (2.0x compressed wheels covering unpacked site-packages + wheel cache):
+#   2 * 5,558,620,263 = 11,117,240,526 bytes (10.35 GiB)
+# - Required free disk with 15% safety margin:
+#   ceil((49,451,597,039 + 11,117,240,526) * 1.15) = ceil(60,568,837,565 * 1.15) = 69,654,163,200 bytes (64.87 GiB)
+EXPECTED_WEIGHTS_TOTAL_BYTES = 49_451_597_039
+EXPECTED_WEIGHTS_DOWNLOAD_SECONDS = 797.4
+VENV_JUDGE_WHEEL_BYTES = 2_779_391_889
+VENV_D3_WHEEL_BYTES = 2_779_228_374
+VENV_UNPACK_MULTIPLIER = 2
+VENVS_ESTIMATED_BYTES = (
+    VENV_JUDGE_WHEEL_BYTES + VENV_D3_WHEEL_BYTES
+) * VENV_UNPACK_MULTIPLIER
+DISK_PREFLIGHT_MARGIN_NUMERATOR = 115
+DISK_PREFLIGHT_MARGIN_DENOMINATOR = 100
+REQUIRED_VM_DISK_BYTES = (
+    (EXPECTED_WEIGHTS_TOTAL_BYTES + VENVS_ESTIMATED_BYTES)
+    * DISK_PREFLIGHT_MARGIN_NUMERATOR
+    + (DISK_PREFLIGHT_MARGIN_DENOMINATOR - 1)
+) // DISK_PREFLIGHT_MARGIN_DENOMINATOR
 
 ALLOWED_ITEM_FIELDS: frozenset[str] = frozenset({"id", "material", "claim"})
 REQUIRED_ITEM_FIELDS_ORDERED: tuple[str, str, str] = ("id", "material", "claim")
@@ -68,6 +98,16 @@ check_d3_mini_remote_code_gate: Any = None
 check_remote_code_gate: Any = None
 run_bakeoff_judge: Any = None
 verify_snapshot_against_receipt: Any = None
+
+
+def resolve_content_dir(content_dir: Path | None = None) -> Path:
+    """Resolve the VM `/content` directory (or `RDLAB_VM_CONTENT_DIR` under the test fake)."""
+    if content_dir is not None:
+        return Path(content_dir)
+    env_content = os.environ.get("RDLAB_VM_CONTENT_DIR", "").strip()
+    if env_content:
+        return Path(env_content)
+    return DEFAULT_CONTENT_DIR
 
 
 def resolve_repo_dir(repo_dir: Path | None = None) -> Path:
@@ -1416,6 +1456,185 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(effective_argv)
 
 
+def _existing_ancestor(path: Path) -> Path:
+    """Return `path` or its nearest existing ancestor directory for `shutil.disk_usage`."""
+    cur = Path(path)
+    while not cur.exists():
+        parent = cur.parent
+        if parent == cur:
+            break
+        cur = parent
+    return cur
+
+
+def _query_free_disk_bytes(path: Path) -> int:
+    """Query free disk bytes on `path` via `shutil.disk_usage`."""
+    ensure_not_drive_path(path)
+    target = _existing_ancestor(Path(path))
+    usage = shutil.disk_usage(target)
+    return int(usage.free)
+
+
+def compute_required_vm_disk_bytes() -> dict[str, int]:
+    """Compute required free bytes from `EXPECTED_WEIGHTS_TOTAL_BYTES` (matched to receipts), venvs estimate, and 15% margin."""
+    weights_bytes = EXPECTED_WEIGHTS_TOTAL_BYTES
+    subtotal = weights_bytes + VENVS_ESTIMATED_BYTES
+    required = (
+        subtotal * DISK_PREFLIGHT_MARGIN_NUMERATOR
+        + (DISK_PREFLIGHT_MARGIN_DENOMINATOR - 1)
+    ) // DISK_PREFLIGHT_MARGIN_DENOMINATOR
+    return {
+        "weights_total_bytes": weights_bytes,
+        "venvs_estimated_bytes": VENVS_ESTIMATED_BYTES,
+        "subtotal_bytes": subtotal,
+        "required_bytes": required,
+    }
+
+
+def check_vm_disk_preflight(
+    content_dir: Path | None = None,
+    hf_home: Path | None = None,
+) -> dict[str, int]:
+    """Check free space on `/content` and `hf_home`; refuse with `VM_DISK_INSUFFICIENT` if below required."""
+    eff_content = resolve_content_dir(content_dir)
+    eff_hf_home = Path(hf_home) if hf_home is not None else eff_content / "hf_home"
+    ensure_not_drive_path(eff_content)
+    ensure_not_drive_path(eff_hf_home)
+
+    req_info = compute_required_vm_disk_bytes()
+    required_bytes = req_info["required_bytes"]
+    content_free = _query_free_disk_bytes(eff_content)
+    hf_free = _query_free_disk_bytes(eff_hf_home)
+
+    if content_free < required_bytes or hf_free < required_bytes:
+        raise RefusalError(
+            "VM_DISK_INSUFFICIENT",
+            f"free disk below required {required_bytes} bytes "
+            f"(weights={req_info['weights_total_bytes']} + venvs={req_info['venvs_estimated_bytes']} + 15% margin): "
+            f"content_free_bytes={content_free}, hf_home_free_bytes={hf_free}",
+        )
+    return {
+        **req_info,
+        "content_free_bytes": content_free,
+        "hf_home_free_bytes": hf_free,
+    }
+
+
+def _resolve_vm_path(path: Path | None, content_dir: Path, default_rel: str) -> Path:
+    """Resolve a VM path relative to `content_dir` when `/content` is redirected by `RDLAB_VM_CONTENT_DIR`."""
+    if path is None:
+        return content_dir / default_rel
+    raw = str(path).replace("\\", "/")
+    if content_dir != DEFAULT_CONTENT_DIR:
+        if raw == "/content":
+            return content_dir
+        if raw.startswith("/content/") and not raw.startswith("/content/drive"):
+            return content_dir / raw.removeprefix("/content/")
+    return Path(path)
+
+
+VALID_COMPLETED_RUN_STEPS: frozenset[str] = frozenset(
+    {"run", "build_allowlisted_result_tar"}
+)
+
+
+def verify_run_status_file(status_path: Path) -> tuple[int, str]:
+    """Verify downloaded `status.json` from the VM run step, rejecting `step=gate` (or any non-run step) as stale."""
+    try:
+        data = json.loads(Path(status_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        return 2, f"invalid_json|{type(exc).__name__}"
+
+    if not isinstance(data, dict):
+        return 2, "invalid_payload|not_a_dict"
+
+    step = str(data.get("step") or "unknown")
+    rc = data.get("rc")
+    reason = str(data.get("reason") or "")
+    if not isinstance(rc, int) or isinstance(rc, bool):
+        return 2, f"{step}|invalid_rc|{reason}"
+
+    if step == "gate" or (rc == 0 and step not in VALID_COMPLETED_RUN_STEPS):
+        return 2, f"stale_status|step={step}|rc={rc}|{reason}"
+
+    if rc != 0:
+        return (rc if 1 <= rc <= 255 else 2), f"{step}|{rc}|{reason}"
+
+    return 0, f"{step}|0|{reason}"
+
+
+def run_gate(args: argparse.Namespace) -> int:
+    """Execute the pre-upload VM gate: create `/content/rdlab_items/`, check disk preflight, and write `status.json`."""
+    import platform
+
+    content_dir = resolve_content_dir()
+    items_dir = content_dir / "rdlab_items"
+    items_file = _resolve_vm_path(
+        args.items_file, content_dir, "rdlab_items/items.jsonl"
+    )
+    items_parent = items_file.parent
+    hf_home = _resolve_vm_path(args.hf_home, content_dir, "hf_home")
+
+    try:
+        for p in (content_dir, items_dir, items_parent, hf_home):
+            ensure_not_drive_path(p)
+        if args.status_file is not None:
+            ensure_not_drive_path(args.status_file)
+
+        if items_dir.exists() and not items_dir.is_dir():
+            raise RefusalError(
+                "VM_ITEMS_DIR_UNAVAILABLE",
+                f"Cannot create VM items directory '{items_dir}': path exists and is not a directory",
+            )
+        try:
+            items_dir.mkdir(parents=True, exist_ok=True)
+            if items_parent != items_dir:
+                items_parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RefusalError(
+                "VM_ITEMS_DIR_UNAVAILABLE",
+                f"Cannot create VM items directory '{items_dir}': {exc.strerror or exc}",
+            ) from exc
+
+        disk_report = check_vm_disk_preflight(
+            content_dir=content_dir,
+            hf_home=hf_home,
+        )
+    except RefusalError as err:
+        if args.status_file is not None:
+            try:
+                write_vm_status_file(
+                    args.status_file,
+                    step="gate",
+                    rc=2,
+                    reason=f"{err.failure_class}: {err.detail}",
+                    status="refused",
+                    failure_class=err.failure_class,
+                )
+            except OSError:
+                pass
+        sys.stderr.write(f"{err.failure_class}: {scrub_log_text(err.detail)}\n")
+        return 2
+
+    if args.status_file is not None:
+        write_vm_status_file(
+            args.status_file,
+            step="gate",
+            rc=0,
+            reason="VM_GATE_OK",
+            status="ok",
+        )
+    print(
+        f"VM_GATE_OK {platform.platform()} "
+        f"items_dir={DEFAULT_ITEMS_DIR.as_posix()} "
+        f"content_free_bytes={disk_report['content_free_bytes']} "
+        f"hf_home_free_bytes={disk_report['hf_home_free_bytes']} "
+        f"required_bytes={disk_report['required_bytes']}",
+        flush=True,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         args = parse_args(argv)
@@ -1434,18 +1653,7 @@ def main(argv: list[str] | None = None) -> int:
         return rc_val
 
     if args.step == "gate":
-        import platform
-
-        if args.status_file is not None:
-            write_vm_status_file(
-                args.status_file,
-                step="gate",
-                rc=0,
-                reason="VM_GATE_OK",
-                status="ok",
-            )
-        print(f"VM_GATE_OK {platform.platform()}", flush=True)
-        return 0
+        return run_gate(args)
 
     for p in (
         args.repo_dir,
