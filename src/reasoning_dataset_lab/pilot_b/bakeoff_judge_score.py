@@ -70,6 +70,7 @@ from statistics import NormalDist
 from typing import Any
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error
+from reasoning_dataset_lab.pilot_b.anchored_two_hop import ANCHORED_ELIGIBLE_DOMAINS
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     BAKEOFF_JUDGE_SPECS,
     GENERATIONS_FILENAME,
@@ -96,6 +97,14 @@ CB_TIE = 0.01
 NEGATIVE_CLASSES: tuple[str, str] = ("unsupported", "cannot_tell")
 NO_JUDGE_ELIGIBLE = "no_judge_eligible"
 _STD_NORMAL = NormalDist()
+_MISSING_REGISTERED_DOMAINS: Any = object()
+_ANCHORED_VALUE_SET_PREFIX = "anchored-two-hop/all-domains [anchored_two_hop "
+_EQ_STATUS_BY_P_FLAGS: dict[tuple[bool, bool], str] = {
+    (True, True): "practically_equivalent",
+    (True, False): "separated",
+    (False, True): "equivalent",
+    (False, False): "inconclusive",
+}
 
 PREREG_DEFINITIONS: dict[str, Any] = {
     "auroc": (
@@ -897,10 +906,47 @@ def compute_per_negative_class_precision(tp: int | float, fp_c: int | float) -> 
     return round(tp_f / denom, 6)
 
 
+def _coerce_finite_float(val: Any) -> float | None:
+    if val is None or isinstance(val, bool):
+        return None
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(num):
+        return None
+    return num
+
+
+def _resolve_registered_domains_for_part(
+    keys_by_id: Mapping[str, SealedKeyRecord],
+) -> tuple[str, ...]:
+    """Compute the sorted domain set of all items in the part's keys once.
+
+    When the part is the anchored counted part (construction `anchored-two-hop`), that set must equal
+    `ANCHORED_ELIGIBLE_DOMAINS`, or the scorer refuses.
+    """
+    domains_in_keys = tuple(sorted({rec.domain for rec in keys_by_id.values()}))
+    is_anchored_counted = any(
+        rec.value_set_id.startswith(_ANCHORED_VALUE_SET_PREFIX) for rec in keys_by_id.values()
+    )
+    if is_anchored_counted:
+        expected_domains = tuple(sorted(ANCHORED_ELIGIBLE_DOMAINS))
+        if domains_in_keys != expected_domains:
+            raise refused_error(
+                "BAKEOFF_SCORE_REGISTERED_DOMAINS_MISMATCH",
+                f"Anchored counted part key domains {list(domains_in_keys)} do not equal "
+                f"ANCHORED_ELIGIBLE_DOMAINS {list(expected_domains)}.",
+                "Ensure keys.sealed.jsonl for the anchored counted part covers all 10 ANCHORED_ELIGIBLE_DOMAINS.",
+            )
+    return domains_in_keys
+
+
 def select_bakeoff_winner(
     judges: Sequence[Mapping[str, Any]],
     pairwise_comparisons: Sequence[Mapping[str, Any]],
     *,
+    registered_domains: Sequence[str] = _MISSING_REGISTERED_DOMAINS,
     precision_lcb_floor: float = PRECISION_LCB_FLOOR,
     recall_lcb_floor: float = RECALL_LCB_FLOOR,
     per_class_precision_floor: float = PER_CLASS_PRECISION_FLOOR,
@@ -909,7 +955,7 @@ def select_bakeoff_winner(
     precision_band: float = PRECISION_BAND,
     cb_tie: float = CB_TIE,
 ) -> dict[str, Any]:
-    """Select the bake-off winner with eligibility floors decided first (Card 2026-11-02).
+    """Select the bake-off winner with eligibility floors decided first and no lenient paths (Card 2026-11-02).
 
     Rule:
     1. Eligibility (decided first, over all judges that ran; `failed_to_run` judges are never eligible):
@@ -921,7 +967,7 @@ def select_bakeoff_winner(
          `c in {unsupported, cannot_tell}`, where per-negative-class precision stays `TP / (TP + 2*FP_c)`, meaning the
          precision the judge would have if the other negative class failed as badly as this one.
        - Domain coverage: AND-gate recall `>= DOMAIN_RECALL_FLOOR = 0.25` in at least `DOMAIN_COVERAGE_MIN = 8` of the
-         10 domains (point estimates per domain).
+         registered domains (point estimates per domain; key set must equal `registered_domains` exactly).
     2. Candidate set (among eligible judges only): let `B` be the eligible judge with the highest
        `class_balanced_strict_accuracy`. Candidates are eligible judges not separated from `B` by the Holm-adjusted
        sign-flip test (`holm_sign_flip_p >= 0.05`), plus those `practically_equivalent` to `B` (both superiority
@@ -935,6 +981,22 @@ def select_bakeoff_winner(
        removed by each condition (`lcb_precision`, `lcb_recall`, `per_class_precision_unsupported`,
        `per_class_precision_cannot_tell`, `domain_coverage`, `failed_to_run`).
     """
+    if (
+        registered_domains is _MISSING_REGISTERED_DOMAINS
+        or not isinstance(registered_domains, Sequence)
+        or isinstance(registered_domains, (str, bytes))
+        or len(registered_domains) == 0
+        or any(not isinstance(d, str) or not d.strip() for d in registered_domains)
+        or len(set(registered_domains)) != len(registered_domains)
+    ):
+        raise refused_error(
+            "BAKEOFF_WINNER_MISSING_REGISTERED_DOMAINS",
+            "select_bakeoff_winner requires a non-empty sequence of unique registered domain names in 'registered_domains'.",
+            "Pass registered_domains=<sorted domain sequence> explicitly to select_bakeoff_winner.",
+        )
+    expected_domain_set = set(registered_domains)
+    registered_domains_sorted = tuple(sorted(expected_domain_set))
+
     removed_by_condition: dict[str, int] = {
         "lcb_precision": 0,
         "lcb_recall": 0,
@@ -965,148 +1027,259 @@ def select_bakeoff_winner(
             "cb_tie": cb_tie,
         }
 
-    def _extract_point(val: Any) -> float:
-        if isinstance(val, Mapping):
-            pt = val.get("point")
-            return 0.0 if pt is None else float(pt)
-        return 0.0 if val is None else float(val)
+    def _require_judge_id(j: Mapping[str, Any]) -> str:
+        raw_jid = j.get("judge_id")
+        if not isinstance(raw_jid, str) or not raw_jid.strip():
+            raise refused_error(
+                "BAKEOFF_WINNER_INVALID_JUDGE_ID",
+                f"Judge summary is missing a non-empty string 'judge_id' (got {raw_jid!r}).",
+                "Provide a valid non-empty 'judge_id' on every judge summary.",
+            )
+        return raw_jid.strip()
+
+    def _require_params_b(jid: str) -> float:
+        if jid not in MODEL_PARAM_BILLIONS_BY_JUDGE:
+            raise refused_error(
+                "BAKEOFF_WINNER_UNKNOWN_JUDGE_ID",
+                f"Judge '{jid}' is not in MODEL_PARAM_BILLIONS_BY_JUDGE ({sorted(MODEL_PARAM_BILLIONS_BY_JUDGE)}).",
+                "Use a registered judge_id from MODEL_PARAM_BILLIONS_BY_JUDGE.",
+            )
+        return float(MODEL_PARAM_BILLIONS_BY_JUDGE[jid])
+
+    def _extract_point(val: Any, *, judge_id: str, field_name: str) -> float:
+        raw_pt = val.get("point") if isinstance(val, Mapping) else val
+        num = _coerce_finite_float(raw_pt)
+        if num is None:
+            raise refused_error(
+                "BAKEOFF_WINNER_MISSING_METRIC_POINT",
+                f"Judge '{judge_id}' has missing or non-numeric point value in '{field_name}'.",
+                f"Provide an explicit finite numeric value (or mapping with numeric 'point') for '{field_name}'.",
+            )
+        return num
 
     def _extract_lcb(val: Any, *, judge_id: str, field_name: str) -> float:
-        if not isinstance(val, Mapping) or val.get("lcb") is None:
+        num = _coerce_finite_float(val.get("lcb") if isinstance(val, Mapping) else None)
+        if num is None:
             raise refused_error(
                 "BAKEOFF_WINNER_MISSING_LCB",
                 f"Judge '{judge_id}' is missing required 'lcb' in '{field_name}'.",
                 f"Include an explicit numeric 'lcb' (5th-percentile bootstrap lower confidence bound) in '{field_name}'; "
                 "winner selection never falls back to 'low' or 'point'.",
             )
-        return float(val["lcb"])
+        return num
 
-    def _cb_acc(j: Mapping[str, Any]) -> float:
-        return _extract_point(j.get("class_balanced_strict_accuracy"))
+    def _cb_acc(j: Mapping[str, Any], *, judge_id: str) -> float:
+        return _extract_point(
+            j.get("class_balanced_strict_accuracy"),
+            judge_id=judge_id,
+            field_name="class_balanced_strict_accuracy",
+        )
 
-    def _yes_prec_point(j: Mapping[str, Any]) -> float:
-        return _extract_point(j.get("screening_yes_precision"))
-
-    def _yes_prec_lcb(j: Mapping[str, Any]) -> float:
-        return _extract_lcb(
+    def _yes_prec_point(j: Mapping[str, Any], *, judge_id: str) -> float:
+        return _extract_point(
             j.get("screening_yes_precision"),
-            judge_id=str(j.get("judge_id") or ""),
+            judge_id=judge_id,
             field_name="screening_yes_precision",
         )
 
-    def _yes_rec_point(j: Mapping[str, Any]) -> float:
-        return _extract_point(j.get("screening_yes_recall"))
-
-    def _yes_rec_lcb(j: Mapping[str, Any]) -> float:
+    def _yes_prec_lcb(j: Mapping[str, Any], *, judge_id: str) -> float:
         return _extract_lcb(
+            j.get("screening_yes_precision"),
+            judge_id=judge_id,
+            field_name="screening_yes_precision",
+        )
+
+    def _yes_rec_point(j: Mapping[str, Any], *, judge_id: str) -> float:
+        return _extract_point(
             j.get("screening_yes_recall"),
-            judge_id=str(j.get("judge_id") or ""),
+            judge_id=judge_id,
             field_name="screening_yes_recall",
         )
 
-    def _per_class_precisions(j: Mapping[str, Any]) -> dict[str, float]:
-        jid = str(j.get("judge_id") or "")
+    def _yes_rec_lcb(j: Mapping[str, Any], *, judge_id: str) -> float:
+        return _extract_lcb(
+            j.get("screening_yes_recall"),
+            judge_id=judge_id,
+            field_name="screening_yes_recall",
+        )
+
+    def _per_class_precisions(j: Mapping[str, Any], *, judge_id: str) -> dict[str, float]:
         raw_map = j.get("screening_per_class_precision")
         if isinstance(raw_map, Mapping):
-            if any(raw_map.get(cls_name) is None for cls_name in NEGATIVE_CLASSES):
-                missing_cls = [cls_name for cls_name in NEGATIVE_CLASSES if raw_map.get(cls_name) is None]
+            bad_cls: list[str] = []
+            out_prec: dict[str, float] = {}
+            for cls_name in NEGATIVE_CLASSES:
+                cell = raw_map.get(cls_name)
+                pt_raw = cell.get("point") if isinstance(cell, Mapping) else cell
+                pt_num = _coerce_finite_float(pt_raw)
+                if pt_num is None:
+                    bad_cls.append(cls_name)
+                else:
+                    out_prec[cls_name] = round(pt_num, 6)
+            if bad_cls:
                 raise refused_error(
                     "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION",
-                    f"Judge '{jid}' is missing per-class precision for {missing_cls} in 'screening_per_class_precision'.",
-                    "Provide 'screening_per_class_precision' with both 'unsupported' and 'cannot_tell', "
-                    "or provide 'screening_tp' and 'screening_fp_by_class' for both negative classes.",
+                    f"Judge '{judge_id}' has missing or non-numeric per-class precision for {bad_cls} in 'screening_per_class_precision'.",
+                    "Provide numeric 'screening_per_class_precision' for both 'unsupported' and 'cannot_tell', "
+                    "or provide numeric 'screening_tp' and 'screening_fp_by_class' for both negative classes.",
                 )
-            return {
-                cls_name: round(_extract_point(raw_map[cls_name]), 6)
-                for cls_name in NEGATIVE_CLASSES
-            }
+            return out_prec
         fp_map = j.get("screening_fp_by_class")
-        if j.get("screening_tp") is not None and isinstance(fp_map, Mapping):
-            if any(fp_map.get(cls_name) is None for cls_name in NEGATIVE_CLASSES):
-                missing_cls = [cls_name for cls_name in NEGATIVE_CLASSES if fp_map.get(cls_name) is None]
+        tp_num = _coerce_finite_float(j.get("screening_tp"))
+        if tp_num is not None and isinstance(fp_map, Mapping):
+            bad_fp = [cls_name for cls_name in NEGATIVE_CLASSES if _coerce_finite_float(fp_map.get(cls_name)) is None]
+            if bad_fp:
                 raise refused_error(
                     "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION",
-                    f"Judge '{jid}' is missing false-positive counts for {missing_cls} in 'screening_fp_by_class'.",
-                    "Provide 'screening_fp_by_class' with both 'unsupported' and 'cannot_tell' alongside 'screening_tp'.",
+                    f"Judge '{judge_id}' has missing or non-numeric false-positive counts for {bad_fp} in 'screening_fp_by_class'.",
+                    "Provide numeric 'screening_fp_by_class' for both 'unsupported' and 'cannot_tell' alongside numeric 'screening_tp'.",
                 )
-            tp_v = float(j["screening_tp"])
-            fp_u = float(fp_map["unsupported"])
-            fp_c = float(fp_map["cannot_tell"])
+            fp_u = float(_coerce_finite_float(fp_map["unsupported"]))  # type: ignore[arg-type]
+            fp_c = float(_coerce_finite_float(fp_map["cannot_tell"]))  # type: ignore[arg-type]
             return {
-                "unsupported": compute_per_negative_class_precision(tp_v, fp_u),
-                "cannot_tell": compute_per_negative_class_precision(tp_v, fp_c),
+                "unsupported": compute_per_negative_class_precision(tp_num, fp_u),
+                "cannot_tell": compute_per_negative_class_precision(tp_num, fp_c),
             }
         raise refused_error(
             "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION",
-            f"Judge '{jid}' is missing per-negative-class precision data (no 'screening_per_class_precision' and no 'screening_tp'/'screening_fp_by_class').",
+            f"Judge '{judge_id}' is missing per-negative-class precision data (no valid 'screening_per_class_precision' and no valid 'screening_tp'/'screening_fp_by_class').",
             "Provide 'screening_per_class_precision' or ('screening_tp' and 'screening_fp_by_class'); "
             "per-class precision is never approximated from pooled precision.",
         )
 
-    def _domain_coverage_counts(j: Mapping[str, Any], rec_pt: float) -> tuple[int, int]:
+    def _domain_coverage_counts(j: Mapping[str, Any], *, judge_id: str) -> tuple[int, int]:
         dom_obj = j.get("screening_domain_recall")
-        if isinstance(dom_obj, Mapping):
-            vals = [_extract_point(v) for v in dom_obj.values()]
-            passing = sum(1 for v in vals if v + 1e-12 >= domain_recall_floor)
-            return passing, len(vals)
-        return (10 if (rec_pt + 1e-12 >= domain_recall_floor) else 0), 10
+        if not isinstance(dom_obj, Mapping):
+            raise refused_error(
+                "BAKEOFF_WINNER_INVALID_DOMAIN_COVERAGE",
+                f"Judge '{judge_id}' is missing 'screening_domain_recall' mapping (expected keys {list(registered_domains_sorted)}).",
+                "Provide a 'screening_domain_recall' mapping whose keys match registered_domains exactly.",
+            )
+        actual_keys = {str(k) for k in dom_obj.keys()}
+        missing_keys = sorted(expected_domain_set - actual_keys)
+        extra_keys = sorted(actual_keys - expected_domain_set)
+        if missing_keys or extra_keys or len(dom_obj) != len(expected_domain_set):
+            raise refused_error(
+                "BAKEOFF_WINNER_INVALID_DOMAIN_COVERAGE",
+                f"Judge '{judge_id}' has 'screening_domain_recall' keys mismatch against registered_domains "
+                f"(missing={missing_keys}, extra={extra_keys}).",
+                f"Provide 'screening_domain_recall' with exact keys {list(registered_domains_sorted)}.",
+            )
+        non_numeric_keys: list[str] = []
+        vals: list[float] = []
+        for dom_key in registered_domains_sorted:
+            raw_v = dom_obj.get(dom_key)
+            pt_raw = raw_v.get("point") if isinstance(raw_v, Mapping) else raw_v
+            pt_num = _coerce_finite_float(pt_raw)
+            if pt_num is None:
+                non_numeric_keys.append(dom_key)
+            else:
+                vals.append(pt_num)
+        if non_numeric_keys:
+            raise refused_error(
+                "BAKEOFF_WINNER_INVALID_DOMAIN_COVERAGE",
+                f"Judge '{judge_id}' has non-numeric domain recall in 'screening_domain_recall' for keys {non_numeric_keys}.",
+                "Every registered domain in 'screening_domain_recall' must have a finite numeric point value.",
+            )
+        passing = sum(1 for v in vals if v + 1e-12 >= domain_recall_floor)
+        return passing, len(vals)
 
-    def _params_b(j: Mapping[str, Any]) -> float:
-        jid = str(j.get("judge_id") or "")
-        return float(MODEL_PARAM_BILLIONS_BY_JUDGE.get(jid, float("inf")))
+    def _sec_med(j: Mapping[str, Any], *, judge_id: str) -> float:
+        num = _coerce_finite_float(j.get("seconds_median"))
+        if num is None:
+            raise refused_error(
+                "BAKEOFF_WINNER_MISSING_SECONDS_MEDIAN",
+                f"Judge '{judge_id}' is missing a finite numeric 'seconds_median'.",
+                "Provide an explicit numeric 'seconds_median' on every judge that ran; winner selection never falls back to 'seconds_mean' or 0.0.",
+            )
+        return num
 
-    def _sec_med(j: Mapping[str, Any]) -> float:
-        return float(j.get("seconds_median", j.get("seconds_mean", 0.0)))
-
-    # Step 1: Decide eligibility first over all judges that ran; failed_to_run judges are never eligible.
+    # Step 1: Decide is_failed first; failed_to_run judges are recorded as ineligible with no strict metric reads.
     eligibility_by_judge: dict[str, dict[str, Any]] = {}
     eligible_objs_unsorted: list[Mapping[str, Any]] = []
+    cb_by_judge: dict[str, float] = {}
+    prec_pt_by_judge: dict[str, float] = {}
+    params_by_judge: dict[str, float] = {}
+    sec_med_by_judge: dict[str, float] = {}
 
     for j_obj in judges:
-        jid = str(j_obj.get("judge_id") or "")
+        jid = _require_judge_id(j_obj)
         is_failed = (
             bool(j_obj.get("failed_to_run"))
             or str(j_obj.get("run_status") or "") == "failed_to_run"
             or str(j_obj.get("status") or "") == "failed_to_run"
         )
-        prec_pt = _yes_prec_point(j_obj)
-        prec_lcb = _yes_prec_lcb(j_obj)
-        rec_pt = _yes_rec_point(j_obj)
-        rec_lcb = _yes_rec_lcb(j_obj)
-        per_cls_prec = _per_class_precisions(j_obj)
-        dom_passing, dom_total = _domain_coverage_counts(j_obj, rec_pt)
-
         if is_failed:
-            passed_lcb_prec = False
-            passed_lcb_rec = False
-            passed_unsup_prec = False
-            passed_ct_prec = False
-            passed_dom_cov = False
-            is_eligible = False
             removed_by_condition["failed_to_run"] += 1
-        else:
-            passed_lcb_prec = (prec_lcb + 1e-12 >= precision_lcb_floor)
-            passed_lcb_rec = (rec_lcb + 1e-12 >= recall_lcb_floor)
-            passed_unsup_prec = (per_cls_prec["unsupported"] + 1e-12 >= per_class_precision_floor)
-            passed_ct_prec = (per_cls_prec["cannot_tell"] + 1e-12 >= per_class_precision_floor)
-            passed_dom_cov = (dom_passing >= domain_coverage_min)
-            is_eligible = (
-                passed_lcb_prec
-                and passed_lcb_rec
-                and passed_unsup_prec
-                and passed_ct_prec
-                and passed_dom_cov
-            )
-            if not passed_lcb_prec:
-                removed_by_condition["lcb_precision"] += 1
-            if not passed_lcb_rec:
-                removed_by_condition["lcb_recall"] += 1
-            if not passed_unsup_prec:
-                removed_by_condition["per_class_precision_unsupported"] += 1
-            if not passed_ct_prec:
-                removed_by_condition["per_class_precision_cannot_tell"] += 1
-            if not passed_dom_cov:
-                removed_by_condition["domain_coverage"] += 1
+            conditions = {
+                "lcb_precision": False,
+                "lcb_recall": False,
+                "per_class_precision_unsupported": False,
+                "per_class_precision_cannot_tell": False,
+                "domain_coverage": False,
+                "not_failed_to_run": False,
+            }
+            eligibility_by_judge[jid] = {
+                "judge_id": jid,
+                "eligible": False,
+                "failed_to_run": True,
+                "precision_point": None,
+                "precision_lcb": None,
+                "recall_point": None,
+                "recall_lcb": None,
+                "per_class_precision": None,
+                "domains_passing_recall_floor": 0,
+                "domains_total": len(registered_domains_sorted),
+                "conditions": conditions,
+                "passed_conditions": [],
+                "failed_conditions": [
+                    "lcb_precision",
+                    "lcb_recall",
+                    "per_class_precision_unsupported",
+                    "per_class_precision_cannot_tell",
+                    "domain_coverage",
+                    "failed_to_run",
+                ],
+            }
+            continue
+
+        params_val = _require_params_b(jid)
+        cb_val = _cb_acc(j_obj, judge_id=jid)
+        prec_pt = _yes_prec_point(j_obj, judge_id=jid)
+        prec_lcb = _yes_prec_lcb(j_obj, judge_id=jid)
+        rec_pt = _yes_rec_point(j_obj, judge_id=jid)
+        rec_lcb = _yes_rec_lcb(j_obj, judge_id=jid)
+        per_cls_prec = _per_class_precisions(j_obj, judge_id=jid)
+        dom_passing, dom_total = _domain_coverage_counts(j_obj, judge_id=jid)
+        sec_med_val = _sec_med(j_obj, judge_id=jid)
+
+        cb_by_judge[jid] = cb_val
+        prec_pt_by_judge[jid] = prec_pt
+        params_by_judge[jid] = params_val
+        sec_med_by_judge[jid] = sec_med_val
+
+        passed_lcb_prec = (prec_lcb + 1e-12 >= precision_lcb_floor)
+        passed_lcb_rec = (rec_lcb + 1e-12 >= recall_lcb_floor)
+        passed_unsup_prec = (per_cls_prec["unsupported"] + 1e-12 >= per_class_precision_floor)
+        passed_ct_prec = (per_cls_prec["cannot_tell"] + 1e-12 >= per_class_precision_floor)
+        passed_dom_cov = (dom_passing >= domain_coverage_min)
+        is_eligible = (
+            passed_lcb_prec
+            and passed_lcb_rec
+            and passed_unsup_prec
+            and passed_ct_prec
+            and passed_dom_cov
+        )
+        if not passed_lcb_prec:
+            removed_by_condition["lcb_precision"] += 1
+        if not passed_lcb_rec:
+            removed_by_condition["lcb_recall"] += 1
+        if not passed_unsup_prec:
+            removed_by_condition["per_class_precision_unsupported"] += 1
+        if not passed_ct_prec:
+            removed_by_condition["per_class_precision_cannot_tell"] += 1
+        if not passed_dom_cov:
+            removed_by_condition["domain_coverage"] += 1
 
         conditions = {
             "lcb_precision": passed_lcb_prec,
@@ -1114,7 +1287,7 @@ def select_bakeoff_winner(
             "per_class_precision_unsupported": passed_unsup_prec,
             "per_class_precision_cannot_tell": passed_ct_prec,
             "domain_coverage": passed_dom_cov,
-            "not_failed_to_run": not is_failed,
+            "not_failed_to_run": True,
         }
         passed_list = [k for k, v in conditions.items() if v]
         failed_list = [("failed_to_run" if k == "not_failed_to_run" else k) for k, v in conditions.items() if not v]
@@ -1122,7 +1295,7 @@ def select_bakeoff_winner(
         eligibility_by_judge[jid] = {
             "judge_id": jid,
             "eligible": is_eligible,
-            "failed_to_run": is_failed,
+            "failed_to_run": False,
             "precision_point": round(prec_pt, 6),
             "precision_lcb": round(prec_lcb, 6),
             "recall_point": round(rec_pt, 6),
@@ -1162,7 +1335,12 @@ def select_bakeoff_winner(
     # Step 2: Candidate set (among eligible judges only) relative to B (highest class-balanced strict accuracy).
     ranked_eligible = sorted(
         eligible_objs_unsorted,
-        key=lambda j: (-round(_cb_acc(j), 6), _params_b(j), _sec_med(j), str(j.get("judge_id") or "")),
+        key=lambda j: (
+            -round(cb_by_judge[str(j["judge_id"])], 6),
+            params_by_judge[str(j["judge_id"])],
+            sec_med_by_judge[str(j["judge_id"])],
+            str(j["judge_id"]),
+        ),
     )
     best_judge_obj = ranked_eligible[0]
     best_id = str(best_judge_obj["judge_id"])
@@ -1187,32 +1365,52 @@ def select_bakeoff_winner(
                 f"Missing pairwise comparison row for eligible judge pair ('{best_id}', '{jid}').",
                 "Provide pairwise sign-flip and TOST comparison rows covering every eligible judge against best eligible judge B.",
             )
-        h_sf = float(pair.get("holm_sign_flip_p", 1.0))
-        h_tost = float(pair.get("holm_tost_p", 1.0))
-        eq_st = str(pair.get("equivalence_status") or "")
-        is_prac_eq = (h_sf < 0.05 and h_tost < 0.05) or eq_st == "practically_equivalent"
+        h_sf = _coerce_finite_float(pair.get("holm_sign_flip_p"))
+        if h_sf is None:
+            raise refused_error(
+                "BAKEOFF_WINNER_MISSING_PAIRWISE_P",
+                f"Pairwise comparison row for ('{best_id}', '{jid}') is missing a finite numeric 'holm_sign_flip_p'.",
+                "Provide numeric 'holm_sign_flip_p' and 'holm_tost_p' on every pairwise comparison row.",
+            )
+        h_tost = _coerce_finite_float(pair.get("holm_tost_p"))
+        if h_tost is None:
+            raise refused_error(
+                "BAKEOFF_WINNER_MISSING_PAIRWISE_P",
+                f"Pairwise comparison row for ('{best_id}', '{jid}') is missing a finite numeric 'holm_tost_p'.",
+                "Provide numeric 'holm_sign_flip_p' and 'holm_tost_p' on every pairwise comparison row.",
+            )
+        expected_eq_st = _EQ_STATUS_BY_P_FLAGS[(h_sf < 0.05, h_tost < 0.05)]
+        raw_eq_st = pair.get("equivalence_status")
+        if raw_eq_st is not None and str(raw_eq_st) != expected_eq_st:
+            raise refused_error(
+                "BAKEOFF_WINNER_EQUIVALENCE_STATUS_MISMATCH",
+                f"Pairwise comparison row for ('{best_id}', '{jid}') has equivalence_status={raw_eq_st!r}, "
+                f"which disagrees with holm_sign_flip_p={h_sf} and holm_tost_p={h_tost} (expected {expected_eq_st!r}).",
+                "Derive equivalence_status strictly from (holm_sign_flip_p < 0.05, holm_tost_p < 0.05).",
+            )
+        is_prac_eq = (h_sf < 0.05 and h_tost < 0.05)
         if is_prac_eq:
             practically_eq_pairs.append((best_id, jid))
         if is_prac_eq or h_sf >= 0.05:
             candidate_objs.append(j_obj)
 
     # Step 3: Pick within PRECISION_BAND of the best candidate's point AND-gate precision.
-    best_cand_prec = max(_yes_prec_point(j) for j in candidate_objs)
+    best_cand_prec = max(prec_pt_by_judge[str(j["judge_id"])] for j in candidate_objs)
     tier_objs = [
-        j for j in candidate_objs if (best_cand_prec - _yes_prec_point(j)) <= precision_band + 1e-12
+        j for j in candidate_objs if (best_cand_prec - prec_pt_by_judge[str(j["judge_id"])]) <= precision_band + 1e-12
     ]
-    max_tier_cb = max(_cb_acc(j) for j in tier_objs)
+    max_tier_cb = max(cb_by_judge[str(j["judge_id"])] for j in tier_objs)
     cb_top_objs = [
-        j for j in tier_objs if (max_tier_cb - _cb_acc(j)) < cb_tie - 1e-12
+        j for j in tier_objs if (max_tier_cb - cb_by_judge[str(j["judge_id"])]) < cb_tie - 1e-12
     ]
     cb_top_sorted = sorted(
         cb_top_objs,
         key=lambda j: (
-            _params_b(j),
-            _sec_med(j),
-            -round(_cb_acc(j), 6),
-            -round(_yes_prec_point(j), 6),
-            str(j.get("judge_id") or ""),
+            params_by_judge[str(j["judge_id"])],
+            sec_med_by_judge[str(j["judge_id"])],
+            -round(cb_by_judge[str(j["judge_id"])], 6),
+            -round(prec_pt_by_judge[str(j["judge_id"])], 6),
+            str(j["judge_id"]),
         ),
     )
     winner_id = str(cb_top_sorted[0]["judge_id"])
@@ -1247,6 +1445,7 @@ def _evaluate_judge_at_rule(
     rows_by_item_order: Mapping[str, Mapping[str, Mapping[str, Any]]],
     first_order_by_item: Mapping[str, str],
     keys_by_id: Mapping[str, SealedKeyRecord],
+    registered_domains: Sequence[str],
     split_filter: str | None = None,
     excluded_triad_ids: set[str] | None = None,
     excluded_item_ids: set[str] | None = None,
@@ -1321,7 +1520,9 @@ def _evaluate_judge_at_rule(
                 length_stops += 1
             elif r.get("state") == "unparseable":
                 unparseable += 1
-            seconds_list.append(float(r.get("seconds", 0.0)))
+            sec_val = _coerce_finite_float(r.get("seconds"))
+            if sec_val is not None:
+                seconds_list.append(sec_val)
             vram_peak = max(vram_peak, int(r.get("vram_peak_mib", 0)))
 
             v = _verdict_at_rule(
@@ -1495,9 +1696,8 @@ def _evaluate_judge_at_rule(
         cls_name: compute_per_negative_class_precision(screening_tp, screening_fp_by_class[cls_name])
         for cls_name in NEGATIVE_CLASSES
     }
-    domains_in_split = sorted({keys_by_id[i].domain for i in scored_item_ids})
     screening_domain_recall: dict[str, float] = {}
-    for dom_name in domains_in_split:
+    for dom_name in registered_domains:
         dom_pos_ids = [
             i for i in scored_item_ids if keys_by_id[i].domain == dom_name and keys_by_id[i].binary_key == "yes"
         ]
@@ -1563,7 +1763,7 @@ def _evaluate_judge_at_rule(
         "error_rate": round((length_stops + unparseable) / max(1, total_calls), 6),
         "seconds_total": round(sum(seconds_list), 4),
         "seconds_mean": round(sum(seconds_list) / max(1, len(seconds_list)), 6),
-        "seconds_median": round(statistics.median(seconds_list), 6) if seconds_list else 0.0,
+        "seconds_median": round(statistics.median(seconds_list), 6) if seconds_list else None,
         "vram_peak_mib": vram_peak,
     }
     return summary, item_correct_map, sealed_scored_rows
@@ -1829,6 +2029,7 @@ def score_bakeoff_outputs(
     # After the tamper check (so a modified dir is reported as such) and before any key is read or any byte is written.
     check_sealed_out_targets_free(sealed_jsonl_path, sealed_csv_path, overwrite=overwrite)
     keys_by_id = load_sealed_keys(keys_path)
+    registered_domains = _resolve_registered_domains_for_part(keys_by_id)
     canary_cfg = load_canary_config(canary_config_path)
     excluded_canary_triads: set[str] = {
         *(str(t) for t in canary_cfg.get("canary_triad_ids", [])),
@@ -1910,6 +2111,7 @@ def score_bakeoff_outputs(
             rows_by_item_order=rows_by_item_order,
             first_order_by_item=first_order_by_item,
             keys_by_id=keys_by_id,
+            registered_domains=registered_domains,
             split_filter="dev",
             bootstrap_resamples=eff_resamples,
         )
@@ -1921,6 +2123,7 @@ def score_bakeoff_outputs(
             rows_by_item_order=rows_by_item_order,
             first_order_by_item=first_order_by_item,
             keys_by_id=keys_by_id,
+            registered_domains=registered_domains,
             split_filter="test",
             bootstrap_resamples=eff_resamples,
         )
@@ -1934,6 +2137,7 @@ def score_bakeoff_outputs(
             rows_by_item_order=rows_by_item_order,
             first_order_by_item=first_order_by_item,
             keys_by_id=keys_by_id,
+            registered_domains=registered_domains,
             split_filter="dev",
             bootstrap_resamples=eff_resamples,
         )
@@ -1945,6 +2149,7 @@ def score_bakeoff_outputs(
             rows_by_item_order=rows_by_item_order,
             first_order_by_item=first_order_by_item,
             keys_by_id=keys_by_id,
+            registered_domains=registered_domains,
             split_filter="test",
             bootstrap_resamples=eff_resamples,
         )
@@ -1956,6 +2161,7 @@ def score_bakeoff_outputs(
             rows_by_item_order=rows_by_item_order,
             first_order_by_item=first_order_by_item,
             keys_by_id=keys_by_id,
+            registered_domains=registered_domains,
             split_filter=None,
             excluded_triad_ids=excluded_canary_triads,
             excluded_item_ids=excluded_canary_items,
@@ -1999,6 +2205,7 @@ def score_bakeoff_outputs(
                 rows_by_item_order=rows_by_item_order,
                 first_order_by_item=first_order_by_item,
                 keys_by_id=keys_by_id,
+                registered_domains=registered_domains,
                 split_filter="dev",
                 bootstrap_resamples=eff_resamples,
             )
@@ -2010,6 +2217,7 @@ def score_bakeoff_outputs(
                 rows_by_item_order=rows_by_item_order,
                 first_order_by_item=first_order_by_item,
                 keys_by_id=keys_by_id,
+                registered_domains=registered_domains,
                 split_filter="test",
                 bootstrap_resamples=eff_resamples,
             )
@@ -2021,6 +2229,7 @@ def score_bakeoff_outputs(
                 rows_by_item_order=rows_by_item_order,
                 first_order_by_item=first_order_by_item,
                 keys_by_id=keys_by_id,
+                registered_domains=registered_domains,
                 split_filter="dev",
                 bootstrap_resamples=eff_resamples,
             )
@@ -2032,6 +2241,7 @@ def score_bakeoff_outputs(
                 rows_by_item_order=rows_by_item_order,
                 first_order_by_item=first_order_by_item,
                 keys_by_id=keys_by_id,
+                registered_domains=registered_domains,
                 split_filter="test",
                 bootstrap_resamples=eff_resamples,
             )
@@ -2138,7 +2348,11 @@ def score_bakeoff_outputs(
         sesoi=sesoi,
         bootstrap_resamples=eff_resamples,
     )
-    winner_selection = select_bakeoff_winner(active_judges, pairwise_all_pairs)
+    winner_selection = select_bakeoff_winner(
+        active_judges,
+        pairwise_all_pairs,
+        registered_domains=registered_domains,
+    )
 
     # Public-safe disagreement table on split == "test" ONLY (aggregate counts per class x closure, never item text or item keys)
     disagreement_by_stratum: list[dict[str, Any]] = []
