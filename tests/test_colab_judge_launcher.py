@@ -3399,8 +3399,12 @@ def test_real_service_assumptions_env_var_classification_table() -> None:
     )
     assert "STOP_POLL_MAX_READS" in shell_local_vars
     assert "STOP_POLL_SLEEP_SECONDS" in shell_local_vars
+    assert "PROGRESS_FETCH_INTERVAL_SECONDS" in shell_local_vars
+    assert "PROGRESS_FETCH_TIMEOUT_SECONDS" in shell_local_vars
     assert "RDLAB_STOP_POLL_MAX_READS" in bash_env_vars
     assert "RDLAB_STOP_POLL_SLEEP_SECONDS" in bash_env_vars
+    assert "RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS" in bash_env_vars
+    assert "RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS" in bash_env_vars
 
     all_code_env_vars = bash_env_vars | py_env_vars
     missing_from_doc = sorted(all_code_env_vars - set(var_to_classifications))
@@ -3412,6 +3416,8 @@ def test_real_service_assumptions_env_var_classification_table() -> None:
     for real_setting in (
         "RDLAB_STOP_POLL_MAX_READS",
         "RDLAB_STOP_POLL_SLEEP_SECONDS",
+        "RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS",
+        "RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS",
         "RDLAB_JUDGE_LOCK_SHA256",
         "RDLAB_D3_LOCK_SHA256",
         "RDLAB_EXPECT_UV_VERSION",
@@ -5477,6 +5483,613 @@ def test_find_or_install_case_8_uv_version_change_refuses_with_uv_version_change
     doc_ok = json.loads(status_8_ok.read_text(encoding="utf-8"))
     assert doc_ok["rc"] == 0
     assert doc_ok["uv_version"] == "uv 0.14.0"
+
+
+def _run_progress_launcher(
+    env_paths: dict[str, Path],
+    items_file: Path,
+    out_dir: Path,
+    *,
+    receipts_dir: Path,
+    hf_home: Path,
+    extra_args: list[str] | None = None,
+    extra_env: dict[str, str] | None = None,
+    timeout: float = 60.0,
+) -> subprocess.CompletedProcess[str]:
+    open_lock = out_dir.parent / f"{out_dir.name}_open.lock"
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=open_lock,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    wsl_launch = _to_wsl_path(LAUNCH_JUDGES_SH)
+    wsl_out = _to_wsl_path(out_dir)
+    cmd_args = " ".join(f"'{a}'" for a in (extra_args or []))
+    run_env = os.environ.copy()
+    if extra_env:
+        run_env.update(extra_env)
+    return subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{wsl_launch}' --stub --out-dir '{wsl_out}' --run-id 'prog-{out_dir.name}' {cmd_args}",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=run_env,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def test_progress_log_per_judge_lines_and_step_timings_in_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Hermetic test (Item 7.1): Per-judge progress lines (`judge_download_start` and `judge_download`)
+    and step lines (`unpack`, `lock_digests`, `venv_sync`, `pyyaml_sdist_build`, `venv_judge`, `venv_d3`,
+    `download`, `verify`, `judge_pass`, `result_packing`, `run_end`) appear in order with a fake
+    `snapshot_download`, echoed to stdout and fsynced to `progress.jsonl`, and `vm_receipt.json` carries
+    a `timings` block with the same data.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+
+    # 1. Direct unit test of `download_all_judge_weights(..., dryrun=False)` with fake `snapshot_download`
+    progress_unit = tmp_path / "unit_progress.jsonl"
+    dl_calls: list[tuple[str, str, str]] = []
+
+    def _fake_snap_dl(repo_id: str, revision: str, cache_dir: str) -> str:
+        dl_calls.append((repo_id, revision, cache_dir))
+        owner, repo = repo_id.split("/", 1)
+        snap_dir = Path(cache_dir) / f"models--{owner}--{repo}" / "snapshots" / revision
+        return str(snap_dir)
+
+    capsys.readouterr()
+    judge_records = vm_judges.download_all_judge_weights(
+        hf_home,
+        dryrun=False,
+        progress_path=progress_unit,
+        snapshot_download_fn=_fake_snap_dl,
+    )
+    captured_out = capsys.readouterr().out
+    stdout_json_lines = [
+        json.loads(ln)
+        for ln in captured_out.splitlines()
+        if ln.strip().startswith("{")
+    ]
+    file_json_lines = [
+        json.loads(ln)
+        for ln in progress_unit.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(dl_calls) == 5
+    assert len(judge_records) == 5
+    assert len(file_json_lines) == 10
+    assert stdout_json_lines == file_json_lines
+
+    expected_judges = sorted(vm_judges.BAKEOFF_JUDGE_SPECS.keys())
+    running_bytes = 0
+    for idx, jid in enumerate(expected_judges):
+        spec = vm_judges.BAKEOFF_JUDGE_SPECS[jid]
+        start_row = file_json_lines[2 * idx]
+        end_row = file_json_lines[2 * idx + 1]
+        assert start_row["kind"] == "judge_download_start"
+        assert start_row["judge_id"] == jid
+        assert start_row["revision"] == spec.revision
+        assert start_row["cumulative_bytes"] == running_bytes
+        assert "mem_available_bytes" in start_row
+
+        assert end_row["kind"] == "judge_download"
+        assert end_row["judge_id"] == jid
+        assert end_row["revision"] == spec.revision
+        assert end_row["bytes"] > 0
+        assert end_row["bytes_on_disk"] == end_row["bytes"]
+        assert end_row["start"].endswith("Z")
+        assert end_row["end"].endswith("Z")
+        assert end_row["seconds"] >= 0.0
+        running_bytes += end_row["bytes"]
+        assert end_row["cumulative_bytes"] == running_bytes
+        assert end_row["cumulative_seconds"] >= end_row["seconds"]
+        assert "mem_available_bytes" in end_row
+
+    # 2. Full end-to-end launcher run with `FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD=1`
+    items_file = _make_synthetic_public_items(tmp_path, count=3)
+    out_dir = tmp_path / "out_run"
+    proc = _run_progress_launcher(
+        fake_env,
+        items_file,
+        out_dir,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_env={"FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD": "1"},
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}\nstdout={proc.stdout}"
+
+    progress_file = out_dir / "progress.jsonl"
+    assert progress_file.is_file()
+    rows = [
+        json.loads(ln)
+        for ln in progress_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    events = [
+        (
+            r["kind"],
+            r["status"] if r["kind"] == "run_end" else (r.get("step") or r.get("judge_id")),
+        )
+        for r in rows
+    ]
+    expected_events = [
+        ("step_start", "unpack"),
+        ("step_end", "unpack"),
+        ("step_start", "lock_digests"),
+        ("step_end", "lock_digests"),
+        ("step_start", "venv_sync"),
+        ("step_start", "pyyaml_sdist_build"),
+        ("step_end", "pyyaml_sdist_build"),
+        ("step_start", "venv_judge"),
+        ("step_end", "venv_judge"),
+        ("step_start", "venv_d3"),
+        ("step_end", "venv_d3"),
+        ("step_end", "venv_sync"),
+        ("step_start", "download"),
+        ("judge_download_start", "d3-mini"),
+        ("judge_download", "d3-mini"),
+        ("judge_download_start", "flow-judge-v0.1"),
+        ("judge_download", "flow-judge-v0.1"),
+        ("judge_download_start", "granite-guardian-4.1-8b"),
+        ("judge_download", "granite-guardian-4.1-8b"),
+        ("judge_download_start", "mu-judge"),
+        ("judge_download", "mu-judge"),
+        ("judge_download_start", "nemotron-3-nano-4b"),
+        ("judge_download", "nemotron-3-nano-4b"),
+        ("step_end", "download"),
+        ("step_start", "verify"),
+        ("step_end", "verify"),
+        ("step_start", "judge_pass"),
+        ("step_end", "judge_pass"),
+        ("step_start", "result_packing"),
+        ("step_end", "result_packing"),
+        ("run_end", "ok"),
+    ]
+    assert events == expected_events
+
+    # Verify `vm_receipt.json` carries `timings` block with the same data
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert "timings" in receipt_doc
+    timings = receipt_doc["timings"]
+    expected_step_keys = [
+        "unpack",
+        "lock_digests",
+        "pyyaml_sdist_build",
+        "venv_judge",
+        "venv_d3",
+        "venv_sync",
+        "download",
+        "verify",
+        "judge_pass",
+        "result_packing",
+    ]
+    assert timings["step_order"] == expected_step_keys
+    step_end_by_name = {
+        r["step"]: r for r in rows if r["kind"] == "step_end"
+    }
+    for skey in expected_step_keys:
+        assert skey in timings["steps"]
+        assert timings["steps"][skey]["start"] == step_end_by_name[skey]["start"]
+        assert timings["steps"][skey]["end"] == step_end_by_name[skey]["end"]
+        assert timings["steps"][skey]["seconds"] == step_end_by_name[skey]["seconds"]
+
+    judge_dl_rows = [r for r in rows if r["kind"] == "judge_download"]
+    assert len(timings["judge_downloads"]) == 5
+    for j_rec, j_row in zip(timings["judge_downloads"], judge_dl_rows, strict=True):
+        assert j_rec["judge_id"] == j_row["judge_id"]
+        assert j_rec["revision"] == j_row["revision"]
+        assert j_rec["bytes"] == j_row["bytes"]
+        assert j_rec["cumulative_bytes"] == j_row["cumulative_bytes"]
+        assert j_rec["seconds"] == j_row["seconds"]
+
+
+def test_progress_log_cut_mid_judge_leaves_judge_download_start_without_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic test (Item 7.2): A cut mid-judge leaves a `judge_download_start` with no
+    `judge_download` end line for that judge.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path, count=2)
+    out_dir = tmp_path / "out_mid_judge"
+
+    # Simulate a cut during `granite-guardian-4.1-8b` (`ibm-granite/granite-guardian-4.1-8b`, the 3rd judge alphabetically)
+    proc = _run_progress_launcher(
+        fake_env,
+        items_file,
+        out_dir,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_env={"FAKE_COLAB_CUT_MID_JUDGE": "ibm-granite/granite-guardian-4.1-8b"},
+    )
+    assert proc.returncode != 0
+
+    progress_file = out_dir / "progress.jsonl"
+    assert progress_file.is_file()
+    rows = [
+        json.loads(ln)
+        for ln in progress_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    starts = [r["judge_id"] for r in rows if r["kind"] == "judge_download_start"]
+    ends = [r["judge_id"] for r in rows if r["kind"] == "judge_download"]
+
+    assert starts == ["d3-mini", "flow-judge-v0.1", "granite-guardian-4.1-8b"]
+    assert ends == ["d3-mini", "flow-judge-v0.1"]
+    assert "granite-guardian-4.1-8b" not in ends
+
+
+def test_progress_log_memory_fields_present_and_cgroup_null_safe(
+    tmp_path: Path,
+) -> None:
+    """Hermetic test (Item 7.3): `mem_available_bytes` is present on every progress line, and
+    `cgroup_memory_current` / `cgroup_memory_max` are null-safe across cgroup v2, cgroup v1,
+    `"max"`, and missing/unreadable files.
+    """
+    # 1. Synthetic `/proc/meminfo` + cgroup v2 (`memory.current` integer, `memory.max` integer)
+    meminfo_p = tmp_path / "meminfo"
+    meminfo_p.write_text(
+        "MemTotal:       65800000 kB\nMemFree:        12000000 kB\nMemAvailable:   42500000 kB\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    cg_root = tmp_path / "cgroup_v2"
+    cg_root.mkdir(parents=True, exist_ok=True)
+    cg_cur = cg_root / "memory.current"
+    cg_max = cg_root / "memory.max"
+    cg_cur.write_text("2147483648\n", encoding="utf-8", newline="\n")
+    cg_max.write_text("53687091200\n", encoding="utf-8", newline="\n")
+    proc_cg = tmp_path / "proc_self_cgroup"
+    proc_cg.write_text("0::/\n", encoding="utf-8", newline="\n")
+
+    snap_v2 = vm_judges.read_vm_memory_snapshot(
+        proc_meminfo_path=meminfo_p,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+    )
+    assert snap_v2 == {
+        "mem_available_bytes": 42500000 * 1024,
+        "cgroup_memory_current": 2147483648,
+        "cgroup_memory_max": 53687091200,
+    }
+
+    # 2. `memory.max` == `"max"` -> `cgroup_memory_max` is `None` (`null` in JSON)
+    cg_max.write_text("max\n", encoding="utf-8", newline="\n")
+    snap_unlim = vm_judges.read_vm_memory_snapshot(
+        proc_meminfo_path=meminfo_p,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+    )
+    assert snap_unlim == {
+        "mem_available_bytes": 42500000 * 1024,
+        "cgroup_memory_current": 2147483648,
+        "cgroup_memory_max": None,
+    }
+
+    # 3. Missing/unreadable `/proc/meminfo` and cgroup files -> all `None`, never raises
+    missing_p = tmp_path / "does_not_exist"
+    snap_missing = vm_judges.read_vm_memory_snapshot(
+        proc_meminfo_path=missing_p,
+        cgroup_root=missing_p,
+        proc_cgroup_path=missing_p,
+    )
+    assert snap_missing == {
+        "mem_available_bytes": None,
+        "cgroup_memory_current": None,
+        "cgroup_memory_max": None,
+    }
+
+    # 4. Verify `append_progress_line` preserves all three fields on every line
+    prog_p = tmp_path / "mem_progress.jsonl"
+    vm_judges.append_progress_line(
+        prog_p,
+        {"kind": "step_start", "step": "unpack"},
+        echo_stdout=False,
+        proc_meminfo_path=meminfo_p,
+        cgroup_root=cg_root,
+        proc_cgroup_path=proc_cg,
+    )
+    vm_judges.append_progress_line(
+        prog_p,
+        {"kind": "step_end", "step": "unpack"},
+        echo_stdout=False,
+        proc_meminfo_path=missing_p,
+        cgroup_root=missing_p,
+        proc_cgroup_path=missing_p,
+    )
+    parsed = [
+        json.loads(ln)
+        for ln in prog_p.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(parsed) == 2
+    for row in parsed:
+        assert "mem_available_bytes" in row
+        assert "cgroup_memory_current" in row
+        assert "cgroup_memory_max" in row
+    assert parsed[0]["mem_available_bytes"] == 42500000 * 1024
+    assert parsed[0]["cgroup_memory_current"] == 2147483648
+    assert parsed[0]["cgroup_memory_max"] is None
+    assert parsed[1]["mem_available_bytes"] is None
+    assert parsed[1]["cgroup_memory_current"] is None
+    assert parsed[1]["cgroup_memory_max"] is None
+
+
+def test_progress_log_fetched_and_scrubbed_on_every_exit_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic test (Items 7.4 & 7.7): `progress.jsonl` is fetched on every exit path
+    (success, run failure, wall/watchdog cut, lost stream), and no proxy token or HF token
+    appears in any fetched file.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path, count=2)
+
+    leak_str = (
+        "https://8080-gpu.colab.googleusercontent.com/api/contents/rdlab_run/progress.jsonl"
+        "?colab-runtime-proxy-token=SecretProxyTokExitPath999 "
+        "auth=hf_SecretHfTokenExitPath888"
+    )
+
+    # Path A: Success (`rc == 0`) with planted token leak
+    env_ok = fake_colab.setup_fake_colab_environment(tmp_path / "env_ok")
+    out_ok = tmp_path / "out_ok"
+    proc_ok = _run_progress_launcher(
+        env_ok,
+        items_file,
+        out_ok,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_env={"RDLAB_TEST_PLANT_LOG_LEAK": leak_str},
+    )
+    assert proc_ok.returncode == 0
+    assert (out_ok / "progress.jsonl").is_file()
+    prog_ok_rows = [
+        json.loads(ln)
+        for ln in (out_ok / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert prog_ok_rows[-1]["kind"] == "run_end"
+    assert prog_ok_rows[-1]["status"] == "ok"
+
+    # Path B: Run failure (`rc != 0`, mid-judge cut)
+    env_fail = fake_colab.setup_fake_colab_environment(tmp_path / "env_fail")
+    out_fail = tmp_path / "out_fail"
+    proc_fail = _run_progress_launcher(
+        env_fail,
+        items_file,
+        out_fail,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_env={
+            "FAKE_COLAB_CUT_MID_JUDGE": "ibm-granite/granite-guardian-4.1-8b",
+            "RDLAB_TEST_PLANT_LOG_LEAK": leak_str,
+        },
+    )
+    assert proc_fail.returncode != 0
+    assert (out_fail / "progress.jsonl").is_file()
+    prog_fail_rows = [
+        json.loads(ln)
+        for ln in (out_fail / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert prog_fail_rows[-1]["kind"] == "run_end"
+    assert prog_fail_rows[-1]["status"] in ("refused", "failed")
+
+    # Path C: Wall / watchdog cut (`rc == 124`)
+    env_cut = fake_colab.setup_fake_colab_environment(tmp_path / "env_cut")
+    out_cut = tmp_path / "out_cut"
+    proc_cut = _run_progress_launcher(
+        env_cut,
+        items_file,
+        out_cut,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_env={
+            "RDLAB_WALL_SECONDS": "3",
+            "FAKE_COLAB_EXEC_SLEEP": "10",
+            "FAKE_COLAB_PROGRESS_PLANT_LEAK": leak_str,
+            "RDLAB_FETCH_MARGIN_SECONDS": "1",
+            "RDLAB_EXEC_MARGIN_SECONDS": "1",
+            "RDLAB_VM_SELF_STOP_MARGIN_SECONDS": "1",
+            "RDLAB_RIG_GRACE_SECONDS": "1",
+            "RDLAB_WATCHDOG_FETCH_TIMEOUT_SECONDS": "5",
+        },
+    )
+    assert proc_cut.returncode == 124
+    assert (out_cut / "progress.jsonl").is_file()
+    prog_cut_text = (out_cut / "progress.jsonl").read_text(encoding="utf-8")
+    assert '"step": "unpack"' in prog_cut_text
+    assert "SecretProxyTokExitPath999" not in prog_cut_text
+    assert "SecretHfTokenExitPath888" not in prog_cut_text
+    assert "colab-runtime-proxy-token=[REDACTED]" in prog_cut_text
+    assert "hf_[REDACTED]" in prog_cut_text
+
+    # Verify no proxy token or HF token appears in ANY file across all output directories
+    for out_d in (out_ok, out_fail, out_cut):
+        for fpath in out_d.rglob("*"):
+            if fpath.is_file() and fpath.suffix != ".gz":
+                txt = fpath.read_text(encoding="utf-8", errors="replace")
+                assert "SecretProxyTokExitPath999" not in txt, f"Proxy token leaked in {fpath}"
+                assert "SecretHfTokenExitPath888" not in txt, f"HF token leaked in {fpath}"
+                assert not vm_judges.UNREDACTED_PROXY_TOKEN_RE.search(
+                    txt,
+                ), f"Unredacted colab-runtime-proxy-token in {fpath}"
+                assert not vm_judges.HF_TOKEN_RE.search(
+                    txt,
+                ), f"Unredacted hf_ token in {fpath}"
+
+
+def test_lost_stream_periodic_fetch_detects_run_end_and_stops_without_waiting_out_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic test (Items 7.4, 7.5 & 7.7): A fake `exec` whose stream goes silent partway
+    (`FAKE_COLAB_LOST_STREAM=1`) while the fake VM keeps running in the background and finishes:
+    periodic fetch updates `<out>/progress.jsonl`, launcher detects completion via `run_end`,
+    kills the hung local `colab exec`, fetches all outputs (`status.json`, `vm_receipt.json`,
+    `result.tar.gz`, `progress.jsonl`), and stops without waiting out `--timeout`.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env_lost_stream")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path, count=2)
+    out_dir = tmp_path / "out_lost_stream"
+
+    t_start = time.monotonic()
+    # With `RDLAB_WALL_SECONDS=120` and small margins, `--timeout` passed to `colab exec` is ~116s.
+    # The background VM takes ~0.75s (5 judges * 0.15s) and writes `run_end`, while foreground
+    # `colab exec` sleeps for 116s with a silent stream. Periodic fetch runs every 1s.
+    proc = _run_progress_launcher(
+        fake_env,
+        items_file,
+        out_dir,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_env={
+            "RDLAB_WALL_SECONDS": "120",
+            "FAKE_COLAB_LOST_STREAM": "1",
+            "FAKE_COLAB_VM_STEP_DELAY_SECONDS": "0.15",
+            "RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS": "1",
+            "RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS": "10",
+            "RDLAB_FETCH_MARGIN_SECONDS": "2",
+            "RDLAB_EXEC_MARGIN_SECONDS": "2",
+            "RDLAB_VM_SELF_STOP_MARGIN_SECONDS": "2",
+            "RDLAB_RIG_GRACE_SECONDS": "5",
+        },
+    )
+    elapsed = time.monotonic() - t_start
+
+    assert proc.returncode == 0, f"stderr={proc.stderr}\nstdout={proc.stdout}"
+    # Must finish promptly via `run_end` detection rather than waiting out the >110s `--timeout`
+    assert elapsed < 35.0, f"Expected early completion via periodic progress fetch, took {elapsed:.2f}s"
+
+    cli_log = (out_dir / "colab-cli.log").read_text(encoding="utf-8")
+    assert "PROGRESS_FETCH_OK" in cli_log
+    assert "PROGRESS_RUN_END_DETECTED" in cli_log
+
+    for expected_file in ("status.json", "vm_receipt.json", "result.tar.gz", "progress.jsonl"):
+        assert (out_dir / expected_file).is_file(), f"Missing fetched output {expected_file}"
+
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    assert status_doc["status"] == "ok"
+    assert status_doc["rc"] == 0
+
+    progress_rows = [
+        json.loads(ln)
+        for ln in (out_dir / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert progress_rows[-1]["kind"] == "run_end"
+    assert progress_rows[-1]["status"] == "ok"
+    judge_dl_rows = [r for r in progress_rows if r["kind"] == "judge_download"]
+    assert len(judge_dl_rows) == 5
+
+    # Session must be stopped cleanly (only the neighbour session survives)
+    sessions_after = json.loads(
+        (fake_env["state_dir"] / "sessions.json").read_text(encoding="utf-8")
+    )
+    assert [s["session_id"] for s in sessions_after] == ["sess-neighbour-keep"]
+
+
+def test_periodic_fetch_knob_validation_and_transient_failure_does_not_stop_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic test (Item 7.6):
+    1. Non-integer / newline values for `RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS` and
+       `RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS` are rejected before session open (`rc == 2`,
+       `BAD_PROGRESS_FETCH_CONFIG`).
+    2. Leading-zero values (`08`, `09`) are normalized in base 10 without octal error.
+    3. A failed periodic fetch is logged (`PROGRESS_FETCH_FAILED`, with tokens scrubbed)
+       and does not stop the run.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path, count=2)
+
+    # 1. Invalid knob values rejected before opening any session
+    for knob_name, bad_val in (
+        ("RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS", "abc"),
+        ("RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS", "10s"),
+        ("RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS", "5\n5"),
+    ):
+        env_bad = fake_colab.setup_fake_colab_environment(
+            tmp_path / f"env_bad_{knob_name}_{bad_val[:2]}"
+        )
+        out_bad = tmp_path / f"out_bad_{knob_name}_{bad_val[:2]}"
+        proc_bad = _run_progress_launcher(
+            env_bad,
+            items_file,
+            out_bad,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            extra_env={knob_name: bad_val},
+        )
+        assert proc_bad.returncode == 2
+        assert "BAD_PROGRESS_FETCH_CONFIG" in (proc_bad.stderr + proc_bad.stdout)
+        calls_file = env_bad["state_dir"] / "calls.jsonl"
+        open_calls = (
+            [
+                json.loads(ln)
+                for ln in calls_file.read_text(encoding="utf-8").splitlines()
+                if ln.strip() and json.loads(ln).get("subcommand") == "open"
+            ]
+            if calls_file.is_file()
+            else []
+        )
+        assert open_calls == []
+
+    # 2. Failed periodic fetch (`FAKE_COLAB_FAIL_PERIODIC_DOWNLOAD=1`) is logged and scrubbed,
+    #    does not stop the run, and leading-zero `01` / `09` knobs work cleanly.
+    env_retry = fake_colab.setup_fake_colab_environment(tmp_path / "env_retry")
+    out_retry = tmp_path / "out_retry"
+    proc_retry = _run_progress_launcher(
+        env_retry,
+        items_file,
+        out_retry,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_env={
+            "RDLAB_WALL_SECONDS": "90",
+            "FAKE_COLAB_LOST_STREAM": "1",
+            "FAKE_COLAB_VM_STEP_DELAY_SECONDS": "0.3",
+            "FAKE_COLAB_FAIL_PERIODIC_DOWNLOAD": "1",
+            "RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS": "01",
+            "RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS": "09",
+            "RDLAB_FETCH_MARGIN_SECONDS": "2",
+            "RDLAB_EXEC_MARGIN_SECONDS": "2",
+            "RDLAB_VM_SELF_STOP_MARGIN_SECONDS": "2",
+            "RDLAB_RIG_GRACE_SECONDS": "5",
+        },
+    )
+    assert proc_retry.returncode == 0, f"stderr={proc_retry.stderr}\nstdout={proc_retry.stdout}"
+    cli_log = (out_retry / "colab-cli.log").read_text(encoding="utf-8")
+    assert "PROGRESS_FETCH_FAILED" in cli_log
+    assert "PROGRESS_FETCH_OK" in cli_log
+    assert "FAKE_PERIODIC_PROXY_SECRET" not in cli_log
+    assert "FakePeriodicSecret99" not in cli_log
+    assert "colab-runtime-proxy-token=[REDACTED]" in cli_log
+    assert "hf_[REDACTED]" in cli_log
+
 
 
 

@@ -223,6 +223,37 @@ elif (( STOP_POLL_SLEEP_SECONDS > 30 )); then
   STOP_POLL_SLEEP_SECONDS=30
 fi
 
+PROGRESS_FETCH_INTERVAL_SECONDS="${RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS-600}"
+PROGRESS_FETCH_TIMEOUT_SECONDS="${RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS-60}"
+if [[ "$PROGRESS_FETCH_INTERVAL_SECONDS" == *$'\n'* || ! "$PROGRESS_FETCH_INTERVAL_SECONDS" =~ ^-?[0123456789]{1,9}$ ]]; then
+  echo "BAD_PROGRESS_FETCH_CONFIG: RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS must be an integer, got '$PROGRESS_FETCH_INTERVAL_SECONDS'" >&2
+  exit 2
+fi
+if [[ "$PROGRESS_FETCH_TIMEOUT_SECONDS" == *$'\n'* || ! "$PROGRESS_FETCH_TIMEOUT_SECONDS" =~ ^-?[0123456789]{1,9}$ ]]; then
+  echo "BAD_PROGRESS_FETCH_CONFIG: RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS must be an integer, got '$PROGRESS_FETCH_TIMEOUT_SECONDS'" >&2
+  exit 2
+fi
+if [[ "$PROGRESS_FETCH_INTERVAL_SECONDS" == -* ]]; then
+  PROGRESS_FETCH_INTERVAL_SECONDS=$(( -10#${PROGRESS_FETCH_INTERVAL_SECONDS#-} ))
+else
+  PROGRESS_FETCH_INTERVAL_SECONDS=$(( 10#$PROGRESS_FETCH_INTERVAL_SECONDS ))
+fi
+if [[ "$PROGRESS_FETCH_TIMEOUT_SECONDS" == -* ]]; then
+  PROGRESS_FETCH_TIMEOUT_SECONDS=$(( -10#${PROGRESS_FETCH_TIMEOUT_SECONDS#-} ))
+else
+  PROGRESS_FETCH_TIMEOUT_SECONDS=$(( 10#$PROGRESS_FETCH_TIMEOUT_SECONDS ))
+fi
+if (( PROGRESS_FETCH_INTERVAL_SECONDS < 1 )); then
+  PROGRESS_FETCH_INTERVAL_SECONDS=1
+elif (( PROGRESS_FETCH_INTERVAL_SECONDS > 3600 )); then
+  PROGRESS_FETCH_INTERVAL_SECONDS=3600
+fi
+if (( PROGRESS_FETCH_TIMEOUT_SECONDS < 1 )); then
+  PROGRESS_FETCH_TIMEOUT_SECONDS=1
+elif (( PROGRESS_FETCH_TIMEOUT_SECONDS > 600 )); then
+  PROGRESS_FETCH_TIMEOUT_SECONDS=600
+fi
+
 WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
 if [[ -n "$EXPLICIT_CAP" ]]; then
   CAP_UNITS="$EXPLICIT_CAP"
@@ -375,6 +406,7 @@ PY
     printf 'colab download -s %s /content/result.tar.gz %s/result.tar.gz\n' "$SESSION_NAME" "$OUT_DIR"
     printf 'colab download -s %s /content/status.json %s/status.json\n' "$SESSION_NAME" "$OUT_DIR"
     printf 'colab download -s %s /content/rdlab_run/vm_receipt.json %s/vm_receipt.json\n' "$SESSION_NAME" "$OUT_DIR"
+    printf 'colab download -s %s /content/rdlab_run/progress.jsonl %s/progress.jsonl\n' "$SESSION_NAME" "$OUT_DIR"
     printf 'colab stop -s %s\n' "$SESSION_NAME"
     printf 'colab sessions\n'
   } | scrub_stream
@@ -387,6 +419,8 @@ OUTCOME_FILE="$OUT_DIR/outcome.draft.json"
 FETCH_CLAIM_DIR="$OUT_DIR/.rig_fetch_claim"
 FETCH_DONE_MARKER="$OUT_DIR/.rig_fetched"
 DEADLINE_MARKER="$OUT_DIR/.rig_deadline_exceeded"
+RUN_END_DETECTED_MARKER="$OUT_DIR/.rig_run_end_detected"
+EXEC_OUT_TMP="$OUT_DIR/.rig_exec_out.tmp"
 touch "$CLI_LOG"
 
 log_msg() {
@@ -417,6 +451,9 @@ POST_SESSIONS=""
 FETCHED=0
 STOPPED=0
 WATCHDOG_PID=""
+PERIODIC_FETCH_PID=""
+PROGRESS_FETCH_SEQ=0
+EXEC_PID=""
 RUN_OUTCOME="failed"
 RUN_WHY="window exited before completion"
 START_EPOCH="$(date +%s)"
@@ -471,9 +508,44 @@ fetch_results_once() {
     timeout "$eff_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
     timeout "$eff_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
     timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
+    timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl" </dev/null >/dev/null 2>&1 || true
+    "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" >/dev/null 2>&1 <<'PY' || true
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+out_dir = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+for name in ("progress.jsonl", "status.json", "vm_receipt.json"):
+    p = out_dir / name
+    if p.is_file():
+        vm_judges.scrub_log_file_in_place(p)
+PY
   fi
   log_msg "FETCH_DONE session=$S"
   touch "$FETCH_DONE_MARKER"
+}
+
+periodic_fetch_progress_once() {
+  if [[ "$NEW_SUCCEEDED" -ne 1 ]] || [[ -z "$S" ]] || [[ -f "$FETCH_DONE_MARKER" ]] || [[ -f "$DEADLINE_MARKER" ]] || [[ -f "$OUT_DIR/.rig_stopped" ]]; then
+    return 1
+  fi
+  PROGRESS_FETCH_SEQ=$((PROGRESS_FETCH_SEQ + 1))
+  local tmp_progress="$OUT_DIR/progress.jsonl.tmp.$$.$PROGRESS_FETCH_SEQ"
+  local dl_rc=0
+  local dl_err=""
+  dl_err="$(timeout "$PROGRESS_FETCH_TIMEOUT_SECONDS" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$tmp_progress" </dev/null 2>&1)" || dl_rc=$?
+  if [[ "$dl_rc" -eq 0 ]] && [[ -f "$tmp_progress" ]]; then
+    "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.scrub_log_file_in_place(Path(sys.argv[2]))" "$REPO_ROOT" "$tmp_progress" >/dev/null 2>&1 || true
+    mv -f "$tmp_progress" "$OUT_DIR/progress.jsonl"
+    log_msg "PROGRESS_FETCH_OK session=$S"
+    return 0
+  fi
+  rm -f "$tmp_progress" 2>/dev/null || true
+  log_msg "PROGRESS_FETCH_FAILED session=$S rc=$dl_rc detail=${dl_err:-download_failed}"
+  return 1
 }
 
 write_outcome_draft() {
@@ -618,6 +690,22 @@ stop_all() {
   local exit_code=$?
   set +e
   cleanup_stage
+  if [[ -n "$PERIODIC_FETCH_PID" ]]; then
+    pkill -P "$PERIODIC_FETCH_PID" 2>/dev/null || true
+    kill "$PERIODIC_FETCH_PID" 2>/dev/null || true
+    wait "$PERIODIC_FETCH_PID" 2>/dev/null || true
+    PERIODIC_FETCH_PID=""
+  fi
+  if [[ -n "$EXEC_PID" ]]; then
+    pkill -P "$EXEC_PID" 2>/dev/null || true
+    kill "$EXEC_PID" 2>/dev/null || true
+    wait "$EXEC_PID" 2>/dev/null || true
+    EXEC_PID=""
+  fi
+  if [[ -n "${EXEC_OUT_TMP:-}" ]] && [[ -f "$EXEC_OUT_TMP" ]]; then
+    scrub_stream < "$EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
+    rm -f "$EXEC_OUT_TMP" 2>/dev/null || true
+  fi
   if [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]] && [[ "$STOPPED" -eq 0 ]] && [[ ! -f "$OUT_DIR/.rig_stopped" ]]; then
     fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
   fi
@@ -678,8 +766,26 @@ stop_all() {
   elif [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]]; then
     rm -f "$LOCK_DIR/$S.lock"
   fi
-  rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$OUT_DIR/.rig_stopped" 2>/dev/null || true
-  "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.scrub_log_file_in_place(Path(sys.argv[2]))" "$REPO_ROOT" "$CLI_LOG" >/dev/null 2>&1 || true
+  rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$RUN_END_DETECTED_MARKER" "$EXEC_OUT_TMP" "$OUT_DIR/.rig_stopped" "$OUT_DIR"/progress.jsonl.tmp.* 2>/dev/null || true
+  "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" "$CLI_LOG" >/dev/null 2>&1 <<'PY' || true
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+out_dir = Path(sys.argv[2])
+cli_log = Path(sys.argv[3])
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+for p in (
+    cli_log,
+    out_dir / "progress.jsonl",
+    out_dir / "status.json",
+    out_dir / "vm_receipt.json",
+):
+    if p.is_file():
+        vm_judges.scrub_log_file_in_place(p)
+PY
   write_outcome_draft
   exit "$exit_code"
 }
@@ -1044,7 +1150,10 @@ fi
 flock -u 9 || true
 log_msg "LOCK_RELEASED session=$S"
 
-rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$OUT_DIR/.rig_stopped" "$OUT_DIR/status.json"
+rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$RUN_END_DETECTED_MARKER" "$EXEC_OUT_TMP" "$OUT_DIR/.rig_stopped" "$OUT_DIR/status.json" "$OUT_DIR"/progress.jsonl.tmp.*
+if [[ "$EFFECTIVE_RESUME" -ne 1 ]]; then
+  rm -f "$OUT_DIR/progress.jsonl"
+fi
 (
   SLEEP_PID=""
   trap 'if [[ -n "$SLEEP_PID" ]]; then kill "$SLEEP_PID" 2>/dev/null || true; fi; exit 0' TERM INT
@@ -1084,8 +1193,54 @@ cleanup_stage
 
 build_exec_env_args
 EXEC_RC=0
+: > "$EXEC_OUT_TMP"
 timeout --signal=TERM --kill-after=15 "${RIG_TIMEOUT}s" \
-  colab exec -s "$S" "${EXEC_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || EXEC_RC=$?
+  colab exec -s "$S" "${EXEC_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null >"$EXEC_OUT_TMP" 2>&1 9>&- &
+EXEC_PID="$!"
+
+(
+  FETCH_SLEEP_PID=""
+  trap 'if [[ -n "$FETCH_SLEEP_PID" ]]; then kill "$FETCH_SLEEP_PID" 2>/dev/null || true; fi; exit 0' TERM INT
+  while kill -0 "$EXEC_PID" 2>/dev/null; do
+    sleep "$PROGRESS_FETCH_INTERVAL_SECONDS" &
+    FETCH_SLEEP_PID="$!"
+    wait "$FETCH_SLEEP_PID" 2>/dev/null || exit 0
+    FETCH_SLEEP_PID=""
+    if ! kill -0 "$EXEC_PID" 2>/dev/null || [[ -f "$FETCH_DONE_MARKER" ]] || [[ -f "$DEADLINE_MARKER" ]] || [[ -f "$OUT_DIR/.rig_stopped" ]]; then
+      break
+    fi
+    if periodic_fetch_progress_once; then
+      if grep -Eq '"kind"[[:space:]]*:[[:space:]]*"run_end"' "$OUT_DIR/progress.jsonl" 2>/dev/null; then
+        touch "$RUN_END_DETECTED_MARKER"
+        log_msg "PROGRESS_RUN_END_DETECTED session=$S"
+        pkill -TERM -P "$EXEC_PID" 2>/dev/null || true
+        kill -TERM "$EXEC_PID" 2>/dev/null || true
+        break
+      fi
+    fi
+  done
+) </dev/null >/dev/null 2>&1 9>&- &
+PERIODIC_FETCH_PID="$!"
+
+wait "$EXEC_PID" 2>/dev/null || EXEC_RC=$?
+EXEC_PID=""
+
+if [[ -n "$PERIODIC_FETCH_PID" ]]; then
+  pkill -P "$PERIODIC_FETCH_PID" 2>/dev/null || true
+  kill "$PERIODIC_FETCH_PID" 2>/dev/null || true
+  wait "$PERIODIC_FETCH_PID" 2>/dev/null || true
+  PERIODIC_FETCH_PID=""
+fi
+
+if [[ -f "$EXEC_OUT_TMP" ]]; then
+  scrub_stream < "$EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
+  rm -f "$EXEC_OUT_TMP" 2>/dev/null || true
+fi
+
+if [[ -f "$RUN_END_DETECTED_MARKER" ]]; then
+  rm -f "$RUN_END_DETECTED_MARKER"
+  EXEC_RC=0
+fi
 
 if [[ -f "$DEADLINE_MARKER" ]]; then
   if [[ -n "$WATCHDOG_PID" ]]; then
@@ -1177,6 +1332,10 @@ for rel_name in ("schedule.json", "generations.jsonl", "time_one_summary.json", 
     if src.is_file():
         shutil.copyfile(src, out_dir / rel_name)
 
+src_progress = extract_dir / "progress.jsonl"
+if src_progress.is_file() and not (out_dir / "progress.jsonl").is_file():
+    shutil.copyfile(src_progress, out_dir / "progress.jsonl")
+
 src_rows = extract_dir / "rows"
 if src_rows.is_dir():
     dst_rows = out_dir / "rows"
@@ -1186,11 +1345,27 @@ if src_rows.is_dir():
             shutil.copyfile(rf, dst_rows / rf.name)
 
 vm_judges.scrub_log_file_in_place(cli_log)
+for extra_f in (
+    out_dir / "progress.jsonl",
+    out_dir / "status.json",
+    out_dir / "vm_receipt.json",
+    extract_dir / "progress.jsonl",
+    extract_dir / "vm_receipt.json",
+):
+    if extra_f.is_file():
+        vm_judges.scrub_log_file_in_place(extra_f)
 for lf in (extract_dir / "logs").glob("*.log"):
     vm_judges.scrub_log_file_in_place(lf)
 
 claim_hashes = vm_judges.collect_claim_ngram_sha256s(items_file)
 paths_to_check: list[Path] = [cli_log]
+for top_f in (
+    out_dir / "progress.jsonl",
+    out_dir / "status.json",
+    out_dir / "vm_receipt.json",
+):
+    if top_f.is_file():
+        paths_to_check.append(top_f)
 for p in sorted(extract_dir.rglob("*")):
     if p.is_file():
         paths_to_check.append(p)
@@ -1207,6 +1382,7 @@ except vm_judges.RefusalError as exc:
         out_dir / "schedule.json",
         out_dir / "generations.jsonl",
         out_dir / "time_one_summary.json",
+        out_dir / "progress.jsonl",
         out_dir / "outputs-closed.json",
     ):
         if q.is_file():

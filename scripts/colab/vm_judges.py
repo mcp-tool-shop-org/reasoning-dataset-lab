@@ -57,6 +57,7 @@ D3_MINI_REVIEWED_REVISION = "bd0090dd758d32ba59ef5c749910a8e87fc4391f"
 SCHEDULE_FILENAME = "schedule.json"
 GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
+PROGRESS_FILENAME = "progress.jsonl"
 ROWS_DIRNAME = "rows"
 
 # Disk preflight constants for the 5 bake-off judges and 2 CPython 3.15 venvs:
@@ -266,6 +267,7 @@ TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
         GENERATIONS_FILENAME,
         "time_one_summary.json",
         "vm_receipt.json",
+        PROGRESS_FILENAME,
     }
 )
 TAR_ALLOWED_DIRS: frozenset[str] = frozenset(
@@ -325,6 +327,230 @@ def scrub_log_file_in_place(path: Path) -> None:
     scrubbed = scrub_log_text(raw)
     if scrubbed != raw:
         path.write_text(scrubbed, encoding="utf-8", newline="\n")
+
+
+def _utc_now_iso() -> str:
+    """Return current UTC timestamp in ISO-8601 format ending with `Z`."""
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _read_cgroup_int(path: Path) -> int | None:
+    """Read a non-negative integer byte count from a cgroup file, returning `None` on `'max'` or unreadable."""
+    try:
+        if not path.is_file():
+            return None
+        raw = path.read_text(encoding="utf-8", errors="replace").strip()
+        if not raw or raw.lower() == "max":
+            return None
+        first_token = raw.split()[0]
+        if not re.fullmatch(r"\d+", first_token):
+            return None
+        val = int(first_token)
+        return val if val >= 0 else None
+    except Exception:
+        return None
+
+
+def read_vm_memory_snapshot(
+    *,
+    proc_meminfo_path: Path | None = None,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+) -> dict[str, int | None]:
+    """Read `mem_available_bytes` from `/proc/meminfo` (`MemAvailable`) and optional cgroup memory files.
+
+    Records `None` (`null` in JSON) where unreadable; never raises an exception.
+    """
+    mem_available_bytes: int | None = None
+    cgroup_memory_current: int | None = None
+    cgroup_memory_max: int | None = None
+
+    meminfo_p = (
+        Path(proc_meminfo_path)
+        if proc_meminfo_path is not None
+        else Path("/proc/meminfo")
+    )
+    try:
+        if meminfo_p.is_file():
+            for line in meminfo_p.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                m = re.match(
+                    r"^MemAvailable:\s*(\d+)(?:\s*([A-Za-z]+))?\s*$",
+                    line.strip(),
+                    flags=re.IGNORECASE,
+                )
+                if m:
+                    raw_val = int(m.group(1))
+                    unit = (m.group(2) or "kb").lower()
+                    if unit == "b":
+                        mem_available_bytes = raw_val
+                    elif unit == "mb":
+                        mem_available_bytes = raw_val * 1024 * 1024
+                    elif unit == "gb":
+                        mem_available_bytes = raw_val * 1024 * 1024 * 1024
+                    else:
+                        mem_available_bytes = raw_val * 1024
+                    break
+    except Exception:
+        mem_available_bytes = None
+
+    cg_root = (
+        Path(cgroup_root) if cgroup_root is not None else Path("/sys/fs/cgroup")
+    )
+    cg_proc = (
+        Path(proc_cgroup_path)
+        if proc_cgroup_path is not None
+        else Path("/proc/self/cgroup")
+    )
+    try:
+        candidate_dirs: list[Path] = []
+        if cg_proc.is_file():
+            for line in cg_proc.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                parts = line.strip().split(":", 2)
+                if len(parts) != 3:
+                    continue
+                _hid, controllers, cg_rel_raw = parts
+                cg_rel = cg_rel_raw.strip().lstrip("/")
+                ctrl_list = [c.strip() for c in controllers.split(",") if c.strip()]
+                if not ctrl_list and cg_rel:
+                    candidate_dirs.append(cg_root / cg_rel)
+                elif "memory" in ctrl_list and cg_rel:
+                    candidate_dirs.append(cg_root / "memory" / cg_rel)
+                    candidate_dirs.append(cg_root / cg_rel)
+        candidate_dirs.append(cg_root)
+        candidate_dirs.append(cg_root / "memory")
+
+        seen_dirs: set[str] = set()
+        for cand in candidate_dirs:
+            key = str(cand)
+            if key in seen_dirs:
+                continue
+            seen_dirs.add(key)
+            if cgroup_memory_current is None:
+                for cur_name in ("memory.current", "memory.usage_in_bytes"):
+                    val = _read_cgroup_int(cand / cur_name)
+                    if val is not None:
+                        cgroup_memory_current = val
+                        break
+            if cgroup_memory_max is None:
+                for max_name in ("memory.max", "memory.limit_in_bytes"):
+                    val = _read_cgroup_int(cand / max_name)
+                    if val is not None:
+                        cgroup_memory_max = val
+                        break
+            if cgroup_memory_current is not None and cgroup_memory_max is not None:
+                break
+    except Exception:
+        pass
+
+    return {
+        "mem_available_bytes": mem_available_bytes,
+        "cgroup_memory_current": cgroup_memory_current,
+        "cgroup_memory_max": cgroup_memory_max,
+    }
+
+
+def append_progress_line(
+    progress_path: Path | None,
+    payload: Mapping[str, Any],
+    *,
+    echo_stdout: bool = True,
+    proc_meminfo_path: Path | None = None,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+) -> dict[str, Any]:
+    """Append one scrubbed JSON line (with memory fields) to `progress_path` (flushed and fsynced) and print to stdout."""
+    mem_snapshot = read_vm_memory_snapshot(
+        proc_meminfo_path=proc_meminfo_path,
+        cgroup_root=cgroup_root,
+        proc_cgroup_path=proc_cgroup_path,
+    )
+    record: dict[str, Any] = dict(payload)
+    for k in ("mem_available_bytes", "cgroup_memory_current", "cgroup_memory_max"):
+        if k not in record:
+            record[k] = mem_snapshot[k]
+
+    raw_line = json.dumps(record, separators=(",", ":"))
+    scrubbed_line = scrub_log_text(raw_line)
+    parsed_record: dict[str, Any] = json.loads(scrubbed_line)
+
+    if progress_path is not None:
+        ensure_not_drive_path(progress_path)
+        progress_path.parent.mkdir(parents=True, exist_ok=True)
+        with progress_path.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(scrubbed_line + "\n")
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+
+    if echo_stdout:
+        sys.stdout.write(scrubbed_line + "\n")
+        sys.stdout.flush()
+
+    return parsed_record
+
+
+def _record_step_start(
+    step_name: str,
+    *,
+    progress_path: Path | None = None,
+    extra: Mapping[str, Any] | None = None,
+) -> tuple[float, str, dict[str, Any]]:
+    """Write a `step_start` progress line for `step_name` and return `(t0_monotonic, start_iso, line_record)`."""
+    t0 = time.monotonic()
+    start_iso = _utc_now_iso()
+    payload: dict[str, Any] = {
+        "kind": "step_start",
+        "step": step_name,
+        "phase": "start",
+        "start": start_iso,
+    }
+    if extra:
+        payload.update(extra)
+    rec = append_progress_line(progress_path, payload)
+    return t0, start_iso, rec
+
+
+def _record_step_end(
+    step_name: str,
+    t0: float,
+    start_iso: str,
+    *,
+    progress_path: Path | None = None,
+    status: str = "ok",
+    step_timings: dict[str, dict[str, Any]] | None = None,
+    step_order: list[str] | None = None,
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Write a `step_end` progress line for `step_name` and record it in `step_timings` / `step_order`."""
+    elapsed_s = round(max(0.0, time.monotonic() - t0), 6)
+    end_iso = _utc_now_iso()
+    payload: dict[str, Any] = {
+        "kind": "step_end",
+        "step": step_name,
+        "phase": "end",
+        "status": status,
+        "start": start_iso,
+        "end": end_iso,
+        "seconds": elapsed_s,
+    }
+    if extra:
+        payload.update(extra)
+    rec = append_progress_line(progress_path, payload)
+    if step_timings is not None:
+        step_timings[step_name] = rec
+    if step_order is not None and step_name not in step_order:
+        step_order.append(step_name)
+    return rec
 
 
 _ACTIVE_VM_LOG_PATH: Path | None = None
@@ -908,6 +1134,9 @@ def sync_judge_venvs(
     *,
     mode: str,
     dryrun: bool = False,
+    progress_path: Path | None = None,
+    step_timings: dict[str, dict[str, Any]] | None = None,
+    step_order: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create and sync `venv-judge` and `venv-d3` on the VM (and run the pyyaml sdist build in `--stub`)."""
     py_report = find_or_install_vm_python_315()
@@ -946,38 +1175,60 @@ def sync_judge_venvs(
         str(work_dir / "pyyaml-sdist.lock.txt"),
     ]
 
-    if dryrun:
-        return {
-            "python_version": REQUIRED_PYTHON_VERSION,
-            "python_315": str(py_report["python_315"]),
-            "uv_version": str(py_report["uv_version"]),
-            "python_315_report": py_report,
-            "lock_sdists": lock_sdists,
-            "hf_deactivate_async_load": "1",
-            "pyyaml_sdist_build": {
-                "mode": mode,
-                "executed_in_stub": mode == "stub",
-                "sdist": PYYAML_SDIST_FILENAME,
-                "sha256": PYYAML_SDIST_SHA256,
-                "cmd": pyyaml_build_cmd,
-            },
-            "venv_judge": plan["venv_judge"],
-            "venv_d3": plan["venv_d3"],
-        }
+    if not dryrun:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        sync_env = build_vm_uv_env()
+    else:
+        sync_env = {}
 
-    work_dir.mkdir(parents=True, exist_ok=True)
-    sync_env = build_vm_uv_env()
-
-    if mode == "stub":
+    t_pyyaml, start_pyyaml, _ = _record_step_start(
+        "pyyaml_sdist_build",
+        progress_path=progress_path,
+        extra={
+            "sdist": PYYAML_SDIST_FILENAME,
+            "sha256": PYYAML_SDIST_SHA256,
+            "executed_in_stub": mode == "stub",
+        },
+    )
+    if not dryrun and mode == "stub":
         pyyaml_lock_file = work_dir / "pyyaml-sdist.lock.txt"
         pyyaml_lock_file.write_text(pyyaml_req_text, encoding="utf-8", newline="\n")
         run_vm_subprocess(plan["venv_judge"]["venv_cmd"], env=sync_env, check=True)
         run_vm_subprocess(pyyaml_build_cmd, env=sync_env, check=True)
+    pyyaml_timing = _record_step_end(
+        "pyyaml_sdist_build",
+        t_pyyaml,
+        start_pyyaml,
+        progress_path=progress_path,
+        step_timings=step_timings,
+        step_order=step_order,
+        extra={
+            "sdist": PYYAML_SDIST_FILENAME,
+            "sha256": PYYAML_SDIST_SHA256,
+            "executed_in_stub": mode == "stub",
+        },
+    )
 
+    venv_timings_by_key: dict[str, dict[str, Any]] = {}
     for key in ("venv_judge", "venv_d3"):
         vinfo = plan[key]
-        run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)
-        run_vm_subprocess(vinfo["sync_cmd"], env=sync_env, check=True)
+        t_venv, start_venv, _ = _record_step_start(
+            key,
+            progress_path=progress_path,
+            extra={"venv": vinfo["path"], "lock": vinfo["lock"]},
+        )
+        if not dryrun:
+            run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)
+            run_vm_subprocess(vinfo["sync_cmd"], env=sync_env, check=True)
+        venv_timings_by_key[key] = _record_step_end(
+            key,
+            t_venv,
+            start_venv,
+            progress_path=progress_path,
+            step_timings=step_timings,
+            step_order=step_order,
+            extra={"venv": vinfo["path"], "lock": vinfo["lock"]},
+        )
 
     return {
         "python_version": REQUIRED_PYTHON_VERSION,
@@ -992,9 +1243,22 @@ def sync_judge_venvs(
             "sdist": PYYAML_SDIST_FILENAME,
             "sha256": PYYAML_SDIST_SHA256,
             "cmd": pyyaml_build_cmd,
+            "start": pyyaml_timing["start"],
+            "end": pyyaml_timing["end"],
+            "seconds": pyyaml_timing["seconds"],
         },
-        "venv_judge": plan["venv_judge"],
-        "venv_d3": plan["venv_d3"],
+        "venv_judge": {
+            **plan["venv_judge"],
+            "start": venv_timings_by_key["venv_judge"]["start"],
+            "end": venv_timings_by_key["venv_judge"]["end"],
+            "seconds": venv_timings_by_key["venv_judge"]["seconds"],
+        },
+        "venv_d3": {
+            **plan["venv_d3"],
+            "start": venv_timings_by_key["venv_d3"]["start"],
+            "end": venv_timings_by_key["venv_d3"]["end"],
+            "seconds": venv_timings_by_key["venv_d3"]["seconds"],
+        },
     }
 
 
@@ -1040,29 +1304,176 @@ def verify_all_judge_snapshots(
     return verified
 
 
+def _judge_snapshot_bytes_on_disk(
+    spec: Any,
+    hf_home: Path,
+    returned_path: str | Path | None = None,
+) -> int:
+    """Compute total regular file bytes on disk for a judge snapshot directory."""
+    candidate_dirs: list[Path] = []
+    if returned_path is not None:
+        try:
+            rp = Path(returned_path)
+            if rp.is_dir():
+                candidate_dirs.append(rp)
+        except Exception:
+            pass
+    owner, repo = str(spec.repo_id).split("/", 1)
+    model_dir_name = f"models--{owner}--{repo}"
+    candidate_dirs.append(
+        hf_home / "hub" / model_dir_name / "snapshots" / str(spec.revision)
+    )
+    candidate_dirs.append(
+        hf_home / model_dir_name / "snapshots" / str(spec.revision)
+    )
+    for snap_dir in candidate_dirs:
+        if snap_dir.is_dir():
+            total = 0
+            for p in snap_dir.rglob("*"):
+                try:
+                    if p.is_file():
+                        total += int(p.stat().st_size)
+                except OSError:
+                    pass
+            return total
+    return 0
+
+
+def download_all_judge_weights(
+    hf_home: Path,
+    *,
+    dryrun: bool = False,
+    repo_dir: Path | None = None,
+    progress_path: Path | None = None,
+    snapshot_download_fn: Any = None,
+) -> list[dict[str, Any]]:
+    """Download each judge at its pinned 40-char revision and emit `judge_download_start` / `judge_download` progress lines."""
+    _ensure_repo_imports(repo_dir)
+    ensure_not_drive_path(hf_home)
+
+    dl_fn = snapshot_download_fn
+    if dl_fn is None:
+        fake_hf_mod = sys.modules.get("huggingface_hub")
+        if not dryrun or getattr(fake_hf_mod, "_IS_FAKE_HF_HUB", False):
+            from huggingface_hub import snapshot_download as _hf_snapshot_download  # type: ignore[import-not-found]
+
+            dl_fn = _hf_snapshot_download
+
+    hub_cache = hf_home / "hub"
+    if dl_fn is not None:
+        hub_cache.mkdir(parents=True, exist_ok=True)
+
+    cumulative_bytes = 0
+    cumulative_seconds = 0.0
+    judge_records: list[dict[str, Any]] = []
+
+    for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+        t0 = time.monotonic()
+        start_iso = _utc_now_iso()
+        append_progress_line(
+            progress_path,
+            {
+                "kind": "judge_download_start",
+                "judge_id": judge_id,
+                "judge": judge_id,
+                "repo_id": spec.repo_id,
+                "revision": spec.revision,
+                "start": start_iso,
+                "cumulative_bytes": cumulative_bytes,
+                "cumulative_seconds": round(cumulative_seconds, 6),
+            },
+        )
+        returned_snap: str | Path | None = None
+        if dl_fn is not None:
+            returned_snap = dl_fn(
+                repo_id=spec.repo_id,
+                revision=spec.revision,
+                cache_dir=str(hub_cache),
+            )
+        snap_bytes = _judge_snapshot_bytes_on_disk(spec, hf_home, returned_snap)
+        elapsed_s = max(0.0, time.monotonic() - t0)
+        end_iso = _utc_now_iso()
+        cumulative_bytes += snap_bytes
+        cumulative_seconds += elapsed_s
+        rec = append_progress_line(
+            progress_path,
+            {
+                "kind": "judge_download",
+                "judge_id": judge_id,
+                "judge": judge_id,
+                "repo_id": spec.repo_id,
+                "revision": spec.revision,
+                "bytes": snap_bytes,
+                "bytes_on_disk": snap_bytes,
+                "start": start_iso,
+                "end": end_iso,
+                "seconds": round(elapsed_s, 6),
+                "cumulative_bytes": cumulative_bytes,
+                "cumulative_seconds": round(cumulative_seconds, 6),
+            },
+        )
+        judge_records.append(rec)
+
+    return judge_records
+
+
 def download_and_verify_all_judge_weights(
     receipts_dir: Path,
     hf_home: Path,
     *,
     dryrun: bool = False,
     repo_dir: Path | None = None,
+    progress_path: Path | None = None,
+    snapshot_download_fn: Any = None,
+    judge_records_out: list[dict[str, Any]] | None = None,
+    step_timings: dict[str, dict[str, Any]] | None = None,
+    step_order: list[str] | None = None,
 ) -> dict[str, str]:
     """Download each judge at its pinned 40-char revision (when not dryrun) and verify all snapshots against receipts."""
     _ensure_repo_imports(repo_dir)
     ensure_not_drive_path(receipts_dir)
     ensure_not_drive_path(hf_home)
-    if not dryrun:
-        from huggingface_hub import snapshot_download  # type: ignore[import-not-found]
 
-        hub_cache = hf_home / "hub"
-        hub_cache.mkdir(parents=True, exist_ok=True)
-        for _, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
-            snapshot_download(
-                repo_id=spec.repo_id,
-                revision=spec.revision,
-                cache_dir=str(hub_cache),
-            )
-    return verify_all_judge_snapshots(receipts_dir, hf_home, repo_dir=repo_dir)
+    t_dl, start_dl, _ = _record_step_start("download", progress_path=progress_path)
+    records = download_all_judge_weights(
+        hf_home,
+        dryrun=dryrun,
+        repo_dir=repo_dir,
+        progress_path=progress_path,
+        snapshot_download_fn=snapshot_download_fn,
+    )
+    if judge_records_out is not None:
+        judge_records_out.extend(records)
+    _record_step_end(
+        "download",
+        t_dl,
+        start_dl,
+        progress_path=progress_path,
+        step_timings=step_timings,
+        step_order=step_order,
+        extra={
+            "judges_count": len(records),
+            "cumulative_bytes": records[-1]["cumulative_bytes"] if records else 0,
+            "cumulative_seconds": (
+                records[-1]["cumulative_seconds"] if records else 0.0
+            ),
+        },
+    )
+
+    t_ver, start_ver, _ = _record_step_start("verify", progress_path=progress_path)
+    verified = verify_all_judge_snapshots(
+        receipts_dir, hf_home, repo_dir=repo_dir
+    )
+    _record_step_end(
+        "verify",
+        t_ver,
+        start_ver,
+        progress_path=progress_path,
+        step_timings=step_timings,
+        step_order=step_order,
+        extra={"verified_judges": len(verified)},
+    )
+    return verified
 
 
 def check_upload_path_allowed(path: str | Path) -> None:
@@ -2880,11 +3291,56 @@ def main(argv: list[str] | None = None) -> int:
     logs_dir.mkdir(parents=True, exist_ok=True)
     vm_log_path = logs_dir / "vm.log"
     receipt_path = args.run_dir / "vm_receipt.json"
+    progress_path = args.run_dir / PROGRESS_FILENAME
+    ensure_not_drive_path(progress_path)
+    if not args.resume and progress_path.is_file():
+        try:
+            progress_path.unlink()
+        except OSError:
+            pass
     dryrun = bool(args.dryrun or os.environ.get("VM_DRYRUN") == "1")
     current_step = "init"
     deleted_items_receipt: dict[str, Any] | None = None
+    step_timings: dict[str, dict[str, Any]] = {}
+    step_order: list[str] = []
+    judge_download_records: list[dict[str, Any]] = []
     prev_log_path = _ACTIVE_VM_LOG_PATH
     _ACTIVE_VM_LOG_PATH = vm_log_path
+
+    def _build_timings_block() -> dict[str, Any]:
+        venv_sync_entry = step_timings.get("venv_sync")
+        venv_sync_block: dict[str, Any] | None = None
+        if venv_sync_entry is not None:
+            venv_sync_block = {
+                **venv_sync_entry,
+                "pyyaml_sdist_build": step_timings.get("pyyaml_sdist_build"),
+                "venv_judge": step_timings.get("venv_judge"),
+                "venv_d3": step_timings.get("venv_d3"),
+            }
+        dl_entry = step_timings.get("download")
+        dl_block: dict[str, Any] | None = None
+        if dl_entry is not None or judge_download_records:
+            dl_block = {
+                **(dl_entry or {}),
+                "judges": list(judge_download_records),
+            }
+        return {
+            "steps": dict(step_timings),
+            "step_order": list(step_order),
+            "judges": list(judge_download_records),
+            "judge_downloads": list(judge_download_records),
+            "judges_by_id": {r["judge_id"]: r for r in judge_download_records},
+            "unpack": step_timings.get("unpack"),
+            "lock_digests": step_timings.get("lock_digests"),
+            "venv_sync": venv_sync_block,
+            "pyyaml_sdist_build": step_timings.get("pyyaml_sdist_build"),
+            "venv_judge": step_timings.get("venv_judge"),
+            "venv_d3": step_timings.get("venv_d3"),
+            "download": dl_block,
+            "verify": step_timings.get("verify"),
+            "judge_pass": step_timings.get("judge_pass"),
+            "result_packing": step_timings.get("result_packing"),
+        }
 
     try:
         current_step = "check_upload_path_allowed"
@@ -2894,6 +3350,9 @@ def main(argv: list[str] | None = None) -> int:
         verify_items_allowlist(args.items_file)
 
         current_step = "unpack_uploaded_archives"
+        t_unpack, start_unpack, _ = _record_step_start(
+            "unpack", progress_path=progress_path
+        )
         unpack_uploaded_archives(
             repo_tar=args.repo_tar,
             repo_dir=args.repo_dir,
@@ -2903,8 +3362,19 @@ def main(argv: list[str] | None = None) -> int:
             run_dir=args.run_dir,
         )
         _ensure_repo_imports(args.repo_dir)
+        _record_step_end(
+            "unpack",
+            t_unpack,
+            start_unpack,
+            progress_path=progress_path,
+            step_timings=step_timings,
+            step_order=step_order,
+        )
 
         current_step = "verify_lock_digests"
+        t_locks, start_locks, _ = _record_step_start(
+            "lock_digests", progress_path=progress_path
+        )
         judge_lock = args.repo_dir / "scripts" / "colab" / "locks" / "judge.lock.txt"
         d3_lock = args.repo_dir / "scripts" / "colab" / "locks" / "d3.lock.txt"
         lock_digests = verify_lock_digests(
@@ -2913,13 +3383,35 @@ def main(argv: list[str] | None = None) -> int:
             env_judge_sha256=os.environ.get("RDLAB_JUDGE_LOCK_SHA256"),
             env_d3_sha256=os.environ.get("RDLAB_D3_LOCK_SHA256"),
         )
+        _record_step_end(
+            "lock_digests",
+            t_locks,
+            start_locks,
+            progress_path=progress_path,
+            step_timings=step_timings,
+            step_order=step_order,
+        )
 
         current_step = "sync_judge_venvs"
+        t_vsync, start_vsync, _ = _record_step_start(
+            "venv_sync", progress_path=progress_path
+        )
         venv_info = sync_judge_venvs(
             args.work_dir,
             args.repo_dir,
             mode=args.mode,
             dryrun=dryrun,
+            progress_path=progress_path,
+            step_timings=step_timings,
+            step_order=step_order,
+        )
+        _record_step_end(
+            "venv_sync",
+            t_vsync,
+            start_vsync,
+            progress_path=progress_path,
+            step_timings=step_timings,
+            step_order=step_order,
         )
 
         current_step = "download_and_verify_all_judge_weights"
@@ -2928,9 +3420,16 @@ def main(argv: list[str] | None = None) -> int:
             args.hf_home,
             dryrun=dryrun,
             repo_dir=args.repo_dir,
+            progress_path=progress_path,
+            judge_records_out=judge_download_records,
+            step_timings=step_timings,
+            step_order=step_order,
         )
 
         current_step = "run_judges_pipeline"
+        t_jpass, start_jpass, _ = _record_step_start(
+            "judge_pass", progress_path=progress_path
+        )
         part_dir = args.items_file.parent
         time_one_summary, pilot_mass_readout = run_judges_pipeline(
             mode=args.mode,
@@ -2941,6 +3440,14 @@ def main(argv: list[str] | None = None) -> int:
             vram_halt_mib=args.vram_halt_mib,
             dryrun=dryrun,
             repo_root=args.repo_dir,
+        )
+        _record_step_end(
+            "judge_pass",
+            t_jpass,
+            start_jpass,
+            progress_path=progress_path,
+            step_timings=step_timings,
+            step_order=step_order,
         )
 
         current_step = "delete_uploaded_items"
@@ -2956,6 +3463,11 @@ def main(argv: list[str] | None = None) -> int:
 
         for lf in logs_dir.glob("*.log"):
             scrub_log_file_in_place(lf)
+
+        current_step = "build_allowlisted_result_tar"
+        t_pack, start_pack, _ = _record_step_start(
+            "result_packing", progress_path=progress_path
+        )
 
         py_rep = venv_info["python_315_report"]
         receipt_doc: dict[str, Any] = {
@@ -2986,6 +3498,7 @@ def main(argv: list[str] | None = None) -> int:
             "harness_readouts": {
                 "pilot_mass_check": pilot_mass_readout,
             },
+            "timings": _build_timings_block(),
             "dryrun": dryrun,
         }
         receipt_path.write_text(
@@ -2993,9 +3506,23 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
             newline="\n",
         )
-
-        current_step = "build_allowlisted_result_tar"
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
+        _record_step_end(
+            "result_packing",
+            t_pack,
+            start_pack,
+            progress_path=progress_path,
+            step_timings=step_timings,
+            step_order=step_order,
+        )
+        receipt_doc["timings"] = _build_timings_block()
+        receipt_path.write_text(
+            json.dumps(receipt_doc, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        build_allowlisted_result_tar(args.run_dir, args.result_tar)
+
         write_vm_status_file(
             args.status_file,
             step=current_step,
@@ -3017,6 +3544,16 @@ def main(argv: list[str] | None = None) -> int:
                 "install_seconds": py_rep["install_seconds"],
                 "route": py_rep["route"],
                 "lock_sdists": venv_info["lock_sdists"],
+            },
+        )
+        append_progress_line(
+            progress_path,
+            {
+                "kind": "run_end",
+                "status": "ok",
+                "rc": 0,
+                "step": current_step,
+                "end": _utc_now_iso(),
             },
         )
         return 0
@@ -3047,6 +3584,7 @@ def main(argv: list[str] | None = None) -> int:
             "reason": f"{failure_class}: {scrub_log_text(str(detail))}",
             "mode": args.mode,
             "deleted_items_receipt": deleted_items_receipt,
+            "timings": _build_timings_block(),
         }
         if err_stdout_tail is not None:
             fail_receipt["stdout_tail"] = _scrub_and_tail(err_stdout_tail)
@@ -3074,6 +3612,20 @@ def main(argv: list[str] | None = None) -> int:
             stderr_tail=err_stderr_tail,
             subprocess_record=err_subproc_rec,
         )
+        try:
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "run_end",
+                    "status": "refused",
+                    "rc": 2,
+                    "step": current_step,
+                    "failure_class": str(failure_class),
+                    "end": _utc_now_iso(),
+                },
+            )
+        except Exception:
+            pass
         sys.stderr.write(f"{failure_class}: {scrub_log_text(str(detail))}\n")
         return 2
 
@@ -3096,6 +3648,20 @@ def main(argv: list[str] | None = None) -> int:
             status="refused",
             failure_class="UNEXPECTED_ERROR",
         )
+        try:
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "run_end",
+                    "status": "refused",
+                    "rc": 2,
+                    "step": current_step,
+                    "failure_class": "UNEXPECTED_ERROR",
+                    "end": _utc_now_iso(),
+                },
+            )
+        except Exception:
+            pass
         sys.stderr.write(
             f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {scrub_log_text(str(exc))}\n"
         )
