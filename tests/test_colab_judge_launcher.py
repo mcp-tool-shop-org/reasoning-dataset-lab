@@ -3903,6 +3903,10 @@ def test_probe_mode_dry_and_live_sequence_no_upload_no_hf_token_scrubs_and_isola
         curl_cmd = probe_doc["commands"][curl_key]["cmd"]
         assert "-r" in curl_cmd
         assert "0-5242879" in curl_cmd
+        assert "--max-filesize" in curl_cmd
+        assert "5242880" in curl_cmd
+        assert probe_doc["commands"][curl_key]["bytes_received"] <= 5242880
+        assert probe_doc["fetches"][curl_key]["bytes_received"] <= 5242880
 
     for cmd_name, cmd_entry in probe_doc["commands"].items():
         combined_cmd_out = cmd_entry["stdout"] + "\n" + cmd_entry["stderr"]
@@ -4007,7 +4011,9 @@ def test_probe_mode_dry_and_live_sequence_no_upload_no_hf_token_scrubs_and_isola
     assert vm_judges.main(["--step", "probe"]) == 0
     inproc_doc1 = json.loads((inproc_probe_dir / "probe.json").read_text(encoding="utf-8"))
     assert inproc_doc1["python_315_install"]["route"] == "real_install"
-    assert inproc_doc1["python_315_install"]["download_size_bytes"] == 1024
+    assert inproc_doc1["python_315_install"]["download_size_bytes"] is None
+    assert inproc_doc1["python_315_install"]["download_size_source"] == "unavailable"
+    assert inproc_doc1["python_315_install"]["installed_size_bytes"] == 1024
     assert inproc_doc1["uv"]["how_installed"] == "image"
     assert "colab-runtime-proxy-token=[REDACTED]" in inproc_doc1["python_315_install"]["source_url"]
     assert "hf_InprocTok999" not in json.dumps(inproc_doc1)
@@ -4102,6 +4108,325 @@ def test_probe_mode_dry_and_live_sequence_no_upload_no_hf_token_scrubs_and_isola
     assert inproc_st_doc["failure_class"] == "VM_SUBPROCESS_FAILED"
     assert "hf_[REDACTED]" in inproc_st_doc["stderr_tail"]
     assert "hf_InprocVenvErr2" not in json.dumps(inproc_st_doc)
+
+
+def test_probe_fetch_5mb_hard_cap_when_server_or_curl_ignores_range_and_offers_50mb(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the 5 MB (`5,242,880` bytes) cap holds on all three probe fetches when:
+    1. A server ignores `Range` and offers 50 MB (`52,428,800` bytes) without `Content-Length` to real `curl`.
+    2. A fake `curl` ignores `-r`, `--max-filesize`, and `SIGPIPE` and offers 50 MB (`52,428,800` bytes).
+    3. A server returns a small (< 5 MB) payload (`1,234` bytes).
+    Each fetch records `bytes_received <= 5,242,880` in `probe.json`.
+    """
+    import http.server
+    import shutil
+    import threading
+
+    fifty_mb = 50 * 1024 * 1024
+    cap_bytes = 5_242_880
+    chunk_64k = b"A" * 65536
+
+    class _IgnoreRange50MBHandler(http.server.BaseHTTPRequestHandler):
+        def do_HEAD(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+
+        def do_GET(self) -> None:
+            # Deliberately ignore Range header and omit Content-Length while offering 50 MB
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+            sent = 0
+            try:
+                while sent < fifty_mb:
+                    to_send = min(len(chunk_64k), fifty_mb - sent)
+                    self.wfile.write(chunk_64k[:to_send])
+                    self.wfile.flush()
+                    sent += to_send
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+
+        def log_message(self, format: str, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _IgnoreRange50MBHandler)
+    port = server.server_address[1]
+    srv_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    srv_thread.start()
+
+    try:
+        probe_content_srv = tmp_path / "probe_srv_content"
+        probe_content_srv.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(probe_content_srv))
+        monkeypatch.setattr(
+            vm_judges, "PROBE_HF_RESOLVE_URL", f"http://127.0.0.1:{port}/hf_50mb.bin"
+        )
+        monkeypatch.setattr(
+            vm_judges, "PROBE_PYYAML_SDIST_URL", f"http://127.0.0.1:{port}/pyyaml_50mb.tar.gz"
+        )
+        monkeypatch.setattr(
+            vm_judges, "PROBE_PYTORCH_WHEEL_URL", f"http://127.0.0.1:{port}/torch_50mb.whl"
+        )
+
+        # Provide fast stub `uv` on PATH while using real `curl` and real pipe streaming
+        stub_bin = tmp_path / "stub_bin_srv"
+        stub_bin.mkdir(parents=True, exist_ok=True)
+        uv_stub = stub_bin / "uv"
+        uv_stub.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"$1\" == \"--version\" ]]; then echo 'uv 0.11.18'; exit 0; fi\n"
+            "if [[ \"$1\" == \"python\" && \"$2\" == \"install\" && \"$3\" == \"--help\" ]]; then echo 'Usage: uv python install --dry-run'; exit 0; fi\n"
+            "if [[ \"$1\" == \"python\" && \"$2\" == \"list\" && \"$*\" == *\"--only-downloads\"* ]]; then echo '[{\"url\":\"http://127.0.0.1:"
+            + str(port)
+            + "/py315.tar.gz\"}]'; exit 0; fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        uv_stub.chmod(0o755)
+        monkeypatch.setenv(
+            "PATH", f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+        )
+
+        assert vm_judges.main(["--step", "probe"]) == 0
+        srv_doc = json.loads((probe_content_srv / "probe.json").read_text(encoding="utf-8"))
+        for key in ("curl_huggingface", "curl_pythonhosted", "curl_pytorch_cu132"):
+            cmd_entry = srv_doc["commands"][key]
+            assert "-r" in cmd_entry["cmd"]
+            assert "0-5242879" in cmd_entry["cmd"]
+            assert "--max-filesize" in cmd_entry["cmd"]
+            assert "5242880" in cmd_entry["cmd"]
+            assert cmd_entry["bytes_received"] == cap_bytes
+            assert cmd_entry["max_bytes"] == cap_bytes
+            assert srv_doc["fetches"][key]["bytes_received"] == cap_bytes
+            assert srv_doc["fetches"][key]["max_bytes"] == cap_bytes
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # 2. Fake `curl` executable that ignores `-r`, `--max-filesize`, and `SIGPIPE`, offering 50 MB
+    probe_content_fake_curl = tmp_path / "probe_fake_curl_content"
+    probe_content_fake_curl.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(probe_content_fake_curl))
+
+    fake_curl_bin = tmp_path / "fake_curl_bin"
+    fake_curl_bin.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(stub_bin / "uv", fake_curl_bin / "uv")
+    fake_curl_script = fake_curl_bin / "curl"
+    fake_curl_script.write_text(
+        "#!/usr/bin/env python3\n"
+        "import signal, sys, time\n"
+        "if '-I' in sys.argv:\n"
+        "    sys.stdout.write('HTTP/2 200\\r\\ncontent-length: 32505856\\r\\n\\r\\n')\n"
+        "    sys.exit(0)\n"
+        "signal.signal(signal.SIGPIPE, signal.SIG_IGN)\n"
+        "buf = b'B' * 65536\n"
+        "remaining = 50 * 1024 * 1024\n"
+        "try:\n"
+        "    while remaining > 0:\n"
+        "        n = min(len(buf), remaining)\n"
+        "        sys.stdout.buffer.write(buf[:n])\n"
+        "        sys.stdout.buffer.flush()\n"
+        "        remaining -= n\n"
+        "except BaseException:\n"
+        "    time.sleep(5)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_curl_script.chmod(0o755)
+    monkeypatch.setenv(
+        "PATH", f"{fake_curl_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    )
+
+    assert vm_judges.main(["--step", "probe"]) == 0
+    fc_doc = json.loads(
+        (probe_content_fake_curl / "probe.json").read_text(encoding="utf-8")
+    )
+    for key in ("curl_huggingface", "curl_pythonhosted", "curl_pytorch_cu132"):
+        assert fc_doc["commands"][key]["bytes_received"] == cap_bytes
+        assert fc_doc["fetches"][key]["bytes_received"] == cap_bytes
+
+    # 3. Also verify a short response (< 5 MB) hits clean EOF and records exact byte count
+    short_res = vm_judges.run_vm_subprocess(
+        [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'Z' * 1234)"],
+        max_stdout_bytes=cap_bytes,
+        check=False,
+        log_output=False,
+    )
+    assert short_res.returncode == 0
+    assert short_res.bytes_received == 1234
+
+
+def test_token_scrubber_redacts_all_hf_and_proxy_token_forms_and_keeps_exceptions(
+    tmp_path: Path,
+) -> None:
+    """Verify `scrub_log_text`, `HF_TOKEN_RE`, and `UNREDACTED_PROXY_TOKEN_RE` redact:
+    1. Standard `hf_<token>`
+    2. `hf_` token preceded by `_` (`x_hf_...`, `_hf_...`)
+    3. `hf_` token followed by `_` (`hf_..._x`, `x_hf_..._y`)
+    4. URL-encoded `hf%5F...` and `hf%5f...` (including `x%5Fhf%5F..._z`)
+    5. Proxy token query form `colab-runtime-proxy-token=<value>`
+    6. Proxy token header form `X-Colab-Runtime-Proxy-Token: <value>` (case-insensitive)
+    7. Existing Bearer, OAuth (`ya29.`, `1//`, KV), JWT, and `HF_TOKEN*` / `HUGGING_FACE_HUB_TOKEN` forms
+    While preserving `hf_home`, `hf_cache`, `hf_low`, `hf_match`, and `hf_deactivate_async_load`.
+    """
+    samples = [
+        ("tok=hf_StandardSecret111", "hf_StandardSecret111", "hf_[REDACTED]"),
+        ("prefix=x_hf_PrecededUnderscore222", "PrecededUnderscore222", "x_hf_[REDACTED]"),
+        ("lead=_hf_LeadingUnderscore333", "LeadingUnderscore333", "_hf_[REDACTED]"),
+        ("suffix=hf_FollowedUnderscore444_x", "FollowedUnderscore444", "hf_[REDACTED]_x"),
+        ("both=x_hf_BothUnderscores555_y", "BothUnderscores555", "x_hf_[REDACTED]_y"),
+        ("url_upper=hf%5FUrlEncodedUpper666", "UrlEncodedUpper666", "hf_[REDACTED]"),
+        ("url_lower=hf%5fUrlEncodedLower777", "UrlEncodedLower777", "hf_[REDACTED]"),
+        ("url_both=x%5Fhf%5FUrlBoth888_z", "UrlBoth888", "x%5Fhf_[REDACTED]_z"),
+        (
+            "https://8080-m-s.colab.dev/api?colab-runtime-proxy-token=QueryProxyTok999",
+            "QueryProxyTok999",
+            "colab-runtime-proxy-token=[REDACTED]",
+        ),
+        (
+            "X-Colab-Runtime-Proxy-Token: HeaderProxyTokAAA",
+            "HeaderProxyTokAAA",
+            "X-Colab-Runtime-Proxy-Token: [REDACTED]",
+        ),
+        (
+            "x-colab-runtime-proxy-token: HeaderLowerTokBBB",
+            "HeaderLowerTokBBB",
+            "x-colab-runtime-proxy-token: [REDACTED]",
+        ),
+        ("Authorization: Bearer BearerSecretCCC", "BearerSecretCCC", "Bearer [REDACTED]"),
+        ("oauth=ya29.OAuthAccessDDD", "OAuthAccessDDD", "[REDACTED_OAUTH_TOKEN]"),
+        ("refresh=1//OAuthRefreshEEE", "OAuthRefreshEEE", "[REDACTED_OAUTH_TOKEN]"),
+        ('{"access_token": "OAuthKvFFF"}', "OAuthKvFFF", '{"access_token": "[REDACTED]"}'),
+        (
+            "jwt=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+            "SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+            "[REDACTED_JWT]",
+        ),
+        ("HF_TOKEN=EnvTokGGG", "EnvTokGGG", "HF_TOKEN=[REDACTED]"),
+        ("HF_TOKEN_GGUF_READ=EnvTokHHH", "EnvTokHHH", "HF_TOKEN_GGUF_READ=[REDACTED]"),
+        ("HUGGING_FACE_HUB_TOKEN=EnvTokIII", "EnvTokIII", "HUGGING_FACE_HUB_TOKEN=[REDACTED]"),
+    ]
+
+    for raw_line, secret_substr, expected_redacted in samples:
+        scrubbed = vm_judges.scrub_log_text(raw_line)
+        assert secret_substr not in scrubbed, f"Leaked {secret_substr!r} in {scrubbed!r}"
+        assert expected_redacted in scrubbed, f"Missing {expected_redacted!r} in {scrubbed!r}"
+        # Idempotent on second pass
+        assert vm_judges.scrub_log_text(scrubbed) == scrubbed
+
+        # Log guard must refuse the unredacted line and accept the scrubbed line
+        log_file = tmp_path / "guard_check.log"
+        log_file.write_text(raw_line + "\n", encoding="utf-8")
+        if not raw_line.startswith(("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")) and "access_token" not in raw_line:
+            with pytest.raises(vm_judges.RefusalError) as exc_info:
+                vm_judges.verify_rig_logs_and_outputs_clean([log_file], claim_ngram_sha256s=set())
+            assert exc_info.value.failure_class == "LOG_GUARD_UNREDACTED_TOKEN"
+        log_file.write_text(scrubbed + "\n", encoding="utf-8")
+        vm_judges.verify_rig_logs_and_outputs_clean([log_file], claim_ngram_sha256s=set())
+
+    # Verify path exceptions (`home|cache|low|match` and `deactivate_async_load`) are never redacted
+    safe_text = (
+        "/content/hf_home hf_home_free_bytes=120000000000 "
+        "/content/hf_cache env_hf_low out_hf_low "
+        "env_hf_match hf_match_data out_hf_match "
+        "hf_deactivate_async_load"
+    )
+    assert vm_judges.scrub_log_text(safe_text) == safe_text
+    safe_file = tmp_path / "safe_paths.log"
+    safe_file.write_text(safe_text + "\n", encoding="utf-8")
+    vm_judges.verify_rig_logs_and_outputs_clean([safe_file], claim_ngram_sha256s=set())
+
+
+def test_probe_size_fallback_labels_installed_size_and_unavailable_download_size(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `run_probe` size reporting in both cases:
+    1. When HEAD `Content-Length` is present and > 0: records `download_size_bytes` from `Content-Length`,
+       `download_size_source: "head_content_length"`, and `installed_size_bytes` separately.
+    2. When HEAD `Content-Length` is 0 or missing: records `installed_size_bytes` (~2160),
+       `download_size_bytes: null`, and `download_size_source: "unavailable"`, never putting the
+       installed size under the download label.
+    """
+    probe_dir = tmp_path / "probe_size_content"
+    probe_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(probe_dir))
+
+    head_response_state = {"stdout": "HTTP/2 200\r\nContent-Length: 32505856\r\n\r\n"}
+
+    def _fake_probe_subproc(
+        cmd: Any, *a: Any, **kw: Any
+    ) -> subprocess.CompletedProcess[str]:
+        cmd_l = [str(x) for x in cmd]
+        call_env = kw.get("env") or {}
+        if cmd_l[:4] == ["uv", "python", "install", "--help"]:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="Usage: uv python install [OPTIONS]\n", stderr=""
+            )
+        if cmd_l[:3] == ["uv", "python", "list"] and "--only-downloads" in cmd_l:
+            return subprocess.CompletedProcess(
+                cmd_l,
+                0,
+                stdout=json.dumps(
+                    [{"key": "cpython-3.15", "url": "https://releases.astral.sh/cpython-3.15.tar.gz"}]
+                ),
+                stderr="",
+            )
+        if cmd_l[:3] == ["uv", "python", "install"]:
+            inst_dir = Path(call_env.get("UV_PYTHON_INSTALL_DIR", "/tmp/probe-py"))
+            inst_dir.mkdir(parents=True, exist_ok=True)
+            (inst_dir / "installed_py315.bin").write_bytes(b"P" * 2160)
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="Installed Python 3.15.0b1\n", stderr=""
+            )
+        if cmd_l[0] == "curl" and "-I" in cmd_l:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout=head_response_state["stdout"], stderr=""
+            )
+        return subprocess.CompletedProcess(cmd_l, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_probe_subproc)
+
+    # Case 1: HEAD Content-Length > 0
+    assert vm_judges.main(["--step", "probe"]) == 0
+    doc_present = json.loads((probe_dir / "probe.json").read_text(encoding="utf-8"))
+    assert doc_present["python_315_install"]["download_size_bytes"] == 32505856
+    assert doc_present["python_315_install"]["download_size_source"] == "head_content_length"
+    assert doc_present["python_315_install"]["installed_size_bytes"] == 2160
+    assert doc_present["uv"]["python_install_3_15_download_size_bytes"] == 32505856
+    assert doc_present["uv"]["python_install_3_15_download_size_source"] == "head_content_length"
+    assert doc_present["uv"]["python_install_3_15_installed_size_bytes"] == 2160
+
+    # Case 2a: HEAD Content-Length is 0
+    head_response_state["stdout"] = "HTTP/2 200\r\nContent-Length: 0\r\n\r\n"
+    assert vm_judges.main(["--step", "probe"]) == 0
+    raw_zero = (probe_dir / "probe.json").read_text(encoding="utf-8")
+    doc_zero = json.loads(raw_zero)
+    assert doc_zero["python_315_install"]["installed_size_bytes"] == 2160
+    assert doc_zero["python_315_install"]["download_size_bytes"] is None
+    assert doc_zero["python_315_install"]["download_size_source"] == "unavailable"
+    assert doc_zero["uv"]["python_install_3_15_installed_size_bytes"] == 2160
+    assert doc_zero["uv"]["python_install_3_15_download_size_bytes"] is None
+    assert doc_zero["uv"]["python_install_3_15_download_size_source"] == "unavailable"
+    assert '"download_size_bytes": null' in raw_zero
+    assert '"download_size_source": "unavailable"' in raw_zero
+
+    # Case 2b: HEAD Content-Length is missing
+    head_response_state["stdout"] = "HTTP/2 200\r\nServer: test\r\n\r\n"
+    assert vm_judges.main(["--step", "probe"]) == 0
+    raw_missing = (probe_dir / "probe.json").read_text(encoding="utf-8")
+    doc_missing = json.loads(raw_missing)
+    assert doc_missing["python_315_install"]["installed_size_bytes"] == 2160
+    assert doc_missing["python_315_install"]["download_size_bytes"] is None
+    assert doc_missing["python_315_install"]["download_size_source"] == "unavailable"
+    assert doc_missing["uv"]["python_install_3_15_installed_size_bytes"] == 2160
+    assert doc_missing["uv"]["python_install_3_15_download_size_bytes"] is None
+    assert doc_missing["uv"]["python_install_3_15_download_size_source"] == "unavailable"
+
 
 
 

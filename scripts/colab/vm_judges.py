@@ -191,7 +191,8 @@ PROBE_EXEC_TIMEOUT_SECONDS = 270
 PROBE_RIG_WALL_SECONDS = 300
 PROBE_CAP_UNITS = 0.01
 PROBE_CURL_BYTE_RANGE = "0-5242879"
-PROBE_CURL_WRITE_OUT = "%{http_code} %{size_download} %{time_total}"
+PROBE_CURL_MAX_BYTES = 5242880
+PROBE_CURL_WRITE_OUT = "%{stderr}%{http_code} %{size_download} %{time_total}\n"
 PROBE_HF_RESOLVE_URL = (
     "https://huggingface.co/flowaicom/Flow-Judge-v0.1/resolve/"
     "b7a47acd7c86e981145168e4dea1bef7d84a0894/tokenizer.json"
@@ -221,11 +222,10 @@ FORBIDDEN_LOG_KEY_MARKERS: tuple[str, ...] = (
 
 HEX64_LOWER_RE = re.compile(r"^[0-9a-f]{64}$")
 PROXY_TOKEN_RE = re.compile(
-    r"colab-runtime-proxy-token=(?!\[REDACTED\])[^\s\"'&;,)\]}]+"
+    r'((?:x-)?colab-runtime-proxy-token"?\s*[:=]\s*"?)(?!\[REDACTED\])[^\s"\'&;,)\]}]+',
+    re.IGNORECASE,
 )
-UNREDACTED_PROXY_TOKEN_RE = re.compile(
-    r"colab-runtime-proxy-token=(?!\[REDACTED\])[^\s\"'&;,)\]}]+"
-)
+UNREDACTED_PROXY_TOKEN_RE = PROXY_TOKEN_RE
 BEARER_TOKEN_RE = re.compile(r"(Bearer\s+)(?!\[REDACTED\])[A-Za-z0-9._~+/=-]+")
 OAUTH_YA29_RE = re.compile(r"\bya29\.[A-Za-z0-9._-]+")
 OAUTH_REFRESH_RE = re.compile(r"\b1//[A-Za-z0-9._-]+")
@@ -234,7 +234,7 @@ OAUTH_KV_RE = re.compile(
 )
 JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b")
 HF_TOKEN_RE = re.compile(
-    r"\bhf_(?!\[REDACTED\]|(?:home|cache|low|match)\b)[A-Za-z0-9]+\b"
+    r"(?:(?<![A-Za-z0-9])|(?<=%[0-9A-Fa-f]{2}))hf(?:_|%5[Ff])(?!\[REDACTED\]|(?:home|cache|low|match|deactivate_async_load)(?![A-Za-z0-9]))[A-Za-z0-9]+(?![A-Za-z0-9])"
 )
 HF_ENV_RE = re.compile(
     r"\b(HF_TOKEN(?:_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)=(?!\[REDACTED\])[^\s\"';]+"
@@ -287,7 +287,7 @@ def sha256_file(path: Path) -> str:
 
 def scrub_log_text(text: str) -> str:
     """Scrub proxy tokens, Bearer/OAuth tokens, JWTs, and HF tokens from log text."""
-    out = PROXY_TOKEN_RE.sub("colab-runtime-proxy-token=[REDACTED]", text)
+    out = PROXY_TOKEN_RE.sub(r"\1[REDACTED]", text)
     out = BEARER_TOKEN_RE.sub(r"\1[REDACTED]", out)
     out = OAUTH_YA29_RE.sub("[REDACTED_OAUTH_TOKEN]", out)
     out = OAUTH_REFRESH_RE.sub("[REDACTED_OAUTH_TOKEN]", out)
@@ -342,6 +342,7 @@ class VmSubprocessResult:
         stdout_tail: str,
         stderr_tail: str,
         duration_seconds: float,
+        bytes_received: int = 0,
     ) -> None:
         self.cmd = [str(part) for part in cmd]
         self.returncode = int(returncode)
@@ -350,6 +351,7 @@ class VmSubprocessResult:
         self.stdout_tail = stdout_tail
         self.stderr_tail = stderr_tail
         self.duration_seconds = round(float(duration_seconds), 6)
+        self.bytes_received = int(bytes_received)
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -410,6 +412,61 @@ class VmSubprocessError(RefusalError, subprocess.CalledProcessError):
         }
 
 
+def _stream_subprocess_with_byte_cap(
+    cmd_list: list[str],
+    *,
+    max_stdout_bytes: int,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | str | None = None,
+    timeout: float | None = None,
+) -> tuple[int, str, str, int]:
+    """Stream subprocess stdout through a pipe and stop reading at `max_stdout_bytes`."""
+    budget = max(0, int(max_stdout_bytes))
+    bytes_received = 0
+    out_tail_buf = bytearray()
+    err_chunks: list[bytes] = []
+    with subprocess.Popen(
+        cmd_list,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(env) if env is not None else None,
+        cwd=str(cwd) if cwd is not None else None,
+    ) as proc:
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+
+        def _drain_stderr() -> None:
+            while True:
+                b = proc.stderr.read(16384)
+                if not b:
+                    break
+                err_chunks.append(b)
+
+        err_thread = threading.Thread(target=_drain_stderr, daemon=True)
+        err_thread.start()
+        while bytes_received < budget:
+            chunk = proc.stdout.read(min(65536, budget - bytes_received))
+            if not chunk:
+                break
+            bytes_received += len(chunk)
+            out_tail_buf.extend(chunk)
+            if len(out_tail_buf) > SUBPROCESS_TAIL_BYTES * 2:
+                del out_tail_buf[: -SUBPROCESS_TAIL_BYTES * 2]
+        proc.stdout.close()
+        try:
+            proc.wait(timeout=0.1 if bytes_received >= budget else timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        err_thread.join(timeout=2.0)
+        proc.stderr.close()
+        rc = int(proc.returncode or 0)
+    raw_out = bytes(out_tail_buf).decode("utf-8", errors="replace")
+    raw_err = b"".join(err_chunks).decode("utf-8", errors="replace")
+    return rc, raw_out, raw_err, bytes_received
+
+
 def run_vm_subprocess(
     cmd: Sequence[str],
     *,
@@ -420,6 +477,7 @@ def run_vm_subprocess(
     failure_class: str = "VM_SUBPROCESS_FAILED",
     log_path: Path | None = None,
     log_output: bool = True,
+    max_stdout_bytes: int | None = None,
 ) -> VmSubprocessResult:
     """Single helper routing every VM subprocess call with stdout/stderr capture and ~4 KB scrubbed tails."""
     cmd_list = [str(part) for part in cmd]
@@ -427,21 +485,45 @@ def run_vm_subprocess(
     raw_out = ""
     raw_err = ""
     rc = 0
+    bytes_received = 0
+    use_pipe_stream = (
+        max_stdout_bytes is not None
+        and getattr(subprocess.run, "__module__", None) == "subprocess"
+        and getattr(subprocess.run, "__name__", None) == "run"
+    )
     try:
-        proc = subprocess.run(
-            cmd_list,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            errors="replace",
-            env=dict(env) if env is not None else None,
-            cwd=str(cwd) if cwd is not None else None,
-            timeout=timeout,
-            check=False,
-        )
-        rc = int(proc.returncode)
-        raw_out = proc.stdout or ""
-        raw_err = proc.stderr or ""
+        if use_pipe_stream and max_stdout_bytes is not None:
+            rc, raw_out, raw_err, bytes_received = _stream_subprocess_with_byte_cap(
+                cmd_list,
+                max_stdout_bytes=max_stdout_bytes,
+                env=env,
+                cwd=cwd,
+                timeout=timeout,
+            )
+        else:
+            proc = subprocess.run(
+                cmd_list,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                env=dict(env) if env is not None else None,
+                cwd=str(cwd) if cwd is not None else None,
+                timeout=timeout,
+                check=False,
+            )
+            rc = int(proc.returncode)
+            raw_out = proc.stdout or ""
+            raw_err = proc.stderr or ""
+            if max_stdout_bytes is not None:
+                budget = max(0, int(max_stdout_bytes))
+                out_bytes = raw_out[:budget].encode("utf-8", errors="replace")[:budget]
+                bytes_received = len(out_bytes)
+                raw_out = out_bytes[-SUBPROCESS_TAIL_BYTES * 2 :].decode(
+                    "utf-8", errors="replace"
+                )
+            else:
+                bytes_received = len(raw_out.encode("utf-8", errors="replace"))
     except subprocess.CalledProcessError as exc:
         rc = int(exc.returncode) if exc.returncode else 2
         raw_out = (
@@ -488,6 +570,7 @@ def run_vm_subprocess(
         stdout_tail=stdout_tail,
         stderr_tail=stderr_tail,
         duration_seconds=duration_s,
+        bytes_received=bytes_received,
     )
 
     eff_log = log_path if log_path is not None else _ACTIVE_VM_LOG_PATH
@@ -2013,6 +2096,7 @@ def run_probe(args: argparse.Namespace) -> int:
         *,
         env: Mapping[str, str] | None = None,
         timeout: float = 60.0,
+        max_stdout_bytes: int | None = None,
     ) -> dict[str, Any]:
         res = run_vm_subprocess(
             cmd,
@@ -2020,8 +2104,9 @@ def run_probe(args: argparse.Namespace) -> int:
             timeout=timeout,
             check=False,
             log_output=False,
+            max_stdout_bytes=max_stdout_bytes,
         )
-        entry = {
+        entry: dict[str, Any] = {
             "name": name,
             "cmd": [scrub_log_text(str(part)) for part in cmd],
             "exit_code": int(res.returncode),
@@ -2030,6 +2115,9 @@ def run_probe(args: argparse.Namespace) -> int:
             "stdout": res.stdout_tail,
             "stderr": res.stderr_tail,
         }
+        if max_stdout_bytes is not None:
+            entry["bytes_received"] = int(res.bytes_received)
+            entry["max_bytes"] = int(max_stdout_bytes)
         commands[name] = entry
         return entry
 
@@ -2132,7 +2220,7 @@ def run_probe(args: argparse.Namespace) -> int:
         if m_url:
             source_url = m_url.group(0)
 
-    download_size_bytes = 0
+    head_content_length = 0
     if source_url:
         head_rec = _run_probe_cmd(
             "curl_python_3_15_head",
@@ -2143,7 +2231,7 @@ def run_probe(args: argparse.Namespace) -> int:
             if line.lower().startswith("content-length:"):
                 raw_cl = line.split(":", 1)[1].strip()
                 if raw_cl.isdigit():
-                    download_size_bytes = int(raw_cl)
+                    head_content_length = int(raw_cl)
 
     installed_size_bytes = 0
     if throwaway_py_dir.is_dir():
@@ -2153,8 +2241,12 @@ def run_probe(args: argparse.Namespace) -> int:
                     installed_size_bytes += int(p.stat().st_size)
             except OSError:
                 pass
-    if download_size_bytes == 0 and installed_size_bytes > 0:
-        download_size_bytes = installed_size_bytes
+    if head_content_length > 0:
+        download_size_bytes: int | None = head_content_length
+        download_size_source = "head_content_length"
+    else:
+        download_size_bytes = None
+        download_size_source = "unavailable"
 
     # 3. Every system Python found (python3 --version, python3.X --version for X in 10-15, ls /usr/bin/python3*)
     found_interpreters: list[str] = []
@@ -2207,13 +2299,14 @@ def run_probe(args: argparse.Namespace) -> int:
     for d in (throwaway_py_dir, throwaway_bin_dir, throwaway_cache_dir):
         shutil.rmtree(d, ignore_errors=True)
 
-    # 5. Reachability and first rate: timed curl fetches with a hard cap of 5 MB each (0-5242879), no token
+    # 5. Reachability and first rate: timed curl fetches with a hard cap of 5 MB each (0-5242879, 5242880 bytes), no token
+    fetches: dict[str, dict[str, Any]] = {}
     for name, url in (
         ("curl_huggingface", PROBE_HF_RESOLVE_URL),
         ("curl_pythonhosted", PROBE_PYYAML_SDIST_URL),
         ("curl_pytorch_cu132", PROBE_PYTORCH_WHEEL_URL),
     ):
-        _run_probe_cmd(
+        fetch_rec = _run_probe_cmd(
             name,
             [
                 "curl",
@@ -2221,8 +2314,8 @@ def run_probe(args: argparse.Namespace) -> int:
                 "-L",
                 "-r",
                 PROBE_CURL_BYTE_RANGE,
-                "-o",
-                "/dev/null",
+                "--max-filesize",
+                str(PROBE_CURL_MAX_BYTES),
                 "-w",
                 PROBE_CURL_WRITE_OUT,
                 "--max-time",
@@ -2230,7 +2323,15 @@ def run_probe(args: argparse.Namespace) -> int:
                 url,
             ],
             timeout=65.0,
+            max_stdout_bytes=PROBE_CURL_MAX_BYTES,
         )
+        fetches[name] = {
+            "url": scrub_log_text(url),
+            "bytes_received": int(fetch_rec["bytes_received"]),
+            "max_bytes": PROBE_CURL_MAX_BYTES,
+            "rc": int(fetch_rec["rc"]),
+            "duration_seconds": fetch_rec["duration_seconds"],
+        }
 
     # 6. df -B1 /content /tmp, nproc, and free -b
     _run_probe_cmd("df_content_tmp", ["df", "-B1", "/content", "/tmp"])
@@ -2249,7 +2350,8 @@ def run_probe(args: argparse.Namespace) -> int:
         "rc": 0,
         "python_315_install": {
             "route": scrubbed_route,
-            "download_size_bytes": int(download_size_bytes),
+            "download_size_bytes": download_size_bytes,
+            "download_size_source": download_size_source,
             "installed_size_bytes": int(installed_size_bytes),
             "source_url": scrubbed_source_url,
             "install_dir": str(throwaway_py_dir),
@@ -2267,13 +2369,16 @@ def run_probe(args: argparse.Namespace) -> int:
             "python_find_3_15_rc": uv_find_rec["rc"],
             "python_install_3_15_route": scrubbed_route,
             "python_install_3_15_mode": scrubbed_route,
-            "python_install_3_15_download_size_bytes": int(download_size_bytes),
+            "python_install_3_15_download_size_bytes": download_size_bytes,
+            "python_install_3_15_download_size_source": download_size_source,
+            "python_install_3_15_installed_size_bytes": int(installed_size_bytes),
             "python_install_3_15_source_url": scrubbed_source_url,
             "python_install_3_15_dir": str(throwaway_py_dir),
             "uv_cache_dir": str(throwaway_cache_dir),
             "python_install_3_15_rc": uv_install_rec["rc"],
             "python_install_3_15_duration_seconds": uv_install_rec["duration_seconds"],
         },
+        "fetches": fetches,
         "found_system_pythons": found_interpreters,
         "python_h_by_interpreter": python_h_by_interpreter,
         "commands": commands,
