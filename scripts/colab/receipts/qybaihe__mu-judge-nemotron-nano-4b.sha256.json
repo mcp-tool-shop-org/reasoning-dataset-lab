@@ -1,0 +1,40 @@
+{
+ "files": {
+  ".gitattributes": {
+   "bytes": 1570,
+   "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930"
+  },
+  "README.md": {
+   "bytes": 4039,
+   "sha256": "6e9bf4e186d6a47bbd5919ced725366562dbcb611732e63e5f36f46591567e1e"
+  },
+  "chat_template.jinja": {
+   "bytes": 10504,
+   "sha256": "ab7813c3abdd9cb655905a410728b26c7884eca45ddfab8d9f931553485a7862"
+  },
+  "config.json": {
+   "bytes": 2694,
+   "sha256": "c92065ef509e32ce88218781cba0c1d8f64f5bc439873a974087a95ba8bcb626"
+  },
+  "generation_config.json": {
+   "bytes": 192,
+   "sha256": "1bed5f31e290782be2afebb4655ed1289609618067f58c7fbd4e9f366369337a"
+  },
+  "model.safetensors": {
+   "bytes": 7947142672,
+   "sha256": "9617ffacd4b00161454b21f9008c3bacafddb780aa35d7ce5e520ef356597bf6"
+  },
+  "tokenizer.json": {
+   "bytes": 17077484,
+   "sha256": "623c34567aebb18582765289fbe23d901c62704d6518d71866e0e58db892b5b7"
+  },
+  "tokenizer_config.json": {
+   "bytes": 364,
+   "sha256": "5ddd0eae26672af6fbf0a468666fab8bd678b5a96dd939355ded122521643045"
+  }
+ },
+ "repo": "qybaihe/mu-judge-nemotron-nano-4b",
+ "revision": "20013889998b8c73a4263620ae6e4ebb407bf30a",
+ "seconds": 128.5,
+ "total_bytes": 7964239519
+}

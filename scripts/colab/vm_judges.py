@@ -1467,42 +1467,17 @@ def _existing_ancestor(path: Path) -> Path:
     return cur
 
 
-def _query_free_disk_bytes(path: Path, *, env_override_var: str | None = None) -> int:
-    """Query free disk bytes on `path` via `shutil.disk_usage`, honouring test overrides if set."""
+def _query_free_disk_bytes(path: Path) -> int:
+    """Query free disk bytes on `path` via `shutil.disk_usage`."""
     ensure_not_drive_path(path)
     target = _existing_ancestor(Path(path))
     usage = shutil.disk_usage(target)
-    free_bytes = int(usage.free)
-    if env_override_var and os.environ.get(env_override_var, "").strip():
-        return int(os.environ[env_override_var].strip())
-    if os.environ.get("FAKE_COLAB_DISK_FREE_BYTES", "").strip():
-        return int(os.environ["FAKE_COLAB_DISK_FREE_BYTES"].strip())
-    return free_bytes
+    return int(usage.free)
 
 
-def compute_required_vm_disk_bytes(receipts_dir: Path | None = None) -> dict[str, int]:
-    """Compute required free bytes from receipts (or `EXPECTED_WEIGHTS_TOTAL_BYTES`), venvs estimate, and 15% margin."""
+def compute_required_vm_disk_bytes() -> dict[str, int]:
+    """Compute required free bytes from `EXPECTED_WEIGHTS_TOTAL_BYTES` (matched to receipts), venvs estimate, and 15% margin."""
     weights_bytes = EXPECTED_WEIGHTS_TOTAL_BYTES
-    if receipts_dir is not None and Path(receipts_dir).is_dir():
-        receipt_files = sorted(Path(receipts_dir).glob("*.sha256.json"))
-        if len(receipt_files) >= 5:
-            summed = 0
-            for rf in receipt_files:
-                try:
-                    doc = json.loads(rf.read_text(encoding="utf-8"))
-                except Exception:
-                    continue
-                if isinstance(doc.get("total_bytes"), int) and doc["total_bytes"] > 0:
-                    summed += int(doc["total_bytes"])
-                elif isinstance(doc.get("files"), dict):
-                    summed += sum(
-                        int(meta.get("bytes", 0))
-                        for meta in doc["files"].values()
-                        if isinstance(meta, dict)
-                    )
-            if summed >= EXPECTED_WEIGHTS_TOTAL_BYTES:
-                weights_bytes = summed
-
     subtotal = weights_bytes + VENVS_ESTIMATED_BYTES
     required = (
         subtotal * DISK_PREFLIGHT_MARGIN_NUMERATOR
@@ -1519,8 +1494,6 @@ def compute_required_vm_disk_bytes(receipts_dir: Path | None = None) -> dict[str
 def check_vm_disk_preflight(
     content_dir: Path | None = None,
     hf_home: Path | None = None,
-    *,
-    receipts_dir: Path | None = None,
 ) -> dict[str, int]:
     """Check free space on `/content` and `hf_home`; refuse with `VM_DISK_INSUFFICIENT` if below required."""
     eff_content = resolve_content_dir(content_dir)
@@ -1528,14 +1501,10 @@ def check_vm_disk_preflight(
     ensure_not_drive_path(eff_content)
     ensure_not_drive_path(eff_hf_home)
 
-    req_info = compute_required_vm_disk_bytes(receipts_dir)
+    req_info = compute_required_vm_disk_bytes()
     required_bytes = req_info["required_bytes"]
-    content_free = _query_free_disk_bytes(
-        eff_content, env_override_var="FAKE_COLAB_CONTENT_DISK_FREE_BYTES"
-    )
-    hf_free = _query_free_disk_bytes(
-        eff_hf_home, env_override_var="FAKE_COLAB_HF_DISK_FREE_BYTES"
-    )
+    content_free = _query_free_disk_bytes(eff_content)
+    hf_free = _query_free_disk_bytes(eff_hf_home)
 
     if content_free < required_bytes or hf_free < required_bytes:
         raise RefusalError(
@@ -1551,18 +1520,60 @@ def check_vm_disk_preflight(
     }
 
 
+def _resolve_vm_path(path: Path | None, content_dir: Path, default_rel: str) -> Path:
+    """Resolve a VM path relative to `content_dir` when `/content` is redirected by `RDLAB_VM_CONTENT_DIR`."""
+    if path is None:
+        return content_dir / default_rel
+    raw = str(path).replace("\\", "/")
+    if content_dir != DEFAULT_CONTENT_DIR:
+        if raw == "/content":
+            return content_dir
+        if raw.startswith("/content/") and not raw.startswith("/content/drive"):
+            return content_dir / raw.removeprefix("/content/")
+    return Path(path)
+
+
+VALID_COMPLETED_RUN_STEPS: frozenset[str] = frozenset(
+    {"run", "build_allowlisted_result_tar"}
+)
+
+
+def verify_run_status_file(status_path: Path) -> tuple[int, str]:
+    """Verify downloaded `status.json` from the VM run step, rejecting `step=gate` (or any non-run step) as stale."""
+    try:
+        data = json.loads(Path(status_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        return 2, f"invalid_json|{type(exc).__name__}"
+
+    if not isinstance(data, dict):
+        return 2, "invalid_payload|not_a_dict"
+
+    step = str(data.get("step") or "unknown")
+    rc = data.get("rc")
+    reason = str(data.get("reason") or "")
+    if not isinstance(rc, int) or isinstance(rc, bool):
+        return 2, f"{step}|invalid_rc|{reason}"
+
+    if step == "gate" or (rc == 0 and step not in VALID_COMPLETED_RUN_STEPS):
+        return 2, f"stale_status|step={step}|rc={rc}|{reason}"
+
+    if rc != 0:
+        return (rc if 1 <= rc <= 255 else 2), f"{step}|{rc}|{reason}"
+
+    return 0, f"{step}|0|{reason}"
+
+
 def run_gate(args: argparse.Namespace) -> int:
     """Execute the pre-upload VM gate: create `/content/rdlab_items/`, check disk preflight, and write `status.json`."""
     import platform
 
-    content_dir = resolve_content_dir(
-        args.status_file.parent if (args.status_file and not os.environ.get("RDLAB_VM_CONTENT_DIR") and not DEFAULT_CONTENT_DIR.exists()) else None
-    )
+    content_dir = resolve_content_dir()
     items_dir = content_dir / "rdlab_items"
-    items_parent = (
-        args.items_file.parent if (args.items_file is not None and not str(args.items_file).startswith("/content/")) else items_dir
+    items_file = _resolve_vm_path(
+        args.items_file, content_dir, "rdlab_items/items.jsonl"
     )
-    hf_home = args.hf_home if (args.hf_home is not None and not str(args.hf_home).startswith("/content/")) else (content_dir / "hf_home")
+    items_parent = items_file.parent
+    hf_home = _resolve_vm_path(args.hf_home, content_dir, "hf_home")
 
     try:
         for p in (content_dir, items_dir, items_parent, hf_home):
@@ -1570,24 +1581,38 @@ def run_gate(args: argparse.Namespace) -> int:
         if args.status_file is not None:
             ensure_not_drive_path(args.status_file)
 
-        items_dir.mkdir(parents=True, exist_ok=True)
-        items_parent.mkdir(parents=True, exist_ok=True)
+        if items_dir.exists() and not items_dir.is_dir():
+            raise RefusalError(
+                "VM_ITEMS_DIR_UNAVAILABLE",
+                f"Cannot create VM items directory '{items_dir}': path exists and is not a directory",
+            )
+        try:
+            items_dir.mkdir(parents=True, exist_ok=True)
+            if items_parent != items_dir:
+                items_parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise RefusalError(
+                "VM_ITEMS_DIR_UNAVAILABLE",
+                f"Cannot create VM items directory '{items_dir}': {exc.strerror or exc}",
+            ) from exc
 
         disk_report = check_vm_disk_preflight(
             content_dir=content_dir,
             hf_home=hf_home,
-            receipts_dir=args.receipts_dir,
         )
     except RefusalError as err:
         if args.status_file is not None:
-            write_vm_status_file(
-                args.status_file,
-                step="gate",
-                rc=2,
-                reason=f"{err.failure_class}: {err.detail}",
-                status="refused",
-                failure_class=err.failure_class,
-            )
+            try:
+                write_vm_status_file(
+                    args.status_file,
+                    step="gate",
+                    rc=2,
+                    reason=f"{err.failure_class}: {err.detail}",
+                    status="refused",
+                    failure_class=err.failure_class,
+                )
+            except OSError:
+                pass
         sys.stderr.write(f"{err.failure_class}: {scrub_log_text(err.detail)}\n")
         return 2
 
