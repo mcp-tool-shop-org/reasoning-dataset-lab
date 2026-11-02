@@ -1,0 +1,149 @@
+=== colab version ===
+Version: 0.7.4
+
+=== colab --help ===
+Usage: colab [OPTIONS] COMMAND [ARGS]...                                                           
+                                                                                                    
+ Colab CLI                                                                                          
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --client-oauth-config  -c      <str>         Path to client OAuth config JSON file               │
+│                                              [default: ~/.colab-cli-oauth-config.json] │
+│ --config                       <str>         Path to session state file                          │
+│                                              (~/.config/colab-cli/sessions.json)                 │
+│ --logtostderr                                Log all output to stderr                            │
+│ --auth                         <oauth2|adc>  Authentication strategy to use: 'oauth2' (public    │
+│                                              InstalledAppFlow), or 'adc' (Application Default    │
+│                                              Credentials).                                       │
+│                                              [default: oauth2]                                   │
+│ --install-completion                         Install completion for the current shell.           │
+│ --show-completion                            Show completion for the current shell, to copy it   │
+│                                              or customize the installation.                      │
+│ --help                 -h                    Show this message and exit.                         │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────────────────────────╮
+│ console         Connect to raw TTY console                                                       │
+│ download        Download a file from a session                                                   │
+│ drivemount      Mount Google Drive at path                                                       │
+│ edit            Edit a file on a running Colab session                                           │
+│ exec            Execute code in a session                                                        │
+│ help            Show help for a command.                                                         │
+│ install         Install python packages on the VM                                                │
+│ log             Manage and view session history logs                                             │
+│ ls              List files in a session                                                          │
+│ new             Create a new session                                                             │
+│ pay             Open the Colab signup page to manage compute units                               │
+│ readme          Print the bundled README.md file                                                 │
+│ repl            Start an interactive REPL                                                        │
+│ restart-kernel  Restart a session's kernel                                                       │
+│ rm              Remove a remote file                                                             │
+│ run             Run a Python script on a fresh Colab VM, then release the VM                     │
+│ sessions        List all active sessions                                                         │
+│ skill           Print the bundled SKILL.md file                                                  │
+│ ssh             Connect to a Colab runtime via SSH.                                              │
+│ status          Show session status                                                              │
+│ stop            Stop a session                                                                   │
+│ update          Check for latest version and print if an update is available                     │
+│ upload          Upload a file to a session                                                       │
+│ url             Print a browser URL that connects to an existing session.                        │
+│ usage           Show account compute-unit usage rate and balance                                 │
+│ version         Show the version of the Colab CLI                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+=== colab new --help ===
+Usage: colab new [OPTIONS]                                                                         
+                                                                                                    
+ Create a new session                                                                               
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --session   -s      <str>  Session name                                                          │
+│ --tpu               <str>  TPU accelerator variant. Supported: v5e1, v6e1.                       │
+│ --gpu               <str>  GPU accelerator variant. Supported: T4, L4, G4, H100, A100.           │
+│                            If omitted (along with --tpu), a CPU runtime is created.              │
+│                            Availability varies by Colab subscription tier.                       │
+│ --high-mem                 Request a high-RAM machine shape (CPU, T4, A100, etc.). Requires      │
+│                            Colab Pro or Pro+ entitlement. Ignored for accelerators that only     │
+│                            offer a single shape (L4, v5e1, v6e1).                                │
+│ --help      -h             Show this message and exit.                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+=== colab sessions --help ===
+Usage: colab sessions [OPTIONS]                                                                    
+                                                                                                    
+ List all active sessions                                                                           
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help  -h        Show this message and exit.                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+=== colab exec --help ===
+Usage: colab exec [OPTIONS]                                                                        
+                                                                                                    
+ Execute code in a session                                                                          
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --session       -s      <str>    Session name                                                    │
+│ --file          -f      <str>    File to execute                                                 │
+│ --output-image          <str>    Path to save plot                                               │
+│ --timeout               <float>  Timeout in seconds for code execution [default: 30.0]           │
+│ --env                   <str>    Set an environment variable in the remote kernel as KEY=VALUE.  │
+│                                  Repeat for multiple variables.                                  │
+│ --help          -h               Show this message and exit.                                     │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+=== colab upload --help ===
+Usage: colab upload [OPTIONS] {local_path} {remote_path}                                           
+                                                                                                    
+ Upload a file to a session                                                                         
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    local_path       <str>  Local file to upload [required]                                     │
+│ *    remote_path      <str>  Remote path to upload to [required]                                 │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --session  -s      <str>  Session name                                                           │
+│ --help     -h             Show this message and exit.                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+=== colab download --help ===
+Usage: colab download [OPTIONS] {remote_path} {local_path}                                         
+                                                                                                    
+ Download a file from a session                                                                     
+                                                                                                    
+╭─ Arguments ──────────────────────────────────────────────────────────────────────────────────────╮
+│ *    remote_path      <str>  Remote path to download from [required]                             │
+│ *    local_path       <str>  Local path to save the file [required]                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --session  -s      <str>  Session name                                                           │
+│ --help     -h             Show this message and exit.                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+=== colab stop --help ===
+Usage: colab stop [OPTIONS]                                                                        
+                                                                                                    
+ Stop a session                                                                                     
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --session  -s      <str>  Session name                                                           │
+│ --help     -h             Show this message and exit.                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+=== colab status --help ===
+Usage: colab status [OPTIONS]                                                                      
+                                                                                                    
+ Show session status                                                                                
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --session  -s      <str>  Session name                                                           │
+│ --help     -h             Show this message and exit.                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+=== colab usage --help ===
+Usage: colab usage [OPTIONS]                                                                       
+                                                                                                    
+ Show account compute-unit usage rate and balance                                                   
+                                                                                                    
+╭─ Options ────────────────────────────────────────────────────────────────────────────────────────╮
+│ --help  -h        Show this message and exit.                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
