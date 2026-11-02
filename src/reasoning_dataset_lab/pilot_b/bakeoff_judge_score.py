@@ -781,9 +781,7 @@ def compute_all_pairs_statistics(
         d_ab = round(diff_vectors / len(common_items), 6) if common_items else 0.0
 
         def _diff_metric(sampled_iids: Sequence[str], _oa: Mapping[str, int] = out_a, _ob: Mapping[str, int] = out_b) -> float:
-            if not sampled_iids:
-                return 0.0
-            return sum(_oa[i] - _ob[i] for i in sampled_iids) / len(sampled_iids)
+            return (sum(_oa[i] - _ob[i] for i in sampled_iids) / len(sampled_iids)) if sampled_iids else 0.0
 
         diff_ci = domain_stratified_triad_bootstrap_ci(
             common_items,
@@ -823,6 +821,12 @@ def compute_all_pairs_statistics(
     holm_tost = holm_adjust(raw_tost_p)
     holm_mc = holm_adjust(raw_mcnemar_p)
 
+    _eq_status_map: dict[tuple[bool, bool], str] = {
+        (True, True): "practically_equivalent",
+        (True, False): "separated",
+        (False, True): "equivalent",
+        (False, False): "inconclusive",
+    }
     results: list[dict[str, Any]] = []
     for j_a, j_b in pair_keys:
         pkey = f"{j_a}__vs__{j_b}"
@@ -832,15 +836,7 @@ def compute_all_pairs_statistics(
         entry["holm_sign_flip_p"] = h_sf
         entry["holm_tost_p"] = h_tost
         entry["holm_mcnemar_p"] = holm_mc[pkey]
-        if h_sf < 0.05 and h_tost < 0.05:
-            eq_status = "practically_equivalent"
-        elif h_sf < 0.05:
-            eq_status = "separated"
-        elif h_tost < 0.05:
-            eq_status = "equivalent"
-        else:
-            eq_status = "inconclusive"
-        entry["equivalence_status"] = eq_status
+        entry["equivalence_status"] = _eq_status_map[(h_sf < 0.05, h_tost < 0.05)]
         results.append(entry)
 
     return results
@@ -877,11 +873,7 @@ def select_bakeoff_winner(
         }
 
     def _extract_point(val: Any) -> float:
-        if isinstance(val, Mapping):
-            return float(val.get("point", 0.0))
-        if isinstance(val, (int, float)):
-            return float(val)
-        return 0.0
+        return float(val.get("point", 0.0)) if isinstance(val, Mapping) else float(val or 0.0)
 
     def _cb_acc(j: Mapping[str, Any]) -> float:
         return _extract_point(j.get("class_balanced_strict_accuracy"))
@@ -906,12 +898,11 @@ def select_bakeoff_winner(
     best_judge_obj = ranked_by_primary[0]
     best_id = str(best_judge_obj["judge_id"])
 
-    pair_lookup: dict[frozenset[str], Mapping[str, Any]] = {}
-    for p in pairwise_comparisons:
-        ja = str(p.get("judge_a") or "")
-        jb = str(p.get("judge_b") or "")
-        if ja and jb:
-            pair_lookup[frozenset((ja, jb))] = p
+    pair_lookup: dict[frozenset[str], Mapping[str, Any]] = {
+        frozenset((str(p.get("judge_a") or ""), str(p.get("judge_b") or ""))): p
+        for p in pairwise_comparisons
+        if p.get("judge_a") and p.get("judge_b")
+    }
 
     candidate_objs: list[Mapping[str, Any]] = []
     practically_eq_pairs: list[tuple[str, str]] = []
@@ -928,10 +919,10 @@ def select_bakeoff_winner(
         h_sf = float(pair.get("holm_sign_flip_p", 1.0))
         h_tost = float(pair.get("holm_tost_p", 1.0))
         eq_st = str(pair.get("equivalence_status") or "")
-        if (h_sf < 0.05 and h_tost < 0.05) or eq_st == "practically_equivalent":
+        is_prac_eq = (h_sf < 0.05 and h_tost < 0.05) or eq_st == "practically_equivalent"
+        if is_prac_eq:
             practically_eq_pairs.append((best_id, jid))
-            candidate_objs.append(j_obj)
-        elif h_sf >= 0.05:
+        if is_prac_eq or h_sf >= 0.05:
             candidate_objs.append(j_obj)
 
     eligible_objs = [

@@ -3090,15 +3090,17 @@ def measure_canary_tolerance(
                 seed=seed,
             )
             for b_rec, r_rec in zip(baseline, snap, strict=True):
-                if b_rec["raw_verdict"] != r_rec["raw_verdict"]:
-                    label_matches = False
-                if b_rec["top5_token_ids"] != r_rec["top5_token_ids"]:
-                    token_matches = False
-                    total_token_mismatches += 1
-                for b_lp, r_lp in zip(b_rec["top5_logprobs"], r_rec["top5_logprobs"], strict=True):
-                    dev = abs(float(b_lp) - float(r_lp))
-                    if dev > judge_max_dev:
-                        judge_max_dev = dev
+                label_matches = label_matches and (b_rec["raw_verdict"] == r_rec["raw_verdict"])
+                token_mismatch = b_rec["top5_token_ids"] != r_rec["top5_token_ids"]
+                token_matches = token_matches and (not token_mismatch)
+                total_token_mismatches += int(token_mismatch)
+                judge_max_dev = max(
+                    judge_max_dev,
+                    *(
+                        abs(float(b_lp) - float(r_lp))
+                        for b_lp, r_lp in zip(b_rec["top5_logprobs"], r_rec["top5_logprobs"], strict=True)
+                    ),
+                )
         overall_max_dev = max(overall_max_dev, judge_max_dev)
         per_judge[judge_id] = {
             "repeats": repeats,
@@ -3241,10 +3243,9 @@ def _run_cpu_transport_probe_for_judge(
         existing_use_det = getattr(existing_torch, "use_deterministic_algorithms", None) if existing_torch is not None else None
         torch_shim = types.ModuleType("torch")
         torch_shim.__version__ = getattr(existing_torch, "__version__", "cpu-probe-stub")  # type: ignore[attr-defined]
-        if existing_torch is None or callable(existing_use_det):
-            torch_shim.use_deterministic_algorithms = (  # type: ignore[attr-defined]
-                existing_use_det if callable(existing_use_det) else (lambda _mode, warn_only=False: None)
-            )
+        torch_shim.use_deterministic_algorithms = (  # type: ignore[attr-defined]
+            existing_use_det if callable(existing_use_det) else (lambda _mode, warn_only=False: None)
+        )
         torch_shim.manual_seed = lambda _s: None  # type: ignore[attr-defined]
         torch_shim.no_grad = _NullCtx  # type: ignore[attr-defined]
         torch_shim.inference_mode = _NullCtx  # type: ignore[attr-defined]
@@ -3261,12 +3262,7 @@ def _run_cpu_transport_probe_for_judge(
             try:
                 judge_op()
             except Exception as exc:
-                use_det = getattr(torch_shim, "use_deterministic_algorithms", None)
-                if callable(use_det):
-                    try:
-                        use_det(True, warn_only=True)
-                    except Exception:  # pragma: no cover
-                        pass
+                torch_shim.use_deterministic_algorithms(True, warn_only=True)
                 j_status = "not enforceable"
                 j_reason = f"judge op raised {type(exc).__name__} under warn_only=False: {exc}; fell back to warn_only=True"
 
@@ -3317,25 +3313,25 @@ def _run_cpu_transport_probe_for_judge(
         transport_used = str(sample_resp.library_pins.get("transport", expected_transport_name))
     finally:
         for mod_name, prev_mod in saved_modules.items():
-            if prev_mod is None:
-                sys.modules.pop(mod_name, None)
-            else:
+            sys.modules.pop(mod_name, None)
+            if prev_mod is not None:  # pragma: no cover
                 sys.modules[mod_name] = prev_mod
         for env_name, prev_val in saved_env.items():
-            if prev_val is None:
-                os.environ.pop(env_name, None)
-            else:
+            os.environ.pop(env_name, None)
+            if prev_val is not None:  # pragma: no cover
                 os.environ[env_name] = prev_val
         sys.dont_write_bytecode = saved_bytecode
 
     label_exact = all(a["raw_verdict"] == b["raw_verdict"] for a, b in zip(s1, s2, strict=True))
     token_id_exact = all(a["top5_token_ids"] == b["top5_token_ids"] for a, b in zip(s1, s2, strict=True))
-    max_dev = 0.0
-    for a, b in zip(s1, s2, strict=True):
-        for lp_a, lp_b in zip(a["top5_logprobs"], b["top5_logprobs"], strict=True):
-            dev = abs(float(lp_a) - float(lp_b))
-            if dev > max_dev:
-                max_dev = dev
+    max_dev = max(
+        (
+            abs(float(lp_a) - float(lp_b))
+            for a, b in zip(s1, s2, strict=True)
+            for lp_a, lp_b in zip(a["top5_logprobs"], b["top5_logprobs"], strict=True)
+        ),
+        default=0.0,
+    )
 
     return {
         "status": j_status,
@@ -3361,12 +3357,11 @@ def probe_judge_determinism(
     """Probe CPU/transport determinism across all 5 judges (`D3MiniTransport` for `d3-mini`, `TransformersJudgeTransport` for the other 4) and record per-judge status and reason."""
     if part_dir is not None:
         cfg = load_canary_config(canary_config_path)
+    if part_dir is not None:
         items, _ = load_judge_items(part_dir)
         items_by_id = {it.item_id: it for it in items}
         wanted_ids = [str(iid) for iid in cfg.get("canary_item_ids", []) if str(iid) in items_by_id]
-        probe_items: list[JudgeInputItem] = (
-            [items_by_id[iid] for iid in wanted_ids] if wanted_ids else list(items[: min(10, len(items))])
-        )
+        probe_items: list[JudgeInputItem] = [items_by_id[iid] for iid in wanted_ids] or list(items[: min(10, len(items))])
     else:
         probe_items = [
             JudgeInputItem(
@@ -3379,7 +3374,7 @@ def probe_judge_determinism(
     judges_out: dict[str, Any] = {}
     for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
         adapter = build_judge_adapter(spec)
-        op_fn = per_judge_op.get(judge_id) if per_judge_op is not None else None
+        op_fn = (per_judge_op or {}).get(judge_id)
         judges_out[judge_id] = _run_cpu_transport_probe_for_judge(
             spec,
             adapter,
@@ -3412,15 +3407,14 @@ def _resolve_part_id_from_dir(part_dir_or_file: Path) -> str | None:
         base_dir / "reports" / "bakeoff_part_report.json",
         base_dir.parent / "reports" / "bakeoff_part_report.json",
     ]
-    for cand in candidates:
-        if cand.is_file():
-            try:
-                doc = json.loads(cand.read_text(encoding="utf-8"))
-                if isinstance(doc, Mapping) and doc.get("part_id"):
-                    return str(doc["part_id"]).strip()
-            except Exception:
-                continue
-    return None
+    found_part_ids = [
+        str(doc["part_id"]).strip()
+        for cand in candidates
+        if cand.is_file()
+        for doc in (json.loads(cand.read_text(encoding="utf-8")),)
+        if isinstance(doc, Mapping) and doc.get("part_id")
+    ]
+    return found_part_ids[0] if found_part_ids else None
 
 
 def check_bakeoff_logprob_mass(
@@ -3460,15 +3454,15 @@ def check_bakeoff_logprob_mass(
     if resolved_part_id is None and part_dir is not None:
         resolved_part_id = _resolve_part_id_from_dir(part_dir) or Path(part_dir).name
     if resolved_part_id is None:
-        for rf in row_files:
-            for ln in rf.read_text(encoding="utf-8").splitlines():
-                if ln.strip():
-                    first_row = json.loads(ln)
-                    if isinstance(first_row, Mapping) and first_row.get("part_id"):
-                        resolved_part_id = str(first_row["part_id"]).strip()
-                    break
-            if resolved_part_id is not None:
-                break
+        row_part_ids = [
+            str(first_row["part_id"]).strip()
+            for rf in row_files
+            for ln in rf.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+            for first_row in (json.loads(ln),)
+            if isinstance(first_row, Mapping) and first_row.get("part_id")
+        ]
+        resolved_part_id = row_part_ids[0] if row_part_ids else None
     if resolved_part_id is None or resolved_part_id.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
         raise refused_error(
             "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
@@ -3491,17 +3485,15 @@ def check_bakeoff_logprob_mass(
         lines = [json.loads(ln) for ln in rf.read_text(encoding="utf-8").splitlines() if ln.strip()]
         parsed_rows = [r for r in lines if r.get("state") == "parsed" and r.get("run_status") != "failed_to_run"]
         masses: list[float] = []
-        below_count = 0
         for r in parsed_rows:
             lp_list = r.get("top_20_logprobs") or r.get("top_logprobs") or []
-            mass = 0.0
-            for entry in lp_list:
-                tok = str(entry.get("token") or "").strip().lower()
-                if tok in ("yes", "no"):
-                    mass += math.exp(float(entry.get("logprob", -100.0)))
+            mass = sum(
+                math.exp(float(entry.get("logprob", -100.0)))
+                for entry in lp_list
+                if str(entry.get("token") or "").strip().lower() in ("yes", "no")
+            )
             masses.append(mass)
-            if mass + 1e-6 < threshold:
-                below_count += 1
+        below_count = sum(1 for m in masses if m + 1e-6 < threshold)
         min_mass = min(masses) if masses else 0.0
         mean_mass = (sum(masses) / len(masses)) if masses else 0.0
         passed = bool(masses and below_count == 0)
@@ -3630,17 +3622,17 @@ def run_bakeoff_judge(
     completed_keys: set[tuple[str, str]] = set()
     existing_row_objs: list[dict[str, Any]] = []
     if row_path.is_file():
-        for raw_ln in row_path.read_text(encoding="utf-8").splitlines():
-            if not raw_ln.strip():
-                continue
-            try:
-                parsed_row = json.loads(raw_ln)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed_row, dict) and parsed_row.get("item_id") and parsed_row.get("order"):
-                if parsed_row.get("run_status") != "failed_to_run":
-                    completed_keys.add((str(parsed_row["item_id"]), str(parsed_row["order"])))
-                    existing_row_objs.append(parsed_row)
+        existing_row_objs = [
+            parsed_row
+            for raw_ln in row_path.read_text(encoding="utf-8").splitlines()
+            if raw_ln.strip()
+            for parsed_row in (json.loads(raw_ln),)
+            if isinstance(parsed_row, dict)
+            and parsed_row.get("item_id")
+            and parsed_row.get("order")
+            and parsed_row.get("run_status") != "failed_to_run"
+        ]
+        completed_keys = {(str(r["item_id"]), str(r["order"])) for r in existing_row_objs}
 
     unparseable_count = sum(1 for r in existing_row_objs if r.get("state") == "unparseable")
     length_stop_count = sum(1 for r in existing_row_objs if r.get("state") == "length_stop")

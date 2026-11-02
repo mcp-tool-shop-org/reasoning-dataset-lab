@@ -1181,6 +1181,8 @@ def test_fix1_item7_logprob_mass_guard_refuses_non_pilot_40b_part(tmp_path: Path
 
     rc_bad = run_cli(["bakeoff-logprob-mass", "--judge-dir", str(judge_dir), "--part-id", "bakeoff-d-t10-anchored-sealed"])
     assert rc_bad == 1
+    rc_ok_no_out = run_cli(["bakeoff-logprob-mass", "--judge-dir", str(judge_dir), "--part-id", "pilot-40b"])
+    assert rc_ok_no_out == 0
 
     rep_ok = bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_id="pilot-40b")
     assert rep_ok["part_id"] == "pilot-40b"
