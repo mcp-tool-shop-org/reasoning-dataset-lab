@@ -966,12 +966,20 @@ def select_bakeoff_winner(
         }
 
     def _extract_point(val: Any) -> float:
-        return float(val.get("point", 0.0)) if isinstance(val, Mapping) else float(val or 0.0)
-
-    def _extract_lcb(val: Any) -> float:
         if isinstance(val, Mapping):
-            return float(val.get("lcb") or val.get("low") or val.get("point") or 0.0)
-        return float(val or 0.0)
+            pt = val.get("point")
+            return 0.0 if pt is None else float(pt)
+        return 0.0 if val is None else float(val)
+
+    def _extract_lcb(val: Any, *, judge_id: str, field_name: str) -> float:
+        if not isinstance(val, Mapping) or val.get("lcb") is None:
+            raise refused_error(
+                "BAKEOFF_WINNER_MISSING_LCB",
+                f"Judge '{judge_id}' is missing required 'lcb' in '{field_name}'.",
+                f"Include an explicit numeric 'lcb' (5th-percentile bootstrap lower confidence bound) in '{field_name}'; "
+                "winner selection never falls back to 'low' or 'point'.",
+            )
+        return float(val["lcb"])
 
     def _cb_acc(j: Mapping[str, Any]) -> float:
         return _extract_point(j.get("class_balanced_strict_accuracy"))
@@ -980,34 +988,60 @@ def select_bakeoff_winner(
         return _extract_point(j.get("screening_yes_precision"))
 
     def _yes_prec_lcb(j: Mapping[str, Any]) -> float:
-        return _extract_lcb(j.get("screening_yes_precision"))
+        return _extract_lcb(
+            j.get("screening_yes_precision"),
+            judge_id=str(j.get("judge_id") or ""),
+            field_name="screening_yes_precision",
+        )
 
     def _yes_rec_point(j: Mapping[str, Any]) -> float:
         return _extract_point(j.get("screening_yes_recall"))
 
     def _yes_rec_lcb(j: Mapping[str, Any]) -> float:
-        return _extract_lcb(j.get("screening_yes_recall"))
+        return _extract_lcb(
+            j.get("screening_yes_recall"),
+            judge_id=str(j.get("judge_id") or ""),
+            field_name="screening_yes_recall",
+        )
 
-    def _per_class_precisions(j: Mapping[str, Any], prec_pt: float) -> dict[str, float]:
+    def _per_class_precisions(j: Mapping[str, Any]) -> dict[str, float]:
+        jid = str(j.get("judge_id") or "")
         raw_map = j.get("screening_per_class_precision")
         if isinstance(raw_map, Mapping):
+            if any(raw_map.get(cls_name) is None for cls_name in NEGATIVE_CLASSES):
+                missing_cls = [cls_name for cls_name in NEGATIVE_CLASSES if raw_map.get(cls_name) is None]
+                raise refused_error(
+                    "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION",
+                    f"Judge '{jid}' is missing per-class precision for {missing_cls} in 'screening_per_class_precision'.",
+                    "Provide 'screening_per_class_precision' with both 'unsupported' and 'cannot_tell', "
+                    "or provide 'screening_tp' and 'screening_fp_by_class' for both negative classes.",
+                )
             return {
-                cls_name: round(_extract_point(raw_map.get(cls_name, 0.0)), 6)
+                cls_name: round(_extract_point(raw_map[cls_name]), 6)
                 for cls_name in NEGATIVE_CLASSES
             }
-        if "screening_tp" in j or isinstance(j.get("screening_fp_by_class"), Mapping):
-            tp_v = float(j.get("screening_tp", 0.0))
-            fp_map = j.get("screening_fp_by_class") if isinstance(j.get("screening_fp_by_class"), Mapping) else {}
-            fp_u = float(fp_map.get("unsupported", 0.0))
-            fp_c = float(fp_map.get("cannot_tell", 0.0))
+        fp_map = j.get("screening_fp_by_class")
+        if j.get("screening_tp") is not None and isinstance(fp_map, Mapping):
+            if any(fp_map.get(cls_name) is None for cls_name in NEGATIVE_CLASSES):
+                missing_cls = [cls_name for cls_name in NEGATIVE_CLASSES if fp_map.get(cls_name) is None]
+                raise refused_error(
+                    "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION",
+                    f"Judge '{jid}' is missing false-positive counts for {missing_cls} in 'screening_fp_by_class'.",
+                    "Provide 'screening_fp_by_class' with both 'unsupported' and 'cannot_tell' alongside 'screening_tp'.",
+                )
+            tp_v = float(j["screening_tp"])
+            fp_u = float(fp_map["unsupported"])
+            fp_c = float(fp_map["cannot_tell"])
             return {
                 "unsupported": compute_per_negative_class_precision(tp_v, fp_u),
                 "cannot_tell": compute_per_negative_class_precision(tp_v, fp_c),
             }
-        return {
-            "unsupported": round(prec_pt, 6),
-            "cannot_tell": round(prec_pt, 6),
-        }
+        raise refused_error(
+            "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION",
+            f"Judge '{jid}' is missing per-negative-class precision data (no 'screening_per_class_precision' and no 'screening_tp'/'screening_fp_by_class').",
+            "Provide 'screening_per_class_precision' or ('screening_tp' and 'screening_fp_by_class'); "
+            "per-class precision is never approximated from pooled precision.",
+        )
 
     def _domain_coverage_counts(j: Mapping[str, Any], rec_pt: float) -> tuple[int, int]:
         dom_obj = j.get("screening_domain_recall")
@@ -1039,7 +1073,7 @@ def select_bakeoff_winner(
         prec_lcb = _yes_prec_lcb(j_obj)
         rec_pt = _yes_rec_point(j_obj)
         rec_lcb = _yes_rec_lcb(j_obj)
-        per_cls_prec = _per_class_precisions(j_obj, prec_pt)
+        per_cls_prec = _per_class_precisions(j_obj)
         dom_passing, dom_total = _domain_coverage_counts(j_obj, rec_pt)
 
         if is_failed:
@@ -1148,8 +1182,11 @@ def select_bakeoff_winner(
             continue
         pair = pair_lookup.get(frozenset((best_id, jid)))
         if pair is None:
-            candidate_objs.append(j_obj)
-            continue
+            raise refused_error(
+                "BAKEOFF_WINNER_MISSING_PAIRWISE_COMPARISON",
+                f"Missing pairwise comparison row for eligible judge pair ('{best_id}', '{jid}').",
+                "Provide pairwise sign-flip and TOST comparison rows covering every eligible judge against best eligible judge B.",
+            )
         h_sf = float(pair.get("holm_sign_flip_p", 1.0))
         h_tost = float(pair.get("holm_tost_p", 1.0))
         eq_st = str(pair.get("equivalence_status") or "")
