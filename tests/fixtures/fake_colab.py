@@ -1031,6 +1031,25 @@ def main(argv: list[str] | None = None) -> int:
                 f"[colab] Download failed: [Errno 2] No such file or directory: '{dst}'\n"
             )
             return 1
+        fail_periodic_spec = os.environ.get("FAKE_COLAB_FAIL_PERIODIC_DOWNLOAD", "").strip()
+        if fail_periodic_spec and dst_path.name.startswith("progress.jsonl.tmp"):
+            attempts_file = state_dir / "periodic_download_attempts.txt"
+            try:
+                prev_attempts = int(attempts_file.read_text(encoding="utf-8").strip())
+            except Exception:
+                prev_attempts = 0
+            attempt = prev_attempts + 1
+            attempts_file.write_text(f"{attempt}\n", encoding="utf-8", newline="\n")
+            should_fail = fail_periodic_spec == "all" or (
+                fail_periodic_spec.isdigit() and attempt <= int(fail_periodic_spec)
+            )
+            if should_fail:
+                sys.stderr.write(
+                    f"[colab] Download failed: transient proxy error "
+                    f"colab-runtime-proxy-token=FAKE_PERIODIC_PROXY_SECRET "
+                    f"hf_FakePeriodicSecret99 for {src} (attempt {attempt})\n"
+                )
+                return 1
         truncate_target = os.environ.get("FAKE_COLAB_TRUNCATE_DOWNLOAD", "").strip()
         if truncate_target and truncate_target in ("1", vm_src.name, dst_path.name):
             raw_bytes = vm_src.read_bytes()
@@ -1174,11 +1193,48 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             if step == "run" and sleep_s > 0:
+                run_dir_sleep = vm_fs / "rdlab_run"
+                run_dir_sleep.mkdir(parents=True, exist_ok=True)
+                plant_leak = os.environ.get("FAKE_COLAB_PROGRESS_PLANT_LEAK", "").strip()
+                sleep_prog_row: dict[str, Any] = {
+                    "kind": "step_start",
+                    "step": "unpack",
+                    "ts": "2026-11-02T00:00:00Z",
+                    "start": "2026-11-02T00:00:00Z",
+                    "mem_available_bytes": 53687091200,
+                    "cgroup_memory_current": 1073741824,
+                    "cgroup_memory_max": None,
+                }
+                if plant_leak:
+                    sleep_prog_row["detail"] = plant_leak
+                (run_dir_sleep / "progress.jsonl").write_text(
+                    json.dumps(sleep_prog_row) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
                 time.sleep(sleep_s)
                 sys.stderr.write(f"Execution timed out after {timeout_s}s\n")
                 return 124
             kernel_code = (
-                "import json, os, pathlib, shutil, subprocess, sys\n"
+                "import json, os, pathlib, shutil, subprocess, sys, time, types\n"
+                "if os.environ.get('FAKE_COLAB_CUT_MID_JUDGE') or os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS') or os.environ.get('FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD') == '1':\n"
+                "    _fake_hf = types.ModuleType('huggingface_hub')\n"
+                "    _fake_hf._IS_FAKE_HF_HUB = True\n"
+                "    def _fake_snapshot_download(repo_id, revision=None, cache_dir=None, **kw):\n"
+                "        delay_s = float(os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS', '0') or '0')\n"
+                "        if delay_s > 0:\n"
+                "            time.sleep(delay_s)\n"
+                "        cut_target = os.environ.get('FAKE_COLAB_CUT_MID_JUDGE', '').strip()\n"
+                "        if cut_target and (cut_target == repo_id or cut_target in str(repo_id)):\n"
+                "            if os.environ.get('FAKE_COLAB_CUT_MID_JUDGE_HARD') == '1':\n"
+                "                os._exit(137)\n"
+                "            raise RuntimeError(f'Simulated cut mid-judge for {repo_id}')\n"
+                "        owner, repo = str(repo_id).split('/', 1)\n"
+                "        base = pathlib.Path(cache_dir) if cache_dir else (pathlib.Path(os.environ.get('HF_HOME', '.')) / 'hub')\n"
+                "        snap_dir = base / f'models--{owner}--{repo}' / 'snapshots' / str(revision or 'main')\n"
+                "        return str(snap_dir)\n"
+                "    _fake_hf.snapshot_download = _fake_snapshot_download\n"
+                "    sys.modules['huggingface_hub'] = _fake_hf\n"
                 "def _fake_disk_usage(p):\n"
                 "    ps = os.path.abspath(os.fspath(p))\n"
                 "    vm_root = os.path.abspath(os.environ['RDLAB_VM_CONTENT_DIR'])\n"
@@ -1277,6 +1333,34 @@ def main(argv: list[str] | None = None) -> int:
                 "rc = ns.get('CELL_EXIT_CODE', 0)\n"
                 "raise SystemExit(int(rc) if isinstance(rc, int) else 0)\n"
             )
+            if step == "run" and os.environ.get("FAKE_COLAB_LOST_STREAM") == "1":
+                prior_cells.append(
+                    {
+                        "step": step,
+                        "py_file": str(py_path),
+                        "env": dict(persisted_env),
+                        "rc": 0,
+                        "lost_stream": True,
+                    }
+                )
+                session_cells_file.write_text(
+                    json.dumps(prior_cells, indent=2) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+                print('{"kind":"stream_started","step":"run"}', flush=True)
+                subprocess.Popen(
+                    [sys.executable, "-c", kernel_code],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=exec_env,
+                    cwd=str(vm_fs),
+                    start_new_session=True,
+                )
+                time.sleep(timeout_s)
+                sys.stderr.write(f"Execution timed out after {timeout_s}s (lost stream)\n")
+                return 1
             proc = subprocess.run(
                 [sys.executable, "-c", kernel_code],
                 stdin=subprocess.DEVNULL,
