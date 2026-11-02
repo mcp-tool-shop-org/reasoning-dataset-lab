@@ -2390,6 +2390,240 @@ def test_stop_poll_config_clamps_zero_and_refuses_non_integer(
         )
 
 
+def _count_post_stop_session_reads(calls_log: Path) -> tuple[int, int]:
+    """Return `(total_calls, post_stop_sessions_reads)` from `fake_colab`'s `calls.jsonl`."""
+    if not calls_log.is_file():
+        return 0, 0
+    lines = [
+        ln
+        for ln in calls_log.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    seen_stop = False
+    post_stop_reads = 0
+    for ln in lines:
+        rec = json.loads(ln)
+        subcmd = rec.get("subcmd")
+        if subcmd == "stop":
+            seen_stop = True
+        elif seen_stop and subcmd == "sessions":
+            post_stop_reads += 1
+    return len(lines), post_stop_reads
+
+
+def test_stop_poll_config_octal_and_fuzz_table(
+    tmp_path: Path,
+) -> None:
+    """Fuzz both `RDLAB_STOP_POLL_MAX_READS` and `RDLAB_STOP_POLL_SLEEP_SECONDS` through the real
+    `launch_judges.sh` script and `fake_colab`, verifying base-10 normalisation for leading-zero
+    values (`08`, `09`, `010`, `-08`, `007`), refusal with `BAD_STOP_POLL_CONFIG` for invalid inputs,
+    and that `MAX_READS` never yields zero post-stop `colab sessions` reads when a session is opened.
+    """
+    wsl_launch = _to_wsl_path(LAUNCH_JUDGES_SH)
+    long_40 = "9" * 40
+
+    # (display_label, raw_value, expected_max_reads_outcome, expected_sleep_seconds_outcome)
+    fuzz_cases: list[tuple[str, str, int | str, int | str]] = [
+        ('""', "", "BAD_STOP_POLL_CONFIG", "BAD_STOP_POLL_CONFIG"),
+        ('" "', " ", "BAD_STOP_POLL_CONFIG", "BAD_STOP_POLL_CONFIG"),
+        ('"+3"', "+3", "BAD_STOP_POLL_CONFIG", "BAD_STOP_POLL_CONFIG"),
+        ('"3 "', "3 ", "BAD_STOP_POLL_CONFIG", "BAD_STOP_POLL_CONFIG"),
+        ('"\\uff11" ("１")', "\uff11", "BAD_STOP_POLL_CONFIG", "BAD_STOP_POLL_CONFIG"),
+        ('"0x10"', "0x10", "BAD_STOP_POLL_CONFIG", "BAD_STOP_POLL_CONFIG"),
+        (f'"{long_40}" (40 digits)', long_40, "BAD_STOP_POLL_CONFIG", "BAD_STOP_POLL_CONFIG"),
+        ('"3\\n4"', "3\n4", "BAD_STOP_POLL_CONFIG", "BAD_STOP_POLL_CONFIG"),
+        ("08", "08", 8, 8),
+        ("09", "09", 9, 9),
+        ("010", "010", 10, 10),
+        ("-08", "-08", 1, 0),
+        ("007", "007", 7, 7),
+    ]
+
+    table_rows: list[tuple[str, str, str, str]] = []
+
+    # 1. Fuzz RDLAB_STOP_POLL_MAX_READS with a persisting session (FAKE_COLAB_STOP_LAG_READS=99)
+    for idx, (label, raw_val, expected_max, _expected_sleep) in enumerate(fuzz_cases):
+        env_case = fake_colab.setup_fake_colab_environment(
+            tmp_path / f"fuzz_max_{idx}", neighbour_sessions=[]
+        )
+        out_case = tmp_path / f"out_fuzz_max_{idx}"
+        run_env = os.environ.copy()
+        run_env["PATH"] = (
+            f"{_to_wsl_path(env_case['fake_bin'])}:{_to_wsl_path(env_case['sentinel_bin'])}:"
+            + run_env.get("PATH", "")
+        )
+        run_env["FAKE_COLAB_STATE_DIR"] = _to_wsl_path(env_case["state_dir"])
+        run_env["COLAB_LOCK_DIR"] = _to_wsl_path(env_case["colab_locks_dir"])
+        run_env["RDLAB_OPEN_LOCK"] = _to_wsl_path(tmp_path / f"fuzz_max_{idx}.lock")
+        run_env["RDLAB_STOP_POLL_MAX_READS"] = raw_val
+        run_env["RDLAB_STOP_POLL_SLEEP_SECONDS"] = "0"
+        run_env["FAKE_COLAB_STOP_LAG_READS"] = "99"
+
+        proc = subprocess.run(
+            [
+                "bash",
+                wsl_launch,
+                "--session-smoke",
+                "--out-dir",
+                _to_wsl_path(out_case),
+                "--run-id",
+                f"fuzz-max-{idx:02d}",
+            ],
+            stdin=subprocess.DEVNULL,
+            env=run_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        total_calls, post_stop_reads = _count_post_stop_session_reads(
+            env_case["calls_log"]
+        )
+
+        if expected_max == "BAD_STOP_POLL_CONFIG":
+            assert proc.returncode == 2, (
+                f"MAX_READS={label}: expected rc=2, got {proc.returncode} (stderr={proc.stderr!r})"
+            )
+            assert "BAD_STOP_POLL_CONFIG" in proc.stderr
+            assert total_calls == 0
+            assert post_stop_reads == 0
+            table_rows.append(
+                (
+                    label,
+                    "RDLAB_STOP_POLL_MAX_READS",
+                    "BAD_STOP_POLL_CONFIG",
+                    "0 (refused before session open)",
+                )
+            )
+        else:
+            exp_int = int(expected_max)
+            assert proc.returncode == 1, (
+                f"MAX_READS={label}: expected persisting session to fail with rc=1, got {proc.returncode}"
+            )
+            assert post_stop_reads >= 1, (
+                f"MAX_READS={label}: post-stop reads must be >= 1, got {post_stop_reads}"
+            )
+            assert post_stop_reads == exp_int, (
+                f"MAX_READS={label}: expected {exp_int} post-stop reads, got {post_stop_reads}"
+            )
+            cli_log = (out_case / "colab-cli.log").read_text(encoding="utf-8")
+            assert f"attempt={exp_int}/{exp_int}" in cli_log
+            outcome_doc = json.loads(
+                (out_case / "outcome.draft.json").read_text(encoding="utf-8")
+            )
+            assert outcome_doc["outcome"] == "failed"
+            assert (
+                f"session rdlab-fuzz-max-{idx:02d} still present after colab stop ({exp_int} reads;"
+                in outcome_doc["why"]
+            )
+            table_rows.append(
+                (
+                    label,
+                    "RDLAB_STOP_POLL_MAX_READS",
+                    f"{exp_int}" + (" (clamped from -8)" if raw_val == "-08" else ""),
+                    f"{post_stop_reads}",
+                )
+            )
+
+    # 2. Fuzz RDLAB_STOP_POLL_SLEEP_SECONDS with FAKE_COLAB_STOP_LAG_READS=1 and a non-blocking sleep recorder in fake_bin
+    for idx, (label, raw_val, _expected_max, expected_sleep) in enumerate(fuzz_cases):
+        env_case = fake_colab.setup_fake_colab_environment(
+            tmp_path / f"fuzz_sleep_{idx}", neighbour_sessions=[]
+        )
+        sleep_log = env_case["state_dir"] / "sleep_args.txt"
+        sleep_shim = env_case["fake_bin"] / "sleep"
+        sleep_shim.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf '%s\\n' \"$*\" >> '{_to_wsl_path(sleep_log)}'\n"
+            "exit 0\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        sleep_shim.chmod(0o755)
+
+        out_case = tmp_path / f"out_fuzz_sleep_{idx}"
+        run_env = os.environ.copy()
+        run_env["PATH"] = (
+            f"{_to_wsl_path(env_case['fake_bin'])}:{_to_wsl_path(env_case['sentinel_bin'])}:"
+            + run_env.get("PATH", "")
+        )
+        run_env["FAKE_COLAB_STATE_DIR"] = _to_wsl_path(env_case["state_dir"])
+        run_env["COLAB_LOCK_DIR"] = _to_wsl_path(env_case["colab_locks_dir"])
+        run_env["RDLAB_OPEN_LOCK"] = _to_wsl_path(tmp_path / f"fuzz_sleep_{idx}.lock")
+        run_env["RDLAB_STOP_POLL_MAX_READS"] = "3"
+        run_env["RDLAB_STOP_POLL_SLEEP_SECONDS"] = raw_val
+        run_env["FAKE_COLAB_STOP_LAG_READS"] = "1"
+
+        proc = subprocess.run(
+            [
+                "bash",
+                wsl_launch,
+                "--session-smoke",
+                "--out-dir",
+                _to_wsl_path(out_case),
+                "--run-id",
+                f"fuzz-sleep-{idx:02d}",
+            ],
+            stdin=subprocess.DEVNULL,
+            env=run_env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        total_calls, post_stop_reads = _count_post_stop_session_reads(
+            env_case["calls_log"]
+        )
+
+        if expected_sleep == "BAD_STOP_POLL_CONFIG":
+            assert proc.returncode == 2, (
+                f"SLEEP_SECONDS={label}: expected rc=2, got {proc.returncode} (stderr={proc.stderr!r})"
+            )
+            assert "BAD_STOP_POLL_CONFIG" in proc.stderr
+            assert total_calls == 0
+            assert post_stop_reads == 0
+            assert not sleep_log.exists()
+            table_rows.append(
+                (
+                    label,
+                    "RDLAB_STOP_POLL_SLEEP_SECONDS",
+                    "BAD_STOP_POLL_CONFIG",
+                    "0 (refused before session open)",
+                )
+            )
+        else:
+            exp_sleep = int(expected_sleep)
+            assert proc.returncode == 0, (
+                f"SLEEP_SECONDS={label}: expected rc=0, got {proc.returncode} (stderr={proc.stderr!r})"
+            )
+            assert post_stop_reads == 2
+            assert sleep_log.is_file()
+            recorded_sleeps = [
+                ln.strip()
+                for ln in sleep_log.read_text(encoding="utf-8").splitlines()
+                if ln.strip()
+            ]
+            assert recorded_sleeps == [str(exp_sleep)], (
+                f"SLEEP_SECONDS={label}: expected sleep({exp_sleep}), got {recorded_sleeps}"
+            )
+            table_rows.append(
+                (
+                    label,
+                    "RDLAB_STOP_POLL_SLEEP_SECONDS",
+                    f"{exp_sleep}" + (" (clamped from -8)" if raw_val == "-08" else ""),
+                    f"{post_stop_reads} (slept {exp_sleep}s after read 1)",
+                )
+            )
+
+    header = "| Value | Knob | Outcome | Reads made |"
+    sep = "|---|---|---|---|"
+    formatted_lines = [header, sep] + [
+        f"| `{v}` | `{k}` | `{o}` | `{r}` |" for v, k, o, r in table_rows
+    ]
+    print("\n" + "\n".join(formatted_lines))
+    assert len(table_rows) == 26
+
+
 def test_real_service_assumptions_weights_table_matches_receipts(
     tmp_path: Path,
 ) -> None:
@@ -3003,6 +3237,179 @@ def test_real_service_assumptions_doc_table_and_line_citations(
     )
     assert rc_gate_ok == 0
     assert json.loads(gate_ok_status.read_text(encoding="utf-8"))["rc"] == 0
+
+
+def _collect_bash_and_python_env_reads(
+    sh_text: str,
+    py_text: str,
+) -> tuple[set[str], set[str], set[str]]:
+    """Extract external environment variables read in `launch_judges.sh` and `vm_judges.py`.
+
+    Returns `(bash_env_vars, py_env_vars, shell_local_vars)`.
+    Shell-local variables are uppercase variables assigned inside `launch_judges.sh` via standalone
+    `VAR=...` or `local VAR=...` statements (as opposed to command-prefixed `VAR=... \\` exports for
+    child processes) and never read before their assignment line; `BASH_SOURCE` is a Bash built-in.
+    """
+    first_assignment_line: dict[str, int] = {}
+    first_read_line: dict[str, int] = {}
+    all_sh_reads: set[str] = set()
+    heredoc_py_reads: set[str] = set()
+
+    lines = sh_text.splitlines()
+    for idx, line in enumerate(lines, 1):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        # Standalone shell assignment (not a backslash-continued command prefix like `VAR="$X" \`)
+        if not stripped.endswith("\\"):
+            for m_assign in re.finditer(
+                r"(?:^|[;\s]|local\s+)([A-Z][A-Z0-9_]*)=", line
+            ):
+                var_name = m_assign.group(1)
+                first_assignment_line.setdefault(var_name, idx)
+
+        for m_read in re.finditer(r"\$\{?([A-Z][A-Z0-9_]*)\b", line):
+            var_name = m_read.group(1)
+            if var_name == "BASH_SOURCE":
+                continue
+            all_sh_reads.add(var_name)
+            first_read_line.setdefault(var_name, idx)
+
+        for m_py in re.finditer(
+            r'os\.(?:environ\.get|environ\[|getenv)\(\s*["\']([A-Za-z_][A-Za-z0-9_]*)["\']',
+            line,
+        ):
+            heredoc_py_reads.add(m_py.group(1))
+
+    shell_local_vars: set[str] = set()
+    for var_name in all_sh_reads:
+        if var_name in first_assignment_line:
+            assert first_assignment_line[var_name] <= first_read_line[var_name], (
+                f"Variable {var_name} read at line {first_read_line[var_name]} before assignment at {first_assignment_line[var_name]}"
+            )
+            shell_local_vars.add(var_name)
+
+    bash_env_vars = (all_sh_reads - shell_local_vars) | heredoc_py_reads
+
+    py_env_vars: set[str] = set()
+    for line in py_text.splitlines():
+        if line.strip().startswith("#"):
+            continue
+        for m_py in re.finditer(
+            r'(?:os\.(?:environ\.get|environ\[|getenv)|env_or|env_int|env_path)\(\s*["\']([A-Za-z_][A-Za-z0-9_]*)["\']',
+            line,
+        ):
+            py_env_vars.add(m_py.group(1))
+
+    return bash_env_vars, py_env_vars, shell_local_vars
+
+
+def test_real_service_assumptions_env_var_classification_table() -> None:
+    """Mechanically enforce that every environment variable read in `scripts/colab/launch_judges.sh`
+    and `scripts/colab/vm_judges.py` appears in the `## Known test hooks in production code`
+    classification table in `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`, marked as one of
+    `real-run setting`, `test hook`, or `stub mode`.
+    """
+    assumptions_md = SCRIPTS_COLAB_DIR / "REAL_SERVICE_ASSUMPTIONS.md"
+    doc_text = assumptions_md.read_text(encoding="utf-8")
+    sh_text = LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
+    py_text = VM_JUDGES_PY.read_text(encoding="utf-8")
+
+    assert "## Known test hooks in production code" in doc_text
+    hooks_section = doc_text.split("## Known test hooks in production code", 1)[1]
+    assert "every remaining test-only hook" not in hooks_section
+
+    allowed_classifications = {
+        "**real-run setting**",
+        "**test hook**",
+        "**stub mode**",
+    }
+    var_to_classifications: dict[str, set[str]] = {}
+    table_rows = [
+        ln.strip()
+        for ln in hooks_section.splitlines()
+        if ln.strip().startswith("| `scripts/colab/")
+    ]
+    assert len(table_rows) >= 30
+
+    for row in table_rows:
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        assert len(cells) == 4, f"Expected 4 columns in classification table row: {row}"
+        _loc_cell, cond_cell, class_cell, _desc_cell = cells
+        assert class_cell in allowed_classifications, (
+            f"Invalid classification {class_cell!r} in row: {row}"
+        )
+        for token in re.findall(r"`([A-Z][A-Z0-9_]+)`", cond_cell):
+            var_to_classifications.setdefault(token, set()).add(class_cell)
+        for token in re.findall(r"\b([A-Z][A-Z0-9_]+)\b", cond_cell):
+            var_to_classifications.setdefault(token, set()).add(class_cell)
+
+    bash_env_vars, py_env_vars, shell_local_vars = _collect_bash_and_python_env_reads(
+        sh_text, py_text
+    )
+    assert "STOP_POLL_MAX_READS" in shell_local_vars
+    assert "STOP_POLL_SLEEP_SECONDS" in shell_local_vars
+    assert "RDLAB_STOP_POLL_MAX_READS" in bash_env_vars
+    assert "RDLAB_STOP_POLL_SLEEP_SECONDS" in bash_env_vars
+
+    all_code_env_vars = bash_env_vars | py_env_vars
+    missing_from_doc = sorted(all_code_env_vars - set(var_to_classifications))
+    assert not missing_from_doc, (
+        f"Environment variables read in code but missing from REAL_SERVICE_ASSUMPTIONS.md classification table: {missing_from_doc}"
+    )
+
+    # Verify specific required classifications from the review
+    for real_setting in (
+        "RDLAB_STOP_POLL_MAX_READS",
+        "RDLAB_STOP_POLL_SLEEP_SECONDS",
+        "RDLAB_JUDGE_LOCK_SHA256",
+        "RDLAB_D3_LOCK_SHA256",
+        "RDLAB_RECEIPTS_DIR",
+        "RDLAB_ITEMS_FILE",
+        "HF_HOME",
+    ):
+        assert var_to_classifications.get(real_setting) == {"**real-run setting**"}, (
+            f"Expected {real_setting} to be classified as **real-run setting**, got {var_to_classifications.get(real_setting)}"
+        )
+
+    for test_hook_var in (
+        "RDLAB_DRY",
+        "RDLAB_PYTHON",
+        "RDLAB_OPEN_LOCK",
+        "COLAB_LOCK_DIR",
+        "RDLAB_WALL_SECONDS",
+        "RDLAB_VRAM_HALT_MIB",
+        "RDLAB_GATE_TIMEOUT_SECONDS",
+        "RDLAB_UPLOAD_TIMEOUT_SECONDS",
+        "RDLAB_DOWNLOAD_TIMEOUT_SECONDS",
+        "RDLAB_FETCH_MARGIN_SECONDS",
+        "RDLAB_EXEC_MARGIN_SECONDS",
+        "RDLAB_VM_SELF_STOP_MARGIN_SECONDS",
+        "RDLAB_RIG_GRACE_SECONDS",
+        "RDLAB_WATCHDOG_FETCH_TIMEOUT_SECONDS",
+        "RDLAB_VM_SCRIPT",
+        "RDLAB_VM_CONTENT_DIR",
+        "RDLAB_COLAB_IS_FAKE",
+        "FAKE_COLAB_STATE_DIR",
+        "VM_DRYRUN",
+        "RDLAB_TEST_PLANT_LOG_LEAK",
+    ):
+        assert var_to_classifications.get(test_hook_var) == {"**test hook**"}, (
+            f"Expected {test_hook_var} to be classified as **test hook**, got {var_to_classifications.get(test_hook_var)}"
+        )
+
+    assert var_to_classifications.get("RDLAB_MODE") == {"**stub mode**"}
+    assert '`mode == "stub"`' in hooks_section
+    assert "`--dry`" in hooks_section
+
+    # Verify the grep detector fails if a new undocumented env var is added to either file
+    b_injected, p_injected, _ = _collect_bash_and_python_env_reads(
+        sh_text + '\nX="${RDLAB_UNDOCUMENTED_BASH_VAR:-1}"\n',
+        py_text + '\n_ = os.environ.get("RDLAB_UNDOCUMENTED_PY_VAR")\n',
+    )
+    assert "RDLAB_UNDOCUMENTED_BASH_VAR" in (b_injected - set(var_to_classifications))
+    assert "RDLAB_UNDOCUMENTED_PY_VAR" in (p_injected - set(var_to_classifications))
+
 
 
 

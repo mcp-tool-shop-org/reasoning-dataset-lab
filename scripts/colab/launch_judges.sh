@@ -169,15 +169,25 @@ if [[ "$OUT_DIR" == *"/content/drive"* ]] || [[ "$OUT_DIR" == *"/gdrive"* ]]; th
   exit 2
 fi
 
-STOP_POLL_MAX_READS="${RDLAB_STOP_POLL_MAX_READS:-3}"
-STOP_POLL_SLEEP_SECONDS="${RDLAB_STOP_POLL_SLEEP_SECONDS:-5}"
-if [[ ! "$STOP_POLL_MAX_READS" =~ ^-?[0-9]+$ ]]; then
+STOP_POLL_MAX_READS="${RDLAB_STOP_POLL_MAX_READS-3}"
+STOP_POLL_SLEEP_SECONDS="${RDLAB_STOP_POLL_SLEEP_SECONDS-5}"
+if [[ "$STOP_POLL_MAX_READS" == *$'\n'* || ! "$STOP_POLL_MAX_READS" =~ ^-?[0123456789]{1,9}$ ]]; then
   echo "BAD_STOP_POLL_CONFIG: RDLAB_STOP_POLL_MAX_READS must be an integer, got '$STOP_POLL_MAX_READS'" >&2
   exit 2
 fi
-if [[ ! "$STOP_POLL_SLEEP_SECONDS" =~ ^-?[0-9]+$ ]]; then
+if [[ "$STOP_POLL_SLEEP_SECONDS" == *$'\n'* || ! "$STOP_POLL_SLEEP_SECONDS" =~ ^-?[0123456789]{1,9}$ ]]; then
   echo "BAD_STOP_POLL_CONFIG: RDLAB_STOP_POLL_SLEEP_SECONDS must be an integer, got '$STOP_POLL_SLEEP_SECONDS'" >&2
   exit 2
+fi
+if [[ "$STOP_POLL_MAX_READS" == -* ]]; then
+  STOP_POLL_MAX_READS=$(( -10#${STOP_POLL_MAX_READS#-} ))
+else
+  STOP_POLL_MAX_READS=$(( 10#$STOP_POLL_MAX_READS ))
+fi
+if [[ "$STOP_POLL_SLEEP_SECONDS" == -* ]]; then
+  STOP_POLL_SLEEP_SECONDS=$(( -10#${STOP_POLL_SLEEP_SECONDS#-} ))
+else
+  STOP_POLL_SLEEP_SECONDS=$(( 10#$STOP_POLL_SLEEP_SECONDS ))
 fi
 if (( STOP_POLL_MAX_READS < 1 )); then
   STOP_POLL_MAX_READS=1
