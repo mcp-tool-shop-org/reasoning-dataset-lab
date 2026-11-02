@@ -45,7 +45,7 @@ jobs:
         run: uv sync --frozen
 
       - name: Run pytest with coverage (floor 90%)
-        run: uv run pytest -v --cov=reasoning_dataset_lab --cov-report=term-missing --cov-report=xml --cov-fail-under=90
+        run: uv run pytest -v -n auto --cov=reasoning_dataset_lab --cov-report=term-missing --cov-report=xml --cov-fail-under=90
 
       - name: Validate example map
         run: uv run rdlab map check examples/t10-pilot-a.map.yaml
