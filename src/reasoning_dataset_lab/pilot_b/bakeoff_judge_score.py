@@ -923,13 +923,24 @@ def _resolve_registered_domains_for_part(
 ) -> tuple[str, ...]:
     """Compute the sorted domain set of all items in the part's keys once.
 
-    When the part is the anchored counted part (construction `anchored-two-hop`), that set must equal
-    `ANCHORED_ELIGIBLE_DOMAINS`, or the scorer refuses.
+    A part is the anchored counted part only if every key's `value_set_id` has the anchored prefix (`all()`).
+    A mixed part (some anchored and some not) raises `BAKEOFF_SCORE_MIXED_PART`.
+    When the part is the anchored counted part, its domain set must equal `ANCHORED_ELIGIBLE_DOMAINS`.
     """
-    domains_in_keys = tuple(sorted({rec.domain for rec in keys_by_id.values()}))
-    is_anchored_counted = any(
-        rec.value_set_id.startswith(_ANCHORED_VALUE_SET_PREFIX) for rec in keys_by_id.values()
-    )
+    records = list(keys_by_id.values())
+    domains_in_keys = tuple(sorted({rec.domain for rec in records}))
+    anchored_flags = [rec.value_set_id.startswith(_ANCHORED_VALUE_SET_PREFIX) for rec in records]
+    has_any_anchored = any(anchored_flags)
+    is_anchored_counted = bool(anchored_flags) and all(anchored_flags)
+    if has_any_anchored and not is_anchored_counted:
+        n_anchored = sum(1 for f in anchored_flags if f)
+        n_other = len(anchored_flags) - n_anchored
+        raise refused_error(
+            "BAKEOFF_SCORE_MIXED_PART",
+            f"Keys file mixes anchored-two-hop keys ({n_anchored}) and non-anchored keys ({n_other}); "
+            "a part must be either wholly anchored or wholly non-anchored.",
+            "Do not mix anchored-two-hop key records with non-anchored key records in keys.sealed.jsonl.",
+        )
     if is_anchored_counted:
         expected_domains = tuple(sorted(ANCHORED_ELIGIBLE_DOMAINS))
         if domains_in_keys != expected_domains:
@@ -1521,8 +1532,13 @@ def _evaluate_judge_at_rule(
             elif r.get("state") == "unparseable":
                 unparseable += 1
             sec_val = _coerce_finite_float(r.get("seconds"))
-            if sec_val is not None:
-                seconds_list.append(sec_val)
+            if sec_val is None:
+                raise refused_error(
+                    "BAKEOFF_SCORE_MISSING_ROW_SECONDS",
+                    f"Judge '{judge_id}' row for item '{iid}' (order '{ord_name}') has missing, boolean, or non-finite 'seconds' ({r.get('seconds')!r}).",
+                    "Every scored row of a judge that ran must record a finite numeric 'seconds' timing.",
+                )
+            seconds_list.append(sec_val)
             vram_peak = max(vram_peak, int(r.get("vram_peak_mib", 0)))
 
             v = _verdict_at_rule(
