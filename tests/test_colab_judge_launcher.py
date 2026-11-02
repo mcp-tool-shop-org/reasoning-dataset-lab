@@ -131,6 +131,32 @@ def _make_synthetic_public_items(base_dir: Path, count: int = 12) -> Path:
     return items_path
 
 
+def _hermetic_path_for(env_paths: dict[str, Path]) -> str:
+    return fake_colab.build_hermetic_path(env_paths)
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_fake_colab_and_uv_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Replace PATH with the shared fake `colab` + fake `uv` bin, sentinel stubs, and `/usr/bin:/bin`,
+    and fail the test if any sentinel stub (`REAL_COLAB_CALLED` or `REAL_UV_CALLED`) is reached.
+    """
+    auto_env = fake_colab.setup_fake_colab_environment(
+        tmp_path / "_hermetic_shared_fake_env"
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(auto_env))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(auto_env["state_dir"]))
+    yield auto_env
+    assert not auto_env["sentinel_called"].exists(), (
+        "Sentinel real-colab trap fired during test"
+    )
+    assert not auto_env["sentinel_uv_called"].exists(), (
+        "Sentinel real-uv trap fired during test"
+    )
+
+
 def _base_launcher_exports(
     env_paths: dict[str, Path],
     *,
@@ -142,7 +168,7 @@ def _base_launcher_exports(
     d3_lock_sha: str = EXPECTED_D3_LOCK_SHA256,
 ) -> str:
     return (
-        f"export PATH='{_to_wsl_path(env_paths['fake_bin'])}:{_to_wsl_path(env_paths['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_paths)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_paths['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_paths['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(open_lock)}'; "
@@ -994,7 +1020,7 @@ def test_colab_message_line_is_not_a_session(tmp_path: Path) -> None:
     )
     out_a = tmp_path / "out_msg_a"
     cmd_a = (
-        f"export PATH='{_to_wsl_path(env_a['fake_bin'])}:{_to_wsl_path(env_a['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_a)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_a['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_a['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'msg_a.lock')}'; "
@@ -1021,7 +1047,7 @@ def test_colab_message_line_is_not_a_session(tmp_path: Path) -> None:
     )
     out_b = tmp_path / "out_msg_b"
     cmd_b = (
-        f"export PATH='{_to_wsl_path(env_b['fake_bin'])}:{_to_wsl_path(env_b['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_b)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_b['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_b['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'msg_b.lock')}'; "
@@ -1044,7 +1070,7 @@ def test_outcome_format_verified_flag_is_false_under_fake(tmp_path: Path) -> Non
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path)
     out_dir = tmp_path / "out_fake_flag"
     cmd = (
-        f"export PATH='{_to_wsl_path(env_paths['fake_bin'])}:{_to_wsl_path(env_paths['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_paths)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_paths['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_paths['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'flag.lock')}'; "
@@ -1469,6 +1495,12 @@ def test_kernel_exec_without_dunder_file_fails_when_dunder_file_used(
 ) -> None:
     import shutil as _shutil
 
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_kernel_dunder", uv_python_315_found=True
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_paths))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_paths["state_dir"]))
+
     vm_src = VM_JUDGES_PY.read_text(encoding="utf-8")
     status_file = tmp_path / "gate_status.json"
     monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "vm_content"))
@@ -1493,6 +1525,7 @@ def test_kernel_exec_without_dunder_file_fails_when_dunder_file_used(
     assert status_doc["step"] == "gate"
     assert status_doc["rc"] == 0
     assert status_doc["status"] == "ok"
+    assert status_doc["python_315"] == fake_colab.DEFAULT_FAKE_UV_PYTHON_315_PATH
 
 
 def test_kernel_exec_gate_and_run_steps_complete(tmp_path: Path) -> None:
@@ -2075,6 +2108,10 @@ def test_exec_env_quoting_persistence_timeout_and_shared_kernel_gate_to_run(
     # 5. Execute vm_judges.py `--step gate` then `--step run` in the EXACT SAME Python kernel namespace (`ns`)
     import shutil as _shutil
 
+    fake_colab.set_fake_uv_python_315_state(env_paths, found=True)
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_paths))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", wsl_state)
+
     shared_vm_fs = tmp_path / "shared_kernel_vm_fs"
     shared_vm_fs.mkdir(parents=True, exist_ok=True)
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
@@ -2148,7 +2185,7 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
         )
         out_lag1 = tmp_path / f"out_lag1_{idx}"
         cmd_lag1 = (
-            f"export PATH='{_to_wsl_path(env_lag1['fake_bin'])}:{_to_wsl_path(env_lag1['sentinel_bin'])}':\"$PATH\"; "
+            f"export PATH='{_hermetic_path_for(env_lag1)}'; "
             f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_lag1['state_dir'])}'; "
             f"export COLAB_LOCK_DIR='{_to_wsl_path(env_lag1['colab_locks_dir'])}'; "
             f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / f'lag1_{idx}.lock')}'; "
@@ -2180,7 +2217,7 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
     )
     out_keep = tmp_path / "out_keep"
     cmd_keep = (
-        f"export PATH='{_to_wsl_path(env_keep['fake_bin'])}:{_to_wsl_path(env_keep['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_keep)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_keep['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_keep['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'keep.lock')}'; "
@@ -2209,7 +2246,7 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
     )
     out_orphan = tmp_path / "out_orphan"
     cmd_orphan = (
-        f"export PATH='{_to_wsl_path(env_orphan['fake_bin'])}:{_to_wsl_path(env_orphan['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_orphan)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_orphan['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_orphan['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'orphan.lock')}'; "
@@ -2239,7 +2276,7 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
     )
     out_pre_q = tmp_path / "out_pre_q"
     cmd_pre_q = (
-        f"export PATH='{_to_wsl_path(env_pre_q['fake_bin'])}:{_to_wsl_path(env_pre_q['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_pre_q)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_pre_q['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_pre_q['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'pre_q.lock')}'; "
@@ -2262,7 +2299,7 @@ def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> Non
     )
     out_prefix = tmp_path / "out_prefix"
     cmd_prefix = (
-        f"export PATH='{_to_wsl_path(env_prefix['fake_bin'])}:{_to_wsl_path(env_prefix['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_prefix)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_prefix['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_prefix['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'prefix.lock')}'; "
@@ -2299,7 +2336,7 @@ def test_stop_poll_config_clamps_zero_and_refuses_non_integer(
     )
     out_zero = tmp_path / "out_max_reads_zero"
     cmd_zero = (
-        f"export PATH='{_to_wsl_path(env_zero['fake_bin'])}:{_to_wsl_path(env_zero['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_zero)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_zero['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_zero['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'zero.lock')}'; "
@@ -2334,7 +2371,7 @@ def test_stop_poll_config_clamps_zero_and_refuses_non_integer(
     )
     out_cap = tmp_path / "out_max_reads_cap"
     cmd_cap = (
-        f"export PATH='{_to_wsl_path(env_cap['fake_bin'])}:{_to_wsl_path(env_cap['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_cap)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_cap['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_cap['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'cap.lock')}'; "
@@ -2368,7 +2405,7 @@ def test_stop_poll_config_clamps_zero_and_refuses_non_integer(
         )
         out_bad = tmp_path / f"out_bad_poll_{idx}"
         cmd_bad = (
-            f"export PATH='{_to_wsl_path(env_bad['fake_bin'])}:{_to_wsl_path(env_bad['sentinel_bin'])}':\"$PATH\"; "
+            f"export PATH='{_hermetic_path_for(env_bad)}'; "
             f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_bad['state_dir'])}'; "
             f"export COLAB_LOCK_DIR='{_to_wsl_path(env_bad['colab_locks_dir'])}'; "
             f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / f'bad_{idx}.lock')}'; "
@@ -2448,10 +2485,7 @@ def test_stop_poll_config_octal_and_fuzz_table(
         )
         out_case = tmp_path / f"out_fuzz_max_{idx}"
         run_env = os.environ.copy()
-        run_env["PATH"] = (
-            f"{_to_wsl_path(env_case['fake_bin'])}:{_to_wsl_path(env_case['sentinel_bin'])}:"
-            + run_env.get("PATH", "")
-        )
+        run_env["PATH"] = _hermetic_path_for(env_case)
         run_env["FAKE_COLAB_STATE_DIR"] = _to_wsl_path(env_case["state_dir"])
         run_env["COLAB_LOCK_DIR"] = _to_wsl_path(env_case["colab_locks_dir"])
         run_env["RDLAB_OPEN_LOCK"] = _to_wsl_path(tmp_path / f"fuzz_max_{idx}.lock")
@@ -2543,10 +2577,7 @@ def test_stop_poll_config_octal_and_fuzz_table(
 
         out_case = tmp_path / f"out_fuzz_sleep_{idx}"
         run_env = os.environ.copy()
-        run_env["PATH"] = (
-            f"{_to_wsl_path(env_case['fake_bin'])}:{_to_wsl_path(env_case['sentinel_bin'])}:"
-            + run_env.get("PATH", "")
-        )
+        run_env["PATH"] = _hermetic_path_for(env_case)
         run_env["FAKE_COLAB_STATE_DIR"] = _to_wsl_path(env_case["state_dir"])
         run_env["COLAB_LOCK_DIR"] = _to_wsl_path(env_case["colab_locks_dir"])
         run_env["RDLAB_OPEN_LOCK"] = _to_wsl_path(tmp_path / f"fuzz_sleep_{idx}.lock")
@@ -3194,6 +3225,11 @@ def test_real_service_assumptions_doc_table_and_line_citations(
     )
 
     # `main(["--step", "gate", ...])` refusal and success paths writing status.json directly via injected shutil.disk_usage
+    env_doc_gate = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_doc_gate", uv_python_315_found=True
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_doc_gate))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_doc_gate["state_dir"]))
     monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "gate_content"))
     monkeypatch.setattr(
         _shutil,
@@ -3756,7 +3792,7 @@ def test_probe_mode_dry_and_live_sequence_no_upload_no_hf_token_scrubs_and_isola
     out_live = tmp_path / "out_probe_live"
 
     base_probe_exports = (
-        f"export PATH='{_to_wsl_path(env_probe['fake_bin'])}:{_to_wsl_path(env_probe['sentinel_bin'])}':\"$PATH\"; "
+        f"export PATH='{_hermetic_path_for(env_probe)}'; "
         f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_probe['state_dir'])}'; "
         f"export COLAB_LOCK_DIR='{_to_wsl_path(env_probe['colab_locks_dir'])}'; "
         f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'probe.lock')}'; "
@@ -3944,7 +3980,7 @@ def test_probe_mode_dry_and_live_sequence_no_upload_no_hf_token_scrubs_and_isola
         [
             "bash",
             "-c",
-            f"export PATH='{_to_wsl_path(env_dry_uv['fake_bin'])}:{_to_wsl_path(env_dry_uv['sentinel_bin'])}':\"$PATH\"; "
+            f"export PATH='{_hermetic_path_for(env_dry_uv)}'; "
             f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_dry_uv['state_dir'])}'; "
             f"export COLAB_LOCK_DIR='{_to_wsl_path(env_dry_uv['colab_locks_dir'])}'; "
             f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'probe_dry_uv.lock')}'; "
@@ -4426,6 +4462,237 @@ def test_probe_size_fallback_labels_installed_size_and_unavailable_download_size
     assert doc_missing["uv"]["python_install_3_15_installed_size_bytes"] == 2160
     assert doc_missing["uv"]["python_install_3_15_download_size_bytes"] is None
     assert doc_missing["uv"]["python_install_3_15_download_size_source"] == "unavailable"
+
+
+def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify the shared fake `uv` executable in `fake_bin/uv`:
+    1. Answers `uv --version`.
+    2. Answers `uv python find 3.15` from test-controlled state (`uv_state.json`), returning a path when found
+       and exiting `2` with `uv`'s stderr message when not found.
+    3. Fails loudly with exit code `98` on any unexpected arguments.
+    4. Causes `--step gate` (both direct kernel/CLI gate execution and end-to-end launcher gate) to refuse
+       with `VM_PYTHON_UNAVAILABLE` and exit code `2` when fake `uv` reports no Python 3.15.
+    """
+    import shutil as _shutil
+
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_fake_uv_refusal",
+        neighbour_sessions=[],
+        uv_python_315_found=True,
+        uv_python_315_path="/opt/fake-uv/python-3.15/bin/python3.15",
+    )
+    hermetic_path = _hermetic_path_for(env_paths)
+    monkeypatch.setenv("PATH", hermetic_path)
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_paths["state_dir"]))
+    monkeypatch.setattr(
+        _shutil,
+        "disk_usage",
+        lambda _p: _shutil._ntuple_diskusage(
+            200_000_000_000, 80_000_000_000, 120_000_000_000
+        ),
+    )
+
+    # 1. `uv --version` and `uv python find 3.15` when found
+    res_ver = subprocess.run(
+        ["uv", "--version"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_ver.returncode == 0
+    assert res_ver.stdout.strip() == "uv 0.11.18"
+
+    res_find_ok = subprocess.run(
+        ["uv", "python", "find", "3.15"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_find_ok.returncode == 0
+    assert res_find_ok.stdout.strip() == "/opt/fake-uv/python-3.15/bin/python3.15"
+
+    # 2. Anything else asked of fake `uv` fails loudly with nonzero exit code (98)
+    for bad_uv_cmd in (
+        ["uv", "python", "find", "3.14"],
+        ["uv", "venv", "/tmp/unexpected"],
+        ["uv", "pip", "list"],
+    ):
+        res_unexpected = subprocess.run(
+            bad_uv_cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert res_unexpected.returncode == 98
+        assert "fake uv: unexpected arguments" in res_unexpected.stderr
+
+    # 3. Switch fake `uv` state to not-found (no Python 3.15) and verify direct `--step gate` refuses with VM_PYTHON_UNAVAILABLE and rc=2
+    fake_colab.set_fake_uv_python_315_state(
+        env_paths,
+        found=False,
+        stderr_message=(
+            "error: No interpreter found for Python 3.15 in managed installations or search path "
+            "(token=hf_FakeUvRefusalSecret777)"
+        ),
+    )
+    res_find_missing = subprocess.run(
+        ["uv", "python", "find", "3.15"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_find_missing.returncode == 2
+    assert "No interpreter found for Python 3.15" in res_find_missing.stderr
+
+    gate_content = tmp_path / "gate_content_no315"
+    gate_status = tmp_path / "gate_status_no315.json"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(gate_content))
+    rc_gate = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(gate_status),
+        ]
+    )
+    assert rc_gate == 2
+    gate_doc = json.loads(gate_status.read_text(encoding="utf-8"))
+    assert gate_doc["step"] == "gate"
+    assert gate_doc["rc"] == 2
+    assert gate_doc["status"] == "refused"
+    assert gate_doc["failure_class"] == "VM_PYTHON_UNAVAILABLE"
+    assert "No interpreter found for Python 3.15" in gate_doc["reason"]
+    assert "hf_[REDACTED]" in gate_doc["reason"]
+    assert "hf_FakeUvRefusalSecret777" not in json.dumps(gate_doc)
+
+    # 4. Also verify end-to-end launcher `--stub` against the same `uv_state.json` refusal
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "e2e_fake_uv_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "e2e_fake_uv_data", count=4)
+    out_e2e = tmp_path / "out_e2e_fake_uv_refusal"
+    exports_e2e = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "e2e_fake_uv.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_e2e = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_e2e} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_e2e)}' --run-id fake-uv-refuse-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_e2e.returncode == 2
+    assert "VM_PYTHON_UNAVAILABLE" in proc_e2e.stderr
+    assert "No interpreter found for Python 3.15" in proc_e2e.stderr
+    assert "hf_[REDACTED]" in proc_e2e.stderr
+    assert "hf_FakeUvRefusalSecret777" not in proc_e2e.stderr
+    outcome_e2e = json.loads(
+        (out_e2e / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_e2e["outcome"] == "failed"
+    assert "VM_PYTHON_UNAVAILABLE" in outcome_e2e["why"]
+    assert not env_paths["sentinel_called"].exists()
+    assert not env_paths["sentinel_uv_called"].exists()
+
+
+def test_hermetic_path_guard_blocks_real_binaries_and_fires_sentinel_when_fake_absent(
+    tmp_path: Path,
+) -> None:
+    """Verify the hermetic PATH guard:
+    1. `build_hermetic_path` replaces PATH with `fake_bin:sentinel_bin:/usr/bin:/bin` (never inheriting host
+       or runner directories where real `uv` or `colab` live).
+    2. When `fake_bin/uv` or `fake_bin/colab` is present, commands resolve to `fake_bin` and sentinels stay untouched.
+    3. When `fake_bin/uv` is absent, invoking `uv` hits `sentinel_bin/uv`, exits `99`, and creates `REAL_UV_CALLED`
+       (causing `vm_judges.check_vm_python_preflight()` to refuse with `VM_PYTHON_UNAVAILABLE`).
+    4. When `fake_bin/colab` is absent, invoking `colab` hits `sentinel_bin/colab`, exits `99`, and creates `REAL_COLAB_CALLED`.
+    """
+    import shutil as _shutil
+
+    guard_env = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_sentinel_guard", neighbour_sessions=[]
+    )
+    hermetic_path = _hermetic_path_for(guard_env)
+    path_parts = hermetic_path.split(":")
+    assert path_parts == [
+        _to_wsl_path(guard_env["fake_bin"]),
+        _to_wsl_path(guard_env["sentinel_bin"]),
+        "/usr/bin",
+        "/bin",
+    ]
+
+    # Verify neither `/usr/bin` nor `/bin` contains a real `uv` or `colab`
+    assert _shutil.which("uv", path="/usr/bin:/bin") is None
+    assert _shutil.which("colab", path="/usr/bin:/bin") is None
+
+    # With fakes present, `which` resolves to `fake_bin` and sentinels are not touched
+    assert _shutil.which("uv", path=hermetic_path) == str(guard_env["fake_bin"] / "uv")
+    assert _shutil.which("colab", path=hermetic_path) == str(
+        guard_env["fake_bin"] / "colab"
+    )
+    assert not guard_env["sentinel_uv_called"].exists()
+    assert not guard_env["sentinel_called"].exists()
+
+    # Remove `fake_bin/uv`: `uv` now resolves to `sentinel_bin/uv`, exits 99, and touches `REAL_UV_CALLED`
+    (guard_env["fake_bin"] / "uv").unlink()
+    assert _shutil.which("uv", path=hermetic_path) == str(
+        guard_env["sentinel_bin"] / "uv"
+    )
+    sub_env = {**os.environ, "PATH": hermetic_path, "FAKE_COLAB_STATE_DIR": str(guard_env["state_dir"])}
+    res_uv_sentinel = subprocess.run(
+        ["uv", "--version"],
+        stdin=subprocess.DEVNULL,
+        env=sub_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_uv_sentinel.returncode == 99
+    assert "SENTINEL_REAL_BINARY_REACHED: uv" in res_uv_sentinel.stderr
+    assert guard_env["sentinel_uv_called"].is_file()
+
+    # Remove `fake_bin/colab`: `colab` now resolves to `sentinel_bin/colab`, exits 99, and touches `REAL_COLAB_CALLED`
+    (guard_env["fake_bin"] / "colab").unlink()
+    assert _shutil.which("colab", path=hermetic_path) == str(
+        guard_env["sentinel_bin"] / "colab"
+    )
+    res_colab_sentinel = subprocess.run(
+        ["colab", "sessions"],
+        stdin=subprocess.DEVNULL,
+        env=sub_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_colab_sentinel.returncode == 99
+    assert "SENTINEL_REAL_BINARY_REACHED: colab" in res_colab_sentinel.stderr
+    assert guard_env["sentinel_called"].is_file()
+
 
 
 
