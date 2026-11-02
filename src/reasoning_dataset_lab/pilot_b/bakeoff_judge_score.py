@@ -28,18 +28,29 @@ Pre-registered definitions and statistical rules (Card 2026-11-01 & Amendment 1)
   counts wrong (`0`) for accuracy, and counts as a flip in `flip_rate` (`strict_ceiling = 1 - flip_rate`).
 - **Screening AND-gate (`both_orders_yes_and_gate`):** A claim passes screening iff the judge outputs `yes` in BOTH
   `AB` and `BA`; per-judge `screening_yes_precision` and `screening_yes_recall` are reported with domain-stratified
-  triad bootstrap 95% CIs (`10,000` resamples).
+  triad bootstrap 95% CIs (`10,000` resamples) alongside the one-sided 95% lower confidence bound (`lcb` = 5th percentile),
+  per-negative-class precision (`TP / (TP + 2*FP_c)`, meaning the precision the judge would have if the other negative
+  class failed as badly as this one), and per-domain AND-gate recall.
 - **Pairwise tests and TOST across all 10 pairs:** Unit = triad (`d_t = a_t - b_t`). Superiority uses the exact
   two-sided paired sign-flip permutation test on `d_t`, Holm step-down adjusted across all 10 judge pairs. Equivalence
   uses paired triad-level `TOST` at `+-SESOI` (`+-0.04`) with the unbiased paired triad sample variance estimator
   `s_d^2 = (1 / (T - 1)) * sum((d_t - d_bar)^2)` and standard error `SE = sqrt(s_d^2 / T)`, also Holm-adjusted across
   all 10 pairs. If both Holm-adjusted superiority and Holm-adjusted TOST fire (`p < 0.05`), the pair is marked
   `"practically_equivalent"` and treated as not separated for candidate selection.
-- **Winner selection rule (`select_bakeoff_winner`):** Candidate set = judges not separated by Holm from the judge with
-  the highest `class_balanced_strict_accuracy` (including `"practically_equivalent"` pairs); filter to candidates with
-  `screening_yes_precision >= 0.90` and `screening_yes_recall >= 0.50`; pick highest `screening_yes_precision`, breaking
-  ties by smaller model parameter count then lower median latency (`seconds_median`); if no candidate meets both floors,
-  return `"no judge eligible"`.
+- **Winner selection rule (`select_bakeoff_winner`, floors first):**
+  1. Eligibility is decided first over all judges that ran (`failed_to_run` judges are never eligible): a judge is
+     eligible iff `LCB(precision) >= PRECISION_LCB_FLOOR = 0.86` and `LCB(recall) >= RECALL_LCB_FLOOR = 0.45` (5th
+     percentile of the domain-stratified triad bootstrap, intersection-union), per-negative-class precision
+     `TP / (TP + 2*FP_c) >= PER_CLASS_PRECISION_FLOOR = 0.85` for each `c in {unsupported, cannot_tell}` (meaning the
+     precision the judge would have if the other negative class failed as badly as this one), and AND-gate recall
+     `>= DOMAIN_RECALL_FLOOR = 0.25` in at least `DOMAIN_COVERAGE_MIN = 8` of the 10 domains.
+  2. Candidate set (among eligible judges only): let `B` be the eligible judge with the highest
+     `class_balanced_strict_accuracy`; candidates are eligible judges not separated from `B` by the Holm-adjusted
+     sign-flip test, plus those `"practically_equivalent"` to `B`.
+  3. Pick: `PRECISION_BAND = 0.015`. Tier = candidates whose point AND-gate precision is within `PRECISION_BAND` of
+     the best candidate's. Within the tier: highest `class_balanced_strict_accuracy` (differences `< CB_TIE = 0.01`
+     are ties), then smaller model parameter count, then lower median latency (`seconds_median`).
+  4. If no judge is eligible, return `"no_judge_eligible"`.
 """
 
 from __future__ import annotations
@@ -75,6 +86,15 @@ PILOT_BANNER = "shakedown, decision rule not applied"
 DEFAULT_BOOTSTRAP_RESAMPLES = 10_000
 DEFAULT_BOOTSTRAP_SEED = 20261030
 DEFAULT_SESOI = 0.04
+PRECISION_LCB_FLOOR = 0.86
+RECALL_LCB_FLOOR = 0.45
+PER_CLASS_PRECISION_FLOOR = 0.85
+DOMAIN_RECALL_FLOOR = 0.25
+DOMAIN_COVERAGE_MIN = 8
+PRECISION_BAND = 0.015
+CB_TIE = 0.01
+NEGATIVE_CLASSES: tuple[str, str] = ("unsupported", "cannot_tell")
+NO_JUDGE_ELIGIBLE = "no_judge_eligible"
 _STD_NORMAL = NormalDist()
 
 PREREG_DEFINITIONS: dict[str, Any] = {
@@ -96,6 +116,23 @@ PREREG_DEFINITIONS: dict[str, Any] = {
     ),
     "tost_variance_estimator": "unbiased_paired_triad_sample_variance_ddof1",
     "tost_holm_adjusted_across_10_pairs": True,
+    "screening_lcb": (
+        "one-sided 95% lower confidence bound (lcb = 5th percentile) of the domain-stratified triad bootstrap "
+        "(10,000 resamples, seed 20261030) on AND-gate precision and recall (intersection-union, no multiplicity correction)"
+    ),
+    "per_negative_class_precision": (
+        "TP / (TP + 2*FP_c) for each negative class c in {unsupported, cannot_tell}, meaning the precision the judge "
+        "would have if the other negative class failed as badly as this one (>= 0.85 point estimate)"
+    ),
+    "winner_selection_rule": (
+        "floors first over all judges that ran (failed_to_run never eligible): LCB(precision) >= 0.86, "
+        "LCB(recall) >= 0.45, per-negative-class precision TP / (TP + 2*FP_c) >= 0.85 for unsupported and cannot_tell, "
+        "and AND-gate recall >= 0.25 in at least 8 of 10 domains; Holm candidate set formed among eligible judges only "
+        "relative to highest class_balanced_strict_accuracy eligible judge B (including practically_equivalent pairs); "
+        "within PRECISION_BAND = 0.015 of best candidate point precision, pick highest class_balanced_strict_accuracy "
+        "(differences < CB_TIE = 0.01 are ties), then smaller parameter count, then lower median latency; "
+        "otherwise no_judge_eligible"
+    ),
 }
 
 FORBIDDEN_PUBLIC_SUMMARY_KEYS: frozenset[str] = frozenset(
@@ -321,9 +358,9 @@ def domain_stratified_triad_bootstrap_ci(
     seed: int = DEFAULT_BOOTSTRAP_SEED,
     salt: str = "metric",
 ) -> dict[str, Any]:
-    """Compute a domain-stratified triad-level percentile bootstrap 95% CI (`resamples` default 10,000)."""
+    """Compute a domain-stratified triad-level percentile bootstrap 95% CI and one-sided 95% LCB (5th percentile, `resamples` default 10,000)."""
     if not item_ids:
-        return {"point": 0.0, "low": 0.0, "high": 0.0, "n": 0}
+        return {"point": 0.0, "lcb": 0.0, "low": 0.0, "high": 0.0, "n": 0}
     point = float(metric_fn(item_ids))
     triads_by_domain: dict[str, list[str]] = defaultdict(list)
     items_by_triad: dict[str, list[str]] = defaultdict(list)
@@ -341,7 +378,13 @@ def domain_stratified_triad_bootstrap_ci(
     domains_sorted = sorted(triads_by_domain.keys())
 
     if len(seen_triads) <= 1 or resamples <= 0:
-        return {"point": round(point, 6), "low": round(point, 6), "high": round(point, 6), "n": len(item_ids)}
+        return {
+            "point": round(point, 6),
+            "lcb": round(point, 6),
+            "low": round(point, 6),
+            "high": round(point, 6),
+            "n": len(item_ids),
+        }
 
     rng = random.Random(f"rdlab-domain-triad-boot-v1:{seed}:{salt}")
     replicates: list[float] = []
@@ -362,9 +405,11 @@ def domain_stratified_triad_bootstrap_ci(
 
     replicates.sort()
     lo_idx = max(0, min(len(replicates) - 1, int(math.floor(0.025 * (len(replicates) - 1)))))
+    lcb_idx = max(0, min(len(replicates) - 1, int(math.floor(0.05 * (len(replicates) - 1)))))
     hi_idx = max(0, min(len(replicates) - 1, int(math.ceil(0.975 * (len(replicates) - 1)))))
     return {
         "point": round(point, 6),
+        "lcb": round(replicates[lcb_idx], 6),
         "low": round(replicates[lo_idx], 6),
         "high": round(replicates[hi_idx], 6),
         "n": len(item_ids),
@@ -842,47 +887,135 @@ def compute_all_pairs_statistics(
     return results
 
 
+def compute_per_negative_class_precision(tp: int | float, fp_c: int | float) -> float:
+    """Compute per-negative-class precision TP / (TP + 2*FP_c), meaning the precision the judge would have if the other negative class failed as badly as this one."""
+    tp_f = float(tp)
+    fp_f = float(fp_c)
+    denom = tp_f + 2.0 * fp_f
+    if denom <= 0.0:
+        return 0.0
+    return round(tp_f / denom, 6)
+
+
 def select_bakeoff_winner(
     judges: Sequence[Mapping[str, Any]],
     pairwise_comparisons: Sequence[Mapping[str, Any]],
     *,
-    precision_floor: float = 0.90,
-    recall_floor: float = 0.50,
+    precision_lcb_floor: float = PRECISION_LCB_FLOOR,
+    recall_lcb_floor: float = RECALL_LCB_FLOOR,
+    per_class_precision_floor: float = PER_CLASS_PRECISION_FLOOR,
+    domain_recall_floor: float = DOMAIN_RECALL_FLOOR,
+    domain_coverage_min: int = DOMAIN_COVERAGE_MIN,
+    precision_band: float = PRECISION_BAND,
+    cb_tie: float = CB_TIE,
 ) -> dict[str, Any]:
-    """Select the bake-off winner under Amendment 1 Change E.
+    """Select the bake-off winner with eligibility floors decided first (Card 2026-11-02).
 
     Rule:
-    1. Candidate set = judges not separated by Holm (`holm_sign_flip_p >= 0.05`) from the judge with the highest
-       `class_balanced_strict_accuracy`. If both superiority (`holm_sign_flip_p < 0.05`) and TOST (`holm_tost_p < 0.05`)
-       fire for a pair, mark the pair `practically_equivalent` and treat them as not separated for selection.
-    2. Filter candidate set to judges meeting both screening floors (`screening_yes_precision >= precision_floor` and
-       `screening_yes_recall >= recall_floor`).
-    3. Pick the eligible candidate with the highest `screening_yes_precision`; break ties by smaller model parameter
-       count (`MODEL_PARAM_BILLIONS_BY_JUDGE`), then lower median latency (`seconds_median`).
-    4. If no candidate meets both floors, return `"no judge eligible"`.
+    1. Eligibility (decided first, over all judges that ran; `failed_to_run` judges are never eligible):
+       a judge is eligible iff ALL of:
+       - `LCB(precision) >= PRECISION_LCB_FLOOR = 0.86` and `LCB(recall) >= RECALL_LCB_FLOOR = 0.45`, where LCB is the
+         one-sided 95% lower bound (5th percentile) of the domain-stratified triad bootstrap on AND-gate screening
+         precision and recall (intersection-union, no multiplicity correction). Point estimates are reported beside LCBs.
+       - Per-negative-class precision `>= PER_CLASS_PRECISION_FLOOR = 0.85` for each negative class
+         `c in {unsupported, cannot_tell}`, where per-negative-class precision stays `TP / (TP + 2*FP_c)`, meaning the
+         precision the judge would have if the other negative class failed as badly as this one.
+       - Domain coverage: AND-gate recall `>= DOMAIN_RECALL_FLOOR = 0.25` in at least `DOMAIN_COVERAGE_MIN = 8` of the
+         10 domains (point estimates per domain).
+    2. Candidate set (among eligible judges only): let `B` be the eligible judge with the highest
+       `class_balanced_strict_accuracy`. Candidates are eligible judges not separated from `B` by the Holm-adjusted
+       sign-flip test (`holm_sign_flip_p >= 0.05`), plus those `practically_equivalent` to `B` (both superiority
+       `holm_sign_flip_p < 0.05` and TOST `holm_tost_p < 0.05` fire).
+    3. Pick: `PRECISION_BAND = 0.015`. Tier = candidates whose point AND-gate precision is within `PRECISION_BAND` of
+       the best candidate's. Within the tier: highest `class_balanced_strict_accuracy` (differences `< CB_TIE = 0.01`
+       are ties), then smaller model parameter count (`MODEL_PARAM_BILLIONS_BY_JUDGE`), then lower median latency
+       (`seconds_median`).
+    4. If no judge is eligible: result `no_judge_eligible`.
+    5. Explainability: records for every judge which eligibility conditions it passed/failed and counts of judges
+       removed by each condition (`lcb_precision`, `lcb_recall`, `per_class_precision_unsupported`,
+       `per_class_precision_cannot_tell`, `domain_coverage`, `failed_to_run`).
     """
+    removed_by_condition: dict[str, int] = {
+        "lcb_precision": 0,
+        "lcb_recall": 0,
+        "per_class_precision_unsupported": 0,
+        "per_class_precision_cannot_tell": 0,
+        "domain_coverage": 0,
+        "failed_to_run": 0,
+    }
     if not judges:
         return {
-            "winner": "no judge eligible",
+            "winner": NO_JUDGE_ELIGIBLE,
+            "best_eligible_judge": None,
             "best_judge": None,
+            "eligible_judges": [],
             "candidate_set": [],
             "eligible_candidates": [],
+            "precision_tier": [],
+            "cb_top_tier": [],
             "practically_equivalent_pairs": [],
-            "precision_floor": precision_floor,
-            "recall_floor": recall_floor,
+            "eligibility_by_judge": {},
+            "removed_by_condition": removed_by_condition,
+            "precision_lcb_floor": precision_lcb_floor,
+            "recall_lcb_floor": recall_lcb_floor,
+            "per_class_precision_floor": per_class_precision_floor,
+            "domain_recall_floor": domain_recall_floor,
+            "domain_coverage_min": domain_coverage_min,
+            "precision_band": precision_band,
+            "cb_tie": cb_tie,
         }
 
     def _extract_point(val: Any) -> float:
         return float(val.get("point", 0.0)) if isinstance(val, Mapping) else float(val or 0.0)
 
+    def _extract_lcb(val: Any) -> float:
+        if isinstance(val, Mapping):
+            return float(val.get("lcb") or val.get("low") or val.get("point") or 0.0)
+        return float(val or 0.0)
+
     def _cb_acc(j: Mapping[str, Any]) -> float:
         return _extract_point(j.get("class_balanced_strict_accuracy"))
 
-    def _yes_prec(j: Mapping[str, Any]) -> float:
+    def _yes_prec_point(j: Mapping[str, Any]) -> float:
         return _extract_point(j.get("screening_yes_precision"))
 
-    def _yes_rec(j: Mapping[str, Any]) -> float:
+    def _yes_prec_lcb(j: Mapping[str, Any]) -> float:
+        return _extract_lcb(j.get("screening_yes_precision"))
+
+    def _yes_rec_point(j: Mapping[str, Any]) -> float:
         return _extract_point(j.get("screening_yes_recall"))
+
+    def _yes_rec_lcb(j: Mapping[str, Any]) -> float:
+        return _extract_lcb(j.get("screening_yes_recall"))
+
+    def _per_class_precisions(j: Mapping[str, Any], prec_pt: float) -> dict[str, float]:
+        raw_map = j.get("screening_per_class_precision")
+        if isinstance(raw_map, Mapping):
+            return {
+                cls_name: round(_extract_point(raw_map.get(cls_name, 0.0)), 6)
+                for cls_name in NEGATIVE_CLASSES
+            }
+        if "screening_tp" in j or isinstance(j.get("screening_fp_by_class"), Mapping):
+            tp_v = float(j.get("screening_tp", 0.0))
+            fp_map = j.get("screening_fp_by_class") if isinstance(j.get("screening_fp_by_class"), Mapping) else {}
+            fp_u = float(fp_map.get("unsupported", 0.0))
+            fp_c = float(fp_map.get("cannot_tell", 0.0))
+            return {
+                "unsupported": compute_per_negative_class_precision(tp_v, fp_u),
+                "cannot_tell": compute_per_negative_class_precision(tp_v, fp_c),
+            }
+        return {
+            "unsupported": round(prec_pt, 6),
+            "cannot_tell": round(prec_pt, 6),
+        }
+
+    def _domain_coverage_counts(j: Mapping[str, Any], rec_pt: float) -> tuple[int, int]:
+        dom_obj = j.get("screening_domain_recall")
+        if isinstance(dom_obj, Mapping):
+            vals = [_extract_point(v) for v in dom_obj.values()]
+            passing = sum(1 for v in vals if v + 1e-12 >= domain_recall_floor)
+            return passing, len(vals)
+        return (10 if (rec_pt + 1e-12 >= domain_recall_floor) else 0), 10
 
     def _params_b(j: Mapping[str, Any]) -> float:
         jid = str(j.get("judge_id") or "")
@@ -891,11 +1024,113 @@ def select_bakeoff_winner(
     def _sec_med(j: Mapping[str, Any]) -> float:
         return float(j.get("seconds_median", j.get("seconds_mean", 0.0)))
 
-    ranked_by_primary = sorted(
-        judges,
+    # Step 1: Decide eligibility first over all judges that ran; failed_to_run judges are never eligible.
+    eligibility_by_judge: dict[str, dict[str, Any]] = {}
+    eligible_objs_unsorted: list[Mapping[str, Any]] = []
+
+    for j_obj in judges:
+        jid = str(j_obj.get("judge_id") or "")
+        is_failed = (
+            bool(j_obj.get("failed_to_run"))
+            or str(j_obj.get("run_status") or "") == "failed_to_run"
+            or str(j_obj.get("status") or "") == "failed_to_run"
+        )
+        prec_pt = _yes_prec_point(j_obj)
+        prec_lcb = _yes_prec_lcb(j_obj)
+        rec_pt = _yes_rec_point(j_obj)
+        rec_lcb = _yes_rec_lcb(j_obj)
+        per_cls_prec = _per_class_precisions(j_obj, prec_pt)
+        dom_passing, dom_total = _domain_coverage_counts(j_obj, rec_pt)
+
+        if is_failed:
+            passed_lcb_prec = False
+            passed_lcb_rec = False
+            passed_unsup_prec = False
+            passed_ct_prec = False
+            passed_dom_cov = False
+            is_eligible = False
+            removed_by_condition["failed_to_run"] += 1
+        else:
+            passed_lcb_prec = (prec_lcb + 1e-12 >= precision_lcb_floor)
+            passed_lcb_rec = (rec_lcb + 1e-12 >= recall_lcb_floor)
+            passed_unsup_prec = (per_cls_prec["unsupported"] + 1e-12 >= per_class_precision_floor)
+            passed_ct_prec = (per_cls_prec["cannot_tell"] + 1e-12 >= per_class_precision_floor)
+            passed_dom_cov = (dom_passing >= domain_coverage_min)
+            is_eligible = (
+                passed_lcb_prec
+                and passed_lcb_rec
+                and passed_unsup_prec
+                and passed_ct_prec
+                and passed_dom_cov
+            )
+            if not passed_lcb_prec:
+                removed_by_condition["lcb_precision"] += 1
+            if not passed_lcb_rec:
+                removed_by_condition["lcb_recall"] += 1
+            if not passed_unsup_prec:
+                removed_by_condition["per_class_precision_unsupported"] += 1
+            if not passed_ct_prec:
+                removed_by_condition["per_class_precision_cannot_tell"] += 1
+            if not passed_dom_cov:
+                removed_by_condition["domain_coverage"] += 1
+
+        conditions = {
+            "lcb_precision": passed_lcb_prec,
+            "lcb_recall": passed_lcb_rec,
+            "per_class_precision_unsupported": passed_unsup_prec,
+            "per_class_precision_cannot_tell": passed_ct_prec,
+            "domain_coverage": passed_dom_cov,
+            "not_failed_to_run": not is_failed,
+        }
+        passed_list = [k for k, v in conditions.items() if v]
+        failed_list = [("failed_to_run" if k == "not_failed_to_run" else k) for k, v in conditions.items() if not v]
+
+        eligibility_by_judge[jid] = {
+            "judge_id": jid,
+            "eligible": is_eligible,
+            "failed_to_run": is_failed,
+            "precision_point": round(prec_pt, 6),
+            "precision_lcb": round(prec_lcb, 6),
+            "recall_point": round(rec_pt, 6),
+            "recall_lcb": round(rec_lcb, 6),
+            "per_class_precision": per_cls_prec,
+            "domains_passing_recall_floor": dom_passing,
+            "domains_total": dom_total,
+            "conditions": conditions,
+            "passed_conditions": passed_list,
+            "failed_conditions": failed_list,
+        }
+        if is_eligible:
+            eligible_objs_unsorted.append(j_obj)
+
+    if not eligible_objs_unsorted:
+        return {
+            "winner": NO_JUDGE_ELIGIBLE,
+            "best_eligible_judge": None,
+            "best_judge": None,
+            "eligible_judges": [],
+            "candidate_set": [],
+            "eligible_candidates": [],
+            "precision_tier": [],
+            "cb_top_tier": [],
+            "practically_equivalent_pairs": [],
+            "eligibility_by_judge": eligibility_by_judge,
+            "removed_by_condition": removed_by_condition,
+            "precision_lcb_floor": precision_lcb_floor,
+            "recall_lcb_floor": recall_lcb_floor,
+            "per_class_precision_floor": per_class_precision_floor,
+            "domain_recall_floor": domain_recall_floor,
+            "domain_coverage_min": domain_coverage_min,
+            "precision_band": precision_band,
+            "cb_tie": cb_tie,
+        }
+
+    # Step 2: Candidate set (among eligible judges only) relative to B (highest class-balanced strict accuracy).
+    ranked_eligible = sorted(
+        eligible_objs_unsorted,
         key=lambda j: (-round(_cb_acc(j), 6), _params_b(j), _sec_med(j), str(j.get("judge_id") or "")),
     )
-    best_judge_obj = ranked_by_primary[0]
+    best_judge_obj = ranked_eligible[0]
     best_id = str(best_judge_obj["judge_id"])
 
     pair_lookup: dict[frozenset[str], Mapping[str, Any]] = {
@@ -906,15 +1141,14 @@ def select_bakeoff_winner(
 
     candidate_objs: list[Mapping[str, Any]] = []
     practically_eq_pairs: list[tuple[str, str]] = []
-    for j_obj in ranked_by_primary:
+    for j_obj in ranked_eligible:
         jid = str(j_obj["judge_id"])
         if jid == best_id:
             candidate_objs.append(j_obj)
             continue
         pair = pair_lookup.get(frozenset((best_id, jid)))
         if pair is None:
-            if abs(_cb_acc(j_obj) - _cb_acc(best_judge_obj)) <= 1e-12:
-                candidate_objs.append(j_obj)
+            candidate_objs.append(j_obj)
             continue
         h_sf = float(pair.get("holm_sign_flip_p", 1.0))
         h_tost = float(pair.get("holm_tost_p", 1.0))
@@ -925,35 +1159,45 @@ def select_bakeoff_winner(
         if is_prac_eq or h_sf >= 0.05:
             candidate_objs.append(j_obj)
 
-    eligible_objs = [
-        j_obj
-        for j_obj in candidate_objs
-        if _yes_prec(j_obj) + 1e-12 >= precision_floor and _yes_rec(j_obj) + 1e-12 >= recall_floor
+    # Step 3: Pick within PRECISION_BAND of the best candidate's point AND-gate precision.
+    best_cand_prec = max(_yes_prec_point(j) for j in candidate_objs)
+    tier_objs = [
+        j for j in candidate_objs if (best_cand_prec - _yes_prec_point(j)) <= precision_band + 1e-12
     ]
-    if not eligible_objs:
-        return {
-            "winner": "no judge eligible",
-            "best_judge": best_id,
-            "candidate_set": [str(j["judge_id"]) for j in candidate_objs],
-            "eligible_candidates": [],
-            "practically_equivalent_pairs": [list(p) for p in practically_eq_pairs],
-            "precision_floor": precision_floor,
-            "recall_floor": recall_floor,
-        }
-
-    eligible_sorted = sorted(
-        eligible_objs,
-        key=lambda j: (-round(_yes_prec(j), 6), _params_b(j), _sec_med(j), str(j.get("judge_id") or "")),
+    max_tier_cb = max(_cb_acc(j) for j in tier_objs)
+    cb_top_objs = [
+        j for j in tier_objs if (max_tier_cb - _cb_acc(j)) < cb_tie - 1e-12
+    ]
+    cb_top_sorted = sorted(
+        cb_top_objs,
+        key=lambda j: (
+            _params_b(j),
+            _sec_med(j),
+            -round(_cb_acc(j), 6),
+            -round(_yes_prec_point(j), 6),
+            str(j.get("judge_id") or ""),
+        ),
     )
-    winner_id = str(eligible_sorted[0]["judge_id"])
+    winner_id = str(cb_top_sorted[0]["judge_id"])
     return {
         "winner": winner_id,
+        "best_eligible_judge": best_id,
         "best_judge": best_id,
+        "eligible_judges": [str(j["judge_id"]) for j in ranked_eligible],
         "candidate_set": [str(j["judge_id"]) for j in candidate_objs],
-        "eligible_candidates": [str(j["judge_id"]) for j in eligible_sorted],
+        "eligible_candidates": [str(j["judge_id"]) for j in candidate_objs],
+        "precision_tier": [str(j["judge_id"]) for j in tier_objs],
+        "cb_top_tier": [str(j["judge_id"]) for j in cb_top_sorted],
         "practically_equivalent_pairs": [list(p) for p in practically_eq_pairs],
-        "precision_floor": precision_floor,
-        "recall_floor": recall_floor,
+        "eligibility_by_judge": eligibility_by_judge,
+        "removed_by_condition": removed_by_condition,
+        "precision_lcb_floor": precision_lcb_floor,
+        "recall_lcb_floor": recall_lcb_floor,
+        "per_class_precision_floor": per_class_precision_floor,
+        "domain_recall_floor": domain_recall_floor,
+        "domain_coverage_min": domain_coverage_min,
+        "precision_band": precision_band,
+        "cb_tie": cb_tie,
     }
 
 
@@ -1201,6 +1445,29 @@ def _evaluate_judge_at_rule(
         salt=f"{judge_id}:{rule_name}:{split_filter}:rec",
     )
 
+    screening_tp = sum(
+        1 for i in scored_item_ids if keys_by_id[i].item_class == "supported" and screen_pass_map[i] == 1
+    )
+    screening_fp_by_class = {
+        cls_name: sum(
+            1 for i in scored_item_ids if keys_by_id[i].item_class == cls_name and screen_pass_map[i] == 1
+        )
+        for cls_name in NEGATIVE_CLASSES
+    }
+    screening_per_class_precision = {
+        cls_name: compute_per_negative_class_precision(screening_tp, screening_fp_by_class[cls_name])
+        for cls_name in NEGATIVE_CLASSES
+    }
+    domains_in_split = sorted({keys_by_id[i].domain for i in scored_item_ids})
+    screening_domain_recall: dict[str, float] = {}
+    for dom_name in domains_in_split:
+        dom_pos_ids = [
+            i for i in scored_item_ids if keys_by_id[i].domain == dom_name and keys_by_id[i].binary_key == "yes"
+        ]
+        screening_domain_recall[dom_name] = (
+            round(sum(screen_pass_map[i] for i in dom_pos_ids) / len(dom_pos_ids), 6) if dom_pos_ids else 0.0
+        )
+
     complete_triads = [vals for vals in triad_items_correct.values() if len(vals) == 3]
     triads_all_correct = sum(1 for vals in complete_triads if sum(vals) == 3)
     triad_consistency = wilson_interval(triads_all_correct, len(complete_triads))
@@ -1241,6 +1508,10 @@ def _evaluate_judge_at_rule(
         "screening_rule": "both_orders_yes_and_gate",
         "screening_yes_precision": screening_prec_ci,
         "screening_yes_recall": screening_rec_ci,
+        "screening_tp": screening_tp,
+        "screening_fp_by_class": screening_fp_by_class,
+        "screening_per_class_precision": screening_per_class_precision,
+        "screening_domain_recall": screening_domain_recall,
         "second_slot_yes_rate": round(second_slot_yes / second_slot_total, 6) if second_slot_total > 0 else 0.0,
         "first_slot_yes_rate": round(first_slot_yes / max(1, second_slot_total), 6) if second_slot_total > 0 else 0.0,
         "triad_consistency": triad_consistency,
@@ -1421,11 +1692,14 @@ def format_bakeoff_score_markdown(report: Mapping[str, Any]) -> str:
         f"- **P(yes):** {defs.get('p_yes')}",
         f"- **Invalid output rule:** {defs.get('invalid_output_rule')}",
         f"- **TOST statistic:** {defs.get('tost_statistic')} (Holm-adjusted across 10 pairs: `{defs.get('tost_holm_adjusted_across_10_pairs')}`)",
+        f"- **Screening LCB:** {defs.get('screening_lcb')}",
+        f"- **Per-negative-class precision:** {defs.get('per_negative_class_precision')}",
+        f"- **Winner selection rule:** {defs.get('winner_selection_rule')}",
         "",
         "## Primary Per-Judge Summary (Raw Label `plain`)",
         "",
-        "| Judge | Rule | Class-Balanced Strict | 95% CI | Plain Strict | All-3-of-Triad | 1 - Flip Rate | Flip Rate | AUROC | Net Bias | Yes-Precision (AND) | Yes-Recall (AND) | Sup Acc | Unsup Acc | Cannot-Tell Acc | Length Stops | Unparseable |",
-        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Judge | Rule | Class-Balanced Strict | 95% CI | Plain Strict | All-3-of-Triad | 1 - Flip Rate | Flip Rate | AUROC | Net Bias | Yes-Precision (AND, LCB) | Yes-Recall (AND, LCB) | Sup Acc | Unsup Acc | Cannot-Tell Acc | Length Stops | Unparseable |",
+        "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|",
     ]
     for j_sum in report.get("judges", []):
         cb = j_sum["class_balanced_strict_accuracy"]
@@ -1435,6 +1709,8 @@ def format_bakeoff_score_markdown(report: Mapping[str, Any]) -> str:
         pc = j_sum["per_class_accuracy"]
         sprec = j_sum["screening_yes_precision"]
         srec = j_sum["screening_yes_recall"]
+        sprec_lcb = sprec.get("lcb", sprec["point"])
+        srec_lcb = srec.get("lcb", srec["point"])
         auroc_val = j_sum.get("mean_order_auroc")
         auroc_str = f"{auroc_val:.4f}" if isinstance(auroc_val, (int, float)) else "N/A"
         lines.append(
@@ -1443,7 +1719,7 @@ def format_bakeoff_score_markdown(report: Mapping[str, Any]) -> str:
             f"{acc['point']:.4f} | {triad_c['point']:.4f} | "
             f"{j_sum['strict_ceiling']:.4f} | {flip['point']:.4f} | "
             f"{auroc_str} | {j_sum['net_affirmative_bias']:+.4f} | "
-            f"{sprec['point']:.4f} | {srec['point']:.4f} | "
+            f"{sprec['point']:.4f} (LCB {sprec_lcb:.4f}) | {srec['point']:.4f} (LCB {srec_lcb:.4f}) | "
             f"{pc['supported']['point']:.4f} | {pc['unsupported']['point']:.4f} | {pc['cannot_tell']['point']:.4f} | "
             f"{j_sum['length_stops']} | {j_sum['unparseable']} |"
         )
@@ -1468,8 +1744,11 @@ def format_bakeoff_score_markdown(report: Mapping[str, Any]) -> str:
                 "## Winner Selection Rule",
                 "",
                 f"- **Selected winner:** `{win.get('winner')}`",
-                f"- **Candidate set (not separated by Holm from best):** `{win.get('candidate_set')}`",
-                f"- **Eligible candidates (precision >= {win.get('precision_floor')}, recall >= {win.get('recall_floor')}):** `{win.get('eligible_candidates')}`",
+                f"- **Eligible judges (LCB precision >= {win.get('precision_lcb_floor')}, LCB recall >= {win.get('recall_lcb_floor')}, per-class precision >= {win.get('per_class_precision_floor')}, domain coverage >= {win.get('domain_coverage_min')} at >= {win.get('domain_recall_floor')}):** `{win.get('eligible_judges')}`",
+                f"- **Best eligible judge (B):** `{win.get('best_eligible_judge')}`",
+                f"- **Candidate set (eligible judges not separated by Holm from B):** `{win.get('candidate_set')}`",
+                f"- **Precision tier (within {win.get('precision_band')} of best candidate precision):** `{win.get('precision_tier')}`",
+                f"- **Removed by condition:** `{win.get('removed_by_condition')}`",
             ]
         )
     lines.extend(
