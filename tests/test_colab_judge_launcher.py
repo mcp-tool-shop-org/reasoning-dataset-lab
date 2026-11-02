@@ -28,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import vm_judges  # noqa: E402
 from reasoning_dataset_lab.errors import RdlabError  # noqa: E402
+from reasoning_dataset_lab.pilot_b import bakeoff_judge_score  # noqa: E402
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (  # noqa: E402
     BAKEOFF_JUDGE_SPECS,
     D3_MINI_REVIEWED_REVISION,
@@ -732,10 +733,108 @@ def test_key_path_upload_refuses_and_deleted_items_receipt_recorded(
     assert not vm_uploaded_item.exists()
 
 
-def test_outputs_closed_written_before_any_key_path_touched(tmp_path: Path) -> None:
+def _make_synthetic_sealed_keys(base_dir: Path, count: int = 12) -> Path:
+    """Create a synthetic `sealed_store/keys.sealed.jsonl` file matching `_make_synthetic_public_items`."""
+    sealed_dir = base_dir / "sealed_store"
+    sealed_dir.mkdir(parents=True, exist_ok=True)
+    keys_path = sealed_dir / "keys.sealed.jsonl"
+    rows = [
+        json.dumps(
+            {
+                "id": f"item-{idx:04d}",
+                "triad_id": f"T10-D-synth-anchored-{idx // 3:03d}",
+                "triad_handle": f"triad-{idx // 3:016x}",
+                "key": "yes" if idx % 3 == 0 else "no",
+                "class": "yes" if idx % 3 == 0 else "no",
+                "key_source": "construction",
+                "value_set_id": f"synth/vs-{idx // 3:03d}",
+                "closure": "closed",
+                "split": "dev" if idx < 3 else "test",
+                "domain": "synth",
+            }
+        )
+        for idx in range(count)
+    ]
+    keys_path.write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+    return keys_path
+
+
+def _instrument_key_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    state_dir: Path,
+) -> Any:
+    """Instrument `bakeoff_judge_score.load_sealed_keys` so it records its own access timestamp and sequence number."""
+    orig_load_sealed_keys = bakeoff_judge_score.load_sealed_keys
+
+    def _instrumented_load_sealed_keys(keys_path: Path) -> dict[str, Any]:
+        seq = len(fake_colab.read_file_access_log(state_dir))
+        access_ts = time.time()
+        fake_colab.record_file_access(
+            state_dir,
+            "read_keys",
+            keys_path,
+            detail=f"seq={seq};ts={access_ts:.6f}",
+        )
+        return orig_load_sealed_keys(keys_path)
+
+    monkeypatch.setattr(
+        bakeoff_judge_score, "load_sealed_keys", _instrumented_load_sealed_keys
+    )
+    return _instrumented_load_sealed_keys
+
+
+def assert_outputs_closed_before_key_access(
+    state_dir: Path,
+    out_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Assert that `write_outputs_closed` occurred strictly before the first key access in `file_access.jsonl`."""
+    raw_events = fake_colab.read_file_access_log(state_dir)
+    annotated = [{**ev, "seq": idx} for idx, ev in enumerate(raw_events)]
+
+    closed_events = [
+        ev for ev in annotated if ev.get("event") == "write_outputs_closed"
+    ]
+    key_events = [
+        ev
+        for ev in annotated
+        if ev.get("event") == "read_keys"
+        or "sealed_store" in str(ev.get("path", ""))
+        or "keys.sealed" in str(ev.get("path", ""))
+    ]
+    assert closed_events, "No write_outputs_closed event recorded in file_access.jsonl"
+    assert key_events, "No key access event recorded in file_access.jsonl"
+
+    closed_ev = closed_events[0]
+    first_key_ev = key_events[0]
+    closed_seq = int(closed_ev["seq"])
+    first_key_seq = int(first_key_ev["seq"])
+    closed_ts = float(closed_ev["ts"])
+    first_key_ts = float(first_key_ev["ts"])
+
+    assert closed_seq < first_key_seq and closed_ts <= first_key_ts, (
+        f"outputs-closed write (seq={closed_seq}, ts={closed_ts:.6f}) must precede "
+        f"first key access (seq={first_key_seq}, ts={first_key_ts:.6f}, path={first_key_ev.get('path')})"
+    )
+
+    for ev in annotated[:first_key_seq]:
+        assert "sealed_store" not in str(ev.get("path", ""))
+        assert "keys.sealed" not in str(ev.get("path", ""))
+
+    closed_path = out_dir / "outputs-closed.json"
+    assert closed_path.is_file()
+    closed_doc = json.loads(closed_path.read_text(encoding="utf-8"))
+    assert closed_doc["outputs_closed_sha256"] == closed_ev["detail"]
+    return closed_ev, first_key_ev
+
+
+def test_outputs_closed_written_before_any_key_path_touched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path)
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
     items_file = _make_synthetic_public_items(tmp_path)
+    keys_file = _make_synthetic_sealed_keys(tmp_path)
     out_dir = tmp_path / "out_closed_order"
     exports = _base_launcher_exports(
         env_paths,
@@ -744,6 +843,8 @@ def test_outputs_closed_written_before_any_key_path_touched(tmp_path: Path) -> N
         hf_home=hf_home,
         items_file=items_file,
     )
+
+    _instrument_key_reader(monkeypatch, env_paths["state_dir"])
 
     proc = subprocess.run(
         [
@@ -766,24 +867,41 @@ def test_outputs_closed_written_before_any_key_path_touched(tmp_path: Path) -> N
     assert "schedule.json" in closed_doc["files"]
     assert "generations.jsonl" in closed_doc["files"]
 
-    # Simulate subsequent rig-only scorer touching keys AFTER launcher completes
-    fake_colab.record_file_access(
-        env_paths["state_dir"],
-        "read_keys",
-        tmp_path / "sealed_store" / "keys.sealed.jsonl",
-    )
+    # Run the instrumented key-reading step after the launcher closes outputs
+    loaded_keys = bakeoff_judge_score.load_sealed_keys(keys_file)
+    assert len(loaded_keys) == 12
 
-    events = fake_colab.read_file_access_log(env_paths["state_dir"])
-    event_names = [e["event"] for e in events]
-    assert "write_outputs_closed" in event_names
-    assert "read_keys" in event_names
-    closed_idx = event_names.index("write_outputs_closed")
-    key_idx = event_names.index("read_keys")
-    assert closed_idx < key_idx
-    # And no event prior to read_keys touched any key or sealed_store path
-    for ev in events[:key_idx]:
-        assert "sealed_store" not in ev["path"]
-        assert "keys.sealed" not in ev["path"]
+    closed_ev, first_key_ev = assert_outputs_closed_before_key_access(
+        env_paths["state_dir"], out_dir
+    )
+    assert closed_ev["seq"] < first_key_ev["seq"]
+    assert float(closed_ev["ts"]) <= float(first_key_ev["ts"])
+    assert f"seq={first_key_ev['seq']};" in str(first_key_ev["detail"])
+
+
+def test_outputs_closed_before_keys_negative_swapped_order_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = tmp_path / "swapped_state"
+    out_dir = tmp_path / "out_swapped"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "schedule.json").write_text('{"seed": 1}\n', encoding="utf-8", newline="\n")
+    (out_dir / "generations.jsonl").write_text('{"judge_id": "mu-judge"}\n', encoding="utf-8", newline="\n")
+    keys_file = _make_synthetic_sealed_keys(tmp_path)
+
+    _instrument_key_reader(monkeypatch, state_dir)
+
+    # Swapped order: read keys BEFORE writing outputs-closed.json
+    loaded_keys = bakeoff_judge_score.load_sealed_keys(keys_file)
+    assert len(loaded_keys) == 12
+    vm_judges.write_outputs_closed(out_dir, state_dir=state_dir)
+
+    with pytest.raises(
+        AssertionError,
+        match=r"outputs-closed write \(seq=1, .*\) must precede first key access \(seq=0,",
+    ):
+        assert_outputs_closed_before_key_access(state_dir, out_dir)
 
 
 def test_log_guard_trips_on_planted_claim_and_planted_key_filename(

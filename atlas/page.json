@@ -10,35 +10,99 @@
   "breaks": [
     {
       "doors": 3,
-      "importedBy": [],
+      "importedBy": [
+        "scripts"
+      ],
       "importedByTests": [
         "tests"
       ],
       "kind": "part",
       "name": "src",
       "partLabel": "src"
+    },
+    {
+      "doors": 1,
+      "importedBy": [],
+      "importedByTests": [
+        "tests"
+      ],
+      "kind": "part",
+      "name": "scripts",
+      "partLabel": "scripts"
     }
   ],
   "changes": {
     "fileCounts": {
-      "added": 2,
-      "changed": 2,
+      "added": 21,
+      "changed": 14,
       "moved": 0,
-      "parts": 4,
+      "parts": 5,
       "removed": 0
     },
     "items": [
       {
+        "kind": "import-added",
+        "sentence": "scripts now imports src.",
+        "subjects": [
+          "scripts",
+          "src"
+        ]
+      },
+      {
+        "kind": "import-added",
+        "sentence": "tests now imports scripts.",
+        "subjects": [
+          "tests",
+          "scripts"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "src/reasoning_dataset_lab/pilot_b/canary_config.json is now written by src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py.",
+        "subjects": [
+          "src/reasoning_dataset_lab/pilot_b/canary_config.json",
+          "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "README.md is now also read by scripts/colab/launch_judges.sh.",
+        "subjects": [
+          "README.md",
+          "scripts/colab/launch_judges.sh"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "pyproject.toml is now also read by scripts/colab/launch_judges.sh.",
+        "subjects": [
+          "pyproject.toml",
+          "scripts/colab/launch_judges.sh"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "And 12 more new writers and readers of places.",
+        "subjects": []
+      },
+      {
+        "kind": "origin",
+        "sentence": "src was authored and is now mixed.",
+        "subjects": [
+          "src"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-10-30; 2 files added and 2 changed content.",
+        "sentence": "21 files added and 14 changed content, across 5 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "1ce24bd2e8e3003952295fee251eb34251b5810d",
-      "generatedAt": "2026-10-30T18:27:09.693Z"
+      "commit": "9285d752fdd80731c35efac778559907f95ab09c",
+      "generatedAt": "2026-11-01T18:37:34.945Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [
     {
@@ -87,6 +151,21 @@
       "shared": 5
     },
     {
+      "a": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
+      "b": "tests/test_bakeoff_prereg_build.py",
+      "either": 8,
+      "partLabels": [
+        "src",
+        "tests"
+      ],
+      "parts": [
+        "src",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 5
+    },
+    {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
       "either": 16,
@@ -100,31 +179,17 @@
       ],
       "relation": "inside",
       "shared": 9
-    },
-    {
-      "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
-      "b": "tests/test_pilot_b_part_b.py",
-      "either": 9,
-      "partLabels": [
-        "src",
-        "tests"
-      ],
-      "parts": [
-        "src",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 5
     }
   ],
   "changesTogetherNote": [
+    "1 file changed together with its own test, as expected.",
     "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
     "Window: 180 days; a pair counts from 3 shared commits, since 4 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
-  "changesTogetherWithTests": 0,
-  "commit": "9285d752fdd80731c35efac778559907f95ab09c",
+  "changesTogetherWithTests": 1,
+  "commit": "2bc4ace459074bed25390bc8a3cc4f9bf196e990",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (50 files), CSS (2), TypeScript (2), Astro (1), JavaScript (1) and shell (1). Work enters through 4 doors; the busiest is ci, which reaches 2 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (59 files), CSS (2), TypeScript (2), shell (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -132,14 +197,21 @@
       "checksMore": 0,
       "file": ".github/workflows/ci.yml",
       "id": ".github/workflows/ci.yml",
-      "landings": [],
+      "landings": [
+        "src/reasoning_dataset_lab/pilot_b/canary_config.json"
+      ],
       "name": "ci",
       "pushes": false,
       "reach": [
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 27
+          "files": 35
+        },
+        {
+          "boundary": "scripts",
+          "depth": 1,
+          "files": 1
         },
         {
           "boundary": "src",
@@ -230,7 +302,9 @@
       "file": "pyproject.toml",
       "id": "pyproject.toml#rdlab",
       "kind": "command",
-      "landings": [],
+      "landings": [
+        "src/reasoning_dataset_lab/pilot_b/canary_config.json"
+      ],
       "name": "rdlab",
       "pushes": false,
       "reach": [
@@ -253,15 +327,29 @@
   "duplicates": [],
   "duplicatesLead": null,
   "duplicatesNote": [],
-  "edges": [],
+  "edges": [
+    {
+      "from": "scripts",
+      "fromTests": false,
+      "to": "src"
+    }
+  ],
   "engine": "1.24.0",
-  "generated": [],
-  "generatedAt": "2026-11-01T18:37:34.945Z",
+  "generated": [
+    {
+      "block": true,
+      "place": "src/reasoning_dataset_lab/pilot_b/canary_config.json",
+      "writers": [
+        "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
+      ]
+    }
+  ],
+  "generatedAt": "2026-11-02T09:27:32.227Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "1 import could not be resolved: `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
-    "10 writes and 13 reads use paths built at run time and are not named here.",
-    "24 writes and 69 reads go to a path their caller passes, not to this repository.",
+    "10 writes and 15 reads use paths built at run time and are not named here.",
+    "33 writes and 82 reads go to a path their caller passes, not to this repository.",
     "1 read goes to the directory the command is run in (certification/), not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
@@ -292,21 +380,16 @@
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 28,
+  "testFiles": 43,
   "testedBy": {
-    "src": 26
+    "scripts": 1,
+    "src": 33
   },
   "unnamedWrites": 10,
   "unread": [],
-  "unreadCode": [
-    "scripts"
-  ],
-  "unreadCodeUses": "scripts holds only shell files, which this map does not read, so what uses it cannot be seen.",
   "unreadFiles": 0,
   "unreadNote": [],
   "untested": [],
-  "untestedNote": [
-    "scripts holds only shell files, which this map does not read, so whether a test touches it cannot be seen."
-  ],
-  "written": 0
+  "untestedNote": [],
+  "written": 1
 }
