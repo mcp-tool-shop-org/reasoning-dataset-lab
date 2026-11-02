@@ -1471,6 +1471,7 @@ def test_kernel_exec_without_dunder_file_fails_when_dunder_file_used(
     status_file = tmp_path / "gate_status.json"
     monkeypatch.setenv("RDLAB_STEP", "gate")
     monkeypatch.setenv("RDLAB_STATUS_FILE", str(status_file))
+    monkeypatch.setenv("FAKE_COLAB_DISK_FREE_BYTES", "120000000000")
     monkeypatch.setattr(
         sys, "argv", ["ipykernel_launcher.py", "-f", "/tmp/kernel-cell.json"]
     )
@@ -1557,4 +1558,764 @@ def test_kernel_exec_gate_and_run_steps_complete(tmp_path: Path) -> None:
     )
     assert outcome_doc["outcome"] == "ok"
     assert Path(wsl_vm_script).is_file()
+
+
+def test_items_upload_fails_at_6436a3a6_gate_and_passes_after_fix(
+    tmp_path: Path,
+) -> None:
+    """Failing-first regression test: at 6436a3a6 (gate does not create /content/rdlab_items),
+    `--stub` fails at `/content/rdlab_items/items.jsonl` upload with HTTP 500; after fix, it passes.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path, count=4)
+    wsl_launch = _to_wsl_path(LAUNCH_JUDGES_SH)
+
+    # 1. Simulate 6436a3a6 vm_judges.py where `--step gate` prints VM_GATE_OK without creating /content/rdlab_items
+    legacy_vm_script = tmp_path / "vm_judges_6436a3a6.py"
+    legacy_src = VM_JUDGES_PY.read_text(encoding="utf-8").replace(
+        "if args.step == \"gate\":\n        return run_gate(args)",
+        'if args.step == "gate":\n'
+        "        import platform\n"
+        "        if args.status_file is not None:\n"
+        '            write_vm_status_file(args.status_file, step="gate", rc=0, reason="VM_GATE_OK", status="ok")\n'
+        '        print(f"VM_GATE_OK {platform.platform()}", flush=True)\n'
+        "        return 0",
+    )
+    legacy_vm_script.write_text(legacy_src, encoding="utf-8", newline="\n")
+
+    env_old = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_6436a3a6", neighbour_sessions=[]
+    )
+    out_old = tmp_path / "out_6436a3a6"
+    exports_old = _base_launcher_exports(
+        env_old,
+        open_lock=tmp_path / "old.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_old = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_old} export RDLAB_VM_SCRIPT='{_to_wsl_path(legacy_vm_script)}'; "
+            f"bash '{wsl_launch}' --stub --out-dir '{_to_wsl_path(out_old)}' --run-id stub-old-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_old.returncode != 0
+    old_cli_log = (out_old / "colab-cli.log").read_text(encoding="utf-8")
+    assert "Uploaded " in old_cli_log and "-> /content/repo_bundle.tar.gz" in old_cli_log
+    assert "-> /content/receipts_bundle.tar.gz" in old_cli_log
+    assert (
+        "[colab] Upload failed: 500 Server Error: Internal Server Error for url:"
+        in old_cli_log
+    )
+    assert "/api/contents/content/rdlab_items/items.jsonl" in old_cli_log
+    old_outcome = json.loads(
+        (out_old / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert old_outcome["outcome"] == "failed"
+    assert "/content/rdlab_items/items.jsonl" in old_outcome["why"]
+
+    # 2. With fixed vm_judges.py, `--step gate` creates `/content/rdlab_items` and logs it; `--stub` passes
+    env_new = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_fixed", neighbour_sessions=[]
+    )
+    out_new = tmp_path / "out_fixed"
+    exports_new = _base_launcher_exports(
+        env_new,
+        open_lock=tmp_path / "new.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_new = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_new} bash '{wsl_launch}' --stub --out-dir '{_to_wsl_path(out_new)}' --run-id stub-fixed-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_new.returncode == 0, f"stderr={proc_new.stderr}"
+    new_cli_log = (out_new / "colab-cli.log").read_text(encoding="utf-8")
+    assert "VM_GATE_OK " in new_cli_log
+    assert "items_dir=/content/rdlab_items" in new_cli_log
+    assert "required_bytes=69654163200" in new_cli_log
+    assert (env_new["state_dir"] / "vm_fs" / "rdlab_items").is_dir()
+    new_outcome = json.loads(
+        (out_new / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert new_outcome["outcome"] == "ok"
+
+
+def test_gate_disk_preflight_reports_free_space_and_refuses_when_insufficient(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify disk preflight arithmetic, free-space reporting, and `VM_DISK_INSUFFICIENT` refusal."""
+    import shutil as _shutil
+
+    assert vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES == 49_451_597_039
+    assert vm_judges.EXPECTED_WEIGHTS_DOWNLOAD_SECONDS == 797.4
+    assert vm_judges.VENV_JUDGE_WHEEL_BYTES == 2_779_391_889
+    assert vm_judges.VENV_D3_WHEEL_BYTES == 2_779_228_374
+    assert vm_judges.VENVS_ESTIMATED_BYTES == 11_117_240_526
+    assert vm_judges.REQUIRED_VM_DISK_BYTES == 69_654_163_200
+
+    req_info = vm_judges.compute_required_vm_disk_bytes()
+    assert req_info == {
+        "weights_total_bytes": 49_451_597_039,
+        "venvs_estimated_bytes": 11_117_240_526,
+        "subtotal_bytes": 60_568_837_565,
+        "required_bytes": 69_654_163_200,
+    }
+
+    # Receipt-driven calculation when all 5 receipts have `total_bytes`
+    rec_dir = tmp_path / "real_sized_receipts"
+    rec_dir.mkdir(parents=True, exist_ok=True)
+    exact_receipt_totals = [
+        ("flowaicom__Flow-Judge-v0.1.sha256.json", 7_644_593_918),
+        ("ibm-granite__granite-guardian-4.1-8b.sha256.json", 16_770_923_290),
+        ("nvidia__NVIDIA-Nemotron-3-Nano-4B-BF16.sha256.json", 7_964_584_688),
+        ("qybaihe__mu-judge-nemotron-nano-4b.sha256.json", 7_964_239_519),
+        ("vllm-sr__d3-mini.sha256.json", 9_107_255_624),
+    ]
+    for fname, tbytes in exact_receipt_totals:
+        (rec_dir / fname).write_text(
+            json.dumps({"total_bytes": tbytes, "files": {}}) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    assert (
+        vm_judges.compute_required_vm_disk_bytes(rec_dir)["required_bytes"]
+        == 69_654_163_200
+    )
+
+    # Direct unit check using monkeypatched shutil.disk_usage at exact boundary
+    monkeypatch.delenv("FAKE_COLAB_DISK_FREE_BYTES", raising=False)
+    monkeypatch.delenv("FAKE_COLAB_CONTENT_DISK_FREE_BYTES", raising=False)
+    monkeypatch.delenv("FAKE_COLAB_HF_DISK_FREE_BYTES", raising=False)
+
+    fake_usage_ok = _shutil._ntuple_diskusage(
+        100_000_000_000, 30_345_836_800, 69_654_163_200
+    )
+    monkeypatch.setattr(_shutil, "disk_usage", lambda _p: fake_usage_ok)
+    report_ok = vm_judges.check_vm_disk_preflight(
+        content_dir=tmp_path, hf_home=tmp_path / "hf_home", receipts_dir=rec_dir
+    )
+    assert report_ok["content_free_bytes"] == 69_654_163_200
+    assert report_ok["hf_home_free_bytes"] == 69_654_163_200
+    assert report_ok["required_bytes"] == 69_654_163_200
+
+    fake_usage_low = _shutil._ntuple_diskusage(
+        100_000_000_000, 30_345_836_801, 69_654_163_199
+    )
+    monkeypatch.setattr(_shutil, "disk_usage", lambda _p: fake_usage_low)
+    with pytest.raises(vm_judges.RefusalError) as exc_low:
+        vm_judges.check_vm_disk_preflight(
+            content_dir=tmp_path, hf_home=tmp_path / "hf_home", receipts_dir=rec_dir
+        )
+    assert exc_low.value.failure_class == "VM_DISK_INSUFFICIENT"
+    assert "69654163200" in str(exc_low.value)
+
+    # End-to-end launcher test with low disk on /content (and FAKE_COLAB_FORCE_EXEC_RC_ZERO=1)
+    env_low = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_low_disk", neighbour_sessions=[]
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "low_disk_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "low_disk_data", count=4)
+    out_low = tmp_path / "out_low_disk"
+    exports_low = _base_launcher_exports(
+        env_low,
+        open_lock=tmp_path / "low_disk.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_low = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_low} export FAKE_COLAB_DISK_FREE_BYTES=50000000000; "
+            f"export FAKE_COLAB_FORCE_EXEC_RC_ZERO=1; "
+            f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_low)}' --run-id low-disk-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_low.returncode == 2
+    assert "VM_DISK_INSUFFICIENT" in proc_low.stderr
+    low_outcome = json.loads(
+        (out_low / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert low_outcome["outcome"] == "failed"
+    assert "VM_DISK_INSUFFICIENT" in low_outcome["why"]
+    # Verify no uploads occurred when gate refused on low disk
+    calls = [
+        json.loads(ln)["subcmd"]
+        for ln in env_low["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert "upload" not in calls
+    assert "stop" in calls
+
+    # Also test low disk on HF_HOME specifically while /content has sufficient disk
+    env_hf_low = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_hf_low", neighbour_sessions=[]
+    )
+    out_hf_low = tmp_path / "out_hf_low"
+    exports_hf_low = _base_launcher_exports(
+        env_hf_low,
+        open_lock=tmp_path / "hf_low.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_hf_low = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_hf_low} export FAKE_COLAB_CONTENT_DISK_FREE_BYTES=120000000000; "
+            f"export FAKE_COLAB_HF_DISK_FREE_BYTES=10000000000; "
+            f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_hf_low)}' --run-id hf-low-disk-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_hf_low.returncode == 2
+    assert "VM_DISK_INSUFFICIENT" in proc_hf_low.stderr
+
+
+def test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local(
+    tmp_path: Path,
+) -> None:
+    """Verify `colab upload` enforces parent dir existence, missing local file, overwrite, size cap, and path length."""
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path, neighbour_sessions=[{"session_id": "rdlab-up-01", "gpu": "CPU"}]
+    )
+    wsl_colab = _to_wsl_path(env_paths["fake_bin"] / "colab")
+    wsl_state = _to_wsl_path(env_paths["state_dir"])
+    vm_fs = env_paths["state_dir"] / "vm_fs"
+
+    src_file = tmp_path / "payload.txt"
+    src_file.write_text("v1-payload\n", encoding="utf-8", newline="\n")
+    wsl_src = _to_wsl_path(src_file)
+
+    def _run_upload(local_arg: str, remote_arg: str, extra_env: str = "") -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"export FAKE_COLAB_STATE_DIR='{wsl_state}'; {extra_env} "
+                f"'{wsl_colab}' upload -s rdlab-up-01 '{local_arg}' '{remote_arg}' </dev/null",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+
+    # 1. Missing parent directory on VM -> HTTP 500
+    res_no_parent = _run_upload(wsl_src, "/content/missing_dir/payload.txt")
+    assert res_no_parent.returncode == 1
+    assert "500 Server Error" in res_no_parent.stdout
+    assert not (vm_fs / "missing_dir").exists()
+
+    # 2. Missing local file -> exits 1
+    res_no_local = _run_upload(_to_wsl_path(tmp_path / "does_not_exist.txt"), "/content/payload.txt")
+    assert res_no_local.returncode == 1
+    assert "Local file" in res_no_local.stdout and "not found" in res_no_local.stdout
+
+    # 3. Upload to /content/payload.txt succeeds, and second upload overwrites in place
+    res_ok1 = _run_upload(wsl_src, "/content/payload.txt")
+    assert res_ok1.returncode == 0
+    assert (vm_fs / "payload.txt").read_text(encoding="utf-8") == "v1-payload\n"
+
+    src_file.write_text("v2-overwritten\n", encoding="utf-8", newline="\n")
+    res_ok2 = _run_upload(wsl_src, "/content/payload.txt")
+    assert res_ok2.returncode == 0
+    assert (vm_fs / "payload.txt").read_text(encoding="utf-8") == "v2-overwritten\n"
+
+    # 4. Upload targeting an existing directory on VM -> HTTP 500
+    (vm_fs / "existing_subdir").mkdir(parents=True, exist_ok=True)
+    res_is_dir = _run_upload(wsl_src, "/content/existing_subdir")
+    assert res_is_dir.returncode == 1
+    assert "500 Server Error" in res_is_dir.stdout
+
+    # 5. Large file exceeding FAKE_COLAB_MAX_UPLOAD_BYTES -> HTTP 413
+    res_too_large = _run_upload(
+        wsl_src,
+        "/content/payload.txt",
+        extra_env="export FAKE_COLAB_MAX_UPLOAD_BYTES=4;",
+    )
+    assert res_too_large.returncode == 1
+    assert "413 Client Error: Payload Too Large" in res_too_large.stdout
+
+    # 6. Path component > 255 bytes or path > FAKE_COLAB_MAX_PATH_LEN -> HTTP 400
+    long_name = "a" * 256 + ".txt"
+    res_long_comp = _run_upload(wsl_src, f"/content/{long_name}")
+    assert res_long_comp.returncode == 1
+    assert "400 Client Error: Bad Request (path too long)" in res_long_comp.stdout
+
+    res_long_total = _run_upload(
+        wsl_src,
+        "/content/payload.txt",
+        extra_env="export FAKE_COLAB_MAX_PATH_LEN=12;",
+    )
+    assert res_long_total.returncode == 1
+    assert "400 Client Error: Bad Request (path too long)" in res_long_total.stdout
+
+
+def test_download_enforces_missing_remote_local_parent_overwrite_and_truncated_corrupt_archive(
+    tmp_path: Path,
+) -> None:
+    """Verify `colab download` enforces missing remote file, local parent dir, overwrite, and truncated download detection."""
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path, neighbour_sessions=[{"session_id": "rdlab-dl-01", "gpu": "CPU"}]
+    )
+    wsl_colab = _to_wsl_path(env_paths["fake_bin"] / "colab")
+    wsl_state = _to_wsl_path(env_paths["state_dir"])
+    vm_fs = env_paths["state_dir"] / "vm_fs"
+
+    def _run_download(remote_arg: str, local_arg: str, extra_env: str = "") -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"export FAKE_COLAB_STATE_DIR='{wsl_state}'; {extra_env} "
+                f"'{wsl_colab}' download -s rdlab-dl-01 '{remote_arg}' '{local_arg}' </dev/null",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+
+    # 1. Missing remote file -> exits 1 and does not create local file
+    missing_dst = tmp_path / "missing_out.json"
+    res_missing = _run_download("/content/nonexistent.json", _to_wsl_path(missing_dst))
+    assert res_missing.returncode == 1
+    assert "File or directory not found" in res_missing.stderr
+    assert not missing_dst.exists()
+
+    # 2. Remote path is a directory -> exits 1
+    (vm_fs / "a_dir").mkdir(parents=True, exist_ok=True)
+    res_dir = _run_download("/content/a_dir", _to_wsl_path(tmp_path / "dir_out"))
+    assert res_dir.returncode == 1
+    assert "path is a directory" in res_dir.stderr
+
+    # 3. Missing local parent directory -> exits 1 (does not auto-mkdir local parent)
+    (vm_fs / "sample.txt").write_text("remote-v1\n", encoding="utf-8", newline="\n")
+    no_parent_dst = tmp_path / "no_such_local_parent" / "sample.txt"
+    res_no_local_parent = _run_download("/content/sample.txt", _to_wsl_path(no_parent_dst))
+    assert res_no_local_parent.returncode == 1
+    assert "No such file or directory" in res_no_local_parent.stderr
+    assert not no_parent_dst.exists()
+
+    # 4. Existing local file is overwritten in place
+    local_dst = tmp_path / "sample_local.txt"
+    local_dst.write_text("stale-local\n", encoding="utf-8", newline="\n")
+    res_overwrite = _run_download("/content/sample.txt", _to_wsl_path(local_dst))
+    assert res_overwrite.returncode == 0
+    assert local_dst.read_text(encoding="utf-8") == "remote-v1\n"
+
+    # 5. End-to-end launcher refuses truncated/interrupted download of status.json or result.tar.gz
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "trunc_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "trunc_data", count=4)
+    for trunc_target in ("status.json", "result.tar.gz"):
+        tag = trunc_target.replace(".", "_")
+        env_t = fake_colab.setup_fake_colab_environment(
+            tmp_path / f"env_{tag}", neighbour_sessions=[]
+        )
+        out_t = tmp_path / f"out_{tag}"
+        exports_t = _base_launcher_exports(
+            env_t,
+            open_lock=tmp_path / f"{tag}.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        proc_t = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports_t} export FAKE_COLAB_TRUNCATE_DOWNLOAD='{trunc_target}'; "
+                f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_t)}' --run-id trunc-{tag}",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        assert proc_t.returncode != 0
+        outcome_t = json.loads(
+            (out_t / "outcome.draft.json").read_text(encoding="utf-8")
+        )
+        assert outcome_t["outcome"] == "failed"
+        assert not (out_t / "outputs-closed.json").exists()
+
+
+def test_exec_env_quoting_persistence_timeout_and_shared_kernel_gate_to_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `colab exec` `--env` validation/quoting/persistence, `--timeout`, and shared-kernel gate->run execution."""
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path, neighbour_sessions=[{"session_id": "rdlab-exec-01", "gpu": "CPU"}]
+    )
+    wsl_colab = _to_wsl_path(env_paths["fake_bin"] / "colab")
+    wsl_state = _to_wsl_path(env_paths["state_dir"])
+
+    probe_py = tmp_path / "env_probe.py"
+    probe_py.write_text(
+        "import json, os\n"
+        "print(json.dumps({\n"
+        "    'EQ_VAL': os.environ.get('EQ_VAL'),\n"
+        "    'SPACE_VAL': os.environ.get('SPACE_VAL'),\n"
+        "    'PERSIST_KEY': os.environ.get('PERSIST_KEY'),\n"
+        "    'UNPASSED_RIG': os.environ.get('RDLAB_OUT_DIR'),\n"
+        "    'PRIOR_COUNT': globals().get('_PRIOR_EXEC_COUNT'),\n"
+        "}))\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    wsl_probe = _to_wsl_path(probe_py)
+
+    # 1. Invalid --env variable name rejected with rc=2
+    res_bad_env = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export FAKE_COLAB_STATE_DIR='{wsl_state}'; "
+            f"'{wsl_colab}' exec -s rdlab-exec-01 --env '123INVALID=val' -f '{wsl_probe}' </dev/null",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_bad_env.returncode == 2
+    assert "Invalid --env variable name" in res_bad_env.stderr
+
+    # 2. Invalid --timeout rejected with rc=2
+    for bad_timeout in ("0", "-5", "not_a_number"):
+        res_bad_to = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"export FAKE_COLAB_STATE_DIR='{wsl_state}'; "
+                f"'{wsl_colab}' exec -s rdlab-exec-01 -f '{wsl_probe}' --timeout={bad_timeout} </dev/null",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        assert res_bad_to.returncode == 2
+
+    # 3. Call 1 sets EQ_VAL (contains '='), SPACE_VAL (contains spaces and '='), and PERSIST_KEY;
+    #    unpassed rig variable RDLAB_OUT_DIR is stripped.
+    res_call1 = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export FAKE_COLAB_STATE_DIR='{wsl_state}'; "
+            f"export RDLAB_OUT_DIR='/rig/should_not_leak'; "
+            f"'{wsl_colab}' exec -s rdlab-exec-01 "
+            f"--env 'EQ_VAL=alpha=beta==gamma' "
+            f"--env 'SPACE_VAL=hello world = ok' "
+            f"--env 'PERSIST_KEY=from_call_1' "
+            f"-f '{wsl_probe}' --timeout=30 </dev/null",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_call1.returncode == 0, f"stderr={res_call1.stderr}"
+    out1 = json.loads(res_call1.stdout.strip().splitlines()[-1])
+    assert out1["EQ_VAL"] == "alpha=beta==gamma"
+    assert out1["SPACE_VAL"] == "hello world = ok"
+    assert out1["PERSIST_KEY"] == "from_call_1"
+    assert out1["UNPASSED_RIG"] is None
+    assert out1["PRIOR_COUNT"] == 0
+
+    # 4. Call 2 on the same session sees PERSIST_KEY persisted from Call 1, and can overwrite EQ_VAL
+    res_call2 = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export FAKE_COLAB_STATE_DIR='{wsl_state}'; "
+            f"'{wsl_colab}' exec -s rdlab-exec-01 "
+            f"--env 'EQ_VAL=overwritten_in_call_2' "
+            f"-f '{wsl_probe}' --timeout=30 </dev/null",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_call2.returncode == 0
+    out2 = json.loads(res_call2.stdout.strip().splitlines()[-1])
+    assert out2["EQ_VAL"] == "overwritten_in_call_2"
+    assert out2["PERSIST_KEY"] == "from_call_1"
+    assert out2["PRIOR_COUNT"] == 1
+
+    # 5. Execute vm_judges.py `--step gate` then `--step run` in the EXACT SAME Python kernel namespace (`ns`)
+    shared_vm_fs = tmp_path / "shared_kernel_vm_fs"
+    shared_vm_fs.mkdir(parents=True, exist_ok=True)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "shared_kernel_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "shared_kernel_data", count=4)
+
+    vm_src = VM_JUDGES_PY.read_text(encoding="utf-8")
+    shared_ns: dict[str, Any] = {"__name__": "__main__"}
+    monkeypatch.setattr(
+        sys, "argv", ["ipykernel_launcher.py", "-f", "/tmp/kernel-shared.json"]
+    )
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(shared_vm_fs))
+    monkeypatch.setenv("FAKE_COLAB_DISK_FREE_BYTES", "120000000000")
+    monkeypatch.setenv("RDLAB_STATUS_FILE", str(shared_vm_fs / "status.json"))
+    monkeypatch.setenv(
+        "RDLAB_ITEMS_FILE", str(shared_vm_fs / "rdlab_items" / "items.jsonl")
+    )
+    monkeypatch.setenv("RDLAB_STEP", "gate")
+
+    exec(compile(vm_src, "<cell>", "exec"), shared_ns)
+    assert shared_ns.get("CELL_EXIT_CODE") == 0
+    assert (shared_vm_fs / "rdlab_items").is_dir()
+
+    # Now upload items into the directory created by gate, and execute `--step run` in the SAME `shared_ns`
+    (shared_vm_fs / "rdlab_items" / "items.jsonl").write_bytes(items_file.read_bytes())
+    (shared_vm_fs / "rdlab_items" / "manifest.json").write_bytes(
+        (items_file.parent / "manifest.json").read_bytes()
+    )
+    monkeypatch.setenv("RDLAB_STEP", "run")
+    monkeypatch.setenv("RDLAB_MODE", "stub")
+    monkeypatch.setenv("VM_DRYRUN", "1")
+    monkeypatch.setenv("RDLAB_REPO_DIR", str(REPO_ROOT))
+    monkeypatch.setenv("RDLAB_RECEIPTS_DIR", str(receipts_dir))
+    monkeypatch.setenv("HF_HOME", str(hf_home))
+    monkeypatch.setenv("RDLAB_RUN_DIR", str(shared_vm_fs / "rdlab_run"))
+    monkeypatch.setenv("RDLAB_WORK_DIR", str(shared_vm_fs / "rdlab_work"))
+    monkeypatch.setenv("RDLAB_RESULT_TAR", str(shared_vm_fs / "result.tar.gz"))
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+
+    exec(compile(vm_src, "<cell>", "exec"), shared_ns)
+    assert shared_ns.get("CELL_EXIT_CODE") == 0
+    run_status = json.loads(
+        (shared_vm_fs / "status.json").read_text(encoding="utf-8")
+    )
+    assert run_status["step"] == "build_allowlisted_result_tar"
+    assert run_status["rc"] == 0
+    assert run_status["status"] == "ok"
+
+
+def test_stop_and_sessions_race_and_orphan_row_after_stop(tmp_path: Path) -> None:
+    """Verify stop/start race (`FAKE_COLAB_KEEP_SESSION_ON_STOP=1` and `[?]` orphan row) and `[colab]` prefix lines."""
+    wsl_launch = _to_wsl_path(LAUNCH_JUDGES_SH)
+
+    # 1. Session still listed as `[rdlab-...]` after `colab stop` -> fails with clear reason
+    env_keep = fake_colab.setup_fake_colab_environment(
+        tmp_path / "keep", neighbour_sessions=[]
+    )
+    out_keep = tmp_path / "out_keep"
+    cmd_keep = (
+        f"export PATH='{_to_wsl_path(env_keep['fake_bin'])}:{_to_wsl_path(env_keep['sentinel_bin'])}':\"$PATH\"; "
+        f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_keep['state_dir'])}'; "
+        f"export COLAB_LOCK_DIR='{_to_wsl_path(env_keep['colab_locks_dir'])}'; "
+        f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'keep.lock')}'; "
+        f"export FAKE_COLAB_KEEP_SESSION_ON_STOP=1; "
+        f"bash '{wsl_launch}' --session-smoke --out-dir '{_to_wsl_path(out_keep)}' --run-id race-keep-01"
+    )
+    proc_keep = subprocess.run(
+        ["bash", "-c", cmd_keep],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_keep.returncode == 1
+    outcome_keep = json.loads(
+        (out_keep / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_keep["outcome"] == "failed"
+    assert "still present after colab stop" in outcome_keep["why"]
+
+    # 2. Session listed as `[?]` on server after local session was removed by `colab stop` -> fails
+    env_orphan = fake_colab.setup_fake_colab_environment(
+        tmp_path / "orphan", neighbour_sessions=[]
+    )
+    out_orphan = tmp_path / "out_orphan"
+    cmd_orphan = (
+        f"export PATH='{_to_wsl_path(env_orphan['fake_bin'])}:{_to_wsl_path(env_orphan['sentinel_bin'])}':\"$PATH\"; "
+        f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_orphan['state_dir'])}'; "
+        f"export COLAB_LOCK_DIR='{_to_wsl_path(env_orphan['colab_locks_dir'])}'; "
+        f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'orphan.lock')}'; "
+        f"export FAKE_COLAB_ORPHAN_ON_STOP=1; "
+        f"bash '{wsl_launch}' --session-smoke --out-dir '{_to_wsl_path(out_orphan)}' --run-id race-orphan-01"
+    )
+    proc_orphan = subprocess.run(
+        ["bash", "-c", cmd_orphan],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_orphan.returncode == 1
+    outcome_orphan = json.loads(
+        (out_orphan / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_orphan["outcome"] == "failed"
+    assert "[?]" in outcome_orphan["why"]
+
+    # 3. `[colab]` informational prefix lines (pruned stale session / auto-update notice) do not break session-smoke
+    env_prefix = fake_colab.setup_fake_colab_environment(
+        tmp_path / "prefix", neighbour_sessions=[]
+    )
+    out_prefix = tmp_path / "out_prefix"
+    cmd_prefix = (
+        f"export PATH='{_to_wsl_path(env_prefix['fake_bin'])}:{_to_wsl_path(env_prefix['sentinel_bin'])}':\"$PATH\"; "
+        f"export FAKE_COLAB_STATE_DIR='{_to_wsl_path(env_prefix['state_dir'])}'; "
+        f"export COLAB_LOCK_DIR='{_to_wsl_path(env_prefix['colab_locks_dir'])}'; "
+        f"export RDLAB_OPEN_LOCK='{_to_wsl_path(tmp_path / 'prefix.lock')}'; "
+        f"export FAKE_COLAB_SESSIONS_PREFIX_LINE='[colab] Pruned 1 stale local session(s).'; "
+        f"bash '{wsl_launch}' --session-smoke --out-dir '{_to_wsl_path(out_prefix)}' --run-id prefix-ok-01"
+    )
+    proc_prefix = subprocess.run(
+        ["bash", "-c", cmd_prefix],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_prefix.returncode == 0, f"stderr={proc_prefix.stderr}"
+    outcome_prefix = json.loads(
+        (out_prefix / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_prefix["outcome"] == "ok"
+
+
+def test_real_service_assumptions_doc_table_and_line_citations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md` row counts, required numbers, and `path:line` citations."""
+    assumptions_md = SCRIPTS_COLAB_DIR / "REAL_SERVICE_ASSUMPTIONS.md"
+    assert assumptions_md.is_file()
+    text = assumptions_md.read_text(encoding="utf-8")
+
+    # Verify required constants and arithmetic appear in REAL_SERVICE_ASSUMPTIONS.md
+    for required_token in (
+        "49,451,597,039",
+        "46.06 GiB",
+        "797.4",
+        "797 s",
+        "2,779,391,889",
+        "2,779,228,374",
+        "11,117,240,526",
+        "69,654,163,200",
+        "VM_DISK_INSUFFICIENT",
+    ):
+        assert required_token in text, f"Missing {required_token!r} in REAL_SERVICE_ASSUMPTIONS.md"
+
+    table_rows = [
+        ln
+        for ln in text.splitlines()
+        if re.match(r"^\|\s*\d+\s*\|", ln.strip())
+    ]
+    assert len(table_rows) == 20
+    enforced_rows = [ln for ln in table_rows if "**Fake now enforces**" in ln]
+    stub_rows = [ln for ln in table_rows if "**Left for the stub**" in ln]
+    assert len(enforced_rows) == 18
+    assert len(stub_rows) == 2
+
+    # Verify every `path:line` or `path:start-end` citation in REAL_SERVICE_ASSUMPTIONS.md is valid
+    citations = re.findall(
+        r"`((?:scripts|tests|src)/[A-Za-z0-9_./-]+):(\d+)(?:-(\d+))?`", text
+    )
+    assert len(citations) >= 25
+    for rel_path, start_s, end_s in citations:
+        full_p = REPO_ROOT / rel_path
+        assert full_p.is_file(), f"Cited path does not exist: {rel_path}"
+        line_count = len(full_p.read_text(encoding="utf-8").splitlines())
+        start_ln = int(start_s)
+        end_ln = int(end_s) if end_s else start_ln
+        assert 1 <= start_ln <= end_ln <= line_count, (
+            f"Invalid line range {rel_path}:{start_s}-{end_s} (file has {line_count} lines)"
+        )
+
+    # Also exercise edge branches in vm_judges.py disk preflight and run_gate for 100% patch coverage
+    assert vm_judges.resolve_content_dir(tmp_path) == tmp_path
+    monkeypatch.delenv("RDLAB_VM_CONTENT_DIR", raising=False)
+    assert vm_judges.resolve_content_dir() == Path("/content")
+
+    # Receipts with `files[*].bytes` fallback and a malformed JSON file
+    fallback_rec = tmp_path / "fallback_receipts"
+    fallback_rec.mkdir(parents=True, exist_ok=True)
+    for idx in range(5):
+        (fallback_rec / f"o__r{idx}.sha256.json").write_text(
+            json.dumps({"files": {"w.bin": {"bytes": 10_000_000_000}}}) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    (fallback_rec / "z__bad.sha256.json").write_text("{bad json", encoding="utf-8")
+    fb_res = vm_judges.compute_required_vm_disk_bytes(fallback_rec)
+    assert fb_res["weights_total_bytes"] == 50_000_000_000
+
+    # `main(["--step", "gate", ...])` refusal writing status.json directly on low disk
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "gate_content"))
+    monkeypatch.setenv("FAKE_COLAB_DISK_FREE_BYTES", "1000")
+    gate_status = tmp_path / "gate_refused_status.json"
+    rc_gate = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            str(tmp_path / "gate_content" / "rdlab_items" / "items.jsonl"),
+            "--hf-home",
+            str(tmp_path / "gate_content" / "hf_home"),
+            "--status-file",
+            str(gate_status),
+        ]
+    )
+    assert rc_gate == 2
+    gate_doc = json.loads(gate_status.read_text(encoding="utf-8"))
+    assert gate_doc["step"] == "gate"
+    assert gate_doc["rc"] == 2
+    assert gate_doc["failure_class"] == "VM_DISK_INSUFFICIENT"
+
+
 

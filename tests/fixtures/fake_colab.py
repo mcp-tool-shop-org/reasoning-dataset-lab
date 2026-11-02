@@ -414,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
             sid = s.get("session_id", "unknown")
             gpu = s.get("gpu", "CPU")
             rendered = row_tpl.format(sid=sid, gpu=gpu)
-            if enforce_shape:
+            if enforce_shape and sid != "?":
                 masked = mask_session_line_shape(rendered, target_session=sid)
                 if masked != SESSION_ROW_SHAPE:
                     sys.stderr.write(
@@ -456,7 +456,36 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"Remote path must be under /content/: {dst}\n")
             return 1
         vm_dst = vm_fs / dst.removeprefix("/content/")
-        vm_dst.parent.mkdir(parents=True, exist_ok=True)
+        if not Path(src).is_file():
+            print(f"[colab] Local file '{src}' not found.")
+            return 1
+        max_path_len = int(os.environ.get("FAKE_COLAB_MAX_PATH_LEN", "1024"))
+        if len(dst) > max_path_len or any(
+            len(part) > 255 for part in dst.strip("/").split("/") if part
+        ):
+            print(
+                f"[colab] Upload failed: 400 Client Error: Bad Request (path too long) for url: "
+                f"https://8080-m-s-fake-{sid}.prod.r.colab.dev/api/contents/{dst.lstrip('/')}?"
+                f"authuser=0&colab-runtime-proxy-token=FAKE_PROXY_SECRET_777"
+            )
+            return 1
+        max_upload_bytes = int(
+            os.environ.get("FAKE_COLAB_MAX_UPLOAD_BYTES", str(100 * 1024 * 1024))
+        )
+        if Path(src).stat().st_size > max_upload_bytes:
+            print(
+                f"[colab] Upload failed: 413 Client Error: Payload Too Large for url: "
+                f"https://8080-m-s-fake-{sid}.prod.r.colab.dev/api/contents/{dst.lstrip('/')}?"
+                f"authuser=0&colab-runtime-proxy-token=FAKE_PROXY_SECRET_777"
+            )
+            return 1
+        if not vm_dst.parent.is_dir() or vm_dst.is_dir():
+            print(
+                f"[colab] Upload failed: 500 Server Error: Internal Server Error for url: "
+                f"https://8080-m-s-fake-{sid}.prod.r.colab.dev/api/contents/{dst.lstrip('/')}?"
+                f"authuser=0&colab-runtime-proxy-token=FAKE_PROXY_SECRET_777"
+            )
+            return 1
         shutil.copyfile(src, vm_dst)
         record_file_access(state_dir, "upload", src, detail=f"to:{dst}")
         print(f"Uploaded {src} -> {dst}")
@@ -475,11 +504,28 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"Remote path must be under /content/: {src}\n")
             return 1
         vm_src = vm_fs / src.removeprefix("/content/")
-        if not vm_src.is_file():
-            sys.stderr.write(f"Remote file not found: {src}\n")
+        if vm_src.is_dir():
+            sys.stderr.write(
+                f"[colab] Download failed: Cannot download '{src}': path is a directory.\n"
+            )
             return 1
-        Path(dst).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(vm_src, dst)
+        if not vm_src.is_file():
+            sys.stderr.write(
+                f"[colab] Download failed: File or directory not found: {src}\n"
+            )
+            return 1
+        dst_path = Path(dst)
+        if not dst_path.parent.is_dir():
+            sys.stderr.write(
+                f"[colab] Download failed: [Errno 2] No such file or directory: '{dst}'\n"
+            )
+            return 1
+        truncate_target = os.environ.get("FAKE_COLAB_TRUNCATE_DOWNLOAD", "").strip()
+        if truncate_target and truncate_target in ("1", vm_src.name, dst_path.name):
+            raw_bytes = vm_src.read_bytes()
+            dst_path.write_bytes(raw_bytes[: min(8, max(1, len(raw_bytes) // 4))])
+        else:
+            shutil.copyfile(vm_src, dst_path)
         record_file_access(state_dir, "download", dst, detail=f"from:{src}")
         print(f"Downloaded {src} -> {dst}")
         return 0
@@ -514,31 +560,87 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"Invalid --timeout={timeout_raw}\n")
             return 2
 
-        exec_env = os.environ.copy()
-        exec_env.setdefault("RDLAB_STATUS_FILE", str(vm_fs / "status.json"))
+        session_env_file = state_dir / f"session_env_{sid}.json"
+        persisted_env: dict[str, str] = {}
+        if session_env_file.is_file():
+            try:
+                persisted_env = json.loads(
+                    session_env_file.read_text(encoding="utf-8")
+                )
+            except Exception:
+                persisted_env = {}
+
         for kv in parsed_opts.get("--env", []):
             if "=" not in kv:
                 sys.stderr.write(f"Invalid --env value (expected KEY=VALUE): {kv}\n")
                 return 2
             k, v = kv.split("=", 1)
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
+                sys.stderr.write(f"Invalid --env variable name: {k}\n")
+                return 2
+            persisted_env[k] = v
+
+        session_env_file.write_text(
+            json.dumps(persisted_env, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+        exec_env = os.environ.copy()
+        for rig_only_key in (
+            "RDLAB_ITEMS_FILE",
+            "RDLAB_RECEIPTS_DIR",
+            "RDLAB_OUT_DIR",
+            "RDLAB_REPO_TAR",
+            "RDLAB_RECEIPTS_TAR",
+            "RDLAB_RESUME_TAR",
+            "RDLAB_RUN_DIR",
+            "RDLAB_WORK_DIR",
+            "RDLAB_RESULT_TAR",
+        ):
+            exec_env.pop(rig_only_key, None)
+
+        exec_env["RDLAB_VM_CONTENT_DIR"] = str(vm_fs)
+        exec_env.setdefault("RDLAB_STATUS_FILE", str(vm_fs / "status.json"))
+        exec_env.setdefault(
+            "RDLAB_ITEMS_FILE", str(vm_fs / "rdlab_items" / "items.jsonl")
+        )
+        exec_env.setdefault(
+            "FAKE_COLAB_DISK_FREE_BYTES",
+            os.environ.get("FAKE_COLAB_DISK_FREE_BYTES", "120000000000"),
+        )
+        for k, v in persisted_env.items():
+            mapped_v = v
             if v.startswith("/content/"):
-                v = str(vm_fs / v.removeprefix("/content/"))
+                mapped_v = str(vm_fs / v.removeprefix("/content/"))
             elif v == "/content":
-                v = str(vm_fs)
-            exec_env[k] = v
+                mapped_v = str(vm_fs)
+            exec_env[k] = mapped_v
 
         sleep_s = float(os.environ.get("FAKE_COLAB_EXEC_SLEEP", "0"))
         step = exec_env.get("RDLAB_STEP", "run")
+        session_cells_file = state_dir / f"session_cells_{sid}.json"
+        prior_cells: list[dict[str, Any]] = []
+        if session_cells_file.is_file():
+            try:
+                prior_cells = json.loads(
+                    session_cells_file.read_text(encoding="utf-8")
+                )
+            except Exception:
+                prior_cells = []
+
         try:
             if step == "run" and sleep_s > 0:
                 time.sleep(sleep_s)
                 sys.stderr.write(f"Execution timed out after {timeout_s}s\n")
                 return 124
             kernel_code = (
-                "import pathlib, sys; "
+                "import os, pathlib, sys; "
                 "sys.argv = ['colab_kernel_launcher.py', '-f', '/tmp/kernel-fake.json']; "
                 f"src = pathlib.Path({str(py_path.resolve())!r}).read_text(encoding='utf-8'); "
-                "ns = {'__name__': '__main__'}; "
+                "ns = {'__name__': '__main__', '_PRIOR_EXEC_COUNT': "
+                f"{len(prior_cells)!r}"
+                "}; "
                 "exec(compile(src, '<cell>', 'exec'), ns); "
                 "rc = ns.get('CELL_EXIT_CODE', 0); "
                 "raise SystemExit(int(rc) if isinstance(rc, int) else 0)"
@@ -554,6 +656,20 @@ def main(argv: list[str] | None = None) -> int:
         except subprocess.TimeoutExpired:
             sys.stderr.write(f"Execution timed out after {timeout_s}s\n")
             return 124
+
+        prior_cells.append(
+            {
+                "step": step,
+                "py_file": str(py_path),
+                "env": dict(persisted_env),
+                "rc": int(proc.returncode),
+            }
+        )
+        session_cells_file.write_text(
+            json.dumps(prior_cells, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
 
         status_env = exec_env.get("RDLAB_STATUS_FILE")
         if os.environ.get("FAKE_COLAB_DELETE_STATUS_FILE") == "1":
@@ -594,11 +710,27 @@ def main(argv: list[str] | None = None) -> int:
         stopped_file = state_dir / "stopped_sessions.jsonl"
         with stopped_file.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps({"session_id": sid, "ts": time.time()}) + "\n")
-        if os.environ.get("FAKE_COLAB_KEEP_SESSION_ON_STOP") != "1":
+        if os.environ.get("FAKE_COLAB_ORPHAN_ON_STOP") == "1":
+            sessions = [
+                {"session_id": "?", "gpu": s.get("gpu", "CPU")}
+                if s.get("session_id") == sid
+                else s
+                for s in sessions
+            ]
+            sessions_file.write_text(
+                json.dumps(sessions), encoding="utf-8", newline="\n"
+            )
+        elif os.environ.get("FAKE_COLAB_KEEP_SESSION_ON_STOP") != "1":
             sessions = [s for s in sessions if s.get("session_id") != sid]
             sessions_file.write_text(
                 json.dumps(sessions), encoding="utf-8", newline="\n"
             )
+            for state_f in (
+                state_dir / f"session_env_{sid}.json",
+                state_dir / f"session_cells_{sid}.json",
+            ):
+                if state_f.is_file():
+                    state_f.unlink()
         print(f"Stopped session [{sid}]")
         return 0
 

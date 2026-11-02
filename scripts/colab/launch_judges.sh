@@ -548,6 +548,10 @@ stop_all() {
       RUN_OUTCOME="failed"
       RUN_WHY="session $S still present after colab stop"
       exit_code=1
+    elif printf '%s\n' "$POST_SESSIONS" | grep -Eq '^\[\?\]' && ! printf '%s\n' "$PRE_SESSIONS" | grep -Eq '^\[\?\]'; then
+      RUN_OUTCOME="failed"
+      RUN_WHY="session $S still present as [?] on server after colab stop"
+      exit_code=1
     fi
   elif [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]]; then
     rm -f "$LOCK_DIR/$S.lock"
@@ -788,14 +792,21 @@ if ! printf '%s\n' "$MID_SESSIONS" | grep -q "^\[$S\]"; then
   exit 1
 fi
 
-GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=gate -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || {
+GATE_RC=0
+GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=gate -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
+if [[ "$GATE_RC" -ne 0 ]] || ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
   flock -u 9 || true
-  RUN_WHY="VM liveness gate failed on session $S"
-  exit 1
-}
-if ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
-  flock -u 9 || true
-  RUN_WHY="VM liveness gate did not print VM_GATE_OK on session $S"
+  if printf '%s\n' "$GATE_OUT" | grep -q 'VM_DISK_INSUFFICIENT'; then
+    GATE_REASON="$(printf '%s\n' "$GATE_OUT" | grep -m1 'VM_DISK_INSUFFICIENT' || true)"
+    RUN_WHY="VM gate refused on session $S: $GATE_REASON"
+    printf '%s\n' "$GATE_REASON" >&2
+    exit 2
+  fi
+  if [[ "$GATE_RC" -ne 0 ]]; then
+    RUN_WHY="VM liveness gate failed on session $S"
+  else
+    RUN_WHY="VM liveness gate did not print VM_GATE_OK on session $S"
+  fi
   exit 1
 fi
 flock -u 9 || true
@@ -819,11 +830,23 @@ rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$OUT_DIR/.rig
 ) </dev/null >/dev/null 2>&1 9>&- &
 WATCHDOG_PID="$!"
 
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
+timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  RUN_WHY="colab upload failed for /content/repo_bundle.tar.gz on session $S"
+  exit 1
+}
+timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  RUN_WHY="colab upload failed for /content/receipts_bundle.tar.gz on session $S"
+  exit 1
+}
+timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  RUN_WHY="colab upload failed for /content/rdlab_items/items.jsonl on session $S"
+  exit 1
+}
 if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG"
+  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    RUN_WHY="colab upload failed for /content/resume_state.tar.gz on session $S"
+    exit 1
+  }
 fi
 cleanup_stage
 
