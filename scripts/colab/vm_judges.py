@@ -166,7 +166,7 @@ def _ensure_repo_imports(repo_dir: Path | None = None) -> None:
     verify_snapshot_against_receipt = _verify_snapshot_against_receipt
 
 
-if os.environ.get("RDLAB_STEP") != "gate":
+if os.environ.get("RDLAB_STEP") not in ("gate", "probe"):
     try:
         _ensure_repo_imports()
     except ModuleNotFoundError:
@@ -184,6 +184,29 @@ PYYAML_SDIST_SHA256 = (
 )
 REQUIRED_PYTHON_VERSION = "3.15"
 CU132_INDEX_URL = "https://download.pytorch.org/whl/cu132"
+SUBPROCESS_TAIL_BYTES = 4096
+
+PROBE_WALL_SECONDS = 240
+PROBE_EXEC_TIMEOUT_SECONDS = 270
+PROBE_RIG_WALL_SECONDS = 300
+PROBE_CAP_UNITS = 0.01
+PROBE_CURL_BYTE_RANGE = "0-5242879"
+PROBE_CURL_WRITE_OUT = "%{http_code} %{size_download} %{time_total}"
+PROBE_HF_RESOLVE_URL = (
+    "https://huggingface.co/flowaicom/Flow-Judge-v0.1/resolve/"
+    "b7a47acd7c86e981145168e4dea1bef7d84a0894/tokenizer.json"
+)
+PROBE_PYYAML_SDIST_URL = (
+    "https://files.pythonhosted.org/packages/05/8e/"
+    "961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz"
+)
+PROBE_PYTORCH_WHEEL_URL = (
+    "https://download.pytorch.org/whl/cu132/"
+    "torch-2.14.1%2Bcu132-cp315-cp315-manylinux_2_28_x86_64.whl"
+)
+PROBE_THROWAWAY_PY_DIR = Path("/tmp/probe-py")
+PROBE_THROWAWAY_PY_BIN_DIR = Path("/tmp/probe-py-bin")
+PROBE_THROWAWAY_UV_CACHE_DIR = Path("/tmp/probe-uv-cache")
 
 TIME_ONE_WALL_SECONDS = 1500
 TIME_ONE_CAP_UNITS = 2.5
@@ -197,9 +220,11 @@ FORBIDDEN_LOG_KEY_MARKERS: tuple[str, ...] = (
 )
 
 HEX64_LOWER_RE = re.compile(r"^[0-9a-f]{64}$")
-PROXY_TOKEN_RE = re.compile(r"colab-runtime-proxy-token=[^\s\"'&;]+")
+PROXY_TOKEN_RE = re.compile(
+    r"colab-runtime-proxy-token=(?!\[REDACTED\])[^\s\"'&;,)\]}]+"
+)
 UNREDACTED_PROXY_TOKEN_RE = re.compile(
-    r"colab-runtime-proxy-token=(?!\[REDACTED\])[^\s\"'&;]+"
+    r"colab-runtime-proxy-token=(?!\[REDACTED\])[^\s\"'&;,)\]}]+"
 )
 BEARER_TOKEN_RE = re.compile(r"(Bearer\s+)(?!\[REDACTED\])[A-Za-z0-9._~+/=-]+")
 OAUTH_YA29_RE = re.compile(r"\bya29\.[A-Za-z0-9._-]+")
@@ -208,9 +233,11 @@ OAUTH_KV_RE = re.compile(
     r'("?(?:access_token|refresh_token|id_token|client_secret|oauth_token)"?\s*[:=]\s*"?)(?!\[REDACTED\])[^\s"\',;}]+'
 )
 JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b")
-HF_TOKEN_RE = re.compile(r"\bhf_(?!\[REDACTED\])[A-Za-z0-9]{10,}\b")
+HF_TOKEN_RE = re.compile(
+    r"\bhf_(?!\[REDACTED\]|(?:home|cache|low|match)\b)[A-Za-z0-9]+\b"
+)
 HF_ENV_RE = re.compile(
-    r"\b(HF_TOKEN|HUGGING_FACE_HUB_TOKEN)=(?!\[REDACTED\])[^\s\"';]+"
+    r"\b(HF_TOKEN(?:_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)=(?!\[REDACTED\])[^\s\"';]+"
 )
 WORD_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
@@ -234,7 +261,7 @@ class RefusalError(RuntimeError):
     """Hard-stop refusal with a structured failure class."""
 
     def __init__(self, failure_class: str, message: str) -> None:
-        super().__init__(f"{failure_class}: {message}")
+        RuntimeError.__init__(self, f"{failure_class}: {message}")
         self.failure_class = failure_class
         self.detail = message
 
@@ -279,6 +306,227 @@ def scrub_log_file_in_place(path: Path) -> None:
     scrubbed = scrub_log_text(raw)
     if scrubbed != raw:
         path.write_text(scrubbed, encoding="utf-8", newline="\n")
+
+
+_ACTIVE_VM_LOG_PATH: Path | None = None
+
+
+def _scrub_and_tail(
+    text: str | bytes | None,
+    max_bytes: int = SUBPROCESS_TAIL_BYTES,
+) -> str:
+    """Scrub token patterns first, then truncate to the last `max_bytes` (~4 KB), and scrub again."""
+    if not text:
+        return ""
+    if isinstance(text, bytes):
+        decoded = text.decode("utf-8", errors="replace")
+    else:
+        decoded = str(text)
+    scrubbed = scrub_log_text(decoded)
+    encoded = scrubbed.encode("utf-8", errors="replace")
+    if len(encoded) > max_bytes:
+        scrubbed = encoded[-max_bytes:].decode("utf-8", errors="ignore")
+    return scrub_log_text(scrubbed)
+
+
+class VmSubprocessResult:
+    """Captured VM subprocess execution result with scrubbed ~4 KB stdout/stderr tails."""
+
+    def __init__(
+        self,
+        *,
+        cmd: Sequence[str],
+        returncode: int,
+        stdout: str,
+        stderr: str,
+        stdout_tail: str,
+        stderr_tail: str,
+        duration_seconds: float,
+    ) -> None:
+        self.cmd = [str(part) for part in cmd]
+        self.returncode = int(returncode)
+        self.stdout = stdout
+        self.stderr = stderr
+        self.stdout_tail = stdout_tail
+        self.stderr_tail = stderr_tail
+        self.duration_seconds = round(float(duration_seconds), 6)
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "cmd": [scrub_log_text(str(part)) for part in self.cmd],
+            "exit_code": self.returncode,
+            "rc": self.returncode,
+            "duration_seconds": self.duration_seconds,
+            "stdout": self.stdout_tail,
+            "stderr": self.stderr_tail,
+            "stdout_tail": self.stdout_tail,
+            "stderr_tail": self.stderr_tail,
+        }
+
+
+class VmSubprocessError(RefusalError, subprocess.CalledProcessError):
+    """Subprocess failure on the VM carrying scrubbed ~4 KB stdout and stderr tails."""
+
+    def __init__(
+        self,
+        cmd: Sequence[str],
+        returncode: int,
+        stdout_tail: str,
+        stderr_tail: str,
+        *,
+        failure_class: str = "VM_SUBPROCESS_FAILED",
+        duration_seconds: float = 0.0,
+    ) -> None:
+        cmd_list = [scrub_log_text(str(part)) for part in cmd]
+        scrubbed_out = _scrub_and_tail(stdout_tail)
+        scrubbed_err = _scrub_and_tail(stderr_tail)
+        subprocess.CalledProcessError.__init__(
+            self,
+            returncode=int(returncode),
+            cmd=cmd_list,
+            output=scrubbed_out,
+            stderr=scrubbed_err,
+        )
+        cmd_str = " ".join(cmd_list)
+        detail_parts = [f"cmd={cmd_str!r} exited with rc={int(returncode)}"]
+        if scrubbed_err.strip():
+            detail_parts.append(f"stderr_tail={scrubbed_err.strip()}")
+        if scrubbed_out.strip():
+            detail_parts.append(f"stdout_tail={scrubbed_out.strip()}")
+        RefusalError.__init__(self, failure_class, "; ".join(detail_parts))
+        self.stdout_tail = scrubbed_out
+        self.stderr_tail = scrubbed_err
+        self.duration_seconds = round(float(duration_seconds), 6)
+
+    def to_failure_record(self) -> dict[str, Any]:
+        return {
+            "cmd": [scrub_log_text(str(part)) for part in self.cmd],
+            "exit_code": int(self.returncode),
+            "rc": int(self.returncode),
+            "returncode": int(self.returncode),
+            "duration_seconds": self.duration_seconds,
+            "stdout_tail": self.stdout_tail,
+            "stderr_tail": self.stderr_tail,
+        }
+
+
+def run_vm_subprocess(
+    cmd: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | str | None = None,
+    timeout: float | None = None,
+    check: bool = True,
+    failure_class: str = "VM_SUBPROCESS_FAILED",
+    log_path: Path | None = None,
+    log_output: bool = True,
+) -> VmSubprocessResult:
+    """Single helper routing every VM subprocess call with stdout/stderr capture and ~4 KB scrubbed tails."""
+    cmd_list = [str(part) for part in cmd]
+    t0 = time.monotonic()
+    raw_out = ""
+    raw_err = ""
+    rc = 0
+    try:
+        proc = subprocess.run(
+            cmd_list,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            env=dict(env) if env is not None else None,
+            cwd=str(cwd) if cwd is not None else None,
+            timeout=timeout,
+            check=False,
+        )
+        rc = int(proc.returncode)
+        raw_out = proc.stdout or ""
+        raw_err = proc.stderr or ""
+    except subprocess.CalledProcessError as exc:
+        rc = int(exc.returncode) if exc.returncode else 2
+        raw_out = (
+            exc.stdout.decode("utf-8", errors="replace")
+            if isinstance(exc.stdout, bytes)
+            else str(exc.stdout or "")
+        )
+        raw_err = (
+            exc.stderr.decode("utf-8", errors="replace")
+            if isinstance(exc.stderr, bytes)
+            else str(exc.stderr or "")
+        )
+    except subprocess.TimeoutExpired as exc:
+        rc = 124
+        out_part = (
+            exc.stdout.decode("utf-8", errors="replace")
+            if isinstance(exc.stdout, bytes)
+            else str(exc.stdout or "")
+        )
+        err_part = (
+            exc.stderr.decode("utf-8", errors="replace")
+            if isinstance(exc.stderr, bytes)
+            else str(exc.stderr or "")
+        )
+        raw_out = out_part
+        raw_err = (
+            f"{err_part}\nsubprocess timed out after {timeout}s".strip()
+            if err_part
+            else f"subprocess timed out after {timeout}s"
+        )
+    except OSError as exc:
+        rc = 127
+        raw_out = ""
+        raw_err = f"{type(exc).__name__}: {exc}"
+
+    duration_s = max(0.0, time.monotonic() - t0)
+    stdout_tail = _scrub_and_tail(raw_out)
+    stderr_tail = _scrub_and_tail(raw_err)
+    result = VmSubprocessResult(
+        cmd=cmd_list,
+        returncode=rc,
+        stdout=scrub_log_text(raw_out),
+        stderr=scrub_log_text(raw_err),
+        stdout_tail=stdout_tail,
+        stderr_tail=stderr_tail,
+        duration_seconds=duration_s,
+    )
+
+    eff_log = log_path if log_path is not None else _ACTIVE_VM_LOG_PATH
+    if eff_log is not None and (log_output or rc != 0):
+        try:
+            eff_log.parent.mkdir(parents=True, exist_ok=True)
+            cmd_scrubbed = scrub_log_text(" ".join(cmd_list))
+            with eff_log.open("a", encoding="utf-8", newline="\n") as lfh:
+                lfh.write(
+                    f"VM_SUBPROCESS cmd={json.dumps(cmd_scrubbed)} rc={rc} duration_s={duration_s:.6f}\n"
+                )
+                if stdout_tail:
+                    lfh.write(
+                        f"VM_SUBPROCESS_STDOUT_TAIL: {json.dumps(stdout_tail)}\n"
+                    )
+                if stderr_tail:
+                    lfh.write(
+                        f"VM_SUBPROCESS_STDERR_TAIL: {json.dumps(stderr_tail)}\n"
+                    )
+        except OSError:
+            pass
+
+    if check and rc != 0:
+        raise VmSubprocessError(
+            cmd_list,
+            rc,
+            stdout_tail,
+            stderr_tail,
+            failure_class=failure_class,
+            duration_seconds=duration_s,
+        )
+    return result
+
+
+def build_vm_uv_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return the exact environment used by both `run_gate` and `sync_judge_venvs` when invoking `uv`."""
+    env = dict(os.environ if base_env is None else base_env)
+    env["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
+    return env
 
 
 def verify_lock_sdist_and_hashes(lock_path: Path) -> dict[str, Any]:
@@ -539,19 +787,18 @@ def sync_judge_venvs(
         }
 
     work_dir.mkdir(parents=True, exist_ok=True)
-    sync_env = os.environ.copy()
-    sync_env["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
+    sync_env = build_vm_uv_env()
 
     if mode == "stub":
         pyyaml_lock_file = work_dir / "pyyaml-sdist.lock.txt"
         pyyaml_lock_file.write_text(pyyaml_req_text, encoding="utf-8", newline="\n")
-        subprocess.run(plan["venv_judge"]["venv_cmd"], env=sync_env, check=True)
-        subprocess.run(pyyaml_build_cmd, env=sync_env, check=True)
+        run_vm_subprocess(plan["venv_judge"]["venv_cmd"], env=sync_env, check=True)
+        run_vm_subprocess(pyyaml_build_cmd, env=sync_env, check=True)
 
     for key in ("venv_judge", "venv_d3"):
         vinfo = plan[key]
-        subprocess.run(vinfo["venv_cmd"], env=sync_env, check=True)
-        subprocess.run(vinfo["sync_cmd"], env=sync_env, check=True)
+        run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)
+        run_vm_subprocess(vinfo["sync_cmd"], env=sync_env, check=True)
 
     return {
         "python_version": REQUIRED_PYTHON_VERSION,
@@ -684,7 +931,11 @@ def delete_uploaded_items_and_record_receipt(
                 p.unlink()
             except OSError:
                 pass
-        proc = subprocess.run(["test", "!", "-e", str(p)], check=False)
+        proc = run_vm_subprocess(
+            ["test", "!", "-e", str(p)],
+            check=False,
+            log_output=False,
+        )
         absent = proc.returncode == 0 and not p.exists()
         if not absent:
             all_absent = False
@@ -1102,16 +1353,15 @@ class VramSampler:
         if self.dryrun:
             return 0
         try:
-            proc = subprocess.run(
+            proc = run_vm_subprocess(
                 [
                     "nvidia-smi",
                     "--query-gpu=memory.used",
                     "--format=csv,noheader,nounits",
                 ],
-                capture_output=True,
-                text=True,
                 timeout=5,
                 check=False,
+                log_output=False,
             )
             if proc.returncode == 0 and proc.stdout.strip():
                 first = proc.stdout.strip().splitlines()[0].strip()
@@ -1342,6 +1592,10 @@ def write_vm_status_file(
     reason: str,
     status: str | None = None,
     failure_class: str | None = None,
+    stdout_tail: str | None = None,
+    stderr_tail: str | None = None,
+    subprocess_record: Mapping[str, Any] | None = None,
+    extra: Mapping[str, Any] | None = None,
 ) -> None:
     """Write VM `status.json` deciding window outcome even if `colab exec` exits 0."""
     if status_path is None:
@@ -1356,6 +1610,15 @@ def write_vm_status_file(
     }
     if failure_class is not None:
         payload["failure_class"] = failure_class
+    if stdout_tail is not None:
+        payload["stdout_tail"] = _scrub_and_tail(stdout_tail)
+    if stderr_tail is not None:
+        payload["stderr_tail"] = _scrub_and_tail(stderr_tail)
+    if subprocess_record is not None:
+        payload["subprocess"] = dict(subprocess_record)
+    if extra is not None:
+        for k, v in extra.items():
+            payload[k] = scrub_log_text(v) if isinstance(v, str) else v
     status_path.write_text(
         json.dumps(payload, indent=2) + "\n",
         encoding="utf-8",
@@ -1370,11 +1633,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="VM-side rdlab Colab judge runner")
     parser.add_argument(
-        "--step", choices=("run", "gate"), default=env_or("RDLAB_STEP", "run")
+        "--step",
+        choices=("run", "gate", "probe"),
+        default=env_or("RDLAB_STEP", "run"),
     )
     parser.add_argument(
         "--mode",
-        choices=("stub", "time-one"),
+        choices=("stub", "time-one", "probe"),
         default=env_or("RDLAB_MODE", "stub"),
     )
     parser.add_argument(
@@ -1425,7 +1690,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--work-dir",
         type=Path,
-        default=env_path("RDLAB_WORK_DIR", Path("/content/rdlab_work")),
+        default=env_path("RDLAB_WORK_DIR", resolve_content_dir() / "rdlab_work"),
     )
     parser.add_argument(
         "--hf-home",
@@ -1563,8 +1828,71 @@ def verify_run_status_file(status_path: Path) -> tuple[int, str]:
     return 0, f"{step}|0|{reason}"
 
 
+def check_vm_python_preflight() -> dict[str, str]:
+    """Check `uv --version`, `shutil.which("uv")`, and `uv python find 3.15` without installing anything.
+
+    Refuses with `VM_PYTHON_UNAVAILABLE` if `uv` is absent or cannot find/provide Python 3.15
+    under the same `build_vm_uv_env()` settings used by `sync_judge_venvs`.
+    """
+    uv_env = build_vm_uv_env()
+    uv_which = shutil.which("uv")
+    uv_path = scrub_log_text(uv_which) if uv_which else "absent"
+    if not uv_which:
+        raise RefusalError(
+            "VM_PYTHON_UNAVAILABLE",
+            f"uv_path={uv_path} uv_version=absent: uv executable is absent from PATH",
+        )
+
+    ver_res = run_vm_subprocess(
+        ["uv", "--version"],
+        env=uv_env,
+        timeout=30.0,
+        check=False,
+        log_output=False,
+    )
+    ver_out = (ver_res.stdout_tail or ver_res.stderr_tail).strip()
+    uv_version = ver_out.splitlines()[0].strip() if ver_out else "absent"
+    if ver_res.returncode != 0:
+        raise VmSubprocessError(
+            ["uv", "--version"],
+            ver_res.returncode,
+            ver_res.stdout_tail,
+            f"uv_path={uv_path} uv_version={uv_version}: {ver_res.stderr_tail or ver_res.stdout_tail}",
+            failure_class="VM_PYTHON_UNAVAILABLE",
+            duration_seconds=ver_res.duration_seconds,
+        )
+
+    find_cmd = ["uv", "python", "find", REQUIRED_PYTHON_VERSION]
+    find_res = run_vm_subprocess(
+        find_cmd,
+        env=uv_env,
+        timeout=30.0,
+        check=False,
+        log_output=False,
+    )
+    py_found = find_res.stdout_tail.strip()
+    if find_res.returncode != 0 or not py_found:
+        err_msg = (find_res.stderr_tail or find_res.stdout_tail or "no output").strip()
+        raise VmSubprocessError(
+            find_cmd,
+            find_res.returncode if find_res.returncode != 0 else 2,
+            find_res.stdout_tail,
+            f"uv_path={uv_path} uv_version={uv_version}: {err_msg}",
+            failure_class="VM_PYTHON_UNAVAILABLE",
+            duration_seconds=find_res.duration_seconds,
+        )
+
+    py_path = py_found.splitlines()[0].strip()
+    return {
+        "uv_path": uv_path,
+        "uv_version": uv_version,
+        "python_version": REQUIRED_PYTHON_VERSION,
+        "python_315": py_path,
+    }
+
+
 def run_gate(args: argparse.Namespace) -> int:
-    """Execute the pre-upload VM gate: create `/content/rdlab_items/`, check disk preflight, and write `status.json`."""
+    """Execute the pre-upload VM gate: create `/content/rdlab_items/`, check disk and Python 3.15 preflight, and write `status.json`."""
     import platform
 
     content_dir = resolve_content_dir()
@@ -1600,6 +1928,7 @@ def run_gate(args: argparse.Namespace) -> int:
             content_dir=content_dir,
             hf_home=hf_home,
         )
+        py_report = check_vm_python_preflight()
     except RefusalError as err:
         if args.status_file is not None:
             try:
@@ -1610,6 +1939,13 @@ def run_gate(args: argparse.Namespace) -> int:
                     reason=f"{err.failure_class}: {err.detail}",
                     status="refused",
                     failure_class=err.failure_class,
+                    stdout_tail=getattr(err, "stdout_tail", None),
+                    stderr_tail=getattr(err, "stderr_tail", None),
+                    subprocess_record=(
+                        err.to_failure_record()
+                        if hasattr(err, "to_failure_record")
+                        else None
+                    ),
                 )
             except OSError:
                 pass
@@ -1623,19 +1959,334 @@ def run_gate(args: argparse.Namespace) -> int:
             rc=0,
             reason="VM_GATE_OK",
             status="ok",
+            extra={
+                "uv_path": py_report["uv_path"],
+                "uv_version": py_report["uv_version"],
+                "python_315": py_report["python_315"],
+            },
         )
     print(
         f"VM_GATE_OK {platform.platform()} "
         f"items_dir={DEFAULT_ITEMS_DIR.as_posix()} "
         f"content_free_bytes={disk_report['content_free_bytes']} "
         f"hf_home_free_bytes={disk_report['hf_home_free_bytes']} "
-        f"required_bytes={disk_report['required_bytes']}",
+        f"required_bytes={disk_report['required_bytes']} "
+        f"uv_path={py_report['uv_path']} "
+        f"uv_version={py_report['uv_version']!r} "
+        f"python_315={py_report['python_315']}",
         flush=True,
     )
     return 0
 
 
+def run_probe(args: argparse.Namespace) -> int:
+    """Execute the standalone CPU `--probe` (`RDLAB_STEP=probe`) and write `/content/probe.json`.
+
+    Never reads or forwards any HF token, never calls `snapshot_download`, `uv venv`, `uv pip`, or a model,
+    and never creates or touches `/content/rdlab_work` or any venv/uv-cache path used by the `run` step.
+    """
+    content_dir = resolve_content_dir()
+    ensure_not_drive_path(content_dir)
+    probe_path = content_dir / "probe.json"
+    ensure_not_drive_path(probe_path)
+
+    throwaway_py_dir = PROBE_THROWAWAY_PY_DIR
+    throwaway_bin_dir = PROBE_THROWAWAY_PY_BIN_DIR
+    throwaway_cache_dir = PROBE_THROWAWAY_UV_CACHE_DIR
+    for d in (throwaway_py_dir, throwaway_bin_dir, throwaway_cache_dir):
+        shutil.rmtree(d, ignore_errors=True)
+
+    probe_env: dict[str, str] = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("HF_TOKEN") and k != "HUGGING_FACE_HUB_TOKEN"
+    }
+    probe_env["UV_CACHE_DIR"] = str(throwaway_cache_dir)
+    probe_env["UV_PYTHON_INSTALL_DIR"] = str(throwaway_py_dir)
+    probe_env["UV_PYTHON_BIN_DIR"] = str(throwaway_bin_dir)
+
+    commands: dict[str, dict[str, Any]] = {}
+
+    def _run_probe_cmd(
+        name: str,
+        cmd: Sequence[str],
+        *,
+        env: Mapping[str, str] | None = None,
+        timeout: float = 60.0,
+    ) -> dict[str, Any]:
+        res = run_vm_subprocess(
+            cmd,
+            env=probe_env if env is None else env,
+            timeout=timeout,
+            check=False,
+            log_output=False,
+        )
+        entry = {
+            "name": name,
+            "cmd": [scrub_log_text(str(part)) for part in cmd],
+            "exit_code": int(res.returncode),
+            "rc": int(res.returncode),
+            "duration_seconds": res.duration_seconds,
+            "stdout": res.stdout_tail,
+            "stderr": res.stderr_tail,
+        }
+        commands[name] = entry
+        return entry
+
+    # 1. uv --version, which uv, and how uv got there (pip show uv location, or "image")
+    uv_ver_rec = _run_probe_cmd("uv_version", ["uv", "--version"])
+    which_uv_rec = _run_probe_cmd("which_uv", ["which", "uv"])
+    pip_uv_rec = _run_probe_cmd("pip_show_uv", ["python3", "-m", "pip", "show", "uv"])
+
+    pip_location = ""
+    if pip_uv_rec["rc"] == 0:
+        for line in pip_uv_rec["stdout"].splitlines():
+            if line.lower().startswith("location:"):
+                pip_location = line.split(":", 1)[1].strip()
+                break
+    uv_which_str = (
+        which_uv_rec["stdout"].strip().splitlines()[0].strip()
+        if which_uv_rec["stdout"].strip()
+        else ""
+    )
+    if pip_location:
+        uv_how = f"pip:{pip_location}"
+    elif which_uv_rec["rc"] == 0 and uv_which_str:
+        uv_how = "image"
+    else:
+        uv_how = "absent"
+
+    # 2. uv python list, uv python find 3.15, and ONE interpreter install check into /tmp/probe-py
+    # Pre-install list/find use UV_CACHE_DIR=/tmp/probe-uv-cache withoutUV_PYTHON_INSTALL_DIR override
+    # so they inspect the VM image's default Python locations without touching any run-step uv cache.
+    pre_uv_env = {
+        k: v
+        for k, v in probe_env.items()
+        if k not in ("UV_PYTHON_INSTALL_DIR", "UV_PYTHON_BIN_DIR")
+    }
+    _run_probe_cmd("uv_python_list", ["uv", "python", "list"], env=pre_uv_env)
+    uv_find_rec = _run_probe_cmd(
+        "uv_python_find_3_15",
+        ["uv", "python", "find", "--no-python-downloads", REQUIRED_PYTHON_VERSION],
+        env=pre_uv_env,
+    )
+
+    dl_meta_rec = _run_probe_cmd(
+        "uv_python_list_3_15_downloads",
+        [
+            "uv",
+            "python",
+            "list",
+            REQUIRED_PYTHON_VERSION,
+            "--only-downloads",
+            "--show-urls",
+            "--output-format",
+            "json",
+        ],
+    )
+    source_url = ""
+    if dl_meta_rec["rc"] == 0 and dl_meta_rec["stdout"].strip():
+        try:
+            dl_items = json.loads(dl_meta_rec["stdout"])
+            if isinstance(dl_items, list):
+                for item in dl_items:
+                    if isinstance(item, dict) and isinstance(item.get("url"), str) and item["url"]:
+                        source_url = item["url"]
+                        break
+        except json.JSONDecodeError:
+            pass
+
+    help_rec = _run_probe_cmd(
+        "uv_python_install_help", ["uv", "python", "install", "--help"]
+    )
+    supports_dry_run = "--dry-run" in (help_rec["stdout"] + "\n" + help_rec["stderr"])
+    if supports_dry_run:
+        install_route = "dry-run"
+        uv_install_rec = _run_probe_cmd(
+            "uv_python_install_3_15",
+            [
+                "uv",
+                "python",
+                "install",
+                "--dry-run",
+                "--no-bin",
+                REQUIRED_PYTHON_VERSION,
+            ],
+            env=probe_env,
+            timeout=120.0,
+        )
+        interpreter_install_count = 0
+    else:
+        install_route = "real_install"
+        uv_install_rec = _run_probe_cmd(
+            "uv_python_install_3_15",
+            ["uv", "python", "install", "-v", "--no-bin", REQUIRED_PYTHON_VERSION],
+            env=probe_env,
+            timeout=120.0,
+        )
+        interpreter_install_count = 1
+
+    if not source_url:
+        combined_install_out = uv_install_rec["stdout"] + "\n" + uv_install_rec["stderr"]
+        m_url = re.search(r"https://[^\s\"'<>]+", combined_install_out)
+        if m_url:
+            source_url = m_url.group(0)
+
+    download_size_bytes = 0
+    if source_url:
+        head_rec = _run_probe_cmd(
+            "curl_python_3_15_head",
+            ["curl", "-sS", "-I", "-L", "--max-time", "30", source_url],
+            timeout=35.0,
+        )
+        for line in head_rec["stdout"].splitlines():
+            if line.lower().startswith("content-length:"):
+                raw_cl = line.split(":", 1)[1].strip()
+                if raw_cl.isdigit():
+                    download_size_bytes = int(raw_cl)
+
+    installed_size_bytes = 0
+    if throwaway_py_dir.is_dir():
+        for p in throwaway_py_dir.rglob("*"):
+            try:
+                if p.is_file() and not p.is_symlink():
+                    installed_size_bytes += int(p.stat().st_size)
+            except OSError:
+                pass
+    if download_size_bytes == 0 and installed_size_bytes > 0:
+        download_size_bytes = installed_size_bytes
+
+    # 3. Every system Python found (python3 --version, python3.X --version for X in 10-15, ls /usr/bin/python3*)
+    found_interpreters: list[str] = []
+    py3_rec = _run_probe_cmd("python3_version", ["python3", "--version"])
+    if py3_rec["rc"] == 0:
+        found_interpreters.append("python3")
+    for minor in range(10, 16):
+        exe_name = f"python3.{minor}"
+        rec = _run_probe_cmd(f"python3_{minor}_version", [exe_name, "--version"])
+        if rec["rc"] == 0:
+            found_interpreters.append(exe_name)
+    _run_probe_cmd("ls_usr_bin_python3", ["sh", "-c", "ls /usr/bin/python3*"])
+
+    # 4. C toolchain for the pyyaml sdist build: gcc --version, cc --version, python3-config --includes,
+    #    and whether Python.h exists for any found interpreter.
+    _run_probe_cmd("gcc_version", ["gcc", "--version"])
+    _run_probe_cmd("cc_version", ["cc", "--version"])
+    _run_probe_cmd("python3_config_includes", ["python3-config", "--includes"])
+    _run_probe_cmd(
+        "find_python_h",
+        [
+            "sh",
+            "-c",
+            "find /usr/include /usr/local/include /tmp/probe-py -name Python.h 2>/dev/null",
+        ],
+    )
+
+    python_h_by_interpreter: dict[str, Any] = {}
+    for interp in found_interpreters:
+        safe_label = interp.replace(".", "_").replace("/", "_")
+        hdr_rec = _run_probe_cmd(
+            f"python_h_{safe_label}",
+            [
+                interp,
+                "-c",
+                (
+                    "import json, os, sysconfig; "
+                    "inc = sysconfig.get_path('include') or ''; "
+                    "hdr = os.path.join(inc, 'Python.h') if inc else ''; "
+                    "print(json.dumps({'include_dir': inc, 'python_h': hdr, 'exists': bool(hdr and os.path.isfile(hdr))}))"
+                ),
+            ],
+        )
+        python_h_by_interpreter[interp] = {
+            "rc": hdr_rec["rc"],
+            "stdout": hdr_rec["stdout"].strip(),
+            "stderr": hdr_rec["stderr"].strip(),
+        }
+
+    for d in (throwaway_py_dir, throwaway_bin_dir, throwaway_cache_dir):
+        shutil.rmtree(d, ignore_errors=True)
+
+    # 5. Reachability and first rate: timed curl fetches with a hard cap of 5 MB each (0-5242879), no token
+    for name, url in (
+        ("curl_huggingface", PROBE_HF_RESOLVE_URL),
+        ("curl_pythonhosted", PROBE_PYYAML_SDIST_URL),
+        ("curl_pytorch_cu132", PROBE_PYTORCH_WHEEL_URL),
+    ):
+        _run_probe_cmd(
+            name,
+            [
+                "curl",
+                "-sS",
+                "-L",
+                "-r",
+                PROBE_CURL_BYTE_RANGE,
+                "-o",
+                "/dev/null",
+                "-w",
+                PROBE_CURL_WRITE_OUT,
+                "--max-time",
+                "60",
+                url,
+            ],
+            timeout=65.0,
+        )
+
+    # 6. df -B1 /content /tmp, nproc, and free -b
+    _run_probe_cmd("df_content_tmp", ["df", "-B1", "/content", "/tmp"])
+    _run_probe_cmd("nproc", ["nproc"])
+    _run_probe_cmd("free_b", ["free", "-b"])
+
+    # 7. cat /etc/os-release and uname -a
+    _run_probe_cmd("os_release", ["cat", "/etc/os-release"])
+    _run_probe_cmd("uname_a", ["uname", "-a"])
+
+    scrubbed_route = scrub_log_text(install_route)
+    scrubbed_source_url = scrub_log_text(source_url)
+    probe_doc: dict[str, Any] = {
+        "step": "probe",
+        "status": "ok",
+        "rc": 0,
+        "python_315_install": {
+            "route": scrubbed_route,
+            "download_size_bytes": int(download_size_bytes),
+            "installed_size_bytes": int(installed_size_bytes),
+            "source_url": scrubbed_source_url,
+            "install_dir": str(throwaway_py_dir),
+            "bin_dir": str(throwaway_bin_dir),
+            "uv_cache_dir": str(throwaway_cache_dir),
+            "interpreter_install_count": interpreter_install_count,
+            "rc": uv_install_rec["rc"],
+            "duration_seconds": uv_install_rec["duration_seconds"],
+        },
+        "uv": {
+            "version": uv_ver_rec["stdout"].strip(),
+            "which": uv_which_str or "absent",
+            "how_installed": scrub_log_text(uv_how),
+            "pip_show_location": scrub_log_text(pip_location),
+            "python_find_3_15_rc": uv_find_rec["rc"],
+            "python_install_3_15_route": scrubbed_route,
+            "python_install_3_15_mode": scrubbed_route,
+            "python_install_3_15_download_size_bytes": int(download_size_bytes),
+            "python_install_3_15_source_url": scrubbed_source_url,
+            "python_install_3_15_dir": str(throwaway_py_dir),
+            "uv_cache_dir": str(throwaway_cache_dir),
+            "python_install_3_15_rc": uv_install_rec["rc"],
+            "python_install_3_15_duration_seconds": uv_install_rec["duration_seconds"],
+        },
+        "found_system_pythons": found_interpreters,
+        "python_h_by_interpreter": python_h_by_interpreter,
+        "commands": commands,
+    }
+    probe_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = scrub_log_text(json.dumps(probe_doc, indent=2, sort_keys=True) + "\n")
+    probe_path.write_text(serialized, encoding="utf-8", newline="\n")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
+    global _ACTIVE_VM_LOG_PATH
+
     try:
         args = parse_args(argv)
     except SystemExit as exc:
@@ -1654,6 +2305,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.step == "gate":
         return run_gate(args)
+    if args.step == "probe":
+        return run_probe(args)
 
     for p in (
         args.repo_dir,
@@ -1675,6 +2328,8 @@ def main(argv: list[str] | None = None) -> int:
     dryrun = bool(args.dryrun or os.environ.get("VM_DRYRUN") == "1")
     current_step = "init"
     deleted_items_receipt: dict[str, Any] | None = None
+    prev_log_path = _ACTIVE_VM_LOG_PATH
+    _ACTIVE_VM_LOG_PATH = vm_log_path
 
     try:
         current_step = "check_upload_path_allowed"
@@ -1784,6 +2439,11 @@ def main(argv: list[str] | None = None) -> int:
             err, "failure_class", getattr(err, "code", "VM_REFUSAL")
         )
         detail = getattr(err, "detail", str(err))
+        err_stdout_tail = getattr(err, "stdout_tail", None)
+        err_stderr_tail = getattr(err, "stderr_tail", None)
+        err_subproc_rec = (
+            err.to_failure_record() if hasattr(err, "to_failure_record") else None
+        )
         if deleted_items_receipt is None and args.items_file is not None:
             try:
                 deleted_items_receipt = delete_uploaded_items_and_record_receipt(
@@ -1791,13 +2451,22 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except Exception:
                 pass
+        for lf in logs_dir.glob("*.log"):
+            scrub_log_file_in_place(lf)
         fail_receipt: dict[str, Any] = {
             "status": "refused",
             "failure_class": str(failure_class),
             "detail": scrub_log_text(str(detail)),
+            "reason": f"{failure_class}: {scrub_log_text(str(detail))}",
             "mode": args.mode,
             "deleted_items_receipt": deleted_items_receipt,
         }
+        if err_stdout_tail is not None:
+            fail_receipt["stdout_tail"] = _scrub_and_tail(err_stdout_tail)
+        if err_stderr_tail is not None:
+            fail_receipt["stderr_tail"] = _scrub_and_tail(err_stderr_tail)
+        if err_subproc_rec is not None:
+            fail_receipt["subprocess"] = err_subproc_rec
         receipt_path.write_text(
             json.dumps(fail_receipt, indent=2) + "\n",
             encoding="utf-8",
@@ -1814,6 +2483,9 @@ def main(argv: list[str] | None = None) -> int:
             reason=f"{failure_class}: {scrub_log_text(str(detail))}",
             status="refused",
             failure_class=str(failure_class),
+            stdout_tail=err_stdout_tail,
+            stderr_tail=err_stderr_tail,
+            subprocess_record=err_subproc_rec,
         )
         sys.stderr.write(f"{failure_class}: {scrub_log_text(str(detail))}\n")
         return 2
@@ -1827,6 +2499,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except Exception:
                 pass
+        for lf in logs_dir.glob("*.log"):
+            scrub_log_file_in_place(lf)
         write_vm_status_file(
             args.status_file,
             step=current_step,
@@ -1835,8 +2509,12 @@ def main(argv: list[str] | None = None) -> int:
             status="refused",
             failure_class="UNEXPECTED_ERROR",
         )
-        sys.stderr.write(f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {exc}\n")
+        sys.stderr.write(
+            f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {scrub_log_text(str(exc))}\n"
+        )
         return 2
+    finally:
+        _ACTIVE_VM_LOG_PATH = prev_log_path
 
 
 def run_kernel_or_cli_entry(argv: list[str] | None = None) -> int:

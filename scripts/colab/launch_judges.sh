@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Per-window Google Colab launcher for the reasoning-dataset-lab five-judge bake-off.
-# Modes: --session-smoke, --stub (CPU), --time-one (A100), --dry, --resume.
+# Modes: --session-smoke, --probe (CPU), --stub (CPU), --time-one (A100), --dry, --resume.
 
 set -euo pipefail
 
@@ -27,10 +27,11 @@ EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--stub] [--time-one] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--receipts-dir DIR] [--cap UNITS]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--receipts-dir DIR] [--cap UNITS]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
+  --probe              Run the read-only CPU VM environment probe (CPU at 0.08/h, wall 300s, cap 0.01)
   --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
   --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
   --dry                Print every colab CLI command in order with resolved arguments and exit
@@ -48,6 +49,11 @@ while [[ $# -gt 0 ]]; do
     --session-smoke)
       SESSION_SMOKE_FLAG=1
       MODE="stub"
+      shift
+      ;;
+    --probe)
+      MODE="probe"
+      SESSION_SMOKE_FLAG=0
       shift
       ;;
     --stub)
@@ -110,6 +116,15 @@ if [[ "$MODE" == "time-one" ]]; then
     EXPLICIT_CAP="2.5"
   fi
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
+elif [[ "$MODE" == "probe" ]]; then
+  CARD="CPU"
+  COLAB_NEW_FLAGS=()
+  WALL_SECONDS="${RDLAB_WALL_SECONDS:-300}"
+  RATE_UNITS_PER_HOUR="0.08"
+  if [[ -z "$EXPLICIT_CAP" ]]; then
+    EXPLICIT_CAP="0.01"
+  fi
+  VRAM_HALT_MIB="0"
 else
   CARD="CPU"
   COLAB_NEW_FLAGS=()
@@ -128,10 +143,17 @@ DOWNLOAD_TIMEOUT_SECONDS="${RDLAB_DOWNLOAD_TIMEOUT_SECONDS:-300}"
 
 # --- Ordered timeout hierarchy derived in one place from WALL_SECONDS ---
 # Order: VM_WALL_SECONDS < EXEC_TIMEOUT_SECONDS < WATCHDOG_SLEEP_SECONDS < RIG_TIMEOUT
-FETCH_MARGIN="${RDLAB_FETCH_MARGIN_SECONDS:-180}"
-EXEC_MARGIN="${RDLAB_EXEC_MARGIN_SECONDS:-60}"
-VM_SELF_STOP_MARGIN="${RDLAB_VM_SELF_STOP_MARGIN_SECONDS:-60}"
-RIG_GRACE_SECONDS="${RDLAB_RIG_GRACE_SECONDS:-5}"
+if [[ "$MODE" == "probe" ]]; then
+  FETCH_MARGIN="${RDLAB_FETCH_MARGIN_SECONDS:-15}"
+  EXEC_MARGIN="${RDLAB_EXEC_MARGIN_SECONDS:-15}"
+  VM_SELF_STOP_MARGIN="${RDLAB_VM_SELF_STOP_MARGIN_SECONDS:-30}"
+  RIG_GRACE_SECONDS="${RDLAB_RIG_GRACE_SECONDS:-0}"
+else
+  FETCH_MARGIN="${RDLAB_FETCH_MARGIN_SECONDS:-180}"
+  EXEC_MARGIN="${RDLAB_EXEC_MARGIN_SECONDS:-60}"
+  VM_SELF_STOP_MARGIN="${RDLAB_VM_SELF_STOP_MARGIN_SECONDS:-60}"
+  RIG_GRACE_SECONDS="${RDLAB_RIG_GRACE_SECONDS:-5}"
+fi
 WATCHDOG_FETCH_TIMEOUT="${RDLAB_WATCHDOG_FETCH_TIMEOUT_SECONDS:-$(( FETCH_MARGIN > 10 ? FETCH_MARGIN - 5 : (FETCH_MARGIN > 0 ? FETCH_MARGIN : 1) ))}"
 
 if [[ "$WALL_SECONDS" -gt "$FETCH_MARGIN" ]]; then
@@ -209,13 +231,15 @@ fi
 
 scrub_stream() {
   sed -E \
-    -e 's/colab-runtime-proxy-token=[^ "'"'"'&;]+/colab-runtime-proxy-token=[REDACTED]/g' \
+    -e 's/colab-runtime-proxy-token=[^ "'"'"'&;,)\]}]+/colab-runtime-proxy-token=[REDACTED]/g' \
     -e 's/(Bearer[[:space:]]+)[A-Za-z0-9._~+\/=-]+/\1[REDACTED]/g' \
     -e 's/ya29\.[A-Za-z0-9._-]+/[REDACTED_OAUTH_TOKEN]/g' \
     -e 's/1\/\/[A-Za-z0-9._-]+/[REDACTED_OAUTH_TOKEN]/g' \
     -e 's/eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}/[REDACTED_JWT]/g' \
-    -e 's/hf_[A-Za-z0-9]{10,}/hf_[REDACTED]/g' \
-    -e 's/(HF_TOKEN|HUGGING_FACE_HUB_TOKEN)=[^ "'"'"';]+/\1=[REDACTED]/g'
+    -e 's/\bhf_(home|cache|low|match)\b/__RDLAB_HF_SAFE_\1__/g' \
+    -e 's/\bhf_[A-Za-z0-9]+\b/hf_[REDACTED]/g' \
+    -e 's/__RDLAB_HF_SAFE_(home|cache|low|match)__/hf_\1/g' \
+    -e 's/(HF_TOKEN(_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)=[^ "'"'"';]+/\1=[REDACTED]/g'
 }
 
 STAGE_DIR="$OUT_DIR/stage"
@@ -236,6 +260,13 @@ build_gate_env_args() {
   if [[ -n "${HF_HOME:-}" ]]; then
     GATE_ENV_ARGS+=(--env "HF_HOME=$HF_HOME")
   fi
+}
+
+build_probe_env_args() {
+  PROBE_ENV_ARGS=(
+    --env "RDLAB_STEP=probe"
+    --env "RDLAB_WALL_SECONDS=$VM_WALL_SECONDS"
+  )
 }
 
 build_exec_env_args() {
@@ -273,7 +304,7 @@ build_exec_env_args() {
 }
 
 if [[ "$DRY_FLAG" == "1" ]]; then
-  if [[ -n "$ITEMS_FILE" ]]; then
+  if [[ "$MODE" != "probe" ]] && [[ -n "$ITEMS_FILE" ]]; then
     "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$SESSION_SMOKE_FLAG" <<'PY'
 import sys
 from pathlib import Path
@@ -299,6 +330,19 @@ PY
     printf 'colab sessions\n'
     printf 'colab stop -s %s\n' "$SESSION_NAME"
     printf 'colab sessions\n'
+    exit 0
+  fi
+  if [[ "$MODE" == "probe" ]]; then
+    build_probe_env_args
+    DRY_PROBE_ENV_STR="${PROBE_ENV_ARGS[*]}"
+    {
+      printf 'colab sessions\n'
+      printf 'colab new -s %s\n' "$SESSION_NAME"
+      printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_PROBE_ENV_STR" "$VM_SCRIPT" "$EXEC_TIMEOUT_SECONDS"
+      printf 'colab download -s %s /content/probe.json %s/probe.json\n' "$SESSION_NAME" "$OUT_DIR"
+      printf 'colab stop -s %s\n' "$SESSION_NAME"
+      printf 'colab sessions\n'
+    } | scrub_stream
     exit 0
   fi
 
@@ -416,9 +460,13 @@ fetch_results_once() {
   if [[ "$fetch_timeout" -gt 0 ]]; then
     eff_timeout="$fetch_timeout"
   fi
-  timeout "$eff_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
-  timeout "$eff_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
-  timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
+  if [[ "$MODE" == "probe" ]]; then
+    timeout "$eff_timeout" colab download -s "$S" "/content/probe.json" "$OUT_DIR/probe.json" </dev/null >/dev/null 2>&1 || true
+  else
+    timeout "$eff_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
+    timeout "$eff_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
+    timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
+  fi
   log_msg "FETCH_DONE session=$S"
   touch "$FETCH_DONE_MARKER"
 }
@@ -678,6 +726,115 @@ if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
   exit 0
 fi
 
+if [[ "$MODE" == "probe" ]]; then
+  for hf_var in $(compgen -e | grep -E '^(HF_TOKEN(_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)$' || true); do
+    unset "$hf_var"
+  done
+  log_msg "PROBE_START id=$RUN_ID session=$SESSION_NAME card=$CARD wall_s=$WALL_SECONDS vm_wall_s=$VM_WALL_SECONDS exec_timeout_s=$EXEC_TIMEOUT_SECONDS rig_timeout_s=$RIG_TIMEOUT rate_uh=$RATE_UNITS_PER_HOUR cap_units=$CAP_UNITS"
+  mkdir -p "$(dirname "$OPEN_LOCK")"
+  exec 9>"$OPEN_LOCK"
+  flock -w 300 9 || {
+    RUN_WHY="failed to acquire open lock $OPEN_LOCK"
+    exit 1
+  }
+  log_msg "LOCK_ACQUIRED lock=$OPEN_LOCK"
+  PRE_SESSIONS="$(run_colab sessions </dev/null || true)"
+  if printf '%s\n' "$PRE_SESSIONS" | grep -Fq "[$SESSION_NAME]"; then
+    flock -u 9 || true
+    RUN_WHY="session $SESSION_NAME already exists in colab sessions; refusing to reuse name"
+    log_msg "SESSION_NAME_IN_USE session=$SESSION_NAME"
+    echo "SESSION_NAME_IN_USE: session [$SESSION_NAME] already exists in colab sessions" >&2
+    exit 1
+  fi
+  if ! run_colab new -s "$SESSION_NAME" </dev/null >/dev/null; then
+    flock -u 9 || true
+    RUN_WHY="colab new failed for $SESSION_NAME"
+    exit 1
+  fi
+  S="$SESSION_NAME"
+  NEW_SUCCEEDED=1
+  mkdir -p "$LOCK_DIR"
+  printf '%s\n' "$MAIN" > "$LOCK_DIR/$S.lock"
+  log_msg "SESSION_LOCK_WRITTEN lock_file=$LOCK_DIR/$S.lock pid=$MAIN"
+  flock -u 9 || true
+  log_msg "LOCK_RELEASED session=$S"
+
+  rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$OUT_DIR/.rig_stopped" "$OUT_DIR/probe.json"
+  (
+    SLEEP_PID=""
+    trap 'if [[ -n "$SLEEP_PID" ]]; then kill "$SLEEP_PID" 2>/dev/null || true; fi; exit 0' TERM INT
+    sleep "$WATCHDOG_SLEEP_SECONDS" &
+    SLEEP_PID="$!"
+    wait "$SLEEP_PID" 2>/dev/null || exit 0
+    SLEEP_PID=""
+    touch "$DEADLINE_MARKER"
+    printf '%s RIG_DEADLINE_EXCEEDED session=%s wall_s=%s fetch_margin_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$WALL_SECONDS" "$FETCH_MARGIN" >> "$CLI_LOG"
+    fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
+    printf '%s WATCHDOG_STOP_SESSION session=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" >> "$CLI_LOG"
+    colab stop -s "$S" </dev/null >/dev/null 2>&1 || true
+    rm -f "$LOCK_DIR/$S.lock"
+    touch "$OUT_DIR/.rig_stopped"
+  ) </dev/null >/dev/null 2>&1 9>&- &
+  WATCHDOG_PID="$!"
+
+  build_probe_env_args
+  EXEC_RC=0
+  timeout --signal=TERM --kill-after=15 "${RIG_TIMEOUT}s" \
+    colab exec -s "$S" "${PROBE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || EXEC_RC=$?
+
+  if [[ -f "$DEADLINE_MARKER" ]]; then
+    if [[ -n "$WATCHDOG_PID" ]]; then
+      wait "$WATCHDOG_PID" 2>/dev/null || true
+      WATCHDOG_PID=""
+    fi
+    rm -f "$DEADLINE_MARKER"
+    EXEC_RC=124
+  fi
+
+  fetch_results_once
+
+  if [[ "$EXEC_RC" -eq 124 ]] || [[ "$EXEC_RC" -eq 137 ]]; then
+    RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
+    exit "$EXEC_RC"
+  fi
+  if [[ "$EXEC_RC" -ne 0 ]]; then
+    RUN_WHY="colab exec probe exited non-zero ($EXEC_RC)"
+    exit "$EXEC_RC"
+  fi
+  if [[ ! -f "$OUT_DIR/probe.json" ]]; then
+    RUN_WHY="probe.json missing after VM probe"
+    exit 1
+  fi
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR/probe.json" "$CLI_LOG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+probe_path = Path(sys.argv[2])
+cli_log = Path(sys.argv[3])
+
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+vm_judges.scrub_log_file_in_place(probe_path)
+vm_judges.scrub_log_file_in_place(cli_log)
+data = json.loads(probe_path.read_text(encoding="utf-8"))
+if data.get("step") != "probe":
+    raise SystemExit("PROBE_INVALID: step != probe")
+vm_judges.verify_rig_logs_and_outputs_clean([probe_path, cli_log], claim_ngram_sha256s=set())
+PY
+  then
+    RUN_WHY="probe.json verification or log guard failed"
+    exit 2
+  fi
+
+  RUN_OUTCOME="probe"
+  RUN_WHY="completed CPU probe for $S"
+  log_msg "PROBE_OK id=$RUN_ID session=$S"
+  exit 0
+fi
+
 log_msg "WINDOW_START id=$RUN_ID mode=$MODE card=$CARD wall_s=$WALL_SECONDS vm_wall_s=$VM_WALL_SECONDS exec_timeout_s=$EXEC_TIMEOUT_SECONDS watchdog_sleep_s=$WATCHDOG_SLEEP_SECONDS rig_timeout_s=$RIG_TIMEOUT rate_uh=$RATE_UNITS_PER_HOUR cap_units=$CAP_UNITS vram_halt_mib=$VRAM_HALT_MIB"
 
 if [[ -z "$ITEMS_FILE" ]]; then
@@ -866,8 +1023,8 @@ GATE_RC=0
 GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
 if [[ "$GATE_RC" -ne 0 ]] || ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
   flock -u 9 || true
-  if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH'; then
-    GATE_REASON="$(printf '%s\n' "$GATE_OUT" | grep -m1 -E 'VM_DISK_INSUFFICIENT|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH' || true)"
+  if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH'; then
+    GATE_REASON="$(printf '%s\n' "$GATE_OUT" | grep -m1 -E 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH' || true)"
     RUN_WHY="VM gate refused on session $S: $GATE_REASON"
     printf '%s\n' "$GATE_REASON" >&2
     exit 2
