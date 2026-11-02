@@ -24,6 +24,7 @@ EXPLICIT_CAP="${RDLAB_CAP_UNITS:-}"
 
 EXPECTED_JUDGE_LOCK_SHA256="608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
 EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
+EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
@@ -254,12 +255,14 @@ if [[ "$RESUME_FLAG" -eq 1 ]] || [[ -f "$OUT_DIR/schedule.json" ]]; then
 fi
 
 build_gate_env_args() {
+  local exp_uv="${RDLAB_EXPECT_UV_VERSION:-$EXPECTED_UV_VERSION}"
   GATE_ENV_ARGS=(
     --env "RDLAB_STEP=gate"
   )
   if [[ -n "${HF_HOME:-}" ]]; then
     GATE_ENV_ARGS+=(--env "HF_HOME=$HF_HOME")
   fi
+  GATE_ENV_ARGS+=(--env "RDLAB_EXPECT_UV_VERSION=$exp_uv")
 }
 
 build_probe_env_args() {
@@ -272,6 +275,7 @@ build_probe_env_args() {
 build_exec_env_args() {
   local j_sha="${RDLAB_JUDGE_LOCK_SHA256:-$EXPECTED_JUDGE_LOCK_SHA256}"
   local d_sha="${RDLAB_D3_LOCK_SHA256:-$EXPECTED_D3_LOCK_SHA256}"
+  local exp_uv="${RDLAB_EXPECT_UV_VERSION:-$EXPECTED_UV_VERSION}"
   EXEC_ENV_ARGS=(
     --env "RDLAB_STEP=run"
     --env "RDLAB_MODE=$MODE"
@@ -279,6 +283,7 @@ build_exec_env_args() {
     --env "RDLAB_VRAM_HALT_MIB=$VRAM_HALT_MIB"
     --env "RDLAB_JUDGE_LOCK_SHA256=$j_sha"
     --env "RDLAB_D3_LOCK_SHA256=$d_sha"
+    --env "RDLAB_EXPECT_UV_VERSION=$exp_uv"
     --env "RDLAB_REPO_DIR=/content/rdlab"
     --env "RDLAB_REPO_TAR=/content/repo_bundle.tar.gz"
     --env "RDLAB_RECEIPTS_DIR=/content/rdlab_receipts"
@@ -1023,8 +1028,8 @@ GATE_RC=0
 GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
 if [[ "$GATE_RC" -ne 0 ]] || ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
   flock -u 9 || true
-  if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH'; then
-    GATE_REASON="$(printf '%s\n' "$GATE_OUT" | grep -m1 -E 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH' || true)"
+  if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH'; then
+    GATE_REASON="$(printf '%s\n' "$GATE_OUT" | grep -m1 -E 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH' || true)"
     RUN_WHY="VM gate refused on session $S: $GATE_REASON"
     printf '%s\n' "$GATE_REASON" >&2
     exit 2

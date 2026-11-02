@@ -148,12 +148,16 @@ def _hermetic_fake_colab_and_uv_env(
     )
     monkeypatch.setenv("PATH", _hermetic_path_for(auto_env))
     monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(auto_env["state_dir"]))
+    monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising=False)
     yield auto_env
     assert not auto_env["sentinel_called"].exists(), (
         "Sentinel real-colab trap fired during test"
     )
     assert not auto_env["sentinel_uv_called"].exists(), (
         "Sentinel real-uv trap fired during test"
+    )
+    assert not auto_env["sentinel_curl_called"].exists(), (
+        "Sentinel real-curl trap fired during test"
     )
 
 
@@ -272,7 +276,13 @@ def test_locks_pin_pyyaml_sdist_and_wheels_only_for_all_others(tmp_path: Path) -
         assert report["pyyaml_hashes"] == [PYYAML_EXPECTED_SDIST_SHA256]
         assert report["pyyaml_distributions"] == ["pyyaml-6.0.3.tar.gz"]
         assert report["non_pyyaml_sdists"] == []
+        assert report["sdists"] == ["pyyaml"]
         assert report["package_count"] >= 50
+
+    assert vm_judges.list_locks_sdists(REPO_ROOT) == {
+        "judge.lock.txt": ["pyyaml"],
+        "d3.lock.txt": ["pyyaml"],
+    }
 
     # Negative check: any non-pyyaml sdist or wrong pyyaml hash must refuse
     bad_lock = tmp_path / "bad.lock.txt"
@@ -3404,6 +3414,7 @@ def test_real_service_assumptions_env_var_classification_table() -> None:
         "RDLAB_STOP_POLL_SLEEP_SECONDS",
         "RDLAB_JUDGE_LOCK_SHA256",
         "RDLAB_D3_LOCK_SHA256",
+        "RDLAB_EXPECT_UV_VERSION",
         "RDLAB_RECEIPTS_DIR",
         "RDLAB_ITEMS_FILE",
         "HF_HOME",
@@ -3671,11 +3682,11 @@ def test_gate_python_315_preflight_refuses_when_uv_absent_or_cannot_provide_315(
     assert "hf_[REDACTED]" in exc_ver.value.detail
     assert "hf_UvBroken123" not in exc_ver.value.detail
 
-    # 4. Direct unit test: `uv python find 3.15` exits 2 with error on stderr
+    # 4. Direct unit test: `uv python find --no-python-downloads cpython-3.15.1-linux-x86_64-gnu` exits 2 and install fails
     def _fake_find_315_fail(cmd: Any, *a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
         cmd_l = list(cmd)
         if cmd_l[:2] == ["uv", "--version"]:
-            return subprocess.CompletedProcess(cmd_l, 0, stdout="uv 0.11.18\n", stderr="")
+            return subprocess.CompletedProcess(cmd_l, 0, stdout="uv 0.13.5\n", stderr="")
         return subprocess.CompletedProcess(
             cmd_l,
             2,
@@ -3703,16 +3714,16 @@ def test_gate_python_315_preflight_refuses_when_uv_absent_or_cannot_provide_315(
     status_doc = json.loads(gate_status.read_text(encoding="utf-8"))
     assert status_doc["step"] == "gate"
     assert status_doc["rc"] == 2
-    assert status_doc["failure_class"] == "VM_PYTHON_UNAVAILABLE"
+    assert status_doc["failure_class"] == "VM_PYTHON_INSTALL_FAILED"
     assert "uv_path=/usr/local/bin/uv" in status_doc["reason"]
-    assert "uv_version=uv 0.11.18" in status_doc["reason"]
+    assert "uv_version=uv 0.13.5" in status_doc["reason"]
     assert "No interpreter found for Python 3.15" in status_doc["reason"]
     assert "hf_[REDACTED]" in status_doc["reason"]
     assert "colab-runtime-proxy-token=[REDACTED]" in status_doc["reason"]
     assert "hf_GateTok555" not in json.dumps(status_doc)
     assert "GateProxy444" not in json.dumps(status_doc)
 
-    # 5. End-to-end launcher test against fake_colab: `uv python find 3.15` fails at gate -> refuses in seconds before any upload
+    # 5. End-to-end launcher test against fake_colab: `uv python find` + install fails at gate -> refuses in seconds before any upload
     monkeypatch.undo()
     env_no315 = fake_colab.setup_fake_colab_environment(
         tmp_path / "env_no315", neighbour_sessions=[]
@@ -3748,7 +3759,7 @@ def test_gate_python_315_preflight_refuses_when_uv_absent_or_cannot_provide_315(
     elapsed = time.monotonic() - t0
     assert elapsed < 15.0
     assert proc_no315.returncode == 2
-    assert "VM_PYTHON_UNAVAILABLE" in proc_no315.stderr
+    assert "VM_PYTHON_INSTALL_FAILED" in proc_no315.stderr
     assert "No interpreter found for Python 3.15" in proc_no315.stderr
     assert "hf_[REDACTED]" in proc_no315.stderr
     assert "hf_GateE2ESecret" not in proc_no315.stderr
@@ -3757,7 +3768,7 @@ def test_gate_python_315_preflight_refuses_when_uv_absent_or_cannot_provide_315(
         (out_no315 / "outcome.draft.json").read_text(encoding="utf-8")
     )
     assert outcome_no315["outcome"] == "failed"
-    assert "VM_PYTHON_UNAVAILABLE" in outcome_no315["why"]
+    assert "VM_PYTHON_INSTALL_FAILED" in outcome_no315["why"]
     assert "hf_GateE2ESecret" not in outcome_no315["why"]
 
     calls_no315 = [
@@ -4105,6 +4116,17 @@ def test_probe_mode_dry_and_live_sequence_no_upload_no_hf_token_scrubs_and_isola
         cmd: Any, *a: Any, **kw: Any
     ) -> subprocess.CompletedProcess[str]:
         cmd_l = [str(x) for x in cmd]
+        if cmd_l[:2] == ["uv", "--version"]:
+            return subprocess.CompletedProcess(
+                cmd_l, 0, stdout="uv 0.13.5\n", stderr=""
+            )
+        if cmd_l[:3] == ["uv", "python", "find"]:
+            return subprocess.CompletedProcess(
+                cmd_l,
+                0,
+                stdout="/usr/local/share/uv/python/cpython-3.15.1-linux-x86_64-gnu/bin/python3.15\n",
+                stderr="",
+            )
         if cmd_l[:2] == ["uv", "venv"]:
             return subprocess.CompletedProcess(
                 cmd_l,
@@ -4151,97 +4173,57 @@ def test_probe_fetch_5mb_hard_cap_when_server_or_curl_ignores_range_and_offers_5
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify the 5 MB (`5,242,880` bytes) cap holds on all three probe fetches when:
-    1. A server ignores `Range` and offers 50 MB (`52,428,800` bytes) without `Content-Length` to real `curl`.
-    2. A fake `curl` ignores `-r`, `--max-filesize`, and `SIGPIPE` and offers 50 MB (`52,428,800` bytes).
-    3. A server returns a small (< 5 MB) payload (`1,234` bytes).
+    1. Shared fake `curl` ignores `Range` and offers 50 MB (`52,428,800` bytes) without `Content-Length` over a pipe.
+    2. A custom fake `curl` ignores `-r`, `--max-filesize`, and `SIGPIPE` and offers 50 MB (`52,428,800` bytes).
+    3. A command returns a small (< 5 MB) payload (`1,234` bytes).
     Each fetch records `bytes_received <= 5,242,880` in `probe.json`.
     """
-    import http.server
     import shutil
-    import threading
 
-    fifty_mb = 50 * 1024 * 1024
     cap_bytes = 5_242_880
-    chunk_64k = b"A" * 65536
 
-    class _IgnoreRange50MBHandler(http.server.BaseHTTPRequestHandler):
-        def do_HEAD(self) -> None:
-            self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.end_headers()
+    probe_content_srv = tmp_path / "probe_srv_content"
+    probe_content_srv.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(probe_content_srv))
+    monkeypatch.setattr(
+        vm_judges, "PROBE_HF_RESOLVE_URL", "https://huggingface.co/fake/hf_50mb.bin"
+    )
+    monkeypatch.setattr(
+        vm_judges, "PROBE_PYYAML_SDIST_URL", "https://files.pythonhosted.org/fake/pyyaml_50mb.tar.gz"
+    )
+    monkeypatch.setattr(
+        vm_judges, "PROBE_PYTORCH_WHEEL_URL", "https://download.pytorch.org/whl/cu132/torch_50mb.whl"
+    )
 
-        def do_GET(self) -> None:
-            # Deliberately ignore Range header and omit Content-Length while offering 50 MB
-            self.send_response(200)
-            self.send_header("Content-Type", "application/octet-stream")
-            self.end_headers()
-            sent = 0
-            try:
-                while sent < fifty_mb:
-                    to_send = min(len(chunk_64k), fifty_mb - sent)
-                    self.wfile.write(chunk_64k[:to_send])
-                    self.wfile.flush()
-                    sent += to_send
-            except (BrokenPipeError, ConnectionResetError, OSError):
-                pass
+    stub_bin = tmp_path / "stub_bin_srv"
+    stub_bin.mkdir(parents=True, exist_ok=True)
+    uv_stub = stub_bin / "uv"
+    uv_stub.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [[ \"$1\" == \"--version\" ]]; then echo 'uv 0.13.5'; exit 0; fi\n"
+        "if [[ \"$1\" == \"python\" && \"$2\" == \"install\" && \"$3\" == \"--help\" ]]; then echo 'Usage: uv python install --dry-run'; exit 0; fi\n"
+        "if [[ \"$1\" == \"python\" && \"$2\" == \"list\" && \"$*\" == *\"--only-downloads\"* ]]; then echo '[{\"url\":\"https://github.com/astral-sh/python-build-standalone/releases/download/20261021/py315.tar.gz\"}]'; exit 0; fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    uv_stub.chmod(0o755)
+    monkeypatch.setenv(
+        "PATH", f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    )
 
-        def log_message(self, format: str, *args: Any) -> None:
-            pass
-
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _IgnoreRange50MBHandler)
-    port = server.server_address[1]
-    srv_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    srv_thread.start()
-
-    try:
-        probe_content_srv = tmp_path / "probe_srv_content"
-        probe_content_srv.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(probe_content_srv))
-        monkeypatch.setattr(
-            vm_judges, "PROBE_HF_RESOLVE_URL", f"http://127.0.0.1:{port}/hf_50mb.bin"
-        )
-        monkeypatch.setattr(
-            vm_judges, "PROBE_PYYAML_SDIST_URL", f"http://127.0.0.1:{port}/pyyaml_50mb.tar.gz"
-        )
-        monkeypatch.setattr(
-            vm_judges, "PROBE_PYTORCH_WHEEL_URL", f"http://127.0.0.1:{port}/torch_50mb.whl"
-        )
-
-        # Provide fast stub `uv` on PATH while using real `curl` and real pipe streaming
-        stub_bin = tmp_path / "stub_bin_srv"
-        stub_bin.mkdir(parents=True, exist_ok=True)
-        uv_stub = stub_bin / "uv"
-        uv_stub.write_text(
-            "#!/usr/bin/env bash\n"
-            "if [[ \"$1\" == \"--version\" ]]; then echo 'uv 0.11.18'; exit 0; fi\n"
-            "if [[ \"$1\" == \"python\" && \"$2\" == \"install\" && \"$3\" == \"--help\" ]]; then echo 'Usage: uv python install --dry-run'; exit 0; fi\n"
-            "if [[ \"$1\" == \"python\" && \"$2\" == \"list\" && \"$*\" == *\"--only-downloads\"* ]]; then echo '[{\"url\":\"http://127.0.0.1:"
-            + str(port)
-            + "/py315.tar.gz\"}]'; exit 0; fi\n"
-            "exit 0\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        uv_stub.chmod(0o755)
-        monkeypatch.setenv(
-            "PATH", f"{stub_bin}{os.pathsep}{os.environ.get('PATH', '')}"
-        )
-
-        assert vm_judges.main(["--step", "probe"]) == 0
-        srv_doc = json.loads((probe_content_srv / "probe.json").read_text(encoding="utf-8"))
-        for key in ("curl_huggingface", "curl_pythonhosted", "curl_pytorch_cu132"):
-            cmd_entry = srv_doc["commands"][key]
-            assert "-r" in cmd_entry["cmd"]
-            assert "0-5242879" in cmd_entry["cmd"]
-            assert "--max-filesize" in cmd_entry["cmd"]
-            assert "5242880" in cmd_entry["cmd"]
-            assert cmd_entry["bytes_received"] == cap_bytes
-            assert cmd_entry["max_bytes"] == cap_bytes
-            assert srv_doc["fetches"][key]["bytes_received"] == cap_bytes
-            assert srv_doc["fetches"][key]["max_bytes"] == cap_bytes
-    finally:
-        server.shutdown()
-        server.server_close()
+    assert vm_judges.main(["--step", "probe"]) == 0
+    srv_doc = json.loads((probe_content_srv / "probe.json").read_text(encoding="utf-8"))
+    for key in ("curl_huggingface", "curl_pythonhosted", "curl_pytorch_cu132"):
+        cmd_entry = srv_doc["commands"][key]
+        assert "-r" in cmd_entry["cmd"]
+        assert "0-5242879" in cmd_entry["cmd"]
+        assert "--max-filesize" in cmd_entry["cmd"]
+        assert "5242880" in cmd_entry["cmd"]
+        assert cmd_entry["bytes_received"] == cap_bytes
+        assert cmd_entry["max_bytes"] == cap_bytes
+        assert srv_doc["fetches"][key]["bytes_received"] == cap_bytes
+        assert srv_doc["fetches"][key]["max_bytes"] == cap_bytes
 
     # 2. Fake `curl` executable that ignores `-r`, `--max-filesize`, and `SIGPIPE`, offering 50 MB
     probe_content_fake_curl = tmp_path / "probe_fake_curl_content"
@@ -4469,12 +4451,12 @@ def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verify the shared fake `uv` executable in `fake_bin/uv`:
-    1. Answers `uv --version`.
-    2. Answers `uv python find 3.15` from test-controlled state (`uv_state.json`), returning a path when found
-       and exiting `2` with `uv`'s stderr message when not found.
+    1. Answers `uv --version` (`uv 0.13.5`).
+    2. Answers `uv python find --no-python-downloads cpython-3.15.1-linux-x86_64-gnu` from test-controlled state (`uv_state.json`),
+       returning a path when found and exiting `2` with `uv`'s stderr message when not found.
     3. Fails loudly with exit code `98` on any unexpected arguments.
     4. Causes `--step gate` (both direct kernel/CLI gate execution and end-to-end launcher gate) to refuse
-       with `VM_PYTHON_UNAVAILABLE` and exit code `2` when fake `uv` reports no Python 3.15.
+       with `VM_PYTHON_INSTALL_FAILED` and exit code `2` when fake `uv` reports no Python 3.15 and install fails.
     """
     import shutil as _shutil
 
@@ -4482,7 +4464,7 @@ def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
         tmp_path / "env_fake_uv_refusal",
         neighbour_sessions=[],
         uv_python_315_found=True,
-        uv_python_315_path="/opt/fake-uv/python-3.15/bin/python3.15",
+        uv_python_315_path="/opt/fake-uv/cpython-3.15.1-linux-x86_64-gnu/bin/python3.15",
     )
     hermetic_path = _hermetic_path_for(env_paths)
     monkeypatch.setenv("PATH", hermetic_path)
@@ -4495,7 +4477,7 @@ def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
         ),
     )
 
-    # 1. `uv --version` and `uv python find 3.15` when found
+    # 1. `uv --version` and `uv python find` when found
     res_ver = subprocess.run(
         ["uv", "--version"],
         stdin=subprocess.DEVNULL,
@@ -4505,10 +4487,10 @@ def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
         check=False,
     )
     assert res_ver.returncode == 0
-    assert res_ver.stdout.strip() == "uv 0.11.18"
+    assert res_ver.stdout.strip() == "uv 0.13.5"
 
     res_find_ok = subprocess.run(
-        ["uv", "python", "find", "3.15"],
+        ["uv", "python", "find", "--no-python-downloads", "cpython-3.15.1-linux-x86_64-gnu"],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -4516,7 +4498,10 @@ def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
         check=False,
     )
     assert res_find_ok.returncode == 0
-    assert res_find_ok.stdout.strip() == "/opt/fake-uv/python-3.15/bin/python3.15"
+    assert (
+        res_find_ok.stdout.strip()
+        == "/opt/fake-uv/cpython-3.15.1-linux-x86_64-gnu/bin/python3.15"
+    )
 
     # 2. Anything else asked of fake `uv` fails loudly with nonzero exit code (98)
     for bad_uv_cmd in (
@@ -4535,7 +4520,7 @@ def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
         assert res_unexpected.returncode == 98
         assert "fake uv: unexpected arguments" in res_unexpected.stderr
 
-    # 3. Switch fake `uv` state to not-found (no Python 3.15) and verify direct `--step gate` refuses with VM_PYTHON_UNAVAILABLE and rc=2
+    # 3. Switch fake `uv` state to not-found (no Python 3.15, no fixture archive) and verify direct `--step gate` refuses with VM_PYTHON_INSTALL_FAILED and rc=2
     fake_colab.set_fake_uv_python_315_state(
         env_paths,
         found=False,
@@ -4545,7 +4530,7 @@ def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
         ),
     )
     res_find_missing = subprocess.run(
-        ["uv", "python", "find", "3.15"],
+        ["uv", "python", "find", "--no-python-downloads", "cpython-3.15.1-linux-x86_64-gnu"],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
@@ -4575,7 +4560,7 @@ def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
     assert gate_doc["step"] == "gate"
     assert gate_doc["rc"] == 2
     assert gate_doc["status"] == "refused"
-    assert gate_doc["failure_class"] == "VM_PYTHON_UNAVAILABLE"
+    assert gate_doc["failure_class"] == "VM_PYTHON_INSTALL_FAILED"
     assert "No interpreter found for Python 3.15" in gate_doc["reason"]
     assert "hf_[REDACTED]" in gate_doc["reason"]
     assert "hf_FakeUvRefusalSecret777" not in json.dumps(gate_doc)
@@ -4606,7 +4591,7 @@ def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
         check=False,
     )
     assert proc_e2e.returncode == 2
-    assert "VM_PYTHON_UNAVAILABLE" in proc_e2e.stderr
+    assert "VM_PYTHON_INSTALL_FAILED" in proc_e2e.stderr
     assert "No interpreter found for Python 3.15" in proc_e2e.stderr
     assert "hf_[REDACTED]" in proc_e2e.stderr
     assert "hf_FakeUvRefusalSecret777" not in proc_e2e.stderr
@@ -4614,9 +4599,10 @@ def test_fake_uv_refuses_gate_with_vm_python_unavailable_when_no_315(
         (out_e2e / "outcome.draft.json").read_text(encoding="utf-8")
     )
     assert outcome_e2e["outcome"] == "failed"
-    assert "VM_PYTHON_UNAVAILABLE" in outcome_e2e["why"]
+    assert "VM_PYTHON_INSTALL_FAILED" in outcome_e2e["why"]
     assert not env_paths["sentinel_called"].exists()
     assert not env_paths["sentinel_uv_called"].exists()
+    assert not env_paths["sentinel_curl_called"].exists()
 
 
 def test_hermetic_path_guard_blocks_real_binaries_and_fires_sentinel_when_fake_absent(
@@ -4625,10 +4611,10 @@ def test_hermetic_path_guard_blocks_real_binaries_and_fires_sentinel_when_fake_a
     """Verify the hermetic PATH guard:
     1. `build_hermetic_path` replaces PATH with `fake_bin:sentinel_bin:/usr/bin:/bin` (never inheriting host
        or runner directories where real `uv` or `colab` live).
-    2. When `fake_bin/uv` or `fake_bin/colab` is present, commands resolve to `fake_bin` and sentinels stay untouched.
-    3. When `fake_bin/uv` is absent, invoking `uv` hits `sentinel_bin/uv`, exits `99`, and creates `REAL_UV_CALLED`
-       (causing `vm_judges.check_vm_python_preflight()` to refuse with `VM_PYTHON_UNAVAILABLE`).
+    2. When `fake_bin/uv`, `fake_bin/colab`, and `fake_bin/curl` are present, commands resolve to `fake_bin` and sentinels stay untouched.
+    3. When `fake_bin/uv` is absent, invoking `uv` hits `sentinel_bin/uv`, exits `99`, and creates `REAL_UV_CALLED`.
     4. When `fake_bin/colab` is absent, invoking `colab` hits `sentinel_bin/colab`, exits `99`, and creates `REAL_COLAB_CALLED`.
+    5. When `fake_bin/curl` is absent, invoking `curl` hits `sentinel_bin/curl`, exits `99`, and creates `REAL_CURL_CALLED`.
     """
     import shutil as _shutil
 
@@ -4653,8 +4639,12 @@ def test_hermetic_path_guard_blocks_real_binaries_and_fires_sentinel_when_fake_a
     assert _shutil.which("colab", path=hermetic_path) == str(
         guard_env["fake_bin"] / "colab"
     )
+    assert _shutil.which("curl", path=hermetic_path) == str(
+        guard_env["fake_bin"] / "curl"
+    )
     assert not guard_env["sentinel_uv_called"].exists()
     assert not guard_env["sentinel_called"].exists()
+    assert not guard_env["sentinel_curl_called"].exists()
 
     # Remove `fake_bin/uv`: `uv` now resolves to `sentinel_bin/uv`, exits 99, and touches `REAL_UV_CALLED`
     (guard_env["fake_bin"] / "uv").unlink()
@@ -4692,6 +4682,802 @@ def test_hermetic_path_guard_blocks_real_binaries_and_fires_sentinel_when_fake_a
     assert res_colab_sentinel.returncode == 99
     assert "SENTINEL_REAL_BINARY_REACHED: colab" in res_colab_sentinel.stderr
     assert guard_env["sentinel_called"].is_file()
+
+    # Remove `fake_bin/curl`: `curl` now resolves to `sentinel_bin/curl`, exits 99, and touches `REAL_CURL_CALLED`
+    (guard_env["fake_bin"] / "curl").unlink()
+    assert _shutil.which("curl", path=hermetic_path) == str(
+        guard_env["sentinel_bin"] / "curl"
+    )
+    res_curl_sentinel = subprocess.run(
+        ["curl", "--version"],
+        stdin=subprocess.DEVNULL,
+        env=sub_env,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert res_curl_sentinel.returncode == 99
+    assert "SENTINEL_REAL_BINARY_REACHED: curl" in res_curl_sentinel.stderr
+    assert guard_env["sentinel_curl_called"].is_file()
+
+
+def _mock_sufficient_vm_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil as _shutil
+
+    monkeypatch.setattr(
+        _shutil,
+        "disk_usage",
+        lambda _p: _shutil._ntuple_diskusage(
+            200_000_000_000, 80_000_000_000, 120_000_000_000
+        ),
+    )
+
+
+def test_find_or_install_case_1_found_route_and_case_10_sdist_list_pyyaml_in_both_locks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic tests (1) and (10):
+    - (1) When Python 3.15.1 (`cpython-3.15.1-linux-x86_64-gnu`) is found by `uv python find --no-python-downloads`,
+          `find_or_install_vm_python_315` and `run_gate` record `route == "found"`, `download_bytes == 0`,
+          `installed_bytes == 0`, `install_seconds == 0.0`, `archive_sha256_actual is None`,
+          `archive_sha256_expected == PINNED_PYTHON_ARCHIVE_SHA256`, `interpreter_version == "3.15.1"`,
+          `interpreter_build == "20261021"`, `uv_version == "uv 0.13.5"`, and `uv_metadata_version == "0.13.5+20261021"`,
+          without calling `curl` or `uv python install`.
+    - (10) The sdist list is `["pyyaml"]` in both `judge.lock.txt` and `d3.lock.txt` and recorded in `lock_sdists`.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    env_found = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_found",
+        uv_python_315_found=True,
+        uv_python_315_path="/usr/local/share/uv/python/cpython-3.15.1-linux-x86_64-gnu/bin/python3.15",
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_found))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_found["state_dir"]))
+    gate_content = tmp_path / "gate_found_content"
+    gate_status = tmp_path / "gate_found_status.json"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(gate_content))
+
+    rc = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(gate_status),
+        ]
+    )
+    assert rc == 0
+    doc = json.loads(gate_status.read_text(encoding="utf-8"))
+    assert doc["step"] == "gate"
+    assert doc["rc"] == 0
+    assert doc["status"] == "ok"
+    assert doc["route"] == "found"
+    assert doc["uv_version"] == "uv 0.13.5"
+    assert doc["uv_metadata_version"] == "0.13.5+20261021"
+    assert (
+        doc["python_315"]
+        == "/usr/local/share/uv/python/cpython-3.15.1-linux-x86_64-gnu/bin/python3.15"
+    )
+    assert doc["interpreter_version"] == "3.15.1"
+    assert doc["interpreter_build"] == "20261021"
+    assert doc["source_url"] == vm_judges.PINNED_PYTHON_ARCHIVE_URL
+    assert doc["archive_sha256_expected"] == vm_judges.PINNED_PYTHON_ARCHIVE_SHA256
+    assert doc["archive_sha256_actual"] is None
+    assert doc["download_bytes"] == 0
+    assert doc["installed_bytes"] == 0
+    assert doc["install_seconds"] == 0.0
+    assert doc["lock_sdists"] == {
+        "judge.lock.txt": ["pyyaml"],
+        "d3.lock.txt": ["pyyaml"],
+    }
+    assert not (env_found["state_dir"] / "curl_calls.jsonl").exists()
+
+
+def test_find_or_install_case_2_absent_and_installed_route_records_every_field_and_case_9_gate_and_run_same_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic tests (2) and (9):
+    - (2) When Python 3.15.1 is absent on the first `uv python find --no-python-downloads`,
+          `find_or_install_vm_python_315` fetches the local fixture archive via fake `curl`,
+          verifies its SHA-256 on disk, installs via fake `uv python install` (`UV_PYTHON_INSTALL_MIRROR=file://...`),
+          re-runs `uv python find --no-python-downloads`, verifies `interpreter_version == "3.15.1"` and
+          `interpreter_build == "20261021"`, and records `route == "installed"` and every required field in both
+          `status.json` and `vm_receipt.json`.
+    - (9) Both `--step gate` and `--step run` (`sync_judge_venvs` / `build_vm_venv_commands`) call the single
+          shared function `find_or_install_vm_python_315`, take the same route when starting from a fresh directory,
+          and point both `venv-judge` and `venv-d3` (`uv venv --python <resolved_python_315>`) at that interpreter.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    fixture_tar, fixture_sha256, fixture_size = fake_colab.build_fixture_python_archive(
+        tmp_path / "fixture_archive",
+        python_version="3.15.1",
+        build_tag="20261021",
+    )
+    monkeypatch.setattr(vm_judges, "PINNED_PYTHON_ARCHIVE_SHA256", fixture_sha256)
+
+    # 1. Run `--step gate` on a fresh content_dir where 3.15 is absent -> route == "installed"
+    env_inst = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_installed",
+        uv_python_315_found=False,
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_inst,
+        found=False,
+        fixture_archive_path=fixture_tar,
+        expected_archive_sha256=fixture_sha256,
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_inst))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_inst["state_dir"]))
+
+    gate_content = tmp_path / "gate_inst_content"
+    gate_status = tmp_path / "gate_inst_status.json"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(gate_content))
+
+    rc_gate = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(gate_status),
+        ]
+    )
+    assert rc_gate == 0
+    gate_doc = json.loads(gate_status.read_text(encoding="utf-8"))
+    assert gate_doc["step"] == "gate"
+    assert gate_doc["rc"] == 0
+    assert gate_doc["status"] == "ok"
+    assert gate_doc["route"] == "installed"
+    assert gate_doc["uv_version"] == "uv 0.13.5"
+    assert gate_doc["uv_metadata_version"] == "0.13.5+20261021"
+    assert gate_doc["uv_path"].endswith("/fake_bin/uv")
+    assert gate_doc["python_315"].endswith(
+        "cpython-3.15.1-linux-x86_64-gnu/bin/python3.15"
+    )
+    assert Path(gate_doc["python_315"]).is_file()
+    assert gate_doc["interpreter_version"] == "3.15.1"
+    assert gate_doc["interpreter_build"] == "20261021"
+    assert gate_doc["source_url"] == vm_judges.PINNED_PYTHON_ARCHIVE_URL
+    assert gate_doc["archive_sha256_expected"] == fixture_sha256
+    assert gate_doc["archive_sha256_actual"] == fixture_sha256
+    assert gate_doc["download_bytes"] == fixture_size
+    assert gate_doc["installed_bytes"] > 0
+    assert isinstance(gate_doc["install_seconds"], float)
+    assert gate_doc["install_seconds"] >= 0.0
+    assert gate_doc["lock_sdists"] == {
+        "judge.lock.txt": ["pyyaml"],
+        "d3.lock.txt": ["pyyaml"],
+    }
+
+    # Verify `uv_calls.jsonl` shows: find (failed) -> install (with --mirror file://...) -> find (succeeded)
+    uv_calls_gate = [
+        json.loads(ln)["args"]
+        for ln in (env_inst["state_dir"] / "uv_calls.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert uv_calls_gate[0] == ["--version"]
+    assert uv_calls_gate[1] == [
+        "python",
+        "find",
+        "--no-python-downloads",
+        "3.15",
+    ]
+    assert uv_calls_gate[2][:3] == ["python", "install", "--no-bin"]
+    assert "--mirror" in uv_calls_gate[2]
+    mirror_idx = uv_calls_gate[2].index("--mirror")
+    assert uv_calls_gate[2][mirror_idx + 1].startswith("file://")
+    assert uv_calls_gate[3] == [
+        "python",
+        "find",
+        "--no-python-downloads",
+        "3.15",
+    ]
+
+    # 2. Case (9): Run `--step run` on a fresh content_dir with `found=False` -> takes the exact same `installed` route
+    #    and points both `venv-judge` and `venv-d3` at the resolved interpreter.
+    env_run = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_run_installed",
+        uv_python_315_found=False,
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_run,
+        found=False,
+        fixture_archive_path=fixture_tar,
+        expected_archive_sha256=fixture_sha256,
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_run))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_run["state_dir"]))
+
+    run_content = tmp_path / "run_inst_content"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(run_content))
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+
+    r_dir, h_dir = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "run_inst_data"
+    )
+    i_file = _make_synthetic_public_items(tmp_path / "run_inst_data", count=4)
+    run_out_dir = tmp_path / "run_inst_out"
+    run_work_dir = tmp_path / "run_inst_work"
+    run_status = tmp_path / "run_inst_status.json"
+    run_tar = tmp_path / "run_inst_result.tar.gz"
+
+    assert vm_judges.check_vm_python_preflight is vm_judges.find_or_install_vm_python_315
+
+    rc_run = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "stub",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(r_dir),
+            "--items-file",
+            str(i_file),
+            "--run-dir",
+            str(run_out_dir),
+            "--work-dir",
+            str(run_work_dir),
+            "--hf-home",
+            str(h_dir),
+            "--result-tar",
+            str(run_tar),
+            "--status-file",
+            str(run_status),
+            "--dryrun",
+        ]
+    )
+    assert rc_run == 0
+    receipt_doc = json.loads(
+        (run_out_dir / "vm_receipt.json").read_text(encoding="utf-8")
+    )
+    run_status_doc = json.loads(run_status.read_text(encoding="utf-8"))
+
+    assert receipt_doc["route"] == gate_doc["route"] == "installed"
+    assert run_status_doc["route"] == "installed"
+    assert receipt_doc["uv_version"] == "uv 0.13.5"
+    assert receipt_doc["uv_metadata_version"] == "0.13.5+20261021"
+    assert receipt_doc["interpreter_version"] == "3.15.1"
+    assert receipt_doc["interpreter_build"] == "20261021"
+    assert receipt_doc["source_url"] == vm_judges.PINNED_PYTHON_ARCHIVE_URL
+    assert receipt_doc["archive_sha256_expected"] == fixture_sha256
+    assert receipt_doc["archive_sha256_actual"] == fixture_sha256
+    assert receipt_doc["download_bytes"] == fixture_size
+    assert receipt_doc["installed_bytes"] > 0
+    assert receipt_doc["lock_sdists"] == {
+        "judge.lock.txt": ["pyyaml"],
+        "d3.lock.txt": ["pyyaml"],
+    }
+
+    resolved_py = receipt_doc["python_315"]
+    assert receipt_doc["venvs"]["venv_judge"]["venv_cmd"] == [
+        "uv",
+        "venv",
+        "--python",
+        resolved_py,
+        str(run_work_dir / "venv-judge"),
+    ]
+    assert receipt_doc["venvs"]["venv_d3"]["venv_cmd"] == [
+        "uv",
+        "venv",
+        "--python",
+        resolved_py,
+        str(run_work_dir / "venv-d3"),
+    ]
+
+
+def test_find_or_install_case_3_install_fails_refuses_with_vm_python_install_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic test (3): When 3.15 is absent and `curl` or `uv python install` fails,
+    `find_or_install_vm_python_315` and `run_gate` refuse with `VM_PYTHON_INSTALL_FAILED` (`rc == 2`).
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    fixture_tar, fixture_sha256, _ = fake_colab.build_fixture_python_archive(
+        tmp_path / "fixture_case3"
+    )
+    monkeypatch.setattr(vm_judges, "PINNED_PYTHON_ARCHIVE_SHA256", fixture_sha256)
+
+    # 3a. `uv python install` exits non-zero after archive download and SHA-256 verification pass
+    env_fail_inst = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_case3_inst",
+        uv_python_315_found=False,
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_fail_inst,
+        found=False,
+        fixture_archive_path=fixture_tar,
+        expected_archive_sha256=fixture_sha256,
+        install_fail=True,
+        install_rc=2,
+        install_stderr="error: simulated uv python install failure (hf_Case3SecretTok)",
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_fail_inst))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_fail_inst["state_dir"]))
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "case3a_content"))
+    status_3a = tmp_path / "case3a_status.json"
+
+    rc_3a = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(status_3a),
+        ]
+    )
+    assert rc_3a == 2
+    doc_3a = json.loads(status_3a.read_text(encoding="utf-8"))
+    assert doc_3a["failure_class"] == "VM_PYTHON_INSTALL_FAILED"
+    assert "simulated uv python install failure" in doc_3a["reason"]
+    assert "hf_[REDACTED]" in doc_3a["reason"]
+    assert "hf_Case3SecretTok" not in json.dumps(doc_3a)
+
+    # 3b. `curl` download exits non-zero
+    env_fail_curl = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_case3_curl",
+        uv_python_315_found=False,
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_fail_curl,
+        found=False,
+        curl_fail=True,
+        curl_rc=22,
+        curl_stderr="curl: (22) HTTP 503 Service Unavailable",
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_fail_curl))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_fail_curl["state_dir"]))
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "case3b_content"))
+    status_3b = tmp_path / "case3b_status.json"
+
+    rc_3b = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(status_3b),
+        ]
+    )
+    assert rc_3b == 2
+    doc_3b = json.loads(status_3b.read_text(encoding="utf-8"))
+    assert doc_3b["failure_class"] == "VM_PYTHON_INSTALL_FAILED"
+    assert "HTTP 503 Service Unavailable" in doc_3b["reason"]
+
+
+def test_find_or_install_case_4_archive_over_200mb_refuses_with_python_archive_too_large(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic test (4): When the Python archive exceeds 200 MB (`209,715,200` bytes),
+    `find_or_install_vm_python_315` refuses with `PYTHON_ARCHIVE_TOO_LARGE` (`rc == 2`)
+    both when `curl --max-filesize` exits `63` and when an oversize file is written to disk,
+    deleting any oversize file and never calling `uv python install`.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    over_200mb = vm_judges.PINNED_PYTHON_MAX_ARCHIVE_BYTES + 1024
+
+    # 4a. `curl --max-filesize 209715200` exits 63 ("Maximum file size exceeded")
+    env_4a = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_case4a",
+        uv_python_315_found=False,
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_4a,
+        found=False,
+        archive_size_bytes=over_200mb,
+        curl_ignore_max_filesize=False,
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_4a))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_4a["state_dir"]))
+    content_4a = tmp_path / "case4a_content"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(content_4a))
+    status_4a = tmp_path / "case4a_status.json"
+
+    rc_4a = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(status_4a),
+        ]
+    )
+    assert rc_4a == 2
+    doc_4a = json.loads(status_4a.read_text(encoding="utf-8"))
+    assert doc_4a["failure_class"] == "PYTHON_ARCHIVE_TOO_LARGE"
+    assert "209715200" in doc_4a["reason"]
+
+    # 4b. `curl` ignores `--max-filesize` and writes a sparse > 200 MB file to disk -> post-download size check deletes it and refuses
+    env_4b = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_case4b",
+        uv_python_315_found=False,
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_4b,
+        found=False,
+        archive_size_bytes=over_200mb,
+        curl_ignore_max_filesize=True,
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_4b))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_4b["state_dir"]))
+    content_4b = tmp_path / "case4b_content"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(content_4b))
+    status_4b = tmp_path / "case4b_status.json"
+
+    rc_4b = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(status_4b),
+        ]
+    )
+    assert rc_4b == 2
+    doc_4b = json.loads(status_4b.read_text(encoding="utf-8"))
+    assert doc_4b["failure_class"] == "PYTHON_ARCHIVE_TOO_LARGE"
+    archive_on_disk = (
+        content_4b
+        / ".rdlab_python_315"
+        / "mirror"
+        / vm_judges.PINNED_PYTHON_BUILD
+        / vm_judges.PINNED_PYTHON_ARCHIVE_FILENAME
+    )
+    assert not archive_on_disk.exists()
+
+    uv_calls_4b = [
+        json.loads(ln)["args"]
+        for ln in (env_4b["state_dir"] / "uv_calls.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert not any(c[:2] == ["python", "install"] for c in uv_calls_4b)
+
+
+def test_find_or_install_case_5_over_120s_refuses_with_python_install_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic test (5): When the Python archive download or `uv python install` exceeds the 120 s
+    timeout cap, `find_or_install_vm_python_315` refuses with `PYTHON_INSTALL_TIMEOUT` (`rc == 2`).
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    fixture_tar, fixture_sha256, _ = fake_colab.build_fixture_python_archive(
+        tmp_path / "fixture_case5"
+    )
+    monkeypatch.setattr(vm_judges, "PINNED_PYTHON_ARCHIVE_SHA256", fixture_sha256)
+
+    # 5a. `uv python install` exceeds `install_timeout_seconds`
+    env_5a = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_case5a",
+        uv_python_315_found=False,
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_5a,
+        found=False,
+        fixture_archive_path=fixture_tar,
+        expected_archive_sha256=fixture_sha256,
+        install_sleep_seconds=2.0,
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_5a))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_5a["state_dir"]))
+    with pytest.raises(vm_judges.RefusalError) as exc_5a:
+        vm_judges.find_or_install_vm_python_315(
+            content_dir=tmp_path / "case5a_content",
+            expected_archive_sha256=fixture_sha256,
+            install_timeout_seconds=0.1,
+        )
+    assert exc_5a.value.failure_class == "PYTHON_INSTALL_TIMEOUT"
+
+    # 5b. `curl` download times out (`rc == 124`) at default 120 s cap
+    orig_run_subproc = vm_judges.run_vm_subprocess
+
+    def _timeout_on_curl(cmd: Sequence[str], *a: Any, **kw: Any) -> vm_judges.VmSubprocessResult:
+        cmd_l = [str(x) for x in cmd]
+        if cmd_l and cmd_l[0] == "curl":
+            return vm_judges.VmSubprocessResult(
+                cmd=cmd_l,
+                returncode=124,
+                stdout="",
+                stderr="subprocess timed out after 120.0s",
+                stdout_tail="",
+                stderr_tail="subprocess timed out after 120.0s",
+                duration_seconds=120.5,
+            )
+        return orig_run_subproc(cmd, *a, **kw)
+
+    monkeypatch.setattr(vm_judges, "run_vm_subprocess", _timeout_on_curl)
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "case5b_content"))
+    status_5b = tmp_path / "case5b_status.json"
+    rc_5b = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(status_5b),
+        ]
+    )
+    assert rc_5b == 2
+    doc_5b = json.loads(status_5b.read_text(encoding="utf-8"))
+    assert doc_5b["failure_class"] == "PYTHON_INSTALL_TIMEOUT"
+    assert "120" in doc_5b["reason"]
+
+
+def test_find_or_install_case_6_sha256_mismatch_refuses_and_never_calls_uv_to_install(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic test (6): When the downloaded Python archive's SHA-256 does not match the pinned
+    `PINNED_PYTHON_ARCHIVE_SHA256`, `find_or_install_vm_python_315` deletes the archive on disk,
+    refuses with `PYTHON_ARCHIVE_SHA256_MISMATCH` (`rc == 2`), and **never** calls `uv` to install.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    tampered_tar, tampered_sha256, _ = fake_colab.build_fixture_python_archive(
+        tmp_path / "fixture_case6_tampered",
+        extra_payload=b"tampered-archive-bytes",
+    )
+    assert tampered_sha256 != vm_judges.PINNED_PYTHON_ARCHIVE_SHA256
+
+    env_6 = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_case6",
+        uv_python_315_found=False,
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_6,
+        found=False,
+        fixture_archive_path=tampered_tar,
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_6))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_6["state_dir"]))
+    content_6 = tmp_path / "case6_content"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(content_6))
+    status_6 = tmp_path / "case6_status.json"
+
+    rc_6 = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(status_6),
+        ]
+    )
+    assert rc_6 == 2
+    doc_6 = json.loads(status_6.read_text(encoding="utf-8"))
+    assert doc_6["step"] == "gate"
+    assert doc_6["rc"] == 2
+    assert doc_6["status"] == "refused"
+    assert doc_6["failure_class"] == "PYTHON_ARCHIVE_SHA256_MISMATCH"
+    assert vm_judges.PINNED_PYTHON_ARCHIVE_SHA256 in doc_6["reason"]
+    assert tampered_sha256 in doc_6["reason"]
+
+    # Verify the mismatched archive was deleted from disk
+    archive_on_disk = (
+        content_6
+        / ".rdlab_python_315"
+        / "mirror"
+        / vm_judges.PINNED_PYTHON_BUILD
+        / vm_judges.PINNED_PYTHON_ARCHIVE_FILENAME
+    )
+    assert not archive_on_disk.exists()
+
+    # Verify `uv` was NEVER called to install
+    uv_calls_6 = [
+        json.loads(ln)["args"]
+        for ln in (env_6["state_dir"] / "uv_calls.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert uv_calls_6 == [
+        ["--version"],
+        [
+            "python",
+            "find",
+            "--no-python-downloads",
+            "3.15",
+        ],
+    ]
+    assert not any("install" in c for c in uv_calls_6)
+
+
+def test_find_or_install_case_7_build_mismatch_refuses_with_python_build_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic test (7): When the found or installed interpreter reports a build tag or version
+    other than `3.15.1` + `20261021`, `find_or_install_vm_python_315` refuses with `PYTHON_BUILD_CHANGED`.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+
+    # 7a. Installed archive contains build `20261101` instead of `20261021`
+    bad_build_tar, bad_build_sha, _ = fake_colab.build_fixture_python_archive(
+        tmp_path / "fixture_case7_build",
+        python_version="3.15.1",
+        build_tag="20261101",
+    )
+    monkeypatch.setattr(vm_judges, "PINNED_PYTHON_ARCHIVE_SHA256", bad_build_sha)
+
+    env_7a = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_case7a",
+        uv_python_315_found=False,
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_7a,
+        found=False,
+        fixture_archive_path=bad_build_tar,
+        expected_archive_sha256=bad_build_sha,
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_7a))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_7a["state_dir"]))
+    content_7a = tmp_path / "case7a_content"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(content_7a))
+    status_7a = tmp_path / "case7a_status.json"
+
+    rc_7a = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(status_7a),
+        ]
+    )
+    assert rc_7a == 2
+    doc_7a = json.loads(status_7a.read_text(encoding="utf-8"))
+    assert doc_7a["failure_class"] == "PYTHON_BUILD_CHANGED"
+    assert "20261101" in doc_7a["reason"]
+    assert "20261021" in doc_7a["reason"]
+
+    # 7b. Found interpreter on disk reports `Python 3.15.2` instead of `Python 3.15.1`
+    fake_inst_root = tmp_path / "found_bad_ver" / "cpython-3.15.2-linux-x86_64-gnu"
+    fake_bin_dir = fake_inst_root / "bin"
+    fake_bin_dir.mkdir(parents=True, exist_ok=True)
+    (fake_inst_root / "BUILD").write_text("20261021\n", encoding="utf-8", newline="\n")
+    bad_py_bin = fake_bin_dir / "python3.15"
+    bad_py_bin.write_text(
+        "#!/usr/bin/env bash\necho 'Python 3.15.2'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    bad_py_bin.chmod(0o755)
+
+    env_7b = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_case7b",
+        uv_python_315_found=True,
+        uv_python_315_path=str(bad_py_bin),
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_7b))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_7b["state_dir"]))
+    content_7b = tmp_path / "case7b_content"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(content_7b))
+    status_7b = tmp_path / "case7b_status.json"
+
+    rc_7b = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(status_7b),
+        ]
+    )
+    assert rc_7b == 2
+    doc_7b = json.loads(status_7b.read_text(encoding="utf-8"))
+    assert doc_7b["failure_class"] == "PYTHON_BUILD_CHANGED"
+    assert "3.15.2" in doc_7b["reason"]
+
+
+def test_find_or_install_case_8_uv_version_change_refuses_with_uv_version_changed_unless_overridden(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hermetic test (8): When `uv --version` does not match `RDLAB_EXPECT_UV_VERSION` (default `0.13.5`),
+    `find_or_install_vm_python_315` refuses with `UV_VERSION_CHANGED` (`rc == 2`), and succeeds when
+    `RDLAB_EXPECT_UV_VERSION` is explicitly set to the new version.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    env_8 = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_case8",
+        uv_python_315_found=True,
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_8,
+        found=True,
+        uv_version="uv 0.14.0",
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_8))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_8["state_dir"]))
+    content_8 = tmp_path / "case8_content"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(content_8))
+    monkeypatch.delenv("RDLAB_EXPECT_UV_VERSION", raising=False)
+    status_8_refuse = tmp_path / "case8_refuse_status.json"
+
+    # 1. Default `RDLAB_EXPECT_UV_VERSION` (`0.13.5`) refuses `uv 0.14.0` with `UV_VERSION_CHANGED`
+    rc_refuse = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(status_8_refuse),
+        ]
+    )
+    assert rc_refuse == 2
+    doc_refuse = json.loads(status_8_refuse.read_text(encoding="utf-8"))
+    assert doc_refuse["failure_class"] == "UV_VERSION_CHANGED"
+    assert "0.14.0" in doc_refuse["reason"]
+    assert "0.13.5" in doc_refuse["reason"]
+
+    # 2. Setting `RDLAB_EXPECT_UV_VERSION=0.14.0` deliberately allows `uv 0.14.0`
+    monkeypatch.setenv("RDLAB_EXPECT_UV_VERSION", "0.14.0")
+    status_8_ok = tmp_path / "case8_ok_status.json"
+    rc_ok = vm_judges.main(
+        [
+            "--step",
+            "gate",
+            "--items-file",
+            "/content/rdlab_items/items.jsonl",
+            "--hf-home",
+            "/content/hf_home",
+            "--status-file",
+            str(status_8_ok),
+        ]
+    )
+    assert rc_ok == 0
+    doc_ok = json.loads(status_8_ok.read_text(encoding="utf-8"))
+    assert doc_ok["rc"] == 0
+    assert doc_ok["uv_version"] == "uv 0.14.0"
+
 
 
 

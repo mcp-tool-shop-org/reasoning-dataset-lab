@@ -11,6 +11,8 @@ Enforces the recorded Colab CLI contract against `colab_help.txt` and
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import os
 import re
@@ -18,7 +20,9 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -153,12 +157,69 @@ def read_file_access_log(state_dir: Path) -> list[dict[str, Any]]:
 
 
 DEFAULT_FAKE_UV_PYTHON_315_PATH = (
-    "/usr/local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15"
+    "/usr/local/share/uv/python/cpython-3.15.1-linux-x86_64-gnu/bin/python3.15"
 )
 DEFAULT_FAKE_UV_MISSING_315_STDERR = (
     "error: No interpreter found for Python 3.15 in managed installations or search path"
 )
 HERMETIC_SYSTEM_PATH = "/usr/bin:/bin"
+
+
+def build_fixture_python_archive(
+    archive_path: Path,
+    *,
+    python_version: str = "3.15.1",
+    build: str = "20261021",
+    build_tag: str | None = None,
+    extra_bytes: int = 0,
+    extra_payload: bytes = b"",
+) -> tuple[Path, str, int]:
+    """Build a small fixture `cpython-3.15.1+20261021` `.tar.gz` archive and return `(path, sha256, bytes)`."""
+    effective_build = build_tag if build_tag is not None else build
+    archive_path = Path(archive_path)
+    if archive_path.is_dir() or not archive_path.name.endswith(".tar.gz"):
+        archive_path = (
+            archive_path
+            / f"cpython-{python_version}+{effective_build}-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+        )
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+    py_script = (
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "--version" || "$1" == "-V" ]]; then\n'
+        f'  echo "Python {python_version}"\n'
+        "  exit 0\n"
+        "fi\n"
+        'exec python3 "$@"\n'
+    ).encode("utf-8")
+    python_h = b"/* Python.h fixture */\n"
+    build_json = (
+        json.dumps({"version": python_version, "release": effective_build}, indent=2)
+        + "\n"
+    ).encode("utf-8")
+
+    with tarfile.open(archive_path, "w:gz") as tf:
+        for arcname, payload, mode in (
+            ("python/bin/python3.15", py_script, 0o755),
+            ("python/bin/python3", py_script, 0o755),
+            ("python/include/python3.15/Python.h", python_h, 0o644),
+            ("python/BUILD.json", build_json, 0o644),
+        ):
+            info = tarfile.TarInfo(name=arcname)
+            info.size = len(payload)
+            info.mode = mode
+            info.mtime = 1762041600
+            tf.addfile(info, io.BytesIO(payload))
+        if extra_bytes > 0 or extra_payload:
+            pad_data = (b"P" * extra_bytes) + extra_payload
+            pad_info = tarfile.TarInfo(name="python/lib/libpython3.15.so.fixture")
+            pad_info.size = len(pad_data)
+            pad_info.mode = 0o644
+            pad_info.mtime = 1762041600
+            tf.addfile(pad_info, io.BytesIO(pad_data))
+
+    raw = archive_path.read_bytes()
+    return archive_path, hashlib.sha256(raw).hexdigest(), len(raw)
 
 
 def setup_fake_colab_environment(
@@ -168,8 +229,9 @@ def setup_fake_colab_environment(
     uv_python_315_found: bool = True,
     uv_python_315_path: str = DEFAULT_FAKE_UV_PYTHON_315_PATH,
     uv_python_315_stderr: str = DEFAULT_FAKE_UV_MISSING_315_STDERR,
+    uv_version: str = "uv 0.13.5",
 ) -> dict[str, Path]:
-    """Create a hermetic fake `colab` + fake `uv` bin directory and a sentinel real-binary trap in `base_dir`."""
+    """Create a hermetic fake `colab` + fake `uv` + fake `curl` bin directory and sentinel real-binary traps in `base_dir`."""
     fake_bin = base_dir / "fake_bin"
     sentinel_bin = base_dir / "sentinel_real_bin"
     state_dir = base_dir / "fake_colab_state"
@@ -195,7 +257,7 @@ def setup_fake_colab_environment(
     uv_state_file.write_text(
         json.dumps(
             {
-                "version": "uv 0.11.18",
+                "version": uv_version,
                 "python_315_found": bool(uv_python_315_found),
                 "python_315_path": uv_python_315_path,
                 "python_315_stderr": uv_python_315_stderr,
@@ -231,6 +293,18 @@ def setup_fake_colab_environment(
     )
     sentinel_uv_script.chmod(sentinel_uv_script.stat().st_mode | stat.S_IEXEC)
 
+    sentinel_curl_called = state_dir / "REAL_CURL_CALLED"
+    sentinel_curl_script = sentinel_bin / "curl"
+    sentinel_curl_script.write_text(
+        "#!/usr/bin/env bash\n"
+        f"touch '{_to_posix(sentinel_curl_called)}'\n"
+        "echo 'SENTINEL_REAL_BINARY_REACHED: curl' >&2\n"
+        "exit 99\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    sentinel_curl_script.chmod(sentinel_curl_script.stat().st_mode | stat.S_IEXEC)
+
     fake_colab_py_posix = _to_posix(Path(__file__).resolve())
     fake_colab_sh = fake_bin / "colab"
     fake_colab_sh.write_text(
@@ -252,6 +326,16 @@ def setup_fake_colab_environment(
     )
     fake_uv_sh.chmod(fake_uv_sh.stat().st_mode | stat.S_IEXEC)
 
+    fake_curl_sh = fake_bin / "curl"
+    fake_curl_sh.write_text(
+        "#!/usr/bin/env bash\n"
+        f"export FAKE_COLAB_STATE_DIR=\"${{FAKE_COLAB_STATE_DIR:-{_to_posix(state_dir)}}}\"\n"
+        f"exec python3 '{fake_colab_py_posix}' --fake-curl \"$@\"\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_curl_sh.chmod(fake_curl_sh.stat().st_mode | stat.S_IEXEC)
+
     return {
         "fake_bin": fake_bin,
         "sentinel_bin": sentinel_bin,
@@ -259,8 +343,10 @@ def setup_fake_colab_environment(
         "colab_locks_dir": colab_locks_dir,
         "sentinel_called": sentinel_called,
         "sentinel_uv_called": sentinel_uv_called,
+        "sentinel_curl_called": sentinel_curl_called,
         "uv_state_file": uv_state_file,
         "uv_calls_log": state_dir / "uv_calls.jsonl",
+        "curl_calls_log": state_dir / "curl_calls.jsonl",
         "calls_log": state_dir / "calls.jsonl",
         "file_access_log": state_dir / "file_access.jsonl",
         "sessions_file": sessions_file,
@@ -283,8 +369,20 @@ def set_fake_uv_python_315_state(
     found: bool,
     python_path: str = DEFAULT_FAKE_UV_PYTHON_315_PATH,
     stderr_message: str = DEFAULT_FAKE_UV_MISSING_315_STDERR,
+    uv_version: str = "uv 0.13.5",
+    fixture_archive_path: Path | str | None = None,
+    expected_archive_sha256: str | None = None,
+    install_fail: bool = False,
+    install_rc: int = 1,
+    install_stderr: str = "error: Failed to install cpython-3.15.1-linux-x86_64-gnu",
+    install_sleep_seconds: float = 0.0,
+    curl_fail: bool = False,
+    curl_rc: int = 22,
+    curl_stderr: str = "curl: (22) The requested URL returned error: 500",
+    archive_size_bytes: int | None = None,
+    curl_ignore_max_filesize: bool = False,
 ) -> Path:
-    """Update the fake `uv` state file controlling whether `uv python find 3.15` succeeds or exits 2."""
+    """Update the fake `uv` + `curl` state file controlling find-or-install behavior."""
     state_dir = (
         state_dir_or_env["state_dir"]
         if isinstance(state_dir_or_env, dict)
@@ -292,33 +390,36 @@ def set_fake_uv_python_315_state(
     )
     state_dir.mkdir(parents=True, exist_ok=True)
     uv_state_file = state_dir / "uv_state.json"
+    state_payload: dict[str, Any] = {
+        "version": uv_version,
+        "python_315_found": bool(found),
+        "python_315_path": python_path,
+        "python_315_stderr": stderr_message,
+        "fixture_archive_path": (
+            str(fixture_archive_path) if fixture_archive_path is not None else None
+        ),
+        "expected_archive_sha256": expected_archive_sha256,
+        "install_fail": bool(install_fail),
+        "install_rc": int(install_rc),
+        "install_stderr": stderr_message if install_fail and not install_stderr else install_stderr,
+        "install_sleep_seconds": float(install_sleep_seconds),
+        "curl_fail": bool(curl_fail),
+        "curl_rc": int(curl_rc),
+        "curl_stderr": curl_stderr,
+        "archive_size_bytes": archive_size_bytes,
+        "curl_ignore_max_filesize": bool(curl_ignore_max_filesize),
+    }
     uv_state_file.write_text(
-        json.dumps(
-            {
-                "version": "uv 0.11.18",
-                "python_315_found": bool(found),
-                "python_315_path": python_path,
-                "python_315_stderr": stderr_message,
-            },
-            indent=2,
-        )
-        + "\n",
+        json.dumps(state_payload, indent=2) + "\n",
         encoding="utf-8",
         newline="\n",
     )
     return uv_state_file
 
 
-def run_fake_uv(argv: list[str]) -> int:
-    """Execute the standalone fake `uv` CLI placed in `fake_bin/uv`."""
-    state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR")
-    state_dir = (
-        Path(state_dir_raw) if state_dir_raw else Path("/tmp/rdlab-fake-colab-state")
-    )
-    state_dir.mkdir(parents=True, exist_ok=True)
-
+def _load_fake_uv_state(state_dir: Path) -> dict[str, Any]:
     uv_state: dict[str, Any] = {
-        "version": "uv 0.11.18",
+        "version": "uv 0.13.5",
         "python_315_found": True,
         "python_315_path": DEFAULT_FAKE_UV_PYTHON_315_PATH,
         "python_315_stderr": DEFAULT_FAKE_UV_MISSING_315_STDERR,
@@ -331,6 +432,123 @@ def run_fake_uv(argv: list[str]) -> int:
                 uv_state.update(loaded)
         except Exception:
             pass
+    return uv_state
+
+
+def run_fake_curl(argv: list[str]) -> int:
+    """Execute the standalone fake `curl` CLI placed in `fake_bin/curl`."""
+    state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR")
+    state_dir = (
+        Path(state_dir_raw) if state_dir_raw else Path("/tmp/rdlab-fake-colab-state")
+    )
+    state_dir.mkdir(parents=True, exist_ok=True)
+    uv_state = _load_fake_uv_state(state_dir)
+
+    curl_calls_log = state_dir / "curl_calls.jsonl"
+    with curl_calls_log.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"args": list(argv), "ts": time.time()}) + "\n")
+
+    out_file: str | None = None
+    max_filesize: int | None = None
+    url_arg: str = ""
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "-o" and i + 1 < len(argv):
+            out_file = argv[i + 1]
+            i += 2
+            continue
+        if tok == "--max-filesize" and i + 1 < len(argv):
+            try:
+                max_filesize = int(argv[i + 1])
+            except ValueError:
+                pass
+            i += 2
+            continue
+        if tok in ("-r", "-w", "--max-time") and i + 1 < len(argv):
+            i += 2
+            continue
+        if not tok.startswith("-"):
+            url_arg = tok
+        i += 1
+
+    if "-I" in argv:
+        sys.stdout.write("HTTP/2 200\r\ncontent-length: 32505856\r\n\r\n")
+        return 0
+
+    if out_file is None or out_file == "-":
+        total_to_stream = (
+            50 * 1024 * 1024
+            if (
+                "50mb" in url_arg.lower()
+                or os.environ.get("FAKE_COLAB_CURL_OFFER_50MB") == "1"
+            )
+            else min(max_filesize or 4096, 5_242_880)
+        )
+        chunk = b"A" * 65536
+        remaining = total_to_stream
+        try:
+            while remaining > 0:
+                n = min(len(chunk), remaining)
+                sys.stdout.buffer.write(chunk[:n])
+                sys.stdout.buffer.flush()
+                remaining -= n
+            return 0
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return 0
+
+    if uv_state.get("curl_fail"):
+        err_msg = str(
+            uv_state.get("curl_stderr")
+            or "curl: (22) The requested URL returned error: 500"
+        )
+        if not err_msg.endswith("\n"):
+            err_msg += "\n"
+        sys.stderr.write(err_msg)
+        return int(uv_state.get("curl_rc") or 22)
+
+    sim_size = uv_state.get("archive_size_bytes")
+    if isinstance(sim_size, int) and sim_size > 0:
+        if (
+            max_filesize is not None
+            and sim_size > max_filesize
+            and not uv_state.get("curl_ignore_max_filesize")
+        ):
+            sys.stderr.write("curl: (63) Maximum file size exceeded\n")
+            return 63
+        if out_file and out_file != "-":
+            out_p = Path(out_file)
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            with out_p.open("wb") as fh:
+                fh.truncate(sim_size)
+            return 0
+
+    fixture_archive = uv_state.get("fixture_archive_path")
+    if fixture_archive and Path(str(fixture_archive)).is_file():
+        if out_file and out_file != "-":
+            out_p = Path(out_file)
+            out_p.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(str(fixture_archive), out_p)
+            return 0
+
+    err_fallback = os.environ.get(
+        "FAKE_COLAB_UV_STDERR",
+        str(uv_state.get("python_315_stderr") or "curl: (22) fixture archive not configured"),
+    )
+    if not err_fallback.endswith("\n"):
+        err_fallback += "\n"
+    sys.stderr.write(err_fallback)
+    return 22
+
+
+def run_fake_uv(argv: list[str]) -> int:
+    """Execute the standalone fake `uv` CLI placed in `fake_bin/uv`."""
+    state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR")
+    state_dir = (
+        Path(state_dir_raw) if state_dir_raw else Path("/tmp/rdlab-fake-colab-state")
+    )
+    state_dir.mkdir(parents=True, exist_ok=True)
+    uv_state = _load_fake_uv_state(state_dir)
 
     uv_calls_log = state_dir / "uv_calls.jsonl"
     with uv_calls_log.open("a", encoding="utf-8", newline="\n") as fh:
@@ -340,11 +558,35 @@ def run_fake_uv(argv: list[str]) -> int:
     plant_sfx = f" {plant}" if plant else ""
 
     if argv == ["--version"]:
-        ver = str(uv_state.get("version") or "uv 0.11.18")
+        ver = os.environ.get(
+            "FAKE_COLAB_UV_VERSION", str(uv_state.get("version") or "uv 0.13.5")
+        )
         sys.stdout.write(f"{ver}{plant_sfx}\n")
         return 0
 
-    if argv == ["python", "find", "3.15"]:
+    if argv in (
+        ["python", "find", "3.15"],
+        ["python", "find", "--no-python-downloads", "3.15"],
+        ["python", "find", "--no-python-downloads", "cpython-3.15.1-linux-x86_64-gnu"],
+        [
+            "python",
+            "find",
+            "--no-python-downloads",
+            "--managed-python",
+            "cpython-3.15.1-linux-x86_64-gnu",
+        ],
+    ):
+        inst_dir_env = os.environ.get("UV_PYTHON_INSTALL_DIR", "").strip()
+        if inst_dir_env and Path(inst_dir_env).is_dir():
+            installed_bins = [
+                b
+                for b in sorted(Path(inst_dir_env).glob("cpython-3.15*/bin/python3.15"))
+                if (b.parent.parent / ".fake_uv_installed").is_file()
+            ]
+            if installed_bins:
+                sys.stdout.write(f"{installed_bins[0]}{plant_sfx}\n")
+                return 0
+
         no_315_env = os.environ.get("FAKE_COLAB_UV_NO_PYTHON_315")
         if no_315_env is not None:
             found = no_315_env != "1"
@@ -367,6 +609,95 @@ def run_fake_uv(argv: list[str]) -> int:
             str(uv_state.get("python_315_path") or DEFAULT_FAKE_UV_PYTHON_315_PATH),
         )
         sys.stdout.write(f"{py_path}{plant_sfx}\n")
+        return 0
+
+    if argv[:2] == ["python", "install"] and "--help" not in argv:
+        sleep_s = float(uv_state.get("install_sleep_seconds") or 0.0)
+        if sleep_s > 0:
+            time.sleep(sleep_s)
+
+        if uv_state.get("install_fail") or os.environ.get("FAKE_COLAB_UV_INSTALL_FAIL") == "1":
+            err_msg = str(
+                uv_state.get("install_stderr")
+                or "error: Failed to install cpython-3.15.1-linux-x86_64-gnu"
+            )
+            if not err_msg.endswith("\n"):
+                err_msg += "\n"
+            sys.stderr.write(err_msg)
+            return int(uv_state.get("install_rc") or 1)
+
+        inst_dir_str = os.environ.get("UV_PYTHON_INSTALL_DIR", "")
+        mirror_url = os.environ.get("UV_PYTHON_INSTALL_MIRROR", "")
+        idx = 2
+        while idx < len(argv):
+            if argv[idx] == "--install-dir" and idx + 1 < len(argv):
+                inst_dir_str = argv[idx + 1]
+                idx += 2
+                continue
+            if argv[idx] == "--mirror" and idx + 1 < len(argv):
+                mirror_url = argv[idx + 1]
+                idx += 2
+                continue
+            idx += 1
+
+        if not mirror_url.startswith("file://"):
+            sys.stderr.write(
+                f"fake uv: expected file:// mirror URL, got {mirror_url!r}\n"
+            )
+            return 2
+
+        parsed_uri = urllib.parse.urlparse(mirror_url)
+        mirror_path = Path(urllib.parse.unquote(parsed_uri.path))
+        build_tag = os.environ.get("UV_PYTHON_CPYTHON_BUILD", "20261021")
+        archive_file = (
+            mirror_path
+            / build_tag
+            / "cpython-3.15.1+20261021-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+        )
+        if not archive_file.is_file():
+            sys.stderr.write(
+                f"error: Local mirror archive not found at {archive_file}\n"
+            )
+            return 2
+
+        target_root = Path(inst_dir_str) / "cpython-3.15.1-linux-x86_64-gnu"
+        if target_root.exists():
+            shutil.rmtree(target_root)
+        target_root.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_file, "r:gz") as tf:
+            for member in tf.getmembers():
+                rel_name = member.name
+                if rel_name.startswith("python/"):
+                    rel_name = rel_name[len("python/") :]
+                if not rel_name or rel_name == "python":
+                    continue
+                dest = target_root / rel_name
+                if member.isdir():
+                    dest.mkdir(parents=True, exist_ok=True)
+                elif member.isfile():
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    extracted = tf.extractfile(member)
+                    if extracted is not None:
+                        dest.write_bytes(extracted.read())
+                    if member.mode & 0o111:
+                        dest.chmod(dest.stat().st_mode | stat.S_IEXEC)
+
+        build_json_p = target_root / "BUILD.json"
+        release_val = build_tag
+        if build_json_p.is_file():
+            try:
+                bdoc = json.loads(build_json_p.read_text(encoding="utf-8"))
+                release_val = str(bdoc.get("release") or build_tag)
+            except Exception:
+                pass
+        (target_root / "BUILD").write_text(
+            f"{release_val}\n", encoding="utf-8", newline="\n"
+        )
+        (target_root / ".fake_uv_installed").write_text(
+            "1\n", encoding="utf-8", newline="\n"
+        )
+        sys.stderr.write(f"Installed Python 3.15.1 in 0.05s{plant_sfx}\n")
         return 0
 
     sys.stderr.write(f"fake uv: unexpected arguments: {argv!r}\n")
@@ -393,6 +724,8 @@ def main(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
     if raw_args[:1] == ["--fake-uv"]:
         return run_fake_uv(raw_args[1:])
+    if raw_args[:1] == ["--fake-curl"]:
+        return run_fake_curl(raw_args[1:])
 
     os.environ["RDLAB_COLAB_IS_FAKE"] = "1"
     contract = load_and_verify_contract()
@@ -883,19 +1216,17 @@ def main(argv: list[str] | None = None) -> int:
                 "        if os.environ.get('FAKE_COLAB_UV_ABSENT') == '1':\n"
                 "            raise FileNotFoundError(2, 'No such file or directory', 'uv')\n"
                 "        return _real_subproc_run(['uv', '--version'], *a, **kw)\n"
-                "    if cmd_list[:3] == ['uv', 'python', 'find'] and '--no-python-downloads' not in cmd_list:\n"
-                "        return _real_subproc_run(cmd_list, *a, **kw)\n"
-                "    if cmd_list[:3] == ['uv', 'python', 'find']:\n"
-                "        if os.environ.get('FAKE_COLAB_UV_NO_PYTHON_315') == '1':\n"
-                "            err_msg = os.environ.get('FAKE_COLAB_UV_STDERR', 'error: No interpreter found for Python 3.15 in managed installations or search path\\n')\n"
-                "            return subprocess.CompletedProcess(cmd_list, 2, stdout='', stderr=err_msg)\n"
-                "        return subprocess.CompletedProcess(cmd_list, 0, stdout='/usr/local/share/uv/python/cpython-3.15.0-linux-x86_64-gnu/bin/python3.15' + plant_sfx + '\\n', stderr='')\n"
                 "    if cmd_list[:2] == ['uv', 'venv']:\n"
                 "        if os.environ.get('FAKE_COLAB_FAIL_UV_VENV') == '1':\n"
                 "            err_msg = os.environ.get('FAKE_COLAB_UV_STDERR', 'error: Failed to create virtualenv\\n')\n"
                 "            out_msg = os.environ.get('FAKE_COLAB_UV_STDOUT', 'Creating virtual environment\\n')\n"
                 "            return subprocess.CompletedProcess(cmd_list, 2, stdout=out_msg, stderr=err_msg)\n"
                 "    if os.environ.get('RDLAB_STEP') == 'probe':\n"
+                "        if cmd_list[:3] == ['uv', 'python', 'find']:\n"
+                "            if os.environ.get('FAKE_COLAB_UV_NO_PYTHON_315') == '1':\n"
+                "                err_msg = os.environ.get('FAKE_COLAB_UV_STDERR', 'error: No interpreter found for Python 3.15 in managed installations or search path\\n')\n"
+                "                return subprocess.CompletedProcess(cmd_list, 2, stdout='', stderr=err_msg)\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='/usr/local/share/uv/python/cpython-3.15.1-linux-x86_64-gnu/bin/python3.15' + plant_sfx + '\\n', stderr='')\n"
                 "        if cmd_list[:4] == ['uv', 'python', 'install', '--help']:\n"
                 "            if os.environ.get('FAKE_COLAB_UV_SUPPORTS_DRY_RUN') == '1':\n"
                 "                return subprocess.CompletedProcess(cmd_list, 0, stdout='Usage: uv python install --dry-run' + plant_sfx + '\\n', stderr='')\n"
@@ -922,7 +1253,7 @@ def main(argv: list[str] | None = None) -> int:
                 "        if cmd_list == ['which', 'uv']:\n"
                 "            return subprocess.CompletedProcess(cmd_list, 0, stdout='/usr/local/bin/uv' + plant_sfx + '\\n', stderr='')\n"
                 "        if cmd_list[:4] == ['python3', '-m', 'pip', 'show']:\n"
-                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='Name: uv\\nVersion: 0.11.18\\nLocation: /usr/local/lib/python3.12/dist-packages' + plant_sfx + '\\n', stderr='')\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='Name: uv\\nVersion: 0.13.5\\nLocation: /usr/local/lib/python3.12/dist-packages' + plant_sfx + '\\n', stderr='')\n"
                 "        if cmd_list[0].startswith('python3') and cmd_list[1:] == ['--version']:\n"
                 "            if cmd_list[0] in ('python3', 'python3.12'):\n"
                 "                return subprocess.CompletedProcess(cmd_list, 0, stdout='Python 3.12.13' + plant_sfx + '\\n', stderr='')\n"
@@ -934,6 +1265,11 @@ def main(argv: list[str] | None = None) -> int:
                 "subprocess.run = _fake_subproc_run\n"
                 "sys.argv = ['colab_kernel_launcher.py', '-f', '/tmp/kernel-fake.json']\n"
                 f"src = pathlib.Path({str(py_path.resolve())!r}).read_text(encoding='utf-8')\n"
+                "_st_uv_p = pathlib.Path(os.environ.get('FAKE_COLAB_STATE_DIR', '')) / 'uv_state.json'\n"
+                "if _st_uv_p.is_file():\n"
+                "    _uv_st = json.loads(_st_uv_p.read_text(encoding='utf-8'))\n"
+                "    if _uv_st.get('expected_archive_sha256'):\n"
+                "        src = src.replace('01d901e09ca673c99a6c9bd9ec2cfbd58dbe8813d07514c36cb73cfd20b18bd8', str(_uv_st['expected_archive_sha256']))\n"
                 "ns = {'__name__': '__main__', '_PRIOR_EXEC_COUNT': "
                 f"{len(prior_cells)!r}"
                 "}\n"

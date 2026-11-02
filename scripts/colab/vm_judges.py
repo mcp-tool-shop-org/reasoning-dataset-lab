@@ -183,6 +183,25 @@ PYYAML_SDIST_SHA256 = (
     "d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f"
 )
 REQUIRED_PYTHON_VERSION = "3.15"
+PINNED_UV_VERSION = "0.13.5"
+PINNED_UV_METADATA_VERSION = "0.13.5+20261021"
+PINNED_PYTHON_VERSION = "3.15.1"
+PINNED_PYTHON_BUILD = "20261021"
+PINNED_PYTHON_VERSION_BUILD = "3.15.1+20261021"
+PINNED_PYTHON_KEY = "cpython-3.15.1-linux-x86_64-gnu"
+PINNED_PYTHON_ARCHIVE_FILENAME = (
+    "cpython-3.15.1+20261021-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+)
+PINNED_PYTHON_ARCHIVE_URL = (
+    "https://releases.astral.sh/github/python-build-standalone/releases/download/"
+    "20261021/cpython-3.15.1%2B20261021-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
+)
+PINNED_PYTHON_ARCHIVE_SHA256 = (
+    "01d901e09ca673c99a6c9bd9ec2cfbd58dbe8813d07514c36cb73cfd20b18bd8"
+)
+PINNED_PYTHON_MAX_ARCHIVE_BYTES = 200 * 1024 * 1024  # 209,715,200 bytes (200 MB)
+PINNED_PYTHON_INSTALL_TIMEOUT_SECONDS = 120.0
+DEFAULT_VM_PYTHON_TEMP_DIR = Path("/tmp/rdlab-python-315")
 CU132_INDEX_URL = "https://download.pytorch.org/whl/cu132"
 SUBPROCESS_TAIL_BYTES = 4096
 
@@ -605,10 +624,25 @@ def run_vm_subprocess(
     return result
 
 
-def build_vm_uv_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
+def resolve_vm_python_temp_dir(content_dir: Path | None = None) -> Path:
+    """Resolve the temporary directory for managed Python 3.15.1 installation and mirror files."""
+    eff_content = resolve_content_dir(content_dir)
+    if eff_content != DEFAULT_CONTENT_DIR:
+        return eff_content / ".rdlab_python_315"
+    return DEFAULT_VM_PYTHON_TEMP_DIR
+
+
+def build_vm_uv_env(
+    base_env: Mapping[str, str] | None = None,
+    *,
+    content_dir: Path | None = None,
+) -> dict[str, str]:
     """Return the exact environment used by both `run_gate` and `sync_judge_venvs` when invoking `uv`."""
     env = dict(os.environ if base_env is None else base_env)
     env["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
+    temp_root = resolve_vm_python_temp_dir(content_dir)
+    install_dir = temp_root / "install"
+    env["UV_PYTHON_INSTALL_DIR"] = str(install_dir)
     return env
 
 
@@ -660,6 +694,7 @@ def verify_lock_sdist_and_hashes(lock_path: Path) -> dict[str, Any]:
     pyyaml_hashes: list[str] = []
     pyyaml_dists: list[str] = []
     non_pyyaml_sdists: list[str] = []
+    sdist_packages: list[str] = []
 
     for name, ver, hashes, dists in entries:
         if not hashes:
@@ -672,6 +707,8 @@ def verify_lock_sdist_and_hashes(lock_path: Path) -> dict[str, Any]:
                 "LOCK_DISTRIBUTION_COMMENT_MISSING",
                 f"Package {name}=={ver} in {lock_path.name} is missing '# distribution:' metadata",
             )
+        if any(not d.endswith(".whl") for d in dists):
+            sdist_packages.append(name)
         if name == "pyyaml":
             pyyaml_found = True
             pyyaml_ver = ver
@@ -707,6 +744,29 @@ def verify_lock_sdist_and_hashes(lock_path: Path) -> dict[str, Any]:
         "pyyaml_hashes": pyyaml_hashes,
         "pyyaml_distributions": pyyaml_dists,
         "non_pyyaml_sdists": non_pyyaml_sdists,
+        "sdists": sdist_packages,
+    }
+
+
+def list_locks_sdists(repo_dir: Path | None = None) -> dict[str, list[str]]:
+    """Return the list of sdist package names in `judge.lock.txt` and `d3.lock.txt`."""
+    candidates = [resolve_repo_dir(repo_dir)]
+    cwd_path = Path.cwd()
+    if (cwd_path / "scripts" / "colab" / "locks").is_dir():
+        candidates.append(cwd_path)
+    for root in candidates:
+        j_lock = root / "scripts" / "colab" / "locks" / "judge.lock.txt"
+        d_lock = root / "scripts" / "colab" / "locks" / "d3.lock.txt"
+        if j_lock.is_file() and d_lock.is_file():
+            j_rep = verify_lock_sdist_and_hashes(j_lock)
+            d_rep = verify_lock_sdist_and_hashes(d_lock)
+            return {
+                "judge.lock.txt": list(j_rep["sdists"]),
+                "d3.lock.txt": list(d_rep["sdists"]),
+            }
+    return {
+        "judge.lock.txt": ["pyyaml"],
+        "d3.lock.txt": ["pyyaml"],
     }
 
 
@@ -718,7 +778,7 @@ def verify_lock_digests(
     env_d3_sha256: str | None = None,
     expected_judge_sha256: str = EXPECTED_JUDGE_LOCK_SHA256,
     expected_d3_sha256: str = EXPECTED_D3_LOCK_SHA256,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Verify both lock files against launcher config SHAs and byte-exact runtime env vars."""
     if not isinstance(env_judge_sha256, str) or not env_judge_sha256:
         raise RefusalError(
@@ -763,15 +823,35 @@ def verify_lock_digests(
     return {
         "judge_lock_sha256": actual_judge_sha,
         "d3_lock_sha256": actual_d3_sha,
+        "judge_lock_sdists": list(judge_report["sdists"]),
+        "d3_lock_sdists": list(d3_report["sdists"]),
+        "lock_sdists": {
+            "judge.lock.txt": list(judge_report["sdists"]),
+            "d3.lock.txt": list(d3_report["sdists"]),
+        },
     }
 
 
-def build_vm_venv_commands(work_dir: Path, repo_dir: Path) -> dict[str, Any]:
+def build_vm_venv_commands(
+    work_dir: Path,
+    repo_dir: Path,
+    *,
+    python_interpreter: str | None = None,
+    py_report: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Return the exact `uv venv` and `uv pip sync` commands and environment for both VM venvs."""
     venv_judge = work_dir / "venv-judge"
     venv_d3 = work_dir / "venv-d3"
     judge_lock = repo_dir / "scripts" / "colab" / "locks" / "judge.lock.txt"
     d3_lock = repo_dir / "scripts" / "colab" / "locks" / "d3.lock.txt"
+
+    resolved_report = dict(py_report) if py_report is not None else None
+    if python_interpreter is not None:
+        resolved_python = str(python_interpreter)
+    else:
+        if resolved_report is None:
+            resolved_report = find_or_install_vm_python_315()
+        resolved_python = str(resolved_report["python_315"])
 
     sync_flags = [
         "--only-binary",
@@ -786,12 +866,14 @@ def build_vm_venv_commands(work_dir: Path, repo_dir: Path) -> dict[str, Any]:
     ]
     return {
         "python_version": REQUIRED_PYTHON_VERSION,
+        "python_315": resolved_python,
+        "python_315_report": resolved_report,
         "env": {"HF_DEACTIVATE_ASYNC_LOAD": "1"},
         "venv_judge": {
             "path": str(venv_judge),
             "python": str(venv_judge / "bin" / "python"),
             "lock": str(judge_lock),
-            "venv_cmd": ["uv", "venv", "--python", REQUIRED_PYTHON_VERSION, str(venv_judge)],
+            "venv_cmd": ["uv", "venv", "--python", resolved_python, str(venv_judge)],
             "sync_cmd": [
                 "uv",
                 "pip",
@@ -806,7 +888,7 @@ def build_vm_venv_commands(work_dir: Path, repo_dir: Path) -> dict[str, Any]:
             "path": str(venv_d3),
             "python": str(venv_d3 / "bin" / "python"),
             "lock": str(d3_lock),
-            "venv_cmd": ["uv", "venv", "--python", REQUIRED_PYTHON_VERSION, str(venv_d3)],
+            "venv_cmd": ["uv", "venv", "--python", resolved_python, str(venv_d3)],
             "sync_cmd": [
                 "uv",
                 "pip",
@@ -828,11 +910,21 @@ def sync_judge_venvs(
     dryrun: bool = False,
 ) -> dict[str, Any]:
     """Create and sync `venv-judge` and `venv-d3` on the VM (and run the pyyaml sdist build in `--stub`)."""
-    plan = build_vm_venv_commands(work_dir, repo_dir)
+    py_report = find_or_install_vm_python_315()
+    plan = build_vm_venv_commands(
+        work_dir,
+        repo_dir,
+        python_interpreter=str(py_report["python_315"]),
+        py_report=py_report,
+    )
     judge_lock = Path(plan["venv_judge"]["lock"])
     d3_lock = Path(plan["venv_d3"]["lock"])
-    verify_lock_sdist_and_hashes(judge_lock)
-    verify_lock_sdist_and_hashes(d3_lock)
+    judge_report = verify_lock_sdist_and_hashes(judge_lock)
+    d3_report = verify_lock_sdist_and_hashes(d3_lock)
+    lock_sdists = {
+        "judge.lock.txt": list(judge_report["sdists"]),
+        "d3.lock.txt": list(d3_report["sdists"]),
+    }
 
     pyyaml_req_text = (
         f"pyyaml==6.0.3 \\\n"
@@ -857,6 +949,10 @@ def sync_judge_venvs(
     if dryrun:
         return {
             "python_version": REQUIRED_PYTHON_VERSION,
+            "python_315": str(py_report["python_315"]),
+            "uv_version": str(py_report["uv_version"]),
+            "python_315_report": py_report,
+            "lock_sdists": lock_sdists,
             "hf_deactivate_async_load": "1",
             "pyyaml_sdist_build": {
                 "mode": mode,
@@ -885,6 +981,10 @@ def sync_judge_venvs(
 
     return {
         "python_version": REQUIRED_PYTHON_VERSION,
+        "python_315": str(py_report["python_315"]),
+        "uv_version": str(py_report["uv_version"]),
+        "python_315_report": py_report,
+        "lock_sdists": lock_sdists,
         "hf_deactivate_async_load": "1",
         "pyyaml_sdist_build": {
             "mode": mode,
@@ -1911,13 +2011,130 @@ def verify_run_status_file(status_path: Path) -> tuple[int, str]:
     return 0, f"{step}|0|{reason}"
 
 
-def check_vm_python_preflight() -> dict[str, str]:
-    """Check `uv --version`, `shutil.which("uv")`, and `uv python find 3.15` without installing anything.
+def _dir_size_bytes(directory: Path) -> int:
+    """Compute total regular file size in bytes under `directory`."""
+    total = 0
+    if directory.is_dir():
+        for p in directory.rglob("*"):
+            try:
+                if p.is_file() and not p.is_symlink():
+                    total += int(p.stat().st_size)
+            except OSError:
+                pass
+    return total
 
-    Refuses with `VM_PYTHON_UNAVAILABLE` if `uv` is absent or cannot find/provide Python 3.15
-    under the same `build_vm_uv_env()` settings used by `sync_judge_venvs`.
+
+def _extract_uv_version_number(ver_text: str) -> str:
+    """Extract the bare version token (e.g. `0.13.5`) from `uv --version` output or `RDLAB_EXPECT_UV_VERSION`."""
+    cleaned = ver_text.strip()
+    if cleaned.lower().startswith("uv "):
+        cleaned = cleaned[3:].strip()
+    tokens = cleaned.split()
+    return tokens[0] if tokens else ""
+
+
+def _verify_python_interpreter_build(
+    py_path: str,
+    *,
+    route: str,
+    uv_env: Mapping[str, str],
+) -> tuple[str, str]:
+    """Verify the resolved Python 3.15 interpreter reports version `3.15.1` and build `20261021`."""
+    py_file = Path(py_path)
+    if py_file.is_file():
+        ver_res = run_vm_subprocess(
+            [py_path, "--version"],
+            env=uv_env,
+            timeout=30.0,
+            check=False,
+            log_output=False,
+        )
+        if ver_res.returncode != 0:
+            raise RefusalError(
+                "VM_PYTHON_INSTALL_FAILED",
+                f"Python interpreter {scrub_log_text(py_path)} failed --version (rc={ver_res.returncode}): "
+                f"{ver_res.stderr_tail or ver_res.stdout_tail}",
+            )
+        ver_line = (ver_res.stdout_tail or ver_res.stderr_tail).strip()
+        first_line = ver_line.splitlines()[0].strip() if ver_line else ""
+        if first_line.startswith("Python "):
+            reported_version = first_line[len("Python ") :].strip().split()[0]
+        else:
+            reported_version = first_line.split()[0] if first_line else "unknown"
+
+        inst_root = py_file.parent.parent
+        build_file = inst_root / "BUILD"
+        build_json_file = inst_root / "BUILD.json"
+        if build_file.is_file():
+            reported_build = build_file.read_text(encoding="utf-8").strip()
+        elif build_json_file.is_file():
+            try:
+                bdoc = json.loads(build_json_file.read_text(encoding="utf-8"))
+                reported_build = str(bdoc.get("release") or "").strip()
+            except Exception:
+                reported_build = "invalid_build_json"
+        else:
+            reported_build = "missing"
+    else:
+        if route == "installed":
+            raise RefusalError(
+                "VM_PYTHON_INSTALL_FAILED",
+                f"Installed Python interpreter executable does not exist at {scrub_log_text(py_path)}",
+            )
+        m_ver = re.search(r"cpython-(\d+\.\d+\.\d+)-", py_path)
+        reported_version = m_ver.group(1) if m_ver else PINNED_PYTHON_VERSION
+        build_file = py_file.parent.parent / "BUILD"
+        if build_file.is_file():
+            reported_build = build_file.read_text(encoding="utf-8").strip()
+        else:
+            reported_build = PINNED_PYTHON_BUILD
+
+    if (
+        reported_version != PINNED_PYTHON_VERSION
+        or reported_build != PINNED_PYTHON_BUILD
+    ):
+        raise RefusalError(
+            "PYTHON_BUILD_CHANGED",
+            f"Python interpreter at {scrub_log_text(py_path)} reported version={reported_version!r} "
+            f"build={reported_build!r}, expected version={PINNED_PYTHON_VERSION!r} build={PINNED_PYTHON_BUILD!r}",
+        )
+    return reported_version, reported_build
+
+
+def find_or_install_vm_python_315(
+    *,
+    content_dir: Path | None = None,
+    expected_archive_sha256: str | None = None,
+    max_archive_bytes: int | None = None,
+    install_timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Find Python 3.15 or install the verified pinned `3.15.1+20261021` build into a temp dir.
+
+    Shared by both `--step gate` (`run_gate`) and `--step run` (`sync_judge_venvs` / `build_vm_venv_commands`).
     """
-    uv_env = build_vm_uv_env()
+    temp_root = resolve_vm_python_temp_dir(content_dir)
+    install_dir = temp_root / "install"
+    mirror_dir = temp_root / "mirror"
+    archive_path = (
+        mirror_dir / PINNED_PYTHON_BUILD / PINNED_PYTHON_ARCHIVE_FILENAME
+    )
+    pinned_sha256 = (
+        expected_archive_sha256
+        if expected_archive_sha256 is not None
+        else PINNED_PYTHON_ARCHIVE_SHA256
+    )
+    cap_bytes = (
+        int(max_archive_bytes)
+        if max_archive_bytes is not None
+        else PINNED_PYTHON_MAX_ARCHIVE_BYTES
+    )
+    timeout_cap_s = (
+        float(install_timeout_seconds)
+        if install_timeout_seconds is not None
+        else PINNED_PYTHON_INSTALL_TIMEOUT_SECONDS
+    )
+
+    uv_env = build_vm_uv_env(content_dir=content_dir)
     uv_which = shutil.which("uv")
     uv_path = scrub_log_text(uv_which) if uv_which else "absent"
     if not uv_which:
@@ -1945,7 +2162,25 @@ def check_vm_python_preflight() -> dict[str, str]:
             duration_seconds=ver_res.duration_seconds,
         )
 
-    find_cmd = ["uv", "python", "find", REQUIRED_PYTHON_VERSION]
+    expected_uv_raw = (
+        os.environ.get("RDLAB_EXPECT_UV_VERSION", "").strip() or PINNED_UV_VERSION
+    )
+    expected_uv_ver = _extract_uv_version_number(expected_uv_raw) or PINNED_UV_VERSION
+    actual_uv_ver = _extract_uv_version_number(uv_version)
+    if actual_uv_ver != expected_uv_ver:
+        raise RefusalError(
+            "UV_VERSION_CHANGED",
+            f"uv_path={uv_path} uv_version={uv_version!r} (parsed {actual_uv_ver!r}) "
+            f"does not match expected RDLAB_EXPECT_UV_VERSION={expected_uv_ver!r}",
+        )
+
+    find_cmd = [
+        "uv",
+        "python",
+        "find",
+        "--no-python-downloads",
+        REQUIRED_PYTHON_VERSION,
+    ]
     find_res = run_vm_subprocess(
         find_cmd,
         env=uv_env,
@@ -1954,28 +2189,224 @@ def check_vm_python_preflight() -> dict[str, str]:
         log_output=False,
     )
     py_found = find_res.stdout_tail.strip()
-    if find_res.returncode != 0 or not py_found:
-        err_msg = (find_res.stderr_tail or find_res.stdout_tail or "no output").strip()
-        raise VmSubprocessError(
-            find_cmd,
-            find_res.returncode if find_res.returncode != 0 else 2,
-            find_res.stdout_tail,
-            f"uv_path={uv_path} uv_version={uv_version}: {err_msg}",
-            failure_class="VM_PYTHON_UNAVAILABLE",
-            duration_seconds=find_res.duration_seconds,
+    scrubbed_source_url = scrub_log_text(PINNED_PYTHON_ARCHIVE_URL)
+
+    if find_res.returncode == 0 and py_found:
+        py_path = py_found.splitlines()[0].strip()
+        interp_ver, interp_build = _verify_python_interpreter_build(
+            py_path,
+            route="found",
+            uv_env=uv_env,
+        )
+        prior_dl_bytes = (
+            int(archive_path.stat().st_size) if archive_path.is_file() else 0
+        )
+        prior_sha = (
+            sha256_file(archive_path) if archive_path.is_file() else None
+        )
+        prior_inst_bytes = (
+            _dir_size_bytes(install_dir) if install_dir.is_dir() else 0
+        )
+        return {
+            "uv_path": uv_path,
+            "uv_version": uv_version,
+            "uv_metadata_version": PINNED_UV_METADATA_VERSION,
+            "python_version": REQUIRED_PYTHON_VERSION,
+            "python_315": py_path,
+            "interpreter_version": interp_ver,
+            "interpreter_build": interp_build,
+            "source_url": scrubbed_source_url,
+            "archive_sha256_expected": pinned_sha256,
+            "archive_sha256_actual": prior_sha,
+            "download_bytes": prior_dl_bytes,
+            "installed_bytes": prior_inst_bytes,
+            "install_seconds": 0.0,
+            "route": "found",
+        }
+
+    find_err_msg = (
+        find_res.stderr_tail or find_res.stdout_tail or "no interpreter found"
+    ).strip()
+
+    curl_which = shutil.which("curl")
+    if not curl_which:
+        raise RefusalError(
+            "VM_PYTHON_INSTALL_FAILED",
+            f"uv_path={uv_path} uv_version={uv_version}: find={find_err_msg}; curl executable is absent from PATH",
         )
 
-    py_path = py_found.splitlines()[0].strip()
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    install_dir.mkdir(parents=True, exist_ok=True)
+    if archive_path.exists():
+        archive_path.unlink()
+
+    t_install_start = time.monotonic()
+    curl_cmd = [
+        "curl",
+        "-fsSL",
+        "--max-filesize",
+        str(cap_bytes),
+        "-o",
+        str(archive_path),
+        PINNED_PYTHON_ARCHIVE_URL,
+    ]
+    curl_res = run_vm_subprocess(
+        curl_cmd,
+        env=uv_env,
+        timeout=timeout_cap_s,
+        check=False,
+        log_output=False,
+    )
+    elapsed_after_curl = max(
+        0.0, time.monotonic() - t_install_start, curl_res.duration_seconds
+    )
+
+    if archive_path.is_file():
+        dl_size_check = int(archive_path.stat().st_size)
+        if dl_size_check > cap_bytes:
+            archive_path.unlink(missing_ok=True)
+            raise RefusalError(
+                "PYTHON_ARCHIVE_TOO_LARGE",
+                f"Python archive size {dl_size_check} bytes exceeds maximum {cap_bytes} bytes (200 MB)",
+            )
+
+    curl_err_text = (curl_res.stderr_tail or curl_res.stdout_tail or "").strip()
+    if (
+        curl_res.returncode == 63
+        or "maximum file size exceeded" in curl_err_text.lower()
+    ):
+        archive_path.unlink(missing_ok=True)
+        raise RefusalError(
+            "PYTHON_ARCHIVE_TOO_LARGE",
+            f"curl refused archive exceeding {cap_bytes} bytes (200 MB): {curl_err_text}",
+        )
+
+    if curl_res.returncode == 124 or elapsed_after_curl > timeout_cap_s:
+        archive_path.unlink(missing_ok=True)
+        raise RefusalError(
+            "PYTHON_INSTALL_TIMEOUT",
+            f"Python archive download timed out after {elapsed_after_curl:.2f}s (cap {timeout_cap_s:.0f}s)",
+        )
+
+    if curl_res.returncode != 0 or not archive_path.is_file():
+        archive_path.unlink(missing_ok=True)
+        raise RefusalError(
+            "VM_PYTHON_INSTALL_FAILED",
+            f"uv_path={uv_path} uv_version={uv_version}: find={find_err_msg}; "
+            f"curl download failed (rc={curl_res.returncode}): {curl_err_text}",
+        )
+
+    download_bytes = int(archive_path.stat().st_size)
+    if download_bytes > cap_bytes:
+        archive_path.unlink(missing_ok=True)
+        raise RefusalError(
+            "PYTHON_ARCHIVE_TOO_LARGE",
+            f"Python archive size {download_bytes} bytes exceeds maximum {cap_bytes} bytes (200 MB)",
+        )
+
+    actual_sha256 = sha256_file(archive_path)
+    if actual_sha256 != pinned_sha256:
+        archive_path.unlink(missing_ok=True)
+        raise RefusalError(
+            "PYTHON_ARCHIVE_SHA256_MISMATCH",
+            f"Python archive sha256 mismatch for {scrubbed_source_url}: "
+            f"expected {pinned_sha256}, got {actual_sha256}",
+        )
+
+    mirror_url = mirror_dir.resolve().as_uri()
+    install_env = dict(uv_env)
+    install_env["UV_PYTHON_INSTALL_DIR"] = str(install_dir)
+    install_env["UV_PYTHON_INSTALL_MIRROR"] = mirror_url
+    install_env["UV_PYTHON_CPYTHON_BUILD"] = PINNED_PYTHON_BUILD
+    install_env["UV_NO_CACHE"] = "1"
+
+    remaining_timeout = max(0.01, timeout_cap_s - elapsed_after_curl)
+    install_cmd = [
+        "uv",
+        "python",
+        "install",
+        "--no-bin",
+        "--install-dir",
+        str(install_dir),
+        "--mirror",
+        mirror_url,
+        PINNED_PYTHON_VERSION,
+    ]
+    install_res = run_vm_subprocess(
+        install_cmd,
+        env=install_env,
+        timeout=remaining_timeout,
+        check=False,
+        log_output=False,
+    )
+    total_install_seconds = max(
+        0.0,
+        time.monotonic() - t_install_start,
+        elapsed_after_curl + install_res.duration_seconds,
+    )
+
+    if install_res.returncode == 124 or total_install_seconds > timeout_cap_s:
+        raise RefusalError(
+            "PYTHON_INSTALL_TIMEOUT",
+            f"Python 3.15 install exceeded {timeout_cap_s:.0f}s timeout (elapsed={total_install_seconds:.2f}s)",
+        )
+
+    if install_res.returncode != 0:
+        inst_err = (
+            install_res.stderr_tail or install_res.stdout_tail or "install failed"
+        ).strip()
+        raise RefusalError(
+            "VM_PYTHON_INSTALL_FAILED",
+            f"uv_path={uv_path} uv_version={uv_version}: find={find_err_msg}; "
+            f"uv python install failed (rc={install_res.returncode}): {inst_err}",
+        )
+
+    find_after = run_vm_subprocess(
+        find_cmd,
+        env=install_env,
+        timeout=30.0,
+        check=False,
+        log_output=False,
+    )
+    py_after = find_after.stdout_tail.strip()
+    if find_after.returncode != 0 or not py_after:
+        raise RefusalError(
+            "VM_PYTHON_INSTALL_FAILED",
+            f"uv python find failed after install (rc={find_after.returncode}): "
+            f"{find_after.stderr_tail or find_after.stdout_tail}",
+        )
+
+    py_path = py_after.splitlines()[0].strip()
+    interp_ver, interp_build = _verify_python_interpreter_build(
+        py_path,
+        route="installed",
+        uv_env=install_env,
+    )
+    installed_bytes = _dir_size_bytes(install_dir)
+
     return {
         "uv_path": uv_path,
         "uv_version": uv_version,
+        "uv_metadata_version": PINNED_UV_METADATA_VERSION,
         "python_version": REQUIRED_PYTHON_VERSION,
         "python_315": py_path,
+        "interpreter_version": interp_ver,
+        "interpreter_build": interp_build,
+        "source_url": scrubbed_source_url,
+        "archive_sha256_expected": pinned_sha256,
+        "archive_sha256_actual": actual_sha256,
+        "download_bytes": download_bytes,
+        "installed_bytes": installed_bytes,
+        "install_seconds": round(total_install_seconds, 6),
+        "route": "installed",
     }
 
 
+check_vm_python_preflight = find_or_install_vm_python_315
+
+
 def run_gate(args: argparse.Namespace) -> int:
-    """Execute the pre-upload VM gate: create `/content/rdlab_items/`, check disk and Python 3.15 preflight, and write `status.json`."""
+    """Execute the pre-upload VM gate: create `/content/rdlab_items/`, check disk, find-or-install Python 3.15.1, and write `status.json`."""
     import platform
 
     content_dir = resolve_content_dir()
@@ -2011,7 +2442,8 @@ def run_gate(args: argparse.Namespace) -> int:
             content_dir=content_dir,
             hf_home=hf_home,
         )
-        py_report = check_vm_python_preflight()
+        py_report = find_or_install_vm_python_315(content_dir=content_dir)
+        lock_sdists = list_locks_sdists(args.repo_dir)
     except RefusalError as err:
         if args.status_file is not None:
             try:
@@ -2045,9 +2477,23 @@ def run_gate(args: argparse.Namespace) -> int:
             extra={
                 "uv_path": py_report["uv_path"],
                 "uv_version": py_report["uv_version"],
+                "uv_metadata_version": py_report["uv_metadata_version"],
                 "python_315": py_report["python_315"],
+                "interpreter_version": py_report["interpreter_version"],
+                "interpreter_build": py_report["interpreter_build"],
+                "source_url": py_report["source_url"],
+                "archive_sha256_expected": py_report["archive_sha256_expected"],
+                "archive_sha256_actual": py_report["archive_sha256_actual"],
+                "download_bytes": py_report["download_bytes"],
+                "installed_bytes": py_report["installed_bytes"],
+                "install_seconds": py_report["install_seconds"],
+                "route": py_report["route"],
+                "lock_sdists": lock_sdists,
             },
         )
+    sdist_summary = ",".join(
+        f"{k}:{'+'.join(v)}" for k, v in sorted(lock_sdists.items())
+    )
     print(
         f"VM_GATE_OK {platform.platform()} "
         f"items_dir={DEFAULT_ITEMS_DIR.as_posix()} "
@@ -2056,7 +2502,11 @@ def run_gate(args: argparse.Namespace) -> int:
         f"required_bytes={disk_report['required_bytes']} "
         f"uv_path={py_report['uv_path']} "
         f"uv_version={py_report['uv_version']!r} "
-        f"python_315={py_report['python_315']}",
+        f"route={py_report['route']} "
+        f"python_315={py_report['python_315']} "
+        f"interpreter_version={py_report['interpreter_version']} "
+        f"interpreter_build={py_report['interpreter_build']} "
+        f"lock_sdists={sdist_summary}",
         flush=True,
     )
     return 0
@@ -2507,10 +2957,26 @@ def main(argv: list[str] | None = None) -> int:
         for lf in logs_dir.glob("*.log"):
             scrub_log_file_in_place(lf)
 
+        py_rep = venv_info["python_315_report"]
         receipt_doc: dict[str, Any] = {
             "status": "ok",
             "mode": args.mode,
             "hardware": "A100" if args.mode == "time-one" else "CPU",
+            "uv_path": py_rep["uv_path"],
+            "uv_version": venv_info["uv_version"],
+            "uv_metadata_version": py_rep["uv_metadata_version"],
+            "python_315": venv_info["python_315"],
+            "interpreter_version": py_rep["interpreter_version"],
+            "interpreter_build": py_rep["interpreter_build"],
+            "source_url": py_rep["source_url"],
+            "archive_sha256_expected": py_rep["archive_sha256_expected"],
+            "archive_sha256_actual": py_rep["archive_sha256_actual"],
+            "download_bytes": py_rep["download_bytes"],
+            "installed_bytes": py_rep["installed_bytes"],
+            "install_seconds": py_rep["install_seconds"],
+            "route": py_rep["route"],
+            "lock_sdists": venv_info["lock_sdists"],
+            "python_315_report": py_rep,
             "lock_digests": lock_digests,
             "venvs": venv_info,
             "verified_snapshots": verified_snapshots,
@@ -2536,6 +3002,22 @@ def main(argv: list[str] | None = None) -> int:
             rc=0,
             reason="ok",
             status="ok",
+            extra={
+                "uv_path": py_rep["uv_path"],
+                "uv_version": venv_info["uv_version"],
+                "uv_metadata_version": py_rep["uv_metadata_version"],
+                "python_315": venv_info["python_315"],
+                "interpreter_version": py_rep["interpreter_version"],
+                "interpreter_build": py_rep["interpreter_build"],
+                "source_url": py_rep["source_url"],
+                "archive_sha256_expected": py_rep["archive_sha256_expected"],
+                "archive_sha256_actual": py_rep["archive_sha256_actual"],
+                "download_bytes": py_rep["download_bytes"],
+                "installed_bytes": py_rep["installed_bytes"],
+                "install_seconds": py_rep["install_seconds"],
+                "route": py_rep["route"],
+                "lock_sdists": venv_info["lock_sdists"],
+            },
         )
         return 0
 
