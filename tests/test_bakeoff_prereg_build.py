@@ -603,6 +603,7 @@ def test_change_d_screening_and_gate_yes_precision_and_yes_recall_with_bootstrap
 def test_change_e_winner_rule_function_and_edge_cases() -> None:
     assert hasattr(bakeoff_judge_score, "select_bakeoff_winner"), "Missing select_bakeoff_winner"
     select_winner = bakeoff_judge_score.select_bakeoff_winner
+    reg_doms = bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
 
     # Case 1: Judge A has highest class-balanced strict accuracy (0.85), Judge B is not separated by Holm (0.83)
     # and has higher yes-precision (0.95 vs 0.91) with recall >= 0.50 -> Judge B wins!
@@ -613,6 +614,7 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
             "screening_yes_precision": {"point": 0.91, "lcb": 0.88},
             "screening_yes_recall": {"point": 0.70, "lcb": 0.64},
             "screening_per_class_precision": {"unsupported": 0.91, "cannot_tell": 0.91},
+            "screening_domain_recall": dict.fromkeys(reg_doms, 0.70),
             "seconds_median": 0.05,
         },
         {
@@ -621,6 +623,7 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
             "screening_yes_precision": {"point": 0.95, "lcb": 0.91},
             "screening_yes_recall": {"point": 0.65, "lcb": 0.59},
             "screening_per_class_precision": {"unsupported": 0.95, "cannot_tell": 0.95},
+            "screening_domain_recall": dict.fromkeys(reg_doms, 0.65),
             "seconds_median": 0.02,
         },
     ]
@@ -633,7 +636,7 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
             "equivalence_status": "inconclusive",
         }
     ]
-    res_1 = select_winner(judges_1, pairs_1)
+    res_1 = select_winner(judges_1, pairs_1, registered_domains=reg_doms)
     assert res_1["winner"] == "mu-judge"
 
     # Case 2: Both superiority (holm_sign_flip_p < 0.05) and TOST (holm_tost_p < 0.05) fire -> marked practically_equivalent
@@ -645,6 +648,7 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
             "screening_yes_precision": {"point": 0.94, "lcb": 0.90},
             "screening_yes_recall": {"point": 0.60, "lcb": 0.54},
             "screening_per_class_precision": {"unsupported": 0.94, "cannot_tell": 0.94},
+            "screening_domain_recall": dict.fromkeys(reg_doms, 0.60),
             "seconds_median": 0.05,
         },
         {
@@ -653,6 +657,7 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
             "screening_yes_precision": {"point": 0.94, "lcb": 0.90},
             "screening_yes_recall": {"point": 0.60, "lcb": 0.54},
             "screening_per_class_precision": {"unsupported": 0.94, "cannot_tell": 0.94},
+            "screening_domain_recall": dict.fromkeys(reg_doms, 0.60),
             "seconds_median": 0.03,
         },
     ]
@@ -665,7 +670,7 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
             "equivalence_status": "practically_equivalent",
         }
     ]
-    res_2 = select_winner(judges_2, pairs_2)
+    res_2 = select_winner(judges_2, pairs_2, registered_domains=reg_doms)
     assert "mu-judge" in res_2["candidate_set"]
     assert res_2["winner"] == "mu-judge"  # 4B < 8B smaller model tie-breaker
 
@@ -677,14 +682,15 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
             "screening_yes_precision": {"point": 0.88, "lcb": 0.84},
             "screening_yes_recall": {"point": 0.45, "lcb": 0.40},
             "screening_per_class_precision": {"unsupported": 0.88, "cannot_tell": 0.88},
+            "screening_domain_recall": dict.fromkeys(reg_doms, 0.45),
             "seconds_median": 0.02,
         }
     ]
-    res_3 = select_winner(judges_3, [])
+    res_3 = select_winner(judges_3, [], registered_domains=reg_doms)
     assert res_3["winner"] == "no_judge_eligible"
 
     # Empty judges list, scalar float CB accuracy, and pairwise statistical helper edge cases
-    assert select_winner([], [])["winner"] == "no_judge_eligible"
+    assert select_winner([], [], registered_domains=reg_doms)["winner"] == "no_judge_eligible"
     res_scalar = select_winner(
         [
             {
@@ -693,6 +699,7 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
                 "screening_yes_precision": {"point": 0.95, "lcb": 0.91},
                 "screening_yes_recall": {"point": 0.70, "lcb": 0.64},
                 "screening_per_class_precision": {"unsupported": 0.95, "cannot_tell": 0.95},
+                "screening_domain_recall": dict.fromkeys(reg_doms, 0.70),
                 "seconds_median": 0.01,
             },
             {
@@ -701,6 +708,7 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
                 "screening_yes_precision": {"point": 0.96, "lcb": 0.92},
                 "screening_yes_recall": {"point": 0.70, "lcb": 0.64},
                 "screening_per_class_precision": {"unsupported": 0.96, "cannot_tell": 0.96},
+                "screening_domain_recall": dict.fromkeys(reg_doms, 0.70),
                 "seconds_median": 0.02,
             },
         ],
@@ -713,6 +721,7 @@ def test_change_e_winner_rule_function_and_edge_cases() -> None:
                 "equivalence_status": "equivalent",
             }
         ],
+        registered_domains=reg_doms,
     )
     assert res_scalar["winner"] == "d3-mini"
     assert bakeoff_judge_score.exact_sign_flip_two_sided_p([0.1] * 22, max_exact_triads=20, mc_samples=200) < 0.05
@@ -1242,7 +1251,7 @@ def test_fix1_item7_logprob_mass_guard_refuses_non_pilot_40b_part(tmp_path: Path
 # Card 2026-11-02: Winner rule, floors first (7 required constructed-summary tests)
 # ---------------------------------------------------------------------------------------------------------------------
 def _ten_domains(default_recall: float = 0.65, overrides: dict[str, float] | None = None) -> dict[str, float]:
-    out = {f"dom_{i}": default_recall for i in range(10)}
+    out = dict.fromkeys(bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS, default_recall)
     if overrides:
         out.update(overrides)
     return out
@@ -1252,7 +1261,7 @@ def test_winner_rule_spoiler_argon_counterexample() -> None:
     """Spoiler (Argon's counterexample): high-CB ineligible judge A separated by Holm from eligible judge B -> B selected."""
     judges = [
         {
-            "judge_id": "judge-a",
+            "judge_id": "granite-guardian-4.1-8b",
             "class_balanced_strict_accuracy": {"point": round((0.90 + 0.88 + 0.88) / 3.0, 6), "lcb": 0.86},
             "screening_yes_precision": {"point": round(0.90 / (0.90 + 2.0 * 0.10), 6), "lcb": 0.78},
             "screening_yes_recall": {"point": 0.90, "lcb": 0.86},
@@ -1264,7 +1273,7 @@ def test_winner_rule_spoiler_argon_counterexample() -> None:
             "seconds_median": 0.03,
         },
         {
-            "judge_id": "judge-b",
+            "judge_id": "mu-judge",
             "class_balanced_strict_accuracy": {"point": round((0.60 + 0.95 + 0.95) / 3.0, 6), "lcb": 0.80},
             "screening_yes_precision": {"point": round(0.60 / (0.60 + 2.0 * 0.015), 6), "lcb": 0.92},
             "screening_yes_recall": {"point": 0.60, "lcb": 0.55},
@@ -1278,18 +1287,20 @@ def test_winner_rule_spoiler_argon_counterexample() -> None:
     ]
     pairs = [
         {
-            "judge_a": "judge-a",
-            "judge_b": "judge-b",
+            "judge_a": "granite-guardian-4.1-8b",
+            "judge_b": "mu-judge",
             "holm_sign_flip_p": 0.001,
             "holm_tost_p": 0.80,
             "equivalence_status": "separated",
         }
     ]
-    res = bakeoff_judge_score.select_bakeoff_winner(judges, pairs)
-    assert res["winner"] == "judge-b"
-    assert res["eligible_judges"] == ["judge-b"]
-    assert res["eligibility_by_judge"]["judge-a"]["eligible"] is False
-    assert res["eligibility_by_judge"]["judge-b"]["eligible"] is True
+    res = bakeoff_judge_score.select_bakeoff_winner(
+        judges, pairs, registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
+    assert res["winner"] == "mu-judge"
+    assert res["eligible_judges"] == ["mu-judge"]
+    assert res["eligibility_by_judge"]["granite-guardian-4.1-8b"]["eligible"] is False
+    assert res["eligibility_by_judge"]["mu-judge"]["eligible"] is True
 
 
 def test_winner_rule_precision_band_prefers_higher_cb_accuracy() -> None:
@@ -1339,7 +1350,9 @@ def test_winner_rule_precision_band_prefers_higher_cb_accuracy() -> None:
             "equivalence_status": "separated",
         },
     ]
-    res = bakeoff_judge_score.select_bakeoff_winner(judges, pairs)
+    res = bakeoff_judge_score.select_bakeoff_winner(
+        judges, pairs, registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
     assert res["winner"] == "mu-judge"
     assert res["eligible_judges"] == ["mu-judge", "granite-guardian-4.1-8b", "flow-judge-v0.1"]
     assert res["candidate_set"] == ["mu-judge", "granite-guardian-4.1-8b"]
@@ -1350,7 +1363,7 @@ def test_winner_rule_lcb_floor_rejects_wide_bootstrap_and_accepts_tight_bootstra
     """LCB: point precision 0.90 with wide bootstrap (LCB < 0.86) is ineligible; point 0.895 with LCB >= 0.86 is eligible."""
     judges = [
         {
-            "judge_id": "wide-boot-judge",
+            "judge_id": "granite-guardian-4.1-8b",
             "class_balanced_strict_accuracy": {"point": 0.86, "lcb": 0.82},
             "screening_yes_precision": {"point": 0.90, "lcb": 0.84, "low": 0.82, "high": 0.96},
             "screening_yes_recall": {"point": 0.65, "lcb": 0.58},
@@ -1359,7 +1372,7 @@ def test_winner_rule_lcb_floor_rejects_wide_bootstrap_and_accepts_tight_bootstra
             "seconds_median": 0.03,
         },
         {
-            "judge_id": "tight-boot-judge",
+            "judge_id": "mu-judge",
             "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
             "screening_yes_precision": {"point": 0.895, "lcb": 0.87, "low": 0.86, "high": 0.93},
             "screening_yes_recall": {"point": 0.65, "lcb": 0.58},
@@ -1370,25 +1383,27 @@ def test_winner_rule_lcb_floor_rejects_wide_bootstrap_and_accepts_tight_bootstra
     ]
     pairs = [
         {
-            "judge_a": "wide-boot-judge",
-            "judge_b": "tight-boot-judge",
+            "judge_a": "granite-guardian-4.1-8b",
+            "judge_b": "mu-judge",
             "holm_sign_flip_p": 0.30,
             "holm_tost_p": 0.20,
             "equivalence_status": "inconclusive",
         }
     ]
-    res = bakeoff_judge_score.select_bakeoff_winner(judges, pairs)
-    assert res["winner"] == "tight-boot-judge"
-    assert res["eligibility_by_judge"]["wide-boot-judge"]["eligible"] is False
-    assert res["eligibility_by_judge"]["wide-boot-judge"]["conditions"]["lcb_precision"] is False
-    assert res["eligibility_by_judge"]["tight-boot-judge"]["eligible"] is True
+    res = bakeoff_judge_score.select_bakeoff_winner(
+        judges, pairs, registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
+    assert res["winner"] == "mu-judge"
+    assert res["eligibility_by_judge"]["granite-guardian-4.1-8b"]["eligible"] is False
+    assert res["eligibility_by_judge"]["granite-guardian-4.1-8b"]["conditions"]["lcb_precision"] is False
+    assert res["eligibility_by_judge"]["mu-judge"]["eligible"] is True
     assert res["removed_by_condition"]["lcb_precision"] == 1
 
 
 def test_winner_rule_per_negative_class_precision_hand_worked_and_concentrated_fp() -> None:
     """Per-class (hand-worked): TP=300, FP_unsupported=0, FP_cannot_tell=30 -> pooled 300/330=0.909, unsup=1.000, cannot_tell=300/360=0.833 < 0.85 -> ineligible."""
     hand_worked_judge = {
-        "judge_id": "concentrated-fp-judge",
+        "judge_id": "granite-guardian-4.1-8b",
         "class_balanced_strict_accuracy": {"point": 0.88, "lcb": 0.85},
         "screening_yes_precision": {"point": round(300.0 / 330.0, 6), "lcb": 0.88},
         "screening_yes_recall": {"point": round(300.0 / 420.0, 6), "lcb": 0.66},
@@ -1397,9 +1412,11 @@ def test_winner_rule_per_negative_class_precision_hand_worked_and_concentrated_f
         "screening_domain_recall": _ten_domains(round(300.0 / 420.0, 6)),
         "seconds_median": 0.02,
     }
-    res_single = bakeoff_judge_score.select_bakeoff_winner([hand_worked_judge], [])
+    res_single = bakeoff_judge_score.select_bakeoff_winner(
+        [hand_worked_judge], [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
     assert res_single["winner"] == "no_judge_eligible"
-    elig = res_single["eligibility_by_judge"]["concentrated-fp-judge"]
+    elig = res_single["eligibility_by_judge"]["granite-guardian-4.1-8b"]
     assert elig["eligible"] is False
     assert elig["precision_point"] == pytest.approx(300.0 / 330.0, abs=1e-6)
     assert elig["per_class_precision"]["unsupported"] == pytest.approx(1.0, abs=1e-6)
@@ -1411,20 +1428,22 @@ def test_winner_rule_per_negative_class_precision_hand_worked_and_concentrated_f
     # Equal pooled FPR (total FP=30 -> 15 each), so both per-class precisions are 300/330 = 0.909 >= 0.85 -> eligible
     balanced_fp_judge = {
         **hand_worked_judge,
-        "judge_id": "balanced-fp-judge",
+        "judge_id": "mu-judge",
         "class_balanced_strict_accuracy": {"point": 0.86, "lcb": 0.83},
         "screening_fp_by_class": {"unsupported": 15, "cannot_tell": 15},
     }
-    res_pair = bakeoff_judge_score.select_bakeoff_winner([hand_worked_judge, balanced_fp_judge], [])
-    assert res_pair["winner"] == "balanced-fp-judge"
+    res_pair = bakeoff_judge_score.select_bakeoff_winner(
+        [hand_worked_judge, balanced_fp_judge], [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
+    assert res_pair["winner"] == "mu-judge"
     assert bakeoff_judge_score.compute_per_negative_class_precision(0, 0) == 0.0
 
 
 def test_winner_rule_domain_coverage_requires_8_of_10_domains_at_least_025() -> None:
     """Domain coverage: recall >= 0.50 overall but < 0.25 in 3 domains (only 7/10 pass) -> ineligible."""
-    dom_recalls = _ten_domains(0.75, overrides={"dom_0": 0.10, "dom_1": 0.20, "dom_2": 0.24})
+    dom_recalls = _ten_domains(0.75, overrides={"boilers": 0.10, "chillers": 0.20, "compressors": 0.24})
     judge = {
-        "judge_id": "domain-gap-judge",
+        "judge_id": "mu-judge",
         "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
         "screening_yes_precision": {"point": 0.93, "lcb": 0.89},
         "screening_yes_recall": {"point": 0.581, "lcb": 0.52},
@@ -1432,11 +1451,13 @@ def test_winner_rule_domain_coverage_requires_8_of_10_domains_at_least_025() -> 
         "screening_domain_recall": dom_recalls,
         "seconds_median": 0.02,
     }
-    res = bakeoff_judge_score.select_bakeoff_winner([judge], [])
+    res = bakeoff_judge_score.select_bakeoff_winner(
+        [judge], [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
     assert res["winner"] == "no_judge_eligible"
-    assert res["eligibility_by_judge"]["domain-gap-judge"]["eligible"] is False
-    assert res["eligibility_by_judge"]["domain-gap-judge"]["domains_passing_recall_floor"] == 7
-    assert res["eligibility_by_judge"]["domain-gap-judge"]["conditions"]["domain_coverage"] is False
+    assert res["eligibility_by_judge"]["mu-judge"]["eligible"] is False
+    assert res["eligibility_by_judge"]["mu-judge"]["domains_passing_recall_floor"] == 7
+    assert res["eligibility_by_judge"]["mu-judge"]["conditions"]["domain_coverage"] is False
     assert res["removed_by_condition"]["domain_coverage"] == 1
 
 
@@ -1444,46 +1465,53 @@ def test_winner_rule_no_judge_eligible_records_per_condition_removal_counts() ->
     """No judge eligible: all fail -> no_judge_eligible with exact per-condition removal counts."""
     judges = [
         {
-            "judge_id": "fail-lcb-prec",
+            "judge_id": "d3-mini",
             "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
             "screening_yes_precision": {"point": 0.91, "lcb": 0.84},
             "screening_yes_recall": {"point": 0.65, "lcb": 0.55},
             "screening_per_class_precision": {"unsupported": 0.91, "cannot_tell": 0.91},
             "screening_domain_recall": _ten_domains(0.65),
+            "seconds_median": 0.02,
         },
         {
-            "judge_id": "fail-lcb-rec",
+            "judge_id": "flow-judge-v0.1",
             "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
             "screening_yes_precision": {"point": 0.92, "lcb": 0.89},
             "screening_yes_recall": {"point": 0.51, "lcb": 0.42},
             "screening_per_class_precision": {"unsupported": 0.92, "cannot_tell": 0.92},
             "screening_domain_recall": _ten_domains(0.51),
+            "seconds_median": 0.02,
         },
         {
-            "judge_id": "fail-unsup-prec",
+            "judge_id": "mu-judge",
             "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
             "screening_yes_precision": {"point": 0.909091, "lcb": 0.88},
             "screening_yes_recall": {"point": 0.714286, "lcb": 0.66},
             "screening_tp": 300,
             "screening_fp_by_class": {"unsupported": 30, "cannot_tell": 0},
             "screening_domain_recall": _ten_domains(0.714286),
+            "seconds_median": 0.02,
         },
         {
-            "judge_id": "fail-ct-prec",
+            "judge_id": "nemotron-3-nano-4b",
             "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
             "screening_yes_precision": {"point": 0.909091, "lcb": 0.88},
             "screening_yes_recall": {"point": 0.714286, "lcb": 0.66},
             "screening_tp": 300,
             "screening_fp_by_class": {"unsupported": 0, "cannot_tell": 30},
             "screening_domain_recall": _ten_domains(0.714286),
+            "seconds_median": 0.02,
         },
         {
-            "judge_id": "fail-domain-cov",
+            "judge_id": "granite-guardian-4.1-8b",
             "class_balanced_strict_accuracy": {"point": 0.85, "lcb": 0.82},
             "screening_yes_precision": {"point": 0.93, "lcb": 0.89},
             "screening_yes_recall": {"point": 0.55, "lcb": 0.49},
             "screening_per_class_precision": {"unsupported": 0.93, "cannot_tell": 0.93},
-            "screening_domain_recall": _ten_domains(0.70, overrides={"dom_0": 0.10, "dom_1": 0.15, "dom_2": 0.20}),
+            "screening_domain_recall": _ten_domains(
+                0.70, overrides={"boilers": 0.10, "chillers": 0.15, "compressors": 0.20}
+            ),
+            "seconds_median": 0.02,
         },
         {
             "judge_id": "halted-judge",
@@ -1494,7 +1522,9 @@ def test_winner_rule_no_judge_eligible_records_per_condition_removal_counts() ->
             "screening_per_class_precision": {"unsupported": 0.99, "cannot_tell": 0.99},
         },
     ]
-    res = bakeoff_judge_score.select_bakeoff_winner(judges, [])
+    res = bakeoff_judge_score.select_bakeoff_winner(
+        judges, [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
     assert res["winner"] == "no_judge_eligible"
     assert res["eligible_judges"] == []
     assert res["candidate_set"] == []
@@ -1540,7 +1570,9 @@ def test_winner_rule_cb_tie_within_band_falls_to_params_then_latency() -> None:
             "equivalence_status": "equivalent",
         }
     ]
-    res_params = bakeoff_judge_score.select_bakeoff_winner(judges_params, pairs_params)
+    res_params = bakeoff_judge_score.select_bakeoff_winner(
+        judges_params, pairs_params, registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
     assert res_params["winner"] == "mu-judge"
 
     # 2. Latency tie-break when parameter count is equal (both 4.0B: mu-judge vs nemotron-3-nano-4b)
@@ -1573,7 +1605,9 @@ def test_winner_rule_cb_tie_within_band_falls_to_params_then_latency() -> None:
             "equivalence_status": "equivalent",
         }
     ]
-    res_latency = bakeoff_judge_score.select_bakeoff_winner(judges_latency, pairs_latency)
+    res_latency = bakeoff_judge_score.select_bakeoff_winner(
+        judges_latency, pairs_latency, registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
     assert res_latency["winner"] == "nemotron-3-nano-4b"
 
 
@@ -1583,7 +1617,7 @@ def test_winner_rule_cb_tie_within_band_falls_to_params_then_latency() -> None:
 def test_winner_rule_strict_lcb_zero_and_missing_lcb_raises() -> None:
     """Fix 1: LCB of 0.0 is used as 0.0 (never falls through to low/point); missing LCB raises RdlabError."""
     judge_zero_prec_lcb = {
-        "judge_id": "zero-prec-lcb-judge",
+        "judge_id": "mu-judge",
         "class_balanced_strict_accuracy": {"point": 0.88, "lcb": 0.85},
         "screening_yes_precision": {"point": 0.94, "low": 0.90, "high": 0.97, "lcb": 0.0},
         "screening_yes_recall": {"point": 0.70, "low": 0.64, "high": 0.76, "lcb": 0.62},
@@ -1591,46 +1625,54 @@ def test_winner_rule_strict_lcb_zero_and_missing_lcb_raises() -> None:
         "screening_domain_recall": _ten_domains(0.70),
         "seconds_median": 0.02,
     }
-    res_zero_prec = bakeoff_judge_score.select_bakeoff_winner([judge_zero_prec_lcb], [])
+    res_zero_prec = bakeoff_judge_score.select_bakeoff_winner(
+        [judge_zero_prec_lcb], [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
     assert res_zero_prec["winner"] == "no_judge_eligible"
-    assert res_zero_prec["eligibility_by_judge"]["zero-prec-lcb-judge"]["precision_lcb"] == 0.0
-    assert res_zero_prec["eligibility_by_judge"]["zero-prec-lcb-judge"]["eligible"] is False
-    assert res_zero_prec["eligibility_by_judge"]["zero-prec-lcb-judge"]["conditions"]["lcb_precision"] is False
+    assert res_zero_prec["eligibility_by_judge"]["mu-judge"]["precision_lcb"] == 0.0
+    assert res_zero_prec["eligibility_by_judge"]["mu-judge"]["eligible"] is False
+    assert res_zero_prec["eligibility_by_judge"]["mu-judge"]["conditions"]["lcb_precision"] is False
 
     judge_zero_rec_lcb = {
         **judge_zero_prec_lcb,
-        "judge_id": "zero-rec-lcb-judge",
+        "judge_id": "granite-guardian-4.1-8b",
         "screening_yes_precision": {"point": 0.94, "low": 0.90, "high": 0.97, "lcb": 0.90},
         "screening_yes_recall": {"point": 0.70, "low": 0.64, "high": 0.76, "lcb": 0.0},
     }
-    res_zero_rec = bakeoff_judge_score.select_bakeoff_winner([judge_zero_rec_lcb], [])
+    res_zero_rec = bakeoff_judge_score.select_bakeoff_winner(
+        [judge_zero_rec_lcb], [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
     assert res_zero_rec["winner"] == "no_judge_eligible"
-    assert res_zero_rec["eligibility_by_judge"]["zero-rec-lcb-judge"]["recall_lcb"] == 0.0
-    assert res_zero_rec["eligibility_by_judge"]["zero-rec-lcb-judge"]["eligible"] is False
-    assert res_zero_rec["eligibility_by_judge"]["zero-rec-lcb-judge"]["conditions"]["lcb_recall"] is False
+    assert res_zero_rec["eligibility_by_judge"]["granite-guardian-4.1-8b"]["recall_lcb"] == 0.0
+    assert res_zero_rec["eligibility_by_judge"]["granite-guardian-4.1-8b"]["eligible"] is False
+    assert res_zero_rec["eligibility_by_judge"]["granite-guardian-4.1-8b"]["conditions"]["lcb_recall"] is False
 
     # Missing LCB (no "lcb" key, even with "low" and "point" present) must raise structured RdlabError
     judge_missing_prec_lcb = {
         **judge_zero_prec_lcb,
-        "judge_id": "missing-prec-lcb-judge",
+        "judge_id": "mu-judge",
         "screening_yes_precision": {"point": 0.94, "low": 0.90, "high": 0.97},
     }
     with pytest.raises(RdlabError) as exc_prec:
-        bakeoff_judge_score.select_bakeoff_winner([judge_missing_prec_lcb], [])
+        bakeoff_judge_score.select_bakeoff_winner(
+            [judge_missing_prec_lcb], [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+        )
     assert exc_prec.value.code == "BAKEOFF_WINNER_MISSING_LCB"
-    assert "missing-prec-lcb-judge" in exc_prec.value.message
+    assert "mu-judge" in exc_prec.value.message
     assert "screening_yes_precision" in exc_prec.value.message
     assert exc_prec.value.hint
 
     judge_missing_rec_lcb = {
         **judge_zero_rec_lcb,
-        "judge_id": "missing-rec-lcb-judge",
+        "judge_id": "granite-guardian-4.1-8b",
         "screening_yes_recall": {"point": 0.70, "low": 0.64, "high": 0.76},
     }
     with pytest.raises(RdlabError) as exc_rec:
-        bakeoff_judge_score.select_bakeoff_winner([judge_missing_rec_lcb], [])
+        bakeoff_judge_score.select_bakeoff_winner(
+            [judge_missing_rec_lcb], [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+        )
     assert exc_rec.value.code == "BAKEOFF_WINNER_MISSING_LCB"
-    assert "missing-rec-lcb-judge" in exc_rec.value.message
+    assert "granite-guardian-4.1-8b" in exc_rec.value.message
     assert "screening_yes_recall" in exc_rec.value.message
     assert exc_rec.value.hint
 
@@ -1638,7 +1680,7 @@ def test_winner_rule_strict_lcb_zero_and_missing_lcb_raises() -> None:
 def test_winner_rule_strict_missing_per_class_precision_raises() -> None:
     """Fix 2: Missing per-class precision data raises RdlabError and is never approximated from pooled precision."""
     judge_no_per_class = {
-        "judge_id": "no-per-class-judge",
+        "judge_id": "mu-judge",
         "class_balanced_strict_accuracy": {"point": 0.88, "lcb": 0.85},
         "screening_yes_precision": {"point": 0.94, "lcb": 0.90},
         "screening_yes_recall": {"point": 0.70, "lcb": 0.64},
@@ -1646,31 +1688,37 @@ def test_winner_rule_strict_missing_per_class_precision_raises() -> None:
         "seconds_median": 0.02,
     }
     with pytest.raises(RdlabError) as exc_missing:
-        bakeoff_judge_score.select_bakeoff_winner([judge_no_per_class], [])
+        bakeoff_judge_score.select_bakeoff_winner(
+            [judge_no_per_class], [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+        )
     assert exc_missing.value.code == "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION"
-    assert "no-per-class-judge" in exc_missing.value.message
+    assert "mu-judge" in exc_missing.value.message
     assert exc_missing.value.hint
 
     # Incomplete screening_per_class_precision (missing one negative class) also raises
     judge_partial_map = {
         **judge_no_per_class,
-        "judge_id": "partial-per-class-judge",
+        "judge_id": "mu-judge",
         "screening_per_class_precision": {"unsupported": 0.94},
     }
     with pytest.raises(RdlabError) as exc_partial:
-        bakeoff_judge_score.select_bakeoff_winner([judge_partial_map], [])
+        bakeoff_judge_score.select_bakeoff_winner(
+            [judge_partial_map], [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+        )
     assert exc_partial.value.code == "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION"
     assert "cannot_tell" in exc_partial.value.message
 
     # Incomplete screening_fp_by_class (missing one negative class) also raises
     judge_partial_fp = {
         **judge_no_per_class,
-        "judge_id": "partial-fp-judge",
+        "judge_id": "mu-judge",
         "screening_tp": 300,
         "screening_fp_by_class": {"unsupported": 10},
     }
     with pytest.raises(RdlabError) as exc_fp:
-        bakeoff_judge_score.select_bakeoff_winner([judge_partial_fp], [])
+        bakeoff_judge_score.select_bakeoff_winner(
+            [judge_partial_fp], [], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+        )
     assert exc_fp.value.code == "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION"
     assert "cannot_tell" in exc_fp.value.message
 
@@ -1722,12 +1770,16 @@ def test_winner_rule_strict_missing_pair_row_against_b_raises_with_pair_named() 
             "equivalence_status": "separated",
         },
     ]
-    res_full = bakeoff_judge_score.select_bakeoff_winner(judges, full_pairs)
+    res_full = bakeoff_judge_score.select_bakeoff_winner(
+        judges, full_pairs, registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+    )
     assert res_full["winner"] == "mu-judge"
 
     # Remove the pair row between B ("mu-judge") and eligible judge "flow-judge-v0.1"
     with pytest.raises(RdlabError) as exc_pair:
-        bakeoff_judge_score.select_bakeoff_winner(judges, full_pairs[:1])
+        bakeoff_judge_score.select_bakeoff_winner(
+            judges, full_pairs[:1], registered_domains=bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+        )
     assert exc_pair.value.code == "BAKEOFF_WINNER_MISSING_PAIRWISE_COMPARISON"
     assert "mu-judge" in exc_pair.value.message
     assert "flow-judge-v0.1" in exc_pair.value.message
@@ -1749,6 +1801,334 @@ def test_winner_rule_real_scorer_output_matches_golden_fixture(tmp_path: Path) -
     golden_doc = json.loads(splits_mod.GOLDEN_PATH.read_text(encoding="utf-8"))
     assert rep["winner_selection"] == golden_doc["winner_selection"]
     assert public_out.read_bytes() == splits_mod.GOLDEN_PATH.read_bytes()
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Card 2026-11-02 (no lenient paths + fix1): Items 1-8 and domain rules
+# ---------------------------------------------------------------------------------------------------------------------
+_REGISTERED_DOMAINS_10 = bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS
+
+
+def _valid_running_judge(judge_id: str = "mu-judge", **overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "judge_id": judge_id,
+        "class_balanced_strict_accuracy": {"point": 0.88, "lcb": 0.85},
+        "screening_yes_precision": {"point": 0.94, "lcb": 0.90},
+        "screening_yes_recall": {"point": 0.70, "lcb": 0.64},
+        "screening_per_class_precision": {"unsupported": 0.94, "cannot_tell": 0.94},
+        "screening_domain_recall": dict.fromkeys(_REGISTERED_DOMAINS_10, 0.70),
+        "seconds_median": 0.02,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_winner_no_lenient_item1_missing_or_non_numeric_point_raises() -> None:
+    """Item 1: Missing or non-numeric point in class_balanced_strict_accuracy, screening_yes_precision, screening_yes_recall, per-class precision, or domain recall raises."""
+    j_no_cb = _valid_running_judge()
+    del j_no_cb["class_balanced_strict_accuracy"]
+    with pytest.raises(RdlabError) as exc_cb:
+        bakeoff_judge_score.select_bakeoff_winner([j_no_cb], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_cb.value.code == "BAKEOFF_WINNER_MISSING_METRIC_POINT"
+    assert "mu-judge" in exc_cb.value.message
+    assert "class_balanced_strict_accuracy" in exc_cb.value.message
+
+    j_no_prec_pt = _valid_running_judge(screening_yes_precision={"lcb": 0.90})
+    with pytest.raises(RdlabError) as exc_prec_pt:
+        bakeoff_judge_score.select_bakeoff_winner([j_no_prec_pt], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_prec_pt.value.code == "BAKEOFF_WINNER_MISSING_METRIC_POINT"
+    assert "screening_yes_precision" in exc_prec_pt.value.message
+
+    j_no_rec_pt = _valid_running_judge(screening_yes_recall={"lcb": 0.64})
+    with pytest.raises(RdlabError) as exc_rec_pt:
+        bakeoff_judge_score.select_bakeoff_winner([j_no_rec_pt], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_rec_pt.value.code == "BAKEOFF_WINNER_MISSING_METRIC_POINT"
+    assert "screening_yes_recall" in exc_rec_pt.value.message
+
+    j_bad_pcp = _valid_running_judge(
+        screening_per_class_precision={"unsupported": {"point": None}, "cannot_tell": 0.94}
+    )
+    with pytest.raises(RdlabError) as exc_pcp:
+        bakeoff_judge_score.select_bakeoff_winner([j_bad_pcp], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_pcp.value.code == "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION"
+    assert "unsupported" in exc_pcp.value.message
+
+    j_bad_fp = _valid_running_judge()
+    del j_bad_fp["screening_per_class_precision"]
+    j_bad_fp["screening_tp"] = 100
+    j_bad_fp["screening_fp_by_class"] = {"unsupported": "bad", "cannot_tell": 5}
+    with pytest.raises(RdlabError) as exc_fp:
+        bakeoff_judge_score.select_bakeoff_winner([j_bad_fp], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_fp.value.code == "BAKEOFF_WINNER_MISSING_PER_CLASS_PRECISION"
+
+    j_bad_lcb = _valid_running_judge(screening_yes_precision={"point": 0.94, "lcb": float("nan")})
+    with pytest.raises(RdlabError) as exc_lcb:
+        bakeoff_judge_score.select_bakeoff_winner([j_bad_lcb], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_lcb.value.code == "BAKEOFF_WINNER_MISSING_LCB"
+
+
+def test_winner_no_lenient_item2_missing_9_and_11_domains_raises() -> None:
+    """Item 2 + Fix 1: Missing screening_domain_recall (no 10-or-0 fallback), 9 domains (missing one), 11 domains (extra domain), or non-numeric domain value raises."""
+    # Missing screening_domain_recall raises (no 10-or-0 fallback)
+    j_no_dom = _valid_running_judge()
+    del j_no_dom["screening_domain_recall"]
+    with pytest.raises(RdlabError) as exc_no_dom:
+        bakeoff_judge_score.select_bakeoff_winner([j_no_dom], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_no_dom.value.code == "BAKEOFF_WINNER_INVALID_DOMAIN_COVERAGE"
+    assert "mu-judge" in exc_no_dom.value.message
+
+    # 9 domains (missing one registered domain) raises
+    dom_9 = {d: 0.70 for d in _REGISTERED_DOMAINS_10[:-1]}
+    j_9 = _valid_running_judge(screening_domain_recall=dom_9)
+    with pytest.raises(RdlabError) as exc_9:
+        bakeoff_judge_score.select_bakeoff_winner([j_9], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_9.value.code == "BAKEOFF_WINNER_INVALID_DOMAIN_COVERAGE"
+    assert _REGISTERED_DOMAINS_10[-1] in exc_9.value.message
+
+    # 11 domains (extra domain) raises
+    dom_11 = {**dict.fromkeys(_REGISTERED_DOMAINS_10, 0.70), "extra_domain": 0.70}
+    j_11 = _valid_running_judge(screening_domain_recall=dom_11)
+    with pytest.raises(RdlabError) as exc_11:
+        bakeoff_judge_score.select_bakeoff_winner([j_11], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_11.value.code == "BAKEOFF_WINNER_INVALID_DOMAIN_COVERAGE"
+    assert "extra_domain" in exc_11.value.message
+
+    # Non-numeric domain value raises
+    dom_bad_val = {**dict.fromkeys(_REGISTERED_DOMAINS_10, 0.70), "chillers": None}
+    j_bad_dom = _valid_running_judge(screening_domain_recall=dom_bad_val)
+    with pytest.raises(RdlabError) as exc_bad_dom:
+        bakeoff_judge_score.select_bakeoff_winner([j_bad_dom], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_bad_dom.value.code == "BAKEOFF_WINNER_INVALID_DOMAIN_COVERAGE"
+    assert "chillers" in exc_bad_dom.value.message
+
+
+def test_winner_no_lenient_fix1_calling_without_registered_domains_raises() -> None:
+    """Fix 1: Calling select_bakeoff_winner without registered_domains raises."""
+    j_ok = _valid_running_judge()
+    with pytest.raises((RdlabError, TypeError)):
+        bakeoff_judge_score.select_bakeoff_winner([j_ok], [])
+
+    with pytest.raises(RdlabError) as exc_empty_reg:
+        bakeoff_judge_score.select_bakeoff_winner([j_ok], [], registered_domains=())
+    assert exc_empty_reg.value.code == "BAKEOFF_WINNER_MISSING_REGISTERED_DOMAINS"
+
+
+def test_winner_no_lenient_item3_unknown_judge_id_raises() -> None:
+    """Item 3: Judge not in MODEL_PARAM_BILLIONS_BY_JUDGE raises instead of defaulting to inf."""
+    j_unknown = _valid_running_judge(judge_id="not-a-registered-judge")
+    with pytest.raises(RdlabError) as exc_unk:
+        bakeoff_judge_score.select_bakeoff_winner([j_unknown], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_unk.value.code == "BAKEOFF_WINNER_UNKNOWN_JUDGE_ID"
+    assert "not-a-registered-judge" in exc_unk.value.message
+
+
+def test_winner_no_lenient_item4_missing_or_mean_only_seconds_median_raises() -> None:
+    """Item 4: Missing seconds_median (even when seconds_mean is present) raises and never falls back to seconds_mean or 0.0."""
+    j_mean_only = _valid_running_judge(seconds_mean=0.01)
+    del j_mean_only["seconds_median"]
+    with pytest.raises(RdlabError) as exc_sec:
+        bakeoff_judge_score.select_bakeoff_winner([j_mean_only], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_sec.value.code == "BAKEOFF_WINNER_MISSING_SECONDS_MEDIAN"
+    assert "mu-judge" in exc_sec.value.message
+    assert "seconds_median" in exc_sec.value.message
+
+
+def test_winner_no_lenient_item5_pairwise_missing_holm_p_or_status_mismatch_raises() -> None:
+    """Item 5: Missing holm_sign_flip_p or holm_tost_p raises; equivalence_status disagreeing with p-values raises mismatch refusal."""
+    j_a = _valid_running_judge("granite-guardian-4.1-8b", class_balanced_strict_accuracy={"point": 0.88, "lcb": 0.85})
+    j_b = _valid_running_judge("mu-judge", class_balanced_strict_accuracy={"point": 0.86, "lcb": 0.83})
+
+    # Missing holm_sign_flip_p raises
+    with pytest.raises(RdlabError) as exc_no_sf:
+        bakeoff_judge_score.select_bakeoff_winner(
+            [j_a, j_b],
+            [{"judge_a": "granite-guardian-4.1-8b", "judge_b": "mu-judge", "holm_tost_p": 0.01}],
+            registered_domains=_REGISTERED_DOMAINS_10,
+        )
+    assert exc_no_sf.value.code == "BAKEOFF_WINNER_MISSING_PAIRWISE_P"
+    assert "holm_sign_flip_p" in exc_no_sf.value.message
+
+    # Missing holm_tost_p raises
+    with pytest.raises(RdlabError) as exc_no_tost:
+        bakeoff_judge_score.select_bakeoff_winner(
+            [j_a, j_b],
+            [{"judge_a": "granite-guardian-4.1-8b", "judge_b": "mu-judge", "holm_sign_flip_p": 0.01}],
+            registered_domains=_REGISTERED_DOMAINS_10,
+        )
+    assert exc_no_tost.value.code == "BAKEOFF_WINNER_MISSING_PAIRWISE_P"
+    assert "holm_tost_p" in exc_no_tost.value.message
+
+    # equivalence_status == "practically_equivalent" with p values >= 0.05 raises mismatch refusal
+    with pytest.raises(RdlabError) as exc_mismatch:
+        bakeoff_judge_score.select_bakeoff_winner(
+            [j_a, j_b],
+            [
+                {
+                    "judge_a": "granite-guardian-4.1-8b",
+                    "judge_b": "mu-judge",
+                    "holm_sign_flip_p": 0.001,
+                    "holm_tost_p": 0.80,
+                    "equivalence_status": "practically_equivalent",
+                }
+            ],
+            registered_domains=_REGISTERED_DOMAINS_10,
+        )
+    assert exc_mismatch.value.code == "BAKEOFF_WINNER_EQUIVALENCE_STATUS_MISMATCH"
+    assert "practically_equivalent" in exc_mismatch.value.message
+
+
+def test_winner_no_lenient_item6_failed_to_run_judge_without_metrics_is_ineligible_without_raising() -> None:
+    """Item 6: A failed_to_run judge missing LCB, per-class precision, domain coverage, and seconds_median is recorded as ineligible with no exception."""
+    failed_judge = {
+        "judge_id": "d3-mini",
+        "run_status": "failed_to_run",
+    }
+    res = bakeoff_judge_score.select_bakeoff_winner(
+        [failed_judge], [], registered_domains=_REGISTERED_DOMAINS_10
+    )
+    assert res["winner"] == "no_judge_eligible"
+    assert res["removed_by_condition"]["failed_to_run"] == 1
+    elig = res["eligibility_by_judge"]["d3-mini"]
+    assert elig["eligible"] is False
+    assert elig["failed_to_run"] is True
+    assert elig["failed_conditions"] == [
+        "lcb_precision",
+        "lcb_recall",
+        "per_class_precision_unsupported",
+        "per_class_precision_cannot_tell",
+        "domain_coverage",
+        "failed_to_run",
+    ]
+
+
+def test_winner_no_lenient_item7_empty_judge_id_raises() -> None:
+    """Item 7: Empty or missing judge_id raises BAKEOFF_WINNER_INVALID_JUDGE_ID."""
+    j_empty = _valid_running_judge(judge_id="")
+    with pytest.raises(RdlabError) as exc_empty:
+        bakeoff_judge_score.select_bakeoff_winner([j_empty], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_empty.value.code == "BAKEOFF_WINNER_INVALID_JUDGE_ID"
+
+    j_missing = _valid_running_judge()
+    del j_missing["judge_id"]
+    with pytest.raises(RdlabError) as exc_missing:
+        bakeoff_judge_score.select_bakeoff_winner([j_missing], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_missing.value.code == "BAKEOFF_WINNER_INVALID_JUDGE_ID"
+
+
+def test_winner_no_lenient_item8_no_timings_writes_null_seconds_median_and_selector_refuses() -> None:
+    """Item 8: _evaluate_judge_at_rule writes seconds_median: null when there are no timings, and select_bakeoff_winner refuses it."""
+    keys_by_id = {
+        "item-1": bakeoff_judge_score.SealedKeyRecord(
+            item_id="item-1",
+            triad_id="T1",
+            triad_handle="h-T1",
+            key="supported",
+            item_class="supported",
+            key_source="construction",
+            value_set_id="vs-1",
+            closure="open",
+            split="test",
+            domain="chillers",
+        )
+    }
+    rows_no_timings = {
+        "item-1": {
+            "AB": {"item_id": "item-1", "order": "AB", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9},
+            "BA": {"item_id": "item-1", "order": "BA", "state": "parsed", "raw_verdict": "yes", "confidence": 0.9},
+        }
+    }
+    summary, _, _ = bakeoff_judge_score._evaluate_judge_at_rule(
+        judge_id="mu-judge",
+        judge_label="mu-judge",
+        rule_name="plain",
+        threshold_value=None,
+        rows_by_item_order=rows_no_timings,
+        first_order_by_item={"item-1": "AB"},
+        keys_by_id=keys_by_id,
+        registered_domains=_REGISTERED_DOMAINS_10,
+        bootstrap_resamples=10,
+    )
+    assert summary["seconds_median"] is None
+    with pytest.raises(RdlabError) as exc_null_sec:
+        bakeoff_judge_score.select_bakeoff_winner([summary], [], registered_domains=_REGISTERED_DOMAINS_10)
+    assert exc_null_sec.value.code == "BAKEOFF_WINNER_MISSING_SECONDS_MEDIAN"
+
+
+def test_winner_no_lenient_fix1_zero_pos_domain_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 1: The scorer writes a 0.0 entry for a registered domain with no scored positive item."""
+    monkeypatch.setattr(bakeoff_judge_score, "DEFAULT_BOOTSTRAP_RESAMPLES", 20)
+    part_dir, keys_path = _build_synthetic_part(tmp_path, n_triads=4)
+    judge_dir = tmp_path / "judge_out"
+    run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="mu-judge", fake_transport=True)
+    close_bakeoff_outputs(judge_dir)
+
+    rep_ok = score_bakeoff_outputs(
+        judge_output_dir=judge_dir,
+        keys_path=keys_path,
+        public_out_path=tmp_path / "pub_ok" / "score_summary.json",
+        sealed_rows_out_path=tmp_path / "sealed_ok" / "scored.sealed.jsonl",
+        count_all_non_canary=False,
+    )
+    key_domains = sorted({json.loads(ln)["domain"] for ln in keys_path.read_text(encoding="utf-8").splitlines() if ln.strip()})
+    test_domains = sorted({json.loads(ln)["domain"] for ln in keys_path.read_text(encoding="utf-8").splitlines() if ln.strip() and json.loads(ln)["split"] == "test"})
+    assert len(key_domains) == 4 and len(test_domains) == 2
+    test_mu = rep_ok["test_only"]["judges"][0]
+    assert sorted(test_mu["screening_domain_recall"].keys()) == key_domains
+    for dom in set(key_domains) - set(test_domains):
+        assert test_mu["screening_domain_recall"][dom] == 0.0
+
+
+def test_winner_no_lenient_fix1_counted_fixture_domain_mismatch_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 1: On a counted-style fixture whose key domains differ from ANCHORED_ELIGIBLE_DOMAINS, the scorer refuses."""
+    monkeypatch.setattr(bakeoff_judge_score, "DEFAULT_BOOTSTRAP_RESAMPLES", 20)
+    part_dir, keys_path = _build_synthetic_part(tmp_path, n_triads=4)
+    judge_dir = tmp_path / "judge_out"
+    run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="mu-judge", fake_transport=True)
+    close_bakeoff_outputs(judge_dir)
+
+    counted_keys_path = tmp_path / "keys_counted_bad" / "keys.sealed.jsonl"
+    counted_keys_path.parent.mkdir(parents=True, exist_ok=True)
+    bad_lines = []
+    for ln in keys_path.read_text(encoding="utf-8").splitlines():
+        if not ln.strip():
+            continue
+        obj = json.loads(ln)
+        obj["value_set_id"] = f"anchored-two-hop/all-domains [anchored_two_hop v5, {obj['split']}]"
+        bad_lines.append(json.dumps(obj, sort_keys=True))
+    counted_keys_path.write_text("\n".join(bad_lines) + "\n", encoding="utf-8", newline="\n")
+
+    with pytest.raises(RdlabError) as exc_dom_set:
+        score_bakeoff_outputs(
+            judge_output_dir=judge_dir,
+            keys_path=counted_keys_path,
+            public_out_path=tmp_path / "pub_bad" / "score_summary.json",
+            sealed_rows_out_path=tmp_path / "sealed_bad" / "scored.sealed.jsonl",
+        )
+    assert exc_dom_set.value.code == "BAKEOFF_SCORE_REGISTERED_DOMAINS_MISMATCH"
+
+    full_anchored_keys = {
+        f"item-{i}": bakeoff_judge_score.SealedKeyRecord(
+            item_id=f"item-{i}",
+            triad_id=f"T-{i}",
+            triad_handle=f"h-{i}",
+            key="supported",
+            item_class="supported",
+            key_source="construction",
+            value_set_id="anchored-two-hop/all-domains [anchored_two_hop v5, test]",
+            closure="open",
+            split="test",
+            domain=dom,
+        )
+        for i, dom in enumerate(bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS)
+    }
+    assert bakeoff_judge_score._resolve_registered_domains_for_part(full_anchored_keys) == tuple(
+        sorted(bakeoff_judge_score.ANCHORED_ELIGIBLE_DOMAINS)
+    )
+
 
 
 
