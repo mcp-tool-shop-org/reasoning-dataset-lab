@@ -824,6 +824,55 @@ def run_fake_uv(argv: list[str]) -> int:
             encoding="utf-8",
             newline="\n",
         )
+        is_d3_venv = venv_path.name == "venv-d3"
+        hf_hub_ver = "1.33.0" if is_d3_venv else "2.4.0"
+        hf_xet_ver = "1.8.0"
+        site_pkgs = venv_path / "site-packages"
+        hf_pkg_dir = site_pkgs / "huggingface_hub"
+        xet_pkg_dir = site_pkgs / "hf_xet"
+        hf_pkg_dir.mkdir(parents=True, exist_ok=True)
+        xet_pkg_dir.mkdir(parents=True, exist_ok=True)
+        (hf_pkg_dir / "__init__.py").write_text(
+            "import json, os, pathlib, time\n"
+            f"__version__ = {hf_hub_ver!r}\n"
+            "_IS_FAKE_HF_HUB = bool(\n"
+            "    os.environ.get('FAKE_COLAB_CUT_MID_JUDGE')\n"
+            "    or os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS')\n"
+            "    or os.environ.get('FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD') == '1'\n"
+            "    or os.environ.get('FAKE_COLAB_HF_FAIL_REPO')\n"
+            "    or os.environ.get('VM_DRYRUN') != '1'\n"
+            ")\n"
+            "def snapshot_download(repo_id, revision=None, cache_dir=None, **kw):\n"
+            "    st_dir = os.environ.get('FAKE_COLAB_STATE_DIR', '')\n"
+            "    if st_dir:\n"
+            "        hf_log = pathlib.Path(st_dir) / 'hf_calls.jsonl'\n"
+            "        hf_log.parent.mkdir(parents=True, exist_ok=True)\n"
+            "        with hf_log.open('a', encoding='utf-8', newline='\\n') as _hff:\n"
+            "            _hff.write(json.dumps({'repo_id': str(repo_id), 'revision': str(revision or ''), 'cache_dir': str(cache_dir or ''), 'max_workers': kw.get('max_workers'), 'hf_xet_num_concurrent_range_gets': os.environ.get('HF_XET_NUM_CONCURRENT_RANGE_GETS'), 'huggingface_hub_version': __version__, 'ts': time.time()}) + '\\n')\n"
+            "    delay_s = float(os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS', '0') or '0')\n"
+            "    if delay_s > 0:\n"
+            "        time.sleep(delay_s)\n"
+            "    fail_repo = os.environ.get('FAKE_COLAB_HF_FAIL_REPO', '').strip()\n"
+            "    if fail_repo and (fail_repo == repo_id or fail_repo in str(repo_id)):\n"
+            "        raise RuntimeError(f'Revision Not Found for {repo_id}@{revision}')\n"
+            "    cut_target = os.environ.get('FAKE_COLAB_CUT_MID_JUDGE', '').strip()\n"
+            "    if cut_target and (cut_target == '1' or cut_target == repo_id or cut_target in str(repo_id)):\n"
+            "        if os.environ.get('FAKE_COLAB_CUT_MID_JUDGE_HARD') == '1':\n"
+            "            os._exit(137)\n"
+            "        raise RuntimeError(f'Simulated cut mid-judge for {repo_id}')\n"
+            "    owner, repo = str(repo_id).split('/', 1)\n"
+            "    base = pathlib.Path(cache_dir) if cache_dir else (pathlib.Path(os.environ.get('HF_HOME', '.')) / 'hub')\n"
+            "    snap_dir = base / f'models--{owner}--{repo}' / 'snapshots' / str(revision or 'main')\n"
+            "    return str(snap_dir)\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (xet_pkg_dir / "__init__.py").write_text(
+            f"__version__ = {hf_xet_ver!r}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        site_pkgs_posix = site_pkgs.as_posix()
         venv_py = bin_dir / "python"
         venv_py.write_text(
             "#!/usr/bin/env bash\n"
@@ -831,7 +880,8 @@ def run_fake_uv(argv: list[str]) -> int:
             '  echo "Python 3.15.1"\n'
             "  exit 0\n"
             "fi\n"
-            'if [[ -n "${FAKE_COLAB_FAIL_JUDGE_CHILD:-}" ]]; then\n'
+            f'export PYTHONPATH="{site_pkgs_posix}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+            'if [[ -n "${FAKE_COLAB_FAIL_JUDGE_CHILD:-}" && "$*" == *"bakeoff_judge"* ]]; then\n'
             '  _prev=""\n'
             '  _jid=""\n'
             '  for _arg in "$@"; do\n'
@@ -853,6 +903,39 @@ def run_fake_uv(argv: list[str]) -> int:
             '    elif [[ "$_mode" == "exit1" ]]; then\n'
             '      echo "${_msg:-Simulated child failure}" >&2\n'
             "      exit 1\n"
+            "    fi\n"
+            "  fi\n"
+            "fi\n"
+            'if [[ -n "${FAKE_COLAB_FAIL_DOWNLOAD_CHILD:-}" && "$*" == *"judge_download"* ]]; then\n'
+            '  _prev=""\n'
+            '  _jid=""\n'
+            '  _done_f=""\n'
+            '  for _arg in "$@"; do\n'
+            '    if [[ "$_prev" == "--judge" ]]; then\n'
+            '      _jid="$_arg"\n'
+            '    elif [[ "$_prev" == "--done-file" ]]; then\n'
+            '      _done_f="$_arg"\n'
+            "    fi\n"
+            '    _prev="$_arg"\n'
+            "  done\n"
+            '  _target="${FAKE_COLAB_FAIL_DOWNLOAD_CHILD%%:*}"\n'
+            '  _rest="${FAKE_COLAB_FAIL_DOWNLOAD_CHILD#*:}"\n'
+            '  if [[ -n "$_jid" && "$_jid" == "$_target" ]]; then\n'
+            '    _mode="${_rest%%:*}"\n'
+            '    _msg="${_rest#*:}"\n'
+            '    if [[ "$_mode" == "sigkill" ]]; then\n'
+            "      kill -9 $$\n"
+            '    elif [[ "$_mode" == "exit137" ]]; then\n'
+            "      exit 137\n"
+            '    elif [[ "$_mode" == "exit1" ]]; then\n'
+            '      echo "${_msg:-Simulated download child failure}" >&2\n'
+            "      exit 1\n"
+            '    elif [[ "$_mode" == "missing_done" ]]; then\n'
+            "      exit 0\n"
+            '    elif [[ "$_mode" == "malformed_done" ]]; then\n'
+            '      mkdir -p "$(dirname "$_done_f")"\n'
+            '      printf "{malformed-download-done\\n" > "$_done_f"\n'
+            "      exit 0\n"
             "    fi\n"
             "  fi\n"
             "fi\n"

@@ -59,6 +59,7 @@ DEFAULT_TORCH_DTYPE = "bfloat16"
 DEFAULT_HF_DOWNLOAD_MAX_WORKERS = 2
 DEFAULT_HF_XET_NUM_CONCURRENT_RANGE_GETS = 4
 JUDGE_RUNNER_MODULE = "reasoning_dataset_lab.pilot_b.bakeoff_judge"
+DOWNLOAD_RUNNER_MODULE = "reasoning_dataset_lab.pilot_b.judge_download"
 D3_MINI_JUDGE_ID = "d3-mini"
 D3_MINI_REVIEWED_REVISION = "bd0090dd758d32ba59ef5c749910a8e87fc4391f"
 FIRST_JUDGE_ID = "flow-judge-v0.1"
@@ -70,6 +71,24 @@ OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
 PROGRESS_FILENAME = "progress.jsonl"
 ROWS_DIRNAME = "rows"
 JUDGE_DONE_DIRNAME = "judge_done"
+DOWNLOAD_DONE_DIRNAME = "download_done"
+
+EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
+    "venv-judge": {
+        "huggingface_hub": "2.4.0",
+        "hf_xet": "1.8.0",
+        "lock_file": "scripts/colab/locks/judge.lock.txt",
+        "huggingface_hub_lock_lines": "57-59",
+        "hf_xet_lock_lines": "45-47",
+    },
+    "venv-d3": {
+        "huggingface_hub": "1.33.0",
+        "hf_xet": "1.8.0",
+        "lock_file": "scripts/colab/locks/d3.lock.txt",
+        "huggingface_hub_lock_lines": "63-65",
+        "hf_xet_lock_lines": "51-53",
+    },
+}
 
 # Disk preflight constants for the 5 bake-off judges and 2 CPython 3.15 venvs:
 # - Weights total (sum of `total_bytes` across the 5 `<owner>__<repo>.sha256.json` receipts):
@@ -924,6 +943,11 @@ class JudgeChildProcessError(VmSubprocessError):
         return rec
 
 
+class DownloadChildProcessError(JudgeChildProcessError):
+    """Raised when a per-judge download child subprocess exits non-zero, OOMs, or leaves a missing/malformed done-file."""
+
+
+
 def _stream_subprocess_with_byte_cap(
     cmd_list: list[str],
     *,
@@ -1503,6 +1527,20 @@ def sync_judge_venvs(
             extra={"venv": vinfo["path"], "lock": vinfo["lock"]},
         )
 
+    state_dir_env = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
+    if state_dir_env:
+        try:
+            st_dir = Path(state_dir_env)
+            st_dir.mkdir(parents=True, exist_ok=True)
+            with (st_dir / "child_lifecycle.jsonl").open(
+                "a", encoding="utf-8", newline="\n"
+            ) as lcfh:
+                lcfh.write(
+                    json.dumps({"event": "venv_sync"}, sort_keys=True) + "\n"
+                )
+        except OSError:
+            pass
+
     return {
         "python_version": REQUIRED_PYTHON_VERSION,
         "python_315": str(py_report["python_315"]),
@@ -1537,17 +1575,72 @@ def sync_judge_venvs(
 
 def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
     """Create a lightweight executable `<venv>/bin/python` wrapper in dryrun/hermetic test mode if absent."""
+    venv_dir = venv_python.parent.parent
+    is_d3_venv = "d3" in venv_dir.name.lower()
+    hf_hub_ver = "1.33.0" if is_d3_venv else "2.4.0"
+    hf_xet_ver = "1.8.0"
+    site_pkgs = venv_dir / "site-packages"
+    hf_pkg_dir = site_pkgs / "huggingface_hub"
+    xet_pkg_dir = site_pkgs / "hf_xet"
+    hf_pkg_dir.mkdir(parents=True, exist_ok=True)
+    xet_pkg_dir.mkdir(parents=True, exist_ok=True)
+    hf_init = hf_pkg_dir / "__init__.py"
+    if not hf_init.is_file():
+        hf_init.write_text(
+            "import json, os, pathlib, time\n"
+            f"__version__ = {hf_hub_ver!r}\n"
+            "_IS_FAKE_HF_HUB = bool(\n"
+            "    os.environ.get('FAKE_COLAB_CUT_MID_JUDGE')\n"
+            "    or os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS')\n"
+            "    or os.environ.get('FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD') == '1'\n"
+            "    or os.environ.get('FAKE_COLAB_HF_FAIL_REPO')\n"
+            "    or os.environ.get('VM_DRYRUN') != '1'\n"
+            ")\n"
+            "def snapshot_download(repo_id, revision=None, cache_dir=None, **kw):\n"
+            "    st_dir = os.environ.get('FAKE_COLAB_STATE_DIR', '')\n"
+            "    if st_dir:\n"
+            "        hf_log = pathlib.Path(st_dir) / 'hf_calls.jsonl'\n"
+            "        hf_log.parent.mkdir(parents=True, exist_ok=True)\n"
+            "        with hf_log.open('a', encoding='utf-8', newline='\\n') as _hff:\n"
+            "            _hff.write(json.dumps({'repo_id': str(repo_id), 'revision': str(revision or ''), 'cache_dir': str(cache_dir or ''), 'max_workers': kw.get('max_workers'), 'hf_xet_num_concurrent_range_gets': os.environ.get('HF_XET_NUM_CONCURRENT_RANGE_GETS'), 'huggingface_hub_version': __version__, 'ts': time.time()}) + '\\n')\n"
+            "    delay_s = float(os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS', '0') or '0')\n"
+            "    if delay_s > 0:\n"
+            "        time.sleep(delay_s)\n"
+            "    fail_repo = os.environ.get('FAKE_COLAB_HF_FAIL_REPO', '').strip()\n"
+            "    if fail_repo and (fail_repo == repo_id or fail_repo in str(repo_id)):\n"
+            "        raise RuntimeError(f'Revision Not Found for {repo_id}@{revision}')\n"
+            "    cut_target = os.environ.get('FAKE_COLAB_CUT_MID_JUDGE', '').strip()\n"
+            "    if cut_target and (cut_target == '1' or cut_target == repo_id or cut_target in str(repo_id)):\n"
+            "        if os.environ.get('FAKE_COLAB_CUT_MID_JUDGE_HARD') == '1':\n"
+            "            os._exit(137)\n"
+            "        raise RuntimeError(f'Simulated cut mid-judge for {repo_id}')\n"
+            "    owner, repo = str(repo_id).split('/', 1)\n"
+            "    base = pathlib.Path(cache_dir) if cache_dir else (pathlib.Path(os.environ.get('HF_HOME', '.')) / 'hub')\n"
+            "    snap_dir = base / f'models--{owner}--{repo}' / 'snapshots' / str(revision or 'main')\n"
+            "    return str(snap_dir)\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    xet_init = xet_pkg_dir / "__init__.py"
+    if not xet_init.is_file():
+        xet_init.write_text(
+            f"__version__ = {hf_xet_ver!r}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
     if venv_python.exists():
         return
     venv_python.parent.mkdir(parents=True, exist_ok=True)
     py_exe = str(Path(sys.executable)).replace("\\", "/")
+    site_pkgs_posix = site_pkgs.as_posix()
     venv_python.write_text(
         "#!/usr/bin/env bash\n"
         'if [[ "$1" == "--version" || "$1" == "-V" ]]; then\n'
         '  echo "Python 3.15.1"\n'
         "  exit 0\n"
         "fi\n"
-        'if [[ -n "${FAKE_COLAB_FAIL_JUDGE_CHILD:-}" ]]; then\n'
+        f'export PYTHONPATH="{site_pkgs_posix}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+        'if [[ -n "${FAKE_COLAB_FAIL_JUDGE_CHILD:-}" && "$*" == *"bakeoff_judge"* ]]; then\n'
         '  _prev=""\n'
         '  _jid=""\n'
         '  for _arg in "$@"; do\n'
@@ -1569,6 +1662,39 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
         '    elif [[ "$_mode" == "exit1" ]]; then\n'
         '      echo "${_msg:-Simulated child failure}" >&2\n'
         "      exit 1\n"
+        "    fi\n"
+        "  fi\n"
+        "fi\n"
+        'if [[ -n "${FAKE_COLAB_FAIL_DOWNLOAD_CHILD:-}" && "$*" == *"judge_download"* ]]; then\n'
+        '  _prev=""\n'
+        '  _jid=""\n'
+        '  _done_f=""\n'
+        '  for _arg in "$@"; do\n'
+        '    if [[ "$_prev" == "--judge" ]]; then\n'
+        '      _jid="$_arg"\n'
+        '    elif [[ "$_prev" == "--done-file" ]]; then\n'
+        '      _done_f="$_arg"\n'
+        "    fi\n"
+        '    _prev="$_arg"\n'
+        "  done\n"
+        '  _target="${FAKE_COLAB_FAIL_DOWNLOAD_CHILD%%:*}"\n'
+        '  _rest="${FAKE_COLAB_FAIL_DOWNLOAD_CHILD#*:}"\n'
+        '  if [[ -n "$_jid" && "$_jid" == "$_target" ]]; then\n'
+        '    _mode="${_rest%%:*}"\n'
+        '    _msg="${_rest#*:}"\n'
+        '    if [[ "$_mode" == "sigkill" ]]; then\n'
+        "      kill -9 $$\n"
+        '    elif [[ "$_mode" == "exit137" ]]; then\n'
+        "      exit 137\n"
+        '    elif [[ "$_mode" == "exit1" ]]; then\n'
+        '      echo "${_msg:-Simulated download child failure}" >&2\n'
+        "      exit 1\n"
+        '    elif [[ "$_mode" == "missing_done" ]]; then\n'
+        "      exit 0\n"
+        '    elif [[ "$_mode" == "malformed_done" ]]; then\n'
+        '      mkdir -p "$(dirname "$_done_f")"\n'
+        '      printf "{malformed-download-done\\n" > "$_done_f"\n'
+        "      exit 0\n"
         "    fi\n"
         "  fi\n"
         "fi\n"
@@ -2061,6 +2187,7 @@ _LIMITING_CGROUP_PROGRESS_KINDS: frozenset[str] = frozenset(
     {
         "judge_download_start",
         "judge_download",
+        "download_failed",
         "judge_pass_done",
         "judge_failed",
     }
@@ -2091,6 +2218,41 @@ def _enrich_progress_record(
             cg_chain["nearest_finite_memory_current"],
         )
     return record
+
+
+def build_download_child_env(
+    hf_home: Path,
+    repo_dir: Path,
+    *,
+    hf_xet_num_concurrent_range_gets: int = DEFAULT_HF_XET_NUM_CONCURRENT_RANGE_GETS,
+    venv_dir: Path | None = None,
+    base_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the download child subprocess environment: network enabled (`HF_HUB_OFFLINE` unset) and no `HF_TOKEN*` / `HUGGING_FACE_HUB_TOKEN` (none of the 5 judge repos is gated or private)."""
+    source_env = os.environ if base_env is None else base_env
+    child_env: dict[str, str] = {
+        k: v
+        for k, v in source_env.items()
+        if not k.startswith("HF_TOKEN")
+        and k != "HUGGING_FACE_HUB_TOKEN"
+        and k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    }
+    child_env["HF_HOME"] = str(hf_home)
+    if int(hf_xet_num_concurrent_range_gets) == 0:
+        child_env.pop("HF_XET_NUM_CONCURRENT_RANGE_GETS", None)
+    else:
+        child_env["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = str(
+            int(hf_xet_num_concurrent_range_gets)
+        )
+    py_paths: list[str] = []
+    if venv_dir is not None and (venv_dir / "site-packages").is_dir():
+        py_paths.append(str(venv_dir / "site-packages"))
+    py_paths.append(str(repo_dir / "src"))
+    existing_py_path = child_env.get("PYTHONPATH", "")
+    if existing_py_path:
+        py_paths.append(existing_py_path)
+    child_env["PYTHONPATH"] = os.pathsep.join(py_paths)
+    return child_env
 
 
 def build_judge_child_env(
@@ -2267,134 +2429,470 @@ def download_all_judge_weights(
     *,
     dryrun: bool = False,
     repo_dir: Path | None = None,
+    work_dir: Path | None = None,
+    receipts_dir: Path | None = None,
     progress_path: Path | None = None,
-    snapshot_download_fn: Any = None,
     only_judge_ids: Sequence[str] | None = None,
     max_workers: Any = None,
     hf_xet_num_concurrent_range_gets: Any = None,
     cgroup_root: Path | None = None,
     proc_cgroup_path: Path | None = None,
+    proc_meminfo_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Download each judge at its pinned 40-char revision and emit `judge_download_start` / `judge_download` progress lines."""
+    """Download each judge at its pinned 40-char revision in a short-lived per-judge child subprocess in that judge's synced venv (`venv-d3` for `d3-mini`, `venv-judge` for the other four), emitting `judge_download_start` / `judge_download` progress lines."""
     _ensure_repo_imports(repo_dir)
     ensure_not_drive_path(hf_home)
+    eff_repo_dir = (repo_dir or resolve_repo_dir()).resolve()
+    eff_work_dir = (
+        work_dir
+        if work_dir is not None
+        else Path(
+            os.environ.get(
+                "RDLAB_WORK_DIR", str(resolve_content_dir() / "rdlab_work")
+            )
+        )
+    )
     eff_max_workers, eff_xet_range_gets = validate_download_config(
         max_workers=max_workers,
         hf_xet_num_concurrent_range_gets=hf_xet_num_concurrent_range_gets,
     )
 
-    dl_fn = snapshot_download_fn
-    if dl_fn is None:
-        fake_hf_mod = sys.modules.get("huggingface_hub")
-        if not dryrun or getattr(fake_hf_mod, "_IS_FAKE_HF_HUB", False):
-            from huggingface_hub import snapshot_download as _hf_snapshot_download  # type: ignore[import-not-found]
-
-            dl_fn = _hf_snapshot_download
-
-    hub_cache = hf_home / "hub"
-    if dl_fn is not None:
-        hub_cache.mkdir(parents=True, exist_ok=True)
-
-    accepts_max_workers = False
-    if dl_fn is not None:
-        try:
-            sig = inspect.signature(dl_fn)
-            accepts_max_workers = (
-                "max_workers" in sig.parameters
-                or any(
-                    p.kind == inspect.Parameter.VAR_KEYWORD
-                    for p in sig.parameters.values()
-                )
-            )
-        except (TypeError, ValueError):
-            accepts_max_workers = True
+    done_dir = eff_work_dir / DOWNLOAD_DONE_DIRNAME
+    done_dir.mkdir(parents=True, exist_ok=True)
 
     cumulative_bytes = 0
     cumulative_seconds = 0.0
     judge_records: list[dict[str, Any]] = []
 
-    had_prev_xet = "HF_XET_NUM_CONCURRENT_RANGE_GETS" in os.environ
-    prev_xet_val = os.environ.get("HF_XET_NUM_CONCURRENT_RANGE_GETS")
-    try:
-        if eff_xet_range_gets == 0:
-            os.environ.pop("HF_XET_NUM_CONCURRENT_RANGE_GETS", None)
-        else:
-            os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = str(eff_xet_range_gets)
+    for judge_id, spec in _select_judge_specs(only_judge_ids):
+        is_d3 = judge_id == D3_MINI_JUDGE_ID
+        venv_name = "venv-d3" if is_d3 else "venv-judge"
+        venv_python = eff_work_dir / venv_name / "bin" / "python"
+        lock_file = "d3.lock.txt" if is_d3 else "judge.lock.txt"
+        lock_sha256 = (
+            EXPECTED_D3_LOCK_SHA256 if is_d3 else EXPECTED_JUDGE_LOCK_SHA256
+        )
+        expected_stack = EXPECTED_DOWNLOAD_STACK_VERSIONS[venv_name]
+        expected_hub_ver = expected_stack["huggingface_hub"]
+        expected_xet_ver = expected_stack["hf_xet"]
 
-        for judge_id, spec in _select_judge_specs(only_judge_ids):
-            t0 = time.monotonic()
-            start_iso = _utc_now_iso()
-            cg_start = read_cgroup_memory_events(
-                cgroup_root=cgroup_root,
-                proc_cgroup_path=proc_cgroup_path,
+        is_hermetic_work = (
+            dryrun
+            or resolve_content_dir() != DEFAULT_CONTENT_DIR
+            or eff_work_dir != DEFAULT_CONTENT_DIR / "rdlab_work"
+        )
+        if is_hermetic_work:
+            _ensure_dryrun_venv_python_wrapper(venv_python)
+        if not venv_python.exists():
+            raise RefusalError(
+                "VENV_PYTHON_MISSING",
+                f"Expected download venv interpreter not found for {judge_id!r}: {venv_python}",
+            )
+
+        done_file = done_dir / f"{judge_id}.json"
+        if done_file.exists():
+            try:
+                done_file.unlink()
+            except OSError:
+                pass
+
+        t0 = time.monotonic()
+        start_iso = _utc_now_iso()
+        cg_start = read_cgroup_memory_events(
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
+        )
+        append_progress_line(
+            progress_path,
+            {
+                "kind": "judge_download_start",
+                "judge_id": judge_id,
+                "judge": judge_id,
+                "venv": venv_name,
+                "venv_python": venv_python.as_posix(),
+                "lock_sha256": lock_sha256,
+                "repo_id": spec.repo_id,
+                "revision": spec.revision,
+                "start": start_iso,
+                "max_workers": eff_max_workers,
+                "hf_xet_num_concurrent_range_gets": eff_xet_range_gets,
+                "oom_kill": cg_start["oom_kill"],
+                "oom": cg_start["oom"],
+                "cumulative_bytes": cumulative_bytes,
+                "cumulative_seconds": round(cumulative_seconds, 6),
+            },
+            proc_meminfo_path=proc_meminfo_path,
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
+        )
+
+        child_cmd: list[str] = [
+            str(venv_python),
+            "-m",
+            DOWNLOAD_RUNNER_MODULE,
+            "--judge",
+            judge_id,
+            "--repo-id",
+            spec.repo_id,
+            "--revision",
+            spec.revision,
+            "--hf-home",
+            str(hf_home),
+            "--done-file",
+            str(done_file),
+            "--venv",
+            venv_name,
+            "--max-workers",
+            str(eff_max_workers),
+            "--hf-xet-num-concurrent-range-gets",
+            str(eff_xet_range_gets),
+            "--expect-huggingface-hub-version",
+            expected_hub_ver,
+            "--expect-hf-xet-version",
+            expected_xet_ver,
+        ]
+        if dryrun:
+            child_cmd.append("--dryrun")
+
+        child_env = build_download_child_env(
+            hf_home,
+            eff_repo_dir,
+            hf_xet_num_concurrent_range_gets=eff_xet_range_gets,
+            venv_dir=eff_work_dir / venv_name,
+        )
+
+        proc = subprocess.run(
+            child_cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env,
+            start_new_session=True,
+        )
+        wall_elapsed = max(0.0001, time.monotonic() - t0)
+
+        cg_end = read_cgroup_memory_events(
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
+        )
+        oom_before = cg_start.get("oom_kill")
+        oom_after = cg_end.get("oom_kill")
+        oom_kill_delta: int | None = None
+        if oom_before is not None and oom_after is not None:
+            oom_kill_delta = max(0, int(oom_after) - int(oom_before))
+
+        mem_info = read_vm_memory_snapshot(proc_meminfo_path=proc_meminfo_path)
+        mem_avail_bytes = mem_info.get("mem_available_bytes")
+
+        stdout_tail = _scrub_and_tail(proc.stdout or "")
+        stderr_tail = _scrub_and_tail(proc.stderr or "")
+        if _ACTIVE_VM_LOG_PATH is not None:
+            try:
+                _ACTIVE_VM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                cmd_scrubbed = scrub_log_text(" ".join(child_cmd))
+                with _ACTIVE_VM_LOG_PATH.open("a", encoding="utf-8", newline="\n") as lfh:
+                    lfh.write(
+                        f"VM_SUBPROCESS cmd={json.dumps(cmd_scrubbed)} rc={proc.returncode} duration_s={wall_elapsed:.6f}\n"
+                    )
+                    if stdout_tail:
+                        lfh.write(
+                            f"VM_SUBPROCESS_STDOUT_TAIL: {json.dumps(stdout_tail)}\n"
+                        )
+                    if stderr_tail:
+                        lfh.write(
+                            f"VM_SUBPROCESS_STDERR_TAIL: {json.dumps(stderr_tail)}\n"
+                        )
+            except OSError:
+                pass
+
+        state_dir_env = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
+        if state_dir_env:
+            try:
+                st_dir = Path(state_dir_env)
+                st_dir.mkdir(parents=True, exist_ok=True)
+                with (st_dir / "download_subprocesses.jsonl").open(
+                    "a", encoding="utf-8", newline="\n"
+                ) as dfh:
+                    dfh.write(
+                        json.dumps(
+                            {
+                                "judge": judge_id,
+                                "judge_id": judge_id,
+                                "venv": venv_name,
+                                "venv_python": venv_python.as_posix(),
+                                "lock_file": lock_file,
+                                "lock_sha256": lock_sha256,
+                                "cmd": list(child_cmd),
+                                "returncode": proc.returncode,
+                                "stdin_devnull": True,
+                                "hf_hub_offline": child_env.get("HF_HUB_OFFLINE"),
+                                "hf_xet_num_concurrent_range_gets": child_env.get(
+                                    "HF_XET_NUM_CONCURRENT_RANGE_GETS"
+                                ),
+                                "hf_token_keys": sorted(
+                                    k
+                                    for k in child_env
+                                    if k.startswith("HF_TOKEN")
+                                    or k == "HUGGING_FACE_HUB_TOKEN"
+                                ),
+                            },
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+                with (st_dir / "child_lifecycle.jsonl").open(
+                    "a", encoding="utf-8", newline="\n"
+                ) as lcfh:
+                    lcfh.write(
+                        json.dumps(
+                            {
+                                "event": "download_child",
+                                "judge_id": judge_id,
+                                "venv": venv_name,
+                                "returncode": proc.returncode,
+                            },
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+            except OSError:
+                pass
+
+        def _fail_download_postcheck(
+            reason_detail: str,
+            *,
+            failure_cls: str = "DOWNLOAD_CHILD_FAILED",
+        ) -> Any:
+            scrubbed_reason = _scrub_and_tail(reason_detail)
+            combined_stderr = (
+                f"{stderr_tail}\n{scrubbed_reason}" if stderr_tail else scrubbed_reason
             )
             append_progress_line(
                 progress_path,
                 {
-                    "kind": "judge_download_start",
-                    "judge_id": judge_id,
+                    "kind": "download_failed",
                     "judge": judge_id,
-                    "repo_id": spec.repo_id,
-                    "revision": spec.revision,
-                    "start": start_iso,
-                    "max_workers": eff_max_workers,
-                    "hf_xet_num_concurrent_range_gets": eff_xet_range_gets,
-                    "oom_kill": cg_start["oom_kill"],
-                    "oom": cg_start["oom"],
-                    "cumulative_bytes": cumulative_bytes,
-                    "cumulative_seconds": round(cumulative_seconds, 6),
+                    "judge_id": judge_id,
+                    "venv": venv_name,
+                    "venv_python": venv_python.as_posix(),
+                    "lock_sha256": lock_sha256,
+                    "exit_code": int(proc.returncode),
+                    "returncode": int(proc.returncode),
+                    "signal": None,
+                    "oom_kill": oom_after,
+                    "oom": cg_end.get("oom"),
+                    "oom_kill_delta": oom_kill_delta,
+                    "mem_available_bytes": mem_avail_bytes,
+                    "stderr_tail": combined_stderr,
+                    "failure_class": failure_cls,
                 },
+                proc_meminfo_path=proc_meminfo_path,
                 cgroup_root=cgroup_root,
                 proc_cgroup_path=proc_cgroup_path,
             )
-            returned_snap: str | Path | None = None
-            if dl_fn is not None:
-                dl_kwargs: dict[str, Any] = {
-                    "repo_id": spec.repo_id,
-                    "revision": spec.revision,
-                    "cache_dir": str(hub_cache),
-                }
-                if accepts_max_workers:
-                    dl_kwargs["max_workers"] = eff_max_workers
-                returned_snap = dl_fn(**dl_kwargs)
-            snap_bytes = _judge_snapshot_bytes_on_disk(spec, hf_home, returned_snap)
-            elapsed_s = max(0.0, time.monotonic() - t0)
-            end_iso = _utc_now_iso()
-            cumulative_bytes += snap_bytes
-            cumulative_seconds += elapsed_s
-            cg_end = read_cgroup_memory_events(
-                cgroup_root=cgroup_root,
-                proc_cgroup_path=proc_cgroup_path,
+            raise DownloadChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=int(proc.returncode),
+                exit_code=int(proc.returncode),
+                signal_num=None,
+                oom=cg_end.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=combined_stderr,
+                failure_class=failure_cls,
+                duration_seconds=wall_elapsed,
             )
-            rec = append_progress_line(
+
+        if proc.returncode != 0:
+            raw_rc = int(proc.returncode)
+            sig_num: int | None = None
+            if raw_rc < 0:
+                sig_num = -raw_rc
+                exit_code = 128 + sig_num
+            elif raw_rc > 128:
+                sig_num = raw_rc - 128
+                exit_code = raw_rc
+            else:
+                exit_code = raw_rc
+
+            is_oom = (
+                sig_num == 9
+                or raw_rc in (-9, 137)
+                or (oom_kill_delta is not None and oom_kill_delta > 0)
+            )
+            if "DOWNLOAD_STACK_VERSION_MISMATCH" in (proc.stderr or ""):
+                failure_class = "DOWNLOAD_STACK_VERSION_MISMATCH"
+            else:
+                failure_class = (
+                    "DOWNLOAD_CHILD_OOM" if is_oom else "DOWNLOAD_CHILD_FAILED"
+                )
+            if is_oom and sig_num is None and raw_rc in (-9, 137):
+                sig_num = 9
+
+            append_progress_line(
                 progress_path,
                 {
-                    "kind": "judge_download",
-                    "judge_id": judge_id,
+                    "kind": "download_failed",
                     "judge": judge_id,
-                    "repo_id": spec.repo_id,
-                    "revision": spec.revision,
-                    "bytes": snap_bytes,
-                    "bytes_on_disk": snap_bytes,
-                    "start": start_iso,
-                    "end": end_iso,
-                    "seconds": round(elapsed_s, 6),
-                    "max_workers": eff_max_workers,
-                    "hf_xet_num_concurrent_range_gets": eff_xet_range_gets,
-                    "oom_kill": cg_end["oom_kill"],
-                    "oom": cg_end["oom"],
-                    "cumulative_bytes": cumulative_bytes,
-                    "cumulative_seconds": round(cumulative_seconds, 6),
+                    "judge_id": judge_id,
+                    "venv": venv_name,
+                    "venv_python": venv_python.as_posix(),
+                    "lock_sha256": lock_sha256,
+                    "exit_code": exit_code,
+                    "returncode": raw_rc,
+                    "signal": sig_num,
+                    "oom_kill": oom_after,
+                    "oom": cg_end.get("oom"),
+                    "oom_kill_delta": oom_kill_delta,
+                    "mem_available_bytes": mem_avail_bytes,
+                    "stderr_tail": stderr_tail,
+                    "failure_class": failure_class,
                 },
+                proc_meminfo_path=proc_meminfo_path,
                 cgroup_root=cgroup_root,
                 proc_cgroup_path=proc_cgroup_path,
             )
-            judge_records.append(rec)
-    finally:
-        if had_prev_xet and prev_xet_val is not None:
-            os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = prev_xet_val
-        else:
-            os.environ.pop("HF_XET_NUM_CONCURRENT_RANGE_GETS", None)
+            raise DownloadChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=raw_rc,
+                exit_code=exit_code,
+                signal_num=sig_num,
+                oom=cg_end.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                failure_class=failure_class,
+                duration_seconds=wall_elapsed,
+            )
+
+        if not done_file.is_file():
+            _fail_download_postcheck(
+                f"Download child for {judge_id!r} exited 0 without writing done-file {done_file}"
+            )
+
+        done_doc: dict[str, Any] = {}
+        try:
+            parsed_done = json.loads(
+                done_file.read_text(encoding="utf-8", errors="replace")
+            )
+            if not isinstance(parsed_done, dict):
+                raise ValueError("download done-file root must be a JSON object")
+            done_doc = parsed_done
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            _fail_download_postcheck(
+                f"Malformed download done-file {done_file.name}: {exc}"
+            )
+
+        required_done_keys = (
+            "judge_id",
+            "files_downloaded",
+            "bytes",
+            "seconds",
+            "huggingface_hub_version",
+            "hf_xet_version",
+        )
+        missing_done_keys = [k for k in required_done_keys if k not in done_doc]
+        if missing_done_keys or str(done_doc.get("judge_id") or "") != judge_id:
+            _fail_download_postcheck(
+                f"Invalid download done-file {done_file.name}: missing_keys={missing_done_keys} judge_id={done_doc.get('judge_id')!r}"
+            )
+
+        actual_hub_ver = str(done_doc.get("huggingface_hub_version") or "").strip()
+        actual_xet_ver = str(done_doc.get("hf_xet_version") or "").strip()
+        if actual_hub_ver != expected_hub_ver or actual_xet_ver != expected_xet_ver:
+            _fail_download_postcheck(
+                f"DOWNLOAD_STACK_VERSION_MISMATCH: judge={judge_id} venv={venv_name} "
+                f"expected huggingface-hub=={expected_hub_ver}, hf-xet=={expected_xet_ver}; "
+                f"got huggingface-hub=={actual_hub_ver!r}, hf-xet=={actual_xet_ver!r}",
+                failure_cls="DOWNLOAD_STACK_VERSION_MISMATCH",
+            )
+
+        returned_snap = done_doc.get("snapshot_dir")
+        snap_bytes = _judge_snapshot_bytes_on_disk(spec, hf_home, returned_snap)
+        if snap_bytes == 0 and isinstance(done_doc.get("bytes"), int) and done_doc["bytes"] > 0:
+            snap_bytes = int(done_doc["bytes"])
+        files_downloaded = int(done_doc.get("files_downloaded") or 0)
+        elapsed_s = max(0.0, time.monotonic() - t0)
+        end_iso = _utc_now_iso()
+        cumulative_bytes += snap_bytes
+        cumulative_seconds += elapsed_s
+
+        rec = append_progress_line(
+            progress_path,
+            {
+                "kind": "judge_download",
+                "judge_id": judge_id,
+                "judge": judge_id,
+                "venv": venv_name,
+                "venv_python": venv_python.as_posix(),
+                "lock_sha256": lock_sha256,
+                "repo_id": spec.repo_id,
+                "revision": spec.revision,
+                "files_downloaded": files_downloaded,
+                "bytes": snap_bytes,
+                "bytes_on_disk": snap_bytes,
+                "start": start_iso,
+                "end": end_iso,
+                "seconds": round(elapsed_s, 6),
+                "max_workers": eff_max_workers,
+                "hf_xet_num_concurrent_range_gets": eff_xet_range_gets,
+                "huggingface_hub_version": actual_hub_ver,
+                "hf_xet_version": actual_xet_ver,
+                "oom_kill": cg_end["oom_kill"],
+                "oom": cg_end["oom"],
+                "oom_kill_delta": oom_kill_delta,
+                "cumulative_bytes": cumulative_bytes,
+                "cumulative_seconds": round(cumulative_seconds, 6),
+            },
+            proc_meminfo_path=proc_meminfo_path,
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
+        )
+        judge_records.append(rec)
+
+        if receipts_dir is not None:
+            allow_sha = resolve_remote_code_arg_for_judge(spec)
+            if spec.requires_remote_code and allow_sha != D3_MINI_REVIEWED_REVISION:
+                raise RefusalError(
+                    "REMOTE_CODE_FORBIDDEN",
+                    f"Remote code is forbidden for {judge_id} ({spec.repo_id})",
+                )
+            verify_snapshot_against_receipt(
+                spec,
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+            )
+            if state_dir_env:
+                try:
+                    with (Path(state_dir_env) / "child_lifecycle.jsonl").open(
+                        "a", encoding="utf-8", newline="\n"
+                    ) as lcfh:
+                        lcfh.write(
+                            json.dumps(
+                                {
+                                    "event": "parent_verify",
+                                    "judge_id": judge_id,
+                                },
+                                sort_keys=True,
+                            )
+                            + "\n"
+                        )
+                except OSError:
+                    pass
 
     return judge_records
 
@@ -2405,8 +2903,8 @@ def download_and_verify_all_judge_weights(
     *,
     dryrun: bool = False,
     repo_dir: Path | None = None,
+    work_dir: Path | None = None,
     progress_path: Path | None = None,
-    snapshot_download_fn: Any = None,
     judge_records_out: list[dict[str, Any]] | None = None,
     step_timings: dict[str, dict[str, Any]] | None = None,
     step_order: list[str] | None = None,
@@ -2415,8 +2913,9 @@ def download_and_verify_all_judge_weights(
     hf_xet_num_concurrent_range_gets: Any = None,
     cgroup_root: Path | None = None,
     proc_cgroup_path: Path | None = None,
+    proc_meminfo_path: Path | None = None,
 ) -> dict[str, str]:
-    """Download each judge at its pinned 40-char revision (when not dryrun) and verify all snapshots against receipts."""
+    """Download each judge in its synced venv child subprocess and verify all snapshots against receipts in the parent."""
     _ensure_repo_imports(repo_dir)
     ensure_not_drive_path(receipts_dir)
     ensure_not_drive_path(hf_home)
@@ -2437,13 +2936,15 @@ def download_and_verify_all_judge_weights(
         hf_home,
         dryrun=dryrun,
         repo_dir=repo_dir,
+        work_dir=work_dir,
+        receipts_dir=receipts_dir,
         progress_path=progress_path,
-        snapshot_download_fn=snapshot_download_fn,
         only_judge_ids=only_judge_ids,
         max_workers=eff_max_workers,
         hf_xet_num_concurrent_range_gets=eff_xet_range_gets,
         cgroup_root=cgroup_root,
         proc_cgroup_path=proc_cgroup_path,
+        proc_meminfo_path=proc_meminfo_path,
     )
     if judge_records_out is not None:
         judge_records_out.extend(records)
@@ -3010,12 +3511,15 @@ def _build_judge_venvs_map(work_dir: Path) -> dict[str, dict[str, str]]:
         lock_sha256 = (
             EXPECTED_D3_LOCK_SHA256 if is_d3 else EXPECTED_JUDGE_LOCK_SHA256
         )
+        expected_stack = EXPECTED_DOWNLOAD_STACK_VERSIONS[venv_name]
         out[judge_id] = {
             "judge_id": judge_id,
             "venv": venv_name,
             "venv_python": venv_python,
             "lock_file": lock_file,
             "lock_sha256": lock_sha256,
+            "expected_huggingface_hub_version": expected_stack["huggingface_hub"],
+            "expected_hf_xet_version": expected_stack["hf_xet"],
         }
     return out
 
@@ -3201,6 +3705,21 @@ def run_judges_pipeline(
                                     if k.startswith("HF_TOKEN")
                                     or k == "HUGGING_FACE_HUB_TOKEN"
                                 ),
+                            },
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+                with (st_dir / "child_lifecycle.jsonl").open(
+                    "a", encoding="utf-8", newline="\n"
+                ) as lcfh:
+                    lcfh.write(
+                        json.dumps(
+                            {
+                                "event": "judge_child",
+                                "judge_id": judge_id,
+                                "venv": venv_name,
+                                "returncode": proc.returncode,
                             },
                             sort_keys=True,
                         )
@@ -4274,7 +4793,19 @@ def run_gate(args: argparse.Namespace) -> int:
                     if hasattr(err, "to_failure_record")
                     else None
                 ),
-                extra={"cgroup_limit_chain": read_cgroup_limit_chain()},
+                extra={
+                    "cgroup_limit_chain": read_cgroup_limit_chain(),
+                    "download_stack_versions": {
+                        "status": "not_available_at_gate_before_venv_sync",
+                        "reason": (
+                            "gate runs before repo upload and before sync_judge_venvs "
+                            "creates venv-judge and venv-d3"
+                        ),
+                        "expected": EXPECTED_DOWNLOAD_STACK_VERSIONS,
+                        "venv_judge": None,
+                        "venv_d3": None,
+                    },
+                },
             )
         except OSError:
             pass
@@ -4302,6 +4833,16 @@ def run_gate(args: argparse.Namespace) -> int:
             "route": py_report["route"],
             "lock_sdists": lock_sdists,
             "cgroup_limit_chain": read_cgroup_limit_chain(),
+            "download_stack_versions": {
+                "status": "not_available_at_gate_before_venv_sync",
+                "reason": (
+                    "gate runs before repo upload and before sync_judge_venvs "
+                    "creates venv-judge and venv-d3"
+                ),
+                "expected": EXPECTED_DOWNLOAD_STACK_VERSIONS,
+                "venv_judge": None,
+                "venv_d3": None,
+            },
         },
     )
     sdist_summary = ",".join(
@@ -4853,6 +5394,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.hf_home,
                 dryrun=dryrun,
                 repo_dir=args.repo_dir,
+                work_dir=args.work_dir,
                 progress_path=progress_path,
                 judge_records_out=judge_download_records,
                 step_timings=step_timings,
@@ -4869,6 +5411,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.hf_home,
                 dryrun=dryrun,
                 repo_dir=args.repo_dir,
+                work_dir=args.work_dir,
                 progress_path=progress_path,
                 judge_records_out=judge_download_records,
                 step_timings=step_timings,
@@ -4884,6 +5427,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.hf_home,
                 dryrun=dryrun,
                 repo_dir=args.repo_dir,
+                work_dir=args.work_dir,
                 progress_path=progress_path,
                 judge_records_out=judge_download_records,
                 step_timings=step_timings,
@@ -4944,6 +5488,15 @@ def main(argv: list[str] | None = None) -> int:
 
         py_rep = venv_info["python_315_report"]
         judge_venvs_map = _build_judge_venvs_map(args.work_dir)
+        download_stack_versions_by_judge = {
+            str(rec.get("judge_id") or ""): {
+                "venv": judge_venvs_map.get(str(rec.get("judge_id") or ""), {}).get("venv"),
+                "huggingface_hub_version": rec.get("huggingface_hub_version"),
+                "hf_xet_version": rec.get("hf_xet_version"),
+            }
+            for rec in judge_download_records
+            if rec.get("judge_id")
+        }
         receipt_doc: dict[str, Any] = {
             "status": "ok",
             "mode": args.mode,
@@ -4966,6 +5519,10 @@ def main(argv: list[str] | None = None) -> int:
             "lock_digests": lock_digests,
             "venvs": venv_info,
             "judge_venvs": judge_venvs_map,
+            "download_stack_versions": {
+                "expected": EXPECTED_DOWNLOAD_STACK_VERSIONS,
+                "by_judge": download_stack_versions_by_judge,
+            },
             "verified_snapshots": verified_snapshots,
             "deleted_items_receipt": deleted_items_receipt,
             "time_one_summary": time_one_summary,
@@ -5072,13 +5629,26 @@ def main(argv: list[str] | None = None) -> int:
                 pass
         for lf in logs_dir.glob("*.log"):
             scrub_log_file_in_place(lf)
+        fail_judge_venvs_map = _build_judge_venvs_map(args.work_dir)
         fail_receipt: dict[str, Any] = {
             "status": "refused",
             "failure_class": str(failure_class),
             "detail": scrub_log_text(str(detail)),
             "reason": f"{failure_class}: {scrub_log_text(str(detail))}",
             "mode": args.mode,
-            "judge_venvs": _build_judge_venvs_map(args.work_dir),
+            "judge_venvs": fail_judge_venvs_map,
+            "download_stack_versions": {
+                "expected": EXPECTED_DOWNLOAD_STACK_VERSIONS,
+                "by_judge": {
+                    str(rec.get("judge_id") or ""): {
+                        "venv": fail_judge_venvs_map.get(str(rec.get("judge_id") or ""), {}).get("venv"),
+                        "huggingface_hub_version": rec.get("huggingface_hub_version"),
+                        "hf_xet_version": rec.get("hf_xet_version"),
+                    }
+                    for rec in judge_download_records
+                    if rec.get("judge_id")
+                },
+            },
             "deleted_items_receipt": deleted_items_receipt,
             "timings": _build_timings_block(),
             "cgroup_limit_chain": read_cgroup_limit_chain(),
