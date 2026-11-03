@@ -59,6 +59,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -85,6 +86,10 @@ SCHEDULE_FILENAME = "schedule.json"
 GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
 ROWS_DIRNAME = "rows"
+JUDGE_CHILD_PROGRESS_ENV_VAR = "RDLAB_JUDGE_CHILD_PROGRESS_FILE"
+JUDGE_CHILD_HEARTBEAT_ENV_VAR = "RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS"
+DEFAULT_CHILD_HEARTBEAT_INTERVAL_SECONDS = 30.0
+_VM_RSS_KB_RE: re.Pattern[str] = re.compile(r"(?m)^VmRSS:\s*(\d+)\s*kB\b")
 SCHEDULE_LAYOUT_DESCRIPTION = (
     "two-pass material-stratified schedule: Pass 1 runs every item's seeded first order (AB or BA) spread across "
     "waves by material_sha256 with no two adjacent items sharing material_sha256; Pass 2 runs every item's opposite "
@@ -2352,6 +2357,26 @@ def verify_snapshot_against_receipt(
     return snapshot_dir, verified_digest
 
 
+class _TokenCountStreamer:
+    """Minimal `generate(..., streamer=...)` hook that counts generated tokens without storing token IDs or text."""
+
+    def __init__(self, transport: Any) -> None:
+        self._transport = transport
+        self._seen_prompt = False
+        self.output_tokens = 0
+
+    def put(self, _value: Any) -> None:
+        if not self._seen_prompt:
+            self._seen_prompt = True
+            self._transport.current_output_tokens = 0
+            return
+        self.output_tokens += 1
+        self._transport.current_output_tokens = self.output_tokens
+
+    def end(self) -> None:
+        pass
+
+
 class TransformersJudgeTransport:
     """Real-model local Hugging Face `transformers` transport with receipt SHA-256 verification and `trust_remote_code=False`.
 
@@ -2384,6 +2409,7 @@ class TransformersJudgeTransport:
         self._tokenizer: Any = None
         self._model: Any = None
         self._candidate_token_ids: dict[int, str] = {}
+        self.current_output_tokens: int | None = None
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
         # Weights load on the main thread (see `ensure_sync_weight_loading`); checked again before each load.
         ensure_sync_weight_loading()
@@ -2455,6 +2481,16 @@ class TransformersJudgeTransport:
         self._candidate_token_ids = candidate_ids
         self._loaded_spec_id = spec.judge_id
 
+    def count_prompt_tokens(self, spec: JudgeSpec, prompt: AssembledPrompt) -> int:
+        self._ensure_loaded(spec)
+        assert self._tokenizer is not None
+        enc = self._tokenizer(
+            prompt.prompt_text,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )
+        return int(enc["input_ids"].shape[1])
+
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         self._ensure_loaded(spec)
         assert self._tokenizer is not None and self._model is not None and self._verified_digest is not None
@@ -2484,6 +2520,8 @@ class TransformersJudgeTransport:
             attention_mask = attention_mask.to(self.device)
         prompt_len = int(input_ids.shape[1])
 
+        streamer = _TokenCountStreamer(self)
+        self.current_output_tokens = 0
         gen_kwargs: dict[str, Any] = {
             "input_ids": input_ids,
             "max_new_tokens": max_new_tokens,
@@ -2491,6 +2529,7 @@ class TransformersJudgeTransport:
             "use_cache": use_cache,
             "return_dict_in_generate": True,
             "output_scores": True,
+            "streamer": streamer,
             "pad_token_id": (
                 self._tokenizer.pad_token_id
                 if self._tokenizer.pad_token_id is not None
@@ -2512,6 +2551,7 @@ class TransformersJudgeTransport:
 
         elapsed = max(0.0001, time.monotonic() - t0)
         gen_token_ids = [int(t) for t in out.sequences[0, prompt_len:].tolist()]
+        self.current_output_tokens = len(gen_token_ids)
         tokens_str = tuple(self._tokenizer.convert_ids_to_tokens(gen_token_ids))
         raw_text = self._tokenizer.decode(gen_token_ids, skip_special_tokens=False)
 
@@ -3522,6 +3562,76 @@ def check_bakeoff_logprob_mass(
     }
 
 
+def _read_process_rss_bytes() -> int:
+    """Read current process RSS in bytes from `/proc/self/status` `VmRSS` or `resource` fallback."""
+    proc_status = Path("/proc/self/status")
+    try:
+        if proc_status.is_file():
+            raw = proc_status.read_text(encoding="utf-8", errors="replace")
+            m = _VM_RSS_KB_RE.search(raw)
+            if m:
+                val = int(m.group(1)) * 1024
+                if val > 0:
+                    return val
+    except OSError:  # pragma: no cover
+        pass
+    try:  # pragma: no cover
+        import resource
+
+        ru_maxrss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        if ru_maxrss > 0:
+            return ru_maxrss if sys.platform == "darwin" else ru_maxrss * 1024
+    except Exception:
+        pass
+    return 4096  # pragma: no cover
+
+
+def resolve_child_heartbeat_interval_seconds(interval_seconds: float | None = None) -> float:
+    """Resolve child `heartbeat` interval in seconds (default 30s, configurable via `RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS`)."""
+    if interval_seconds is not None:
+        return max(0.001, float(interval_seconds))
+    raw_env = os.environ.get(JUDGE_CHILD_HEARTBEAT_ENV_VAR, "").strip()
+    if raw_env:
+        try:
+            parsed = float(raw_env)
+            if parsed > 0:
+                return parsed
+        except ValueError:
+            pass
+    return DEFAULT_CHILD_HEARTBEAT_INTERVAL_SECONDS
+
+
+def _append_child_progress_line(
+    progress_file: Path | None,
+    payload: Mapping[str, Any],
+    *,
+    lock: threading.Lock,
+) -> None:
+    """Append one compact JSON progress line to `progress_file` and call `flush()` + `os.fsync()`."""
+    if progress_file is None:
+        return
+    line = json.dumps(dict(payload), separators=(",", ":"), ensure_ascii=False) + "\n"
+    with lock:
+        progress_file.parent.mkdir(parents=True, exist_ok=True)
+        with progress_file.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(line)
+            fh.flush()
+            os.fsync(fh.fileno())
+
+
+def _count_prompt_tokens(transport: Any, spec: JudgeSpec, prompt: AssembledPrompt) -> int:
+    """Return an integer prompt token count without recording token IDs or prompt text."""
+    count_fn = getattr(transport, "count_prompt_tokens", None)
+    if callable(count_fn):
+        try:
+            count_val = int(count_fn(spec, prompt))
+            if count_val > 0:
+                return count_val
+        except Exception:  # pragma: no cover
+            pass
+    return max(1, len(prompt.prompt_text.split()))
+
+
 def run_bakeoff_judge(
     *,
     part_dir: Path,
@@ -3548,6 +3658,8 @@ def run_bakeoff_judge(
     canary_config_path: Path | None = None,
     run_canary: bool = True,
     repo_root: Path | None = None,
+    progress_file: Path | None = None,
+    heartbeat_interval_seconds: float | None = None,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
     resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
@@ -3555,6 +3667,26 @@ def run_bakeoff_judge(
     adapter = build_judge_adapter(spec)
     effective_dtype = DEFAULT_TORCH_DTYPE if str(torch_dtype).strip().lower() == "auto" else str(torch_dtype)
     det_status = configure_torch_determinism()
+    env_prog = os.environ.get(JUDGE_CHILD_PROGRESS_ENV_VAR, "").strip()
+    eff_progress_file: Path | None = (
+        Path(progress_file)
+        if progress_file is not None
+        else (Path(env_prog) if env_prog else None)
+    )
+    progress_lock = threading.Lock()
+    child_start_mono = time.monotonic()
+    _append_child_progress_line(
+        eff_progress_file,
+        {
+            "kind": "child_start",
+            "judge_id": spec.judge_id,
+            "device": str(device),
+            "dtype": effective_dtype,
+            "limit_items": limit_items,
+            "pid": os.getpid(),
+        },
+        lock=progress_lock,
+    )
 
     if vram_probe is None:
         vram_probe = (
@@ -3595,8 +3727,22 @@ def run_bakeoff_judge(
                 )
 
     verified_digest = transport.verify_ready(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+    ensure_loaded_fn = getattr(transport, "_ensure_loaded", None)
+    if callable(ensure_loaded_fn):
+        ensure_loaded_fn(spec)
+    _append_child_progress_line(
+        eff_progress_file,
+        {
+            "kind": "load_done",
+            "judge_id": spec.judge_id,
+            "load_seconds": round(max(0.0, time.monotonic() - child_start_mono), 6),
+            "rss_bytes": _read_process_rss_bytes(),
+        },
+        lock=progress_lock,
+    )
     items, items_sha256 = load_judge_items(part_dir, limit=limit_items)
     items_by_id = {it.item_id: it for it in items}
+    item_index_by_id = {it.item_id: idx for idx, it in enumerate(items)}
     schedule = load_or_create_schedule(
         resolved_out,
         items,
@@ -3644,20 +3790,36 @@ def run_bakeoff_judge(
     unparseable_count = sum(1 for r in existing_row_objs if r.get("state") == "unparseable")
     length_stop_count = sum(1 for r in existing_row_objs if r.get("state") == "length_stop")
     parsed_count = sum(1 for r in existing_row_objs if r.get("state") == "parsed")
+    failed_to_run_count = 0
     vram_peak_overall = max((int(r.get("vram_peak_mib", 0)) for r in existing_row_objs), default=0)
     total_seconds = sum(float(r.get("seconds", 0.0)) for r in existing_row_objs)
     calls_so_far = len(existing_row_objs)
     polarity_map = POLARITY_MAP_BY_JUDGE.get(spec.judge_id, {"inverted": "false"})
+    eff_hb_interval = resolve_child_heartbeat_interval_seconds(heartbeat_interval_seconds)
 
     row_mode = "a" if existing_row_objs else "w"
     with row_path.open(row_mode, encoding="utf-8", newline="\n") as rf, gen_path.open("a", encoding="utf-8", newline="\n") as gf:
-        for entry in schedule.entries:
+        for call_idx, entry in enumerate(schedule.entries):
             if (entry.item_id, entry.order) in completed_keys:
                 continue
             item = items_by_id[entry.item_id]
+            item_idx = item_index_by_id[entry.item_id]
             ordered_mat = swap_material_facts_order(item.material, entry.order)
             hop1_idx, hop2_idx, marker_idx = extract_hop_and_marker_lines(ordered_mat, item.claim)
             prompt = adapter.assemble_prompt(item, order=entry.order, pass_mode=pass_mode)
+            prompt_tokens_count = _count_prompt_tokens(transport, spec, prompt)
+            _append_child_progress_line(
+                eff_progress_file,
+                {
+                    "kind": "call_start",
+                    "judge_id": spec.judge_id,
+                    "index": call_idx,
+                    "item_index": item_idx,
+                    "order": entry.order,
+                    "prompt_tokens": prompt_tokens_count,
+                },
+                lock=progress_lock,
+            )
             vram_before = check_vram_guard(
                 vram_halt_mib=vram_halt_mib,
                 vram_probe=vram_probe,
@@ -3665,7 +3827,88 @@ def run_bakeoff_judge(
                 pid_killer=pid_killer,
             )
             t0 = time.monotonic()
-            resp = transport.generate(spec, prompt, seed=schedule.seed)
+            hb_stop = threading.Event()
+            hb_thread: threading.Thread | None = None
+            if eff_progress_file is not None and eff_hb_interval > 0:
+                def _hb_loop(
+                    _call_idx: int = call_idx,
+                    _t0: float = t0,
+                    _stop: threading.Event = hb_stop,
+                ) -> None:
+                    while not _stop.wait(eff_hb_interval):
+                        elapsed_hb = round(max(0.0001, time.monotonic() - _t0), 6)
+                        raw_cur_toks = getattr(transport, "current_output_tokens", None)
+                        cur_toks = (
+                            int(raw_cur_toks)
+                            if isinstance(raw_cur_toks, int) and not isinstance(raw_cur_toks, bool)
+                            else None
+                        )
+                        _append_child_progress_line(
+                            eff_progress_file,
+                            {
+                                "kind": "heartbeat",
+                                "judge_id": spec.judge_id,
+                                "index": _call_idx,
+                                "seconds": elapsed_hb,
+                                "seconds_so_far": elapsed_hb,
+                                "output_tokens": cur_toks,
+                                "rss_bytes": _read_process_rss_bytes(),
+                            },
+                            lock=progress_lock,
+                        )
+
+                hb_thread = threading.Thread(
+                    target=_hb_loop,
+                    name=f"rdlab-judge-hb-{call_idx}",
+                    daemon=True,
+                )
+                hb_thread.start()
+
+            try:
+                resp = transport.generate(spec, prompt, seed=schedule.seed)
+            except Exception:
+                hb_stop.set()
+                if hb_thread is not None:
+                    hb_thread.join(timeout=1.0)
+                failed_elapsed = max(0.0001, time.monotonic() - t0)
+                total_seconds += failed_elapsed
+                failed_to_run_count += 1
+                calls_so_far += 1
+                _append_child_progress_line(
+                    eff_progress_file,
+                    {
+                        "kind": "call_done",
+                        "judge_id": spec.judge_id,
+                        "index": call_idx,
+                        "item_index": item_idx,
+                        "order": entry.order,
+                        "seconds": round(failed_elapsed, 6),
+                        "prompt_tokens": prompt_tokens_count,
+                        "output_tokens": 0,
+                        "state": "failed_to_run",
+                    },
+                    lock=progress_lock,
+                )
+                _append_child_progress_line(
+                    eff_progress_file,
+                    {
+                        "kind": "child_end",
+                        "judge_id": spec.judge_id,
+                        "counts_by_state": {
+                            "parsed": parsed_count,
+                            "unparseable": unparseable_count,
+                            "length_stop": length_stop_count,
+                            "failed_to_run": failed_to_run_count,
+                        },
+                        "total_seconds": round(max(0.0, time.monotonic() - child_start_mono), 6),
+                    },
+                    lock=progress_lock,
+                )
+                raise
+            else:
+                hb_stop.set()
+                if hb_thread is not None:
+                    hb_thread.join(timeout=1.0)
             elapsed = resp.seconds if resp.seconds > 0 else max(0.0001, time.monotonic() - t0)
             vram_after = check_vram_guard(
                 vram_halt_mib=vram_halt_mib,
@@ -3695,6 +3938,24 @@ def run_bakeoff_judge(
             calls_so_far += 1
             bad_calls = unparseable_count + length_stop_count
             will_halt_error_rate = calls_so_far >= error_rate_min_calls and (bad_calls / calls_so_far) > error_rate_stop
+            if will_halt_error_rate:
+                failed_to_run_count += 1
+            call_state_for_progress = "failed_to_run" if will_halt_error_rate else readout.state
+            _append_child_progress_line(
+                eff_progress_file,
+                {
+                    "kind": "call_done",
+                    "judge_id": spec.judge_id,
+                    "index": call_idx,
+                    "item_index": item_idx,
+                    "order": entry.order,
+                    "seconds": round(elapsed, 6),
+                    "prompt_tokens": prompt_tokens_count,
+                    "output_tokens": int(len(resp.tokens)),
+                    "state": call_state_for_progress,
+                },
+                lock=progress_lock,
+            )
 
             call_id = f"{spec.judge_id}:{pass_mode}:{entry.slot_index:04d}:{item.item_id}:{entry.order}"
             top5_dicts = [lp.to_dict() for lp in readout.verdict_top_logprobs[:5]]
@@ -3784,12 +4045,43 @@ def run_bakeoff_judge(
             rf.flush()
 
             if will_halt_error_rate:
+                _append_child_progress_line(
+                    eff_progress_file,
+                    {
+                        "kind": "child_end",
+                        "judge_id": spec.judge_id,
+                        "counts_by_state": {
+                            "parsed": parsed_count,
+                            "unparseable": unparseable_count,
+                            "length_stop": length_stop_count,
+                            "failed_to_run": failed_to_run_count,
+                        },
+                        "total_seconds": round(max(0.0, time.monotonic() - child_start_mono), 6),
+                    },
+                    lock=progress_lock,
+                )
                 raise refused_error(
                     "BAKEOFF_JUDGE_ERROR_RATE_STOP",
                     f"Stop rule triggered for '{spec.judge_id}': unparseable ({unparseable_count}) + length_stop "
                     f"({length_stop_count}) = {bad_calls}/{calls_so_far} ({bad_calls / calls_so_far:.1%}) > {error_rate_stop:.1%}.",
                     "Inspect prompt formatting and max_new_tokens settings before continuing.",
                 )
+
+    _append_child_progress_line(
+        eff_progress_file,
+        {
+            "kind": "child_end",
+            "judge_id": spec.judge_id,
+            "counts_by_state": {
+                "parsed": parsed_count,
+                "unparseable": unparseable_count,
+                "length_stop": length_stop_count,
+                "failed_to_run": failed_to_run_count,
+            },
+            "total_seconds": round(max(0.0, time.monotonic() - child_start_mono), 6),
+        },
+        lock=progress_lock,
+    )
 
     canary_summary: dict[str, Any] | None = None
     if canary_start_records is not None:
@@ -4016,6 +4308,12 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Disable canary snapshot drift check.",
     )
+    parser.add_argument(
+        "--progress-file",
+        type=Path,
+        default=None,
+        help="Optional per-judge child progress JSONL file.",
+    )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
@@ -4035,6 +4333,7 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             vram_halt_mib=args.vram_halt_mib,
             run_canary=not bool(args.no_canary),
             repo_root=args.repo_root,
+            progress_file=args.progress_file,
         )
         return 0
     except RdlabError as exc:

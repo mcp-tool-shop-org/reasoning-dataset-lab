@@ -6978,8 +6978,8 @@ def test_fix6_audit_table_versions_match_locks() -> None:
             .replace("scripts/colab/locks/judge.lock.txt:186-188", "judge.lock.txt:154-155")
             .replace("scripts/colab/locks/judge.lock.txt:229-231", "scripts/colab/locks/judge.lock.txt:210-211")
             .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2233-2367", "bakeoff_judge.py:390-450")
-            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2594", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
-            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2652-2670", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
+            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2634", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
+            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2692-2710", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
             .replace(
                 "(note: `torch.cuda.max_memory_allocated()` is not used anywhere in the repo)",
                 "and `run_bakeoff_judge` also tracks `torch.cuda.max_memory_allocated()`",
@@ -9465,12 +9465,12 @@ def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
     tmp_path: Path,
 ) -> None:
     """Time-one readiness Test 4:
-    - `--until first_load` (fake child) runs `venv_sync`, then download + verify for `flow-judge-v0.1`
-      only, then launches ONE judge child for `flow-judge-v0.1` with `--device cpu` and `--limit-items 2`
+    - `--until first_load` (fake child) runs `venv_sync`, then download + verify for `nemotron-3-nano-4b`
+      only, then launches ONE judge child for `nemotron-3-nano-4b` with `--device cpu` and `--limit-items 2`
       through the same entry module (`reasoning_dataset_lab.pilot_b.bakeoff_judge`) as the GPU path
       (without `--stub`), with dtype `bfloat16` and the `first_load` timeout (1,800 s default).
     - Records `load_seconds` (`load_time_seconds`) and `per_call_seconds`, memory on every progress line
-      plus the nearest finite cgroup limit fields, and fetches rows and done-file for `flow-judge-v0.1` only.
+      plus the nearest finite cgroup limit fields, and fetches rows and done-file for `nemotron-3-nano-4b` only.
     - An OOM-killed child gives `JUDGE_CHILD_OOM`, a clean stop (`judge_failed`, `run_end`), and
       fetched rows for nothing else.
     """
@@ -9511,9 +9511,9 @@ def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
     ]
     assert [(e["event"], e.get("judge_id")) for e in lc_ok] == [
         ("venv_sync", None),
-        ("download_child", "flow-judge-v0.1"),
-        ("parent_verify", "flow-judge-v0.1"),
-        ("judge_child", "flow-judge-v0.1"),
+        ("download_child", "nemotron-3-nano-4b"),
+        ("parent_verify", "nemotron-3-nano-4b"),
+        ("judge_child", "nemotron-3-nano-4b"),
     ]
 
     dl_children = [
@@ -9524,7 +9524,7 @@ def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
         if ln.strip()
     ]
     assert len(dl_children) == 1
-    assert dl_children[0]["judge_id"] == "flow-judge-v0.1"
+    assert dl_children[0]["judge_id"] == "nemotron-3-nano-4b"
 
     judge_children = [
         json.loads(ln)
@@ -9535,7 +9535,7 @@ def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
     ]
     assert len(judge_children) == 1
     jc = judge_children[0]
-    assert jc["judge_id"] == "flow-judge-v0.1"
+    assert jc["judge_id"] == "nemotron-3-nano-4b"
     argv = jc["argv"]
     assert "-m" in argv
     assert "reasoning_dataset_lab.pilot_b.bakeoff_judge" in argv
@@ -9545,21 +9545,21 @@ def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
     assert "--stub" not in argv
     assert jc["timeout_seconds"] == 1800.0
 
-    # Rows and done-file written and fetched for flow-judge-v0.1 only
+    # Rows and done-file written and fetched for nemotron-3-nano-4b only
     raw_files = sorted(p.name for p in (out_ok / "rows").glob("*.jsonl"))
     done_files = sorted(p.name for p in (out_ok / "judge_done").glob("*.json"))
-    assert raw_files == ["flow-judge-v0.1.jsonl"]
-    assert done_files == ["flow-judge-v0.1.json"]
+    assert raw_files == ["nemotron-3-nano-4b.jsonl"]
+    assert done_files == ["nemotron-3-nano-4b.json"]
     flow_rows = [
         json.loads(ln)
-        for ln in (out_ok / "rows" / "flow-judge-v0.1.jsonl")
+        for ln in (out_ok / "rows" / "nemotron-3-nano-4b.jsonl")
         .read_text(encoding="utf-8")
         .splitlines()
         if ln.strip()
     ]
     assert len(flow_rows) == 4  # 2 items * 2 orders
     flow_done = json.loads(
-        (out_ok / "judge_done" / "flow-judge-v0.1.json").read_text(encoding="utf-8")
+        (out_ok / "judge_done" / "nemotron-3-nano-4b.json").read_text(encoding="utf-8")
     )
     assert flow_done["device"] == "cpu"
     assert flow_done["dtype"] == "bfloat16"
@@ -9574,7 +9574,7 @@ def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
     ]
     jdone = [r for r in prog_ok if r["kind"] == "judge_pass_done"]
     assert len(jdone) == 1
-    assert jdone[0]["judge_id"] == "flow-judge-v0.1"
+    assert jdone[0]["judge_id"] == "nemotron-3-nano-4b"
     assert isinstance(jdone[0]["load_time_seconds"], (int, float))
     assert isinstance(jdone[0]["load_seconds"], (int, float))
     assert isinstance(jdone[0]["per_call_seconds"], (int, float))
@@ -9596,7 +9596,7 @@ def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
             hf_home=hf_ok,
             items_file=items_ok,
         )
-        + "export FAKE_COLAB_FAIL_JUDGE_CHILD='flow-judge-v0.1:sigkill'; "
+        + "export FAKE_COLAB_FAIL_JUDGE_CHILD='nemotron-3-nano-4b:sigkill'; "
     )
     proc_oom = subprocess.run(
         [
@@ -9622,7 +9622,7 @@ def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
     ]
     jfailed = [r for r in prog_oom if r["kind"] == "judge_failed"]
     assert len(jfailed) == 1
-    assert jfailed[0]["judge_id"] == "flow-judge-v0.1"
+    assert jfailed[0]["judge_id"] == "nemotron-3-nano-4b"
     assert jfailed[0]["failure_class"] == "JUDGE_CHILD_OOM"
     assert prog_oom[-1]["kind"] == "run_end"
     assert list((out_oom / "judge_done").glob("*.json")) == []
@@ -9894,8 +9894,8 @@ def test_readiness_fix1_1_judge_child_timeout_class_progress_and_stop_path(
     assert len(jfailed_rows) == 1
     jf = jfailed_rows[0]
     assert jf["failure_class"] == "JUDGE_CHILD_TIMEOUT"
-    assert jf["judge"] == "flow-judge-v0.1"
-    assert jf["judge_id"] == "flow-judge-v0.1"
+    assert jf["judge"] == "nemotron-3-nano-4b"
+    assert jf["judge_id"] == "nemotron-3-nano-4b"
     assert isinstance(jf["elapsed_seconds"], (int, float)) and jf["elapsed_seconds"] >= 0.2
     assert jf["timeout_seconds"] == pytest.approx(0.25, rel=1e-3)
     for req_key in (
@@ -10381,6 +10381,748 @@ def test_readiness_fix1_4_download_child_timeout_group_kill_and_wall_bound(
                             pass
             except Exception:
                 pass
+
+
+def test_child_progress_1_lines_in_order_and_fields_for_two_item_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Child-progress + first_load Test 1:
+    - `build_judge_child_env` sets `RDLAB_JUDGE_CHILD_PROGRESS_FILE` when `progress_file` is supplied.
+    - The judge child (`reasoning_dataset_lab.pilot_b.bakeoff_judge`) appends flushed JSON lines
+      in order (`child_start`, `load_done`, 4 x (`call_start`, `call_done`), `child_end`) for a
+      fake 2-item child with the required fields.
+    - Also verifies `unparseable`, `length_stop`, and `failed_to_run` states in `call_done` and `child_end`.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    prog_file = tmp_path / "child_progress_2item.jsonl"
+    child_env = vm_judges.build_judge_child_env(
+        tmp_path / "hf_home",
+        REPO_ROOT,
+        progress_file=prog_file,
+    )
+    assert child_env.get("RDLAB_JUDGE_CHILD_PROGRESS_FILE") == str(prog_file)
+
+    items_file = _make_synthetic_public_items(tmp_path / "items_2item", count=3)
+    out_dir = tmp_path / "judge_out_2item"
+    monkeypatch.setenv("RDLAB_JUDGE_CHILD_PROGRESS_FILE", str(prog_file))
+
+    res = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_file,
+        output_dir=out_dir,
+        judge="nemotron-3-nano-4b",
+        limit_items=2,
+        fake_transport=True,
+        device="cpu",
+        torch_dtype="bfloat16",
+        run_canary=False,
+    )
+    assert res["status"] == "ok"
+    assert prog_file.is_file()
+
+    lines = [
+        json.loads(ln)
+        for ln in prog_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    kinds = [r["kind"] for r in lines]
+    assert kinds == [
+        "child_start",
+        "load_done",
+        "call_start",
+        "call_done",
+        "call_start",
+        "call_done",
+        "call_start",
+        "call_done",
+        "call_start",
+        "call_done",
+        "child_end",
+    ]
+
+    cs = lines[0]
+    assert cs["judge_id"] == "nemotron-3-nano-4b"
+    assert cs["device"] == "cpu"
+    assert cs["dtype"] == "bfloat16"
+    assert cs["limit_items"] == 2
+    assert isinstance(cs["pid"], int) and cs["pid"] > 0
+
+    ld = lines[1]
+    assert ld["judge_id"] == "nemotron-3-nano-4b"
+    assert isinstance(ld["load_seconds"], (int, float)) and ld["load_seconds"] >= 0.0
+    assert isinstance(ld["rss_bytes"], int) and ld["rss_bytes"] > 0
+
+    for call_idx in range(4):
+        c_start = lines[2 + 2 * call_idx]
+        c_done = lines[3 + 2 * call_idx]
+        assert c_start["index"] == call_idx
+        assert c_start["item_index"] in (0, 1)
+        assert c_start["order"] in ("AB", "BA")
+        assert isinstance(c_start["prompt_tokens"], int) and c_start["prompt_tokens"] > 0
+
+        assert c_done["index"] == call_idx
+        assert isinstance(c_done["seconds"], (int, float)) and c_done["seconds"] > 0.0
+        assert c_done["prompt_tokens"] == c_start["prompt_tokens"]
+        assert c_done["output_tokens"] == 1
+        assert c_done["state"] == "parsed"
+
+    ce = lines[-1]
+    assert ce["counts_by_state"] == {
+        "parsed": 4,
+        "unparseable": 0,
+        "length_stop": 0,
+        "failed_to_run": 0,
+    }
+    assert isinstance(ce["total_seconds"], (int, float)) and ce["total_seconds"] >= 0.0
+
+    # Also exercise length_stop, unparseable, and failed_to_run states
+    prog_mixed = tmp_path / "child_progress_mixed.jsonl"
+    raw_items = [
+        json.loads(ln)
+        for ln in items_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    item0_id = raw_items[0]["id"]
+    item1_id = raw_items[1]["id"]
+    bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_file,
+        output_dir=tmp_path / "judge_out_mixed",
+        judge="nemotron-3-nano-4b",
+        limit_items=2,
+        fake_transport=True,
+        device="cpu",
+        torch_dtype="bfloat16",
+        force_length_stop_items=(f"{item0_id}:AB",),
+        force_unparseable_items=(f"{item1_id}:BA",),
+        progress_file=prog_mixed,
+        run_canary=False,
+    )
+    mixed_lines = [
+        json.loads(ln)
+        for ln in prog_mixed.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    mixed_end = mixed_lines[-1]
+    assert mixed_end["kind"] == "child_end"
+    assert mixed_end["counts_by_state"] == {
+        "parsed": 2,
+        "unparseable": 1,
+        "length_stop": 1,
+        "failed_to_run": 0,
+    }
+
+    # Exercise failed_to_run state when transport.generate raises
+    class _FailingCallTransport(bakeoff_judge.DeterministicFakeJudgeTransport):
+        def generate(
+            self,
+            spec: bakeoff_judge.JudgeSpec,
+            prompt: bakeoff_judge.AssembledPrompt,
+            *,
+            seed: int,
+        ) -> bakeoff_judge.JudgeTransportResponse:
+            raise RuntimeError("simulated transport failure")
+
+    prog_fail = tmp_path / "child_progress_fail.jsonl"
+    with pytest.raises(RuntimeError, match="simulated transport failure"):
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_file,
+            output_dir=tmp_path / "judge_out_fail",
+            judge="nemotron-3-nano-4b",
+            limit_items=2,
+            transport=_FailingCallTransport(),
+            device="cpu",
+            torch_dtype="bfloat16",
+            progress_file=prog_fail,
+            run_canary=False,
+        )
+    fail_lines = [
+        json.loads(ln)
+        for ln in prog_fail.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert [r["kind"] for r in fail_lines] == [
+        "child_start",
+        "load_done",
+        "call_start",
+        "call_done",
+        "child_end",
+    ]
+    assert fail_lines[3]["state"] == "failed_to_run"
+    assert fail_lines[4]["counts_by_state"] == {
+        "parsed": 0,
+        "unparseable": 0,
+        "length_stop": 0,
+        "failed_to_run": 1,
+    }
+
+    # Exercise main_judge_runner --progress-file and TransformersJudgeTransport.count_prompt_tokens
+    prog_cli = tmp_path / "child_progress_cli.jsonl"
+    rc_cli = bakeoff_judge.main_judge_runner(
+        [
+            "--judge",
+            "nemotron-3-nano-4b",
+            "--items",
+            str(items_file),
+            "--output-dir",
+            str(tmp_path / "judge_out_cli"),
+            "--device",
+            "cpu",
+            "--dtype",
+            "bfloat16",
+            "--limit-items",
+            "2",
+            "--stub",
+            "--no-canary",
+            "--progress-file",
+            str(prog_cli),
+        ]
+    )
+    assert rc_cli == 0
+    assert prog_cli.is_file()
+
+    tf_tp = bakeoff_judge.TransformersJudgeTransport(
+        receipts_dir=tmp_path,
+        hf_home=tmp_path,
+        device="cpu",
+    )
+    spec_nem = bakeoff_judge.BAKEOFF_JUDGE_SPECS["nemotron-3-nano-4b"]
+    tf_tp._loaded_spec_id = spec_nem.judge_id
+    tf_tp._model = object()
+    tf_tp._tokenizer = lambda _text, **_kw: {
+        "input_ids": type("_T", (), {"shape": (1, 17)})()
+    }
+    sample_prompt = bakeoff_judge.build_judge_adapter(spec_nem).assemble_prompt(
+        bakeoff_judge.JudgeInputItem(
+            item_id="it0",
+            material="1. Premise one.\n2. Premise two.",
+            claim="Claim.",
+        ),
+        order="AB",
+        pass_mode="binary",
+    )
+    assert tf_tp.count_prompt_tokens(spec_nem, sample_prompt) == 17
+    assert bakeoff_judge._count_prompt_tokens(tf_tp, spec_nem, sample_prompt) == 17
+
+
+def test_child_progress_2_heartbeat_fires_on_slow_call_and_stops_after_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Child-progress + first_load Test 2:
+    - `heartbeat` fires on a slow fake call with `index`, `seconds` (`seconds_so_far`),
+      `output_tokens` (int if transport gives them, else null), and `rss_bytes`.
+    - Runs on a daemon thread that stops when the call finishes.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    items_file = _make_synthetic_public_items(tmp_path / "items_hb", count=2)
+    prog_hb = tmp_path / "child_progress_hb.jsonl"
+
+    class _SlowFirstCallTransport(bakeoff_judge.DeterministicFakeJudgeTransport):
+        def __init__(self) -> None:
+            super().__init__(torch_dtype="bfloat16")
+            self._call_num = 0
+            self.current_output_tokens: int | None = None
+
+        def generate(
+            self,
+            spec: bakeoff_judge.JudgeSpec,
+            prompt: bakeoff_judge.AssembledPrompt,
+            *,
+            seed: int,
+        ) -> bakeoff_judge.JudgeTransportResponse:
+            idx = self._call_num
+            self._call_num += 1
+            if idx == 0:
+                self.current_output_tokens = 5
+                time.sleep(0.14)
+                self.current_output_tokens = None
+            elif idx == 1:
+                self.current_output_tokens = None
+                time.sleep(0.14)
+            return super().generate(spec, prompt, seed=seed)
+
+    monkeypatch.setenv("RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS", "0.04")
+    bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_file,
+        output_dir=tmp_path / "judge_out_hb",
+        judge="nemotron-3-nano-4b",
+        limit_items=2,
+        transport=_SlowFirstCallTransport(),
+        device="cpu",
+        torch_dtype="bfloat16",
+        progress_file=prog_hb,
+        run_canary=False,
+    )
+    # Sleep briefly after run_bakeoff_judge returns to confirm no stray daemon heartbeat writes after calls end
+    count_after_return = len(prog_hb.read_text(encoding="utf-8").splitlines())
+    time.sleep(0.10)
+    assert len(prog_hb.read_text(encoding="utf-8").splitlines()) == count_after_return
+
+    lines = [
+        json.loads(ln)
+        for ln in prog_hb.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    hb_call0 = [
+        r for r in lines if r["kind"] == "heartbeat" and r["index"] == 0
+    ]
+    hb_call1 = [
+        r for r in lines if r["kind"] == "heartbeat" and r["index"] == 1
+    ]
+    assert len(hb_call0) >= 1
+    assert len(hb_call1) >= 1
+    for hb in hb_call0:
+        assert hb["output_tokens"] == 5
+        assert isinstance(hb["seconds"], (int, float)) and hb["seconds"] > 0.0
+        assert hb["seconds_so_far"] == hb["seconds"]
+        assert isinstance(hb["rss_bytes"], int) and hb["rss_bytes"] > 0
+    for hb in hb_call1:
+        assert hb["output_tokens"] is None
+        assert isinstance(hb["seconds"], (int, float)) and hb["seconds"] > 0.0
+        assert isinstance(hb["rss_bytes"], int) and hb["rss_bytes"] > 0
+
+    # Verify heartbeats for call 0 appear strictly between call_start(0) and call_done(0)
+    idx_start_0 = next(
+        i for i, r in enumerate(lines) if r["kind"] == "call_start" and r["index"] == 0
+    )
+    idx_done_0 = next(
+        i for i, r in enumerate(lines) if r["kind"] == "call_done" and r["index"] == 0
+    )
+    for i, r in enumerate(lines):
+        if r["kind"] == "heartbeat" and r["index"] == 0:
+            assert idx_start_0 < i < idx_done_0
+
+    # Exercise _TokenCountStreamer, resolve_child_heartbeat_interval_seconds, and error-rate stop child_end
+    dummy_tp = type("_D", (), {"current_output_tokens": None})()
+    streamer = bakeoff_judge._TokenCountStreamer(dummy_tp)
+    streamer.put([10, 20])
+    assert dummy_tp.current_output_tokens == 0
+    streamer.put([30])
+    assert dummy_tp.current_output_tokens == 1
+    streamer.end()
+    assert bakeoff_judge.resolve_child_heartbeat_interval_seconds(1.5) == 1.5
+    monkeypatch.setenv("RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS", "not-a-float")
+    assert bakeoff_judge.resolve_child_heartbeat_interval_seconds(None) == 30.0
+    monkeypatch.delenv("RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS", raising=False)
+    assert bakeoff_judge.resolve_child_heartbeat_interval_seconds(None) == 30.0
+
+    prog_errstop = tmp_path / "child_progress_errstop.jsonl"
+    raw_items_hb = [
+        json.loads(ln)
+        for ln in items_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    with pytest.raises(bakeoff_judge.RdlabError) as exc_er:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_file,
+            output_dir=tmp_path / "judge_out_errstop",
+            judge="nemotron-3-nano-4b",
+            limit_items=2,
+            fake_transport=True,
+            device="cpu",
+            torch_dtype="bfloat16",
+            error_rate_min_calls=1,
+            force_unparseable_items=(
+                f"{raw_items_hb[0]['id']}:AB",
+                f"{raw_items_hb[0]['id']}:BA",
+                f"{raw_items_hb[1]['id']}:AB",
+                f"{raw_items_hb[1]['id']}:BA",
+            ),
+            progress_file=prog_errstop,
+            run_canary=False,
+        )
+    assert exc_er.value.code == "BAKEOFF_JUDGE_ERROR_RATE_STOP"
+    errstop_lines = [
+        json.loads(ln)
+        for ln in prog_errstop.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert errstop_lines[-2]["kind"] == "call_done"
+    assert errstop_lines[-2]["state"] == "failed_to_run"
+    assert errstop_lines[-1]["kind"] == "child_end"
+    assert errstop_lines[-1]["counts_by_state"]["failed_to_run"] == 1
+
+
+def test_child_progress_3_lines_survive_judge_child_timeout_group_kill_mid_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Child-progress + first_load Test 3:
+    - When a fake judge child is killed mid-call by `JUDGE_CHILD_TIMEOUT`, the child progress lines
+      written up to the kill (`child_start`, `load_done`, `call_start(0)`, `call_done(0)`,
+      `call_start(1)`, `heartbeat(1)`) survive on disk and inside `result.tar.gz`.
+    """
+    import shutil as _shutil
+    import stat as _stat
+    import tarfile as _tarfile
+
+    _mock_sufficient_vm_disk(monkeypatch)
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env_cp_kill")
+    monkeypatch.setenv("PATH", _hermetic_path_for(fake_env))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(fake_env["state_dir"]))
+
+    vm_content = tmp_path / "vm_content_cp_kill"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(vm_content))
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_cp_kill"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_cp_kill", count=2)
+    staged_items = vm_content / "rdlab_items" / "items.jsonl"
+    staged_items.parent.mkdir(parents=True, exist_ok=True)
+    _shutil.copy2(items_file, staged_items)
+
+    work_dir = vm_content / "rdlab_work"
+    run_dir = vm_content / "rdlab_run"
+    result_tar = vm_content / "result.tar.gz"
+    status_file = vm_content / "status.json"
+    gate_status_file = vm_content / "gate_status.json"
+
+    # Configure the dryrun venv-judge python wrapper to run real bakeoff_judge with a fake transport
+    # that completes call 0 quickly and hangs on call 1 while emitting heartbeats
+    venv_judge_py = work_dir / "venv-judge" / "bin" / "python"
+    vm_judges._ensure_dryrun_venv_python_wrapper(venv_judge_py)
+    py_exe = str(Path(sys.executable)).replace("\\", "/")
+    site_pkgs_posix = (work_dir / "venv-judge" / "site-packages").as_posix()
+    slow_child_driver = tmp_path / "slow_child_driver.py"
+    slow_child_driver.write_text(
+        "import sys, time\n"
+        "from reasoning_dataset_lab.pilot_b import bakeoff_judge\n"
+        "class _HangCall1Transport(bakeoff_judge.DeterministicFakeJudgeTransport):\n"
+        "    def __init__(self, **kw):\n"
+        "        super().__init__(**kw)\n"
+        "        self._n = 0\n"
+        "        self.current_output_tokens = None\n"
+        "    def generate(self, spec, prompt, *, seed):\n"
+        "        idx = self._n\n"
+        "        self._n += 1\n"
+        "        if idx >= 1:\n"
+        "            self.current_output_tokens = 1\n"
+        "            time.sleep(5.0)\n"
+        "        return super().generate(spec, prompt, seed=seed)\n"
+        "bakeoff_judge.TransformersJudgeTransport = lambda **kw: _HangCall1Transport()\n"
+        "raise SystemExit(bakeoff_judge.main_judge_runner(sys.argv[1:]))\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    venv_judge_py.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "--version" || "$1" == "-V" ]]; then\n'
+        '  echo "Python 3.15.1"\n'
+        "  exit 0\n"
+        "fi\n"
+        'export RDLAB_ACTIVE_VENV_NAME="venv-judge"\n'
+        f'export PYTHONPATH="{site_pkgs_posix}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
+        'if [[ "$*" == *"bakeoff_judge"* ]]; then\n'
+        "  shift 2\n"
+        f'  exec "{py_exe}" "{slow_child_driver.as_posix()}" "$@"\n'
+        "fi\n"
+        f'exec "{py_exe}" "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    venv_judge_py.chmod(venv_judge_py.stat().st_mode | _stat.S_IEXEC)
+
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", vm_judges.EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", vm_judges.EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_FIRST_LOAD_TIMEOUT_SECONDS", "0.35")
+    monkeypatch.setenv("RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS", "0.05")
+
+    rc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "stub",
+            "--until",
+            "first_load",
+            "--dryrun",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--items-file",
+            str(staged_items),
+            "--run-dir",
+            str(run_dir),
+            "--work-dir",
+            str(work_dir),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(result_tar),
+            "--status-file",
+            str(status_file),
+            "--gate-status-file",
+            str(gate_status_file),
+        ]
+    )
+    assert rc == 2
+    status_doc = json.loads(status_file.read_text(encoding="utf-8"))
+    assert status_doc["failure_class"] == "JUDGE_CHILD_TIMEOUT"
+    assert status_doc["any_member_survived"] is False
+    assert result_tar.is_file()
+
+    with _tarfile.open(result_tar, "r:*") as tf:
+        tar_names = set(tf.getnames())
+        assert "child_progress/nemotron-3-nano-4b.jsonl" in tar_names
+        assert "child_progress.jsonl" in tar_names
+        raw_tar_cp = (
+            tf.extractfile("child_progress/nemotron-3-nano-4b.jsonl")
+            .read()
+            .decode("utf-8")
+        )
+
+    cp_rows = [json.loads(ln) for ln in raw_tar_cp.splitlines() if ln.strip()]
+    cp_kinds = [r["kind"] for r in cp_rows]
+    assert cp_kinds[:5] == [
+        "child_start",
+        "load_done",
+        "call_start",
+        "call_done",
+        "call_start",
+    ]
+    assert cp_rows[2]["index"] == 0
+    assert cp_rows[3]["index"] == 0 and cp_rows[3]["state"] == "parsed"
+    assert cp_rows[4]["index"] == 1
+    assert any(
+        r["kind"] == "heartbeat" and r["index"] == 1 for r in cp_rows[5:]
+    ), f"Expected mid-call heartbeat for index=1 before kill, got {cp_rows}"
+    assert "child_end" not in cp_kinds
+
+
+def test_child_progress_4_first_load_selects_nemotron_while_first_judge_selects_flow_judge(
+    tmp_path: Path,
+) -> None:
+    """Child-progress + first_load Test 4:
+    - `FIRST_LOAD_JUDGE_ID == "nemotron-3-nano-4b"` beside `FIRST_JUDGE_ID == "flow-judge-v0.1"`.
+    - `--until first_load` selects `nemotron-3-nano-4b` (in `venv-judge`) for download, verify,
+      and the judge pass (CPU, bf16, limit 2, 1800s timeout), and writes `first_load_judge_id`
+      plus the plain note to `vm_receipt.json` and `status.json`.
+    - `--until first_judge` still selects `flow-judge-v0.1`.
+    """
+    assert getattr(vm_judges, "FIRST_LOAD_JUDGE_ID", None) == "nemotron-3-nano-4b"
+    assert vm_judges.FIRST_JUDGE_ID == "flow-judge-v0.1"
+    expected_note = (
+        "first_load proves a real call completes and parses for a one-token judge; "
+        "it does not prove Flow-Judge's 512-token feedback parse."
+    )
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_fl_fj"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_fl_fj", count=4)
+
+    # 1. `--until first_judge` keeps `flow-judge-v0.1`
+    env_fj = fake_colab.setup_fake_colab_environment(tmp_path / "env_fj")
+    out_fj = tmp_path / "out_fj"
+    exports_fj = _base_launcher_exports(
+        env_fj,
+        open_lock=tmp_path / "fj.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_fj = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_fj} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_judge --out-dir '{_to_wsl_path(out_fj)}' --run-id fj-check-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_fj.returncode == 0, f"stderr={proc_fj.stderr}"
+    lc_fj = [
+        json.loads(ln)
+        for ln in (env_fj["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert [(e["event"], e.get("judge_id")) for e in lc_fj] == [
+        ("venv_sync", None),
+        ("download_child", "flow-judge-v0.1"),
+        ("parent_verify", "flow-judge-v0.1"),
+    ]
+
+    # 2. `--until first_load` selects `nemotron-3-nano-4b` for download, verify, and judge pass in `venv-judge`
+    env_fl = fake_colab.setup_fake_colab_environment(tmp_path / "env_fl")
+    out_fl = tmp_path / "out_fl"
+    exports_fl = _base_launcher_exports(
+        env_fl,
+        open_lock=tmp_path / "fl.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_fl = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_fl} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_load --out-dir '{_to_wsl_path(out_fl)}' --run-id fl-check-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_fl.returncode == 0, f"stderr={proc_fl.stderr}"
+    lc_fl = [
+        json.loads(ln)
+        for ln in (env_fl["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert [(e["event"], e.get("judge_id")) for e in lc_fl] == [
+        ("venv_sync", None),
+        ("download_child", "nemotron-3-nano-4b"),
+        ("parent_verify", "nemotron-3-nano-4b"),
+        ("judge_child", "nemotron-3-nano-4b"),
+    ]
+    judge_subprocs = [
+        json.loads(ln)
+        for ln in (env_fl["state_dir"] / "judge_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(judge_subprocs) == 1
+    assert judge_subprocs[0]["judge_id"] == "nemotron-3-nano-4b"
+    assert judge_subprocs[0]["venv"] == "venv-judge"
+    assert judge_subprocs[0]["timeout_seconds"] == 1800.0
+
+    receipt_fl = json.loads((out_fl / "vm_receipt.json").read_text(encoding="utf-8"))
+    status_fl = json.loads((out_fl / "status.json").read_text(encoding="utf-8"))
+    assert receipt_fl.get("first_load_judge_id") == "nemotron-3-nano-4b"
+    assert status_fl.get("first_load_judge_id") == "nemotron-3-nano-4b"
+    assert receipt_fl.get("first_load_note") == expected_note
+    assert status_fl.get("first_load_note") == expected_note
+
+
+def test_child_progress_5_no_text_or_token_ids_leak_into_progress_lines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Child-progress + first_load Test 5:
+    - Scans every child progress line (`child_start`, `load_done`, `call_start`, `heartbeat`,
+      `call_done`, `child_end`) to confirm that no prompt, item ID, material, claim,
+      generated text, or token IDs appear anywhere in any line.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    secret_item_0 = "item-secret-handle-" + "alpha901"
+    secret_item_1 = "item-secret-handle-" + "bravo902"
+    secret_mat_0 = "1. SecretMaterialPremiseOneAlpha.\n2. SecretMaterialPremiseTwoAlpha."
+    secret_mat_1 = "1. SecretMaterialPremiseOneBravo.\n2. SecretMaterialPremiseTwoBravo."
+    secret_claim_0 = "SecretClaimStatementAlpha is derived."
+    secret_claim_1 = "SecretClaimStatementBravo is derived."
+    secret_gen_text = "SecretGeneratedFeedbackText999"
+
+    items_p = tmp_path / "leak_check_items.jsonl"
+    items_p.write_text(
+        json.dumps({"id": secret_item_0, "material": secret_mat_0, "claim": secret_claim_0})
+        + "\n"
+        + json.dumps({"id": secret_item_1, "material": secret_mat_1, "claim": secret_claim_1})
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    class _LeakCheckTransport(bakeoff_judge.DeterministicFakeJudgeTransport):
+        def generate(
+            self,
+            spec: bakeoff_judge.JudgeSpec,
+            prompt: bakeoff_judge.AssembledPrompt,
+            *,
+            seed: int,
+        ) -> bakeoff_judge.JudgeTransportResponse:
+            time.sleep(0.05)
+            base = super().generate(spec, prompt, seed=seed)
+            return bakeoff_judge.JudgeTransportResponse(
+                raw_text= f"<feedback>{secret_gen_text}</feedback><score>Pass</score>",
+                tokens=(secret_gen_text, "yes"),
+                verdict_top_logprobs=(
+                    bakeoff_judge.TopLogprobEntry(token="yes", logprob=-0.05, token_id=987654),
+                    bakeoff_judge.TopLogprobEntry(token="no", logprob=-3.10, token_id=876543),
+                ),
+                done_reason=base.done_reason,
+                seconds=base.seconds,
+                model_digest=base.model_digest,
+                server_binary=base.server_binary,
+                library_pins=base.library_pins,
+            )
+
+    prog_p = tmp_path / "leak_check_progress.jsonl"
+    monkeypatch.setenv("RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS", "0.02")
+    bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_p,
+        output_dir=tmp_path / "leak_check_out",
+        judge="nemotron-3-nano-4b",
+        limit_items=2,
+        transport=_LeakCheckTransport(),
+        device="cpu",
+        torch_dtype="bfloat16",
+        progress_file=prog_p,
+        run_canary=False,
+    )
+    raw_content = prog_p.read_text(encoding="utf-8")
+    raw_lines = [ln for ln in raw_content.splitlines() if ln.strip()]
+    assert len(raw_lines) >= 11
+
+    forbidden_substrings = (
+        secret_item_0,
+        secret_item_1,
+        "SecretMaterialPremise",
+        "SecretClaimStatement",
+        secret_gen_text,
+        "987654",
+        "876543",
+        "token_id",
+        "raw_text",
+        "raw_generation",
+        "prompt_text",
+        "material",
+        "claim",
+        "item_id",
+    )
+    allowed_keys = {
+        "kind",
+        "judge_id",
+        "device",
+        "dtype",
+        "limit_items",
+        "pid",
+        "load_seconds",
+        "rss_bytes",
+        "index",
+        "item_index",
+        "order",
+        "prompt_tokens",
+        "output_tokens",
+        "seconds",
+        "seconds_so_far",
+        "state",
+        "counts_by_state",
+        "parsed_count",
+        "unparseable_count",
+        "length_stop_count",
+        "failed_to_run_count",
+        "calls_count",
+        "total_seconds",
+    }
+    for lineno, ln in enumerate(raw_lines, start=1):
+        for marker in forbidden_substrings:
+            assert marker not in ln, f"Forbidden text/token marker {marker!r} leaked on line {lineno}: {ln}"
+        obj = json.loads(ln)
+        assert set(obj.keys()).issubset(allowed_keys), f"Unexpected key(s) in {obj}"
+
 
 
 

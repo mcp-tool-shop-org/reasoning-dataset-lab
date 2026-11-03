@@ -65,6 +65,12 @@ D3_MINI_JUDGE_ID = "d3-mini"
 D3_MINI_REVIEWED_REVISION = "bd0090dd758d32ba59ef5c749910a8e87fc4391f"
 FIRST_JUDGE_ID = "flow-judge-v0.1"
 FIRST_JUDGE_RECEIPT_BYTES = 7_644_593_918
+FIRST_LOAD_JUDGE_ID = "nemotron-3-nano-4b"
+FIRST_LOAD_RECEIPT_BYTES = 7_964_584_688
+FIRST_LOAD_NOTE = (
+    "first_load proves a real call completes and parses for a one-token judge; "
+    "it does not prove Flow-Judge's 512-token feedback parse."
+)
 ALLOWED_UNTIL_STEPS: tuple[str, ...] = (
     "venv_sync",
     "gpu_gate",
@@ -131,6 +137,9 @@ SCHEDULE_FILENAME = "schedule.json"
 GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
 PROGRESS_FILENAME = "progress.jsonl"
+CHILD_PROGRESS_FILENAME = "child_progress.jsonl"
+CHILD_PROGRESS_DIRNAME = "child_progress"
+JUDGE_CHILD_PROGRESS_ENV_VAR = "RDLAB_JUDGE_CHILD_PROGRESS_FILE"
 ROWS_DIRNAME = "rows"
 JUDGE_DONE_DIRNAME = "judge_done"
 DOWNLOAD_DONE_DIRNAME = "download_done"
@@ -452,12 +461,14 @@ TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
         "time_one_summary.json",
         "vm_receipt.json",
         PROGRESS_FILENAME,
+        CHILD_PROGRESS_FILENAME,
     }
 )
 TAR_ALLOWED_DIRS: frozenset[str] = frozenset(
     {
         ROWS_DIRNAME,
         JUDGE_DONE_DIRNAME,
+        CHILD_PROGRESS_DIRNAME,
         "logs",
     }
 )
@@ -2724,6 +2735,7 @@ def build_judge_child_env(
     repo_dir: Path,
     *,
     base_env: Mapping[str, str] | None = None,
+    progress_file: Path | None = None,
 ) -> dict[str, str]:
     """Build the judge child subprocess environment, dropping `HF_TOKEN*` and `HUGGING_FACE_HUB_TOKEN` and setting `HF_HUB_OFFLINE=1`."""
     source_env = os.environ if base_env is None else base_env
@@ -2735,6 +2747,8 @@ def build_judge_child_env(
     child_env["HF_HUB_OFFLINE"] = "1"
     child_env["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
     child_env["HF_HOME"] = str(hf_home)
+    if progress_file is not None:
+        child_env[JUDGE_CHILD_PROGRESS_ENV_VAR] = str(progress_file)
     src_path = str(repo_dir / "src")
     existing_py_path = child_env.get("PYTHONPATH", "")
     child_env["PYTHONPATH"] = (
@@ -3912,6 +3926,8 @@ def is_allowed_tar_member(rel_posix_path: str) -> bool:
         return True
     if len(parts) == 2 and parts[0] == JUDGE_DONE_DIRNAME and parts[1].endswith(".json"):
         return True
+    if len(parts) == 2 and parts[0] == CHILD_PROGRESS_DIRNAME and parts[1].endswith(".jsonl"):
+        return True
     if len(parts) == 2 and parts[0] == "logs" and parts[1].endswith(".log"):
         return True
     return False
@@ -4598,6 +4614,9 @@ def run_judges_pipeline(
     judge_done_dir = run_dir / JUDGE_DONE_DIRNAME
     judge_done_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / ROWS_DIRNAME).mkdir(parents=True, exist_ok=True)
+    child_progress_dir = run_dir / CHILD_PROGRESS_DIRNAME
+    child_progress_dir.mkdir(parents=True, exist_ok=True)
+    merged_child_progress_path = run_dir / CHILD_PROGRESS_FILENAME
 
     per_judge_metrics: dict[str, Any] = {}
     for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
@@ -4624,6 +4643,7 @@ def run_judges_pipeline(
             if (real_load_on_cpu or dryrun or mode == "stub")
             else "cuda"
         )
+        child_progress_file = child_progress_dir / f"{judge_id}.jsonl"
         child_cmd: list[str] = [
             str(venv_python),
             "-m",
@@ -4650,13 +4670,19 @@ def run_judges_pipeline(
             str(limit_items),
             "--repo-root",
             str(eff_repo_dir),
+            "--progress-file",
+            str(child_progress_file),
         ]
         if allow_remote_sha is not None:
             child_cmd.extend(["--allow-remote-code-reviewed", allow_remote_sha])
         if (dryrun or mode == "stub") and not real_load_on_cpu:
             child_cmd.append("--stub")
 
-        child_env = build_judge_child_env(hf_home, eff_repo_dir)
+        child_env = build_judge_child_env(
+            hf_home,
+            eff_repo_dir,
+            progress_file=child_progress_file,
+        )
         eff_child_timeout = compute_child_timeout_seconds(configured_child_timeout)
 
         cg_before = read_cgroup_memory_events(
@@ -4675,6 +4701,25 @@ def run_judges_pipeline(
             )
         finally:
             sampler_peak = sampler.stop()
+        if child_progress_file.is_file():
+            try:
+                raw_cp_lines = [
+                    ln
+                    for ln in child_progress_file.read_text(
+                        encoding="utf-8", errors="replace"
+                    ).splitlines()
+                    if ln.strip()
+                ]
+                if raw_cp_lines:
+                    with merged_child_progress_path.open(
+                        "a", encoding="utf-8", newline="\n"
+                    ) as mfh:
+                        for cp_ln in raw_cp_lines:
+                            mfh.write(cp_ln + "\n")
+                        mfh.flush()
+                        os.fsync(mfh.fileno())
+            except OSError:
+                pass
         wall_elapsed = float(child_res["elapsed_seconds"])
         child_rc = int(child_res["returncode"])
 
@@ -6638,7 +6683,7 @@ def main(argv: list[str] | None = None) -> int:
                 judge_records_out=judge_download_records,
                 step_timings=step_timings,
                 step_order=step_order,
-                only_judge_ids=(FIRST_JUDGE_ID,),
+                only_judge_ids=(FIRST_LOAD_JUDGE_ID,),
                 max_workers=dl_max_workers,
                 hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
             )
@@ -6658,7 +6703,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=args.repo_dir,
                 work_dir=args.work_dir,
                 progress_path=progress_path,
-                only_judge_ids=(FIRST_JUDGE_ID,),
+                only_judge_ids=(FIRST_LOAD_JUDGE_ID,),
                 real_load_on_cpu=True,
                 child_timeout_seconds=resolve_first_load_timeout_seconds(),
             )
@@ -6806,9 +6851,15 @@ def main(argv: list[str] | None = None) -> int:
             receipt_doc["until"] = until_step
             receipt_doc["until_step"] = until_step
             receipt_doc["stopped_after"] = stopped_after
-            if until_step in ("first_judge", "first_load"):
+            if until_step == "first_judge":
                 receipt_doc["first_judge_id"] = FIRST_JUDGE_ID
                 receipt_doc["first_judge_receipt_bytes"] = FIRST_JUDGE_RECEIPT_BYTES
+            elif until_step == "first_load":
+                receipt_doc["first_load_judge_id"] = FIRST_LOAD_JUDGE_ID
+                receipt_doc["first_load_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
+                receipt_doc["first_load_note"] = FIRST_LOAD_NOTE
+                receipt_doc["first_judge_id"] = FIRST_LOAD_JUDGE_ID
+                receipt_doc["first_judge_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
         receipt_path.write_text(
             json.dumps(receipt_doc, indent=2) + "\n",
             encoding="utf-8",
@@ -6853,9 +6904,15 @@ def main(argv: list[str] | None = None) -> int:
             status_extra["until"] = until_step
             status_extra["until_step"] = until_step
             status_extra["stopped_after"] = stopped_after
-            if until_step in ("first_judge", "first_load"):
+            if until_step == "first_judge":
                 status_extra["first_judge_id"] = FIRST_JUDGE_ID
                 status_extra["first_judge_receipt_bytes"] = FIRST_JUDGE_RECEIPT_BYTES
+            elif until_step == "first_load":
+                status_extra["first_load_judge_id"] = FIRST_LOAD_JUDGE_ID
+                status_extra["first_load_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
+                status_extra["first_load_note"] = FIRST_LOAD_NOTE
+                status_extra["first_judge_id"] = FIRST_LOAD_JUDGE_ID
+                status_extra["first_judge_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
 
         write_vm_status_file(
             args.status_file,
@@ -6942,6 +6999,13 @@ def main(argv: list[str] | None = None) -> int:
             fail_receipt["until_step"] = until_step
             status_fail_extra["until"] = until_step
             status_fail_extra["until_step"] = until_step
+            if until_step == "first_load":
+                fail_receipt["first_load_judge_id"] = FIRST_LOAD_JUDGE_ID
+                fail_receipt["first_load_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
+                fail_receipt["first_load_note"] = FIRST_LOAD_NOTE
+                status_fail_extra["first_load_judge_id"] = FIRST_LOAD_JUDGE_ID
+                status_fail_extra["first_load_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
+                status_fail_extra["first_load_note"] = FIRST_LOAD_NOTE
         if isinstance(err, (JudgeChildProcessError, DownloadChildProcessError)):
             for k in (
                 "judge",
