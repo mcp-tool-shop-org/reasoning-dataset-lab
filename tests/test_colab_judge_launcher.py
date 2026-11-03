@@ -5540,22 +5540,19 @@ def test_progress_log_per_judge_lines_and_step_timings_in_order(
     fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env")
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
 
-    # 1. Direct unit test of `download_all_judge_weights(..., dryrun=False)` with fake `snapshot_download`
+    # 1. Direct unit test of `download_all_judge_weights(..., dryrun=False)` via per-judge child subprocesses
     progress_unit = tmp_path / "unit_progress.jsonl"
-    dl_calls: list[tuple[str, str, str]] = []
-
-    def _fake_snap_dl(repo_id: str, revision: str, cache_dir: str) -> str:
-        dl_calls.append((repo_id, revision, cache_dir))
-        owner, repo = repo_id.split("/", 1)
-        snap_dir = Path(cache_dir) / f"models--{owner}--{repo}" / "snapshots" / revision
-        return str(snap_dir)
+    unit_state_dir = tmp_path / "unit_state"
+    unit_work_dir = tmp_path / "unit_work"
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", str(unit_state_dir))
+    monkeypatch.setenv("FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD", "1")
 
     capsys.readouterr()
     judge_records = vm_judges.download_all_judge_weights(
         hf_home,
         dryrun=False,
+        work_dir=unit_work_dir,
         progress_path=progress_unit,
-        snapshot_download_fn=_fake_snap_dl,
     )
     captured_out = capsys.readouterr().out
     stdout_json_lines = [
@@ -5566,6 +5563,11 @@ def test_progress_log_per_judge_lines_and_step_timings_in_order(
     file_json_lines = [
         json.loads(ln)
         for ln in progress_unit.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    dl_calls = [
+        json.loads(ln)
+        for ln in (unit_state_dir / "hf_calls.jsonl").read_text(encoding="utf-8").splitlines()
         if ln.strip()
     ]
     assert len(dl_calls) == 5
@@ -5653,6 +5655,11 @@ def test_progress_log_per_judge_lines_and_step_timings_in_order(
         ("step_start", "verify"),
         ("step_end", "verify"),
         ("step_start", "judge_pass"),
+        ("judge_pass_done", "d3-mini"),
+        ("judge_pass_done", "flow-judge-v0.1"),
+        ("judge_pass_done", "granite-guardian-4.1-8b"),
+        ("judge_pass_done", "mu-judge"),
+        ("judge_pass_done", "nemotron-3-nano-4b"),
         ("step_end", "judge_pass"),
         ("step_start", "result_packing"),
         ("step_end", "result_packing"),
@@ -6777,6 +6784,2383 @@ def test_fix5_staged_stub_until_option_all_stages_and_validation(
         assert len(dl_rows) == expected_dl_count
         step_end_names = [r.get("step") for r in progress_rows if r["kind"] == "step_end"]
         assert "judge_pass" not in step_end_names
+
+
+def _validate_c1_c15_audit_table_text(doc_text: str) -> None:
+    """Validate every `pkg==ver`, repo `path:line` citation, and `torch.cuda.max_memory_allocated` claim in C1–C15."""
+    marker = "## VM Command and Tool Audit against Pinned/Installed Real Versions"
+    assert marker in doc_text, f"Missing section {marker!r}"
+    after_marker = doc_text.split(marker, 1)[1]
+    c_table_section = after_marker.split("\n---\n", 1)[0]
+
+    c_rows: dict[str, str] = {}
+    for line in c_table_section.splitlines():
+        m = re.match(r"^\|\s*`(C\d+)`\s*\|", line.strip())
+        if m:
+            c_rows[m.group(1)] = line.strip()
+    assert set(c_rows.keys()) == {f"C{i}" for i in range(1, 16)}, (
+        f"Expected C1..C15 rows, got {sorted(c_rows.keys())}"
+    )
+
+    judge_lock_text = JUDGE_LOCK_TXT.read_text(encoding="utf-8")
+    d3_lock_text = D3_LOCK_TXT.read_text(encoding="utf-8")
+    uv_lock_text = (REPO_ROOT / "uv.lock").read_text(encoding="utf-8")
+
+    def _pkg_ver_in_locks(pkg: str, ver: str) -> bool:
+        norm_pkg = pkg.lower().replace("_", "-")
+        alt_pkg = pkg.lower().replace("-", "_")
+        for lock_txt in (judge_lock_text, d3_lock_text):
+            if f"{norm_pkg}=={ver}" in lock_txt.lower() or f"{alt_pkg}=={ver}" in lock_txt.lower():
+                return True
+        if f'name = "{norm_pkg}"\nversion = "{ver}"' in uv_lock_text.lower():
+            return True
+        return False
+
+    violations: list[str] = []
+
+    # 1. Every `pkg==ver` in C1–C15 must exist in the lock the row cites (or in either lock if the row names both)
+    pkg_vers = re.findall(r"\b([A-Za-z0-9_.-]+)==([0-9][A-Za-z0-9_.+-]*)", c_table_section)
+    assert pkg_vers, "No pkg==ver tokens found in C1–C15 section"
+    for cid, row_text in sorted(c_rows.items()):
+        row_pkg_vers = re.findall(r"\b([A-Za-z0-9_.-]+)==([0-9][A-Za-z0-9_.+-]*)", row_text)
+        cites_judge = "judge.lock.txt" in row_text
+        cites_d3 = "d3.lock.txt" in row_text
+        for pkg, ver in row_pkg_vers:
+            norm_pkg = pkg.lower().replace("_", "-")
+            alt_pkg = pkg.lower().replace("-", "_")
+            if cites_judge and not cites_d3:
+                target_locks = [("judge.lock.txt", judge_lock_text)]
+            elif cites_d3 and not cites_judge:
+                target_locks = [("d3.lock.txt", d3_lock_text)]
+            else:
+                target_locks = [("judge.lock.txt", judge_lock_text), ("d3.lock.txt", d3_lock_text)]
+            if not any(
+                f"{norm_pkg}=={ver}" in ltxt.lower() or f"{alt_pkg}=={ver}" in ltxt.lower()
+                for _lname, ltxt in target_locks
+            ) and not _pkg_ver_in_locks(pkg, ver):
+                lock_names = " or ".join(lname for lname, _ in target_locks)
+                violations.append(
+                    f"{cid}: package version {pkg}=={ver} does not exist in cited lock ({lock_names})"
+                )
+            elif not any(
+                f"{norm_pkg}=={ver}" in ltxt.lower() or f"{alt_pkg}=={ver}" in ltxt.lower()
+                for _lname, ltxt in target_locks
+            ):
+                lock_names = " or ".join(lname for lname, _ in target_locks)
+                violations.append(
+                    f"{cid}: package version {pkg}=={ver} does not exist in cited lock ({lock_names})"
+                )
+
+    # 2. Every `path:line` citation in C1–C15 pointing inside this repo must exist, be in range,
+    #    and have the cited symbol/package within +-5 lines
+    for cid, row_text in sorted(c_rows.items()):
+        for m_cite in re.finditer(
+            r"((?:scripts|src|tests)/[A-Za-z0-9_./-]+|(?:judge|d3)\.lock\.txt|bakeoff_judge\.py):(\d+)(?:-(\d+))?",
+            row_text,
+        ):
+            raw_path, start_s, end_s = m_cite.group(1), m_cite.group(2), m_cite.group(3)
+            if raw_path in ("judge.lock.txt", "d3.lock.txt"):
+                rel_path = f"scripts/colab/locks/{raw_path}"
+            elif raw_path == "bakeoff_judge.py":
+                rel_path = "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
+            else:
+                rel_path = raw_path
+            full_p = REPO_ROOT / rel_path
+            if not full_p.is_file():
+                violations.append(f"{cid}: cited file does not exist: {rel_path}")
+                continue
+            file_lines = full_p.read_text(encoding="utf-8").splitlines()
+            start_ln = int(start_s)
+            end_ln = int(end_s) if end_s else start_ln
+            if not (1 <= start_ln <= end_ln <= len(file_lines)):
+                violations.append(
+                    f"{cid}: line range {rel_path}:{start_s}-{end_s} out of range (1..{len(file_lines)})"
+                )
+                continue
+            lo_idx = max(0, start_ln - 6)
+            hi_idx = min(len(file_lines), end_ln + 5)
+            window_text = "\n".join(file_lines[lo_idx:hi_idx]).lower()
+            if rel_path.endswith(("judge.lock.txt", "d3.lock.txt")):
+                if cid == "C3" and "pyyaml==6.0.3" not in window_text:
+                    violations.append(
+                        f"{cid}: expected pyyaml==6.0.3 within 5 lines of {rel_path}:{start_s}-{end_s}"
+                    )
+                elif cid == "C4" and start_ln > 5 and "torch==2.14.1+cu132" not in window_text:
+                    violations.append(
+                        f"{cid}: expected torch==2.14.1+cu132 within 5 lines of {rel_path}:{start_s}-{end_s}"
+                    )
+                elif cid == "C11" and not ("huggingface-hub==" in window_text or "hf-xet==" in window_text):
+                    violations.append(
+                        f"{cid}: expected huggingface-hub or hf-xet within 5 lines of {rel_path}:{start_s}-{end_s}"
+                    )
+                elif cid == "C12" and "transformers==" not in window_text:
+                    violations.append(
+                        f"{cid}: expected transformers== within 5 lines of {rel_path}:{start_s}-{end_s}"
+                    )
+            elif rel_path.endswith("bakeoff_judge.py"):
+                if cid == "C11" and "verify_snapshot_against_receipt" not in window_text:
+                    violations.append(
+                        f"{cid}: expected verify_snapshot_against_receipt within 5 lines of {rel_path}:{start_s}-{end_s}"
+                    )
+                elif cid == "C12" and not (
+                    "hf_deactivate_async_load" in window_text
+                    or "ensure_sync_weight_loading" in window_text
+                ):
+                    violations.append(
+                        f"{cid}: expected HF_DEACTIVATE_ASYNC_LOAD or ensure_sync_weight_loading within 5 lines of {rel_path}:{start_s}-{end_s}"
+                    )
+                elif cid == "C14" and not (
+                    "nvidia-smi" in window_text
+                    or "query_gpu_vram_peak_mib" in window_text
+                    or "check_vram_guard" in window_text
+                ):
+                    violations.append(
+                        f"{cid}: expected nvidia-smi / query_gpu_vram_peak_mib / check_vram_guard within 5 lines of {rel_path}:{start_s}-{end_s}"
+                    )
+
+    # 3. `torch.cuda.max_memory_allocated` must not appear as a positive claim about our code unless present in src/ or scripts/
+    code_has_max_mem = False
+    for root_sub in ("src", "scripts"):
+        for py_f in (REPO_ROOT / root_sub).rglob("*.py"):
+            if "torch.cuda.max_memory_allocated" in py_f.read_text(encoding="utf-8"):
+                code_has_max_mem = True
+                break
+    if not code_has_max_mem:
+        for cid, row_text in c_rows.items():
+            if "torch.cuda.max_memory_allocated" in row_text:
+                if not ("not used anywhere" in row_text or "does not" in row_text):
+                    violations.append(
+                        f"{cid}: claims our code calls torch.cuda.max_memory_allocated, which does not exist in src/ or scripts/"
+                    )
+
+    assert not violations, "C1–C15 audit table validation failed:\n" + "\n".join(violations)
+
+
+def test_fix6_audit_table_versions_match_locks() -> None:
+    """Part 0 mechanical test:
+    - Fails on `8f873402:scripts/colab/REAL_SERVICE_ASSUMPTIONS.md` (fix5).
+    - Passes on the corrected `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`.
+    """
+    assumptions_md = SCRIPTS_COLAB_DIR / "REAL_SERVICE_ASSUMPTIONS.md"
+    current_text = assumptions_md.read_text(encoding="utf-8")
+    _validate_c1_c15_audit_table_text(current_text)
+    assert (
+        "Corrected 2026-11-02 (fix6 Part 0): rows C3, C4, C10, C11, C12, C14 had wrong versions or cites at fix5."
+        in current_text
+    ), "Missing required Part 0 correction note above the C1–C15 audit table"
+
+    # Verify the same validator fails on fix5 (`8f873402:scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`
+    # when commit `8f873402` is locally present, or reconstructed fix5 rows in shallow CI clones)
+    old_commit_fix5 = "8f873402dc10364644dbf7b6f222e21fbda87f5c"
+    if (
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit_fix5}^{{commit}}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        ).returncode
+        == 0
+    ):
+        old_doc_text = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"{old_commit_fix5}:scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        ).stdout
+    else:
+        old_doc_text = (
+            current_text.replace("torch==2.14.1+cu132", "torch==2.11.0+cu132")
+            .replace("transformers==5.19.0", "transformers==5.0.0")
+            .replace("scripts/colab/locks/judge.lock.txt:186-188", "judge.lock.txt:154-155")
+            .replace("scripts/colab/locks/judge.lock.txt:229-231", "scripts/colab/locks/judge.lock.txt:210-211")
+            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2233-2367", "bakeoff_judge.py:390-450")
+            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2594", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
+            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2652-2670", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
+            .replace(
+                "(note: `torch.cuda.max_memory_allocated()` is not used anywhere in the repo)",
+                "and `run_bakeoff_judge` also tracks `torch.cuda.max_memory_allocated()`",
+            )
+        )
+    with pytest.raises(AssertionError) as exc_old:
+        _validate_c1_c15_audit_table_text(old_doc_text)
+    err_msg = str(exc_old.value)
+    assert "torch==2.11.0+cu132" in err_msg
+    assert "transformers==5.0.0" in err_msg
+    assert "C3: expected pyyaml==6.0.3" in err_msg
+    assert "C4: expected torch==2.14.1+cu132" in err_msg
+    assert "C11: expected verify_snapshot_against_receipt" in err_msg
+    assert "C12: expected HF_DEACTIVATE_ASYNC_LOAD" in err_msg
+    assert "C14: claims our code calls torch.cuda.max_memory_allocated" in err_msg
+
+
+def _check_vm_judges_no_in_process_judge_imports(py_source: str) -> None:
+    """Static AST check that `vm_judges.py` does not import `bakeoff_judge`, `torch`, `transformers`,
+    `pydantic`, or `huggingface_hub`, and does not call `run_bakeoff_judge(...)` or `snapshot_download(...)`
+    in-process.
+    """
+    import ast
+
+    tree = ast.parse(py_source)
+    forbidden_modules = (
+        "bakeoff_judge",
+        "torch",
+        "transformers",
+        "pydantic",
+        "huggingface_hub",
+    )
+    found_imports: list[str] = []
+    found_in_process_calls: list[int] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                for bad in forbidden_modules:
+                    if bad == alias.name or alias.name.startswith(f"{bad}.") or f".{bad}" in alias.name:
+                        found_imports.append(f"line {node.lineno}: import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            for bad in forbidden_modules:
+                if bad == mod or mod.startswith(f"{bad}.") or f".{bad}" in mod:
+                    found_imports.append(f"line {node.lineno}: from {mod} import ...")
+            for alias in node.names:
+                if alias.name in (
+                    "run_bakeoff_judge",
+                    "bakeoff_judge",
+                    "snapshot_download",
+                    "huggingface_hub",
+                ):
+                    found_imports.append(
+                        f"line {node.lineno}: from {mod} import {alias.name}"
+                    )
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in (
+                "run_bakeoff_judge",
+                "snapshot_download",
+            ):
+                found_in_process_calls.append(node.lineno)
+            elif isinstance(node.func, ast.Attribute) and node.func.attr in (
+                "run_bakeoff_judge",
+                "snapshot_download",
+            ):
+                found_in_process_calls.append(node.lineno)
+
+    assert not found_imports, f"Forbidden imports in vm_judges.py: {found_imports}"
+    assert not found_in_process_calls, (
+        f"Forbidden in-process call(s) at line(s): {found_in_process_calls}"
+    )
+
+
+def test_fix6_vm_judges_static_no_in_process_judge_or_model_imports() -> None:
+    """Item 1 & Addendum 1 Item 3 static check:
+    - Fails on `e2257a4a:scripts/colab/vm_judges.py` (which imported `bakeoff_judge` and called `run_bakeoff_judge` in-process).
+    - Fails on `4c684457:scripts/colab/vm_judges.py` (which had lazy `from huggingface_hub import snapshot_download`).
+    - Passes on current `scripts/colab/vm_judges.py`.
+    """
+    current_source = VM_JUDGES_PY.read_text(encoding="utf-8")
+    _check_vm_judges_no_in_process_judge_imports(current_source)
+
+    old_commit = "e2257a4aebb7cf84ff44651b6d55ff9991d696e8"
+    if (
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit}^{{commit}}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        ).returncode
+        == 0
+    ):
+        old_vm_source = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"{old_commit}:scripts/colab/vm_judges.py"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        ).stdout
+    else:
+        old_vm_source = (
+            current_source
+            + "\nfrom reasoning_dataset_lab.pilot_b.bakeoff_judge import run_bakeoff_judge\n"
+            + "run_bakeoff_judge(part_dir='.', output_dir='.')\n"
+        )
+    with pytest.raises(AssertionError) as exc_old:
+        _check_vm_judges_no_in_process_judge_imports(old_vm_source)
+    assert "bakeoff_judge" in str(exc_old.value)
+
+    # Addendum 1 Item 3: prove it fails against `4c684457:scripts/colab/vm_judges.py`
+    commit_4c68 = "4c684457d2858f9d6ecb56fd3141f421b2464fdd"
+    if (
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{commit_4c68}^{{commit}}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        ).returncode
+        == 0
+    ):
+        src_4c68 = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"{commit_4c68}:scripts/colab/vm_judges.py"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        ).stdout
+    else:
+        src_4c68 = (
+            current_source
+            + "\nfrom huggingface_hub import snapshot_download\n"
+            + "snapshot_download(repo_id='flowaicom/Flow-Judge-v0.1')\n"
+        )
+    with pytest.raises(AssertionError) as exc_4c68:
+        _check_vm_judges_no_in_process_judge_imports(src_4c68)
+    assert "huggingface_hub" in str(exc_4c68.value)
+    assert "snapshot_download" in str(exc_4c68.value)
+
+
+def test_fix6_each_judge_runs_in_its_synced_venv_subprocess(tmp_path: Path) -> None:
+    """Item 1: Under fake `colab` and fake `uv`, 4 judges run with `venv-judge/bin/python`
+    and `d3-mini` runs with `venv-d3/bin/python`, each in a separate child subprocess with
+    `-m reasoning_dataset_lab.pilot_b.bakeoff_judge`, `HF_DEACTIVATE_ASYNC_LOAD=1`, and `stdin=DEVNULL`.
+    `vm_receipt.json` records `venv_python` and `lock_sha256` per judge.
+    """
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_venv_subproc",
+        uv_python_315_found=True,
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path)
+    out_dir = tmp_path / "out_venv_subproc"
+    exports = (
+        _base_launcher_exports(
+            env_paths,
+            open_lock=tmp_path / "venv_subproc.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        ).replace("export VM_DRYRUN=1;", "export VM_DRYRUN=0;")
+        + "export FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD=1; "
+    )
+
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id fix6-venv-subproc-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}\nstdout={proc.stdout}"
+
+    j_subproc_log = env_paths["state_dir"] / "judge_subprocesses.jsonl"
+    assert j_subproc_log.is_file()
+    subproc_rows = [
+        json.loads(ln)
+        for ln in j_subproc_log.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(subproc_rows) == 5
+
+    venv_judge_rows = [r for r in subproc_rows if r["venv"] == "venv-judge"]
+    venv_d3_rows = [r for r in subproc_rows if r["venv"] == "venv-d3"]
+    assert len(venv_judge_rows) == 4
+    assert len(venv_d3_rows) == 1
+    assert venv_d3_rows[0]["judge_id"] == "d3-mini"
+    assert venv_d3_rows[0]["venv_python"].endswith("/venv-d3/bin/python")
+    assert venv_d3_rows[0]["lock_sha256"] == EXPECTED_D3_LOCK_SHA256
+
+    for r in venv_judge_rows:
+        assert r["venv_python"].endswith("/venv-judge/bin/python")
+        assert r["lock_sha256"] == EXPECTED_JUDGE_LOCK_SHA256
+
+    for r in subproc_rows:
+        assert r["cmd"][0] == r["venv_python"]
+        assert r["cmd"][1:3] == ["-m", "reasoning_dataset_lab.pilot_b.bakeoff_judge"]
+        assert "--judge" in r["cmd"]
+        assert r["stdin_devnull"] is True
+        assert r["hf_deactivate_async_load"] == "1"
+        assert r["returncode"] == 0
+
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert "judge_venvs" in receipt_doc
+    for jid in sorted(BAKEOFF_JUDGE_SPECS.keys()):
+        jv = receipt_doc["judge_venvs"][jid]
+        if jid == "d3-mini":
+            assert jv["venv"] == "venv-d3"
+            assert jv["venv_python"].endswith("/venv-d3/bin/python")
+            assert jv["lock_sha256"] == EXPECTED_D3_LOCK_SHA256
+        else:
+            assert jv["venv"] == "venv-judge"
+            assert jv["venv_python"].endswith("/venv-judge/bin/python")
+            assert jv["lock_sha256"] == EXPECTED_JUDGE_LOCK_SHA256
+
+    # Also exercise `main_judge_runner` directly in-process (both success and RdlabError paths)
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as _bakeoff_judge
+
+    direct_out = tmp_path / "direct_child_runner_out"
+    rc_direct_ok = _bakeoff_judge.main_judge_runner(
+        [
+            "--judge",
+            "flow-judge-v0.1",
+            "--items",
+            str(items_file),
+            "--output-dir",
+            str(direct_out),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(hf_home),
+            "--device",
+            "cpu",
+            "--dtype",
+            "bfloat16",
+            "--repo-root",
+            str(REPO_ROOT),
+            "--fake-transport",
+            "--no-canary",
+        ]
+    )
+    assert rc_direct_ok == 0
+    assert (direct_out / "judge_done" / "flow-judge-v0.1.json").is_file()
+
+    rc_direct_err = _bakeoff_judge.main_judge_runner(
+        [
+            "--judge",
+            "nonexistent-judge-id",
+            "--items",
+            str(items_file),
+            "--output-dir",
+            str(direct_out),
+            "--fake-transport",
+            "--no-canary",
+        ]
+    )
+    assert rc_direct_err == 2
+
+
+@pytest.mark.parametrize("kill_mode", ["sigkill", "exit137"])
+def test_fix6_judge_child_killed_by_signal_9_or_137_records_oom_and_stops(
+    tmp_path: Path,
+    kill_mode: str,
+) -> None:
+    """Item 2: When a judge child is killed with signal 9 (`SIGKILL` or exit `137`),
+    `vm_judges.py` stays alive, writes `judge_failed` (`JUDGE_CHILD_OOM`, `signal=9`,
+    `oom_kill`, `oom`, `mem_available_bytes`) in `progress.jsonl`, deletes uploaded items,
+    writes `status.json`, `vm_receipt.json`, `result.tar.gz`, and `run_end`, does not
+    continue to later judges, and exits non-zero.
+    """
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path / f"env_oom_{kill_mode}"
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / f"data_{kill_mode}"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / f"data_{kill_mode}")
+    out_dir = tmp_path / f"out_oom_{kill_mode}"
+
+    # Sorted judge order: d3-mini, flow-judge-v0.1, granite-guardian-4.1-8b, mu-judge, nemotron-3-nano-4b
+    # Fail on the 3rd judge (`granite-guardian-4.1-8b`)
+    target_judge = "granite-guardian-4.1-8b"
+    exports = (
+        _base_launcher_exports(
+            env_paths,
+            open_lock=tmp_path / f"oom_{kill_mode}.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        + f"export FAKE_COLAB_FAIL_JUDGE_CHILD='{target_judge}:{kill_mode}'; "
+    )
+
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id oom-{kill_mode}-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 2
+
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    assert status_doc["rc"] == 2
+    assert status_doc["status"] == "refused"
+    assert status_doc["failure_class"] == "JUDGE_CHILD_OOM"
+    assert status_doc["judge_id"] == target_judge
+    assert status_doc["signal"] == 9
+    assert status_doc["exit_code"] == 137
+
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert receipt_doc["status"] == "refused"
+    assert receipt_doc["failure_class"] == "JUDGE_CHILD_OOM"
+    assert receipt_doc["deleted_items_receipt"]["all_absent"] is True
+    assert (out_dir / "result.tar.gz").is_file()
+
+    progress_rows = [
+        json.loads(ln)
+        for ln in (out_dir / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    failed_rows = [r for r in progress_rows if r.get("kind") == "judge_failed"]
+    assert len(failed_rows) == 1
+    assert failed_rows[0]["judge_id"] == target_judge
+    assert failed_rows[0]["failure_class"] == "JUDGE_CHILD_OOM"
+    assert failed_rows[0]["signal"] == 9
+    assert failed_rows[0]["exit_code"] == 137
+    assert "oom_kill" in failed_rows[0]
+    assert "oom" in failed_rows[0]
+    assert "mem_available_bytes" in failed_rows[0]
+    assert progress_rows[-1]["kind"] == "run_end"
+    assert progress_rows[-1]["failure_class"] == "JUDGE_CHILD_OOM"
+
+    # Stopped immediately after `granite-guardian-4.1-8b`; `mu-judge` and `nemotron-3-nano-4b` never launched
+    done_judges = [
+        r["judge_id"] for r in progress_rows if r.get("kind") == "judge_pass_done"
+    ]
+    assert done_judges == ["d3-mini", "flow-judge-v0.1"]
+
+
+def test_fix6_judge_child_exit_1_records_failed_and_scrubs_stderr(
+    tmp_path: Path,
+) -> None:
+    """Item 2: When a judge child exits 1 with stderr, `vm_judges.py` records `JUDGE_CHILD_FAILED`
+    with scrubbed `stderr_tail` in `status.json`, `vm_receipt.json`, and `progress.jsonl`,
+    and stops before the next judge.
+    """
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env_exit1")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path)
+    out_dir = tmp_path / "out_exit1"
+
+    target_judge = "flow-judge-v0.1"
+    leaked_stderr = "RuntimeError: child crash with token hf_SecretToken1234567890abcdef"
+    exports = (
+        _base_launcher_exports(
+            env_paths,
+            open_lock=tmp_path / "exit1.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        + f"export FAKE_COLAB_FAIL_JUDGE_CHILD='{target_judge}:exit1:{leaked_stderr}'; "
+    )
+
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id exit1-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 2
+
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    assert status_doc["rc"] == 2
+    assert status_doc["failure_class"] == "JUDGE_CHILD_FAILED"
+    assert status_doc["judge_id"] == target_judge
+    assert status_doc["exit_code"] == 1
+    assert "RuntimeError: child crash with token hf_[REDACTED]" in status_doc["stderr_tail"]
+    assert "hf_SecretToken1234567890abcdef" not in json.dumps(status_doc)
+
+    progress_rows = [
+        json.loads(ln)
+        for ln in (out_dir / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    done_judges = [
+        r["judge_id"] for r in progress_rows if r.get("kind") == "judge_pass_done"
+    ]
+    assert done_judges == ["d3-mini"]
+    failed_rows = [r for r in progress_rows if r.get("kind") == "judge_failed"]
+    assert len(failed_rows) == 1
+    assert failed_rows[0]["failure_class"] == "JUDGE_CHILD_FAILED"
+    assert "hf_SecretToken1234567890abcdef" not in json.dumps(failed_rows[0])
+
+
+def test_fix6_row_checkpointing_preserves_completed_judges_when_judge_5_fails(
+    tmp_path: Path,
+) -> None:
+    """Item 3: When judges 1–4 finish and judge 5 (`nemotron-3-nano-4b` in sorted order) fails,
+    the rig's `<out>/rows/` and `<out>/judge_done/` contain the 4 finished judges' row files
+    and `judge_done/<judge>.json` files with matching `row_count` and `sha256`.
+    """
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env_ckpt")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path)
+    out_dir = tmp_path / "out_ckpt"
+
+    # Sorted judge IDs:
+    # 1: d3-mini, 2: flow-judge-v0.1, 3: granite-guardian-4.1-8b, 4: mu-judge, 5: nemotron-3-nano-4b
+    fifth_judge = "nemotron-3-nano-4b"
+    expected_completed = [
+        "d3-mini",
+        "flow-judge-v0.1",
+        "granite-guardian-4.1-8b",
+        "mu-judge",
+    ]
+    exports = (
+        _base_launcher_exports(
+            env_paths,
+            open_lock=tmp_path / "ckpt.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        + f"export FAKE_COLAB_FAIL_JUDGE_CHILD='{fifth_judge}:exit1:judge 5 boom'; "
+    )
+
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id ckpt-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 2
+
+    for jid in expected_completed:
+        row_p = out_dir / "rows" / f"{jid}.jsonl"
+        done_p = out_dir / "judge_done" / f"{jid}.json"
+        assert row_p.is_file(), f"Missing checkpointed row file for {jid}"
+        assert done_p.is_file(), f"Missing checkpointed judge_done file for {jid}"
+        raw_bytes = row_p.read_bytes()
+        actual_sha = hashlib.sha256(raw_bytes).hexdigest()
+        actual_lines = [ln for ln in raw_bytes.decode("utf-8").splitlines() if ln.strip()]
+        done_doc = json.loads(done_p.read_text(encoding="utf-8"))
+        assert done_doc["judge_id"] == jid
+        assert done_doc["row_count"] == len(actual_lines) == 4  # 2 stub items * 2 orders
+        assert done_doc["sha256"] == actual_sha
+
+    assert not (out_dir / "judge_done" / f"{fifth_judge}.json").exists()
+
+
+def test_fix6_weight_size_mismatch_refuses_before_sha256_hashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Item 4: `verify_snapshot_against_receipt` checks every file's `st_size` against `bytes`
+    in the receipt first, raising `WEIGHT_SIZE_MISMATCH` without calling `hashlib.sha256()`.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    spec = vm_judges.BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"]
+    owner, repo = spec.repo_id.split("/", 1)
+    snap_dir = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
+
+    # Truncate model.safetensors by 1 byte so size mismatches
+    weights_file = snap_dir / "model.safetensors"
+    orig_bytes = weights_file.read_bytes()
+    weights_file.write_bytes(orig_bytes[:-1])
+
+    sha_calls = 0
+
+    def _forbidden_sha256(*_a: Any, **_kw: Any) -> Any:
+        nonlocal sha_calls
+        sha_calls += 1
+        raise AssertionError("hashlib.sha256 must not be called when file size mismatches")
+
+    monkeypatch.setattr(hashlib, "sha256", _forbidden_sha256)
+
+    with pytest.raises(vm_judges.RefusalError) as exc_vm:
+        vm_judges.verify_snapshot_against_receipt(
+            spec,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+        )
+    assert exc_vm.value.failure_class == "WEIGHT_SIZE_MISMATCH"
+    assert "model.safetensors" in exc_vm.value.detail
+    assert sha_calls == 0
+
+    with pytest.raises(RdlabError) as exc_bj:
+        bj_mod.verify_snapshot_against_receipt(
+            bj_mod.BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"],
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+        )
+    assert exc_bj.value.code == "WEIGHT_SIZE_MISMATCH"
+    assert sha_calls == 0
+
+
+def test_fix6_download_concurrency_knobs_and_bad_config_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Item 5:
+    - `RDLAB_HF_DOWNLOAD_MAX_WORKERS` (default `2`, integer `>= 1`) and
+      `HF_XET_NUM_CONCURRENT_RANGE_GETS` (default `4`, integer `>= 0` where `0` unsets the env var)
+      are passed to `snapshot_download` and logged on `judge_download_start` and `judge_download`
+      alongside cgroup `oom_kill` and `oom`.
+    - Invalid values (`0`, `-1`, `abc` for `RDLAB_HF_DOWNLOAD_MAX_WORKERS`; `-1`, `abc` for
+      `HF_XET_NUM_CONCURRENT_RANGE_GETS`) refuse with `BAD_DOWNLOAD_CONFIG`.
+    """
+    # 1. Direct validation checks
+    assert vm_judges.validate_download_config(None, None) == (2, 4)
+    assert vm_judges.validate_download_config("3", "0") == (3, 0)
+    assert vm_judges.validate_download_config("1", "8") == (1, 8)
+
+    for bad_mw in ("0", "-1", "abc", True):
+        with pytest.raises(vm_judges.RefusalError) as exc_mw:
+            vm_judges.validate_download_config(bad_mw, "4")
+        assert exc_mw.value.failure_class == "BAD_DOWNLOAD_CONFIG"
+
+    for bad_rg in ("-1", "abc", False):
+        with pytest.raises(vm_judges.RefusalError) as exc_rg:
+            vm_judges.validate_download_config("2", bad_rg)
+        assert exc_rg.value.failure_class == "BAD_DOWNLOAD_CONFIG"
+
+    # 2. Launcher refuses bad download config before opening any session
+    env_bad = fake_colab.setup_fake_colab_environment(tmp_path / "env_bad_dl")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path)
+    exports_base = _base_launcher_exports(
+        env_bad,
+        open_lock=tmp_path / "bad_dl.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    for env_override in (
+        "export RDLAB_HF_DOWNLOAD_MAX_WORKERS=0;",
+        "export RDLAB_HF_DOWNLOAD_MAX_WORKERS=-1;",
+        "export RDLAB_HF_DOWNLOAD_MAX_WORKERS=abc;",
+        "export HF_XET_NUM_CONCURRENT_RANGE_GETS=-1;",
+        "export HF_XET_NUM_CONCURRENT_RANGE_GETS=abc;",
+    ):
+        proc_bad = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports_base} {env_override} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(tmp_path / 'out_bad_dl')}' --run-id bad-dl-01",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_bad.returncode == 2
+        assert "BAD_DOWNLOAD_CONFIG" in proc_bad.stderr
+        assert not env_bad["calls_log"].exists()
+
+    # 3. Verify `download_all_judge_weights` passes `max_workers` and sets/unsets `HF_XET_NUM_CONCURRENT_RANGE_GETS`
+    #    in the download child subprocess and logs `max_workers`, `hf_xet_num_concurrent_range_gets`, `oom_kill`, and `oom` in `progress.jsonl`
+    knobs_state_dir = tmp_path / "knobs_state"
+    knobs_work_dir = tmp_path / "knobs_work"
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", str(knobs_state_dir))
+    monkeypatch.setenv("FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD", "1")
+
+    fake_cgroup = tmp_path / "memory.events"
+    fake_cgroup.write_text("low 0\nhigh 0\nmax 0\noom 2\noom_kill 1\n", encoding="utf-8")
+    monkeypatch.setenv("RDLAB_CGROUP_MEMORY_EVENTS_PATH", str(fake_cgroup))
+
+    prog_default = tmp_path / "progress_default.jsonl"
+    vm_judges.download_all_judge_weights(
+        hf_home,
+        dryrun=False,
+        work_dir=knobs_work_dir,
+        progress_path=prog_default,
+        only_judge_ids=("flow-judge-v0.1",),
+    )
+    hf_calls_path = knobs_state_dir / "hf_calls.jsonl"
+    seen_calls = [
+        json.loads(ln)
+        for ln in hf_calls_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(seen_calls) == 1
+    assert seen_calls[0]["max_workers"] == 2
+    assert seen_calls[0]["hf_xet_num_concurrent_range_gets"] == "4"
+    dl_lines = [
+        json.loads(ln)
+        for ln in prog_default.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert [r["kind"] for r in dl_lines] == ["judge_download_start", "judge_download"]
+    for r in dl_lines:
+        assert r["max_workers"] == 2
+        assert r["hf_xet_num_concurrent_range_gets"] == 4
+        assert r["oom"] == 2
+        assert r["oom_kill"] == 1
+
+    # Custom values: max_workers=3, range_gets=0 (unsets HF_XET_NUM_CONCURRENT_RANGE_GETS)
+    hf_calls_path.unlink()
+    monkeypatch.setenv("HF_XET_NUM_CONCURRENT_RANGE_GETS", "99")
+    prog_custom = tmp_path / "progress_custom.jsonl"
+    vm_judges.download_all_judge_weights(
+        hf_home,
+        dryrun=False,
+        work_dir=knobs_work_dir,
+        progress_path=prog_custom,
+        only_judge_ids=("flow-judge-v0.1",),
+        max_workers=3,
+        hf_xet_num_concurrent_range_gets=0,
+    )
+    seen_calls = [
+        json.loads(ln)
+        for ln in hf_calls_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(seen_calls) == 1
+    assert seen_calls[0]["max_workers"] == 3
+    assert seen_calls[0]["hf_xet_num_concurrent_range_gets"] is None
+    dl_custom_lines = [
+        json.loads(ln)
+        for ln in prog_custom.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    for r in dl_custom_lines:
+        assert r["max_workers"] == 3
+        assert r["hf_xet_num_concurrent_range_gets"] == 0
+
+
+def _assert_judge_specs_no_drift(
+    parent_specs: dict[str, Any],
+    lib_specs: dict[str, Any],
+) -> None:
+    """Assert `vm_judges.BAKEOFF_JUDGE_SPECS` and `bakeoff_judge.BAKEOFF_JUDGE_SPECS` have identical keys and `.to_dict()`."""
+    assert set(parent_specs.keys()) == set(lib_specs.keys()), (
+        f"BAKEOFF_JUDGE_SPECS key drift: parent={sorted(parent_specs.keys())} vs lib={sorted(lib_specs.keys())}"
+    )
+    for judge_id in sorted(lib_specs.keys()):
+        p_dict = parent_specs[judge_id].to_dict()
+        l_dict = lib_specs[judge_id].to_dict()
+        assert p_dict == l_dict, (
+            f"BAKEOFF_JUDGE_SPECS[{judge_id!r}] field drift: parent={p_dict} vs lib={l_dict}"
+        )
+
+
+def test_fix6b_drift_bakeoff_judge_specs_and_mutations() -> None:
+    """Fix6b Item 1 (Specs):
+    - `vm_judges.BAKEOFF_JUDGE_SPECS` and `bakeoff_judge.BAKEOFF_JUDGE_SPECS` have the same keys
+      and every judge's `to_dict()` is equal.
+    - Mutation cases (one per field class): revision, card_sha256, remote_code_files, numeric field
+      (`max_new_tokens`), and add/remove a judge key — each makes the drift check fail.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    _assert_judge_specs_no_drift(
+        vm_judges.BAKEOFF_JUDGE_SPECS,
+        bj_mod.BAKEOFF_JUDGE_SPECS,
+    )
+
+    # 1. Mutation: change only `revision`
+    mut_rev = dict(vm_judges.BAKEOFF_JUDGE_SPECS)
+    mut_rev["flow-judge-v0.1"] = mut_rev["flow-judge-v0.1"]._replace(
+        revision="0" * 40
+    )
+    with pytest.raises(AssertionError, match=r"BAKEOFF_JUDGE_SPECS\['flow-judge-v0\.1'\] field drift"):
+        _assert_judge_specs_no_drift(mut_rev, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+    # 2. Mutation: change only `card_snapshot_sha256`
+    mut_card = dict(vm_judges.BAKEOFF_JUDGE_SPECS)
+    mut_card["granite-guardian-4.1-8b"] = mut_card["granite-guardian-4.1-8b"]._replace(
+        card_snapshot_sha256="f" * 64
+    )
+    with pytest.raises(AssertionError, match=r"BAKEOFF_JUDGE_SPECS\['granite-guardian-4\.1-8b'\] field drift"):
+        _assert_judge_specs_no_drift(mut_card, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+    # 3. Mutation: change only `remote_code_files` (file list)
+    mut_rc = dict(vm_judges.BAKEOFF_JUDGE_SPECS)
+    mut_rc["d3-mini"] = mut_rc["d3-mini"]._replace(
+        remote_code_files=("modeling_d3.py",)
+    )
+    with pytest.raises(AssertionError, match=r"BAKEOFF_JUDGE_SPECS\['d3-mini'\] field drift"):
+        _assert_judge_specs_no_drift(mut_rc, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+    # 4. Mutation: change only a numeric field (`max_new_tokens`)
+    mut_num = dict(vm_judges.BAKEOFF_JUDGE_SPECS)
+    mut_num["mu-judge"] = mut_num["mu-judge"]._replace(max_new_tokens=999)
+    with pytest.raises(AssertionError, match=r"BAKEOFF_JUDGE_SPECS\['mu-judge'\] field drift"):
+        _assert_judge_specs_no_drift(mut_num, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+    # 5a. Mutation: remove a judge key
+    mut_removed = {
+        k: v for k, v in vm_judges.BAKEOFF_JUDGE_SPECS.items() if k != "nemotron-3-nano-4b"
+    }
+    with pytest.raises(AssertionError, match="BAKEOFF_JUDGE_SPECS key drift"):
+        _assert_judge_specs_no_drift(mut_removed, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+    # 5b. Mutation: add a judge key
+    mut_added = dict(vm_judges.BAKEOFF_JUDGE_SPECS)
+    mut_added["extra-judge"] = mut_added["flow-judge-v0.1"]._replace(
+        judge_id="extra-judge"
+    )
+    with pytest.raises(AssertionError, match="BAKEOFF_JUDGE_SPECS key drift"):
+        _assert_judge_specs_no_drift(mut_added, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+
+def _run_both_verify_snapshot(
+    judge_id: str,
+    *,
+    receipts_dir: Path,
+    hf_home: Path,
+) -> tuple[str, str]:
+    """Run both `vm_judges.verify_snapshot_against_receipt` and `bakeoff_judge.verify_snapshot_against_receipt`
+    and assert identical outcome and identical refusal code.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    p_spec = vm_judges.BAKEOFF_JUDGE_SPECS[judge_id]
+    l_spec = bj_mod.BAKEOFF_JUDGE_SPECS[judge_id]
+
+    p_outcome: tuple[str, Any]
+    l_outcome: tuple[str, Any]
+
+    try:
+        p_snap, p_dig = vm_judges.verify_snapshot_against_receipt(
+            p_spec, receipts_dir=receipts_dir, hf_home=hf_home
+        )
+        p_outcome = ("ok", (p_snap.resolve(), p_dig))
+    except vm_judges.RefusalError as exc_p:
+        p_outcome = ("refused", exc_p.failure_class)
+
+    try:
+        l_snap, l_dig = bj_mod.verify_snapshot_against_receipt(
+            l_spec, receipts_dir=receipts_dir, hf_home=hf_home
+        )
+        l_outcome = ("ok", (l_snap.resolve(), l_dig))
+    except RdlabError as exc_l:
+        l_outcome = ("refused", exc_l.code)
+
+    assert p_outcome == l_outcome, (
+        f"verify_snapshot_against_receipt drift for {judge_id}: parent={p_outcome} vs lib={l_outcome}"
+    )
+    return p_outcome[0], str(p_outcome[1])
+
+
+def test_fix6b_drift_verify_snapshot_against_receipt_tamper_matrix(
+    tmp_path: Path,
+) -> None:
+    """Fix6b Item 1 (`verify_snapshot_against_receipt`):
+    Runs a tamper matrix through both `vm_judges.verify_snapshot_against_receipt` and
+    `bakeoff_judge.verify_snapshot_against_receipt` on the same fixture snapshot and receipt:
+    clean, missing file, extra file, size mismatch, sha mismatch, bytecode file, receipt missing,
+    plus receipt-facing mutations (changed size in receipt and changed file list in receipt).
+    Both copies give the exact same outcome and refusal code in every case.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "tamper"
+    )
+    jid = "flow-judge-v0.1"
+    spec = vm_judges.BAKEOFF_JUDGE_SPECS[jid]
+    owner, repo = spec.repo_id.split("/", 1)
+    snap_dir = (
+        hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
+    )
+    receipt_path = receipts_dir / f"{owner}__{repo}.sha256.json"
+    orig_receipt_bytes = receipt_path.read_bytes()
+    weights_path = snap_dir / "model.safetensors"
+    orig_weights = weights_path.read_bytes()
+
+    # 1. Clean
+    status_clean, detail_clean = _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    )
+    assert status_clean == "ok"
+
+    # 2. Missing file in snapshot
+    weights_path.unlink()
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "BAKEOFF_JUDGE_SNAPSHOT_MISSING_FILE")
+    weights_path.write_bytes(orig_weights)
+
+    # 3. Extra unlisted file in snapshot
+    extra_f = snap_dir / "extra_unlisted.bin"
+    extra_f.write_bytes(b"unlisted")
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "BAKEOFF_JUDGE_SNAPSHOT_EXTRA_FILE")
+    extra_f.unlink()
+
+    # 4. Size mismatch on disk
+    weights_path.write_bytes(orig_weights + b"!")
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "WEIGHT_SIZE_MISMATCH")
+    weights_path.write_bytes(orig_weights)
+
+    # 5. SHA-256 mismatch (same byte length, mutated content)
+    flipped = bytes([orig_weights[0] ^ 0xFF]) + orig_weights[1:]
+    assert len(flipped) == len(orig_weights)
+    weights_path.write_bytes(flipped)
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH")
+    weights_path.write_bytes(orig_weights)
+
+    # 6. Bytecode file (`.pyc` / `__pycache__`)
+    pyc_file = snap_dir / "leaked.pyc"
+    pyc_file.write_bytes(b"\x00\x01\x02\x03")
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "BAKEOFF_JUDGE_SNAPSHOT_BYTECODE")
+    pyc_file.unlink()
+
+    # 7. Receipt-facing mutation: changed size (`bytes`) in receipt -> WEIGHT_SIZE_MISMATCH
+    rec_size_mut = json.loads(orig_receipt_bytes.decode("utf-8"))
+    rec_size_mut["files"]["model.safetensors"]["bytes"] += 10
+    receipt_path.write_text(json.dumps(rec_size_mut), encoding="utf-8")
+    out_rec_size = _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    )
+    assert out_rec_size == ("refused", "WEIGHT_SIZE_MISMATCH")
+
+    # 8. Receipt-facing mutation: changed file list in receipt -> different outcome from changed size
+    rec_files_mut = json.loads(orig_receipt_bytes.decode("utf-8"))
+    rec_files_mut["files"]["ghost_shard.safetensors"] = {
+        "bytes": 16,
+        "sha256": "a" * 64,
+    }
+    receipt_path.write_text(json.dumps(rec_files_mut), encoding="utf-8")
+    out_rec_files = _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    )
+    assert out_rec_files == ("refused", "BAKEOFF_JUDGE_SNAPSHOT_MISSING_FILE")
+    assert out_rec_size != out_rec_files
+    receipt_path.write_bytes(orig_receipt_bytes)
+
+    # 9. Receipt missing
+    receipt_path.unlink()
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND")
+
+
+def test_fix6b_drift_other_four_copied_functions_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix6b Item 1 (The other four copied functions):
+    Equal-outcome check across pass and each refusal code for:
+    - `check_remote_code_gate` (`vm_judges.py:1584`)
+    - `check_d3_mini_remote_code_gate` (`vm_judges.py:1605`)
+    - `_resolve_snapshot_dir_for_spec` (`vm_judges.py:1631`) vs `_resolve_snapshot_dir`
+    - `check_bakeoff_logprob_mass` (`vm_judges.py:1771`)
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    # --- A. `check_remote_code_gate` matrix ---
+    rc_cases = [
+        ("flow-judge-v0.1", None, False, ("ok", False)),
+        ("flow-judge-v0.1", None, True, ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED")),
+        (
+            "flow-judge-v0.1",
+            vm_judges.BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"].revision[:8],
+            True,
+            ("ok", True),
+        ),
+        ("d3-mini", None, False, ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED")),
+        ("d3-mini", "bd0090dd"[:6], False, ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED")),
+        ("d3-mini", "0" * 40, False, ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED")),
+        ("d3-mini", D3_MINI_REVIEWED_REVISION, False, ("ok", True)),
+        ("d3-mini", D3_MINI_REVIEWED_REVISION[:10], False, ("ok", True)),
+    ]
+    for jid, allow_sha, force_rc, expected in rc_cases:
+        try:
+            p_res = (
+                "ok",
+                vm_judges.check_remote_code_gate(
+                    vm_judges.BAKEOFF_JUDGE_SPECS[jid],
+                    allow_remote_code_reviewed=allow_sha,
+                    force_remote_code=force_rc,
+                ),
+            )
+        except vm_judges.RefusalError as exc_p:
+            p_res = ("refused", exc_p.failure_class)
+
+        try:
+            l_res = (
+                "ok",
+                bj_mod.check_remote_code_gate(
+                    bj_mod.BAKEOFF_JUDGE_SPECS[jid],
+                    allow_remote_code_reviewed=allow_sha,
+                    force_remote_code=force_rc,
+                ),
+            )
+        except RdlabError as exc_l:
+            l_res = ("refused", exc_l.code)
+
+        assert p_res == l_res == expected
+
+    # --- B. `check_d3_mini_remote_code_gate` matrix ---
+    d3_cases = [
+        # (judge_id, revision_override, allow_sha, expected)
+        ("d3-mini", None, D3_MINI_REVIEWED_REVISION, ("ok", None)),
+        (
+            "flow-judge-v0.1",
+            None,
+            D3_MINI_REVIEWED_REVISION,
+            ("refused", "BAKEOFF_JUDGE_D3_TRANSPORT_WRONG_JUDGE"),
+        ),
+        ("d3-mini", None, None, ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED")),
+        (
+            "d3-mini",
+            None,
+            D3_MINI_REVIEWED_REVISION[:8],
+            ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED"),
+        ),
+        (
+            "d3-mini",
+            None,
+            D3_MINI_REVIEWED_REVISION.upper(),
+            ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED"),
+        ),
+        (
+            "d3-mini",
+            "a" * 40,
+            D3_MINI_REVIEWED_REVISION,
+            ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REVISION_MISMATCH"),
+        ),
+        (
+            "d3-mini",
+            "a" * 40,
+            "b" * 40,
+            ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED"),
+        ),
+    ]
+    for jid, rev_override, allow_sha, expected in d3_cases:
+        p_spec = vm_judges.BAKEOFF_JUDGE_SPECS[jid]
+        l_spec = bj_mod.BAKEOFF_JUDGE_SPECS[jid]
+        if rev_override is not None:
+            p_spec = p_spec._replace(revision=rev_override)
+            l_spec = bj_mod.JudgeSpec(
+                **{**l_spec.to_dict(), "revision": rev_override}
+            )
+        try:
+            vm_judges.check_d3_mini_remote_code_gate(
+                p_spec, allow_remote_code_reviewed=allow_sha
+            )
+            p_res = ("ok", None)
+        except vm_judges.RefusalError as exc_p:
+            p_res = ("refused", exc_p.failure_class)
+
+        try:
+            bj_mod.check_d3_mini_remote_code_gate(
+                l_spec, allow_remote_code_reviewed=allow_sha
+            )
+            l_res = ("ok", None)
+        except RdlabError as exc_l:
+            l_res = ("refused", exc_l.code)
+
+        assert p_res == l_res == expected
+
+    # --- C. `_resolve_snapshot_dir_for_spec` vs `_resolve_snapshot_dir` matrix ---
+    p_flow = vm_judges.BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"]
+    l_flow = bj_mod.BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"]
+    owner, repo = p_flow.repo_id.split("/", 1)
+    model_dir = f"models--{owner}--{repo}"
+
+    # 1. Missing HF_HOME
+    monkeypatch.delenv("HF_HOME", raising=False)
+    with pytest.raises(vm_judges.RefusalError) as exc_p_hf:
+        vm_judges._resolve_snapshot_dir_for_spec(p_flow, hf_home=None)
+    with pytest.raises(RdlabError) as exc_l_hf:
+        bj_mod._resolve_snapshot_dir(l_flow, hf_home=None)
+    assert (
+        exc_p_hf.value.failure_class
+        == exc_l_hf.value.code
+        == "BAKEOFF_JUDGE_HF_HOME_MISSING"
+    )
+
+    # 2. Snapshot directory not found under hf_home
+    empty_hf = tmp_path / "empty_hf"
+    empty_hf.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(vm_judges.RefusalError) as exc_p_nf:
+        vm_judges._resolve_snapshot_dir_for_spec(p_flow, hf_home=empty_hf)
+    with pytest.raises(RdlabError) as exc_l_nf:
+        bj_mod._resolve_snapshot_dir(l_flow, hf_home=empty_hf)
+    assert (
+        exc_p_nf.value.failure_class
+        == exc_l_nf.value.code
+        == "BAKEOFF_JUDGE_SNAPSHOT_NOT_FOUND"
+    )
+
+    # 3. Direct layout (`<hf_home>/models--.../snapshots/<rev>`)
+    direct_hf = tmp_path / "direct_hf"
+    direct_snap = direct_hf / model_dir / "snapshots" / p_flow.revision
+    direct_snap.mkdir(parents=True, exist_ok=True)
+    assert (
+        vm_judges._resolve_snapshot_dir_for_spec(p_flow, hf_home=direct_hf)
+        == bj_mod._resolve_snapshot_dir(l_flow, hf_home=direct_hf)
+        == direct_snap.resolve()
+    )
+
+    # 4. Hub layout (`<hf_home>/hub/models--.../snapshots/<rev>`)
+    hub_hf = tmp_path / "hub_hf"
+    hub_snap = hub_hf / "hub" / model_dir / "snapshots" / p_flow.revision
+    hub_snap.mkdir(parents=True, exist_ok=True)
+    assert (
+        vm_judges._resolve_snapshot_dir_for_spec(p_flow, hf_home=hub_hf)
+        == bj_mod._resolve_snapshot_dir(l_flow, hf_home=hub_hf)
+        == hub_snap.resolve()
+    )
+
+    # --- D. `check_bakeoff_logprob_mass` matrix ---
+    # 1. Forbidden part_id
+    out_mass = tmp_path / "mass_out"
+    with pytest.raises(vm_judges.RefusalError) as exc_p_part:
+        vm_judges.check_bakeoff_logprob_mass(out_mass, part_id="forbidden-part")
+    with pytest.raises(RdlabError) as exc_l_part:
+        bj_mod.check_bakeoff_logprob_mass(out_mass, part_id="forbidden-part")
+    assert (
+        exc_p_part.value.failure_class
+        == exc_l_part.value.code
+        == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+    )
+
+    # 2. Missing rows/ directory
+    with pytest.raises(vm_judges.RefusalError) as exc_p_norows:
+        vm_judges.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+    with pytest.raises(RdlabError) as exc_l_norows:
+        bj_mod.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+    assert (
+        exc_p_norows.value.failure_class
+        == exc_l_norows.value.code
+        == "BAKEOFF_LOGPROB_MASS_NO_ROWS"
+    )
+
+    # 3. Empty rows/ directory
+    rows_dir = out_mass / "rows"
+    rows_dir.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(vm_judges.RefusalError) as exc_p_empty:
+        vm_judges.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+    with pytest.raises(RdlabError) as exc_l_empty:
+        bj_mod.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+    assert (
+        exc_p_empty.value.failure_class
+        == exc_l_empty.value.code
+        == "BAKEOFF_LOGPROB_MASS_NO_ROWS"
+    )
+
+    # 4. Pass + not_applicable + WARN outcomes
+    (rows_dir / "flow-judge-v0.1.jsonl").write_text(
+        json.dumps({"part_id": "pilot-40b", "state": "parsed", "score": 4}) + "\n",
+        encoding="utf-8",
+    )
+    (rows_dir / "mu-judge.jsonl").write_text(
+        json.dumps(
+            {
+                "part_id": "pilot-40b",
+                "state": "parsed",
+                "top_20_logprobs": [
+                    {"token": "yes", "logprob": -0.002},
+                    {"token": "no", "logprob": -6.908},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (rows_dir / "d3-mini.jsonl").write_text(
+        json.dumps(
+            {
+                "part_id": "pilot-40b",
+                "state": "parsed",
+                "top_20_logprobs": [
+                    {"token": "yes", "logprob": -0.7},
+                    {"token": "no", "logprob": -0.8},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    p_report = vm_judges.check_bakeoff_logprob_mass(out_mass, part_id=None)
+    l_report = bj_mod.check_bakeoff_logprob_mass(out_mass, part_id=None)
+    assert p_report == l_report
+    assert p_report["judges"]["flow-judge-v0.1"]["status"] == "not_applicable"
+    assert p_report["judges"]["mu-judge"]["status"] == "PASS"
+    assert p_report["judges"]["d3-mini"]["status"] == "WARN"
+
+
+def test_fix6b_child_env_drops_hf_tokens_and_sets_hf_hub_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix6b Item 2:
+    With fake `HF_TOKEN`, `HF_TOKEN_ALT`, and `HUGGING_FACE_HUB_TOKEN` in the parent env,
+    the child env (captured by the fake child itself) has none of them and has `HF_HUB_OFFLINE=1`.
+    """
+    monkeypatch.setenv("HF_TOKEN", "hf_" "FakeParentSecretToken1234567890abcdef")
+    monkeypatch.setenv("HF_TOKEN_ALT", "hf_" "FakeAltSecretToken1234567890abcdef")
+    monkeypatch.setenv(
+        "HUGGING_FACE_HUB_TOKEN", "hf_" "FakeHubSecretToken1234567890abcdef"
+    )
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "env_test"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "env_test", count=2)
+    run_dir = tmp_path / "run_dir"
+    work_dir = tmp_path / "work_dir"
+    captured_env_dir = tmp_path / "captured_envs"
+    captured_env_dir.mkdir(parents=True, exist_ok=True)
+
+    capture_script = tmp_path / "capture_child_env.py"
+    capture_script.write_text(
+        "import json, os, pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "if '--judge' in args:\n"
+        "    jid = args[args.index('--judge') + 1]\n"
+        f"    out_p = pathlib.Path({str(captured_env_dir.as_posix())!r}) / f'env_{{jid}}.json'\n"
+        "    out_p.write_text(json.dumps(dict(os.environ)), encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    py_exe = str(Path(sys.executable)).replace("\\", "/")
+    for venv_name in ("venv-judge", "venv-d3"):
+        vpy = work_dir / venv_name / "bin" / "python"
+        vpy.parent.mkdir(parents=True, exist_ok=True)
+        vpy.write_text(
+            "#!/usr/bin/env bash\n"
+            f'"{py_exe}" "{capture_script.as_posix()}" "$@"\n'
+            f'exec "{py_exe}" "$@"\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        vpy.chmod(0o755)
+
+    vm_judges.run_judges_pipeline(
+        mode="stub",
+        part_dir=items_file.parent,
+        run_dir=run_dir,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        dryrun=True,
+        repo_root=REPO_ROOT,
+        work_dir=work_dir,
+        progress_path=run_dir / "progress.jsonl",
+    )
+
+    for jid in sorted(BAKEOFF_JUDGE_SPECS.keys()):
+        env_file = captured_env_dir / f"env_{jid}.json"
+        assert env_file.is_file(), f"Missing captured child env for {jid}"
+        captured_env = json.loads(env_file.read_text(encoding="utf-8"))
+        assert "HF_TOKEN" not in captured_env
+        assert "HF_TOKEN_ALT" not in captured_env
+        assert "HUGGING_FACE_HUB_TOKEN" not in captured_env
+        assert not any(k.startswith("HF_TOKEN") for k in captured_env)
+        assert captured_env.get("HF_HUB_OFFLINE") == "1"
+        assert captured_env.get("HF_DEACTIVATE_ASYNC_LOAD") == "1"
+
+
+@pytest.mark.parametrize("corrupt_kind", ["malformed_done", "malformed_rows"])
+def test_fix6b_malformed_done_file_and_malformed_rows_line_fail_as_judge_child_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corrupt_kind: str,
+) -> None:
+    """Fix6b Item 3:
+    Malformed `judge_done/<id>.json` or a malformed `rows/<id>.jsonl` line is wrapped as
+    `JUDGE_CHILD_FAILED` (never `UNEXPECTED_ERROR`), with the judge id, a `judge_failed`
+    progress line, and the normal stop path.
+    """
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path / f"env_{corrupt_kind}"
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / f"data_{corrupt_kind}"
+    )
+    items_file = _make_synthetic_public_items(
+        tmp_path / f"data_{corrupt_kind}", count=2
+    )
+    run_dir = tmp_path / f"run_{corrupt_kind}"
+    work_dir = tmp_path / f"work_{corrupt_kind}"
+    status_file = tmp_path / f"status_{corrupt_kind}.json"
+    result_tar = tmp_path / f"result_{corrupt_kind}.tar.gz"
+    target_judge = "flow-judge-v0.1"
+
+    py_exe = str(Path(sys.executable)).replace("\\", "/")
+    for venv_name in ("venv-judge", "venv-d3"):
+        vpy = work_dir / venv_name / "bin" / "python"
+        vpy.parent.mkdir(parents=True, exist_ok=True)
+        if corrupt_kind == "malformed_done":
+            tamper_snip = (
+                f'if [[ "$_jid" == "{target_judge}" && "$*" == *"bakeoff_judge"* ]]; then\n'
+                f'  echo "{{not valid json" > "{run_dir.as_posix()}/judge_done/{target_judge}.json"\n'
+                "fi\n"
+            )
+        else:
+            tamper_snip = (
+                f'if [[ "$_jid" == "{target_judge}" && "$*" == *"bakeoff_judge"* ]]; then\n'
+                f'  echo "{{not valid row json" >> "{run_dir.as_posix()}/rows/{target_judge}.jsonl"\n'
+                "fi\n"
+            )
+        vpy.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "--version" || "$1" == "-V" ]]; then echo "Python 3.15.1"; exit 0; fi\n'
+            '_prev=""; _jid=""\n'
+            'for _arg in "$@"; do\n'
+            '  if [[ "$_prev" == "--judge" ]]; then _jid="$_arg"; break; fi\n'
+            '  _prev="$_arg"\n'
+            "done\n"
+            f'"{py_exe}" "$@"\n'
+            "_rc=$?\n"
+            f"{tamper_snip}"
+            "exit $_rc\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        vpy.chmod(0o755)
+
+    rc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "stub",
+            "--dryrun",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--items-file",
+            str(items_file),
+            "--run-dir",
+            str(run_dir),
+            "--work-dir",
+            str(work_dir),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(result_tar),
+            "--status-file",
+            str(status_file),
+        ]
+    )
+    assert rc == 2
+
+    status_doc = json.loads(status_file.read_text(encoding="utf-8"))
+    assert status_doc["status"] == "refused"
+    assert status_doc["failure_class"] == "JUDGE_CHILD_FAILED"
+    assert status_doc["judge_id"] == target_judge
+
+    receipt_doc = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert receipt_doc["status"] == "refused"
+    assert receipt_doc["failure_class"] == "JUDGE_CHILD_FAILED"
+    assert receipt_doc["judge_id"] == target_judge
+    assert receipt_doc["deleted_items_receipt"]["all_absent"] is True
+
+    progress_rows = [
+        json.loads(ln)
+        for ln in (run_dir / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    failed_rows = [r for r in progress_rows if r.get("kind") == "judge_failed"]
+    assert len(failed_rows) == 1
+    assert failed_rows[0]["judge_id"] == target_judge
+    assert failed_rows[0]["failure_class"] == "JUDGE_CHILD_FAILED"
+    assert progress_rows[-1]["kind"] == "run_end"
+    assert progress_rows[-1]["failure_class"] == "JUDGE_CHILD_FAILED"
+
+    # First judge (`d3-mini`) completed; `flow-judge-v0.1` failed; later judges never ran
+    done_judges = [
+        r["judge_id"] for r in progress_rows if r.get("kind") == "judge_pass_done"
+    ]
+    assert done_judges == ["d3-mini"]
+    _ = env_paths
+
+
+def test_fix6b_cgroup_limit_chain_and_logging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix6b Item 4:
+    - A fake cgroup tree with a finite limit two levels up gives that path and value.
+    - A tree where every level is `'max'` gives `None` (`null`).
+    - A missing `/proc/self/cgroup` gives an empty chain, with no exception.
+    - Logged in `gate_status.json`, at run start (`step_start` `unpack` and `vm_receipt.json`),
+      and on every `judge_download_start`, `judge_download`, `judge_pass_done`, and `judge_failed` line.
+    """
+    # 1. Finite limit two levels up:
+    #    self = /kubepods.slice/pod-abc/ctn-xyz (level 0)
+    #    1 up = /kubepods.slice/pod-abc         (level 1)
+    #    2 up = /kubepods.slice                 (level 2 -> finite memory.max = 13421772800)
+    #    3 up = /                               (level 3 -> memory.max = max)
+    cg_root_finite = tmp_path / "cg_finite"
+    leaf_dir = cg_root_finite / "kubepods.slice" / "pod-abc" / "ctn-xyz"
+    pod_dir = cg_root_finite / "kubepods.slice" / "pod-abc"
+    slice_dir = cg_root_finite / "kubepods.slice"
+    leaf_dir.mkdir(parents=True, exist_ok=True)
+
+    (leaf_dir / "memory.max").write_text("max\n", encoding="utf-8")
+    (leaf_dir / "memory.high").write_text("max\n", encoding="utf-8")
+    (leaf_dir / "memory.current").write_text("104857600\n", encoding="utf-8")
+    (leaf_dir / "memory.events").write_text("oom 0\noom_kill 0\n", encoding="utf-8")
+
+    (pod_dir / "memory.max").write_text("max\n", encoding="utf-8")
+    (pod_dir / "memory.current").write_text("209715200\n", encoding="utf-8")
+
+    (slice_dir / "memory.max").write_text("13421772800\n", encoding="utf-8")
+    (slice_dir / "memory.high").write_text("12884901888\n", encoding="utf-8")
+    (slice_dir / "memory.current").write_text("3221225472\n", encoding="utf-8")
+    (slice_dir / "memory.events").write_text("oom 2\noom_kill 1\n", encoding="utf-8")
+
+    (cg_root_finite / "memory.max").write_text("max\n", encoding="utf-8")
+    (cg_root_finite / "memory.current").write_text("6442450944\n", encoding="utf-8")
+
+    proc_cg_finite = tmp_path / "proc_cgroup_finite"
+    proc_cg_finite.write_text(
+        "0::/kubepods.slice/pod-abc/ctn-xyz\n", encoding="utf-8"
+    )
+
+    res_finite = vm_judges.read_cgroup_limit_chain(
+        cgroup_root=cg_root_finite,
+        proc_cgroup_path=proc_cg_finite,
+    )
+    assert [e["path"] for e in res_finite["chain"]] == [
+        leaf_dir.as_posix(),
+        pod_dir.as_posix(),
+        slice_dir.as_posix(),
+        cg_root_finite.as_posix(),
+    ]
+    assert res_finite["chain"][0]["memory.max"] == "max"
+    assert res_finite["chain"][1]["memory.high"] is None  # missing file -> null
+    assert res_finite["chain"][2]["memory.max"] == "13421772800"
+    assert res_finite["chain"][2]["memory.high"] == "12884901888"
+    assert res_finite["chain"][2]["memory.current"] == 3221225472
+    assert res_finite["chain"][2]["oom"] == 2
+    assert res_finite["chain"][2]["oom_kill"] == 1
+    assert res_finite["nearest_finite_path"] == slice_dir.as_posix()
+    assert res_finite["nearest_finite_memory_max"] == 13421772800
+    assert res_finite["nearest_finite_memory_current"] == 3221225472
+
+    # 2. Tree where every level is "max" -> nearest_finite_* are all None (null)
+    cg_root_max = tmp_path / "cg_all_max"
+    sub_max = cg_root_max / "user.slice" / "session-1.scope"
+    sub_max.mkdir(parents=True, exist_ok=True)
+    for d in (sub_max, cg_root_max / "user.slice", cg_root_max):
+        (d / "memory.max").write_text("max\n", encoding="utf-8")
+        (d / "memory.current").write_text("5000\n", encoding="utf-8")
+    proc_cg_max = tmp_path / "proc_cgroup_max"
+    proc_cg_max.write_text("0::/user.slice/session-1.scope\n", encoding="utf-8")
+
+    res_all_max = vm_judges.read_cgroup_limit_chain(
+        cgroup_root=cg_root_max,
+        proc_cgroup_path=proc_cg_max,
+    )
+    assert len(res_all_max["chain"]) == 3
+    assert all(e["memory.max"] == "max" for e in res_all_max["chain"])
+    assert res_all_max["nearest_finite_path"] is None
+    assert res_all_max["nearest_finite_memory_max"] is None
+    assert res_all_max["nearest_finite_memory_current"] is None
+
+    # 3. Missing `/proc/self/cgroup` -> empty chain, no exception
+    res_missing = vm_judges.read_cgroup_limit_chain(
+        cgroup_root=cg_root_finite,
+        proc_cgroup_path=tmp_path / "nonexistent_proc_self_cgroup",
+    )
+    assert res_missing == {
+        "chain": [],
+        "nearest_finite_path": None,
+        "nearest_finite_memory_max": None,
+        "nearest_finite_memory_current": None,
+    }
+
+    # 4. Verify `append_progress_line` attaches `nearest_finite_*` on
+    #    `judge_download_start`, `judge_download`, `judge_pass_done`, and `judge_failed`
+    prog_p = tmp_path / "cg_kinds_progress.jsonl"
+    for kind in (
+        "judge_download_start",
+        "judge_download",
+        "judge_pass_done",
+        "judge_failed",
+    ):
+        rec = vm_judges.append_progress_line(
+            prog_p,
+            {"kind": kind, "judge_id": "d3-mini"},
+            echo_stdout=False,
+            cgroup_root=cg_root_finite,
+            proc_cgroup_path=proc_cg_finite,
+        )
+        assert rec["nearest_finite_cgroup_path"] == slice_dir.as_posix()
+        assert rec["nearest_finite_memory_max"] == 13421772800
+        assert rec["nearest_finite_memory_current"] == 3221225472
+
+    # 5. Verify `gate_status.json` and run start (`step_start` `unpack` + `vm_receipt.json`) carry `cgroup_limit_chain`
+    monkeypatch.setenv("RDLAB_CGROUP_DIR", str(cg_root_finite))
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env_cg_e2e")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_cg_e2e"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_cg_e2e", count=2)
+    out_dir = tmp_path / "out_cg_e2e"
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "cg_e2e.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id cg-e2e-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+    gate_doc = json.loads((out_dir / "gate_status.json").read_text(encoding="utf-8"))
+    assert "cgroup_limit_chain" in gate_doc
+    assert isinstance(gate_doc["cgroup_limit_chain"]["chain"], list)
+
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert "cgroup_limit_chain" in receipt_doc
+    assert isinstance(receipt_doc["cgroup_limit_chain"]["chain"], list)
+
+    prog_rows = [
+        json.loads(ln)
+        for ln in (out_dir / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert prog_rows[0]["kind"] == "step_start"
+    assert prog_rows[0]["step"] == "unpack"
+    assert "cgroup_limit_chain" in prog_rows[0]
+
+
+def test_fix6_addendum1_judge_download_module_imports_and_in_process_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Addendum 1 Item 1:
+    - `src/reasoning_dataset_lab/pilot_b/judge_download.py` imports only stdlib and `huggingface_hub`
+      (plus optional `hf_xet` version inspection) — never `torch`, `transformers`, `pydantic`, or `bakeoff_judge`.
+    - Exercising `judge_download` in-process covers version detection, `snapshot_download` invocation,
+      atomic done-file writing, and `DOWNLOAD_STACK_VERSION_MISMATCH` (`rc=2`).
+    """
+    import ast
+    import types as _types
+
+    judge_dl_path = (
+        REPO_ROOT / "src" / "reasoning_dataset_lab" / "pilot_b" / "judge_download.py"
+    )
+    src_text = judge_dl_path.read_text(encoding="utf-8")
+    tree = ast.parse(src_text)
+    allowed_imports = {
+        "__future__",
+        "argparse",
+        "importlib",
+        "importlib.metadata",
+        "inspect",
+        "json",
+        "os",
+        "pathlib",
+        "sys",
+        "time",
+        "typing",
+        "huggingface_hub",
+        "hf_xet",
+    }
+    forbidden_imports = {"torch", "transformers", "pydantic", "bakeoff_judge"}
+    seen_imports: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                seen_imports.add(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            seen_imports.add(node.module)
+
+    for imp in seen_imports:
+        top = imp.split(".")[0]
+        assert top not in forbidden_imports, (
+            f"Forbidden import {imp!r} in judge_download.py"
+        )
+        assert imp in allowed_imports or top in allowed_imports, (
+            f"Unexpected import {imp!r} in judge_download.py"
+        )
+
+    # Set up fake `huggingface_hub` and `hf_xet` in sys.modules for in-process coverage
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "dl_inproc"
+    )
+    spec_flow = vm_judges.BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"]
+    spec_d3 = vm_judges.BAKEOFF_JUDGE_SPECS["d3-mini"]
+
+    dl_invocations: list[dict[str, Any]] = []
+
+    def _fake_snap(
+        repo_id: str,
+        revision: str | None = None,
+        cache_dir: str | None = None,
+        max_workers: int = 2,
+    ) -> str:
+        dl_invocations.append(
+            {
+                "repo_id": repo_id,
+                "revision": revision,
+                "cache_dir": cache_dir,
+                "max_workers": max_workers,
+                "xet_env": os.environ.get("HF_XET_NUM_CONCURRENT_RANGE_GETS"),
+            }
+        )
+        owner, repo = repo_id.split("/", 1)
+        return str(
+            Path(cache_dir or (hf_home / "hub"))
+            / f"models--{owner}--{repo}"
+            / "snapshots"
+            / str(revision)
+        )
+
+    fake_hub = _types.ModuleType("huggingface_hub")
+    fake_hub.__version__ = "2.4.0"  # type: ignore[attr-defined]
+    fake_hub._IS_FAKE_HF_HUB = True  # type: ignore[attr-defined]
+    fake_hub.snapshot_download = _fake_snap  # type: ignore[attr-defined]
+    fake_xet = _types.ModuleType("hf_xet")
+    fake_xet.__version__ = "1.8.0"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+    monkeypatch.setitem(sys.modules, "hf_xet", fake_xet)
+
+    from reasoning_dataset_lab.pilot_b import judge_download
+
+    # 1. Normal download for `flow-judge-v0.1` (`venv-judge`: 2.4.0 + 1.8.0)
+    done_flow = tmp_path / "done" / "flow-judge-v0.1.json"
+    rc_ok = judge_download.main_download_runner(
+        [
+            "--judge",
+            "flow-judge-v0.1",
+            "--repo-id",
+            spec_flow.repo_id,
+            "--revision",
+            spec_flow.revision,
+            "--hf-home",
+            str(hf_home),
+            "--done-file",
+            str(done_flow),
+            "--venv",
+            "venv-judge",
+            "--max-workers",
+            "2",
+            "--hf-xet-num-concurrent-range-gets",
+            "4",
+            "--expect-huggingface-hub-version",
+            "2.4.0",
+            "--expect-hf-xet-version",
+            "1.8.0",
+        ]
+    )
+    assert rc_ok == 0
+    assert done_flow.is_file()
+    doc_flow = json.loads(done_flow.read_text(encoding="utf-8"))
+    assert doc_flow["judge_id"] == "flow-judge-v0.1"
+    assert doc_flow["venv"] == "venv-judge"
+    assert doc_flow["files_downloaded"] > 0
+    assert doc_flow["bytes"] > 0
+    assert doc_flow["huggingface_hub_version"] == "2.4.0"
+    assert doc_flow["hf_xet_version"] == "1.8.0"
+    assert len(dl_invocations) == 1
+    assert dl_invocations[0]["max_workers"] == 2
+    assert dl_invocations[0]["xet_env"] == "4"
+
+    # 2. Range gets = 0 unsets HF_XET_NUM_CONCURRENT_RANGE_GETS, and `venv-d3` uses 1.33.0
+    fake_hub.__version__ = "1.33.0"  # type: ignore[attr-defined]
+    done_d3 = tmp_path / "done" / "d3-mini.json"
+    rc_d3 = judge_download.main_download_runner(
+        [
+            "--judge",
+            "d3-mini",
+            "--repo-id",
+            spec_d3.repo_id,
+            "--revision",
+            spec_d3.revision,
+            "--hf-home",
+            str(hf_home),
+            "--done-file",
+            str(done_d3),
+            "--venv",
+            "venv-d3",
+            "--max-workers",
+            "3",
+            "--hf-xet-num-concurrent-range-gets",
+            "0",
+            "--expect-huggingface-hub-version",
+            "1.33.0",
+            "--expect-hf-xet-version",
+            "1.8.0",
+            "--dryrun",
+        ]
+    )
+    assert rc_d3 == 0
+    doc_d3 = json.loads(done_d3.read_text(encoding="utf-8"))
+    assert doc_d3["huggingface_hub_version"] == "1.33.0"
+    assert doc_d3["hf_xet_version"] == "1.8.0"
+    assert dl_invocations[-1]["xet_env"] is None
+
+    # 3. Version mismatch returns rc=2 with `DOWNLOAD_STACK_VERSION_MISMATCH`
+    capsys.readouterr()
+    rc_mismatch = judge_download.main_download_runner(
+        [
+            "--judge",
+            "d3-mini",
+            "--repo-id",
+            spec_d3.repo_id,
+            "--revision",
+            spec_d3.revision,
+            "--hf-home",
+            str(hf_home),
+            "--done-file",
+            str(tmp_path / "done" / "mismatch.json"),
+            "--venv",
+            "venv-d3",
+            "--expect-huggingface-hub-version",
+            "2.4.0",
+            "--expect-hf-xet-version",
+            "1.8.0",
+        ]
+    )
+    assert rc_mismatch == 2
+    assert "DOWNLOAD_STACK_VERSION_MISMATCH" in capsys.readouterr().err
+
+    # 4. Fallback paths in `_resolve_snapshot_dir`, `_collect_snapshot_files`, and `detect_download_stack_versions`
+    nonexistent_snap = judge_download._resolve_snapshot_dir(
+        "owner/missing-repo",
+        "0" * 40,
+        tmp_path / "empty_hf",
+        returned_path=None,
+    )
+    assert judge_download._collect_snapshot_files(nonexistent_snap) == ([], 0)
+
+    monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", "9.9.9")
+    monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", "8.8.8")
+    assert judge_download.detect_download_stack_versions() == ("9.9.9", "8.8.8")
+    monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", raising=False)
+    monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", raising=False)
+
+    fake_hub.__version__ = ""  # type: ignore[attr-defined]
+    fake_xet.__version__ = ""  # type: ignore[attr-defined]
+    ver_pair = judge_download.detect_download_stack_versions()
+    assert len(ver_pair) == 2
+
+    # Cover `except ImportError:` when `hf_xet` is missing from sys.modules
+    monkeypatch.setitem(sys.modules, "hf_xet", None)
+    ver_pair_no_xet = judge_download.detect_download_stack_versions()
+    assert len(ver_pair_no_xet) == 2
+    monkeypatch.setitem(sys.modules, "hf_xet", fake_xet)
+
+    # Cover `_IS_FAKE_HF_HUB = False` with `--dryrun` (skips `dl_fn`)
+    fake_hub._IS_FAKE_HF_HUB = False  # type: ignore[attr-defined]
+    fake_hub.__version__ = "2.4.0"  # type: ignore[attr-defined]
+    fake_xet.__version__ = "1.8.0"  # type: ignore[attr-defined]
+    rc_dry = judge_download.main_download_runner(
+        [
+            "--judge",
+            "flow-judge-v0.1",
+            "--repo-id",
+            spec_flow.repo_id,
+            "--revision",
+            spec_flow.revision,
+            "--hf-home",
+            str(hf_home),
+            "--done-file",
+            str(tmp_path / "done" / "dry_only.json"),
+            "--venv",
+            "venv-judge",
+            "--expect-huggingface-hub-version",
+            "2.4.0",
+            "--expect-hf-xet-version",
+            "1.8.0",
+            "--dryrun",
+        ]
+    )
+    assert rc_dry == 0
+
+
+def test_fix6_addendum1_download_child_vs_judge_child_env_split(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Addendum 1 Items 1, 2, & 5:
+    - Download child runs `<venv>/bin/python -m reasoning_dataset_lab.pilot_b.judge_download`
+      in that judge's own venv (`venv-d3` for `d3-mini`, `venv-judge` for the other four).
+    - Download child has network (`HF_HUB_OFFLINE` unset) and no HF token (`HF_TOKEN*` /
+      `HUGGING_FACE_HUB_TOKEN` stripped because all 5 judge repos are public and non-gated).
+    - Judge child has `HF_HUB_OFFLINE=1` (offline) and no HF token.
+    - Both children's environments are captured and asserted to differ on `HF_HUB_OFFLINE`.
+    - `huggingface_hub.__version__` and `hf_xet` version read inside each download child are
+      recorded in the child's done-file, the `judge_download` progress line, `vm_receipt.json`,
+      and `gate_status.json` (which records why `gate` cannot read them before venv sync).
+    """
+    monkeypatch.setenv("HF_TOKEN", "hf_" "SuperSecretParentTokenValue1234567890")
+    monkeypatch.setenv("HF_TOKEN_PATH", "/tmp/secret_hf_token")
+    monkeypatch.setenv(
+        "HUGGING_FACE_HUB_TOKEN", "hf_" "LegacySecretTokenValue1234567890"
+    )
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    dl_env = vm_judges.build_download_child_env(
+        tmp_path / "hf_home",
+        REPO_ROOT,
+        hf_xet_num_concurrent_range_gets=4,
+    )
+    judge_env = vm_judges.build_judge_child_env(
+        tmp_path / "hf_home",
+        REPO_ROOT,
+    )
+    assert "HF_HUB_OFFLINE" not in dl_env
+    assert judge_env.get("HF_HUB_OFFLINE") == "1"
+    for env_d in (dl_env, judge_env):
+        assert "HF_TOKEN" not in env_d
+        assert "HF_TOKEN_PATH" not in env_d
+        assert "HUGGING_FACE_HUB_TOKEN" not in env_d
+        assert not [k for k in env_d if k.startswith("HF_TOKEN")]
+
+    # Full launcher run capturing both download_subprocesses.jsonl and judge_subprocesses.jsonl
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env_split")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_split"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_split", count=2)
+    out_dir = tmp_path / "out_split"
+    exports = (
+        _base_launcher_exports(
+            env_paths,
+            open_lock=tmp_path / "split.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        + "export FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD=1; "
+        + "export HF_TOKEN='hf_" "SuperSecretParentTokenValue1234567890'; "
+        + "export HUGGING_FACE_HUB_TOKEN='hf_" "LegacySecretTokenValue1234567890'; "
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id split-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}\nstdout={proc.stdout}"
+
+    dl_subprocs = [
+        json.loads(ln)
+        for ln in (env_paths["state_dir"] / "download_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    judge_subprocs = [
+        json.loads(ln)
+        for ln in (env_paths["state_dir"] / "judge_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(dl_subprocs) == 5
+    assert len(judge_subprocs) == 5
+
+    for dl_rec, j_rec in zip(dl_subprocs, judge_subprocs, strict=True):
+        jid = dl_rec["judge_id"]
+        assert j_rec["judge_id"] == jid
+        expected_venv = "venv-d3" if jid == "d3-mini" else "venv-judge"
+        assert dl_rec["venv"] == expected_venv
+        assert j_rec["venv"] == expected_venv
+        assert (
+            "reasoning_dataset_lab.pilot_b.judge_download" in dl_rec["cmd"]
+        )
+        assert (
+            "reasoning_dataset_lab.pilot_b.bakeoff_judge" in j_rec["cmd"]
+        )
+        # Environment difference: download child has HF_HUB_OFFLINE=None, judge child has HF_HUB_OFFLINE="1"
+        assert dl_rec["hf_hub_offline"] is None
+        assert j_rec["hf_hub_offline"] == "1"
+        assert dl_rec["hf_token_keys"] == []
+        assert j_rec["hf_token_keys"] == []
+
+        # Verify download done-file on VM work_dir
+        done_path = (
+            env_paths["state_dir"]
+            / "vm_fs"
+            / "rdlab_work"
+            / "download_done"
+            / f"{jid}.json"
+        )
+        assert done_path.is_file()
+        done_doc = json.loads(done_path.read_text(encoding="utf-8"))
+        exp_hub_ver = "1.33.0" if jid == "d3-mini" else "2.4.0"
+        assert done_doc["judge_id"] == jid
+        assert done_doc["huggingface_hub_version"] == exp_hub_ver
+        assert done_doc["hf_xet_version"] == "1.8.0"
+        assert done_doc["files_downloaded"] > 0
+        assert done_doc["bytes"] > 0
+
+    # Verify versions in progress.jsonl (`judge_download`), `vm_receipt.json`, and `gate_status.json`
+    prog_rows = [
+        json.loads(ln)
+        for ln in (out_dir / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    dl_prog_rows = [r for r in prog_rows if r["kind"] == "judge_download"]
+    assert len(dl_prog_rows) == 5
+    for r in dl_prog_rows:
+        jid = r["judge_id"]
+        exp_hub_ver = "1.33.0" if jid == "d3-mini" else "2.4.0"
+        assert r["huggingface_hub_version"] == exp_hub_ver
+        assert r["hf_xet_version"] == "1.8.0"
+
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    dsv = receipt_doc["download_stack_versions"]
+    assert dsv["expected"] == vm_judges.EXPECTED_DOWNLOAD_STACK_VERSIONS
+    assert dsv["expected"]["venv-judge"]["huggingface_hub"] == "2.4.0"
+    assert dsv["expected"]["venv-judge"]["hf_xet"] == "1.8.0"
+    assert dsv["expected"]["venv-d3"]["huggingface_hub"] == "1.33.0"
+    assert dsv["expected"]["venv-d3"]["hf_xet"] == "1.8.0"
+    for jid in vm_judges.BAKEOFF_JUDGE_SPECS:
+        exp_hub_ver = "1.33.0" if jid == "d3-mini" else "2.4.0"
+        assert dsv["by_judge"][jid]["huggingface_hub_version"] == exp_hub_ver
+        assert dsv["by_judge"][jid]["hf_xet_version"] == "1.8.0"
+
+    gate_doc = json.loads((out_dir / "gate_status.json").read_text(encoding="utf-8"))
+    assert (
+        gate_doc["download_stack_versions"]["status"]
+        == "not_available_at_gate_before_venv_sync"
+    )
+    assert gate_doc["download_stack_versions"]["expected"] == dsv["expected"]
+
+
+def test_fix6_addendum1_download_child_failures_and_version_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Addendum 1 Items 4 & 5:
+    - OOM or signal 9/137 in the download child gives `DOWNLOAD_CHILD_OOM`.
+    - Any other non-zero exit, or a missing/malformed download done-file, gives `DOWNLOAD_CHILD_FAILED`.
+    - Mismatched `huggingface_hub` or `hf_xet` version gives `DOWNLOAD_STACK_VERSION_MISMATCH`.
+    - Parent survives, writes a `download_failed` progress line (with exit code, signal,
+      `oom_kill_delta`, scrubbed `stderr_tail`, and fix6b's nearest finite cgroup limit fields),
+      and takes the normal stop path.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "dl_fail_data"
+    )
+
+    # Synthetic cgroup hierarchy with finite limit so `download_failed` logs `nearest_finite_*`
+    cg_root = tmp_path / "cg_dl_fail"
+    leaf_dir = cg_root / "kubepods.slice" / "pod-1"
+    slice_dir = cg_root / "kubepods.slice"
+    leaf_dir.mkdir(parents=True, exist_ok=True)
+    (leaf_dir / "memory.max").write_text("max\n", encoding="utf-8")
+    (leaf_dir / "memory.current").write_text("100000\n", encoding="utf-8")
+    (leaf_dir / "memory.events").write_text("oom 1\noom_kill 1\n", encoding="utf-8")
+    (slice_dir / "memory.max").write_text("13421772800\n", encoding="utf-8")
+    (slice_dir / "memory.current").write_text("4294967296\n", encoding="utf-8")
+    proc_cg = tmp_path / "proc_cg_dl_fail"
+    proc_cg.write_text("0::/kubepods.slice/pod-1\n", encoding="utf-8")
+
+    cases = [
+        ("flow-judge-v0.1:sigkill", None, None, "DOWNLOAD_CHILD_OOM", 137, 9),
+        ("flow-judge-v0.1:exit137", None, None, "DOWNLOAD_CHILD_OOM", 137, 9),
+        (
+            "flow-judge-v0.1:exit1:hf_SecretLeak1234567890123456 connection reset",
+            None,
+            None,
+            "DOWNLOAD_CHILD_FAILED",
+            1,
+            None,
+        ),
+        ("flow-judge-v0.1:missing_done", None, None, "DOWNLOAD_CHILD_FAILED", 0, None),
+        (
+            "flow-judge-v0.1:malformed_done",
+            None,
+            None,
+            "DOWNLOAD_CHILD_FAILED",
+            0,
+            None,
+        ),
+        (
+            None,
+            "9.9.9",
+            None,
+            "DOWNLOAD_STACK_VERSION_MISMATCH",
+            2,
+            None,
+        ),
+        (
+            None,
+            None,
+            "0.0.1",
+            "DOWNLOAD_STACK_VERSION_MISMATCH",
+            2,
+            None,
+        ),
+    ]
+
+    for idx, (
+        fail_spec,
+        override_hub,
+        override_xet,
+        expected_cls,
+        expected_exit_code,
+        expected_sig,
+    ) in enumerate(cases):
+        case_dir = tmp_path / f"case_{idx}"
+        work_dir = case_dir / "work"
+        prog_path = case_dir / "progress.jsonl"
+        if fail_spec:
+            monkeypatch.setenv("FAKE_COLAB_FAIL_DOWNLOAD_CHILD", fail_spec)
+        else:
+            monkeypatch.delenv("FAKE_COLAB_FAIL_DOWNLOAD_CHILD", raising=False)
+        if override_hub:
+            monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", override_hub)
+        else:
+            monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", raising=False)
+        if override_xet:
+            monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", override_xet)
+        else:
+            monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", raising=False)
+
+        with pytest.raises(vm_judges.DownloadChildProcessError) as exc_info:
+            vm_judges.download_all_judge_weights(
+                hf_home,
+                dryrun=True,
+                work_dir=work_dir,
+                receipts_dir=receipts_dir,
+                progress_path=prog_path,
+                only_judge_ids=("flow-judge-v0.1",),
+                cgroup_root=cg_root,
+                proc_cgroup_path=proc_cg,
+            )
+        assert exc_info.value.failure_class == expected_cls
+        assert "hf_SecretLeak" not in (exc_info.value.stderr_tail or "")
+
+        prog_lines = [
+            json.loads(ln)
+            for ln in prog_path.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        failed_lines = [r for r in prog_lines if r["kind"] == "download_failed"]
+        assert len(failed_lines) == 1
+        fl = failed_lines[0]
+        assert fl["failure_class"] == expected_cls
+        assert fl["judge_id"] == "flow-judge-v0.1"
+        assert fl["venv"] == "venv-judge"
+        assert fl["exit_code"] == expected_exit_code
+        assert fl["signal"] == expected_sig
+        assert "oom_kill_delta" in fl
+        assert "stderr_tail" in fl
+        assert "hf_SecretLeak" not in fl["stderr_tail"]
+        assert fl["nearest_finite_cgroup_path"] == slice_dir.as_posix()
+        assert fl["nearest_finite_memory_max"] == 13421772800
+        assert fl["nearest_finite_memory_current"] == 4294967296
+
+    monkeypatch.delenv("FAKE_COLAB_FAIL_DOWNLOAD_CHILD", raising=False)
+    monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", raising=False)
+    monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", raising=False)
+
+
+def test_fix6_addendum1_order_and_until_stages(tmp_path: Path) -> None:
+    """Addendum 1 Item 7:
+    - Order: `venv_sync` (once, before all), then for each judge: download child -> parent verify,
+      then judge child for each judge.
+    - `--until venv_sync` stops before any child (0 download children, 0 judge children).
+    - `--until first_judge` stops after `flow-judge-v0.1`'s download child and parent verify,
+      without running `flow-judge-v0.1`'s judge child (1 download child, 1 parent verify, 0 judge children).
+    - `--until weights` stops after all 5 downloads and verifies, with no judge child
+      (5 download children, 5 parent verifies, 0 judge children).
+    """
+    expected_judges = sorted(vm_judges.BAKEOFF_JUDGE_SPECS.keys())
+
+    # 1. `--until venv_sync`: stops before any download or judge child
+    env_vs = fake_colab.setup_fake_colab_environment(tmp_path / "env_vs")
+    receipts_vs, hf_vs = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_vs"
+    )
+    items_vs = _make_synthetic_public_items(tmp_path / "data_vs", count=2)
+    out_vs = tmp_path / "out_vs"
+    exports_vs = _base_launcher_exports(
+        env_vs,
+        open_lock=tmp_path / "vs.lock",
+        receipts_dir=receipts_vs,
+        hf_home=hf_vs,
+        items_file=items_vs,
+    )
+    proc_vs = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_vs} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_vs)}' --run-id until-vs-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_vs.returncode == 0, f"stderr={proc_vs.stderr}"
+    lc_vs = [
+        json.loads(ln)
+        for ln in (env_vs["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert [e["event"] for e in lc_vs] == ["venv_sync"]
+    assert not (env_vs["state_dir"] / "download_subprocesses.jsonl").exists()
+    assert not (env_vs["state_dir"] / "judge_subprocesses.jsonl").exists()
+
+    # 2. `--until first_judge`: runs `venv_sync`, then `flow-judge-v0.1` download child + parent verify, 0 judge children
+    env_fj = fake_colab.setup_fake_colab_environment(tmp_path / "env_fj")
+    receipts_fj, hf_fj = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_fj"
+    )
+    items_fj = _make_synthetic_public_items(tmp_path / "data_fj", count=2)
+    out_fj = tmp_path / "out_fj"
+    exports_fj = _base_launcher_exports(
+        env_fj,
+        open_lock=tmp_path / "fj.lock",
+        receipts_dir=receipts_fj,
+        hf_home=hf_fj,
+        items_file=items_fj,
+    )
+    proc_fj = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_fj} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_judge --out-dir '{_to_wsl_path(out_fj)}' --run-id until-fj-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_fj.returncode == 0, f"stderr={proc_fj.stderr}"
+    lc_fj = [
+        json.loads(ln)
+        for ln in (env_fj["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert [(e["event"], e.get("judge_id")) for e in lc_fj] == [
+        ("venv_sync", None),
+        ("download_child", "flow-judge-v0.1"),
+        ("parent_verify", "flow-judge-v0.1"),
+    ]
+    assert not (env_fj["state_dir"] / "judge_subprocesses.jsonl").exists()
+
+    # 3. `--until weights`: runs `venv_sync`, then all 5 download children + parent verifies, 0 judge children
+    env_wt = fake_colab.setup_fake_colab_environment(tmp_path / "env_wt")
+    receipts_wt, hf_wt = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_wt"
+    )
+    items_wt = _make_synthetic_public_items(tmp_path / "data_wt", count=2)
+    out_wt = tmp_path / "out_wt"
+    exports_wt = _base_launcher_exports(
+        env_wt,
+        open_lock=tmp_path / "wt.lock",
+        receipts_dir=receipts_wt,
+        hf_home=hf_wt,
+        items_file=items_wt,
+    )
+    proc_wt = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_wt} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until weights --out-dir '{_to_wsl_path(out_wt)}' --run-id until-wt-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_wt.returncode == 0, f"stderr={proc_wt.stderr}"
+    lc_wt = [
+        json.loads(ln)
+        for ln in (env_wt["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    expected_wt_events: list[tuple[str, str | None]] = [("venv_sync", None)]
+    for jid in expected_judges:
+        expected_wt_events.append(("download_child", jid))
+        expected_wt_events.append(("parent_verify", jid))
+    assert [(e["event"], e.get("judge_id")) for e in lc_wt] == expected_wt_events
+    assert not (env_wt["state_dir"] / "judge_subprocesses.jsonl").exists()
+
+    # 4. Full run (no `--until`): `venv_sync` once, then download_child -> parent_verify per judge, then judge_child per judge
+    env_full = fake_colab.setup_fake_colab_environment(tmp_path / "env_full")
+    receipts_full, hf_full = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_full"
+    )
+    items_full = _make_synthetic_public_items(tmp_path / "data_full", count=2)
+    out_full = tmp_path / "out_full"
+    exports_full = _base_launcher_exports(
+        env_full,
+        open_lock=tmp_path / "full.lock",
+        receipts_dir=receipts_full,
+        hf_home=hf_full,
+        items_file=items_full,
+    )
+    proc_full = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_full} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_full)}' --run-id full-order-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_full.returncode == 0, f"stderr={proc_full.stderr}"
+    lc_full = [
+        json.loads(ln)
+        for ln in (env_full["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    expected_full_events = list(expected_wt_events) + [
+        ("judge_child", jid) for jid in expected_judges
+    ]
+    assert [(e["event"], e.get("judge_id")) for e in lc_full] == expected_full_events
+
+
 
 
 

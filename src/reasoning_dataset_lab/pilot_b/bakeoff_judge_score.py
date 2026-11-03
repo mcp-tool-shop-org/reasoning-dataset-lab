@@ -38,7 +38,8 @@ Pre-registered definitions and statistical rules (Card 2026-11-01 & Amendment 1)
   all 10 pairs. If both Holm-adjusted superiority and Holm-adjusted TOST fire (`p < 0.05`), the pair is marked
   `"practically_equivalent"` and treated as not separated for candidate selection.
 - **Winner selection rule (`select_bakeoff_winner`, floors first):**
-  1. Eligibility is decided first over all judges that ran (`failed_to_run` judges are never eligible): a judge is
+  1. Eligibility is decided first over all judges that ran (`failed_to_run` judges are never eligible; a judge child
+     stop such as `JUDGE_CHILD_OOM` or `JUDGE_CHILD_FAILED` is a result of the run, not a score of the judge): a judge is
      eligible iff `LCB(precision) >= PRECISION_LCB_FLOOR = 0.86` and `LCB(recall) >= RECALL_LCB_FLOOR = 0.45` (5th
      percentile of the domain-stratified triad bootstrap, intersection-union), per-negative-class precision
      `TP / (TP + 2*FP_c) >= PER_CLASS_PRECISION_FLOOR = 0.85` for each `c in {unsupported, cannot_tell}` (meaning the
@@ -133,6 +134,8 @@ PREREG_DEFINITIONS: dict[str, Any] = {
         "TP / (TP + 2*FP_c) for each negative class c in {unsupported, cannot_tell}, meaning the precision the judge "
         "would have if the other negative class failed as badly as this one (>= 0.85 point estimate)"
     ),
+    # Note: a partial run or judge child stop (e.g. JUDGE_CHILD_OOM or JUDGE_CHILD_FAILED, recorded as failed_to_run)
+    # is a result of the run, not a score of the judge; no ranking is computed from an incomplete judge set.
     "winner_selection_rule": (
         "floors first over all judges that ran (failed_to_run never eligible): LCB(precision) >= 0.86, "
         "LCB(recall) >= 0.45, per-negative-class precision TP / (TP + 2*FP_c) >= 0.85 for unsupported and cannot_tell, "

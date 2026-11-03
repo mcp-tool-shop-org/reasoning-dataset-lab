@@ -32,3 +32,25 @@ on CPython 3.15.1, torch 2.14.1+cu132: exit 139.
 Snapshot code (d3-mini's eight reviewed `.py` files) is imported with bytecode writing off (`sys.dont_write_bytecode`,
 set by `D3MiniTransport`). A judge snapshot that contains any `__pycache__` or `.pyc` is refused by the receipt check
 with `BAKEOFF_JUDGE_SNAPSHOT_BYTECODE`. Ad-hoc import checks against a snapshot must run with `python -B`.
+
+## Colab VM execution (one child subprocess per judge in its synced venv)
+
+On a Colab VM (`scripts/colab/vm_judges.py`), the top-level cell executes in the Colab kernel's system Python
+(`3.12`/`3.13`) as a stdlib-only orchestrator (it never imports `reasoning_dataset_lab.pilot_b.bakeoff_judge`,
+`torch`, `transformers`, or `pydantic`). After `sync_judge_venvs` creates and syncs the two CPython `3.15.1+20261021`
+virtual environments (`venv-judge` from `scripts/colab/locks/judge.lock.txt` and `venv-d3` from
+`scripts/colab/locks/d3.lock.txt`) and `verify_snapshot_against_receipt` checks every snapshot file's byte size first
+(`WEIGHT_SIZE_MISMATCH` before hashing) and SHA-256 second, `run_judges_pipeline` runs each judge in a separate child
+subprocess (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) with `HF_DEACTIVATE_ASYNC_LOAD=1`,
+`stdin=subprocess.DEVNULL`, and `start_new_session=True`:
+
+- `venv-judge/bin/python` (`judge.lock.txt`, `transformers==5.19.0`, `huggingface-hub==2.4.0`): `flow-judge-v0.1`,
+  `granite-guardian-4.1-8b`, `mu-judge`, and `nemotron-3-nano-4b`.
+- `venv-d3/bin/python` (`d3.lock.txt`, `transformers==5.17.0`, `huggingface-hub==1.33.0`): `d3-mini`.
+
+When a judge child finishes, it writes `<run_dir>/judge_done/<judge>.json` (`row_count` and `sha256` of
+`rows/<judge>.jsonl`), and the parent records `judge_pass_done` in `progress.jsonl`. If a judge child is killed by the
+Linux OOM killer (`SIGKILL` / signal `9`, exit `137`, or cgroup `memory.events` `oom_kill` delta `> 0`) or exits
+non-zero, the parent stays alive, records `judge_failed` (`JUDGE_CHILD_OOM` or `JUDGE_CHILD_FAILED`), deletes uploaded
+items, packs `result.tar.gz` (preserving completed judges' `rows/<judge>.jsonl` and `judge_done/<judge>.json`), and
+exits `2` without starting later judges.

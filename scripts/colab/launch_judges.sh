@@ -293,6 +293,28 @@ elif (( PROGRESS_FETCH_TIMEOUT_SECONDS > 600 )); then
   PROGRESS_FETCH_TIMEOUT_SECONDS=600
 fi
 
+if ! "$PYTHON_BIN" - "$REPO_ROOT" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+try:
+    vm_judges.validate_download_config(
+        os.environ.get("RDLAB_HF_DOWNLOAD_MAX_WORKERS"),
+        os.environ.get("HF_XET_NUM_CONCURRENT_RANGE_GETS"),
+    )
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+then
+  exit 2
+fi
+
 WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
 if [[ -n "$EXPLICIT_CAP" ]]; then
   CAP_UNITS="$EXPLICIT_CAP"
@@ -375,6 +397,15 @@ build_exec_env_args() {
   fi
   if [[ -n "${HF_HOME:-}" ]]; then
     EXEC_ENV_ARGS+=(--env "HF_HOME=$HF_HOME")
+  fi
+  if [[ -n "${RDLAB_HF_DOWNLOAD_MAX_WORKERS+x}" ]] && [[ -n "${RDLAB_HF_DOWNLOAD_MAX_WORKERS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_HF_DOWNLOAD_MAX_WORKERS=$RDLAB_HF_DOWNLOAD_MAX_WORKERS")
+  fi
+  if [[ -n "${HF_XET_NUM_CONCURRENT_RANGE_GETS+x}" ]] && [[ -n "${HF_XET_NUM_CONCURRENT_RANGE_GETS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "HF_XET_NUM_CONCURRENT_RANGE_GETS=$HF_XET_NUM_CONCURRENT_RANGE_GETS")
+  fi
+  if [[ -n "${FAKE_COLAB_FAIL_JUDGE_CHILD:-}" ]]; then
+    EXEC_ENV_ARGS+=(--env "FAKE_COLAB_FAIL_JUDGE_CHILD=$FAKE_COLAB_FAIL_JUDGE_CHILD")
   fi
   if [[ -n "${RDLAB_TEST_PLANT_LOG_LEAK:-}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_TEST_PLANT_LOG_LEAK=$RDLAB_TEST_PLANT_LOG_LEAK")
@@ -521,6 +552,51 @@ wait_for_fetch_done() {
   done
 }
 
+fetch_completed_judge_checkpoints() {
+  local dl_timeout="${1:-$PROGRESS_FETCH_TIMEOUT_SECONDS}"
+  if [[ ! -f "$OUT_DIR/progress.jsonl" ]]; then
+    return 0
+  fi
+  local done_judges=""
+  done_judges="$("$PYTHON_BIN" - "$OUT_DIR/progress.jsonl" 2>/dev/null <<'PY' || true
+import json
+import sys
+from pathlib import Path
+
+p = Path(sys.argv[1])
+seen: list[str] = []
+if p.is_file():
+    for raw in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            continue
+        if obj.get("kind") == "judge_pass_done":
+            jid = str(obj.get("judge_id") or obj.get("judge") or "").strip()
+            if jid and jid not in seen:
+                seen.append(jid)
+for j in seen:
+    print(j)
+PY
+)"
+  if [[ -z "$done_judges" ]]; then
+    return 0
+  fi
+  mkdir -p "$OUT_DIR/rows" "$OUT_DIR/judge_done"
+  local jid
+  for jid in $done_judges; do
+    if [[ ! -f "$OUT_DIR/judge_done/${jid}.json" ]]; then
+      timeout "$dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${jid}.json" "$OUT_DIR/judge_done/${jid}.json" </dev/null >/dev/null 2>&1 || true
+    fi
+    if [[ ! -f "$OUT_DIR/rows/${jid}.jsonl" ]]; then
+      timeout "$dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${jid}.jsonl" "$OUT_DIR/rows/${jid}.jsonl" </dev/null >/dev/null 2>&1 || true
+    fi
+  done
+}
+
 fetch_results_once() {
   local fetch_timeout="${1:-0}"
   local wait_timeout="$fetch_timeout"
@@ -554,6 +630,38 @@ fetch_results_once() {
     timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
     timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl" </dev/null >/dev/null 2>&1 || true
     "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" >/dev/null 2>&1 <<'PY' || true
+import shutil
+import sys
+import tarfile
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+out_dir = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+tar_path = out_dir / "result.tar.gz"
+if tar_path.is_file():
+    try:
+        vm_judges.validate_tar_file(tar_path)
+        tmp_ext = out_dir / ".tmp_checkpoint_extract"
+        tmp_ext.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(tar_path, "r:*") as tf:
+            tf.extractall(tmp_ext, filter="data")
+        for sub_name, pat in (("rows", "*.jsonl"), ("judge_done", "*.json")):
+            src_sub = tmp_ext / sub_name
+            if src_sub.is_dir():
+                dst_sub = out_dir / sub_name
+                dst_sub.mkdir(parents=True, exist_ok=True)
+                for f in sorted(src_sub.glob(pat)):
+                    if f.is_file() and not (dst_sub / f.name).is_file():
+                        shutil.copyfile(f, dst_sub / f.name)
+        shutil.rmtree(tmp_ext, ignore_errors=True)
+    except Exception:
+        pass
+PY
+    fetch_completed_judge_checkpoints "$eff_timeout"
+    "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" >/dev/null 2>&1 <<'PY' || true
 import sys
 from pathlib import Path
 
@@ -566,6 +674,11 @@ for name in ("progress.jsonl", "status.json", "gate_status.json", "vm_receipt.js
     p = out_dir / name
     if p.is_file():
         vm_judges.scrub_log_file_in_place(p)
+jdone_dir = out_dir / "judge_done"
+if jdone_dir.is_dir():
+    for jf in sorted(jdone_dir.glob("*.json")):
+        if jf.is_file():
+            vm_judges.scrub_log_file_in_place(jf)
 PY
   fi
   log_msg "FETCH_DONE session=$S"
@@ -584,6 +697,7 @@ periodic_fetch_progress_once() {
   if [[ "$dl_rc" -eq 0 ]] && [[ -f "$tmp_progress" ]]; then
     "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.scrub_log_file_in_place(Path(sys.argv[2]))" "$REPO_ROOT" "$tmp_progress" >/dev/null 2>&1 || true
     mv -f "$tmp_progress" "$OUT_DIR/progress.jsonl"
+    fetch_completed_judge_checkpoints "$PROGRESS_FETCH_TIMEOUT_SECONDS"
     log_msg "PROGRESS_FETCH_OK session=$S"
     return 0
   fi
@@ -1079,9 +1193,8 @@ receipts_tar = Path(sys.argv[5])
 repo_tar = Path(sys.argv[6])
 
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
-sys.path.insert(0, str(repo_root / "src"))
 import vm_judges
-from reasoning_dataset_lab.pilot_b.bakeoff_judge import BAKEOFF_JUDGE_SPECS
+BAKEOFF_JUDGE_SPECS = vm_judges.BAKEOFF_JUDGE_SPECS
 
 vm_judges.check_upload_path_allowed(items_src)
 vm_judges.verify_items_allowlist(items_src)
@@ -1141,6 +1254,11 @@ with tarfile.open(tar_path, "w:gz") as tf:
         for rf in sorted(rows_dir.glob("*.jsonl")):
             if rf.is_file():
                 tf.add(rf, arcname=f"rows/{rf.name}", recursive=False)
+    jdone_dir = out_dir / "judge_done"
+    if jdone_dir.is_dir():
+        for jf in sorted(jdone_dir.glob("*.json")):
+            if jf.is_file():
+                tf.add(jf, arcname=f"judge_done/{jf.name}", recursive=False)
 PY
 fi
 
@@ -1395,6 +1513,14 @@ if src_rows.is_dir():
         if rf.is_file():
             shutil.copyfile(rf, dst_rows / rf.name)
 
+src_jdone = extract_dir / "judge_done"
+if src_jdone.is_dir():
+    dst_jdone = out_dir / "judge_done"
+    dst_jdone.mkdir(parents=True, exist_ok=True)
+    for jf in sorted(src_jdone.glob("*.json")):
+        if jf.is_file():
+            shutil.copyfile(jf, dst_jdone / jf.name)
+
 vm_judges.scrub_log_file_in_place(cli_log)
 for extra_f in (
     out_dir / "progress.jsonl",
@@ -1406,6 +1532,11 @@ for extra_f in (
 ):
     if extra_f.is_file():
         vm_judges.scrub_log_file_in_place(extra_f)
+for jdone_parent in (out_dir / "judge_done", extract_dir / "judge_done"):
+    if jdone_parent.is_dir():
+        for jf in sorted(jdone_parent.glob("*.json")):
+            if jf.is_file():
+                vm_judges.scrub_log_file_in_place(jf)
 for lf in (extract_dir / "logs").glob("*.log"):
     vm_judges.scrub_log_file_in_place(lf)
 
@@ -1419,6 +1550,10 @@ for top_f in (
 ):
     if top_f.is_file():
         paths_to_check.append(top_f)
+if (out_dir / "judge_done").is_dir():
+    for jf in sorted((out_dir / "judge_done").glob("*.json")):
+        if jf.is_file():
+            paths_to_check.append(jf)
 for p in sorted(extract_dir.rglob("*")):
     if p.is_file():
         paths_to_check.append(p)
@@ -1442,6 +1577,7 @@ except vm_judges.RefusalError as exc:
             q.unlink()
     shutil.rmtree(extract_dir, ignore_errors=True)
     shutil.rmtree(out_dir / "rows", ignore_errors=True)
+    shutil.rmtree(out_dir / "judge_done", ignore_errors=True)
     receipt_p = out_dir / "vm_receipt.json"
     receipt_p.write_text(
         json.dumps(
