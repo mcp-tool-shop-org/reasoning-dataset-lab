@@ -6161,18 +6161,42 @@ def test_fix5_create_each_venv_once_and_old_double_venv_fails_under_fake(
         if expect_kept:
             assert pkgs["pyyaml"].get("kept_by_sync") is True
 
-    # Load `e2257a4a:scripts/colab/vm_judges.py` via `git show` and prove its double `uv venv`
-    # on `venv-judge` fails with `rc == 2` and "Caused by: A virtual environment already exists at:"
-    # under the updated fake `uv`.
+    # Load `e2257a4a:scripts/colab/vm_judges.py` (via `git show` when the commit is locally
+    # present, or by reverting the single `venv_judge_created` guard in shallow clones without network)
+    # and prove its double `uv venv` on `venv-judge` fails with `rc == 2` and
+    # "Caused by: A virtual environment already exists at:" under the updated fake `uv`.
     old_commit = "e2257a4aebb7cf84ff44651b6d55ff9991d696e8"
-    old_vm_src = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "show", f"{old_commit}:scripts/colab/vm_judges.py"],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=True,
-    ).stdout
+    if (
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit}^{{commit}}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        ).returncode
+        == 0
+    ):
+        old_vm_src = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"{old_commit}:scripts/colab/vm_judges.py"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        ).stdout
+    else:
+        cur_vm_src = VM_JUDGES_PY.read_text(encoding="utf-8")
+        guard_snippet = (
+            'if not (key == "venv_judge" and venv_judge_created):\n'
+            '                run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)'
+        )
+        assert guard_snippet in cur_vm_src
+        old_vm_src = cur_vm_src.replace(
+            guard_snippet,
+            'run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)',
+            1,
+        )
     old_vm_py = tmp_path / "vm_judges_e2257a4a.py"
     old_vm_py.write_text(old_vm_src, encoding="utf-8", newline="\n")
     old_ns: dict[str, Any] = {"__name__": "vm_judges_e2257a4a"}
