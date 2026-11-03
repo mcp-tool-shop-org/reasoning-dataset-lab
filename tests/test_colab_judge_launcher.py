@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -3666,14 +3667,14 @@ def test_gate_python_315_preflight_refuses_when_uv_absent_or_cannot_provide_315(
     uv_env = vm_judges.build_vm_uv_env({"PATH": "/usr/bin"})
     assert uv_env["HF_DEACTIVATE_ASYNC_LOAD"] == "1"
 
-    # 2. Direct unit test: `uv` is absent (`shutil.which("uv") -> None`)
+    # 2. Direct unit test: `uv` is absent (`shutil.which("uv") -> None`) and pinned wheel download fails
+    monkeypatch.delenv("FAKE_COLAB_STATE_DIR", raising=False)
     monkeypatch.setattr(_shutil, "which", lambda _cmd: None)
     with pytest.raises(vm_judges.RefusalError) as exc_absent:
         vm_judges.check_vm_python_preflight()
-    assert exc_absent.value.failure_class == "VM_PYTHON_UNAVAILABLE"
-    assert "uv_path=absent" in exc_absent.value.detail
+    assert exc_absent.value.failure_class == "PINNED_UV_DOWNLOAD_FAILED"
 
-    # 3. Direct unit test: `uv --version` exits non-zero
+    # 3. Direct unit test: `uv --version` exits non-zero and pinned wheel download fails with scrubbed token
     monkeypatch.setattr(_shutil, "which", lambda _cmd: "/usr/local/bin/uv")
     monkeypatch.setattr(
         subprocess,
@@ -3682,9 +3683,16 @@ def test_gate_python_315_preflight_refuses_when_uv_absent_or_cannot_provide_315(
             list(cmd), 2, stdout="", stderr="uv broken hf_UvBroken123\n"
         ),
     )
-    with pytest.raises(vm_judges.VmSubprocessError) as exc_ver:
+    monkeypatch.setattr(
+        vm_judges,
+        "open_pinned_uv_wheel_stream",
+        lambda url, **_kw: (_ for _ in ()).throw(
+            RuntimeError("wheel fetch failed hf_UvBroken123")
+        ),
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_ver:
         vm_judges.check_vm_python_preflight()
-    assert exc_ver.value.failure_class == "VM_PYTHON_UNAVAILABLE"
+    assert exc_ver.value.failure_class == "PINNED_UV_DOWNLOAD_FAILED"
     assert "hf_[REDACTED]" in exc_ver.value.detail
     assert "hf_UvBroken123" not in exc_ver.value.detail
 
@@ -5424,9 +5432,10 @@ def test_find_or_install_case_8_uv_version_change_refuses_with_uv_version_change
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Hermetic test (8): When `uv --version` does not match `RDLAB_EXPECT_UV_VERSION` (default `0.13.5`),
+    """Hermetic test (8): `UV_VERSION_CHANGED` checks the `uv` actually used against
+    `RDLAB_EXPECT_UV_VERSION`: when `RDLAB_EXPECT_UV_VERSION` does not match the active `uv` (`0.13.5`),
     `find_or_install_vm_python_315` refuses with `UV_VERSION_CHANGED` (`rc == 2`), and succeeds when
-    `RDLAB_EXPECT_UV_VERSION` is explicitly set to the new version.
+    `RDLAB_EXPECT_UV_VERSION` matches the active `0.13.5`.
     """
     _mock_sufficient_vm_disk(monkeypatch)
     env_8 = fake_colab.setup_fake_colab_environment(
@@ -5442,10 +5451,10 @@ def test_find_or_install_case_8_uv_version_change_refuses_with_uv_version_change
     monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_8["state_dir"]))
     content_8 = tmp_path / "case8_content"
     monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(content_8))
-    monkeypatch.delenv("RDLAB_EXPECT_UV_VERSION", raising=False)
+    monkeypatch.setenv("RDLAB_EXPECT_UV_VERSION", "0.14.0")
     status_8_refuse = tmp_path / "case8_refuse_status.json"
 
-    # 1. Default `RDLAB_EXPECT_UV_VERSION` (`0.13.5`) refuses `uv 0.14.0` with `UV_VERSION_CHANGED`
+    # 1. Image uv 0.14.0 causes pinned 0.13.5 wheel to be used; expecting 0.14.0 refuses with `UV_VERSION_CHANGED`
     rc_refuse = vm_judges.main(
         [
             "--step",
@@ -5464,8 +5473,8 @@ def test_find_or_install_case_8_uv_version_change_refuses_with_uv_version_change
     assert "0.14.0" in doc_refuse["reason"]
     assert "0.13.5" in doc_refuse["reason"]
 
-    # 2. Setting `RDLAB_EXPECT_UV_VERSION=0.14.0` deliberately allows `uv 0.14.0`
-    monkeypatch.setenv("RDLAB_EXPECT_UV_VERSION", "0.14.0")
+    # 2. Default `RDLAB_EXPECT_UV_VERSION=0.13.5` matches the pinned wheel (`0.13.5`) actually used
+    monkeypatch.setenv("RDLAB_EXPECT_UV_VERSION", "0.13.5")
     status_8_ok = tmp_path / "case8_ok_status.json"
     rc_ok = vm_judges.main(
         [
@@ -5482,7 +5491,9 @@ def test_find_or_install_case_8_uv_version_change_refuses_with_uv_version_change
     assert rc_ok == 0
     doc_ok = json.loads(status_8_ok.read_text(encoding="utf-8"))
     assert doc_ok["rc"] == 0
-    assert doc_ok["uv_version"] == "uv 0.14.0"
+    assert doc_ok["uv_source"] == "pinned-wheel"
+    assert doc_ok["uv_path"] == "/tmp/uv-pinned/uv"
+    assert doc_ok["uv_version"] == "uv 0.13.5"
 
 
 def _run_progress_launcher(
@@ -11681,5 +11692,686 @@ def test_dry_listings_forward_judge_order_and_first_load_judge_id_without_real_c
     assert "--env RDLAB_FIRST_LOAD_JUDGE_ID=d3-mini" in proc_fl.stdout
     assert not env_dry["calls_log"].exists()
     assert not env_dry["sentinel_called"].exists()
+
+
+def test_pinned_uv_wheel_constants_match_table() -> None:
+    """Card Item 5: the pinned uv wheel constants in `vm_judges.py` equal the exact table in the brief."""
+    assert (
+        vm_judges.PINNED_UV_WHEEL_FILENAME
+        == "uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    )
+    assert (
+        vm_judges.PINNED_UV_WHEEL_URL
+        == "https://files.pythonhosted.org/packages/3a/ad/3c2a81d66d1839063662e5b6c0002ec31f8ee987dbc5295747627ca6160a/uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    )
+    assert (
+        vm_judges.PINNED_UV_WHEEL_SHA256
+        == "fa8d26e08e34c29c0c4e820cf3181757086d547240b4f4d31ff1d8bd810ca946"
+    )
+    assert vm_judges.PINNED_UV_WHEEL_SIZE_BYTES == 17_211_825
+    assert vm_judges.PINNED_UV_WHEEL_MAX_DOWNLOAD_BYTES == 18_000_000
+    assert vm_judges.PINNED_UV_WHEEL_MEMBER_COUNT == 12
+    assert vm_judges.PINNED_UV_WHEEL_EXTRACT_MEMBERS == {
+        "uv-0.13.5.data/scripts/uv": "uv",
+        "uv-0.13.5.data/scripts/uvx": "uvx",
+    }
+    assert vm_judges.PINNED_UV_BINARY_EXPECTED_BYTES == 37_597_160
+    assert vm_judges.PINNED_UVX_BINARY_EXPECTED_BYTES == 330_456
+    assert vm_judges.PINNED_UV_BINARY_MODE == 0o755
+    assert vm_judges.DEFAULT_PINNED_UV_DIR == Path("/tmp/uv-pinned")
+
+
+def test_pinned_uv_image_0135_used_as_is_and_uv_source_is_image(
+    tmp_path: Path,
+) -> None:
+    """Card Item 5: an image uv at `0.13.5` is used as is, and `uv_source=image` in `gate_status.json`, `status.json`, and `vm_receipt.json`."""
+    env_img = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_img_0135",
+        uv_version="uv 0.13.5",
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "img_0135_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "img_0135_data", count=4)
+    out_dir = tmp_path / "out_img_0135"
+    exports = _base_launcher_exports(
+        env_img,
+        open_lock=tmp_path / "img_0135.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_dir)}' --run-id img-0135-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+
+    vm_fs = env_img["state_dir"] / "vm_fs"
+    gate_doc = json.loads((vm_fs / "gate_status.json").read_text(encoding="utf-8"))
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+
+    for doc in (gate_doc, status_doc, receipt_doc):
+        assert doc["uv_source"] == "image"
+        assert doc["uv_path"] == "/usr/local/bin/uv"
+        assert doc["uv_version"] == "uv 0.13.5"
+
+    assert not Path("/tmp/uv-pinned/uv").exists()
+    uv_calls = [
+        json.loads(ln)
+        for ln in env_img["uv_calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(uv_calls) >= 2
+    assert all(c["uv_source"] == "image" for c in uv_calls)
+    assert all(not str(c["uv_bin"]).startswith("/tmp/uv-pinned") for c in uv_calls)
+
+
+def test_pinned_uv_image_0134_installs_pinned_wheel_and_every_uv_call_site_uses_tmp_uv_pinned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Item 5: an image uv at `0.13.4` means the pinned wheel is installed and used,
+    `uv_source=pinned-wheel`, and every uv call site (gate python find & install, venv creation &
+    `uv pip sync`, download child env, and judge child env) uses `/tmp/uv-pinned/uv`.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    fixture_py_tar, fixture_py_sha, _ = fake_colab.build_fixture_python_archive(
+        tmp_path / "fixture_py_0134"
+    )
+    fixture_whl, fixture_whl_sha, fixture_whl_size = fake_colab.build_fixture_uv_wheel(
+        tmp_path / "fixture_whl_0134",
+        uv_binary_version="0.13.5",
+    )
+    assert fixture_whl_size == 17_211_825
+
+    env_0134 = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_0134",
+        uv_python_315_found=False,
+        uv_version="uv 0.13.4",
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_0134,
+        found=False,
+        uv_version="uv 0.13.4",
+        fixture_archive_path=fixture_py_tar,
+        expected_archive_sha256=fixture_py_sha,
+        uv_wheel_path=fixture_whl,
+        expected_uv_wheel_sha256=fixture_whl_sha,
+    )
+
+    # 1. End-to-end launcher run (`--stub`) with image uv at 0.13.4 and Python 3.15 needing install
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_0134"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_0134", count=4)
+    out_dir = tmp_path / "out_0134"
+    exports = _base_launcher_exports(
+        env_0134,
+        open_lock=tmp_path / "0134.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id uv-0134-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+
+    vm_fs = env_0134["state_dir"] / "vm_fs"
+    gate_doc = json.loads((vm_fs / "gate_status.json").read_text(encoding="utf-8"))
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+
+    for doc in (gate_doc, status_doc, receipt_doc):
+        assert doc["uv_source"] == "pinned-wheel"
+        assert doc["uv_path"] == "/tmp/uv-pinned/uv"
+        assert doc["uv_version"] == "uv 0.13.5"
+
+    assert Path("/tmp/uv-pinned/uv").is_file()
+    assert Path("/tmp/uv-pinned/uvx").is_file()
+    assert (Path("/tmp/uv-pinned/uv").stat().st_mode & 0o777) == 0o755
+    assert (Path("/tmp/uv-pinned/uvx").stat().st_mode & 0o777) == 0o755
+    assert sorted(p.name for p in Path("/tmp/uv-pinned").iterdir()) == ["uv", "uvx"]
+
+    # Verify download child and judge child environments had `/tmp/uv-pinned` prepended to PATH
+    dl_subprocs = [
+        json.loads(ln)
+        for ln in (env_0134["state_dir"] / "download_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    judge_subprocs = [
+        json.loads(ln)
+        for ln in (env_0134["state_dir"] / "judge_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(dl_subprocs) == 5
+    assert len(judge_subprocs) == 5
+    for rec in dl_subprocs + judge_subprocs:
+        assert str(rec["path"]).split(os.pathsep)[0] == "/tmp/uv-pinned"
+        assert rec["uv_bin"] == "/tmp/uv-pinned/uv"
+
+    # 2. Also exercise `sync_judge_venvs(..., dryrun=False)` directly so `uv venv`, `uv pip install` (pyyaml sdist),
+    #    and `uv pip sync` execute as real subprocesses and log into `uv_calls.jsonl`.
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_0134))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_0134["state_dir"]))
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "direct_0134_content"))
+    monkeypatch.setattr(vm_judges, "PINNED_PYTHON_ARCHIVE_SHA256", fixture_py_sha)
+    monkeypatch.setattr(vm_judges, "PINNED_UV_WHEEL_SHA256", fixture_whl_sha)
+    env_0134["uv_calls_log"].unlink(missing_ok=True)
+
+    venv_res = vm_judges.sync_judge_venvs(
+        tmp_path / "direct_0134_work",
+        REPO_ROOT,
+        mode="stub",
+        dryrun=False,
+    )
+    assert venv_res["uv_source"] == "pinned-wheel"
+    assert venv_res["uv_path"] == "/tmp/uv-pinned/uv"
+    assert venv_res["uv_version"] == "uv 0.13.5"
+    assert "/tmp/uv-pinned" not in os.environ.get("PATH", "").split(os.pathsep)
+
+    uv_calls = [
+        json.loads(ln)
+        for ln in env_0134["uv_calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    # Call 0 is the initial image `uv --version` probe (which reported 0.13.4);
+    # every subsequent call (pinned `--version`, `python find`, `python install`, `python find`,
+    # `venv`, `pip install` pyyaml, `pip sync` judge, `venv` d3, `pip sync` d3) uses `/tmp/uv-pinned/uv`!
+    assert uv_calls[0]["args"] == ["--version"]
+    assert uv_calls[0]["uv_source"] == "image"
+    subsequent_calls = uv_calls[1:]
+    assert len(subsequent_calls) >= 9
+    for call in subsequent_calls:
+        assert call["uv_bin"] == "/tmp/uv-pinned/uv"
+        assert call["uv_source"] == "pinned-wheel"
+        assert str(call["path"]).split(os.pathsep)[0] == "/tmp/uv-pinned"
+    seen_subcommands = [c["args"][:2] for c in subsequent_calls]
+    assert ["--version"] in seen_subcommands
+    assert ["python", "find"] in seen_subcommands
+    assert ["python", "install"] in seen_subcommands
+    assert ["venv", "--python"] in seen_subcommands
+    assert ["pip", "install"] in seen_subcommands
+    assert ["pip", "sync"] in seen_subcommands
+
+
+def test_pinned_uv_absent_in_image_installs_and_uses_pinned_wheel(
+    tmp_path: Path,
+) -> None:
+    """Card Item 5: no uv in the image means the pinned wheel is installed and used."""
+    env_absent = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_uv_absent",
+        uv_python_315_found=True,
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "absent_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "absent_data", count=4)
+    out_dir = tmp_path / "out_uv_absent"
+    exports = _base_launcher_exports(
+        env_absent,
+        open_lock=tmp_path / "absent.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} export FAKE_COLAB_UV_ABSENT=1; bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_dir)}' --run-id uv-absent-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+
+    vm_fs = env_absent["state_dir"] / "vm_fs"
+    gate_doc = json.loads((vm_fs / "gate_status.json").read_text(encoding="utf-8"))
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+
+    for doc in (gate_doc, status_doc, receipt_doc):
+        assert doc["uv_source"] == "pinned-wheel"
+        assert doc["uv_path"] == "/tmp/uv-pinned/uv"
+        assert doc["uv_version"] == "uv 0.13.5"
+
+    uv_calls = [
+        json.loads(ln)
+        for ln in env_absent["uv_calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(uv_calls) >= 2
+    for call in uv_calls:
+        assert call["uv_bin"] == "/tmp/uv-pinned/uv"
+        assert call["uv_source"] == "pinned-wheel"
+
+
+def test_pinned_uv_named_refusals_sha256_size_short_read_bad_members_and_version_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Item 5: each of these refuses by name:
+    - a sha256 mismatch (`PINNED_UV_SHA256_MISMATCH`), verified BEFORE unpacking (`zipfile.ZipFile` never called);
+    - a wrong size (`PINNED_UV_SIZE_MISMATCH`);
+    - a short read (`PINNED_UV_DOWNLOAD_FAILED`);
+    - a traversal member (`../x`) and an absolute member (`/etc/passwd`) (`PINNED_UV_BAD_MEMBER`);
+    - a symlink member (`PINNED_UV_BAD_MEMBER`);
+    - a missing `uv` member (`PINNED_UV_BAD_MEMBER`);
+    - `--version` reporting `0.13.4` (`PINNED_UV_VERSION_MISMATCH`);
+    - launcher's gate refusal-class grep reports `"VM gate refused"`, not `"liveness"`.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    valid_whl, valid_sha, _ = fake_colab.build_fixture_uv_wheel(
+        tmp_path / "valid_whl",
+        uv_binary_version="0.13.5",
+    )
+
+    # 1. `PINNED_UV_SHA256_MISMATCH` — verified BEFORE unpacking (`zipfile.ZipFile` must NOT be called)
+    tampered_whl, tampered_sha, tampered_size = fake_colab.build_fixture_uv_wheel(
+        tmp_path / "tampered_whl",
+        tamper_after_build=True,
+    )
+    assert tampered_size == 17_211_825
+    assert tampered_sha != valid_sha
+
+    zipfile_opened = False
+    real_zipfile = zipfile.ZipFile
+
+    def _spy_zipfile(*a: Any, **kw: Any) -> Any:
+        nonlocal zipfile_opened
+        zipfile_opened = True
+        return real_zipfile(*a, **kw)
+
+    monkeypatch.setattr(zipfile, "ZipFile", _spy_zipfile)
+    monkeypatch.setattr(
+        vm_judges,
+        "open_pinned_uv_wheel_stream",
+        lambda url, **_kw: vm_judges._FakeWheelStream(tampered_whl.read_bytes()),
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_sha:
+        vm_judges.install_pinned_uv_wheel(
+            pinned_uv_dir=tmp_path / "uv_sha_mismatch",
+            expected_sha256=valid_sha,
+        )
+    assert exc_sha.value.failure_class == "PINNED_UV_SHA256_MISMATCH"
+    assert not zipfile_opened
+    monkeypatch.setattr(zipfile, "ZipFile", real_zipfile)
+
+    # 2. `PINNED_UV_SIZE_MISMATCH` — wrong size (e.g. 17,211,000 bytes and > 18,000,000 cap)
+    wrong_size_whl, wrong_size_sha, _ = fake_colab.build_fixture_uv_wheel(
+        tmp_path / "wrong_size_whl",
+        target_size=17_211_000,
+    )
+    monkeypatch.setattr(
+        vm_judges,
+        "open_pinned_uv_wheel_stream",
+        lambda url, **_kw: vm_judges._FakeWheelStream(wrong_size_whl.read_bytes()),
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_size:
+        vm_judges.install_pinned_uv_wheel(
+            pinned_uv_dir=tmp_path / "uv_size_mismatch",
+            expected_sha256=wrong_size_sha,
+        )
+    assert exc_size.value.failure_class == "PINNED_UV_SIZE_MISMATCH"
+
+    monkeypatch.setattr(
+        vm_judges,
+        "open_pinned_uv_wheel_stream",
+        lambda url, **_kw: vm_judges._FakeWheelStream(b"X" * 18_000_001),
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_cap:
+        vm_judges.install_pinned_uv_wheel(
+            pinned_uv_dir=tmp_path / "uv_cap_mismatch",
+            expected_sha256=valid_sha,
+        )
+    assert exc_cap.value.failure_class == "PINNED_UV_SIZE_MISMATCH"
+
+    # 3. `PINNED_UV_DOWNLOAD_FAILED` — short read (Content-Length 17,211,825 but stream ends at 500,000 bytes)
+    monkeypatch.setattr(
+        vm_judges,
+        "open_pinned_uv_wheel_stream",
+        lambda url, **_kw: vm_judges._FakeWheelStream(
+            valid_whl.read_bytes()[:500_000],
+            content_length=17_211_825,
+        ),
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_short:
+        vm_judges.install_pinned_uv_wheel(
+            pinned_uv_dir=tmp_path / "uv_short_read",
+            expected_sha256=valid_sha,
+        )
+    assert exc_short.value.failure_class == "PINNED_UV_DOWNLOAD_FAILED"
+    assert "Short read" in exc_short.value.detail
+
+    # 4. `PINNED_UV_BAD_MEMBER` — traversal member (`../x`) and absolute member (`/etc/passwd`)
+    trav_whl, trav_sha, _ = fake_colab.build_fixture_uv_wheel(
+        tmp_path / "trav_whl",
+        extra_member_name="../x",
+    )
+    monkeypatch.setattr(
+        vm_judges,
+        "open_pinned_uv_wheel_stream",
+        lambda url, **_kw: vm_judges._FakeWheelStream(trav_whl.read_bytes()),
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_trav:
+        vm_judges.install_pinned_uv_wheel(
+            pinned_uv_dir=tmp_path / "uv_trav",
+            expected_sha256=trav_sha,
+        )
+    assert exc_trav.value.failure_class == "PINNED_UV_BAD_MEMBER"
+    assert "../x" in exc_trav.value.detail
+
+    abs_whl, abs_sha, _ = fake_colab.build_fixture_uv_wheel(
+        tmp_path / "abs_whl",
+        extra_member_name="/etc/passwd",
+    )
+    monkeypatch.setattr(
+        vm_judges,
+        "open_pinned_uv_wheel_stream",
+        lambda url, **_kw: vm_judges._FakeWheelStream(abs_whl.read_bytes()),
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_abs:
+        vm_judges.install_pinned_uv_wheel(
+            pinned_uv_dir=tmp_path / "uv_abs",
+            expected_sha256=abs_sha,
+        )
+    assert exc_abs.value.failure_class == "PINNED_UV_BAD_MEMBER"
+    assert "/etc/passwd" in exc_abs.value.detail
+
+    # 5. `PINNED_UV_BAD_MEMBER` — symlink member (mode `0o120777` in zip external_attr)
+    sym_whl, sym_sha, _ = fake_colab.build_fixture_uv_wheel(
+        tmp_path / "sym_whl",
+        extra_member_name="uv-0.13.5.data/scripts/uv_symlink",
+        extra_member_is_symlink=True,
+    )
+    monkeypatch.setattr(
+        vm_judges,
+        "open_pinned_uv_wheel_stream",
+        lambda url, **_kw: vm_judges._FakeWheelStream(sym_whl.read_bytes()),
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_sym:
+        vm_judges.install_pinned_uv_wheel(
+            pinned_uv_dir=tmp_path / "uv_sym",
+            expected_sha256=sym_sha,
+        )
+    assert exc_sym.value.failure_class == "PINNED_UV_BAD_MEMBER"
+    assert "symlink" in exc_sym.value.detail
+
+    # 6. `PINNED_UV_BAD_MEMBER` — missing `uv` member (`uv-0.13.5.data/scripts/uv` absent)
+    missing_uv_whl, missing_uv_sha, _ = fake_colab.build_fixture_uv_wheel(
+        tmp_path / "missing_uv_whl",
+        omit_uv_member=True,
+    )
+    monkeypatch.setattr(
+        vm_judges,
+        "open_pinned_uv_wheel_stream",
+        lambda url, **_kw: vm_judges._FakeWheelStream(missing_uv_whl.read_bytes()),
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_missing:
+        vm_judges.install_pinned_uv_wheel(
+            pinned_uv_dir=tmp_path / "uv_missing",
+            expected_sha256=missing_uv_sha,
+        )
+    assert exc_missing.value.failure_class == "PINNED_UV_BAD_MEMBER"
+    assert "uv-0.13.5.data/scripts/uv" in exc_missing.value.detail
+
+    # 7. `PINNED_UV_VERSION_MISMATCH` — unpacked binary reports `uv 0.13.4`
+    bad_ver_whl, bad_ver_sha, _ = fake_colab.build_fixture_uv_wheel(
+        tmp_path / "bad_ver_whl",
+        uv_binary_version="0.13.4",
+    )
+    monkeypatch.setattr(
+        vm_judges,
+        "open_pinned_uv_wheel_stream",
+        lambda url, **_kw: vm_judges._FakeWheelStream(bad_ver_whl.read_bytes()),
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_ver:
+        vm_judges.install_pinned_uv_wheel(
+            pinned_uv_dir=tmp_path / "uv_bad_ver",
+            expected_sha256=bad_ver_sha,
+        )
+    assert exc_ver.value.failure_class == "PINNED_UV_VERSION_MISMATCH"
+    assert "0.13.4" in exc_ver.value.detail
+
+    # 8. Launcher gate refusal-class grep reports "VM gate refused" (exit 2), not "liveness"
+    monkeypatch.undo()
+    env_gate_ref = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_gate_ref",
+        uv_version="uv 0.13.4",
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_gate_ref,
+        found=True,
+        uv_version="uv 0.13.4",
+        uv_wheel_path=bad_ver_whl,
+        expected_uv_wheel_sha256=bad_ver_sha,
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "gate_ref_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "gate_ref_data", count=4)
+    out_gate_ref = tmp_path / "out_gate_ref"
+    exports_ref = _base_launcher_exports(
+        env_gate_ref,
+        open_lock=tmp_path / "gate_ref.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_ref = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_ref} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_gate_ref)}' --run-id gate-ref-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_ref.returncode == 2
+    outcome_ref = json.loads(
+        (out_gate_ref / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert "VM gate refused" in outcome_ref["why"]
+    assert "PINNED_UV_VERSION_MISMATCH" in outcome_ref["why"]
+    assert "liveness" not in outcome_ref["why"]
+
+
+def test_force_pinned_uv_knob_forces_pinned_in_stub_and_refuses_time_one_before_colab_new(
+    tmp_path: Path,
+) -> None:
+    """Card Item 5 & Item 6:
+    - `RDLAB_FORCE_PINNED_UV=1` with `--stub` forces the pinned wheel path even when image uv is `0.13.5`;
+    - `RDLAB_FORCE_PINNED_UV=1` with `--time-one` is refused with `FORCE_PINNED_UV_INVALID` before `colab new`;
+    - `RDLAB_FORCE_PINNED_UV=1 scripts/colab/launch_judges.sh --stub --until venv_sync --dry` shows the forwarded `--env`.
+    """
+    # 1. With `--time-one`, `RDLAB_FORCE_PINNED_UV=1` is refused before `colab new`
+    env_t1 = fake_colab.setup_fake_colab_environment(tmp_path / "env_force_t1")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "force_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "force_data", count=4)
+    out_t1 = tmp_path / "out_force_t1"
+    exports_t1 = _base_launcher_exports(
+        env_t1,
+        open_lock=tmp_path / "force_t1.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_t1 = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_t1} RDLAB_FORCE_PINNED_UV=1 bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_t1)}' --run-id force-t1-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_t1.returncode == 2
+    assert "FORCE_PINNED_UV_INVALID" in proc_t1.stderr
+    assert not env_t1["calls_log"].exists()
+    assert not env_t1["sentinel_called"].exists()
+
+    # 2. Item 6 dry listing: `RDLAB_FORCE_PINNED_UV=1 scripts/colab/launch_judges.sh --stub --until venv_sync --dry`
+    hermetic_path = _hermetic_path_for(env_t1)
+    proc_dry = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export PATH='{hermetic_path}'; RDLAB_FORCE_PINNED_UV=1 bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --dry",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_dry.returncode == 0, f"stderr={proc_dry.stderr}"
+    assert "--env RDLAB_FORCE_PINNED_UV=1" in proc_dry.stdout
+    assert not env_t1["calls_log"].exists()
+    assert not env_t1["sentinel_called"].exists()
+
+    # 3. With `--stub` (and image uv at `0.13.5`), `RDLAB_FORCE_PINNED_UV=1` forces the pinned wheel path
+    env_stub = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_force_stub",
+        uv_version="uv 0.13.5",
+    )
+    out_stub = tmp_path / "out_force_stub"
+    exports_stub = _base_launcher_exports(
+        env_stub,
+        open_lock=tmp_path / "force_stub.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_stub = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_stub} RDLAB_FORCE_PINNED_UV=1 bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_stub)}' --run-id force-stub-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_stub.returncode == 0, f"stderr={proc_stub.stderr}"
+    vm_fs = env_stub["state_dir"] / "vm_fs"
+    gate_doc = json.loads((vm_fs / "gate_status.json").read_text(encoding="utf-8"))
+    status_doc = json.loads((out_stub / "status.json").read_text(encoding="utf-8"))
+    receipt_doc = json.loads((out_stub / "vm_receipt.json").read_text(encoding="utf-8"))
+    for doc in (gate_doc, status_doc, receipt_doc):
+        assert doc["uv_source"] == "pinned-wheel"
+        assert doc["uv_path"] == "/tmp/uv-pinned/uv"
+        assert doc["uv_version"] == "uv 0.13.5"
+
+
+def test_request_timeout_default_60_and_preset_value_respected_across_all_colab_calls(
+    tmp_path: Path,
+) -> None:
+    """Card Item 4 & Item 5: `REQUEST_TIMEOUT` defaults to `60` in `scripts/colab/launch_judges.sh`,
+    respects a preset value, and every `colab` call in a fake run sees it.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "req_to_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "req_to_data", count=4)
+
+    # 1. Default `REQUEST_TIMEOUT=60` when unset
+    env_def = fake_colab.setup_fake_colab_environment(tmp_path / "env_req_def")
+    out_def = tmp_path / "out_req_def"
+    exports_def = _base_launcher_exports(
+        env_def,
+        open_lock=tmp_path / "req_def.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_def = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_def} unset REQUEST_TIMEOUT; bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_def)}' --run-id req-def-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_def.returncode == 0, f"stderr={proc_def.stderr}"
+    calls_def = [
+        json.loads(ln)
+        for ln in env_def["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(calls_def) >= 6
+    assert all(c["request_timeout"] == "60" for c in calls_def)
+
+    # 2. Preset `REQUEST_TIMEOUT=120` is respected across all `colab` calls
+    env_pre = fake_colab.setup_fake_colab_environment(tmp_path / "env_req_pre")
+    out_pre = tmp_path / "out_req_pre"
+    exports_pre = _base_launcher_exports(
+        env_pre,
+        open_lock=tmp_path / "req_pre.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_pre = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_pre} REQUEST_TIMEOUT=120 bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_pre)}' --run-id req-pre-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_pre.returncode == 0, f"stderr={proc_pre.stderr}"
+    calls_pre = [
+        json.loads(ln)
+        for ln in env_pre["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(calls_pre) >= 6
+    assert all(c["request_timeout"] == "120" for c in calls_pre)
+
 
 

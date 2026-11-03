@@ -34,6 +34,7 @@ import datetime
 import fnmatch
 import hashlib
 import inspect
+import io
 import json
 import math
 import os
@@ -47,6 +48,9 @@ import sys
 import tarfile
 import threading
 import time
+import urllib.error
+import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 
@@ -392,6 +396,39 @@ PYYAML_SDIST_SHA256 = (
 REQUIRED_PYTHON_VERSION = "3.15"
 PINNED_UV_VERSION = "0.13.5"
 PINNED_UV_METADATA_VERSION = "0.13.5+20261021"
+PINNED_UV_WHEEL_FILENAME = (
+    "uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+)
+PINNED_UV_WHEEL_URL = (
+    "https://files.pythonhosted.org/packages/3a/ad/"
+    "3c2a81d66d1839063662e5b6c0002ec31f8ee987dbc5295747627ca6160a/"
+    "uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+)
+PINNED_UV_WHEEL_SHA256 = (
+    "fa8d26e08e34c29c0c4e820cf3181757086d547240b4f4d31ff1d8bd810ca946"
+)
+PINNED_UV_WHEEL_SIZE_BYTES = 17_211_825
+PINNED_UV_WHEEL_MAX_BYTES = 18_000_000
+PINNED_UV_WHEEL_MAX_DOWNLOAD_BYTES = PINNED_UV_WHEEL_MAX_BYTES
+PINNED_UV_WHEEL_MEMBER_COUNT = 12
+PINNED_UV_WHEEL_UV_MEMBER = "uv-0.13.5.data/scripts/uv"
+PINNED_UV_WHEEL_UV_MEMBER_SIZE_BYTES = 37_597_160
+PINNED_UV_BINARY_EXPECTED_BYTES = PINNED_UV_WHEEL_UV_MEMBER_SIZE_BYTES
+PINNED_UV_WHEEL_UVX_MEMBER = "uv-0.13.5.data/scripts/uvx"
+PINNED_UV_WHEEL_UVX_MEMBER_SIZE_BYTES = 330_456
+PINNED_UVX_BINARY_EXPECTED_BYTES = PINNED_UV_WHEEL_UVX_MEMBER_SIZE_BYTES
+PINNED_UV_WHEEL_MEMBER_MODE = 0o755
+PINNED_UV_BINARY_MODE = PINNED_UV_WHEEL_MEMBER_MODE
+PINNED_UV_WHEEL_MEMBERS: tuple[str, str] = (
+    PINNED_UV_WHEEL_UV_MEMBER,
+    PINNED_UV_WHEEL_UVX_MEMBER,
+)
+PINNED_UV_WHEEL_EXTRACT_MEMBERS: dict[str, str] = {
+    PINNED_UV_WHEEL_UV_MEMBER: "uv",
+    PINNED_UV_WHEEL_UVX_MEMBER: "uvx",
+}
+DEFAULT_PINNED_UV_DIR = Path("/tmp/uv-pinned")
+_STDLIB_URLOPEN = urllib.request.urlopen
 PINNED_PYTHON_VERSION = "3.15.1"
 PINNED_PYTHON_BUILD = "20261021"
 PINNED_PYTHON_VERSION_BUILD = "3.15.1+20261021"
@@ -1559,10 +1596,23 @@ def resolve_vm_python_temp_dir(content_dir: Path | None = None) -> Path:
     return DEFAULT_VM_PYTHON_TEMP_DIR
 
 
+def _prepend_pinned_uv_to_path(
+    env: dict[str, str],
+    *,
+    pinned_uv_dir: Path = DEFAULT_PINNED_UV_DIR,
+) -> None:
+    """Prepend `/tmp/uv-pinned` to `env['PATH']` without touching `os.environ`."""
+    pinned_str = str(pinned_uv_dir)
+    existing_path = env.get("PATH", "")
+    parts = [p for p in existing_path.split(os.pathsep) if p and p != pinned_str]
+    env["PATH"] = os.pathsep.join([pinned_str, *parts]) if parts else pinned_str
+
+
 def build_vm_uv_env(
     base_env: Mapping[str, str] | None = None,
     *,
     content_dir: Path | None = None,
+    pinned_uv_dir: Path = DEFAULT_PINNED_UV_DIR,
 ) -> dict[str, str]:
     """Return the exact environment used by both `run_gate` and `sync_judge_venvs` when invoking `uv`."""
     env = dict(os.environ if base_env is None else base_env)
@@ -1571,6 +1621,7 @@ def build_vm_uv_env(
     temp_root = resolve_vm_python_temp_dir(content_dir)
     install_dir = temp_root / "install"
     env["UV_PYTHON_INSTALL_DIR"] = str(install_dir)
+    _prepend_pinned_uv_to_path(env, pinned_uv_dir=pinned_uv_dir)
     return env
 
 
@@ -1877,11 +1928,9 @@ def sync_judge_venvs(
         str(work_dir / "pyyaml-sdist.lock.txt"),
     ]
 
+    sync_env = build_vm_uv_env()
     if not dryrun:
         work_dir.mkdir(parents=True, exist_ok=True)
-        sync_env = build_vm_uv_env()
-    else:
-        sync_env = {}
 
     t_pyyaml, start_pyyaml, _ = _record_step_start(
         "pyyaml_sdist_build",
@@ -1954,6 +2003,8 @@ def sync_judge_venvs(
     return {
         "python_version": REQUIRED_PYTHON_VERSION,
         "python_315": str(py_report["python_315"]),
+        "uv_source": str(py_report["uv_source"]),
+        "uv_path": str(py_report["uv_path"]),
         "uv_version": str(py_report["uv_version"]),
         "python_315_report": py_report,
         "lock_sdists": lock_sdists,
@@ -2740,6 +2791,7 @@ def build_download_child_env(
     if existing_py_path:
         py_paths.append(existing_py_path)
     child_env["PYTHONPATH"] = os.pathsep.join(py_paths)
+    _prepend_pinned_uv_to_path(child_env)
     return child_env
 
 
@@ -2769,6 +2821,7 @@ def build_judge_child_env(
         if existing_py_path
         else src_path
     )
+    _prepend_pinned_uv_to_path(child_env)
     return child_env
 
 
@@ -3139,6 +3192,12 @@ def download_all_judge_weights(
                                 "hf_hub_offline": child_env.get("HF_HUB_OFFLINE"),
                                 "hf_xet_num_concurrent_range_gets": child_env.get(
                                     "HF_XET_NUM_CONCURRENT_RANGE_GETS"
+                                ),
+                                "path": child_env.get("PATH"),
+                                "uv_bin": (
+                                    str(DEFAULT_PINNED_UV_DIR / "uv")
+                                    if (DEFAULT_PINNED_UV_DIR / "uv").is_file()
+                                    else (shutil.which("uv") or "absent")
                                 ),
                                 "hf_token_keys": sorted(
                                     k
@@ -4805,6 +4864,12 @@ def run_judges_pipeline(
                                     "HF_DEACTIVATE_ASYNC_LOAD"
                                 ),
                                 "hf_hub_offline": child_env.get("HF_HUB_OFFLINE"),
+                                "path": child_env.get("PATH"),
+                                "uv_bin": (
+                                    str(DEFAULT_PINNED_UV_DIR / "uv")
+                                    if (DEFAULT_PINNED_UV_DIR / "uv").is_file()
+                                    else (shutil.which("uv") or "absent")
+                                ),
                                 "hf_token_keys": sorted(
                                     k
                                     for k in child_env
@@ -5619,6 +5684,394 @@ def _verify_python_interpreter_build(
     return reported_version, reported_build
 
 
+_STDLIB_URLOPEN = urllib.request.urlopen
+
+
+def validate_force_pinned_uv(
+    mode: str,
+    raw_val: str | None = None,
+    *,
+    session_smoke: bool = False,
+) -> bool:
+    """Validate `RDLAB_FORCE_PINNED_UV`: allowed only with `--stub` (`mode == 'stub'`) and value `'1'`."""
+    if raw_val is None:
+        raw_val = os.environ.get("RDLAB_FORCE_PINNED_UV")
+    if raw_val is None or raw_val == "":
+        return False
+    if mode != "stub" or session_smoke or raw_val != "1":
+        raise RefusalError(
+            "FORCE_PINNED_UV_INVALID",
+            f"RDLAB_FORCE_PINNED_UV=1 is allowed only with --stub "
+            f"(got mode={mode!r}, RDLAB_FORCE_PINNED_UV={raw_val!r}, session_smoke={session_smoke!r})",
+        )
+    return True
+
+
+def _is_unsafe_zip_member(zinfo: zipfile.ZipInfo) -> str | None:
+    """Return a refusal reason if `zinfo` is absolute, contains `..`, or is a symlink."""
+    raw_name = zinfo.filename
+    if not raw_name:
+        return "empty member name"
+    if (
+        raw_name.startswith(("/", "\\"))
+        or "\\" in raw_name
+        or re.match(r"^[A-Za-z]:", raw_name)
+    ):
+        return f"absolute or drive-prefixed member {scrub_log_text(raw_name)!r}"
+    parts = raw_name.split("/")
+    if ".." in parts:
+        return f"path-traversal member {scrub_log_text(raw_name)!r}"
+    unix_mode = (zinfo.external_attr >> 16) & 0xFFFF
+    if stat.S_ISLNK(unix_mode):
+        return f"symlink member {scrub_log_text(raw_name)!r} (mode={oct(unix_mode)})"
+    return None
+
+
+class _FakeWheelStream:
+    """In-memory HTTP-like response stream used by the hermetic fake wheel downloader."""
+
+    def __init__(
+        self,
+        payload: bytes,
+        *,
+        content_length: int | None = None,
+        status: int = 200,
+    ) -> None:
+        self._bio = io.BytesIO(payload)
+        self.status = status
+        self.code = status
+        eff_cl = len(payload) if content_length is None else int(content_length)
+        self.headers = {"Content-Length": str(eff_cl)}
+
+    def read(self, amt: int | None = None) -> bytes:
+        return self._bio.read(amt)
+
+    def __enter__(self) -> _FakeWheelStream:
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self._bio.close()
+
+
+def open_pinned_uv_wheel_stream(
+    url: str,
+    *,
+    timeout: float = 60.0,
+) -> Any:
+    """Open an HTTP stream for `url`, or serve from `FAKE_COLAB_STATE_DIR/uv_state.json` in hermetic tests."""
+    if urllib.request.urlopen is not _STDLIB_URLOPEN:
+        return urllib.request.urlopen(url, timeout=timeout)
+    state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
+    if state_dir_raw:
+        uv_st_path = Path(state_dir_raw) / "uv_state.json"
+        uv_st: dict[str, Any] = {}
+        if uv_st_path.is_file():
+            try:
+                uv_st = json.loads(uv_st_path.read_text(encoding="utf-8"))
+            except Exception:
+                uv_st = {}
+        if uv_st.get("uv_wheel_download_fail"):
+            err_msg = str(
+                uv_st.get("uv_wheel_download_error") or "HTTP 503 Service Unavailable"
+            )
+            err_code = int(uv_st.get("uv_wheel_download_http_code") or 503)
+            raise urllib.error.HTTPError(url, err_code, err_msg, {}, None)  # type: ignore[arg-type]
+        wheel_p_str = str(uv_st.get("uv_wheel_path") or "").strip()
+        if not wheel_p_str or not Path(wheel_p_str).is_file():
+            raise urllib.error.URLError(
+                f"fake uv wheel not configured or missing at {wheel_p_str!r}"
+            )
+        raw_bytes = Path(wheel_p_str).read_bytes()
+        declared_len = int(uv_st.get("uv_wheel_content_length") or len(raw_bytes))
+        short_read = uv_st.get("uv_wheel_short_read_bytes")
+        if short_read is not None:
+            raw_bytes = raw_bytes[: int(short_read)]
+        return _FakeWheelStream(raw_bytes, content_length=declared_len, status=200)
+    if "pytest" in sys.modules:
+        raise urllib.error.URLError(
+            "network access disabled under pytest without fake uv wheel downloader"
+        )
+    return urllib.request.urlopen(url, timeout=timeout)
+
+
+def install_pinned_uv_wheel(
+    *,
+    content_dir: Path | None = None,
+    pinned_uv_dir: Path | None = None,
+    wheel_url: str | None = None,
+    expected_sha256: str | None = None,
+    expected_size_bytes: int | None = None,
+    max_download_bytes: int | None = None,
+    timeout_seconds: float = 60.0,
+) -> dict[str, str]:
+    """Download, verify (`size == 17,211,825`, `sha256` before unpack), safely unpack (`uv` + `uvx`), and verify `/tmp/uv-pinned/uv --version == uv 0.13.5`."""
+    target_dir = (
+        Path(pinned_uv_dir) if pinned_uv_dir is not None else DEFAULT_PINNED_UV_DIR
+    )
+    url = wheel_url if wheel_url is not None else PINNED_UV_WHEEL_URL
+    scrubbed_url = scrub_log_text(url)
+    exp_size = (
+        int(expected_size_bytes)
+        if expected_size_bytes is not None
+        else PINNED_UV_WHEEL_SIZE_BYTES
+    )
+    cap_bytes = (
+        int(max_download_bytes)
+        if max_download_bytes is not None
+        else PINNED_UV_WHEEL_MAX_DOWNLOAD_BYTES
+    )
+    if expected_sha256 is not None:
+        exp_sha = str(expected_sha256).strip().lower()
+    else:
+        exp_sha = PINNED_UV_WHEEL_SHA256.lower()
+        state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
+        if (
+            state_dir_raw
+            and exp_sha
+            == "fa8d26e08e34c29c0c4e820cf3181757086d547240b4f4d31ff1d8bd810ca946"
+        ):
+            uv_st_path = Path(state_dir_raw) / "uv_state.json"
+            if uv_st_path.is_file():
+                try:
+                    uv_st = json.loads(uv_st_path.read_text(encoding="utf-8"))
+                    if uv_st.get("expected_uv_wheel_sha256"):
+                        exp_sha = str(uv_st["expected_uv_wheel_sha256"]).strip().lower()
+                except Exception:
+                    pass
+
+    shutil.rmtree(target_dir, ignore_errors=True)
+
+    chunks: list[bytes] = []
+    total_read = 0
+    declared_content_length: int | None = None
+    try:
+        with open_pinned_uv_wheel_stream(url, timeout=timeout_seconds) as resp:
+            status_code = getattr(resp, "status", getattr(resp, "code", 200))
+            if status_code is not None and int(status_code) >= 400:
+                raise RefusalError(
+                    "PINNED_UV_DOWNLOAD_FAILED",
+                    f"HTTP {int(status_code)} downloading pinned uv wheel from {scrubbed_url}",
+                )
+            headers = getattr(resp, "headers", None)
+            if headers is not None and hasattr(headers, "get"):
+                cl_val = headers.get("Content-Length") or headers.get("content-length")
+                if cl_val is not None and str(cl_val).strip().isdigit():
+                    declared_content_length = int(str(cl_val).strip())
+            if getattr(resp, "short_read", False):
+                raise RefusalError(
+                    "PINNED_UV_DOWNLOAD_FAILED",
+                    f"Short read downloading pinned uv wheel from {scrubbed_url}",
+                )
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("latin-1")
+                chunks.append(chunk)
+                total_read += len(chunk)
+                if total_read > cap_bytes:
+                    raise RefusalError(
+                        "PINNED_UV_SIZE_MISMATCH",
+                        f"Pinned uv wheel from {scrubbed_url} exceeded hard download cap of {cap_bytes} bytes (read {total_read} bytes, expected {exp_size} bytes)",
+                    )
+    except RefusalError:
+        raise
+    except urllib.error.HTTPError as exc:
+        raise RefusalError(
+            "PINNED_UV_DOWNLOAD_FAILED",
+            f"HTTP {exc.code} downloading pinned uv wheel from {scrubbed_url}: {scrub_log_text(str(exc.reason or exc))}",
+        ) from exc
+    except Exception as exc:
+        raise RefusalError(
+            "PINNED_UV_DOWNLOAD_FAILED",
+            f"Failed downloading pinned uv wheel from {scrubbed_url}: {scrub_log_text(str(exc))}",
+        ) from exc
+
+    if declared_content_length is not None and total_read < declared_content_length:
+        raise RefusalError(
+            "PINNED_UV_DOWNLOAD_FAILED",
+            f"Short read downloading pinned uv wheel from {scrubbed_url}: read {total_read} of {declared_content_length} Content-Length bytes",
+        )
+
+    if total_read != exp_size:
+        raise RefusalError(
+            "PINNED_UV_SIZE_MISMATCH",
+            f"Pinned uv wheel size mismatch for {scrubbed_url}: expected {exp_size} bytes (cap {cap_bytes}), got {total_read} bytes",
+        )
+
+    wheel_bytes = b"".join(chunks)
+
+    # Verify sha256 BEFORE unpacking (`zipfile.ZipFile` is never touched on mismatch).
+    actual_sha256 = hashlib.sha256(wheel_bytes).hexdigest()
+    if actual_sha256.lower() != exp_sha:
+        raise RefusalError(
+            "PINNED_UV_SHA256_MISMATCH",
+            f"Pinned uv wheel sha256 mismatch for {scrubbed_url}: expected {exp_sha}, got {actual_sha256}",
+        )
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(wheel_bytes), "r")
+    except Exception as exc:
+        raise RefusalError(
+            "PINNED_UV_BAD_MEMBER",
+            f"Pinned uv wheel from {scrubbed_url} is not a valid zip archive: {scrub_log_text(str(exc))}",
+        ) from exc
+
+    with zf:
+        info_by_name: dict[str, zipfile.ZipInfo] = {}
+        for zinfo in zf.infolist():
+            unsafe_reason = _is_unsafe_zip_member(zinfo)
+            if unsafe_reason is not None:
+                raise RefusalError(
+                    "PINNED_UV_BAD_MEMBER",
+                    f"Pinned uv wheel from {scrubbed_url} rejected: {unsafe_reason}",
+                )
+            if zinfo.filename in info_by_name:
+                raise RefusalError(
+                    "PINNED_UV_BAD_MEMBER",
+                    f"Pinned uv wheel from {scrubbed_url} contains duplicate member {scrub_log_text(zinfo.filename)!r}",
+                )
+            info_by_name[zinfo.filename] = zinfo
+
+        for req_member in PINNED_UV_WHEEL_EXTRACT_MEMBERS:
+            if req_member not in info_by_name or info_by_name[req_member].is_dir():
+                raise RefusalError(
+                    "PINNED_UV_BAD_MEMBER",
+                    f"Pinned uv wheel from {scrubbed_url} is missing required member {req_member!r}",
+                )
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for member_name, dest_name in PINNED_UV_WHEEL_EXTRACT_MEMBERS.items():
+            member_bytes = zf.read(member_name)
+            dest_path = target_dir / dest_name
+            dest_path.write_bytes(member_bytes)
+            os.chmod(dest_path, PINNED_UV_BINARY_MODE)
+
+    pinned_uv_bin = target_dir / "uv"
+    ver_env = build_vm_uv_env(content_dir=content_dir, pinned_uv_dir=target_dir)
+    ver_res = run_vm_subprocess(
+        [str(pinned_uv_bin), "--version"],
+        env=ver_env,
+        timeout=30.0,
+        check=False,
+        log_output=False,
+    )
+    ver_out = (ver_res.stdout_tail or ver_res.stderr_tail).strip()
+    uv_version = ver_out.splitlines()[0].strip() if ver_out else "absent"
+    parsed_ver = _extract_uv_version_number(uv_version)
+    if (
+        ver_res.returncode != 0
+        or parsed_ver != PINNED_UV_VERSION
+        or not uv_version.startswith(f"uv {PINNED_UV_VERSION}")
+    ):
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise RefusalError(
+            "PINNED_UV_VERSION_MISMATCH",
+            f"Pinned uv binary at {scrub_log_text(str(pinned_uv_bin))} reported {scrub_log_text(uv_version)!r} "
+            f"(rc={ver_res.returncode}), expected 'uv {PINNED_UV_VERSION}'",
+        )
+
+    return {
+        "uv_source": "pinned-wheel",
+        "uv_path": scrub_log_text(str(pinned_uv_bin)),
+        "uv_version": uv_version,
+    }
+
+
+def ensure_vm_uv(
+    *,
+    content_dir: Path | None = None,
+    pinned_uv_dir: Path | None = None,
+) -> dict[str, str]:
+    """Ensure `uv 0.13.5` is available on the VM: use image `uv` when it is `0.13.5` (unless `RDLAB_FORCE_PINNED_UV=1`), otherwise install the pinned wheel into `/tmp/uv-pinned`."""
+    target_dir = (
+        Path(pinned_uv_dir) if pinned_uv_dir is not None else DEFAULT_PINNED_UV_DIR
+    )
+    mode_env = os.environ.get("RDLAB_MODE", "stub").strip() or "stub"
+    force_pinned = validate_force_pinned_uv(
+        mode_env,
+        os.environ.get("RDLAB_FORCE_PINNED_UV"),
+    )
+
+    if not force_pinned:
+        uv_which = shutil.which("uv")
+        if uv_which:
+            image_env = build_vm_uv_env(content_dir=content_dir, pinned_uv_dir=target_dir)
+            raw_path_parts = [
+                p
+                for p in image_env.get("PATH", "").split(os.pathsep)
+                if p and p != str(target_dir)
+            ]
+            image_env["PATH"] = os.pathsep.join(raw_path_parts)
+            try:
+                ver_res = run_vm_subprocess(
+                    ["uv", "--version"],
+                    env=image_env,
+                    timeout=30.0,
+                    check=False,
+                    log_output=False,
+                )
+            except Exception:
+                ver_res = None
+            if ver_res is not None and ver_res.returncode == 0:
+                ver_out = (ver_res.stdout_tail or ver_res.stderr_tail).strip()
+                image_uv_version = (
+                    ver_out.splitlines()[0].strip() if ver_out else "absent"
+                )
+                if _extract_uv_version_number(image_uv_version) == PINNED_UV_VERSION:
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                    return {
+                        "uv_source": "image",
+                        "uv_path": scrub_log_text(uv_which),
+                        "uv_version": image_uv_version,
+                    }
+
+    # Check if `--step gate` on this `content_dir` already installed and verified `/tmp/uv-pinned/uv`.
+    if (
+        content_dir is not None
+        and (content_dir / "gate_status.json").is_file()
+        and (target_dir / "uv").is_file()
+        and (target_dir / "uvx").is_file()
+    ):
+        try:
+            gate_doc = json.loads(
+                (content_dir / "gate_status.json").read_text(encoding="utf-8")
+            )
+        except Exception:
+            gate_doc = {}
+        if (
+            gate_doc.get("status") == "ok"
+            and gate_doc.get("uv_source") == "pinned-wheel"
+        ):
+            pinned_uv_bin = target_dir / "uv"
+            ver_env = build_vm_uv_env(content_dir=content_dir, pinned_uv_dir=target_dir)
+            ver_res = run_vm_subprocess(
+                [str(pinned_uv_bin), "--version"],
+                env=ver_env,
+                timeout=30.0,
+                check=False,
+                log_output=False,
+            )
+            ver_out = (ver_res.stdout_tail or ver_res.stderr_tail).strip()
+            uv_version = ver_out.splitlines()[0].strip() if ver_out else "absent"
+            if (
+                ver_res.returncode == 0
+                and _extract_uv_version_number(uv_version) == PINNED_UV_VERSION
+                and uv_version.startswith(f"uv {PINNED_UV_VERSION}")
+            ):
+                return {
+                    "uv_source": "pinned-wheel",
+                    "uv_path": scrub_log_text(str(pinned_uv_bin)),
+                    "uv_version": uv_version,
+                }
+
+    return install_pinned_uv_wheel(
+        content_dir=content_dir,
+        pinned_uv_dir=target_dir,
+    )
+
+
 def find_or_install_vm_python_315(
     *,
     content_dir: Path | None = None,
@@ -5630,6 +6083,7 @@ def find_or_install_vm_python_315(
 
     Shared by both `--step gate` (`run_gate`) and `--step run` (`sync_judge_venvs` / `build_vm_venv_commands`).
     """
+    eff_content_dir = content_dir if content_dir is not None else resolve_content_dir()
     temp_root = resolve_vm_python_temp_dir(content_dir)
     install_dir = temp_root / "install"
     mirror_dir = temp_root / "mirror"
@@ -5652,33 +6106,11 @@ def find_or_install_vm_python_315(
         else PINNED_PYTHON_INSTALL_TIMEOUT_SECONDS
     )
 
+    uv_info = ensure_vm_uv(content_dir=eff_content_dir)
+    uv_source = uv_info["uv_source"]
+    uv_path = uv_info["uv_path"]
+    uv_version = uv_info["uv_version"]
     uv_env = build_vm_uv_env(content_dir=content_dir)
-    uv_which = shutil.which("uv")
-    uv_path = scrub_log_text(uv_which) if uv_which else "absent"
-    if not uv_which:
-        raise RefusalError(
-            "VM_PYTHON_UNAVAILABLE",
-            f"uv_path={uv_path} uv_version=absent: uv executable is absent from PATH",
-        )
-
-    ver_res = run_vm_subprocess(
-        ["uv", "--version"],
-        env=uv_env,
-        timeout=30.0,
-        check=False,
-        log_output=False,
-    )
-    ver_out = (ver_res.stdout_tail or ver_res.stderr_tail).strip()
-    uv_version = ver_out.splitlines()[0].strip() if ver_out else "absent"
-    if ver_res.returncode != 0:
-        raise VmSubprocessError(
-            ["uv", "--version"],
-            ver_res.returncode,
-            ver_res.stdout_tail,
-            f"uv_path={uv_path} uv_version={uv_version}: {ver_res.stderr_tail or ver_res.stdout_tail}",
-            failure_class="VM_PYTHON_UNAVAILABLE",
-            duration_seconds=ver_res.duration_seconds,
-        )
 
     expected_uv_raw = (
         os.environ.get("RDLAB_EXPECT_UV_VERSION", "").strip() or PINNED_UV_VERSION
@@ -5688,7 +6120,7 @@ def find_or_install_vm_python_315(
     if actual_uv_ver != expected_uv_ver:
         raise RefusalError(
             "UV_VERSION_CHANGED",
-            f"uv_path={uv_path} uv_version={uv_version!r} (parsed {actual_uv_ver!r}) "
+            f"uv_source={uv_source} uv_path={uv_path} uv_version={uv_version!r} (parsed {actual_uv_ver!r}) "
             f"does not match expected RDLAB_EXPECT_UV_VERSION={expected_uv_ver!r}",
         )
 
@@ -5726,6 +6158,7 @@ def find_or_install_vm_python_315(
             _dir_size_bytes(install_dir) if install_dir.is_dir() else 0
         )
         return {
+            "uv_source": uv_source,
             "uv_path": uv_path,
             "uv_version": uv_version,
             "uv_metadata_version": PINNED_UV_METADATA_VERSION,
@@ -5903,6 +6336,7 @@ def find_or_install_vm_python_315(
     installed_bytes = _dir_size_bytes(install_dir)
 
     return {
+        "uv_source": uv_source,
         "uv_path": uv_path,
         "uv_version": uv_version,
         "uv_metadata_version": PINNED_UV_METADATA_VERSION,
@@ -6187,6 +6621,7 @@ def run_gate(args: argparse.Namespace) -> int:
             "mem_total_bytes": meminfo_vals["mem_total_bytes"],
             "mem_available_bytes": meminfo_vals["mem_available_bytes"],
             "cpu_count": cpu_count_val,
+            "uv_source": py_report["uv_source"],
             "uv_path": py_report["uv_path"],
             "uv_version": py_report["uv_version"],
             "uv_metadata_version": py_report["uv_metadata_version"],
@@ -6235,6 +6670,7 @@ def run_gate(args: argparse.Namespace) -> int:
         f"content_free_bytes={disk_report['content_free_bytes']} "
         f"hf_home_free_bytes={disk_report['hf_home_free_bytes']} "
         f"required_bytes={disk_report['required_bytes']} "
+        f"uv_source={py_report['uv_source']} "
         f"uv_path={py_report['uv_path']} "
         f"uv_version={py_report['uv_version']!r} "
         f"route={py_report['route']} "
@@ -6692,6 +7128,9 @@ def main(argv: list[str] | None = None) -> int:
         until_step = validate_until_option(args.mode, getattr(args, "until", None))
         stopped_after: str | None = None
 
+        current_step = "validate_force_pinned_uv"
+        validate_force_pinned_uv(args.mode)
+
         current_step = "validate_judge_order"
         judge_order, judge_order_source = validate_judge_order(
             args.mode,
@@ -6976,6 +7415,7 @@ def main(argv: list[str] | None = None) -> int:
             "status": "ok",
             "mode": args.mode,
             "hardware": "A100" if args.mode == "time-one" else "CPU",
+            "uv_source": py_rep["uv_source"],
             "uv_path": py_rep["uv_path"],
             "uv_version": venv_info["uv_version"],
             "uv_metadata_version": py_rep["uv_metadata_version"],
@@ -7055,6 +7495,7 @@ def main(argv: list[str] | None = None) -> int:
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
 
         status_extra: dict[str, Any] = {
+            "uv_source": py_rep["uv_source"],
             "uv_path": py_rep["uv_path"],
             "uv_version": venv_info["uv_version"],
             "uv_metadata_version": py_rep["uv_metadata_version"],
