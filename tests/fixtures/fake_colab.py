@@ -831,7 +831,32 @@ def run_fake_uv(argv: list[str]) -> int:
             '  echo "Python 3.15.1"\n'
             "  exit 0\n"
             "fi\n"
-            'exec python3 "$@"\n',
+            'if [[ -n "${FAKE_COLAB_FAIL_JUDGE_CHILD:-}" ]]; then\n'
+            '  _prev=""\n'
+            '  _jid=""\n'
+            '  for _arg in "$@"; do\n'
+            '    if [[ "$_prev" == "--judge" ]]; then\n'
+            '      _jid="$_arg"\n'
+            "      break\n"
+            "    fi\n"
+            '    _prev="$_arg"\n'
+            "  done\n"
+            '  _target="${FAKE_COLAB_FAIL_JUDGE_CHILD%%:*}"\n'
+            '  _rest="${FAKE_COLAB_FAIL_JUDGE_CHILD#*:}"\n'
+            '  if [[ -n "$_jid" && "$_jid" == "$_target" ]]; then\n'
+            '    _mode="${_rest%%:*}"\n'
+            '    _msg="${_rest#*:}"\n'
+            '    if [[ "$_mode" == "sigkill" ]]; then\n'
+            "      kill -9 $$\n"
+            '    elif [[ "$_mode" == "exit137" ]]; then\n'
+            "      exit 137\n"
+            '    elif [[ "$_mode" == "exit1" ]]; then\n'
+            '      echo "${_msg:-Simulated child failure}" >&2\n'
+            "      exit 1\n"
+            "    fi\n"
+            "  fi\n"
+            "fi\n"
+            f'exec "{sys.executable}" "$@"\n',
             encoding="utf-8",
             newline="\n",
         )
@@ -1647,7 +1672,7 @@ def main(argv: list[str] | None = None) -> int:
                 "        if st_dir:\n"
                 "            hf_log = pathlib.Path(st_dir) / 'hf_calls.jsonl'\n"
                 "            with hf_log.open('a', encoding='utf-8', newline='\\n') as _hff:\n"
-                "                _hff.write(json.dumps({'repo_id': str(repo_id), 'revision': str(revision or ''), 'cache_dir': str(cache_dir or ''), 'ts': time.time()}) + '\\n')\n"
+                "                _hff.write(json.dumps({'repo_id': str(repo_id), 'revision': str(revision or ''), 'cache_dir': str(cache_dir or ''), 'max_workers': kw.get('max_workers'), 'hf_xet_num_concurrent_range_gets': os.environ.get('HF_XET_NUM_CONCURRENT_RANGE_GETS'), 'ts': time.time()}) + '\\n')\n"
                 "        delay_s = float(os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS', '0') or '0')\n"
                 "        if delay_s > 0:\n"
                 "            time.sleep(delay_s)\n"

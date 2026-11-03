@@ -1334,7 +1334,7 @@ def test_tl_item1_transformers_judge_transport_cpu_tiny_model_and_snapshot_recei
     assert readout.raw_verdict in ("yes", "no")
     assert readout.p_yes is not None and 0.0 <= readout.p_yes <= 1.0
 
-    # Tamper one byte in a snapshot file -> verify_ready refuses before loading
+    # Tamper one byte (size mismatch) in a snapshot file -> verify_ready refuses before hashing/loading
     cfg_file = snapshot_dir / "config.json"
     orig_cfg = cfg_file.read_bytes()
     cfg_file.write_bytes(orig_cfg + b"\n")
@@ -1345,7 +1345,7 @@ def test_tl_item1_transformers_judge_transport_cpu_tiny_model_and_snapshot_recei
     )
     with pytest.raises(RdlabError) as exc_sha:
         tampered_transport.verify_ready(spec)
-    assert exc_sha.value.code == "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH"
+    assert exc_sha.value.code == "WEIGHT_SIZE_MISMATCH"
     cfg_file.write_bytes(orig_cfg)
 
     # Extra file in snapshot -> verify_ready refuses

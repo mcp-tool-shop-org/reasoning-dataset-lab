@@ -2314,20 +2314,27 @@ def verify_snapshot_against_receipt(
             "Remove untracked files from the pinned snapshot directory.",
         )
 
-    digest_hasher = hashlib.sha256()
-    digest_hasher.update(f"{spec.repo_id}@{spec.revision}\n".encode("utf-8"))
+    sizes_by_rel: dict[str, int] = {}
     for rel in sorted(expected_rels):
         entry = expected_files[rel]
-        exp_sha = str(entry.get("sha256") or "").lower()
         exp_bytes = entry.get("bytes")
         fpath = actual_files[rel]
         size_on_disk = fpath.stat().st_size
         if exp_bytes is not None and int(exp_bytes) != size_on_disk:
             raise refused_error(
-                "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH",
+                "WEIGHT_SIZE_MISMATCH",
                 f"Snapshot file '{rel}' byte length mismatch in '{snapshot_dir}': expected {exp_bytes}, got {size_on_disk}.",
                 "Restore the unmodified snapshot file matching the download receipt.",
             )
+        sizes_by_rel[rel] = size_on_disk
+
+    digest_hasher = hashlib.sha256()
+    digest_hasher.update(f"{spec.repo_id}@{spec.revision}\n".encode("utf-8"))
+    for rel in sorted(expected_rels):
+        entry = expected_files[rel]
+        exp_sha = str(entry.get("sha256") or "").lower()
+        fpath = actual_files[rel]
+        size_on_disk = sizes_by_rel[rel]
         file_hasher = hashlib.sha256()
         with fpath.open("rb") as fh:
             while chunk := fh.read(1024 * 1024):
@@ -3801,6 +3808,35 @@ def run_bakeoff_judge(
             logprob_tolerance=canary_tol,
         )
 
+    row_bytes = row_path.read_bytes()
+    rows_sha256 = hashlib.sha256(row_bytes).hexdigest()
+    judge_done_dir = resolved_out / "judge_done"
+    judge_done_dir.mkdir(parents=True, exist_ok=True)
+    judge_done_path = judge_done_dir / f"{spec.judge_id}.json"
+    judge_done_tmp = judge_done_dir / f".{spec.judge_id}.json.tmp"
+    judge_done_doc: dict[str, Any] = {
+        "judge_id": spec.judge_id,
+        "row_count": calls_so_far,
+        "sha256": rows_sha256,
+        "rows_file": f"{ROWS_DIRNAME}/{spec.judge_id}.jsonl",
+        "bytes": len(row_bytes),
+        "items_count": len(items),
+        "calls_count": calls_so_far,
+        "parsed_count": parsed_count,
+        "unparseable_count": unparseable_count,
+        "length_stop_count": length_stop_count,
+        "vram_peak_mib": vram_peak_overall,
+        "total_seconds": round(total_seconds, 4),
+        "dtype": effective_dtype,
+        "canary": canary_summary,
+    }
+    judge_done_tmp.write_text(
+        json.dumps(judge_done_doc, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    judge_done_tmp.replace(judge_done_path)
+
     return {
         "status": "ok",
         "judge_id": spec.judge_id,
@@ -3814,6 +3850,8 @@ def run_bakeoff_judge(
         "deterministic_algorithms": det_status,
         "items_count": len(items),
         "calls_count": calls_so_far,
+        "row_count": calls_so_far,
+        "rows_sha256": rows_sha256,
         "parsed_count": parsed_count,
         "unparseable_count": unparseable_count,
         "length_stop_count": length_stop_count,
@@ -3823,6 +3861,7 @@ def run_bakeoff_judge(
         "schedule_sha256": schedule.schedule_sha256,
         "canary": canary_summary,
         "rows_path": str(row_path),
+        "judge_done_path": str(judge_done_path),
         "generations_path": str(gen_path),
     }
 
@@ -3883,3 +3922,125 @@ def close_bakeoff_outputs(
         newline="\n",
     )
     return closed_doc
+
+
+def main_judge_runner(argv: Sequence[str] | None = None) -> int:
+    """Subprocess CLI entrypoint (`<venv>/bin/python -m reasoning_dataset_lab.pilot_b.bakeoff_judge`) for one judge."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="python -m reasoning_dataset_lab.pilot_b.bakeoff_judge",
+        description="Run a single bake-off judge inside its hash-locked venv subprocess.",
+    )
+    parser.add_argument("--judge", required=True, help="Judge ID to run.")
+    parser.add_argument(
+        "--items",
+        "--part-dir",
+        dest="part_dir",
+        type=Path,
+        required=True,
+        help="Path to items.jsonl or its parent directory.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help="Output directory for rows/<judge>.jsonl, judge_done/<judge>.json, schedule.json, generations.jsonl.",
+    )
+    parser.add_argument(
+        "--receipts-dir",
+        type=Path,
+        default=None,
+        help="Directory containing <owner>__<repo>.sha256.json receipts.",
+    )
+    parser.add_argument(
+        "--hf-home",
+        type=Path,
+        default=None,
+        help="HF_HOME directory containing cached model snapshots.",
+    )
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        help="Target device ('cuda' or 'cpu').",
+    )
+    parser.add_argument(
+        "--dtype",
+        default=DEFAULT_TORCH_DTYPE,
+        help="Torch dtype (default: bfloat16).",
+    )
+    parser.add_argument(
+        "--allow-remote-code-reviewed",
+        default=None,
+        help="40-char reviewed commit SHA for d3-mini remote code gate.",
+    )
+    parser.add_argument(
+        "--schedule-seed",
+        type=int,
+        default=DEFAULT_SCHEDULE_SEED,
+        help="Deterministic schedule seed.",
+    )
+    parser.add_argument(
+        "--pass-mode",
+        choices=("binary", "three_way"),
+        default="binary",
+        help="Judge pass mode.",
+    )
+    parser.add_argument(
+        "--limit-items",
+        type=int,
+        default=None,
+        help="Optional cap on number of items.",
+    )
+    parser.add_argument(
+        "--vram-halt-mib",
+        type=float,
+        default=DEFAULT_VRAM_HALT_MIB,
+        help="VRAM halt threshold in MiB.",
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=None,
+        help="Repository root directory.",
+    )
+    parser.add_argument(
+        "--stub",
+        "--fake-transport",
+        dest="fake_transport",
+        action="store_true",
+        help="Use DeterministicFakeJudgeTransport (stub / dryrun mode).",
+    )
+    parser.add_argument(
+        "--no-canary",
+        action="store_true",
+        help="Disable canary snapshot drift check.",
+    )
+
+    args = parser.parse_args(list(argv) if argv is not None else None)
+    try:
+        run_bakeoff_judge(
+            part_dir=args.part_dir,
+            output_dir=args.output_dir,
+            judge=args.judge,
+            schedule_seed=args.schedule_seed,
+            pass_mode=args.pass_mode,
+            limit_items=args.limit_items,
+            fake_transport=bool(args.fake_transport),
+            receipts_dir=args.receipts_dir,
+            hf_home=args.hf_home,
+            device=args.device,
+            torch_dtype=args.dtype,
+            allow_remote_code_reviewed=args.allow_remote_code_reviewed,
+            vram_halt_mib=args.vram_halt_mib,
+            run_canary=not bool(args.no_canary),
+            repo_root=args.repo_root,
+        )
+        return 0
+    except RdlabError as exc:
+        sys.stderr.write(f"{exc.code}: {exc.message}\n")
+        return int(exc.exit_code or 2)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main_judge_runner())

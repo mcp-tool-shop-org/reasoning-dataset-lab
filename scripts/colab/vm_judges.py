@@ -29,15 +29,18 @@ Enforces:
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import datetime
 import fnmatch
 import hashlib
+import inspect
 import json
 import math
 import os
 import re
 import shutil
 import statistics
+import stat
 import subprocess
 import sys
 import tarfile
@@ -53,6 +56,9 @@ DEFAULT_GATE_STATUS_FILE = Path("/content/gate_status.json")
 DEFAULT_SCHEDULE_SEED = 20261030
 DEFAULT_VRAM_HALT_MIB = 26_000
 DEFAULT_TORCH_DTYPE = "bfloat16"
+DEFAULT_HF_DOWNLOAD_MAX_WORKERS = 2
+DEFAULT_HF_XET_NUM_CONCURRENT_RANGE_GETS = 4
+JUDGE_RUNNER_MODULE = "reasoning_dataset_lab.pilot_b.bakeoff_judge"
 D3_MINI_JUDGE_ID = "d3-mini"
 D3_MINI_REVIEWED_REVISION = "bd0090dd758d32ba59ef5c749910a8e87fc4391f"
 FIRST_JUDGE_ID = "flow-judge-v0.1"
@@ -63,6 +69,7 @@ GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
 PROGRESS_FILENAME = "progress.jsonl"
 ROWS_DIRNAME = "rows"
+JUDGE_DONE_DIRNAME = "judge_done"
 
 # Disk preflight constants for the 5 bake-off judges and 2 CPython 3.15 venvs:
 # - Weights total (sum of `total_bytes` across the 5 `<owner>__<repo>.sha256.json` receipts):
@@ -94,15 +101,143 @@ REQUIRED_VM_DISK_BYTES = (
 
 ALLOWED_ITEM_FIELDS: frozenset[str] = frozenset({"id", "material", "claim"})
 REQUIRED_ITEM_FIELDS_ORDERED: tuple[str, str, str] = ("id", "material", "claim")
+ALLOWED_LOGPROB_MASS_PART_IDS: frozenset[str] = frozenset({"pilot-40b"})
 
-RdlabError: type[BaseException] = RuntimeError
-BAKEOFF_JUDGE_SPECS: dict[str, Any] = {}
-JudgeSpec: Any = Any
-check_bakeoff_logprob_mass: Any = None
-check_d3_mini_remote_code_gate: Any = None
-check_remote_code_gate: Any = None
-run_bakeoff_judge: Any = None
-verify_snapshot_against_receipt: Any = None
+
+@dataclass(frozen=True)
+class JudgeSpec:
+    """Pinned specification for one of the five bake-off judges."""
+
+    judge_id: str
+    judge_label: str
+    repo_id: str
+    revision: str
+    card_registry_id: str
+    licence_registry_id: str
+    requires_remote_code: bool
+    remote_code_files: tuple[str, ...]
+    supports_three_way: bool
+    has_probability: bool
+    verdict_position: str
+    max_new_tokens: int
+    card_snapshot_path: str
+    card_snapshot_sha256: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "judge_id": self.judge_id,
+            "judge_label": self.judge_label,
+            "repo_id": self.repo_id,
+            "revision": self.revision,
+            "card_registry_id": self.card_registry_id,
+            "licence_registry_id": self.licence_registry_id,
+            "requires_remote_code": self.requires_remote_code,
+            "remote_code_files": list(self.remote_code_files),
+            "supports_three_way": self.supports_three_way,
+            "has_probability": self.has_probability,
+            "verdict_position": self.verdict_position,
+            "max_new_tokens": self.max_new_tokens,
+            "card_snapshot_path": self.card_snapshot_path,
+            "card_snapshot_sha256": self.card_snapshot_sha256,
+        }
+
+
+BAKEOFF_JUDGE_SPECS: dict[str, JudgeSpec] = {
+    "mu-judge": JudgeSpec(
+        judge_id="mu-judge",
+        judge_label="mu-judge-nemotron-nano-4b",
+        repo_id="qybaihe/mu-judge-nemotron-nano-4b",
+        revision="20013889998b8c73a4263620ae6e4ebb407bf30a",
+        card_registry_id="mu-judge-nemotron-nano-4b-card",
+        licence_registry_id="nvidia-open-model-license",
+        requires_remote_code=False,
+        remote_code_files=(),
+        supports_three_way=True,
+        has_probability=True,
+        verdict_position="first_token",
+        max_new_tokens=1,
+        card_snapshot_path="cards/qybaihe_mu-judge-nemotron-nano-4b.md",
+        card_snapshot_sha256="6e9bf4e186d6a47bbd5919ced725366562dbcb611732e63e5f36f46591567e1e",
+    ),
+    "nemotron-3-nano-4b": JudgeSpec(
+        judge_id="nemotron-3-nano-4b",
+        judge_label="NVIDIA-Nemotron-3-Nano-4B-BF16 (base)",
+        repo_id="nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+        revision="dfaf35de3e30f1867dd8dbc38a7fc9fb52d3914f",
+        card_registry_id="nemotron-3-nano-4b-card",
+        licence_registry_id="nvidia-nemotron-open-model-license",
+        requires_remote_code=False,
+        remote_code_files=(
+            "__init__.py",
+            "configuration_nemotron_h.py",
+            "modeling_nemotron_h.py",
+            "nano_v3_reasoning_parser.py",
+        ),
+        supports_three_way=True,
+        has_probability=True,
+        verdict_position="first_token",
+        max_new_tokens=1,
+        card_snapshot_path="cards/nvidia_NVIDIA-Nemotron-3-Nano-4B-BF16.md",
+        card_snapshot_sha256="06f349f02b364c5ff6d92562be82ddd190e00b7e161a749c297766d372068c18",
+    ),
+    "d3-mini": JudgeSpec(
+        judge_id="d3-mini",
+        judge_label="vllm-sr/d3-mini",
+        repo_id="vllm-sr/d3-mini",
+        revision="bd0090dd758d32ba59ef5c749910a8e87fc4391f",
+        card_registry_id="d3-mini-card",
+        licence_registry_id="apache-2.0",
+        requires_remote_code=True,
+        remote_code_files=(
+            "d3_engine.py",
+            "d3_fast.py",
+            "d3_format.py",
+            "d3_kernels.py",
+            "d3_runtime.py",
+            "d3_server.py",
+            "modeling_d3.py",
+            "pipeline_d3.py",
+        ),
+        supports_three_way=True,
+        has_probability=True,
+        verdict_position="system_one_readout",
+        max_new_tokens=1,
+        card_snapshot_path="cards/vllm-sr_d3-mini.md",
+        card_snapshot_sha256="57e4fcc4c67283573ee1bd201bb87b0ea9b123d0a6938116fcb3dc7294686b43",
+    ),
+    "granite-guardian-4.1-8b": JudgeSpec(
+        judge_id="granite-guardian-4.1-8b",
+        judge_label="ibm-granite/granite-guardian-4.1-8b",
+        repo_id="ibm-granite/granite-guardian-4.1-8b",
+        revision="ab01ccca5dcfb80246369a086a4a87a29198f5af",
+        card_registry_id="granite-guardian-4.1-8b-card",
+        licence_registry_id="apache-2.0",
+        requires_remote_code=False,
+        remote_code_files=(),
+        supports_three_way=False,
+        has_probability=True,
+        verdict_position="score_token_inverted",
+        max_new_tokens=32,
+        card_snapshot_path="cards/ibm-granite_granite-guardian-4.1-8b.md",
+        card_snapshot_sha256="b8d7ae89ebac9ce04dfb5389b04fb76a8659fe521b8ee5d4ec8126f7d871efa8",
+    ),
+    "flow-judge-v0.1": JudgeSpec(
+        judge_id="flow-judge-v0.1",
+        judge_label="flowaicom/Flow-Judge-v0.1",
+        repo_id="flowaicom/Flow-Judge-v0.1",
+        revision="b7a47acd7c86e981145168e4dea1bef7d84a0894",
+        card_registry_id="flow-judge-v0.1-card",
+        licence_registry_id="apache-2.0",
+        requires_remote_code=False,
+        remote_code_files=(),
+        supports_three_way=True,
+        has_probability=False,
+        verdict_position="parsed_pass_fail",
+        max_new_tokens=512,
+        card_snapshot_path="cards/flowaicom_Flow-Judge-v0.1.md",
+        card_snapshot_sha256="f1392c4ef4ea17126a758b2c4a0ccfca702f8840e93cd8f21d29cae68185090e",
+    ),
+}
 
 
 def resolve_content_dir(content_dir: Path | None = None) -> Path:
@@ -126,16 +261,7 @@ def resolve_repo_dir(repo_dir: Path | None = None) -> Path:
 
 
 def _ensure_repo_imports(repo_dir: Path | None = None) -> None:
-    """Add `RDLAB_REPO_DIR/src` to `sys.path` and load `reasoning_dataset_lab` symbols."""
-    global RdlabError
-    global BAKEOFF_JUDGE_SPECS
-    global JudgeSpec
-    global check_bakeoff_logprob_mass
-    global check_d3_mini_remote_code_gate
-    global check_remote_code_gate
-    global run_bakeoff_judge
-    global verify_snapshot_against_receipt
-
+    """Ensure `<repo_dir>/src` is on `sys.path` without importing `torch`, `transformers`, or `bakeoff_judge` in the parent."""
     candidate_roots = [resolve_repo_dir(repo_dir)]
     if repo_dir is not None:
         candidate_roots.insert(0, Path(repo_dir))
@@ -149,33 +275,6 @@ def _ensure_repo_imports(repo_dir: Path | None = None) -> None:
             src_str = str(src_dir)
             if src_str not in sys.path:
                 sys.path.insert(0, src_str)
-
-    from reasoning_dataset_lab.errors import RdlabError as _RdlabError
-    from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
-        BAKEOFF_JUDGE_SPECS as _BAKEOFF_JUDGE_SPECS,
-        JudgeSpec as _JudgeSpec,
-        check_bakeoff_logprob_mass as _check_bakeoff_logprob_mass,
-        check_d3_mini_remote_code_gate as _check_d3_mini_remote_code_gate,
-        check_remote_code_gate as _check_remote_code_gate,
-        run_bakeoff_judge as _run_bakeoff_judge,
-        verify_snapshot_against_receipt as _verify_snapshot_against_receipt,
-    )
-
-    RdlabError = _RdlabError
-    BAKEOFF_JUDGE_SPECS = _BAKEOFF_JUDGE_SPECS
-    JudgeSpec = _JudgeSpec
-    check_bakeoff_logprob_mass = _check_bakeoff_logprob_mass
-    check_d3_mini_remote_code_gate = _check_d3_mini_remote_code_gate
-    check_remote_code_gate = _check_remote_code_gate
-    run_bakeoff_judge = _run_bakeoff_judge
-    verify_snapshot_against_receipt = _verify_snapshot_against_receipt
-
-
-if os.environ.get("RDLAB_STEP") not in ("gate", "probe"):
-    try:
-        _ensure_repo_imports()
-    except ModuleNotFoundError:
-        pass
 
 EXPECTED_JUDGE_LOCK_SHA256 = (
     "608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
@@ -258,7 +357,7 @@ OAUTH_KV_RE = re.compile(
 )
 JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b")
 HF_TOKEN_RE = re.compile(
-    r"(?:(?<![A-Za-z0-9])|(?<=%[0-9A-Fa-f]{2}))hf(?:_|%5[Ff])(?!\[REDACTED\]|(?:home|cache|low|match|deactivate_async_load)(?![A-Za-z0-9]))[A-Za-z0-9]+(?![A-Za-z0-9])"
+    r"(?:(?<![A-Za-z0-9])|(?<=%[0-9A-Fa-f]{2}))hf(?:_|%5[Ff])(?!\[REDACTED\]|(?:home|cache|low|match|deactivate_async_load|xet|hub|transfer|calls|download)(?![A-Za-z0-9]))[A-Za-z0-9]+(?![A-Za-z0-9])"
 )
 HF_ENV_RE = re.compile(
     r"\b(HF_TOKEN(?:_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)=(?!\[REDACTED\])[^\s\"';]+"
@@ -277,6 +376,7 @@ TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
 TAR_ALLOWED_DIRS: frozenset[str] = frozenset(
     {
         ROWS_DIRNAME,
+        JUDGE_DONE_DIRNAME,
         "logs",
     }
 )
@@ -288,7 +388,11 @@ class RefusalError(RuntimeError):
     def __init__(self, failure_class: str, message: str) -> None:
         RuntimeError.__init__(self, f"{failure_class}: {message}")
         self.failure_class = failure_class
+        self.code = failure_class
         self.detail = message
+
+
+RdlabError: type[BaseException] = RefusalError
 
 
 def ensure_not_drive_path(path: Path | str) -> None:
@@ -459,6 +563,99 @@ def read_vm_memory_snapshot(
         "cgroup_memory_current": cgroup_memory_current,
         "cgroup_memory_max": cgroup_memory_max,
     }
+
+
+def read_cgroup_memory_events(
+    *,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+    events_file: Path | None = None,
+) -> dict[str, int | None]:
+    """Read `oom` and `oom_kill` counts from cgroup v2 `memory.events` (or v1 `memory.oom_control` / `memory.failcnt`).
+
+    Returns `{"oom": int | None, "oom_kill": int | None}`, never raising.
+    """
+    oom_val: int | None = None
+    oom_kill_val: int | None = None
+
+    explicit_ev = events_file
+    if explicit_ev is None:
+        env_ev = os.environ.get("RDLAB_CGROUP_MEMORY_EVENTS_PATH", "").strip()
+        if env_ev:
+            explicit_ev = Path(env_ev)
+
+    cg_root = (
+        Path(cgroup_root)
+        if cgroup_root is not None
+        else Path(
+            os.environ.get("RDLAB_CGROUP_DIR", "").strip() or "/sys/fs/cgroup"
+        )
+    )
+    cg_proc = (
+        Path(proc_cgroup_path)
+        if proc_cgroup_path is not None
+        else Path("/proc/self/cgroup")
+    )
+
+    def _parse_kv_file(path: Path) -> None:
+        nonlocal oom_val, oom_kill_val
+        try:
+            if not path.is_file():
+                return
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                parts = line.strip().split()
+                if len(parts) != 2 or not re.fullmatch(r"\d+", parts[1]):
+                    continue
+                k, v = parts[0], int(parts[1])
+                if k in ("oom", "under_oom") and oom_val is None:
+                    oom_val = v
+                elif k == "oom_kill" and oom_kill_val is None:
+                    oom_kill_val = v
+        except Exception:
+            pass
+
+    if explicit_ev is not None:
+        _parse_kv_file(Path(explicit_ev))
+        return {"oom": oom_val, "oom_kill": oom_kill_val}
+
+    try:
+        candidate_dirs: list[Path] = [cg_root]
+        if cg_proc.is_file():
+            for line in cg_proc.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                parts = line.strip().split(":", 2)
+                if len(parts) != 3:
+                    continue
+                _hid, controllers, cg_rel_raw = parts
+                cg_rel = cg_rel_raw.strip().lstrip("/")
+                ctrl_list = [c.strip() for c in controllers.split(",") if c.strip()]
+                if not ctrl_list and cg_rel:
+                    candidate_dirs.append(cg_root / cg_rel)
+                elif "memory" in ctrl_list and cg_rel:
+                    candidate_dirs.append(cg_root / "memory" / cg_rel)
+                    candidate_dirs.append(cg_root / cg_rel)
+        candidate_dirs.append(cg_root / "memory")
+
+        seen: set[str] = set()
+        for cand in candidate_dirs:
+            key = str(cand)
+            if key in seen:
+                continue
+            seen.add(key)
+            _parse_kv_file(cand / "memory.events")
+            if oom_val is None or oom_kill_val is None:
+                _parse_kv_file(cand / "memory.oom_control")
+            if oom_val is None:
+                failcnt = _read_cgroup_int(cand / "memory.failcnt")
+                if failcnt is not None:
+                    oom_val = failcnt
+            if oom_val is not None and oom_kill_val is not None:
+                break
+    except Exception:
+        pass
+
+    return {"oom": oom_val, "oom_kill": oom_kill_val}
 
 
 def append_progress_line(
@@ -659,6 +856,71 @@ class VmSubprocessError(RefusalError, subprocess.CalledProcessError):
             "stdout_tail": self.stdout_tail,
             "stderr_tail": self.stderr_tail,
         }
+
+
+class JudgeChildProcessError(VmSubprocessError):
+    """Raised when a per-judge child subprocess exits non-zero or is killed by a signal (e.g. OOM SIGKILL)."""
+
+    def __init__(
+        self,
+        *,
+        judge_id: str,
+        venv: str,
+        venv_python: str,
+        lock_sha256: str,
+        cmd: Sequence[str],
+        returncode: int,
+        exit_code: int,
+        signal_num: int | None,
+        oom: int | None,
+        oom_kill: int | None,
+        oom_kill_delta: int | None,
+        mem_available_bytes: int | None,
+        stdout_tail: str,
+        stderr_tail: str,
+        failure_class: str,
+        duration_seconds: float,
+        completed_judges: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(
+            cmd=cmd,
+            returncode=returncode,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            failure_class=failure_class,
+            duration_seconds=duration_seconds,
+        )
+        self.judge_id = judge_id
+        self.venv = venv
+        self.venv_python = venv_python
+        self.lock_sha256 = lock_sha256
+        self.exit_code = int(exit_code)
+        self.signal_num = signal_num
+        self.oom = oom
+        self.oom_kill = oom_kill
+        self.oom_kill_delta = oom_kill_delta
+        self.mem_available_bytes = mem_available_bytes
+        self.completed_judges = dict(completed_judges or {})
+
+    def to_failure_record(self) -> dict[str, Any]:
+        rec = super().to_failure_record()
+        rec.update(
+            {
+                "judge_id": self.judge_id,
+                "judge": self.judge_id,
+                "venv": self.venv,
+                "venv_python": self.venv_python,
+                "lock_sha256": self.lock_sha256,
+                "exit_code": self.exit_code,
+                "raw_returncode": int(self.returncode),
+                "signal": self.signal_num,
+                "oom": self.oom,
+                "oom_kill": self.oom_kill,
+                "oom_kill_delta": self.oom_kill_delta,
+                "mem_available_bytes": self.mem_available_bytes,
+            }
+        )
+        return rec
 
 
 def _stream_subprocess_with_byte_cap(
@@ -1228,6 +1490,8 @@ def sync_judge_venvs(
             if not (key == "venv_judge" and venv_judge_created):
                 run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)
             run_vm_subprocess(vinfo["sync_cmd"], env=sync_env, check=True)
+        else:
+            _ensure_dryrun_venv_python_wrapper(Path(vinfo["python"]))
         venv_timings_by_key[key] = _record_step_end(
             key,
             t_venv,
@@ -1268,6 +1532,367 @@ def sync_judge_venvs(
             "seconds": venv_timings_by_key["venv_d3"]["seconds"],
         },
     }
+
+
+def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
+    """Create a lightweight executable `<venv>/bin/python` wrapper in dryrun/hermetic test mode if absent."""
+    if venv_python.exists():
+        return
+    venv_python.parent.mkdir(parents=True, exist_ok=True)
+    py_exe = str(Path(sys.executable)).replace("\\", "/")
+    venv_python.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [[ "$1" == "--version" || "$1" == "-V" ]]; then\n'
+        '  echo "Python 3.15.1"\n'
+        "  exit 0\n"
+        "fi\n"
+        'if [[ -n "${FAKE_COLAB_FAIL_JUDGE_CHILD:-}" ]]; then\n'
+        '  _prev=""\n'
+        '  _jid=""\n'
+        '  for _arg in "$@"; do\n'
+        '    if [[ "$_prev" == "--judge" ]]; then\n'
+        '      _jid="$_arg"\n'
+        "      break\n"
+        "    fi\n"
+        '    _prev="$_arg"\n'
+        "  done\n"
+        '  _target="${FAKE_COLAB_FAIL_JUDGE_CHILD%%:*}"\n'
+        '  _rest="${FAKE_COLAB_FAIL_JUDGE_CHILD#*:}"\n'
+        '  if [[ -n "$_jid" && "$_jid" == "$_target" ]]; then\n'
+        '    _mode="${_rest%%:*}"\n'
+        '    _msg="${_rest#*:}"\n'
+        '    if [[ "$_mode" == "sigkill" ]]; then\n'
+        "      kill -9 $$\n"
+        '    elif [[ "$_mode" == "exit137" ]]; then\n'
+        "      exit 137\n"
+        '    elif [[ "$_mode" == "exit1" ]]; then\n'
+        '      echo "${_msg:-Simulated child failure}" >&2\n'
+        "      exit 1\n"
+        "    fi\n"
+        "  fi\n"
+        "fi\n"
+        f'exec "{py_exe}" "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    try:
+        venv_python.chmod(venv_python.stat().st_mode | stat.S_IEXEC)
+    except OSError:
+        pass
+
+
+def check_remote_code_gate(
+    spec: JudgeSpec,
+    *,
+    allow_remote_code_reviewed: str | None = None,
+    force_remote_code: bool = False,
+) -> bool:
+    """Enforce the remote-code gate without importing `bakeoff_judge` in the parent process."""
+    needs_gate = spec.requires_remote_code or force_remote_code
+    if not needs_gate:
+        return False
+    reviewed = (allow_remote_code_reviewed or "").strip().lower()
+    rev = spec.revision.lower()
+    if not reviewed or len(reviewed) < 8 or not (rev == reviewed or rev.startswith(reviewed)):
+        raise RefusalError(
+            "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED",
+            f"Judge '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}) requires trust_remote_code=True "
+            f"({', '.join(spec.remote_code_files) or 'remote repo code'}), which is blocked until reviewed.",
+        )
+    return True
+
+
+def check_d3_mini_remote_code_gate(
+    spec: JudgeSpec,
+    *,
+    allow_remote_code_reviewed: str | None = None,
+) -> None:
+    """Enforce the byte-exact 40-char lowercase hex remote-code gate for `d3-mini`."""
+    if spec.judge_id != D3_MINI_JUDGE_ID:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_D3_TRANSPORT_WRONG_JUDGE",
+            f"D3MiniTransport is only for '{D3_MINI_JUDGE_ID}', got '{spec.judge_id}'.",
+        )
+    if spec.revision != D3_MINI_REVIEWED_REVISION:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_REMOTE_CODE_REVISION_MISMATCH",
+            f"Pinned revision '{spec.revision}' does not match reviewed d3-mini SHA '{D3_MINI_REVIEWED_REVISION}'.",
+        )
+    if (
+        not isinstance(allow_remote_code_reviewed, str)
+        or allow_remote_code_reviewed != D3_MINI_REVIEWED_REVISION
+    ):
+        raise RefusalError(
+            "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED",
+            f"d3-mini requires exact 40-char reviewed SHA '{D3_MINI_REVIEWED_REVISION}'.",
+        )
+
+
+def _resolve_snapshot_dir_for_spec(
+    spec: JudgeSpec,
+    *,
+    hf_home: Path | None = None,
+) -> Path:
+    """Resolve `<hf_home>/hub/models--<owner>--<repo>/snapshots/<revision>` on disk."""
+    eff_hf_home = Path(hf_home) if hf_home is not None else (
+        Path(os.environ["HF_HOME"]) if os.environ.get("HF_HOME", "").strip() else None
+    )
+    if eff_hf_home is None:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_HF_HOME_MISSING",
+            f"HF_HOME is not set and --hf-home was not provided for '{spec.judge_id}'.",
+        )
+    owner, repo = spec.repo_id.split("/", 1)
+    model_dir_name = f"models--{owner}--{repo}"
+    for candidate in (
+        eff_hf_home.resolve() / "hub" / model_dir_name / "snapshots" / spec.revision,
+        eff_hf_home.resolve() / model_dir_name / "snapshots" / spec.revision,
+    ):
+        if candidate.is_dir():
+            return candidate
+    raise RefusalError(
+        "BAKEOFF_JUDGE_SNAPSHOT_NOT_FOUND",
+        f"Pinned snapshot directory not found for '{spec.judge_id}' ({spec.repo_id} @ {spec.revision}) under '{eff_hf_home}'.",
+    )
+
+
+def verify_snapshot_against_receipt(
+    spec: JudgeSpec,
+    *,
+    receipts_dir: Path,
+    hf_home: Path | None = None,
+) -> tuple[Path, str]:
+    """Verify every file in a local HF snapshot against `<receipts_dir>/<owner>__<repo>.sha256.json`.
+
+    Checks every file's `st_size` against receipt `bytes` first (`WEIGHT_SIZE_MISMATCH`) before calling `hashlib.sha256`.
+    """
+    owner, repo = spec.repo_id.split("/", 1)
+    receipt_path = receipts_dir.resolve() / f"{owner}__{repo}.sha256.json"
+    if not receipt_path.is_file():
+        raise RefusalError(
+            "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND",
+            f"Download receipt '{receipt_path}' not found for '{spec.judge_id}' ({spec.repo_id}).",
+        )
+    try:
+        receipt_doc = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_RECEIPT_INVALID",
+            f"Malformed JSON in receipt '{receipt_path}': {exc}.",
+        ) from exc
+
+    if not isinstance(receipt_doc, Mapping) or not isinstance(receipt_doc.get("files"), Mapping):
+        raise RefusalError(
+            "BAKEOFF_JUDGE_RECEIPT_INVALID",
+            f"Receipt '{receipt_path}' is missing 'files' mapping.",
+        )
+
+    rec_repo = str(receipt_doc.get("repo") or "")
+    rec_rev = str(receipt_doc.get("revision") or "")
+    if rec_repo != spec.repo_id or rec_rev != spec.revision:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_RECEIPT_MISMATCH",
+            f"Receipt '{receipt_path}' ({rec_repo} @ {rec_rev}) does not match pinned JudgeSpec ({spec.repo_id} @ {spec.revision}).",
+        )
+
+    snapshot_dir = _resolve_snapshot_dir_for_spec(spec, hf_home=hf_home)
+    expected_files: Mapping[str, Any] = receipt_doc["files"]
+    expected_rels = set(expected_files.keys())
+
+    actual_files: dict[str, Path] = {
+        p.relative_to(snapshot_dir).as_posix(): p
+        for p in snapshot_dir.rglob("*")
+        if p.is_file()
+    }
+    actual_rels = set(actual_files.keys())
+
+    missing_rels = sorted(expected_rels - actual_rels)
+    if missing_rels:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_SNAPSHOT_MISSING_FILE",
+            f"Snapshot '{snapshot_dir}' is missing {len(missing_rels)} file(s) listed in receipt: {missing_rels[:5]}.",
+        )
+
+    bytecode_rels = sorted(
+        p.relative_to(snapshot_dir).as_posix()
+        for p in snapshot_dir.rglob("*")
+        if p.name == "__pycache__" or p.suffix.lower() in (".pyc", ".pyo")
+    )
+    if bytecode_rels:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_SNAPSHOT_BYTECODE",
+            f"Snapshot '{snapshot_dir}' contains Python bytecode not in the receipt: {bytecode_rels[:5]}.",
+        )
+
+    extra_rels = sorted(actual_rels - expected_rels)
+    if extra_rels:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_SNAPSHOT_EXTRA_FILE",
+            f"Snapshot '{snapshot_dir}' contains {len(extra_rels)} unlisted extra file(s) not in receipt: {extra_rels[:5]}.",
+        )
+
+    # Check every file's size (`st_size`) against the receipt's `bytes` BEFORE hashing any bytes.
+    sizes_by_rel: dict[str, int] = {}
+    for rel in sorted(expected_rels):
+        entry = expected_files[rel]
+        exp_bytes = entry.get("bytes")
+        fpath = actual_files[rel]
+        size_on_disk = fpath.stat().st_size
+        if exp_bytes is not None and int(exp_bytes) != size_on_disk:
+            raise RefusalError(
+                "WEIGHT_SIZE_MISMATCH",
+                f"Snapshot file '{rel}' byte length mismatch in '{snapshot_dir}': expected {exp_bytes}, got {size_on_disk}.",
+            )
+        sizes_by_rel[rel] = size_on_disk
+
+    digest_hasher = hashlib.sha256()
+    digest_hasher.update(f"{spec.repo_id}@{spec.revision}\n".encode("utf-8"))
+    for rel in sorted(expected_rels):
+        entry = expected_files[rel]
+        exp_sha = str(entry.get("sha256") or "").lower()
+        fpath = actual_files[rel]
+        size_on_disk = sizes_by_rel[rel]
+        file_hasher = hashlib.sha256()
+        with fpath.open("rb") as fh:
+            while chunk := fh.read(1024 * 1024):
+                file_hasher.update(chunk)
+        actual_sha = file_hasher.hexdigest().lower()
+        if actual_sha != exp_sha:
+            raise RefusalError(
+                "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH",
+                f"Snapshot file '{rel}' SHA-256 mismatch in '{snapshot_dir}': expected {exp_sha}, got {actual_sha}.",
+            )
+        digest_hasher.update(f"{rel}:{actual_sha}:{size_on_disk}\n".encode("utf-8"))
+
+    verified_digest = f"sha256:{spec.revision}:{digest_hasher.hexdigest()[:16]}"
+    return snapshot_dir, verified_digest
+
+
+def check_bakeoff_logprob_mass(
+    judge_output_dir: Path,
+    *,
+    threshold: float = 0.99,
+    part_id: str | None = None,
+) -> dict[str, Any]:
+    """Compute the burned `pilot-40b` yes/no token log-probability mass harness readout from `rows/*.jsonl`."""
+    resolved_part_id = str(part_id).strip() if part_id is not None else "pilot-40b"
+    if resolved_part_id.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+        raise RefusalError(
+            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
+            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={resolved_part_id!r}.",
+        )
+    rows_dir = Path(judge_output_dir) / ROWS_DIRNAME
+    if not rows_dir.is_dir():
+        raise RefusalError(
+            "BAKEOFF_LOGPROB_MASS_NO_ROWS",
+            f"Rows directory '{rows_dir}' not found.",
+        )
+    row_files = sorted(
+        p for p in rows_dir.glob("*.jsonl") if not p.name.endswith(".three_way.jsonl")
+    )
+    if not row_files:
+        raise RefusalError(
+            "BAKEOFF_LOGPROB_MASS_NO_ROWS",
+            f"No binary judge row files found in '{rows_dir}'.",
+        )
+    judges_report: dict[str, Any] = {}
+    for rf in row_files:
+        judge_id = rf.stem
+        spec = BAKEOFF_JUDGE_SPECS.get(judge_id)
+        if spec is not None and not spec.has_probability:
+            judges_report[judge_id] = {
+                "status": "not_applicable",
+                "passed": True,
+                "reason": "Judge does not expose a yes/no token log-probability distribution (Flow-Judge rubric text score).",
+                "threshold": threshold,
+            }
+            continue
+        lines = [
+            json.loads(ln)
+            for ln in rf.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        parsed_rows = [
+            r
+            for r in lines
+            if r.get("state") == "parsed" and r.get("run_status") != "failed_to_run"
+        ]
+        masses: list[float] = []
+        for r in parsed_rows:
+            lp_list = r.get("top_20_logprobs") or r.get("top_logprobs") or []
+            mass = sum(
+                math.exp(float(entry.get("logprob", -100.0)))
+                for entry in lp_list
+                if str(entry.get("token") or "").strip().lower() in ("yes", "no")
+            )
+            masses.append(mass)
+        below_count = sum(1 for m in masses if m + 1e-6 < threshold)
+        min_mass = min(masses) if masses else 0.0
+        mean_mass = (sum(masses) / len(masses)) if masses else 0.0
+        passed = bool(masses and below_count == 0)
+        judges_report[judge_id] = {
+            "status": "PASS" if passed else "WARN",
+            "passed": passed,
+            "calls_checked": len(masses),
+            "below_threshold_count": below_count,
+            "min_yes_no_mass": round(min_mass, 6),
+            "mean_yes_no_mass": round(mean_mass, 6),
+            "threshold": threshold,
+        }
+    return {
+        "schema_version": "1.0",
+        "part_id": resolved_part_id,
+        "threshold": threshold,
+        "judges": judges_report,
+    }
+
+
+def validate_download_config(
+    max_workers: Any = None,
+    hf_xet_num_concurrent_range_gets: Any = None,
+) -> tuple[int, int]:
+    """Validate `RDLAB_HF_DOWNLOAD_MAX_WORKERS` (positive int, default 2) and `HF_XET_NUM_CONCURRENT_RANGE_GETS` (non-negative int, default 4).
+
+    Refuses invalid values (`0`, `-1`, `'abc'` for `max_workers`; `-1`, `'abc'` for `range_gets`) with `BAD_DOWNLOAD_CONFIG`.
+    """
+    raw_mw: Any = max_workers
+    if raw_mw is None:
+        if "RDLAB_HF_DOWNLOAD_MAX_WORKERS" in os.environ:
+            raw_mw = os.environ["RDLAB_HF_DOWNLOAD_MAX_WORKERS"]
+        else:
+            raw_mw = DEFAULT_HF_DOWNLOAD_MAX_WORKERS
+
+    if isinstance(raw_mw, bool) or not re.fullmatch(r"\+?[0-9]+", str(raw_mw).strip()):
+        raise RefusalError(
+            "BAD_DOWNLOAD_CONFIG",
+            f"RDLAB_HF_DOWNLOAD_MAX_WORKERS must be a positive integer (>= 1), got {raw_mw!r}",
+        )
+    mw_val = int(str(raw_mw).strip())
+    if mw_val < 1:
+        raise RefusalError(
+            "BAD_DOWNLOAD_CONFIG",
+            f"RDLAB_HF_DOWNLOAD_MAX_WORKERS must be >= 1, got {raw_mw!r}",
+        )
+
+    raw_rg: Any = hf_xet_num_concurrent_range_gets
+    if raw_rg is None:
+        if "HF_XET_NUM_CONCURRENT_RANGE_GETS" in os.environ:
+            raw_rg = os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"]
+        else:
+            raw_rg = DEFAULT_HF_XET_NUM_CONCURRENT_RANGE_GETS
+
+    if isinstance(raw_rg, bool) or not re.fullmatch(r"\+?[0-9]+", str(raw_rg).strip()):
+        raise RefusalError(
+            "BAD_DOWNLOAD_CONFIG",
+            f"HF_XET_NUM_CONCURRENT_RANGE_GETS must be a non-negative integer (>= 0), got {raw_rg!r}",
+        )
+    rg_val = int(str(raw_rg).strip())
+    if rg_val < 0:
+        raise RefusalError(
+            "BAD_DOWNLOAD_CONFIG",
+            f"HF_XET_NUM_CONCURRENT_RANGE_GETS must be >= 0, got {raw_rg!r}",
+        )
+    return mw_val, rg_val
 
 
 def resolve_remote_code_arg_for_judge(spec: JudgeSpec) -> str | None:
@@ -1373,10 +1998,18 @@ def download_all_judge_weights(
     progress_path: Path | None = None,
     snapshot_download_fn: Any = None,
     only_judge_ids: Sequence[str] | None = None,
+    max_workers: Any = None,
+    hf_xet_num_concurrent_range_gets: Any = None,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Download each judge at its pinned 40-char revision and emit `judge_download_start` / `judge_download` progress lines."""
     _ensure_repo_imports(repo_dir)
     ensure_not_drive_path(hf_home)
+    eff_max_workers, eff_xet_range_gets = validate_download_config(
+        max_workers=max_workers,
+        hf_xet_num_concurrent_range_gets=hf_xet_num_concurrent_range_gets,
+    )
 
     dl_fn = snapshot_download_fn
     if dl_fn is None:
@@ -1390,56 +2023,106 @@ def download_all_judge_weights(
     if dl_fn is not None:
         hub_cache.mkdir(parents=True, exist_ok=True)
 
+    accepts_max_workers = False
+    if dl_fn is not None:
+        try:
+            sig = inspect.signature(dl_fn)
+            accepts_max_workers = (
+                "max_workers" in sig.parameters
+                or any(
+                    p.kind == inspect.Parameter.VAR_KEYWORD
+                    for p in sig.parameters.values()
+                )
+            )
+        except (TypeError, ValueError):
+            accepts_max_workers = True
+
     cumulative_bytes = 0
     cumulative_seconds = 0.0
     judge_records: list[dict[str, Any]] = []
 
-    for judge_id, spec in _select_judge_specs(only_judge_ids):
-        t0 = time.monotonic()
-        start_iso = _utc_now_iso()
-        append_progress_line(
-            progress_path,
-            {
-                "kind": "judge_download_start",
-                "judge_id": judge_id,
-                "judge": judge_id,
-                "repo_id": spec.repo_id,
-                "revision": spec.revision,
-                "start": start_iso,
-                "cumulative_bytes": cumulative_bytes,
-                "cumulative_seconds": round(cumulative_seconds, 6),
-            },
-        )
-        returned_snap: str | Path | None = None
-        if dl_fn is not None:
-            returned_snap = dl_fn(
-                repo_id=spec.repo_id,
-                revision=spec.revision,
-                cache_dir=str(hub_cache),
+    had_prev_xet = "HF_XET_NUM_CONCURRENT_RANGE_GETS" in os.environ
+    prev_xet_val = os.environ.get("HF_XET_NUM_CONCURRENT_RANGE_GETS")
+    try:
+        if eff_xet_range_gets == 0:
+            os.environ.pop("HF_XET_NUM_CONCURRENT_RANGE_GETS", None)
+        else:
+            os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = str(eff_xet_range_gets)
+
+        for judge_id, spec in _select_judge_specs(only_judge_ids):
+            t0 = time.monotonic()
+            start_iso = _utc_now_iso()
+            cg_start = read_cgroup_memory_events(
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
             )
-        snap_bytes = _judge_snapshot_bytes_on_disk(spec, hf_home, returned_snap)
-        elapsed_s = max(0.0, time.monotonic() - t0)
-        end_iso = _utc_now_iso()
-        cumulative_bytes += snap_bytes
-        cumulative_seconds += elapsed_s
-        rec = append_progress_line(
-            progress_path,
-            {
-                "kind": "judge_download",
-                "judge_id": judge_id,
-                "judge": judge_id,
-                "repo_id": spec.repo_id,
-                "revision": spec.revision,
-                "bytes": snap_bytes,
-                "bytes_on_disk": snap_bytes,
-                "start": start_iso,
-                "end": end_iso,
-                "seconds": round(elapsed_s, 6),
-                "cumulative_bytes": cumulative_bytes,
-                "cumulative_seconds": round(cumulative_seconds, 6),
-            },
-        )
-        judge_records.append(rec)
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "judge_download_start",
+                    "judge_id": judge_id,
+                    "judge": judge_id,
+                    "repo_id": spec.repo_id,
+                    "revision": spec.revision,
+                    "start": start_iso,
+                    "max_workers": eff_max_workers,
+                    "hf_xet_num_concurrent_range_gets": eff_xet_range_gets,
+                    "oom_kill": cg_start["oom_kill"],
+                    "oom": cg_start["oom"],
+                    "cumulative_bytes": cumulative_bytes,
+                    "cumulative_seconds": round(cumulative_seconds, 6),
+                },
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+            )
+            returned_snap: str | Path | None = None
+            if dl_fn is not None:
+                dl_kwargs: dict[str, Any] = {
+                    "repo_id": spec.repo_id,
+                    "revision": spec.revision,
+                    "cache_dir": str(hub_cache),
+                }
+                if accepts_max_workers:
+                    dl_kwargs["max_workers"] = eff_max_workers
+                returned_snap = dl_fn(**dl_kwargs)
+            snap_bytes = _judge_snapshot_bytes_on_disk(spec, hf_home, returned_snap)
+            elapsed_s = max(0.0, time.monotonic() - t0)
+            end_iso = _utc_now_iso()
+            cumulative_bytes += snap_bytes
+            cumulative_seconds += elapsed_s
+            cg_end = read_cgroup_memory_events(
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+            )
+            rec = append_progress_line(
+                progress_path,
+                {
+                    "kind": "judge_download",
+                    "judge_id": judge_id,
+                    "judge": judge_id,
+                    "repo_id": spec.repo_id,
+                    "revision": spec.revision,
+                    "bytes": snap_bytes,
+                    "bytes_on_disk": snap_bytes,
+                    "start": start_iso,
+                    "end": end_iso,
+                    "seconds": round(elapsed_s, 6),
+                    "max_workers": eff_max_workers,
+                    "hf_xet_num_concurrent_range_gets": eff_xet_range_gets,
+                    "oom_kill": cg_end["oom_kill"],
+                    "oom": cg_end["oom"],
+                    "cumulative_bytes": cumulative_bytes,
+                    "cumulative_seconds": round(cumulative_seconds, 6),
+                },
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+            )
+            judge_records.append(rec)
+    finally:
+        if had_prev_xet and prev_xet_val is not None:
+            os.environ["HF_XET_NUM_CONCURRENT_RANGE_GETS"] = prev_xet_val
+        else:
+            os.environ.pop("HF_XET_NUM_CONCURRENT_RANGE_GETS", None)
 
     return judge_records
 
@@ -1456,13 +2139,28 @@ def download_and_verify_all_judge_weights(
     step_timings: dict[str, dict[str, Any]] | None = None,
     step_order: list[str] | None = None,
     only_judge_ids: Sequence[str] | None = None,
+    max_workers: Any = None,
+    hf_xet_num_concurrent_range_gets: Any = None,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
 ) -> dict[str, str]:
     """Download each judge at its pinned 40-char revision (when not dryrun) and verify all snapshots against receipts."""
     _ensure_repo_imports(repo_dir)
     ensure_not_drive_path(receipts_dir)
     ensure_not_drive_path(hf_home)
+    eff_max_workers, eff_xet_range_gets = validate_download_config(
+        max_workers=max_workers,
+        hf_xet_num_concurrent_range_gets=hf_xet_num_concurrent_range_gets,
+    )
 
-    t_dl, start_dl, _ = _record_step_start("download", progress_path=progress_path)
+    t_dl, start_dl, _ = _record_step_start(
+        "download",
+        progress_path=progress_path,
+        extra={
+            "max_workers": eff_max_workers,
+            "hf_xet_num_concurrent_range_gets": eff_xet_range_gets,
+        },
+    )
     records = download_all_judge_weights(
         hf_home,
         dryrun=dryrun,
@@ -1470,6 +2168,10 @@ def download_and_verify_all_judge_weights(
         progress_path=progress_path,
         snapshot_download_fn=snapshot_download_fn,
         only_judge_ids=only_judge_ids,
+        max_workers=eff_max_workers,
+        hf_xet_num_concurrent_range_gets=eff_xet_range_gets,
+        cgroup_root=cgroup_root,
+        proc_cgroup_path=proc_cgroup_path,
     )
     if judge_records_out is not None:
         judge_records_out.extend(records)
@@ -1603,6 +2305,12 @@ def write_outputs_closed(
         for rf in sorted(rows_dir.glob("*.jsonl")):
             if rf.is_file():
                 candidate_rels.append(rf.relative_to(output_dir).as_posix())
+
+    judge_done_dir = output_dir / JUDGE_DONE_DIRNAME
+    if judge_done_dir.is_dir():
+        for jdf in sorted(judge_done_dir.glob("*.json")):
+            if jdf.is_file():
+                candidate_rels.append(jdf.relative_to(output_dir).as_posix())
 
     if not candidate_rels:
         raise RefusalError(
@@ -1873,6 +2581,8 @@ def is_allowed_tar_member(rel_posix_path: str) -> bool:
         return True
     if len(parts) == 2 and parts[0] == ROWS_DIRNAME and parts[1].endswith(".jsonl"):
         return True
+    if len(parts) == 2 and parts[0] == JUDGE_DONE_DIRNAME and parts[1].endswith(".json"):
+        return True
     if len(parts) == 2 and parts[0] == "logs" and parts[1].endswith(".log"):
         return True
     return False
@@ -2017,6 +2727,27 @@ class VramSampler:
         return self.peak_mib
 
 
+def _build_judge_venvs_map(work_dir: Path) -> dict[str, dict[str, str]]:
+    """Build per-judge `{venv, venv_python, lock_file, lock_sha256}` metadata map."""
+    out: dict[str, dict[str, str]] = {}
+    for judge_id in sorted(BAKEOFF_JUDGE_SPECS.keys()):
+        is_d3 = judge_id == D3_MINI_JUDGE_ID
+        venv_name = "venv-d3" if is_d3 else "venv-judge"
+        venv_python = (work_dir / venv_name / "bin" / "python").as_posix()
+        lock_file = "d3.lock.txt" if is_d3 else "judge.lock.txt"
+        lock_sha256 = (
+            EXPECTED_D3_LOCK_SHA256 if is_d3 else EXPECTED_JUDGE_LOCK_SHA256
+        )
+        out[judge_id] = {
+            "judge_id": judge_id,
+            "venv": venv_name,
+            "venv_python": venv_python,
+            "lock_file": lock_file,
+            "lock_sha256": lock_sha256,
+        }
+    return out
+
+
 def run_judges_pipeline(
     *,
     mode: str,
@@ -2027,9 +2758,23 @@ def run_judges_pipeline(
     vram_halt_mib: int = DEFAULT_VRAM_HALT_MIB,
     dryrun: bool = False,
     repo_root: Path | None = None,
+    work_dir: Path | None = None,
+    progress_path: Path | None = None,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+    proc_meminfo_path: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Run all 5 judges (10 pilot items in both AB and BA orders in time-one mode) and compute readouts."""
-    _ensure_repo_imports(repo_root)
+    """Run all 5 judges as separate child subprocesses in their synced venvs and compute readouts."""
+    eff_repo_dir = (repo_root or resolve_repo_dir()).resolve()
+    eff_work_dir = (
+        work_dir
+        if work_dir is not None
+        else Path(
+            os.environ.get(
+                "RDLAB_WORK_DIR", str(resolve_content_dir() / "rdlab_work")
+            )
+        )
+    )
     limit_items = TIME_ONE_ITEMS_LIMIT if mode == "time-one" else 2
     part_manifest = part_dir / "manifest.json"
     if not part_manifest.is_file():
@@ -2040,43 +2785,312 @@ def run_judges_pipeline(
             newline="\n",
         )
 
+    judge_done_dir = run_dir / JUDGE_DONE_DIRNAME
+    judge_done_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / ROWS_DIRNAME).mkdir(parents=True, exist_ok=True)
+
     per_judge_metrics: dict[str, Any] = {}
     for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
-        venv_name = "venv-d3" if judge_id == D3_MINI_JUDGE_ID else "venv-judge"
+        is_d3 = judge_id == D3_MINI_JUDGE_ID
+        venv_name = "venv-d3" if is_d3 else "venv-judge"
+        venv_python = eff_work_dir / venv_name / "bin" / "python"
+        lock_file = "d3.lock.txt" if is_d3 else "judge.lock.txt"
+        lock_sha256 = (
+            EXPECTED_D3_LOCK_SHA256 if is_d3 else EXPECTED_JUDGE_LOCK_SHA256
+        )
+        if not venv_python.exists() and dryrun:
+            _ensure_dryrun_venv_python_wrapper(venv_python)
+        if not venv_python.exists():
+            raise RefusalError(
+                "VENV_PYTHON_MISSING",
+                f"Expected judge venv interpreter not found for {judge_id!r}: {venv_python}",
+            )
+
         allow_remote_sha = resolve_remote_code_arg_for_judge(spec)
+        device_str = "cpu" if (dryrun or mode == "stub") else "cuda"
+        child_cmd: list[str] = [
+            str(venv_python),
+            "-m",
+            JUDGE_RUNNER_MODULE,
+            "--judge",
+            judge_id,
+            "--items",
+            str(part_dir),
+            "--output-dir",
+            str(run_dir),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(hf_home),
+            "--device",
+            device_str,
+            "--dtype",
+            DEFAULT_TORCH_DTYPE,
+            "--schedule-seed",
+            str(DEFAULT_SCHEDULE_SEED),
+            "--vram-halt-mib",
+            str(vram_halt_mib),
+            "--limit-items",
+            str(limit_items),
+            "--repo-root",
+            str(eff_repo_dir),
+        ]
+        if allow_remote_sha is not None:
+            child_cmd.extend(["--allow-remote-code-reviewed", allow_remote_sha])
+        if dryrun or mode == "stub":
+            child_cmd.append("--stub")
+
+        child_env = os.environ.copy()
+        child_env["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
+        child_env["HF_HOME"] = str(hf_home)
+        src_path = str(eff_repo_dir / "src")
+        existing_py_path = child_env.get("PYTHONPATH", "")
+        child_env["PYTHONPATH"] = (
+            f"{src_path}{os.pathsep}{existing_py_path}"
+            if existing_py_path
+            else src_path
+        )
+
+        cg_before = read_cgroup_memory_events(
+            cgroup_root=cgroup_root, proc_cgroup_path=proc_cgroup_path
+        )
+
         sampler = VramSampler(
             interval_s=float(VRAM_SAMPLE_INTERVAL_SECONDS), dryrun=dryrun
         )
         sampler.start()
         t_start = time.monotonic()
         try:
-            summary = run_bakeoff_judge(
-                part_dir=part_dir,
-                output_dir=run_dir,
-                judge=judge_id,
-                schedule_seed=DEFAULT_SCHEDULE_SEED,
-                pass_mode="binary",
-                limit_items=limit_items,
-                fake_transport=dryrun or (mode == "stub"),
-                receipts_dir=receipts_dir,
-                hf_home=hf_home,
-                device="cpu" if (dryrun or mode == "stub") else "cuda",
-                torch_dtype=DEFAULT_TORCH_DTYPE,
-                allow_remote_code_reviewed=allow_remote_sha,
-                vram_halt_mib=vram_halt_mib,
-                run_canary=True,
-                repo_root=repo_root,
+            proc = subprocess.run(
+                child_cmd,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=child_env,
+                start_new_session=True,
             )
         finally:
             sampler_peak = sampler.stop()
         wall_elapsed = max(0.0001, time.monotonic() - t_start)
 
+        cg_after = read_cgroup_memory_events(
+            cgroup_root=cgroup_root, proc_cgroup_path=proc_cgroup_path
+        )
+        oom_before = cg_before.get("oom_kill")
+        oom_after = cg_after.get("oom_kill")
+        oom_kill_delta: int | None = None
+        if oom_before is not None and oom_after is not None:
+            oom_kill_delta = max(0, int(oom_after) - int(oom_before))
+
+        mem_info = read_vm_memory_snapshot(proc_meminfo_path=proc_meminfo_path)
+        mem_avail_bytes = mem_info.get("mem_available_bytes")
+
+        stdout_tail = _scrub_and_tail(proc.stdout or "")
+        stderr_tail = _scrub_and_tail(proc.stderr or "")
+        if _ACTIVE_VM_LOG_PATH is not None:
+            try:
+                _ACTIVE_VM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+                cmd_scrubbed = scrub_log_text(" ".join(child_cmd))
+                with _ACTIVE_VM_LOG_PATH.open("a", encoding="utf-8", newline="\n") as lfh:
+                    lfh.write(
+                        f"VM_SUBPROCESS cmd={json.dumps(cmd_scrubbed)} rc={proc.returncode} duration_s={wall_elapsed:.6f}\n"
+                    )
+                    if stdout_tail:
+                        lfh.write(
+                            f"VM_SUBPROCESS_STDOUT_TAIL: {json.dumps(stdout_tail)}\n"
+                        )
+                    if stderr_tail:
+                        lfh.write(
+                            f"VM_SUBPROCESS_STDERR_TAIL: {json.dumps(stderr_tail)}\n"
+                        )
+            except OSError:
+                pass
+
+        state_dir_env = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
+        if state_dir_env:
+            try:
+                st_dir = Path(state_dir_env)
+                st_dir.mkdir(parents=True, exist_ok=True)
+                with (st_dir / "judge_subprocesses.jsonl").open(
+                    "a", encoding="utf-8", newline="\n"
+                ) as jfh:
+                    jfh.write(
+                        json.dumps(
+                            {
+                                "judge": judge_id,
+                                "judge_id": judge_id,
+                                "venv": venv_name,
+                                "venv_python": venv_python.as_posix(),
+                                "lock_file": lock_file,
+                                "lock_sha256": lock_sha256,
+                                "cmd": list(child_cmd),
+                                "returncode": proc.returncode,
+                                "stdin_devnull": True,
+                                "hf_deactivate_async_load": child_env.get(
+                                    "HF_DEACTIVATE_ASYNC_LOAD"
+                                ),
+                            },
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+            except OSError:
+                pass
+
+        if proc.returncode != 0:
+            raw_rc = int(proc.returncode)
+            sig_num: int | None = None
+            if raw_rc < 0:
+                sig_num = -raw_rc
+                exit_code = 128 + sig_num
+            elif raw_rc > 128:
+                sig_num = raw_rc - 128
+                exit_code = raw_rc
+            else:
+                exit_code = raw_rc
+
+            is_oom = (
+                sig_num == 9
+                or raw_rc in (-9, 137)
+                or (oom_kill_delta is not None and oom_kill_delta > 0)
+            )
+            failure_class = "JUDGE_CHILD_OOM" if is_oom else "JUDGE_CHILD_FAILED"
+            if is_oom and sig_num is None and raw_rc in (-9, 137):
+                sig_num = 9
+
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "judge_failed",
+                    "judge": judge_id,
+                    "judge_id": judge_id,
+                    "venv": venv_name,
+                    "venv_python": venv_python.as_posix(),
+                    "lock_sha256": lock_sha256,
+                    "exit_code": exit_code,
+                    "returncode": raw_rc,
+                    "signal": sig_num,
+                    "oom_kill": oom_after,
+                    "oom": cg_after.get("oom"),
+                    "oom_kill_delta": oom_kill_delta,
+                    "mem_available_bytes": mem_avail_bytes,
+                    "stderr_tail": stderr_tail,
+                    "failure_class": failure_class,
+                },
+            )
+            raise JudgeChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=raw_rc,
+                exit_code=exit_code,
+                signal_num=sig_num,
+                oom=cg_after.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                failure_class=failure_class,
+                duration_seconds=wall_elapsed,
+                completed_judges=per_judge_metrics,
+            )
+
         row_file = run_dir / ROWS_DIRNAME / f"{judge_id}.jsonl"
+        done_file = judge_done_dir / f"{judge_id}.json"
+        if not row_file.is_file():
+            raise JudgeChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=0,
+                exit_code=0,
+                signal_num=None,
+                oom=cg_after.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=f"Judge {judge_id} exited 0 but {row_file} is missing",
+                failure_class="JUDGE_CHILD_FAILED",
+                duration_seconds=wall_elapsed,
+                completed_judges=per_judge_metrics,
+            )
+        if not done_file.is_file():
+            raise JudgeChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=0,
+                exit_code=0,
+                signal_num=None,
+                oom=cg_after.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=f"Judge {judge_id} exited 0 but {done_file} is missing",
+                failure_class="JUDGE_CHILD_FAILED",
+                duration_seconds=wall_elapsed,
+                completed_judges=per_judge_metrics,
+            )
+
+        row_bytes = row_file.read_bytes()
+        actual_rows_sha = hashlib.sha256(row_bytes).hexdigest()
         row_objs = [
             json.loads(ln)
-            for ln in row_file.read_text(encoding="utf-8").splitlines()
+            for ln in row_bytes.decode("utf-8").splitlines()
             if ln.strip()
         ]
+        done_doc = json.loads(done_file.read_text(encoding="utf-8"))
+        expected_row_count = int(done_doc.get("row_count", -1))
+        expected_rows_sha = str(done_doc.get("sha256", ""))
+        if len(row_objs) != expected_row_count or actual_rows_sha != expected_rows_sha:
+            raise JudgeChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=0,
+                exit_code=0,
+                signal_num=None,
+                oom=cg_after.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=(
+                    f"Judge {judge_id} checkpoint mismatch: rows={len(row_objs)} "
+                    f"(expected {expected_row_count}), sha256={actual_rows_sha} (expected {expected_rows_sha})"
+                ),
+                failure_class="JUDGE_CHILD_FAILED",
+                duration_seconds=wall_elapsed,
+                completed_judges=per_judge_metrics,
+            )
+
+        append_progress_line(
+            progress_path,
+            {
+                "kind": "judge_pass_done",
+                "judge": judge_id,
+                "judge_id": judge_id,
+                "venv": venv_name,
+                "venv_python": venv_python.as_posix(),
+                "lock_sha256": lock_sha256,
+                "row_count": len(row_objs),
+                "sha256": actual_rows_sha,
+            },
+        )
+
         call_durations = [float(r.get("seconds", 0.0)) for r in row_objs]
         sum_call_s = sum(call_durations)
         load_time_s = round(max(0.0, wall_elapsed - sum_call_s), 6)
@@ -2086,24 +3100,29 @@ def run_judges_pipeline(
             else 0.0
         )
         p95_s = round(compute_percentile(call_durations, 95.0), 6)
-        harness_peak = int(summary.get("vram_peak_mib", 0))
+        harness_peak = int(done_doc.get("vram_peak_mib", 0))
         peak_vram = max(harness_peak, sampler_peak)
-        canary_info = summary.get("canary") or {
+        canary_info = done_doc.get("canary") or {
             "passed": True,
             "max_logprob_drift": 0.0,
             "label_flips": 0,
             "top5_token_mismatches": 0,
         }
-        dtype_str = str(summary.get("dtype") or DEFAULT_TORCH_DTYPE)
+        dtype_str = str(done_doc.get("dtype") or DEFAULT_TORCH_DTYPE)
 
         per_judge_metrics[judge_id] = {
             "judge_id": judge_id,
             "repo_id": spec.repo_id,
             "revision": spec.revision,
             "venv": venv_name,
-            "items_count": int(summary.get("items_count", limit_items)),
+            "venv_python": venv_python.as_posix(),
+            "lock_file": lock_file,
+            "lock_sha256": lock_sha256,
+            "row_count": len(row_objs),
+            "rows_sha256": actual_rows_sha,
+            "items_count": int(done_doc.get("items_count", limit_items)),
             "orders": ["AB", "BA"],
-            "calls_count": int(summary.get("calls_count", len(row_objs))),
+            "calls_count": int(done_doc.get("calls_count", len(row_objs))),
             "load_time": load_time_s,
             "load_time_seconds": load_time_s,
             "per_call_median": median_s,
@@ -2341,6 +3360,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--until",
         default=env_or("RDLAB_UNTIL", None),
+    )
+    parser.add_argument(
+        "--hf-download-max-workers",
+        default=env_or("RDLAB_HF_DOWNLOAD_MAX_WORKERS", None),
+    )
+    parser.add_argument(
+        "--hf-xet-num-concurrent-range-gets",
+        default=env_or("HF_XET_NUM_CONCURRENT_RANGE_GETS", None),
     )
     parser.add_argument(
         "--resume",
@@ -3435,6 +4462,12 @@ def main(argv: list[str] | None = None) -> int:
         until_step = validate_until_option(args.mode, getattr(args, "until", None))
         stopped_after: str | None = None
 
+        current_step = "validate_download_config"
+        dl_max_workers, dl_xet_range_gets = validate_download_config(
+            getattr(args, "hf_download_max_workers", None),
+            getattr(args, "hf_xet_num_concurrent_range_gets", None),
+        )
+
         current_step = "check_upload_path_allowed"
         check_upload_path_allowed(args.items_file)
 
@@ -3524,6 +4557,8 @@ def main(argv: list[str] | None = None) -> int:
                 step_timings=step_timings,
                 step_order=step_order,
                 only_judge_ids=(FIRST_JUDGE_ID,),
+                max_workers=dl_max_workers,
+                hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
             )
             stopped_after = "first_judge"
         elif until_step == "weights":
@@ -3537,6 +4572,8 @@ def main(argv: list[str] | None = None) -> int:
                 judge_records_out=judge_download_records,
                 step_timings=step_timings,
                 step_order=step_order,
+                max_workers=dl_max_workers,
+                hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
             )
             stopped_after = "weights"
         else:
@@ -3550,6 +4587,8 @@ def main(argv: list[str] | None = None) -> int:
                 judge_records_out=judge_download_records,
                 step_timings=step_timings,
                 step_order=step_order,
+                max_workers=dl_max_workers,
+                hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
             )
 
             current_step = "run_judges_pipeline"
@@ -3566,6 +4605,8 @@ def main(argv: list[str] | None = None) -> int:
                 vram_halt_mib=args.vram_halt_mib,
                 dryrun=dryrun,
                 repo_root=args.repo_dir,
+                work_dir=args.work_dir,
+                progress_path=progress_path,
             )
             _record_step_end(
                 "judge_pass",
@@ -3601,6 +4642,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         py_rep = venv_info["python_315_report"]
+        judge_venvs_map = _build_judge_venvs_map(args.work_dir)
         receipt_doc: dict[str, Any] = {
             "status": "ok",
             "mode": args.mode,
@@ -3622,6 +4664,7 @@ def main(argv: list[str] | None = None) -> int:
             "python_315_report": py_rep,
             "lock_digests": lock_digests,
             "venvs": venv_info,
+            "judge_venvs": judge_venvs_map,
             "verified_snapshots": verified_snapshots,
             "deleted_items_receipt": deleted_items_receipt,
             "time_one_summary": time_one_summary,
@@ -3675,6 +4718,7 @@ def main(argv: list[str] | None = None) -> int:
             "install_seconds": py_rep["install_seconds"],
             "route": py_rep["route"],
             "lock_sdists": venv_info["lock_sdists"],
+            "judge_venvs": judge_venvs_map,
         }
         if until_step is not None:
             status_extra["until"] = until_step
@@ -3732,6 +4776,7 @@ def main(argv: list[str] | None = None) -> int:
             "detail": scrub_log_text(str(detail)),
             "reason": f"{failure_class}: {scrub_log_text(str(detail))}",
             "mode": args.mode,
+            "judge_venvs": _build_judge_venvs_map(args.work_dir),
             "deleted_items_receipt": deleted_items_receipt,
             "timings": _build_timings_block(),
         }
@@ -3741,6 +4786,24 @@ def main(argv: list[str] | None = None) -> int:
             fail_receipt["stderr_tail"] = _scrub_and_tail(err_stderr_tail)
         if err_subproc_rec is not None:
             fail_receipt["subprocess"] = err_subproc_rec
+        status_fail_extra: dict[str, Any] = {}
+        if isinstance(err, JudgeChildProcessError):
+            for k in (
+                "judge",
+                "judge_id",
+                "venv",
+                "venv_python",
+                "lock_sha256",
+                "exit_code",
+                "signal",
+                "oom_kill",
+                "oom",
+                "oom_kill_delta",
+                "mem_available_bytes",
+            ):
+                if err_subproc_rec is not None and k in err_subproc_rec:
+                    fail_receipt[k] = err_subproc_rec[k]
+                    status_fail_extra[k] = err_subproc_rec[k]
         receipt_path.write_text(
             json.dumps(fail_receipt, indent=2) + "\n",
             encoding="utf-8",
@@ -3760,6 +4823,7 @@ def main(argv: list[str] | None = None) -> int:
             stdout_tail=err_stdout_tail,
             stderr_tail=err_stderr_tail,
             subprocess_record=err_subproc_rec,
+            extra=status_fail_extra or None,
         )
         try:
             append_progress_line(
