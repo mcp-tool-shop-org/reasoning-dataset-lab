@@ -23,6 +23,7 @@ import sys
 import tarfile
 import time
 import urllib.parse
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -222,6 +223,109 @@ def build_fixture_python_archive(
     return archive_path, hashlib.sha256(raw).hexdigest(), len(raw)
 
 
+PINNED_UV_WHEEL_EXACT_SIZE_BYTES = 17_211_825
+_CACHED_DEFAULT_UV_WHEEL: tuple[Path, str, int] | None = None
+
+
+def build_fixture_uv_wheel(
+    wheel_path: Path,
+    *,
+    uv_binary_version: str = "0.13.5",
+    target_size: int = PINNED_UV_WHEEL_EXACT_SIZE_BYTES,
+    omit_uv_member: bool = False,
+    omit_uvx_member: bool = False,
+    extra_member_name: str | None = None,
+    extra_member_is_symlink: bool = False,
+    tamper_after_build: bool = False,
+) -> tuple[Path, str, int]:
+    """Build a 12-member fixture `uv-0.13.5` `.whl` of exact size `target_size` (`17,211,825` bytes) and return `(path, sha256, bytes)`."""
+    wheel_path = Path(wheel_path)
+    if wheel_path.is_dir() or not wheel_path.name.endswith(".whl"):
+        wheel_path = (
+            wheel_path
+            / "uv-0.13.5-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+        )
+    wheel_path.parent.mkdir(parents=True, exist_ok=True)
+
+    fake_colab_py_posix = _to_posix(Path(__file__).resolve())
+    uv_script = (
+        "#!/usr/bin/env bash\n"
+        'export FAKE_COLAB_UV_INVOKED_AS="$0"\n'
+        'export FAKE_COLAB_UV_SOURCE="pinned-wheel"\n'
+        f'export FAKE_COLAB_PINNED_UV_BINARY_VERSION="uv {uv_binary_version}"\n'
+        f"exec python3 '{fake_colab_py_posix}' --fake-uv \"$@\"\n"
+    ).encode("utf-8")
+    uvx_script = (
+        "#!/usr/bin/env bash\n"
+        f'echo "uvx {uv_binary_version}"\n'
+    ).encode("utf-8")
+
+    members: list[tuple[str, bytes, int]] = [
+        ("uv/__init__.py", b"__all__ = ['find_uv_bin']\n", 0o644),
+        ("uv/__main__.py", b"import sys\n", 0o644),
+        ("uv/_find_uv.py", b"def find_uv_bin() -> str: return 'uv'\n", 0o644),
+        ("uv/py.typed", b"", 0o644),
+    ]
+    if not omit_uv_member:
+        members.append(("uv-0.13.5.data/scripts/uv", uv_script, 0o755))
+    if not omit_uvx_member:
+        members.append(("uv-0.13.5.data/scripts/uvx", uvx_script, 0o755))
+    members.extend(
+        [
+            ("uv-0.13.5.dist-info/METADATA", b"Metadata-Version: 2.3\nName: uv\nVersion: 0.13.5\n", 0o644),
+            ("uv-0.13.5.dist-info/WHEEL", b"Wheel-Version: 1.0\nGenerator: maturin\nRoot-Is-Purelib: false\nTag: py3-none-manylinux_2_17_x86_64\n", 0o644),
+            ("uv-0.13.5.dist-info/entry_points.txt", b"[console_scripts]\nuv = uv:main\nuvx = uv:main\n", 0o644),
+            ("uv-0.13.5.dist-info/licenses/LICENSE-APACHE", b"Apache-2.0\n", 0o644),
+            ("uv-0.13.5.dist-info/licenses/LICENSE-MIT", b"MIT\n", 0o644),
+        ]
+    )
+    if extra_member_name is not None:
+        ext_mode = 0o120777 if extra_member_is_symlink else 0o100644
+        members.append((extra_member_name, b"/tmp/target", ext_mode))
+
+    def _write_zip(buf: io.BytesIO | Path, record_bytes: bytes) -> None:
+        with zipfile.ZipFile(
+            buf, "w", compression=zipfile.ZIP_STORED, allowZip64=False
+        ) as zf:
+            for arcname, payload, mode in members:
+                zi = zipfile.ZipInfo(filename=arcname, date_time=(2026, 10, 21, 0, 0, 0))
+                zi.compress_type = zipfile.ZIP_STORED
+                full_mode = mode if (mode & 0o170000) else (0o100000 | mode)
+                zi.external_attr = (full_mode & 0xFFFF) << 16
+                zf.writestr(zi, payload)
+            rec_zi = zipfile.ZipInfo(
+                filename="uv-0.13.5.dist-info/RECORD",
+                date_time=(2026, 10, 21, 0, 0, 0),
+            )
+            rec_zi.compress_type = zipfile.ZIP_STORED
+            rec_zi.external_attr = (0o100644 & 0xFFFF) << 16
+            zf.writestr(rec_zi, record_bytes)
+
+    probe_bio = io.BytesIO()
+    _write_zip(probe_bio, b"")
+    base_len = len(probe_bio.getvalue())
+    pad_len = max(0, int(target_size) - base_len)
+    record_payload = (b"R" * max(0, pad_len - 1)) + (b"\n" if pad_len > 0 else b"")
+    _write_zip(wheel_path, record_payload)
+
+    raw = bytearray(wheel_path.read_bytes())
+    if tamper_after_build and len(raw) > 64:
+        raw[-64] ^= 0x01
+        wheel_path.write_bytes(bytes(raw))
+    final_bytes = bytes(raw)
+    return wheel_path, hashlib.sha256(final_bytes).hexdigest(), len(final_bytes)
+
+
+def _get_default_fixture_uv_wheel() -> tuple[Path, str, int]:
+    """Return a cached valid 12-member `17,211,825`-byte fixture wheel in `/tmp`."""
+    global _CACHED_DEFAULT_UV_WHEEL
+    if _CACHED_DEFAULT_UV_WHEEL is not None and _CACHED_DEFAULT_UV_WHEEL[0].is_file():
+        return _CACHED_DEFAULT_UV_WHEEL
+    cache_path = Path(f"/tmp/rdlab-fixture-uv-0.13.5-{os.getpid()}.whl")
+    _CACHED_DEFAULT_UV_WHEEL = build_fixture_uv_wheel(cache_path)
+    return _CACHED_DEFAULT_UV_WHEEL
+
+
 def setup_fake_colab_environment(
     base_dir: Path,
     *,
@@ -253,6 +357,7 @@ def setup_fake_colab_environment(
         newline="\n",
     )
 
+    default_wheel_path, default_wheel_sha, _ = _get_default_fixture_uv_wheel()
     uv_state_file = state_dir / "uv_state.json"
     uv_state_file.write_text(
         json.dumps(
@@ -261,6 +366,8 @@ def setup_fake_colab_environment(
                 "python_315_found": bool(uv_python_315_found),
                 "python_315_path": uv_python_315_path,
                 "python_315_stderr": uv_python_315_stderr,
+                "uv_wheel_path": str(default_wheel_path),
+                "expected_uv_wheel_sha256": default_wheel_sha,
             },
             indent=2,
         )
@@ -320,6 +427,8 @@ def setup_fake_colab_environment(
     fake_uv_sh.write_text(
         "#!/usr/bin/env bash\n"
         f"export FAKE_COLAB_STATE_DIR=\"${{FAKE_COLAB_STATE_DIR:-{_to_posix(state_dir)}}}\"\n"
+        'export FAKE_COLAB_UV_INVOKED_AS="${FAKE_COLAB_UV_INVOKED_AS:-$0}"\n'
+        'export FAKE_COLAB_UV_SOURCE="${FAKE_COLAB_UV_SOURCE:-image}"\n'
         f"exec python3 '{fake_colab_py_posix}' --fake-uv \"$@\"\n",
         encoding="utf-8",
         newline="\n",
@@ -381,6 +490,14 @@ def set_fake_uv_python_315_state(
     curl_stderr: str = "curl: (22) The requested URL returned error: 500",
     archive_size_bytes: int | None = None,
     curl_ignore_max_filesize: bool = False,
+    uv_wheel_path: Path | str | None = None,
+    expected_uv_wheel_sha256: str | None = None,
+    uv_wheel_download_fail: bool = False,
+    uv_wheel_download_error: str = "HTTP 503 Service Unavailable",
+    uv_wheel_download_http_code: int = 503,
+    uv_wheel_short_read_bytes: int | None = None,
+    uv_wheel_content_length: int | None = None,
+    pinned_uv_binary_version: str | None = None,
 ) -> Path:
     """Update the fake `uv` + `curl` state file controlling find-or-install behavior."""
     state_dir = (
@@ -389,6 +506,15 @@ def set_fake_uv_python_315_state(
         else state_dir_or_env
     )
     state_dir.mkdir(parents=True, exist_ok=True)
+    default_wheel_path, default_wheel_sha, _ = _get_default_fixture_uv_wheel()
+    eff_wheel_path = (
+        str(uv_wheel_path) if uv_wheel_path is not None else str(default_wheel_path)
+    )
+    eff_wheel_sha = (
+        expected_uv_wheel_sha256
+        if expected_uv_wheel_sha256 is not None
+        else default_wheel_sha
+    )
     uv_state_file = state_dir / "uv_state.json"
     state_payload: dict[str, Any] = {
         "version": uv_version,
@@ -408,6 +534,14 @@ def set_fake_uv_python_315_state(
         "curl_stderr": curl_stderr,
         "archive_size_bytes": archive_size_bytes,
         "curl_ignore_max_filesize": bool(curl_ignore_max_filesize),
+        "uv_wheel_path": eff_wheel_path,
+        "expected_uv_wheel_sha256": eff_wheel_sha,
+        "uv_wheel_download_fail": bool(uv_wheel_download_fail),
+        "uv_wheel_download_error": uv_wheel_download_error,
+        "uv_wheel_download_http_code": int(uv_wheel_download_http_code),
+        "uv_wheel_short_read_bytes": uv_wheel_short_read_bytes,
+        "uv_wheel_content_length": uv_wheel_content_length,
+        "pinned_uv_binary_version": pinned_uv_binary_version,
     }
     uv_state_file.write_text(
         json.dumps(state_payload, indent=2) + "\n",
@@ -582,12 +716,34 @@ def run_fake_uv(argv: list[str]) -> int:
     state_dir.mkdir(parents=True, exist_ok=True)
     uv_state = _load_fake_uv_state(state_dir)
 
+    invoked_as = os.environ.get("FAKE_COLAB_UV_INVOKED_AS", "uv")
+    uv_source = os.environ.get("FAKE_COLAB_UV_SOURCE") or (
+        "pinned-wheel" if "/tmp/uv-pinned" in invoked_as else "image"
+    )
+    if (
+        invoked_as.startswith("/tmp/uv-pinned")
+        and state_dir_raw
+        and not (state_dir / ".pinned_uv_installed").is_file()
+        and not (state_dir / ".pinned_uv_downloading").is_file()
+    ):
+        non_pinned_path = os.pathsep.join(
+            p
+            for p in os.environ.get("PATH", "").split(os.pathsep)
+            if p and p != "/tmp/uv-pinned"
+        )
+        fallback_uv = shutil.which("uv", path=non_pinned_path)
+        invoked_as = fallback_uv or "uv"
+        uv_source = "image"
+
     uv_calls_log = state_dir / "uv_calls.jsonl"
     with uv_calls_log.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(
             json.dumps(
                 {
                     "args": list(argv),
+                    "uv_bin": invoked_as,
+                    "uv_source": uv_source,
+                    "path": os.environ.get("PATH"),
                     "uv_system_python": os.environ.get("UV_SYSTEM_PYTHON"),
                     "ts": time.time(),
                 }
@@ -599,9 +755,16 @@ def run_fake_uv(argv: list[str]) -> int:
     plant_sfx = f" {plant}" if plant else ""
 
     if argv == ["--version"]:
-        ver = os.environ.get(
-            "FAKE_COLAB_UV_VERSION", str(uv_state.get("version") or "uv 0.13.5")
-        )
+        if uv_source == "pinned-wheel":
+            state_pver = uv_state.get("pinned_uv_binary_version")
+            if state_pver and invoked_as.startswith("/tmp/uv-pinned"):
+                ver = str(state_pver)
+            else:
+                ver = os.environ.get("FAKE_COLAB_PINNED_UV_BINARY_VERSION", "uv 0.13.5")
+        else:
+            ver = os.environ.get(
+                "FAKE_COLAB_UV_VERSION", str(uv_state.get("version") or "uv 0.13.5")
+            )
         sys.stdout.write(f"{ver}{plant_sfx}\n")
         return 0
 
@@ -1468,6 +1631,7 @@ def main(argv: list[str] | None = None) -> int:
         "lock_held": lock_held,
         "reconcile_locks": reconcile_locks_present,
         "stdin_is_devnull": stdin_is_devnull,
+        "request_timeout": os.environ.get("REQUEST_TIMEOUT"),
         "ts": time.time(),
     }
     with calls_log.open("a", encoding="utf-8", newline="\n") as fh:
@@ -1886,7 +2050,7 @@ def main(argv: list[str] | None = None) -> int:
                 "    plant = os.environ.get('FAKE_COLAB_PROBE_PLANT_STDOUT', '')\n"
                 "    plant_sfx = (' ' + plant) if plant else ''\n"
                 "    if cmd_list[:2] == ['uv', '--version']:\n"
-                "        if os.environ.get('FAKE_COLAB_UV_ABSENT') == '1':\n"
+                "        if os.environ.get('FAKE_COLAB_UV_ABSENT') == '1' and '/tmp/uv-pinned' not in call_env.get('PATH', '').split(os.pathsep):\n"
                 "            raise FileNotFoundError(2, 'No such file or directory', 'uv')\n"
                 "        return _real_subproc_run(['uv', '--version'], *a, **kw)\n"
                 "    if cmd_list[:2] == ['uv', 'venv']:\n"
