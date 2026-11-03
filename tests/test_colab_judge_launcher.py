@@ -8655,11 +8655,9 @@ def test_fix6_addendum1_judge_download_module_imports_and_in_process_coverage(
     )
     assert judge_download._collect_snapshot_files(nonexistent_snap) == ([], 0)
 
-    monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", "9.9.9")
-    monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", "8.8.8")
-    assert judge_download.detect_download_stack_versions() == ("9.9.9", "8.8.8")
-    monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", raising=False)
-    monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", raising=False)
+    fake_hub.__version__ = "2.4.0"  # type: ignore[attr-defined]
+    fake_xet.__version__ = "1.8.0"  # type: ignore[attr-defined]
+    assert judge_download.detect_download_stack_versions() == ("2.4.0", "1.8.0")
 
     fake_hub.__version__ = ""  # type: ignore[attr-defined]
     fake_xet.__version__ = ""  # type: ignore[attr-defined]
@@ -8941,14 +8939,23 @@ def test_fix6_addendum1_download_child_failures_and_version_mismatch(
             monkeypatch.setenv("FAKE_COLAB_FAIL_DOWNLOAD_CHILD", fail_spec)
         else:
             monkeypatch.delenv("FAKE_COLAB_FAIL_DOWNLOAD_CHILD", raising=False)
+        site_pkgs = work_dir / "venv-judge" / "site-packages"
         if override_hub:
-            monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", override_hub)
-        else:
-            monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", raising=False)
+            hf_pkg = site_pkgs / "huggingface_hub"
+            hf_pkg.mkdir(parents=True, exist_ok=True)
+            (hf_pkg / "__init__.py").write_text(
+                f"__version__ = {override_hub!r}\n_IS_FAKE_HF_HUB = True\n"
+                "def snapshot_download(repo_id, revision=None, cache_dir=None, **kw):\n"
+                "    return str(cache_dir or '.')\n",
+                encoding="utf-8",
+            )
         if override_xet:
-            monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", override_xet)
-        else:
-            monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", raising=False)
+            xet_pkg = site_pkgs / "hf_xet"
+            xet_pkg.mkdir(parents=True, exist_ok=True)
+            (xet_pkg / "__init__.py").write_text(
+                f"__version__ = {override_xet!r}\n",
+                encoding="utf-8",
+            )
 
         with pytest.raises(vm_judges.DownloadChildProcessError) as exc_info:
             vm_judges.download_all_judge_weights(
@@ -8985,8 +8992,6 @@ def test_fix6_addendum1_download_child_failures_and_version_mismatch(
         assert fl["nearest_finite_memory_current"] == 4294967296
 
     monkeypatch.delenv("FAKE_COLAB_FAIL_DOWNLOAD_CHILD", raising=False)
-    monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", raising=False)
-    monkeypatch.delenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", raising=False)
 
 
 def test_fix6_addendum1_order_and_until_stages(tmp_path: Path) -> None:
@@ -9159,6 +9164,588 @@ def test_fix6_addendum1_order_and_until_stages(tmp_path: Path) -> None:
         ("judge_child", jid) for jid in expected_judges
     ]
     assert [(e["event"], e.get("judge_id")) for e in lc_full] == expected_full_events
+
+
+def test_timeone_readiness_1_gpu_gate_order_and_empty_download_log_on_failure(
+    tmp_path: Path,
+) -> None:
+    """Time-one readiness Test 1:
+    - `gpu_gate` in `--time-one` (fake child) runs AFTER the venv sync and BEFORE any download child.
+    - The fake download child's launch log (`download_subprocesses.jsonl`) is empty when the gate fails.
+    """
+    expected_judges = sorted(vm_judges.BAKEOFF_JUDGE_SPECS.keys())
+
+    # 1. `--time-one` with passing `gpu_gate`: runs `venv_sync` -> `gpu_gate` (venv-judge, venv-d3) -> downloads -> judges
+    env_ok = fake_colab.setup_fake_colab_environment(tmp_path / "env_ok")
+    receipts_ok, hf_ok = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_ok"
+    )
+    items_ok = _make_synthetic_public_items(tmp_path / "data_ok", count=2)
+    out_ok = tmp_path / "out_ok"
+    exports_ok = _base_launcher_exports(
+        env_ok,
+        open_lock=tmp_path / "ok.lock",
+        receipts_dir=receipts_ok,
+        hf_home=hf_ok,
+        items_file=items_ok,
+    )
+    proc_ok = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_ok} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_ok)}' --run-id timeone-gpu-ok-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_ok.returncode == 0, f"stderr={proc_ok.stderr}"
+    lc_ok = [
+        json.loads(ln)
+        for ln in (env_ok["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    expected_ok_events: list[tuple[str, str | None]] = [
+        ("venv_sync", None),
+        ("gpu_gate", "venv-judge"),
+        ("gpu_gate", "venv-d3"),
+    ]
+    for jid in expected_judges:
+        expected_ok_events.append(("download_child", jid))
+        expected_ok_events.append(("parent_verify", jid))
+    for jid in expected_judges:
+        expected_ok_events.append(("judge_child", jid))
+    assert [
+        (e["event"], e.get("venv") if e["event"] == "gpu_gate" else e.get("judge_id"))
+        for e in lc_ok
+    ] == expected_ok_events
+
+    prog_ok = [
+        json.loads(ln)
+        for ln in (out_ok / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    kinds_ok = [r["kind"] for r in prog_ok]
+    assert "gpu_gate" in kinds_ok
+    assert kinds_ok.index("gpu_gate") < kinds_ok.index("judge_download")
+
+    receipt_ok = json.loads((out_ok / "vm_receipt.json").read_text(encoding="utf-8"))
+    gate_ok = json.loads((out_ok / "gate_status.json").read_text(encoding="utf-8"))
+    for doc in (receipt_ok, gate_ok):
+        assert doc["gpu_gate"]["status"] == "ok"
+        for vname in ("venv-judge", "venv-d3"):
+            vrec = doc["gpu_gate"]["venvs"][vname]
+            assert vrec["cuda_is_available"] is True
+            assert vrec["device_count"] >= 1
+            assert vrec["device_query"]["matmul_shape"] == [1024, 1024]
+            assert vrec["device_query"]["matmul_finite"] is True
+
+    # 2. `--time-one` when `gpu_gate` fails: no download child starts; download launch log is empty
+    env_fail = fake_colab.setup_fake_colab_environment(tmp_path / "env_fail")
+    out_fail = tmp_path / "out_fail"
+    exports_fail = (
+        _base_launcher_exports(
+            env_fail,
+            open_lock=tmp_path / "fail.lock",
+            receipts_dir=receipts_ok,
+            hf_home=hf_ok,
+            items_file=items_ok,
+        )
+        + "export FAKE_COLAB_GPU_GATE_MODE='not_available'; "
+    )
+    proc_fail = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_fail} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_fail)}' --run-id timeone-gpu-fail-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_fail.returncode == 2
+    dl_log = env_fail["state_dir"] / "download_subprocesses.jsonl"
+    assert not dl_log.exists() or dl_log.read_text(encoding="utf-8").strip() == ""
+    lc_fail = [
+        json.loads(ln)
+        for ln in (env_fail["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert [
+        (e["event"], e.get("venv") if e["event"] == "gpu_gate" else e.get("judge_id"))
+        for e in lc_fail
+    ] == [
+        ("venv_sync", None),
+        ("gpu_gate", "venv-judge"),
+    ]
+    status_fail = json.loads((out_fail / "status.json").read_text(encoding="utf-8"))
+    assert status_fail["rc"] == 2
+    assert status_fail["status"] == "refused"
+    assert status_fail["failure_class"] == "GPU_GATE_FAILED"
+
+
+def test_timeone_readiness_2_gpu_gate_all_failure_modes_and_normal_stop_path(
+    tmp_path: Path,
+) -> None:
+    """Time-one readiness Test 2:
+    - Every `gpu_gate` failure (not available, exception, non-finite result, timeout) gives
+      `GPU_GATE_FAILED` with the venv named, the exit code, and a scrubbed stderr tail,
+      plus the normal stop path (`status.json`, `vm_receipt.json`, `result.tar.gz`, `run_end`).
+    - Diagnostic fields (`cuda_is_available`, `device_count`, `device_query`, `torch_version_cuda`,
+      `cuda_runtime_version`, `nvidia_smi_driver_line`, `exception_type`, `exception_message`)
+      are recorded and scrubbed.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_modes"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_modes", count=2)
+    planted_tok = "hf_" + "GpuGateSecretToken9876543210987654"
+
+    failure_cases = [
+        ("not_available", "venv-judge", {}),
+        ("exception", "venv-d3", {"FAKE_COLAB_GPU_GATE_SECRET": planted_tok}),
+        ("non_finite", "venv-judge", {}),
+        (
+            "timeout",
+            "venv-d3",
+            {
+                "RDLAB_GPU_GATE_TIMEOUT_SECONDS": "0.2",
+                "FAKE_COLAB_GPU_GATE_SLEEP_SECONDS": "2.0",
+            },
+        ),
+    ]
+
+    for mode_name, target_venv, extra_vars in failure_cases:
+        sub = tmp_path / f"mode_{mode_name}_{target_venv}"
+        env = fake_colab.setup_fake_colab_environment(sub / "env")
+        out_dir = sub / "out"
+        merged_extra = {
+            "FAKE_COLAB_GPU_GATE_MODE": mode_name,
+            "FAKE_COLAB_GPU_GATE_VENV": target_venv,
+            **extra_vars,
+        }
+        exports = _base_launcher_exports(
+            env,
+            open_lock=sub / "run.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        ) + "".join(f"export {k}='{v}'; " for k, v in merged_extra.items())
+        proc = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_dir)}' --run-id gpu-fail-{mode_name}",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        assert proc.returncode == 2, f"mode={mode_name} stderr={proc.stderr}"
+        dl_log = env["state_dir"] / "download_subprocesses.jsonl"
+        assert not dl_log.exists()
+
+        # Normal stop path artifacts
+        status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+        receipt_doc = json.loads(
+            (out_dir / "vm_receipt.json").read_text(encoding="utf-8")
+        )
+        gate_doc = json.loads(
+            (out_dir / "gate_status.json").read_text(encoding="utf-8")
+        )
+        assert (out_dir / "result.tar.gz").is_file()
+        prog_lines = [
+            json.loads(ln)
+            for ln in (out_dir / "progress.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if ln.strip()
+        ]
+        assert prog_lines[-1]["kind"] == "run_end"
+        assert prog_lines[-1]["status"] == "refused"
+        assert prog_lines[-1]["rc"] == 2
+        gpu_prog = [r for r in prog_lines if r["kind"] == "gpu_gate"]
+        assert len(gpu_prog) == 1
+        assert gpu_prog[0]["status"] == "failed"
+        assert gpu_prog[0]["failure_class"] == "GPU_GATE_FAILED"
+        assert gpu_prog[0]["failed_venv"] == target_venv
+
+        assert status_doc["rc"] == 2
+        assert status_doc["status"] == "refused"
+        assert status_doc["failure_class"] == "GPU_GATE_FAILED"
+        assert target_venv in status_doc["reason"]
+
+        for doc in (receipt_doc, gate_doc):
+            gg = doc["gpu_gate"]
+            assert gg["status"] == "failed"
+            assert gg["failure_class"] == "GPU_GATE_FAILED"
+            assert gg["failed_venv"] == target_venv
+            vrec = gg["venvs"][target_venv]
+            assert vrec["exit_code"] is not None
+            assert isinstance(vrec["stderr_tail"], str)
+            assert planted_tok not in vrec["stderr_tail"]
+            assert "cuda_is_available" in vrec
+            assert "device_count" in vrec
+            assert "device_query" in vrec
+            assert "torch_version_cuda" in vrec
+            assert "cuda_runtime_version" in vrec
+            assert "nvidia_smi_driver_line" in vrec
+            assert "exception_type" in vrec
+            assert "exception_message" in vrec
+            assert planted_tok not in str(vrec["exception_message"] or "")
+            if target_venv == "venv-d3":
+                # venv-judge ran first and succeeded
+                assert gg["venvs"]["venv-judge"]["cuda_is_available"] is True
+                assert gg["venvs"]["venv-judge"]["exit_code"] == 0
+
+
+def test_timeone_readiness_3_until_gpu_gate_under_stub_no_cuda(
+    tmp_path: Path,
+) -> None:
+    """Time-one readiness Test 3:
+    - `--until gpu_gate` under `--stub`, with a fake python reporting no CUDA, gives
+      `GPU_GATE_FAILED` as the recorded outcome, with `rc == 2` and `status == "refused"`.
+    """
+    env = fake_colab.setup_fake_colab_environment(tmp_path / "env_ug")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_ug"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_ug", count=2)
+    out_dir = tmp_path / "out_ug"
+    exports = _base_launcher_exports(
+        env,
+        open_lock=tmp_path / "ug.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until gpu_gate --out-dir '{_to_wsl_path(out_dir)}' --run-id stub-until-gpugate-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 2, f"stderr={proc.stderr}"
+    assert "BAD_UNTIL" not in (proc.stderr + proc.stdout)
+    assert not (env["state_dir"] / "download_subprocesses.jsonl").exists()
+    assert not (env["state_dir"] / "judge_subprocesses.jsonl").exists()
+
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    assert status_doc["rc"] == 2
+    assert status_doc["status"] == "refused"
+    assert status_doc["failure_class"] == "GPU_GATE_FAILED"
+    assert status_doc["until_step"] == "gpu_gate"
+
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    gate_doc = json.loads((out_dir / "gate_status.json").read_text(encoding="utf-8"))
+    for doc in (receipt_doc, gate_doc):
+        assert doc["gpu_gate"]["status"] == "failed"
+        assert doc["gpu_gate"]["failure_class"] == "GPU_GATE_FAILED"
+        assert doc["gpu_gate"]["failed_venv"] == "venv-judge"
+        assert doc["gpu_gate"]["venvs"]["venv-judge"]["cuda_is_available"] is False
+
+
+def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
+    tmp_path: Path,
+) -> None:
+    """Time-one readiness Test 4:
+    - `--until first_load` (fake child) runs `venv_sync`, then download + verify for `flow-judge-v0.1`
+      only, then launches ONE judge child for `flow-judge-v0.1` with `--device cpu` and `--limit-items 2`
+      through the same entry module (`reasoning_dataset_lab.pilot_b.bakeoff_judge`) as the GPU path
+      (without `--stub`), with dtype `bfloat16` and the `first_load` timeout (1,800 s default).
+    - Records `load_seconds` (`load_time_seconds`) and `per_call_seconds`, memory on every progress line
+      plus the nearest finite cgroup limit fields, and fetches rows and done-file for `flow-judge-v0.1` only.
+    - An OOM-killed child gives `JUDGE_CHILD_OOM`, a clean stop (`judge_failed`, `run_end`), and
+      fetched rows for nothing else.
+    """
+    # 1. Passing `--stub --until first_load`
+    env_ok = fake_colab.setup_fake_colab_environment(tmp_path / "env_fl_ok")
+    receipts_ok, hf_ok = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_fl_ok"
+    )
+    items_ok = _make_synthetic_public_items(tmp_path / "data_fl_ok", count=5)
+    out_ok = tmp_path / "out_fl_ok"
+    exports_ok = _base_launcher_exports(
+        env_ok,
+        open_lock=tmp_path / "fl_ok.lock",
+        receipts_dir=receipts_ok,
+        hf_home=hf_ok,
+        items_file=items_ok,
+    )
+    proc_ok = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_ok} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_load --out-dir '{_to_wsl_path(out_ok)}' --run-id until-fl-ok-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_ok.returncode == 0, f"stderr={proc_ok.stderr}"
+
+    lc_ok = [
+        json.loads(ln)
+        for ln in (env_ok["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert [(e["event"], e.get("judge_id")) for e in lc_ok] == [
+        ("venv_sync", None),
+        ("download_child", "flow-judge-v0.1"),
+        ("parent_verify", "flow-judge-v0.1"),
+        ("judge_child", "flow-judge-v0.1"),
+    ]
+
+    dl_children = [
+        json.loads(ln)
+        for ln in (env_ok["state_dir"] / "download_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(dl_children) == 1
+    assert dl_children[0]["judge_id"] == "flow-judge-v0.1"
+
+    judge_children = [
+        json.loads(ln)
+        for ln in (env_ok["state_dir"] / "judge_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(judge_children) == 1
+    jc = judge_children[0]
+    assert jc["judge_id"] == "flow-judge-v0.1"
+    argv = jc["argv"]
+    assert "-m" in argv
+    assert "reasoning_dataset_lab.pilot_b.bakeoff_judge" in argv
+    assert "--device" in argv and argv[argv.index("--device") + 1] == "cpu"
+    assert "--dtype" in argv and argv[argv.index("--dtype") + 1] == "bfloat16"
+    assert "--limit-items" in argv and argv[argv.index("--limit-items") + 1] == "2"
+    assert "--stub" not in argv
+    assert jc["timeout_seconds"] == 1800.0
+
+    # Rows and done-file written and fetched for flow-judge-v0.1 only
+    raw_files = sorted(p.name for p in (out_ok / "rows").glob("*.jsonl"))
+    done_files = sorted(p.name for p in (out_ok / "judge_done").glob("*.json"))
+    assert raw_files == ["flow-judge-v0.1.jsonl"]
+    assert done_files == ["flow-judge-v0.1.json"]
+    flow_rows = [
+        json.loads(ln)
+        for ln in (out_ok / "rows" / "flow-judge-v0.1.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(flow_rows) == 4  # 2 items * 2 orders
+    flow_done = json.loads(
+        (out_ok / "judge_done" / "flow-judge-v0.1.json").read_text(encoding="utf-8")
+    )
+    assert flow_done["device"] == "cpu"
+    assert flow_done["dtype"] == "bfloat16"
+    assert isinstance(flow_done["load_time_seconds"], (int, float))
+    assert isinstance(flow_done["load_seconds"], (int, float))
+    assert isinstance(flow_done["per_call_seconds"], (int, float))
+
+    prog_ok = [
+        json.loads(ln)
+        for ln in (out_ok / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    jdone = [r for r in prog_ok if r["kind"] == "judge_pass_done"]
+    assert len(jdone) == 1
+    assert jdone[0]["judge_id"] == "flow-judge-v0.1"
+    assert isinstance(jdone[0]["load_time_seconds"], (int, float))
+    assert isinstance(jdone[0]["load_seconds"], (int, float))
+    assert isinstance(jdone[0]["per_call_seconds"], (int, float))
+    for rec in prog_ok:
+        assert "mem_available_bytes" in rec
+        assert "cgroup_memory_current" in rec
+        assert "nearest_finite_cgroup_path" in rec
+        assert "nearest_finite_memory_max" in rec
+        assert "nearest_finite_memory_current" in rec
+
+    # 2. OOM-killed child under `--stub --until first_load`
+    env_oom = fake_colab.setup_fake_colab_environment(tmp_path / "env_fl_oom")
+    out_oom = tmp_path / "out_fl_oom"
+    exports_oom = (
+        _base_launcher_exports(
+            env_oom,
+            open_lock=tmp_path / "fl_oom.lock",
+            receipts_dir=receipts_ok,
+            hf_home=hf_ok,
+            items_file=items_ok,
+        )
+        + "export FAKE_COLAB_FAIL_JUDGE_CHILD='flow-judge-v0.1:sigkill'; "
+    )
+    proc_oom = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_oom} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_load --out-dir '{_to_wsl_path(out_oom)}' --run-id until-fl-oom-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_oom.returncode == 2, f"stderr={proc_oom.stderr}"
+    status_oom = json.loads((out_oom / "status.json").read_text(encoding="utf-8"))
+    assert status_oom["rc"] == 2
+    assert status_oom["status"] == "refused"
+    assert status_oom["failure_class"] == "JUDGE_CHILD_OOM"
+    prog_oom = [
+        json.loads(ln)
+        for ln in (out_oom / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    jfailed = [r for r in prog_oom if r["kind"] == "judge_failed"]
+    assert len(jfailed) == 1
+    assert jfailed[0]["judge_id"] == "flow-judge-v0.1"
+    assert jfailed[0]["failure_class"] == "JUDGE_CHILD_OOM"
+    assert prog_oom[-1]["kind"] == "run_end"
+    assert list((out_oom / "judge_done").glob("*.json")) == []
+    assert list((out_oom / "rows").glob("*.jsonl")) == []
+
+
+def test_timeone_readiness_5_gate_status_vm_measurement_fields_stub_and_timeone(
+    tmp_path: Path,
+) -> None:
+    """Time-one readiness Test 5:
+    - `gate_status.json` carries in every mode (`--stub` and `--time-one`):
+      - `content_free_bytes` and `hf_home_free_bytes`
+      - `mem_total_bytes` and `mem_available_bytes` (`/proc/meminfo`)
+      - `cpu_count` (`os.cpu_count()`)
+      - `cgroup_limit_chain`
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_m5"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_m5", count=2)
+
+    for mode_flag in ("--stub", "--time-one"):
+        tag = mode_flag.lstrip("-")
+        env = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{tag}")
+        out_dir = tmp_path / f"out_{tag}"
+        exports = _base_launcher_exports(
+            env,
+            open_lock=tmp_path / f"{tag}.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        proc = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' {mode_flag} --out-dir '{_to_wsl_path(out_dir)}' --run-id gate-meas-{tag}",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        assert proc.returncode == 0, f"mode={mode_flag} stderr={proc.stderr}"
+        gate_doc = json.loads(
+            (out_dir / "gate_status.json").read_text(encoding="utf-8")
+        )
+        assert isinstance(gate_doc["content_free_bytes"], int)
+        assert gate_doc["content_free_bytes"] > 0
+        assert isinstance(gate_doc["hf_home_free_bytes"], int)
+        assert gate_doc["hf_home_free_bytes"] > 0
+        assert isinstance(gate_doc["mem_total_bytes"], int)
+        assert gate_doc["mem_total_bytes"] > 0
+        assert isinstance(gate_doc["mem_available_bytes"], int)
+        assert gate_doc["mem_available_bytes"] > 0
+        assert isinstance(gate_doc["cpu_count"], int)
+        assert gate_doc["cpu_count"] >= 1
+        assert isinstance(gate_doc["cgroup_limit_chain"], dict)
+        assert isinstance(gate_doc["cgroup_limit_chain"]["chain"], list)
+        assert len(gate_doc["cgroup_limit_chain"]["chain"]) >= 1
+
+
+def test_timeone_readiness_6_download_child_ignores_version_override_env_vars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Time-one readiness Test 6 (Item 4):
+    - With both `FAKE_COLAB_OVERRIDE_HF_HUB_VERSION` and `FAKE_COLAB_OVERRIDE_HF_XET_VERSION`
+      set in the environment, `judge_download` still reports the real (fake-module) versions,
+      and the `DOWNLOAD_STACK_VERSION_MISMATCH` refusal still fires on a real mismatch.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_m6"
+    )
+
+    # 1. Direct check in process: env vars set, fake modules on sys.modules win
+    import types
+
+    fake_hub = types.ModuleType("huggingface_hub")
+    fake_hub.__version__ = "2.4.0"  # type: ignore[attr-defined]
+    fake_xet = types.ModuleType("hf_xet")
+    fake_xet.__version__ = "1.8.0"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_hub)
+    monkeypatch.setitem(sys.modules, "hf_xet", fake_xet)
+    monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", "9.9.9")
+    monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", "8.8.8")
+
+    from reasoning_dataset_lab.pilot_b import judge_download
+
+    assert judge_download.detect_download_stack_versions() == ("2.4.0", "1.8.0")
+
+    # 2. Subprocess child check: env vars set to matching versions ("2.4.0" / "1.8.0"),
+    #    while fake `huggingface_hub` on the child's path has a mismatched version ("0.99.0").
+    #    The child must report "0.99.0" and refuse with `DOWNLOAD_STACK_VERSION_MISMATCH`.
+    monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", "2.4.0")
+    monkeypatch.setenv("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", "1.8.0")
+
+    work_dir = tmp_path / "work_m6"
+    prog_path = tmp_path / "progress_m6.jsonl"
+    site_pkgs = work_dir / "venv-judge" / "site-packages"
+    hf_pkg = site_pkgs / "huggingface_hub"
+    hf_pkg.mkdir(parents=True, exist_ok=True)
+    (hf_pkg / "__init__.py").write_text(
+        "__version__ = '0.99.0'\n_IS_FAKE_HF_HUB = True\n"
+        "def snapshot_download(repo_id, revision=None, cache_dir=None, **kw):\n"
+        "    return str(cache_dir or '.')\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(vm_judges.DownloadChildProcessError) as exc_info:
+        vm_judges.download_all_judge_weights(
+            hf_home,
+            dryrun=True,
+            work_dir=work_dir,
+            receipts_dir=receipts_dir,
+            progress_path=prog_path,
+            only_judge_ids=("flow-judge-v0.1",),
+        )
+    assert exc_info.value.failure_class == "DOWNLOAD_STACK_VERSION_MISMATCH"
+    assert "0.99.0" in (exc_info.value.stderr_tail or "")
+
 
 
 
