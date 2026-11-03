@@ -38,33 +38,25 @@ import huggingface_hub  # type: ignore[import-not-found]
 
 def detect_download_stack_versions() -> tuple[str, str]:
     """Return `(huggingface_hub_version, hf_xet_version)` inside the active virtualenv."""
-    override_hf_hub = os.environ.get("FAKE_COLAB_OVERRIDE_HF_HUB_VERSION", "").strip()
-    if override_hf_hub:
-        hf_hub_ver = override_hf_hub
-    else:
-        hf_hub_ver = str(getattr(huggingface_hub, "__version__", "") or "").strip()
-        if not hf_hub_ver:
-            try:
-                hf_hub_ver = importlib.metadata.version("huggingface-hub").strip()
-            except importlib.metadata.PackageNotFoundError:
-                hf_hub_ver = "unknown"
-
-    override_hf_xet = os.environ.get("FAKE_COLAB_OVERRIDE_HF_XET_VERSION", "").strip()
-    if override_hf_xet:
-        hf_xet_ver = override_hf_xet
-    else:
-        hf_xet_ver = ""
+    hf_hub_ver = str(getattr(huggingface_hub, "__version__", "") or "").strip()
+    if not hf_hub_ver:
         try:
-            import hf_xet  # type: ignore[import-not-found]
+            hf_hub_ver = importlib.metadata.version("huggingface-hub").strip()
+        except importlib.metadata.PackageNotFoundError:
+            hf_hub_ver = "unknown"
 
-            hf_xet_ver = str(getattr(hf_xet, "__version__", "") or "").strip()
-        except ImportError:
-            hf_xet_ver = ""
-        if not hf_xet_ver:
-            try:
-                hf_xet_ver = importlib.metadata.version("hf-xet").strip()
-            except importlib.metadata.PackageNotFoundError:
-                hf_xet_ver = "unknown"
+    hf_xet_ver = ""
+    try:
+        import hf_xet  # type: ignore[import-not-found]
+
+        hf_xet_ver = str(getattr(hf_xet, "__version__", "") or "").strip()
+    except ImportError:
+        hf_xet_ver = ""
+    if not hf_xet_ver:
+        try:
+            hf_xet_ver = importlib.metadata.version("hf-xet").strip()
+        except importlib.metadata.PackageNotFoundError:
+            hf_xet_ver = "unknown"
 
     return hf_hub_ver, hf_xet_ver
 

@@ -830,48 +830,123 @@ def run_fake_uv(argv: list[str]) -> int:
         site_pkgs = venv_path / "site-packages"
         hf_pkg_dir = site_pkgs / "huggingface_hub"
         xet_pkg_dir = site_pkgs / "hf_xet"
+        torch_pkg_dir = site_pkgs / "torch"
         hf_pkg_dir.mkdir(parents=True, exist_ok=True)
         xet_pkg_dir.mkdir(parents=True, exist_ok=True)
-        (hf_pkg_dir / "__init__.py").write_text(
-            "import json, os, pathlib, time\n"
-            f"__version__ = {hf_hub_ver!r}\n"
-            "_IS_FAKE_HF_HUB = bool(\n"
-            "    os.environ.get('FAKE_COLAB_CUT_MID_JUDGE')\n"
-            "    or os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS')\n"
-            "    or os.environ.get('FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD') == '1'\n"
-            "    or os.environ.get('FAKE_COLAB_HF_FAIL_REPO')\n"
-            "    or os.environ.get('VM_DRYRUN') != '1'\n"
-            ")\n"
-            "def snapshot_download(repo_id, revision=None, cache_dir=None, **kw):\n"
-            "    st_dir = os.environ.get('FAKE_COLAB_STATE_DIR', '')\n"
-            "    if st_dir:\n"
-            "        hf_log = pathlib.Path(st_dir) / 'hf_calls.jsonl'\n"
-            "        hf_log.parent.mkdir(parents=True, exist_ok=True)\n"
-            "        with hf_log.open('a', encoding='utf-8', newline='\\n') as _hff:\n"
-            "            _hff.write(json.dumps({'repo_id': str(repo_id), 'revision': str(revision or ''), 'cache_dir': str(cache_dir or ''), 'max_workers': kw.get('max_workers'), 'hf_xet_num_concurrent_range_gets': os.environ.get('HF_XET_NUM_CONCURRENT_RANGE_GETS'), 'huggingface_hub_version': __version__, 'ts': time.time()}) + '\\n')\n"
-            "    delay_s = float(os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS', '0') or '0')\n"
-            "    if delay_s > 0:\n"
-            "        time.sleep(delay_s)\n"
-            "    fail_repo = os.environ.get('FAKE_COLAB_HF_FAIL_REPO', '').strip()\n"
-            "    if fail_repo and (fail_repo == repo_id or fail_repo in str(repo_id)):\n"
-            "        raise RuntimeError(f'Revision Not Found for {repo_id}@{revision}')\n"
-            "    cut_target = os.environ.get('FAKE_COLAB_CUT_MID_JUDGE', '').strip()\n"
-            "    if cut_target and (cut_target == '1' or cut_target == repo_id or cut_target in str(repo_id)):\n"
-            "        if os.environ.get('FAKE_COLAB_CUT_MID_JUDGE_HARD') == '1':\n"
-            "            os._exit(137)\n"
-            "        raise RuntimeError(f'Simulated cut mid-judge for {repo_id}')\n"
-            "    owner, repo = str(repo_id).split('/', 1)\n"
-            "    base = pathlib.Path(cache_dir) if cache_dir else (pathlib.Path(os.environ.get('HF_HOME', '.')) / 'hub')\n"
-            "    snap_dir = base / f'models--{owner}--{repo}' / 'snapshots' / str(revision or 'main')\n"
-            "    return str(snap_dir)\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        (xet_pkg_dir / "__init__.py").write_text(
-            f"__version__ = {hf_xet_ver!r}\n",
-            encoding="utf-8",
-            newline="\n",
-        )
+        torch_pkg_dir.mkdir(parents=True, exist_ok=True)
+        if not (hf_pkg_dir / "__init__.py").is_file():
+            (hf_pkg_dir / "__init__.py").write_text(
+                "import json, os, pathlib, time\n"
+                f"__version__ = {hf_hub_ver!r}\n"
+                "_IS_FAKE_HF_HUB = bool(\n"
+                "    os.environ.get('FAKE_COLAB_CUT_MID_JUDGE')\n"
+                "    or os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS')\n"
+                "    or os.environ.get('FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD') == '1'\n"
+                "    or os.environ.get('FAKE_COLAB_HF_FAIL_REPO')\n"
+                "    or os.environ.get('VM_DRYRUN') != '1'\n"
+                ")\n"
+                "def snapshot_download(repo_id, revision=None, cache_dir=None, **kw):\n"
+                "    st_dir = os.environ.get('FAKE_COLAB_STATE_DIR', '')\n"
+                "    if st_dir:\n"
+                "        hf_log = pathlib.Path(st_dir) / 'hf_calls.jsonl'\n"
+                "        hf_log.parent.mkdir(parents=True, exist_ok=True)\n"
+                "        with hf_log.open('a', encoding='utf-8', newline='\\n') as _hff:\n"
+                "            _hff.write(json.dumps({'repo_id': str(repo_id), 'revision': str(revision or ''), 'cache_dir': str(cache_dir or ''), 'max_workers': kw.get('max_workers'), 'hf_xet_num_concurrent_range_gets': os.environ.get('HF_XET_NUM_CONCURRENT_RANGE_GETS'), 'huggingface_hub_version': __version__, 'ts': time.time()}) + '\\n')\n"
+                "    delay_s = float(os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS', '0') or '0')\n"
+                "    if delay_s > 0:\n"
+                "        time.sleep(delay_s)\n"
+                "    fail_repo = os.environ.get('FAKE_COLAB_HF_FAIL_REPO', '').strip()\n"
+                "    if fail_repo and (fail_repo == repo_id or fail_repo in str(repo_id)):\n"
+                "        raise RuntimeError(f'Revision Not Found for {repo_id}@{revision}')\n"
+                "    cut_target = os.environ.get('FAKE_COLAB_CUT_MID_JUDGE', '').strip()\n"
+                "    if cut_target and (cut_target == '1' or cut_target == repo_id or cut_target in str(repo_id)):\n"
+                "        if os.environ.get('FAKE_COLAB_CUT_MID_JUDGE_HARD') == '1':\n"
+                "            os._exit(137)\n"
+                "        raise RuntimeError(f'Simulated cut mid-judge for {repo_id}')\n"
+                "    owner, repo = str(repo_id).split('/', 1)\n"
+                "    base = pathlib.Path(cache_dir) if cache_dir else (pathlib.Path(os.environ.get('HF_HOME', '.')) / 'hub')\n"
+                "    snap_dir = base / f'models--{owner}--{repo}' / 'snapshots' / str(revision or 'main')\n"
+                "    return str(snap_dir)\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        if not (xet_pkg_dir / "__init__.py").is_file():
+            (xet_pkg_dir / "__init__.py").write_text(
+                f"__version__ = {hf_xet_ver!r}\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        if not (torch_pkg_dir / "__init__.py").is_file():
+            (torch_pkg_dir / "__init__.py").write_text(
+                "import os, time\n"
+                "__version__ = '2.14.1+cu132'\n"
+                "float16 = 'float16'\n"
+                "bfloat16 = 'bfloat16'\n"
+                "class version:\n"
+                "    cuda = '13.2'\n"
+                "def _active_mode():\n"
+                "    target_venv = os.environ.get('FAKE_COLAB_GPU_GATE_VENV', '').strip()\n"
+                "    this_venv = os.environ.get('RDLAB_ACTIVE_VENV_NAME', '').strip()\n"
+                "    if target_venv and this_venv and target_venv != this_venv:\n"
+                "        return 'ok'\n"
+                "    raw = os.environ.get('FAKE_COLAB_GPU_GATE_MODE', '').strip()\n"
+                "    if raw:\n"
+                "        return raw\n"
+                "    if os.environ.get('RDLAB_MODE', '').strip() == 'stub':\n"
+                "        return 'not_available'\n"
+                "    return 'ok'\n"
+                "class _FakeTensor:\n"
+                "    def __init__(self, shape, dtype=None, device=None, finite=True):\n"
+                "        self.shape = tuple(shape)\n"
+                "        self.dtype = dtype\n"
+                "        self.device = device\n"
+                "        self._finite = finite\n"
+                "    def all(self):\n"
+                "        return self._finite\n"
+                "def ones(shape, dtype=None, device=None):\n"
+                "    return _FakeTensor(shape, dtype=dtype, device=device, finite=True)\n"
+                "def matmul(a, b):\n"
+                "    mode = _active_mode()\n"
+                "    if mode in ('sleep', 'timeout'):\n"
+                "        delay = float(os.environ.get('FAKE_COLAB_GPU_GATE_SLEEP_SECONDS', '5.0') or '5.0')\n"
+                "        time.sleep(delay)\n"
+                "    if mode == 'exception':\n"
+                "        secret = os.environ.get('FAKE_COLAB_GPU_GATE_SECRET', '')\n"
+                "        raise RuntimeError(f'CUDA error: device-side assert triggered {secret}'.strip())\n"
+                "    finite = (mode != 'non_finite')\n"
+                "    return _FakeTensor((a.shape[0], b.shape[1]), dtype=a.dtype, device=a.device, finite=finite)\n"
+                "def isfinite(t):\n"
+                "    return _FakeTensor(t.shape, dtype='bool', device=t.device, finite=getattr(t, '_finite', True))\n"
+                "class _FakeCudart:\n"
+                "    def cudaRuntimeGetVersion(self):\n"
+                "        return 13020\n"
+                "class cuda:\n"
+                "    @staticmethod\n"
+                "    def is_available():\n"
+                "        return _active_mode() != 'not_available'\n"
+                "    @staticmethod\n"
+                "    def device_count():\n"
+                "        return 0 if _active_mode() == 'not_available' else 1\n"
+                "    @staticmethod\n"
+                "    def get_device_name(idx=0):\n"
+                "        if _active_mode() == 'not_available':\n"
+                "            raise RuntimeError('Torch not compiled with CUDA enabled')\n"
+                "        return 'NVIDIA A100-SXM4-40GB'\n"
+                "    @staticmethod\n"
+                "    def mem_get_info(idx=0):\n"
+                "        if _active_mode() == 'not_available':\n"
+                "            raise RuntimeError('CUDA not available')\n"
+                "        return (41875931136, 42949672960)\n"
+                "    @staticmethod\n"
+                "    def synchronize():\n"
+                "        if _active_mode() == 'not_available':\n"
+                "            raise RuntimeError('CUDA not available')\n"
+                "    @staticmethod\n"
+                "    def cudart():\n"
+                "        return _FakeCudart()\n",
+                encoding="utf-8",
+                newline="\n",
+            )
         site_pkgs_posix = site_pkgs.as_posix()
         venv_py = bin_dir / "python"
         venv_py.write_text(
@@ -880,6 +955,7 @@ def run_fake_uv(argv: list[str]) -> int:
             '  echo "Python 3.15.1"\n'
             "  exit 0\n"
             "fi\n"
+            f'export RDLAB_ACTIVE_VENV_NAME="{venv_path.name}"\n'
             f'export PYTHONPATH="{site_pkgs_posix}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
             'if [[ -n "${FAKE_COLAB_FAIL_JUDGE_CHILD:-}" && "$*" == *"bakeoff_judge"* ]]; then\n'
             '  _prev=""\n'
@@ -938,6 +1014,9 @@ def run_fake_uv(argv: list[str]) -> int:
             "      exit 0\n"
             "    fi\n"
             "  fi\n"
+            "fi\n"
+            'if [[ "$*" == *"bakeoff_judge"* && "$*" != *"--stub"* && "$*" != *"--fake-transport"* ]]; then\n'
+            f'  exec "{sys.executable}" "$@" --stub\n'
             "fi\n"
             f'exec "{sys.executable}" "$@"\n',
             encoding="utf-8",

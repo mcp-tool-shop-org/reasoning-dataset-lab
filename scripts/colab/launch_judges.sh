@@ -40,7 +40,7 @@ Options:
   --probe              Run the read-only CPU VM environment probe (CPU at 0.08/h, wall 300s, cap 0.01)
   --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
   --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
-  --until STEP         Stop --stub after STEP (venv_sync, first_judge, weights)
+  --until STEP         Stop --stub after STEP (venv_sync, gpu_gate, first_judge, first_load, weights)
   --dry                Print every colab CLI command in order with resolved arguments and exit
   --resume             Resume from existing schedule/generations state in --out-dir
   --run-id ID          Run identifier (session name is rdlab-<ID>)
@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
     --until)
       UNTIL_FLAG_SET=1
       if [[ $# -lt 2 ]] || [[ -z "${2:-}" ]]; then
-        echo "BAD_UNTIL: --until requires a step name (venv_sync, first_judge, weights)" >&2
+        echo "BAD_UNTIL: --until requires a step name (venv_sync, gpu_gate, first_judge, first_load, weights)" >&2
         exit 2
       fi
       UNTIL_STEP="$2"
@@ -86,7 +86,7 @@ while [[ $# -gt 0 ]]; do
       UNTIL_FLAG_SET=1
       UNTIL_STEP="${1#*=}"
       if [[ -z "$UNTIL_STEP" ]]; then
-        echo "BAD_UNTIL: --until requires a step name (venv_sync, first_judge, weights)" >&2
+        echo "BAD_UNTIL: --until requires a step name (venv_sync, gpu_gate, first_judge, first_load, weights)" >&2
         exit 2
       fi
       shift
@@ -137,10 +137,10 @@ if [[ "$UNTIL_FLAG_SET" -eq 1 ]] || [[ -n "$UNTIL_STEP" ]]; then
     exit 2
   fi
   case "$UNTIL_STEP" in
-    venv_sync|first_judge|weights)
+    venv_sync|gpu_gate|first_judge|first_load|weights)
       ;;
     *)
-      echo "BAD_UNTIL: unknown --until step '$UNTIL_STEP' (allowed: venv_sync, first_judge, weights)" >&2
+      echo "BAD_UNTIL: unknown --until step '$UNTIL_STEP' (allowed: venv_sync, gpu_gate, first_judge, first_load, weights)" >&2
       exit 2
       ;;
   esac
