@@ -541,6 +541,38 @@ def run_fake_curl(argv: list[str]) -> int:
     return 22
 
 
+def _parse_fake_lock_entries(lock_path: Path) -> list[tuple[str, str, list[str], list[str]]]:
+    """Parse `(name, version, hashes, distributions)` from a lock/requirements file for `run_fake_uv`."""
+    entries: list[tuple[str, str, list[str], list[str]]] = []
+    cur_name: str | None = None
+    cur_ver: str | None = None
+    cur_hashes: list[str] = []
+    cur_dists: list[str] = []
+    for raw_line in lock_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        m_pkg = re.match(r"^([a-zA-Z0-9_.-]+)==([^\s\\]+)", line)
+        if m_pkg:
+            if cur_name is not None and cur_ver is not None:
+                entries.append((cur_name, cur_ver, cur_hashes, cur_dists))
+            cur_name = m_pkg.group(1).lower()
+            cur_ver = m_pkg.group(2)
+            cur_hashes = [
+                hm.group(1) for hm in re.finditer(r"--hash=sha256:([0-9a-f]{64})", line)
+            ]
+            cur_dists = []
+            continue
+        if cur_name is not None:
+            for hm in re.finditer(r"--hash=sha256:([0-9a-f]{64})", line):
+                cur_hashes.append(hm.group(1))
+            if line.startswith("# distribution:"):
+                cur_dists.append(line.split("# distribution:", 1)[1].strip())
+    if cur_name is not None and cur_ver is not None:
+        entries.append((cur_name, cur_ver, cur_hashes, cur_dists))
+    return entries
+
+
 def run_fake_uv(argv: list[str]) -> int:
     """Execute the standalone fake `uv` CLI placed in `fake_bin/uv`."""
     state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR")
@@ -552,7 +584,16 @@ def run_fake_uv(argv: list[str]) -> int:
 
     uv_calls_log = state_dir / "uv_calls.jsonl"
     with uv_calls_log.open("a", encoding="utf-8", newline="\n") as fh:
-        fh.write(json.dumps({"args": list(argv), "ts": time.time()}) + "\n")
+        fh.write(
+            json.dumps(
+                {
+                    "args": list(argv),
+                    "uv_system_python": os.environ.get("UV_SYSTEM_PYTHON"),
+                    "ts": time.time(),
+                }
+            )
+            + "\n"
+        )
 
     plant = os.environ.get("FAKE_COLAB_PROBE_PLANT_STDOUT", "")
     plant_sfx = f" {plant}" if plant else ""
@@ -698,6 +739,377 @@ def run_fake_uv(argv: list[str]) -> int:
             "1\n", encoding="utf-8", newline="\n"
         )
         sys.stderr.write(f"Installed Python 3.15.1 in 0.05s{plant_sfx}\n")
+        return 0
+
+    if argv[:1] == ["venv"] and "--python" in argv:
+        if os.environ.get("FAKE_COLAB_FAIL_UV_VENV") == "1" or uv_state.get("venv_fail"):
+            err_msg = os.environ.get(
+                "FAKE_COLAB_UV_STDERR", "error: Failed to create virtualenv\n"
+            )
+            out_msg = os.environ.get(
+                "FAKE_COLAB_UV_STDOUT", "Creating virtual environment\n"
+            )
+            sys.stdout.write(out_msg)
+            sys.stderr.write(err_msg)
+            return 2
+
+        py_interp = ""
+        venv_dir_str = ""
+        has_clear = os.environ.get("UV_VENV_CLEAR", "").lower() in ("1", "true")
+        has_system = os.environ.get("UV_SYSTEM_PYTHON", "").lower() in ("1", "true")
+        idx = 1
+        while idx < len(argv):
+            tok = argv[idx]
+            if tok == "--python" and idx + 1 < len(argv):
+                py_interp = argv[idx + 1]
+                idx += 2
+                continue
+            if tok == "--clear":
+                has_clear = True
+                idx += 1
+                continue
+            if tok == "--system":
+                has_system = True
+                idx += 1
+                continue
+            if not tok.startswith("-"):
+                venv_dir_str = tok
+            idx += 1
+
+        if not py_interp or not venv_dir_str:
+            sys.stderr.write(f"fake uv: unexpected arguments: {argv!r}\n")
+            return 98
+
+        if has_system:
+            sys.stderr.write(
+                "warning: The `--system` flag has no effect, `uv venv` always ignores virtual environments "
+                "when finding a Python interpreter; did you mean `--no-managed-python`?\n"
+            )
+
+        venv_path = Path(venv_dir_str)
+        sys.stderr.write(
+            f"Using CPython 3.15.1 interpreter at: {py_interp}\n"
+            f"Creating virtual environment at: {venv_path}\n"
+        )
+        if venv_path.is_file() or venv_path.is_symlink():
+            sys.stderr.write(
+                f"error: Failed to create virtual environment\n"
+                f"  Caused by: File exists at `{venv_path}`\n"
+            )
+            return 2
+
+        if (
+            venv_path.is_dir()
+            and ((venv_path / "pyvenv.cfg").is_file() or any(venv_path.iterdir()))
+            and not has_clear
+        ):
+            sys.stderr.write(
+                f"error: Failed to create virtual environment\n"
+                f"  Caused by: A virtual environment already exists at: {venv_path}\n\n"
+                f"  hint: Use the `--clear` flag or set `UV_VENV_CLEAR=1` to replace the existing virtual environment\n"
+            )
+            return 2
+
+        if venv_path.is_dir() and has_clear:
+            shutil.rmtree(venv_path)
+
+        bin_dir = venv_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        (venv_path / "pyvenv.cfg").write_text(
+            f"home = {Path(py_interp).parent}\n"
+            "implementation = CPython\n"
+            "uv = 0.13.5\n"
+            "version_info = 3.15.1\n"
+            "include-system-site-packages = false\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        venv_py = bin_dir / "python"
+        venv_py.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "--version" || "$1" == "-V" ]]; then\n'
+            '  echo "Python 3.15.1"\n'
+            "  exit 0\n"
+            "fi\n"
+            'exec python3 "$@"\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        venv_py.chmod(venv_py.stat().st_mode | stat.S_IEXEC)
+        (venv_path / ".installed_packages.json").write_text(
+            "{}\n", encoding="utf-8", newline="\n"
+        )
+        return 0
+
+    if argv[:2] == ["pip", "install"]:
+        venv_python = ""
+        req_file = ""
+        require_hashes = False
+        no_binary_pkgs: set[str] = set()
+        only_binary_all = False
+        idx = 2
+        while idx < len(argv):
+            tok = argv[idx]
+            if tok == "--python" and idx + 1 < len(argv):
+                venv_python = argv[idx + 1]
+                idx += 2
+                continue
+            if tok in ("-r", "--requirement") and idx + 1 < len(argv):
+                req_file = argv[idx + 1]
+                idx += 2
+                continue
+            if tok == "--require-hashes":
+                require_hashes = True
+                idx += 1
+                continue
+            if tok == "--only-binary" and idx + 1 < len(argv):
+                if argv[idx + 1] == ":all:":
+                    only_binary_all = True
+                idx += 2
+                continue
+            if tok == "--no-binary" and idx + 1 < len(argv):
+                no_binary_pkgs.add(argv[idx + 1].lower())
+                idx += 2
+                continue
+            idx += 1
+
+        if not venv_python or not req_file:
+            sys.stderr.write(f"fake uv: unexpected arguments: {argv!r}\n")
+            return 98
+
+        venv_py_path = Path(venv_python)
+        if not venv_py_path.is_file():
+            sys.stderr.write(
+                f"error: Failed to inspect Python interpreter from `--python` at `{venv_py_path}`\n"
+            )
+            return 2
+
+        req_path = Path(req_file)
+        if not req_path.is_file():
+            sys.stderr.write(f"error: File not found: `{req_path}`\n")
+            return 2
+
+        entries = _parse_fake_lock_entries(req_path)
+        expected_pyyaml_sha = (
+            "d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f"
+        )
+        sim_mismatch = (
+            bool(uv_state.get("simulate_hash_mismatch"))
+            or os.environ.get("FAKE_COLAB_UV_HASH_MISMATCH") == "1"
+        )
+        for name, ver, hashes, dists in entries:
+            if require_hashes and not hashes:
+                sys.stderr.write(
+                    f"error: In `--require-hashes` mode, all requirements must have their versions pinned with `==` and a `--hash` specified: `{name}=={ver}`\n"
+                )
+                return 2
+            if require_hashes and (
+                sim_mismatch
+                or (name == "pyyaml" and hashes != [expected_pyyaml_sha])
+            ):
+                exp_h = hashes[0] if hashes else expected_pyyaml_sha
+                sys.stderr.write(
+                    f"error: Hash mismatch for `{name}=={ver}`\n\n"
+                    f"Expected:\n    sha256:{exp_h}\n\n"
+                    f"Computed:\n    sha256:{'0' * 64}\n"
+                )
+                return 2
+            if only_binary_all and name not in no_binary_pkgs:
+                if any(not d.endswith(".whl") for d in dists):
+                    sys.stderr.write(
+                        f"error: Cannot build source distribution for `{name}=={ver}` under `--only-binary :all:`\n"
+                    )
+                    return 2
+
+        venv_root = venv_py_path.parent.parent
+        pkg_db_path = venv_root / ".installed_packages.json"
+        installed_db: dict[str, Any] = {}
+        if pkg_db_path.is_file():
+            try:
+                installed_db = json.loads(pkg_db_path.read_text(encoding="utf-8"))
+            except Exception:
+                installed_db = {}
+
+        wheel_cache_path = state_dir / "uv_wheel_cache.json"
+        wheel_cache: dict[str, Any] = {}
+        if wheel_cache_path.is_file():
+            try:
+                wheel_cache = json.loads(wheel_cache_path.read_text(encoding="utf-8"))
+            except Exception:
+                wheel_cache = {}
+
+        for name, ver, hashes, dists in entries:
+            is_sdist = any(d.endswith(".tar.gz") for d in dists)
+            installed_db[name] = {
+                "version": ver,
+                "hashes": hashes,
+                "distributions": dists,
+                "source": "sdist_built" if is_sdist else "wheel",
+                "installed_by": "pip_install",
+                "kept_by_sync": False,
+            }
+            if is_sdist:
+                wheel_cache[f"{name}=={ver}"] = {
+                    "hashes": hashes,
+                    "distributions": dists,
+                    "built_from_sdist": True,
+                }
+
+        pkg_db_path.write_text(
+            json.dumps(installed_db, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        wheel_cache_path.write_text(
+            json.dumps(wheel_cache, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        sys.stderr.write(f"Installed {len(entries)} package(s)\n")
+        return 0
+
+    if argv[:2] == ["pip", "sync"]:
+        venv_python = ""
+        lock_file = ""
+        require_hashes = False
+        no_binary_pkgs: set[str] = set()
+        only_binary_all = False
+        extra_index_urls: list[str] = []
+        index_strategy = ""
+        idx = 2
+        while idx < len(argv):
+            tok = argv[idx]
+            if tok == "--python" and idx + 1 < len(argv):
+                venv_python = argv[idx + 1]
+                idx += 2
+                continue
+            if tok == "--require-hashes":
+                require_hashes = True
+                idx += 1
+                continue
+            if tok == "--only-binary" and idx + 1 < len(argv):
+                if argv[idx + 1] == ":all:":
+                    only_binary_all = True
+                idx += 2
+                continue
+            if tok == "--no-binary" and idx + 1 < len(argv):
+                no_binary_pkgs.add(argv[idx + 1].lower())
+                idx += 2
+                continue
+            if tok == "--extra-index-url" and idx + 1 < len(argv):
+                extra_index_urls.append(argv[idx + 1])
+                idx += 2
+                continue
+            if tok == "--index-strategy" and idx + 1 < len(argv):
+                index_strategy = argv[idx + 1]
+                idx += 2
+                continue
+            if not tok.startswith("-"):
+                lock_file = tok
+            idx += 1
+
+        if not venv_python or not lock_file:
+            sys.stderr.write(f"fake uv: unexpected arguments: {argv!r}\n")
+            return 98
+
+        venv_py_path = Path(venv_python)
+        if not venv_py_path.is_file():
+            sys.stderr.write(
+                f"error: Failed to inspect Python interpreter from `--python` at `{venv_py_path}`\n"
+            )
+            return 2
+
+        lock_path = Path(lock_file)
+        if not lock_path.is_file():
+            sys.stderr.write(f"error: File not found: `{lock_path}`\n")
+            return 2
+
+        entries = _parse_fake_lock_entries(lock_path)
+        expected_pyyaml_sha = (
+            "d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f"
+        )
+        sim_mismatch = (
+            bool(uv_state.get("simulate_hash_mismatch"))
+            or os.environ.get("FAKE_COLAB_UV_HASH_MISMATCH") == "1"
+        )
+        for name, ver, hashes, dists in entries:
+            if require_hashes and not hashes:
+                sys.stderr.write(
+                    f"error: In `--require-hashes` mode, all requirements must have their versions pinned with `==` and a `--hash` specified: `{name}=={ver}`\n"
+                )
+                return 2
+            if require_hashes and (
+                sim_mismatch
+                or (name == "pyyaml" and hashes != [expected_pyyaml_sha])
+            ):
+                exp_h = hashes[0] if hashes else expected_pyyaml_sha
+                sys.stderr.write(
+                    f"error: Hash mismatch for `{name}=={ver}`\n\n"
+                    f"Expected:\n    sha256:{exp_h}\n\n"
+                    f"Computed:\n    sha256:{'0' * 64}\n"
+                )
+                return 2
+            if "+cu132" in ver and (
+                "https://download.pytorch.org/whl/cu132" not in extra_index_urls
+                or index_strategy != "unsafe-best-match"
+            ):
+                sys.stderr.write(
+                    f"error: No solution found when resolving: `{name}=={ver}` was not found on the package index\n"
+                )
+                return 2
+            if only_binary_all and name not in no_binary_pkgs:
+                if any(not d.endswith(".whl") for d in dists):
+                    sys.stderr.write(
+                        f"error: Cannot build source distribution for `{name}=={ver}` under `--only-binary :all:`\n"
+                    )
+                    return 2
+
+        venv_root = venv_py_path.parent.parent
+        pkg_db_path = venv_root / ".installed_packages.json"
+        existing_db: dict[str, Any] = {}
+        if pkg_db_path.is_file():
+            try:
+                existing_db = json.loads(pkg_db_path.read_text(encoding="utf-8"))
+            except Exception:
+                existing_db = {}
+
+        wheel_cache_path = state_dir / "uv_wheel_cache.json"
+        wheel_cache: dict[str, Any] = {}
+        if wheel_cache_path.is_file():
+            try:
+                wheel_cache = json.loads(wheel_cache_path.read_text(encoding="utf-8"))
+            except Exception:
+                wheel_cache = {}
+
+        new_db: dict[str, Any] = {}
+        for name, ver, hashes, dists in entries:
+            prior = existing_db.get(name)
+            if isinstance(prior, dict) and prior.get("version") == ver:
+                kept = dict(prior)
+                kept["kept_by_sync"] = True
+                new_db[name] = kept
+            else:
+                is_sdist = any(d.endswith(".tar.gz") for d in dists)
+                from_cache = f"{name}=={ver}" in wheel_cache
+                new_db[name] = {
+                    "version": ver,
+                    "hashes": hashes,
+                    "distributions": dists,
+                    "source": (
+                        "cached_sdist_wheel"
+                        if (is_sdist and from_cache)
+                        else ("sdist_built" if is_sdist else "wheel")
+                    ),
+                    "installed_by": "pip_sync",
+                    "kept_by_sync": False,
+                }
+
+        pkg_db_path.write_text(
+            json.dumps(new_db, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        sys.stderr.write(f"Synced {len(entries)} package(s)\n")
         return 0
 
     sys.stderr.write(f"fake uv: unexpected arguments: {argv!r}\n")
@@ -1217,13 +1629,31 @@ def main(argv: list[str] | None = None) -> int:
                 return 124
             kernel_code = (
                 "import json, os, pathlib, shutil, subprocess, sys, time, types\n"
-                "if os.environ.get('FAKE_COLAB_CUT_MID_JUDGE') or os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS') or os.environ.get('FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD') == '1':\n"
+                "_use_fake_hf = bool(\n"
+                "    os.environ.get('FAKE_COLAB_CUT_MID_JUDGE')\n"
+                "    or os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS')\n"
+                "    or os.environ.get('FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD') == '1'\n"
+                "    or os.environ.get('VM_DRYRUN') != '1'\n"
+                ")\n"
+                "if _use_fake_hf:\n"
                 "    _fake_hf = types.ModuleType('huggingface_hub')\n"
-                "    _fake_hf._IS_FAKE_HF_HUB = True\n"
+                "    _fake_hf._IS_FAKE_HF_HUB = bool(\n"
+                "        os.environ.get('FAKE_COLAB_CUT_MID_JUDGE')\n"
+                "        or os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS')\n"
+                "        or os.environ.get('FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD') == '1'\n"
+                "    )\n"
                 "    def _fake_snapshot_download(repo_id, revision=None, cache_dir=None, **kw):\n"
+                "        st_dir = os.environ.get('FAKE_COLAB_STATE_DIR', '')\n"
+                "        if st_dir:\n"
+                "            hf_log = pathlib.Path(st_dir) / 'hf_calls.jsonl'\n"
+                "            with hf_log.open('a', encoding='utf-8', newline='\\n') as _hff:\n"
+                "                _hff.write(json.dumps({'repo_id': str(repo_id), 'revision': str(revision or ''), 'cache_dir': str(cache_dir or ''), 'ts': time.time()}) + '\\n')\n"
                 "        delay_s = float(os.environ.get('FAKE_COLAB_VM_STEP_DELAY_SECONDS', '0') or '0')\n"
                 "        if delay_s > 0:\n"
                 "            time.sleep(delay_s)\n"
+                "        fail_repo = os.environ.get('FAKE_COLAB_HF_FAIL_REPO', '').strip()\n"
+                "        if fail_repo and (fail_repo == repo_id or fail_repo in str(repo_id)):\n"
+                "            raise RuntimeError(f'Revision Not Found for {repo_id}@{revision}')\n"
                 "        cut_target = os.environ.get('FAKE_COLAB_CUT_MID_JUDGE', '').strip()\n"
                 "        if cut_target and (cut_target == repo_id or cut_target in str(repo_id)):\n"
                 "            if os.environ.get('FAKE_COLAB_CUT_MID_JUDGE_HARD') == '1':\n"

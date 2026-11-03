@@ -6091,6 +6091,695 @@ def test_periodic_fetch_knob_validation_and_transient_failure_does_not_stop_run(
     assert "hf_[REDACTED]" in cli_log
 
 
+def test_fix5_create_each_venv_once_and_old_double_venv_fails_under_fake(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deliverable 1:
+    1. `sync_judge_venvs` in `--stub` (`dryrun=False`, `mode="stub"`) calls `uv venv`
+       once for `venv-judge` (before `pyyaml_sdist_build`) and once for `venv-d3`
+       (in the loop), never passes `--clear` or `UV_VENV_CLEAR`, pops `UV_SYSTEM_PYTHON`
+       from `build_vm_uv_env` so `uv venv` emits no `--system` warning, and `uv pip sync`
+       into `venv-judge` keeps the sdist-built `pyyaml==6.0.3` in place while `venv-d3`
+       gets `pyyaml==6.0.3` from the cached wheel.
+    2. The old `e2257a4a` `sync_judge_venvs` double `uv venv` on `venv-judge` fails
+       under the updated `fake_colab` `uv` with `rc == 2` and
+       `Caused by: A virtual environment already exists at:`.
+    """
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env_venv_once")
+    monkeypatch.setenv("PATH", _hermetic_path_for(fake_env))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(fake_env["state_dir"]))
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "vm_content"))
+    monkeypatch.setenv("UV_SYSTEM_PYTHON", "true")
+
+    uv_env = vm_judges.build_vm_uv_env(content_dir=tmp_path / "vm_content")
+    assert "UV_SYSTEM_PYTHON" not in uv_env
+    assert "UV_VENV_CLEAR" not in uv_env
+
+    # Prepare synthetic uploaded repo with committed lockfiles matching head hashes
+    import shutil as _shutil
+
+    uploaded = tmp_path / "uploaded_repo"
+    (uploaded / "scripts" / "colab" / "locks").mkdir(parents=True, exist_ok=True)
+    for lock_name in ("judge.lock.txt", "d3.lock.txt"):
+        _shutil.copy2(
+            SCRIPTS_COLAB_DIR / "locks" / lock_name,
+            uploaded / "scripts" / "colab" / "locks" / lock_name,
+        )
+
+    work_dir = tmp_path / "work"
+    info = vm_judges.sync_judge_venvs(
+        work_dir,
+        uploaded,
+        mode="stub",
+        dryrun=False,
+    )
+    assert "--clear" not in info["venv_judge"]["venv_cmd"]
+    assert "--clear" not in info["venv_d3"]["venv_cmd"]
+
+    uv_calls = [
+        json.loads(ln)
+        for ln in (fake_env["state_dir"] / "uv_calls.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    venv_calls = [c for c in uv_calls if c["args"][:1] == ["venv"]]
+    assert len(venv_calls) == 2
+    assert venv_calls[0]["args"][-1] == str(work_dir / "venv-judge")
+    assert venv_calls[1]["args"][-1] == str(work_dir / "venv-d3")
+    for c in uv_calls:
+        assert "--clear" not in c["args"]
+        assert c.get("uv_system_python") is None
+
+    # Verify pyyaml==6.0.3 remains installed in both venvs after uv pip sync
+    # (`kept_by_sync: True` in venv-judge, and installed from cached wheel in venv-d3)
+    for venv_name, expect_kept in (("venv-judge", True), ("venv-d3", False)):
+        pkgs_file = work_dir / venv_name / ".installed_packages.json"
+        assert pkgs_file.is_file()
+        pkgs = json.loads(pkgs_file.read_text(encoding="utf-8"))
+        assert "pyyaml" in pkgs
+        assert pkgs["pyyaml"]["version"] == "6.0.3"
+        if expect_kept:
+            assert pkgs["pyyaml"].get("kept_by_sync") is True
+
+    # Load `e2257a4a:scripts/colab/vm_judges.py` (via `git show` when the commit is locally
+    # present, or by reverting the single `venv_judge_created` guard in shallow clones without network)
+    # and prove its double `uv venv` on `venv-judge` fails with `rc == 2` and
+    # "Caused by: A virtual environment already exists at:" under the updated fake `uv`.
+    old_commit = "e2257a4aebb7cf84ff44651b6d55ff9991d696e8"
+    if (
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit}^{{commit}}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        ).returncode
+        == 0
+    ):
+        old_vm_src = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"{old_commit}:scripts/colab/vm_judges.py"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        ).stdout
+    else:
+        cur_vm_src = VM_JUDGES_PY.read_text(encoding="utf-8")
+        guard_snippet = (
+            'if not (key == "venv_judge" and venv_judge_created):\n'
+            '                run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)'
+        )
+        assert guard_snippet in cur_vm_src
+        old_vm_src = cur_vm_src.replace(
+            guard_snippet,
+            'run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)',
+            1,
+        )
+    old_vm_py = tmp_path / "vm_judges_e2257a4a.py"
+    old_vm_py.write_text(old_vm_src, encoding="utf-8", newline="\n")
+    old_ns: dict[str, Any] = {"__name__": "vm_judges_e2257a4a"}
+    exec(compile(old_vm_src, str(old_vm_py), "exec"), old_ns)
+
+    work_old = tmp_path / "work_old"
+    with pytest.raises(Exception) as exc_info:
+        old_ns["sync_judge_venvs"](
+            work_old,
+            uploaded,
+            mode="stub",
+            dryrun=False,
+        )
+    err_old = exc_info.value
+    assert getattr(err_old, "returncode", None) == 2
+    assert "error: Failed to create virtual environment" in getattr(err_old, "stderr_tail", "")
+    assert "Caused by: A virtual environment already exists at:" in getattr(err_old, "stderr_tail", "")
+    assert "hint: Use the `--clear` flag or set `UV_VENV_CLEAR=1`" in getattr(err_old, "stderr_tail", "")
+
+
+def test_fix5_vm_command_audit_table_and_audited_fake_behaviours(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deliverable 2:
+    1. `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md` has the VM Command and Tool Audit table
+       covering `C1`..`C15` with `(a)` repeat call, `(b)` existing target, `(c)` missing
+       target/input, and `(d)` non-zero exit/error + code handling.
+    2. `tarfile.extractall(..., filter="data")` in `vm_judges.py` and `launch_judges.sh`
+       emits no `DeprecationWarning` and rejects unsafe path traversal members (`FilterError`).
+    3. `fake_colab` `uv` models:
+       - `--system` / `UV_SYSTEM_PYTHON` warning on `uv venv`
+       - `uv pip sync` removing extraneous packages while keeping `pyyaml==6.0.3`
+       - `uv pip sync` refusing missing `--extra-index-url` for `+cu132` wheels (`rc == 2`)
+       - `uv pip sync` refusing `--require-hashes` mismatch (`rc == 2`)
+       - `uv pip install` refusing missing `-r` lockfile (`rc == 2`).
+    """
+    assumptions_text = (SCRIPTS_COLAB_DIR / "REAL_SERVICE_ASSUMPTIONS.md").read_text(encoding="utf-8")
+    assert "## VM Command and Tool Audit against Pinned/Installed Real Versions" in assumptions_text
+    audit_section = assumptions_text.split(
+        "## VM Command and Tool Audit against Pinned/Installed Real Versions", 1
+    )[1]
+    for cid in [f"`C{i}`" for i in range(1, 16)]:
+        assert cid in audit_section, f"Missing audit row {cid} in REAL_SERVICE_ASSUMPTIONS.md"
+    for col_marker in ("(a) Repeat Call", "(b) Existing Target", "(c) Missing Target", "(d) Non-Zero Exit"):
+        assert col_marker in audit_section
+
+    # Verify filter="data" in both vm_judges.py and launch_judges.sh
+    assert 'filter="data"' in VM_JUDGES_PY.read_text(encoding="utf-8")
+    assert 'filter="data"' in LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
+
+    # Test unsafe tar member rejection via unpack_uploaded_archives (validate_tar_file catches .. first,
+    # and extractall(..., filter="data") also enforces data_filter)
+    bad_tar = tmp_path / "bad_repo.tar.gz"
+    import io as _io
+    import tarfile as _tarfile
+
+    with _tarfile.open(bad_tar, "w:gz") as tf:
+        ti = _tarfile.TarInfo(name="../evil_escape.txt")
+        payload = b"evil"
+        ti.size = len(payload)
+        tf.addfile(ti, _io.BytesIO(payload))
+
+    with pytest.raises((vm_judges.RefusalError, _tarfile.FilterError)):
+        vm_judges.unpack_uploaded_archives(
+            repo_tar=bad_tar,
+            repo_dir=tmp_path / "unpack_repo",
+            receipts_tar=None,
+            receipts_dir=tmp_path / "unpack_receipts",
+            resume_tar=None,
+            run_dir=tmp_path / "unpack_run",
+        )
+
+    # Test fake `uv` audited behaviours
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env_audit_uv")
+    uv_bin = str(fake_env["fake_bin"] / "uv")
+    state_env = {
+        **os.environ,
+        "PATH": _hermetic_path_for(fake_env),
+        "FAKE_COLAB_STATE_DIR": str(fake_env["state_dir"]),
+    }
+
+    # Find managed python 3.15 path via fake uv
+    proc_find = subprocess.run(
+        [uv_bin, "python", "find", "--no-python-downloads", "3.15"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=state_env,
+        timeout=15,
+        check=True,
+    )
+    py315_bin = proc_find.stdout.strip()
+
+    # (a) `uv venv` with UV_SYSTEM_PYTHON=true emits the exact uv 0.13.5 warning on stderr
+    venv_sys = tmp_path / "venv_sys"
+    proc_sys = subprocess.run(
+        [uv_bin, "venv", "--python", py315_bin, str(venv_sys)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env={**state_env, "UV_SYSTEM_PYTHON": "true"},
+        timeout=15,
+        check=False,
+    )
+    assert proc_sys.returncode == 0
+    assert "warning: The `--system` flag has no effect" in proc_sys.stderr
+
+    # First install pyyaml==6.0.3 from sdist into venv_sys so the wheel is cached and installed
+    pyyaml_lock = tmp_path / "pyyaml-sdist.lock.txt"
+    pyyaml_lock.write_text(
+        f"pyyaml==6.0.3 \\\n"
+        f"    --hash=sha256:{vm_judges.PYYAML_SDIST_SHA256}\n"
+        f"    # distribution: {vm_judges.PYYAML_SDIST_FILENAME}\n",
+        encoding="utf-8",
+    )
+    proc_inst = subprocess.run(
+        [
+            uv_bin,
+            "pip",
+            "install",
+            "--python",
+            str(venv_sys / "bin" / "python"),
+            "--only-binary",
+            ":all:",
+            "--no-binary",
+            "pyyaml",
+            "--require-hashes",
+            "-r",
+            str(pyyaml_lock),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=state_env,
+        timeout=15,
+        check=False,
+    )
+    assert proc_inst.returncode == 0
+
+    # (b) Extraneous package in venv_sys is removed by `uv pip sync` while `pyyaml==6.0.3` is kept
+    pkgs_json = venv_sys / ".installed_packages.json"
+    pkgs_data = json.loads(pkgs_json.read_text(encoding="utf-8"))
+    pkgs_data["extraneous-pkg"] = {"version": "9.9.9", "source": "wheel"}
+    pkgs_json.write_text(json.dumps(pkgs_data, indent=2) + "\n", encoding="utf-8")
+
+    lock_judge = SCRIPTS_COLAB_DIR / "locks" / "judge.lock.txt"
+    proc_sync_ok = subprocess.run(
+        [
+            uv_bin,
+            "pip",
+            "sync",
+            "--python",
+            str(venv_sys / "bin" / "python"),
+            "--only-binary",
+            ":all:",
+            "--no-binary",
+            "pyyaml",
+            "--require-hashes",
+            "--extra-index-url",
+            vm_judges.CU132_INDEX_URL,
+            "--index-strategy",
+            "unsafe-best-match",
+            str(lock_judge),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=state_env,
+        timeout=15,
+        check=False,
+    )
+    assert proc_sync_ok.returncode == 0, f"stderr={proc_sync_ok.stderr}"
+    synced_pkgs = json.loads(pkgs_json.read_text(encoding="utf-8"))
+    assert synced_pkgs["pyyaml"]["version"] == "6.0.3"
+    assert synced_pkgs["pyyaml"]["kept_by_sync"] is True
+    assert "extraneous-pkg" not in synced_pkgs
+
+    # (c) `uv pip sync` without `--extra-index-url` on a lockfile with `+cu132` fails with rc == 2
+    proc_no_idx = subprocess.run(
+        [
+            uv_bin,
+            "pip",
+            "sync",
+            "--python",
+            str(venv_sys / "bin" / "python"),
+            "--only-binary",
+            ":all:",
+            "--no-binary",
+            "pyyaml",
+            "--require-hashes",
+            str(lock_judge),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=state_env,
+        timeout=15,
+        check=False,
+    )
+    assert proc_no_idx.returncode == 2
+    assert "+cu132" in proc_no_idx.stderr
+
+    # (d) `uv pip sync` with `--require-hashes` on an unhashed requirement fails with rc == 2
+    unhashed_lock = tmp_path / "unhashed.lock.txt"
+    unhashed_lock.write_text("colorama==0.4.6\n    # distribution: colorama-0.4.6-py2.py3-none-any.whl\n", encoding="utf-8")
+    proc_unhashed = subprocess.run(
+        [
+            uv_bin,
+            "pip",
+            "sync",
+            "--python",
+            str(venv_sys / "bin" / "python"),
+            "--only-binary",
+            ":all:",
+            "--no-binary",
+            "pyyaml",
+            "--require-hashes",
+            "--extra-index-url",
+            vm_judges.CU132_INDEX_URL,
+            "--index-strategy",
+            "unsafe-best-match",
+            str(unhashed_lock),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=state_env,
+        timeout=15,
+        check=False,
+    )
+    assert proc_unhashed.returncode == 2
+    assert "In `--require-hashes` mode, all requirements must have their versions pinned with `==` and a `--hash` specified" in proc_unhashed.stderr
+
+    # (e) `uv pip install` with missing `-r` lockfile fails with rc == 2
+    proc_missing_req = subprocess.run(
+        [
+            uv_bin,
+            "pip",
+            "install",
+            "--python",
+            str(venv_sys / "bin" / "python"),
+            "--only-binary",
+            ":all:",
+            "--no-binary",
+            "pyyaml",
+            "--require-hashes",
+            "-r",
+            str(tmp_path / "nonexistent-pyyaml.lock.txt"),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        env=state_env,
+        timeout=15,
+        check=False,
+    )
+    assert proc_missing_req.returncode == 2
+    assert "error: File not found:" in proc_missing_req.stderr
+
+
+def test_fix5_gate_status_json_preserved_and_downloaded_on_all_exit_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deliverable 3:
+    1. `--step gate` writes `/content/gate_status.json` (`gate_status.json`), which `--step run`
+       never overwrites, and prints `archive_sha256_expected`, `archive_sha256_actual` (`-` when
+       `route=found`, hex digest when `route=installed`), `download_bytes`, `installed_bytes`,
+       `install_seconds` on the `VM_GATE_OK` stdout line.
+    2. `launch_judges.sh` downloads `/content/gate_status.json` to `<out>/gate_status.json`
+       on both success (where `<out>/status.json` is the run status) and failure (where `--step run`
+       fails and overwrites `<out>/status.json`), and scrubs any secret tokens from `<out>/gate_status.json`.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path, count=2)
+
+    # 1. Check `main(["--step", "gate", ...])` for `route=installed` (`uv_python_315_found=False`) vs `route=found`
+    import io as _io
+    import contextlib as _contextlib
+
+    fixture_tar, fixture_sha256, _fixture_size = fake_colab.build_fixture_python_archive(
+        tmp_path / "fixture_archive_gate",
+        python_version="3.15.1",
+        build_tag="20261021",
+    )
+    monkeypatch.setattr(vm_judges, "PINNED_PYTHON_ARCHIVE_SHA256", fixture_sha256)
+
+    env_inst = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_gate_inst", uv_python_315_found=False
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_inst,
+        found=False,
+        fixture_archive_path=fixture_tar,
+        expected_archive_sha256=fixture_sha256,
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_inst))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_inst["state_dir"]))
+    content_inst = tmp_path / "content_inst"
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(content_inst))
+
+    gate_status_inst = tmp_path / "gate_status_inst.json"
+    buf_inst = _io.StringIO()
+    with _contextlib.redirect_stdout(buf_inst):
+        rc_main_inst = vm_judges.main(
+            [
+                "--step",
+                "gate",
+                "--repo-dir",
+                str(REPO_ROOT),
+                "--status-file",
+                str(tmp_path / "status_inst.json"),
+                "--gate-status-file",
+                str(gate_status_inst),
+            ]
+        )
+    assert rc_main_inst == 0
+    stdout_inst = buf_inst.getvalue().strip()
+    assert stdout_inst.startswith("VM_GATE_OK ")
+    for expected_kv in (
+        f"archive_sha256_expected={fixture_sha256}",
+        f"archive_sha256_actual={fixture_sha256}",
+        "download_bytes=",
+        "installed_bytes=",
+        "install_seconds=",
+    ):
+        assert expected_kv in stdout_inst
+    assert gate_status_inst.is_file()
+    gate_doc_inst = json.loads(gate_status_inst.read_text(encoding="utf-8"))
+    assert gate_doc_inst["step"] == "gate"
+    assert gate_doc_inst["rc"] == 0
+    assert gate_doc_inst["route"] == "installed"
+    assert gate_doc_inst["archive_sha256_actual"] == fixture_sha256
+
+    # Also check `route=found` stdout line has `archive_sha256_actual=-`
+    env_fnd = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_gate_fnd", uv_python_315_found=True
+    )
+    monkeypatch.setenv("PATH", _hermetic_path_for(env_fnd))
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_fnd["state_dir"]))
+    monkeypatch.setenv("RDLAB_VM_CONTENT_DIR", str(tmp_path / "content_fnd"))
+    buf_fnd = _io.StringIO()
+    with _contextlib.redirect_stdout(buf_fnd):
+        rc_main_fnd = vm_judges.main(
+            [
+                "--step",
+                "gate",
+                "--repo-dir",
+                str(REPO_ROOT),
+                "--status-file",
+                str(tmp_path / "status_fnd.json"),
+                "--gate-status-file",
+                str(tmp_path / "gate_status_fnd.json"),
+            ]
+        )
+    assert rc_main_fnd == 0
+    stdout_fnd = buf_fnd.getvalue().strip()
+    assert f"archive_sha256_expected={fixture_sha256}" in stdout_fnd
+    assert "archive_sha256_actual=-" in stdout_fnd
+
+    # 2. End-to-end launcher success path: both `<out>/gate_status.json` (`step="gate"`)
+    #    and `<out>/status.json` (`step="build_allowlisted_result_tar"`) exist in `<out>`.
+    env_e2e_ok = fake_colab.setup_fake_colab_environment(tmp_path / "env_e2e_gate_ok")
+    out_e2e_ok = tmp_path / "out_e2e_gate_ok"
+    proc_ok = _run_progress_launcher(
+        env_e2e_ok,
+        items_file,
+        out_e2e_ok,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+    )
+    assert proc_ok.returncode == 0, f"stderr={proc_ok.stderr}\nstdout={proc_ok.stdout}"
+    assert (out_e2e_ok / "gate_status.json").is_file()
+    assert (out_e2e_ok / "status.json").is_file()
+    e2e_gate_doc = json.loads((out_e2e_ok / "gate_status.json").read_text(encoding="utf-8"))
+    e2e_run_doc = json.loads((out_e2e_ok / "status.json").read_text(encoding="utf-8"))
+    assert e2e_gate_doc["step"] == "gate"
+    assert e2e_gate_doc["status"] == "ok"
+    assert e2e_gate_doc["rc"] == 0
+    assert e2e_run_doc["step"] == "build_allowlisted_result_tar"
+    assert e2e_run_doc["status"] == "ok"
+
+    # 3. End-to-end launcher failure path: `--step run` fails and overwrites `status.json`,
+    #    while `gate_status.json` still preserves the gate's own `step="gate"`, `status="ok"` record.
+    env_e2e_fail = fake_colab.setup_fake_colab_environment(tmp_path / "env_e2e_gate_fail")
+    out_e2e_fail = tmp_path / "out_e2e_gate_fail"
+    proc_fail = _run_progress_launcher(
+        env_e2e_fail,
+        items_file,
+        out_e2e_fail,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_env={"FAKE_COLAB_CUT_MID_JUDGE": "1"},
+    )
+    assert proc_fail.returncode != 0
+    assert (out_e2e_fail / "gate_status.json").is_file()
+    assert (out_e2e_fail / "status.json").is_file()
+    fail_gate_doc = json.loads((out_e2e_fail / "gate_status.json").read_text(encoding="utf-8"))
+    fail_run_doc = json.loads((out_e2e_fail / "status.json").read_text(encoding="utf-8"))
+    assert fail_gate_doc["step"] == "gate"
+    assert fail_gate_doc["status"] == "ok"
+    assert fail_run_doc["step"] != "gate"
+    assert fail_run_doc["status"] in ("failed", "refused")
+
+
+def test_fix5_staged_stub_until_option_all_stages_and_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deliverable 4:
+    1. `--stub --until venv_sync` stops after `sync_judge_venvs`, writes `status.json` (`ok`,
+       `until="venv_sync"`, `stopped_after="venv_sync"`), `vm_receipt.json`, `result.tar.gz`,
+       and `run_end`, and makes 0 HF downloads.
+    2. `--stub --until first_judge` downloads & verifies only `flow-judge-v0.1` (`7,644,593,918`
+       receipt bytes, smallest judge), writes `status.json` (`ok`, `until="first_judge"`,
+       `stopped_after="first_judge"`), `vm_receipt.json`, `result.tar.gz`, and `run_end`,
+       and makes 1 HF download (`flow-judge-v0.1`).
+    3. `--stub --until weights` downloads & verifies all 5 judges, stops before `judge_pass`,
+       writes `status.json` (`ok`, `until="weights"`, `stopped_after="weights"`), `vm_receipt.json`,
+       `result.tar.gz`, and `run_end`, and makes 5 HF downloads.
+    4. Unknown `--until` values or `--until` with `--time-one`, `--probe`, or `--session-smoke`
+       refuse before any session opens (`rc == 2`, `BAD_UNTIL`).
+    5. `--dry --stub --until <step>` shows `--env RDLAB_UNTIL=<step>`.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_file = _make_synthetic_public_items(tmp_path, count=2)
+
+    # Confirm `flow-judge-v0.1` is the smallest judge by receipt bytes (7,644,593,918)
+    assert vm_judges.FIRST_JUDGE_ID == "flow-judge-v0.1"
+    assert vm_judges.FIRST_JUDGE_RECEIPT_BYTES == 7_644_593_918
+
+    # Unit-test validate_until_option
+    assert vm_judges.validate_until_option("stub", None) is None
+    assert vm_judges.validate_until_option("stub", "venv_sync") == "venv_sync"
+    assert vm_judges.validate_until_option("stub", "first_judge") == "first_judge"
+    assert vm_judges.validate_until_option("stub", "weights") == "weights"
+    with pytest.raises(vm_judges.RefusalError) as exc_empty:
+        vm_judges.validate_until_option("stub", "")
+    assert exc_empty.value.failure_class == "BAD_UNTIL"
+    with pytest.raises(vm_judges.RefusalError) as exc_bogus:
+        vm_judges.validate_until_option("stub", "bogus")
+    assert exc_bogus.value.failure_class == "BAD_UNTIL"
+    with pytest.raises(vm_judges.RefusalError) as exc_mode:
+        vm_judges.validate_until_option("time-one", "venv_sync")
+    assert exc_mode.value.failure_class == "BAD_UNTIL"
+
+    # 1. Invalid `--until` value and non-`--stub` modes rejected before opening any session
+    for bad_args in (
+        ["--stub", "--until", "bogus"],
+        ["--stub", "--until", ""],
+        ["--until", "venv_sync", "--time-one"],
+        ["--until", "venv_sync", "--probe"],
+        ["--until", "venv_sync", "--session-smoke"],
+    ):
+        tag = "_".join(a.strip("-") or "empty" for a in bad_args)
+        env_bad = fake_colab.setup_fake_colab_environment(tmp_path / f"env_bad_until_{tag}")
+        out_bad = tmp_path / f"out_bad_until_{tag}"
+        exports = _base_launcher_exports(
+            env_bad,
+            open_lock=tmp_path / f"lock_{tag}.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        quoted_args = " ".join(f"'{a}'" for a in bad_args)
+        proc_bad = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' {quoted_args} --out-dir '{_to_wsl_path(out_bad)}' --run-id bad-until",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_bad.returncode == 2, f"Expected rc=2 for {bad_args}, got {proc_bad.returncode}"
+        assert "BAD_UNTIL" in (proc_bad.stderr + proc_bad.stdout)
+        calls_file = env_bad["state_dir"] / "calls.jsonl"
+        assert not calls_file.exists() or "open" not in calls_file.read_text(encoding="utf-8")
+
+    # 2. `--dry --stub --until first_judge` includes `--env RDLAB_UNTIL=first_judge`
+    env_dry = fake_colab.setup_fake_colab_environment(tmp_path / "env_dry_until")
+    out_dry = tmp_path / "out_dry_until"
+    exports_dry = _base_launcher_exports(
+        env_dry,
+        open_lock=tmp_path / "dry_until.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_dry = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_dry} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --dry --stub --until first_judge --out-dir '{_to_wsl_path(out_dry)}' --run-id dry-until-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_dry.returncode == 0
+    assert "--env RDLAB_UNTIL=first_judge" in proc_dry.stdout
+    assert "/content/gate_status.json" in proc_dry.stdout
+
+    # 3. End-to-end staged runs for `venv_sync`, `first_judge`, and `weights`
+    vm_judges._ensure_repo_imports(REPO_ROOT)
+    all_judge_ids_ordered = sorted(vm_judges.BAKEOFF_JUDGE_SPECS.keys())
+    stage_expectations = [
+        ("venv_sync", 0, []),
+        ("first_judge", 1, ["flow-judge-v0.1"]),
+        ("weights", 5, all_judge_ids_ordered),
+    ]
+    for until_step, expected_dl_count, expected_judges in stage_expectations:
+        env_stage = fake_colab.setup_fake_colab_environment(tmp_path / f"env_until_{until_step}")
+        out_stage = tmp_path / f"out_until_{until_step}"
+        exports_stage = _base_launcher_exports(
+            env_stage,
+            open_lock=tmp_path / f"until_{until_step}.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        proc_stage = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports_stage} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until {until_step} --out-dir '{_to_wsl_path(out_stage)}' --run-id until-{until_step}",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        assert proc_stage.returncode == 0, (
+            f"until={until_step} failed: stderr={proc_stage.stderr}\nstdout={proc_stage.stdout}"
+        )
+        for req_file in (
+            "gate_status.json",
+            "status.json",
+            "vm_receipt.json",
+            "result.tar.gz",
+            "progress.jsonl",
+            "outputs-closed.json",
+        ):
+            assert (out_stage / req_file).is_file(), f"Missing {req_file} for until={until_step}"
+
+        status_doc = json.loads((out_stage / "status.json").read_text(encoding="utf-8"))
+        assert status_doc["status"] == "ok"
+        assert status_doc["rc"] == 0
+        assert status_doc["step"] == "build_allowlisted_result_tar"
+        assert status_doc["until"] == until_step
+        assert status_doc["stopped_after"] == until_step
+
+        receipt_doc = json.loads((out_stage / "vm_receipt.json").read_text(encoding="utf-8"))
+        assert receipt_doc["until"] == until_step
+        assert receipt_doc["stopped_after"] == until_step
+        assert sorted(receipt_doc["verified_snapshots"].keys()) == expected_judges
+
+        progress_rows = [
+            json.loads(ln)
+            for ln in (out_stage / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        assert progress_rows[-1]["kind"] == "run_end"
+        assert progress_rows[-1]["status"] == "ok"
+        assert progress_rows[-1]["until"] == until_step
+        assert progress_rows[-1]["stopped_after"] == until_step
+        dl_rows = [r for r in progress_rows if r["kind"] == "judge_download"]
+        assert [r["judge_id"] for r in dl_rows] == expected_judges
+        assert len(dl_rows) == expected_dl_count
+        step_end_names = [r.get("step") for r in progress_rows if r["kind"] == "step_end"]
+        assert "judge_pass" not in step_end_names
+
+
+
 
 
 

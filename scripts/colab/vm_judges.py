@@ -49,11 +49,15 @@ from typing import Any, Iterable, Mapping, Sequence
 DEFAULT_CONTENT_DIR = Path("/content")
 DEFAULT_ITEMS_DIR = Path("/content/rdlab_items")
 DEFAULT_REPO_DIR = Path("/content/rdlab")
+DEFAULT_GATE_STATUS_FILE = Path("/content/gate_status.json")
 DEFAULT_SCHEDULE_SEED = 20261030
 DEFAULT_VRAM_HALT_MIB = 26_000
 DEFAULT_TORCH_DTYPE = "bfloat16"
 D3_MINI_JUDGE_ID = "d3-mini"
 D3_MINI_REVIEWED_REVISION = "bd0090dd758d32ba59ef5c749910a8e87fc4391f"
+FIRST_JUDGE_ID = "flow-judge-v0.1"
+FIRST_JUDGE_RECEIPT_BYTES = 7_644_593_918
+ALLOWED_UNTIL_STEPS: tuple[str, ...] = ("venv_sync", "first_judge", "weights")
 SCHEDULE_FILENAME = "schedule.json"
 GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
@@ -865,6 +869,7 @@ def build_vm_uv_env(
 ) -> dict[str, str]:
     """Return the exact environment used by both `run_gate` and `sync_judge_venvs` when invoking `uv`."""
     env = dict(os.environ if base_env is None else base_env)
+    env.pop("UV_SYSTEM_PYTHON", None)
     env["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
     temp_root = resolve_vm_python_temp_dir(content_dir)
     install_dir = temp_root / "install"
@@ -1190,10 +1195,12 @@ def sync_judge_venvs(
             "executed_in_stub": mode == "stub",
         },
     )
+    venv_judge_created = False
     if not dryrun and mode == "stub":
         pyyaml_lock_file = work_dir / "pyyaml-sdist.lock.txt"
         pyyaml_lock_file.write_text(pyyaml_req_text, encoding="utf-8", newline="\n")
         run_vm_subprocess(plan["venv_judge"]["venv_cmd"], env=sync_env, check=True)
+        venv_judge_created = True
         run_vm_subprocess(pyyaml_build_cmd, env=sync_env, check=True)
     pyyaml_timing = _record_step_end(
         "pyyaml_sdist_build",
@@ -1218,7 +1225,8 @@ def sync_judge_venvs(
             extra={"venv": vinfo["path"], "lock": vinfo["lock"]},
         )
         if not dryrun:
-            run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)
+            if not (key == "venv_judge" and venv_judge_created):
+                run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)
             run_vm_subprocess(vinfo["sync_cmd"], env=sync_env, check=True)
         venv_timings_by_key[key] = _record_step_end(
             key,
@@ -1274,13 +1282,31 @@ def resolve_remote_code_arg_for_judge(spec: JudgeSpec) -> str | None:
     return None
 
 
+def _select_judge_specs(
+    only_judge_ids: Sequence[str] | None = None,
+) -> list[tuple[str, Any]]:
+    """Return ordered `(judge_id, spec)` pairs for all judges or a requested subset."""
+    if only_judge_ids is None:
+        return sorted(BAKEOFF_JUDGE_SPECS.items())
+    selected: list[tuple[str, Any]] = []
+    for jid in only_judge_ids:
+        if jid not in BAKEOFF_JUDGE_SPECS:
+            raise RefusalError(
+                "UNKNOWN_JUDGE_ID",
+                f"Unknown judge_id {jid!r} (allowed: {sorted(BAKEOFF_JUDGE_SPECS.keys())})",
+            )
+        selected.append((jid, BAKEOFF_JUDGE_SPECS[jid]))
+    return selected
+
+
 def verify_all_judge_snapshots(
     receipts_dir: Path,
     hf_home: Path,
     *,
     repo_dir: Path | None = None,
+    only_judge_ids: Sequence[str] | None = None,
 ) -> dict[str, str]:
-    """Verify every file of all 5 judges in `BAKEOFF_JUDGE_SPECS` against `<owner>__<repo>.sha256.json`.
+    """Verify every file of all 5 judges (or `only_judge_ids`) in `BAKEOFF_JUDGE_SPECS` against `<owner>__<repo>.sha256.json`.
 
     Refuses the whole run on any SHA mismatch, extra file, bytecode file, or missing file.
     """
@@ -1288,7 +1314,7 @@ def verify_all_judge_snapshots(
     ensure_not_drive_path(receipts_dir)
     ensure_not_drive_path(hf_home)
     verified: dict[str, str] = {}
-    for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+    for judge_id, spec in _select_judge_specs(only_judge_ids):
         allow_sha = resolve_remote_code_arg_for_judge(spec)
         if spec.requires_remote_code and allow_sha != D3_MINI_REVIEWED_REVISION:
             raise RefusalError(
@@ -1346,6 +1372,7 @@ def download_all_judge_weights(
     repo_dir: Path | None = None,
     progress_path: Path | None = None,
     snapshot_download_fn: Any = None,
+    only_judge_ids: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Download each judge at its pinned 40-char revision and emit `judge_download_start` / `judge_download` progress lines."""
     _ensure_repo_imports(repo_dir)
@@ -1367,7 +1394,7 @@ def download_all_judge_weights(
     cumulative_seconds = 0.0
     judge_records: list[dict[str, Any]] = []
 
-    for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+    for judge_id, spec in _select_judge_specs(only_judge_ids):
         t0 = time.monotonic()
         start_iso = _utc_now_iso()
         append_progress_line(
@@ -1428,6 +1455,7 @@ def download_and_verify_all_judge_weights(
     judge_records_out: list[dict[str, Any]] | None = None,
     step_timings: dict[str, dict[str, Any]] | None = None,
     step_order: list[str] | None = None,
+    only_judge_ids: Sequence[str] | None = None,
 ) -> dict[str, str]:
     """Download each judge at its pinned 40-char revision (when not dryrun) and verify all snapshots against receipts."""
     _ensure_repo_imports(repo_dir)
@@ -1441,6 +1469,7 @@ def download_and_verify_all_judge_weights(
         repo_dir=repo_dir,
         progress_path=progress_path,
         snapshot_download_fn=snapshot_download_fn,
+        only_judge_ids=only_judge_ids,
     )
     if judge_records_out is not None:
         judge_records_out.extend(records)
@@ -1462,7 +1491,10 @@ def download_and_verify_all_judge_weights(
 
     t_ver, start_ver, _ = _record_step_start("verify", progress_path=progress_path)
     verified = verify_all_judge_snapshots(
-        receipts_dir, hf_home, repo_dir=repo_dir
+        receipts_dir,
+        hf_home,
+        repo_dir=repo_dir,
+        only_judge_ids=only_judge_ids,
     )
     _record_step_end(
         "verify",
@@ -2145,7 +2177,7 @@ def unpack_uploaded_archives(
                             "TAR_ALLOWLIST_VIOLATION",
                             f"Forbidden archive member: {member.name!r}",
                         )
-                tf.extractall(dest_dir)
+                tf.extractall(dest_dir, filter="data")
         finally:
             try:
                 archive.unlink()
@@ -2300,6 +2332,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--status-file",
         type=Path,
         default=env_path("RDLAB_STATUS_FILE", Path("/content/status.json")),
+    )
+    parser.add_argument(
+        "--gate-status-file",
+        type=Path,
+        default=env_path("RDLAB_GATE_STATUS_FILE", DEFAULT_GATE_STATUS_FILE),
+    )
+    parser.add_argument(
+        "--until",
+        default=env_or("RDLAB_UNTIL", None),
     )
     parser.add_argument(
         "--resume",
@@ -2816,8 +2857,32 @@ def find_or_install_vm_python_315(
 check_vm_python_preflight = find_or_install_vm_python_315
 
 
+def validate_until_option(mode: str, until: str | None) -> str | None:
+    """Validate `--until` / `RDLAB_UNTIL`: allowed only in `stub` mode and only in `ALLOWED_UNTIL_STEPS`."""
+    if until is None:
+        return None
+    cleaned = str(until).strip()
+    if not cleaned:
+        raise RefusalError(
+            "BAD_UNTIL",
+            "--until requires a non-empty step name (allowed: venv_sync, first_judge, weights)",
+        )
+    if mode != "stub":
+        raise RefusalError(
+            "BAD_UNTIL",
+            f"--until is allowed only with --stub (got mode={mode!r}, until={cleaned!r})",
+        )
+    if cleaned not in ALLOWED_UNTIL_STEPS:
+        allowed_str = ", ".join(ALLOWED_UNTIL_STEPS)
+        raise RefusalError(
+            "BAD_UNTIL",
+            f"Unknown --until step {cleaned!r} (allowed: {allowed_str})",
+        )
+    return cleaned
+
+
 def run_gate(args: argparse.Namespace) -> int:
-    """Execute the pre-upload VM gate: create `/content/rdlab_items/`, check disk, find-or-install Python 3.15.1, and write `status.json`."""
+    """Execute the pre-upload VM gate: create `/content/rdlab_items/`, check disk, find-or-install Python 3.15.1, and write `/content/gate_status.json`."""
     import platform
 
     content_dir = resolve_content_dir()
@@ -2827,12 +2892,29 @@ def run_gate(args: argparse.Namespace) -> int:
     )
     items_parent = items_file.parent
     hf_home = _resolve_vm_path(args.hf_home, content_dir, "hf_home")
+    gate_status_path = _resolve_vm_path(
+        getattr(args, "gate_status_file", DEFAULT_GATE_STATUS_FILE),
+        content_dir,
+        "gate_status.json",
+    )
+    legacy_status_path = (
+        _resolve_vm_path(args.status_file, content_dir, "status.json")
+        if args.status_file is not None
+        else None
+    )
+
+    def _write_gate_status_files(**status_kwargs: Any) -> None:
+        targets: list[Path] = [gate_status_path]
+        if legacy_status_path is not None and legacy_status_path != gate_status_path:
+            targets.append(legacy_status_path)
+        for target_p in targets:
+            write_vm_status_file(target_p, **status_kwargs)
 
     try:
-        for p in (content_dir, items_dir, items_parent, hf_home):
+        for p in (content_dir, items_dir, items_parent, hf_home, gate_status_path):
             ensure_not_drive_path(p)
-        if args.status_file is not None:
-            ensure_not_drive_path(args.status_file)
+        if legacy_status_path is not None:
+            ensure_not_drive_path(legacy_status_path)
 
         if items_dir.exists() and not items_dir.is_dir():
             raise RefusalError(
@@ -2856,54 +2938,55 @@ def run_gate(args: argparse.Namespace) -> int:
         py_report = find_or_install_vm_python_315(content_dir=content_dir)
         lock_sdists = list_locks_sdists(args.repo_dir)
     except RefusalError as err:
-        if args.status_file is not None:
-            try:
-                write_vm_status_file(
-                    args.status_file,
-                    step="gate",
-                    rc=2,
-                    reason=f"{err.failure_class}: {err.detail}",
-                    status="refused",
-                    failure_class=err.failure_class,
-                    stdout_tail=getattr(err, "stdout_tail", None),
-                    stderr_tail=getattr(err, "stderr_tail", None),
-                    subprocess_record=(
-                        err.to_failure_record()
-                        if hasattr(err, "to_failure_record")
-                        else None
-                    ),
-                )
-            except OSError:
-                pass
+        try:
+            _write_gate_status_files(
+                step="gate",
+                rc=2,
+                reason=f"{err.failure_class}: {err.detail}",
+                status="refused",
+                failure_class=err.failure_class,
+                stdout_tail=getattr(err, "stdout_tail", None),
+                stderr_tail=getattr(err, "stderr_tail", None),
+                subprocess_record=(
+                    err.to_failure_record()
+                    if hasattr(err, "to_failure_record")
+                    else None
+                ),
+            )
+        except OSError:
+            pass
         sys.stderr.write(f"{err.failure_class}: {scrub_log_text(err.detail)}\n")
         return 2
 
-    if args.status_file is not None:
-        write_vm_status_file(
-            args.status_file,
-            step="gate",
-            rc=0,
-            reason="VM_GATE_OK",
-            status="ok",
-            extra={
-                "uv_path": py_report["uv_path"],
-                "uv_version": py_report["uv_version"],
-                "uv_metadata_version": py_report["uv_metadata_version"],
-                "python_315": py_report["python_315"],
-                "interpreter_version": py_report["interpreter_version"],
-                "interpreter_build": py_report["interpreter_build"],
-                "source_url": py_report["source_url"],
-                "archive_sha256_expected": py_report["archive_sha256_expected"],
-                "archive_sha256_actual": py_report["archive_sha256_actual"],
-                "download_bytes": py_report["download_bytes"],
-                "installed_bytes": py_report["installed_bytes"],
-                "install_seconds": py_report["install_seconds"],
-                "route": py_report["route"],
-                "lock_sdists": lock_sdists,
-            },
-        )
+    _write_gate_status_files(
+        step="gate",
+        rc=0,
+        reason="VM_GATE_OK",
+        status="ok",
+        extra={
+            "uv_path": py_report["uv_path"],
+            "uv_version": py_report["uv_version"],
+            "uv_metadata_version": py_report["uv_metadata_version"],
+            "python_315": py_report["python_315"],
+            "interpreter_version": py_report["interpreter_version"],
+            "interpreter_build": py_report["interpreter_build"],
+            "source_url": py_report["source_url"],
+            "archive_sha256_expected": py_report["archive_sha256_expected"],
+            "archive_sha256_actual": py_report["archive_sha256_actual"],
+            "download_bytes": py_report["download_bytes"],
+            "installed_bytes": py_report["installed_bytes"],
+            "install_seconds": py_report["install_seconds"],
+            "route": py_report["route"],
+            "lock_sdists": lock_sdists,
+        },
+    )
     sdist_summary = ",".join(
         f"{k}:{'+'.join(v)}" for k, v in sorted(lock_sdists.items())
+    )
+    actual_sha_display = (
+        "-"
+        if py_report["route"] == "found" or not py_report["archive_sha256_actual"]
+        else str(py_report["archive_sha256_actual"])
     )
     print(
         f"VM_GATE_OK {platform.platform()} "
@@ -2917,6 +3000,11 @@ def run_gate(args: argparse.Namespace) -> int:
         f"python_315={py_report['python_315']} "
         f"interpreter_version={py_report['interpreter_version']} "
         f"interpreter_build={py_report['interpreter_build']} "
+        f"archive_sha256_expected={py_report['archive_sha256_expected']} "
+        f"archive_sha256_actual={actual_sha_display} "
+        f"download_bytes={py_report['download_bytes']} "
+        f"installed_bytes={py_report['installed_bytes']} "
+        f"install_seconds={py_report['install_seconds']} "
         f"lock_sdists={sdist_summary}",
         flush=True,
     )
@@ -3343,6 +3431,10 @@ def main(argv: list[str] | None = None) -> int:
         }
 
     try:
+        current_step = "validate_until_option"
+        until_step = validate_until_option(args.mode, getattr(args, "until", None))
+        stopped_after: str | None = None
+
         current_step = "check_upload_path_allowed"
         check_upload_path_allowed(args.items_file)
 
@@ -3414,41 +3506,75 @@ def main(argv: list[str] | None = None) -> int:
             step_order=step_order,
         )
 
-        current_step = "download_and_verify_all_judge_weights"
-        verified_snapshots = download_and_verify_all_judge_weights(
-            args.receipts_dir,
-            args.hf_home,
-            dryrun=dryrun,
-            repo_dir=args.repo_dir,
-            progress_path=progress_path,
-            judge_records_out=judge_download_records,
-            step_timings=step_timings,
-            step_order=step_order,
-        )
+        verified_snapshots: dict[str, str] = {}
+        time_one_summary: dict[str, Any] | None = None
+        pilot_mass_readout: dict[str, Any] | None = None
 
-        current_step = "run_judges_pipeline"
-        t_jpass, start_jpass, _ = _record_step_start(
-            "judge_pass", progress_path=progress_path
-        )
-        part_dir = args.items_file.parent
-        time_one_summary, pilot_mass_readout = run_judges_pipeline(
-            mode=args.mode,
-            part_dir=part_dir,
-            run_dir=args.run_dir,
-            receipts_dir=args.receipts_dir,
-            hf_home=args.hf_home,
-            vram_halt_mib=args.vram_halt_mib,
-            dryrun=dryrun,
-            repo_root=args.repo_dir,
-        )
-        _record_step_end(
-            "judge_pass",
-            t_jpass,
-            start_jpass,
-            progress_path=progress_path,
-            step_timings=step_timings,
-            step_order=step_order,
-        )
+        if until_step == "venv_sync":
+            stopped_after = "venv_sync"
+        elif until_step == "first_judge":
+            current_step = "download_and_verify_all_judge_weights"
+            verified_snapshots = download_and_verify_all_judge_weights(
+                args.receipts_dir,
+                args.hf_home,
+                dryrun=dryrun,
+                repo_dir=args.repo_dir,
+                progress_path=progress_path,
+                judge_records_out=judge_download_records,
+                step_timings=step_timings,
+                step_order=step_order,
+                only_judge_ids=(FIRST_JUDGE_ID,),
+            )
+            stopped_after = "first_judge"
+        elif until_step == "weights":
+            current_step = "download_and_verify_all_judge_weights"
+            verified_snapshots = download_and_verify_all_judge_weights(
+                args.receipts_dir,
+                args.hf_home,
+                dryrun=dryrun,
+                repo_dir=args.repo_dir,
+                progress_path=progress_path,
+                judge_records_out=judge_download_records,
+                step_timings=step_timings,
+                step_order=step_order,
+            )
+            stopped_after = "weights"
+        else:
+            current_step = "download_and_verify_all_judge_weights"
+            verified_snapshots = download_and_verify_all_judge_weights(
+                args.receipts_dir,
+                args.hf_home,
+                dryrun=dryrun,
+                repo_dir=args.repo_dir,
+                progress_path=progress_path,
+                judge_records_out=judge_download_records,
+                step_timings=step_timings,
+                step_order=step_order,
+            )
+
+            current_step = "run_judges_pipeline"
+            t_jpass, start_jpass, _ = _record_step_start(
+                "judge_pass", progress_path=progress_path
+            )
+            part_dir = args.items_file.parent
+            time_one_summary, pilot_mass_readout = run_judges_pipeline(
+                mode=args.mode,
+                part_dir=part_dir,
+                run_dir=args.run_dir,
+                receipts_dir=args.receipts_dir,
+                hf_home=args.hf_home,
+                vram_halt_mib=args.vram_halt_mib,
+                dryrun=dryrun,
+                repo_root=args.repo_dir,
+            )
+            _record_step_end(
+                "judge_pass",
+                t_jpass,
+                start_jpass,
+                progress_path=progress_path,
+                step_timings=step_timings,
+                step_order=step_order,
+            )
 
         current_step = "delete_uploaded_items"
         deleted_items_receipt = delete_uploaded_items_and_record_receipt(
@@ -3456,7 +3582,12 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         with vm_log_path.open("a", encoding="utf-8", newline="\n") as log_fh:
-            log_fh.write(f"VM_RUN_OK mode={args.mode} dryrun={dryrun}\n")
+            until_sfx = (
+                f" until={until_step} stopped_after={stopped_after}"
+                if until_step is not None
+                else ""
+            )
+            log_fh.write(f"VM_RUN_OK mode={args.mode} dryrun={dryrun}{until_sfx}\n")
             planted_leak = os.environ.get("RDLAB_TEST_PLANT_LOG_LEAK", "").strip()
             if planted_leak:
                 log_fh.write(f"planted_test_leak={planted_leak}\n")
@@ -3501,6 +3632,12 @@ def main(argv: list[str] | None = None) -> int:
             "timings": _build_timings_block(),
             "dryrun": dryrun,
         }
+        if until_step is not None:
+            receipt_doc["until"] = until_step
+            receipt_doc["stopped_after"] = stopped_after
+            if until_step == "first_judge":
+                receipt_doc["first_judge_id"] = FIRST_JUDGE_ID
+                receipt_doc["first_judge_receipt_bytes"] = FIRST_JUDGE_RECEIPT_BYTES
         receipt_path.write_text(
             json.dumps(receipt_doc, indent=2) + "\n",
             encoding="utf-8",
@@ -3523,38 +3660,50 @@ def main(argv: list[str] | None = None) -> int:
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
 
+        status_extra: dict[str, Any] = {
+            "uv_path": py_rep["uv_path"],
+            "uv_version": venv_info["uv_version"],
+            "uv_metadata_version": py_rep["uv_metadata_version"],
+            "python_315": venv_info["python_315"],
+            "interpreter_version": py_rep["interpreter_version"],
+            "interpreter_build": py_rep["interpreter_build"],
+            "source_url": py_rep["source_url"],
+            "archive_sha256_expected": py_rep["archive_sha256_expected"],
+            "archive_sha256_actual": py_rep["archive_sha256_actual"],
+            "download_bytes": py_rep["download_bytes"],
+            "installed_bytes": py_rep["installed_bytes"],
+            "install_seconds": py_rep["install_seconds"],
+            "route": py_rep["route"],
+            "lock_sdists": venv_info["lock_sdists"],
+        }
+        if until_step is not None:
+            status_extra["until"] = until_step
+            status_extra["stopped_after"] = stopped_after
+            if until_step == "first_judge":
+                status_extra["first_judge_id"] = FIRST_JUDGE_ID
+                status_extra["first_judge_receipt_bytes"] = FIRST_JUDGE_RECEIPT_BYTES
+
         write_vm_status_file(
             args.status_file,
             step=current_step,
             rc=0,
             reason="ok",
             status="ok",
-            extra={
-                "uv_path": py_rep["uv_path"],
-                "uv_version": venv_info["uv_version"],
-                "uv_metadata_version": py_rep["uv_metadata_version"],
-                "python_315": venv_info["python_315"],
-                "interpreter_version": py_rep["interpreter_version"],
-                "interpreter_build": py_rep["interpreter_build"],
-                "source_url": py_rep["source_url"],
-                "archive_sha256_expected": py_rep["archive_sha256_expected"],
-                "archive_sha256_actual": py_rep["archive_sha256_actual"],
-                "download_bytes": py_rep["download_bytes"],
-                "installed_bytes": py_rep["installed_bytes"],
-                "install_seconds": py_rep["install_seconds"],
-                "route": py_rep["route"],
-                "lock_sdists": venv_info["lock_sdists"],
-            },
+            extra=status_extra,
         )
+        run_end_payload: dict[str, Any] = {
+            "kind": "run_end",
+            "status": "ok",
+            "rc": 0,
+            "step": current_step,
+            "end": _utc_now_iso(),
+        }
+        if until_step is not None:
+            run_end_payload["until"] = until_step
+            run_end_payload["stopped_after"] = stopped_after
         append_progress_line(
             progress_path,
-            {
-                "kind": "run_end",
-                "status": "ok",
-                "rc": 0,
-                "step": current_step,
-                "end": _utc_now_iso(),
-            },
+            run_end_payload,
         )
         return 0
 
