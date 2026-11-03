@@ -6947,17 +6947,44 @@ def test_fix6_audit_table_versions_match_locks() -> None:
         in current_text
     ), "Missing required Part 0 correction note above the C1–C15 audit table"
 
-    # Verify the same validator fails on fix5 (`8f873402:scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`)
-    proc_old = subprocess.run(
-        ["git", "show", "8f873402:scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"],
-        cwd=str(REPO_ROOT),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    # Verify the same validator fails on fix5 (`8f873402:scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`
+    # when commit `8f873402` is locally present, or reconstructed fix5 rows in shallow CI clones)
+    old_commit_fix5 = "8f873402dc10364644dbf7b6f222e21fbda87f5c"
+    if (
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit_fix5}^{{commit}}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        ).returncode
+        == 0
+    ):
+        old_doc_text = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"{old_commit_fix5}:scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        ).stdout
+    else:
+        old_doc_text = (
+            current_text.replace("torch==2.14.1+cu132", "torch==2.11.0+cu132")
+            .replace("transformers==5.19.0", "transformers==5.0.0")
+            .replace("scripts/colab/locks/judge.lock.txt:186-188", "judge.lock.txt:154-155")
+            .replace("scripts/colab/locks/judge.lock.txt:229-231", "scripts/colab/locks/judge.lock.txt:210-211")
+            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2233-2367", "bakeoff_judge.py:390-450")
+            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2594", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
+            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2652-2670", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
+            .replace(
+                "(note: `torch.cuda.max_memory_allocated()` is not used anywhere in the repo)",
+                "and `run_bakeoff_judge` also tracks `torch.cuda.max_memory_allocated()`",
+            )
+        )
     with pytest.raises(AssertionError) as exc_old:
-        _validate_c1_c15_audit_table_text(proc_old.stdout)
+        _validate_c1_c15_audit_table_text(old_doc_text)
     err_msg = str(exc_old.value)
     assert "torch==2.11.0+cu132" in err_msg
     assert "transformers==5.0.0" in err_msg
@@ -7018,16 +7045,34 @@ def test_fix6_vm_judges_static_no_in_process_judge_or_model_imports() -> None:
     current_source = VM_JUDGES_PY.read_text(encoding="utf-8")
     _check_vm_judges_no_in_process_judge_imports(current_source)
 
-    proc_old = subprocess.run(
-        ["git", "show", "e2257a4a:scripts/colab/vm_judges.py"],
-        cwd=str(REPO_ROOT),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
+    old_commit = "e2257a4aebb7cf84ff44651b6d55ff9991d696e8"
+    if (
+        subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit}^{{commit}}"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        ).returncode
+        == 0
+    ):
+        old_vm_source = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"{old_commit}:scripts/colab/vm_judges.py"],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        ).stdout
+    else:
+        old_vm_source = (
+            current_source
+            + "\nfrom reasoning_dataset_lab.pilot_b.bakeoff_judge import run_bakeoff_judge\n"
+            + "run_bakeoff_judge(part_dir='.', output_dir='.')\n"
+        )
     with pytest.raises(AssertionError) as exc_old:
-        _check_vm_judges_no_in_process_judge_imports(proc_old.stdout)
+        _check_vm_judges_no_in_process_judge_imports(old_vm_source)
     assert "bakeoff_judge" in str(exc_old.value)
 
 

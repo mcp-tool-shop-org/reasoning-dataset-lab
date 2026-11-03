@@ -29,7 +29,7 @@ Enforces:
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+# Pure-stdlib imports only (never torch, transformers, pydantic, or bakeoff_judge)
 import datetime
 import fnmatch
 import hashlib
@@ -47,7 +47,7 @@ import tarfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 
 DEFAULT_CONTENT_DIR = Path("/content")
 DEFAULT_ITEMS_DIR = Path("/content/rdlab_items")
@@ -104,8 +104,8 @@ REQUIRED_ITEM_FIELDS_ORDERED: tuple[str, str, str] = ("id", "material", "claim")
 ALLOWED_LOGPROB_MASS_PART_IDS: frozenset[str] = frozenset({"pilot-40b"})
 
 
-@dataclass(frozen=True)
-class JudgeSpec:
+# Immutable judge specification (NamedTuple avoids sys.modules lookup on isolated exec)
+class JudgeSpec(NamedTuple):
     """Pinned specification for one of the five bake-off judges."""
 
     judge_id: str
