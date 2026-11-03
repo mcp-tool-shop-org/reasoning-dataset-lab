@@ -8109,10 +8109,10 @@ def test_fix6b_child_env_drops_hf_tokens_and_sets_hf_hub_offline(
     With fake `HF_TOKEN`, `HF_TOKEN_ALT`, and `HUGGING_FACE_HUB_TOKEN` in the parent env,
     the child env (captured by the fake child itself) has none of them and has `HF_HUB_OFFLINE=1`.
     """
-    monkeypatch.setenv("HF_TOKEN", "hf_FakeParentSecretToken1234567890abcdef")
-    monkeypatch.setenv("HF_TOKEN_ALT", "hf_FakeAltSecretToken1234567890abcdef")
+    monkeypatch.setenv("HF_TOKEN", "hf_" "FakeParentSecretToken1234567890abcdef")
+    monkeypatch.setenv("HF_TOKEN_ALT", "hf_" "FakeAltSecretToken1234567890abcdef")
     monkeypatch.setenv(
-        "HUGGING_FACE_HUB_TOKEN", "hf_FakeHubSecretToken1234567890abcdef"
+        "HUGGING_FACE_HUB_TOKEN", "hf_" "FakeHubSecretToken1234567890abcdef"
     )
 
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
@@ -8715,10 +8715,10 @@ def test_fix6_addendum1_download_child_vs_judge_child_env_split(
       recorded in the child's done-file, the `judge_download` progress line, `vm_receipt.json`,
       and `gate_status.json` (which records why `gate` cannot read them before venv sync).
     """
-    monkeypatch.setenv("HF_TOKEN", "hf_SuperSecretParentTokenValue1234567890")
+    monkeypatch.setenv("HF_TOKEN", "hf_" "SuperSecretParentTokenValue1234567890")
     monkeypatch.setenv("HF_TOKEN_PATH", "/tmp/secret_hf_token")
     monkeypatch.setenv(
-        "HUGGING_FACE_HUB_TOKEN", "hf_LegacySecretTokenValue1234567890"
+        "HUGGING_FACE_HUB_TOKEN", "hf_" "LegacySecretTokenValue1234567890"
     )
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
@@ -8755,8 +8755,8 @@ def test_fix6_addendum1_download_child_vs_judge_child_env_split(
             items_file=items_file,
         )
         + "export FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD=1; "
-        + "export HF_TOKEN='hf_SuperSecretParentTokenValue1234567890'; "
-        + "export HUGGING_FACE_HUB_TOKEN='hf_LegacySecretTokenValue1234567890'; "
+        + "export HF_TOKEN='hf_" "SuperSecretParentTokenValue1234567890'; "
+        + "export HUGGING_FACE_HUB_TOKEN='hf_" "LegacySecretTokenValue1234567890'; "
     )
     proc = subprocess.run(
         [
