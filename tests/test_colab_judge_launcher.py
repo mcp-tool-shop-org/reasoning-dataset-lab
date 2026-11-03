@@ -7591,6 +7591,820 @@ def test_fix6_download_concurrency_knobs_and_bad_config_refusal(
         assert r["hf_xet_num_concurrent_range_gets"] == 0
 
 
+def _assert_judge_specs_no_drift(
+    parent_specs: dict[str, Any],
+    lib_specs: dict[str, Any],
+) -> None:
+    """Assert `vm_judges.BAKEOFF_JUDGE_SPECS` and `bakeoff_judge.BAKEOFF_JUDGE_SPECS` have identical keys and `.to_dict()`."""
+    assert set(parent_specs.keys()) == set(lib_specs.keys()), (
+        f"BAKEOFF_JUDGE_SPECS key drift: parent={sorted(parent_specs.keys())} vs lib={sorted(lib_specs.keys())}"
+    )
+    for judge_id in sorted(lib_specs.keys()):
+        p_dict = parent_specs[judge_id].to_dict()
+        l_dict = lib_specs[judge_id].to_dict()
+        assert p_dict == l_dict, (
+            f"BAKEOFF_JUDGE_SPECS[{judge_id!r}] field drift: parent={p_dict} vs lib={l_dict}"
+        )
+
+
+def test_fix6b_drift_bakeoff_judge_specs_and_mutations() -> None:
+    """Fix6b Item 1 (Specs):
+    - `vm_judges.BAKEOFF_JUDGE_SPECS` and `bakeoff_judge.BAKEOFF_JUDGE_SPECS` have the same keys
+      and every judge's `to_dict()` is equal.
+    - Mutation cases (one per field class): revision, card_sha256, remote_code_files, numeric field
+      (`max_new_tokens`), and add/remove a judge key — each makes the drift check fail.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    _assert_judge_specs_no_drift(
+        vm_judges.BAKEOFF_JUDGE_SPECS,
+        bj_mod.BAKEOFF_JUDGE_SPECS,
+    )
+
+    # 1. Mutation: change only `revision`
+    mut_rev = dict(vm_judges.BAKEOFF_JUDGE_SPECS)
+    mut_rev["flow-judge-v0.1"] = mut_rev["flow-judge-v0.1"]._replace(
+        revision="0" * 40
+    )
+    with pytest.raises(AssertionError, match=r"BAKEOFF_JUDGE_SPECS\['flow-judge-v0\.1'\] field drift"):
+        _assert_judge_specs_no_drift(mut_rev, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+    # 2. Mutation: change only `card_snapshot_sha256`
+    mut_card = dict(vm_judges.BAKEOFF_JUDGE_SPECS)
+    mut_card["granite-guardian-4.1-8b"] = mut_card["granite-guardian-4.1-8b"]._replace(
+        card_snapshot_sha256="f" * 64
+    )
+    with pytest.raises(AssertionError, match=r"BAKEOFF_JUDGE_SPECS\['granite-guardian-4\.1-8b'\] field drift"):
+        _assert_judge_specs_no_drift(mut_card, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+    # 3. Mutation: change only `remote_code_files` (file list)
+    mut_rc = dict(vm_judges.BAKEOFF_JUDGE_SPECS)
+    mut_rc["d3-mini"] = mut_rc["d3-mini"]._replace(
+        remote_code_files=("modeling_d3.py",)
+    )
+    with pytest.raises(AssertionError, match=r"BAKEOFF_JUDGE_SPECS\['d3-mini'\] field drift"):
+        _assert_judge_specs_no_drift(mut_rc, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+    # 4. Mutation: change only a numeric field (`max_new_tokens`)
+    mut_num = dict(vm_judges.BAKEOFF_JUDGE_SPECS)
+    mut_num["mu-judge"] = mut_num["mu-judge"]._replace(max_new_tokens=999)
+    with pytest.raises(AssertionError, match=r"BAKEOFF_JUDGE_SPECS\['mu-judge'\] field drift"):
+        _assert_judge_specs_no_drift(mut_num, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+    # 5a. Mutation: remove a judge key
+    mut_removed = {
+        k: v for k, v in vm_judges.BAKEOFF_JUDGE_SPECS.items() if k != "nemotron-3-nano-4b"
+    }
+    with pytest.raises(AssertionError, match="BAKEOFF_JUDGE_SPECS key drift"):
+        _assert_judge_specs_no_drift(mut_removed, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+    # 5b. Mutation: add a judge key
+    mut_added = dict(vm_judges.BAKEOFF_JUDGE_SPECS)
+    mut_added["extra-judge"] = mut_added["flow-judge-v0.1"]._replace(
+        judge_id="extra-judge"
+    )
+    with pytest.raises(AssertionError, match="BAKEOFF_JUDGE_SPECS key drift"):
+        _assert_judge_specs_no_drift(mut_added, bj_mod.BAKEOFF_JUDGE_SPECS)
+
+
+def _run_both_verify_snapshot(
+    judge_id: str,
+    *,
+    receipts_dir: Path,
+    hf_home: Path,
+) -> tuple[str, str]:
+    """Run both `vm_judges.verify_snapshot_against_receipt` and `bakeoff_judge.verify_snapshot_against_receipt`
+    and assert identical outcome and identical refusal code.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    p_spec = vm_judges.BAKEOFF_JUDGE_SPECS[judge_id]
+    l_spec = bj_mod.BAKEOFF_JUDGE_SPECS[judge_id]
+
+    p_outcome: tuple[str, Any]
+    l_outcome: tuple[str, Any]
+
+    try:
+        p_snap, p_dig = vm_judges.verify_snapshot_against_receipt(
+            p_spec, receipts_dir=receipts_dir, hf_home=hf_home
+        )
+        p_outcome = ("ok", (p_snap.resolve(), p_dig))
+    except vm_judges.RefusalError as exc_p:
+        p_outcome = ("refused", exc_p.failure_class)
+
+    try:
+        l_snap, l_dig = bj_mod.verify_snapshot_against_receipt(
+            l_spec, receipts_dir=receipts_dir, hf_home=hf_home
+        )
+        l_outcome = ("ok", (l_snap.resolve(), l_dig))
+    except RdlabError as exc_l:
+        l_outcome = ("refused", exc_l.code)
+
+    assert p_outcome == l_outcome, (
+        f"verify_snapshot_against_receipt drift for {judge_id}: parent={p_outcome} vs lib={l_outcome}"
+    )
+    return p_outcome[0], str(p_outcome[1])
+
+
+def test_fix6b_drift_verify_snapshot_against_receipt_tamper_matrix(
+    tmp_path: Path,
+) -> None:
+    """Fix6b Item 1 (`verify_snapshot_against_receipt`):
+    Runs a tamper matrix through both `vm_judges.verify_snapshot_against_receipt` and
+    `bakeoff_judge.verify_snapshot_against_receipt` on the same fixture snapshot and receipt:
+    clean, missing file, extra file, size mismatch, sha mismatch, bytecode file, receipt missing,
+    plus receipt-facing mutations (changed size in receipt and changed file list in receipt).
+    Both copies give the exact same outcome and refusal code in every case.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "tamper"
+    )
+    jid = "flow-judge-v0.1"
+    spec = vm_judges.BAKEOFF_JUDGE_SPECS[jid]
+    owner, repo = spec.repo_id.split("/", 1)
+    snap_dir = (
+        hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
+    )
+    receipt_path = receipts_dir / f"{owner}__{repo}.sha256.json"
+    orig_receipt_bytes = receipt_path.read_bytes()
+    weights_path = snap_dir / "model.safetensors"
+    orig_weights = weights_path.read_bytes()
+
+    # 1. Clean
+    status_clean, detail_clean = _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    )
+    assert status_clean == "ok"
+
+    # 2. Missing file in snapshot
+    weights_path.unlink()
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "BAKEOFF_JUDGE_SNAPSHOT_MISSING_FILE")
+    weights_path.write_bytes(orig_weights)
+
+    # 3. Extra unlisted file in snapshot
+    extra_f = snap_dir / "extra_unlisted.bin"
+    extra_f.write_bytes(b"unlisted")
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "BAKEOFF_JUDGE_SNAPSHOT_EXTRA_FILE")
+    extra_f.unlink()
+
+    # 4. Size mismatch on disk
+    weights_path.write_bytes(orig_weights + b"!")
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "WEIGHT_SIZE_MISMATCH")
+    weights_path.write_bytes(orig_weights)
+
+    # 5. SHA-256 mismatch (same byte length, mutated content)
+    flipped = bytes([orig_weights[0] ^ 0xFF]) + orig_weights[1:]
+    assert len(flipped) == len(orig_weights)
+    weights_path.write_bytes(flipped)
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH")
+    weights_path.write_bytes(orig_weights)
+
+    # 6. Bytecode file (`.pyc` / `__pycache__`)
+    pyc_file = snap_dir / "leaked.pyc"
+    pyc_file.write_bytes(b"\x00\x01\x02\x03")
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "BAKEOFF_JUDGE_SNAPSHOT_BYTECODE")
+    pyc_file.unlink()
+
+    # 7. Receipt-facing mutation: changed size (`bytes`) in receipt -> WEIGHT_SIZE_MISMATCH
+    rec_size_mut = json.loads(orig_receipt_bytes.decode("utf-8"))
+    rec_size_mut["files"]["model.safetensors"]["bytes"] += 10
+    receipt_path.write_text(json.dumps(rec_size_mut), encoding="utf-8")
+    out_rec_size = _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    )
+    assert out_rec_size == ("refused", "WEIGHT_SIZE_MISMATCH")
+
+    # 8. Receipt-facing mutation: changed file list in receipt -> different outcome from changed size
+    rec_files_mut = json.loads(orig_receipt_bytes.decode("utf-8"))
+    rec_files_mut["files"]["ghost_shard.safetensors"] = {
+        "bytes": 16,
+        "sha256": "a" * 64,
+    }
+    receipt_path.write_text(json.dumps(rec_files_mut), encoding="utf-8")
+    out_rec_files = _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    )
+    assert out_rec_files == ("refused", "BAKEOFF_JUDGE_SNAPSHOT_MISSING_FILE")
+    assert out_rec_size != out_rec_files
+    receipt_path.write_bytes(orig_receipt_bytes)
+
+    # 9. Receipt missing
+    receipt_path.unlink()
+    assert _run_both_verify_snapshot(
+        jid, receipts_dir=receipts_dir, hf_home=hf_home
+    ) == ("refused", "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND")
+
+
+def test_fix6b_drift_other_four_copied_functions_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix6b Item 1 (The other four copied functions):
+    Equal-outcome check across pass and each refusal code for:
+    - `check_remote_code_gate` (`vm_judges.py:1584`)
+    - `check_d3_mini_remote_code_gate` (`vm_judges.py:1605`)
+    - `_resolve_snapshot_dir_for_spec` (`vm_judges.py:1631`) vs `_resolve_snapshot_dir`
+    - `check_bakeoff_logprob_mass` (`vm_judges.py:1771`)
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    # --- A. `check_remote_code_gate` matrix ---
+    rc_cases = [
+        ("flow-judge-v0.1", None, False, ("ok", False)),
+        ("flow-judge-v0.1", None, True, ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED")),
+        (
+            "flow-judge-v0.1",
+            vm_judges.BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"].revision[:8],
+            True,
+            ("ok", True),
+        ),
+        ("d3-mini", None, False, ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED")),
+        ("d3-mini", "bd0090dd"[:6], False, ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED")),
+        ("d3-mini", "0" * 40, False, ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED")),
+        ("d3-mini", D3_MINI_REVIEWED_REVISION, False, ("ok", True)),
+        ("d3-mini", D3_MINI_REVIEWED_REVISION[:10], False, ("ok", True)),
+    ]
+    for jid, allow_sha, force_rc, expected in rc_cases:
+        try:
+            p_res = (
+                "ok",
+                vm_judges.check_remote_code_gate(
+                    vm_judges.BAKEOFF_JUDGE_SPECS[jid],
+                    allow_remote_code_reviewed=allow_sha,
+                    force_remote_code=force_rc,
+                ),
+            )
+        except vm_judges.RefusalError as exc_p:
+            p_res = ("refused", exc_p.failure_class)
+
+        try:
+            l_res = (
+                "ok",
+                bj_mod.check_remote_code_gate(
+                    bj_mod.BAKEOFF_JUDGE_SPECS[jid],
+                    allow_remote_code_reviewed=allow_sha,
+                    force_remote_code=force_rc,
+                ),
+            )
+        except RdlabError as exc_l:
+            l_res = ("refused", exc_l.code)
+
+        assert p_res == l_res == expected
+
+    # --- B. `check_d3_mini_remote_code_gate` matrix ---
+    d3_cases = [
+        # (judge_id, revision_override, allow_sha, expected)
+        ("d3-mini", None, D3_MINI_REVIEWED_REVISION, ("ok", None)),
+        (
+            "flow-judge-v0.1",
+            None,
+            D3_MINI_REVIEWED_REVISION,
+            ("refused", "BAKEOFF_JUDGE_D3_TRANSPORT_WRONG_JUDGE"),
+        ),
+        ("d3-mini", None, None, ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED")),
+        (
+            "d3-mini",
+            None,
+            D3_MINI_REVIEWED_REVISION[:8],
+            ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED"),
+        ),
+        (
+            "d3-mini",
+            None,
+            D3_MINI_REVIEWED_REVISION.upper(),
+            ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED"),
+        ),
+        (
+            "d3-mini",
+            "a" * 40,
+            D3_MINI_REVIEWED_REVISION,
+            ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REVISION_MISMATCH"),
+        ),
+        (
+            "d3-mini",
+            "a" * 40,
+            "b" * 40,
+            ("refused", "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED"),
+        ),
+    ]
+    for jid, rev_override, allow_sha, expected in d3_cases:
+        p_spec = vm_judges.BAKEOFF_JUDGE_SPECS[jid]
+        l_spec = bj_mod.BAKEOFF_JUDGE_SPECS[jid]
+        if rev_override is not None:
+            p_spec = p_spec._replace(revision=rev_override)
+            l_spec = bj_mod.JudgeSpec(
+                **{**l_spec.to_dict(), "revision": rev_override}
+            )
+        try:
+            vm_judges.check_d3_mini_remote_code_gate(
+                p_spec, allow_remote_code_reviewed=allow_sha
+            )
+            p_res = ("ok", None)
+        except vm_judges.RefusalError as exc_p:
+            p_res = ("refused", exc_p.failure_class)
+
+        try:
+            bj_mod.check_d3_mini_remote_code_gate(
+                l_spec, allow_remote_code_reviewed=allow_sha
+            )
+            l_res = ("ok", None)
+        except RdlabError as exc_l:
+            l_res = ("refused", exc_l.code)
+
+        assert p_res == l_res == expected
+
+    # --- C. `_resolve_snapshot_dir_for_spec` vs `_resolve_snapshot_dir` matrix ---
+    p_flow = vm_judges.BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"]
+    l_flow = bj_mod.BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"]
+    owner, repo = p_flow.repo_id.split("/", 1)
+    model_dir = f"models--{owner}--{repo}"
+
+    # 1. Missing HF_HOME
+    monkeypatch.delenv("HF_HOME", raising=False)
+    with pytest.raises(vm_judges.RefusalError) as exc_p_hf:
+        vm_judges._resolve_snapshot_dir_for_spec(p_flow, hf_home=None)
+    with pytest.raises(RdlabError) as exc_l_hf:
+        bj_mod._resolve_snapshot_dir(l_flow, hf_home=None)
+    assert (
+        exc_p_hf.value.failure_class
+        == exc_l_hf.value.code
+        == "BAKEOFF_JUDGE_HF_HOME_MISSING"
+    )
+
+    # 2. Snapshot directory not found under hf_home
+    empty_hf = tmp_path / "empty_hf"
+    empty_hf.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(vm_judges.RefusalError) as exc_p_nf:
+        vm_judges._resolve_snapshot_dir_for_spec(p_flow, hf_home=empty_hf)
+    with pytest.raises(RdlabError) as exc_l_nf:
+        bj_mod._resolve_snapshot_dir(l_flow, hf_home=empty_hf)
+    assert (
+        exc_p_nf.value.failure_class
+        == exc_l_nf.value.code
+        == "BAKEOFF_JUDGE_SNAPSHOT_NOT_FOUND"
+    )
+
+    # 3. Direct layout (`<hf_home>/models--.../snapshots/<rev>`)
+    direct_hf = tmp_path / "direct_hf"
+    direct_snap = direct_hf / model_dir / "snapshots" / p_flow.revision
+    direct_snap.mkdir(parents=True, exist_ok=True)
+    assert (
+        vm_judges._resolve_snapshot_dir_for_spec(p_flow, hf_home=direct_hf)
+        == bj_mod._resolve_snapshot_dir(l_flow, hf_home=direct_hf)
+        == direct_snap.resolve()
+    )
+
+    # 4. Hub layout (`<hf_home>/hub/models--.../snapshots/<rev>`)
+    hub_hf = tmp_path / "hub_hf"
+    hub_snap = hub_hf / "hub" / model_dir / "snapshots" / p_flow.revision
+    hub_snap.mkdir(parents=True, exist_ok=True)
+    assert (
+        vm_judges._resolve_snapshot_dir_for_spec(p_flow, hf_home=hub_hf)
+        == bj_mod._resolve_snapshot_dir(l_flow, hf_home=hub_hf)
+        == hub_snap.resolve()
+    )
+
+    # --- D. `check_bakeoff_logprob_mass` matrix ---
+    # 1. Forbidden part_id
+    out_mass = tmp_path / "mass_out"
+    with pytest.raises(vm_judges.RefusalError) as exc_p_part:
+        vm_judges.check_bakeoff_logprob_mass(out_mass, part_id="forbidden-part")
+    with pytest.raises(RdlabError) as exc_l_part:
+        bj_mod.check_bakeoff_logprob_mass(out_mass, part_id="forbidden-part")
+    assert (
+        exc_p_part.value.failure_class
+        == exc_l_part.value.code
+        == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+    )
+
+    # 2. Missing rows/ directory
+    with pytest.raises(vm_judges.RefusalError) as exc_p_norows:
+        vm_judges.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+    with pytest.raises(RdlabError) as exc_l_norows:
+        bj_mod.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+    assert (
+        exc_p_norows.value.failure_class
+        == exc_l_norows.value.code
+        == "BAKEOFF_LOGPROB_MASS_NO_ROWS"
+    )
+
+    # 3. Empty rows/ directory
+    rows_dir = out_mass / "rows"
+    rows_dir.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(vm_judges.RefusalError) as exc_p_empty:
+        vm_judges.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+    with pytest.raises(RdlabError) as exc_l_empty:
+        bj_mod.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+    assert (
+        exc_p_empty.value.failure_class
+        == exc_l_empty.value.code
+        == "BAKEOFF_LOGPROB_MASS_NO_ROWS"
+    )
+
+    # 4. Pass + not_applicable + WARN outcomes
+    (rows_dir / "flow-judge-v0.1.jsonl").write_text(
+        json.dumps({"part_id": "pilot-40b", "state": "parsed", "score": 4}) + "\n",
+        encoding="utf-8",
+    )
+    (rows_dir / "mu-judge.jsonl").write_text(
+        json.dumps(
+            {
+                "part_id": "pilot-40b",
+                "state": "parsed",
+                "top_20_logprobs": [
+                    {"token": "yes", "logprob": -0.002},
+                    {"token": "no", "logprob": -6.908},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (rows_dir / "d3-mini.jsonl").write_text(
+        json.dumps(
+            {
+                "part_id": "pilot-40b",
+                "state": "parsed",
+                "top_20_logprobs": [
+                    {"token": "yes", "logprob": -0.7},
+                    {"token": "no", "logprob": -0.8},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    p_report = vm_judges.check_bakeoff_logprob_mass(out_mass, part_id=None)
+    l_report = bj_mod.check_bakeoff_logprob_mass(out_mass, part_id=None)
+    assert p_report == l_report
+    assert p_report["judges"]["flow-judge-v0.1"]["status"] == "not_applicable"
+    assert p_report["judges"]["mu-judge"]["status"] == "PASS"
+    assert p_report["judges"]["d3-mini"]["status"] == "WARN"
+
+
+def test_fix6b_child_env_drops_hf_tokens_and_sets_hf_hub_offline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix6b Item 2:
+    With fake `HF_TOKEN`, `HF_TOKEN_ALT`, and `HUGGING_FACE_HUB_TOKEN` in the parent env,
+    the child env (captured by the fake child itself) has none of them and has `HF_HUB_OFFLINE=1`.
+    """
+    monkeypatch.setenv("HF_TOKEN", "hf_FakeParentSecretToken1234567890abcdef")
+    monkeypatch.setenv("HF_TOKEN_ALT", "hf_FakeAltSecretToken1234567890abcdef")
+    monkeypatch.setenv(
+        "HUGGING_FACE_HUB_TOKEN", "hf_FakeHubSecretToken1234567890abcdef"
+    )
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "env_test"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "env_test", count=2)
+    run_dir = tmp_path / "run_dir"
+    work_dir = tmp_path / "work_dir"
+    captured_env_dir = tmp_path / "captured_envs"
+    captured_env_dir.mkdir(parents=True, exist_ok=True)
+
+    capture_script = tmp_path / "capture_child_env.py"
+    capture_script.write_text(
+        "import json, os, pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "if '--judge' in args:\n"
+        "    jid = args[args.index('--judge') + 1]\n"
+        f"    out_p = pathlib.Path({str(captured_env_dir.as_posix())!r}) / f'env_{{jid}}.json'\n"
+        "    out_p.write_text(json.dumps(dict(os.environ)), encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    py_exe = str(Path(sys.executable)).replace("\\", "/")
+    for venv_name in ("venv-judge", "venv-d3"):
+        vpy = work_dir / venv_name / "bin" / "python"
+        vpy.parent.mkdir(parents=True, exist_ok=True)
+        vpy.write_text(
+            "#!/usr/bin/env bash\n"
+            f'"{py_exe}" "{capture_script.as_posix()}" "$@"\n'
+            f'exec "{py_exe}" "$@"\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        vpy.chmod(0o755)
+
+    vm_judges.run_judges_pipeline(
+        mode="stub",
+        part_dir=items_file.parent,
+        run_dir=run_dir,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        dryrun=True,
+        repo_root=REPO_ROOT,
+        work_dir=work_dir,
+        progress_path=run_dir / "progress.jsonl",
+    )
+
+    for jid in sorted(BAKEOFF_JUDGE_SPECS.keys()):
+        env_file = captured_env_dir / f"env_{jid}.json"
+        assert env_file.is_file(), f"Missing captured child env for {jid}"
+        captured_env = json.loads(env_file.read_text(encoding="utf-8"))
+        assert "HF_TOKEN" not in captured_env
+        assert "HF_TOKEN_ALT" not in captured_env
+        assert "HUGGING_FACE_HUB_TOKEN" not in captured_env
+        assert not any(k.startswith("HF_TOKEN") for k in captured_env)
+        assert captured_env.get("HF_HUB_OFFLINE") == "1"
+        assert captured_env.get("HF_DEACTIVATE_ASYNC_LOAD") == "1"
+
+
+@pytest.mark.parametrize("corrupt_kind", ["malformed_done", "malformed_rows"])
+def test_fix6b_malformed_done_file_and_malformed_rows_line_fail_as_judge_child_failed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corrupt_kind: str,
+) -> None:
+    """Fix6b Item 3:
+    Malformed `judge_done/<id>.json` or a malformed `rows/<id>.jsonl` line is wrapped as
+    `JUDGE_CHILD_FAILED` (never `UNEXPECTED_ERROR`), with the judge id, a `judge_failed`
+    progress line, and the normal stop path.
+    """
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    env_paths = fake_colab.setup_fake_colab_environment(
+        tmp_path / f"env_{corrupt_kind}"
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / f"data_{corrupt_kind}"
+    )
+    items_file = _make_synthetic_public_items(
+        tmp_path / f"data_{corrupt_kind}", count=2
+    )
+    run_dir = tmp_path / f"run_{corrupt_kind}"
+    work_dir = tmp_path / f"work_{corrupt_kind}"
+    status_file = tmp_path / f"status_{corrupt_kind}.json"
+    result_tar = tmp_path / f"result_{corrupt_kind}.tar.gz"
+    target_judge = "flow-judge-v0.1"
+
+    py_exe = str(Path(sys.executable)).replace("\\", "/")
+    for venv_name in ("venv-judge", "venv-d3"):
+        vpy = work_dir / venv_name / "bin" / "python"
+        vpy.parent.mkdir(parents=True, exist_ok=True)
+        if corrupt_kind == "malformed_done":
+            tamper_snip = (
+                f'if [[ "$_jid" == "{target_judge}" ]]; then\n'
+                f'  echo "{{not valid json" > "{run_dir.as_posix()}/judge_done/{target_judge}.json"\n'
+                "fi\n"
+            )
+        else:
+            tamper_snip = (
+                f'if [[ "$_jid" == "{target_judge}" ]]; then\n'
+                f'  echo "{{not valid row json" >> "{run_dir.as_posix()}/rows/{target_judge}.jsonl"\n'
+                "fi\n"
+            )
+        vpy.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "--version" || "$1" == "-V" ]]; then echo "Python 3.15.1"; exit 0; fi\n'
+            '_prev=""; _jid=""\n'
+            'for _arg in "$@"; do\n'
+            '  if [[ "$_prev" == "--judge" ]]; then _jid="$_arg"; break; fi\n'
+            '  _prev="$_arg"\n'
+            "done\n"
+            f'"{py_exe}" "$@"\n'
+            "_rc=$?\n"
+            f"{tamper_snip}"
+            "exit $_rc\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        vpy.chmod(0o755)
+
+    rc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--mode",
+            "stub",
+            "--dryrun",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--items-file",
+            str(items_file),
+            "--run-dir",
+            str(run_dir),
+            "--work-dir",
+            str(work_dir),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(result_tar),
+            "--status-file",
+            str(status_file),
+        ]
+    )
+    assert rc == 2
+
+    status_doc = json.loads(status_file.read_text(encoding="utf-8"))
+    assert status_doc["status"] == "refused"
+    assert status_doc["failure_class"] == "JUDGE_CHILD_FAILED"
+    assert status_doc["judge_id"] == target_judge
+
+    receipt_doc = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert receipt_doc["status"] == "refused"
+    assert receipt_doc["failure_class"] == "JUDGE_CHILD_FAILED"
+    assert receipt_doc["judge_id"] == target_judge
+    assert receipt_doc["deleted_items_receipt"]["all_absent"] is True
+
+    progress_rows = [
+        json.loads(ln)
+        for ln in (run_dir / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    failed_rows = [r for r in progress_rows if r.get("kind") == "judge_failed"]
+    assert len(failed_rows) == 1
+    assert failed_rows[0]["judge_id"] == target_judge
+    assert failed_rows[0]["failure_class"] == "JUDGE_CHILD_FAILED"
+    assert progress_rows[-1]["kind"] == "run_end"
+    assert progress_rows[-1]["failure_class"] == "JUDGE_CHILD_FAILED"
+
+    # First judge (`d3-mini`) completed; `flow-judge-v0.1` failed; later judges never ran
+    done_judges = [
+        r["judge_id"] for r in progress_rows if r.get("kind") == "judge_pass_done"
+    ]
+    assert done_judges == ["d3-mini"]
+    _ = env_paths
+
+
+def test_fix6b_cgroup_limit_chain_and_logging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix6b Item 4:
+    - A fake cgroup tree with a finite limit two levels up gives that path and value.
+    - A tree where every level is `'max'` gives `None` (`null`).
+    - A missing `/proc/self/cgroup` gives an empty chain, with no exception.
+    - Logged in `gate_status.json`, at run start (`step_start` `unpack` and `vm_receipt.json`),
+      and on every `judge_download_start`, `judge_download`, `judge_pass_done`, and `judge_failed` line.
+    """
+    # 1. Finite limit two levels up:
+    #    self = /kubepods.slice/pod-abc/ctn-xyz (level 0)
+    #    1 up = /kubepods.slice/pod-abc         (level 1)
+    #    2 up = /kubepods.slice                 (level 2 -> finite memory.max = 13421772800)
+    #    3 up = /                               (level 3 -> memory.max = max)
+    cg_root_finite = tmp_path / "cg_finite"
+    leaf_dir = cg_root_finite / "kubepods.slice" / "pod-abc" / "ctn-xyz"
+    pod_dir = cg_root_finite / "kubepods.slice" / "pod-abc"
+    slice_dir = cg_root_finite / "kubepods.slice"
+    leaf_dir.mkdir(parents=True, exist_ok=True)
+
+    (leaf_dir / "memory.max").write_text("max\n", encoding="utf-8")
+    (leaf_dir / "memory.high").write_text("max\n", encoding="utf-8")
+    (leaf_dir / "memory.current").write_text("104857600\n", encoding="utf-8")
+    (leaf_dir / "memory.events").write_text("oom 0\noom_kill 0\n", encoding="utf-8")
+
+    (pod_dir / "memory.max").write_text("max\n", encoding="utf-8")
+    (pod_dir / "memory.current").write_text("209715200\n", encoding="utf-8")
+
+    (slice_dir / "memory.max").write_text("13421772800\n", encoding="utf-8")
+    (slice_dir / "memory.high").write_text("12884901888\n", encoding="utf-8")
+    (slice_dir / "memory.current").write_text("3221225472\n", encoding="utf-8")
+    (slice_dir / "memory.events").write_text("oom 2\noom_kill 1\n", encoding="utf-8")
+
+    (cg_root_finite / "memory.max").write_text("max\n", encoding="utf-8")
+    (cg_root_finite / "memory.current").write_text("6442450944\n", encoding="utf-8")
+
+    proc_cg_finite = tmp_path / "proc_cgroup_finite"
+    proc_cg_finite.write_text(
+        "0::/kubepods.slice/pod-abc/ctn-xyz\n", encoding="utf-8"
+    )
+
+    res_finite = vm_judges.read_cgroup_limit_chain(
+        cgroup_root=cg_root_finite,
+        proc_cgroup_path=proc_cg_finite,
+    )
+    assert [e["path"] for e in res_finite["chain"]] == [
+        leaf_dir.as_posix(),
+        pod_dir.as_posix(),
+        slice_dir.as_posix(),
+        cg_root_finite.as_posix(),
+    ]
+    assert res_finite["chain"][0]["memory.max"] == "max"
+    assert res_finite["chain"][1]["memory.high"] is None  # missing file -> null
+    assert res_finite["chain"][2]["memory.max"] == "13421772800"
+    assert res_finite["chain"][2]["memory.high"] == "12884901888"
+    assert res_finite["chain"][2]["memory.current"] == 3221225472
+    assert res_finite["chain"][2]["oom"] == 2
+    assert res_finite["chain"][2]["oom_kill"] == 1
+    assert res_finite["nearest_finite_path"] == slice_dir.as_posix()
+    assert res_finite["nearest_finite_memory_max"] == 13421772800
+    assert res_finite["nearest_finite_memory_current"] == 3221225472
+
+    # 2. Tree where every level is "max" -> nearest_finite_* are all None (null)
+    cg_root_max = tmp_path / "cg_all_max"
+    sub_max = cg_root_max / "user.slice" / "session-1.scope"
+    sub_max.mkdir(parents=True, exist_ok=True)
+    for d in (sub_max, cg_root_max / "user.slice", cg_root_max):
+        (d / "memory.max").write_text("max\n", encoding="utf-8")
+        (d / "memory.current").write_text("5000\n", encoding="utf-8")
+    proc_cg_max = tmp_path / "proc_cgroup_max"
+    proc_cg_max.write_text("0::/user.slice/session-1.scope\n", encoding="utf-8")
+
+    res_all_max = vm_judges.read_cgroup_limit_chain(
+        cgroup_root=cg_root_max,
+        proc_cgroup_path=proc_cg_max,
+    )
+    assert len(res_all_max["chain"]) == 3
+    assert all(e["memory.max"] == "max" for e in res_all_max["chain"])
+    assert res_all_max["nearest_finite_path"] is None
+    assert res_all_max["nearest_finite_memory_max"] is None
+    assert res_all_max["nearest_finite_memory_current"] is None
+
+    # 3. Missing `/proc/self/cgroup` -> empty chain, no exception
+    res_missing = vm_judges.read_cgroup_limit_chain(
+        cgroup_root=cg_root_finite,
+        proc_cgroup_path=tmp_path / "nonexistent_proc_self_cgroup",
+    )
+    assert res_missing == {
+        "chain": [],
+        "nearest_finite_path": None,
+        "nearest_finite_memory_max": None,
+        "nearest_finite_memory_current": None,
+    }
+
+    # 4. Verify `append_progress_line` attaches `nearest_finite_*` on
+    #    `judge_download_start`, `judge_download`, `judge_pass_done`, and `judge_failed`
+    prog_p = tmp_path / "cg_kinds_progress.jsonl"
+    for kind in (
+        "judge_download_start",
+        "judge_download",
+        "judge_pass_done",
+        "judge_failed",
+    ):
+        rec = vm_judges.append_progress_line(
+            prog_p,
+            {"kind": kind, "judge_id": "d3-mini"},
+            echo_stdout=False,
+            cgroup_root=cg_root_finite,
+            proc_cgroup_path=proc_cg_finite,
+        )
+        assert rec["nearest_finite_cgroup_path"] == slice_dir.as_posix()
+        assert rec["nearest_finite_memory_max"] == 13421772800
+        assert rec["nearest_finite_memory_current"] == 3221225472
+
+    # 5. Verify `gate_status.json` and run start (`step_start` `unpack` + `vm_receipt.json`) carry `cgroup_limit_chain`
+    monkeypatch.setenv("RDLAB_CGROUP_DIR", str(cg_root_finite))
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env_cg_e2e")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_cg_e2e"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_cg_e2e", count=2)
+    out_dir = tmp_path / "out_cg_e2e"
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "cg_e2e.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_dir)}' --run-id cg-e2e-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+    gate_doc = json.loads((out_dir / "gate_status.json").read_text(encoding="utf-8"))
+    assert "cgroup_limit_chain" in gate_doc
+    assert isinstance(gate_doc["cgroup_limit_chain"]["chain"], list)
+
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert "cgroup_limit_chain" in receipt_doc
+    assert isinstance(receipt_doc["cgroup_limit_chain"]["chain"], list)
+
+    prog_rows = [
+        json.loads(ln)
+        for ln in (out_dir / "progress.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert prog_rows[0]["kind"] == "step_start"
+    assert prog_rows[0]["step"] == "unpack"
+    assert "cgroup_limit_chain" in prog_rows[0]
+
+
+
 
 
 

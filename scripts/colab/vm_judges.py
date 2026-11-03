@@ -673,10 +673,11 @@ def append_progress_line(
         cgroup_root=cgroup_root,
         proc_cgroup_path=proc_cgroup_path,
     )
-    record: dict[str, Any] = dict(payload)
-    for k in ("mem_available_bytes", "cgroup_memory_current", "cgroup_memory_max"):
-        if k not in record:
-            record[k] = mem_snapshot[k]
+    record: dict[str, Any] = _enrich_progress_record(
+        payload, mem_snapshot,
+        cgroup_root=cgroup_root,
+        proc_cgroup_path=proc_cgroup_path,
+    )
 
     raw_line = json.dumps(record, separators=(",", ":"))
     scrubbed_line = scrub_log_text(raw_line)
@@ -1613,11 +1614,6 @@ def check_d3_mini_remote_code_gate(
             "BAKEOFF_JUDGE_D3_TRANSPORT_WRONG_JUDGE",
             f"D3MiniTransport is only for '{D3_MINI_JUDGE_ID}', got '{spec.judge_id}'.",
         )
-    if spec.revision != D3_MINI_REVIEWED_REVISION:
-        raise RefusalError(
-            "BAKEOFF_JUDGE_REMOTE_CODE_REVISION_MISMATCH",
-            f"Pinned revision '{spec.revision}' does not match reviewed d3-mini SHA '{D3_MINI_REVIEWED_REVISION}'.",
-        )
     if (
         not isinstance(allow_remote_code_reviewed, str)
         or allow_remote_code_reviewed != D3_MINI_REVIEWED_REVISION
@@ -1625,6 +1621,11 @@ def check_d3_mini_remote_code_gate(
         raise RefusalError(
             "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED",
             f"d3-mini requires exact 40-char reviewed SHA '{D3_MINI_REVIEWED_REVISION}'.",
+        )
+    if spec.revision != D3_MINI_REVIEWED_REVISION:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_REMOTE_CODE_REVISION_MISMATCH",
+            f"Pinned revision '{spec.revision}' does not match reviewed d3-mini SHA '{D3_MINI_REVIEWED_REVISION}'.",
         )
 
 
@@ -1773,13 +1774,13 @@ def check_bakeoff_logprob_mass(
     *,
     threshold: float = 0.99,
     part_id: str | None = None,
+    part_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Compute the burned `pilot-40b` yes/no token log-probability mass harness readout from `rows/*.jsonl`."""
-    resolved_part_id = str(part_id).strip() if part_id is not None else "pilot-40b"
-    if resolved_part_id.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+    if part_id is not None and str(part_id).strip().lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
         raise RefusalError(
             "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
-            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={resolved_part_id!r}.",
+            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={part_id!r}.",
         )
     rows_dir = Path(judge_output_dir) / ROWS_DIRNAME
     if not rows_dir.is_dir():
@@ -1794,6 +1795,37 @@ def check_bakeoff_logprob_mass(
         raise RefusalError(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
             f"No binary judge row files found in '{rows_dir}'.",
+        )
+    resolved_part_id = str(part_id).strip() if part_id is not None else None
+    if resolved_part_id is None and part_dir is not None:
+        pdir = Path(part_dir).resolve()
+        search_dirs = [pdir.parent] if pdir.is_file() else [pdir, pdir / "part_bakeoff_sealed"]
+        found_pids: list[str] = []
+        for sdir in search_dirs:
+            for mname in ("manifest.json", "part_manifest.json"):
+                cand = sdir / mname
+                if cand.is_file():
+                    try:
+                        doc = json.loads(cand.read_text(encoding="utf-8"))
+                        if isinstance(doc, Mapping) and doc.get("part_id"):
+                            found_pids.append(str(doc["part_id"]).strip())
+                    except Exception:
+                        pass
+        resolved_part_id = found_pids[0] if found_pids else Path(part_dir).name
+    if resolved_part_id is None:
+        row_part_ids = [
+            str(first_row["part_id"]).strip()
+            for rf in row_files
+            for ln in rf.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+            for first_row in (json.loads(ln),)
+            if isinstance(first_row, Mapping) and first_row.get("part_id")
+        ]
+        resolved_part_id = row_part_ids[0] if row_part_ids else None
+    if resolved_part_id is None or resolved_part_id.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+        raise RefusalError(
+            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
+            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={resolved_part_id!r}.",
         )
     judges_report: dict[str, Any] = {}
     for rf in row_files:
@@ -1845,6 +1877,246 @@ def check_bakeoff_logprob_mass(
         "threshold": threshold,
         "judges": judges_report,
     }
+
+
+def _read_cgroup_raw_str(path: Path) -> str | None:
+    """Read a single-line cgroup file as a stripped raw string (`'max'` kept as `'max'`), or `None` if missing."""
+    try:
+        if not path.is_file():
+            return None
+        raw = path.read_text(encoding="utf-8", errors="replace").strip()
+        if not raw:
+            return None
+        return raw.splitlines()[0].strip() or None
+    except Exception:
+        return None
+
+
+def _parse_cgroup_events_for_dir(cand: Path) -> tuple[int | None, int | None]:
+    """Read `(oom, oom_kill)` counts for a single cgroup directory, returning `None` when missing."""
+    oom_val: int | None = None
+    oom_kill_val: int | None = None
+
+    def _parse_kv(p: Path) -> None:
+        nonlocal oom_val, oom_kill_val
+        try:
+            if not p.is_file():
+                return
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                parts = line.strip().split()
+                if len(parts) != 2 or not re.fullmatch(r"\d+", parts[1]):
+                    continue
+                k, v = parts[0], int(parts[1])
+                if k in ("oom", "under_oom") and oom_val is None:
+                    oom_val = v
+                elif k == "oom_kill" and oom_kill_val is None:
+                    oom_kill_val = v
+        except Exception:
+            pass
+
+    _parse_kv(cand / "memory.events")
+    if oom_val is None or oom_kill_val is None:
+        _parse_kv(cand / "memory.oom_control")
+    if oom_val is None:
+        failcnt = _read_cgroup_int(cand / "memory.failcnt")
+        if failcnt is not None:
+            oom_val = failcnt
+    return oom_val, oom_kill_val
+
+
+def _ancestor_dirs_to_root(base_root: Path, rel_path: str) -> list[Path]:
+    """Return ordered directories from `base_root / rel_path` up to `base_root`."""
+    cleaned = rel_path.strip().strip("/")
+    if not cleaned:
+        return [base_root]
+    parts = [p for p in cleaned.split("/") if p and p != "."]
+    dirs: list[Path] = []
+    for i in range(len(parts), 0, -1):
+        dirs.append(base_root.joinpath(*parts[:i]))
+    dirs.append(base_root)
+    return dirs
+
+
+def read_cgroup_limit_chain(
+    *,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+) -> dict[str, Any]:
+    """Walk from the process's own cgroup (`/proc/self/cgroup`) up to the cgroup root.
+
+    For each directory that exists, records:
+    - `path`
+    - `memory.max` and `memory.high` (raw string; `'max'` kept as `'max'`, missing -> `None`)
+    - `memory.current` (`int` or `None`)
+    - `oom` and `oom_kill` counts from `memory.events` (`int` or `None`)
+    Also records the nearest ancestor with a finite `memory.max` (`nearest_finite_path`,
+    `nearest_finite_memory_max`, and `nearest_finite_memory_current`; all `None` if none is finite).
+    Never raises; a missing `/proc/self/cgroup` gives an empty chain.
+    """
+    cg_root = (
+        Path(cgroup_root)
+        if cgroup_root is not None
+        else Path(
+            os.environ.get("RDLAB_CGROUP_DIR", "").strip() or "/sys/fs/cgroup"
+        )
+    )
+    cg_proc = (
+        Path(proc_cgroup_path)
+        if proc_cgroup_path is not None
+        else Path("/proc/self/cgroup")
+    )
+
+    chain: list[dict[str, Any]] = []
+    nearest_finite_path: str | None = None
+    nearest_finite_memory_max: int | None = None
+    nearest_finite_memory_current: int | None = None
+
+    try:
+        if not cg_proc.is_file():
+            return {
+                "chain": [],
+                "nearest_finite_path": None,
+                "nearest_finite_memory_max": None,
+                "nearest_finite_memory_current": None,
+            }
+
+        v2_rel: str | None = None
+        v1_mem_rel: str | None = None
+        for line in cg_proc.read_text(encoding="utf-8", errors="replace").splitlines():
+            parts = line.strip().split(":", 2)
+            if len(parts) != 3:
+                continue
+            _hid, controllers, cg_rel_raw = parts
+            ctrl_list = [c.strip() for c in controllers.split(",") if c.strip()]
+            if not ctrl_list and v2_rel is None:
+                v2_rel = cg_rel_raw.strip()
+            elif "memory" in ctrl_list and v1_mem_rel is None:
+                v1_mem_rel = cg_rel_raw.strip()
+
+        candidate_dirs: list[Path] = []
+        if v2_rel is not None:
+            candidate_dirs.extend(_ancestor_dirs_to_root(cg_root, v2_rel))
+        if v1_mem_rel is not None:
+            v1_base = cg_root / "memory" if (cg_root / "memory").is_dir() else cg_root
+            for d in _ancestor_dirs_to_root(v1_base, v1_mem_rel):
+                if d not in candidate_dirs:
+                    candidate_dirs.append(d)
+
+        seen_paths: set[str] = set()
+        for cand in candidate_dirs:
+            norm_path = cand.as_posix()
+            if norm_path in seen_paths:
+                continue
+            seen_paths.add(norm_path)
+            if not cand.is_dir():
+                continue
+
+            mem_max_raw = _read_cgroup_raw_str(cand / "memory.max")
+            if mem_max_raw is None:
+                mem_max_raw = _read_cgroup_raw_str(cand / "memory.limit_in_bytes")
+
+            mem_high_raw = _read_cgroup_raw_str(cand / "memory.high")
+            if mem_high_raw is None:
+                mem_high_raw = _read_cgroup_raw_str(cand / "memory.soft_limit_in_bytes")
+
+            mem_cur_val = _read_cgroup_int(cand / "memory.current")
+            if mem_cur_val is None:
+                mem_cur_val = _read_cgroup_int(cand / "memory.usage_in_bytes")
+
+            oom_val, oom_kill_val = _parse_cgroup_events_for_dir(cand)
+
+            chain.append(
+                {
+                    "path": norm_path,
+                    "memory.max": mem_max_raw,
+                    "memory.high": mem_high_raw,
+                    "memory.current": mem_cur_val,
+                    "oom": oom_val,
+                    "oom_kill": oom_kill_val,
+                }
+            )
+
+            if (
+                nearest_finite_path is None
+                and mem_max_raw is not None
+                and re.fullmatch(r"\d+", mem_max_raw)
+            ):
+                parsed_max = int(mem_max_raw)
+                if 0 <= parsed_max < (1 << 60):
+                    nearest_finite_path = norm_path
+                    nearest_finite_memory_max = parsed_max
+                    nearest_finite_memory_current = mem_cur_val
+    except Exception:
+        pass
+
+    return {
+        "chain": chain,
+        "nearest_finite_path": nearest_finite_path,
+        "nearest_finite_memory_max": nearest_finite_memory_max,
+        "nearest_finite_memory_current": nearest_finite_memory_current,
+    }
+
+
+_LIMITING_CGROUP_PROGRESS_KINDS: frozenset[str] = frozenset(
+    {
+        "judge_download_start",
+        "judge_download",
+        "judge_pass_done",
+        "judge_failed",
+    }
+)
+
+
+def _enrich_progress_record(
+    payload: Mapping[str, Any],
+    mem_snapshot: Mapping[str, Any],
+    *,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+) -> dict[str, Any]:
+    """Attach `mem_available_bytes`, `cgroup_memory_current`, `cgroup_memory_max`, and (on judge download/pass/fail lines) the nearest finite cgroup limit."""
+    record: dict[str, Any] = dict(payload)
+    for k in ("mem_available_bytes", "cgroup_memory_current", "cgroup_memory_max"):
+        if k not in record:
+            record[k] = mem_snapshot[k]
+    if str(record.get("kind") or "") in _LIMITING_CGROUP_PROGRESS_KINDS:
+        cg_chain = read_cgroup_limit_chain(
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
+        )
+        record.setdefault("nearest_finite_cgroup_path", cg_chain["nearest_finite_path"])
+        record.setdefault("nearest_finite_memory_max", cg_chain["nearest_finite_memory_max"])
+        record.setdefault(
+            "nearest_finite_memory_current",
+            cg_chain["nearest_finite_memory_current"],
+        )
+    return record
+
+
+def build_judge_child_env(
+    hf_home: Path,
+    repo_dir: Path,
+    *,
+    base_env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Build the judge child subprocess environment, dropping `HF_TOKEN*` and `HUGGING_FACE_HUB_TOKEN` and setting `HF_HUB_OFFLINE=1`."""
+    source_env = os.environ if base_env is None else base_env
+    child_env: dict[str, str] = {
+        k: v
+        for k, v in source_env.items()
+        if not k.startswith("HF_TOKEN") and k != "HUGGING_FACE_HUB_TOKEN"
+    }
+    child_env["HF_HUB_OFFLINE"] = "1"
+    child_env["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
+    child_env["HF_HOME"] = str(hf_home)
+    src_path = str(repo_dir / "src")
+    existing_py_path = child_env.get("PYTHONPATH", "")
+    child_env["PYTHONPATH"] = (
+        f"{src_path}{os.pathsep}{existing_py_path}"
+        if existing_py_path
+        else src_path
+    )
+    return child_env
 
 
 def validate_download_config(
@@ -2840,16 +3112,7 @@ def run_judges_pipeline(
         if dryrun or mode == "stub":
             child_cmd.append("--stub")
 
-        child_env = os.environ.copy()
-        child_env["HF_DEACTIVATE_ASYNC_LOAD"] = "1"
-        child_env["HF_HOME"] = str(hf_home)
-        src_path = str(eff_repo_dir / "src")
-        existing_py_path = child_env.get("PYTHONPATH", "")
-        child_env["PYTHONPATH"] = (
-            f"{src_path}{os.pathsep}{existing_py_path}"
-            if existing_py_path
-            else src_path
-        )
+        child_env = build_judge_child_env(hf_home, eff_repo_dir)
 
         cg_before = read_cgroup_memory_events(
             cgroup_root=cgroup_root, proc_cgroup_path=proc_cgroup_path
@@ -2931,6 +3194,13 @@ def run_judges_pipeline(
                                 "hf_deactivate_async_load": child_env.get(
                                     "HF_DEACTIVATE_ASYNC_LOAD"
                                 ),
+                                "hf_hub_offline": child_env.get("HF_HUB_OFFLINE"),
+                                "hf_token_keys": sorted(
+                                    k
+                                    for k in child_env
+                                    if k.startswith("HF_TOKEN")
+                                    or k == "HUGGING_FACE_HUB_TOKEN"
+                                ),
                             },
                             sort_keys=True,
                         )
@@ -2938,6 +3208,54 @@ def run_judges_pipeline(
                     )
             except OSError:
                 pass
+
+        def _fail_child_postcheck(reason_detail: str) -> Any:
+            scrubbed_reason = _scrub_and_tail(reason_detail)
+            combined_stderr = (
+                f"{stderr_tail}\n{scrubbed_reason}" if stderr_tail else scrubbed_reason
+            )
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "judge_failed",
+                    "judge": judge_id,
+                    "judge_id": judge_id,
+                    "venv": venv_name,
+                    "venv_python": venv_python.as_posix(),
+                    "lock_sha256": lock_sha256,
+                    "exit_code": int(proc.returncode),
+                    "returncode": int(proc.returncode),
+                    "signal": None,
+                    "oom_kill": oom_after,
+                    "oom": cg_after.get("oom"),
+                    "oom_kill_delta": oom_kill_delta,
+                    "mem_available_bytes": mem_avail_bytes,
+                    "stderr_tail": combined_stderr,
+                    "failure_class": "JUDGE_CHILD_FAILED",
+                },
+                proc_meminfo_path=proc_meminfo_path,
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+            )
+            raise JudgeChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=int(proc.returncode),
+                exit_code=int(proc.returncode),
+                signal_num=None,
+                oom=cg_after.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=combined_stderr,
+                failure_class="JUDGE_CHILD_FAILED",
+                duration_seconds=wall_elapsed,
+                completed_judges=per_judge_metrics,
+            )
 
         if proc.returncode != 0:
             raw_rc = int(proc.returncode)
@@ -2979,6 +3297,9 @@ def run_judges_pipeline(
                     "stderr_tail": stderr_tail,
                     "failure_class": failure_class,
                 },
+                proc_meminfo_path=proc_meminfo_path,
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
             )
             raise JudgeChildProcessError(
                 judge_id=judge_id,
@@ -3003,78 +3324,49 @@ def run_judges_pipeline(
         row_file = run_dir / ROWS_DIRNAME / f"{judge_id}.jsonl"
         done_file = judge_done_dir / f"{judge_id}.json"
         if not row_file.is_file():
-            raise JudgeChildProcessError(
-                judge_id=judge_id,
-                venv=venv_name,
-                venv_python=venv_python.as_posix(),
-                lock_sha256=lock_sha256,
-                cmd=child_cmd,
-                returncode=0,
-                exit_code=0,
-                signal_num=None,
-                oom=cg_after.get("oom"),
-                oom_kill=oom_after,
-                oom_kill_delta=oom_kill_delta,
-                mem_available_bytes=mem_avail_bytes,
-                stdout_tail=stdout_tail,
-                stderr_tail=f"Judge {judge_id} exited 0 but {row_file} is missing",
-                failure_class="JUDGE_CHILD_FAILED",
-                duration_seconds=wall_elapsed,
-                completed_judges=per_judge_metrics,
-            )
+            _fail_child_postcheck(f"Judge {judge_id} exited 0 but {row_file} is missing")
         if not done_file.is_file():
-            raise JudgeChildProcessError(
-                judge_id=judge_id,
-                venv=venv_name,
-                venv_python=venv_python.as_posix(),
-                lock_sha256=lock_sha256,
-                cmd=child_cmd,
-                returncode=0,
-                exit_code=0,
-                signal_num=None,
-                oom=cg_after.get("oom"),
-                oom_kill=oom_after,
-                oom_kill_delta=oom_kill_delta,
-                mem_available_bytes=mem_avail_bytes,
-                stdout_tail=stdout_tail,
-                stderr_tail=f"Judge {judge_id} exited 0 but {done_file} is missing",
-                failure_class="JUDGE_CHILD_FAILED",
-                duration_seconds=wall_elapsed,
-                completed_judges=per_judge_metrics,
+            _fail_child_postcheck(f"Judge {judge_id} exited 0 but {done_file} is missing")
+
+        try:
+            row_bytes = row_file.read_bytes()
+            actual_rows_sha = hashlib.sha256(row_bytes).hexdigest()
+            row_objs: list[dict[str, Any]] = []
+            for line_idx, ln in enumerate(
+                row_bytes.decode("utf-8").splitlines(), start=1
+            ):
+                if not ln.strip():
+                    continue
+                parsed_row = json.loads(ln)
+                if not isinstance(parsed_row, Mapping):
+                    raise ValueError(f"row line {line_idx} is not a JSON object")
+                row_objs.append(dict(parsed_row))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            _fail_child_postcheck(
+                f"Judge {judge_id} wrote malformed rows file {row_file.name}: {type(exc).__name__}: {exc}"
             )
 
-        row_bytes = row_file.read_bytes()
-        actual_rows_sha = hashlib.sha256(row_bytes).hexdigest()
-        row_objs = [
-            json.loads(ln)
-            for ln in row_bytes.decode("utf-8").splitlines()
-            if ln.strip()
-        ]
-        done_doc = json.loads(done_file.read_text(encoding="utf-8"))
-        expected_row_count = int(done_doc.get("row_count", -1))
-        expected_rows_sha = str(done_doc.get("sha256", ""))
+        try:
+            done_doc = json.loads(done_file.read_text(encoding="utf-8"))
+            if not isinstance(done_doc, Mapping):
+                raise ValueError("done file root is not a JSON object")
+            expected_row_count = int(done_doc.get("row_count", -1))
+            expected_rows_sha = str(done_doc.get("sha256", ""))
+        except (
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+            TypeError,
+        ) as exc:
+            _fail_child_postcheck(
+                f"Judge {judge_id} wrote malformed done file {done_file.name}: {type(exc).__name__}: {exc}"
+            )
+
         if len(row_objs) != expected_row_count or actual_rows_sha != expected_rows_sha:
-            raise JudgeChildProcessError(
-                judge_id=judge_id,
-                venv=venv_name,
-                venv_python=venv_python.as_posix(),
-                lock_sha256=lock_sha256,
-                cmd=child_cmd,
-                returncode=0,
-                exit_code=0,
-                signal_num=None,
-                oom=cg_after.get("oom"),
-                oom_kill=oom_after,
-                oom_kill_delta=oom_kill_delta,
-                mem_available_bytes=mem_avail_bytes,
-                stdout_tail=stdout_tail,
-                stderr_tail=(
-                    f"Judge {judge_id} checkpoint mismatch: rows={len(row_objs)} "
-                    f"(expected {expected_row_count}), sha256={actual_rows_sha} (expected {expected_rows_sha})"
-                ),
-                failure_class="JUDGE_CHILD_FAILED",
-                duration_seconds=wall_elapsed,
-                completed_judges=per_judge_metrics,
+            _fail_child_postcheck(
+                f"Judge {judge_id} checkpoint mismatch: rows={len(row_objs)} "
+                f"(expected {expected_row_count}), sha256={actual_rows_sha} (expected {expected_rows_sha})"
             )
 
         append_progress_line(
@@ -3089,6 +3381,9 @@ def run_judges_pipeline(
                 "row_count": len(row_objs),
                 "sha256": actual_rows_sha,
             },
+            proc_meminfo_path=proc_meminfo_path,
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
         )
 
         call_durations = [float(r.get("seconds", 0.0)) for r in row_objs]
@@ -3979,6 +4274,7 @@ def run_gate(args: argparse.Namespace) -> int:
                     if hasattr(err, "to_failure_record")
                     else None
                 ),
+                extra={"cgroup_limit_chain": read_cgroup_limit_chain()},
             )
         except OSError:
             pass
@@ -4005,6 +4301,7 @@ def run_gate(args: argparse.Namespace) -> int:
             "install_seconds": py_report["install_seconds"],
             "route": py_report["route"],
             "lock_sdists": lock_sdists,
+            "cgroup_limit_chain": read_cgroup_limit_chain(),
         },
     )
     sdist_summary = ",".join(
@@ -4474,9 +4771,13 @@ def main(argv: list[str] | None = None) -> int:
         current_step = "verify_items_allowlist"
         verify_items_allowlist(args.items_file)
 
+        cgroup_chain_at_start = read_cgroup_limit_chain()
+
         current_step = "unpack_uploaded_archives"
         t_unpack, start_unpack, _ = _record_step_start(
-            "unpack", progress_path=progress_path
+            "unpack",
+            progress_path=progress_path,
+            extra={"cgroup_limit_chain": cgroup_chain_at_start},
         )
         unpack_uploaded_archives(
             repo_tar=args.repo_tar,
@@ -4673,6 +4974,7 @@ def main(argv: list[str] | None = None) -> int:
                 "pilot_mass_check": pilot_mass_readout,
             },
             "timings": _build_timings_block(),
+            "cgroup_limit_chain": cgroup_chain_at_start,
             "dryrun": dryrun,
         }
         if until_step is not None:
@@ -4779,6 +5081,7 @@ def main(argv: list[str] | None = None) -> int:
             "judge_venvs": _build_judge_venvs_map(args.work_dir),
             "deleted_items_receipt": deleted_items_receipt,
             "timings": _build_timings_block(),
+            "cgroup_limit_chain": read_cgroup_limit_chain(),
         }
         if err_stdout_tail is not None:
             fail_receipt["stdout_tail"] = _scrub_and_tail(err_stdout_tail)
