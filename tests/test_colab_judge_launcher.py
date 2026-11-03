@@ -5651,6 +5651,9 @@ def test_progress_log_per_judge_lines_and_step_timings_in_order(
         ("step_start", "venv_d3"),
         ("step_end", "venv_d3"),
         ("step_end", "venv_sync"),
+        ("step_start", "device_check"),
+        ("device_check", None),
+        ("step_end", "device_check"),
         ("step_start", "download"),
         ("judge_download_start", "d3-mini"),
         ("judge_download", "d3-mini"),
@@ -5689,6 +5692,7 @@ def test_progress_log_per_judge_lines_and_step_timings_in_order(
         "venv_judge",
         "venv_d3",
         "venv_sync",
+        "device_check",
         "download",
         "verify",
         "judge_pass",
@@ -9091,6 +9095,8 @@ def test_fix6_addendum1_order_and_until_stages(tmp_path: Path) -> None:
     ]
     assert [(e["event"], e.get("judge_id")) for e in lc_fj] == [
         ("venv_sync", None),
+        ("device_check", None),
+        ("device_check", None),
         ("download_child", "flow-judge-v0.1"),
         ("parent_verify", "flow-judge-v0.1"),
     ]
@@ -9130,7 +9136,11 @@ def test_fix6_addendum1_order_and_until_stages(tmp_path: Path) -> None:
         .splitlines()
         if ln.strip()
     ]
-    expected_wt_events: list[tuple[str, str | None]] = [("venv_sync", None)]
+    expected_wt_events: list[tuple[str, str | None]] = [
+        ("venv_sync", None),
+        ("device_check", None),
+        ("device_check", None),
+    ]
     for jid in expected_judges:
         expected_wt_events.append(("download_child", jid))
         expected_wt_events.append(("parent_verify", jid))
@@ -9222,6 +9232,8 @@ def test_timeone_readiness_1_gpu_gate_order_and_empty_download_log_on_failure(
     ]
     expected_ok_events: list[tuple[str, str | None]] = [
         ("venv_sync", None),
+        ("device_check", "venv-judge"),
+        ("device_check", "venv-d3"),
         ("gpu_gate", "venv-judge"),
         ("gpu_gate", "venv-d3"),
     ]
@@ -9231,7 +9243,12 @@ def test_timeone_readiness_1_gpu_gate_order_and_empty_download_log_on_failure(
     for jid in expected_judges:
         expected_ok_events.append(("judge_child", jid))
     assert [
-        (e["event"], e.get("venv") if e["event"] == "gpu_gate" else e.get("judge_id"))
+        (
+            e["event"],
+            e.get("venv")
+            if e["event"] in ("device_check", "gpu_gate")
+            else e.get("judge_id"),
+        )
         for e in lc_ok
     ] == expected_ok_events
 
@@ -9291,10 +9308,17 @@ def test_timeone_readiness_1_gpu_gate_order_and_empty_download_log_on_failure(
         if ln.strip()
     ]
     assert [
-        (e["event"], e.get("venv") if e["event"] == "gpu_gate" else e.get("judge_id"))
+        (
+            e["event"],
+            e.get("venv")
+            if e["event"] in ("device_check", "gpu_gate")
+            else e.get("judge_id"),
+        )
         for e in lc_fail
     ] == [
         ("venv_sync", None),
+        ("device_check", "venv-judge"),
+        ("device_check", "venv-d3"),
         ("gpu_gate", "venv-judge"),
     ]
     status_fail = json.loads((out_fail / "status.json").read_text(encoding="utf-8"))
@@ -9522,6 +9546,8 @@ def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
     ]
     assert [(e["event"], e.get("judge_id")) for e in lc_ok] == [
         ("venv_sync", None),
+        ("device_check", None),
+        ("device_check", None),
         ("download_child", "nemotron-3-nano-4b"),
         ("parent_verify", "nemotron-3-nano-4b"),
         ("judge_child", "nemotron-3-nano-4b"),
@@ -10957,6 +10983,8 @@ def test_child_progress_4_first_load_selects_nemotron_while_first_judge_selects_
     ]
     assert [(e["event"], e.get("judge_id")) for e in lc_fj] == [
         ("venv_sync", None),
+        ("device_check", None),
+        ("device_check", None),
         ("download_child", "flow-judge-v0.1"),
         ("parent_verify", "flow-judge-v0.1"),
     ]
@@ -10993,6 +11021,8 @@ def test_child_progress_4_first_load_selects_nemotron_while_first_judge_selects_
     ]
     assert [(e["event"], e.get("judge_id")) for e in lc_fl] == [
         ("venv_sync", None),
+        ("device_check", None),
+        ("device_check", None),
         ("download_child", "nemotron-3-nano-4b"),
         ("parent_verify", "nemotron-3-nano-4b"),
         ("judge_child", "nemotron-3-nano-4b"),
@@ -11439,6 +11469,8 @@ def test_first_load_judge_id_default_and_d3_mini_selection(
     ]
     assert [(e["event"], e.get("judge_id"), e.get("venv")) for e in lc_d3] == [
         ("venv_sync", None, None),
+        ("device_check", None, "venv-judge"),
+        ("device_check", None, "venv-d3"),
         ("download_child", "d3-mini", "venv-d3"),
         ("parent_verify", "d3-mini", None),
         ("judge_child", "d3-mini", "venv-d3"),
@@ -12373,6 +12405,717 @@ def test_request_timeout_default_60_and_preset_value_respected_across_all_colab_
     ]
     assert len(calls_pre) >= 6
     assert all(c["request_timeout"] == "120" for c in calls_pre)
+
+
+def test_non_stub_child_argv_uses_cuda_0_and_runner_normalizes_cuda_for_d3_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Part 1 Item 1 & Item 4(1):
+    - the non-stub child argv in `vm_judges.py` has `--device cuda:0`,
+    - `bakeoff_judge` normalises `--device cuda` to `cuda:0` so `D3MiniTransport` passes `device="cuda:0"`
+      to `AutoModel.from_pretrained` (assert the recorded kwarg on the fake),
+    - progress lines and `judge_done/<judge>.json` record the normalised device string.
+    """
+    import types as _types
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "dev_norm_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "dev_norm_data", count=2)
+    run_dir = tmp_path / "run_non_stub"
+    work_dir = tmp_path / "work_non_stub"
+    vm_judges._ensure_dryrun_venv_python_wrapper(work_dir / "venv-judge" / "bin" / "python")
+    vm_judges._ensure_dryrun_venv_python_wrapper(work_dir / "venv-d3" / "bin" / "python")
+
+    state_dir_t1 = Path(os.environ["FAKE_COLAB_STATE_DIR"])
+    subproc_log_t1 = state_dir_t1 / "judge_subprocesses.jsonl"
+    if subproc_log_t1.exists():
+        subproc_log_t1.unlink()
+
+    # 1. Running `run_judges_pipeline` in `time-one` normalises child argv to `--device cuda:0`
+    #    (using the fake dryrun venv python wrapper so no real GPU is touched)
+    vm_judges.run_judges_pipeline(
+        mode="time-one",
+        part_dir=items_file.parent,
+        run_dir=run_dir,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        dryrun=False,
+        repo_root=REPO_ROOT,
+        work_dir=work_dir,
+        progress_path=run_dir / "progress.jsonl",
+        only_judge_ids=("d3-mini",),
+    )
+
+    subproc_rows = [
+        json.loads(ln)
+        for ln in subproc_log_t1.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(subproc_rows) == 1
+    argv_d3 = subproc_rows[0]["argv"]
+    dev_idx = argv_d3.index("--device")
+    assert argv_d3[dev_idx + 1] == "cuda:0"
+    assert subproc_rows[0]["device"] == "cuda:0"
+
+    # 2. `resolve_judge_device` for non-stub (`time-one`, `dryrun=False`, `real_load_on_cpu=False`) returns `"cuda:0"`
+    assert (
+        vm_judges.resolve_judge_device(
+            mode="time-one", dryrun=False, real_load_on_cpu=False
+        )
+        == "cuda:0"
+    )
+
+    done_d3 = json.loads(
+        (run_dir / "judge_done" / "d3-mini.json").read_text(encoding="utf-8")
+    )
+    assert done_d3["device"] == "cuda:0"
+
+    # 3. `bakeoff_judge` normalises `--device cuda` to `"cuda:0"` so `D3MiniTransport` passes `device="cuda:0"`
+    #    to `AutoModel.from_pretrained`
+    for name in bj_mod.OFFLINE_ENV_VARS:
+        monkeypatch.setenv(name, "1")
+
+    recorded_from_pretrained: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    class _FakeD3Model:
+        def system_one(self, **kwargs: Any) -> dict[str, Any]:
+            q = kwargs["questions"]["supported"]
+            if q["type"] == "noul":
+                ans: dict[str, Any] = {"type": "noul", "noul": 0.9}
+            else:
+                ans = {
+                    "type": "choice",
+                    "choice": "supported",
+                    "probabilities": {
+                        "supported": 0.8,
+                        "unsupported": 0.1,
+                        "cannot_tell": 0.1,
+                    },
+                    "confidence": 0.8,
+                }
+            return {
+                "model": "d3-mini",
+                "answers": {"supported": ans},
+                "usage": {"input_tokens": 32, "output_tokens": 0},
+            }
+
+    class _FakeAutoModel:
+        @classmethod
+        def from_pretrained(cls, *args: Any, **kwargs: Any) -> Any:
+            recorded_from_pretrained.append((args, dict(kwargs)))
+            return _FakeD3Model()
+
+    class _FakeInferenceMode:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    fake_tf = _types.ModuleType("transformers")
+    fake_tf.__version__ = bj_mod.D3_MINI_TRANSFORMERS_VERSION  # type: ignore[attr-defined]
+    fake_tf.AutoModel = _FakeAutoModel  # type: ignore[attr-defined]
+
+    fake_torch = _types.ModuleType("torch")
+    fake_torch.__version__ = "2.14.1+cu132"  # type: ignore[attr-defined]
+    fake_torch.manual_seed = lambda _s: None  # type: ignore[attr-defined]
+    fake_torch.inference_mode = _FakeInferenceMode  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    runner_out = tmp_path / "runner_d3_out"
+    runner_done = runner_out / "judge_done" / "d3-mini.json"
+    runner_prog = runner_out / "progress.jsonl"
+    rc_runner = bj_mod.main_judge_runner(
+        [
+            "--judge",
+            "d3-mini",
+            "--part-dir",
+            str(items_file.parent),
+            "--output-dir",
+            str(runner_out),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(hf_home),
+            "--device",
+            "cuda",
+            "--allow-remote-code-reviewed",
+            D3_MINI_REVIEWED_REVISION,
+            "--no-canary",
+            "--progress-file",
+            str(runner_prog),
+        ]
+    )
+    assert rc_runner == 0
+    assert len(recorded_from_pretrained) == 1
+    _, fp_kwargs = recorded_from_pretrained[0]
+    assert fp_kwargs["device"] == "cuda:0"
+
+    runner_done_doc = json.loads(runner_done.read_text(encoding="utf-8"))
+    assert runner_done_doc["device"] == "cuda:0"
+    runner_prog_rows = [
+        json.loads(ln)
+        for ln in runner_prog.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert all(r.get("device") == "cuda:0" for r in runner_prog_rows)
+
+
+def test_fake_d3_runtime_rejects_indexless_cuda_and_passes_with_normalized_device(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Part 1 Item 4(2):
+    A fake d3 runtime that raises `ValueError("Expected a torch.device with a specified index or an integer, but got:cuda")`
+    on any indexless CUDA device fails at `a35534dcfa15d7ddbc42cd06b5f4d60058dc350e` and passes with the fix.
+    """
+    import types as _types
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "d3_idx_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "d3_idx_data", count=2)
+
+    for name in bj_mod.OFFLINE_ENV_VARS:
+        monkeypatch.setenv(name, "1")
+
+    class _FakeTorchDevice:
+        def __init__(self, spec: Any) -> None:
+            if isinstance(spec, _FakeTorchDevice):
+                self.type = spec.type
+                self.index = spec.index
+                return
+            s = str(spec)
+            if s == "cpu":
+                self.type = "cpu"
+                self.index = None
+            elif s == "cuda":
+                self.type = "cuda"
+                self.index = None
+            elif s.startswith("cuda:"):
+                self.type = "cuda"
+                self.index = int(s.split(":", 1)[1])
+            else:
+                raise RuntimeError(f"Invalid device string: {s!r}")
+
+        def __str__(self) -> str:
+            return self.type if self.index is None else f"{self.type}:{self.index}"
+
+    def _get_device_index(
+        device: Any, optional: bool = False, allow_cpu: bool = False
+    ) -> int:
+        dev = device if isinstance(device, _FakeTorchDevice) else _FakeTorchDevice(device)
+        if dev.type != "cuda" or dev.index is None:
+            raise ValueError(
+                f"Expected a torch.device with a specified index or an integer, but got:{dev}"
+            )
+        return int(dev.index)
+
+    class _StrictIndexD3Model:
+        def system_one(self, **kwargs: Any) -> dict[str, Any]:
+            q = kwargs["questions"]["supported"]
+            if q["type"] == "noul":
+                ans: dict[str, Any] = {"type": "noul", "noul": 0.88}
+            else:
+                ans = {
+                    "type": "choice",
+                    "choice": "supported",
+                    "probabilities": {
+                        "supported": 0.85,
+                        "unsupported": 0.1,
+                        "cannot_tell": 0.05,
+                    },
+                    "confidence": 0.85,
+                }
+            return {
+                "model": "d3-mini",
+                "answers": {"supported": ans},
+                "usage": {"input_tokens": 28, "output_tokens": 0},
+            }
+
+    class _StrictAutoModel:
+        @classmethod
+        def from_pretrained(cls, *args: Any, **kwargs: Any) -> Any:
+            # Mirror d3-mini modeling_d3.py:1372 -> bitsandbytes -> torch.cuda._utils._get_device_index(torch.device(device))
+            _get_device_index(_FakeTorchDevice(kwargs.get("device")))
+            return _StrictIndexD3Model()
+
+    class _FakeInferenceMode:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    fake_tf = _types.ModuleType("transformers")
+    fake_tf.__version__ = bj_mod.D3_MINI_TRANSFORMERS_VERSION  # type: ignore[attr-defined]
+    fake_tf.AutoModel = _StrictAutoModel  # type: ignore[attr-defined]
+
+    fake_torch = _types.ModuleType("torch")
+    fake_torch.__version__ = "2.14.1+cu132"  # type: ignore[attr-defined]
+    fake_torch.device = _FakeTorchDevice  # type: ignore[attr-defined]
+    fake_torch.manual_seed = lambda _s: None  # type: ignore[attr-defined]
+    fake_torch.inference_mode = _FakeInferenceMode  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    # Confirm the fake runtime raises the exact ValueError on indexless "cuda"
+    with pytest.raises(
+        ValueError,
+        match=r"Expected a torch\.device with a specified index or an integer, but got:cuda",
+    ):
+        _StrictAutoModel.from_pretrained("dummy", device="cuda")
+
+    # Passing `device="cuda"` into `run_bakeoff_judge` normalises to `"cuda:0"` and succeeds
+    summary = bj_mod.run_bakeoff_judge(
+        judge="d3-mini",
+        part_dir=items_file.parent,
+        output_dir=tmp_path / "d3_idx_out",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cuda",
+        allow_remote_code_reviewed=D3_MINI_REVIEWED_REVISION,
+        fake_transport=False,
+        run_canary=False,
+    )
+    assert summary["device"] == "cuda:0"
+    assert summary["calls_count"] == 4
+
+
+def test_device_normalizer_table_valid_and_refusals() -> None:
+    """Card Part 1 Item 1 & Item 4(3):
+    The normaliser table:
+    - `"cuda" -> "cuda:0"`, `"cuda:0" -> "cuda:0"`, `"cuda:2" -> "cuda:2"`, `"cpu" -> "cpu"`,
+    - `"cuda:"`, `"cuda:-1"`, `"gpu"`, `"cuda:0 "`, `""` each refused with `BAKEOFF_JUDGE_DEVICE_INVALID`
+      and a scrubbed message.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    valid_table = [
+        ("cuda", "cuda:0"),
+        ("cuda:0", "cuda:0"),
+        ("cuda:2", "cuda:2"),
+        ("cpu", "cpu"),
+    ]
+    for raw_dev, expected_dev in valid_table:
+        assert vm_judges.normalize_judge_device(raw_dev) == expected_dev
+        assert bj_mod.normalize_judge_device(raw_dev) == expected_dev
+
+    invalid_inputs: list[Any] = [
+        "cuda:",
+        "cuda:-1",
+        "gpu",
+        "cuda:0 ",
+        "",
+        " cuda:0",
+        "cuda:01",
+        "CUDA:0",
+        None,
+        0,
+    ]
+    for bad_dev in invalid_inputs:
+        with pytest.raises(vm_judges.RefusalError) as exc_vm:
+            vm_judges.normalize_judge_device(bad_dev)
+        assert exc_vm.value.failure_class == "BAKEOFF_JUDGE_DEVICE_INVALID"
+
+        with pytest.raises(RdlabError) as exc_bj:
+            bj_mod.normalize_judge_device(bad_dev)
+        assert exc_bj.value.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+
+    # Verify token scrubbing on refusal message in both normalisers
+    planted_tok = "hf_" + "SecretDeviceToken9876543210abcdef"
+    with pytest.raises(vm_judges.RefusalError) as exc_vm_tok:
+        vm_judges.normalize_judge_device(planted_tok)
+    assert exc_vm_tok.value.failure_class == "BAKEOFF_JUDGE_DEVICE_INVALID"
+    assert planted_tok not in str(exc_vm_tok.value)
+
+    with pytest.raises(RdlabError) as exc_bj_tok:
+        bj_mod.normalize_judge_device(planted_tok)
+    assert exc_bj_tok.value.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+    assert planted_tok not in str(exc_bj_tok.value)
+
+
+def test_no_code_path_builds_child_argv_with_bare_cuda_across_all_modes(
+    tmp_path: Path,
+) -> None:
+    """Card Part 1 Item 4(4):
+    No code path in `vm_judges.py` or `bakeoff_judge.py` builds a child argv with `--device cuda`
+    across `--stub`, `--until first_judge`, `--until first_load`, and `--time-one`.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    # 1. Run fake pipeline / launcher across `--stub`, `--until first_judge`, `--until first_load`, and `--time-one`
+    #    and verify every recorded child argv in `judge_subprocesses.jsonl` never has `["--device", "cuda"]`
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "modes_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "modes_data", count=2)
+
+    work_t1 = tmp_path / "work_t1_direct"
+    vm_judges._ensure_dryrun_venv_python_wrapper(work_t1 / "venv-judge" / "bin" / "python")
+    vm_judges._ensure_dryrun_venv_python_wrapper(work_t1 / "venv-d3" / "bin" / "python")
+    state_dir_direct = Path(os.environ["FAKE_COLAB_STATE_DIR"])
+    subproc_direct = state_dir_direct / "judge_subprocesses.jsonl"
+    if subproc_direct.exists():
+        subproc_direct.unlink()
+    vm_judges.run_judges_pipeline(
+        mode="time-one",
+        part_dir=items_file.parent,
+        run_dir=tmp_path / "run_t1_direct",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        dryrun=False,
+        repo_root=REPO_ROOT,
+        work_dir=work_t1,
+        progress_path=tmp_path / "run_t1_direct" / "progress.jsonl",
+        only_judge_ids=("d3-mini",),
+    )
+    direct_rows = [
+        json.loads(ln)
+        for ln in subproc_direct.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(direct_rows) == 1
+    direct_argv = direct_rows[0]["argv"]
+    direct_idx = direct_argv.index("--device")
+    assert direct_argv[direct_idx + 1] != "cuda", (
+        f"Bare '--device cuda' found in time-one: {direct_argv}"
+    )
+    assert direct_argv[direct_idx + 1] == "cuda:0"
+
+    mode_runs = [
+        ("stub", "--stub", "cpu"),
+        ("first_judge", "--stub --until first_judge", None),
+        ("first_load", "--stub --until first_load", "cpu"),
+        ("time_one", "--time-one", "cuda:0"),
+    ]
+    for label, flags, expected_dev in mode_runs:
+        env_m = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{label}")
+        out_m = tmp_path / f"out_{label}"
+        exports_m = _base_launcher_exports(
+            env_m,
+            open_lock=tmp_path / f"lock_{label}.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        )
+        proc_m = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports_m} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' {flags} --out-dir '{_to_wsl_path(out_m)}' --run-id mode-{label}-01",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        assert proc_m.returncode == 0, f"label={label} stderr={proc_m.stderr}"
+        subproc_file = env_m["state_dir"] / "judge_subprocesses.jsonl"
+        if expected_dev is None:
+            assert not subproc_file.exists()
+            continue
+        subprocs = [
+            json.loads(ln)
+            for ln in subproc_file.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        assert len(subprocs) >= 1
+        for sp in subprocs:
+            argv = sp["argv"]
+            idx = argv.index("--device")
+            assert argv[idx + 1] != "cuda", (
+                f"Bare '--device cuda' found in {label}: {argv}"
+            )
+            assert argv[idx + 1] == expected_dev
+            assert sp["device"] == expected_dev
+
+    # 2. Check `resolve_judge_device` across all four mode/stage combinations
+    assert (
+        vm_judges.resolve_judge_device(
+            mode="stub", dryrun=True, real_load_on_cpu=False
+        )
+        == "cpu"
+    )
+    assert (
+        vm_judges.resolve_judge_device(
+            mode="stub", dryrun=False, real_load_on_cpu=False
+        )
+        == "cpu"
+    )
+    assert (
+        vm_judges.resolve_judge_device(
+            mode="stub", dryrun=False, real_load_on_cpu=True
+        )
+        == "cpu"
+    )
+    assert (
+        vm_judges.resolve_judge_device(
+            mode="time-one", dryrun=False, real_load_on_cpu=False
+        )
+        == "cuda:0"
+    )
+    assert (
+        vm_judges.resolve_judge_device(
+            mode="time-one", dryrun=False, real_load_on_cpu=False, raw_device="cuda"
+        )
+        == "cuda:0"
+    )
+
+    # 3. Also verify `bakeoff_judge` normalises `--device cuda` to `"cuda:0"`
+    assert bj_mod.normalize_judge_device("cuda") == "cuda:0"
+
+
+def test_device_check_passes_for_cuda_0_and_refuses_for_cuda_in_stub_before_download(
+    tmp_path: Path,
+) -> None:
+    """Card Part 1 Item 2 & Item 4(5):
+    `device_check` passes for `"cuda:0"` in both venvs and refuses with `DEVICE_INDEX_CHECK_FAILED`
+    before any download when `"cuda"` is injected, even in `--stub`.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "dev_chk_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "dev_chk_data", count=2)
+
+    # 1. `--stub --until device_check` runs `device_check` in both `venv-judge` and `venv-d3` for `"cuda:0"` and passes
+    env_ok = fake_colab.setup_fake_colab_environment(tmp_path / "env_dc_ok")
+    out_ok = tmp_path / "out_dc_ok"
+    exports_ok = _base_launcher_exports(
+        env_ok,
+        open_lock=tmp_path / "dc_ok.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_ok = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_ok} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until device_check --out-dir '{_to_wsl_path(out_ok)}' --run-id dc-ok-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_ok.returncode == 0, f"stderr={proc_ok.stderr}"
+    status_ok = json.loads((out_ok / "status.json").read_text(encoding="utf-8"))
+    receipt_ok = json.loads((out_ok / "vm_receipt.json").read_text(encoding="utf-8"))
+    vm_fs_ok = env_ok["state_dir"] / "vm_fs"
+    gate_ok = json.loads((vm_fs_ok / "gate_status.json").read_text(encoding="utf-8"))
+    assert status_ok["stopped_after"] == "device_check"
+    assert receipt_ok["stopped_after"] == "device_check"
+    for doc in (status_ok, receipt_ok, gate_ok):
+        dc = doc["device_check"]
+        assert dc["ok"] is True
+        assert dc["device"] == "cuda:0"
+        assert dc["venvs"]["venv-judge"]["ok"] is True
+        assert dc["venvs"]["venv-judge"]["device"] == "cuda:0"
+        assert dc["venvs"]["venv-judge"]["device_index"] == 0
+        assert dc["venvs"]["venv-d3"]["ok"] is True
+        assert dc["venvs"]["venv-d3"]["device"] == "cuda:0"
+        assert dc["venvs"]["venv-d3"]["device_index"] == 0
+
+    # 2. When `"cuda"` is injected into `device_check` in `--stub`, it refuses with `DEVICE_INDEX_CHECK_FAILED`
+    #    before any download child starts
+    env_fail = fake_colab.setup_fake_colab_environment(tmp_path / "env_dc_fail")
+    out_fail = tmp_path / "out_dc_fail"
+    exports_fail = _base_launcher_exports(
+        env_fail,
+        open_lock=tmp_path / "dc_fail.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_fail = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_fail} export FAKE_COLAB_DEVICE_CHECK_DEVICE=cuda; bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --out-dir '{_to_wsl_path(out_fail)}' --run-id dc-fail-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_fail.returncode == 2, f"stderr={proc_fail.stderr}"
+    status_fail = json.loads((out_fail / "status.json").read_text(encoding="utf-8"))
+    receipt_fail = json.loads((out_fail / "vm_receipt.json").read_text(encoding="utf-8"))
+    outcome_fail = json.loads(
+        (out_fail / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert status_fail["failure_class"] == "DEVICE_INDEX_CHECK_FAILED"
+    assert receipt_fail["failure_class"] == "DEVICE_INDEX_CHECK_FAILED"
+    assert status_fail["device_check"]["ok"] is False
+    assert status_fail["device_check"]["device"] == "cuda"
+    assert "Expected a torch.device with a specified index" in json.dumps(
+        status_fail["device_check"]
+    )
+    assert "DEVICE_INDEX_CHECK_FAILED" in outcome_fail["why"]
+    assert "liveness" not in outcome_fail["why"]
+
+    lc_fail_path = env_fail["state_dir"] / "child_lifecycle.jsonl"
+    if lc_fail_path.exists():
+        lc_fail = [
+            json.loads(ln)
+            for ln in lc_fail_path.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+    else:
+        lc_fail = []
+    assert [e for e in lc_fail if e.get("event") == "download_child"] == []
+    assert [e for e in lc_fail if e.get("event") == "judge_child"] == []
+
+
+def test_only_judges_d3_mini_under_time_one_downloads_verifies_and_runs_only_d3_mini(
+    tmp_path: Path,
+) -> None:
+    """Card Part 1 Item 3 & Item 4(6):
+    `RDLAB_ONLY_JUDGES=d3-mini` under `--time-one` downloads, verifies, and runs only `d3-mini`,
+    and `status.json`, `vm_receipt.json`, `time_one_summary.json`, `judge_done/`, and the outcome draft
+    carry only `d3-mini` and `"only_judges": ["d3-mini"]`.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "only_d3_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "only_d3_data", count=2)
+    env_only = fake_colab.setup_fake_colab_environment(tmp_path / "env_only_d3")
+    out_only = tmp_path / "out_only_d3"
+    exports_only = _base_launcher_exports(
+        env_only,
+        open_lock=tmp_path / "only_d3.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_only = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_only} RDLAB_ONLY_JUDGES=d3-mini bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_only)}' --run-id only-d3-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_only.returncode == 0, f"stderr={proc_only.stderr}"
+
+    lc_only = [
+        json.loads(ln)
+        for ln in (env_only["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert [e["judge_id"] for e in lc_only if e["event"] == "download_child"] == [
+        "d3-mini"
+    ]
+    assert [e["judge_id"] for e in lc_only if e["event"] == "parent_verify"] == [
+        "d3-mini"
+    ]
+    assert [e["judge_id"] for e in lc_only if e["event"] == "judge_child"] == [
+        "d3-mini"
+    ]
+
+    status_doc = json.loads((out_only / "status.json").read_text(encoding="utf-8"))
+    receipt_doc = json.loads((out_only / "vm_receipt.json").read_text(encoding="utf-8"))
+    summary_doc = json.loads(
+        (out_only / "time_one_summary.json").read_text(encoding="utf-8")
+    )
+    outcome_doc = json.loads(
+        (out_only / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+
+    assert status_doc["only_judges"] == ["d3-mini"]
+    assert status_doc["judge_order"] == ["d3-mini"]
+    assert receipt_doc["only_judges"] == ["d3-mini"]
+    assert receipt_doc["judge_order"] == ["d3-mini"]
+    assert list(receipt_doc["judges"].keys()) == ["d3-mini"]
+    assert summary_doc["only_judges"] == ["d3-mini"]
+    assert summary_doc["judge_order"] == ["d3-mini"]
+    assert list(summary_doc["judges"].keys()) == ["d3-mini"]
+    assert outcome_doc["only_judges"] == ["d3-mini"]
+    assert outcome_doc["judges_completed"] == ["d3-mini"]
+
+    done_files = sorted(p.name for p in (out_only / "judge_done").glob("*.json"))
+    row_files = sorted(p.name for p in (out_only / "rows").glob("*.jsonl"))
+    assert done_files == ["d3-mini.json"]
+    assert row_files == ["d3-mini.jsonl"]
+
+
+def test_only_judges_refused_with_stub_with_judge_order_unknown_id_and_duplicate(
+    tmp_path: Path,
+) -> None:
+    """Card Part 1 Item 3 & Item 4(7):
+    `RDLAB_ONLY_JUDGES` is refused (`ONLY_JUDGES_INVALID`, before `colab new`) with `--stub`,
+    with `RDLAB_JUDGE_ORDER`, on an unknown id, and on a duplicate (plus empty or whitespace).
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "only_ref_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "only_ref_data", count=2)
+    env_ref = fake_colab.setup_fake_colab_environment(tmp_path / "env_only_ref")
+    exports_ref = _base_launcher_exports(
+        env_ref,
+        open_lock=tmp_path / "only_ref.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+
+    perm_all = (
+        "flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini"
+    )
+    refusal_cases = [
+        # (env_prefix, cli_flags)
+        ("RDLAB_ONLY_JUDGES='d3-mini'", "--stub"),
+        ("RDLAB_ONLY_JUDGES='d3-mini'", "--stub --until first_load"),
+        (
+            f"RDLAB_ONLY_JUDGES='d3-mini' RDLAB_JUDGE_ORDER='{perm_all}'",
+            "--time-one",
+        ),
+        ("RDLAB_ONLY_JUDGES='unknown-judge'", "--time-one"),
+        ("RDLAB_ONLY_JUDGES='d3-mini,d3-mini'", "--time-one"),
+        ("RDLAB_ONLY_JUDGES=''", "--time-one"),
+        ("RDLAB_ONLY_JUDGES='d3-mini,'", "--time-one"),
+        ("RDLAB_ONLY_JUDGES=' d3-mini'", "--time-one"),
+    ]
+
+    for idx, (env_prefix, cli_flags) in enumerate(refusal_cases):
+        proc = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports_ref} {env_prefix} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' {cli_flags} --out-dir '{_to_wsl_path(tmp_path / f'out_only_ref_{idx}')}' --run-id only-ref-{idx:02d}",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc.returncode == 2, (
+            f"case={idx} ({env_prefix} {cli_flags}) rc={proc.returncode} stderr={proc.stderr}"
+        )
+        assert "ONLY_JUDGES_INVALID" in proc.stderr
+        assert not env_ref["calls_log"].exists(), (
+            f"Fake colab was called for refusal case {idx}: {env_prefix} {cli_flags}"
+        )
+        assert not env_ref["sentinel_called"].exists()
+
 
 
 

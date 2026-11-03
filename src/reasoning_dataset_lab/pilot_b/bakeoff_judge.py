@@ -2377,6 +2377,35 @@ class _TokenCountStreamer:
         pass
 
 
+_CUDA_INDEX_DEVICE_RE: re.Pattern[str] = re.compile(r"^cuda:(?:0|[1-9][0-9]*)$")
+_DEVICE_SCRUB_RE: re.Pattern[str] = re.compile(
+    r"(?:hf_[A-Za-z0-9]{10,}|ya29\.[A-Za-z0-9._-]+|eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})"
+)
+
+
+def _scrub_device_error_text(text: str) -> str:
+    return _DEVICE_SCRUB_RE.sub("<REDACTED>", text)
+
+
+def normalize_judge_device(device: Any) -> str:
+    """Normalise judge device strings: `'cuda' -> 'cuda:0'`, `'cuda:N' -> 'cuda:N'`, `'cpu' -> 'cpu'`.
+
+    Any other value (including `'cuda:'`, `'cuda:-1'`, `'gpu'`, `'cuda:0 '`, `''`, or non-str)
+    is refused with `BAKEOFF_JUDGE_DEVICE_INVALID` and a scrubbed message.
+    """
+    if isinstance(device, str) and not isinstance(device, bool):
+        if device == "cuda":
+            return "cuda:0"
+        if device == "cpu" or _CUDA_INDEX_DEVICE_RE.match(device):
+            return device
+    raw_repr = _scrub_device_error_text(repr(device))
+    raise refused_error(
+        "BAKEOFF_JUDGE_DEVICE_INVALID",
+        f"Invalid judge device {raw_repr}; expected 'cuda', 'cuda:N' (non-negative integer N), or 'cpu'.",
+        "Pass --device cuda:0 (or --device cuda, which normalises to cuda:0) or --device cpu.",
+    )
+
+
 class TransformersJudgeTransport:
     """Real-model local Hugging Face `transformers` transport with receipt SHA-256 verification and `trust_remote_code=False`.
 
@@ -2401,7 +2430,7 @@ class TransformersJudgeTransport:
     ) -> None:
         self.receipts_dir = Path(receipts_dir)
         self.hf_home = Path(hf_home) if hf_home is not None else None
-        self.device = device
+        self.device = normalize_judge_device(device)
         self.torch_dtype = DEFAULT_TORCH_DTYPE if torch_dtype == "auto" else torch_dtype
         self._loaded_spec_id: str | None = None
         self._verified_digest: str | None = None
@@ -2830,7 +2859,7 @@ class D3MiniTransport:
     ) -> None:
         self.receipts_dir = Path(receipts_dir)
         self.hf_home = Path(hf_home) if hf_home is not None else None
-        self.device = device
+        self.device = normalize_judge_device(device)
         self.expected_transformers_version = expected_transformers_version
         self.torch_dtype = str(torch_dtype)
         self._verified_digest: str | None = None
@@ -3662,6 +3691,7 @@ def run_bakeoff_judge(
     heartbeat_interval_seconds: float | None = None,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
+    device = normalize_judge_device(device)
     resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
     spec = resolve_judge_spec(judge)
     adapter = build_judge_adapter(spec)
@@ -3680,7 +3710,7 @@ def run_bakeoff_judge(
         {
             "kind": "child_start",
             "judge_id": spec.judge_id,
-            "device": str(device),
+            "device": device,
             "dtype": effective_dtype,
             "limit_items": limit_items,
             "pid": os.getpid(),
@@ -3735,6 +3765,7 @@ def run_bakeoff_judge(
         {
             "kind": "load_done",
             "judge_id": spec.judge_id,
+            "device": device,
             "load_seconds": round(max(0.0, time.monotonic() - child_start_mono), 6),
             "rss_bytes": _read_process_rss_bytes(),
         },
@@ -3813,6 +3844,7 @@ def run_bakeoff_judge(
                 {
                     "kind": "call_start",
                     "judge_id": spec.judge_id,
+                    "device": device,
                     "index": call_idx,
                     "item_index": item_idx,
                     "order": entry.order,
@@ -3848,6 +3880,7 @@ def run_bakeoff_judge(
                             {
                                 "kind": "heartbeat",
                                 "judge_id": spec.judge_id,
+                                "device": device,
                                 "index": _call_idx,
                                 "seconds": elapsed_hb,
                                 "seconds_so_far": elapsed_hb,
@@ -3879,6 +3912,7 @@ def run_bakeoff_judge(
                     {
                         "kind": "call_done",
                         "judge_id": spec.judge_id,
+                        "device": device,
                         "index": call_idx,
                         "item_index": item_idx,
                         "order": entry.order,
@@ -3894,6 +3928,7 @@ def run_bakeoff_judge(
                     {
                         "kind": "child_end",
                         "judge_id": spec.judge_id,
+                        "device": device,
                         "counts_by_state": {
                             "parsed": parsed_count,
                             "unparseable": unparseable_count,
@@ -3946,6 +3981,7 @@ def run_bakeoff_judge(
                 {
                     "kind": "call_done",
                     "judge_id": spec.judge_id,
+                    "device": device,
                     "index": call_idx,
                     "item_index": item_idx,
                     "order": entry.order,
@@ -4050,6 +4086,7 @@ def run_bakeoff_judge(
                     {
                         "kind": "child_end",
                         "judge_id": spec.judge_id,
+                        "device": device,
                         "counts_by_state": {
                             "parsed": parsed_count,
                             "unparseable": unparseable_count,
@@ -4072,6 +4109,7 @@ def run_bakeoff_judge(
         {
             "kind": "child_end",
             "judge_id": spec.judge_id,
+            "device": device,
             "counts_by_state": {
                 "parsed": parsed_count,
                 "unparseable": unparseable_count,
@@ -4108,6 +4146,7 @@ def run_bakeoff_judge(
     judge_done_tmp = judge_done_dir / f".{spec.judge_id}.json.tmp"
     judge_done_doc: dict[str, Any] = {
         "judge_id": spec.judge_id,
+        "device": device,
         "row_count": calls_so_far,
         "sha256": rows_sha256,
         "rows_file": f"{ROWS_DIRNAME}/{spec.judge_id}.jsonl",
@@ -4137,6 +4176,7 @@ def run_bakeoff_judge(
         "revision": spec.revision,
         "model_digest": verified_digest,
         "pass_mode": pass_mode,
+        "device": device,
         "dtype": effective_dtype,
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
         "deterministic_algorithms": det_status,
@@ -4253,8 +4293,8 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--device",
-        default="cuda",
-        help="Target device ('cuda' or 'cpu').",
+        default="cuda:0",
+        help="Target device ('cuda:0', 'cuda', or 'cpu').",
     )
     parser.add_argument(
         "--dtype",
@@ -4317,6 +4357,7 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
+        normalized_device = normalize_judge_device(args.device)
         run_bakeoff_judge(
             part_dir=args.part_dir,
             output_dir=args.output_dir,
@@ -4327,7 +4368,7 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             fake_transport=bool(args.fake_transport),
             receipts_dir=args.receipts_dir,
             hf_home=args.hf_home,
-            device=args.device,
+            device=normalized_device,
             torch_dtype=args.dtype,
             allow_remote_code_reviewed=args.allow_remote_code_reviewed,
             vram_halt_mib=args.vram_halt_mib,
