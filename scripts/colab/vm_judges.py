@@ -71,6 +71,17 @@ FIRST_LOAD_NOTE = (
     "first_load proves a real call completes and parses for a one-token judge; "
     "it does not prove Flow-Judge's 512-token feedback parse."
 )
+FIRST_LOAD_FLOW_JUDGE_NOTE = (
+    "first_load with flow-judge-v0.1 proves a real call with Flow-Judge's "
+    "feedback output on CPU, as far as the calls finish."
+)
+JUDGE_RECEIPT_BYTES_BY_ID: dict[str, int] = {
+    "d3-mini": 9_107_255_624,
+    "flow-judge-v0.1": 7_644_593_918,
+    "granite-guardian-4.1-8b": 16_770_923_290,
+    "mu-judge": 7_964_239_519,
+    "nemotron-3-nano-4b": 7_964_584_688,
+}
 ALLOWED_UNTIL_STEPS: tuple[str, ...] = (
     "venv_sync",
     "gpu_gate",
@@ -328,6 +339,8 @@ BAKEOFF_JUDGE_SPECS: dict[str, JudgeSpec] = {
         card_snapshot_sha256="f1392c4ef4ea17126a758b2c4a0ccfca702f8840e93cd8f21d29cae68185090e",
     ),
 }
+
+DEFAULT_JUDGE_ORDER: tuple[str, ...] = tuple(sorted(BAKEOFF_JUDGE_SPECS.keys()))
 
 
 def resolve_content_dir(content_dir: Path | None = None) -> Path:
@@ -4573,6 +4586,8 @@ def run_judges_pipeline(
     proc_cgroup_path: Path | None = None,
     proc_meminfo_path: Path | None = None,
     only_judge_ids: Sequence[str] | None = None,
+    judge_order: Sequence[str] | None = None,
+    judge_order_source: str = "default",
     real_load_on_cpu: bool = False,
     child_timeout_seconds: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -4601,7 +4616,6 @@ def run_judges_pipeline(
             else resolve_judge_child_timeout_seconds()
         )
     )
-    allowed_ids = set(only_judge_ids) if only_judge_ids is not None else None
     part_manifest = part_dir / "manifest.json"
     if not part_manifest.is_file():
         part_manifest.write_text(
@@ -4618,10 +4632,17 @@ def run_judges_pipeline(
     child_progress_dir.mkdir(parents=True, exist_ok=True)
     merged_child_progress_path = run_dir / CHILD_PROGRESS_FILENAME
 
+    selected_specs = _select_judge_specs(
+        only_judge_ids if only_judge_ids is not None else judge_order
+    )
+    eff_judge_order = (
+        list(judge_order)
+        if judge_order is not None
+        else [jid for jid, _ in selected_specs]
+    )
+
     per_judge_metrics: dict[str, Any] = {}
-    for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
-        if allowed_ids is not None and judge_id not in allowed_ids:
-            continue
+    for judge_id, spec in selected_specs:
         is_d3 = judge_id == D3_MINI_JUDGE_ID
         venv_name = "venv-d3" if is_d3 else "venv-judge"
         venv_python = eff_work_dir / venv_name / "bin" / "python"
@@ -5148,6 +5169,8 @@ def run_judges_pipeline(
         "cap_units": TIME_ONE_CAP_UNITS if mode == "time-one" else 0.16,
         "items_per_judge": limit_items,
         "orders": ["AB", "BA"],
+        "judge_order": eff_judge_order,
+        "judge_order_source": judge_order_source,
         "vram_sample_interval_seconds": VRAM_SAMPLE_INTERVAL_SECONDS,
         "judges": per_judge_metrics,
         "harness_readouts": {
@@ -5360,6 +5383,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--until",
         default=env_or("RDLAB_UNTIL", None),
+    )
+    parser.add_argument(
+        "--judge-order",
+        default=os.environ.get("RDLAB_JUDGE_ORDER", None),
+    )
+    parser.add_argument(
+        "--first-load-judge-id",
+        default=os.environ.get("RDLAB_FIRST_LOAD_JUDGE_ID", None),
     )
     parser.add_argument(
         "--hf-download-max-workers",
@@ -5914,6 +5945,114 @@ def validate_until_option(mode: str, until: str | None) -> str | None:
             f"Unknown --until step {cleaned!r} (allowed: {allowed_str})",
         )
     return cleaned
+
+
+# RDLAB_JUDGE_ORDER: this knob is for the time-one window only.
+# The counted run's order is its own registered choice, and this knob does not change it.
+def validate_judge_order(
+    mode: str,
+    raw_order: str | None = None,
+    *,
+    until: str | None = None,
+    session_smoke: bool = False,
+) -> tuple[tuple[str, ...], str]:
+    """Validate `RDLAB_JUDGE_ORDER`: allowed only with `--time-one` and must be an exact comma-separated permutation of the 5 `BAKEOFF_JUDGE_SPECS` keys."""
+    if raw_order is None:
+        if "RDLAB_JUDGE_ORDER" in os.environ:
+            raw_val: str | None = os.environ["RDLAB_JUDGE_ORDER"]
+        else:
+            raw_val = None
+    else:
+        raw_val = str(raw_order)
+
+    if raw_val is None:
+        return DEFAULT_JUDGE_ORDER, "default"
+
+    has_until = until is not None and str(until).strip() != ""
+    if mode != "time-one" or has_until or session_smoke:
+        raise RefusalError(
+            "JUDGE_ORDER_INVALID",
+            f"RDLAB_JUDGE_ORDER is allowed only with --time-one (got mode={mode!r}, until={until!r}, session_smoke={session_smoke!r})",
+        )
+
+    if (
+        not isinstance(raw_val, str)
+        or not raw_val
+        or any(ch.isspace() for ch in raw_val)
+    ):
+        raise RefusalError(
+            "JUDGE_ORDER_INVALID",
+            f"RDLAB_JUDGE_ORDER must be a comma-separated permutation of {list(DEFAULT_JUDGE_ORDER)} with no whitespace or empty items, got {raw_val!r}",
+        )
+
+    parts = raw_val.split(",")
+    if any(not p for p in parts):
+        raise RefusalError(
+            "JUDGE_ORDER_INVALID",
+            f"RDLAB_JUDGE_ORDER contains empty item(s): {raw_val!r}",
+        )
+    unknown = [p for p in parts if p not in BAKEOFF_JUDGE_SPECS]
+    if unknown:
+        raise RefusalError(
+            "JUDGE_ORDER_INVALID",
+            f"RDLAB_JUDGE_ORDER contains unknown judge_id(s) {unknown!r} (allowed: {list(DEFAULT_JUDGE_ORDER)})",
+        )
+    if len(set(parts)) != len(parts):
+        raise RefusalError(
+            "JUDGE_ORDER_INVALID",
+            f"RDLAB_JUDGE_ORDER contains duplicate judge_id(s): {parts!r}",
+        )
+    if set(parts) != set(DEFAULT_JUDGE_ORDER) or len(parts) != len(DEFAULT_JUDGE_ORDER):
+        raise RefusalError(
+            "JUDGE_ORDER_INVALID",
+            f"RDLAB_JUDGE_ORDER must be an exact permutation of all 5 judges {list(DEFAULT_JUDGE_ORDER)}, got {parts!r}",
+        )
+    return tuple(parts), "env"
+
+
+def resolve_first_load_note(judge_id: str) -> str:
+    """Return the `first_load_note` text for `judge_id`."""
+    if judge_id == "flow-judge-v0.1":
+        return FIRST_LOAD_FLOW_JUDGE_NOTE
+    return FIRST_LOAD_NOTE
+
+
+def validate_first_load_judge_id(
+    mode: str,
+    until: str | None = None,
+    raw_judge_id: str | None = None,
+    *,
+    session_smoke: bool = False,
+) -> tuple[str, str]:
+    """Validate `RDLAB_FIRST_LOAD_JUDGE_ID`: allowed only with `--stub --until first_load` and must be one of the 5 `BAKEOFF_JUDGE_SPECS` keys."""
+    if raw_judge_id is None:
+        if "RDLAB_FIRST_LOAD_JUDGE_ID" in os.environ:
+            raw_val: str | None = os.environ["RDLAB_FIRST_LOAD_JUDGE_ID"]
+        else:
+            raw_val = None
+    else:
+        raw_val = str(raw_judge_id)
+
+    if raw_val is None:
+        return FIRST_LOAD_JUDGE_ID, "default"
+
+    cleaned_until = str(until).strip() if until is not None else ""
+    if mode != "stub" or cleaned_until != "first_load" or session_smoke:
+        raise RefusalError(
+            "FIRST_LOAD_JUDGE_ID_INVALID",
+            f"RDLAB_FIRST_LOAD_JUDGE_ID is allowed only with --stub --until first_load (got mode={mode!r}, until={until!r}, session_smoke={session_smoke!r})",
+        )
+    if (
+        not isinstance(raw_val, str)
+        or not raw_val
+        or any(ch.isspace() for ch in raw_val)
+        or raw_val not in BAKEOFF_JUDGE_SPECS
+    ):
+        raise RefusalError(
+            "FIRST_LOAD_JUDGE_ID_INVALID",
+            f"RDLAB_FIRST_LOAD_JUDGE_ID must be one of {list(DEFAULT_JUDGE_ORDER)}, got {raw_val!r}",
+        )
+    return raw_val, "env"
 
 
 def run_gate(args: argparse.Namespace) -> int:
@@ -6543,11 +6682,29 @@ def main(argv: list[str] | None = None) -> int:
         }
 
     until_step: str | None = None
+    judge_order: tuple[str, ...] = DEFAULT_JUDGE_ORDER
+    judge_order_source: str = "default"
+    first_load_judge_id: str = FIRST_LOAD_JUDGE_ID
+    first_load_judge_id_source: str = "default"
     gpu_gate_report: dict[str, Any] | None = None
     try:
         current_step = "validate_until_option"
         until_step = validate_until_option(args.mode, getattr(args, "until", None))
         stopped_after: str | None = None
+
+        current_step = "validate_judge_order"
+        judge_order, judge_order_source = validate_judge_order(
+            args.mode,
+            getattr(args, "judge_order", None),
+            until=until_step,
+        )
+
+        current_step = "validate_first_load_judge_id"
+        first_load_judge_id, first_load_judge_id_source = validate_first_load_judge_id(
+            args.mode,
+            until_step,
+            getattr(args, "first_load_judge_id", None),
+        )
 
         current_step = "validate_download_config"
         dl_max_workers, dl_xet_range_gets = validate_download_config(
@@ -6683,7 +6840,7 @@ def main(argv: list[str] | None = None) -> int:
                 judge_records_out=judge_download_records,
                 step_timings=step_timings,
                 step_order=step_order,
-                only_judge_ids=(FIRST_LOAD_JUDGE_ID,),
+                only_judge_ids=(first_load_judge_id,),
                 max_workers=dl_max_workers,
                 hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
             )
@@ -6703,7 +6860,9 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=args.repo_dir,
                 work_dir=args.work_dir,
                 progress_path=progress_path,
-                only_judge_ids=(FIRST_LOAD_JUDGE_ID,),
+                only_judge_ids=(first_load_judge_id,),
+                judge_order=judge_order,
+                judge_order_source=judge_order_source,
                 real_load_on_cpu=True,
                 child_timeout_seconds=resolve_first_load_timeout_seconds(),
             )
@@ -6744,6 +6903,7 @@ def main(argv: list[str] | None = None) -> int:
                 judge_records_out=judge_download_records,
                 step_timings=step_timings,
                 step_order=step_order,
+                only_judge_ids=judge_order,
                 max_workers=dl_max_workers,
                 hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
             )
@@ -6764,6 +6924,9 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=args.repo_dir,
                 work_dir=args.work_dir,
                 progress_path=progress_path,
+                only_judge_ids=judge_order,
+                judge_order=judge_order,
+                judge_order_source=judge_order_source,
             )
             _record_step_end(
                 "judge_pass",
@@ -6831,6 +6994,8 @@ def main(argv: list[str] | None = None) -> int:
             "lock_digests": lock_digests,
             "venvs": venv_info,
             "judge_venvs": judge_venvs_map,
+            "judge_order": list(judge_order),
+            "judge_order_source": judge_order_source,
             "gpu_gate": gpu_gate_report,
             "download_stack_versions": {
                 "expected": EXPECTED_DOWNLOAD_STACK_VERSIONS,
@@ -6844,7 +7009,9 @@ def main(argv: list[str] | None = None) -> int:
                 "pilot_mass_check": pilot_mass_readout,
             },
             "timings": _build_timings_block(),
-            "cgroup_limit_chain": cgroup_chain_at_start,
+            "cgroup_limit_chain": cgroup_limit_chain_at_start
+            if "cgroup_limit_chain_at_start" in locals()
+            else cgroup_chain_at_start,
             "dryrun": dryrun,
         }
         if until_step is not None:
@@ -6855,11 +7022,16 @@ def main(argv: list[str] | None = None) -> int:
                 receipt_doc["first_judge_id"] = FIRST_JUDGE_ID
                 receipt_doc["first_judge_receipt_bytes"] = FIRST_JUDGE_RECEIPT_BYTES
             elif until_step == "first_load":
-                receipt_doc["first_load_judge_id"] = FIRST_LOAD_JUDGE_ID
-                receipt_doc["first_load_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
-                receipt_doc["first_load_note"] = FIRST_LOAD_NOTE
-                receipt_doc["first_judge_id"] = FIRST_LOAD_JUDGE_ID
-                receipt_doc["first_judge_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
+                fl_receipt_bytes = JUDGE_RECEIPT_BYTES_BY_ID.get(
+                    first_load_judge_id, FIRST_LOAD_RECEIPT_BYTES
+                )
+                fl_note = resolve_first_load_note(first_load_judge_id)
+                receipt_doc["first_load_judge_id"] = first_load_judge_id
+                receipt_doc["first_load_judge_id_source"] = first_load_judge_id_source
+                receipt_doc["first_load_receipt_bytes"] = fl_receipt_bytes
+                receipt_doc["first_load_note"] = fl_note
+                receipt_doc["first_judge_id"] = first_load_judge_id
+                receipt_doc["first_judge_receipt_bytes"] = fl_receipt_bytes
         receipt_path.write_text(
             json.dumps(receipt_doc, indent=2) + "\n",
             encoding="utf-8",
@@ -6898,6 +7070,8 @@ def main(argv: list[str] | None = None) -> int:
             "route": py_rep["route"],
             "lock_sdists": venv_info["lock_sdists"],
             "judge_venvs": judge_venvs_map,
+            "judge_order": list(judge_order),
+            "judge_order_source": judge_order_source,
             "gpu_gate": gpu_gate_report,
         }
         if until_step is not None:
@@ -6908,11 +7082,16 @@ def main(argv: list[str] | None = None) -> int:
                 status_extra["first_judge_id"] = FIRST_JUDGE_ID
                 status_extra["first_judge_receipt_bytes"] = FIRST_JUDGE_RECEIPT_BYTES
             elif until_step == "first_load":
-                status_extra["first_load_judge_id"] = FIRST_LOAD_JUDGE_ID
-                status_extra["first_load_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
-                status_extra["first_load_note"] = FIRST_LOAD_NOTE
-                status_extra["first_judge_id"] = FIRST_LOAD_JUDGE_ID
-                status_extra["first_judge_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
+                fl_receipt_bytes = JUDGE_RECEIPT_BYTES_BY_ID.get(
+                    first_load_judge_id, FIRST_LOAD_RECEIPT_BYTES
+                )
+                fl_note = resolve_first_load_note(first_load_judge_id)
+                status_extra["first_load_judge_id"] = first_load_judge_id
+                status_extra["first_load_judge_id_source"] = first_load_judge_id_source
+                status_extra["first_load_receipt_bytes"] = fl_receipt_bytes
+                status_extra["first_load_note"] = fl_note
+                status_extra["first_judge_id"] = first_load_judge_id
+                status_extra["first_judge_receipt_bytes"] = fl_receipt_bytes
 
         write_vm_status_file(
             args.status_file,
@@ -6968,6 +7147,8 @@ def main(argv: list[str] | None = None) -> int:
             "reason": f"{failure_class}: {scrub_log_text(str(detail))}",
             "mode": args.mode,
             "judge_venvs": fail_judge_venvs_map,
+            "judge_order": list(judge_order),
+            "judge_order_source": judge_order_source,
             "gpu_gate": gpu_gate_report,
             "download_stack_versions": {
                 "expected": EXPECTED_DOWNLOAD_STACK_VERSIONS,
@@ -6991,7 +7172,10 @@ def main(argv: list[str] | None = None) -> int:
             fail_receipt["stderr_tail"] = _scrub_and_tail(err_stderr_tail)
         if err_subproc_rec is not None:
             fail_receipt["subprocess"] = err_subproc_rec
-        status_fail_extra: dict[str, Any] = {}
+        status_fail_extra: dict[str, Any] = {
+            "judge_order": list(judge_order),
+            "judge_order_source": judge_order_source,
+        }
         if gpu_gate_report is not None:
             status_fail_extra["gpu_gate"] = gpu_gate_report
         if until_step is not None:
@@ -7000,12 +7184,18 @@ def main(argv: list[str] | None = None) -> int:
             status_fail_extra["until"] = until_step
             status_fail_extra["until_step"] = until_step
             if until_step == "first_load":
-                fail_receipt["first_load_judge_id"] = FIRST_LOAD_JUDGE_ID
-                fail_receipt["first_load_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
-                fail_receipt["first_load_note"] = FIRST_LOAD_NOTE
-                status_fail_extra["first_load_judge_id"] = FIRST_LOAD_JUDGE_ID
-                status_fail_extra["first_load_receipt_bytes"] = FIRST_LOAD_RECEIPT_BYTES
-                status_fail_extra["first_load_note"] = FIRST_LOAD_NOTE
+                fl_receipt_bytes = JUDGE_RECEIPT_BYTES_BY_ID.get(
+                    first_load_judge_id, FIRST_LOAD_RECEIPT_BYTES
+                )
+                fl_note = resolve_first_load_note(first_load_judge_id)
+                fail_receipt["first_load_judge_id"] = first_load_judge_id
+                fail_receipt["first_load_judge_id_source"] = first_load_judge_id_source
+                fail_receipt["first_load_receipt_bytes"] = fl_receipt_bytes
+                fail_receipt["first_load_note"] = fl_note
+                status_fail_extra["first_load_judge_id"] = first_load_judge_id
+                status_fail_extra["first_load_judge_id_source"] = first_load_judge_id_source
+                status_fail_extra["first_load_receipt_bytes"] = fl_receipt_bytes
+                status_fail_extra["first_load_note"] = fl_note
         if isinstance(err, (JudgeChildProcessError, DownloadChildProcessError)):
             for k in (
                 "judge",

@@ -293,12 +293,15 @@ elif (( PROGRESS_FETCH_TIMEOUT_SECONDS > 600 )); then
   PROGRESS_FETCH_TIMEOUT_SECONDS=600
 fi
 
-if ! "$PYTHON_BIN" - "$REPO_ROOT" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" <<'PY'
 import os
 import sys
 from pathlib import Path
 
 repo_root = Path(sys.argv[1])
+mode = sys.argv[2]
+until_step = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
+is_smoke = (len(sys.argv) > 4 and sys.argv[4] == "1")
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
@@ -306,6 +309,18 @@ try:
     vm_judges.validate_download_config(
         os.environ.get("RDLAB_HF_DOWNLOAD_MAX_WORKERS"),
         os.environ.get("HF_XET_NUM_CONCURRENT_RANGE_GETS"),
+    )
+    vm_judges.validate_judge_order(
+        mode,
+        os.environ.get("RDLAB_JUDGE_ORDER", None),
+        until=until_step,
+        session_smoke=is_smoke,
+    )
+    vm_judges.validate_first_load_judge_id(
+        mode,
+        until_step,
+        os.environ.get("RDLAB_FIRST_LOAD_JUDGE_ID", None),
+        session_smoke=is_smoke,
     )
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
@@ -388,6 +403,12 @@ build_exec_env_args() {
   )
   if [[ -n "$UNTIL_STEP" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_UNTIL=$UNTIL_STEP")
+  fi
+  if [[ -n "${RDLAB_JUDGE_ORDER+x}" ]] && [[ -n "${RDLAB_JUDGE_ORDER}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_JUDGE_ORDER=$RDLAB_JUDGE_ORDER")
+  fi
+  if [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID+x}" ]] && [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_FIRST_LOAD_JUDGE_ID=$RDLAB_FIRST_LOAD_JUDGE_ID")
   fi
   if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=/content/resume_state.tar.gz")

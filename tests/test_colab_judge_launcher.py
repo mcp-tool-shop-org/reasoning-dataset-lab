@@ -11124,18 +11124,562 @@ def test_child_progress_5_no_text_or_token_ids_leak_into_progress_lines(
         assert set(obj.keys()).issubset(allowed_keys), f"Unexpected key(s) in {obj}"
 
 
+def test_judge_order_default_and_valid_permutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Item 1 + Item 3 (Order: default & valid permutation):
+    - unset gives the alphabetical default (`judge_order_source == "default"`);
+    - a valid permutation with `d3-mini` last runs download, verify, and the judge pass in that order
+      and records `judge_order` + `judge_order_source == "env"` in `vm_receipt.json`, `status.json`,
+      and `time_one_summary.json`.
+    """
+    default_order = [
+        "d3-mini",
+        "flow-judge-v0.1",
+        "granite-guardian-4.1-8b",
+        "mu-judge",
+        "nemotron-3-nano-4b",
+    ]
+    perm_d3_last = [
+        "flow-judge-v0.1",
+        "granite-guardian-4.1-8b",
+        "mu-judge",
+        "nemotron-3-nano-4b",
+        "d3-mini",
+    ]
+    perm_d3_last_str = ",".join(perm_d3_last)
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_jo_perm"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_jo_perm", count=2)
+
+    # 1. Valid permutation with d3-mini last in `--time-one` runs download, verify, and judge pass in that order
+    env_perm = fake_colab.setup_fake_colab_environment(tmp_path / "env_jo_perm")
+    out_perm = tmp_path / "out_jo_perm"
+    exports_perm = _base_launcher_exports(
+        env_perm,
+        open_lock=tmp_path / "jo_perm.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_perm = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_perm} RDLAB_JUDGE_ORDER='{perm_d3_last_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_perm)}' --run-id jo-perm-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_perm.returncode == 0, f"stderr={proc_perm.stderr}"
+    lc_perm = [
+        json.loads(ln)
+        for ln in (env_perm["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert [
+        e["judge_id"] for e in lc_perm if e["event"] == "judge_child"
+    ] == perm_d3_last
+    assert [
+        e["judge_id"] for e in lc_perm if e["event"] == "download_child"
+    ] == perm_d3_last
+    assert [
+        e["judge_id"] for e in lc_perm if e["event"] == "parent_verify"
+    ] == perm_d3_last
+
+    rec_perm = json.loads((out_perm / "vm_receipt.json").read_text(encoding="utf-8"))
+    st_perm = json.loads((out_perm / "status.json").read_text(encoding="utf-8"))
+    sum_perm = json.loads(
+        (out_perm / "time_one_summary.json").read_text(encoding="utf-8")
+    )
+    assert rec_perm["judge_order"] == perm_d3_last
+    assert rec_perm["judge_order_source"] == "env"
+    assert st_perm["judge_order"] == perm_d3_last
+    assert st_perm["judge_order_source"] == "env"
+    assert sum_perm["judge_order"] == perm_d3_last
+    assert sum_perm["judge_order_source"] == "env"
+    assert list(sum_perm["judges"].keys()) == perm_d3_last
+
+    # 2. Unset in `--time-one` gives alphabetical default and records `judge_order` + `judge_order_source == "default"`
+    env_def = fake_colab.setup_fake_colab_environment(tmp_path / "env_jo_def")
+    out_def = tmp_path / "out_jo_def"
+    exports_def = _base_launcher_exports(
+        env_def,
+        open_lock=tmp_path / "jo_def.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_def = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_def} unset RDLAB_JUDGE_ORDER; bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_def)}' --run-id jo-def-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_def.returncode == 0, f"stderr={proc_def.stderr}"
+    lc_def = [
+        json.loads(ln)
+        for ln in (env_def["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert [
+        e["judge_id"] for e in lc_def if e["event"] == "judge_child"
+    ] == default_order
+    rec_def = json.loads((out_def / "vm_receipt.json").read_text(encoding="utf-8"))
+    st_def = json.loads((out_def / "status.json").read_text(encoding="utf-8"))
+    sum_def = json.loads((out_def / "time_one_summary.json").read_text(encoding="utf-8"))
+    assert rec_def["judge_order"] == default_order
+    assert rec_def["judge_order_source"] == "default"
+    assert st_def["judge_order"] == default_order
+    assert st_def["judge_order_source"] == "default"
+    assert sum_def["judge_order"] == default_order
+    assert sum_def["judge_order_source"] == "default"
+
+    # 3. Direct VM validation helper check
+    monkeypatch.delenv("RDLAB_JUDGE_ORDER", raising=False)
+    assert vm_judges.validate_judge_order("time-one", None) == (
+        tuple(default_order),
+        "default",
+    )
+    assert vm_judges.validate_judge_order("stub", None, until="first_load") == (
+        tuple(default_order),
+        "default",
+    )
+    assert vm_judges.validate_judge_order("time-one", perm_d3_last_str) == (
+        tuple(perm_d3_last),
+        "env",
+    )
 
 
+def test_judge_order_invalid_values_and_wrong_modes_refuse_before_colab_new(
+    tmp_path: Path,
+) -> None:
+    """Card Item 1 + Item 3 (Order refusals):
+    - each invalid value (unknown id, missing id, duplicate, empty item, whitespace games) refuses
+      with `JUDGE_ORDER_INVALID` before `colab new` (assert no session command in the fake CLI log);
+    - set with `--stub` or `--until` (or `--probe` / `--session-smoke`) refuses before `colab new`;
+    - VM re-checks too.
+    """
+    perm_d3_last_str = (
+        "flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini"
+    )
+    invalid_order_values = [
+        "",
+        "   ",
+        "flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b",  # missing d3-mini
+        "flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,unknown-judge",  # unknown id
+        "flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,flow-judge-v0.1",  # duplicate
+        "flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini,",  # trailing empty item
+        ",flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini",  # leading empty item
+        "flow-judge-v0.1,,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini",  # middle empty item
+        " flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini",  # leading space
+        "flow-judge-v0.1, granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini",  # inner space
+        "flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini ",  # trailing space
+        "flow-judge-v0.1\t,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini",  # tab whitespace
+    ]
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_jo_ref"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_jo_ref", count=2)
+    env_refuse = fake_colab.setup_fake_colab_environment(tmp_path / "env_jo_refuse")
+    exports_refuse = _base_launcher_exports(
+        env_refuse,
+        open_lock=tmp_path / "jo_refuse.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+
+    # 1. Invalid values with --time-one refuse before `colab new` (using `--dry` first so no session opens even on unpatched code, then non-dry)
+    for idx, bad_val in enumerate(invalid_order_values):
+        proc_bad = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports_refuse} RDLAB_JUDGE_ORDER={json.dumps(bad_val)} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(tmp_path / f'out_bad_{idx}')}' --run-id jo-bad-{idx}",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_bad.returncode == 2, f"bad_val={bad_val!r} stderr={proc_bad.stderr}"
+        assert "JUDGE_ORDER_INVALID" in proc_bad.stderr
+        assert not env_refuse["calls_log"].exists(), (
+            f"Fake colab CLI was called for invalid RDLAB_JUDGE_ORDER={bad_val!r}"
+        )
+
+    # 2. Set with `--stub` or `--until` refuses before `colab new`
+    for idx, mode_args in enumerate(
+        (
+            "--stub",
+            "--stub --until first_load",
+            "--stub --until weights",
+            "--probe",
+            "--session-smoke",
+            "--stub --dry",
+        )
+    ):
+        proc_mode = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports_refuse} RDLAB_JUDGE_ORDER='{perm_d3_last_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' {mode_args} --out-dir '{_to_wsl_path(tmp_path / f'out_mode_{idx}')}' --run-id jo-mode-{idx}",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_mode.returncode == 2, (
+            f"mode_args={mode_args!r} stderr={proc_mode.stderr}"
+        )
+        assert "JUDGE_ORDER_INVALID" in proc_mode.stderr
+        assert not env_refuse["calls_log"].exists(), (
+            f"Fake colab CLI was called when RDLAB_JUDGE_ORDER set with {mode_args!r}"
+        )
+
+    # 3. VM re-checks
+    for bad_val in invalid_order_values:
+        with pytest.raises(vm_judges.RefusalError) as exc_bad:
+            vm_judges.validate_judge_order("time-one", bad_val)
+        assert exc_bad.value.failure_class == "JUDGE_ORDER_INVALID"
+
+    for bad_mode, bad_until, bad_smoke in (
+        ("stub", None, False),
+        ("stub", "first_load", False),
+        ("stub", "weights", False),
+        ("probe", None, False),
+        ("time-one", "weights", False),
+        ("time-one", None, True),
+    ):
+        with pytest.raises(vm_judges.RefusalError) as exc_mode:
+            vm_judges.validate_judge_order(
+                bad_mode,
+                perm_d3_last_str,
+                until=bad_until,
+                session_smoke=bad_smoke,
+            )
+        assert exc_mode.value.failure_class == "JUDGE_ORDER_INVALID"
 
 
+def test_first_load_judge_id_default_and_d3_mini_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Item 2 + Item 3 (First-load id: default & d3-mini):
+    - unset gives `nemotron-3-nano-4b` (`first_load_judge_id_source == "default"`);
+    - `d3-mini` selects `d3-mini` for download, verify, and the judge pass, in `venv-d3`
+      (`d3.lock.txt`), with `--allow-remote-code-reviewed <D3_MINI_REVIEWED_REVISION>`.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_flid_d3"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_flid_d3", count=3)
+
+    # 1. `RDLAB_FIRST_LOAD_JUDGE_ID=d3-mini` selects d3-mini for download, verify, and judge pass in venv-d3 with reviewed-revision flag
+    env_d3 = fake_colab.setup_fake_colab_environment(tmp_path / "env_flid_d3")
+    out_d3 = tmp_path / "out_flid_d3"
+    exports_d3 = _base_launcher_exports(
+        env_d3,
+        open_lock=tmp_path / "flid_d3.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_d3 = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_d3} RDLAB_FIRST_LOAD_JUDGE_ID=d3-mini bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_load --out-dir '{_to_wsl_path(out_d3)}' --run-id flid-d3-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_d3.returncode == 0, f"stderr={proc_d3.stderr}"
+    lc_d3 = [
+        json.loads(ln)
+        for ln in (env_d3["state_dir"] / "child_lifecycle.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert [(e["event"], e.get("judge_id"), e.get("venv")) for e in lc_d3] == [
+        ("venv_sync", None, None),
+        ("download_child", "d3-mini", "venv-d3"),
+        ("parent_verify", "d3-mini", None),
+        ("judge_child", "d3-mini", "venv-d3"),
+    ]
+    dl_d3 = [
+        json.loads(ln)
+        for ln in (env_d3["state_dir"] / "download_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(dl_d3) == 1
+    assert dl_d3[0]["judge_id"] == "d3-mini"
+    assert dl_d3[0]["venv"] == "venv-d3"
+    assert dl_d3[0]["lock_file"] == "d3.lock.txt"
+    assert dl_d3[0]["lock_sha256"] == EXPECTED_D3_LOCK_SHA256
+
+    jc_d3 = [
+        json.loads(ln)
+        for ln in (env_d3["state_dir"] / "judge_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(jc_d3) == 1
+    assert jc_d3[0]["judge_id"] == "d3-mini"
+    assert jc_d3[0]["venv"] == "venv-d3"
+    assert jc_d3[0]["lock_file"] == "d3.lock.txt"
+    assert jc_d3[0]["lock_sha256"] == EXPECTED_D3_LOCK_SHA256
+    argv_d3 = jc_d3[0]["argv"]
+    assert "--allow-remote-code-reviewed" in argv_d3
+    rev_idx = argv_d3.index("--allow-remote-code-reviewed")
+    assert argv_d3[rev_idx + 1] == D3_MINI_REVIEWED_REVISION
+    assert "--device" in argv_d3 and argv_d3[argv_d3.index("--device") + 1] == "cpu"
+
+    rec_d3 = json.loads((out_d3 / "vm_receipt.json").read_text(encoding="utf-8"))
+    st_d3 = json.loads((out_d3 / "status.json").read_text(encoding="utf-8"))
+    for doc in (rec_d3, st_d3):
+        assert doc["first_load_judge_id"] == "d3-mini"
+        assert doc["first_load_judge_id_source"] == "env"
+        assert doc["first_load_note"] == vm_judges.FIRST_LOAD_NOTE
+
+    # 2. Unset gives `nemotron-3-nano-4b` and `first_load_judge_id_source == "default"`
+    env_def = fake_colab.setup_fake_colab_environment(tmp_path / "env_flid_def")
+    out_def = tmp_path / "out_flid_def"
+    exports_def = _base_launcher_exports(
+        env_def,
+        open_lock=tmp_path / "flid_def.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_def = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_def} unset RDLAB_FIRST_LOAD_JUDGE_ID; bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_load --out-dir '{_to_wsl_path(out_def)}' --run-id flid-def-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_def.returncode == 0, f"stderr={proc_def.stderr}"
+    rec_def = json.loads((out_def / "vm_receipt.json").read_text(encoding="utf-8"))
+    st_def = json.loads((out_def / "status.json").read_text(encoding="utf-8"))
+    for doc in (rec_def, st_def):
+        assert doc["first_load_judge_id"] == "nemotron-3-nano-4b"
+        assert doc["first_load_judge_id_source"] == "default"
+        assert doc["first_load_note"] == vm_judges.FIRST_LOAD_NOTE
+
+    monkeypatch.delenv("RDLAB_FIRST_LOAD_JUDGE_ID", raising=False)
+    assert vm_judges.validate_first_load_judge_id("stub", "first_load", None) == (
+        "nemotron-3-nano-4b",
+        "default",
+    )
 
 
+def test_first_load_judge_id_refusals_and_note_per_id(
+    tmp_path: Path,
+) -> None:
+    """Card Item 2 + Item 3 (First-load id refusals & note text per id):
+    - an invalid id refuses before `colab new` (no session command in fake CLI log);
+    - set with `--time-one` (or any other mode or `--until` stage) refuses before `colab new`;
+    - the `first_load_note` text per id: keeps the non-Flow note ("does not prove Flow-Judge's 512-token feedback parse")
+      for every id except `flow-judge-v0.1`, and for `flow-judge-v0.1` uses a note that says it does prove a real call
+      with Flow-Judge's feedback output on CPU, as far as the calls finish.
+    """
+    invalid_ids = [
+        "",
+        "   ",
+        "unknown-judge",
+        "d3-mini,flow-judge-v0.1",
+        " d3-mini",
+        "d3-mini ",
+        "D3-MINI",
+    ]
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "data_flid_ref"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "data_flid_ref", count=3)
+    env_refuse = fake_colab.setup_fake_colab_environment(tmp_path / "env_flid_refuse")
+    exports_refuse = _base_launcher_exports(
+        env_refuse,
+        open_lock=tmp_path / "flid_refuse.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+
+    # 1. Invalid id refuses before `colab new`
+    for idx, bad_id in enumerate(invalid_ids):
+        proc_bad = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports_refuse} RDLAB_FIRST_LOAD_JUDGE_ID={json.dumps(bad_id)} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_load --out-dir '{_to_wsl_path(tmp_path / f'out_flbad_{idx}')}' --run-id flid-bad-{idx}",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_bad.returncode == 2, f"bad_id={bad_id!r} stderr={proc_bad.stderr}"
+        assert "FIRST_LOAD_JUDGE_ID_INVALID" in proc_bad.stderr
+        assert not env_refuse["calls_log"].exists(), (
+            f"Fake colab CLI was called for invalid RDLAB_FIRST_LOAD_JUDGE_ID={bad_id!r}"
+        )
+
+    # 2. Set with `--time-one` or any other mode/stage refuses before `colab new`
+    for idx, mode_args in enumerate(
+        (
+            "--time-one",
+            "--time-one --dry",
+            "--stub",
+            "--stub --until first_judge",
+            "--stub --until weights",
+            "--stub --until venv_sync",
+            "--stub --until gpu_gate",
+            "--probe",
+            "--session-smoke",
+        )
+    ):
+        proc_mode = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports_refuse} RDLAB_FIRST_LOAD_JUDGE_ID=d3-mini bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' {mode_args} --out-dir '{_to_wsl_path(tmp_path / f'out_flmode_{idx}')}' --run-id flid-mode-{idx}",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_mode.returncode == 2, (
+            f"mode_args={mode_args!r} stderr={proc_mode.stderr}"
+        )
+        assert "FIRST_LOAD_JUDGE_ID_INVALID" in proc_mode.stderr
+        assert not env_refuse["calls_log"].exists(), (
+            f"Fake colab CLI was called when RDLAB_FIRST_LOAD_JUDGE_ID set with {mode_args!r}"
+        )
+
+    # 3. Note text per id + `flow-judge-v0.1` run check
+    for jid in sorted(BAKEOFF_JUDGE_SPECS.keys()):
+        note = vm_judges.resolve_first_load_note(jid)
+        if jid == "flow-judge-v0.1":
+            assert "does not prove Flow-Judge's" not in note
+            assert "proves a real call with Flow-Judge's" in note
+            assert "feedback output on CPU, as far as the calls finish" in note
+        else:
+            assert note == vm_judges.FIRST_LOAD_NOTE
+            assert "does not prove Flow-Judge's 512-token feedback parse" in note
+
+    env_flow = fake_colab.setup_fake_colab_environment(tmp_path / "env_flid_flow")
+    out_flow = tmp_path / "out_flid_flow"
+    exports_flow = _base_launcher_exports(
+        env_flow,
+        open_lock=tmp_path / "flid_flow.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_flow = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_flow} RDLAB_FIRST_LOAD_JUDGE_ID=flow-judge-v0.1 bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_load --out-dir '{_to_wsl_path(out_flow)}' --run-id flid-flow-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc_flow.returncode == 0, f"stderr={proc_flow.stderr}"
+    rec_flow = json.loads((out_flow / "vm_receipt.json").read_text(encoding="utf-8"))
+    st_flow = json.loads((out_flow / "status.json").read_text(encoding="utf-8"))
+    for doc in (rec_flow, st_flow):
+        assert doc["first_load_judge_id"] == "flow-judge-v0.1"
+        assert doc["first_load_judge_id_source"] == "env"
+        assert doc["first_load_note"] == vm_judges.FIRST_LOAD_FLOW_JUDGE_NOTE
+        assert "does not prove Flow-Judge's" not in doc["first_load_note"]
 
 
+def test_dry_listings_forward_judge_order_and_first_load_judge_id_without_real_cli(
+    tmp_path: Path,
+) -> None:
+    """Card Item 4:
+    - `RDLAB_JUDGE_ORDER=flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini scripts/colab/launch_judges.sh --time-one --cap 4.0 --dry`
+      shows `--env RDLAB_JUDGE_ORDER=...` on the run exec and never calls `colab`.
+    - `RDLAB_FIRST_LOAD_JUDGE_ID=d3-mini scripts/colab/launch_judges.sh --stub --until first_load --dry`
+      shows `--env RDLAB_FIRST_LOAD_JUDGE_ID=d3-mini` on the run exec and never calls `colab`.
+    """
+    env_dry = fake_colab.setup_fake_colab_environment(tmp_path / "env_dry_knobs")
+    hermetic_path = _hermetic_path_for(env_dry)
+    perm_str = "flow-judge-v0.1,granite-guardian-4.1-8b,mu-judge,nemotron-3-nano-4b,d3-mini"
 
+    proc_jo = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export PATH='{hermetic_path}'; RDLAB_JUDGE_ORDER='{perm_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --cap 4.0 --dry --run-id dry-jo-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_jo.returncode == 0, f"stderr={proc_jo.stderr}"
+    assert f"--env RDLAB_JUDGE_ORDER={perm_str}" in proc_jo.stdout
+    assert not env_dry["calls_log"].exists()
+    assert not env_dry["sentinel_called"].exists()
 
-
-
-
+    proc_fl = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export PATH='{hermetic_path}'; RDLAB_FIRST_LOAD_JUDGE_ID=d3-mini bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_load --dry --run-id dry-fl-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_fl.returncode == 0, f"stderr={proc_fl.stderr}"
+    assert "--env RDLAB_FIRST_LOAD_JUDGE_ID=d3-mini" in proc_fl.stdout
+    assert not env_dry["calls_log"].exists()
+    assert not env_dry["sentinel_called"].exists()
 
 
