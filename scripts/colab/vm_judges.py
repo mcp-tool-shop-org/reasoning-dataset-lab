@@ -39,6 +39,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import statistics
 import stat
 import subprocess
@@ -73,6 +74,10 @@ ALLOWED_UNTIL_STEPS: tuple[str, ...] = (
 )
 DEFAULT_GPU_GATE_TIMEOUT_SECONDS = 60.0
 DEFAULT_FIRST_LOAD_TIMEOUT_SECONDS = 1800.0
+DEFAULT_JUDGE_CHILD_TIMEOUT_SECONDS = 600.0
+DEFAULT_DOWNLOAD_CHILD_TIMEOUT_SECONDS = 900.0
+DEFAULT_CHILD_WALL_MARGIN_SECONDS = 60.0
+CHILD_GROUP_SIGTERM_GRACE_SECONDS = 0.5
 GPU_GATE_VENVS: tuple[str, ...] = ("venv-judge", "venv-d3")
 GPU_GATE_PYTHON_SCRIPT = (
     "import json, sys, torch\n"
@@ -955,7 +960,7 @@ class VmSubprocessError(RefusalError, subprocess.CalledProcessError):
 
 
 class JudgeChildProcessError(VmSubprocessError):
-    """Raised when a per-judge child subprocess exits non-zero or is killed by a signal (e.g. OOM SIGKILL)."""
+    """Raised when a per-judge child subprocess exits non-zero, times out, or is killed by a signal (e.g. OOM SIGKILL)."""
 
     def __init__(
         self,
@@ -977,6 +982,13 @@ class JudgeChildProcessError(VmSubprocessError):
         failure_class: str,
         duration_seconds: float,
         completed_judges: Mapping[str, Any] | None = None,
+        timeout_seconds: float | None = None,
+        timed_out: bool = False,
+        process_group_id: int | None = None,
+        surviving_pids: Sequence[int] | None = None,
+        any_member_survived: bool | None = None,
+        gpu_memory_used_mib: int | None = None,
+        parent_rss_bytes: int | None = None,
     ) -> None:
         super().__init__(
             cmd=cmd,
@@ -997,6 +1009,26 @@ class JudgeChildProcessError(VmSubprocessError):
         self.oom_kill_delta = oom_kill_delta
         self.mem_available_bytes = mem_available_bytes
         self.completed_judges = dict(completed_judges or {})
+        self.timeout_seconds = (
+            round(float(timeout_seconds), 6) if timeout_seconds is not None else None
+        )
+        self.elapsed_seconds = round(float(duration_seconds), 6)
+        self.timed_out = bool(timed_out)
+        self.process_group_id = (
+            int(process_group_id) if process_group_id is not None else None
+        )
+        self.surviving_pids = (
+            [int(p) for p in surviving_pids] if surviving_pids is not None else None
+        )
+        self.any_member_survived = (
+            bool(any_member_survived) if any_member_survived is not None else None
+        )
+        self.gpu_memory_used_mib = (
+            int(gpu_memory_used_mib) if gpu_memory_used_mib is not None else None
+        )
+        self.parent_rss_bytes = (
+            int(parent_rss_bytes) if parent_rss_bytes is not None else None
+        )
 
     def to_failure_record(self) -> dict[str, Any]:
         rec = super().to_failure_record()
@@ -1014,13 +1046,291 @@ class JudgeChildProcessError(VmSubprocessError):
                 "oom_kill": self.oom_kill,
                 "oom_kill_delta": self.oom_kill_delta,
                 "mem_available_bytes": self.mem_available_bytes,
+                "elapsed_seconds": self.elapsed_seconds,
+                "timeout_seconds": self.timeout_seconds,
+                "timed_out": self.timed_out,
             }
         )
+        if self.process_group_id is not None:
+            rec["process_group_id"] = self.process_group_id
+        if self.surviving_pids is not None:
+            rec["surviving_pids"] = list(self.surviving_pids)
+        if self.any_member_survived is not None:
+            rec["any_member_survived"] = self.any_member_survived
+        if self.gpu_memory_used_mib is not None or self.timed_out:
+            rec["gpu_memory_used_mib"] = self.gpu_memory_used_mib
+        if self.parent_rss_bytes is not None:
+            rec["parent_rss_bytes"] = self.parent_rss_bytes
         return rec
 
 
 class DownloadChildProcessError(JudgeChildProcessError):
-    """Raised when a per-judge download child subprocess exits non-zero, OOMs, or leaves a missing/malformed done-file."""
+    """Raised when a per-judge download child subprocess exits non-zero, times out, OOMs, or leaves a missing/malformed done-file."""
+
+
+def read_parent_rss_bytes(proc_status_path: Path | None = None) -> int | None:
+    """Read the parent process's own resident set size (`VmRSS` in bytes) from `/proc/self/status`."""
+    status_p = (
+        Path(proc_status_path)
+        if proc_status_path is not None
+        else Path("/proc/self/status")
+    )
+    try:
+        if status_p.is_file():
+            for line in status_p.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                m = re.match(
+                    r"^VmRSS:\s*(\d+)(?:\s*([A-Za-z]+))?\s*$",
+                    line.strip(),
+                    flags=re.IGNORECASE,
+                )
+                if not m:
+                    continue
+                raw_val = int(m.group(1))
+                unit = (m.group(2) or "kb").lower()
+                if unit == "b":
+                    return raw_val
+                if unit == "mb":
+                    return raw_val * 1024 * 1024
+                if unit == "gb":
+                    return raw_val * 1024 * 1024 * 1024
+                return raw_val * 1024
+    except Exception:
+        pass
+    try:
+        statm_p = Path("/proc/self/statm")
+        if statm_p.is_file():
+            parts = statm_p.read_text(encoding="utf-8", errors="replace").split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                page_size = int(os.sysconf("SC_PAGE_SIZE"))
+                return int(parts[1]) * page_size
+    except Exception:
+        pass
+    return None
+
+
+def read_gpu_memory_used_mib(*, dryrun: bool = False) -> int | None:
+    """Read current GPU memory used in MiB from `nvidia-smi` where present, or `None` when absent/dryrun."""
+    if dryrun:
+        return None
+    smi_bin = shutil.which("nvidia-smi")
+    if not smi_bin:
+        return None
+    try:
+        proc = subprocess.run(
+            [
+                smi_bin,
+                "--query-gpu=memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+        if proc.returncode == 0 and (proc.stdout or "").strip():
+            first_line = proc.stdout.strip().splitlines()[0].strip()
+            if re.fullmatch(r"\d+", first_line):
+                return int(first_line)
+    except Exception:
+        pass
+    return None
+
+
+def _find_group_member_pids(
+    pgid: int,
+    *,
+    proc_root: Path = Path("/proc"),
+) -> list[int]:
+    """Return sorted alive (non-zombie) PIDs belonging to process group or session `pgid` from `/proc`."""
+    alive: set[int] = set()
+    try:
+        if proc_root.is_dir():
+            for entry in proc_root.iterdir():
+                name = entry.name
+                if not name.isdigit():
+                    continue
+                pid = int(name)
+                stat_file = entry / "stat"
+                try:
+                    raw = stat_file.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                rparen = raw.rfind(")")
+                if rparen == -1:
+                    continue
+                fields = raw[rparen + 1 :].split()
+                if len(fields) < 4:
+                    continue
+                state = fields[0]
+                if state == "Z":
+                    continue
+                try:
+                    p_pgrp = int(fields[2])
+                    p_sess = int(fields[3])
+                except ValueError:
+                    continue
+                if p_pgrp == pgid or p_sess == pgid:
+                    try:
+                        os.kill(pid, 0)
+                        alive.add(pid)
+                    except ProcessLookupError:
+                        pass
+                    except PermissionError:
+                        alive.add(pid)
+    except Exception:
+        pass
+    return sorted(alive)
+
+
+def _kill_process_group_and_check_survivors(
+    proc: subprocess.Popen[Any],
+    pgid: int,
+    *,
+    grace_seconds: float = CHILD_GROUP_SIGTERM_GRACE_SECONDS,
+) -> tuple[list[int], bool]:
+    """Send SIGTERM to process group `pgid`, wait briefly, send SIGKILL to the group, reap, and return `(surviving_pids, any_member_survived)`."""
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except OSError:
+            pass
+    for pid in _find_group_member_pids(pgid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    try:
+        proc.terminate()
+    except OSError:
+        pass
+
+    deadline_term = time.monotonic() + max(0.05, float(grace_seconds))
+    while time.monotonic() < deadline_term:
+        if proc.poll() is not None and not _find_group_member_pids(pgid):
+            break
+        time.sleep(0.025)
+
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
+            pass
+    for pid in _find_group_member_pids(pgid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+    try:
+        proc.wait(timeout=5.0)
+    except Exception:
+        pass
+
+    deadline_reap = time.monotonic() + 1.0
+    while time.monotonic() < deadline_reap:
+        rem = _find_group_member_pids(pgid)
+        if not rem:
+            break
+        for pid in rem:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        time.sleep(0.02)
+
+    surviving_pids = _find_group_member_pids(pgid)
+    return surviving_pids, bool(surviving_pids)
+
+
+def _run_child_with_group_timeout(
+    child_cmd: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """Run a child subprocess in a new session (`start_new_session=True`) with a process-group timeout and survivor check."""
+    cmd_list = [str(part) for part in child_cmd]
+    out_chunks: list[bytes] = []
+    err_chunks: list[bytes] = []
+    t0 = time.monotonic()
+    proc = subprocess.Popen(
+        cmd_list,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(env),
+        start_new_session=True,
+    )
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    try:
+        pgid = int(os.getpgid(proc.pid)) if hasattr(os, "getpgid") else int(proc.pid)
+    except Exception:
+        pgid = int(proc.pid)
+
+    def _drain_pipe(pipe: Any, sink: list[bytes]) -> None:
+        try:
+            while True:
+                chunk = pipe.read(16384)
+                if not chunk:
+                    break
+                sink.append(chunk)
+        except Exception:
+            pass
+
+    out_thread = threading.Thread(
+        target=_drain_pipe, args=(proc.stdout, out_chunks), daemon=True
+    )
+    err_thread = threading.Thread(
+        target=_drain_pipe, args=(proc.stderr, err_chunks), daemon=True
+    )
+    out_thread.start()
+    err_thread.start()
+
+    timed_out = False
+    surviving_pids: list[int] = []
+    any_member_survived = False
+    try:
+        proc.wait(timeout=float(timeout_seconds))
+        rc = int(proc.returncode or 0)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        surviving_pids, any_member_survived = _kill_process_group_and_check_survivors(
+            proc, pgid
+        )
+        rc = 124
+    finally:
+        for pipe_obj in (proc.stdout, proc.stderr):
+            try:
+                pipe_obj.close()
+            except Exception:
+                pass
+        out_thread.join(timeout=1.0)
+        err_thread.join(timeout=1.0)
+
+    elapsed_s = max(0.0001, time.monotonic() - t0)
+    raw_stdout = b"".join(out_chunks).decode("utf-8", errors="replace")
+    raw_stderr = b"".join(err_chunks).decode("utf-8", errors="replace")
+    return {
+        "returncode": rc,
+        "stdout": raw_stdout,
+        "stderr": raw_stderr,
+        "timed_out": timed_out,
+        "elapsed_seconds": elapsed_s,
+        "pgid": pgid,
+        "process_group_id": pgid,
+        "surviving_pids": surviving_pids,
+        "any_member_survived": any_member_survived,
+    }
 
 
 
@@ -2592,6 +2902,10 @@ def download_all_judge_weights(
     cgroup_root: Path | None = None,
     proc_cgroup_path: Path | None = None,
     proc_meminfo_path: Path | None = None,
+    child_timeout_seconds: float | None = None,
+    remaining_wall_seconds: float | None = None,
+    wall_deadline_monotonic: float | None = None,
+    wall_margin_seconds: float | None = None,
 ) -> list[dict[str, Any]]:
     """Download each judge at its pinned 40-char revision in a short-lived per-judge child subprocess in that judge's synced venv (`venv-d3` for `d3-mini`, `venv-judge` for the other four), emitting `judge_download_start` / `judge_download` progress lines."""
     _ensure_repo_imports(repo_dir)
@@ -2650,6 +2964,18 @@ def download_all_judge_weights(
             except OSError:
                 pass
 
+        configured_dl_timeout = (
+            float(child_timeout_seconds)
+            if child_timeout_seconds is not None
+            else resolve_download_child_timeout_seconds()
+        )
+        eff_dl_timeout = compute_child_timeout_seconds(
+            configured_dl_timeout,
+            remaining_wall_seconds=remaining_wall_seconds,
+            wall_deadline_monotonic=wall_deadline_monotonic,
+            margin_seconds=wall_margin_seconds,
+        )
+
         t0 = time.monotonic()
         start_iso = _utc_now_iso()
         cg_start = read_cgroup_memory_events(
@@ -2668,6 +2994,7 @@ def download_all_judge_weights(
                 "repo_id": spec.repo_id,
                 "revision": spec.revision,
                 "start": start_iso,
+                "timeout_seconds": eff_dl_timeout,
                 "max_workers": eff_max_workers,
                 "hf_xet_num_concurrent_range_gets": eff_xet_range_gets,
                 "oom_kill": cg_start["oom_kill"],
@@ -2715,17 +3042,16 @@ def download_all_judge_weights(
             venv_dir=eff_work_dir / venv_name,
         )
 
-        proc = subprocess.run(
+        child_res = _run_child_with_group_timeout(
             child_cmd,
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             env=child_env,
-            start_new_session=True,
+            timeout_seconds=eff_dl_timeout,
         )
         wall_elapsed = max(0.0001, time.monotonic() - t0)
+        child_rc = int(child_res["returncode"])
+        child_stdout = str(child_res["stdout"] or "")
+        child_stderr = str(child_res["stderr"] or "")
+        child_timed_out = bool(child_res["timed_out"])
 
         cg_end = read_cgroup_memory_events(
             cgroup_root=cgroup_root,
@@ -2740,15 +3066,15 @@ def download_all_judge_weights(
         mem_info = read_vm_memory_snapshot(proc_meminfo_path=proc_meminfo_path)
         mem_avail_bytes = mem_info.get("mem_available_bytes")
 
-        stdout_tail = _scrub_and_tail(proc.stdout or "")
-        stderr_tail = _scrub_and_tail(proc.stderr or "")
+        stdout_tail = _scrub_and_tail(child_stdout)
+        stderr_tail = _scrub_and_tail(child_stderr)
         if _ACTIVE_VM_LOG_PATH is not None:
             try:
                 _ACTIVE_VM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
                 cmd_scrubbed = scrub_log_text(" ".join(child_cmd))
                 with _ACTIVE_VM_LOG_PATH.open("a", encoding="utf-8", newline="\n") as lfh:
                     lfh.write(
-                        f"VM_SUBPROCESS cmd={json.dumps(cmd_scrubbed)} rc={proc.returncode} duration_s={wall_elapsed:.6f}\n"
+                        f"VM_SUBPROCESS cmd={json.dumps(cmd_scrubbed)} rc={child_rc} duration_s={wall_elapsed:.6f}\n"
                     )
                     if stdout_tail:
                         lfh.write(
@@ -2779,7 +3105,9 @@ def download_all_judge_weights(
                                 "lock_file": lock_file,
                                 "lock_sha256": lock_sha256,
                                 "cmd": list(child_cmd),
-                                "returncode": proc.returncode,
+                                "timeout_seconds": eff_dl_timeout,
+                                "configured_timeout_seconds": configured_dl_timeout,
+                                "returncode": child_rc,
                                 "stdin_devnull": True,
                                 "hf_hub_offline": child_env.get("HF_HUB_OFFLINE"),
                                 "hf_xet_num_concurrent_range_gets": child_env.get(
@@ -2805,7 +3133,7 @@ def download_all_judge_weights(
                                 "event": "download_child",
                                 "judge_id": judge_id,
                                 "venv": venv_name,
-                                "returncode": proc.returncode,
+                                "returncode": child_rc,
                             },
                             sort_keys=True,
                         )
@@ -2813,6 +3141,74 @@ def download_all_judge_weights(
                     )
             except OSError:
                 pass
+
+        if child_timed_out:
+            gpu_mem_mib = read_gpu_memory_used_mib(dryrun=dryrun)
+            parent_rss_b = read_parent_rss_bytes()
+            timeout_note = (
+                f"Download child for {judge_id!r} timed out after {eff_dl_timeout}s"
+            )
+            combined_to_err = _scrub_and_tail(
+                f"{stderr_tail}\n{timeout_note}" if stderr_tail else timeout_note
+            )
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "download_failed",
+                    "judge": judge_id,
+                    "judge_id": judge_id,
+                    "venv": venv_name,
+                    "venv_python": venv_python.as_posix(),
+                    "lock_sha256": lock_sha256,
+                    "elapsed_seconds": round(wall_elapsed, 6),
+                    "duration_seconds": round(wall_elapsed, 6),
+                    "timeout_seconds": eff_dl_timeout,
+                    "configured_timeout_seconds": configured_dl_timeout,
+                    "timed_out": True,
+                    "exit_code": 124,
+                    "returncode": 124,
+                    "signal": int(signal.SIGKILL),
+                    "process_group_id": child_res["pgid"],
+                    "surviving_pids": child_res["surviving_pids"],
+                    "any_member_survived": child_res["any_member_survived"],
+                    "gpu_memory_used_mib": gpu_mem_mib,
+                    "parent_rss_bytes": parent_rss_b,
+                    "oom_kill": oom_after,
+                    "oom": cg_end.get("oom"),
+                    "oom_kill_delta": oom_kill_delta,
+                    "mem_available_bytes": mem_avail_bytes,
+                    "stderr_tail": combined_to_err,
+                    "failure_class": "DOWNLOAD_CHILD_TIMEOUT",
+                },
+                proc_meminfo_path=proc_meminfo_path,
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+            )
+            raise DownloadChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=124,
+                exit_code=124,
+                signal_num=int(signal.SIGKILL),
+                oom=cg_end.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=combined_to_err,
+                failure_class="DOWNLOAD_CHILD_TIMEOUT",
+                duration_seconds=wall_elapsed,
+                timeout_seconds=eff_dl_timeout,
+                timed_out=True,
+                process_group_id=child_res["pgid"],
+                surviving_pids=child_res["surviving_pids"],
+                any_member_survived=child_res["any_member_survived"],
+                gpu_memory_used_mib=gpu_mem_mib,
+                parent_rss_bytes=parent_rss_b,
+            )
 
         def _fail_download_postcheck(
             reason_detail: str,
@@ -2832,8 +3228,10 @@ def download_all_judge_weights(
                     "venv": venv_name,
                     "venv_python": venv_python.as_posix(),
                     "lock_sha256": lock_sha256,
-                    "exit_code": int(proc.returncode),
-                    "returncode": int(proc.returncode),
+                    "elapsed_seconds": round(wall_elapsed, 6),
+                    "timeout_seconds": eff_dl_timeout,
+                    "exit_code": int(child_rc),
+                    "returncode": int(child_rc),
                     "signal": None,
                     "oom_kill": oom_after,
                     "oom": cg_end.get("oom"),
@@ -2852,8 +3250,8 @@ def download_all_judge_weights(
                 venv_python=venv_python.as_posix(),
                 lock_sha256=lock_sha256,
                 cmd=child_cmd,
-                returncode=int(proc.returncode),
-                exit_code=int(proc.returncode),
+                returncode=int(child_rc),
+                exit_code=int(child_rc),
                 signal_num=None,
                 oom=cg_end.get("oom"),
                 oom_kill=oom_after,
@@ -2863,10 +3261,11 @@ def download_all_judge_weights(
                 stderr_tail=combined_stderr,
                 failure_class=failure_cls,
                 duration_seconds=wall_elapsed,
+                timeout_seconds=eff_dl_timeout,
             )
 
-        if proc.returncode != 0:
-            raw_rc = int(proc.returncode)
+        if child_rc != 0:
+            raw_rc = int(child_rc)
             sig_num: int | None = None
             if raw_rc < 0:
                 sig_num = -raw_rc
@@ -2882,7 +3281,7 @@ def download_all_judge_weights(
                 or raw_rc in (-9, 137)
                 or (oom_kill_delta is not None and oom_kill_delta > 0)
             )
-            if "DOWNLOAD_STACK_VERSION_MISMATCH" in (proc.stderr or ""):
+            if "DOWNLOAD_STACK_VERSION_MISMATCH" in child_stderr:
                 failure_class = "DOWNLOAD_STACK_VERSION_MISMATCH"
             else:
                 failure_class = (
@@ -2900,6 +3299,8 @@ def download_all_judge_weights(
                     "venv": venv_name,
                     "venv_python": venv_python.as_posix(),
                     "lock_sha256": lock_sha256,
+                    "elapsed_seconds": round(wall_elapsed, 6),
+                    "timeout_seconds": eff_dl_timeout,
                     "exit_code": exit_code,
                     "returncode": raw_rc,
                     "signal": sig_num,
@@ -2931,6 +3332,7 @@ def download_all_judge_weights(
                 stderr_tail=stderr_tail,
                 failure_class=failure_class,
                 duration_seconds=wall_elapsed,
+                timeout_seconds=eff_dl_timeout,
             )
 
         if not done_file.is_file():
@@ -3706,6 +4108,98 @@ def resolve_first_load_timeout_seconds() -> float:
     return float(DEFAULT_FIRST_LOAD_TIMEOUT_SECONDS)
 
 
+def resolve_judge_child_timeout_seconds() -> float:
+    """Resolve the named judge child timeout knob outside `first_load` (`RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS`, default 600.0 s)."""
+    raw = os.environ.get("RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return float(DEFAULT_JUDGE_CHILD_TIMEOUT_SECONDS)
+    try:
+        val = float(raw)
+        if val > 0:
+            return val
+    except ValueError:
+        pass
+    return float(DEFAULT_JUDGE_CHILD_TIMEOUT_SECONDS)
+
+
+def resolve_download_child_timeout_seconds() -> float:
+    """Resolve the named download child timeout knob (`RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS`, default 900.0 s)."""
+    raw = os.environ.get("RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return float(DEFAULT_DOWNLOAD_CHILD_TIMEOUT_SECONDS)
+    try:
+        val = float(raw)
+        if val > 0:
+            return val
+    except ValueError:
+        pass
+    return float(DEFAULT_DOWNLOAD_CHILD_TIMEOUT_SECONDS)
+
+
+def resolve_child_wall_margin_seconds() -> float:
+    """Resolve the named VM wall margin knob (`RDLAB_CHILD_WALL_MARGIN_SECONDS`, default 60.0 s)."""
+    raw = os.environ.get("RDLAB_CHILD_WALL_MARGIN_SECONDS", "").strip()
+    if not raw:
+        return float(DEFAULT_CHILD_WALL_MARGIN_SECONDS)
+    try:
+        val = float(raw)
+        if val >= 0:
+            return val
+    except ValueError:
+        pass
+    return float(DEFAULT_CHILD_WALL_MARGIN_SECONDS)
+
+
+_ACTIVE_RUN_WALL_DEADLINE_MONOTONIC: float | None = None
+
+
+def resolve_remaining_wall_seconds(
+    wall_deadline_monotonic: float | None = None,
+    *,
+    default_wall_seconds: float = 1200.0,
+) -> float:
+    """Resolve the remaining seconds before the run's own wall deadline."""
+    if wall_deadline_monotonic is not None:
+        return max(0.0, float(wall_deadline_monotonic) - time.monotonic())
+    if _ACTIVE_RUN_WALL_DEADLINE_MONOTONIC is not None:
+        return max(0.0, float(_ACTIVE_RUN_WALL_DEADLINE_MONOTONIC) - time.monotonic())
+    raw_wall = os.environ.get("RDLAB_WALL_SECONDS", "").strip()
+    if raw_wall:
+        try:
+            val = float(raw_wall)
+            if val > 0:
+                return val
+        except ValueError:
+            pass
+    return float(default_wall_seconds)
+
+
+def compute_child_timeout_seconds(
+    configured_timeout_seconds: float,
+    *,
+    remaining_wall_seconds: float | None = None,
+    wall_deadline_monotonic: float | None = None,
+    margin_seconds: float | None = None,
+    default_wall_seconds: float = 1200.0,
+) -> float:
+    """Bound a child subprocess timeout by `min(configured, remaining_wall - margin)`."""
+    eff_margin = (
+        float(margin_seconds)
+        if margin_seconds is not None
+        else resolve_child_wall_margin_seconds()
+    )
+    rem_wall = (
+        float(remaining_wall_seconds)
+        if remaining_wall_seconds is not None
+        else resolve_remaining_wall_seconds(
+            wall_deadline_monotonic,
+            default_wall_seconds=default_wall_seconds,
+        )
+    )
+    wall_cap = max(0.05, rem_wall - eff_margin)
+    return round(min(float(configured_timeout_seconds), wall_cap), 6)
+
+
 def _query_nvidia_smi_driver_line() -> str:
     """Return the scrubbed `nvidia-smi` driver line (driver version and CUDA version), or `'nvidia-smi not found'`."""
     smi_bin = shutil.which("nvidia-smi")
@@ -4082,13 +4576,13 @@ def run_judges_pipeline(
         if real_load_on_cpu
         else (TIME_ONE_ITEMS_LIMIT if mode == "time-one" else 2)
     )
-    eff_child_timeout = (
+    configured_child_timeout = (
         float(child_timeout_seconds)
         if child_timeout_seconds is not None
         else (
             resolve_first_load_timeout_seconds()
             if real_load_on_cpu
-            else None
+            else resolve_judge_child_timeout_seconds()
         )
     )
     allowed_ids = set(only_judge_ids) if only_judge_ids is not None else None
@@ -4163,6 +4657,7 @@ def run_judges_pipeline(
             child_cmd.append("--stub")
 
         child_env = build_judge_child_env(hf_home, eff_repo_dir)
+        eff_child_timeout = compute_child_timeout_seconds(configured_child_timeout)
 
         cg_before = read_cgroup_memory_events(
             cgroup_root=cgroup_root, proc_cgroup_path=proc_cgroup_path
@@ -4172,22 +4667,16 @@ def run_judges_pipeline(
             interval_s=float(VRAM_SAMPLE_INTERVAL_SECONDS), dryrun=dryrun
         )
         sampler.start()
-        t_start = time.monotonic()
         try:
-            proc = subprocess.run(
+            child_res = _run_child_with_group_timeout(
                 child_cmd,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
                 env=child_env,
-                timeout=eff_child_timeout,
-                start_new_session=True,
+                timeout_seconds=eff_child_timeout,
             )
         finally:
             sampler_peak = sampler.stop()
-        wall_elapsed = max(0.0001, time.monotonic() - t_start)
+        wall_elapsed = float(child_res["elapsed_seconds"])
+        child_rc = int(child_res["returncode"])
 
         cg_after = read_cgroup_memory_events(
             cgroup_root=cgroup_root, proc_cgroup_path=proc_cgroup_path
@@ -4201,15 +4690,15 @@ def run_judges_pipeline(
         mem_info = read_vm_memory_snapshot(proc_meminfo_path=proc_meminfo_path)
         mem_avail_bytes = mem_info.get("mem_available_bytes")
 
-        stdout_tail = _scrub_and_tail(proc.stdout or "")
-        stderr_tail = _scrub_and_tail(proc.stderr or "")
+        stdout_tail = _scrub_and_tail(child_res["stdout"] or "")
+        stderr_tail = _scrub_and_tail(child_res["stderr"] or "")
         if _ACTIVE_VM_LOG_PATH is not None:
             try:
                 _ACTIVE_VM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
                 cmd_scrubbed = scrub_log_text(" ".join(child_cmd))
                 with _ACTIVE_VM_LOG_PATH.open("a", encoding="utf-8", newline="\n") as lfh:
                     lfh.write(
-                        f"VM_SUBPROCESS cmd={json.dumps(cmd_scrubbed)} rc={proc.returncode} duration_s={wall_elapsed:.6f}\n"
+                        f"VM_SUBPROCESS cmd={json.dumps(cmd_scrubbed)} rc={child_rc} duration_s={wall_elapsed:.6f}\n"
                     )
                     if stdout_tail:
                         lfh.write(
@@ -4242,7 +4731,9 @@ def run_judges_pipeline(
                                 "cmd": list(child_cmd),
                                 "argv": list(child_cmd),
                                 "timeout_seconds": eff_child_timeout,
-                                "returncode": proc.returncode,
+                                "configured_timeout_seconds": configured_child_timeout,
+                                "timed_out": bool(child_res["timed_out"]),
+                                "returncode": child_rc,
                                 "stdin_devnull": True,
                                 "hf_deactivate_async_load": child_env.get(
                                     "HF_DEACTIVATE_ASYNC_LOAD"
@@ -4268,7 +4759,8 @@ def run_judges_pipeline(
                                 "event": "judge_child",
                                 "judge_id": judge_id,
                                 "venv": venv_name,
-                                "returncode": proc.returncode,
+                                "returncode": child_rc,
+                                "timed_out": bool(child_res["timed_out"]),
                             },
                             sort_keys=True,
                         )
@@ -4276,6 +4768,76 @@ def run_judges_pipeline(
                     )
             except OSError:
                 pass
+
+        if child_res["timed_out"]:
+            gpu_mem_mib = read_gpu_memory_used_mib(dryrun=dryrun)
+            parent_rss_b = read_parent_rss_bytes()
+            surviving_pids = list(child_res["surviving_pids"])
+            any_survived = bool(child_res["any_member_survived"])
+            pgid_val = int(child_res["process_group_id"])
+            raw_rc = child_rc
+            sig_num = 9 if raw_rc in (-9, 137) else (
+                -raw_rc if raw_rc < 0 else (raw_rc - 128 if raw_rc > 128 else None)
+            )
+            exit_code = 128 + sig_num if sig_num is not None else raw_rc
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "judge_failed",
+                    "judge": judge_id,
+                    "judge_id": judge_id,
+                    "venv": venv_name,
+                    "venv_python": venv_python.as_posix(),
+                    "lock_sha256": lock_sha256,
+                    "exit_code": exit_code,
+                    "returncode": raw_rc,
+                    "signal": sig_num,
+                    "oom_kill": oom_after,
+                    "oom": cg_after.get("oom"),
+                    "oom_kill_delta": oom_kill_delta,
+                    "mem_available_bytes": mem_avail_bytes,
+                    "stdout_tail": stdout_tail,
+                    "stderr_tail": stderr_tail,
+                    "failure_class": "JUDGE_CHILD_TIMEOUT",
+                    "elapsed_seconds": round(wall_elapsed, 6),
+                    "timeout_seconds": eff_child_timeout,
+                    "timed_out": True,
+                    "process_group_id": pgid_val,
+                    "surviving_pids": surviving_pids,
+                    "any_member_survived": any_survived,
+                    "gpu_memory_used_mib": gpu_mem_mib,
+                    "parent_rss_bytes": parent_rss_b,
+                },
+                proc_meminfo_path=proc_meminfo_path,
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+            )
+            raise JudgeChildProcessError(
+                judge_id=judge_id,
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                lock_sha256=lock_sha256,
+                cmd=child_cmd,
+                returncode=raw_rc,
+                exit_code=exit_code,
+                signal_num=sig_num,
+                oom=cg_after.get("oom"),
+                oom_kill=oom_after,
+                oom_kill_delta=oom_kill_delta,
+                mem_available_bytes=mem_avail_bytes,
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                failure_class="JUDGE_CHILD_TIMEOUT",
+                duration_seconds=wall_elapsed,
+                completed_judges=per_judge_metrics,
+                timeout_seconds=eff_child_timeout,
+                timed_out=True,
+                process_group_id=pgid_val,
+                surviving_pids=surviving_pids,
+                any_member_survived=any_survived,
+                gpu_memory_used_mib=gpu_mem_mib,
+                parent_rss_bytes=parent_rss_b,
+            )
 
         def _fail_child_postcheck(reason_detail: str) -> Any:
             scrubbed_reason = _scrub_and_tail(reason_detail)
@@ -4291,8 +4853,8 @@ def run_judges_pipeline(
                     "venv": venv_name,
                     "venv_python": venv_python.as_posix(),
                     "lock_sha256": lock_sha256,
-                    "exit_code": int(proc.returncode),
-                    "returncode": int(proc.returncode),
+                    "exit_code": int(child_rc),
+                    "returncode": int(child_rc),
                     "signal": None,
                     "oom_kill": oom_after,
                     "oom": cg_after.get("oom"),
@@ -4311,8 +4873,8 @@ def run_judges_pipeline(
                 venv_python=venv_python.as_posix(),
                 lock_sha256=lock_sha256,
                 cmd=child_cmd,
-                returncode=int(proc.returncode),
-                exit_code=int(proc.returncode),
+                returncode=int(child_rc),
+                exit_code=int(child_rc),
                 signal_num=None,
                 oom=cg_after.get("oom"),
                 oom_kill=oom_after,
@@ -4323,11 +4885,12 @@ def run_judges_pipeline(
                 failure_class="JUDGE_CHILD_FAILED",
                 duration_seconds=wall_elapsed,
                 completed_judges=per_judge_metrics,
+                timeout_seconds=eff_child_timeout,
             )
 
-        if proc.returncode != 0:
-            raw_rc = int(proc.returncode)
-            sig_num: int | None = None
+        if child_rc != 0:
+            raw_rc = int(child_rc)
+            sig_num = None
             if raw_rc < 0:
                 sig_num = -raw_rc
                 exit_code = 128 + sig_num
@@ -4387,6 +4950,7 @@ def run_judges_pipeline(
                 failure_class=failure_class,
                 duration_seconds=wall_elapsed,
                 completed_judges=per_judge_metrics,
+                timeout_seconds=eff_child_timeout,
             )
 
         row_file = run_dir / ROWS_DIRNAME / f"{judge_id}.jsonl"
@@ -4681,7 +5245,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--wall-seconds",
         type=int,
-        default=env_int("RDLAB_WALL_SECONDS", 1200),
+        default=None,
     )
     parser.add_argument(
         "--vram-halt-mib",
@@ -4771,7 +5335,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=(os.environ.get("VM_DRYRUN") == "1"),
     )
     effective_argv: list[str] = [] if (argv is None or is_kernel_env(argv)) else list(argv)
-    return parser.parse_args(effective_argv)
+    parsed = parser.parse_args(effective_argv)
+    if parsed.wall_seconds is None:
+        default_wall = (
+            TIME_ONE_WALL_SECONDS
+            if parsed.mode == "time-one"
+            else (PROBE_WALL_SECONDS if parsed.mode == "probe" else 7200)
+        )
+        parsed.wall_seconds = env_int("RDLAB_WALL_SECONDS", default_wall)
+    return parsed
 
 
 def _existing_ancestor(path: Path) -> Path:
@@ -5824,7 +6396,7 @@ def run_probe(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    global _ACTIVE_VM_LOG_PATH
+    global _ACTIVE_VM_LOG_PATH, _ACTIVE_RUN_WALL_DEADLINE_MONOTONIC
 
     try:
         args = parse_args(argv)
@@ -5879,6 +6451,15 @@ def main(argv: list[str] | None = None) -> int:
     judge_download_records: list[dict[str, Any]] = []
     prev_log_path = _ACTIVE_VM_LOG_PATH
     _ACTIVE_VM_LOG_PATH = vm_log_path
+    prev_wall_deadline = _ACTIVE_RUN_WALL_DEADLINE_MONOTONIC
+    try:
+        wall_sec_val = float(getattr(args, "wall_seconds", 7200))
+    except (TypeError, ValueError):
+        wall_sec_val = 7200.0
+    if wall_sec_val > 0:
+        _ACTIVE_RUN_WALL_DEADLINE_MONOTONIC = time.monotonic() + wall_sec_val
+    else:
+        _ACTIVE_RUN_WALL_DEADLINE_MONOTONIC = None
 
     def _build_timings_block() -> dict[str, Any]:
         venv_sync_entry = step_timings.get("venv_sync")
@@ -6361,7 +6942,7 @@ def main(argv: list[str] | None = None) -> int:
             fail_receipt["until_step"] = until_step
             status_fail_extra["until"] = until_step
             status_fail_extra["until_step"] = until_step
-        if isinstance(err, JudgeChildProcessError):
+        if isinstance(err, (JudgeChildProcessError, DownloadChildProcessError)):
             for k in (
                 "judge",
                 "judge_id",
@@ -6374,6 +6955,14 @@ def main(argv: list[str] | None = None) -> int:
                 "oom",
                 "oom_kill_delta",
                 "mem_available_bytes",
+                "elapsed_seconds",
+                "timeout_seconds",
+                "timed_out",
+                "process_group_id",
+                "surviving_pids",
+                "any_member_survived",
+                "gpu_memory_used_mib",
+                "parent_rss_bytes",
             ):
                 if err_subproc_rec is not None and k in err_subproc_rec:
                     fail_receipt[k] = err_subproc_rec[k]
@@ -6455,6 +7044,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     finally:
         _ACTIVE_VM_LOG_PATH = prev_log_path
+        _ACTIVE_RUN_WALL_DEADLINE_MONOTONIC = prev_wall_deadline
 
 
 def run_kernel_or_cli_entry(argv: list[str] | None = None) -> int:
