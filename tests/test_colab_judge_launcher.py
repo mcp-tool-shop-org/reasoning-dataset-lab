@@ -7156,6 +7156,49 @@ def test_fix6_each_judge_runs_in_its_synced_venv_subprocess(tmp_path: Path) -> N
             assert jv["venv_python"].endswith("/venv-judge/bin/python")
             assert jv["lock_sha256"] == EXPECTED_JUDGE_LOCK_SHA256
 
+    # Also exercise `main_judge_runner` directly in-process (both success and RdlabError paths)
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as _bakeoff_judge
+
+    direct_out = tmp_path / "direct_child_runner_out"
+    rc_direct_ok = _bakeoff_judge.main_judge_runner(
+        [
+            "--judge",
+            "flow-judge-v0.1",
+            "--items",
+            str(items_file),
+            "--output-dir",
+            str(direct_out),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(hf_home),
+            "--device",
+            "cpu",
+            "--dtype",
+            "bfloat16",
+            "--repo-root",
+            str(REPO_ROOT),
+            "--fake-transport",
+            "--no-canary",
+        ]
+    )
+    assert rc_direct_ok == 0
+    assert (direct_out / "judge_done" / "flow-judge-v0.1.json").is_file()
+
+    rc_direct_err = _bakeoff_judge.main_judge_runner(
+        [
+            "--judge",
+            "nonexistent-judge-id",
+            "--items",
+            str(items_file),
+            "--output-dir",
+            str(direct_out),
+            "--fake-transport",
+            "--no-canary",
+        ]
+    )
+    assert rc_direct_err == 2
+
 
 @pytest.mark.parametrize("kill_mode", ["sigkill", "exit137"])
 def test_fix6_judge_child_killed_by_signal_9_or_137_records_oom_and_stops(
