@@ -548,8 +548,17 @@ def check_output_dir_outside_repo(output_dir: Path, *, repo_root: Path | None = 
     return resolved_out
 
 
+_DEVICE_SCRUB_RE: re.Pattern[str] = re.compile(
+    r"(?:hf_[A-Za-z0-9]{10,}|ya29\.[A-Za-z0-9._-]+|eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})"
+)
+
+
+def _scrub_device_error_text(text: str) -> str:
+    return _DEVICE_SCRUB_RE.sub("<REDACTED>", text)
+
+
 def query_gpu_vram_peak_mib() -> int:
-    """Query current GPU memory usage in MiB via nvidia-smi (returns 0 if unavailable)."""
+    """Query current GPU memory usage in MiB via nvidia-smi (fail-closed: refuses with BAKEOFF_JUDGE_VRAM_PROBE_FAILED on failure)."""
     try:
         proc = subprocess.run(
             [
@@ -562,16 +571,34 @@ def query_gpu_vram_peak_mib() -> int:
             timeout=5,
             check=False,
         )
-        if proc.returncode != 0 or not proc.stdout.strip():
-            return 0
-        vals = [
-            int(line.strip())
-            for line in proc.stdout.splitlines()
-            if line.strip().isdigit()
-        ]
-        return max(vals, default=0)
-    except Exception:  # pragma: no cover
-        return 0
+    except Exception as exc:
+        detail = _scrub_device_error_text(f"{type(exc).__name__}: {exc}")
+        raise refused_error(
+            "BAKEOFF_JUDGE_VRAM_PROBE_FAILED",
+            f"GPU VRAM probe via nvidia-smi failed ({detail}); refusing to treat unknown VRAM usage as 0 MiB.",
+            "Ensure nvidia-smi is installed, reachable on PATH, and responsive on GPU runs.",
+        ) from exc
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raw_err = (proc.stderr or proc.stdout or "").strip()
+        detail = _scrub_device_error_text(raw_err) if raw_err else "empty stdout"
+        raise refused_error(
+            "BAKEOFF_JUDGE_VRAM_PROBE_FAILED",
+            f"GPU VRAM probe via nvidia-smi failed (rc={proc.returncode}, detail={detail!r}); refusing to treat unknown VRAM usage as 0 MiB.",
+            "Ensure nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits succeeds and prints integer MiB values.",
+        )
+    vals = [
+        int(line.strip())
+        for line in proc.stdout.splitlines()
+        if line.strip().isdigit()
+    ]
+    if not vals:
+        raw_out = _scrub_device_error_text(proc.stdout.strip())
+        raise refused_error(
+            "BAKEOFF_JUDGE_VRAM_PROBE_FAILED",
+            f"GPU VRAM probe via nvidia-smi returned no integer MiB values (stdout={raw_out!r}); refusing to treat unknown VRAM usage as 0 MiB.",
+            "Ensure nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits prints integer MiB values.",
+        )
+    return max(vals)
 
 
 def kill_judge_pid_tree(pid: int) -> None:
@@ -2377,33 +2404,21 @@ class _TokenCountStreamer:
         pass
 
 
-_CUDA_INDEX_DEVICE_RE: re.Pattern[str] = re.compile(r"^cuda:(?:0|[1-9][0-9]*)$")
-_DEVICE_SCRUB_RE: re.Pattern[str] = re.compile(
-    r"(?:hf_[A-Za-z0-9]{10,}|ya29\.[A-Za-z0-9._-]+|eyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,})"
-)
+def _import_vm_judges_normalize_judge_device() -> Callable[[Any], str]:
+    if "vm_judges" in sys.modules and hasattr(sys.modules["vm_judges"], "normalize_judge_device"):
+        _vm_mod = sys.modules["vm_judges"]
+    else:
+        colab_dir = Path(__file__).resolve().parents[3] / "scripts" / "colab"
+        colab_dir_str = str(colab_dir)
+        if colab_dir.is_dir() and colab_dir_str not in sys.path:
+            sys.path.insert(0, colab_dir_str)
+        import vm_judges as _vm_mod
+    if RdlabError not in _vm_mod.RefusalError.__bases__:
+        _vm_mod.RefusalError.__bases__ = (*_vm_mod.RefusalError.__bases__, RdlabError)
+    return _vm_mod.normalize_judge_device  # type: ignore[no-any-return]
 
 
-def _scrub_device_error_text(text: str) -> str:
-    return _DEVICE_SCRUB_RE.sub("<REDACTED>", text)
-
-
-def normalize_judge_device(device: Any) -> str:
-    """Normalise judge device strings: `'cuda' -> 'cuda:0'`, `'cuda:N' -> 'cuda:N'`, `'cpu' -> 'cpu'`.
-
-    Any other value (including `'cuda:'`, `'cuda:-1'`, `'gpu'`, `'cuda:0 '`, `''`, or non-str)
-    is refused with `BAKEOFF_JUDGE_DEVICE_INVALID` and a scrubbed message.
-    """
-    if isinstance(device, str) and not isinstance(device, bool):
-        if device == "cuda":
-            return "cuda:0"
-        if device == "cpu" or _CUDA_INDEX_DEVICE_RE.match(device):
-            return device
-    raw_repr = _scrub_device_error_text(repr(device))
-    raise refused_error(
-        "BAKEOFF_JUDGE_DEVICE_INVALID",
-        f"Invalid judge device {raw_repr}; expected 'cuda', 'cuda:N' (non-negative integer N), or 'cpu'.",
-        "Pass --device cuda:0 (or --device cuda, which normalises to cuda:0) or --device cpu.",
-    )
+normalize_judge_device = _import_vm_judges_normalize_judge_device()
 
 
 class TransformersJudgeTransport:
@@ -3630,6 +3645,9 @@ def resolve_child_heartbeat_interval_seconds(interval_seconds: float | None = No
     return DEFAULT_CHILD_HEARTBEAT_INTERVAL_SECONDS
 
 
+_PROCESS_START_MONOTONIC: float = time.monotonic()
+
+
 def _append_child_progress_line(
     progress_file: Path | None,
     payload: Mapping[str, Any],
@@ -3639,7 +3657,11 @@ def _append_child_progress_line(
     """Append one compact JSON progress line to `progress_file` and call `flush()` + `os.fsync()`."""
     if progress_file is None:
         return
-    line = json.dumps(dict(payload), separators=(",", ":"), ensure_ascii=False) + "\n"
+    rec = dict(payload)
+    since_start_s = round(max(0.0, time.monotonic() - _PROCESS_START_MONOTONIC), 6)
+    rec.setdefault("mono_seconds", since_start_s)
+    rec.setdefault("since_start_seconds", since_start_s)
+    line = json.dumps(rec, separators=(",", ":"), ensure_ascii=False) + "\n"
     with lock:
         progress_file.parent.mkdir(parents=True, exist_ok=True)
         with progress_file.open("a", encoding="utf-8", newline="\n") as fh:
@@ -3719,9 +3741,10 @@ def run_bakeoff_judge(
     )
 
     if vram_probe is None:
+        force_gpu_probe = bool(os.environ.get("FAKE_COLAB_NVIDIA_SMI_MODE", "").strip())
         vram_probe = (
             (lambda: 0)
-            if (fake_transport or str(device).lower().startswith("cpu"))
+            if (str(device).lower().startswith("cpu") or (fake_transport and not force_gpu_probe))
             else query_gpu_vram_peak_mib
         )
 
@@ -3923,6 +3946,7 @@ def run_bakeoff_judge(
                     },
                     lock=progress_lock,
                 )
+                failed_wall_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
                 _append_child_progress_line(
                     eff_progress_file,
                     {
@@ -3935,7 +3959,8 @@ def run_bakeoff_judge(
                             "length_stop": length_stop_count,
                             "failed_to_run": failed_to_run_count,
                         },
-                        "total_seconds": round(max(0.0, time.monotonic() - child_start_mono), 6),
+                        "total_seconds": failed_wall_s,
+                        "elapsed_seconds": failed_wall_s,
                     },
                     lock=progress_lock,
                 )
@@ -3973,9 +3998,6 @@ def run_bakeoff_judge(
             calls_so_far += 1
             bad_calls = unparseable_count + length_stop_count
             will_halt_error_rate = calls_so_far >= error_rate_min_calls and (bad_calls / calls_so_far) > error_rate_stop
-            if will_halt_error_rate:
-                failed_to_run_count += 1
-            call_state_for_progress = "failed_to_run" if will_halt_error_rate else readout.state
             _append_child_progress_line(
                 eff_progress_file,
                 {
@@ -3988,7 +4010,7 @@ def run_bakeoff_judge(
                     "seconds": round(elapsed, 6),
                     "prompt_tokens": prompt_tokens_count,
                     "output_tokens": int(len(resp.tokens)),
-                    "state": call_state_for_progress,
+                    "state": readout.state,
                 },
                 lock=progress_lock,
             )
@@ -4081,6 +4103,7 @@ def run_bakeoff_judge(
             rf.flush()
 
             if will_halt_error_rate:
+                failed_wall_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
                 _append_child_progress_line(
                     eff_progress_file,
                     {
@@ -4093,7 +4116,8 @@ def run_bakeoff_judge(
                             "length_stop": length_stop_count,
                             "failed_to_run": failed_to_run_count,
                         },
-                        "total_seconds": round(max(0.0, time.monotonic() - child_start_mono), 6),
+                        "total_seconds": failed_wall_s,
+                        "elapsed_seconds": failed_wall_s,
                     },
                     lock=progress_lock,
                 )
@@ -4104,6 +4128,7 @@ def run_bakeoff_judge(
                     "Inspect prompt formatting and max_new_tokens settings before continuing.",
                 )
 
+    child_wall_elapsed_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
     _append_child_progress_line(
         eff_progress_file,
         {
@@ -4116,7 +4141,8 @@ def run_bakeoff_judge(
                 "length_stop": length_stop_count,
                 "failed_to_run": failed_to_run_count,
             },
-            "total_seconds": round(max(0.0, time.monotonic() - child_start_mono), 6),
+            "total_seconds": child_wall_elapsed_s,
+            "elapsed_seconds": child_wall_elapsed_s,
         },
         lock=progress_lock,
     )
@@ -4158,6 +4184,7 @@ def run_bakeoff_judge(
         "length_stop_count": length_stop_count,
         "vram_peak_mib": vram_peak_overall,
         "total_seconds": round(total_seconds, 4),
+        "elapsed_seconds": child_wall_elapsed_s,
         "dtype": effective_dtype,
         "canary": canary_summary,
     }
@@ -4189,6 +4216,7 @@ def run_bakeoff_judge(
         "length_stop_count": length_stop_count,
         "vram_peak_mib": vram_peak_overall,
         "total_seconds": round(total_seconds, 4),
+        "elapsed_seconds": child_wall_elapsed_s,
         "schedule_seed": schedule.seed,
         "schedule_sha256": schedule.schedule_sha256,
         "canary": canary_summary,

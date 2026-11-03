@@ -295,6 +295,11 @@ elif (( PROGRESS_FETCH_TIMEOUT_SECONDS > 600 )); then
   PROGRESS_FETCH_TIMEOUT_SECONDS=600
 fi
 
+ALIVE_PROBE_MAX_TRIES="${RDLAB_ALIVE_PROBE_MAX_TRIES:-3}"
+ALIVE_PROBE_SLEEP_SECONDS="${RDLAB_ALIVE_PROBE_SLEEP_SECONDS:-20}"
+ALIVE_PROBE_TIMEOUT_SECONDS="${RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS:-60}"
+COST_CAP_POLL_SECONDS="${RDLAB_COST_CAP_POLL_SECONDS:-1}"
+
 if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" <<'PY'
 import os
 import sys
@@ -448,6 +453,27 @@ build_exec_env_args() {
   if [[ -n "${HF_XET_NUM_CONCURRENT_RANGE_GETS+x}" ]] && [[ -n "${HF_XET_NUM_CONCURRENT_RANGE_GETS}" ]]; then
     EXEC_ENV_ARGS+=(--env "HF_XET_NUM_CONCURRENT_RANGE_GETS=$HF_XET_NUM_CONCURRENT_RANGE_GETS")
   fi
+  if [[ -n "${RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS+x}" ]] && [[ -n "${RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS=$RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS")
+  fi
+  if [[ -n "${RDLAB_FIRST_LOAD_TIMEOUT_SECONDS+x}" ]] && [[ -n "${RDLAB_FIRST_LOAD_TIMEOUT_SECONDS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_FIRST_LOAD_TIMEOUT_SECONDS=$RDLAB_FIRST_LOAD_TIMEOUT_SECONDS")
+  fi
+  if [[ -n "${RDLAB_GPU_GATE_TIMEOUT_SECONDS+x}" ]] && [[ -n "${RDLAB_GPU_GATE_TIMEOUT_SECONDS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_GPU_GATE_TIMEOUT_SECONDS=$RDLAB_GPU_GATE_TIMEOUT_SECONDS")
+  fi
+  if [[ -n "${RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS+x}" ]] && [[ -n "${RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS=$RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS")
+  fi
+  if [[ -n "${RDLAB_CHILD_WALL_MARGIN_SECONDS+x}" ]] && [[ -n "${RDLAB_CHILD_WALL_MARGIN_SECONDS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_CHILD_WALL_MARGIN_SECONDS=$RDLAB_CHILD_WALL_MARGIN_SECONDS")
+  fi
+  if [[ -n "${RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS+x}" ]] && [[ -n "${RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS=$RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS")
+  fi
+  if [[ -n "${FAKE_COLAB_NVIDIA_SMI_MODE+x}" ]] && [[ -n "${FAKE_COLAB_NVIDIA_SMI_MODE}" ]]; then
+    EXEC_ENV_ARGS+=(--env "FAKE_COLAB_NVIDIA_SMI_MODE=$FAKE_COLAB_NVIDIA_SMI_MODE")
+  fi
   if [[ -n "${FAKE_COLAB_FAIL_JUDGE_CHILD:-}" ]]; then
     EXEC_ENV_ARGS+=(--env "FAKE_COLAB_FAIL_JUDGE_CHILD=$FAKE_COLAB_FAIL_JUDGE_CHILD")
   fi
@@ -512,6 +538,8 @@ PY
     printf 'colab sessions\n'
     printf 'colab new%s -s %s\n' "$DRY_NEW_OPTS" "$SESSION_NAME"
     printf 'colab sessions\n'
+    printf 'colab usage\n'
+    printf 'colab exec -s %s --env RDLAB_STEP=alive -f %s --timeout=%s\n' "$SESSION_NAME" "$VM_SCRIPT" "$ALIVE_PROBE_TIMEOUT_SECONDS"
     printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_GATE_ENV_STR" "$VM_SCRIPT" "$GATE_TIMEOUT_SECONDS"
     printf 'colab upload -s %s %s /content/repo_bundle.tar.gz\n' "$SESSION_NAME" "$REPO_TAR"
     printf 'colab upload -s %s %s /content/receipts_bundle.tar.gz\n' "$SESSION_NAME" "$RECEIPTS_TAR"
@@ -537,9 +565,25 @@ OUTCOME_FILE="$OUT_DIR/outcome.draft.json"
 FETCH_CLAIM_DIR="$OUT_DIR/.rig_fetch_claim"
 FETCH_DONE_MARKER="$OUT_DIR/.rig_fetched"
 DEADLINE_MARKER="$OUT_DIR/.rig_deadline_exceeded"
+COST_CAP_MARKER="$OUT_DIR/.rig_cost_cap_exceeded"
 RUN_END_DETECTED_MARKER="$OUT_DIR/.rig_run_end_detected"
 EXEC_OUT_TMP="$OUT_DIR/.rig_exec_out.tmp"
 touch "$CLI_LOG"
+
+now_epoch_seconds() {
+  if [[ -n "${RDLAB_FAKE_CLOCK_FILE:-}" ]] && [[ -f "$RDLAB_FAKE_CLOCK_FILE" ]]; then
+    local cur=""
+    cur="$(tr -d '[:space:]' < "$RDLAB_FAKE_CLOCK_FILE" 2>/dev/null || true)"
+    if [[ "$cur" =~ ^[0-9]+$ ]]; then
+      if [[ "${RDLAB_FAKE_CLOCK_ARMED:-0}" == "1" ]] && [[ -n "${RDLAB_FAKE_CLOCK_STEP_SECONDS:-}" ]] && [[ "$RDLAB_FAKE_CLOCK_STEP_SECONDS" =~ ^[0-9]+$ ]] && (( RDLAB_FAKE_CLOCK_STEP_SECONDS > 0 )); then
+        printf '%s\n' "$(( cur + RDLAB_FAKE_CLOCK_STEP_SECONDS ))" > "$RDLAB_FAKE_CLOCK_FILE" 2>/dev/null || true
+      fi
+      printf '%s\n' "$cur"
+      return 0
+    fi
+  fi
+  date +%s
+}
 
 log_msg() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | scrub_stream | tee -a "$CLI_LOG" >/dev/null
@@ -570,11 +614,17 @@ FETCHED=0
 STOPPED=0
 WATCHDOG_PID=""
 PERIODIC_FETCH_PID=""
+COST_CAP_PID=""
 PROGRESS_FETCH_SEQ=0
 EXEC_PID=""
 RUN_OUTCOME="failed"
 RUN_WHY="window exited before completion"
-START_EPOCH="$(date +%s)"
+RUN_FAILURE_CLASS=""
+LIVE_RATE_UNITS_PER_HOUR=""
+RATE_READ_AT_UTC=""
+COST_CAP_MAX_RUNTIME_SECONDS=0
+START_EPOCH="$(now_epoch_seconds)"
+OPEN_CLOCK_EPOCH="$START_EPOCH"
 
 cleanup_stage() {
   if [[ -n "$STAGE_DIR" ]] && [[ -d "$STAGE_DIR" ]]; then
@@ -754,17 +804,27 @@ periodic_fetch_progress_once() {
 }
 
 write_outcome_draft() {
-  local end_epoch runtime_s
-  end_epoch="$(date +%s)"
-  runtime_s=$(( end_epoch - START_EPOCH ))
-  if [[ "$runtime_s" -lt 0 ]]; then
-    runtime_s=0
+  local end_epoch runtime_s cap_elapsed=""
+  if [[ -f "$COST_CAP_MARKER" ]]; then
+    cap_elapsed="$(tr -d '[:space:]' < "$COST_CAP_MARKER" 2>/dev/null || true)"
+  fi
+  if [[ "$cap_elapsed" =~ ^[0-9]+$ ]]; then
+    runtime_s="$cap_elapsed"
+  else
+    end_epoch="$(now_epoch_seconds)"
+    runtime_s=$(( end_epoch - START_EPOCH ))
+    if [[ "$runtime_s" -lt 0 ]]; then
+      runtime_s=0
+    fi
   fi
   RDLAB_SMOKE_SESSION_NAME="$SESSION_NAME" \
   RDLAB_SMOKE_PRE_SESSIONS="$PRE_SESSIONS" \
   RDLAB_SMOKE_MID_SESSIONS="$MID_SESSIONS" \
   RDLAB_SMOKE_POST_SESSIONS="$POST_SESSIONS" \
   RDLAB_UNTIL_STEP="$UNTIL_STEP" \
+  RDLAB_FAILURE_CLASS="$RUN_FAILURE_CLASS" \
+  RDLAB_LIVE_USAGE_RATE="$LIVE_RATE_UNITS_PER_HOUR" \
+  RDLAB_RATE_READ_AT_UTC="$RATE_READ_AT_UTC" \
   "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "$CARD" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" <<'PY'
 import datetime
 import json
@@ -920,6 +980,21 @@ if until_step_val:
     payload["until"] = until_step_val
     if outcome == "ok":
         payload["stopped_after"] = until_step_val
+failure_class_val = os.environ.get("RDLAB_FAILURE_CLASS", "").strip()
+if failure_class_val:
+    payload["failure_class"] = failure_class_val
+live_usage_rate_raw = os.environ.get("RDLAB_LIVE_USAGE_RATE", "").strip()
+rate_read_at_utc = os.environ.get("RDLAB_RATE_READ_AT_UTC", "").strip()
+if live_usage_rate_raw:
+    try:
+        live_rate_f = float(live_usage_rate_raw)
+        payload["live_rate"] = live_rate_f
+        payload["live_usage_rate_per_hour"] = live_rate_f
+    except ValueError:
+        pass
+if rate_read_at_utc:
+    payload["rate_read_at"] = rate_read_at_utc
+    payload["live_usage_rate_read_at"] = rate_read_at_utc
 out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
 PY
 }
@@ -928,6 +1003,12 @@ stop_all() {
   local exit_code=$?
   set +e
   cleanup_stage
+  if [[ -n "$COST_CAP_PID" ]]; then
+    pkill -P "$COST_CAP_PID" 2>/dev/null || true
+    kill "$COST_CAP_PID" 2>/dev/null || true
+    wait "$COST_CAP_PID" 2>/dev/null || true
+    COST_CAP_PID=""
+  fi
   if [[ -n "$PERIODIC_FETCH_PID" ]]; then
     pkill -P "$PERIODIC_FETCH_PID" 2>/dev/null || true
     kill "$PERIODIC_FETCH_PID" 2>/dev/null || true
@@ -1372,6 +1453,76 @@ if ! printf '%s\n' "$MID_SESSIONS" | grep -q "^\[$S\]"; then
   exit 1
 fi
 
+OPEN_CLOCK_EPOCH="$(now_epoch_seconds)"
+START_EPOCH="$OPEN_CLOCK_EPOCH"
+RATE_READ_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+USAGE_RC=0
+USAGE_OUT="$(run_colab usage </dev/null)" || USAGE_RC=$?
+LIVE_RATE_UNITS_PER_HOUR=""
+if [[ "$USAGE_RC" -eq 0 ]] && [[ -n "$USAGE_OUT" ]]; then
+  LIVE_RATE_UNITS_PER_HOUR="$("$PYTHON_BIN" - "$USAGE_OUT" <<'PY' || true
+import re
+import sys
+
+text = sys.argv[1]
+m = re.search(r"Usage\s+rate\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*h(?:r|our)?\b", text, re.IGNORECASE)
+if m:
+    val = float(m.group(1))
+    if val > 0.0:
+        print(f"{val:g}" if "." not in m.group(1) else m.group(1))
+PY
+)"
+fi
+if [[ -z "$LIVE_RATE_UNITS_PER_HOUR" ]]; then
+  flock -u 9 || true
+  RUN_FAILURE_CLASS="LIVE_USAGE_RATE_UNAVAILABLE"
+  RUN_WHY="LIVE_USAGE_RATE_UNAVAILABLE: failed to read positive live usage rate on session $S"
+  echo "$RUN_WHY" >&2
+  exit 2
+fi
+RATE_UNITS_PER_HOUR="$LIVE_RATE_UNITS_PER_HOUR"
+WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
+if [[ -n "$EXPLICIT_CAP" ]]; then
+  CAP_UNITS="$EXPLICIT_CAP"
+else
+  CAP_UNITS="$WALL_X_RATE"
+fi
+COST_CAP_MAX_RUNTIME_SECONDS="$("$PYTHON_BIN" - "$CAP_UNITS" "$LIVE_RATE_UNITS_PER_HOUR" <<'PY'
+import math
+import sys
+
+cap = float(sys.argv[1])
+rate = float(sys.argv[2])
+s = max(1, int(math.ceil((cap * 3600.0) / rate - 1e-12)))
+print(s)
+PY
+)"
+log_msg "LIVE_USAGE_RATE session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR rate_read_at=$RATE_READ_AT_UTC cap_units=$CAP_UNITS cap_max_runtime_s=$COST_CAP_MAX_RUNTIME_SECONDS"
+
+ALIVE_OK=0
+ALIVE_ATTEMPT=0
+while (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); do
+  ALIVE_ATTEMPT=$(( ALIVE_ATTEMPT + 1 ))
+  ALIVE_RC=0
+  ALIVE_OUT="$(timeout "$ALIVE_PROBE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=alive -f "$VM_SCRIPT" --timeout="$ALIVE_PROBE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || ALIVE_RC=$?
+  if [[ "$ALIVE_RC" -eq 0 ]] && printf '%s\n' "$ALIVE_OUT" | grep -q '^VM_ALIVE_OK'; then
+    ALIVE_OK=1
+    log_msg "ALIVE_PROBE_OK session=$S attempt=${ALIVE_ATTEMPT}/${ALIVE_PROBE_MAX_TRIES}"
+    break
+  fi
+  log_msg "ALIVE_PROBE_RETRY session=$S attempt=${ALIVE_ATTEMPT}/${ALIVE_PROBE_MAX_TRIES} rc=$ALIVE_RC"
+  if (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); then
+    sleep "$ALIVE_PROBE_SLEEP_SECONDS"
+  fi
+done
+if [[ "$ALIVE_OK" -ne 1 ]]; then
+  flock -u 9 || true
+  RUN_FAILURE_CLASS="CLI_KERNEL_CONNECTION_LOST_BEFORE_GATE"
+  RUN_WHY="CLI_KERNEL_CONNECTION_LOST_BEFORE_GATE: CLI kernel connection lost before gate script ran on session $S after ${ALIVE_PROBE_MAX_TRIES} attempts"
+  echo "$RUN_WHY" >&2
+  exit 2
+fi
+
 build_gate_env_args
 GATE_RC=0
 GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
@@ -1379,10 +1530,18 @@ if [[ "$GATE_RC" -ne 0 ]] || ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'
   flock -u 9 || true
   if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID'; then
     GATE_REASON="$(printf '%s\n' "$GATE_OUT" | grep -m1 -E 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID' || true)"
+    RUN_FAILURE_CLASS="VM_GATE_REFUSED"
     RUN_WHY="VM gate refused on session $S: $GATE_REASON"
     printf '%s\n' "$GATE_REASON" >&2
     exit 2
   fi
+  if printf '%s\n' "$GATE_OUT" | grep -Fq 'Connection was lost'; then
+    RUN_FAILURE_CLASS="CLI_KERNEL_CONNECTION_LOST_BEFORE_GATE"
+    RUN_WHY="CLI_KERNEL_CONNECTION_LOST_BEFORE_GATE: CLI kernel connection lost before gate script completed on session $S"
+    echo "$RUN_WHY" >&2
+    exit 2
+  fi
+  RUN_FAILURE_CLASS="VM_GATE_REFUSED"
   if [[ "$GATE_RC" -ne 0 ]]; then
     RUN_WHY="VM liveness gate failed on session $S"
   else
@@ -1393,7 +1552,7 @@ fi
 flock -u 9 || true
 log_msg "LOCK_RELEASED session=$S"
 
-rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$RUN_END_DETECTED_MARKER" "$EXEC_OUT_TMP" "$OUT_DIR/.rig_stopped" "$OUT_DIR/status.json" "$OUT_DIR/gate_status.json" "$OUT_DIR"/progress.jsonl.tmp.*
+rm -rf "$DEADLINE_MARKER" "$COST_CAP_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$RUN_END_DETECTED_MARKER" "$EXEC_OUT_TMP" "$OUT_DIR/.rig_stopped" "$OUT_DIR/status.json" "$OUT_DIR/gate_status.json" "$OUT_DIR"/progress.jsonl.tmp.*
 if [[ "$EFFECTIVE_RESUME" -ne 1 ]]; then
   rm -f "$OUT_DIR/progress.jsonl"
 fi
@@ -1442,6 +1601,31 @@ timeout --signal=TERM --kill-after=15 "${RIG_TIMEOUT}s" \
 EXEC_PID="$!"
 
 (
+  CAP_SLEEP_PID=""
+  trap 'if [[ -n "$CAP_SLEEP_PID" ]]; then kill "$CAP_SLEEP_PID" 2>/dev/null || true; fi; exit 0' TERM INT
+  while kill -0 "$EXEC_PID" 2>/dev/null; do
+    sleep "$COST_CAP_POLL_SECONDS" &
+    CAP_SLEEP_PID="$!"
+    wait "$CAP_SLEEP_PID" 2>/dev/null || exit 0
+    CAP_SLEEP_PID=""
+    if ! kill -0 "$EXEC_PID" 2>/dev/null || [[ -f "$FETCH_DONE_MARKER" ]] || [[ -f "$DEADLINE_MARKER" ]] || [[ -f "$OUT_DIR/.rig_stopped" ]]; then
+      break
+    fi
+    cur_epoch="$(RDLAB_FAKE_CLOCK_ARMED=1 now_epoch_seconds)"
+    elapsed_s=$(( cur_epoch - OPEN_CLOCK_EPOCH ))
+    if (( COST_CAP_MAX_RUNTIME_SECONDS > 0 && elapsed_s >= COST_CAP_MAX_RUNTIME_SECONDS )); then
+      printf '%s\n' "$elapsed_s" > "$COST_CAP_MARKER"
+      printf '%s COST_CAP_REACHED session=%s runtime_s=%s rate_uh=%s cap_units=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$elapsed_s" "$LIVE_RATE_UNITS_PER_HOUR" "$CAP_UNITS" >> "$CLI_LOG"
+      fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
+      pkill -TERM -P "$EXEC_PID" 2>/dev/null || true
+      kill -TERM "$EXEC_PID" 2>/dev/null || true
+      break
+    fi
+  done
+) </dev/null >/dev/null 2>&1 9>&- &
+COST_CAP_PID="$!"
+
+(
   FETCH_SLEEP_PID=""
   trap 'if [[ -n "$FETCH_SLEEP_PID" ]]; then kill "$FETCH_SLEEP_PID" 2>/dev/null || true; fi; exit 0' TERM INT
   while kill -0 "$EXEC_PID" 2>/dev/null; do
@@ -1467,6 +1651,17 @@ PERIODIC_FETCH_PID="$!"
 
 wait "$EXEC_PID" 2>/dev/null || EXEC_RC=$?
 EXEC_PID=""
+
+if [[ -n "$COST_CAP_PID" ]]; then
+  if [[ -f "$COST_CAP_MARKER" ]]; then
+    wait "$COST_CAP_PID" 2>/dev/null || true
+  else
+    pkill -P "$COST_CAP_PID" 2>/dev/null || true
+    kill "$COST_CAP_PID" 2>/dev/null || true
+    wait "$COST_CAP_PID" 2>/dev/null || true
+  fi
+  COST_CAP_PID=""
+fi
 
 if [[ -n "$PERIODIC_FETCH_PID" ]]; then
   pkill -P "$PERIODIC_FETCH_PID" 2>/dev/null || true
@@ -1495,6 +1690,77 @@ if [[ -f "$DEADLINE_MARKER" ]]; then
 fi
 
 fetch_results_once
+
+if [[ -f "$COST_CAP_MARKER" ]]; then
+  CAP_ELAPSED_S="$(tr -d '[:space:]' < "$COST_CAP_MARKER" 2>/dev/null || true)"
+  if [[ ! "$CAP_ELAPSED_S" =~ ^[0-9]+$ ]]; then
+    CAP_ELAPSED_S="$COST_CAP_MAX_RUNTIME_SECONDS"
+  fi
+  "$PYTHON_BIN" - "$OUT_DIR/status.json" "$LIVE_RATE_UNITS_PER_HOUR" "$RATE_READ_AT_UTC" "$CAP_UNITS" "$CAP_ELAPSED_S" <<'PY' || true
+import json
+import sys
+from pathlib import Path
+
+status_path = Path(sys.argv[1])
+live_rate = float(sys.argv[2])
+rate_read_at = sys.argv[3]
+cap_units = float(sys.argv[4])
+elapsed_s = int(sys.argv[5])
+
+doc: dict[str, object] = {}
+if status_path.is_file():
+    try:
+        loaded = json.loads(status_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            doc = loaded
+    except Exception:
+        doc = {}
+
+doc.setdefault("step", "run")
+doc["rc"] = 2
+doc["status"] = "stopped_cost_cap"
+doc["failure_class"] = "COST_CAP_REACHED"
+doc["reason"] = f"COST_CAP_REACHED: runtime={elapsed_s}s * rate={live_rate:g}/h >= cap={cap_units:g}"
+doc["live_rate"] = live_rate
+doc["live_usage_rate_per_hour"] = live_rate
+doc["rate_read_at"] = rate_read_at
+doc["live_usage_rate_read_at"] = rate_read_at
+doc["cap_units"] = cap_units
+doc["runtime_seconds"] = elapsed_s
+doc["cost_cap_reached"] = True
+status_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
+PY
+  RUN_FAILURE_CLASS="COST_CAP_REACHED"
+  RUN_OUTCOME="stopped_cost_cap"
+  RUN_WHY="COST_CAP_REACHED: runtime=${CAP_ELAPSED_S}s * rate=${LIVE_RATE_UNITS_PER_HOUR}/h >= cap=${CAP_UNITS}"
+  echo "$RUN_WHY" >&2
+  exit 2
+fi
+
+if [[ -f "$OUT_DIR/status.json" ]] && [[ -n "$LIVE_RATE_UNITS_PER_HOUR" ]]; then
+  "$PYTHON_BIN" - "$OUT_DIR/status.json" "$LIVE_RATE_UNITS_PER_HOUR" "$RATE_READ_AT_UTC" "$CAP_UNITS" <<'PY' || true
+import json
+import sys
+from pathlib import Path
+
+status_path = Path(sys.argv[1])
+live_rate = float(sys.argv[2])
+rate_read_at = sys.argv[3]
+cap_units = float(sys.argv[4])
+try:
+    doc = json.loads(status_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+if isinstance(doc, dict):
+    doc["live_rate"] = live_rate
+    doc["live_usage_rate_per_hour"] = live_rate
+    doc["rate_read_at"] = rate_read_at
+    doc["live_usage_rate_read_at"] = rate_read_at
+    doc["cap_units"] = cap_units
+    doc.setdefault("cost_cap_reached", False)
+    status_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
+PY
+fi
 
 if [[ "$EXEC_RC" -eq 124 ]] || [[ "$EXEC_RC" -eq 137 ]]; then
   RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"

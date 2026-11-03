@@ -150,6 +150,37 @@ def _hermetic_fake_colab_and_uv_env(
     monkeypatch.setenv("PATH", _hermetic_path_for(auto_env))
     monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(auto_env["state_dir"]))
     monkeypatch.delenv("UV_PYTHON_INSTALL_DIR", raising=False)
+    _orig_resolve_uv_sha = getattr(vm_judges, "resolve_expected_uv_wheel_sha256", None)
+    _default_uv_sha = "fa8d26e08e34c29c0c4e820cf3181757086d547240b4f4d31ff1d8bd810ca946"
+
+    if _orig_resolve_uv_sha is not None:
+        def _test_seam_resolve_expected_uv_wheel_sha256(
+            expected_sha256: str | None = None,
+        ) -> str:
+            if expected_sha256 is not None:
+                return _orig_resolve_uv_sha(expected_sha256)
+            if vm_judges.PINNED_UV_WHEEL_SHA256 != _default_uv_sha:
+                return _orig_resolve_uv_sha(None)
+            st_dir = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
+            if st_dir:
+                uv_st_p = Path(st_dir) / "uv_state.json"
+                if uv_st_p.is_file():
+                    try:
+                        st_doc = json.loads(uv_st_p.read_text(encoding="utf-8"))
+                        override_sha = str(
+                            st_doc.get("expected_uv_wheel_sha256") or ""
+                        ).strip().lower()
+                        if len(override_sha) == 64:
+                            return override_sha
+                    except Exception:
+                        pass
+            return _orig_resolve_uv_sha(None)
+
+        monkeypatch.setattr(
+            vm_judges,
+            "resolve_expected_uv_wheel_sha256",
+            _test_seam_resolve_expected_uv_wheel_sha256,
+        )
     yield auto_env
     assert not auto_env["sentinel_called"].exists(), (
         "Sentinel real-colab trap fired during test"
@@ -2883,9 +2914,10 @@ def test_gate_checks_disk_at_run_hf_home(tmp_path: Path) -> None:
         for ln in proc_dry.stdout.splitlines()
         if ln.strip().startswith("colab exec ")
     ]
-    assert len(exec_lines) == 2
-    assert f"--env RDLAB_STEP=gate --env HF_HOME={wsl_hf_home}" in exec_lines[0]
-    assert f"--env HF_HOME={wsl_hf_home}" in exec_lines[1]
+    assert len(exec_lines) == 3
+    assert "--env RDLAB_STEP=alive" in exec_lines[0]
+    assert f"--env RDLAB_STEP=gate --env HF_HOME={wsl_hf_home}" in exec_lines[1]
+    assert f"--env HF_HOME={wsl_hf_home}" in exec_lines[2]
 
     # 2. Forbidden Google Drive HF_HOME is caught at the gate before any upload
     env_drv = fake_colab.setup_fake_colab_environment(
@@ -9322,6 +9354,7 @@ def test_timeone_readiness_1_gpu_gate_order_and_empty_download_log_on_failure(
         ("device_check", "venv-judge"),
         ("device_check", "venv-d3"),
         ("gpu_gate", "venv-judge"),
+        ("gpu_gate", "venv-d3"),
     ]
     status_fail = json.loads((out_fail / "status.json").read_text(encoding="utf-8"))
     assert status_fail["rc"] == 2
@@ -9495,7 +9528,9 @@ def test_timeone_readiness_3_until_gpu_gate_under_stub_no_cuda(
         assert doc["gpu_gate"]["status"] == "failed"
         assert doc["gpu_gate"]["failure_class"] == "GPU_GATE_FAILED"
         assert doc["gpu_gate"]["failed_venv"] == "venv-judge"
+        assert doc["gpu_gate"]["failed_venvs"] == ["venv-judge", "venv-d3"]
         assert doc["gpu_gate"]["venvs"]["venv-judge"]["cuda_is_available"] is False
+        assert doc["gpu_gate"]["venvs"]["venv-d3"]["cuda_is_available"] is False
 
 
 def test_timeone_readiness_4_until_first_load_cpu_two_items_and_oom(
@@ -10779,9 +10814,10 @@ def test_child_progress_2_heartbeat_fires_on_slow_call_and_stops_after_call(
         if ln.strip()
     ]
     assert errstop_lines[-2]["kind"] == "call_done"
-    assert errstop_lines[-2]["state"] == "failed_to_run"
+    assert errstop_lines[-2]["state"] == "unparseable"
     assert errstop_lines[-1]["kind"] == "child_end"
-    assert errstop_lines[-1]["counts_by_state"]["failed_to_run"] == 1
+    assert errstop_lines[-1]["counts_by_state"]["unparseable"] == 1
+    assert errstop_lines[-1]["counts_by_state"]["failed_to_run"] == 0
 
 
 def test_child_progress_3_lines_survive_judge_child_timeout_group_kill_mid_call(
@@ -11159,6 +11195,9 @@ def test_child_progress_5_no_text_or_token_ids_leak_into_progress_lines(
         "failed_to_run_count",
         "calls_count",
         "total_seconds",
+        "elapsed_seconds",
+        "mono_seconds",
+        "since_start_seconds",
     }
     for lineno, ln in enumerate(raw_lines, start=1):
         for marker in forbidden_substrings:
@@ -12793,10 +12832,12 @@ def test_no_code_path_builds_child_argv_with_bare_cuda_across_all_modes(
     assert direct_argv[direct_idx + 1] == "cuda:0"
 
     mode_runs = [
+        ("dry", "--stub --dry", None),
         ("stub", "--stub", "cpu"),
         ("first_judge", "--stub --until first_judge", None),
         ("first_load", "--stub --until first_load", "cpu"),
         ("time_one", "--time-one", "cuda:0"),
+        ("counted_default", "", "cpu"),
     ]
     for label, flags, expected_dev in mode_runs:
         env_m = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{label}")
@@ -12822,17 +12863,24 @@ def test_no_code_path_builds_child_argv_with_bare_cuda_across_all_modes(
         )
         assert proc_m.returncode == 0, f"label={label} stderr={proc_m.stderr}"
         subproc_file = env_m["state_dir"] / "judge_subprocesses.jsonl"
+        child_argvs: list[list[str]] = []
+        if subproc_file.exists():
+            subprocs = [
+                json.loads(ln)
+                for ln in subproc_file.read_text(encoding="utf-8").splitlines()
+                if ln.strip()
+            ]
+            child_argvs = [list(sp["argv"]) for sp in subprocs]
+        else:
+            subprocs = []
         if expected_dev is None:
-            assert not subproc_file.exists()
+            assert child_argvs == []
+            if label == "dry":
+                assert "colab usage" in proc_m.stdout
+                assert "--env RDLAB_STEP=alive" in proc_m.stdout
             continue
-        subprocs = [
-            json.loads(ln)
-            for ln in subproc_file.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-        ]
-        assert len(subprocs) >= 1
-        for sp in subprocs:
-            argv = sp["argv"]
+        assert len(child_argvs) >= 1
+        for sp, argv in zip(subprocs, child_argvs, strict=True):
             idx = argv.index("--device")
             assert argv[idx + 1] != "cuda", (
                 f"Bare '--device cuda' found in {label}: {argv}"
@@ -13117,6 +13165,622 @@ def test_only_judges_refused_with_stub_with_judge_order_unknown_id_and_duplicate
             f"Fake colab was called for refusal case {idx}: {env_prefix} {cli_flags}"
         )
         assert not env_ref["sentinel_called"].exists()
+
+
+def test_part2_item1_forward_child_timeout_env_vars_into_colab_exec(
+    tmp_path: Path,
+) -> None:
+    """Card Part 2 Item 1:
+    Setting `RDLAB_FIRST_LOAD_TIMEOUT_SECONDS=900` (and the other child-timeout/heartbeat vars)
+    on the rig forwards `--env RDLAB_FIRST_LOAD_TIMEOUT_SECONDS=900` into `colab exec` argv
+    recorded by `fake_colab` and is read by `vm_judges.py`.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "p2_item1_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "p2_item1_data", count=2)
+    env_p = fake_colab.setup_fake_colab_environment(tmp_path / "env_p2_item1")
+    out_p = tmp_path / "out_p2_item1"
+    exports_p = _base_launcher_exports(
+        env_p,
+        open_lock=tmp_path / "p2_item1.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    extra_env = (
+        "export RDLAB_FIRST_LOAD_TIMEOUT_SECONDS=900; "
+        "export RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS=750; "
+        "export RDLAB_GPU_GATE_TIMEOUT_SECONDS=45; "
+        "export RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS=480; "
+        "export RDLAB_CHILD_WALL_MARGIN_SECONDS=40; "
+        "export RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS=15; "
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_p} {extra_env} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_load --out-dir '{_to_wsl_path(out_p)}' --run-id p2-item1-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+    calls = [
+        json.loads(ln)
+        for ln in env_p["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    run_exec_calls = [
+        c
+        for c in calls
+        if c["subcmd"] == "exec" and "RDLAB_STEP=run" in c["args"]
+    ]
+    assert len(run_exec_calls) == 1
+    run_args = run_exec_calls[0]["args"]
+    for expected_kv in (
+        "RDLAB_FIRST_LOAD_TIMEOUT_SECONDS=900",
+        "RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS=750",
+        "RDLAB_GPU_GATE_TIMEOUT_SECONDS=45",
+        "RDLAB_DOWNLOAD_CHILD_TIMEOUT_SECONDS=480",
+        "RDLAB_CHILD_WALL_MARGIN_SECONDS=40",
+        "RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS=15",
+    ):
+        assert expected_kv in run_args, f"Missing {expected_kv} in {run_args}"
+
+    j_subprocs = [
+        json.loads(ln)
+        for ln in (env_p["state_dir"] / "judge_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(j_subprocs) == 1
+    assert j_subprocs[0]["timeout_seconds"] == 900.0
+
+
+def test_part2_item2_fail_closed_vram_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Part 2 Item 2:
+    On `cuda:0` (or any `cuda:<idx>`), if `nvidia-smi` exits non-zero, returns empty stdout,
+    returns non-integer output, or is missing, `query_gpu_vram_peak_mib` and the judge pass
+    fail closed with `BAKEOFF_JUDGE_VRAM_PROBE_FAILED` instead of silently returning `0`.
+    """
+    from reasoning_dataset_lab.errors import RdlabError
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    planted_tok = "hf_" + "VramProbeSecretToken998877665544"
+
+    # 1. Direct `query_gpu_vram_peak_mib` fail-closed checks
+    for bad_proc in (
+        subprocess.CompletedProcess(
+            args=[], returncode=9, stdout="", stderr=f"driver fail {planted_tok}"
+        ),
+        subprocess.CompletedProcess(args=[], returncode=0, stdout="\n  \n", stderr=""),
+        subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=f"N/A {planted_tok}\n", stderr=""
+        ),
+    ):
+        monkeypatch.setattr(subprocess, "run", lambda *a, _p=bad_proc, **kw: _p)
+        with pytest.raises(RdlabError) as exc_v:
+            bj_mod.query_gpu_vram_peak_mib()
+        assert exc_v.value.code == "BAKEOFF_JUDGE_VRAM_PROBE_FAILED"
+        assert planted_tok not in str(exc_v.value)
+
+    def _raise_missing(*_a: object, **_kw: object) -> object:
+        raise FileNotFoundError(2, f"No such file or directory {planted_tok}", "nvidia-smi")
+
+    monkeypatch.setattr(subprocess, "run", _raise_missing)
+    with pytest.raises(RdlabError) as exc_m:
+        bj_mod.query_gpu_vram_peak_mib()
+    assert exc_m.value.code == "BAKEOFF_JUDGE_VRAM_PROBE_FAILED"
+    assert planted_tok not in str(exc_m.value)
+
+    # 2. `run_bakeoff_judge` on `cuda:0` fails closed when `query_gpu_vram_peak_mib` fails
+    items_file = _make_synthetic_public_items(tmp_path / "vram_items", count=2)
+    with pytest.raises(RdlabError) as exc_run:
+        bj_mod.run_bakeoff_judge(
+            part_dir=items_file,
+            output_dir=tmp_path / "vram_out",
+            judge="nemotron-3-nano-4b",
+            limit_items=1,
+            transport=bj_mod.DeterministicFakeJudgeTransport(),
+            device="cuda:0",
+            torch_dtype="bfloat16",
+            run_canary=False,
+            vram_probe=bj_mod.query_gpu_vram_peak_mib,
+        )
+    assert exc_run.value.code == "BAKEOFF_JUDGE_VRAM_PROBE_FAILED"
+
+
+def test_part2_item3_live_rate_from_colab_usage_and_cost_cap_fetch_before_stop(
+    tmp_path: Path,
+) -> None:
+    """Card Part 2 Item 3:
+    With a fake clock and fake `colab usage` returning `13.08/hr`, a `--cap 2.5` run fetches
+    `/content/result.tar.gz` and `/content/status.json` and stops at `runtime * 13.08 / 3600 >= 2.5`
+    (`<= 689` s) with `status.json` recording the live rate and `result.tar.gz` fetched before `colab stop`.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "p2_item3_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "p2_item3_data", count=2)
+    env_c = fake_colab.setup_fake_colab_environment(tmp_path / "env_p2_item3")
+    out_c = tmp_path / "out_p2_item3"
+    clock_file = tmp_path / "fake_clock.txt"
+    clock_file.write_text("1000000\n", encoding="utf-8", newline="\n")
+
+    exports_c = _base_launcher_exports(
+        env_c,
+        open_lock=tmp_path / "p2_item3.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    extra_c = (
+        f"export RDLAB_FAKE_CLOCK_FILE='{_to_wsl_path(clock_file)}'; "
+        "export RDLAB_FAKE_CLOCK_STEP_SECONDS=689; "
+        "export FAKE_COLAB_USAGE_RATE='13.08'; "
+        "export FAKE_COLAB_EXEC_SLEEP='15'; "
+        "export FAKE_COLAB_WRITE_RESULT_TAR_BEFORE_SLEEP=1; "
+        "export RDLAB_COST_CAP_POLL_SECONDS=1; "
+    )
+    # Advance the fake clock file by 689s on the first armed poll inside COST_CAP_PID
+    clock_file.write_text("1000000\n", encoding="utf-8", newline="\n")
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_c} {extra_c} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --cap 2.5 --out-dir '{_to_wsl_path(out_c)}' --run-id p2-cap-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 2, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert (out_c / "result.tar.gz").is_file()
+    assert (out_c / "status.json").is_file()
+
+    status_doc = json.loads((out_c / "status.json").read_text(encoding="utf-8"))
+    outcome_doc = json.loads((out_c / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert status_doc["live_rate"] == 13.08
+    assert status_doc["live_usage_rate_per_hour"] == 13.08
+    assert isinstance(status_doc["rate_read_at"], str) and status_doc["rate_read_at"]
+    assert status_doc["cost_cap_reached"] is True
+    assert status_doc["runtime_seconds"] <= 689
+    assert (status_doc["runtime_seconds"] * 13.08 / 3600.0) >= 2.5
+
+    assert outcome_doc["rate_per_hour"] == 13.08
+    assert outcome_doc["live_rate"] == 13.08
+    assert outcome_doc["runtime_seconds"] <= 689
+    assert outcome_doc["outcome"] == "stopped_cost_cap"
+
+    calls = [
+        json.loads(ln)
+        for ln in env_c["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    subcmds_and_args = [(c["subcmd"], c["args"]) for c in calls]
+    usage_idx = next(i for i, (s, _) in enumerate(subcmds_and_args) if s == "usage")
+    dl_tar_idx = next(
+        i
+        for i, (s, a) in enumerate(subcmds_and_args)
+        if s == "download" and "/content/result.tar.gz" in a
+    )
+    dl_status_idx = next(
+        i
+        for i, (s, a) in enumerate(subcmds_and_args)
+        if s == "download" and "/content/status.json" in a
+    )
+    stop_idx = next(i for i, (s, _) in enumerate(subcmds_and_args) if s == "stop")
+    assert usage_idx < dl_tar_idx < stop_idx
+    assert usage_idx < dl_status_idx < stop_idx
+
+
+def test_part2_item4_cli_alive_probe_and_distinct_failure_class(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Card Part 2 Item 4:
+    - `vm_judges.py --step alive` prints `VM_ALIVE_OK` and returns `0`.
+    - `launch_judges.sh` recovers when the first `alive` probe fails with `Connection was lost`
+      and the second try succeeds.
+    - `launch_judges.sh` reports `CLI_KERNEL_CONNECTION_LOST_BEFORE_GATE` when all 3 alive probe
+      tries fail, and `VM_GATE_REFUSED` when the gate script actually runs and refuses.
+    """
+    # 1. Direct `--step alive`
+    rc_alive = vm_judges.main(["--step", "alive"])
+    assert rc_alive == 0
+    captured = capsys.readouterr()
+    assert "VM_ALIVE_OK" in captured.out
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "p2_item4_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "p2_item4_data", count=2)
+
+    # 2. First alive probe loses connection, second succeeds -> full run succeeds
+    env_rec = fake_colab.setup_fake_colab_environment(tmp_path / "env_alive_recover")
+    out_rec = tmp_path / "out_alive_recover"
+    exports_rec = _base_launcher_exports(
+        env_rec,
+        open_lock=tmp_path / "alive_rec.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_rec = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_rec} export FAKE_COLAB_ALIVE_FAIL_COUNT=1; export RDLAB_ALIVE_PROBE_SLEEP_SECONDS=0; "
+            f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_rec)}' --run-id alive-rec-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_rec.returncode == 0, f"stderr={proc_rec.stderr}"
+    alive_attempts_rec = [
+        json.loads(ln)
+        for ln in (env_rec["state_dir"] / "alive_attempts.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    assert len(alive_attempts_rec) == 2
+    assert alive_attempts_rec[0]["failed"] is True
+    assert alive_attempts_rec[1]["failed"] is False
+
+    # 3. All 3 alive probe tries lose connection -> CLI_KERNEL_CONNECTION_LOST_BEFORE_GATE
+    env_lost = fake_colab.setup_fake_colab_environment(tmp_path / "env_alive_lost")
+    out_lost = tmp_path / "out_alive_lost"
+    exports_lost = _base_launcher_exports(
+        env_lost,
+        open_lock=tmp_path / "alive_lost.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_lost = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_lost} export FAKE_COLAB_ALIVE_FAIL_COUNT=3; export RDLAB_ALIVE_PROBE_SLEEP_SECONDS=0; "
+            f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_lost)}' --run-id alive-lost-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_lost.returncode == 2
+    assert "CLI_KERNEL_CONNECTION_LOST_BEFORE_GATE" in proc_lost.stderr
+    outcome_lost = json.loads(
+        (out_lost / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_lost["failure_class"] == "CLI_KERNEL_CONNECTION_LOST_BEFORE_GATE"
+    assert "CLI_KERNEL_CONNECTION_LOST_BEFORE_GATE" in outcome_lost["why"]
+    assert "VM liveness gate failed" not in outcome_lost["why"]
+
+    # 4. Gate script runs and refuses -> VM_GATE_REFUSED
+    env_gref = fake_colab.setup_fake_colab_environment(tmp_path / "env_gate_refused")
+    out_gref = tmp_path / "out_gate_refused"
+    exports_gref = _base_launcher_exports(
+        env_gref,
+        open_lock=tmp_path / "gate_ref.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_gref = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_gref} export FAKE_COLAB_DISK_FREE_BYTES=1000000; "
+            f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_gref)}' --run-id gate-ref-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_gref.returncode == 2
+    outcome_gref = json.loads(
+        (out_gref / "outcome.draft.json").read_text(encoding="utf-8")
+    )
+    assert outcome_gref["failure_class"] == "VM_GATE_REFUSED"
+
+
+def test_part2_item5_uv_wheel_sha_hook_behind_explicit_test_seam(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Part 2 Item 5:
+    `install_pinned_uv_wheel` in `scripts/colab/vm_judges.py` does not read `FAKE_COLAB_STATE_DIR`
+    or `uv_state.json`; with the production `resolve_expected_uv_wheel_sha256` unpatched, setting
+    `FAKE_COLAB_STATE_DIR` has zero effect on the expected SHA-256 check.
+    """
+    import inspect
+
+    src = inspect.getsource(vm_judges.install_pinned_uv_wheel)
+    assert "FAKE_COLAB_STATE_DIR" not in src
+    assert "uv_state.json" not in src
+
+    # Restore real production `resolve_expected_uv_wheel_sha256` (undoing the test fixture monkeypatch)
+    real_resolve = vm_judges.resolve_expected_uv_wheel_sha256.__wrapped__ if hasattr(
+        vm_judges.resolve_expected_uv_wheel_sha256, "__wrapped__"
+    ) else (
+        lambda expected_sha256=None: (
+            str(expected_sha256).strip().lower()
+            if expected_sha256 is not None
+            else str(vm_judges.PINNED_UV_WHEEL_SHA256).strip().lower()
+        )
+    )
+    monkeypatch.setattr(vm_judges, "resolve_expected_uv_wheel_sha256", real_resolve)
+
+    fake_state = tmp_path / "prod_seam_state"
+    fake_state.mkdir(parents=True, exist_ok=True)
+    (fake_state / "uv_state.json").write_text(
+        json.dumps({"expected_uv_wheel_sha256": "a" * 64}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", str(fake_state))
+    assert vm_judges.resolve_expected_uv_wheel_sha256() == vm_judges.PINNED_UV_WHEEL_SHA256
+
+
+def test_part2_item6_pinned_uv_wheel_download_and_unpack_timing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Part 2 Item 6:
+    `install_pinned_uv_wheel` times `uv_wheel_download_seconds` and `uv_wheel_unpack_seconds`
+    and records them in `gate_status.json`, `vm_receipt.json`, and `status.json`.
+    """
+    _mock_sufficient_vm_disk(monkeypatch)
+    fixture_py_tar, fixture_py_sha, _ = fake_colab.build_fixture_python_archive(
+        tmp_path / "fixture_py_item6"
+    )
+    fixture_whl, fixture_whl_sha, _ = fake_colab.build_fixture_uv_wheel(
+        tmp_path / "fixture_whl_item6",
+        uv_binary_version="0.13.5",
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "p2_item6_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "p2_item6_data", count=2)
+    env_u = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_p2_item6",
+        uv_python_315_found=False,
+        uv_version="uv 0.13.4",
+    )
+    fake_colab.set_fake_uv_python_315_state(
+        env_u,
+        found=False,
+        uv_version="uv 0.13.4",
+        fixture_archive_path=fixture_py_tar,
+        expected_archive_sha256=fixture_py_sha,
+        uv_wheel_path=fixture_whl,
+        expected_uv_wheel_sha256=fixture_whl_sha,
+    )
+    out_u = tmp_path / "out_p2_item6"
+    exports_u = _base_launcher_exports(
+        env_u,
+        open_lock=tmp_path / "p2_item6.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_u} export RDLAB_FORCE_PINNED_UV=1; "
+            f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_u)}' --run-id p2-uv-time-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+    for fname in ("gate_status.json", "vm_receipt.json", "status.json"):
+        doc = json.loads((out_u / fname).read_text(encoding="utf-8"))
+        assert isinstance(doc.get("uv_wheel_download_seconds"), float), f"Missing in {fname}: {doc}"
+        assert doc["uv_wheel_download_seconds"] >= 0.0
+        assert isinstance(doc.get("uv_wheel_unpack_seconds"), float), f"Missing in {fname}: {doc}"
+        assert doc["uv_wheel_unpack_seconds"] >= 0.0
+
+
+def test_part2_item7_first_load_judge_order_and_dead_branch_removed(
+    tmp_path: Path,
+) -> None:
+    """Card Part 2 Item 7:
+    - Under `--until first_load`, `vm_receipt.json`, `status.json`, and `time_one_summary.json`
+      record `judge_order == [first_load_judge_id]` (`["nemotron-3-nano-4b"]` by default) instead
+      of the 5-judge list.
+    - The dead `cgroup_limit_chain_at_start` branch is removed from `scripts/colab/vm_judges.py`.
+    """
+    vm_src = (REPO_ROOT / "scripts" / "colab" / "vm_judges.py").read_text(encoding="utf-8")
+    assert "cgroup_limit_chain_at_start" not in vm_src
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "p2_item7_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "p2_item7_data", count=2)
+    env_fl = fake_colab.setup_fake_colab_environment(tmp_path / "env_p2_item7")
+    out_fl = tmp_path / "out_p2_item7"
+    exports_fl = _base_launcher_exports(
+        env_fl,
+        open_lock=tmp_path / "p2_item7.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_fl} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until first_load --out-dir '{_to_wsl_path(out_fl)}' --run-id p2-fl-order-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stderr={proc.stderr}"
+    for fname in ("vm_receipt.json", "status.json", "time_one_summary.json"):
+        doc = json.loads((out_fl / fname).read_text(encoding="utf-8"))
+        assert doc["judge_order"] == ["nemotron-3-nano-4b"], f"{fname} had {doc.get('judge_order')}"
+
+
+def test_part2_item8_mono_seconds_elapsed_seconds_error_rate_state_and_both_venvs_queried(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Part 2 Item 8(a)-(d):
+    - (a) Every child progress line carries monotonic `mono_seconds` and `since_start_seconds`.
+    - (b) Every completed child record carries `elapsed_seconds`.
+    - (c) Error-rate halt path preserves `readout.state` (`unparseable`) and does not increment `failed_to_run_count`.
+    - (d) `run_device_check` and `run_gpu_gate` query both `venv-judge` and `venv-d3` even when `venv-judge` fails first.
+    """
+    from reasoning_dataset_lab.errors import RdlabError
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    # (a) & (b): Child progress lines have `mono_seconds` + `since_start_seconds`, and `child_end` + `judge_done` have `elapsed_seconds`
+    items_file = _make_synthetic_public_items(tmp_path / "p2_item8_items", count=2)
+    prog_f = tmp_path / "p2_item8_child_progress.jsonl"
+    out_bj = tmp_path / "p2_item8_bj_out"
+    res_bj = bj_mod.run_bakeoff_judge(
+        part_dir=items_file,
+        output_dir=out_bj,
+        judge="nemotron-3-nano-4b",
+        limit_items=1,
+        transport=bj_mod.DeterministicFakeJudgeTransport(),
+        device="cpu",
+        torch_dtype="bfloat16",
+        progress_file=prog_f,
+        run_canary=False,
+    )
+    assert isinstance(res_bj.get("elapsed_seconds"), float)
+    jdone_doc = json.loads(
+        (out_bj / "judge_done" / "nemotron-3-nano-4b.json").read_text(encoding="utf-8")
+    )
+    assert isinstance(jdone_doc.get("elapsed_seconds"), float)
+
+    cp_lines = [
+        json.loads(ln)
+        for ln in prog_f.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(cp_lines) >= 6
+    prev_mono = -1.0
+    for row in cp_lines:
+        assert isinstance(row.get("mono_seconds"), float)
+        assert isinstance(row.get("since_start_seconds"), float)
+        assert row["mono_seconds"] == row["since_start_seconds"]
+        assert row["mono_seconds"] >= prev_mono
+        prev_mono = row["mono_seconds"]
+    assert cp_lines[-1]["kind"] == "child_end"
+    assert isinstance(cp_lines[-1].get("elapsed_seconds"), float)
+
+    # (c): Error-rate halt path preserves `unparseable` and keeps `failed_to_run == 0`
+    class _AlwaysUnparseableTransport(bj_mod.DeterministicFakeJudgeTransport):
+        def generate(
+            self,
+            spec: bj_mod.JudgeSpec,
+            prompt: bj_mod.AssembledPrompt,
+            *,
+            seed: int,
+        ) -> bj_mod.JudgeTransportResponse:
+            base = super().generate(spec, prompt, seed=seed)
+            return bj_mod.JudgeTransportResponse(
+                raw_text="NOT_A_VERDICT_AT_ALL",
+                tokens=("NOT_A_VERDICT_AT_ALL",),
+                verdict_top_logprobs=(),
+                done_reason=base.done_reason,
+                seconds=base.seconds,
+                model_digest=base.model_digest,
+                server_binary=base.server_binary,
+                library_pins=base.library_pins,
+            )
+
+    prog_er = tmp_path / "p2_item8_errstop.jsonl"
+    with pytest.raises(RdlabError) as exc_er:
+        bj_mod.run_bakeoff_judge(
+            part_dir=items_file,
+            output_dir=tmp_path / "p2_item8_er_out",
+            judge="nemotron-3-nano-4b",
+            limit_items=2,
+            transport=_AlwaysUnparseableTransport(),
+            device="cpu",
+            torch_dtype="bfloat16",
+            error_rate_min_calls=1,
+            progress_file=prog_er,
+            run_canary=False,
+        )
+    assert exc_er.value.code == "BAKEOFF_JUDGE_ERROR_RATE_STOP"
+    er_lines = [
+        json.loads(ln)
+        for ln in prog_er.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert er_lines[-2]["kind"] == "call_done"
+    assert er_lines[-2]["state"] == "unparseable"
+    assert er_lines[-1]["kind"] == "child_end"
+    assert er_lines[-1]["counts_by_state"]["unparseable"] == 1
+    assert er_lines[-1]["counts_by_state"]["failed_to_run"] == 0
+    assert isinstance(er_lines[-1].get("elapsed_seconds"), float)
+
+    # (d): `run_device_check` and `run_gpu_gate` query both `venv-judge` and `venv-d3` even when `venv-judge` fails first
+    work_dc = tmp_path / "work_dc_both"
+    vm_judges._ensure_dryrun_venv_python_wrapper(work_dc / "venv-judge" / "bin" / "python")
+    vm_judges._ensure_dryrun_venv_python_wrapper(work_dc / "venv-d3" / "bin" / "python")
+    with pytest.raises(vm_judges.DeviceIndexCheckError) as exc_dc:
+        vm_judges.run_device_check(work_dc, device="cuda")
+    assert set(exc_dc.value.device_check_report["venvs"].keys()) == {"venv-judge", "venv-d3"}
+    assert exc_dc.value.device_check_report["failed_venvs"] == ["venv-judge", "venv-d3"]
+
+    monkeypatch.setenv("FAKE_COLAB_GPU_GATE_MODE", "not_available")
+    monkeypatch.delenv("FAKE_COLAB_GPU_GATE_VENV", raising=False)
+    with pytest.raises(vm_judges.GpuGateError) as exc_gg:
+        vm_judges.run_gpu_gate(work_dc)
+    assert set(exc_gg.value.gpu_gate_report["venvs"].keys()) == {"venv-judge", "venv-d3"}
+    assert exc_gg.value.gpu_gate_report["failed_venvs"] == ["venv-judge", "venv-d3"]
+
+
+def test_part2_item9_single_normalize_judge_device_and_re_fullmatch() -> None:
+    """Card Part 2 Item 9:
+    - `normalize_judge_device` lives in one place (`scripts/colab/vm_judges.py`) and is imported
+      by `src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py`.
+    - `vm_judges.normalize_judge_device` uses `re.fullmatch` (via `_CUDA_INDEX_DEVICE_RE.fullmatch`).
+    """
+    import inspect
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+
+    assert bj_mod.normalize_judge_device is vm_judges.normalize_judge_device
+    bj_src = (
+        REPO_ROOT / "src" / "reasoning_dataset_lab" / "pilot_b" / "bakeoff_judge.py"
+    ).read_text(encoding="utf-8")
+    assert "def normalize_judge_device(" not in bj_src
+
+    norm_src = inspect.getsource(vm_judges.normalize_judge_device)
+    assert ".fullmatch(" in norm_src
+
 
 
 
