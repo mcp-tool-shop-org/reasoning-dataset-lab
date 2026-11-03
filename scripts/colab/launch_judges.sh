@@ -16,6 +16,11 @@ MODE="${RDLAB_MODE:-stub}"
 SESSION_SMOKE_FLAG=0
 DRY_FLAG="${RDLAB_DRY:-0}"
 RESUME_FLAG=0
+UNTIL_STEP="${RDLAB_UNTIL:-}"
+UNTIL_FLAG_SET=0
+if [[ -n "${RDLAB_UNTIL+x}" ]] && [[ -n "$UNTIL_STEP" ]]; then
+  UNTIL_FLAG_SET=1
+fi
 OUT_DIR="${RDLAB_OUT_DIR:-}"
 RUN_ID="${RDLAB_RUN_ID:-judges-$(date -u +%Y%m%dT%H%M%SZ)}"
 ITEMS_FILE="${RDLAB_ITEMS_FILE:-}"
@@ -28,13 +33,14 @@ EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--receipts-dir DIR] [--cap UNITS]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--receipts-dir DIR] [--cap UNITS]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
   --probe              Run the read-only CPU VM environment probe (CPU at 0.08/h, wall 300s, cap 0.01)
   --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
   --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
+  --until STEP         Stop --stub after STEP (venv_sync, first_judge, weights)
   --dry                Print every colab CLI command in order with resolved arguments and exit
   --resume             Resume from existing schedule/generations state in --out-dir
   --run-id ID          Run identifier (session name is rdlab-<ID>)
@@ -65,6 +71,24 @@ while [[ $# -gt 0 ]]; do
     --time-one)
       MODE="time-one"
       SESSION_SMOKE_FLAG=0
+      shift
+      ;;
+    --until)
+      UNTIL_FLAG_SET=1
+      if [[ $# -lt 2 ]] || [[ -z "${2:-}" ]]; then
+        echo "BAD_UNTIL: --until requires a step name (venv_sync, first_judge, weights)" >&2
+        exit 2
+      fi
+      UNTIL_STEP="$2"
+      shift 2
+      ;;
+    --until=*)
+      UNTIL_FLAG_SET=1
+      UNTIL_STEP="${1#*=}"
+      if [[ -z "$UNTIL_STEP" ]]; then
+        echo "BAD_UNTIL: --until requires a step name (venv_sync, first_judge, weights)" >&2
+        exit 2
+      fi
       shift
       ;;
     --dry|--dry-run)
@@ -106,6 +130,21 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$UNTIL_FLAG_SET" -eq 1 ]] || [[ -n "$UNTIL_STEP" ]]; then
+  if [[ "$MODE" != "stub" ]] || [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
+    echo "BAD_UNTIL: --until is allowed only with --stub (got mode=$MODE session_smoke=$SESSION_SMOKE_FLAG)" >&2
+    exit 2
+  fi
+  case "$UNTIL_STEP" in
+    venv_sync|first_judge|weights)
+      ;;
+    *)
+      echo "BAD_UNTIL: unknown --until step '$UNTIL_STEP' (allowed: venv_sync, first_judge, weights)" >&2
+      exit 2
+      ;;
+  esac
+fi
 
 # --- Card and rate per mode ---
 if [[ "$MODE" == "time-one" ]]; then
@@ -325,6 +364,9 @@ build_exec_env_args() {
     --env "RDLAB_STATUS_FILE=/content/status.json"
     --env "RDLAB_RESUME=$EFFECTIVE_RESUME"
   )
+  if [[ -n "$UNTIL_STEP" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_UNTIL=$UNTIL_STEP")
+  fi
   if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=/content/resume_state.tar.gz")
   fi
@@ -405,6 +447,7 @@ PY
     printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_ENV_STR" "$VM_SCRIPT" "$EXEC_TIMEOUT_SECONDS"
     printf 'colab download -s %s /content/result.tar.gz %s/result.tar.gz\n' "$SESSION_NAME" "$OUT_DIR"
     printf 'colab download -s %s /content/status.json %s/status.json\n' "$SESSION_NAME" "$OUT_DIR"
+    printf 'colab download -s %s /content/gate_status.json %s/gate_status.json\n' "$SESSION_NAME" "$OUT_DIR"
     printf 'colab download -s %s /content/rdlab_run/vm_receipt.json %s/vm_receipt.json\n' "$SESSION_NAME" "$OUT_DIR"
     printf 'colab download -s %s /content/rdlab_run/progress.jsonl %s/progress.jsonl\n' "$SESSION_NAME" "$OUT_DIR"
     printf 'colab stop -s %s\n' "$SESSION_NAME"
@@ -507,6 +550,7 @@ fetch_results_once() {
   else
     timeout "$eff_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
     timeout "$eff_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
+    timeout "$eff_timeout" colab download -s "$S" "/content/gate_status.json" "$OUT_DIR/gate_status.json" </dev/null >/dev/null 2>&1 || true
     timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
     timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl" </dev/null >/dev/null 2>&1 || true
     "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" >/dev/null 2>&1 <<'PY' || true
@@ -518,7 +562,7 @@ out_dir = Path(sys.argv[2])
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
-for name in ("progress.jsonl", "status.json", "vm_receipt.json"):
+for name in ("progress.jsonl", "status.json", "gate_status.json", "vm_receipt.json"):
     p = out_dir / name
     if p.is_file():
         vm_judges.scrub_log_file_in_place(p)
@@ -559,6 +603,7 @@ write_outcome_draft() {
   RDLAB_SMOKE_PRE_SESSIONS="$PRE_SESSIONS" \
   RDLAB_SMOKE_MID_SESSIONS="$MID_SESSIONS" \
   RDLAB_SMOKE_POST_SESSIONS="$POST_SESSIONS" \
+  RDLAB_UNTIL_STEP="$UNTIL_STEP" \
   "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "$CARD" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" <<'PY'
 import datetime
 import json
@@ -682,6 +727,11 @@ payload: dict[str, object] = {
     "format_verified_on_real_cli": verified_flag,
     "sessions_output_shape": sessions_shape,
 }
+until_step_val = os.environ.get("RDLAB_UNTIL_STEP", "").strip()
+if until_step_val:
+    payload["until"] = until_step_val
+    if outcome == "ok":
+        payload["stopped_after"] = until_step_val
 out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
 PY
 }
@@ -781,6 +831,7 @@ for p in (
     cli_log,
     out_dir / "progress.jsonl",
     out_dir / "status.json",
+    out_dir / "gate_status.json",
     out_dir / "vm_receipt.json",
 ):
     if p.is_file():
@@ -1150,7 +1201,7 @@ fi
 flock -u 9 || true
 log_msg "LOCK_RELEASED session=$S"
 
-rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$RUN_END_DETECTED_MARKER" "$EXEC_OUT_TMP" "$OUT_DIR/.rig_stopped" "$OUT_DIR/status.json" "$OUT_DIR"/progress.jsonl.tmp.*
+rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$RUN_END_DETECTED_MARKER" "$EXEC_OUT_TMP" "$OUT_DIR/.rig_stopped" "$OUT_DIR/status.json" "$OUT_DIR/gate_status.json" "$OUT_DIR"/progress.jsonl.tmp.*
 if [[ "$EFFECTIVE_RESUME" -ne 1 ]]; then
   rm -f "$OUT_DIR/progress.jsonl"
 fi
@@ -1325,7 +1376,7 @@ extract_dir.mkdir(parents=True, exist_ok=True)
 
 vm_judges.validate_tar_file(tar_path)
 with tarfile.open(tar_path, "r:*") as tf:
-    tf.extractall(extract_dir)
+    tf.extractall(extract_dir, filter="data")
 
 for rel_name in ("schedule.json", "generations.jsonl", "time_one_summary.json", "vm_receipt.json"):
     src = extract_dir / rel_name
@@ -1348,6 +1399,7 @@ vm_judges.scrub_log_file_in_place(cli_log)
 for extra_f in (
     out_dir / "progress.jsonl",
     out_dir / "status.json",
+    out_dir / "gate_status.json",
     out_dir / "vm_receipt.json",
     extract_dir / "progress.jsonl",
     extract_dir / "vm_receipt.json",
@@ -1362,6 +1414,7 @@ paths_to_check: list[Path] = [cli_log]
 for top_f in (
     out_dir / "progress.jsonl",
     out_dir / "status.json",
+    out_dir / "gate_status.json",
     out_dir / "vm_receipt.json",
 ):
     if top_f.is_file():
