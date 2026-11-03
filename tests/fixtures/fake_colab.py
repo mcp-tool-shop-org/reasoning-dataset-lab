@@ -321,9 +321,7 @@ def _get_default_fixture_uv_wheel() -> tuple[Path, str, int]:
     global _CACHED_DEFAULT_UV_WHEEL
     if _CACHED_DEFAULT_UV_WHEEL is not None and _CACHED_DEFAULT_UV_WHEEL[0].is_file():
         return _CACHED_DEFAULT_UV_WHEEL
-    cache_path = Path(
-        f"/tmp/rdlab-fixture-uv-0.13.5-{os.getuid() if hasattr(os, 'getuid') else '0'}.whl"
-    )
+    cache_path = Path(f"/tmp/rdlab-fixture-uv-0.13.5-{os.getpid()}.whl")
     _CACHED_DEFAULT_UV_WHEEL = build_fixture_uv_wheel(cache_path)
     return _CACHED_DEFAULT_UV_WHEEL
 
@@ -499,6 +497,7 @@ def set_fake_uv_python_315_state(
     uv_wheel_download_http_code: int = 503,
     uv_wheel_short_read_bytes: int | None = None,
     uv_wheel_content_length: int | None = None,
+    pinned_uv_binary_version: str | None = None,
 ) -> Path:
     """Update the fake `uv` + `curl` state file controlling find-or-install behavior."""
     state_dir = (
@@ -542,6 +541,7 @@ def set_fake_uv_python_315_state(
         "uv_wheel_download_http_code": int(uv_wheel_download_http_code),
         "uv_wheel_short_read_bytes": uv_wheel_short_read_bytes,
         "uv_wheel_content_length": uv_wheel_content_length,
+        "pinned_uv_binary_version": pinned_uv_binary_version,
     }
     uv_state_file.write_text(
         json.dumps(state_payload, indent=2) + "\n",
@@ -720,6 +720,21 @@ def run_fake_uv(argv: list[str]) -> int:
     uv_source = os.environ.get("FAKE_COLAB_UV_SOURCE") or (
         "pinned-wheel" if "/tmp/uv-pinned" in invoked_as else "image"
     )
+    if (
+        invoked_as.startswith("/tmp/uv-pinned")
+        and state_dir_raw
+        and not (state_dir / ".pinned_uv_installed").is_file()
+        and not (state_dir / ".pinned_uv_downloading").is_file()
+    ):
+        non_pinned_path = os.pathsep.join(
+            p
+            for p in os.environ.get("PATH", "").split(os.pathsep)
+            if p and p != "/tmp/uv-pinned"
+        )
+        fallback_uv = shutil.which("uv", path=non_pinned_path)
+        invoked_as = fallback_uv or "uv"
+        uv_source = "image"
+
     uv_calls_log = state_dir / "uv_calls.jsonl"
     with uv_calls_log.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write(
@@ -740,8 +755,12 @@ def run_fake_uv(argv: list[str]) -> int:
     plant_sfx = f" {plant}" if plant else ""
 
     if argv == ["--version"]:
-        if uv_source == "pinned-wheel" or "FAKE_COLAB_PINNED_UV_BINARY_VERSION" in os.environ:
-            ver = os.environ.get("FAKE_COLAB_PINNED_UV_BINARY_VERSION", "uv 0.13.5")
+        if uv_source == "pinned-wheel":
+            state_pver = uv_state.get("pinned_uv_binary_version")
+            if state_pver and invoked_as.startswith("/tmp/uv-pinned"):
+                ver = str(state_pver)
+            else:
+                ver = os.environ.get("FAKE_COLAB_PINNED_UV_BINARY_VERSION", "uv 0.13.5")
         else:
             ver = os.environ.get(
                 "FAKE_COLAB_UV_VERSION", str(uv_state.get("version") or "uv 0.13.5")

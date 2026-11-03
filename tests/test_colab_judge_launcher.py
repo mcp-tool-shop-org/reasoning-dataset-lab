@@ -11765,7 +11765,7 @@ def test_pinned_uv_image_0135_used_as_is_and_uv_source_is_image(
         assert doc["uv_path"] == "/usr/local/bin/uv"
         assert doc["uv_version"] == "uv 0.13.5"
 
-    assert not Path("/tmp/uv-pinned/uv").exists()
+    assert not (env_img["state_dir"] / ".pinned_uv_installed").exists()
     uv_calls = [
         json.loads(ln)
         for ln in env_img["uv_calls_log"].read_text(encoding="utf-8").splitlines()
@@ -12170,8 +12170,9 @@ def test_pinned_uv_named_refusals_sha256_size_short_read_bad_members_and_version
         env_gate_ref,
         found=True,
         uv_version="uv 0.13.4",
-        uv_wheel_path=bad_ver_whl,
-        expected_uv_wheel_sha256=bad_ver_sha,
+        uv_wheel_path=valid_whl,
+        expected_uv_wheel_sha256=valid_sha,
+        pinned_uv_binary_version="uv 0.13.4",
     )
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
         tmp_path / "gate_ref_data"

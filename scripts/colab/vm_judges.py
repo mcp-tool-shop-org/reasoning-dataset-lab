@@ -5782,6 +5782,12 @@ def open_pinned_uv_wheel_stream(
                 f"fake uv wheel not configured or missing at {wheel_p_str!r}"
             )
         raw_bytes = Path(wheel_p_str).read_bytes()
+        try:
+            (Path(state_dir_raw) / ".pinned_uv_downloading").write_text(
+                "1\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
         declared_len = int(uv_st.get("uv_wheel_content_length") or len(raw_bytes))
         short_read = uv_st.get("uv_wheel_short_read_bytes")
         if short_read is not None:
@@ -5820,11 +5826,11 @@ def install_pinned_uv_wheel(
         if max_download_bytes is not None
         else PINNED_UV_WHEEL_MAX_DOWNLOAD_BYTES
     )
+    state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
     if expected_sha256 is not None:
         exp_sha = str(expected_sha256).strip().lower()
     else:
         exp_sha = PINNED_UV_WHEEL_SHA256.lower()
-        state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
         if (
             state_dir_raw
             and exp_sha
@@ -5839,7 +5845,8 @@ def install_pinned_uv_wheel(
                 except Exception:
                     pass
 
-    shutil.rmtree(target_dir, ignore_errors=True)
+    if target_dir != DEFAULT_PINNED_UV_DIR or not state_dir_raw:
+        shutil.rmtree(target_dir, ignore_errors=True)
 
     chunks: list[bytes] = []
     total_read = 0
@@ -5945,8 +5952,13 @@ def install_pinned_uv_wheel(
         for member_name, dest_name in PINNED_UV_WHEEL_EXTRACT_MEMBERS.items():
             member_bytes = zf.read(member_name)
             dest_path = target_dir / dest_name
-            dest_path.write_bytes(member_bytes)
-            os.chmod(dest_path, PINNED_UV_BINARY_MODE)
+            tmp_dest = (
+                target_dir.parent
+                / f".{target_dir.name}-{dest_name}-{os.getpid()}.tmp"
+            )
+            tmp_dest.write_bytes(member_bytes)
+            os.chmod(tmp_dest, PINNED_UV_BINARY_MODE)
+            os.replace(tmp_dest, dest_path)
 
     pinned_uv_bin = target_dir / "uv"
     ver_env = build_vm_uv_env(content_dir=content_dir, pinned_uv_dir=target_dir)
@@ -5965,12 +5977,24 @@ def install_pinned_uv_wheel(
         or parsed_ver != PINNED_UV_VERSION
         or not uv_version.startswith(f"uv {PINNED_UV_VERSION}")
     ):
-        shutil.rmtree(target_dir, ignore_errors=True)
+        if state_dir_raw:
+            (Path(state_dir_raw) / ".pinned_uv_downloading").unlink(missing_ok=True)
+            (Path(state_dir_raw) / ".pinned_uv_installed").unlink(missing_ok=True)
+        if target_dir != DEFAULT_PINNED_UV_DIR or not state_dir_raw:
+            shutil.rmtree(target_dir, ignore_errors=True)
         raise RefusalError(
             "PINNED_UV_VERSION_MISMATCH",
             f"Pinned uv binary at {scrub_log_text(str(pinned_uv_bin))} reported {scrub_log_text(uv_version)!r} "
             f"(rc={ver_res.returncode}), expected 'uv {PINNED_UV_VERSION}'",
         )
+
+    if state_dir_raw:
+        try:
+            (Path(state_dir_raw) / ".pinned_uv_installed").write_text(
+                "1\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
 
     return {
         "uv_source": "pinned-wheel",
@@ -6020,7 +6044,16 @@ def ensure_vm_uv(
                     ver_out.splitlines()[0].strip() if ver_out else "absent"
                 )
                 if _extract_uv_version_number(image_uv_version) == PINNED_UV_VERSION:
-                    shutil.rmtree(target_dir, ignore_errors=True)
+                    state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
+                    if state_dir_raw:
+                        (Path(state_dir_raw) / ".pinned_uv_installed").unlink(
+                            missing_ok=True
+                        )
+                        (Path(state_dir_raw) / ".pinned_uv_downloading").unlink(
+                            missing_ok=True
+                        )
+                    else:
+                        shutil.rmtree(target_dir, ignore_errors=True)
                     return {
                         "uv_source": "image",
                         "uv_path": scrub_log_text(uv_which),
