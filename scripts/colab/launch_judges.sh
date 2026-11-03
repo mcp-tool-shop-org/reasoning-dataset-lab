@@ -648,7 +648,7 @@ if tar_path.is_file():
         tmp_ext.mkdir(parents=True, exist_ok=True)
         with tarfile.open(tar_path, "r:*") as tf:
             tf.extractall(tmp_ext, filter="data")
-        for sub_name, pat in (("rows", "*.jsonl"), ("judge_done", "*.json")):
+        for sub_name, pat in (("rows", "*.jsonl"), ("judge_done", "*.json"), ("child_progress", "*.jsonl")):
             src_sub = tmp_ext / sub_name
             if src_sub.is_dir():
                 dst_sub = out_dir / sub_name
@@ -656,6 +656,9 @@ if tar_path.is_file():
                 for f in sorted(src_sub.glob(pat)):
                     if f.is_file() and not (dst_sub / f.name).is_file():
                         shutil.copyfile(f, dst_sub / f.name)
+        src_cp = tmp_ext / "child_progress.jsonl"
+        if src_cp.is_file() and not (out_dir / "child_progress.jsonl").is_file():
+            shutil.copyfile(src_cp, out_dir / "child_progress.jsonl")
         shutil.rmtree(tmp_ext, ignore_errors=True)
     except Exception:
         pass
