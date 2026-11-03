@@ -6995,6 +6995,8 @@ def test_fix6_audit_table_versions_match_locks() -> None:
             .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2233-2367", "bakeoff_judge.py:390-450")
             .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2634", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
             .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2692-2710", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
+            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2663", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
+            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2721-2739", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
             .replace(
                 "(note: `torch.cuda.max_memory_allocated()` is not used anywhere in the repo)",
                 "and `run_bakeoff_judge` also tracks `torch.cuda.max_memory_allocated()`",
