@@ -88,6 +88,7 @@ JUDGE_RECEIPT_BYTES_BY_ID: dict[str, int] = {
 }
 ALLOWED_UNTIL_STEPS: tuple[str, ...] = (
     "venv_sync",
+    "device_check",
     "gpu_gate",
     "first_judge",
     "first_load",
@@ -99,6 +100,33 @@ DEFAULT_JUDGE_CHILD_TIMEOUT_SECONDS = 600.0
 DEFAULT_DOWNLOAD_CHILD_TIMEOUT_SECONDS = 900.0
 DEFAULT_CHILD_WALL_MARGIN_SECONDS = 60.0
 CHILD_GROUP_SIGTERM_GRACE_SECONDS = 0.5
+DEVICE_CHECK_VENVS: tuple[str, ...] = ("venv-judge", "venv-d3")
+DEVICE_CHECK_PYTHON_SCRIPT = (
+    "import json, sys, torch\n"
+    "dev_str = sys.argv[1] if len(sys.argv) > 1 else ''\n"
+    "rec = {\n"
+    "    'device': dev_str,\n"
+    "    'device_type': None,\n"
+    "    'device_index': None,\n"
+    "    'torch_version': str(getattr(torch, '__version__', '')),\n"
+    "    'exception_type': None,\n"
+    "    'exception_message': None,\n"
+    "}\n"
+    "try:\n"
+    "    d = torch.device(dev_str)\n"
+    "    rec['device_type'] = str(getattr(d, 'type', ''))\n"
+    "    idx = int(torch.cuda._utils._get_device_index(d))\n"
+    "    rec['device_index'] = idx\n"
+    "    assert idx >= 0, f'expected non-negative device_index, got {idx}'\n"
+    "except Exception as exc:\n"
+    "    rec['exception_type'] = type(exc).__name__\n"
+    "    rec['exception_message'] = str(exc)\n"
+    "    print(json.dumps(rec, sort_keys=True))\n"
+    "    sys.stderr.write(f'{type(exc).__name__}: {exc}\\n')\n"
+    "    sys.exit(1)\n"
+    "print(json.dumps(rec, sort_keys=True))\n"
+    "sys.exit(0)\n"
+)
 GPU_GATE_VENVS: tuple[str, ...] = ("venv-judge", "venv-d3")
 GPU_GATE_PYTHON_SCRIPT = (
     "import json, sys, torch\n"
@@ -2100,6 +2128,32 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "bfloat16 = 'bfloat16'\n"
             "class version:\n"
             "    cuda = '13.2'\n"
+            "class device:\n"
+            "    def __init__(self, spec):\n"
+            "        if isinstance(spec, device):\n"
+            "            self.type = spec.type\n"
+            "            self.index = spec.index\n"
+            "            return\n"
+            "        if not isinstance(spec, str) or isinstance(spec, bool) or not spec:\n"
+            "            raise RuntimeError(f'Invalid device string: {spec!r}')\n"
+            "        if spec == 'cpu':\n"
+            "            self.type = 'cpu'\n"
+            "            self.index = None\n"
+            "        elif spec == 'cuda':\n"
+            "            self.type = 'cuda'\n"
+            "            self.index = None\n"
+            "        elif spec.startswith('cuda:'):\n"
+            "            idx_part = spec.split(':', 1)[1]\n"
+            "            if not idx_part or any(c.isspace() for c in idx_part) or (len(idx_part) > 1 and idx_part.startswith('0')) or not idx_part.isdigit():\n"
+            "                raise RuntimeError(f'Invalid device string: {spec!r}')\n"
+            "            self.type = 'cuda'\n"
+            "            self.index = int(idx_part)\n"
+            "        else:\n"
+            "            raise RuntimeError(f'Invalid device string: {spec!r}')\n"
+            "    def __str__(self):\n"
+            "        return self.type if self.index is None else f'{self.type}:{self.index}'\n"
+            "    def __repr__(self):\n"
+            "        return f'device(type={self.type!r}' + (f', index={self.index}' if self.index is not None else '') + ')'\n"
             "def _active_mode():\n"
             "    target_venv = os.environ.get('FAKE_COLAB_GPU_GATE_VENV', '').strip()\n"
             "    this_venv = os.environ.get('RDLAB_ACTIVE_VENV_NAME', '').strip()\n"
@@ -2137,6 +2191,19 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "    def cudaRuntimeGetVersion(self):\n"
             "        return 13020\n"
             "class cuda:\n"
+            "    class _utils:\n"
+            "        @staticmethod\n"
+            "        def _get_device_index(dev, optional=False, allow_cpu=False):\n"
+            "            if isinstance(dev, int) and not isinstance(dev, bool):\n"
+            "                if dev < 0:\n"
+            "                    raise ValueError(f'Expected a non-negative device index, but got {dev}')\n"
+            "                return int(dev)\n"
+            "            d = dev if isinstance(dev, device) else device(dev)\n"
+            "            if d.type == 'cpu' and allow_cpu:\n"
+            "                return -1\n"
+            "            if d.type != 'cuda' or d.index is None:\n"
+            "                raise ValueError(f'Expected a torch.device with a specified index or an integer, but got:{d}')\n"
+            "            return int(d.index)\n"
             "    @staticmethod\n"
             "    def is_available():\n"
             "        return _active_mode() != 'not_available'\n"
@@ -4321,6 +4388,382 @@ def _query_nvidia_smi_driver_line() -> str:
     return "nvidia-smi not found"
 
 
+_CUDA_INDEX_DEVICE_RE: re.Pattern[str] = re.compile(r"^cuda:(?:0|[1-9][0-9]*)$")
+
+
+def normalize_judge_device(device: Any) -> str:
+    """Normalise judge device strings: `'cuda' -> 'cuda:0'`, `'cuda:N' -> 'cuda:N'`, `'cpu' -> 'cpu'`.
+
+    Any other value (including `'cuda:'`, `'cuda:-1'`, `'gpu'`, `'cuda:0 '`, `''`, or non-str)
+    is refused with `BAKEOFF_JUDGE_DEVICE_INVALID` and a scrubbed message.
+    """
+    if isinstance(device, str) and not isinstance(device, bool):
+        if device == "cuda":
+            return "cuda:0"
+        if device == "cpu" or _CUDA_INDEX_DEVICE_RE.match(device):
+            return device
+    raw_repr = scrub_log_text(repr(device))
+    raise RefusalError(
+        "BAKEOFF_JUDGE_DEVICE_INVALID",
+        f"Invalid judge device {raw_repr}; expected 'cuda', 'cuda:N' (non-negative integer N), or 'cpu'",
+    )
+
+
+def resolve_judge_device(
+    *,
+    mode: str,
+    dryrun: bool = False,
+    real_load_on_cpu: bool = False,
+    raw_device: Any = None,
+) -> str:
+    """Resolve and normalise the `--device` string passed to a judge child subprocess."""
+    _ = dryrun
+    if real_load_on_cpu or mode == "stub":
+        candidate: Any = "cpu" if raw_device is None else raw_device
+    else:
+        candidate = "cuda" if raw_device is None else raw_device
+    return normalize_judge_device(candidate)
+
+
+def _update_gate_status_device_check(
+    gate_status_path: Path | None,
+    device_check_report: Mapping[str, Any],
+) -> None:
+    """Update `gate_status.json` in-place with `"device_check": device_check_report` if the file exists."""
+    target = (
+        gate_status_path
+        if gate_status_path is not None
+        else (resolve_content_dir() / "gate_status.json")
+    )
+    try:
+        ensure_not_drive_path(target)
+        if not target.is_file():
+            return
+        doc = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            return
+        doc["device_check"] = dict(device_check_report)
+        tmp_p = target.parent / f".{target.name}.tmp.{os.getpid()}"
+        tmp_p.write_text(
+            json.dumps(doc, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.replace(tmp_p, target)
+    except Exception:
+        pass
+
+
+class DeviceIndexCheckError(RefusalError):
+    """Structured failure raised when `device_check` fails in `venv-judge` or `venv-d3`."""
+
+    def __init__(
+        self,
+        *,
+        venv: str,
+        venv_python: str,
+        device: str,
+        exit_code: int,
+        stderr_tail: str,
+        device_check_report: Mapping[str, Any],
+        detail_msg: str | None = None,
+    ) -> None:
+        scrubbed_err = _scrub_and_tail(stderr_tail)
+        scrubbed_dev = scrub_log_text(str(device))
+        msg = detail_msg or (
+            f"device_check failed in {venv} ({venv_python}) for device={scrubbed_dev!r} "
+            f"with exit_code={exit_code}: stderr_tail={scrubbed_err!r}"
+        )
+        super().__init__("DEVICE_INDEX_CHECK_FAILED", msg)
+        self.venv = venv
+        self.venv_python = venv_python
+        self.device = scrubbed_dev
+        self.exit_code = int(exit_code)
+        self.stderr_tail = scrubbed_err
+        self.device_check_report = dict(device_check_report)
+
+
+def run_device_check(
+    work_dir: Path,
+    *,
+    device: str | None = None,
+    dryrun: bool = False,
+    timeout_seconds: float | None = None,
+    progress_path: Path | None = None,
+    gate_status_path: Path | None = None,
+    step_timings: dict[str, dict[str, Any]] | None = None,
+    step_order: list[str] | None = None,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+    proc_meminfo_path: Path | None = None,
+) -> dict[str, Any]:
+    """Run the CPU-safe `device_check` (`torch.cuda._utils._get_device_index(torch.device(device))`) in both venvs."""
+    eff_timeout = (
+        float(timeout_seconds)
+        if timeout_seconds is not None
+        else resolve_gpu_gate_timeout_seconds()
+    )
+    if device is not None:
+        target_device = str(device)
+    elif "FAKE_COLAB_DEVICE_CHECK_DEVICE" in os.environ:
+        target_device = os.environ["FAKE_COLAB_DEVICE_CHECK_DEVICE"]
+    else:
+        target_device = resolve_judge_device(
+            mode="time-one", dryrun=False, real_load_on_cpu=False
+        )
+    scrubbed_target = scrub_log_text(target_device)
+
+    t_check, start_check, _ = _record_step_start(
+        "device_check",
+        progress_path=progress_path,
+        extra={
+            "device": scrubbed_target,
+            "timeout_seconds": eff_timeout,
+            "venvs": list(DEVICE_CHECK_VENVS),
+        },
+    )
+    venvs_records: dict[str, dict[str, Any]] = {}
+    state_dir_env = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
+
+    for venv_name in DEVICE_CHECK_VENVS:
+        venv_python = work_dir / venv_name / "bin" / "python"
+        if not venv_python.exists() and dryrun:
+            _ensure_dryrun_venv_python_wrapper(venv_python)
+        if not venv_python.exists():
+            raise RefusalError(
+                "VENV_PYTHON_MISSING",
+                f"Expected venv interpreter not found for device_check ({venv_name}): {venv_python}",
+            )
+
+        cmd = [str(venv_python), "-c", DEVICE_CHECK_PYTHON_SCRIPT, target_device]
+        child_env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("HF_TOKEN") and k != "HUGGING_FACE_HUB_TOKEN"
+        }
+        child_env["RDLAB_ACTIVE_VENV_NAME"] = venv_name
+        venv_site_pkgs = venv_python.parent.parent / "site-packages"
+        if venv_site_pkgs.is_dir():
+            existing_pypath = child_env.get("PYTHONPATH", "")
+            child_env["PYTHONPATH"] = (
+                f"{venv_site_pkgs}{os.pathsep}{existing_pypath}"
+                if existing_pypath
+                else str(venv_site_pkgs)
+            )
+
+        t0 = time.monotonic()
+        timed_out = False
+        raw_stdout = ""
+        raw_stderr = ""
+        exit_code = 1
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=child_env,
+                timeout=eff_timeout,
+                check=False,
+            )
+            exit_code = int(proc.returncode)
+            raw_stdout = proc.stdout or ""
+            raw_stderr = proc.stderr or ""
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            exit_code = 124
+            raw_stdout = (
+                exc.stdout.decode("utf-8", errors="replace")
+                if isinstance(exc.stdout, bytes)
+                else str(exc.stdout or "")
+            )
+            raw_stderr = (
+                exc.stderr.decode("utf-8", errors="replace")
+                if isinstance(exc.stderr, bytes)
+                else str(exc.stderr or "")
+            )
+            raw_stderr = (
+                f"{raw_stderr}\nTimeoutExpired: device_check in {venv_name} timed out after {eff_timeout}s"
+            ).strip()
+        duration_s = round(max(0.0, time.monotonic() - t0), 6)
+
+        if state_dir_env:
+            try:
+                st_dir = Path(state_dir_env)
+                st_dir.mkdir(parents=True, exist_ok=True)
+                with (st_dir / "child_lifecycle.jsonl").open(
+                    "a", encoding="utf-8", newline="\n"
+                ) as lcfh:
+                    lcfh.write(
+                        json.dumps(
+                            {
+                                "event": "device_check",
+                                "venv": venv_name,
+                                "device": scrubbed_target,
+                                "returncode": exit_code,
+                            },
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+            except OSError:
+                pass
+
+        parsed_child: dict[str, Any] = {}
+        for ln in reversed(raw_stdout.splitlines()):
+            ln_s = ln.strip()
+            if ln_s.startswith("{") and ln_s.endswith("}"):
+                try:
+                    cand = json.loads(ln_s)
+                    if isinstance(cand, dict):
+                        parsed_child = cand
+                        break
+                except Exception:
+                    pass
+
+        stderr_tail = _scrub_and_tail(raw_stderr)
+        exc_type_raw = parsed_child.get("exception_type")
+        exc_msg_raw = parsed_child.get("exception_message")
+        if timed_out and not exc_type_raw:
+            exc_type_raw = "TimeoutExpired"
+            exc_msg_raw = f"device_check in {venv_name} timed out after {eff_timeout}s"
+
+        raw_idx = parsed_child.get("device_index")
+        device_index_val = (
+            int(raw_idx)
+            if isinstance(raw_idx, int) and not isinstance(raw_idx, bool)
+            else None
+        )
+        ok_flag = bool(
+            exit_code == 0
+            and not timed_out
+            and device_index_val is not None
+            and device_index_val >= 0
+        )
+        venv_rec: dict[str, Any] = {
+            "venv": venv_name,
+            "venv_python": venv_python.as_posix(),
+            "device": scrubbed_target,
+            "device_type": (
+                _scrub_and_tail(str(parsed_child["device_type"]))
+                if parsed_child.get("device_type") is not None
+                else None
+            ),
+            "device_index": device_index_val,
+            "ok": ok_flag,
+            "torch_version": _scrub_and_tail(
+                str(parsed_child.get("torch_version") or "")
+            ),
+            "exception_type": (
+                _scrub_and_tail(str(exc_type_raw)) if exc_type_raw is not None else None
+            ),
+            "exception_message": (
+                _scrub_and_tail(str(exc_msg_raw)) if exc_msg_raw is not None else None
+            ),
+            "exit_code": exit_code,
+            "rc": exit_code,
+            "timed_out": timed_out,
+            "timeout_seconds": eff_timeout,
+            "duration_seconds": duration_s,
+            "stderr_tail": stderr_tail,
+        }
+        venvs_records[venv_name] = venv_rec
+
+        if not ok_flag:
+            if not venv_rec["stderr_tail"] and venv_rec["exception_message"]:
+                venv_rec["stderr_tail"] = _scrub_and_tail(
+                    f"{venv_rec['exception_type'] or 'Error'}: {venv_rec['exception_message']}"
+                )
+            fail_report: dict[str, Any] = {
+                "status": "failed",
+                "ok": False,
+                "device": scrubbed_target,
+                "failure_class": "DEVICE_INDEX_CHECK_FAILED",
+                "failed_venv": venv_name,
+                "exit_code": exit_code,
+                "stderr_tail": venv_rec["stderr_tail"],
+                "timeout_seconds": eff_timeout,
+                "venvs": venvs_records,
+            }
+            _update_gate_status_device_check(gate_status_path, fail_report)
+            append_progress_line(
+                progress_path,
+                {
+                    "kind": "device_check",
+                    "status": "failed",
+                    "ok": False,
+                    "device": scrubbed_target,
+                    "failure_class": "DEVICE_INDEX_CHECK_FAILED",
+                    "failed_venv": venv_name,
+                    "exit_code": exit_code,
+                    "stderr_tail": venv_rec["stderr_tail"],
+                    "venvs": venvs_records,
+                },
+                proc_meminfo_path=proc_meminfo_path,
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+            )
+            _record_step_end(
+                "device_check",
+                t_check,
+                start_check,
+                progress_path=progress_path,
+                status="failed",
+                step_timings=step_timings,
+                step_order=step_order,
+                extra={
+                    "device": scrubbed_target,
+                    "failed_venv": venv_name,
+                    "exit_code": exit_code,
+                },
+            )
+            raise DeviceIndexCheckError(
+                venv=venv_name,
+                venv_python=venv_python.as_posix(),
+                device=scrubbed_target,
+                exit_code=exit_code,
+                stderr_tail=venv_rec["stderr_tail"],
+                device_check_report=fail_report,
+            )
+
+    ok_report: dict[str, Any] = {
+        "status": "ok",
+        "ok": True,
+        "device": scrubbed_target,
+        "failure_class": None,
+        "failed_venv": None,
+        "timeout_seconds": eff_timeout,
+        "venvs": venvs_records,
+    }
+    _update_gate_status_device_check(gate_status_path, ok_report)
+    append_progress_line(
+        progress_path,
+        {
+            "kind": "device_check",
+            "status": "ok",
+            "ok": True,
+            "device": scrubbed_target,
+            "venvs": venvs_records,
+        },
+        proc_meminfo_path=proc_meminfo_path,
+        cgroup_root=cgroup_root,
+        proc_cgroup_path=proc_cgroup_path,
+    )
+    _record_step_end(
+        "device_check",
+        t_check,
+        start_check,
+        progress_path=progress_path,
+        status="ok",
+        step_timings=step_timings,
+        step_order=step_order,
+        extra={"device": scrubbed_target},
+    )
+    return ok_report
+
+
 def _update_gate_status_gpu_gate(
     gate_status_path: Path | None,
     gpu_gate_report: Mapping[str, Any],
@@ -4421,6 +4864,14 @@ def run_gpu_gate(
             if not k.startswith("HF_TOKEN") and k != "HUGGING_FACE_HUB_TOKEN"
         }
         child_env["RDLAB_ACTIVE_VENV_NAME"] = venv_name
+        venv_site_pkgs = venv_python.parent.parent / "site-packages"
+        if venv_site_pkgs.is_dir():
+            existing_pypath = child_env.get("PYTHONPATH", "")
+            child_env["PYTHONPATH"] = (
+                f"{venv_site_pkgs}{os.pathsep}{existing_pypath}"
+                if existing_pypath
+                else str(venv_site_pkgs)
+            )
 
         t0 = time.monotonic()
         timed_out = False
@@ -4645,6 +5096,7 @@ def run_judges_pipeline(
     proc_cgroup_path: Path | None = None,
     proc_meminfo_path: Path | None = None,
     only_judge_ids: Sequence[str] | None = None,
+    only_judges: Sequence[str] | None = None,
     judge_order: Sequence[str] | None = None,
     judge_order_source: str = "default",
     real_load_on_cpu: bool = False,
@@ -4718,10 +5170,10 @@ def run_judges_pipeline(
             )
 
         allow_remote_sha = resolve_remote_code_arg_for_judge(spec)
-        device_str = (
-            "cpu"
-            if (real_load_on_cpu or dryrun or mode == "stub")
-            else "cuda"
+        device_str = resolve_judge_device(
+            mode=mode,
+            dryrun=dryrun,
+            real_load_on_cpu=real_load_on_cpu,
         )
         child_progress_file = child_progress_dir / f"{judge_id}.jsonl"
         child_cmd: list[str] = [
@@ -4853,6 +5305,7 @@ def run_judges_pipeline(
                                 "venv_python": venv_python.as_posix(),
                                 "lock_file": lock_file,
                                 "lock_sha256": lock_sha256,
+                                "device": device_str,
                                 "cmd": list(child_cmd),
                                 "argv": list(child_cmd),
                                 "timeout_seconds": eff_child_timeout,
@@ -5156,7 +5609,7 @@ def run_judges_pipeline(
         }
         dtype_str = str(done_doc.get("dtype") or DEFAULT_TORCH_DTYPE)
         enriched_done_doc = dict(done_doc)
-        enriched_done_doc.setdefault("device", device_str)
+        enriched_done_doc["device"] = device_str
         enriched_done_doc.setdefault("dtype", dtype_str)
         enriched_done_doc["load_time_seconds"] = load_time_s
         enriched_done_doc["load_seconds"] = load_time_s
@@ -5236,6 +5689,7 @@ def run_judges_pipeline(
         "orders": ["AB", "BA"],
         "judge_order": eff_judge_order,
         "judge_order_source": judge_order_source,
+        "only_judges": list(only_judges) if only_judges is not None else None,
         "vram_sample_interval_seconds": VRAM_SAMPLE_INTERVAL_SECONDS,
         "judges": per_judge_metrics,
         "harness_readouts": {
@@ -5452,6 +5906,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--judge-order",
         default=os.environ.get("RDLAB_JUDGE_ORDER", None),
+    )
+    parser.add_argument(
+        "--only-judges",
+        default=os.environ.get("RDLAB_ONLY_JUDGES", None),
     )
     parser.add_argument(
         "--first-load-judge-id",
@@ -6398,7 +6856,7 @@ def validate_until_option(mode: str, until: str | None) -> str | None:
     if not cleaned:
         raise RefusalError(
             "BAD_UNTIL",
-            "--until requires a non-empty step name (allowed: venv_sync, gpu_gate, first_judge, first_load, weights)",
+            "--until requires a non-empty step name (allowed: venv_sync, device_check, gpu_gate, first_judge, first_load, weights)",
         )
     if mode != "stub":
         raise RefusalError(
@@ -6475,6 +6933,74 @@ def validate_judge_order(
             f"RDLAB_JUDGE_ORDER must be an exact permutation of all 5 judges {list(DEFAULT_JUDGE_ORDER)}, got {parts!r}",
         )
     return tuple(parts), "env"
+
+
+# RDLAB_ONLY_JUDGES is a time-one verification knob; the counted run is all five judges and does not accept it.
+def validate_only_judges(
+    mode: str,
+    raw_only: str | None = None,
+    *,
+    raw_judge_order: str | None = None,
+    until: str | None = None,
+    session_smoke: bool = False,
+) -> tuple[str, ...] | None:
+    """Validate `RDLAB_ONLY_JUDGES`: allowed only with `--time-one` (not `--stub`, `--until`, `--session-smoke`, or `RDLAB_JUDGE_ORDER`) and must be a non-empty comma-separated subset of `BAKEOFF_JUDGE_SPECS` keys with no duplicates or whitespace."""
+    if raw_only is None:
+        if "RDLAB_ONLY_JUDGES" in os.environ:
+            raw_val: str | None = os.environ["RDLAB_ONLY_JUDGES"]
+        else:
+            raw_val = None
+    else:
+        raw_val = str(raw_only)
+
+    if raw_val is None:
+        return None
+
+    has_until = until is not None and str(until).strip() != ""
+    if mode != "time-one" or has_until or session_smoke:
+        raise RefusalError(
+            "ONLY_JUDGES_INVALID",
+            f"RDLAB_ONLY_JUDGES is allowed only with --time-one (got mode={mode!r}, until={until!r}, session_smoke={session_smoke!r})",
+        )
+
+    has_judge_order = (
+        raw_judge_order is not None
+        or "RDLAB_JUDGE_ORDER" in os.environ
+    )
+    if has_judge_order:
+        raise RefusalError(
+            "ONLY_JUDGES_INVALID",
+            "RDLAB_ONLY_JUDGES cannot be combined with RDLAB_JUDGE_ORDER",
+        )
+
+    if (
+        not isinstance(raw_val, str)
+        or not raw_val
+        or any(ch.isspace() for ch in raw_val)
+    ):
+        raise RefusalError(
+            "ONLY_JUDGES_INVALID",
+            f"RDLAB_ONLY_JUDGES must be a non-empty comma-separated subset of {list(DEFAULT_JUDGE_ORDER)} with no whitespace or empty items, got {raw_val!r}",
+        )
+
+    parts = raw_val.split(",")
+    if any(not p for p in parts):
+        raise RefusalError(
+            "ONLY_JUDGES_INVALID",
+            f"RDLAB_ONLY_JUDGES contains empty item(s): {raw_val!r}",
+        )
+    unknown = [p for p in parts if p not in BAKEOFF_JUDGE_SPECS]
+    if unknown:
+        raise RefusalError(
+            "ONLY_JUDGES_INVALID",
+            f"RDLAB_ONLY_JUDGES contains unknown judge_id(s) {unknown!r} (allowed: {list(DEFAULT_JUDGE_ORDER)})",
+        )
+    if len(set(parts)) != len(parts):
+        raise RefusalError(
+            "ONLY_JUDGES_INVALID",
+            f"RDLAB_ONLY_JUDGES contains duplicate judge_id(s): {parts!r}",
+        )
+    return tuple(parts)
 
 
 def resolve_first_load_note(judge_id: str) -> str:
@@ -6619,6 +7145,13 @@ def run_gate(args: argparse.Namespace) -> int:
                     "mem_available_bytes": meminfo_vals["mem_available_bytes"],
                     "cpu_count": cpu_count_val,
                     "cgroup_limit_chain": read_cgroup_limit_chain(),
+                    "device_check": {
+                        "status": "not_run_at_gate_before_venv_sync",
+                        "reason": (
+                            "gate runs before repo upload and before sync_judge_venvs "
+                            "creates venv-judge and venv-d3"
+                        ),
+                    },
                     "gpu_gate": {
                         "status": "not_run_at_gate_before_venv_sync",
                         "reason": (
@@ -6670,6 +7203,13 @@ def run_gate(args: argparse.Namespace) -> int:
             "route": py_report["route"],
             "lock_sdists": lock_sdists,
             "cgroup_limit_chain": read_cgroup_limit_chain(),
+            "device_check": {
+                "status": "not_run_at_gate_before_venv_sync",
+                "reason": (
+                    "gate runs before repo upload and before sync_judge_venvs "
+                    "creates venv-judge and venv-d3"
+                ),
+            },
             "gpu_gate": {
                 "status": "not_run_at_gate_before_venv_sync",
                 "reason": (
@@ -7143,6 +7683,7 @@ def main(argv: list[str] | None = None) -> int:
             "pyyaml_sdist_build": step_timings.get("pyyaml_sdist_build"),
             "venv_judge": step_timings.get("venv_judge"),
             "venv_d3": step_timings.get("venv_d3"),
+            "device_check": step_timings.get("device_check"),
             "gpu_gate": step_timings.get("gpu_gate"),
             "download": dl_block,
             "verify": step_timings.get("verify"),
@@ -7151,10 +7692,12 @@ def main(argv: list[str] | None = None) -> int:
         }
 
     until_step: str | None = None
+    only_judges: tuple[str, ...] | None = None
     judge_order: tuple[str, ...] = DEFAULT_JUDGE_ORDER
     judge_order_source: str = "default"
     first_load_judge_id: str = FIRST_LOAD_JUDGE_ID
     first_load_judge_id_source: str = "default"
+    device_check_report: dict[str, Any] | None = None
     gpu_gate_report: dict[str, Any] | None = None
     try:
         current_step = "validate_until_option"
@@ -7164,12 +7707,24 @@ def main(argv: list[str] | None = None) -> int:
         current_step = "validate_force_pinned_uv"
         validate_force_pinned_uv(args.mode)
 
-        current_step = "validate_judge_order"
-        judge_order, judge_order_source = validate_judge_order(
+        current_step = "validate_only_judges"
+        only_judges = validate_only_judges(
             args.mode,
-            getattr(args, "judge_order", None),
+            getattr(args, "only_judges", None),
+            raw_judge_order=getattr(args, "judge_order", None),
             until=until_step,
         )
+
+        current_step = "validate_judge_order"
+        if only_judges is not None:
+            judge_order = only_judges
+            judge_order_source = "only_judges"
+        else:
+            judge_order, judge_order_source = validate_judge_order(
+                args.mode,
+                getattr(args, "judge_order", None),
+                until=until_step,
+            )
 
         current_step = "validate_first_load_judge_id"
         first_load_judge_id, first_load_judge_id_source = validate_first_load_judge_id(
@@ -7268,9 +7823,11 @@ def main(argv: list[str] | None = None) -> int:
             "gate_status.json",
         )
 
-        if args.mode == "time-one" or until_step == "gpu_gate":
-            current_step = "gpu_gate"
-            gpu_gate_report = run_gpu_gate(
+        if until_step == "venv_sync":
+            stopped_after = "venv_sync"
+        else:
+            current_step = "device_check"
+            device_check_report = run_device_check(
                 args.work_dir,
                 dryrun=dryrun,
                 progress_path=progress_path,
@@ -7278,136 +7835,149 @@ def main(argv: list[str] | None = None) -> int:
                 step_timings=step_timings,
                 step_order=step_order,
             )
+            if until_step == "device_check":
+                stopped_after = "device_check"
+            else:
+                if args.mode == "time-one" or until_step == "gpu_gate":
+                    current_step = "gpu_gate"
+                    gpu_gate_report = run_gpu_gate(
+                        args.work_dir,
+                        dryrun=dryrun,
+                        progress_path=progress_path,
+                        gate_status_path=gate_status_path,
+                        step_timings=step_timings,
+                        step_order=step_order,
+                    )
 
-        if until_step == "venv_sync":
-            stopped_after = "venv_sync"
-        elif until_step == "gpu_gate":
-            stopped_after = "gpu_gate"
-        elif until_step == "first_judge":
-            current_step = "download_and_verify_all_judge_weights"
-            verified_snapshots = download_and_verify_all_judge_weights(
-                args.receipts_dir,
-                args.hf_home,
-                dryrun=dryrun,
-                repo_dir=args.repo_dir,
-                work_dir=args.work_dir,
-                progress_path=progress_path,
-                judge_records_out=judge_download_records,
-                step_timings=step_timings,
-                step_order=step_order,
-                only_judge_ids=(FIRST_JUDGE_ID,),
-                max_workers=dl_max_workers,
-                hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
-            )
-            stopped_after = "first_judge"
-        elif until_step == "first_load":
-            current_step = "download_and_verify_all_judge_weights"
-            verified_snapshots = download_and_verify_all_judge_weights(
-                args.receipts_dir,
-                args.hf_home,
-                dryrun=dryrun,
-                repo_dir=args.repo_dir,
-                work_dir=args.work_dir,
-                progress_path=progress_path,
-                judge_records_out=judge_download_records,
-                step_timings=step_timings,
-                step_order=step_order,
-                only_judge_ids=(first_load_judge_id,),
-                max_workers=dl_max_workers,
-                hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
-            )
-            current_step = "run_judges_pipeline"
-            t_jpass, start_jpass, _ = _record_step_start(
-                "judge_pass", progress_path=progress_path
-            )
-            part_dir = args.items_file.parent
-            time_one_summary, pilot_mass_readout = run_judges_pipeline(
-                mode=args.mode,
-                part_dir=part_dir,
-                run_dir=args.run_dir,
-                receipts_dir=args.receipts_dir,
-                hf_home=args.hf_home,
-                vram_halt_mib=args.vram_halt_mib,
-                dryrun=dryrun,
-                repo_root=args.repo_dir,
-                work_dir=args.work_dir,
-                progress_path=progress_path,
-                only_judge_ids=(first_load_judge_id,),
-                judge_order=judge_order,
-                judge_order_source=judge_order_source,
-                real_load_on_cpu=True,
-                child_timeout_seconds=resolve_first_load_timeout_seconds(),
-            )
-            _record_step_end(
-                "judge_pass",
-                t_jpass,
-                start_jpass,
-                progress_path=progress_path,
-                step_timings=step_timings,
-                step_order=step_order,
-            )
-            stopped_after = "first_load"
-        elif until_step == "weights":
-            current_step = "download_and_verify_all_judge_weights"
-            verified_snapshots = download_and_verify_all_judge_weights(
-                args.receipts_dir,
-                args.hf_home,
-                dryrun=dryrun,
-                repo_dir=args.repo_dir,
-                work_dir=args.work_dir,
-                progress_path=progress_path,
-                judge_records_out=judge_download_records,
-                step_timings=step_timings,
-                step_order=step_order,
-                max_workers=dl_max_workers,
-                hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
-            )
-            stopped_after = "weights"
-        else:
-            current_step = "download_and_verify_all_judge_weights"
-            verified_snapshots = download_and_verify_all_judge_weights(
-                args.receipts_dir,
-                args.hf_home,
-                dryrun=dryrun,
-                repo_dir=args.repo_dir,
-                work_dir=args.work_dir,
-                progress_path=progress_path,
-                judge_records_out=judge_download_records,
-                step_timings=step_timings,
-                step_order=step_order,
-                only_judge_ids=judge_order,
-                max_workers=dl_max_workers,
-                hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
-            )
+                if until_step == "gpu_gate":
+                    stopped_after = "gpu_gate"
+                elif until_step == "first_judge":
+                    current_step = "download_and_verify_all_judge_weights"
+                    verified_snapshots = download_and_verify_all_judge_weights(
+                        args.receipts_dir,
+                        args.hf_home,
+                        dryrun=dryrun,
+                        repo_dir=args.repo_dir,
+                        work_dir=args.work_dir,
+                        progress_path=progress_path,
+                        judge_records_out=judge_download_records,
+                        step_timings=step_timings,
+                        step_order=step_order,
+                        only_judge_ids=(FIRST_JUDGE_ID,),
+                        max_workers=dl_max_workers,
+                        hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
+                    )
+                    stopped_after = "first_judge"
+                elif until_step == "first_load":
+                    current_step = "download_and_verify_all_judge_weights"
+                    verified_snapshots = download_and_verify_all_judge_weights(
+                        args.receipts_dir,
+                        args.hf_home,
+                        dryrun=dryrun,
+                        repo_dir=args.repo_dir,
+                        work_dir=args.work_dir,
+                        progress_path=progress_path,
+                        judge_records_out=judge_download_records,
+                        step_timings=step_timings,
+                        step_order=step_order,
+                        only_judge_ids=(first_load_judge_id,),
+                        max_workers=dl_max_workers,
+                        hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
+                    )
+                    current_step = "run_judges_pipeline"
+                    t_jpass, start_jpass, _ = _record_step_start(
+                        "judge_pass", progress_path=progress_path
+                    )
+                    part_dir = args.items_file.parent
+                    time_one_summary, pilot_mass_readout = run_judges_pipeline(
+                        mode=args.mode,
+                        part_dir=part_dir,
+                        run_dir=args.run_dir,
+                        receipts_dir=args.receipts_dir,
+                        hf_home=args.hf_home,
+                        vram_halt_mib=args.vram_halt_mib,
+                        dryrun=dryrun,
+                        repo_root=args.repo_dir,
+                        work_dir=args.work_dir,
+                        progress_path=progress_path,
+                        only_judge_ids=(first_load_judge_id,),
+                        judge_order=judge_order,
+                        judge_order_source=judge_order_source,
+                        only_judges=only_judges,
+                        real_load_on_cpu=True,
+                        child_timeout_seconds=resolve_first_load_timeout_seconds(),
+                    )
+                    _record_step_end(
+                        "judge_pass",
+                        t_jpass,
+                        start_jpass,
+                        progress_path=progress_path,
+                        step_timings=step_timings,
+                        step_order=step_order,
+                    )
+                    stopped_after = "first_load"
+                elif until_step == "weights":
+                    current_step = "download_and_verify_all_judge_weights"
+                    verified_snapshots = download_and_verify_all_judge_weights(
+                        args.receipts_dir,
+                        args.hf_home,
+                        dryrun=dryrun,
+                        repo_dir=args.repo_dir,
+                        work_dir=args.work_dir,
+                        progress_path=progress_path,
+                        judge_records_out=judge_download_records,
+                        step_timings=step_timings,
+                        step_order=step_order,
+                        max_workers=dl_max_workers,
+                        hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
+                    )
+                    stopped_after = "weights"
+                else:
+                    current_step = "download_and_verify_all_judge_weights"
+                    verified_snapshots = download_and_verify_all_judge_weights(
+                        args.receipts_dir,
+                        args.hf_home,
+                        dryrun=dryrun,
+                        repo_dir=args.repo_dir,
+                        work_dir=args.work_dir,
+                        progress_path=progress_path,
+                        judge_records_out=judge_download_records,
+                        step_timings=step_timings,
+                        step_order=step_order,
+                        only_judge_ids=judge_order,
+                        max_workers=dl_max_workers,
+                        hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
+                    )
 
-            current_step = "run_judges_pipeline"
-            t_jpass, start_jpass, _ = _record_step_start(
-                "judge_pass", progress_path=progress_path
-            )
-            part_dir = args.items_file.parent
-            time_one_summary, pilot_mass_readout = run_judges_pipeline(
-                mode=args.mode,
-                part_dir=part_dir,
-                run_dir=args.run_dir,
-                receipts_dir=args.receipts_dir,
-                hf_home=args.hf_home,
-                vram_halt_mib=args.vram_halt_mib,
-                dryrun=dryrun,
-                repo_root=args.repo_dir,
-                work_dir=args.work_dir,
-                progress_path=progress_path,
-                only_judge_ids=judge_order,
-                judge_order=judge_order,
-                judge_order_source=judge_order_source,
-            )
-            _record_step_end(
-                "judge_pass",
-                t_jpass,
-                start_jpass,
-                progress_path=progress_path,
-                step_timings=step_timings,
-                step_order=step_order,
-            )
+                    current_step = "run_judges_pipeline"
+                    t_jpass, start_jpass, _ = _record_step_start(
+                        "judge_pass", progress_path=progress_path
+                    )
+                    part_dir = args.items_file.parent
+                    time_one_summary, pilot_mass_readout = run_judges_pipeline(
+                        mode=args.mode,
+                        part_dir=part_dir,
+                        run_dir=args.run_dir,
+                        receipts_dir=args.receipts_dir,
+                        hf_home=args.hf_home,
+                        vram_halt_mib=args.vram_halt_mib,
+                        dryrun=dryrun,
+                        repo_root=args.repo_dir,
+                        work_dir=args.work_dir,
+                        progress_path=progress_path,
+                        only_judge_ids=judge_order,
+                        judge_order=judge_order,
+                        judge_order_source=judge_order_source,
+                        only_judges=only_judges,
+                    )
+                    _record_step_end(
+                        "judge_pass",
+                        t_jpass,
+                        start_jpass,
+                        progress_path=progress_path,
+                        step_timings=step_timings,
+                        step_order=step_order,
+                    )
 
         current_step = "delete_uploaded_items"
         deleted_items_receipt = delete_uploaded_items_and_record_receipt(
@@ -7469,6 +8039,8 @@ def main(argv: list[str] | None = None) -> int:
             "judge_venvs": judge_venvs_map,
             "judge_order": list(judge_order),
             "judge_order_source": judge_order_source,
+            "only_judges": list(only_judges) if only_judges is not None else None,
+            "device_check": device_check_report,
             "gpu_gate": gpu_gate_report,
             "download_stack_versions": {
                 "expected": EXPECTED_DOWNLOAD_STACK_VERSIONS,
@@ -7476,6 +8048,11 @@ def main(argv: list[str] | None = None) -> int:
             },
             "verified_snapshots": verified_snapshots,
             "deleted_items_receipt": deleted_items_receipt,
+            "judges": (
+                dict(time_one_summary.get("judges", {}))
+                if time_one_summary is not None
+                else {}
+            ),
             "time_one_summary": time_one_summary,
             "pilot_mass_check": pilot_mass_readout,
             "harness_readouts": {
@@ -7546,6 +8123,8 @@ def main(argv: list[str] | None = None) -> int:
             "judge_venvs": judge_venvs_map,
             "judge_order": list(judge_order),
             "judge_order_source": judge_order_source,
+            "only_judges": list(only_judges) if only_judges is not None else None,
+            "device_check": device_check_report,
             "gpu_gate": gpu_gate_report,
         }
         if until_step is not None:
@@ -7604,6 +8183,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         if isinstance(err, GpuGateError):
             gpu_gate_report = err.gpu_gate_report
+        if isinstance(err, DeviceIndexCheckError):
+            device_check_report = err.device_check_report
         if deleted_items_receipt is None and args.items_file is not None:
             try:
                 deleted_items_receipt = delete_uploaded_items_and_record_receipt(
@@ -7623,6 +8204,8 @@ def main(argv: list[str] | None = None) -> int:
             "judge_venvs": fail_judge_venvs_map,
             "judge_order": list(judge_order),
             "judge_order_source": judge_order_source,
+            "only_judges": list(only_judges) if only_judges is not None else None,
+            "device_check": device_check_report,
             "gpu_gate": gpu_gate_report,
             "download_stack_versions": {
                 "expected": EXPECTED_DOWNLOAD_STACK_VERSIONS,
@@ -7649,7 +8232,10 @@ def main(argv: list[str] | None = None) -> int:
         status_fail_extra: dict[str, Any] = {
             "judge_order": list(judge_order),
             "judge_order_source": judge_order_source,
+            "only_judges": list(only_judges) if only_judges is not None else None,
         }
+        if device_check_report is not None:
+            status_fail_extra["device_check"] = device_check_report
         if gpu_gate_report is not None:
             status_fail_extra["gpu_gate"] = gpu_gate_report
         if until_step is not None:

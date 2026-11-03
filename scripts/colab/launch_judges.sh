@@ -42,7 +42,7 @@ Options:
   --probe              Run the read-only CPU VM environment probe (CPU at 0.08/h, wall 300s, cap 0.01)
   --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
   --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
-  --until STEP         Stop --stub after STEP (venv_sync, gpu_gate, first_judge, first_load, weights)
+  --until STEP         Stop --stub after STEP (venv_sync, device_check, gpu_gate, first_judge, first_load, weights)
   --dry                Print every colab CLI command in order with resolved arguments and exit
   --resume             Resume from existing schedule/generations state in --out-dir
   --run-id ID          Run identifier (session name is rdlab-<ID>)
@@ -78,7 +78,7 @@ while [[ $# -gt 0 ]]; do
     --until)
       UNTIL_FLAG_SET=1
       if [[ $# -lt 2 ]] || [[ -z "${2:-}" ]]; then
-        echo "BAD_UNTIL: --until requires a step name (venv_sync, gpu_gate, first_judge, first_load, weights)" >&2
+        echo "BAD_UNTIL: --until requires a step name (venv_sync, device_check, gpu_gate, first_judge, first_load, weights)" >&2
         exit 2
       fi
       UNTIL_STEP="$2"
@@ -88,7 +88,7 @@ while [[ $# -gt 0 ]]; do
       UNTIL_FLAG_SET=1
       UNTIL_STEP="${1#*=}"
       if [[ -z "$UNTIL_STEP" ]]; then
-        echo "BAD_UNTIL: --until requires a step name (venv_sync, gpu_gate, first_judge, first_load, weights)" >&2
+        echo "BAD_UNTIL: --until requires a step name (venv_sync, device_check, gpu_gate, first_judge, first_load, weights)" >&2
         exit 2
       fi
       shift
@@ -139,10 +139,10 @@ if [[ "$UNTIL_FLAG_SET" -eq 1 ]] || [[ -n "$UNTIL_STEP" ]]; then
     exit 2
   fi
   case "$UNTIL_STEP" in
-    venv_sync|gpu_gate|first_judge|first_load|weights)
+    venv_sync|device_check|gpu_gate|first_judge|first_load|weights)
       ;;
     *)
-      echo "BAD_UNTIL: unknown --until step '$UNTIL_STEP' (allowed: venv_sync, gpu_gate, first_judge, first_load, weights)" >&2
+      echo "BAD_UNTIL: unknown --until step '$UNTIL_STEP' (allowed: venv_sync, device_check, gpu_gate, first_judge, first_load, weights)" >&2
       exit 2
       ;;
   esac
@@ -312,6 +312,13 @@ try:
         os.environ.get("RDLAB_HF_DOWNLOAD_MAX_WORKERS"),
         os.environ.get("HF_XET_NUM_CONCURRENT_RANGE_GETS"),
     )
+    vm_judges.validate_only_judges(
+        mode,
+        os.environ.get("RDLAB_ONLY_JUDGES", None),
+        raw_judge_order=os.environ.get("RDLAB_JUDGE_ORDER", None),
+        until=until_step,
+        session_smoke=is_smoke,
+    )
     vm_judges.validate_judge_order(
         mode,
         os.environ.get("RDLAB_JUDGE_ORDER", None),
@@ -416,6 +423,9 @@ build_exec_env_args() {
   fi
   if [[ -n "${RDLAB_JUDGE_ORDER+x}" ]] && [[ -n "${RDLAB_JUDGE_ORDER}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_JUDGE_ORDER=$RDLAB_JUDGE_ORDER")
+  fi
+  if [[ -n "${RDLAB_ONLY_JUDGES+x}" ]] && [[ -n "${RDLAB_ONLY_JUDGES}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_ONLY_JUDGES=$RDLAB_ONLY_JUDGES")
   fi
   if [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID+x}" ]] && [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_FIRST_LOAD_JUDGE_ID=$RDLAB_FIRST_LOAD_JUDGE_ID")
@@ -878,6 +888,33 @@ payload: dict[str, object] = {
     "format_verified_on_real_cli": verified_flag,
     "sessions_output_shape": sessions_shape,
 }
+raw_only_judges = os.environ.get("RDLAB_ONLY_JUDGES", "").strip()
+only_judges_list: list[str] | None = (
+    [p for p in raw_only_judges.split(",") if p] if raw_only_judges else None
+)
+payload["only_judges"] = only_judges_list
+jdone_dir = out_path.parent / "judge_done"
+done_ids: set[str] = set()
+if jdone_dir.is_dir():
+    for jf in sorted(jdone_dir.glob("*.json")):
+        if jf.is_file():
+            done_ids.add(jf.stem)
+ordered_candidates: list[str] = []
+receipt_file = out_path.parent / "vm_receipt.json"
+if receipt_file.is_file():
+    try:
+        rdoc = json.loads(receipt_file.read_text(encoding="utf-8"))
+        if isinstance(rdoc.get("judge_order"), list):
+            ordered_candidates = [str(x) for x in rdoc["judge_order"]]
+    except Exception:
+        pass
+if not ordered_candidates and only_judges_list:
+    ordered_candidates = list(only_judges_list)
+completed_judges: list[str] = [jid for jid in ordered_candidates if jid in done_ids]
+for jid in sorted(done_ids):
+    if jid not in completed_judges:
+        completed_judges.append(jid)
+payload["judges_completed"] = completed_judges
 until_step_val = os.environ.get("RDLAB_UNTIL_STEP", "").strip()
 if until_step_val:
     payload["until"] = until_step_val
@@ -1340,8 +1377,8 @@ GATE_RC=0
 GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
 if [[ "$GATE_RC" -ne 0 ]] || ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
   flock -u 9 || true
-  if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH'; then
-    GATE_REASON="$(printf '%s\n' "$GATE_OUT" | grep -m1 -E 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH' || true)"
+  if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID'; then
+    GATE_REASON="$(printf '%s\n' "$GATE_OUT" | grep -m1 -E 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID' || true)"
     RUN_WHY="VM gate refused on session $S: $GATE_REASON"
     printf '%s\n' "$GATE_REASON" >&2
     exit 2
