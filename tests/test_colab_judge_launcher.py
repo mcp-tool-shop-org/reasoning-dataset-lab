@@ -6983,10 +6983,34 @@ def _validate_c1_c15_audit_table_text(doc_text: str) -> None:
     assert not violations, "C1–C15 audit table validation failed:\n" + "\n".join(violations)
 
 
+def _mutate_c1_c15_audit_row(
+    doc_text: str,
+    row_id: str,
+    mutator: Any,
+) -> str:
+    """Apply `mutator` to the single C1–C15 markdown table row identified by `row_id`."""
+    row_prefix_re = re.compile(rf"^\|\s*`{re.escape(row_id)}`\s*\|")
+    out_lines: list[str] = []
+    matched = False
+    for line in doc_text.splitlines():
+        if row_prefix_re.match(line.strip()):
+            assert not matched, f"Duplicate audit row {row_id}"
+            mutated = mutator(line)
+            assert mutated != line, f"Row mutator for {row_id} was a no-op"
+            out_lines.append(mutated)
+            matched = True
+        else:
+            out_lines.append(line)
+    assert matched, f"Audit row {row_id} not found"
+    return "\n".join(out_lines) + "\n"
+
+
 def test_fix6_audit_table_versions_match_locks() -> None:
-    """Part 0 mechanical test:
-    - Fails on `8f873402:scripts/colab/REAL_SERVICE_ASSUMPTIONS.md` (fix5).
-    - Passes on the corrected `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`.
+    """Part 0 mechanical test (independent of local git history and literal line numbers):
+    - Passes on the current `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`.
+    - Fails when audit rows are mutated by row ID (`C3`, `C4`, `C11`, `C12`, `C14`) with
+      mismatched package versions, off-target `path:line` citations, or a positive
+      `torch.cuda.max_memory_allocated()` claim.
     """
     assumptions_md = SCRIPTS_COLAB_DIR / "REAL_SERVICE_ASSUMPTIONS.md"
     current_text = assumptions_md.read_text(encoding="utf-8")
@@ -6996,46 +7020,57 @@ def test_fix6_audit_table_versions_match_locks() -> None:
         in current_text
     ), "Missing required Part 0 correction note above the C1–C15 audit table"
 
-    # Verify the same validator fails on fix5 (`8f873402:scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`
-    # when commit `8f873402` is locally present, or reconstructed fix5 rows in shallow CI clones)
-    old_commit_fix5 = "8f873402dc10364644dbf7b6f222e21fbda87f5c"
-    if (
-        subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit_fix5}^{{commit}}"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        ).returncode
-        == 0
-    ):
-        old_doc_text = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "show", f"{old_commit_fix5}:scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=True,
-        ).stdout
-    else:
-        old_doc_text = (
-            current_text.replace("torch==2.14.1+cu132", "torch==2.11.0+cu132")
-            .replace("transformers==5.19.0", "transformers==5.0.0")
-            .replace("scripts/colab/locks/judge.lock.txt:186-188", "judge.lock.txt:154-155")
-            .replace("scripts/colab/locks/judge.lock.txt:229-231", "scripts/colab/locks/judge.lock.txt:210-211")
-            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2233-2367", "bakeoff_judge.py:390-450")
-            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2634", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
-            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2692-2710", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
-            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2663", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
-            .replace("src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:2721-2739", "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py:726")
-            .replace(
-                "(note: `torch.cuda.max_memory_allocated()` is not used anywhere in the repo)",
-                "and `run_bakeoff_judge` also tracks `torch.cuda.max_memory_allocated()`",
-            )
-        )
+    # Build the mismatched document by editing rows by row ID (`C3`, `C4`, `C11`, `C12`, `C14`)
+    # using regex patterns over whatever `path:line` citations each row currently holds.
+    mismatched_doc_text = current_text
+    mismatched_doc_text = _mutate_c1_c15_audit_row(
+        mismatched_doc_text,
+        "C3",
+        lambda row: re.sub(
+            r"((?:scripts/colab/locks/)?judge\.lock\.txt):\d+(?:-\d+)?",
+            r"\1:1-2",
+            row,
+        ),
+    )
+    mismatched_doc_text = _mutate_c1_c15_audit_row(
+        mismatched_doc_text,
+        "C4",
+        lambda row: re.sub(
+            r"((?:scripts/colab/locks/)?judge\.lock\.txt):(?!1-2\b)\d+(?:-\d+)?",
+            r"\1:10-11",
+            re.sub(r"\btorch==[0-9][A-Za-z0-9_.+-]*", "torch==2.11.0+cu132", row),
+        ),
+    )
+    mismatched_doc_text = _mutate_c1_c15_audit_row(
+        mismatched_doc_text,
+        "C11",
+        lambda row: re.sub(
+            r"((?:src/reasoning_dataset_lab/pilot_b/)?bakeoff_judge\.py):\d+(?:-\d+)?",
+            r"\1:1-5",
+            row,
+        ),
+    )
+    mismatched_doc_text = _mutate_c1_c15_audit_row(
+        mismatched_doc_text,
+        "C12",
+        lambda row: re.sub(
+            r"((?:src/reasoning_dataset_lab/pilot_b/)?bakeoff_judge\.py):\d+(?:-\d+)?",
+            r"\1:1-5",
+            re.sub(r"\btransformers==[0-9][A-Za-z0-9_.+-]*", "transformers==5.0.0", row),
+        ),
+    )
+    mismatched_doc_text = _mutate_c1_c15_audit_row(
+        mismatched_doc_text,
+        "C14",
+        lambda row: re.sub(
+            r"\(note: `torch\.cuda\.max_memory_allocated\(\)` is not used anywhere in the repo\)",
+            "and `run_bakeoff_judge` also tracks `torch.cuda.max_memory_allocated()`",
+            row,
+        ),
+    )
+
     with pytest.raises(AssertionError) as exc_old:
-        _validate_c1_c15_audit_table_text(old_doc_text)
+        _validate_c1_c15_audit_table_text(mismatched_doc_text)
     err_msg = str(exc_old.value)
     assert "torch==2.11.0+cu132" in err_msg
     assert "transformers==5.0.0" in err_msg
