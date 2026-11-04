@@ -34,21 +34,21 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 5,
+      "changed": 1,
       "moved": 0,
-      "parts": 2,
+      "parts": 1,
       "removed": 0
     },
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-02; 5 files changed content.",
+        "sentence": "Nothing structural changed since 2026-11-04; 1 file changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "2bc4ace459074bed25390bc8a3cc4f9bf196e990",
-      "generatedAt": "2026-11-02T09:27:32.227Z"
+      "commit": "98ce0a8879019a01db5b23e532f5baa57ff9dc70",
+      "generatedAt": "2026-11-04T18:31:16.771Z"
     },
     "unchanged": true
   },
@@ -69,6 +69,36 @@
       "shared": 8
     },
     {
+      "a": "scripts/colab/vm_judges.py",
+      "b": "tests/fixtures/fake_colab.py",
+      "either": 15,
+      "partLabels": [
+        "scripts",
+        "tests"
+      ],
+      "parts": [
+        "scripts",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 13
+    },
+    {
+      "a": "scripts/colab/vm_judges.py",
+      "b": "tests/test_colab_judge_launcher.py",
+      "either": 18,
+      "partLabels": [
+        "scripts",
+        "tests"
+      ],
+      "parts": [
+        "scripts",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 15
+    },
+    {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "tests/test_pilot_b_ollama_adapters.py",
       "either": 11,
@@ -84,60 +114,30 @@
       "shared": 9
     },
     {
-      "a": "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
-      "b": "tests/test_pilot_b_variety.py",
-      "either": 7,
+      "a": "tests/fixtures/fake_colab.py",
+      "b": "tests/test_colab_judge_launcher.py",
+      "either": 18,
       "partLabels": [
-        "src",
+        "tests",
         "tests"
       ],
       "parts": [
-        "src",
+        "tests",
         "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 5
-    },
-    {
-      "a": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
-      "b": "tests/test_bakeoff_prereg_build.py",
-      "either": 8,
-      "partLabels": [
-        "src",
-        "tests"
-      ],
-      "parts": [
-        "src",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 5
-    },
-    {
-      "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
-      "b": "src/reasoning_dataset_lab/pilot_b/ollama.py",
-      "either": 16,
-      "partLabels": [
-        "src",
-        "src"
-      ],
-      "parts": [
-        "src",
-        "src"
       ],
       "relation": "inside",
-      "shared": 9
+      "shared": 13
     }
   ],
   "changesTogetherNote": [
     "1 file changed together with its own test, as expected.",
     "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
-    "Window: 180 days; a pair counts from 3 shared commits, since 4 source files reach 10 revisions; the floor rises to 10 when 25 do."
+    "Window: 180 days; a pair counts from 3 shared commits, since 8 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "e8aa37a6c44d6f481d8c3ce7d3c767abe77ab41b",
+  "commit": "034ee76329d409d4843ac964bccbe389511bdb2f",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (59 files), CSS (2), TypeScript (2), shell (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (62 files), CSS (2), TypeScript (2), shell (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -159,12 +159,12 @@
         {
           "boundary": "scripts",
           "depth": 1,
-          "files": 1
+          "files": 2
         },
         {
           "boundary": "src",
           "depth": 1,
-          "files": 23
+          "files": 25
         }
       ],
       "runs": [
@@ -228,7 +228,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 23
+          "files": 25
         }
       ],
       "runs": [],
@@ -259,7 +259,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 20
+          "files": 21
         }
       ],
       "runs": [
@@ -292,13 +292,13 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-02T10:18:05.891Z",
+  "generatedAt": "2026-11-04T18:40:55.454Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
-    "1 import could not be resolved: `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
-    "10 writes and 15 reads use paths built at run time and are not named here.",
-    "33 writes and 83 reads go to a path their caller passes, not to this repository.",
-    "1 read goes to the directory the command is run in (certification/), not to this repository.",
+    "3 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
+    "11 writes and 26 reads use paths built at run time and are not named here.",
+    "49 writes and 114 reads go to a path their caller passes, not to this repository.",
+    "3 reads go to the directory the command is run in, not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
   "mainDoor": ".github/workflows/ci.yml",
@@ -333,7 +333,7 @@
     "scripts": 1,
     "src": 33
   },
-  "unnamedWrites": 10,
+  "unnamedWrites": 11,
   "unread": [],
   "unreadFiles": 0,
   "unreadNote": [],

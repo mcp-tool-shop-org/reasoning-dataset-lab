@@ -666,7 +666,9 @@ def test_additional_error_branches_and_edge_cases(tmp_path: Path, monkeypatch: p
         "run",
         lambda *a, **kw: subprocess.CompletedProcess(args=[], returncode=1, stdout=""),
     )
-    assert bakeoff_judge.query_gpu_vram_peak_mib() == 0
+    with pytest.raises(RdlabError) as exc_vram_fail:
+        bakeoff_judge.query_gpu_vram_peak_mib()
+    assert exc_vram_fail.value.code == "BAKEOFF_JUDGE_VRAM_PROBE_FAILED"
     bakeoff_judge.kill_judge_pid_tree(0)  # no-op for pid <= 4
 
     # resolve_items_jsonl_path missing

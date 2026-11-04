@@ -396,26 +396,18 @@ def resolve_repo_dir(repo_dir: Path | None = None) -> Path:
 
 
 def _ensure_repo_imports(repo_dir: Path | None = None) -> None:
-    """Ensure `<repo_dir>/src` is on `sys.path` without importing `torch`, `transformers`, or `bakeoff_judge` in the parent."""
-    candidate_roots = [resolve_repo_dir(repo_dir)]
-    if repo_dir is not None:
-        candidate_roots.insert(0, Path(repo_dir))
-    cwd_path = Path.cwd()
-    if (cwd_path / "src" / "reasoning_dataset_lab").is_dir():
-        candidate_roots.append(cwd_path)
+    """No-op compatibility stub (parent process never mutates `sys.path`)."""
+    _ = repo_dir
 
-    for root in candidate_roots:
-        src_dir = root / "src"
-        if src_dir.is_dir():
-            src_str = str(src_dir)
-            if src_str not in sys.path:
-                sys.path.insert(0, src_str)
 
 EXPECTED_JUDGE_LOCK_SHA256 = (
     "608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
 )
 EXPECTED_D3_LOCK_SHA256 = (
     "08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
+)
+EXPECTED_DEVICE_PY_SHA256 = (
+    "0755b739628d8f91adb696df4df90dbda78b0cfe5233fe33b54ae7987e55232d"
 )
 PYYAML_SDIST_FILENAME = "pyyaml-6.0.3.tar.gz"
 PYYAML_SDIST_SHA256 = (
@@ -552,16 +544,48 @@ TAR_ALLOWED_DIRS: frozenset[str] = frozenset(
 )
 
 
-class RefusalError(RuntimeError):
-    """Hard-stop refusal with a structured failure class."""
-
-    def __init__(self, failure_class: str, message: str) -> None:
-        RuntimeError.__init__(self, f"{failure_class}: {message}")
-        self.failure_class = failure_class
-        self.code = failure_class
+class _FallbackDeviceRefusalError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        hint: str = "Inspect VM logs and refusal details before retrying.",
+        exit_code: int = 1,
+    ) -> None:
+        RuntimeError.__init__(self, f"[{code}] {message} (hint: {hint})")
+        self.code = code
+        self.failure_class = code
+        self.message = message
         self.detail = message
+        self.hint = hint
+        self.exit_code = exit_code
 
 
+try:
+    from reasoning_dataset_lab.pilot_b.device import (
+        _CUDA_INDEX_DEVICE_RE,
+        DeviceRefusalError,
+        normalize_judge_device,
+    )
+except ModuleNotFoundError:
+    try:
+        if (
+            Path("device.py").is_file()
+            and hashlib.sha256(Path("device.py").read_bytes()).hexdigest()
+            == EXPECTED_DEVICE_PY_SHA256
+        ):
+            from device import (  # type: ignore[import-not-found,no-redef]
+                _CUDA_INDEX_DEVICE_RE,
+                DeviceRefusalError,
+                normalize_judge_device,
+            )
+        else:
+            DeviceRefusalError = _FallbackDeviceRefusalError  # type: ignore[misc,assignment]
+    except ModuleNotFoundError:
+        DeviceRefusalError = _FallbackDeviceRefusalError  # type: ignore[misc,assignment]
+
+
+RefusalError = DeviceRefusalError
 RdlabError: type[BaseException] = RefusalError
 
 
@@ -1836,6 +1860,66 @@ def verify_lock_digests(
             "judge.lock.txt": list(judge_report["sdists"]),
             "d3.lock.txt": list(d3_report["sdists"]),
         },
+    }
+
+
+def verify_device_py_digest(
+    device_py_path: Path,
+    *,
+    repo_device_py_path: Path | None = None,
+    env_device_sha256: str | None = None,
+    expected_device_sha256: str = EXPECTED_DEVICE_PY_SHA256,
+) -> dict[str, str]:
+    """Verify uploaded `/content/device.py` (and optional repo copy) against launcher config SHA and `RDLAB_DEVICE_PY_SHA256`."""
+    if not isinstance(env_device_sha256, str) or not env_device_sha256:
+        raise RefusalError(
+            "DEVICE_PY_SHA256_MISSING",
+            "RDLAB_DEVICE_PY_SHA256 is required and must not be empty.",
+        )
+    if not HEX64_LOWER_RE.match(env_device_sha256):
+        raise RefusalError(
+            "DEVICE_PY_SHA256_MISMATCH",
+            f"RDLAB_DEVICE_PY_SHA256 must be 64 lowercase hex chars, got {env_device_sha256!r}.",
+        )
+    if not device_py_path.is_file():
+        raise RefusalError(
+            "DEVICE_PY_MISSING",
+            f"device.py not found at {device_py_path}",
+        )
+    actual_sha = sha256_file(device_py_path)
+    if actual_sha != expected_device_sha256 or env_device_sha256 != actual_sha:
+        raise RefusalError(
+            "DEVICE_PY_SHA256_MISMATCH",
+            f"device.py sha256 mismatch at {device_py_path}: file={actual_sha}, "
+            f"config={expected_device_sha256}, env={env_device_sha256}",
+        )
+    if repo_device_py_path is not None:
+        if not repo_device_py_path.is_file():
+            raise RefusalError(
+                "DEVICE_PY_MISSING",
+                f"repo device.py not found at {repo_device_py_path}",
+            )
+        repo_sha = sha256_file(repo_device_py_path)
+        if repo_sha != expected_device_sha256 or repo_sha != actual_sha:
+            raise RefusalError(
+                "DEVICE_PY_SHA256_MISMATCH",
+                f"repo device.py sha256 mismatch at {repo_device_py_path}: file={repo_sha}, "
+                f"uploaded={actual_sha}, config={expected_device_sha256}",
+            )
+    if Path("device.py").is_file() and Path("device.py").resolve() == device_py_path.resolve():
+        from device import (  # type: ignore[import-not-found]
+            _CUDA_INDEX_DEVICE_RE as _uploaded_cuda_re,
+            DeviceRefusalError as _uploaded_refusal_err,
+            normalize_judge_device as _uploaded_normalize_judge_device,
+        )
+
+        if "normalize_judge_device" not in globals():
+            globals()["_CUDA_INDEX_DEVICE_RE"] = _uploaded_cuda_re
+            globals()["DeviceRefusalError"] = _uploaded_refusal_err
+            globals()["normalize_judge_device"] = _uploaded_normalize_judge_device
+    return {
+        "device_py_path": str(device_py_path),
+        "device_py_sha256": actual_sha,
     }
 
 
@@ -3254,6 +3338,7 @@ def download_all_judge_weights(
                                 "cmd": list(child_cmd),
                                 "timeout_seconds": eff_dl_timeout,
                                 "configured_timeout_seconds": configured_dl_timeout,
+                                "elapsed_seconds": round(wall_elapsed, 6),
                                 "returncode": child_rc,
                                 "stdin_devnull": True,
                                 "hf_hub_offline": child_env.get("HF_HUB_OFFLINE"),
@@ -3557,6 +3642,7 @@ def download_all_judge_weights(
                 "start": start_iso,
                 "end": end_iso,
                 "seconds": round(elapsed_s, 6),
+                "elapsed_seconds": round(elapsed_s, 6),
                 "max_workers": eff_max_workers,
                 "hf_xet_num_concurrent_range_gets": eff_xet_range_gets,
                 "huggingface_hub_version": actual_hub_ver,
@@ -4154,7 +4240,7 @@ def compute_percentile(vals: Sequence[float], pct: float) -> float:
 
 
 class VramSampler:
-    """Samples GPU VRAM every `interval_s` seconds (default 5 s) and tracks peak MiB."""
+    """Samples GPU VRAM every `interval_s` seconds (default 5 s) and tracks peak MiB fail-closed."""
 
     def __init__(
         self,
@@ -4164,14 +4250,20 @@ class VramSampler:
     ) -> None:
         self.interval_s = interval_s
         self.dryrun = dryrun
-        self.peak_mib = 0
+        self.peak_mib: int | None = None
         self.samples_count = 0
+        self.failure_class: str | None = None
+        self.failures: list[str] = []
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def _sample_once(self) -> int:
+    def _record_failure(self, detail: str) -> None:
+        self.failure_class = "VRAM_SAMPLE_FAILED"
+        self.failures.append(scrub_log_text(detail))
+
+    def _sample_once(self) -> int | None:
         if self.dryrun:
-            return 0
+            return None
         try:
             proc = run_vm_subprocess(
                 [
@@ -4183,28 +4275,46 @@ class VramSampler:
                 check=False,
                 log_output=False,
             )
-            if proc.returncode == 0 and proc.stdout.strip():
-                first = proc.stdout.strip().splitlines()[0].strip()
-                return int(first)
-        except Exception:
-            pass
-        return 0
+            if proc.returncode != 0:
+                self._record_failure(
+                    f"VRAM_SAMPLE_FAILED: nvidia-smi exited with rc={proc.returncode}: "
+                    f"{proc.stderr_tail or proc.stdout_tail}"
+                )
+                return None
+            out_stripped = proc.stdout.strip()
+            if not out_stripped:
+                self._record_failure("VRAM_SAMPLE_FAILED: nvidia-smi returned empty stdout")
+                return None
+            first = out_stripped.splitlines()[0].strip()
+            val = int(first)
+            if val < 0:
+                self._record_failure(
+                    f"VRAM_SAMPLE_FAILED: nvidia-smi returned negative MiB {val}"
+                )
+                return None
+            return val
+        except Exception as exc:
+            self._record_failure(
+                f"VRAM_SAMPLE_FAILED: {type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _record_sample(self, val: int | None) -> None:
+        self.samples_count += 1
+        if val is not None:
+            self.peak_mib = val if self.peak_mib is None else max(self.peak_mib, val)
 
     def start(self) -> None:
-        val = self._sample_once()
-        self.peak_mib = max(self.peak_mib, val)
-        self.samples_count += 1
+        self._record_sample(self._sample_once())
 
         def _loop() -> None:
             while not self._stop_event.wait(self.interval_s):
-                v = self._sample_once()
-                self.peak_mib = max(self.peak_mib, v)
-                self.samples_count += 1
+                self._record_sample(self._sample_once())
 
         self._thread = threading.Thread(target=_loop, daemon=True)
         self._thread.start()
 
-    def stop(self) -> int:
+    def stop(self) -> int | None:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
@@ -4388,27 +4498,6 @@ def _query_nvidia_smi_driver_line() -> str:
     return "nvidia-smi not found"
 
 
-_CUDA_INDEX_DEVICE_RE: re.Pattern[str] = re.compile(r"^cuda:(?:0|[1-9][0-9]*)$")
-
-
-def normalize_judge_device(device: Any) -> str:
-    """Normalise judge device strings: `'cuda' -> 'cuda:0'`, `'cuda:N' -> 'cuda:N'`, `'cpu' -> 'cpu'`.
-
-    Any other value (including `'cuda:'`, `'cuda:-1'`, `'gpu'`, `'cuda:0 '`, `''`, or non-str)
-    is refused with `BAKEOFF_JUDGE_DEVICE_INVALID` and a scrubbed message.
-    """
-    if isinstance(device, str) and not isinstance(device, bool):
-        if device == "cuda":
-            return "cuda:0"
-        if device == "cpu" or _CUDA_INDEX_DEVICE_RE.match(device):
-            return device
-    raw_repr = scrub_log_text(repr(device))
-    raise RefusalError(
-        "BAKEOFF_JUDGE_DEVICE_INVALID",
-        f"Invalid judge device {raw_repr}; expected 'cuda', 'cuda:N' (non-negative integer N), or 'cpu'",
-    )
-
-
 def resolve_judge_device(
     *,
     mode: str,
@@ -4523,6 +4612,7 @@ def run_device_check(
         },
     )
     venvs_records: dict[str, dict[str, Any]] = {}
+    failed_venv_recs: list[dict[str, Any]] = []
     state_dir_env = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
 
     for venv_name in DEVICE_CHECK_VENVS:
@@ -4669,64 +4759,75 @@ def run_device_check(
             "duration_seconds": duration_s,
             "stderr_tail": stderr_tail,
         }
-        venvs_records[venv_name] = venv_rec
-
         if not ok_flag:
             if not venv_rec["stderr_tail"] and venv_rec["exception_message"]:
                 venv_rec["stderr_tail"] = _scrub_and_tail(
                     f"{venv_rec['exception_type'] or 'Error'}: {venv_rec['exception_message']}"
                 )
-            fail_report: dict[str, Any] = {
+            failed_venv_recs.append(venv_rec)
+        venvs_records[venv_name] = venv_rec
+
+    if failed_venv_recs:
+        first_fail = failed_venv_recs[0]
+        failed_venv_name = str(first_fail["venv"])
+        failed_venv_py = str(first_fail["venv_python"])
+        failed_exit_code = int(first_fail["exit_code"])
+        failed_stderr_tail = str(first_fail["stderr_tail"])
+        failed_venvs_list = [str(r["venv"]) for r in failed_venv_recs]
+        fail_report: dict[str, Any] = {
+            "status": "failed",
+            "ok": False,
+            "device": scrubbed_target,
+            "failure_class": "DEVICE_INDEX_CHECK_FAILED",
+            "failed_venv": failed_venv_name,
+            "failed_venvs": failed_venvs_list,
+            "exit_code": failed_exit_code,
+            "stderr_tail": failed_stderr_tail,
+            "timeout_seconds": eff_timeout,
+            "venvs": venvs_records,
+        }
+        _update_gate_status_device_check(gate_status_path, fail_report)
+        append_progress_line(
+            progress_path,
+            {
+                "kind": "device_check",
                 "status": "failed",
                 "ok": False,
                 "device": scrubbed_target,
                 "failure_class": "DEVICE_INDEX_CHECK_FAILED",
-                "failed_venv": venv_name,
-                "exit_code": exit_code,
-                "stderr_tail": venv_rec["stderr_tail"],
-                "timeout_seconds": eff_timeout,
+                "failed_venv": failed_venv_name,
+                "failed_venvs": failed_venvs_list,
+                "exit_code": failed_exit_code,
+                "stderr_tail": failed_stderr_tail,
                 "venvs": venvs_records,
-            }
-            _update_gate_status_device_check(gate_status_path, fail_report)
-            append_progress_line(
-                progress_path,
-                {
-                    "kind": "device_check",
-                    "status": "failed",
-                    "ok": False,
-                    "device": scrubbed_target,
-                    "failure_class": "DEVICE_INDEX_CHECK_FAILED",
-                    "failed_venv": venv_name,
-                    "exit_code": exit_code,
-                    "stderr_tail": venv_rec["stderr_tail"],
-                    "venvs": venvs_records,
-                },
-                proc_meminfo_path=proc_meminfo_path,
-                cgroup_root=cgroup_root,
-                proc_cgroup_path=proc_cgroup_path,
-            )
-            _record_step_end(
-                "device_check",
-                t_check,
-                start_check,
-                progress_path=progress_path,
-                status="failed",
-                step_timings=step_timings,
-                step_order=step_order,
-                extra={
-                    "device": scrubbed_target,
-                    "failed_venv": venv_name,
-                    "exit_code": exit_code,
-                },
-            )
-            raise DeviceIndexCheckError(
-                venv=venv_name,
-                venv_python=venv_python.as_posix(),
-                device=scrubbed_target,
-                exit_code=exit_code,
-                stderr_tail=venv_rec["stderr_tail"],
-                device_check_report=fail_report,
-            )
+            },
+            proc_meminfo_path=proc_meminfo_path,
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
+        )
+        _record_step_end(
+            "device_check",
+            t_check,
+            start_check,
+            progress_path=progress_path,
+            status="failed",
+            step_timings=step_timings,
+            step_order=step_order,
+            extra={
+                "device": scrubbed_target,
+                "failed_venv": failed_venv_name,
+                "failed_venvs": failed_venvs_list,
+                "exit_code": failed_exit_code,
+            },
+        )
+        raise DeviceIndexCheckError(
+            venv=failed_venv_name,
+            venv_python=failed_venv_py,
+            device=scrubbed_target,
+            exit_code=failed_exit_code,
+            stderr_tail=failed_stderr_tail,
+            device_check_report=fail_report,
+        )
 
     ok_report: dict[str, Any] = {
         "status": "ok",
@@ -4845,6 +4946,7 @@ def run_gpu_gate(
     )
     nvidia_smi_line = _query_nvidia_smi_driver_line()
     venvs_records: dict[str, dict[str, Any]] = {}
+    failed_venv_recs: list[dict[str, Any]] = []
     state_dir_env = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
 
     for venv_name in GPU_GATE_VENVS:
@@ -4955,9 +5057,21 @@ def run_gpu_gate(
         if not isinstance(dev_query, dict):
             dev_query = None
 
+        shape_ok = (
+            isinstance(dev_query, dict)
+            and dev_query.get("matmul_shape") == [1024, 1024]
+            and dev_query.get("matmul_finite") is True
+        )
+        ok_flag = bool(
+            exit_code == 0
+            and not timed_out
+            and bool(parsed_child.get("cuda_is_available", False))
+            and shape_ok
+        )
         venv_rec: dict[str, Any] = {
             "venv": venv_name,
             "venv_python": venv_python.as_posix(),
+            "ok": ok_flag,
             "cuda_is_available": bool(parsed_child.get("cuda_is_available", False)),
             "device_count": int(parsed_child.get("device_count", 0) or 0),
             "device_query": dev_query,
@@ -4985,67 +5099,71 @@ def run_gpu_gate(
             "duration_seconds": duration_s,
             "stderr_tail": stderr_tail,
         }
-        venvs_records[venv_name] = venv_rec
-
-        shape_ok = (
-            isinstance(dev_query, dict)
-            and dev_query.get("matmul_shape") == [1024, 1024]
-            and dev_query.get("matmul_finite") is True
-        )
-        if (
-            exit_code != 0
-            or timed_out
-            or not venv_rec["cuda_is_available"]
-            or not shape_ok
-        ):
+        if not ok_flag:
             if not venv_rec["stderr_tail"] and venv_rec["exception_message"]:
                 venv_rec["stderr_tail"] = _scrub_and_tail(
                     f"{venv_rec['exception_type'] or 'Error'}: {venv_rec['exception_message']}"
                 )
-            fail_report: dict[str, Any] = {
+            failed_venv_recs.append(venv_rec)
+        venvs_records[venv_name] = venv_rec
+
+    if failed_venv_recs:
+        first_fail = failed_venv_recs[0]
+        failed_venv_name = str(first_fail["venv"])
+        failed_venv_py = str(first_fail["venv_python"])
+        failed_exit_code = int(first_fail["exit_code"])
+        failed_stderr_tail = str(first_fail["stderr_tail"])
+        failed_venvs_list = [str(r["venv"]) for r in failed_venv_recs]
+        fail_report: dict[str, Any] = {
+            "status": "failed",
+            "failure_class": "GPU_GATE_FAILED",
+            "failed_venv": failed_venv_name,
+            "failed_venvs": failed_venvs_list,
+            "exit_code": failed_exit_code,
+            "stderr_tail": failed_stderr_tail,
+            "timeout_seconds": eff_timeout,
+            "nvidia_smi_driver_line": nvidia_smi_line,
+            "venvs": venvs_records,
+        }
+        _update_gate_status_gpu_gate(gate_status_path, fail_report)
+        append_progress_line(
+            progress_path,
+            {
+                "kind": "gpu_gate",
                 "status": "failed",
                 "failure_class": "GPU_GATE_FAILED",
-                "failed_venv": venv_name,
-                "exit_code": exit_code,
-                "stderr_tail": venv_rec["stderr_tail"],
-                "timeout_seconds": eff_timeout,
+                "failed_venv": failed_venv_name,
+                "failed_venvs": failed_venvs_list,
+                "exit_code": failed_exit_code,
+                "stderr_tail": failed_stderr_tail,
                 "nvidia_smi_driver_line": nvidia_smi_line,
                 "venvs": venvs_records,
-            }
-            _update_gate_status_gpu_gate(gate_status_path, fail_report)
-            append_progress_line(
-                progress_path,
-                {
-                    "kind": "gpu_gate",
-                    "status": "failed",
-                    "failure_class": "GPU_GATE_FAILED",
-                    "failed_venv": venv_name,
-                    "exit_code": exit_code,
-                    "stderr_tail": venv_rec["stderr_tail"],
-                    "nvidia_smi_driver_line": nvidia_smi_line,
-                    "venvs": venvs_records,
-                },
-                proc_meminfo_path=proc_meminfo_path,
-                cgroup_root=cgroup_root,
-                proc_cgroup_path=proc_cgroup_path,
-            )
-            _record_step_end(
-                "gpu_gate",
-                t_gate,
-                start_gate,
-                progress_path=progress_path,
-                status="failed",
-                step_timings=step_timings,
-                step_order=step_order,
-                extra={"failed_venv": venv_name, "exit_code": exit_code},
-            )
-            raise GpuGateError(
-                venv=venv_name,
-                venv_python=venv_python.as_posix(),
-                exit_code=exit_code,
-                stderr_tail=venv_rec["stderr_tail"],
-                gpu_gate_report=fail_report,
-            )
+            },
+            proc_meminfo_path=proc_meminfo_path,
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
+        )
+        _record_step_end(
+            "gpu_gate",
+            t_gate,
+            start_gate,
+            progress_path=progress_path,
+            status="failed",
+            step_timings=step_timings,
+            step_order=step_order,
+            extra={
+                "failed_venv": failed_venv_name,
+                "failed_venvs": failed_venvs_list,
+                "exit_code": failed_exit_code,
+            },
+        )
+        raise GpuGateError(
+            venv=failed_venv_name,
+            venv_python=failed_venv_py,
+            exit_code=failed_exit_code,
+            stderr_tail=failed_stderr_tail,
+            gpu_gate_report=fail_report,
+        )
 
     ok_report: dict[str, Any] = {
         "status": "ok",
@@ -5310,6 +5428,7 @@ def run_judges_pipeline(
                                 "argv": list(child_cmd),
                                 "timeout_seconds": eff_child_timeout,
                                 "configured_timeout_seconds": configured_child_timeout,
+                                "elapsed_seconds": round(wall_elapsed, 6),
                                 "timed_out": bool(child_res["timed_out"]),
                                 "returncode": child_rc,
                                 "stdin_devnull": True,
@@ -5599,8 +5718,19 @@ def run_judges_pipeline(
             else 0.0
         )
         p95_s = round(compute_percentile(call_durations, 95.0), 6)
-        harness_peak = int(done_doc.get("vram_peak_mib", 0))
-        peak_vram = max(harness_peak, sampler_peak)
+        raw_harness_peak = done_doc.get("vram_peak_mib")
+        harness_peak: int | None = (
+            int(raw_harness_peak)
+            if isinstance(raw_harness_peak, (int, float))
+            and not isinstance(raw_harness_peak, bool)
+            else None
+        )
+        if sampler_peak is not None and harness_peak is not None:
+            peak_vram: int | None = max(harness_peak, sampler_peak)
+        elif sampler_peak is not None:
+            peak_vram = sampler_peak
+        else:
+            peak_vram = harness_peak
         canary_info = done_doc.get("canary") or {
             "passed": True,
             "max_logprob_drift": 0.0,
@@ -5611,6 +5741,7 @@ def run_judges_pipeline(
         enriched_done_doc = dict(done_doc)
         enriched_done_doc["device"] = device_str
         enriched_done_doc.setdefault("dtype", dtype_str)
+        enriched_done_doc["elapsed_seconds"] = round(wall_elapsed, 6)
         enriched_done_doc["load_time_seconds"] = load_time_s
         enriched_done_doc["load_seconds"] = load_time_s
         enriched_done_doc["per_call_seconds"] = per_call_s
@@ -5635,6 +5766,7 @@ def run_judges_pipeline(
                 "dtype": dtype_str,
                 "row_count": len(row_objs),
                 "sha256": actual_rows_sha,
+                "elapsed_seconds": round(wall_elapsed, 6),
                 "load_time_seconds": load_time_s,
                 "load_seconds": load_time_s,
                 "per_call_seconds": per_call_s,
@@ -5660,6 +5792,7 @@ def run_judges_pipeline(
             "items_count": int(done_doc.get("items_count", limit_items)),
             "orders": ["AB", "BA"],
             "calls_count": int(done_doc.get("calls_count", len(row_objs))),
+            "elapsed_seconds": round(wall_elapsed, 6),
             "load_time": load_time_s,
             "load_seconds": load_time_s,
             "load_time_seconds": load_time_s,
@@ -5821,7 +5954,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="VM-side rdlab Colab judge runner")
     parser.add_argument(
         "--step",
-        choices=("run", "gate", "probe"),
+        choices=("run", "gate", "probe", "alive"),
         default=env_or("RDLAB_STEP", "run"),
     )
     parser.add_argument(
@@ -6258,6 +6391,13 @@ def open_pinned_uv_wheel_stream(
     return urllib.request.urlopen(url, timeout=timeout)
 
 
+def resolve_expected_uv_wheel_sha256(expected_sha256: str | None = None) -> str:
+    """Return the expected SHA-256 hex digest for the pinned uv wheel (test seam for sha256 mismatch tests)."""
+    if expected_sha256 is not None:
+        return str(expected_sha256).strip().lower()
+    return PINNED_UV_WHEEL_SHA256.lower()
+
+
 def install_pinned_uv_wheel(
     *,
     content_dir: Path | None = None,
@@ -6267,7 +6407,7 @@ def install_pinned_uv_wheel(
     expected_size_bytes: int | None = None,
     max_download_bytes: int | None = None,
     timeout_seconds: float = 60.0,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Download, verify (`size == 17,211,825`, `sha256` before unpack), safely unpack (`uv` + `uvx`), and verify `/tmp/uv-pinned/uv --version == uv 0.13.5`."""
     target_dir = (
         Path(pinned_uv_dir) if pinned_uv_dir is not None else DEFAULT_PINNED_UV_DIR
@@ -6284,28 +6424,12 @@ def install_pinned_uv_wheel(
         if max_download_bytes is not None
         else PINNED_UV_WHEEL_MAX_DOWNLOAD_BYTES
     )
-    state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
-    if expected_sha256 is not None:
-        exp_sha = str(expected_sha256).strip().lower()
-    else:
-        exp_sha = PINNED_UV_WHEEL_SHA256.lower()
-        if (
-            state_dir_raw
-            and exp_sha
-            == "fa8d26e08e34c29c0c4e820cf3181757086d547240b4f4d31ff1d8bd810ca946"
-        ):
-            uv_st_path = Path(state_dir_raw) / "uv_state.json"
-            if uv_st_path.is_file():
-                try:
-                    uv_st = json.loads(uv_st_path.read_text(encoding="utf-8"))
-                    if uv_st.get("expected_uv_wheel_sha256"):
-                        exp_sha = str(uv_st["expected_uv_wheel_sha256"]).strip().lower()
-                except Exception:
-                    pass
+    exp_sha = resolve_expected_uv_wheel_sha256(expected_sha256)
 
-    if target_dir != DEFAULT_PINNED_UV_DIR or not state_dir_raw:
+    if target_dir != DEFAULT_PINNED_UV_DIR:
         shutil.rmtree(target_dir, ignore_errors=True)
 
+    t_dl0 = time.monotonic()
     chunks: list[bytes] = []
     total_read = 0
     declared_content_length: int | None = None
@@ -6374,7 +6498,9 @@ def install_pinned_uv_wheel(
             "PINNED_UV_SHA256_MISMATCH",
             f"Pinned uv wheel sha256 mismatch for {scrubbed_url}: expected {exp_sha}, got {actual_sha256}",
         )
+    uv_wheel_download_seconds = round(max(0.0, time.monotonic() - t_dl0), 6)
 
+    t_up0 = time.monotonic()
     try:
         zf = zipfile.ZipFile(io.BytesIO(wheel_bytes), "r")
     except Exception as exc:
@@ -6417,6 +6543,7 @@ def install_pinned_uv_wheel(
             tmp_dest.write_bytes(member_bytes)
             os.chmod(tmp_dest, PINNED_UV_BINARY_MODE)
             os.replace(tmp_dest, dest_path)
+    uv_wheel_unpack_seconds = round(max(0.0, time.monotonic() - t_up0), 6)
 
     pinned_uv_bin = target_dir / "uv"
     ver_env = build_vm_uv_env(content_dir=content_dir, pinned_uv_dir=target_dir)
@@ -6435,29 +6562,19 @@ def install_pinned_uv_wheel(
         or parsed_ver != PINNED_UV_VERSION
         or not uv_version.startswith(f"uv {PINNED_UV_VERSION}")
     ):
-        if state_dir_raw:
-            (Path(state_dir_raw) / ".pinned_uv_downloading").unlink(missing_ok=True)
-            (Path(state_dir_raw) / ".pinned_uv_installed").unlink(missing_ok=True)
-        if target_dir != DEFAULT_PINNED_UV_DIR or not state_dir_raw:
-            shutil.rmtree(target_dir, ignore_errors=True)
+        shutil.rmtree(target_dir, ignore_errors=True)
         raise RefusalError(
             "PINNED_UV_VERSION_MISMATCH",
             f"Pinned uv binary at {scrub_log_text(str(pinned_uv_bin))} reported {scrub_log_text(uv_version)!r} "
             f"(rc={ver_res.returncode}), expected 'uv {PINNED_UV_VERSION}'",
         )
 
-    if state_dir_raw:
-        try:
-            (Path(state_dir_raw) / ".pinned_uv_installed").write_text(
-                "1\n", encoding="utf-8"
-            )
-        except OSError:
-            pass
-
     return {
         "uv_source": "pinned-wheel",
         "uv_path": scrub_log_text(str(pinned_uv_bin)),
         "uv_version": uv_version,
+        "uv_wheel_download_seconds": uv_wheel_download_seconds,
+        "uv_wheel_unpack_seconds": uv_wheel_unpack_seconds,
     }
 
 
@@ -6465,7 +6582,7 @@ def ensure_vm_uv(
     *,
     content_dir: Path | None = None,
     pinned_uv_dir: Path | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Ensure `uv 0.13.5` is available on the VM: use image `uv` when it is `0.13.5` (unless `RDLAB_FORCE_PINNED_UV=1`), otherwise install the pinned wheel into `/tmp/uv-pinned`."""
     target_dir = (
         Path(pinned_uv_dir) if pinned_uv_dir is not None else DEFAULT_PINNED_UV_DIR
@@ -6516,6 +6633,8 @@ def ensure_vm_uv(
                         "uv_source": "image",
                         "uv_path": scrub_log_text(uv_which),
                         "uv_version": image_uv_version,
+                        "uv_wheel_download_seconds": 0.0,
+                        "uv_wheel_unpack_seconds": 0.0,
                     }
 
     # Check if `--step gate` on this `content_dir` already installed and verified `/tmp/uv-pinned/uv`.
@@ -6555,6 +6674,12 @@ def ensure_vm_uv(
                     "uv_source": "pinned-wheel",
                     "uv_path": scrub_log_text(str(pinned_uv_bin)),
                     "uv_version": uv_version,
+                    "uv_wheel_download_seconds": float(
+                        gate_doc.get("uv_wheel_download_seconds", 0.0) or 0.0
+                    ),
+                    "uv_wheel_unpack_seconds": float(
+                        gate_doc.get("uv_wheel_unpack_seconds", 0.0) or 0.0
+                    ),
                 }
 
     return install_pinned_uv_wheel(
@@ -6598,9 +6723,15 @@ def find_or_install_vm_python_315(
     )
 
     uv_info = ensure_vm_uv(content_dir=eff_content_dir)
-    uv_source = uv_info["uv_source"]
-    uv_path = uv_info["uv_path"]
-    uv_version = uv_info["uv_version"]
+    uv_source = str(uv_info["uv_source"])
+    uv_path = str(uv_info["uv_path"])
+    uv_version = str(uv_info["uv_version"])
+    uv_wheel_download_seconds = float(
+        uv_info.get("uv_wheel_download_seconds", 0.0) or 0.0
+    )
+    uv_wheel_unpack_seconds = float(
+        uv_info.get("uv_wheel_unpack_seconds", 0.0) or 0.0
+    )
     uv_env = build_vm_uv_env(content_dir=content_dir)
 
     expected_uv_raw = (
@@ -6653,6 +6784,8 @@ def find_or_install_vm_python_315(
             "uv_path": uv_path,
             "uv_version": uv_version,
             "uv_metadata_version": PINNED_UV_METADATA_VERSION,
+            "uv_wheel_download_seconds": uv_wheel_download_seconds,
+            "uv_wheel_unpack_seconds": uv_wheel_unpack_seconds,
             "python_version": REQUIRED_PYTHON_VERSION,
             "python_315": py_path,
             "interpreter_version": interp_ver,
@@ -6831,6 +6964,8 @@ def find_or_install_vm_python_315(
         "uv_path": uv_path,
         "uv_version": uv_version,
         "uv_metadata_version": PINNED_UV_METADATA_VERSION,
+        "uv_wheel_download_seconds": uv_wheel_download_seconds,
+        "uv_wheel_unpack_seconds": uv_wheel_unpack_seconds,
         "python_version": REQUIRED_PYTHON_VERSION,
         "python_315": py_path,
         "interpreter_version": interp_ver,
@@ -7191,6 +7326,8 @@ def run_gate(args: argparse.Namespace) -> int:
             "uv_path": py_report["uv_path"],
             "uv_version": py_report["uv_version"],
             "uv_metadata_version": py_report["uv_metadata_version"],
+            "uv_wheel_download_seconds": py_report["uv_wheel_download_seconds"],
+            "uv_wheel_unpack_seconds": py_report["uv_wheel_unpack_seconds"],
             "python_315": py_report["python_315"],
             "interpreter_version": py_report["interpreter_version"],
             "interpreter_build": py_report["interpreter_build"],
@@ -7588,6 +7725,12 @@ def run_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_alive() -> int:
+    """Execute the pre-gate kernel alive probe (`RDLAB_STEP=alive`)."""
+    print("VM_ALIVE_OK", flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     global _ACTIVE_VM_LOG_PATH, _ACTIVE_RUN_WALL_DEADLINE_MONOTONIC
 
@@ -7607,6 +7750,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         return rc_val
 
+    if args.step == "alive":
+        return run_alive()
     if args.step == "gate":
         return run_gate(args)
     if args.step == "probe":
@@ -7732,6 +7877,8 @@ def main(argv: list[str] | None = None) -> int:
             until_step,
             getattr(args, "first_load_judge_id", None),
         )
+        if until_step == "first_load":
+            judge_order = (first_load_judge_id,)
 
         current_step = "validate_download_config"
         dl_max_workers, dl_xet_range_gets = validate_download_config(
@@ -7783,6 +7930,25 @@ def main(argv: list[str] | None = None) -> int:
             env_judge_sha256=os.environ.get("RDLAB_JUDGE_LOCK_SHA256"),
             env_d3_sha256=os.environ.get("RDLAB_D3_LOCK_SHA256"),
         )
+        repo_device_py = (
+            args.repo_dir / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py"
+        )
+        uploaded_device_py = resolve_content_dir() / "device.py"
+        require_uploaded_device_py = bool(
+            args.repo_tar is not None
+            or uploaded_device_py.exists()
+            or "RDLAB_DEVICE_PY_SHA256" in os.environ
+        )
+        device_py_report = verify_device_py_digest(
+            uploaded_device_py if require_uploaded_device_py else repo_device_py,
+            repo_device_py_path=repo_device_py if require_uploaded_device_py else None,
+            env_device_sha256=(
+                os.environ.get("RDLAB_DEVICE_PY_SHA256")
+                if require_uploaded_device_py
+                else EXPECTED_DEVICE_PY_SHA256
+            ),
+        )
+        lock_digests["device_py_sha256"] = device_py_report["device_py_sha256"]
         _record_step_end(
             "lock_digests",
             t_locks,
@@ -8022,6 +8188,8 @@ def main(argv: list[str] | None = None) -> int:
             "uv_path": py_rep["uv_path"],
             "uv_version": venv_info["uv_version"],
             "uv_metadata_version": py_rep["uv_metadata_version"],
+            "uv_wheel_download_seconds": py_rep["uv_wheel_download_seconds"],
+            "uv_wheel_unpack_seconds": py_rep["uv_wheel_unpack_seconds"],
             "python_315": venv_info["python_315"],
             "interpreter_version": py_rep["interpreter_version"],
             "interpreter_build": py_rep["interpreter_build"],
@@ -8059,9 +8227,7 @@ def main(argv: list[str] | None = None) -> int:
                 "pilot_mass_check": pilot_mass_readout,
             },
             "timings": _build_timings_block(),
-            "cgroup_limit_chain": cgroup_limit_chain_at_start
-            if "cgroup_limit_chain_at_start" in locals()
-            else cgroup_chain_at_start,
+            "cgroup_limit_chain": cgroup_chain_at_start,
             "dryrun": dryrun,
         }
         if until_step is not None:
@@ -8109,6 +8275,8 @@ def main(argv: list[str] | None = None) -> int:
             "uv_path": py_rep["uv_path"],
             "uv_version": venv_info["uv_version"],
             "uv_metadata_version": py_rep["uv_metadata_version"],
+            "uv_wheel_download_seconds": py_rep["uv_wheel_download_seconds"],
+            "uv_wheel_unpack_seconds": py_rep["uv_wheel_unpack_seconds"],
             "python_315": venv_info["python_315"],
             "interpreter_version": py_rep["interpreter_version"],
             "interpreter_build": py_rep["interpreter_build"],

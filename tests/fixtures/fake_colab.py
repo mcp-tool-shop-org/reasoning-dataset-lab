@@ -445,6 +445,30 @@ def setup_fake_colab_environment(
     )
     fake_curl_sh.chmod(fake_curl_sh.stat().st_mode | stat.S_IEXEC)
 
+    fake_nvidia_smi_sh = fake_bin / "nvidia-smi"
+    fake_nvidia_smi_sh.write_text(
+        "#!/usr/bin/env bash\n"
+        'mode="${FAKE_COLAB_NVIDIA_SMI_MODE:-ok}"\n'
+        'if [[ "$mode" == "fail" ]]; then\n'
+        '  echo "NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver." >&2\n'
+        '  exit 9\n'
+        'elif [[ "$mode" == "empty" ]]; then\n'
+        '  exit 0\n'
+        'elif [[ "$mode" == "non_int" ]]; then\n'
+        '  echo "N/A"\n'
+        '  exit 0\n'
+        'fi\n'
+        'if [[ "$*" == *"--query-gpu=memory.used"* ]]; then\n'
+        '  echo "${FAKE_COLAB_NVIDIA_SMI_MIB:-1024}"\n'
+        '  exit 0\n'
+        'fi\n'
+        'echo "NVIDIA-SMI 550.54.15   Driver Version: 550.54.15   CUDA Version: 12.4"\n'
+        'exit 0\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    fake_nvidia_smi_sh.chmod(fake_nvidia_smi_sh.stat().st_mode | stat.S_IEXEC)
+
     return {
         "fake_bin": fake_bin,
         "sentinel_bin": sentinel_bin,
@@ -761,6 +785,17 @@ def run_fake_uv(argv: list[str]) -> int:
                 ver = str(state_pver)
             else:
                 ver = os.environ.get("FAKE_COLAB_PINNED_UV_BINARY_VERSION", "uv 0.13.5")
+            if state_dir_raw and invoked_as.startswith("/tmp/uv-pinned"):
+                try:
+                    if ver.startswith("uv 0.13.5"):
+                        (state_dir / ".pinned_uv_installed").write_text(
+                            "1\n", encoding="utf-8"
+                        )
+                    else:
+                        (state_dir / ".pinned_uv_downloading").unlink(missing_ok=True)
+                        (state_dir / ".pinned_uv_installed").unlink(missing_ok=True)
+                except OSError:
+                    pass
         else:
             ver = os.environ.get(
                 "FAKE_COLAB_UV_VERSION", str(uv_state.get("version") or "uv 0.13.5")
@@ -1802,6 +1837,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         shutil.copyfile(src, vm_dst)
+        if (
+            dst == "/content/device.py"
+            and os.environ.get("FAKE_COLAB_CORRUPT_DEVICE_PY") == "1"
+        ):
+            vm_dst.write_text(
+                vm_dst.read_text(encoding="utf-8") + "# tampered on VM\n",
+                encoding="utf-8",
+                newline="\n",
+            )
         record_file_access(state_dir, "upload", src, detail=f"to:{dst}")
         print(f"Uploaded {src} -> {dst}")
         return 0
@@ -1920,23 +1964,14 @@ def main(argv: list[str] | None = None) -> int:
             newline="\n",
         )
 
-        exec_env = os.environ.copy()
-        for k_existing in list(exec_env):
-            if k_existing.startswith("HF_TOKEN") or k_existing == "HUGGING_FACE_HUB_TOKEN":
-                exec_env.pop(k_existing, None)
-        for rig_only_key in (
-            "HF_HOME",
-            "RDLAB_ITEMS_FILE",
-            "RDLAB_RECEIPTS_DIR",
-            "RDLAB_OUT_DIR",
-            "RDLAB_REPO_TAR",
-            "RDLAB_RECEIPTS_TAR",
-            "RDLAB_RESUME_TAR",
-            "RDLAB_RUN_DIR",
-            "RDLAB_WORK_DIR",
-            "RDLAB_RESULT_TAR",
-        ):
-            exec_env.pop(rig_only_key, None)
+        exec_env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("RDLAB_")
+            and not k.startswith("HF_TOKEN")
+            and k != "HUGGING_FACE_HUB_TOKEN"
+            and k != "HF_HOME"
+        }
 
         exec_env["RDLAB_VM_CONTENT_DIR"] = str(vm_fs)
         exec_env.setdefault("RDLAB_STATUS_FILE", str(vm_fs / "status.json"))
@@ -1958,6 +1993,40 @@ def main(argv: list[str] | None = None) -> int:
         (vm_fs / ".cache").mkdir(parents=True, exist_ok=True)
         sleep_s = float(os.environ.get("FAKE_COLAB_EXEC_SLEEP", "0"))
         step = exec_env.get("RDLAB_STEP", "run")
+        if step == "alive":
+            alive_log = state_dir / "alive_attempts.jsonl"
+            attempt_idx = 1
+            if alive_log.is_file():
+                attempt_idx = (
+                    len(
+                        [
+                            ln
+                            for ln in alive_log.read_text(encoding="utf-8").splitlines()
+                            if ln.strip()
+                        ]
+                    )
+                    + 1
+                )
+            fail_count = int(os.environ.get("FAKE_COLAB_ALIVE_FAIL_COUNT", "0") or "0")
+            failed_this_try = attempt_idx <= fail_count
+            with alive_log.open("a", encoding="utf-8", newline="\n") as afh:
+                afh.write(
+                    json.dumps(
+                        {
+                            "session_id": sid,
+                            "attempt": attempt_idx,
+                            "failed": failed_this_try,
+                            "ts": time.time(),
+                        }
+                    )
+                    + "\n"
+                )
+            if failed_this_try:
+                sys.stderr.write("Connection was lost\n")
+                return 1
+        if step == "gate" and os.environ.get("FAKE_COLAB_GATE_CONNECTION_LOST") == "1":
+            sys.stderr.write("Connection was lost\n")
+            return 1
         if step == "gate" and os.environ.get("FAKE_COLAB_UNWRITABLE_ITEMS_DIR") == "1":
             blocker = vm_fs / "rdlab_items"
             if blocker.is_dir():
@@ -2016,6 +2085,83 @@ def main(argv: list[str] | None = None) -> int:
                     encoding="utf-8",
                     newline="\n",
                 )
+                if os.environ.get("FAKE_COLAB_WRITE_PARTIAL_RUN_BEFORE_SLEEP") == "1":
+                    partial_prog_rows = [
+                        sleep_prog_row,
+                        {
+                            "kind": "judge_pass_done",
+                            "judge_id": "nemotron-3-nano-4b",
+                            "status": "ok",
+                            "calls_count": 2,
+                            "ts": "2026-11-02T00:00:05Z",
+                        },
+                    ]
+                    (run_dir_sleep / "progress.jsonl").write_text(
+                        "\n".join(json.dumps(r) for r in partial_prog_rows) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    logs_dir_sleep = run_dir_sleep / "logs"
+                    logs_dir_sleep.mkdir(parents=True, exist_ok=True)
+                    (logs_dir_sleep / "vm.log").write_text(
+                        "2026-11-02T00:00:05Z [vm] completed judge=nemotron-3-nano-4b before cap stop\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    jdone_sleep = run_dir_sleep / "judge_done"
+                    jdone_sleep.mkdir(parents=True, exist_ok=True)
+                    (jdone_sleep / "nemotron-3-nano-4b.json").write_text(
+                        json.dumps(
+                            {
+                                "judge_id": "nemotron-3-nano-4b",
+                                "status": "ok",
+                                "device": "cuda:0",
+                                "calls_count": 2,
+                            },
+                            indent=2,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    rows_sleep = run_dir_sleep / "rows"
+                    rows_sleep.mkdir(parents=True, exist_ok=True)
+                    (rows_sleep / "nemotron-3-nano-4b.jsonl").write_text(
+                        json.dumps(
+                            {
+                                "id": "item-0000",
+                                "judge_id": "nemotron-3-nano-4b",
+                                "state": "parsed",
+                                "verdict": "yes",
+                            }
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                if os.environ.get("FAKE_COLAB_WRITE_RESULT_TAR_BEFORE_SLEEP") == "1":
+                    import tarfile as _tarfile
+
+                    sched_f = run_dir_sleep / "schedule.json"
+                    sched_f.write_text(
+                        json.dumps({"items_count": 2, "judges": []}) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    rec_f = run_dir_sleep / "vm_receipt.json"
+                    rec_f.write_text(
+                        json.dumps({"status": "running", "step": "run"}) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    with _tarfile.open(vm_fs / "result.tar.gz", "w:gz") as _tf:
+                        _tf.add(sched_f, arcname="schedule.json", recursive=False)
+                        _tf.add(rec_f, arcname="vm_receipt.json", recursive=False)
+                    (vm_fs / "status.json").write_text(
+                        json.dumps({"step": "run", "rc": 0, "status": "ok", "reason": "partial_before_cap"}) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
                 time.sleep(sleep_s)
                 sys.stderr.write(f"Execution timed out after {timeout_s}s\n")
                 return 124
@@ -2148,6 +2294,8 @@ def main(argv: list[str] | None = None) -> int:
                 "    _uv_st = json.loads(_st_uv_p.read_text(encoding='utf-8'))\n"
                 "    if _uv_st.get('expected_archive_sha256'):\n"
                 "        src = src.replace('01d901e09ca673c99a6c9bd9ec2cfbd58dbe8813d07514c36cb73cfd20b18bd8', str(_uv_st['expected_archive_sha256']))\n"
+                "    if _uv_st.get('expected_uv_wheel_sha256'):\n"
+                "        src = src.replace('fa8d26e08e34c29c0c4e820cf3181757086d547240b4f4d31ff1d8bd810ca946', str(_uv_st['expected_uv_wheel_sha256']))\n"
                 "ns = {'__name__': '__main__', '_PRIOR_EXEC_COUNT': "
                 f"{len(prior_cells)!r}"
                 "}\n"
@@ -2297,8 +2445,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if subcmd == "usage":
+        if os.environ.get("FAKE_COLAB_USAGE_FAIL") == "1":
+            sys.stderr.write("colab usage failed\n")
+            return 1
+        raw_override = os.environ.get("FAKE_COLAB_USAGE_OUTPUT")
+        if raw_override is not None:
+            print(raw_override)
+            return 0
+        rate_str = os.environ.get("FAKE_COLAB_USAGE_RATE", "").strip()
+        if not rate_str:
+            has_a100 = any(str(s.get("gpu", "")).upper() == "A100" for s in sessions)
+            rate_str = "5.30" if has_a100 else "0.08"
         print(
-            "Compute units balance: 100.0 | Usage rate: 0.08/hr | Active assignments: 1"
+            f"Compute units balance: 100.0 | Usage rate: {rate_str}/h | Active assignments: 1"
         )
         return 0
 
