@@ -304,7 +304,7 @@
           "path": "scripts/colab/README.md"
         },
         {
-          "hash": "90b1f62e1fbedbcb906fd979df9806dafd96a270c4c3f3c6beb5a5d427c7ad40",
+          "hash": "2f904d94381cf7efcd2f2fa197af58648d00740b6a999e1e2a70ad922f0148a1",
           "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
         },
         {
@@ -1593,7 +1593,7 @@
             "verify_snapshot_against_receipt",
             "write_shard_manifest"
           ],
-          "hash": "f4b722053c8e00871eab53993a8868ad0735e073855897bac7d14df0a665a085",
+          "hash": "26e631c689e362ed2793c6506f4e2ca3ba271afb0b1bb1c8dcfe0006363f1b33",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/device.py"
@@ -3518,14 +3518,14 @@
                 },
                 {
                   "branch": "receipts_dir is None",
-                  "line": 4338,
+                  "line": 4337,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 4359,
+                  "line": 4358,
                   "name": "verify_ready",
                   "target": null
                 },
@@ -3613,7 +3613,7 @@
                 },
                 {
                   "branch": "not schedule_path.is_file() or not gen_path.is_file() or no…",
-                  "line": 5129,
+                  "line": 5127,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3621,7 +3621,7 @@
                 },
                 {
                   "branch": "not row_files",
-                  "line": 5137,
+                  "line": 5135,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3636,14 +3636,14 @@
             {
               "calls": [
                 {
-                  "line": 5320,
+                  "line": 5318,
                   "name": "normalize_judge_device",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/device.py"
                   }
                 },
                 {
-                  "line": 5322,
+                  "line": 5320,
                   "name": "RdlabError",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3777,7 +3777,7 @@
                 },
                 {
                   "branch": "receipts_dir is None",
-                  "line": 4338,
+                  "line": 4337,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -3785,7 +3785,7 @@
                   "via": "run_bakeoff_judge"
                 },
                 {
-                  "line": 4359,
+                  "line": 4358,
                   "name": "verify_ready",
                   "target": null,
                   "via": "run_bakeoff_judge"
@@ -8661,7 +8661,7 @@
             "test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local",
             "test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log"
           ],
-          "hash": "6c890a71ada48b6d417cac23665286e3739a12f4bc798150f071da58295d29fe",
+          "hash": "c8f81c9f4efcaffb049c5aa6e7cbce85790c429eb2247611085b9560f8c1e82c",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -9924,7 +9924,7 @@
   ],
   "engine": "1.23.0",
   "generatedFrom": {
-    "commit": "c24372a558046ca0a671640de861571b9bb23238",
+    "commit": "580c41d213ef2dfbb7d656ff9c569574bc781c82",
     "tracked": 162
   },
   "landings": [

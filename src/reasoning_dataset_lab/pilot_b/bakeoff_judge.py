@@ -518,8 +518,8 @@ class JudgeTransportResponse:
     system_one_result: dict[str, Any] | None = None
     input_token_ids_sha256: str | None = None
     output_token_ids_sha256: str | None = None
-    input_token_count: int | None = None
-    output_token_count: int | None = None
+    input_token_count: int = 0
+    output_token_count: int = 0
     stop_reason: str | None = None
     min_top2_logit_margin: float | None = None
 
@@ -4311,7 +4311,6 @@ def run_bakeoff_judge(
             "device": device,
             "dtype": effective_dtype,
             "limit_items": limit_items,
-            "shard_spec": eff_shard_spec,
             "pid": os.getpid(),
         },
         lock=progress_lock,
@@ -4368,7 +4367,6 @@ def run_bakeoff_judge(
             "judge_id": spec.judge_id,
             "device": device,
             "load_seconds": load_wall_seconds,
-            "load_wall_seconds": load_wall_seconds,
             "rss_bytes": _read_process_rss_bytes(),
         },
         lock=progress_lock,
@@ -4598,8 +4596,8 @@ def run_bakeoff_judge(
                         anc_resp.tokens,
                         system_one_result=anc_resp.system_one_result,
                     )
-                    anc_in_cnt = int(anc_resp.input_token_count) if anc_resp.input_token_count > 0 else anc_prompt_toks
-                    anc_out_cnt = int(anc_resp.output_token_count) if anc_resp.output_token_count > 0 else len(anc_resp.tokens)
+                    anc_in_cnt = int(anc_resp.input_token_count) if (anc_resp.input_token_count or 0) > 0 else anc_prompt_toks
+                    anc_out_cnt = int(anc_resp.output_token_count) if (anc_resp.output_token_count or 0) > 0 else len(anc_resp.tokens)
                     anc_stop_rsn = anc_resp.stop_reason or ("max_new_tokens" if anc_readout.done_reason == "length" else "eos")
                     anc_margin = (
                         anc_resp.min_top2_logit_margin
@@ -4852,8 +4850,8 @@ def run_bakeoff_judge(
                 resp.tokens,
                 system_one_result=resp.system_one_result,
             )
-            in_tok_cnt = int(resp.input_token_count) if resp.input_token_count > 0 else prompt_tokens_count
-            out_tok_cnt = int(resp.output_token_count) if resp.output_token_count > 0 else len(resp.tokens)
+            in_tok_cnt = int(resp.input_token_count) if (resp.input_token_count or 0) > 0 else prompt_tokens_count
+            out_tok_cnt = int(resp.output_token_count) if (resp.output_token_count or 0) > 0 else len(resp.tokens)
             stop_rsn = resp.stop_reason or ("max_new_tokens" if readout.done_reason == "length" else "eos")
             min_margin = (
                 resp.min_top2_logit_margin

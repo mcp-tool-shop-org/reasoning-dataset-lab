@@ -14208,6 +14208,9 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_CGROUP_DIR": "vm-internal: `/sys/fs/cgroup` path override used in unit tests",
     "RDLAB_CGROUP_MEMORY_EVENTS_PATH": "vm-internal: `/sys/fs/cgroup/memory.events` path override used in unit tests",
     "RDLAB_PROC_MEMINFO_PATH": "vm-internal: `/proc/meminfo` path override used in unit tests",
+    "RDLAB_CARD_TYPE": "vm-internal: GPU card type override used in boot gatekeeper unit tests",
+    "RDLAB_SDPA_BACKEND": "vm-internal: SDPA backend override used in session_env unit tests",
+    "RDLAB_SESSION_FINGERPRINT_SHA256": "vm-internal: set by `vm_judges.py` when spawning judge child subprocesses",
 }
 
 
