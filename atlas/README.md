@@ -1,16 +1,18 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-04 from commit 034ee76 by Atlas 1.24.0.
+Mapped at 2026-11-04 from commit 7955c81 by Atlas 1.24.0.
 
 ## What this is
 
 reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item. (written by a person)
 
-9 parts, mostly Python (62 files), CSS (2), TypeScript (2), shell (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
+9 parts, mostly Python (67 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-04 (98ce0a8)
+## What changed since 2026-11-04 (034ee76)
 
-Nothing structural changed since 2026-11-04; 1 file changed content.
+- tests/fixtures/historical_git_fixtures_manifest.json is now read by tests/fixtures/historical_git_fixtures.py.
+- tests/test_colab_judge_launcher.py is now read by tests/test_colab_judge_launcher.py.
+- 7 files added and 1 changed content, across 1 part.
 
 ## What comes in
 
@@ -45,17 +47,17 @@ Only ci itself reads what it writes.
 
 ## What tends to change together
 
+- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 14 of 14 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
-- **scripts/colab/vm_judges.py** and **tests/fixtures/fake_colab.py** changed together in 13 of 15 commits, and the tests part imports the scripts part.
-- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 15 of 18 commits, and the tests part imports the scripts part.
+- **scripts/colab/vm_judges.py** and **tests/fixtures/fake_colab.py** changed together in 12 of 14 commits, and the tests part imports the scripts part.
+- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 12 of 14 commits, inside the tests part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 9 of 11 commits, and the tests part imports the src part.
-- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 13 of 18 commits, inside the tests part.
 
 1 file changed together with its own test, as expected.
 
 Confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
-Window: 180 days; a pair counts from 3 shared commits, since 8 source files reach 10 revisions; the floor rises to 10 when 25 do.
+Window: 180 days; a pair counts from 3 shared commits, since 7 source files reach 10 revisions; the floor rises to 10 when 25 do.
 
 ## What no test touches
 

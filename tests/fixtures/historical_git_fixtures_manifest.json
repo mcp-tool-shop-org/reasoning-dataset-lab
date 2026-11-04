@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "fixture": "vm_judges_6243174e_write_status.py",
+      "source_sha": "6243174ef48418228e1a925677bee63291eeb686",
+      "path": "scripts/colab/vm_judges.py",
+      "start_line": 1337,
+      "end_line": 1363,
+      "sha256": "b2675ff3fd00472b151273d79d03925690326ce4d771bbaab4d4dcaa42693627"
+    },
+    {
+      "fixture": "launch_judges_6243174e_status_check.sh",
+      "source_sha": "6243174ef48418228e1a925677bee63291eeb686",
+      "path": "scripts/colab/launch_judges.sh",
+      "start_line": 874,
+      "end_line": 926,
+      "sha256": "95851220bdc04ba823924e8427b662ec31b86567a05cf3561edf402778b31a03"
+    },
+    {
+      "fixture": "vm_judges_e2257a4a_sync_judge_venvs.py",
+      "source_sha": "e2257a4aebb7cf84ff44651b6d55ff9991d696e8",
+      "path": "scripts/colab/vm_judges.py",
+      "start_line": 1131,
+      "end_line": 1262,
+      "sha256": "7771ac26c0788dbd3985d52e50c8a47f99dee688ca5b2d1482b913b18a365ae9"
+    },
+    {
+      "fixture": "vm_judges_e2257a4a_ensure_repo_imports.py",
+      "source_sha": "e2257a4aebb7cf84ff44651b6d55ff9991d696e8",
+      "path": "scripts/colab/vm_judges.py",
+      "start_line": 124,
+      "end_line": 167,
+      "sha256": "f514dbbdacf2d84b26baca3ce6865e33b4f44842f313cf81233378741157cf4e"
+    },
+    {
+      "fixture": "vm_judges_4c684457_download_judge_weights.py",
+      "source_sha": "4c684457d2858f9d6ecb56fd3141f421b2464fdd",
+      "path": "scripts/colab/vm_judges.py",
+      "start_line": 1993,
+      "end_line": 2021,
+      "sha256": "e09007462af908c548a42f2914034f9ad53d024ca441e6c7cdf6593bbf762113"
+    }
+  ]
+}
