@@ -1837,6 +1837,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
         shutil.copyfile(src, vm_dst)
+        if (
+            dst == "/content/device.py"
+            and os.environ.get("FAKE_COLAB_CORRUPT_DEVICE_PY") == "1"
+        ):
+            vm_dst.write_text(
+                vm_dst.read_text(encoding="utf-8") + "# tampered on VM\n",
+                encoding="utf-8",
+                newline="\n",
+            )
         record_file_access(state_dir, "upload", src, detail=f"to:{dst}")
         print(f"Uploaded {src} -> {dst}")
         return 0
@@ -1955,23 +1964,14 @@ def main(argv: list[str] | None = None) -> int:
             newline="\n",
         )
 
-        exec_env = os.environ.copy()
-        for k_existing in list(exec_env):
-            if k_existing.startswith("HF_TOKEN") or k_existing == "HUGGING_FACE_HUB_TOKEN":
-                exec_env.pop(k_existing, None)
-        for rig_only_key in (
-            "HF_HOME",
-            "RDLAB_ITEMS_FILE",
-            "RDLAB_RECEIPTS_DIR",
-            "RDLAB_OUT_DIR",
-            "RDLAB_REPO_TAR",
-            "RDLAB_RECEIPTS_TAR",
-            "RDLAB_RESUME_TAR",
-            "RDLAB_RUN_DIR",
-            "RDLAB_WORK_DIR",
-            "RDLAB_RESULT_TAR",
-        ):
-            exec_env.pop(rig_only_key, None)
+        exec_env = {
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith("RDLAB_")
+            and not k.startswith("HF_TOKEN")
+            and k != "HUGGING_FACE_HUB_TOKEN"
+            and k != "HF_HOME"
+        }
 
         exec_env["RDLAB_VM_CONTENT_DIR"] = str(vm_fs)
         exec_env.setdefault("RDLAB_STATUS_FILE", str(vm_fs / "status.json"))
@@ -2085,6 +2085,60 @@ def main(argv: list[str] | None = None) -> int:
                     encoding="utf-8",
                     newline="\n",
                 )
+                if os.environ.get("FAKE_COLAB_WRITE_PARTIAL_RUN_BEFORE_SLEEP") == "1":
+                    partial_prog_rows = [
+                        sleep_prog_row,
+                        {
+                            "kind": "judge_pass_done",
+                            "judge_id": "nemotron-3-nano-4b",
+                            "status": "ok",
+                            "calls_count": 2,
+                            "ts": "2026-11-02T00:00:05Z",
+                        },
+                    ]
+                    (run_dir_sleep / "progress.jsonl").write_text(
+                        "\n".join(json.dumps(r) for r in partial_prog_rows) + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    logs_dir_sleep = run_dir_sleep / "logs"
+                    logs_dir_sleep.mkdir(parents=True, exist_ok=True)
+                    (logs_dir_sleep / "vm.log").write_text(
+                        "2026-11-02T00:00:05Z [vm] completed judge=nemotron-3-nano-4b before cap stop\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    jdone_sleep = run_dir_sleep / "judge_done"
+                    jdone_sleep.mkdir(parents=True, exist_ok=True)
+                    (jdone_sleep / "nemotron-3-nano-4b.json").write_text(
+                        json.dumps(
+                            {
+                                "judge_id": "nemotron-3-nano-4b",
+                                "status": "ok",
+                                "device": "cuda:0",
+                                "calls_count": 2,
+                            },
+                            indent=2,
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
+                    rows_sleep = run_dir_sleep / "rows"
+                    rows_sleep.mkdir(parents=True, exist_ok=True)
+                    (rows_sleep / "nemotron-3-nano-4b.jsonl").write_text(
+                        json.dumps(
+                            {
+                                "id": "item-0000",
+                                "judge_id": "nemotron-3-nano-4b",
+                                "state": "parsed",
+                                "verdict": "yes",
+                            }
+                        )
+                        + "\n",
+                        encoding="utf-8",
+                        newline="\n",
+                    )
                 if os.environ.get("FAKE_COLAB_WRITE_RESULT_TAR_BEFORE_SLEEP") == "1":
                     import tarfile as _tarfile
 

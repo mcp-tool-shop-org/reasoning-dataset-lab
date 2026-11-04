@@ -64,6 +64,7 @@ import time
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error, usage_error
+from reasoning_dataset_lab.pilot_b.device import normalize_judge_device
 
 OrderMode = Literal["AB", "BA"]
 PassMode = Literal["binary", "three_way"]
@@ -2402,23 +2403,6 @@ class _TokenCountStreamer:
 
     def end(self) -> None:
         pass
-
-
-def _import_vm_judges_normalize_judge_device() -> Callable[[Any], str]:
-    """Bind the single canonical `normalize_judge_device` implementation from `vm_judges.py`.
-    Ensures `vm_judges.RefusalError` subclasses `RdlabError` so callers catching either
-    `RdlabError` or `vm_judges.RefusalError` handle `BAKEOFF_JUDGE_DEVICE_INVALID`.
-    """
-    import importlib
-
-    colab_dir = os.path.join(str(Path(__file__).resolve().parents[3]), "scripts", "colab")
-    sys.path.insert(0, colab_dir)
-    _vm_mod = getattr(importlib, "import_module")("vm_judges")
-    _vm_mod.RefusalError.__bases__ = tuple(dict.fromkeys((*_vm_mod.RefusalError.__bases__, RdlabError)))
-    return _vm_mod.normalize_judge_device  # type: ignore[no-any-return]
-
-
-normalize_judge_device = _import_vm_judges_normalize_judge_device()
 
 
 class TransformersJudgeTransport:

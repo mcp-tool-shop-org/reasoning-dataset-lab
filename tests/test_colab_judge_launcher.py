@@ -176,6 +176,7 @@ def _hermetic_fake_colab_and_uv_env(
                         pass
             return _orig_resolve_uv_sha(None)
 
+        _test_seam_resolve_expected_uv_wheel_sha256.__wrapped__ = _orig_resolve_uv_sha  # type: ignore[attr-defined]
         monkeypatch.setattr(
             vm_judges,
             "resolve_expected_uv_wheel_sha256",
@@ -12773,6 +12774,7 @@ def test_device_normalizer_table_valid_and_refusals() -> None:
       and a scrubbed message.
     """
     from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+    from reasoning_dataset_lab.pilot_b import device as dev_mod
 
     valid_table = [
         ("cuda", "cuda:0"),
@@ -12781,6 +12783,7 @@ def test_device_normalizer_table_valid_and_refusals() -> None:
         ("cpu", "cpu"),
     ]
     for raw_dev, expected_dev in valid_table:
+        assert dev_mod.normalize_judge_device(raw_dev) == expected_dev
         assert vm_judges.normalize_judge_device(raw_dev) == expected_dev
         assert bj_mod.normalize_judge_device(raw_dev) == expected_dev
 
@@ -12789,14 +12792,23 @@ def test_device_normalizer_table_valid_and_refusals() -> None:
         "cuda:-1",
         "gpu",
         "cuda:0 ",
-        "",
         " cuda:0",
+        "cuda:0\n",
+        "",
         "cuda:01",
         "CUDA:0",
         None,
         0,
+        True,
     ]
     for bad_dev in invalid_inputs:
+        with pytest.raises(dev_mod.DeviceRefusalError) as exc_dev:
+            dev_mod.normalize_judge_device(bad_dev)
+        assert exc_dev.value.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+        assert exc_dev.value.failure_class == "BAKEOFF_JUDGE_DEVICE_INVALID"
+        assert exc_dev.value.to_dict()["code"] == "BAKEOFF_JUDGE_DEVICE_INVALID"
+        assert '"BAKEOFF_JUDGE_DEVICE_INVALID"' in exc_dev.value.to_json()
+
         with pytest.raises(vm_judges.RefusalError) as exc_vm:
             vm_judges.normalize_judge_device(bad_dev)
         assert exc_vm.value.failure_class == "BAKEOFF_JUDGE_DEVICE_INVALID"
@@ -13554,15 +13566,14 @@ def test_part2_item5_uv_wheel_sha_hook_behind_explicit_test_seam(
     assert "uv_state.json" not in src
 
     # Restore real production `resolve_expected_uv_wheel_sha256` (undoing the test fixture monkeypatch)
-    real_resolve = vm_judges.resolve_expected_uv_wheel_sha256.__wrapped__ if hasattr(
-        vm_judges.resolve_expected_uv_wheel_sha256, "__wrapped__"
-    ) else (
-        lambda expected_sha256=None: (
-            str(expected_sha256).strip().lower()
-            if expected_sha256 is not None
-            else str(vm_judges.PINNED_UV_WHEEL_SHA256).strip().lower()
-        )
+    assert hasattr(vm_judges.resolve_expected_uv_wheel_sha256, "__wrapped__"), (
+        "Expected test fixture wrapper to expose production function on __wrapped__"
     )
+    real_resolve = getattr(vm_judges.resolve_expected_uv_wheel_sha256, "__wrapped__")
+    real_src = inspect.getsource(real_resolve)
+    assert "def resolve_expected_uv_wheel_sha256(" in real_src
+    assert "FAKE_COLAB_STATE_DIR" not in real_src
+    assert "uv_state.json" not in real_src
     monkeypatch.setattr(vm_judges, "resolve_expected_uv_wheel_sha256", real_resolve)
 
     fake_state = tmp_path / "prod_seam_state"
@@ -13574,6 +13585,7 @@ def test_part2_item5_uv_wheel_sha_hook_behind_explicit_test_seam(
     )
     monkeypatch.setenv("FAKE_COLAB_STATE_DIR", str(fake_state))
     assert vm_judges.resolve_expected_uv_wheel_sha256() == vm_judges.PINNED_UV_WHEEL_SHA256
+    assert vm_judges.resolve_expected_uv_wheel_sha256("  " + ("B" * 64) + "  ") == "b" * 64
 
 
 def test_part2_item6_pinned_uv_wheel_download_and_unpack_timing(
@@ -13799,22 +13811,673 @@ def test_part2_item8_mono_seconds_elapsed_seconds_error_rate_state_and_both_venv
 
 
 def test_part2_item9_single_normalize_judge_device_and_re_fullmatch() -> None:
-    """Card Part 2 Item 9:
-    - `normalize_judge_device` lives in one place (`scripts/colab/vm_judges.py`) and is imported
-      by `src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py`.
-    - `vm_judges.normalize_judge_device` uses `re.fullmatch` (via `_CUDA_INDEX_DEVICE_RE.fullmatch`).
+    """Card Part 2 Item 9 & Fix2 Item 1:
+    - `normalize_judge_device` lives in one place in the package (`src/reasoning_dataset_lab/pilot_b/device.py`)
+      and is imported by both `src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py` and `scripts/colab/vm_judges.py`.
+    - `device.normalize_judge_device` uses `re.fullmatch` (via `_CUDA_INDEX_DEVICE_RE.fullmatch`).
     """
     import inspect
     from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+    from reasoning_dataset_lab.pilot_b import device as dev_mod
 
-    assert bj_mod.normalize_judge_device is vm_judges.normalize_judge_device
+    assert bj_mod.normalize_judge_device is dev_mod.normalize_judge_device
+    assert vm_judges.normalize_judge_device is dev_mod.normalize_judge_device
     bj_src = (
         REPO_ROOT / "src" / "reasoning_dataset_lab" / "pilot_b" / "bakeoff_judge.py"
     ).read_text(encoding="utf-8")
+    vm_src = (REPO_ROOT / "scripts" / "colab" / "vm_judges.py").read_text(
+        encoding="utf-8"
+    )
     assert "def normalize_judge_device(" not in bj_src
+    assert "def normalize_judge_device(" not in vm_src
 
-    norm_src = inspect.getsource(vm_judges.normalize_judge_device)
+    norm_src = inspect.getsource(dev_mod.normalize_judge_device)
     assert ".fullmatch(" in norm_src
+
+
+def check_python_source_package_hygiene(
+    source_text: str,
+    rel_path: str = "<source>",
+) -> list[str]:
+    """Walk `source_text` with `ast` and return violations for:
+    - any import of `scripts` (in any form, including `vm_judges`);
+    - any `sys.path` mutation (`insert`, `append`, `extend`, `remove`, `pop`, `clear`, assignment, augassign, delete);
+    - any `importlib.import_module` call, including `getattr(importlib, "import_module")`;
+    - any `__import__` call (direct or via `getattr(..., "__import__")`).
+    """
+    import ast
+
+    tree = ast.parse(source_text, filename=rel_path)
+    violations: list[str] = []
+
+    def _is_sys_path_expr(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "path"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "sys"
+        )
+
+    for node in ast.walk(tree):
+        lineno = getattr(node, "lineno", 0)
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top_mod = alias.name.split(".", 1)[0]
+                if top_mod in ("scripts", "vm_judges"):
+                    violations.append(
+                        f"{rel_path}:{lineno}: forbidden import '{alias.name}'"
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            mod_name = node.module or ""
+            top_mod = mod_name.split(".", 1)[0] if mod_name else ""
+            if top_mod in ("scripts", "vm_judges"):
+                violations.append(
+                    f"{rel_path}:{lineno}: forbidden from-import '{mod_name}'"
+                )
+            for alias in node.names:
+                if alias.name in ("scripts", "vm_judges"):
+                    violations.append(
+                        f"{rel_path}:{lineno}: forbidden imported symbol '{alias.name}'"
+                    )
+        elif isinstance(node, ast.Call):
+            func = node.func
+            if isinstance(func, ast.Attribute) and _is_sys_path_expr(func.value):
+                if func.attr in (
+                    "insert",
+                    "append",
+                    "extend",
+                    "remove",
+                    "pop",
+                    "clear",
+                    "reverse",
+                    "sort",
+                ):
+                    violations.append(
+                        f"{rel_path}:{lineno}: forbidden sys.path.{func.attr}() mutation"
+                    )
+            if isinstance(func, ast.Attribute) and func.attr == "import_module":
+                violations.append(
+                    f"{rel_path}:{lineno}: forbidden import_module() call"
+                )
+            if isinstance(func, ast.Name) and func.id in ("import_module", "__import__"):
+                violations.append(
+                    f"{rel_path}:{lineno}: forbidden {func.id}() call"
+                )
+            if isinstance(func, ast.Attribute) and func.attr == "__import__":
+                violations.append(
+                    f"{rel_path}:{lineno}: forbidden __import__() call"
+                )
+            if (
+                isinstance(func, ast.Name)
+                and func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value in ("import_module", "__import__")
+            ):
+                violations.append(
+                    f"{rel_path}:{lineno}: forbidden getattr(..., {node.args[1].value!r}) call"
+                )
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if _is_sys_path_expr(target) or (
+                    isinstance(target, ast.Subscript)
+                    and _is_sys_path_expr(target.value)
+                ):
+                    violations.append(
+                        f"{rel_path}:{lineno}: forbidden sys.path assignment"
+                    )
+        elif isinstance(node, ast.AugAssign):
+            if _is_sys_path_expr(node.target) or (
+                isinstance(node.target, ast.Subscript)
+                and _is_sys_path_expr(node.target.value)
+            ):
+                violations.append(
+                    f"{rel_path}:{lineno}: forbidden sys.path augmented assignment"
+                )
+        elif isinstance(node, ast.Delete):
+            for target in node.targets:
+                if _is_sys_path_expr(target) or (
+                    isinstance(target, ast.Subscript)
+                    and _is_sys_path_expr(target.value)
+                ):
+                    violations.append(
+                        f"{rel_path}:{lineno}: forbidden sys.path deletion"
+                    )
+
+    return violations
+
+
+def check_src_tree_package_import_hygiene(
+    src_root: Path | None = None,
+) -> list[str]:
+    root = src_root or (REPO_ROOT / "src" / "reasoning_dataset_lab")
+    all_violations: list[str] = []
+    for py_file in sorted(root.rglob("*.py")):
+        rel = py_file.relative_to(REPO_ROOT).as_posix()
+        text = py_file.read_text(encoding="utf-8")
+        all_violations.extend(check_python_source_package_hygiene(text, rel))
+    return all_violations
+
+
+def test_fix2_item1_ast_guard_no_scripts_imports_or_sys_path_mutation_in_src() -> None:
+    """Card Fix2 Item 1 (permanent AST guard):
+    Walk every `.py` file under `src/reasoning_dataset_lab` with `ast` and fail on:
+    - any import of `scripts` (in any form);
+    - any `sys.path` mutation (`insert`, `append`, `extend`, assignment);
+    - any `importlib.import_module` call, including `getattr(importlib, "import_module")`;
+    - `__import__`.
+    Also ensure no `__bases__` mutation exists in `src/reasoning_dataset_lab`.
+    """
+    violations = check_src_tree_package_import_hygiene()
+    assert violations == [], f"Package import hygiene violations: {violations}"
+
+    for py_file in sorted((REPO_ROOT / "src" / "reasoning_dataset_lab").rglob("*.py")):
+        src_text = py_file.read_text(encoding="utf-8")
+        assert "__bases__" not in src_text, f"Forbidden __bases__ mutation in {py_file}"
+
+    # Verify the AST guard catches each forbidden construct
+    assert check_python_source_package_hygiene("import scripts.colab.vm_judges\n", "bad1.py")
+    assert check_python_source_package_hygiene("from scripts.colab import vm_judges\n", "bad2.py")
+    assert check_python_source_package_hygiene("import sys\nsys.path.insert(0, '/tmp')\n", "bad3.py")
+    assert check_python_source_package_hygiene("import sys\nsys.path.append('/tmp')\n", "bad4.py")
+    assert check_python_source_package_hygiene("import sys\nsys.path = []\n", "bad5.py")
+    assert check_python_source_package_hygiene("import importlib\nimportlib.import_module('vm_judges')\n", "bad6.py")
+    assert check_python_source_package_hygiene("import importlib\ngetattr(importlib, 'import_module')('vm_judges')\n", "bad7.py")
+    assert check_python_source_package_hygiene("__import__('vm_judges')\n", "bad8.py")
+
+
+def test_fix2_item1_wheel_install_outside_repo_imports_bakeoff_judge_and_runs_rdlab_help(
+    tmp_path: Path,
+) -> None:
+    """Card Fix2 Item 1:
+    Build the wheel (`uv build`), install it into a fresh venv outside the repo,
+    and run `python -c "import reasoning_dataset_lab.pilot_b.bakeoff_judge"` and `rdlab --help`,
+    both passing without touching the network or repo source tree.
+    """
+    import shutil as _shutil
+    import site as _site
+
+    real_uv = Path.home() / ".local" / "bin" / "uv"
+    if not real_uv.is_file():
+        found_uv = _shutil.which("uv")
+        assert found_uv is not None, "uv binary not found"
+        real_uv = Path(found_uv)
+
+    dist_dir = tmp_path / "dist_out"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    build_env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith("FAKE_COLAB_")
+    }
+    build_env["PATH"] = f"{real_uv.parent}:/usr/local/bin:/usr/bin:/bin"
+    build_proc = subprocess.run(
+        [str(real_uv), "build", "--wheel", "--out-dir", str(dist_dir)],
+        cwd=str(REPO_ROOT),
+        env=build_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert build_proc.returncode == 0, f"uv build failed: {build_proc.stderr}\n{build_proc.stdout}"
+    wheels = sorted(dist_dir.glob("reasoning_dataset_lab-*.whl"))
+    assert len(wheels) == 1, f"Expected 1 wheel in {dist_dir}, found {wheels}"
+    wheel_path = wheels[0]
+
+    venv_dir = tmp_path / "fresh_wheel_venv"
+    outside_cwd = tmp_path / "outside_cwd"
+    outside_cwd.mkdir(parents=True, exist_ok=True)
+
+    venv_proc = subprocess.run(
+        [sys.executable, "-m", "venv", str(venv_dir)],
+        cwd=str(outside_cwd),
+        env=build_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert venv_proc.returncode == 0, f"venv creation failed: {venv_proc.stderr}"
+
+    # Seed runtime third-party packages (yaml, aspire_si_gates, role_set) from the test environment's
+    # site-packages into the fresh venv so `pip install --no-index --no-deps` stays 100% offline
+    # without copying `reasoning_dataset_lab` or any `.pth` file.
+    venv_site_candidates = list((venv_dir / "lib").glob("python*/site-packages"))
+    assert len(venv_site_candidates) == 1
+    venv_site = venv_site_candidates[0]
+    host_sites = [Path(p) for p in _site.getsitepackages() if Path(p).is_dir()]
+    for hs in host_sites:
+        for pat in (
+            "yaml",
+            "_yaml*",
+            "pyyaml*.dist-info",
+            "PyYAML*.dist-info",
+            "aspire_si_gates*",
+            "role_set*",
+        ):
+            for item in hs.glob(pat):
+                dst = venv_site / item.name
+                if dst.exists():
+                    continue
+                if item.is_dir():
+                    _shutil.copytree(item, dst)
+                elif item.is_file() and item.suffix != ".pth":
+                    _shutil.copy2(item, dst)
+
+    venv_pip = venv_dir / "bin" / "pip"
+    venv_python = venv_dir / "bin" / "python"
+    venv_rdlab = venv_dir / "bin" / "rdlab"
+
+    clean_env = {
+        "PATH": f"{venv_dir / 'bin'}:/usr/local/bin:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+    }
+    install_proc = subprocess.run(
+        [str(venv_pip), "install", "--no-index", "--no-deps", str(wheel_path)],
+        cwd=str(outside_cwd),
+        env=clean_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert install_proc.returncode == 0, f"pip install failed: {install_proc.stderr}"
+
+    import_proc = subprocess.run(
+        [
+            str(venv_python),
+            "-c",
+            (
+                "import reasoning_dataset_lab.pilot_b.bakeoff_judge as bj; "
+                "import reasoning_dataset_lab.pilot_b.device as dev; "
+                "assert bj.normalize_judge_device is dev.normalize_judge_device; "
+                "assert bj.normalize_judge_device('cuda') == 'cuda:0'; "
+                "print(bj.__file__)"
+            ),
+        ],
+        cwd=str(outside_cwd),
+        env=clean_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert import_proc.returncode == 0, f"import bakeoff_judge failed: {import_proc.stderr}"
+    assert str(venv_site) in import_proc.stdout.strip()
+
+    help_proc = subprocess.run(
+        [str(venv_rdlab), "--help"],
+        cwd=str(outside_cwd),
+        env=clean_env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert help_proc.returncode == 0, f"rdlab --help failed: {help_proc.stderr}"
+    assert "usage: rdlab" in help_proc.stdout
+
+
+def test_fix2_item1_uploaded_device_py_sha256_verified_on_vm_under_fake_colab(
+    tmp_path: Path,
+) -> None:
+    """Card Fix2 Item 1:
+    - `launch_judges.sh` uploads `src/reasoning_dataset_lab/pilot_b/device.py` to `/content/device.py`
+      beside `/content/vm_judges.py` and passes `--env RDLAB_DEVICE_PY_SHA256=<sha256>`.
+    - `vm_judges.py` checks `/content/device.py`'s SHA-256 on the VM and refuses on mismatch or absence.
+    """
+    device_py_src = (
+        REPO_ROOT / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py"
+    )
+    actual_report = vm_judges.verify_device_py_digest(
+        device_py_src,
+        repo_device_py_path=device_py_src,
+        env_device_sha256=vm_judges.EXPECTED_DEVICE_PY_SHA256,
+        expected_device_sha256=vm_judges.EXPECTED_DEVICE_PY_SHA256,
+    )
+    assert actual_report["device_py_sha256"] == vm_judges.EXPECTED_DEVICE_PY_SHA256
+
+    # Direct refusal checks on tampered/missing/mismatched device.py
+    bad_dev_py = tmp_path / "corrupt_device.py"
+    bad_dev_py.write_text("# tampered\n", encoding="utf-8", newline="\n")
+    with pytest.raises(vm_judges.RefusalError) as exc_env_missing:
+        vm_judges.verify_device_py_digest(bad_dev_py, env_device_sha256="")
+    assert exc_env_missing.value.failure_class == "DEVICE_PY_SHA256_MISSING"
+
+    with pytest.raises(vm_judges.RefusalError) as exc_corrupt:
+        vm_judges.verify_device_py_digest(
+            bad_dev_py,
+            env_device_sha256=vm_judges.EXPECTED_DEVICE_PY_SHA256,
+        )
+    assert exc_corrupt.value.failure_class == "DEVICE_PY_SHA256_MISMATCH"
+
+    with pytest.raises(vm_judges.RefusalError) as exc_missing:
+        vm_judges.verify_device_py_digest(
+            tmp_path / "nonexistent_device.py",
+            env_device_sha256=vm_judges.EXPECTED_DEVICE_PY_SHA256,
+        )
+    assert exc_missing.value.failure_class == "DEVICE_PY_MISSING"
+
+    with pytest.raises(vm_judges.RefusalError) as exc_env_mismatch:
+        vm_judges.verify_device_py_digest(
+            device_py_src,
+            env_device_sha256="0" * 64,
+        )
+    assert exc_env_mismatch.value.failure_class == "DEVICE_PY_SHA256_MISMATCH"
+
+    # End-to-end under fake_colab: corrupting uploaded `/content/device.py` fails closed on the VM
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "dev_sha_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "dev_sha_data", count=2)
+    env_bad = fake_colab.setup_fake_colab_environment(tmp_path / "env_dev_corrupt")
+    out_bad = tmp_path / "out_dev_corrupt"
+    exports_bad = _base_launcher_exports(
+        env_bad,
+        open_lock=tmp_path / "dev_corrupt.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    proc_bad = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_bad} export FAKE_COLAB_CORRUPT_DEVICE_PY=1; "
+            f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --until venv_sync --out-dir '{_to_wsl_path(out_bad)}' --run-id dev-corrupt-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_bad.returncode == 2, f"stderr={proc_bad.stderr}"
+    status_bad = json.loads((out_bad / "status.json").read_text(encoding="utf-8"))
+    outcome_bad = json.loads((out_bad / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert status_bad["failure_class"] == "DEVICE_PY_SHA256_MISMATCH"
+    assert "DEVICE_PY_SHA256_MISMATCH" in outcome_bad["why"]
+
+
+# Explicit, commented allow-list of `RDLAB_*` variables that are either rig-only
+# (consumed by `launch_judges.sh` on the rig and never read on the VM) or VM-internal
+# (set inside `vm_judges.py` for child processes or injected only in unit tests).
+RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
+    # Rig-only launcher configuration and state variables in `launch_judges.sh`:
+    "RDLAB_ALIVE_PROBE_MAX_TRIES": "rig-only: max retries for `launch_judges.sh` pre-gate alive probe loop",
+    "RDLAB_ALIVE_PROBE_SLEEP_SECONDS": "rig-only: sleep seconds between pre-gate alive probe retries on the rig",
+    "RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS": "rig-only: per-try timeout on the rig for `colab exec` alive probe",
+    "RDLAB_CAP_UNITS": "rig-only: compute-unit cap enforced by the rig cost-cap monitor",
+    "RDLAB_COLAB_IS_FAKE": "rig-only: marks fake CLI runs for `outcome.draft.json` on the rig",
+    "RDLAB_COST_CAP_POLL_SECONDS": "rig-only: polling interval for the rig cost-cap background loop",
+    "RDLAB_DOWNLOAD_TIMEOUT_SECONDS": "rig-only: timeout for rig `colab download` calls",
+    "RDLAB_DRY": "rig-only: `--dry` flag state in `launch_judges.sh`",
+    "RDLAB_EXEC_MARGIN_SECONDS": "rig-only: margin subtracted from `WALL_SECONDS` for `colab exec --timeout`",
+    "RDLAB_FAILURE_CLASS": "rig-only: internal env var passed to `write_outcome_draft` Python helper on the rig",
+    "RDLAB_FAKE_CLOCK_ARMED": "rig-only: internal flag arming fake clock stepping in the rig cost-cap loop",
+    "RDLAB_FAKE_CLOCK_FILE": "rig-only: file path for deterministic fake clock testing on the rig",
+    "RDLAB_FAKE_CLOCK_STEP_SECONDS": "rig-only: step seconds for deterministic fake clock testing on the rig",
+    "RDLAB_FETCH_MARGIN_SECONDS": "rig-only: margin before `WALL_SECONDS` when the rig watchdog starts fetching",
+    "RDLAB_GATE_TIMEOUT_SECONDS": "rig-only: timeout for the rig's `colab exec` gate/probe calls",
+    "RDLAB_LIVE_USAGE_RATE": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
+    "RDLAB_OPEN_LOCK": "rig-only: flock path serializing `colab sessions` + `colab new` on the rig",
+    "RDLAB_OUT_DIR": "rig-only: output directory on the rig filesystem",
+    "RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS": "rig-only: interval between periodic `progress.jsonl` downloads on the rig",
+    "RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS": "rig-only: timeout for each periodic `progress.jsonl` download on the rig",
+    "RDLAB_PYTHON": "rig-only: Python interpreter path on the rig",
+    "RDLAB_RATE_READ_AT_UTC": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
+    "RDLAB_RIG_GRACE_SECONDS": "rig-only: outer `timeout -k` grace period on the rig",
+    "RDLAB_RUN_ID": "rig-only: run identifier on the rig",
+    "RDLAB_SMOKE_MID_SESSIONS": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
+    "RDLAB_SMOKE_POST_SESSIONS": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
+    "RDLAB_SMOKE_PRE_SESSIONS": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
+    "RDLAB_SMOKE_SESSION_NAME": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
+    "RDLAB_STOP_POLL_MAX_READS": "rig-only: max post-stop `colab sessions` reads on the rig",
+    "RDLAB_STOP_POLL_SLEEP_SECONDS": "rig-only: sleep seconds between post-stop `colab sessions` reads on the rig",
+    "RDLAB_UNTIL_STEP": "rig-only: internal env var passed to `write_outcome_draft` on the rig (forwarded to VM as `RDLAB_UNTIL`)",
+    "RDLAB_UPLOAD_TIMEOUT_SECONDS": "rig-only: timeout for rig `colab upload` calls",
+    "RDLAB_VM_SCRIPT": "rig-only: local path to `vm_judges.py` passed to `colab exec -f` on the rig",
+    "RDLAB_VM_SELF_STOP_MARGIN_SECONDS": "rig-only: subtracted on the rig to compute `VM_WALL_SECONDS` (forwarded as `RDLAB_WALL_SECONDS`)",
+    "RDLAB_WATCHDOG_FETCH_TIMEOUT_SECONDS": "rig-only: timeout for pre-stop fetch on the rig",
+    # VM-internal variables (set by `vm_judges.py` for child processes or used as unit-test overrides on the VM):
+    "RDLAB_ACTIVE_VENV_NAME": "vm-internal: set by `vm_judges.py` when spawning venv child subprocesses",
+    "RDLAB_JUDGE_CHILD_PROGRESS_FILE": "vm-internal: set by `vm_judges.py` when spawning a judge child subprocess",
+    "RDLAB_VM_CONTENT_DIR": "vm-internal: `/content` root override used by `fake_colab` and unit tests",
+    "RDLAB_GATE_STATUS_FILE": "vm-internal: `/content/gate_status.json` path override used in unit tests",
+    "RDLAB_WORK_DIR": "vm-internal: `/content/rdlab_work` path override used in unit tests",
+    "RDLAB_CGROUP_DIR": "vm-internal: `/sys/fs/cgroup` path override used in unit tests",
+    "RDLAB_CGROUP_MEMORY_EVENTS_PATH": "vm-internal: `/sys/fs/cgroup/memory.events` path override used in unit tests",
+    "RDLAB_PROC_MEMINFO_PATH": "vm-internal: `/proc/meminfo` path override used in unit tests",
+}
+
+
+def extract_launch_sh_forwarded_rdlab_env_vars(
+    sh_text: str | None = None,
+) -> set[str]:
+    text = sh_text if sh_text is not None else LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
+    return set(re.findall(r"--env\s+[\"']?(RDLAB_[A-Z0-9_]+)=", text))
+
+
+def test_fix2_item3_env_forwarding_completeness_and_fake_colab_strips_unforwarded_host_env(
+    tmp_path: Path,
+) -> None:
+    """Card Fix2 Item 3 (the review's HIGH 2):
+    - Every `RDLAB_*` name read by `vm_judges.py`, or listed in `REAL_SERVICE_ASSUMPTIONS.md`,
+      is either in `launch_judges.sh`'s `--env` forwarding list or in an explicit, commented
+      rig-only / VM-internal allow-list.
+    - `tests/fixtures/fake_colab.py` does not pass unforwarded host `RDLAB_*` variables through
+      to `colab exec`.
+    """
+    vm_text = VM_JUDGES_PY.read_text(encoding="utf-8")
+    doc_text = (SCRIPTS_COLAB_DIR / "REAL_SERVICE_ASSUMPTIONS.md").read_text(encoding="utf-8")
+    sh_text = LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
+
+    vm_rdlab_vars = {
+        v for v in re.findall(r"\bRDLAB_[A-Z0-9_]+\b", vm_text) if v != "RDLAB_"
+    }
+    doc_rdlab_vars = {
+        v for v in re.findall(r"\bRDLAB_[A-Z0-9_]+\b", doc_text) if v != "RDLAB_"
+    }
+    forwarded_vars = extract_launch_sh_forwarded_rdlab_env_vars(sh_text)
+    allowlist_vars = set(RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST.keys())
+
+    # Every allow-list entry must have a non-empty comment and must NOT overlap with forwarded_vars
+    for k, comment in RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST.items():
+        assert isinstance(comment, str) and len(comment.strip()) >= 10, (
+            f"Allow-list entry {k} lacks explanation comment"
+        )
+    overlap = forwarded_vars & allowlist_vars
+    assert overlap == set(), (
+        f"Variables cannot be in both launch_judges.sh --env forwarding and the non-forwarded allow-list: {sorted(overlap)}"
+    )
+
+    covered = forwarded_vars | allowlist_vars
+    missing_from_vm = sorted(vm_rdlab_vars - covered)
+    missing_from_doc = sorted(doc_rdlab_vars - covered)
+    assert missing_from_vm == [], (
+        f"RDLAB_* variables in vm_judges.py missing from launch_judges.sh --env forwarding: {missing_from_vm}"
+    )
+    assert missing_from_doc == [], (
+        f"RDLAB_* variables in REAL_SERVICE_ASSUMPTIONS.md missing from launch_judges.sh --env forwarding: {missing_from_doc}"
+    )
+
+    # Also verify that removing RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS from launch_judges.sh forwarding is caught
+    mutated_sh = re.sub(
+        r'[^\n]*RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS=[^\n]*\n',
+        "",
+        sh_text,
+    )
+    mutated_forwarded = extract_launch_sh_forwarded_rdlab_env_vars(mutated_sh)
+    assert "RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS" not in mutated_forwarded
+    assert "RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS" in (
+        (vm_rdlab_vars | doc_rdlab_vars) - (mutated_forwarded | allowlist_vars)
+    )
+
+    # Verify `fake_colab.py` strips unforwarded host `RDLAB_*` variables from `colab exec`
+    env_fc = fake_colab.setup_fake_colab_environment(
+        tmp_path / "env_strip_check",
+        neighbour_sessions=[{"session_id": "rdlab-strip-01", "gpu": "CPU"}],
+    )
+    wsl_colab = _to_wsl_path(env_fc["fake_bin"] / "colab")
+    wsl_state = _to_wsl_path(env_fc["state_dir"])
+    probe_script = tmp_path / "check_env_forwarded.py"
+    probe_script.write_text(
+        "import json, os\n"
+        "print(json.dumps({\n"
+        "    'RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS': os.environ.get('RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS'),\n"
+        "    'RDLAB_FIRST_LOAD_TIMEOUT_SECONDS': os.environ.get('RDLAB_FIRST_LOAD_TIMEOUT_SECONDS'),\n"
+        "}))\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    wsl_probe = _to_wsl_path(probe_script)
+
+    # Host exports RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS=777, but only passes RDLAB_FIRST_LOAD_TIMEOUT_SECONDS via --env
+    proc_strip = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"export FAKE_COLAB_STATE_DIR='{wsl_state}'; "
+            "export RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS='777'; "
+            "export RDLAB_FIRST_LOAD_TIMEOUT_SECONDS='888'; "
+            f"'{wsl_colab}' exec -s rdlab-strip-01 --env 'RDLAB_FIRST_LOAD_TIMEOUT_SECONDS=888' -f '{wsl_probe}' </dev/null",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert proc_strip.returncode == 0, f"stderr={proc_strip.stderr}"
+    payload = json.loads(proc_strip.stdout.strip().splitlines()[-1])
+    assert payload["RDLAB_JUDGE_CHILD_TIMEOUT_SECONDS"] is None
+    assert payload["RDLAB_FIRST_LOAD_TIMEOUT_SECONDS"] == "888"
+
+
+def test_fix2_item6_vram_sampler_fails_closed_never_returns_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Fix2 Item 6 (LOW 6):
+    `VramSampler._sample_once` in `scripts/colab/vm_judges.py` never returns `0` on `nvidia-smi`
+    errors; it records `failure_class = "VRAM_SAMPLE_FAILED"` and returns `None` (`null`), so the
+    peak is never under-reported as `0`.
+    """
+    planted_tok = "hf_" + "VramSamplerSecretToken1122334455"
+
+    for bad_proc in (
+        subprocess.CompletedProcess(
+            args=[], returncode=6, stdout="", stderr=f"GPU lost {planted_tok}"
+        ),
+        subprocess.CompletedProcess(args=[], returncode=0, stdout="\n  \n", stderr=""),
+        subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=f"ERR {planted_tok}\n", stderr=""
+        ),
+    ):
+        sampler = vm_judges.VramSampler(interval_s=0.05)
+        monkeypatch.setattr(subprocess, "run", lambda *a, _p=bad_proc, **kw: _p)
+        val = sampler._sample_once()
+        assert val is None
+        assert sampler.peak_mib is None
+        assert sampler.failure_class == "VRAM_SAMPLE_FAILED"
+        assert len(sampler.failures) == 1
+        assert planted_tok not in sampler.failures[0]
+
+    def _raise_os_err(*_a: object, **_kw: object) -> object:
+        raise FileNotFoundError(2, f"missing nvidia-smi {planted_tok}")
+
+    sampler_err = vm_judges.VramSampler(interval_s=0.05)
+    monkeypatch.setattr(subprocess, "run", _raise_os_err)
+    assert sampler_err._sample_once() is None
+    assert sampler_err.peak_mib is None
+    assert sampler_err.failure_class == "VRAM_SAMPLE_FAILED"
+    assert len(sampler_err.failures) == 1
+    assert planted_tok not in sampler_err.failures[0]
+
+    # Starting/stopping a VramSampler when all samples fail leaves peak_mib as None (never 0)
+    sampler_run = vm_judges.VramSampler(interval_s=0.05)
+    sampler_run.start()
+    sampler_run.stop()
+    assert sampler_run.peak_mib is None
+    assert sampler_run.failure_class == "VRAM_SAMPLE_FAILED"
+
+
+def test_fix2_item7_mid_run_cost_cap_stop_without_result_tar_fetches_partial_artifacts_and_records_cap_stop(
+    tmp_path: Path,
+) -> None:
+    """Card Fix2 Item 7 (LOW 6):
+    When a cost-cap stop triggers mid-run before `/content/result.tar.gz` exists on the VM,
+    `launch_judges.sh` fetches `/content/rdlab_run/progress.jsonl`, `/content/rdlab_run/logs/vm.log`,
+    `/content/gate_status.json`, and finished judges' `judge_done/<jid>.json` + `rows/<jid>.jsonl`,
+    and records in `status.json` (`status == "stopped_cost_cap"`, `failure_class == "COST_CAP_REACHED"`,
+    `cost_cap_reached is True`, `step == "run"`) that the stop was a cap stop.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "fix2_item7_data"
+    )
+    items_file = _make_synthetic_public_items(tmp_path / "fix2_item7_data", count=2)
+    env_mid = fake_colab.setup_fake_colab_environment(tmp_path / "env_fix2_item7")
+    out_mid = tmp_path / "out_fix2_item7"
+    clock_file = tmp_path / "fake_clock_mid.txt"
+    clock_file.write_text("1000000\n", encoding="utf-8", newline="\n")
+
+    exports_mid = _base_launcher_exports(
+        env_mid,
+        open_lock=tmp_path / "fix2_item7.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    extra_mid = (
+        f"export RDLAB_FAKE_CLOCK_FILE='{_to_wsl_path(clock_file)}'; "
+        "export RDLAB_FAKE_CLOCK_STEP_SECONDS=689; "
+        "export FAKE_COLAB_USAGE_RATE='13.08'; "
+        "export FAKE_COLAB_EXEC_SLEEP='15'; "
+        "export FAKE_COLAB_WRITE_PARTIAL_RUN_BEFORE_SLEEP=1; "
+        "export RDLAB_COST_CAP_POLL_SECONDS=1; "
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports_mid} {extra_mid} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --cap 2.5 --out-dir '{_to_wsl_path(out_mid)}' --run-id fix2-cap-mid-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc.returncode == 2, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert not (out_mid / "result.tar.gz").exists()
+
+    # Verify progress, logs, gate status, and finished judge's done/rows were fetched
+    assert (out_mid / "progress.jsonl").is_file()
+    assert (out_mid / "logs" / "vm.log").is_file()
+    assert (out_mid / "gate_status.json").is_file()
+    assert (out_mid / "judge_done" / "nemotron-3-nano-4b.json").is_file()
+    assert (out_mid / "rows" / "nemotron-3-nano-4b.jsonl").is_file()
+
+    # Verify status.json records that the stop was a cap stop on step="run"
+    status_doc = json.loads((out_mid / "status.json").read_text(encoding="utf-8"))
+    assert status_doc["step"] == "run"
+    assert status_doc["rc"] == 2
+    assert status_doc["status"] == "stopped_cost_cap"
+    assert status_doc["failure_class"] == "COST_CAP_REACHED"
+    assert status_doc["cost_cap_reached"] is True
+    assert status_doc["live_rate"] == 13.08
+    assert status_doc["cap_units"] == 2.5
+
+    outcome_doc = json.loads((out_mid / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome_doc["outcome"] == "stopped_cost_cap"
+    assert outcome_doc["failure_class"] == "COST_CAP_REACHED"
+    assert outcome_doc["judges_completed"] == ["nemotron-3-nano-4b"]
 
 
 

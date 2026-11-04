@@ -31,6 +31,7 @@ EXPLICIT_CAP="${RDLAB_CAP_UNITS:-}"
 
 EXPECTED_JUDGE_LOCK_SHA256="608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
 EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
+EXPECTED_DEVICE_PY_SHA256="0755b739628d8f91adb696df4df90dbda78b0cfe5233fe33b54ae7987e55232d"
 EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
@@ -309,6 +310,7 @@ repo_root = Path(sys.argv[1])
 mode = sys.argv[2]
 until_step = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
 is_smoke = (len(sys.argv) > 4 and sys.argv[4] == "1")
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
@@ -370,6 +372,7 @@ scrub_stream() {
 }
 
 STAGE_DIR="$OUT_DIR/stage"
+STAGED_DEVICE_PY="$STAGE_DIR/device.py"
 REPO_TAR="$STAGE_DIR/repo_bundle.tar.gz"
 RECEIPTS_TAR="$STAGE_DIR/receipts_bundle.tar.gz"
 STAGED_ITEMS_FILE="$STAGE_DIR/items.jsonl"
@@ -404,6 +407,7 @@ build_probe_env_args() {
 build_exec_env_args() {
   local j_sha="${RDLAB_JUDGE_LOCK_SHA256:-$EXPECTED_JUDGE_LOCK_SHA256}"
   local d_sha="${RDLAB_D3_LOCK_SHA256:-$EXPECTED_D3_LOCK_SHA256}"
+  local dev_sha="${RDLAB_DEVICE_PY_SHA256:-$EXPECTED_DEVICE_PY_SHA256}"
   local exp_uv="${RDLAB_EXPECT_UV_VERSION:-$EXPECTED_UV_VERSION}"
   EXEC_ENV_ARGS=(
     --env "RDLAB_STEP=run"
@@ -412,6 +416,7 @@ build_exec_env_args() {
     --env "RDLAB_VRAM_HALT_MIB=$VRAM_HALT_MIB"
     --env "RDLAB_JUDGE_LOCK_SHA256=$j_sha"
     --env "RDLAB_D3_LOCK_SHA256=$d_sha"
+    --env "RDLAB_DEVICE_PY_SHA256=$dev_sha"
     --env "RDLAB_EXPECT_UV_VERSION=$exp_uv"
     --env "RDLAB_REPO_DIR=/content/rdlab"
     --env "RDLAB_REPO_TAR=/content/repo_bundle.tar.gz"
@@ -491,6 +496,7 @@ from pathlib import Path
 repo_root = Path(sys.argv[1])
 items_file = Path(sys.argv[2])
 is_smoke = sys.argv[3] == "1"
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
@@ -541,6 +547,7 @@ PY
     printf 'colab usage\n'
     printf 'colab exec -s %s --env RDLAB_STEP=alive -f %s --timeout=%s\n' "$SESSION_NAME" "$VM_SCRIPT" "$ALIVE_PROBE_TIMEOUT_SECONDS"
     printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_GATE_ENV_STR" "$VM_SCRIPT" "$GATE_TIMEOUT_SECONDS"
+    printf 'colab upload -s %s %s /content/device.py\n' "$SESSION_NAME" "$STAGED_DEVICE_PY"
     printf 'colab upload -s %s %s /content/repo_bundle.tar.gz\n' "$SESSION_NAME" "$REPO_TAR"
     printf 'colab upload -s %s %s /content/receipts_bundle.tar.gz\n' "$SESSION_NAME" "$RECEIPTS_TAR"
     printf 'colab upload -s %s %s /content/rdlab_items/items.jsonl\n' "$SESSION_NAME" "$STAGED_ITEMS_FILE"
@@ -723,6 +730,10 @@ fetch_results_once() {
     timeout "$eff_timeout" colab download -s "$S" "/content/gate_status.json" "$OUT_DIR/gate_status.json" </dev/null >/dev/null 2>&1 || true
     timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
     timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl" </dev/null >/dev/null 2>&1 || true
+    if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
+      mkdir -p "$OUT_DIR/logs"
+      timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/logs/vm.log" "$OUT_DIR/logs/vm.log" </dev/null >/dev/null 2>&1 || true
+    fi
     "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" >/dev/null 2>&1 <<'PY' || true
 import shutil
 import sys
@@ -731,6 +742,7 @@ from pathlib import Path
 
 repo_root = Path(sys.argv[1])
 out_dir = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
@@ -764,10 +776,11 @@ from pathlib import Path
 
 repo_root = Path(sys.argv[1])
 out_dir = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
-for name in ("progress.jsonl", "status.json", "gate_status.json", "vm_receipt.json"):
+for name in ("progress.jsonl", "status.json", "gate_status.json", "vm_receipt.json", "logs/vm.log"):
     p = out_dir / name
     if p.is_file():
         vm_judges.scrub_log_file_in_place(p)
@@ -792,7 +805,7 @@ periodic_fetch_progress_once() {
   local dl_err=""
   dl_err="$(timeout "$PROGRESS_FETCH_TIMEOUT_SECONDS" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$tmp_progress" </dev/null 2>&1)" || dl_rc=$?
   if [[ "$dl_rc" -eq 0 ]] && [[ -f "$tmp_progress" ]]; then
-    "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.scrub_log_file_in_place(Path(sys.argv[2]))" "$REPO_ROOT" "$tmp_progress" >/dev/null 2>&1 || true
+    "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'src')); sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.scrub_log_file_in_place(Path(sys.argv[2]))" "$REPO_ROOT" "$tmp_progress" >/dev/null 2>&1 || true
     mv -f "$tmp_progress" "$OUT_DIR/progress.jsonl"
     fetch_completed_judge_checkpoints "$PROGRESS_FETCH_TIMEOUT_SECONDS"
     log_msg "PROGRESS_FETCH_OK session=$S"
@@ -1093,6 +1106,7 @@ from pathlib import Path
 repo_root = Path(sys.argv[1])
 out_dir = Path(sys.argv[2])
 cli_log = Path(sys.argv[3])
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
@@ -1102,6 +1116,7 @@ for p in (
     out_dir / "status.json",
     out_dir / "gate_status.json",
     out_dir / "vm_receipt.json",
+    out_dir / "logs" / "vm.log",
 ):
     if p.is_file():
         vm_judges.scrub_log_file_in_place(p)
@@ -1245,6 +1260,7 @@ repo_root = Path(sys.argv[1])
 probe_path = Path(sys.argv[2])
 cli_log = Path(sys.argv[3])
 
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
@@ -1273,7 +1289,7 @@ if [[ -z "$ITEMS_FILE" ]]; then
   echo "ITEMS_FILE_MISSING: RDLAB_ITEMS_FILE or --items-file is required" >&2
   exit 2
 fi
-if ! "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.check_upload_path_allowed(sys.argv[2])" "$REPO_ROOT" "$ITEMS_FILE"; then
+if ! "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'src')); sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.check_upload_path_allowed(sys.argv[2])" "$REPO_ROOT" "$ITEMS_FILE"; then
   RUN_WHY="upload path refused by key/sealed-store guard: $ITEMS_FILE"
   exit 2
 fi
@@ -1288,6 +1304,7 @@ from pathlib import Path
 
 repo_root = Path(sys.argv[1])
 items_file = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
@@ -1308,7 +1325,7 @@ if [[ -z "$RECEIPTS_DIR" ]] || [[ ! -d "$RECEIPTS_DIR" ]]; then
   exit 2
 fi
 
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$EXPECTED_JUDGE_LOCK_SHA256" "$EXPECTED_D3_LOCK_SHA256" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$EXPECTED_JUDGE_LOCK_SHA256" "$EXPECTED_D3_LOCK_SHA256" "$EXPECTED_DEVICE_PY_SHA256" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -1316,6 +1333,8 @@ from pathlib import Path
 repo_root = Path(sys.argv[1])
 exp_judge = sys.argv[2]
 exp_d3 = sys.argv[3]
+exp_dev = sys.argv[4]
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
@@ -1327,14 +1346,23 @@ vm_judges.verify_lock_digests(
     expected_judge_sha256=exp_judge,
     expected_d3_sha256=exp_d3,
 )
+vm_judges.verify_device_py_digest(
+    repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py",
+    env_device_sha256=(
+        os.environ["RDLAB_DEVICE_PY_SHA256"]
+        if "RDLAB_DEVICE_PY_SHA256" in os.environ
+        else exp_dev
+    ),
+    expected_device_sha256=exp_dev,
+)
 PY
 then
-  RUN_WHY="lock file SHA-256 verification failed before session open"
+  RUN_WHY="lock file or device.py SHA-256 verification failed before session open"
   exit 2
 fi
 
 mkdir -p "$STAGE_DIR"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" <<'PY'
 import shutil
 import sys
 import tarfile
@@ -1346,7 +1374,9 @@ items_dst = Path(sys.argv[3])
 receipts_dir = Path(sys.argv[4])
 receipts_tar = Path(sys.argv[5])
 repo_tar = Path(sys.argv[6])
+device_py_dst = Path(sys.argv[7])
 
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 BAKEOFF_JUDGE_SPECS = vm_judges.BAKEOFF_JUDGE_SPECS
@@ -1355,6 +1385,7 @@ vm_judges.check_upload_path_allowed(items_src)
 vm_judges.verify_items_allowlist(items_src)
 _ = vm_judges.collect_claim_ngram_sha256s(items_src)
 shutil.copyfile(items_src, items_dst)
+shutil.copyfile(repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py", device_py_dst)
 
 with tarfile.open(receipts_tar, "w:gz") as tf:
     for _, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
@@ -1573,6 +1604,10 @@ fi
 ) </dev/null >/dev/null 2>&1 9>&- &
 WATCHDOG_PID="$!"
 
+timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_DEVICE_PY" "/content/device.py" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  RUN_WHY="colab upload failed for /content/device.py on session $S"
+  exit 1
+}
 timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
   RUN_WHY="colab upload failed for /content/repo_bundle.tar.gz on session $S"
   exit 1
@@ -1716,7 +1751,7 @@ if status_path.is_file():
     except Exception:
         doc = {}
 
-doc.setdefault("step", "run")
+doc["step"] = "run"
 doc["rc"] = 2
 doc["status"] = "stopped_cost_cap"
 doc["failure_class"] = "COST_CAP_REACHED"
@@ -1783,6 +1818,7 @@ from pathlib import Path
 
 repo_root = Path(sys.argv[1])
 status_path = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 
@@ -1825,6 +1861,7 @@ out_dir = Path(sys.argv[2])
 items_file = Path(sys.argv[3])
 cli_log = Path(sys.argv[4])
 
+sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
 

@@ -396,26 +396,18 @@ def resolve_repo_dir(repo_dir: Path | None = None) -> Path:
 
 
 def _ensure_repo_imports(repo_dir: Path | None = None) -> None:
-    """Ensure `<repo_dir>/src` is on `sys.path` without importing `torch`, `transformers`, or `bakeoff_judge` in the parent."""
-    candidate_roots = [resolve_repo_dir(repo_dir)]
-    if repo_dir is not None:
-        candidate_roots.insert(0, Path(repo_dir))
-    cwd_path = Path.cwd()
-    if (cwd_path / "src" / "reasoning_dataset_lab").is_dir():
-        candidate_roots.append(cwd_path)
+    """No-op compatibility stub (parent process never mutates `sys.path`)."""
+    _ = repo_dir
 
-    for root in candidate_roots:
-        src_dir = root / "src"
-        if src_dir.is_dir():
-            src_str = str(src_dir)
-            if src_str not in sys.path:
-                sys.path.insert(0, src_str)
 
 EXPECTED_JUDGE_LOCK_SHA256 = (
     "608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
 )
 EXPECTED_D3_LOCK_SHA256 = (
     "08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
+)
+EXPECTED_DEVICE_PY_SHA256 = (
+    "0755b739628d8f91adb696df4df90dbda78b0cfe5233fe33b54ae7987e55232d"
 )
 PYYAML_SDIST_FILENAME = "pyyaml-6.0.3.tar.gz"
 PYYAML_SDIST_SHA256 = (
@@ -552,24 +544,48 @@ TAR_ALLOWED_DIRS: frozenset[str] = frozenset(
 )
 
 
-class RefusalError(RuntimeError):
-    """Hard-stop refusal with a structured failure class."""
-
+class _FallbackDeviceRefusalError(RuntimeError):
     def __init__(
         self,
-        failure_class: str,
+        code: str,
         message: str,
         hint: str = "Inspect VM logs and refusal details before retrying.",
+        exit_code: int = 1,
     ) -> None:
-        RuntimeError.__init__(self, f"{failure_class}: {message}")
-        self.failure_class = failure_class
-        self.code = failure_class
-        self.detail = message
+        RuntimeError.__init__(self, f"[{code}] {message} (hint: {hint})")
+        self.code = code
+        self.failure_class = code
         self.message = message
+        self.detail = message
         self.hint = hint
-        self.exit_code = 1
+        self.exit_code = exit_code
 
 
+try:
+    from reasoning_dataset_lab.pilot_b.device import (
+        _CUDA_INDEX_DEVICE_RE,
+        DeviceRefusalError,
+        normalize_judge_device,
+    )
+except ModuleNotFoundError:
+    try:
+        if (
+            Path("device.py").is_file()
+            and hashlib.sha256(Path("device.py").read_bytes()).hexdigest()
+            == EXPECTED_DEVICE_PY_SHA256
+        ):
+            from device import (  # type: ignore[import-not-found,no-redef]
+                _CUDA_INDEX_DEVICE_RE,
+                DeviceRefusalError,
+                normalize_judge_device,
+            )
+        else:
+            DeviceRefusalError = _FallbackDeviceRefusalError  # type: ignore[misc,assignment]
+    except ModuleNotFoundError:
+        DeviceRefusalError = _FallbackDeviceRefusalError  # type: ignore[misc,assignment]
+
+
+RefusalError = DeviceRefusalError
 RdlabError: type[BaseException] = RefusalError
 
 
@@ -1844,6 +1860,66 @@ def verify_lock_digests(
             "judge.lock.txt": list(judge_report["sdists"]),
             "d3.lock.txt": list(d3_report["sdists"]),
         },
+    }
+
+
+def verify_device_py_digest(
+    device_py_path: Path,
+    *,
+    repo_device_py_path: Path | None = None,
+    env_device_sha256: str | None = None,
+    expected_device_sha256: str = EXPECTED_DEVICE_PY_SHA256,
+) -> dict[str, str]:
+    """Verify uploaded `/content/device.py` (and optional repo copy) against launcher config SHA and `RDLAB_DEVICE_PY_SHA256`."""
+    if not isinstance(env_device_sha256, str) or not env_device_sha256:
+        raise RefusalError(
+            "DEVICE_PY_SHA256_MISSING",
+            "RDLAB_DEVICE_PY_SHA256 is required and must not be empty.",
+        )
+    if not HEX64_LOWER_RE.match(env_device_sha256):
+        raise RefusalError(
+            "DEVICE_PY_SHA256_MISMATCH",
+            f"RDLAB_DEVICE_PY_SHA256 must be 64 lowercase hex chars, got {env_device_sha256!r}.",
+        )
+    if not device_py_path.is_file():
+        raise RefusalError(
+            "DEVICE_PY_MISSING",
+            f"device.py not found at {device_py_path}",
+        )
+    actual_sha = sha256_file(device_py_path)
+    if actual_sha != expected_device_sha256 or env_device_sha256 != actual_sha:
+        raise RefusalError(
+            "DEVICE_PY_SHA256_MISMATCH",
+            f"device.py sha256 mismatch at {device_py_path}: file={actual_sha}, "
+            f"config={expected_device_sha256}, env={env_device_sha256}",
+        )
+    if repo_device_py_path is not None:
+        if not repo_device_py_path.is_file():
+            raise RefusalError(
+                "DEVICE_PY_MISSING",
+                f"repo device.py not found at {repo_device_py_path}",
+            )
+        repo_sha = sha256_file(repo_device_py_path)
+        if repo_sha != expected_device_sha256 or repo_sha != actual_sha:
+            raise RefusalError(
+                "DEVICE_PY_SHA256_MISMATCH",
+                f"repo device.py sha256 mismatch at {repo_device_py_path}: file={repo_sha}, "
+                f"uploaded={actual_sha}, config={expected_device_sha256}",
+            )
+    if Path("device.py").is_file() and Path("device.py").resolve() == device_py_path.resolve():
+        from device import (  # type: ignore[import-not-found]
+            _CUDA_INDEX_DEVICE_RE as _uploaded_cuda_re,
+            DeviceRefusalError as _uploaded_refusal_err,
+            normalize_judge_device as _uploaded_normalize_judge_device,
+        )
+
+        if "normalize_judge_device" not in globals():
+            globals()["_CUDA_INDEX_DEVICE_RE"] = _uploaded_cuda_re
+            globals()["DeviceRefusalError"] = _uploaded_refusal_err
+            globals()["normalize_judge_device"] = _uploaded_normalize_judge_device
+    return {
+        "device_py_path": str(device_py_path),
+        "device_py_sha256": actual_sha,
     }
 
 
@@ -4164,7 +4240,7 @@ def compute_percentile(vals: Sequence[float], pct: float) -> float:
 
 
 class VramSampler:
-    """Samples GPU VRAM every `interval_s` seconds (default 5 s) and tracks peak MiB."""
+    """Samples GPU VRAM every `interval_s` seconds (default 5 s) and tracks peak MiB fail-closed."""
 
     def __init__(
         self,
@@ -4174,14 +4250,20 @@ class VramSampler:
     ) -> None:
         self.interval_s = interval_s
         self.dryrun = dryrun
-        self.peak_mib = 0
+        self.peak_mib: int | None = None
         self.samples_count = 0
+        self.failure_class: str | None = None
+        self.failures: list[str] = []
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def _sample_once(self) -> int:
+    def _record_failure(self, detail: str) -> None:
+        self.failure_class = "VRAM_SAMPLE_FAILED"
+        self.failures.append(scrub_log_text(detail))
+
+    def _sample_once(self) -> int | None:
         if self.dryrun:
-            return 0
+            return None
         try:
             proc = run_vm_subprocess(
                 [
@@ -4193,28 +4275,46 @@ class VramSampler:
                 check=False,
                 log_output=False,
             )
-            if proc.returncode == 0 and proc.stdout.strip():
-                first = proc.stdout.strip().splitlines()[0].strip()
-                return int(first)
-        except Exception:
-            pass
-        return 0
+            if proc.returncode != 0:
+                self._record_failure(
+                    f"VRAM_SAMPLE_FAILED: nvidia-smi exited with rc={proc.returncode}: "
+                    f"{proc.stderr_tail or proc.stdout_tail}"
+                )
+                return None
+            out_stripped = proc.stdout.strip()
+            if not out_stripped:
+                self._record_failure("VRAM_SAMPLE_FAILED: nvidia-smi returned empty stdout")
+                return None
+            first = out_stripped.splitlines()[0].strip()
+            val = int(first)
+            if val < 0:
+                self._record_failure(
+                    f"VRAM_SAMPLE_FAILED: nvidia-smi returned negative MiB {val}"
+                )
+                return None
+            return val
+        except Exception as exc:
+            self._record_failure(
+                f"VRAM_SAMPLE_FAILED: {type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _record_sample(self, val: int | None) -> None:
+        self.samples_count += 1
+        if val is not None:
+            self.peak_mib = val if self.peak_mib is None else max(self.peak_mib, val)
 
     def start(self) -> None:
-        val = self._sample_once()
-        self.peak_mib = max(self.peak_mib, val)
-        self.samples_count += 1
+        self._record_sample(self._sample_once())
 
         def _loop() -> None:
             while not self._stop_event.wait(self.interval_s):
-                v = self._sample_once()
-                self.peak_mib = max(self.peak_mib, v)
-                self.samples_count += 1
+                self._record_sample(self._sample_once())
 
         self._thread = threading.Thread(target=_loop, daemon=True)
         self._thread.start()
 
-    def stop(self) -> int:
+    def stop(self) -> int | None:
         self._stop_event.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
@@ -4396,28 +4496,6 @@ def _query_nvidia_smi_driver_line() -> str:
     except Exception as exc:
         return _scrub_and_tail(f"nvidia-smi error: {type(exc).__name__}: {exc}")
     return "nvidia-smi not found"
-
-
-_CUDA_INDEX_DEVICE_RE: re.Pattern[str] = re.compile(r"cuda:(?:0|[1-9][0-9]*)")
-
-
-def normalize_judge_device(device: Any) -> str:
-    """Normalise judge device strings: `'cuda' -> 'cuda:0'`, `'cuda:N' -> 'cuda:N'`, `'cpu' -> 'cpu'`.
-
-    Any other value (including `'cuda:'`, `'cuda:-1'`, `'gpu'`, `'cuda:0 '`, `' cuda:0'`, `'cuda:0\\n'`, `''`, or non-str)
-    is refused with `BAKEOFF_JUDGE_DEVICE_INVALID` and a scrubbed message.
-    """
-    if isinstance(device, str) and not isinstance(device, bool):
-        if device == "cuda":
-            return "cuda:0"
-        if device == "cpu" or _CUDA_INDEX_DEVICE_RE.fullmatch(device):
-            return device
-    raw_repr = scrub_log_text(repr(device))
-    raise RefusalError(
-        "BAKEOFF_JUDGE_DEVICE_INVALID",
-        f"Invalid judge device {raw_repr}; expected 'cuda', 'cuda:N' (non-negative integer N), or 'cpu'",
-        "Pass --device cuda:0 (or --device cuda, which normalises to cuda:0) or --device cpu.",
-    )
 
 
 def resolve_judge_device(
@@ -5640,8 +5718,19 @@ def run_judges_pipeline(
             else 0.0
         )
         p95_s = round(compute_percentile(call_durations, 95.0), 6)
-        harness_peak = int(done_doc.get("vram_peak_mib", 0))
-        peak_vram = max(harness_peak, sampler_peak)
+        raw_harness_peak = done_doc.get("vram_peak_mib")
+        harness_peak: int | None = (
+            int(raw_harness_peak)
+            if isinstance(raw_harness_peak, (int, float))
+            and not isinstance(raw_harness_peak, bool)
+            else None
+        )
+        if sampler_peak is not None and harness_peak is not None:
+            peak_vram: int | None = max(harness_peak, sampler_peak)
+        elif sampler_peak is not None:
+            peak_vram = sampler_peak
+        else:
+            peak_vram = harness_peak
         canary_info = done_doc.get("canary") or {
             "passed": True,
             "max_logprob_drift": 0.0,
@@ -7841,6 +7930,25 @@ def main(argv: list[str] | None = None) -> int:
             env_judge_sha256=os.environ.get("RDLAB_JUDGE_LOCK_SHA256"),
             env_d3_sha256=os.environ.get("RDLAB_D3_LOCK_SHA256"),
         )
+        repo_device_py = (
+            args.repo_dir / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py"
+        )
+        uploaded_device_py = resolve_content_dir() / "device.py"
+        require_uploaded_device_py = bool(
+            args.repo_tar is not None
+            or uploaded_device_py.exists()
+            or "RDLAB_DEVICE_PY_SHA256" in os.environ
+        )
+        device_py_report = verify_device_py_digest(
+            uploaded_device_py if require_uploaded_device_py else repo_device_py,
+            repo_device_py_path=repo_device_py if require_uploaded_device_py else None,
+            env_device_sha256=(
+                os.environ.get("RDLAB_DEVICE_PY_SHA256")
+                if require_uploaded_device_py
+                else EXPECTED_DEVICE_PY_SHA256
+            ),
+        )
+        lock_digests["device_py_sha256"] = device_py_report["device_py_sha256"]
         _record_step_end(
             "lock_digests",
             t_locks,
