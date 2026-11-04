@@ -43,6 +43,13 @@ Options:
   --probe              Run the read-only CPU VM environment probe (CPU at 0.08/h, wall 300s, cap 0.01)
   --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
   --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
+  --counted            Run a counted A100 shard window (--gpu A100 at 5.30/h, strict determinism)
+  --shard k/n          Shard index k of n (1-indexed, default 1/1; or set RDLAB_SHARD)
+  --shard-manifest F   Pre-built shard_manifest.json path (or set RDLAB_SHARD_MANIFEST)
+  --shard-manifest-sha256 SHA  Expected sha256 of shard_manifest.json (or set RDLAB_SHARD_MANIFEST_SHA256)
+  --loop ORDER         Loop order: subblock (default) or judge_outer (or set RDLAB_LOOP)
+  --subblock-items B   Items per sub-block when --loop subblock (default 50; or set RDLAB_SUBBLOCK_ITEMS)
+  --replacement-session  Mark window as replacement session requiring 3-item-pair overlap check
   --until STEP         Stop --stub after STEP (venv_sync, device_check, gpu_gate, first_judge, first_load, weights)
   --dry                Print every colab CLI command in order with resolved arguments and exit
   --resume             Resume from existing schedule/generations state in --out-dir
@@ -74,6 +81,55 @@ while [[ $# -gt 0 ]]; do
     --time-one)
       MODE="time-one"
       SESSION_SMOKE_FLAG=0
+      shift
+      ;;
+    --counted)
+      MODE="counted"
+      SESSION_SMOKE_FLAG=0
+      shift
+      ;;
+    --shard)
+      export RDLAB_SHARD="${2:-}"
+      shift 2
+      ;;
+    --shard=*)
+      export RDLAB_SHARD="${1#*=}"
+      shift
+      ;;
+    --shard-manifest)
+      export RDLAB_SHARD_MANIFEST="${2:-}"
+      shift 2
+      ;;
+    --shard-manifest=*)
+      export RDLAB_SHARD_MANIFEST="${1#*=}"
+      shift
+      ;;
+    --shard-manifest-sha256)
+      export RDLAB_SHARD_MANIFEST_SHA256="${2:-}"
+      shift 2
+      ;;
+    --shard-manifest-sha256=*)
+      export RDLAB_SHARD_MANIFEST_SHA256="${1#*=}"
+      shift
+      ;;
+    --loop)
+      export RDLAB_LOOP="${2:-}"
+      shift 2
+      ;;
+    --loop=*)
+      export RDLAB_LOOP="${1#*=}"
+      shift
+      ;;
+    --subblock-items)
+      export RDLAB_SUBBLOCK_ITEMS="${2:-}"
+      shift 2
+      ;;
+    --subblock-items=*)
+      export RDLAB_SUBBLOCK_ITEMS="${1#*=}"
+      shift
+      ;;
+    --replacement-session)
+      export RDLAB_REPLACEMENT_SESSION=1
       shift
       ;;
     --until)
@@ -158,6 +214,12 @@ if [[ "$MODE" == "time-one" ]]; then
   if [[ -z "$EXPLICIT_CAP" ]]; then
     EXPLICIT_CAP="2.5"
   fi
+  VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
+elif [[ "$MODE" == "counted" ]]; then
+  CARD="A100"
+  COLAB_NEW_FLAGS=(--gpu A100)
+  WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
+  RATE_UNITS_PER_HOUR="5.30"
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
 elif [[ "$MODE" == "probe" ]]; then
   CARD="CPU"
@@ -343,6 +405,17 @@ try:
         os.environ.get("RDLAB_FORCE_PINNED_UV", None),
         session_smoke=is_smoke,
     )
+    vm_judges.parse_shard_spec(os.environ.get("RDLAB_SHARD") or "1/1")
+    vm_judges.validate_loop_order(
+        os.environ.get("RDLAB_LOOP"),
+        os.environ.get("RDLAB_SUBBLOCK_ITEMS"),
+    )
+    raw_manifest_path = (os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip()
+    if raw_manifest_path:
+        vm_judges.verify_shard_manifest_file(
+            Path(raw_manifest_path),
+            expected_sha256=os.environ.get("RDLAB_SHARD_MANIFEST_SHA256"),
+        )
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
     raise SystemExit(2)
@@ -485,6 +558,39 @@ build_exec_env_args() {
   if [[ -n "${RDLAB_TEST_PLANT_LOG_LEAK:-}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_TEST_PLANT_LOG_LEAK=$RDLAB_TEST_PLANT_LOG_LEAK")
   fi
+  if [[ -n "${RDLAB_SHARD+x}" ]] && [[ -n "${RDLAB_SHARD}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_SHARD=$RDLAB_SHARD")
+  fi
+  if [[ -n "${RDLAB_SHARD_MANIFEST+x}" ]] && [[ -n "${RDLAB_SHARD_MANIFEST}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_SHARD_MANIFEST=/content/rdlab/shard_manifest.json")
+  fi
+  if [[ -n "${RDLAB_SHARD_MANIFEST_SHA256+x}" ]] && [[ -n "${RDLAB_SHARD_MANIFEST_SHA256}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_SHARD_MANIFEST_SHA256=$RDLAB_SHARD_MANIFEST_SHA256")
+  fi
+  if [[ -n "${RDLAB_LOOP+x}" ]] && [[ -n "${RDLAB_LOOP}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_LOOP=$RDLAB_LOOP")
+  fi
+  if [[ -n "${RDLAB_SUBBLOCK_ITEMS+x}" ]] && [[ -n "${RDLAB_SUBBLOCK_ITEMS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_SUBBLOCK_ITEMS=$RDLAB_SUBBLOCK_ITEMS")
+  fi
+  if [[ -n "${RDLAB_REPLACEMENT_SESSION+x}" ]] && [[ -n "${RDLAB_REPLACEMENT_SESSION}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_REPLACEMENT_SESSION=$RDLAB_REPLACEMENT_SESSION")
+  fi
+  if [[ -n "${RDLAB_BOOT_GATEKEEPER_GOLDENS+x}" ]] && [[ -n "${RDLAB_BOOT_GATEKEEPER_GOLDENS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_BOOT_GATEKEEPER_GOLDENS=$RDLAB_BOOT_GATEKEEPER_GOLDENS")
+  fi
+  if [[ -n "${RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES+x}" ]] && [[ -n "${RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES=$RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES")
+  fi
+  if [[ -n "${RDLAB_DETERMINISM_WARN_ONLY+x}" ]] && [[ -n "${RDLAB_DETERMINISM_WARN_ONLY}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_DETERMINISM_WARN_ONLY=$RDLAB_DETERMINISM_WARN_ONLY")
+  fi
+  if [[ -n "${RDLAB_LIMIT_ITEMS+x}" ]] && [[ -n "${RDLAB_LIMIT_ITEMS}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_LIMIT_ITEMS=$RDLAB_LIMIT_ITEMS")
+  fi
+  if [[ -n "${RDLAB_SESSION_ID+x}" ]] && [[ -n "${RDLAB_SESSION_ID}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_SESSION_ID=$RDLAB_SESSION_ID")
+  fi
 }
 
 if [[ "$DRY_FLAG" == "1" ]]; then
@@ -598,7 +704,7 @@ log_msg() {
 
 run_colab() {
   local out err_file err rc=0
-  err_file="$(mktemp)"
+  err_file="$(mktemp "${OUT_DIR:-/tmp}/.colab_err.XXXXXX" 2>/dev/null || mktemp)"
   out="$(colab "$@" </dev/null 2>"$err_file")" || rc=$?
   err="$(cat "$err_file" 2>/dev/null || true)"
   rm -f "$err_file"
@@ -754,7 +860,7 @@ if tar_path.is_file():
         tmp_ext.mkdir(parents=True, exist_ok=True)
         with tarfile.open(tar_path, "r:*") as tf:
             tf.extractall(tmp_ext, filter="data")
-        for sub_name, pat in (("rows", "*.jsonl"), ("judge_done", "*.json"), ("child_progress", "*.jsonl")):
+        for sub_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json"), ("child_progress", "*.jsonl")):
             src_sub = tmp_ext / sub_name
             if src_sub.is_dir():
                 dst_sub = out_dir / sub_name
@@ -762,9 +868,10 @@ if tar_path.is_file():
                 for f in sorted(src_sub.glob(pat)):
                     if f.is_file() and not (dst_sub / f.name).is_file():
                         shutil.copyfile(f, dst_sub / f.name)
-        src_cp = tmp_ext / "child_progress.jsonl"
-        if src_cp.is_file() and not (out_dir / "child_progress.jsonl").is_file():
-            shutil.copyfile(src_cp, out_dir / "child_progress.jsonl")
+        for exact_cp in ("child_progress.jsonl", "session_env.json", "shard_manifest.json", "shard_manifest.json.sha256", "boot_gatekeeper.json"):
+            src_cp = tmp_ext / exact_cp
+            if src_cp.is_file() and not (out_dir / exact_cp).is_file():
+                shutil.copyfile(src_cp, out_dir / exact_cp)
         shutil.rmtree(tmp_ext, ignore_errors=True)
     except Exception:
         pass
@@ -1008,6 +1115,33 @@ if live_usage_rate_raw:
 if rate_read_at_utc:
     payload["rate_read_at"] = rate_read_at_utc
     payload["live_usage_rate_read_at"] = rate_read_at_utc
+shard_spec_env = (os.environ.get("RDLAB_SHARD") or "").strip() or "1/1"
+loop_env = (os.environ.get("RDLAB_LOOP") or "").strip() or "subblock"
+shard_manifest_sha = (os.environ.get("RDLAB_SHARD_MANIFEST_SHA256") or "").strip()
+shard_item_ids_val: list[str] = []
+anchor_item_ids_val: list[str] = []
+for src_doc_path in (out_path.parent / "vm_receipt.json", out_path.parent / "status.json"):
+    if src_doc_path.is_file():
+        try:
+            sdoc = json.loads(src_doc_path.read_text(encoding="utf-8"))
+            if isinstance(sdoc, dict):
+                if sdoc.get("shard_spec"):
+                    shard_spec_env = str(sdoc["shard_spec"])
+                if sdoc.get("shard_manifest_sha256"):
+                    shard_manifest_sha = str(sdoc["shard_manifest_sha256"])
+                if sdoc.get("loop_order"):
+                    loop_env = str(sdoc["loop_order"])
+                if isinstance(sdoc.get("shard_item_ids"), list) and not shard_item_ids_val:
+                    shard_item_ids_val = [str(x) for x in sdoc["shard_item_ids"]]
+                if isinstance(sdoc.get("anchor_item_ids"), list) and not anchor_item_ids_val:
+                    anchor_item_ids_val = [str(x) for x in sdoc["anchor_item_ids"]]
+        except Exception:
+            pass
+payload["shard_spec"] = shard_spec_env
+payload["shard_manifest_sha256"] = shard_manifest_sha or None
+payload["shard_item_ids"] = shard_item_ids_val
+payload["anchor_item_ids"] = anchor_item_ids_val
+payload["loop_order"] = loop_env
 out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
 PY
 }
@@ -1403,6 +1537,9 @@ include_paths = [
     "src",
     "scripts/colab",
 ]
+raw_shard_manifest = (os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip() if "os" in dir() else ""
+import os as _os
+raw_shard_manifest = (_os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip()
 with tarfile.open(repo_tar, "w:gz") as tf:
     for rel in include_paths:
         target = repo_root / rel
@@ -1416,6 +1553,11 @@ with tarfile.open(repo_tar, "w:gz") as tf:
                     continue
                 if child.is_file():
                     tf.add(child, arcname=child.relative_to(repo_root).as_posix(), recursive=False)
+    if raw_shard_manifest:
+        sm_path = Path(raw_shard_manifest)
+        if not sm_path.is_file():
+            raise SystemExit(f"SHARD_MANIFEST_INVALID: file does not exist: {sm_path}")
+        tf.add(sm_path, arcname="shard_manifest.json", recursive=False)
 PY
 then
   RUN_WHY="staging of items, receipts, or repo bundle failed on rig"
@@ -1431,20 +1573,16 @@ from pathlib import Path
 out_dir = Path(sys.argv[1])
 tar_path = Path(sys.argv[2])
 with tarfile.open(tar_path, "w:gz") as tf:
-    for exact in ("schedule.json", "generations.jsonl"):
+    for exact in ("schedule.json", "generations.jsonl", "shard_manifest.json", "shard_manifest.json.sha256", "session_env.json"):
         p = out_dir / exact
         if p.is_file():
             tf.add(p, arcname=exact, recursive=False)
-    rows_dir = out_dir / "rows"
-    if rows_dir.is_dir():
-        for rf in sorted(rows_dir.glob("*.jsonl")):
-            if rf.is_file():
-                tf.add(rf, arcname=f"rows/{rf.name}", recursive=False)
-    jdone_dir = out_dir / "judge_done"
-    if jdone_dir.is_dir():
-        for jf in sorted(jdone_dir.glob("*.json")):
-            if jf.is_file():
-                tf.add(jf, arcname=f"judge_done/{jf.name}", recursive=False)
+    for sub_dir_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json")):
+        sdir = out_dir / sub_dir_name
+        if sdir.is_dir():
+            for rf in sorted(sdir.glob(pat)):
+                if rf.is_file():
+                    tf.add(rf, arcname=f"{sub_dir_name}/{rf.name}", recursive=False)
 PY
 fi
 
@@ -1873,7 +2011,16 @@ vm_judges.validate_tar_file(tar_path)
 with tarfile.open(tar_path, "r:*") as tf:
     tf.extractall(extract_dir, filter="data")
 
-for rel_name in ("schedule.json", "generations.jsonl", "time_one_summary.json", "vm_receipt.json"):
+for rel_name in (
+    "schedule.json",
+    "generations.jsonl",
+    "time_one_summary.json",
+    "vm_receipt.json",
+    "session_env.json",
+    "shard_manifest.json",
+    "shard_manifest.json.sha256",
+    "boot_gatekeeper.json",
+):
     src = extract_dir / rel_name
     if src.is_file():
         shutil.copyfile(src, out_dir / rel_name)
@@ -1882,21 +2029,14 @@ src_progress = extract_dir / "progress.jsonl"
 if src_progress.is_file() and not (out_dir / "progress.jsonl").is_file():
     shutil.copyfile(src_progress, out_dir / "progress.jsonl")
 
-src_rows = extract_dir / "rows"
-if src_rows.is_dir():
-    dst_rows = out_dir / "rows"
-    dst_rows.mkdir(parents=True, exist_ok=True)
-    for rf in sorted(src_rows.glob("*.jsonl")):
-        if rf.is_file():
-            shutil.copyfile(rf, dst_rows / rf.name)
-
-src_jdone = extract_dir / "judge_done"
-if src_jdone.is_dir():
-    dst_jdone = out_dir / "judge_done"
-    dst_jdone.mkdir(parents=True, exist_ok=True)
-    for jf in sorted(src_jdone.glob("*.json")):
-        if jf.is_file():
-            shutil.copyfile(jf, dst_jdone / jf.name)
+for sub_name, pat in (("rows", "*.jsonl"), ("anchor_rows", "*.jsonl"), ("judge_done", "*.json")):
+    src_sub = extract_dir / sub_name
+    if src_sub.is_dir():
+        dst_sub = out_dir / sub_name
+        dst_sub.mkdir(parents=True, exist_ok=True)
+        for rf in sorted(src_sub.glob(pat)):
+            if rf.is_file():
+                shutil.copyfile(rf, dst_sub / rf.name)
 
 vm_judges.scrub_log_file_in_place(cli_log)
 for extra_f in (
@@ -1904,8 +2044,14 @@ for extra_f in (
     out_dir / "status.json",
     out_dir / "gate_status.json",
     out_dir / "vm_receipt.json",
+    out_dir / "session_env.json",
+    out_dir / "shard_manifest.json",
+    out_dir / "boot_gatekeeper.json",
     extract_dir / "progress.jsonl",
     extract_dir / "vm_receipt.json",
+    extract_dir / "session_env.json",
+    extract_dir / "shard_manifest.json",
+    extract_dir / "boot_gatekeeper.json",
 ):
     if extra_f.is_file():
         vm_judges.scrub_log_file_in_place(extra_f)
@@ -1924,6 +2070,9 @@ for top_f in (
     out_dir / "status.json",
     out_dir / "gate_status.json",
     out_dir / "vm_receipt.json",
+    out_dir / "session_env.json",
+    out_dir / "shard_manifest.json",
+    out_dir / "boot_gatekeeper.json",
 ):
     if top_f.is_file():
         paths_to_check.append(top_f)
@@ -1948,12 +2097,17 @@ except vm_judges.RefusalError as exc:
         out_dir / "generations.jsonl",
         out_dir / "time_one_summary.json",
         out_dir / "progress.jsonl",
+        out_dir / "session_env.json",
+        out_dir / "shard_manifest.json",
+        out_dir / "shard_manifest.json.sha256",
+        out_dir / "boot_gatekeeper.json",
         out_dir / "outputs-closed.json",
     ):
         if q.is_file():
             q.unlink()
     shutil.rmtree(extract_dir, ignore_errors=True)
     shutil.rmtree(out_dir / "rows", ignore_errors=True)
+    shutil.rmtree(out_dir / "anchor_rows", ignore_errors=True)
     shutil.rmtree(out_dir / "judge_done", ignore_errors=True)
     receipt_p = out_dir / "vm_receipt.json"
     receipt_p.write_text(

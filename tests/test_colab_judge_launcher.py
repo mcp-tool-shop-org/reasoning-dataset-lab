@@ -14646,23 +14646,23 @@ def _extract_ast_string_fragments(
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         out.append(node.value)
     elif isinstance(node, ast.JoinedStr):
-        parts: list[str] = []
+        combos: list[str] = [""]
         for val in node.values:
             if isinstance(val, ast.Constant) and isinstance(val.value, str):
-                parts.append(val.value)
+                combos = [c + val.value for c in combos]
             elif isinstance(val, ast.FormattedValue):
-                sub = _extract_ast_string_fragments(val.value, var_env, seen)
-                parts.append(sub[0] if sub else "{}")
-        if parts:
-            out.append("".join(parts))
+                sub = _extract_ast_string_fragments(val.value, var_env, seen) or ["{}"]
+                combos = [c + s for c in combos for s in sub[:16]][:64]
+        out.extend(c for c in combos if c)
     elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         left = _extract_ast_string_fragments(node.left, var_env, seen)
         right = _extract_ast_string_fragments(node.right, var_env, seen)
         if left and right:
-            out.append(left[0] + right[0])
-        else:
-            out.extend(left)
-            out.extend(right)
+            for lv in left[:16]:
+                for rv in right[:16]:
+                    out.append(lv + rv)
+        out.extend(left)
+        out.extend(right)
     elif (
         isinstance(node, ast.Name)
         and var_env is not None
@@ -14678,6 +14678,15 @@ def _extract_ast_string_fragments(
         for child in ast.iter_child_nodes(node):
             out.extend(_extract_ast_string_fragments(child, var_env, seen))
     return out
+
+
+def _append_var_fragments(
+    var_env: dict[str, list[str]], name: str, frags: list[str]
+) -> None:
+    bucket = var_env.setdefault(name, [])
+    for f in frags:
+        if f not in bucket:
+            bucket.append(f)
 
 
 def _scan_tests_for_network_and_git_remote_calls(
@@ -14712,28 +14721,32 @@ def _scan_tests_for_network_and_git_remote_calls(
                 if mod == "requests" or mod.startswith("urllib.request"):
                     for alias in node.names:
                         urllib_req_func_aliases.add(alias.asname or alias.name)
-            elif (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-            ):
-                tname = node.targets[0].id
+            elif isinstance(node, ast.Assign):
                 frags = _extract_ast_string_fragments(node.value, var_env)
-                if frags:
-                    var_env[tname] = frags
-                if isinstance(node.value, ast.Call):
-                    fn_u = ast.unparse(node.value.func)
-                    if any(
-                        fn_u.startswith(f"{a}.") for a in urllib_req_aliases
-                    ) and ("Session" in fn_u or "build_opener" in fn_u):
-                        urllib_req_aliases.add(tname)
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        tname = tgt.id
+                        if frags:
+                            _append_var_fragments(var_env, tname, frags)
+                        if isinstance(node.value, ast.Call):
+                            fn_u = ast.unparse(node.value.func)
+                            if any(
+                                fn_u.startswith(f"{a}.") for a in urllib_req_aliases
+                            ) and ("Session" in fn_u or "build_opener" in fn_u):
+                                urllib_req_aliases.add(tname)
             elif isinstance(node, ast.AnnAssign) and isinstance(
                 node.target, ast.Name
             ):
                 if node.value is not None:
                     frags = _extract_ast_string_fragments(node.value, var_env)
                     if frags:
-                        var_env[node.target.id] = frags
+                        _append_var_fragments(var_env, node.target.id, frags)
+            elif isinstance(node, ast.AugAssign) and isinstance(
+                node.target, ast.Name
+            ):
+                frags = _extract_ast_string_fragments(node.value, var_env)
+                if frags:
+                    _append_var_fragments(var_env, node.target.id, frags)
 
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -14916,5 +14929,905 @@ def test_historical_git_fixtures_manifest_and_rederivation() -> None:
         pytest.skip(
             f"Historical commits absent in shallow clone ({missing_shas}); manifest SHA-256s verified."
         )
+
+
+def _make_stratified_public_items(base_dir: Path, count: int = 60) -> Path:
+    """Create a synthetic public `items.jsonl` with `count` items across 3 strata (`math`, `logic`, `code`)."""
+    part_dir = base_dir / "part_public_stratified"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {"part_id": "pilot-40b", "schema_version": "1.0"}
+    (part_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    items_path = part_dir / "items.jsonl"
+    strata = ("math", "logic", "code")
+    rows = []
+    for idx in range(count):
+        stratum = strata[idx % len(strata)]
+        rows.append(
+            json.dumps(
+                {
+                    "id": f"item-{stratum}-{idx:04d}",
+                    "material": (
+                        f"1. Premise alpha {idx} in {stratum} establishes first hop {idx}.\n"
+                        f"2. Premise beta {idx} in {stratum} links first hop to outcome {idx}."
+                    ),
+                    "claim": (
+                        f"Synthetic stratified claim statement {idx:04d} for {stratum} outcome {idx}."
+                    ),
+                }
+            )
+        )
+    items_path.write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
+    return items_path
+
+
+def test_item1_shard_manifest_stratified_interleave_and_refusals(
+    tmp_path: Path,
+) -> None:
+    """Item 1: Shard manifest & stratified Pass-1 interleave, anchor subset, and pre-open refusals."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    assert bakeoff_judge.parse_shard_spec("1/1") == (1, 1)
+    assert bakeoff_judge.parse_shard_spec("2/3") == (2, 3)
+    assert vm_judges.parse_shard_spec("1/2") == (1, 2)
+
+    for bad_spec in ("0/2", "3/2", "1/0", "-1/2", "2", "a/b", ""):
+        with pytest.raises(RdlabError) as exc_info:
+            bakeoff_judge.parse_shard_spec(bad_spec)
+        assert exc_info.value.code in (
+            "SHARD_SPEC_INVALID",
+            "SHARD_SPEC_OUT_OF_RANGE",
+            "SHARD_SPEC_MISSING_N",
+        )
+        with pytest.raises(vm_judges.RefusalError) as vm_exc:
+            vm_judges.parse_shard_spec(bad_spec)
+        assert vm_exc.value.failure_class in (
+            "SHARD_SPEC_INVALID",
+            "SHARD_SPEC_OUT_OF_RANGE",
+            "SHARD_SPEC_MISSING_N",
+        )
+
+    items_path = _make_stratified_public_items(tmp_path, count=60)
+    m_doc_1 = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=3, anchor_count=25
+    )
+    m_doc_2 = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=3, anchor_count=25
+    )
+    assert m_doc_1 == m_doc_2
+    assert m_doc_1["num_shards"] == 3
+    assert m_doc_1["item_count"] == 60
+    assert len(m_doc_1["anchor_item_ids"]) == 20  # capped to len(shard_1) = 20
+
+    s1_ids = m_doc_1["shards"]["1"]
+    s2_ids = m_doc_1["shards"]["2"]
+    s3_ids = m_doc_1["shards"]["3"]
+    assert len(s1_ids) == 20
+    assert len(s2_ids) == 20
+    assert len(s3_ids) == 20
+    assert set(s1_ids).isdisjoint(s2_ids)
+    assert set(s1_ids).isdisjoint(s3_ids)
+    assert set(s2_ids).isdisjoint(s3_ids)
+    assert sorted(s1_ids + s2_ids + s3_ids) == sorted(m_doc_1["shard_by_item"].keys())
+    assert set(m_doc_1["anchor_item_ids"]).issubset(set(s1_ids))
+
+    manifest_path = tmp_path / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(m_doc_1, manifest_path)
+    verified, verified_sha = bakeoff_judge.verify_shard_manifest(
+        manifest_path,
+        expected_sha256=manifest_sha,
+        expected_num_shards=3,
+    )
+    assert verified_sha == manifest_sha
+    assert verified["shards"]["2"] == s2_ids
+
+    with pytest.raises(RdlabError) as bad_sha_exc:
+        bakeoff_judge.verify_shard_manifest(
+            manifest_path,
+            expected_sha256="0" * 64,
+        )
+    assert bad_sha_exc.value.code in (
+        "SHARD_MANIFEST_INVALID",
+        "SHARD_MANIFEST_SHA256_MISMATCH",
+    )
+
+    # Tamper partition to duplicate an item across shards 1 and 2
+    tampered_doc = json.loads(manifest_path.read_text(encoding="utf-8"))
+    tampered_doc["shards"]["2"][0] = tampered_doc["shards"]["1"][0]
+    tampered_path = tmp_path / "tampered_manifest.json"
+    tampered_path.write_text(json.dumps(tampered_doc), encoding="utf-8")
+    with pytest.raises(RdlabError) as dup_exc:
+        bakeoff_judge.verify_shard_manifest(tampered_path)
+    assert dup_exc.value.code in (
+        "SHARD_MANIFEST_INVALID",
+        "SHARD_MANIFEST_SHA256_MISMATCH",
+    )
+
+    # Pre-open refusal in launch_judges.sh when --shard is invalid or out of range
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "preopen_env")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "open.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_path,
+    )
+    proc_bad_shard = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --stub --shard 4/2 --out-dir '{_to_wsl_path(tmp_path / 'out_bad_shard')}' --run-id bad-shard-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_bad_shard.returncode == 2
+    assert (
+        "SHARD_SPEC_OUT_OF_RANGE" in proc_bad_shard.stderr
+        or "SHARD_SPEC_INVALID" in proc_bad_shard.stderr
+    )
+    assert not env_paths["calls_log"].exists()
+
+
+def test_item2_subblock_outer_loop_5x_loads_and_resume_skips_completed(
+    tmp_path: Path,
+) -> None:
+    """Item 2: Sub-block outer loop (`RDLAB_LOOP=subblock`, `RDLAB_SUBBLOCK_ITEMS=B`) vs `judge_outer`."""
+    assert vm_judges.validate_loop_order(None, None) == ("subblock", 50)
+    assert vm_judges.validate_loop_order("subblock", "2") == ("subblock", 2)
+    assert vm_judges.validate_loop_order("judge_outer", "10") == ("judge_outer", 10)
+    for bad_loop, bad_b in (
+        ("invalid_loop", "50"),
+        ("subblock", "0"),
+        ("subblock", "-5"),
+        ("subblock", "abc"),
+    ):
+        with pytest.raises(vm_judges.RefusalError) as exc_info:
+            vm_judges.validate_loop_order(bad_loop, bad_b)
+        assert exc_info.value.failure_class in (
+            "LOOP_ORDER_INVALID",
+            "SUBBLOCK_ITEMS_INVALID",
+        )
+
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "subblock_env")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_path = _make_synthetic_public_items(tmp_path, count=4)
+    out_dir = tmp_path / "out_subblock"
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "open.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_path,
+    )
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} export RDLAB_LIMIT_ITEMS=4; bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' "
+            f"--stub --loop subblock --subblock-items 2 --out-dir '{_to_wsl_path(out_dir)}' --run-id subblock-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    receipt = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert receipt["loop_order"] == "subblock"
+    assert receipt["subblock_items"] == 2
+    assert receipt["time_one_summary"]["subblock_count"] == 2
+    for jid in BAKEOFF_JUDGE_SPECS:
+        jdone = json.loads(
+            (out_dir / "judge_done" / f"{jid}.json").read_text(encoding="utf-8")
+        )
+        assert jdone["calls_count"] == 8  # 4 items * 2 orders
+        assert len(jdone["load_wall_seconds_history"]) == 2
+        assert len(receipt["judges"][jid]["load_wall_seconds_history"]) == 2
+
+
+def test_item3_strict_determinism_refusal_in_counted_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Item 3: Deterministic kernel enforcement in counted windows (`BAKEOFF_JUDGE_DETERMINISM_REFUSED`)."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    class _FakeTorchUnsupportedDeterminism:
+        class backends:
+            class cuda:
+                class matmul:
+                    allow_tf32 = False
+
+            class cudnn:
+                allow_tf32 = False
+                benchmark = False
+                deterministic = True
+
+        @staticmethod
+        def use_deterministic_algorithms(mode: bool, *, warn_only: bool = False) -> None:
+            if mode and not warn_only:
+                raise RuntimeError("deterministic_algorithms unsupported on this platform")
+
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorchUnsupportedDeterminism())
+
+    # In stub mode (non-strict), fallback to warn_only=True is allowed
+    monkeypatch.setenv("RDLAB_MODE", "stub")
+    monkeypatch.delenv("RDLAB_DETERMINISM_WARN_ONLY", raising=False)
+    status_stub, reason_stub = bakeoff_judge.configure_torch_determinism_with_reason(
+        window_mode="stub", strict=False
+    )
+    assert status_stub == "not enforceable"
+    assert "strict deterministic mode unsupported" in reason_stub
+
+    # In counted mode, fallback to warn_only=True is refused with BAKEOFF_JUDGE_DETERMINISM_REFUSED
+    with pytest.raises(RdlabError) as exc_counted:
+        bakeoff_judge.configure_torch_determinism_with_reason(
+            window_mode="counted"
+        )
+    assert exc_counted.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+    # In counted mode, setting RDLAB_DETERMINISM_WARN_ONLY=1 is refused even if torch supports strict mode
+    class _FakeTorchStrictOk(_FakeTorchUnsupportedDeterminism):
+        @staticmethod
+        def use_deterministic_algorithms(mode: bool, *, warn_only: bool = False) -> None:
+            return None
+
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorchStrictOk())
+    monkeypatch.setenv("RDLAB_DETERMINISM_WARN_ONLY", "1")
+    with pytest.raises(RdlabError) as exc_env:
+        bakeoff_judge.configure_torch_determinism_with_reason(
+            window_mode="counted"
+        )
+    assert exc_env.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+
+def test_item4_attention_backend_pinned_to_sdpa_and_override_refused(
+    tmp_path: Path,
+) -> None:
+    """Item 4: Attention backend pinned to `attn_implementation='sdpa'` on all 5 judges."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    assert bakeoff_judge.PINNED_ATTN_IMPLEMENTATION == "sdpa"
+    for jid in bakeoff_judge.BAKEOFF_JUDGE_SPECS:
+        if jid == "d3-mini":
+            with pytest.raises(RdlabError) as exc_d3:
+                bakeoff_judge.D3MiniTransport(
+                    receipts_dir=tmp_path,
+                    attn_implementation="eager",
+                )
+            assert exc_d3.value.code == "BAKEOFF_JUDGE_ATTN_IMPLEMENTATION_UNPINNED"
+        else:
+            with pytest.raises(RdlabError) as exc_tf:
+                bakeoff_judge.TransformersJudgeTransport(
+                    receipts_dir=tmp_path,
+                    attn_implementation="flash_attention_2",
+                )
+            assert exc_tf.value.code == "BAKEOFF_JUDGE_ATTN_IMPLEMENTATION_UNPINNED"
+
+    sdpa_backend = bakeoff_judge.pin_and_read_sdpa_backend()
+    assert isinstance(sdpa_backend, str) and sdpa_backend
+
+
+def test_item5_session_env_json_schema_start_and_end_snapshots(
+    tmp_path: Path,
+) -> None:
+    """Item 5: Per-window `session_env.json` written at start and updated at end with GPU, runtime, determinism, attention, and all 5 judge weight/tokenizer hashes."""
+    receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    run_dir = tmp_path / "run_dir"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    start_doc = vm_judges.collect_and_write_session_env(
+        run_dir,
+        receipts_dir=receipts_dir,
+        mode="stub",
+        shard_spec="1/2",
+        phase="start",
+        dryrun=True,
+    )
+    end_doc = vm_judges.collect_and_write_session_env(
+        run_dir,
+        receipts_dir=receipts_dir,
+        mode="stub",
+        shard_spec="1/2",
+        phase="end",
+        dryrun=True,
+        prior_session_env=start_doc,
+    )
+    assert (run_dir / "session_env.json").is_file()
+    assert vm_judges.is_allowed_tar_member("session_env.json")
+    assert end_doc["written_at_start"] is not None
+    assert end_doc["written_at_end"] is not None
+    assert end_doc["ecc"]["uncorrected_volatile_start"] == 0
+    assert end_doc["ecc"]["uncorrected_volatile_end"] == 0
+    assert end_doc["determinism"]["cublas_workspace_config"] == ":4096:8"
+    assert end_doc["attention"]["attn_implementation"] == "sdpa"
+    assert len(end_doc["env_comparability_sha256"]) == 64
+    assert len(end_doc["session_fingerprint_sha256"]) == 64
+    for jid in BAKEOFF_JUDGE_SPECS:
+        assert len(end_doc["judges"][jid]["weights_sha256"]) == 64
+        assert len(end_doc["judges"][jid]["tokenizer_sha256"]) == 64
+
+
+def test_item6_boot_gatekeeper_passes_on_matching_hashes_and_refuses_on_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Item 6: Boot gatekeeper passes on matching hashes, refuses on unfilled goldens in counted mode, and refuses with `BOOT_GATEKEEPER_GOLDEN_MISMATCH` on hash mismatch."""
+    goldens_path = SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json"
+    assert goldens_path.is_file()
+    goldens_doc = json.loads(goldens_path.read_text(encoding="utf-8"))
+    assert len(goldens_doc["synthetic_prompts"]) == 2
+    assert (
+        goldens_doc["card_types"]["A100"]["prompts"]["boot_gatekeeper_synthetic_1"][
+            "output_token_ids_sha256"
+        ]
+        is None
+    )
+    assert (
+        goldens_doc["card_types"]["L4"]["prompts"]["boot_gatekeeper_synthetic_1"][
+            "output_token_ids_sha256"
+        ]
+        is None
+    )
+
+    run_dir = tmp_path / "gk_run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Unfilled goldens in counted mode -> BOOT_GATEKEEPER_GOLDEN_MISSING
+    with pytest.raises(vm_judges.RefusalError) as unfilled_exc:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=run_dir,
+            repo_root=REPO_ROOT,
+            mode="counted",
+            card_type="A100",
+            goldens_path=goldens_path,
+        )
+    assert unfilled_exc.value.failure_class == "BOOT_GATEKEEPER_GOLDEN_MISSING"
+
+    # Filled goldens: matching passes, mismatched refuses with BOOT_GATEKEEPER_GOLDEN_MISMATCH
+    filled_doc = json.loads(goldens_path.read_text(encoding="utf-8"))
+    for p_entry in filled_doc["synthetic_prompts"]:
+        pid = p_entry["prompt_id"]
+        out_sha = vm_judges._compute_synthetic_gatekeeper_output_sha256(
+            pid, judge_id=filled_doc["judge_id"]
+        )
+        filled_doc["card_types"]["A100"]["prompts"][pid] = {
+            "output_token_ids_sha256": out_sha,
+        }
+    filled_path = tmp_path / "filled_goldens.json"
+    filled_path.write_text(json.dumps(filled_doc, indent=2), encoding="utf-8")
+
+    ok_res = vm_judges.run_boot_gatekeeper(
+        run_dir=run_dir,
+        repo_root=REPO_ROOT,
+        mode="counted",
+        card_type="A100",
+        goldens_path=filled_path,
+    )
+    assert ok_res["status"] == "ok"
+    assert (run_dir / "boot_gatekeeper.json").is_file()
+
+    # Now override actual hash to simulate kernel drift -> BOOT_GATEKEEPER_GOLDEN_MISMATCH
+    monkeypatch.setenv(
+        "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+        json.dumps(
+            {
+                "boot_gatekeeper_synthetic_1": "f" * 64,
+            }
+        ),
+    )
+    with pytest.raises(vm_judges.RefusalError) as mismatch_exc:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=run_dir,
+            repo_root=REPO_ROOT,
+            mode="counted",
+            card_type="A100",
+            goldens_path=filled_path,
+        )
+    assert mismatch_exc.value.failure_class == "BOOT_GATEKEEPER_GOLDEN_MISMATCH"
+
+
+def test_item7_per_call_sealed_safe_telemetry_and_row_sha256(
+    tmp_path: Path,
+) -> None:
+    """Item 7: Per-call sealed-safe telemetry in `rows/<judge_id>.jsonl`, `anchor_rows/<judge_id>.jsonl`, and `judge_done/<judge_id>.json`."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    items_path = _make_stratified_public_items(tmp_path, count=4)
+    manifest_doc = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=2, anchor_count=2
+    )
+    manifest_path = tmp_path / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+    run_dir = tmp_path / "telemetry_run"
+    summary = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=run_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        shard_spec="1/2",
+        shard_manifest_path=manifest_path,
+        shard_manifest_sha256=manifest_sha,
+        session_fingerprint_sha256="b" * 64,
+    )
+    assert summary["status"] == "ok"
+    assert len(summary["row_sha256s"]) == 4  # 2 items in shard 1 * 2 orders
+
+    rows_file = run_dir / "rows" / "mu-judge.jsonl"
+    anchor_file = run_dir / "anchor_rows" / "mu-judge.jsonl"
+    assert rows_file.is_file()
+    assert anchor_file.is_file()
+
+    rows = [
+        json.loads(ln)
+        for ln in rows_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    anchor_rows = [
+        json.loads(ln)
+        for ln in anchor_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(rows) == 4
+    assert len(anchor_rows) == 4  # 2 anchor items * 2 orders
+
+    by_item_order = {(r["item_id"], r["order"]): r for r in rows}
+    for item_id in manifest_doc["shards"]["1"]:
+        r_ab = by_item_order[(item_id, "AB")]
+        r_ba = by_item_order[(item_id, "BA")]
+        assert r_ab["input_token_ids_sha256"] != r_ba["input_token_ids_sha256"]
+        for r in (r_ab, r_ba):
+            assert len(r["input_token_ids_sha256"]) == 64
+            assert len(r["output_token_ids_sha256"]) == 64
+            assert r["input_token_count"] > 0
+            assert r["output_token_count"] > 0
+            assert r["stop_reason"] == "eos"
+            assert isinstance(r["min_top2_logit_margin"], float)
+            assert r["verdict_parse_status"] == "parsed"
+            assert r["shard_spec"] == "1/2"
+            assert r["session_fingerprint_sha256"] == "b" * 64
+            assert r["row_sha256"] == bakeoff_judge.compute_row_body_sha256(r)
+            assert "claim" not in r
+            assert "material" not in r
+
+
+def test_item8_item_pair_atomicity_and_replacement_session_overlap_check(
+    tmp_path: Path,
+) -> None:
+    """Item 8: Item-pair atomicity on resume (discarding half-finished pair) and 3-item-pair overlap check on replacement session."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    items_path = _make_stratified_public_items(tmp_path, count=5)
+    run_dir = tmp_path / "resume_atomic"
+    item_ids = [
+        "item-math-0000",
+        "item-logic-0001",
+        "item-code-0002",
+        "item-math-0003",
+        "item-logic-0004",
+    ]
+
+    # First run 4 items cleanly so we have 4 complete item pairs
+    bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=run_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        active_item_ids=item_ids[:4],
+        session_fingerprint_sha256="c" * 64,
+    )
+    rows_path = run_dir / "rows" / "mu-judge.jsonl"
+    existing_lines = [
+        ln for ln in rows_path.read_text(encoding="utf-8").splitlines() if ln.strip()
+    ]
+    assert len(existing_lines) == 8
+
+    # Append a half-finished item pair (only AB for item-logic-0004)
+    orphan_row = json.loads(existing_lines[0])
+    orphan_row["item_id"] = item_ids[4]
+    orphan_row["order"] = "AB"
+    orphan_row["session_fingerprint_sha256"] = "d" * 64
+    orphan_row["row_sha256"] = bakeoff_judge.compute_row_body_sha256(orphan_row)
+    rows_path.write_text(
+        "\n".join(existing_lines + [json.dumps(orphan_row)]) + "\n", encoding="utf-8"
+    )
+
+    # Resume with replacement_session=True:
+    # 1) Discards the half-finished item-logic-0004 AB row and re-runs both AB and BA for item-logic-0004
+    # 2) Re-runs the last 3 completed item pairs and verifies identical output_token_ids_sha256
+    resumed = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=run_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        replacement_session=True,
+        session_fingerprint_sha256="e" * 64,
+    )
+    assert isinstance(resumed["verified_recovery"], dict)
+    assert resumed["verified_recovery"]["verified"] is True
+    assert resumed["calls_count"] == 10
+    final_rows = [
+        json.loads(ln)
+        for ln in rows_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(final_rows) == 10
+    item4_rows = [r for r in final_rows if r["item_id"] == item_ids[4]]
+    assert len(item4_rows) == 2
+    assert all(r["session_fingerprint_sha256"] == "e" * 64 for r in item4_rows)
+
+    # Now tamper one of the last 3 completed item pairs' output_token_ids_sha256 and verify RECOVERY_OVERLAP_MISMATCH
+    tampered_rows = [
+        json.loads(ln)
+        for ln in rows_path.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    for r in tampered_rows:
+        if r["item_id"] == item_ids[4] and r["order"] == "BA":
+            r["output_token_ids_sha256"] = "9" * 64
+            r["row_sha256"] = bakeoff_judge.compute_row_body_sha256(r)
+    rows_path.write_text(
+        "\n".join(json.dumps(r) for r in tampered_rows) + "\n", encoding="utf-8"
+    )
+
+    with pytest.raises(RdlabError) as overlap_exc:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=run_dir,
+            judge="mu-judge",
+            fake_transport=True,
+            replacement_session=True,
+            session_fingerprint_sha256="f" * 64,
+        )
+    assert overlap_exc.value.code == "RECOVERY_OVERLAP_MISMATCH"
+    assert not rows_path.exists()
+
+
+def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
+    tmp_path: Path,
+) -> None:
+    """Item 9: `scripts/colab/merge_shards.py` enforces all 5 gates and writes sealed-safe `merged_readout.json` and `merge_receipt.json`."""
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    items_path = _make_stratified_public_items(tmp_path, count=6)
+    manifest_doc = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=2, anchor_count=2
+    )
+    manifest_path = tmp_path / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+    receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+
+    shard_dirs: list[Path] = []
+    for k in (1, 2):
+        sdir = tmp_path / f"shard_{k}"
+        sdir.mkdir(parents=True, exist_ok=True)
+        shard_spec = f"{k}/2"
+        shutil.copyfile(manifest_path, sdir / "shard_manifest.json")
+        (sdir / "shard_manifest.json.sha256").write_text(
+            f"{manifest_sha}  shard_manifest.json\n", encoding="utf-8"
+        )
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir,
+            receipts_dir=receipts_dir,
+            mode="stub",
+            shard_spec=shard_spec,
+            phase="start",
+            dryrun=True,
+        )
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir,
+            receipts_dir=receipts_dir,
+            mode="stub",
+            shard_spec=shard_spec,
+            phase="end",
+            dryrun=True,
+            prior_session_env=s_env,
+        )
+        sess_fp = s_env["session_fingerprint_sha256"]
+        for jid in BAKEOFF_JUDGE_SPECS:
+            bakeoff_judge.run_bakeoff_judge(
+                part_dir=items_path,
+                output_dir=sdir,
+                judge=jid,
+                fake_transport=True,
+                allow_remote_code_reviewed=(
+                    bakeoff_judge.D3_MINI_REVIEWED_REVISION if jid == "d3-mini" else None
+                ),
+                shard_spec=shard_spec,
+                shard_manifest_path=manifest_path,
+                shard_manifest_sha256=manifest_sha,
+                session_fingerprint_sha256=sess_fp,
+            )
+        vm_judges.write_outputs_closed(sdir)
+        shard_dirs.append(sdir)
+
+    merged_out = tmp_path / "merged_ok"
+    receipt = merge_shards.merge_shards(
+        shard_dirs=shard_dirs,
+        manifest_path=manifest_path,
+        output_dir=merged_out,
+    )
+    assert receipt["status"] == "ok"
+    assert receipt["anchor_agreement"]["flip_count"] == 0
+    assert receipt["anchor_agreement"]["output_sha_mismatch_count"] == 0
+    assert receipt["anchor_agreement"]["rule_of_three_95_upper_bound"] > 0
+    assert (merged_out / "merged_readout.json").is_file()
+    assert (merged_out / "merge_receipt.json").is_file()
+
+    # Gate (a1): Missing row -> MERGE_BIJECTION_FAILED
+    rows_p = shard_dirs[0] / "rows" / "d3-mini.jsonl"
+    orig_rows_text = rows_p.read_text(encoding="utf-8")
+    jdone_p = shard_dirs[0] / "judge_done" / "d3-mini.json"
+    orig_jdone_text = jdone_p.read_text(encoding="utf-8")
+    kept_rows = [json.loads(ln) for ln in orig_rows_text.splitlines() if ln.strip()][:-1]
+    rows_p.write_text(
+        "\n".join(json.dumps(r) for r in kept_rows) + "\n", encoding="utf-8"
+    )
+    jdone_doc = json.loads(orig_jdone_text)
+    jdone_doc["row_sha256s"] = [r["row_sha256"] for r in kept_rows]
+    jdone_p.write_text(json.dumps(jdone_doc), encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as bij_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_bij_fail",
+        )
+    assert bij_exc.value.failure_class == "MERGE_BIJECTION_FAILED"
+    rows_p.write_text(orig_rows_text, encoding="utf-8")
+    jdone_p.write_text(orig_jdone_text, encoding="utf-8")
+
+    # Gate (a2): Tampered input_token_ids_sha256 -> MERGE_INPUT_TOKEN_SHA_MISMATCH
+    mod_rows = [json.loads(ln) for ln in orig_rows_text.splitlines() if ln.strip()]
+    mod_rows[1]["input_token_ids_sha256"] = mod_rows[0]["input_token_ids_sha256"]
+    mod_rows[1]["row_sha256"] = bakeoff_judge.compute_row_body_sha256(mod_rows[1])
+    rows_p.write_text(
+        "\n".join(json.dumps(r) for r in mod_rows) + "\n", encoding="utf-8"
+    )
+    jdone_doc = json.loads(orig_jdone_text)
+    jdone_doc["row_sha256s"] = [r["row_sha256"] for r in mod_rows]
+    jdone_p.write_text(json.dumps(jdone_doc), encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as insha_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_insha_fail",
+        )
+    assert insha_exc.value.failure_class == "MERGE_INPUT_TOKEN_SHA_MISMATCH"
+    rows_p.write_text(orig_rows_text, encoding="utf-8")
+    jdone_p.write_text(orig_jdone_text, encoding="utf-8")
+
+    # Gate (b): Co-location failure -> MERGE_COLOCATION_FAILED
+    mod_rows = [json.loads(ln) for ln in orig_rows_text.splitlines() if ln.strip()]
+    mod_rows[0]["session_fingerprint_sha256"] = "9" * 64
+    mod_rows[0]["row_sha256"] = bakeoff_judge.compute_row_body_sha256(mod_rows[0])
+    rows_p.write_text(
+        "\n".join(json.dumps(r) for r in mod_rows) + "\n", encoding="utf-8"
+    )
+    jdone_doc = json.loads(orig_jdone_text)
+    jdone_doc["row_sha256s"] = [r["row_sha256"] for r in mod_rows]
+    jdone_p.write_text(json.dumps(jdone_doc), encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as coloc_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_coloc_fail",
+        )
+    assert coloc_exc.value.failure_class == "MERGE_COLOCATION_FAILED"
+    rows_p.write_text(orig_rows_text, encoding="utf-8")
+    jdone_p.write_text(orig_jdone_text, encoding="utf-8")
+
+    # Gate (c1) & (c2): Session-env mismatch & non-zero ECC
+    senv_p = shard_dirs[1] / "session_env.json"
+    orig_senv_text = senv_p.read_text(encoding="utf-8")
+    senv_doc = json.loads(orig_senv_text)
+    senv_doc["gpu"]["driver_version"] = "999.99.99"
+    senv_p.write_text(json.dumps(senv_doc), encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as senv_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_senv_fail",
+        )
+    assert senv_exc.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
+
+    senv_doc = json.loads(orig_senv_text)
+    senv_doc["ecc"]["uncorrected_volatile_end"] = 1
+    senv_p.write_text(json.dumps(senv_doc), encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as ecc_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_ecc_fail",
+        )
+    assert ecc_exc.value.failure_class == "MERGE_ECC_UNCORRECTED_NONZERO"
+    senv_p.write_text(orig_senv_text, encoding="utf-8")
+
+    # Gate (d): Anchor drift refused unless --accepted-anchor-drift-bound permits
+    ar_p = shard_dirs[1] / "anchor_rows" / "d3-mini.jsonl"
+    orig_ar_text = ar_p.read_text(encoding="utf-8")
+    ar_rows = [json.loads(ln) for ln in orig_ar_text.splitlines() if ln.strip()]
+    ar_rows[0]["output_token_ids_sha256"] = "1" * 64
+    ar_p.write_text(
+        "\n".join(json.dumps(r) for r in ar_rows) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(merge_shards.MergeRefusalError) as drift_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_drift_fail",
+        )
+    assert drift_exc.value.failure_class == "MERGE_ANCHOR_DRIFT_REFUSED"
+    ar_p.write_text(orig_ar_text, encoding="utf-8")
+
+    # Gate (e): Row sha256 vs judge_done mismatch -> MERGE_ROW_DONE_SHA_MISMATCH
+    jdone_doc = json.loads(orig_jdone_text)
+    jdone_doc["row_sha256s"][0] = "0" * 64
+    jdone_p.write_text(json.dumps(jdone_doc), encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as row_sha_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_rowsha_fail",
+        )
+    assert row_sha_exc.value.failure_class == "MERGE_ROW_DONE_SHA_MISMATCH"
+    jdone_p.write_text(orig_jdone_text, encoding="utf-8")
+
+
+def test_item10_parallel_two_shard_stub_windows_and_merge_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """Item 10 + Also: Run two `launch_judges.sh --stub` windows in parallel (`RDLAB_SHARD=1/2` and `RDLAB_SHARD=2/2`) against `fake_colab`, then merge with `merge_shards.py`."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "parallel_env")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_path = _make_stratified_public_items(tmp_path, count=6)
+    manifest_doc = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=2, anchor_count=2
+    )
+    manifest_path = tmp_path / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+
+    open_lock = tmp_path / "shared_open.lock"
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=open_lock,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_path,
+    )
+    wsl_launch = _to_wsl_path(LAUNCH_JUDGES_SH)
+    wsl_manifest = _to_wsl_path(manifest_path)
+    out_s1 = tmp_path / "out_shard_1"
+    out_s2 = tmp_path / "out_shard_2"
+
+    cmd_1 = (
+        f"{exports} export FAKE_COLAB_ISOLATE_SESSION_FS=1; "
+        f"bash '{wsl_launch}' --stub --shard 1/2 --shard-manifest '{wsl_manifest}' "
+        f"--shard-manifest-sha256 '{manifest_sha}' --run-id parallel-s1 --out-dir '{_to_wsl_path(out_s1)}'"
+    )
+    cmd_2 = (
+        f"{exports} export FAKE_COLAB_ISOLATE_SESSION_FS=1; "
+        f"bash '{wsl_launch}' --stub --shard 2/2 --shard-manifest '{wsl_manifest}' "
+        f"--shard-manifest-sha256 '{manifest_sha}' --run-id parallel-s2 --out-dir '{_to_wsl_path(out_s2)}'"
+    )
+
+    p1 = subprocess.Popen(
+        ["bash", "-c", cmd_1],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    p2 = subprocess.Popen(
+        ["bash", "-c", cmd_2],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    out1, err1 = p1.communicate(timeout=120)
+    out2, err2 = p2.communicate(timeout=120)
+    assert p1.returncode == 0, f"shard 1 failed: stdout={out1}\nstderr={err1}"
+    assert p2.returncode == 0, f"shard 2 failed: stdout={out2}\nstderr={err2}"
+
+    for k, out_dir in ((1, out_s1), (2, out_s2)):
+        draft = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+        assert draft["outcome"] == "ok"
+        assert draft["shard_spec"] == f"{k}/2"
+        assert draft["shard_manifest_sha256"] == manifest_sha
+        assert draft["shard_item_ids"] == manifest_doc["shards"][str(k)]
+        assert draft["anchor_item_ids"] == manifest_doc["anchor_item_ids"]
+        assert draft["loop_order"] == "subblock"
+        assert (out_dir / "session_env.json").is_file()
+        assert (out_dir / "shard_manifest.json").is_file()
+        assert (out_dir / "outputs-closed.json").is_file()
+
+    # Verify per-window identity: distinct run ids, distinct session_names, and distinct remote paths
+    draft_s1 = json.loads((out_s1 / "outcome.draft.json").read_text(encoding="utf-8"))
+    draft_s2 = json.loads((out_s2 / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert draft_s1["id"] == "parallel-s1"
+    assert draft_s2["id"] == "parallel-s2"
+    calls_log = [
+        json.loads(ln)
+        for ln in env_paths["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    new_calls = [c for c in calls_log if c["subcmd"] == "new"]
+    assert len(new_calls) == 2
+    assert all(c["lock_held"] is True for c in new_calls)
+    assert any("rdlab-parallel-s1" in c["args"] for c in new_calls)
+    assert any("rdlab-parallel-s2" in c["args"] for c in new_calls)
+
+    merged_dir = tmp_path / "merged_parallel"
+    merge_proc = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS_COLAB_DIR / "merge_shards.py"),
+            "--manifest",
+            str(manifest_path),
+            "--shard-dirs",
+            str(out_s1),
+            str(out_s2),
+            "--output-dir",
+            str(merged_dir),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert merge_proc.returncode == 0, f"merge stderr={merge_proc.stderr}"
+    merge_rec = json.loads(
+        (merged_dir / "merge_receipt.json").read_text(encoding="utf-8")
+    )
+    merged_readout = json.loads(
+        (merged_dir / "merged_readout.json").read_text(encoding="utf-8")
+    )
+    assert merge_rec["status"] == "ok"
+    assert merge_rec["num_shards"] == 2
+    assert merge_rec["anchor_agreement"]["flip_count"] == 0
+    assert merged_readout["total_items"] == 6
+    assert merged_readout["total_rows"] == 60  # 6 items * 5 judges * 2 orders
+
+
+def test_item11_ast_network_guard_catches_rebound_variable_across_scopes(
+    tmp_path: Path,
+) -> None:
+    """Item 11: AST variable-tracking fix catches forbidden URL or git remote subcommand when a variable is rebound later in the file."""
+    rebound_dir = tmp_path / "rebound_tests"
+    rebound_dir.mkdir(parents=True, exist_ok=True)
+    proto = "ht" + "tps://"
+    rebound_py = rebound_dir / "test_rebound_violation.py"
+    rebound_py.write_text(
+        "import subprocess\n"
+        "import urllib.request\n\n"
+        "def test_first():\n"
+        f'    target = "{proto}example.invalid/hidden"\n'
+        '    sub = "fetch"\n'
+        "    urllib.request.urlopen(target)\n"
+        '    subprocess.run(["git", sub, "origin"])\n\n'
+        "def test_second():\n"
+        '    target = "file:///tmp/safe.json"\n'
+        '    sub = "status"\n'
+        "    assert target and sub\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    violations = _scan_tests_for_network_and_git_remote_calls(rebound_dir)
+    assert len(violations) == 2
+    assert any("forbidden http(s):// URL" in v for v in violations)
+    assert any("forbidden git fetch subprocess call" in v for v in violations)
+
 
 

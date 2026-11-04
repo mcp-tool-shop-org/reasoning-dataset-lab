@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0",
+  "judge_id": "flow-judge-v0.1",
+  "synthetic_prompts": [
+    {
+      "prompt_id": "boot_gatekeeper_synthetic_1",
+      "material": "1. Signal alpha-1 recorded pressure 102 kPa at station north.\n2. Station north currently records status nominal.",
+      "claim": "Station north recorded pressure 102 kPa and status nominal.",
+      "order": "AB",
+      "pass_mode": "binary"
+    },
+    {
+      "prompt_id": "boot_gatekeeper_synthetic_2",
+      "material": "1. Relay beta-4 logged 12 volts on channel two.\n2. Channel two does not record any overvoltage event.",
+      "claim": "Channel two recorded an overvoltage event on relay beta-4.",
+      "order": "BA",
+      "pass_mode": "binary"
+    }
+  ],
+  "card_types": {
+    "A100": {
+      "status": "unfilled",
+      "prompts": {
+        "boot_gatekeeper_synthetic_1": {
+          "output_token_ids_sha256": null
+        },
+        "boot_gatekeeper_synthetic_2": {
+          "output_token_ids_sha256": null
+        }
+      }
+    },
+    "L4": {
+      "status": "unfilled",
+      "prompts": {
+        "boot_gatekeeper_synthetic_1": {
+          "output_token_ids_sha256": null
+        },
+        "boot_gatekeeper_synthetic_2": {
+          "output_token_ids_sha256": null
+        }
+      }
+    }
+  },
+  "goldens_by_card_type": {
+    "A100": {
+      "prompt_1_output_token_ids_sha256": null,
+      "prompt_2_output_token_ids_sha256": null,
+      "status": "unfilled"
+    },
+    "L4": {
+      "prompt_1_output_token_ids_sha256": null,
+      "prompt_2_output_token_ids_sha256": null,
+      "status": "unfilled"
+    }
+  }
+}

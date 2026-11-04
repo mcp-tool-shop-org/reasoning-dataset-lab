@@ -1683,6 +1683,21 @@ def main(argv: list[str] | None = None) -> int:
                 return vals[-1]
         return None
 
+    active_sid = _get_opt("-s", "--session")
+    if active_sid and os.environ.get("FAKE_COLAB_ISOLATE_SESSION_FS") == "1":
+        safe_sid = re.sub(r"[^A-Za-z0-9_.-]+", "_", active_sid)
+        vm_fs = state_dir / f"vm_fs_{safe_sid}"
+        vm_fs.mkdir(parents=True, exist_ok=True)
+
+    sessions_lock_path = state_dir / "sessions.lock"
+    sessions_lock_fh = sessions_lock_path.open("a+", encoding="utf-8")
+    try:
+        import fcntl
+
+        fcntl.flock(sessions_lock_fh.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        pass
+
     lock_held = False
     if lock_file.exists():
         try:
@@ -1792,6 +1807,13 @@ def main(argv: list[str] | None = None) -> int:
         sessions_file.write_text(json.dumps(sessions), encoding="utf-8", newline="\n")
         print(f"Created session [{sid}] ({gpu})")
         return 0
+
+    try:
+        import fcntl as _fcntl
+
+        _fcntl.flock(sessions_lock_fh.fileno(), _fcntl.LOCK_UN)
+    except Exception:
+        pass
 
     if subcmd == "upload":
         sid = _get_opt("-s", "--session")
@@ -2393,6 +2415,13 @@ def main(argv: list[str] | None = None) -> int:
         if not sid:
             sys.stderr.write("colab stop requires -s/--session\n")
             return 2
+        try:
+            import fcntl as _fcntl
+
+            _fcntl.flock(sessions_lock_fh.fileno(), _fcntl.LOCK_EX)
+        except Exception:
+            pass
+        sessions = json.loads(sessions_file.read_text(encoding="utf-8"))
         stopped_file = state_dir / "stopped_sessions.jsonl"
         with stopped_file.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps({"session_id": sid, "ts": time.time()}) + "\n")
