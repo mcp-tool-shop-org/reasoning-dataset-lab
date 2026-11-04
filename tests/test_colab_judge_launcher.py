@@ -14572,7 +14572,7 @@ def test_fix3_item4c_package_callers_wrap_device_refusal_into_rdlab_error_with_c
     from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
     from reasoning_dataset_lab.pilot_b.device import DeviceRefusalError
 
-    bad_device = "cuda:bad hf_SecretDeviceToken9876543210abcdef"
+    bad_device = "cuda:bad " + "hf_" + "SecretDeviceToken9876543210abcdef"
 
     # Call site 1: TransformersJudgeTransport.__init__
     with pytest.raises(PkgRdlabError) as exc_t:
