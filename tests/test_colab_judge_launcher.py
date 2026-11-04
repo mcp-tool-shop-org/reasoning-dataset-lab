@@ -2962,12 +2962,14 @@ def test_gate_checks_disk_at_run_hf_home(tmp_path: Path) -> None:
 def test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_run_fails(
     tmp_path: Path,
 ) -> None:
-    """Failing-first regression test: load the real `6243174e` code (`scripts/colab/vm_judges.py`
-    and `scripts/colab/launch_judges.sh`) via `git show 6243174e:...` to show that `6243174e`
+    """Failing-first regression test: load the committed `6243174e` fixtures
+    (`tests/fixtures/vm_judges_6243174e_write_status.py` and
+    `tests/fixtures/launch_judges_6243174e_status_check.sh`) to show that `6243174e`
     had no `verify_run_status_file` in `vm_judges.py` and its status check in `launch_judges.sh`
     accepted a `step='gate'` `status.json` (allowing a crashed `run` step to pass the status check at `6243174e`),
     whereas head rejects `step='gate'` as `stale_status`.
     """
+    fixtures_dir = REPO_ROOT / "tests" / "fixtures"
     stale_gate_status = tmp_path / "stale_gate_status.json"
     stale_gate_status.write_text(
         json.dumps(
@@ -2984,40 +2986,19 @@ def test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_ru
         newline="\n",
     )
 
-    # 1. Load real `6243174e:scripts/colab/vm_judges.py` and `6243174e:scripts/colab/launch_judges.sh` via `git show`
-    old_commit = "6243174ef48418228e1a925677bee63291eeb686"
-    if (
-        subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit}^{{commit}}"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        ).returncode
-        != 0
-    ):
-        subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "fetch", "--depth=10", "origin", old_commit],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    old_vm_src = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "show", "6243174e:scripts/colab/vm_judges.py"],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=True,
-    ).stdout
-    old_vm_py = tmp_path / "vm_judges_6243174e.py"
-    old_vm_py.write_text(old_vm_src, encoding="utf-8", newline="\n")
+    # 1. Load committed `6243174e` fixtures (`vm_judges_6243174e_write_status.py` and `launch_judges_6243174e_status_check.sh`)
+    old_vm_fixture = fixtures_dir / "vm_judges_6243174e_write_status.py"
+    old_vm_src = old_vm_fixture.read_text(encoding="utf-8")
 
-    old_vm_ns: dict[str, Any] = {"__name__": "vm_judges_6243174e"}
-    exec(compile(old_vm_src, str(old_vm_py), "exec"), old_vm_ns)
+    old_vm_ns: dict[str, Any] = {
+        "__name__": "vm_judges_6243174e",
+        "Path": Path,
+        "Any": Any,
+        "json": json,
+        "ensure_not_drive_path": vm_judges.ensure_not_drive_path,
+        "scrub_log_text": vm_judges.scrub_log_text,
+    }
+    exec(compile(old_vm_src, str(old_vm_fixture), "exec"), old_vm_ns)
     assert "verify_run_status_file" not in old_vm_ns
 
     # Run the real `6243174e` `write_vm_status_file` for `step="gate"` and verify what it writes
@@ -3029,14 +3010,21 @@ def test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_ru
         status="ok",
     )
 
-    old_launch_src = subprocess.run(
-        ["git", "-C", str(REPO_ROOT), "show", "6243174e:scripts/colab/launch_judges.sh"],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=15,
-        check=True,
-    ).stdout
+    old_launch_fixture = fixtures_dir / "launch_judges_6243174e_status_check.sh"
+    old_launch_status_check_src = old_launch_fixture.read_text(encoding="utf-8")
+    current_launch_src = LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
+    head_status_block_start = 'if [[ ! -f "$OUT_DIR/status.json" ]]; then\n'
+    head_status_block_end = (
+        'if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then\n'
+        '  RUN_WHY="result.tar.gz missing after VM run"\n'
+        '  exit 1\n'
+        'fi\n'
+    )
+    assert head_status_block_start in current_launch_src
+    assert head_status_block_end in current_launch_src
+    prefix_sh, rest_sh = current_launch_src.split(head_status_block_start, 1)
+    _, suffix_sh = rest_sh.split(head_status_block_end, 1)
+    old_launch_src = prefix_sh + old_launch_status_check_src + suffix_sh
     old_launch_sh = tmp_path / "scripts" / "colab" / "launch_judges_6243174e.sh"
     old_launch_sh.parent.mkdir(parents=True, exist_ok=True)
     old_launch_sh.write_text(
@@ -3048,11 +3036,11 @@ def test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_ru
         newline="\n",
     )
 
-    # Extract the real status-checker block from `6243174e:scripts/colab/launch_judges.sh` and run it against `step="gate"`
+    # Extract the real status-checker block from `launch_judges_6243174e_status_check.sh` and run it against `step="gate"`
     marker_start = 'STATUS_CHECK_OUT="$("$PYTHON_BIN" - "$OUT_DIR/status.json" <<\'PY\'\n'
     marker_end = "\nPY\n)"
-    assert marker_start in old_launch_src
-    checker_body = old_launch_src.split(marker_start, 1)[1].split(marker_end, 1)[0]
+    assert marker_start in old_launch_status_check_src
+    checker_body = old_launch_status_check_src.split(marker_start, 1)[1].split(marker_end, 1)[0]
     old_checker_py = tmp_path / "status_checker_6243174e.py"
     old_checker_py.write_text(checker_body + "\n", encoding="utf-8", newline="\n")
 
@@ -3091,7 +3079,7 @@ def test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_ru
     assert ok_msg == "build_allowlisted_result_tar|0|ok"
 
     # 3. End-to-end launcher comparison: when run cell crashes before writing its own status.json
-    #    (leaving gate's status.json on the VM), the real `6243174e` launcher accepts the stale gate
+    #    (leaving gate's status.json on the VM), the `6243174e` status check accepts the stale gate
     #    status (`STATUS_CHECK_RC=0`), whereas head rejects it with `rc == 2` and `stale_status|step=gate|rc=0|VM_GATE_OK`.
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
         tmp_path / "crash_data"
@@ -3113,8 +3101,7 @@ def test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_ru
         [
             "bash",
             "-c",
-            f"{exports_old_crash} export RDLAB_VM_SCRIPT='{_to_wsl_path(old_vm_py)}'; "
-            f"export FAKE_COLAB_CRASH_RUN_BEFORE_STATUS=1; "
+            f"{exports_old_crash} export FAKE_COLAB_CRASH_RUN_BEFORE_STATUS=1; "
             f"bash '{_to_wsl_path(old_launch_sh)}' --stub --out-dir '{_to_wsl_path(out_old_crash)}' --run-id old-crash-01",
         ],
         stdin=subprocess.DEVNULL,
@@ -6220,46 +6207,16 @@ def test_fix5_create_each_venv_once_and_old_double_venv_fails_under_fake(
         if expect_kept:
             assert pkgs["pyyaml"].get("kept_by_sync") is True
 
-    # Load `e2257a4a:scripts/colab/vm_judges.py` (via `git show` when the commit is locally
-    # present, or by reverting the single `venv_judge_created` guard in shallow clones without network)
+    # Load the committed `e2257a4a` `sync_judge_venvs` fixture (`tests/fixtures/vm_judges_e2257a4a_sync_judge_venvs.py`)
     # and prove its double `uv venv` on `venv-judge` fails with `rc == 2` and
     # "Caused by: A virtual environment already exists at:" under the updated fake `uv`.
-    old_commit = "e2257a4aebb7cf84ff44651b6d55ff9991d696e8"
-    if (
-        subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit}^{{commit}}"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        ).returncode
-        == 0
-    ):
-        old_vm_src = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "show", f"{old_commit}:scripts/colab/vm_judges.py"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=True,
-        ).stdout
-    else:
-        cur_vm_src = VM_JUDGES_PY.read_text(encoding="utf-8")
-        guard_snippet = (
-            'if not (key == "venv_judge" and venv_judge_created):\n'
-            '                run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)'
-        )
-        assert guard_snippet in cur_vm_src
-        old_vm_src = cur_vm_src.replace(
-            guard_snippet,
-            'run_vm_subprocess(vinfo["venv_cmd"], env=sync_env, check=True)',
-            1,
-        )
-    old_vm_py = tmp_path / "vm_judges_e2257a4a.py"
-    old_vm_py.write_text(old_vm_src, encoding="utf-8", newline="\n")
-    old_ns: dict[str, Any] = {"__name__": "vm_judges_e2257a4a"}
-    exec(compile(old_vm_src, str(old_vm_py), "exec"), old_ns)
+    old_sync_fixture = (
+        REPO_ROOT / "tests" / "fixtures" / "vm_judges_e2257a4a_sync_judge_venvs.py"
+    )
+    old_vm_src = old_sync_fixture.read_text(encoding="utf-8")
+    old_ns: dict[str, Any] = dict(vm_judges.__dict__)
+    old_ns["__name__"] = "vm_judges_e2257a4a"
+    exec(compile(old_vm_src, str(old_sync_fixture), "exec"), old_ns)
 
     work_old = tmp_path / "work_old"
     with pytest.raises(Exception) as exc_info:
@@ -7145,70 +7102,37 @@ def _check_vm_judges_no_in_process_judge_imports(py_source: str) -> None:
 
 def test_fix6_vm_judges_static_no_in_process_judge_or_model_imports() -> None:
     """Item 1 & Addendum 1 Item 3 static check:
-    - Fails on `e2257a4a:scripts/colab/vm_judges.py` (which imported `bakeoff_judge` and called `run_bakeoff_judge` in-process).
-    - Fails on `4c684457:scripts/colab/vm_judges.py` (which had lazy `from huggingface_hub import snapshot_download`).
+    - Fails on `tests/fixtures/vm_judges_e2257a4a_ensure_repo_imports.py` (which imported `bakeoff_judge` and `run_bakeoff_judge` in-process).
+    - Fails on `tests/fixtures/vm_judges_4c684457_download_judge_weights.py` (which had lazy `from huggingface_hub import snapshot_download`).
     - Passes on current `scripts/colab/vm_judges.py`.
     """
     current_source = VM_JUDGES_PY.read_text(encoding="utf-8")
     _check_vm_judges_no_in_process_judge_imports(current_source)
 
-    old_commit = "e2257a4aebb7cf84ff44651b6d55ff9991d696e8"
-    if (
-        subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{old_commit}^{{commit}}"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        ).returncode
-        == 0
-    ):
-        old_vm_source = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "show", f"{old_commit}:scripts/colab/vm_judges.py"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=True,
-        ).stdout
-    else:
-        old_vm_source = (
-            current_source
-            + "\nfrom reasoning_dataset_lab.pilot_b.bakeoff_judge import run_bakeoff_judge\n"
-            + "run_bakeoff_judge(part_dir='.', output_dir='.')\n"
-        )
+    old_vm_fixture = (
+        REPO_ROOT / "tests" / "fixtures" / "vm_judges_e2257a4a_ensure_repo_imports.py"
+    )
+    old_vm_source = old_vm_fixture.read_text(encoding="utf-8")
     with pytest.raises(AssertionError) as exc_old:
         _check_vm_judges_no_in_process_judge_imports(old_vm_source)
     assert "bakeoff_judge" in str(exc_old.value)
 
-    # Addendum 1 Item 3: prove it fails against `4c684457:scripts/colab/vm_judges.py`
-    commit_4c68 = "4c684457d2858f9d6ecb56fd3141f421b2464fdd"
-    if (
-        subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "cat-file", "-e", f"{commit_4c68}^{{commit}}"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=False,
-        ).returncode
-        == 0
-    ):
-        src_4c68 = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "show", f"{commit_4c68}:scripts/colab/vm_judges.py"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=True,
-        ).stdout
-    else:
-        src_4c68 = (
-            current_source
-            + "\nfrom huggingface_hub import snapshot_download\n"
-            + "snapshot_download(repo_id='flowaicom/Flow-Judge-v0.1')\n"
-        )
+    test_fix6_vm_judges_static_no_lazy_hf_hub_snapshot_download_at_4c684457()
+
+
+def test_fix6_vm_judges_static_no_lazy_hf_hub_snapshot_download_at_4c684457() -> None:
+    """Addendum 1 Item 3 static check:
+    - Fails on committed fixture `tests/fixtures/vm_judges_4c684457_download_judge_weights.py`
+      (which had lazy `from huggingface_hub import snapshot_download`).
+    - Passes on current `scripts/colab/vm_judges.py`.
+    """
+    current_source = VM_JUDGES_PY.read_text(encoding="utf-8")
+    _check_vm_judges_no_in_process_judge_imports(current_source)
+
+    fixture_4c68 = (
+        REPO_ROOT / "tests" / "fixtures" / "vm_judges_4c684457_download_judge_weights.py"
+    )
+    src_4c68 = fixture_4c68.read_text(encoding="utf-8")
     with pytest.raises(AssertionError) as exc_4c68:
         _check_vm_judges_no_in_process_judge_imports(src_4c68)
     assert "huggingface_hub" in str(exc_4c68.value)
@@ -14669,6 +14593,328 @@ def test_fix3_item4d_vm_path_raises_device_refusal_error() -> None:
     assert exc_vm.value.failure_class == "BAKEOFF_JUDGE_DEVICE_INVALID"
 
 
+_FORBIDDEN_GIT_REMOTE_SUBCOMMANDS: tuple[str, ...] = (
+    "fetch",
+    "clone",
+    "pull",
+    "ls-remote",
+)
 
+_SUBPROCESS_CALL_NAMES: frozenset[str] = frozenset(
+    {
+        "run",
+        "Popen",
+        "call",
+        "check_call",
+        "check_output",
+        "getoutput",
+        "getstatusoutput",
+        "system",
+        "popen",
+        "create_subprocess_exec",
+        "create_subprocess_shell",
+    }
+)
+
+_URLLIB_REQUESTS_CALL_NAMES: frozenset[str] = frozenset(
+    {
+        "urlopen",
+        "urlretrieve",
+        "Request",
+        "get",
+        "post",
+        "put",
+        "delete",
+        "head",
+        "options",
+        "patch",
+        "request",
+    }
+)
+
+
+def _extract_ast_string_fragments(
+    node: Any,
+    var_env: dict[str, list[str]] | None = None,
+    _seen: set[str] | None = None,
+) -> list[str]:
+    """Extract constant string fragments from an AST expression, resolving local string variables."""
+    import ast
+
+    out: list[str] = []
+    seen = set(_seen or ())
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        out.append(node.value)
+    elif isinstance(node, ast.JoinedStr):
+        parts: list[str] = []
+        for val in node.values:
+            if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                parts.append(val.value)
+            elif isinstance(val, ast.FormattedValue):
+                sub = _extract_ast_string_fragments(val.value, var_env, seen)
+                parts.append(sub[0] if sub else "{}")
+        if parts:
+            out.append("".join(parts))
+    elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _extract_ast_string_fragments(node.left, var_env, seen)
+        right = _extract_ast_string_fragments(node.right, var_env, seen)
+        if left and right:
+            out.append(left[0] + right[0])
+        else:
+            out.extend(left)
+            out.extend(right)
+    elif (
+        isinstance(node, ast.Name)
+        and var_env is not None
+        and node.id in var_env
+        and node.id not in seen
+    ):
+        seen.add(node.id)
+        out.extend(var_env[node.id])
+    elif isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        for elt in node.elts:
+            out.extend(_extract_ast_string_fragments(elt, var_env, seen))
+    else:
+        for child in ast.iter_child_nodes(node):
+            out.extend(_extract_ast_string_fragments(child, var_env, seen))
+    return out
+
+
+def _scan_tests_for_network_and_git_remote_calls(
+    tests_root: Path | None = None,
+) -> list[str]:
+    """Walk `tests/` with `ast` and flag:
+    1. Any subprocess call whose argv includes `git` together with `fetch`, `clone`, `pull`, or `ls-remote`.
+    2. Any `http://` or `https://` URL passed to `urllib` or `requests` calls in tests (`file://` is allowed).
+    """
+    import ast
+
+    root = tests_root or (REPO_ROOT / "tests")
+    base_dir = root.parent if root == (REPO_ROOT / "tests") else root
+    violations: list[str] = []
+
+    for py_path in sorted(root.rglob("*.py")):
+        rel_path = py_path.relative_to(base_dir).as_posix()
+        tree = ast.parse(py_path.read_text(encoding="utf-8"), filename=str(py_path))
+        var_env: dict[str, list[str]] = {}
+        urllib_req_aliases: set[str] = {"urllib", "requests"}
+        urllib_req_func_aliases: set[str] = set()
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "requests" or alias.name.startswith("urllib"):
+                        urllib_req_aliases.add(
+                            alias.asname or alias.name.split(".")[0]
+                        )
+            elif isinstance(node, ast.ImportFrom):
+                mod = node.module or ""
+                if mod == "requests" or mod.startswith("urllib.request"):
+                    for alias in node.names:
+                        urllib_req_func_aliases.add(alias.asname or alias.name)
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+            ):
+                tname = node.targets[0].id
+                frags = _extract_ast_string_fragments(node.value, var_env)
+                if frags:
+                    var_env[tname] = frags
+                if isinstance(node.value, ast.Call):
+                    fn_u = ast.unparse(node.value.func)
+                    if any(
+                        fn_u.startswith(f"{a}.") for a in urllib_req_aliases
+                    ) and ("Session" in fn_u or "build_opener" in fn_u):
+                        urllib_req_aliases.add(tname)
+            elif isinstance(node, ast.AnnAssign) and isinstance(
+                node.target, ast.Name
+            ):
+                if node.value is not None:
+                    frags = _extract_ast_string_fragments(node.value, var_env)
+                    if frags:
+                        var_env[node.target.id] = frags
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn_unparsed = ast.unparse(node.func)
+            func_leaf = (
+                node.func.id
+                if isinstance(node.func, ast.Name)
+                else (
+                    node.func.attr
+                    if isinstance(node.func, ast.Attribute)
+                    else ""
+                )
+            )
+
+            if func_leaf in _SUBPROCESS_CALL_NAMES and (
+                isinstance(node.func, ast.Name)
+                or fn_unparsed.startswith(("subprocess.", "os.", "asyncio."))
+            ):
+                arg_nodes = list(node.args[:1])
+                for kw in node.keywords:
+                    if kw.arg in ("args", "cmd"):
+                        arg_nodes.append(kw.value)
+                raw_tokens: list[str] = []
+                for an in arg_nodes:
+                    raw_tokens.extend(_extract_ast_string_fragments(an, var_env))
+                expanded_tokens: list[str] = []
+                for tok in raw_tokens:
+                    expanded_tokens.append(tok.strip())
+                    if any(ch.isspace() for ch in tok):
+                        expanded_tokens.extend(re.split(r"[\s;|&'\"]+", tok))
+                has_git = any(
+                    t == "git" or t.endswith(("/git", "\\git", "git.exe"))
+                    for t in expanded_tokens
+                )
+                matched_remote = [
+                    sub
+                    for sub in _FORBIDDEN_GIT_REMOTE_SUBCOMMANDS
+                    if sub in expanded_tokens
+                ]
+                if has_git and matched_remote:
+                    violations.append(
+                        f"{rel_path}:{node.lineno}: forbidden git {matched_remote[0]} subprocess call: {ast.unparse(node)}"
+                    )
+
+            is_urllib_or_requests = False
+            if func_leaf in _URLLIB_REQUESTS_CALL_NAMES:
+                if (
+                    isinstance(node.func, ast.Name)
+                    and func_leaf in urllib_req_func_aliases
+                ):
+                    is_urllib_or_requests = True
+                elif isinstance(node.func, ast.Attribute):
+                    if fn_unparsed.startswith(
+                        ("urllib.request.", "requests.")
+                    ) or any(
+                        fn_unparsed == f"{a}.{func_leaf}"
+                        for a in urllib_req_aliases
+                    ):
+                        if not fn_unparsed.startswith(
+                            ("urllib.parse.", "urllib.error.")
+                        ):
+                            is_urllib_or_requests = True
+
+            if is_urllib_or_requests:
+                url_frags: list[str] = []
+                for an in node.args:
+                    url_frags.extend(_extract_ast_string_fragments(an, var_env))
+                for kw in node.keywords:
+                    if kw.arg in ("url", "fullurl", None):
+                        url_frags.extend(
+                            _extract_ast_string_fragments(kw.value, var_env)
+                        )
+                for u in url_frags:
+                    u_low = u.strip().lower()
+                    if u_low.startswith("file://"):
+                        continue
+                    if "http://" in u_low or "https://" in u_low:
+                        violations.append(
+                            f"{rel_path}:{node.lineno}: forbidden http(s):// URL in urllib/requests call: {ast.unparse(node)}"
+                        )
+
+    return violations
+
+
+def test_ast_guard_no_git_network_or_http_urllib_requests_in_tests(
+    tmp_path: Path,
+) -> None:
+    """Card Item 2:
+    Walk `tests/` with `ast` and fail on any subprocess call whose argv includes `git`
+    together with `fetch`, `clone`, `pull`, or `ls-remote`, or on any `http(s)://` URL
+    passed to `urllib` or `requests` calls in tests (`file://` uses are allowed).
+    """
+    violations = _scan_tests_for_network_and_git_remote_calls(REPO_ROOT / "tests")
+    assert not violations, (
+        "Forbidden git remote subprocess or http(s):// urllib/requests calls in tests/:\n"
+        + "\n".join(violations)
+    )
+
+    # Self-test on synthetic offending and allowed test files in tmp_path
+    bad_dir = tmp_path / "synthetic_tests"
+    bad_dir.mkdir(parents=True, exist_ok=True)
+    bad_py = bad_dir / "test_synthetic_bad.py"
+    bad_py.write_text(
+        "import subprocess\n"
+        "import urllib.request\n"
+        "import requests\n\n"
+        "def test_bad(REPO_ROOT, old_commit):\n"
+        '    subprocess.run(["git", "-C", str(REPO_ROOT), "fetch", "--depth=10", "origin", old_commit])\n'
+        '    subprocess.run(["git", "clone", "https://example.invalid/repo.git"])\n'
+        '    subprocess.check_output(["git", "pull", "--ff-only"])\n'
+        '    subprocess.Popen(["git", "ls-remote", "origin"])\n'
+        '    urllib.request.urlopen("https://example.invalid/data.json")\n'
+        '    requests.get("http://example.invalid/status")\n'
+        '    urllib.request.urlopen("file:///tmp/allowed_local.whl")\n'
+        '    subprocess.run(["git", "status", "--short"])\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    synth_violations = _scan_tests_for_network_and_git_remote_calls(bad_dir)
+    assert len(synth_violations) == 6
+    assert any("forbidden git fetch subprocess call" in v for v in synth_violations)
+    assert any("forbidden git clone subprocess call" in v for v in synth_violations)
+    assert any("forbidden git pull subprocess call" in v for v in synth_violations)
+    assert any("forbidden git ls-remote subprocess call" in v for v in synth_violations)
+    assert any(
+        "forbidden http(s):// URL in urllib/requests call: urllib.request.urlopen('https://example.invalid/data.json')"
+        in v
+        for v in synth_violations
+    )
+    assert any(
+        "forbidden http(s):// URL in urllib/requests call: requests.get('http://example.invalid/status')"
+        in v
+        for v in synth_violations
+    )
+
+
+def test_historical_git_fixtures_manifest_and_rederivation() -> None:
+    """Card Item 1 (Fixture correctness):
+    1. Always verify committed fixtures under `tests/fixtures/` match `historical_git_fixtures_manifest.json` SHA-256s.
+    2. Verify the four historical regression tests read only committed fixtures and contain no `git` calls in their AST.
+    3. When the old commits are present locally, re-derive every fixture from `git show <source_sha>:<path>`
+       and assert both content and SHA-256 match the manifest; skip the git re-derivation step when absent.
+    """
+    import ast
+    from tests.fixtures import historical_git_fixtures as hist_fix
+
+    entries = hist_fix.verify_committed_fixtures_against_manifest()
+    assert len(entries) == 5
+
+    # Verify the four tests in this file have zero `git` subprocess calls
+    launcher_tree = ast.parse(
+        Path(__file__).read_text(encoding="utf-8"), filename=str(__file__)
+    )
+    target_test_names = {
+        "test_stale_gate_status_fails_at_6243174e_and_passes_after_fix_and_crashed_run_fails",
+        "test_fix5_create_each_venv_once_and_old_double_venv_fails_under_fake",
+        "test_fix6_vm_judges_static_no_in_process_judge_or_model_imports",
+        "test_fix6_vm_judges_static_no_lazy_hf_hub_snapshot_download_at_4c684457",
+    }
+    found_funcs: set[str] = set()
+    for node in launcher_tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in target_test_names:
+            found_funcs.add(node.name)
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Constant) and sub.value in (
+                    "git",
+                    "cat-file",
+                    "fetch",
+                ):
+                    raise AssertionError(
+                        f"{node.name}:{sub.lineno} still contains forbidden git constant {sub.value!r}"
+                    )
+    assert found_funcs == target_test_names
+
+    all_present, missing_shas = hist_fix.rederive_and_check_all_from_git(
+        write_files=False
+    )
+    if not all_present:
+        pytest.skip(
+            f"Historical commits absent in shallow clone ({missing_shas}); manifest SHA-256s verified."
+        )
 
 

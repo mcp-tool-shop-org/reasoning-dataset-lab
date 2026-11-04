@@ -12333,7 +12333,7 @@
       "testRunners": [
         "pytest"
       ],
-      "testedBy": 33,
+      "testedBy": 34,
       "unresolvedSites": 0
     },
     {
@@ -12410,8 +12410,57 @@
           "path": "tests/fixtures/fake_colab.py"
         },
         {
+          "exports": [
+            "derive_fixture_snippet_from_git",
+            "is_commit_present_locally",
+            "load_historical_fixtures_manifest",
+            "main",
+            "rederive_and_check_all_from_git",
+            "verify_committed_fixtures_against_manifest"
+          ],
+          "hash": "5966c0848f064d3d27e86262960d87012382f9d8b1ec8c20e326cee2f159ac41",
+          "path": "tests/fixtures/historical_git_fixtures.py"
+        },
+        {
+          "hash": "6f10fd323946193a5e509af736f66586d01980c9635994a24e3f8c4e8740e027",
+          "path": "tests/fixtures/historical_git_fixtures_manifest.json"
+        },
+        {
+          "hash": "95851220bdc04ba823924e8427b662ec31b86567a05cf3561edf402778b31a03",
+          "path": "tests/fixtures/launch_judges_6243174e_status_check.sh"
+        },
+        {
           "hash": "596e7b3c0321849a00e5c31859aed2260475d6f4e25b9c8b20ee5edf5620bfef",
           "path": "tests/fixtures/rnd-licences-registry-fb27d76.json"
+        },
+        {
+          "exports": [
+            "download_all_judge_weights"
+          ],
+          "hash": "e09007462af908c548a42f2914034f9ad53d024ca441e6c7cdf6593bbf762113",
+          "path": "tests/fixtures/vm_judges_4c684457_download_judge_weights.py"
+        },
+        {
+          "exports": [
+            "write_vm_status_file"
+          ],
+          "hash": "b2675ff3fd00472b151273d79d03925690326ce4d771bbaab4d4dcaa42693627",
+          "path": "tests/fixtures/vm_judges_6243174e_write_status.py"
+        },
+        {
+          "hash": "f514dbbdacf2d84b26baca3ce6865e33b4f44842f313cf81233378741157cf4e",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/errors.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
+          ],
+          "path": "tests/fixtures/vm_judges_e2257a4a_ensure_repo_imports.py"
+        },
+        {
+          "exports": [
+            "sync_judge_venvs"
+          ],
+          "hash": "7771ac26c0788dbd3985d52e50c8a47f99dee688ca5b2d1482b913b18a365ae9",
+          "path": "tests/fixtures/vm_judges_e2257a4a_sync_judge_venvs.py"
         },
         {
           "hash": "3249df6bb9befac5337d5bbb437dca3d7bad28b52a57304c19d2e98f96362ff0",
@@ -12777,6 +12826,7 @@
             "check_python_source_package_hygiene",
             "check_src_tree_package_import_hygiene",
             "extract_launch_sh_forwarded_rdlab_env_vars",
+            "test_ast_guard_no_git_network_or_http_urllib_requests_in_tests",
             "test_child_progress_1_lines_in_order_and_fields_for_two_item_child",
             "test_child_progress_2_heartbeat_fires_on_slow_call_and_stops_after_call",
             "test_child_progress_3_lines_survive_judge_child_timeout_group_kill_mid_call",
@@ -12826,6 +12876,7 @@
             "test_fix6_judge_child_killed_by_signal_9_or_137_records_oom_and_stops",
             "test_fix6_row_checkpointing_preserves_completed_judges_when_judge_5_fails",
             "test_fix6_vm_judges_static_no_in_process_judge_or_model_imports",
+            "test_fix6_vm_judges_static_no_lazy_hf_hub_snapshot_download_at_4c684457",
             "test_fix6_weight_size_mismatch_refuses_before_sha256_hashing",
             "test_fix6b_cgroup_limit_chain_and_logging",
             "test_fix6b_child_env_drops_hf_tokens_and_sets_hf_hub_offline",
@@ -12839,6 +12890,7 @@
             "test_gate_python_315_preflight_refuses_when_uv_absent_or_cannot_provide_315",
             "test_gate_refuses_when_items_dir_unavailable_without_fallback",
             "test_hermetic_path_guard_blocks_real_binaries_and_fires_sentinel_when_fake_absent",
+            "test_historical_git_fixtures_manifest_and_rederivation",
             "test_items_allowlist_exact_id_material_claim_row_passes",
             "test_items_allowlist_refusal_message_contains_field_name_and_not_value",
             "test_items_allowlist_row_missing_claim_refuses",
@@ -12910,7 +12962,7 @@
             "test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local",
             "test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log"
           ],
-          "hash": "274d149ff65744fb3b2deefee45b7cc1359f6af11601cd89c1ec7398b09bddcb",
+          "hash": "4c4788e06c0e23fb481dbd7f1be0758de8b682a0cc89aef402cf451712c7915e",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -12921,7 +12973,8 @@
             "scripts/colab/generate_weights_table.py",
             "src/reasoning_dataset_lab/pilot_b/judge_download.py",
             "src/reasoning_dataset_lab/pilot_b/device.py",
-            "src/reasoning_dataset_lab/__init__.py"
+            "src/reasoning_dataset_lab/__init__.py",
+            "tests/fixtures/historical_git_fixtures.py"
           ],
           "importsFiles": [
             "scripts/colab/generate_weights_table.py",
@@ -12933,7 +12986,8 @@
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/judge_download.py",
-            "tests/fixtures/fake_colab.py"
+            "tests/fixtures/fake_colab.py",
+            "tests/fixtures/historical_git_fixtures.py"
           ],
           "path": "tests/test_colab_judge_launcher.py",
           "testFramework": "pytest"
@@ -13914,7 +13968,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 35
+          "files": 40
         },
         {
           "boundary": "scripts",
@@ -13986,7 +14040,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 35,
+          "files": 40,
           "job": "test",
           "runner": "pytest",
           "step": "Run pytest with coverage (floor 90%)"
@@ -13994,7 +14048,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 35,
+          "files": 40,
           "job": "test-py313",
           "runner": "pytest",
           "step": "Run pytest (no coverage on this leg)"
@@ -14002,7 +14056,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 35,
+          "files": 40,
           "job": "test-py314",
           "runner": "pytest",
           "step": "Run pytest (no coverage on this leg)"
@@ -14438,8 +14492,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "034ee76329d409d4843ac964bccbe389511bdb2f",
-    "tracked": 153
+    "commit": "7955c811cf347c35cad8c09c7990e7e5e51a052d",
+    "tracked": 160
   },
   "landings": [
     {
@@ -15002,6 +15056,18 @@
     {
       "readers": [
         {
+          "by": "tests/fixtures/historical_git_fixtures.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "tests/fixtures/historical_git_fixtures_manifest.json",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
           "by": "tests/test_pilot_b_value_certification.py",
           "call": "read_bytes",
           "confidence": "ast",
@@ -15032,6 +15098,18 @@
     {
       "readers": [
         {
+          "by": "tests/test_colab_judge_launcher.py",
+          "call": "read_text",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "tests/test_colab_judge_launcher.py",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
           "by": "tests/test_pilot_b_variety.py",
           "call": "read_text",
           "confidence": "ast",
@@ -15056,6 +15134,6 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 43,
+  "testFiles": 50,
   "unassigned": []
 }
