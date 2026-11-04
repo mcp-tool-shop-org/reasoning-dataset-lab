@@ -64,7 +64,10 @@ import time
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error, usage_error
-from reasoning_dataset_lab.pilot_b.device import normalize_judge_device
+from reasoning_dataset_lab.pilot_b.device import (
+    DeviceRefusalError,
+    normalize_judge_device,
+)
 
 OrderMode = Literal["AB", "BA"]
 PassMode = Literal["binary", "three_way"]
@@ -2429,7 +2432,15 @@ class TransformersJudgeTransport:
     ) -> None:
         self.receipts_dir = Path(receipts_dir)
         self.hf_home = Path(hf_home) if hf_home is not None else None
-        self.device = normalize_judge_device(device)
+        try:
+            self.device = normalize_judge_device(device)
+        except DeviceRefusalError as exc:
+            raise RdlabError(
+                code="BAKEOFF_JUDGE_DEVICE_INVALID",
+                message=exc.message,
+                hint=exc.hint,
+                exit_code=exc.exit_code,
+            ) from exc
         self.torch_dtype = DEFAULT_TORCH_DTYPE if torch_dtype == "auto" else torch_dtype
         self._loaded_spec_id: str | None = None
         self._verified_digest: str | None = None
@@ -2858,7 +2869,15 @@ class D3MiniTransport:
     ) -> None:
         self.receipts_dir = Path(receipts_dir)
         self.hf_home = Path(hf_home) if hf_home is not None else None
-        self.device = normalize_judge_device(device)
+        try:
+            self.device = normalize_judge_device(device)
+        except DeviceRefusalError as exc:
+            raise RdlabError(
+                code="BAKEOFF_JUDGE_DEVICE_INVALID",
+                message=exc.message,
+                hint=exc.hint,
+                exit_code=exc.exit_code,
+            ) from exc
         self.expected_transformers_version = expected_transformers_version
         self.torch_dtype = str(torch_dtype)
         self._verified_digest: str | None = None
@@ -3697,7 +3716,15 @@ def run_bakeoff_judge(
     heartbeat_interval_seconds: float | None = None,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
-    device = normalize_judge_device(device)
+    try:
+        device = normalize_judge_device(device)
+    except DeviceRefusalError as exc:
+        raise RdlabError(
+            code="BAKEOFF_JUDGE_DEVICE_INVALID",
+            message=exc.message,
+            hint=exc.hint,
+            exit_code=exc.exit_code,
+        ) from exc
     resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
     spec = resolve_judge_spec(judge)
     adapter = build_judge_adapter(spec)
@@ -4369,7 +4396,15 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
-        normalized_device = normalize_judge_device(args.device)
+        try:
+            normalized_device = normalize_judge_device(args.device)
+        except DeviceRefusalError as exc:
+            raise RdlabError(
+                code="BAKEOFF_JUDGE_DEVICE_INVALID",
+                message=exc.message,
+                hint=exc.hint,
+                exit_code=exc.exit_code,
+            ) from exc
         run_bakeoff_judge(
             part_dir=args.part_dir,
             output_dir=args.output_dir,

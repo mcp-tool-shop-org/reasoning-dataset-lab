@@ -12818,10 +12818,14 @@ def test_device_normalizer_table_valid_and_refusals() -> None:
         assert exc_vm.value.failure_class == "BAKEOFF_JUDGE_DEVICE_INVALID"
 
         with pytest.raises(RdlabError) as exc_bj:
-            bj_mod.normalize_judge_device(bad_dev)
+            bj_mod.TransformersJudgeTransport(
+                receipts_dir=Path("/tmp/unused_receipts"),
+                device=bad_dev,
+            )
         assert exc_bj.value.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+        assert isinstance(exc_bj.value.__cause__, dev_mod.DeviceRefusalError)
 
-    # Verify token scrubbing on refusal message in both normalisers
+    # Verify token scrubbing on refusal message in both VM and package paths
     planted_tok = "hf_" + "SecretDeviceToken9876543210abcdef"
     with pytest.raises(vm_judges.RefusalError) as exc_vm_tok:
         vm_judges.normalize_judge_device(planted_tok)
@@ -12829,8 +12833,12 @@ def test_device_normalizer_table_valid_and_refusals() -> None:
     assert planted_tok not in str(exc_vm_tok.value)
 
     with pytest.raises(RdlabError) as exc_bj_tok:
-        bj_mod.normalize_judge_device(planted_tok)
+        bj_mod.TransformersJudgeTransport(
+            receipts_dir=Path("/tmp/unused_receipts"),
+            device=planted_tok,
+        )
     assert exc_bj_tok.value.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+    assert isinstance(exc_bj_tok.value.__cause__, dev_mod.DeviceRefusalError)
     assert planted_tok not in str(exc_bj_tok.value)
 
 
@@ -14499,6 +14507,166 @@ def test_fix2_item7_mid_run_cost_cap_stop_without_result_tar_fetches_partial_art
     assert outcome_doc["outcome"] == "stopped_cost_cap"
     assert outcome_doc["failure_class"] == "COST_CAP_REACHED"
     assert outcome_doc["judges_completed"] == ["nemotron-3-nano-4b"]
+
+
+def test_fix3_item4a_pin_rdlab_error_public_dataclass_type() -> None:
+    """Card Fix3 Item 4(a):
+    Pin the type: `RdlabError` is a dataclass (`dataclasses.is_dataclass`),
+    not a `RuntimeError` subclass, and `code`, `message` and `hint` are required.
+    Constructing it without `hint` raises `TypeError`.
+    """
+    import dataclasses
+    from reasoning_dataset_lab import errors as errors_mod
+    from reasoning_dataset_lab.pilot_b import device as dev_mod
+
+    err_cls = errors_mod.RdlabError
+    assert dataclasses.is_dataclass(err_cls), "RdlabError must be a dataclass"
+    assert not issubclass(err_cls, RuntimeError), (
+        "RdlabError must not be a RuntimeError subclass"
+    )
+    assert err_cls is not dev_mod.DeviceRefusalError
+    assert issubclass(err_cls, Exception)
+
+    fields_by_name = {f.name: f for f in dataclasses.fields(err_cls)}
+    assert list(fields_by_name.keys()) == ["code", "message", "hint", "exit_code"]
+    for req_field in ("code", "message", "hint"):
+        assert fields_by_name[req_field].default is dataclasses.MISSING
+        assert fields_by_name[req_field].default_factory is dataclasses.MISSING
+    assert fields_by_name["exit_code"].default == errors_mod.EXIT_REFUSED
+
+    # Constructing without `hint`, `message`, or `code` raises TypeError
+    with pytest.raises(TypeError):
+        err_cls("CODE_ONLY", "msg only")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        err_cls(code="CODE_ONLY", message="msg only")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        err_cls("CODE_ONLY")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        err_cls()  # type: ignore[call-arg]
+
+    # Dataclass semantics: equality, repr, asdict, and outside `except RuntimeError` does not swallow
+    inst1 = err_cls(code="C1", message="M1", hint="H1")
+    inst2 = err_cls(code="C1", message="M1", hint="H1")
+    assert inst1 == inst2
+    assert dataclasses.asdict(inst1) == {
+        "code": "C1",
+        "message": "M1",
+        "hint": "H1",
+        "exit_code": 1,
+    }
+    assert "RdlabError(" in repr(inst1)
+    assert not isinstance(inst1, RuntimeError)
+
+
+def test_fix3_item4c_package_callers_wrap_device_refusal_into_rdlab_error_with_cause(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Card Fix3 Item 3 & Item 4(c):
+    A bad device passed through the package API raises `RdlabError` with code
+    `BAKEOFF_JUDGE_DEVICE_INVALID`, and `__cause__` is the `DeviceRefusalError`.
+    Also verifies `main_judge_runner` preserves its exit-code behaviour.
+    """
+    import dataclasses
+    from reasoning_dataset_lab.errors import EXIT_REFUSED, RdlabError as PkgRdlabError
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj_mod
+    from reasoning_dataset_lab.pilot_b.device import DeviceRefusalError
+
+    bad_device = "cuda:bad hf_SecretDeviceToken9876543210abcdef"
+
+    # Call site 1: TransformersJudgeTransport.__init__
+    with pytest.raises(PkgRdlabError) as exc_t:
+        bj_mod.TransformersJudgeTransport(
+            receipts_dir=tmp_path / "receipts",
+            device=bad_device,
+        )
+    assert type(exc_t.value) is PkgRdlabError
+    assert dataclasses.is_dataclass(exc_t.value)
+    assert not isinstance(exc_t.value, RuntimeError)
+    assert exc_t.value.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+    assert exc_t.value.exit_code == EXIT_REFUSED
+    assert "SecretDeviceToken9876543210abcdef" not in exc_t.value.message
+    assert isinstance(exc_t.value.__cause__, DeviceRefusalError)
+    assert exc_t.value.__cause__.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+
+    # Call site 2: D3MiniTransport.__init__
+    with pytest.raises(PkgRdlabError) as exc_d3:
+        bj_mod.D3MiniTransport(
+            receipts_dir=tmp_path / "receipts",
+            device=bad_device,
+        )
+    assert type(exc_d3.value) is PkgRdlabError
+    assert not isinstance(exc_d3.value, RuntimeError)
+    assert exc_d3.value.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+    assert exc_d3.value.exit_code == EXIT_REFUSED
+    assert "SecretDeviceToken9876543210abcdef" not in exc_d3.value.message
+    assert isinstance(exc_d3.value.__cause__, DeviceRefusalError)
+    assert exc_d3.value.__cause__.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+
+    # Call site 3: run_bakeoff_judge
+    with pytest.raises(PkgRdlabError) as exc_run:
+        bj_mod.run_bakeoff_judge(
+            part_dir=tmp_path / "part",
+            output_dir=tmp_path / "out",
+            judge="nemotron-3-nano-4b",
+            device=bad_device,
+            fake_transport=True,
+        )
+    assert type(exc_run.value) is PkgRdlabError
+    assert not isinstance(exc_run.value, RuntimeError)
+    assert exc_run.value.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+    assert exc_run.value.exit_code == EXIT_REFUSED
+    assert "SecretDeviceToken9876543210abcdef" not in exc_run.value.message
+    assert isinstance(exc_run.value.__cause__, DeviceRefusalError)
+    assert exc_run.value.__cause__.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+
+    # Call site 4: main_judge_runner CLI entry point preserves exit-code behaviour (rc=1)
+    rc = bj_mod.main_judge_runner(
+        [
+            "--part-dir",
+            str(tmp_path / "part"),
+            "--output-dir",
+            str(tmp_path / "out_cli"),
+            "--judge",
+            "nemotron-3-nano-4b",
+            "--device",
+            bad_device,
+            "--fake-transport",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert rc == EXIT_REFUSED == 1
+    assert "BAKEOFF_JUDGE_DEVICE_INVALID:" in captured.err
+    assert "SecretDeviceToken9876543210abcdef" not in captured.err
+
+
+def test_fix3_item4d_vm_path_raises_device_refusal_error() -> None:
+    """Card Fix3 Item 2 & Item 4(d):
+    - `pilot_b/device.py` keeps its own standalone stdlib `DeviceRefusalError` for the VM and imports nothing from the package.
+    - `vm_judges` still raises its own refusal with the same code (`BAKEOFF_JUDGE_DEVICE_INVALID`) and named class (`DeviceRefusalError`).
+    """
+    from reasoning_dataset_lab.pilot_b import device as dev_mod
+
+    dev_src = (
+        REPO_ROOT / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py"
+    ).read_text(encoding="utf-8")
+    assert "reasoning_dataset_lab" not in dev_src
+
+    assert dev_mod.DeviceRefusalError.__name__ == "DeviceRefusalError"
+    assert issubclass(dev_mod.DeviceRefusalError, RuntimeError)
+    assert vm_judges.DeviceRefusalError is dev_mod.DeviceRefusalError
+    assert vm_judges.RefusalError is dev_mod.DeviceRefusalError
+
+    with pytest.raises(vm_judges.DeviceRefusalError) as exc_vm:
+        vm_judges.resolve_judge_device(
+            mode="time-one",
+            dryrun=False,
+            real_load_on_cpu=False,
+            raw_device="cuda:bad",
+        )
+    assert type(exc_vm.value).__name__ == "DeviceRefusalError"
+    assert exc_vm.value.code == "BAKEOFF_JUDGE_DEVICE_INVALID"
+    assert exc_vm.value.failure_class == "BAKEOFF_JUDGE_DEVICE_INVALID"
 
 
 

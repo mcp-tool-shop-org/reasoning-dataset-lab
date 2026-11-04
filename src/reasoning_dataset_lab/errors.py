@@ -8,13 +8,35 @@ Exit codes:
 
 from __future__ import annotations
 
-from reasoning_dataset_lab.pilot_b.device import DeviceRefusalError
+import json
+from dataclasses import dataclass
 
 EXIT_CLEAN = 0
 EXIT_REFUSED = 1
 EXIT_USAGE = 2
 
-RdlabError = DeviceRefusalError
+
+@dataclass
+class RdlabError(Exception):
+    """Structured error carrying {code, message, hint} and a CLI exit code."""
+
+    code: str
+    message: str
+    hint: str
+    exit_code: int = EXIT_REFUSED
+
+    def __str__(self) -> str:
+        return f"[{self.code}] {self.message} (hint: {self.hint})"
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "message": self.message,
+            "hint": self.hint,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False)
 
 
 def refused_error(code: str, message: str, hint: str) -> RdlabError:
