@@ -33,62 +33,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 8,
-      "changed": 10,
+      "added": 1,
+      "changed": 1,
       "moved": 0,
-      "parts": 4,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": ".gitattributes is now read by scripts/colab/receipts/flowaicom__Flow-Judge-v0.1.sha256.json, scripts/colab/receipts/ibm-granite__granite-guardian-4.1-8b.sha256.json, scripts/colab/receipts/nvidia__NVIDIA-Nemotron-3-Nano-4B-BF16.sha256.json, scripts/colab/receipts/qybaihe__mu-judge-nemotron-nano-4b.sha256.json and scripts/colab/receipts/vllm-sr__d3-mini.sha256.json.",
-        "subjects": [
-          ".gitattributes",
-          "scripts/colab/receipts/flowaicom__Flow-Judge-v0.1.sha256.json",
-          "scripts/colab/receipts/ibm-granite__granite-guardian-4.1-8b.sha256.json",
-          "scripts/colab/receipts/nvidia__NVIDIA-Nemotron-3-Nano-4B-BF16.sha256.json",
-          "scripts/colab/receipts/qybaihe__mu-judge-nemotron-nano-4b.sha256.json",
-          "scripts/colab/receipts/vllm-sr__d3-mini.sha256.json"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "LICENSE is now also read by scripts/colab/receipts/nvidia__NVIDIA-Nemotron-3-Nano-4B-BF16.sha256.json and scripts/colab/receipts/vllm-sr__d3-mini.sha256.json.",
-        "subjects": [
-          "LICENSE",
-          "scripts/colab/receipts/nvidia__NVIDIA-Nemotron-3-Nano-4B-BF16.sha256.json",
-          "scripts/colab/receipts/vllm-sr__d3-mini.sha256.json"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "README.md is now also read by scripts/colab/receipts/flowaicom__Flow-Judge-v0.1.sha256.json, scripts/colab/receipts/ibm-granite__granite-guardian-4.1-8b.sha256.json, scripts/colab/receipts/nvidia__NVIDIA-Nemotron-3-Nano-4B-BF16.sha256.json, scripts/colab/receipts/qybaihe__mu-judge-nemotron-nano-4b.sha256.json and scripts/colab/receipts/vllm-sr__d3-mini.sha256.json.",
-        "subjects": [
-          "README.md",
-          "scripts/colab/receipts/flowaicom__Flow-Judge-v0.1.sha256.json",
-          "scripts/colab/receipts/ibm-granite__granite-guardian-4.1-8b.sha256.json",
-          "scripts/colab/receipts/nvidia__NVIDIA-Nemotron-3-Nano-4B-BF16.sha256.json",
-          "scripts/colab/receipts/qybaihe__mu-judge-nemotron-nano-4b.sha256.json",
-          "scripts/colab/receipts/vllm-sr__d3-mini.sha256.json"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "And 4 more new writers and readers of places.",
-        "subjects": []
-      },
-      {
         "kind": "counts",
-        "sentence": "8 files added and 10 changed content, across 4 parts.",
+        "sentence": "Nothing structural changed since 2026-11-04; 1 file added and 1 changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "e8aa37a6c44d6f481d8c3ce7d3c767abe77ab41b",
-      "generatedAt": "2026-11-02T10:18:05.891Z"
+      "commit": "11c6690939f7264d27bd19cb7450ff9bef34c99b",
+      "generatedAt": "2026-11-04T16:50:20.489Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -109,6 +71,21 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
+      "either": 16,
+      "partLabels": [
+        "scripts",
+        "tests"
+      ],
+      "parts": [
+        "scripts",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 15
+    },
+    {
+      "a": "scripts/colab/vm_judges.py",
+      "b": "tests/fixtures/fake_colab.py",
       "either": 15,
       "partLabels": [
         "scripts",
@@ -119,22 +96,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 14
-    },
-    {
-      "a": "scripts/colab/vm_judges.py",
-      "b": "tests/fixtures/fake_colab.py",
-      "either": 14,
-      "partLabels": [
-        "scripts",
-        "tests"
-      ],
-      "parts": [
-        "scripts",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 12
+      "shared": 13
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
@@ -154,7 +116,7 @@
     {
       "a": "tests/fixtures/fake_colab.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 15,
+      "either": 16,
       "partLabels": [
         "tests",
         "tests"
@@ -164,7 +126,7 @@
         "tests"
       ],
       "relation": "inside",
-      "shared": 12
+      "shared": 13
     }
   ],
   "changesTogetherNote": [
@@ -173,9 +135,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 7 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "11c6690939f7264d27bd19cb7450ff9bef34c99b",
+  "commit": "030b68e1bfbfbf2dedfc19ae964df5aa3060634a",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (61 files), CSS (2), TypeScript (2), shell (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (62 files), CSS (2), TypeScript (2), shell (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -202,7 +164,7 @@
         {
           "boundary": "src",
           "depth": 1,
-          "files": 22
+          "files": 25
         }
       ],
       "runs": [
@@ -266,7 +228,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 24
+          "files": 25
         }
       ],
       "runs": [],
@@ -297,7 +259,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 19
+          "files": 21
         }
       ],
       "runs": [
@@ -320,7 +282,7 @@
       "to": "src"
     }
   ],
-  "engine": "1.23.0",
+  "engine": "1.24.0",
   "generated": [
     {
       "block": true,
@@ -330,10 +292,10 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-04T16:50:20.489Z",
+  "generatedAt": "2026-11-04T17:18:37.813Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
-    "4 imports could not be resolved: `scripts/colab/vm_judges.py` imports `reasoning_dataset_lab.pilot_b.device`, which is no module on its import path and no declared dependency; `src/reasoning_dataset_lab/errors.py` imports `reasoning_dataset_lab.pilot_b.device`, which is no module on its import path and no declared dependency; `src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py` imports `reasoning_dataset_lab.pilot_b.device`, which is no module on its import path and no declared dependency; and 1 more.",
+    "3 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
     "11 writes and 26 reads use paths built at run time and are not named here.",
     "49 writes and 114 reads go to a path their caller passes, not to this repository.",
     "3 reads go to the directory the command is run in, not to this repository.",

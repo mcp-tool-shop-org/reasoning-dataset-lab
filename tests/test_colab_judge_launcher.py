@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -13,6 +14,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
+_HOST_INITIAL_ENV: dict[str, str] = dict(os.environ)
+_HOST_REAL_UV: str | None = shutil.which("uv", path=_HOST_INITIAL_ENV.get("PATH"))
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_COLAB_DIR = REPO_ROOT / "scripts" / "colab"
@@ -13997,20 +14001,28 @@ def test_fix2_item1_wheel_install_outside_repo_imports_bakeoff_judge_and_runs_rd
     import shutil as _shutil
     import site as _site
 
-    real_uv = Path.home() / ".local" / "bin" / "uv"
-    if not real_uv.is_file():
-        found_uv = _shutil.which("uv")
-        assert found_uv is not None, "uv binary not found"
-        real_uv = Path(found_uv)
+    if _HOST_REAL_UV and Path(_HOST_REAL_UV).is_file():
+        real_uv = Path(_HOST_REAL_UV)
+    else:
+        real_uv = Path.home() / ".local" / "bin" / "uv"
+        if not real_uv.is_file():
+            clean_path = os.pathsep.join(
+                p
+                for p in _HOST_INITIAL_ENV.get("PATH", "").split(os.pathsep)
+                if p and "fake_bin" not in p and "sentinel_bin" not in p
+            )
+            found_uv = _shutil.which("uv", path=clean_path)
+            assert found_uv is not None, "real uv binary not found"
+            real_uv = Path(found_uv)
 
     dist_dir = tmp_path / "dist_out"
     dist_dir.mkdir(parents=True, exist_ok=True)
     build_env = {
         k: v
-        for k, v in os.environ.items()
+        for k, v in _HOST_INITIAL_ENV.items()
         if not k.startswith("FAKE_COLAB_")
     }
-    build_env["PATH"] = f"{real_uv.parent}:/usr/local/bin:/usr/bin:/bin"
+    build_env["PATH"] = f"{real_uv.parent}:{_HOST_INITIAL_ENV.get('PATH', '/usr/local/bin:/usr/bin:/bin')}"
     build_proc = subprocess.run(
         [str(real_uv), "build", "--wheel", "--out-dir", str(dist_dir)],
         cwd=str(REPO_ROOT),
@@ -14031,7 +14043,7 @@ def test_fix2_item1_wheel_install_outside_repo_imports_bakeoff_judge_and_runs_rd
     outside_cwd.mkdir(parents=True, exist_ok=True)
 
     venv_proc = subprocess.run(
-        [sys.executable, "-m", "venv", str(venv_dir)],
+        [sys.executable, "-m", "venv", "--without-pip", str(venv_dir)],
         cwd=str(outside_cwd),
         env=build_env,
         stdin=subprocess.DEVNULL,
@@ -14043,7 +14055,7 @@ def test_fix2_item1_wheel_install_outside_repo_imports_bakeoff_judge_and_runs_rd
     assert venv_proc.returncode == 0, f"venv creation failed: {venv_proc.stderr}"
 
     # Seed runtime third-party packages (yaml, aspire_si_gates, role_set) from the test environment's
-    # site-packages into the fresh venv so `pip install --no-index --no-deps` stays 100% offline
+    # site-packages into the fresh venv so `uv pip install --no-index --no-deps` stays 100% offline
     # without copying `reasoning_dataset_lab` or any `.pth` file.
     venv_site_candidates = list((venv_dir / "lib").glob("python*/site-packages"))
     assert len(venv_site_candidates) == 1
@@ -14067,26 +14079,35 @@ def test_fix2_item1_wheel_install_outside_repo_imports_bakeoff_judge_and_runs_rd
                 elif item.is_file() and item.suffix != ".pth":
                     _shutil.copy2(item, dst)
 
-    venv_pip = venv_dir / "bin" / "pip"
     venv_python = venv_dir / "bin" / "python"
     venv_rdlab = venv_dir / "bin" / "rdlab"
 
-    clean_env = {
-        "PATH": f"{venv_dir / 'bin'}:/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(tmp_path),
-        "LANG": os.environ.get("LANG", "C.UTF-8"),
-    }
     install_proc = subprocess.run(
-        [str(venv_pip), "install", "--no-index", "--no-deps", str(wheel_path)],
+        [
+            str(real_uv),
+            "pip",
+            "install",
+            "--python",
+            str(venv_python),
+            "--no-index",
+            "--no-deps",
+            str(wheel_path),
+        ],
         cwd=str(outside_cwd),
-        env=clean_env,
+        env=build_env,
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=60,
         check=False,
     )
-    assert install_proc.returncode == 0, f"pip install failed: {install_proc.stderr}"
+    assert install_proc.returncode == 0, f"uv pip install failed: {install_proc.stderr}"
+
+    clean_env = {
+        "PATH": f"{venv_dir / 'bin'}:/usr/local/bin:/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+    }
 
     import_proc = subprocess.run(
         [

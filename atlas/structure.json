@@ -317,6 +317,37 @@
             "update_doc_weights_table",
             "verify_doc_matches_receipts"
           ],
+          "failurePaths": [
+            {
+              "in": "load_and_verify_receipt_rows",
+              "kind": "raise",
+              "line": 54
+            },
+            {
+              "in": "load_and_verify_receipt_rows",
+              "kind": "raise",
+              "line": 59
+            },
+            {
+              "in": "load_and_verify_receipt_rows",
+              "kind": "raise",
+              "line": 65
+            },
+            {
+              "in": "load_and_verify_receipt_rows",
+              "kind": "raise",
+              "line": 69
+            },
+            {
+              "in": "extract_weights_table_block",
+              "kind": "raise",
+              "line": 118
+            },
+            {
+              "kind": "raise",
+              "line": 197
+            }
+          ],
           "hash": "fc787c5e8385b5e20412016bd76aced4e3ac0454c2e297b73980aecc0b1d88a3",
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -435,7 +466,1210 @@
             "write_outputs_closed",
             "write_vm_status_file"
           ],
+          "failurePaths": [
+            {
+              "kind": "except",
+              "line": 570
+            },
+            {
+              "kind": "except",
+              "line": 584
+            },
+            {
+              "in": "ensure_not_drive_path",
+              "kind": "raise",
+              "line": 596
+            },
+            {
+              "in": "_read_cgroup_int",
+              "kind": "except",
+              "line": 656
+            },
+            {
+              "in": "read_proc_meminfo_bytes",
+              "kind": "except",
+              "line": 700
+            },
+            {
+              "in": "read_vm_memory_snapshot",
+              "kind": "except",
+              "line": 771
+            },
+            {
+              "in": "_parse_kv_file",
+              "kind": "except",
+              "line": 827
+            },
+            {
+              "in": "read_cgroup_memory_events",
+              "kind": "except",
+              "line": 868
+            },
+            {
+              "in": "append_progress_line",
+              "kind": "except",
+              "line": 907
+            },
+            {
+              "in": "read_parent_rss_bytes",
+              "kind": "except",
+              "line": 1212
+            },
+            {
+              "in": "read_parent_rss_bytes",
+              "kind": "except",
+              "line": 1221
+            },
+            {
+              "in": "read_gpu_memory_used_mib",
+              "kind": "except",
+              "line": 1252
+            },
+            {
+              "in": "_find_group_member_pids",
+              "kind": "except",
+              "line": 1274
+            },
+            {
+              "in": "_find_group_member_pids",
+              "kind": "except",
+              "line": 1288
+            },
+            {
+              "in": "_find_group_member_pids",
+              "kind": "except",
+              "line": 1294
+            },
+            {
+              "in": "_find_group_member_pids",
+              "kind": "except",
+              "line": 1296
+            },
+            {
+              "in": "_find_group_member_pids",
+              "kind": "except",
+              "line": 1298
+            },
+            {
+              "in": "_kill_process_group_and_check_survivors",
+              "kind": "except",
+              "line": 1313
+            },
+            {
+              "in": "_kill_process_group_and_check_survivors",
+              "kind": "except",
+              "line": 1318
+            },
+            {
+              "in": "_kill_process_group_and_check_survivors",
+              "kind": "except",
+              "line": 1322
+            },
+            {
+              "in": "_kill_process_group_and_check_survivors",
+              "kind": "except",
+              "line": 1334
+            },
+            {
+              "in": "_kill_process_group_and_check_survivors",
+              "kind": "except",
+              "line": 1339
+            },
+            {
+              "in": "_kill_process_group_and_check_survivors",
+              "kind": "except",
+              "line": 1343
+            },
+            {
+              "in": "_kill_process_group_and_check_survivors",
+              "kind": "except",
+              "line": 1348
+            },
+            {
+              "in": "_kill_process_group_and_check_survivors",
+              "kind": "except",
+              "line": 1359
+            },
+            {
+              "in": "_run_child_with_group_timeout",
+              "kind": "except",
+              "line": 1390
+            },
+            {
+              "in": "_drain_pipe",
+              "kind": "except",
+              "line": 1400
+            },
+            {
+              "in": "_run_child_with_group_timeout",
+              "kind": "except",
+              "line": 1418
+            },
+            {
+              "in": "_run_child_with_group_timeout",
+              "kind": "except",
+              "line": 1428
+            },
+            {
+              "in": "_stream_subprocess_with_byte_cap",
+              "kind": "except",
+              "line": 1494
+            },
+            {
+              "in": "run_vm_subprocess",
+              "kind": "except",
+              "line": 1562
+            },
+            {
+              "in": "run_vm_subprocess",
+              "kind": "except",
+              "line": 1574
+            },
+            {
+              "in": "run_vm_subprocess",
+              "kind": "except",
+              "line": 1592
+            },
+            {
+              "in": "run_vm_subprocess",
+              "kind": "except",
+              "line": 1628
+            },
+            {
+              "in": "run_vm_subprocess",
+              "kind": "raise",
+              "line": 1632
+            },
+            {
+              "in": "verify_lock_sdist_and_hashes",
+              "kind": "raise",
+              "line": 1683
+            },
+            {
+              "in": "verify_lock_sdist_and_hashes",
+              "kind": "raise",
+              "line": 1721
+            },
+            {
+              "in": "verify_lock_sdist_and_hashes",
+              "kind": "raise",
+              "line": 1732
+            },
+            {
+              "in": "verify_lock_sdist_and_hashes",
+              "kind": "raise",
+              "line": 1737
+            },
+            {
+              "in": "verify_lock_sdist_and_hashes",
+              "kind": "raise",
+              "line": 1749
+            },
+            {
+              "in": "verify_lock_sdist_and_hashes",
+              "kind": "raise",
+              "line": 1760
+            },
+            {
+              "in": "verify_lock_sdist_and_hashes",
+              "kind": "raise",
+              "line": 1765
+            },
+            {
+              "in": "verify_lock_digests",
+              "kind": "raise",
+              "line": 1815
+            },
+            {
+              "in": "verify_lock_digests",
+              "kind": "raise",
+              "line": 1820
+            },
+            {
+              "in": "verify_lock_digests",
+              "kind": "raise",
+              "line": 1826
+            },
+            {
+              "in": "verify_lock_digests",
+              "kind": "raise",
+              "line": 1831
+            },
+            {
+              "in": "verify_lock_digests",
+              "kind": "raise",
+              "line": 1842
+            },
+            {
+              "in": "verify_lock_digests",
+              "kind": "raise",
+              "line": 1848
+            },
+            {
+              "in": "verify_device_py_digest",
+              "kind": "raise",
+              "line": 1875
+            },
+            {
+              "in": "verify_device_py_digest",
+              "kind": "raise",
+              "line": 1880
+            },
+            {
+              "in": "verify_device_py_digest",
+              "kind": "raise",
+              "line": 1885
+            },
+            {
+              "in": "verify_device_py_digest",
+              "kind": "raise",
+              "line": 1891
+            },
+            {
+              "in": "verify_device_py_digest",
+              "kind": "raise",
+              "line": 1898
+            },
+            {
+              "in": "verify_device_py_digest",
+              "kind": "raise",
+              "line": 1904
+            },
+            {
+              "in": "sync_judge_venvs",
+              "kind": "except",
+              "line": 2112
+            },
+            {
+              "in": "_ensure_dryrun_venv_python_wrapper",
+              "kind": "except",
+              "line": 2397
+            },
+            {
+              "in": "check_remote_code_gate",
+              "kind": "raise",
+              "line": 2414
+            },
+            {
+              "in": "check_d3_mini_remote_code_gate",
+              "kind": "raise",
+              "line": 2429
+            },
+            {
+              "in": "check_d3_mini_remote_code_gate",
+              "kind": "raise",
+              "line": 2437
+            },
+            {
+              "in": "check_d3_mini_remote_code_gate",
+              "kind": "raise",
+              "line": 2442
+            },
+            {
+              "in": "_resolve_snapshot_dir_for_spec",
+              "kind": "raise",
+              "line": 2458
+            },
+            {
+              "in": "_resolve_snapshot_dir_for_spec",
+              "kind": "raise",
+              "line": 2470
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2489
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "except",
+              "line": 2495
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2496
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2502
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2510
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2528
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2539
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2546
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2559
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2578
+            },
+            {
+              "in": "check_bakeoff_logprob_mass",
+              "kind": "raise",
+              "line": 2597
+            },
+            {
+              "in": "check_bakeoff_logprob_mass",
+              "kind": "raise",
+              "line": 2603
+            },
+            {
+              "in": "check_bakeoff_logprob_mass",
+              "kind": "raise",
+              "line": 2611
+            },
+            {
+              "in": "check_bakeoff_logprob_mass",
+              "kind": "except",
+              "line": 2628
+            },
+            {
+              "in": "check_bakeoff_logprob_mass",
+              "kind": "raise",
+              "line": 2642
+            },
+            {
+              "in": "_read_cgroup_raw_str",
+              "kind": "except",
+              "line": 2707
+            },
+            {
+              "in": "_parse_kv",
+              "kind": "except",
+              "line": 2730
+            },
+            {
+              "in": "read_cgroup_limit_chain",
+              "kind": "except",
+              "line": 2865
+            },
+            {
+              "in": "validate_download_config",
+              "kind": "raise",
+              "line": 2995
+            },
+            {
+              "in": "validate_download_config",
+              "kind": "raise",
+              "line": 3001
+            },
+            {
+              "in": "validate_download_config",
+              "kind": "raise",
+              "line": 3014
+            },
+            {
+              "in": "validate_download_config",
+              "kind": "raise",
+              "line": 3020
+            },
+            {
+              "in": "_select_judge_specs",
+              "kind": "raise",
+              "line": 3048
+            },
+            {
+              "in": "verify_all_judge_snapshots",
+              "kind": "raise",
+              "line": 3074
+            },
+            {
+              "in": "_judge_snapshot_bytes_on_disk",
+              "kind": "except",
+              "line": 3099
+            },
+            {
+              "in": "_judge_snapshot_bytes_on_disk",
+              "kind": "except",
+              "line": 3116
+            },
+            {
+              "in": "download_all_judge_weights",
+              "kind": "raise",
+              "line": 3186
+            },
+            {
+              "in": "download_all_judge_weights",
+              "kind": "except",
+              "line": 3195
+            },
+            {
+              "in": "download_all_judge_weights",
+              "kind": "except",
+              "line": 3318
+            },
+            {
+              "in": "download_all_judge_weights",
+              "kind": "except",
+              "line": 3380
+            },
+            {
+              "in": "download_all_judge_weights",
+              "kind": "raise",
+              "line": 3425
+            },
+            {
+              "in": "_fail_download_postcheck",
+              "kind": "raise",
+              "line": 3485
+            },
+            {
+              "in": "download_all_judge_weights",
+              "kind": "raise",
+              "line": 3556
+            },
+            {
+              "in": "download_all_judge_weights",
+              "kind": "raise",
+              "line": 3587
+            },
+            {
+              "in": "download_all_judge_weights",
+              "kind": "except",
+              "line": 3589
+            },
+            {
+              "in": "download_all_judge_weights",
+              "kind": "raise",
+              "line": 3665
+            },
+            {
+              "in": "download_all_judge_weights",
+              "kind": "except",
+              "line": 3689
+            },
+            {
+              "in": "check_upload_path_allowed",
+              "kind": "raise",
+              "line": 3785
+            },
+            {
+              "in": "check_upload_path_allowed",
+              "kind": "raise",
+              "line": 3793
+            },
+            {
+              "in": "check_upload_path_allowed",
+              "kind": "raise",
+              "line": 3798
+            },
+            {
+              "in": "check_upload_path_allowed",
+              "kind": "raise",
+              "line": 3811
+            },
+            {
+              "in": "delete_uploaded_items_and_record_receipt",
+              "kind": "except",
+              "line": 3828
+            },
+            {
+              "in": "delete_uploaded_items_and_record_receipt",
+              "kind": "raise",
+              "line": 3847
+            },
+            {
+              "in": "write_outputs_closed",
+              "kind": "raise",
+              "line": 3884
+            },
+            {
+              "in": "_validate_item_row_allowlist",
+              "kind": "raise",
+              "line": 3972
+            },
+            {
+              "in": "_validate_item_row_allowlist",
+              "kind": "raise",
+              "line": 3990
+            },
+            {
+              "in": "_validate_item_row_allowlist",
+              "kind": "raise",
+              "line": 3997
+            },
+            {
+              "in": "verify_items_allowlist",
+              "kind": "raise",
+              "line": 4011
+            },
+            {
+              "in": "verify_items_allowlist",
+              "kind": "except",
+              "line": 4021
+            },
+            {
+              "in": "verify_items_allowlist",
+              "kind": "raise",
+              "line": 4022
+            },
+            {
+              "in": "verify_items_allowlist",
+              "kind": "raise",
+              "line": 4033
+            },
+            {
+              "in": "collect_claim_ngram_sha256s",
+              "kind": "raise",
+              "line": 4047
+            },
+            {
+              "in": "collect_claim_ngram_sha256s",
+              "kind": "except",
+              "line": 4058
+            },
+            {
+              "in": "collect_claim_ngram_sha256s",
+              "kind": "raise",
+              "line": 4059
+            },
+            {
+              "in": "collect_claim_ngram_sha256s",
+              "kind": "raise",
+              "line": 4075
+            },
+            {
+              "in": "verify_rig_logs_and_outputs_clean",
+              "kind": "raise",
+              "line": 4101
+            },
+            {
+              "in": "verify_rig_logs_and_outputs_clean",
+              "kind": "raise",
+              "line": 4113
+            },
+            {
+              "in": "verify_rig_logs_and_outputs_clean",
+              "kind": "raise",
+              "line": 4126
+            },
+            {
+              "in": "validate_tar_file",
+              "kind": "raise",
+              "line": 4174
+            },
+            {
+              "in": "validate_tar_file",
+              "kind": "raise",
+              "line": 4185
+            },
+            {
+              "in": "build_allowlisted_result_tar",
+              "kind": "raise",
+              "line": 4201
+            },
+            {
+              "in": "build_allowlisted_result_tar",
+              "kind": "raise",
+              "line": 4206
+            },
+            {
+              "in": "build_allowlisted_result_tar",
+              "kind": "raise",
+              "line": 4212
+            },
+            {
+              "in": "_sample_once",
+              "kind": "except",
+              "line": 4296
+            },
+            {
+              "in": "resolve_gpu_gate_timeout_seconds",
+              "kind": "except",
+              "line": 4357
+            },
+            {
+              "in": "resolve_first_load_timeout_seconds",
+              "kind": "except",
+              "line": 4371
+            },
+            {
+              "in": "resolve_judge_child_timeout_seconds",
+              "kind": "except",
+              "line": 4385
+            },
+            {
+              "in": "resolve_download_child_timeout_seconds",
+              "kind": "except",
+              "line": 4399
+            },
+            {
+              "in": "resolve_child_wall_margin_seconds",
+              "kind": "except",
+              "line": 4413
+            },
+            {
+              "in": "resolve_remaining_wall_seconds",
+              "kind": "except",
+              "line": 4437
+            },
+            {
+              "in": "_query_nvidia_smi_driver_line",
+              "kind": "except",
+              "line": 4494
+            },
+            {
+              "in": "_query_nvidia_smi_driver_line",
+              "kind": "except",
+              "line": 4496
+            },
+            {
+              "in": "_update_gate_status_device_check",
+              "kind": "except",
+              "line": 4542
+            },
+            {
+              "in": "run_device_check",
+              "kind": "raise",
+              "line": 4623
+            },
+            {
+              "in": "run_device_check",
+              "kind": "except",
+              "line": 4664
+            },
+            {
+              "in": "run_device_check",
+              "kind": "except",
+              "line": 4701
+            },
+            {
+              "in": "run_device_check",
+              "kind": "except",
+              "line": 4713
+            },
+            {
+              "in": "run_device_check",
+              "kind": "raise",
+              "line": 4823
+            },
+            {
+              "in": "_update_gate_status_gpu_gate",
+              "kind": "except",
+              "line": 4893
+            },
+            {
+              "in": "run_gpu_gate",
+              "kind": "raise",
+              "line": 4957
+            },
+            {
+              "in": "run_gpu_gate",
+              "kind": "except",
+              "line": 4998
+            },
+            {
+              "in": "run_gpu_gate",
+              "kind": "except",
+              "line": 5034
+            },
+            {
+              "in": "run_gpu_gate",
+              "kind": "except",
+              "line": 5046
+            },
+            {
+              "in": "run_gpu_gate",
+              "kind": "raise",
+              "line": 5160
+            },
+            {
+              "in": "run_judges_pipeline",
+              "kind": "raise",
+              "line": 5285
+            },
+            {
+              "in": "run_judges_pipeline",
+              "kind": "except",
+              "line": 5371
+            },
+            {
+              "in": "run_judges_pipeline",
+              "kind": "except",
+              "line": 5406
+            },
+            {
+              "in": "run_judges_pipeline",
+              "kind": "except",
+              "line": 5472
+            },
+            {
+              "in": "run_judges_pipeline",
+              "kind": "raise",
+              "line": 5518
+            },
+            {
+              "in": "_fail_child_postcheck",
+              "kind": "raise",
+              "line": 5573
+            },
+            {
+              "in": "run_judges_pipeline",
+              "kind": "raise",
+              "line": 5638
+            },
+            {
+              "in": "run_judges_pipeline",
+              "kind": "raise",
+              "line": 5677
+            },
+            {
+              "in": "run_judges_pipeline",
+              "kind": "except",
+              "line": 5679
+            },
+            {
+              "in": "run_judges_pipeline",
+              "kind": "raise",
+              "line": 5687
+            },
+            {
+              "in": "run_judges_pipeline",
+              "kind": "except",
+              "line": 5690
+            },
+            {
+              "in": "unpack_uploaded_archives",
+              "kind": "raise",
+              "line": 5870
+            },
+            {
+              "in": "unpack_uploaded_archives",
+              "kind": "except",
+              "line": 5878
+            },
+            {
+              "in": "check_vm_disk_preflight",
+              "kind": "raise",
+              "line": 6132
+            },
+            {
+              "in": "verify_run_status_file",
+              "kind": "except",
+              "line": 6167
+            },
+            {
+              "in": "_dir_size_bytes",
+              "kind": "except",
+              "line": 6196
+            },
+            {
+              "in": "_verify_python_interpreter_build",
+              "kind": "raise",
+              "line": 6227
+            },
+            {
+              "in": "_verify_python_interpreter_build",
+              "kind": "except",
+              "line": 6248
+            },
+            {
+              "in": "_verify_python_interpreter_build",
+              "kind": "raise",
+              "line": 6254
+            },
+            {
+              "in": "_verify_python_interpreter_build",
+              "kind": "raise",
+              "line": 6270
+            },
+            {
+              "in": "validate_force_pinned_uv",
+              "kind": "raise",
+              "line": 6293
+            },
+            {
+              "in": "open_pinned_uv_wheel_stream",
+              "kind": "except",
+              "line": 6362
+            },
+            {
+              "in": "open_pinned_uv_wheel_stream",
+              "kind": "raise",
+              "line": 6369
+            },
+            {
+              "in": "open_pinned_uv_wheel_stream",
+              "kind": "raise",
+              "line": 6372
+            },
+            {
+              "in": "open_pinned_uv_wheel_stream",
+              "kind": "except",
+              "line": 6380
+            },
+            {
+              "in": "open_pinned_uv_wheel_stream",
+              "kind": "raise",
+              "line": 6388
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6440
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6450
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6463
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "except",
+              "line": 6467
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6468
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "except",
+              "line": 6469
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6470
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "except",
+              "line": 6474
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6475
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6481
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6487
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6497
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "except",
+              "line": 6506
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6507
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6517
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6522
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6530
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 6566
+            },
+            {
+              "in": "ensure_vm_uv",
+              "kind": "except",
+              "line": 6614
+            },
+            {
+              "in": "ensure_vm_uv",
+              "kind": "except",
+              "line": 6651
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6743
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6808
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6843
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6854
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6861
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6868
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6877
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6885
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6924
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6933
+            },
+            {
+              "in": "find_or_install_vm_python_315",
+              "kind": "raise",
+              "line": 6948
+            },
+            {
+              "in": "validate_until_option",
+              "kind": "raise",
+              "line": 6992
+            },
+            {
+              "in": "validate_until_option",
+              "kind": "raise",
+              "line": 6997
+            },
+            {
+              "in": "validate_until_option",
+              "kind": "raise",
+              "line": 7003
+            },
+            {
+              "in": "validate_judge_order",
+              "kind": "raise",
+              "line": 7033
+            },
+            {
+              "in": "validate_judge_order",
+              "kind": "raise",
+              "line": 7043
+            },
+            {
+              "in": "validate_judge_order",
+              "kind": "raise",
+              "line": 7050
+            },
+            {
+              "in": "validate_judge_order",
+              "kind": "raise",
+              "line": 7056
+            },
+            {
+              "in": "validate_judge_order",
+              "kind": "raise",
+              "line": 7061
+            },
+            {
+              "in": "validate_judge_order",
+              "kind": "raise",
+              "line": 7066
+            },
+            {
+              "in": "validate_only_judges",
+              "kind": "raise",
+              "line": 7096
+            },
+            {
+              "in": "validate_only_judges",
+              "kind": "raise",
+              "line": 7106
+            },
+            {
+              "in": "validate_only_judges",
+              "kind": "raise",
+              "line": 7116
+            },
+            {
+              "in": "validate_only_judges",
+              "kind": "raise",
+              "line": 7123
+            },
+            {
+              "in": "validate_only_judges",
+              "kind": "raise",
+              "line": 7129
+            },
+            {
+              "in": "validate_only_judges",
+              "kind": "raise",
+              "line": 7134
+            },
+            {
+              "in": "validate_first_load_judge_id",
+              "kind": "raise",
+              "line": 7169
+            },
+            {
+              "in": "validate_first_load_judge_id",
+              "kind": "raise",
+              "line": 7179
+            },
+            {
+              "in": "run_gate",
+              "kind": "raise",
+              "line": 7225
+            },
+            {
+              "in": "run_gate",
+              "kind": "except",
+              "line": 7233
+            },
+            {
+              "in": "run_gate",
+              "kind": "raise",
+              "line": 7234
+            },
+            {
+              "in": "run_gate",
+              "kind": "except",
+              "line": 7245
+            },
+            {
+              "in": "run_gate",
+              "kind": "except",
+              "line": 7252
+            },
+            {
+              "in": "run_gate",
+              "kind": "except",
+              "line": 7260
+            },
+            {
+              "in": "run_gate",
+              "kind": "except",
+              "line": 7309
+            },
+            {
+              "in": "run_probe",
+              "kind": "except",
+              "line": 7520
+            },
+            {
+              "in": "run_probe",
+              "kind": "except",
+              "line": 7578
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 7739
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 7782
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 7795
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 8342
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 8361
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 8459
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 8485
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 8490
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 8497
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 8521
+            },
+            {
+              "in": "run_kernel_or_cli_entry",
+              "kind": "raise",
+              "line": 8537
+            }
+          ],
           "hash": "4242d939a55692d0e28169c86eccaddc9f1e8046afe81469918a5c6fdf543955",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/pilot_b/device.py"
+          ],
           "path": "scripts/colab/vm_judges.py"
         },
         {
@@ -468,15 +1702,23 @@
       "outsideReads": 40,
       "outsideWrites": 22,
       "role": "code",
+      "testRunners": [
+        "pytest"
+      ],
       "testedBy": 1,
       "unresolvedNamed": [
         {
           "path": "scripts/colab/vm_judges.py",
-          "specifier": "reasoning_dataset_lab.pilot_b.device",
+          "specifier": "device",
+          "why": "unplaced"
+        },
+        {
+          "path": "scripts/colab/vm_judges.py",
+          "specifier": "device",
           "why": "unplaced"
         }
       ],
-      "unresolvedSites": 1
+      "unresolvedSites": 2
     },
     {
       "dynamicReads": 0,
@@ -599,6 +1841,53 @@
             "main",
             "run_cli"
           ],
+          "failurePaths": [
+            {
+              "in": "error",
+              "kind": "raise",
+              "line": 72
+            },
+            {
+              "in": "_run_certify_values",
+              "kind": "raise",
+              "line": 926
+            },
+            {
+              "in": "_run_certify_values",
+              "kind": "raise",
+              "line": 935
+            },
+            {
+              "in": "run_cli",
+              "kind": "raise",
+              "line": 1146
+            },
+            {
+              "in": "run_cli",
+              "kind": "raise",
+              "line": 1157
+            },
+            {
+              "in": "run_cli",
+              "kind": "raise",
+              "line": 1297
+            },
+            {
+              "in": "run_cli",
+              "kind": "raise",
+              "line": 1350
+            },
+            {
+              "in": "run_cli",
+              "kind": "except",
+              "line": 1355
+            },
+            {
+              "in": "main",
+              "kind": "raise",
+              "line": 1361
+            }
+          ],
           "hash": "4cf548a0a14218346df856f4aecbe309abd561c1e2404718cd10f01fbf890b7a",
           "importsFiles": [
             "src/reasoning_dataset_lab/__init__.py",
@@ -613,6 +1902,7 @@
             "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
             "src/reasoning_dataset_lab/pilot_b/ollama.py",
             "src/reasoning_dataset_lab/pilot_b/shortcut_probe.py",
+            "src/reasoning_dataset_lab/pilot_b/value_certification.py",
             "src/reasoning_dataset_lab/pilot_b/variety.py"
           ],
           "path": "src/reasoning_dataset_lab/cli.py",
@@ -1410,6 +2700,128 @@
             "load_terminology",
             "normalize_text_bytes"
           ],
+          "failurePaths": [
+            {
+              "in": "_read_json_object",
+              "kind": "except",
+              "line": 48
+            },
+            {
+              "in": "_read_json_object",
+              "kind": "raise",
+              "line": 49
+            },
+            {
+              "in": "_read_json_object",
+              "kind": "except",
+              "line": 57
+            },
+            {
+              "in": "_read_json_object",
+              "kind": "raise",
+              "line": 58
+            },
+            {
+              "in": "_read_json_object",
+              "kind": "raise",
+              "line": 68
+            },
+            {
+              "in": "load_project_meta",
+              "kind": "raise",
+              "line": 88
+            },
+            {
+              "in": "load_constitution",
+              "kind": "raise",
+              "line": 108
+            },
+            {
+              "in": "load_terminology",
+              "kind": "raise",
+              "line": 123
+            },
+            {
+              "in": "derive_lanes_from_map",
+              "kind": "raise",
+              "line": 137
+            },
+            {
+              "in": "load_lanes",
+              "kind": "raise",
+              "line": 172
+            },
+            {
+              "in": "load_lanes",
+              "kind": "raise",
+              "line": 179
+            },
+            {
+              "in": "load_lanes",
+              "kind": "raise",
+              "line": 187
+            },
+            {
+              "in": "load_lanes",
+              "kind": "raise",
+              "line": 193
+            },
+            {
+              "in": "load_lanes",
+              "kind": "raise",
+              "line": 203
+            },
+            {
+              "in": "load_lanes",
+              "kind": "raise",
+              "line": 213
+            },
+            {
+              "in": "load_rubric",
+              "kind": "raise",
+              "line": 230
+            },
+            {
+              "in": "load_rubric",
+              "kind": "raise",
+              "line": 236
+            },
+            {
+              "in": "load_rubric",
+              "kind": "raise",
+              "line": 243
+            },
+            {
+              "in": "load_project_config",
+              "kind": "raise",
+              "line": 261
+            },
+            {
+              "in": "load_project_config",
+              "kind": "raise",
+              "line": 273
+            },
+            {
+              "in": "compute_config_fingerprint",
+              "kind": "raise",
+              "line": 317
+            },
+            {
+              "in": "compute_config_fingerprint",
+              "kind": "raise",
+              "line": 328
+            },
+            {
+              "in": "compute_config_fingerprint",
+              "kind": "raise",
+              "line": 337
+            },
+            {
+              "in": "compute_config_fingerprint",
+              "kind": "raise",
+              "line": 372
+            }
+          ],
           "hash": "a4247b3169327b105475e86e1726e66c53f2c204b0b809eab35b2ea583be52ed",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
@@ -1423,6 +2835,9 @@
             "usage_error"
           ],
           "hash": "70e22c33f19a0c7901e2186ada81df5ba73ab49f8c372471bfc5440d0f524ba6",
+          "importsFiles": [
+            "src/reasoning_dataset_lab/pilot_b/device.py"
+          ],
           "path": "src/reasoning_dataset_lab/errors.py"
         },
         {
@@ -1438,6 +2853,33 @@
             "format_cell_id",
             "hash_canonical_json"
           ],
+          "failurePaths": [
+            {
+              "in": "from_dict",
+              "kind": "raise",
+              "line": 72
+            },
+            {
+              "in": "from_dict",
+              "kind": "raise",
+              "line": 78
+            },
+            {
+              "in": "from_dict",
+              "kind": "raise",
+              "line": 86
+            },
+            {
+              "in": "plan",
+              "kind": "raise",
+              "line": 362
+            },
+            {
+              "in": "plan",
+              "kind": "raise",
+              "line": 368
+            }
+          ],
           "hash": "a23bc9939521455b32932e66bceee0a344149a7dbd86f8fd192879f7bafab22a",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py"
@@ -1449,6 +2891,88 @@
             "question_and_op",
             "target_shortcut_for",
             "validate_shortcut_join"
+          ],
+          "failurePaths": [
+            {
+              "in": "validate_shortcut_join",
+              "kind": "raise",
+              "line": 70
+            },
+            {
+              "in": "_validate_cell_for_role_set",
+              "kind": "raise",
+              "line": 83
+            },
+            {
+              "in": "_validate_cell_for_role_set",
+              "kind": "raise",
+              "line": 89
+            },
+            {
+              "in": "_validate_cell_for_role_set",
+              "kind": "raise",
+              "line": 95
+            },
+            {
+              "in": "_validate_cell_for_role_set",
+              "kind": "raise",
+              "line": 101
+            },
+            {
+              "in": "_validate_cell_for_role_set",
+              "kind": "raise",
+              "line": 107
+            },
+            {
+              "in": "__init__",
+              "kind": "raise",
+              "line": 149
+            },
+            {
+              "in": "plan",
+              "kind": "raise",
+              "line": 167
+            },
+            {
+              "in": "plan",
+              "kind": "raise",
+              "line": 173
+            },
+            {
+              "in": "plan",
+              "kind": "raise",
+              "line": 192
+            },
+            {
+              "in": "plan",
+              "kind": "raise",
+              "line": 258
+            },
+            {
+              "in": "build",
+              "kind": "raise",
+              "line": 270
+            },
+            {
+              "in": "build",
+              "kind": "raise",
+              "line": 280
+            },
+            {
+              "in": "build",
+              "kind": "raise",
+              "line": 287
+            },
+            {
+              "in": "build",
+              "kind": "raise",
+              "line": 316
+            },
+            {
+              "in": "build",
+              "kind": "raise",
+              "line": 368
+            }
           ],
           "hash": "7dae7b9ab43c0942f77b1e6cdb31fe27ea42777639f218da1b40e70eccc91d88",
           "importsFiles": [
@@ -1467,6 +2991,373 @@
             "validate_canon_dir",
             "validate_canon_file",
             "validate_map"
+          ],
+          "failurePaths": [
+            {
+              "in": "_check_unknown_keys",
+              "kind": "raise",
+              "line": 155
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "raise",
+              "line": 181
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "except",
+              "line": 188
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "raise",
+              "line": 189
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "except",
+              "line": 197
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "raise",
+              "line": 198
+            },
+            {
+              "in": "load_map_yaml",
+              "kind": "raise",
+              "line": 205
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 215
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 221
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 230
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 236
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 245
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 252
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 258
+            },
+            {
+              "in": "_validate_axes",
+              "kind": "raise",
+              "line": 265
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 281
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 300
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 310
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 317
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 327
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 341
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 349
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 355
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 367
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 376
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 384
+            },
+            {
+              "in": "_validate_cells",
+              "kind": "raise",
+              "line": 393
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 408
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 416
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 425
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 434
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 442
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 450
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 459
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 468
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 476
+            },
+            {
+              "in": "_validate_shares",
+              "kind": "raise",
+              "line": 486
+            },
+            {
+              "in": "_validate_variety",
+              "kind": "raise",
+              "line": 495
+            },
+            {
+              "in": "_validate_variety",
+              "kind": "raise",
+              "line": 503
+            },
+            {
+              "in": "_normalize_kind_list",
+              "kind": "raise",
+              "line": 519
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 528
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 536
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 543
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 552
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 559
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 566
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 579
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 584
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 591
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 599
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 605
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 614
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 621
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 627
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 636
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 643
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 649
+            },
+            {
+              "in": "_validate_acceptance",
+              "kind": "raise",
+              "line": 655
+            },
+            {
+              "in": "_validate_splits",
+              "kind": "raise",
+              "line": 664
+            },
+            {
+              "in": "_validate_splits",
+              "kind": "raise",
+              "line": 674
+            },
+            {
+              "in": "_validate_splits",
+              "kind": "raise",
+              "line": 681
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 691
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 701
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 709
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 717
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 741
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 748
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 755
+            },
+            {
+              "in": "validate_map",
+              "kind": "raise",
+              "line": 762
+            },
+            {
+              "in": "validate_canon_file",
+              "kind": "raise",
+              "line": 789
+            },
+            {
+              "in": "validate_canon_file",
+              "kind": "raise",
+              "line": 796
+            },
+            {
+              "in": "validate_canon_file",
+              "kind": "except",
+              "line": 803
+            },
+            {
+              "in": "validate_canon_file",
+              "kind": "raise",
+              "line": 804
+            }
           ],
           "hash": "40e7de0695290c3a94b32121a5199db8c80a0ebf6fc682589b5fb362b7e3eb1f",
           "importsFiles": [
@@ -1503,6 +3394,173 @@
             "strip_line_number",
             "templates_sha256",
             "validate_anchored_material"
+          ],
+          "failurePaths": [
+            {
+              "in": "_domain_spec",
+              "kind": "raise",
+              "line": 219
+            },
+            {
+              "in": "build_anchored_triad",
+              "kind": "raise",
+              "line": 418
+            },
+            {
+              "in": "build_anchored_triad",
+              "kind": "raise",
+              "line": 424
+            },
+            {
+              "in": "build_anchored_triad",
+              "kind": "raise",
+              "line": 438
+            },
+            {
+              "in": "build_anchored_triad",
+              "kind": "raise",
+              "line": 452
+            },
+            {
+              "in": "fresh",
+              "kind": "raise",
+              "line": 471
+            },
+            {
+              "in": "build_anchored_triad",
+              "kind": "raise",
+              "line": 496
+            },
+            {
+              "in": "build_anchored_triad",
+              "kind": "raise",
+              "line": 527
+            },
+            {
+              "in": "build_anchored_triad",
+              "kind": "raise",
+              "line": 581
+            },
+            {
+              "in": "build_anchored_triad",
+              "kind": "raise",
+              "line": 595
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 668
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 674
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 685
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 694
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 702
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 708
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 719
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 726
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 742
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 748
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 753
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 756
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 767
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 774
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 782
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 791
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 799
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 807
+            },
+            {
+              "in": "validate_anchored_material",
+              "kind": "raise",
+              "line": 818
+            },
+            {
+              "in": "rederive_anchored_key",
+              "kind": "raise",
+              "line": 833
+            },
+            {
+              "in": "rederive_anchored_key",
+              "kind": "raise",
+              "line": 836
+            },
+            {
+              "in": "rederive_anchored_key",
+              "kind": "raise",
+              "line": 842
+            },
+            {
+              "in": "render_material",
+              "kind": "raise",
+              "line": 978
+            }
           ],
           "hash": "9c50723e7c4fc1b9fafa4cddacb87556d3beec9e3f1f503f569073b643a8b644",
           "importsFiles": [
@@ -1552,9 +3610,536 @@
             "verify_schedule_invariants",
             "verify_snapshot_against_receipt"
           ],
+          "failurePaths": [
+            {
+              "in": "resolve_judge_spec",
+              "kind": "raise",
+              "line": 374
+            },
+            {
+              "in": "check_output_dir_outside_repo",
+              "kind": "except",
+              "line": 541
+            },
+            {
+              "in": "check_output_dir_outside_repo",
+              "kind": "raise",
+              "line": 544
+            },
+            {
+              "in": "query_gpu_vram_peak_mib",
+              "kind": "except",
+              "line": 575
+            },
+            {
+              "in": "query_gpu_vram_peak_mib",
+              "kind": "raise",
+              "line": 577
+            },
+            {
+              "in": "query_gpu_vram_peak_mib",
+              "kind": "raise",
+              "line": 585
+            },
+            {
+              "in": "query_gpu_vram_peak_mib",
+              "kind": "raise",
+              "line": 597
+            },
+            {
+              "in": "kill_judge_pid_tree",
+              "kind": "except",
+              "line": 619
+            },
+            {
+              "in": "kill_judge_pid_tree",
+              "kind": "except",
+              "line": 625
+            },
+            {
+              "in": "check_vram_guard",
+              "kind": "raise",
+              "line": 641
+            },
+            {
+              "in": "check_remote_code_gate",
+              "kind": "raise",
+              "line": 666
+            },
+            {
+              "in": "resolve_items_jsonl_path",
+              "kind": "raise",
+              "line": 680
+            },
+            {
+              "in": "resolve_items_jsonl_path",
+              "kind": "raise",
+              "line": 693
+            },
+            {
+              "in": "_check_input_row_stop_rule",
+              "kind": "raise",
+              "line": 704
+            },
+            {
+              "in": "_check_input_row_stop_rule",
+              "kind": "raise",
+              "line": 714
+            },
+            {
+              "in": "load_judge_items",
+              "kind": "raise",
+              "line": 734
+            },
+            {
+              "in": "load_judge_items",
+              "kind": "except",
+              "line": 745
+            },
+            {
+              "in": "load_judge_items",
+              "kind": "raise",
+              "line": 746
+            },
+            {
+              "in": "load_judge_items",
+              "kind": "raise",
+              "line": 752
+            },
+            {
+              "in": "load_judge_items",
+              "kind": "raise",
+              "line": 762
+            },
+            {
+              "in": "load_judge_items",
+              "kind": "raise",
+              "line": 768
+            },
+            {
+              "in": "swap_material_facts_order",
+              "kind": "raise",
+              "line": 791
+            },
+            {
+              "in": "swap_material_facts_order",
+              "kind": "raise",
+              "line": 798
+            },
+            {
+              "in": "swap_material_facts_order",
+              "kind": "raise",
+              "line": 807
+            },
+            {
+              "in": "enforce_prompt_stop_rule",
+              "kind": "raise",
+              "line": 831
+            },
+            {
+              "in": "enforce_prompt_stop_rule",
+              "kind": "raise",
+              "line": 838
+            },
+            {
+              "in": "_spread_pass_items_by_material",
+              "kind": "raise",
+              "line": 867
+            },
+            {
+              "in": "_spread_pass_items_by_material",
+              "kind": "raise",
+              "line": 924
+            },
+            {
+              "in": "verify_schedule_invariants",
+              "kind": "raise",
+              "line": 936
+            },
+            {
+              "in": "verify_schedule_invariants",
+              "kind": "raise",
+              "line": 944
+            },
+            {
+              "in": "verify_schedule_invariants",
+              "kind": "raise",
+              "line": 952
+            },
+            {
+              "in": "verify_schedule_invariants",
+              "kind": "raise",
+              "line": 960
+            },
+            {
+              "in": "verify_schedule_invariants",
+              "kind": "raise",
+              "line": 968
+            },
+            {
+              "in": "build_schedule",
+              "kind": "raise",
+              "line": 983
+            },
+            {
+              "in": "load_or_create_schedule",
+              "kind": "raise",
+              "line": 1074
+            },
+            {
+              "in": "configure_torch_determinism_with_reason",
+              "kind": "except",
+              "line": 1152
+            },
+            {
+              "in": "configure_torch_determinism_with_reason",
+              "kind": "except",
+              "line": 1160
+            },
+            {
+              "in": "configure_torch_determinism_with_reason",
+              "kind": "except",
+              "line": 1163
+            },
+            {
+              "in": "assemble_prompt",
+              "kind": "raise",
+              "line": 1248
+            },
+            {
+              "in": "_build_prompt",
+              "kind": "raise",
+              "line": 1266
+            },
+            {
+              "in": "_parse_non_length_response",
+              "kind": "raise",
+              "line": 1292
+            },
+            {
+              "in": "_parse_non_length_response",
+              "kind": "except",
+              "line": 1591
+            },
+            {
+              "in": "_parse_non_length_response",
+              "kind": "except",
+              "line": 1603
+            },
+            {
+              "in": "build_judge_adapter",
+              "kind": "raise",
+              "line": 1955
+            },
+            {
+              "in": "verify_ready",
+              "kind": "raise",
+              "line": 1999
+            },
+            {
+              "in": "_resolve_snapshot_dir",
+              "kind": "raise",
+              "line": 2244
+            },
+            {
+              "in": "_resolve_snapshot_dir",
+              "kind": "raise",
+              "line": 2259
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2276
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "except",
+              "line": 2283
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2284
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2291
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2300
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2320
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2334
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2344
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2357
+            },
+            {
+              "in": "verify_snapshot_against_receipt",
+              "kind": "raise",
+              "line": 2377
+            },
+            {
+              "in": "verify_ready",
+              "kind": "raise",
+              "line": 2448
+            },
+            {
+              "in": "_ensure_loaded",
+              "kind": "except",
+              "line": 2473
+            },
+            {
+              "in": "_ensure_loaded",
+              "kind": "raise",
+              "line": 2474
+            },
+            {
+              "in": "generate",
+              "kind": "except",
+              "line": 2573
+            },
+            {
+              "in": "check_d3_mini_remote_code_gate",
+              "kind": "raise",
+              "line": 2674
+            },
+            {
+              "in": "check_d3_mini_remote_code_gate",
+              "kind": "raise",
+              "line": 2682
+            },
+            {
+              "in": "check_d3_mini_remote_code_gate",
+              "kind": "raise",
+              "line": 2689
+            },
+            {
+              "in": "ensure_offline_env",
+              "kind": "raise",
+              "line": 2705
+            },
+            {
+              "in": "ensure_sync_weight_loading",
+              "kind": "raise",
+              "line": 2733
+            },
+            {
+              "in": "_walk_d3_input",
+              "kind": "raise",
+              "line": 2745
+            },
+            {
+              "in": "_walk_d3_input",
+              "kind": "raise",
+              "line": 2751
+            },
+            {
+              "in": "_walk_d3_input",
+              "kind": "raise",
+              "line": 2764
+            },
+            {
+              "in": "_walk_d3_input",
+              "kind": "raise",
+              "line": 2772
+            },
+            {
+              "in": "check_d3_text_only_inputs",
+              "kind": "raise",
+              "line": 2784
+            },
+            {
+              "in": "check_d3_text_only_inputs",
+              "kind": "raise",
+              "line": 2790
+            },
+            {
+              "in": "check_d3_text_only_inputs",
+              "kind": "raise",
+              "line": 2797
+            },
+            {
+              "in": "__init__",
+              "kind": "raise",
+              "line": 2880
+            },
+            {
+              "in": "verify_ready",
+              "kind": "raise",
+              "line": 2900
+            },
+            {
+              "in": "_ensure_loaded",
+              "kind": "except",
+              "line": 2922
+            },
+            {
+              "in": "_ensure_loaded",
+              "kind": "raise",
+              "line": 2923
+            },
+            {
+              "in": "_ensure_loaded",
+              "kind": "raise",
+              "line": 2930
+            },
+            {
+              "in": "_ensure_loaded",
+              "kind": "raise",
+              "line": 2945
+            },
+            {
+              "in": "load_canary_config",
+              "kind": "raise",
+              "line": 3015
+            },
+            {
+              "in": "load_canary_config",
+              "kind": "except",
+              "line": 3022
+            },
+            {
+              "in": "load_canary_config",
+              "kind": "raise",
+              "line": 3023
+            },
+            {
+              "in": "load_canary_config",
+              "kind": "raise",
+              "line": 3029
+            },
+            {
+              "in": "_compare_canary_snapshots",
+              "kind": "raise",
+              "line": 3082
+            },
+            {
+              "in": "_compare_canary_snapshots",
+              "kind": "raise",
+              "line": 3091
+            },
+            {
+              "in": "_compare_canary_snapshots",
+              "kind": "raise",
+              "line": 3102
+            },
+            {
+              "in": "measure_canary_tolerance",
+              "kind": "raise",
+              "line": 3125
+            },
+            {
+              "in": "_run_cpu_transport_probe_for_judge",
+              "kind": "except",
+              "line": 3339
+            },
+            {
+              "in": "check_bakeoff_logprob_mass",
+              "kind": "raise",
+              "line": 3507
+            },
+            {
+              "in": "check_bakeoff_logprob_mass",
+              "kind": "raise",
+              "line": 3515
+            },
+            {
+              "in": "check_bakeoff_logprob_mass",
+              "kind": "raise",
+              "line": 3522
+            },
+            {
+              "in": "check_bakeoff_logprob_mass",
+              "kind": "raise",
+              "line": 3542
+            },
+            {
+              "in": "_read_process_rss_bytes",
+              "kind": "except",
+              "line": 3604
+            },
+            {
+              "in": "_read_process_rss_bytes",
+              "kind": "except",
+              "line": 3612
+            },
+            {
+              "in": "resolve_child_heartbeat_interval_seconds",
+              "kind": "except",
+              "line": 3627
+            },
+            {
+              "in": "_count_prompt_tokens",
+              "kind": "except",
+              "line": 3665
+            },
+            {
+              "in": "run_bakeoff_judge",
+              "kind": "raise",
+              "line": 3745
+            },
+            {
+              "in": "run_bakeoff_judge",
+              "kind": "except",
+              "line": 3909
+            },
+            {
+              "in": "run_bakeoff_judge",
+              "kind": "raise",
+              "line": 3951
+            },
+            {
+              "in": "run_bakeoff_judge",
+              "kind": "raise",
+              "line": 3968
+            },
+            {
+              "in": "run_bakeoff_judge",
+              "kind": "raise",
+              "line": 4108
+            },
+            {
+              "in": "close_bakeoff_outputs",
+              "kind": "raise",
+              "line": 4225
+            },
+            {
+              "in": "close_bakeoff_outputs",
+              "kind": "raise",
+              "line": 4233
+            },
+            {
+              "in": "main_judge_runner",
+              "kind": "except",
+              "line": 4392
+            },
+            {
+              "kind": "raise",
+              "line": 4398
+            }
+          ],
           "hash": "f290230a6503ff33e94b6b9fa10a9815d0d0d24cce396d3638e0e364721942ef",
           "importsFiles": [
-            "src/reasoning_dataset_lab/errors.py"
+            "src/reasoning_dataset_lab/errors.py",
+            "src/reasoning_dataset_lab/pilot_b/device.py"
           ],
           "path": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
           "sequences": [
@@ -2932,6 +5517,13 @@
             {
               "calls": [
                 {
+                  "line": 3700,
+                  "name": "normalize_judge_device",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/device.py"
+                  }
+                },
+                {
                   "line": 537,
                   "name": "resolve",
                   "target": null,
@@ -3116,15 +5708,6 @@
                     "file": "src/reasoning_dataset_lab/errors.py"
                   },
                   "via": "_spread_pass_items_by_material"
-                },
-                {
-                  "branch": "existing.schedule_sha256 != built.schedule_sha256 or existi…",
-                  "line": 1074,
-                  "name": "refused_error",
-                  "target": {
-                    "file": "src/reasoning_dataset_lab/errors.py"
-                  },
-                  "via": "load_or_create_schedule"
                 }
               ],
               "exported": true,
@@ -3174,6 +5757,13 @@
             },
             {
               "calls": [
+                {
+                  "line": 4372,
+                  "name": "normalize_judge_device",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/device.py"
+                  }
+                },
                 {
                   "line": 537,
                   "name": "resolve",
@@ -3361,15 +5951,6 @@
                     "file": "src/reasoning_dataset_lab/errors.py"
                   },
                   "via": "_spread_pass_items_by_material"
-                },
-                {
-                  "branch": "existing.schedule_sha256 != built.schedule_sha256 or existi…",
-                  "line": 1074,
-                  "name": "refused_error",
-                  "target": {
-                    "file": "src/reasoning_dataset_lab/errors.py"
-                  },
-                  "via": "load_or_create_schedule"
                 }
               ],
               "exported": true,
@@ -3404,6 +5985,198 @@
             "triad_clustered_bootstrap_p",
             "verify_outputs_closed",
             "wilson_interval"
+          ],
+          "failurePaths": [
+            {
+              "in": "verify_outputs_closed",
+              "kind": "raise",
+              "line": 210
+            },
+            {
+              "in": "verify_outputs_closed",
+              "kind": "except",
+              "line": 218
+            },
+            {
+              "in": "verify_outputs_closed",
+              "kind": "raise",
+              "line": 219
+            },
+            {
+              "in": "verify_outputs_closed",
+              "kind": "raise",
+              "line": 227
+            },
+            {
+              "in": "verify_outputs_closed",
+              "kind": "raise",
+              "line": 242
+            },
+            {
+              "in": "verify_outputs_closed",
+              "kind": "raise",
+              "line": 257
+            },
+            {
+              "in": "verify_outputs_closed",
+              "kind": "raise",
+              "line": 266
+            },
+            {
+              "in": "verify_outputs_closed",
+              "kind": "raise",
+              "line": 276
+            },
+            {
+              "in": "load_sealed_keys",
+              "kind": "raise",
+              "line": 296
+            },
+            {
+              "in": "load_sealed_keys",
+              "kind": "raise",
+              "line": 322
+            },
+            {
+              "in": "_coerce_finite_float",
+              "kind": "except",
+              "line": 917
+            },
+            {
+              "in": "_resolve_registered_domains_for_part",
+              "kind": "raise",
+              "line": 941
+            },
+            {
+              "in": "_resolve_registered_domains_for_part",
+              "kind": "raise",
+              "line": 950
+            },
+            {
+              "in": "select_bakeoff_winner",
+              "kind": "raise",
+              "line": 1006
+            },
+            {
+              "in": "_require_judge_id",
+              "kind": "raise",
+              "line": 1047
+            },
+            {
+              "in": "_require_params_b",
+              "kind": "raise",
+              "line": 1056
+            },
+            {
+              "in": "_extract_point",
+              "kind": "raise",
+              "line": 1067
+            },
+            {
+              "in": "_extract_lcb",
+              "kind": "raise",
+              "line": 1077
+            },
+            {
+              "in": "_per_class_precisions",
+              "kind": "raise",
+              "line": 1134
+            },
+            {
+              "in": "_per_class_precisions",
+              "kind": "raise",
+              "line": 1146
+            },
+            {
+              "in": "_per_class_precisions",
+              "kind": "raise",
+              "line": 1157
+            },
+            {
+              "in": "_domain_coverage_counts",
+              "kind": "raise",
+              "line": 1167
+            },
+            {
+              "in": "_domain_coverage_counts",
+              "kind": "raise",
+              "line": 1176
+            },
+            {
+              "in": "_domain_coverage_counts",
+              "kind": "raise",
+              "line": 1193
+            },
+            {
+              "in": "_sec_med",
+              "kind": "raise",
+              "line": 1204
+            },
+            {
+              "in": "select_bakeoff_winner",
+              "kind": "raise",
+              "line": 1377
+            },
+            {
+              "in": "select_bakeoff_winner",
+              "kind": "raise",
+              "line": 1384
+            },
+            {
+              "in": "select_bakeoff_winner",
+              "kind": "raise",
+              "line": 1391
+            },
+            {
+              "in": "select_bakeoff_winner",
+              "kind": "raise",
+              "line": 1399
+            },
+            {
+              "in": "_evaluate_judge_at_rule",
+              "kind": "raise",
+              "line": 1539
+            },
+            {
+              "in": "check_sealed_out_targets_free",
+              "kind": "raise",
+              "line": 1810
+            },
+            {
+              "in": "_write_sealed_scored_rows",
+              "kind": "raise",
+              "line": 1873
+            },
+            {
+              "in": "_assert_public_summary_clean",
+              "kind": "raise",
+              "line": 1918
+            },
+            {
+              "in": "score_bakeoff_outputs",
+              "kind": "raise",
+              "line": 2077
+            },
+            {
+              "in": "score_bakeoff_outputs",
+              "kind": "raise",
+              "line": 2103
+            },
+            {
+              "in": "score_bakeoff_outputs",
+              "kind": "raise",
+              "line": 2191
+            },
+            {
+              "in": "score_bakeoff_outputs",
+              "kind": "raise",
+              "line": 2282
+            },
+            {
+              "in": "score_bakeoff_outputs",
+              "kind": "raise",
+              "line": 2307
+            }
           ],
           "hash": "86d8eaae0205dc55df31672c7965a6bc2fa5f0c34abdb089011e21e379ad729f",
           "importsFiles": [
@@ -4035,6 +6808,398 @@
             "validate_value_set_split",
             "verify_and_load_v3_value_sets",
             "wait_for_ollama_version"
+          ],
+          "failurePaths": [
+            {
+              "in": "verify_and_load_v3_value_sets",
+              "kind": "raise",
+              "line": 257
+            },
+            {
+              "in": "verify_and_load_v3_value_sets",
+              "kind": "raise",
+              "line": 263
+            },
+            {
+              "in": "verify_and_load_v3_value_sets",
+              "kind": "raise",
+              "line": 275
+            },
+            {
+              "in": "validate_candidate_value_sets",
+              "kind": "raise",
+              "line": 340
+            },
+            {
+              "in": "validate_candidate_value_sets",
+              "kind": "raise",
+              "line": 351
+            },
+            {
+              "in": "validate_candidate_value_sets",
+              "kind": "raise",
+              "line": 357
+            },
+            {
+              "in": "split_value_sets_dev_test",
+              "kind": "raise",
+              "line": 372
+            },
+            {
+              "in": "validate_value_set_split",
+              "kind": "raise",
+              "line": 418
+            },
+            {
+              "in": "validate_value_set_split",
+              "kind": "raise",
+              "line": 427
+            },
+            {
+              "in": "plan_bakeoff_triads",
+              "kind": "raise",
+              "line": 461
+            },
+            {
+              "in": "plan_anchored_bakeoff_triads",
+              "kind": "raise",
+              "line": 681
+            },
+            {
+              "in": "_check",
+              "kind": "raise",
+              "line": 755
+            },
+            {
+              "in": "check_output_dir_outside_repo",
+              "kind": "except",
+              "line": 772
+            },
+            {
+              "in": "check_output_dir_outside_repo",
+              "kind": "raise",
+              "line": 775
+            },
+            {
+              "in": "require_gpu_grant",
+              "kind": "raise",
+              "line": 793
+            },
+            {
+              "in": "query_gpu_vram_peak_mib",
+              "kind": "except",
+              "line": 823
+            },
+            {
+              "in": "kill_pid_tree",
+              "kind": "except",
+              "line": 841
+            },
+            {
+              "in": "kill_pid_tree",
+              "kind": "except",
+              "line": 856
+            },
+            {
+              "in": "kill_pid_tree",
+              "kind": "except",
+              "line": 861
+            },
+            {
+              "in": "kill_pid_tree",
+              "kind": "except",
+              "line": 866
+            },
+            {
+              "in": "kill_pid_tree",
+              "kind": "except",
+              "line": 878
+            },
+            {
+              "in": "kill_pid_tree",
+              "kind": "except",
+              "line": 891
+            },
+            {
+              "in": "kill_pid_tree",
+              "kind": "except",
+              "line": 898
+            },
+            {
+              "in": "stop",
+              "kind": "except",
+              "line": 933
+            },
+            {
+              "in": "stop",
+              "kind": "except",
+              "line": 939
+            },
+            {
+              "in": "wait_for_ollama_version",
+              "kind": "raise",
+              "line": 976
+            },
+            {
+              "in": "wait_for_ollama_version",
+              "kind": "except",
+              "line": 986
+            },
+            {
+              "in": "wait_for_ollama_version",
+              "kind": "raise",
+              "line": 991
+            },
+            {
+              "in": "start_owned_ollama_server",
+              "kind": "except",
+              "line": 1041
+            },
+            {
+              "in": "start_owned_ollama_server",
+              "kind": "raise",
+              "line": 1043
+            },
+            {
+              "in": "start_owned_ollama_server",
+              "kind": "except",
+              "line": 1066
+            },
+            {
+              "in": "start_owned_ollama_server",
+              "kind": "raise",
+              "line": 1068
+            },
+            {
+              "in": "resolve_owned_ollama_halt_pid",
+              "kind": "raise",
+              "line": 1125
+            },
+            {
+              "in": "resolve_owned_ollama_halt_pid",
+              "kind": "raise",
+              "line": 1132
+            },
+            {
+              "in": "resolve_owned_ollama_halt_pid",
+              "kind": "raise",
+              "line": 1155
+            },
+            {
+              "in": "resolve_owned_ollama_halt_pid",
+              "kind": "raise",
+              "line": 1191
+            },
+            {
+              "in": "resolve_owned_ollama_halt_pid",
+              "kind": "raise",
+              "line": 1199
+            },
+            {
+              "in": "resolve_owned_ollama_halt_pid",
+              "kind": "raise",
+              "line": 1228
+            },
+            {
+              "in": "resolve_owned_ollama_halt_pid",
+              "kind": "raise",
+              "line": 1261
+            },
+            {
+              "in": "__init__",
+              "kind": "raise",
+              "line": 1283
+            },
+            {
+              "in": "_raise_halted",
+              "kind": "raise",
+              "line": 1335
+            },
+            {
+              "in": "_guarded",
+              "kind": "raise",
+              "line": 1425
+            },
+            {
+              "in": "_transport",
+              "kind": "raise",
+              "line": 1559
+            },
+            {
+              "in": "recompute_merged_split",
+              "kind": "raise",
+              "line": 1684
+            },
+            {
+              "in": "_verify_single_triad_canonical",
+              "kind": "raise",
+              "line": 2088
+            },
+            {
+              "in": "_verify_single_triad_canonical",
+              "kind": "raise",
+              "line": 2101
+            },
+            {
+              "in": "_verify_single_triad_canonical",
+              "kind": "raise",
+              "line": 2130
+            },
+            {
+              "in": "_verify_single_triad_canonical",
+              "kind": "raise",
+              "line": 2152
+            },
+            {
+              "in": "load_and_verify",
+              "kind": "raise",
+              "line": 2222
+            },
+            {
+              "in": "load_and_verify",
+              "kind": "raise",
+              "line": 2240
+            },
+            {
+              "in": "load_and_verify",
+              "kind": "raise",
+              "line": 2256
+            },
+            {
+              "in": "load_and_verify",
+              "kind": "raise",
+              "line": 2267
+            },
+            {
+              "in": "load_and_verify",
+              "kind": "raise",
+              "line": 2283
+            },
+            {
+              "in": "load_and_verify",
+              "kind": "raise",
+              "line": 2366
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2395
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "except",
+              "line": 2403
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2404
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2411
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2419
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2431
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2444
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2455
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2468
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2479
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2501
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2507
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2513
+            },
+            {
+              "in": "_load_and_check_resume_headers",
+              "kind": "raise",
+              "line": 2523
+            },
+            {
+              "in": "run_bakeoff_writer_waves",
+              "kind": "except",
+              "line": 2602
+            },
+            {
+              "in": "run_bakeoff_writer_waves",
+              "kind": "raise",
+              "line": 2607
+            },
+            {
+              "in": "run_bakeoff_writer_waves",
+              "kind": "except",
+              "line": 2699
+            },
+            {
+              "in": "run_bakeoff_writer_waves",
+              "kind": "raise",
+              "line": 2704
+            },
+            {
+              "in": "run_bakeoff_writer_waves",
+              "kind": "raise",
+              "line": 2866
+            },
+            {
+              "in": "run_bakeoff_part_build",
+              "kind": "raise",
+              "line": 3004
+            },
+            {
+              "in": "run_bakeoff_part_build",
+              "kind": "raise",
+              "line": 3046
+            },
+            {
+              "in": "run_bakeoff_part_build",
+              "kind": "raise",
+              "line": 3117
+            },
+            {
+              "in": "run_bakeoff_part_build",
+              "kind": "raise",
+              "line": 3136
+            },
+            {
+              "in": "run_bakeoff_part_build",
+              "kind": "except",
+              "line": 3296
+            }
           ],
           "hash": "00a2a0d020c488cd80a6b7762c72d91b9371020dd118ad25464eb3c4bce53218",
           "importsFiles": [
@@ -5206,6 +8371,21 @@
           "path": "src/reasoning_dataset_lab/pilot_b/canary_config.json"
         },
         {
+          "exports": [
+            "normalize_judge_device",
+            "scrub_device_text"
+          ],
+          "failurePaths": [
+            {
+              "in": "normalize_judge_device",
+              "kind": "raise",
+              "line": 89
+            }
+          ],
+          "hash": "0755b739628d8f91adb696df4df90dbda78b0cfe5233fe33b54ae7987e55232d",
+          "path": "src/reasoning_dataset_lab/pilot_b/device.py"
+        },
+        {
           "entry": "build_contrast_triad",
           "entryRule": 4,
           "exports": [
@@ -5220,6 +8400,203 @@
             "value_display_form",
             "value_sets",
             "verify_triad_against_table"
+          ],
+          "failurePaths": [
+            {
+              "in": "get_fact",
+              "kind": "raise",
+              "line": 974
+            },
+            {
+              "in": "mutate_fact_value_fallbacks",
+              "kind": "except",
+              "line": 1072
+            },
+            {
+              "in": "mutate_fact_value",
+              "kind": "raise",
+              "line": 1178
+            },
+            {
+              "in": "mutate_fact_value",
+              "kind": "raise",
+              "line": 1192
+            },
+            {
+              "in": "brute_force_check_claim_against_table",
+              "kind": "raise",
+              "line": 1383
+            },
+            {
+              "in": "brute_force_check_claim_against_table",
+              "kind": "raise",
+              "line": 1393
+            },
+            {
+              "in": "brute_force_check_claim_against_table",
+              "kind": "raise",
+              "line": 1404
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1435
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1441
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1449
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1461
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1479
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1486
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1512
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1519
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1530
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1537
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1545
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1573
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1584
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1591
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1603
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1611
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1638
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1647
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1653
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1660
+            },
+            {
+              "in": "prove_claim_against_table",
+              "kind": "raise",
+              "line": 1684
+            },
+            {
+              "in": "verify_triad_against_table",
+              "kind": "raise",
+              "line": 1734
+            },
+            {
+              "in": "verify_triad_against_table",
+              "kind": "raise",
+              "line": 1742
+            },
+            {
+              "in": "verify_triad_against_table",
+              "kind": "raise",
+              "line": 1749
+            },
+            {
+              "in": "verify_triad_against_table",
+              "kind": "raise",
+              "line": 1761
+            },
+            {
+              "in": "_domain_role_map",
+              "kind": "raise",
+              "line": 1824
+            },
+            {
+              "in": "build_sample_fact_table",
+              "kind": "raise",
+              "line": 2066
+            },
+            {
+              "in": "build_sample_fact_table",
+              "kind": "raise",
+              "line": 2078
+            },
+            {
+              "in": "generate_fact_tables",
+              "kind": "raise",
+              "line": 2272
+            },
+            {
+              "in": "build_contrast_triad",
+              "kind": "raise",
+              "line": 2294
+            },
+            {
+              "in": "build_contrast_triad",
+              "kind": "raise",
+              "line": 2313
+            },
+            {
+              "in": "build_contrast_triad",
+              "kind": "raise",
+              "line": 2652
+            }
           ],
           "hash": "672f4a8dcb80bb15e0a7e61be1806391e4413c25cb40d553a7ff74885694cc1f",
           "importsFiles": [
@@ -6023,6 +9400,27 @@
             "detect_download_stack_versions",
             "main_download_runner"
           ],
+          "failurePaths": [
+            {
+              "in": "detect_download_stack_versions",
+              "kind": "except",
+              "line": 45
+            },
+            {
+              "in": "detect_download_stack_versions",
+              "kind": "except",
+              "line": 53
+            },
+            {
+              "in": "detect_download_stack_versions",
+              "kind": "except",
+              "line": 58
+            },
+            {
+              "kind": "raise",
+              "line": 223
+            }
+          ],
           "hash": "5b84457ae403aaa3b813f622ba27ac61f2d71a0d499f76ec837f7ffd0ff9b2a1",
           "path": "src/reasoning_dataset_lab/pilot_b/judge_download.py"
         },
@@ -6040,6 +9438,163 @@
             "style_review",
             "validate_models_against_licence_registry",
             "verify_live_ollama_models"
+          ],
+          "failurePaths": [
+            {
+              "in": "resolve_pilot_b_model_pins",
+              "kind": "raise",
+              "line": 303
+            },
+            {
+              "in": "resolve_pilot_b_model_pins",
+              "kind": "raise",
+              "line": 312
+            },
+            {
+              "in": "resolve_pilot_b_model_pins",
+              "kind": "raise",
+              "line": 319
+            },
+            {
+              "in": "load_licence_registry",
+              "kind": "raise",
+              "line": 462
+            },
+            {
+              "in": "load_licence_registry",
+              "kind": "except",
+              "line": 469
+            },
+            {
+              "in": "load_licence_registry",
+              "kind": "raise",
+              "line": 470
+            },
+            {
+              "in": "load_licence_registry",
+              "kind": "raise",
+              "line": 477
+            },
+            {
+              "in": "validate_models_against_licence_registry",
+              "kind": "raise",
+              "line": 502
+            },
+            {
+              "in": "validate_models_against_licence_registry",
+              "kind": "raise",
+              "line": 518
+            },
+            {
+              "in": "validate_models_against_licence_registry",
+              "kind": "raise",
+              "line": 524
+            },
+            {
+              "in": "validate_models_against_licence_registry",
+              "kind": "raise",
+              "line": 541
+            },
+            {
+              "in": "validate_models_against_licence_registry",
+              "kind": "raise",
+              "line": 548
+            },
+            {
+              "in": "_default_fetch_ollama_manifest",
+              "kind": "except",
+              "line": 592
+            },
+            {
+              "in": "_default_fetch_ollama_manifest",
+              "kind": "raise",
+              "line": 593
+            },
+            {
+              "in": "verify_live_ollama_models",
+              "kind": "except",
+              "line": 631
+            },
+            {
+              "in": "verify_live_ollama_models",
+              "kind": "raise",
+              "line": 632
+            },
+            {
+              "in": "verify_live_ollama_models",
+              "kind": "raise",
+              "line": 658
+            },
+            {
+              "in": "verify_live_ollama_models",
+              "kind": "raise",
+              "line": 666
+            },
+            {
+              "in": "verify_live_ollama_models",
+              "kind": "raise",
+              "line": 674
+            },
+            {
+              "in": "run_pilot_b_build",
+              "kind": "raise",
+              "line": 984
+            },
+            {
+              "in": "run_pilot_b_build",
+              "kind": "raise",
+              "line": 1051
+            },
+            {
+              "in": "run_pilot_b_build",
+              "kind": "raise",
+              "line": 1085
+            },
+            {
+              "in": "run_pilot_b_build",
+              "kind": "raise",
+              "line": 1091
+            },
+            {
+              "in": "run_pilot_b_build",
+              "kind": "raise",
+              "line": 1130
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1221
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1227
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1233
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1239
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1245
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1263
+            },
+            {
+              "in": "run_pilot_b_calibration",
+              "kind": "raise",
+              "line": 1271
+            }
           ],
           "hash": "215906905538c6e5366054096473116e4d4d515482b026b4de9b1827088f729e",
           "importsFiles": [
@@ -6873,6 +10428,163 @@
             "run_ollama_calibration_calls",
             "verify_local_ollama_model_digest"
           ],
+          "failurePaths": [
+            {
+              "in": "round_up_num_ctx",
+              "kind": "raise",
+              "line": 162
+            },
+            {
+              "in": "_validate_positive_num_predict",
+              "kind": "raise",
+              "line": 205
+            },
+            {
+              "in": "_validate_positive_num_predict",
+              "kind": "except",
+              "line": 213
+            },
+            {
+              "in": "_validate_positive_num_predict",
+              "kind": "raise",
+              "line": 214
+            },
+            {
+              "in": "_validate_positive_num_predict",
+              "kind": "raise",
+              "line": 222
+            },
+            {
+              "in": "_validate_positive_num_predict",
+              "kind": "raise",
+              "line": 228
+            },
+            {
+              "in": "resolve_num_predict_config",
+              "kind": "raise",
+              "line": 422
+            },
+            {
+              "in": "resolve_num_predict_config",
+              "kind": "except",
+              "line": 429
+            },
+            {
+              "in": "resolve_num_predict_config",
+              "kind": "raise",
+              "line": 430
+            },
+            {
+              "in": "resolve_num_predict_config",
+              "kind": "raise",
+              "line": 436
+            },
+            {
+              "in": "require_loopback_ollama_url",
+              "kind": "raise",
+              "line": 631
+            },
+            {
+              "in": "default_ollama_http_transport",
+              "kind": "except",
+              "line": 660
+            },
+            {
+              "in": "default_ollama_http_transport",
+              "kind": "raise",
+              "line": 661
+            },
+            {
+              "in": "default_ollama_http_transport",
+              "kind": "except",
+              "line": 669
+            },
+            {
+              "in": "default_ollama_http_transport",
+              "kind": "raise",
+              "line": 670
+            },
+            {
+              "in": "default_ollama_http_transport",
+              "kind": "raise",
+              "line": 677
+            },
+            {
+              "in": "verify_local_ollama_model_digest",
+              "kind": "raise",
+              "line": 790
+            },
+            {
+              "in": "verify_local_ollama_model_digest",
+              "kind": "raise",
+              "line": 799
+            },
+            {
+              "in": "derive_key_blind_phrasing_cue",
+              "kind": "except",
+              "line": 820
+            },
+            {
+              "in": "__init__",
+              "kind": "raise",
+              "line": 1065
+            },
+            {
+              "in": "_chat",
+              "kind": "raise",
+              "line": 1182
+            },
+            {
+              "in": "_chat",
+              "kind": "raise",
+              "line": 1239
+            },
+            {
+              "in": "parse_reader_verdict",
+              "kind": "except",
+              "line": 1308
+            },
+            {
+              "in": "__init__",
+              "kind": "raise",
+              "line": 1342
+            },
+            {
+              "in": "__init__",
+              "kind": "raise",
+              "line": 1357
+            },
+            {
+              "in": "_chat",
+              "kind": "raise",
+              "line": 1479
+            },
+            {
+              "in": "run_ollama_calibration_calls",
+              "kind": "raise",
+              "line": 1614
+            },
+            {
+              "in": "run_ollama_calibration_calls",
+              "kind": "raise",
+              "line": 1619
+            },
+            {
+              "in": "run_ollama_calibration_calls",
+              "kind": "raise",
+              "line": 1625
+            },
+            {
+              "in": "run_ollama_calibration_calls",
+              "kind": "raise",
+              "line": 1631
+            },
+            {
+              "in": "run_ollama_calibration_calls",
+              "kind": "raise",
+              "line": 1637
+            }
+          ],
           "hash": "7ab204273ecae903ccf44570856892f02fa3447eccd506165ef99fcd00066b5a",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
@@ -7385,6 +11097,123 @@
             "structural_token_whitelist",
             "style_lint"
           ],
+          "failurePaths": [
+            {
+              "in": "_check_polarity_and_quantifiers",
+              "kind": "raise",
+              "line": 256
+            },
+            {
+              "in": "_check_polarity_and_quantifiers",
+              "kind": "raise",
+              "line": 264
+            },
+            {
+              "in": "_check_polarity_and_quantifiers",
+              "kind": "raise",
+              "line": 275
+            },
+            {
+              "in": "_check_polarity_and_quantifiers",
+              "kind": "raise",
+              "line": 282
+            },
+            {
+              "in": "_check_polarity_and_quantifiers",
+              "kind": "raise",
+              "line": 289
+            },
+            {
+              "in": "_check_polarity_and_quantifiers",
+              "kind": "raise",
+              "line": 298
+            },
+            {
+              "in": "_check_polarity_and_quantifiers",
+              "kind": "raise",
+              "line": 306
+            },
+            {
+              "in": "_check_polarity_and_quantifiers",
+              "kind": "raise",
+              "line": 313
+            },
+            {
+              "in": "_check_grounding_tokens",
+              "kind": "raise",
+              "line": 329
+            },
+            {
+              "in": "_check_grounding_tokens",
+              "kind": "raise",
+              "line": 339
+            },
+            {
+              "in": "_parse_material_sentences",
+              "kind": "raise",
+              "line": 356
+            },
+            {
+              "in": "_parse_material_sentences",
+              "kind": "raise",
+              "line": 363
+            },
+            {
+              "in": "check_rendered_material",
+              "kind": "raise",
+              "line": 377
+            },
+            {
+              "in": "check_rendered_material",
+              "kind": "raise",
+              "line": 389
+            },
+            {
+              "in": "check_rendered_material",
+              "kind": "raise",
+              "line": 395
+            },
+            {
+              "in": "check_rendered_material",
+              "kind": "raise",
+              "line": 402
+            },
+            {
+              "in": "check_rendered_material",
+              "kind": "raise",
+              "line": 411
+            },
+            {
+              "in": "check_worded_claim",
+              "kind": "raise",
+              "line": 436
+            },
+            {
+              "in": "check_worded_claim",
+              "kind": "raise",
+              "line": 442
+            },
+            {
+              "in": "check_worded_claim",
+              "kind": "raise",
+              "line": 449
+            },
+            {
+              "in": "check_worded_claim",
+              "kind": "raise",
+              "line": 457
+            },
+            {
+              "in": "check_worded_triad",
+              "kind": "raise",
+              "line": 484
+            },
+            {
+              "in": "check_worded_triad",
+              "kind": "raise",
+              "line": 503
+            }
+          ],
           "hash": "4ed078f6603104dea45fa2b4ca08bf60d5c0aae4c36f403f81cc8483b7849e74",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
@@ -7425,6 +11254,63 @@
             "resolve_part_items_path",
             "run_bakeoff_shortcut_probe"
           ],
+          "failurePaths": [
+            {
+              "in": "resolve_part_items_path",
+              "kind": "raise",
+              "line": 1292
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "raise",
+              "line": 1306
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "except",
+              "line": 1321
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "raise",
+              "line": 1322
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "except",
+              "line": 1339
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "raise",
+              "line": 1340
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "raise",
+              "line": 1349
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "raise",
+              "line": 1360
+            },
+            {
+              "in": "load_items_and_keys",
+              "kind": "raise",
+              "line": 1368
+            },
+            {
+              "in": "run_bakeoff_shortcut_probe",
+              "kind": "raise",
+              "line": 1389
+            },
+            {
+              "in": "run_bakeoff_shortcut_probe",
+              "kind": "raise",
+              "line": 1405
+            }
+          ],
           "hash": "4d8ca9448521b8411a99f51a7f90d0612bbd603fe7636a968729df3c1543b2df",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
@@ -7444,6 +11330,48 @@
             "render_failure_rate",
             "run_unanimity_gate_batch",
             "validate_chain_families"
+          ],
+          "failurePaths": [
+            {
+              "in": "validate_chain_families",
+              "kind": "raise",
+              "line": 217
+            },
+            {
+              "in": "validate_chain_families",
+              "kind": "raise",
+              "line": 231
+            },
+            {
+              "in": "validate_chain_families",
+              "kind": "raise",
+              "line": 242
+            },
+            {
+              "in": "validate_chain_families",
+              "kind": "raise",
+              "line": 251
+            },
+            {
+              "in": "validate_chain_families",
+              "kind": "raise",
+              "line": 259
+            },
+            {
+              "in": "evaluate_claim_unanimity",
+              "kind": "raise",
+              "line": 307
+            },
+            {
+              "in": "check_min_pass_rate_per_class",
+              "kind": "raise",
+              "line": 442
+            },
+            {
+              "in": "check_min_pass_rate_per_class",
+              "kind": "raise",
+              "line": 461
+            }
           ],
           "hash": "ada46bab164f6e95407f005ef4cd3237672a803f86d3db0bfde6a26f5bc579fe",
           "importsFiles": [
@@ -7475,6 +11403,143 @@
             "verify_manifest",
             "write_manifest"
           ],
+          "failurePaths": [
+            {
+              "in": "parse_reader_think_overrides",
+              "kind": "raise",
+              "line": 73
+            },
+            {
+              "in": "parse_reader_think_overrides",
+              "kind": "raise",
+              "line": 85
+            },
+            {
+              "in": "parse_reader_think_overrides",
+              "kind": "raise",
+              "line": 95
+            },
+            {
+              "in": "parse_reader_think_overrides",
+              "kind": "raise",
+              "line": 102
+            },
+            {
+              "in": "ask_pair",
+              "kind": "except",
+              "line": 212
+            },
+            {
+              "in": "_check_readers",
+              "kind": "raise",
+              "line": 290
+            },
+            {
+              "in": "_check_readers",
+              "kind": "raise",
+              "line": 297
+            },
+            {
+              "in": "check_parent_manifest",
+              "kind": "raise",
+              "line": 468
+            },
+            {
+              "in": "check_parent_manifest",
+              "kind": "raise",
+              "line": 488
+            },
+            {
+              "in": "run_certification",
+              "kind": "raise",
+              "line": 733
+            },
+            {
+              "in": "run_certification",
+              "kind": "raise",
+              "line": 765
+            },
+            {
+              "in": "run_certification",
+              "kind": "raise",
+              "line": 778
+            },
+            {
+              "in": "run_certification",
+              "kind": "raise",
+              "line": 784
+            },
+            {
+              "in": "run_certification",
+              "kind": "except",
+              "line": 793
+            },
+            {
+              "in": "run_certification",
+              "kind": "raise",
+              "line": 798
+            },
+            {
+              "in": "load_manifest",
+              "kind": "except",
+              "line": 828
+            },
+            {
+              "in": "load_manifest",
+              "kind": "raise",
+              "line": 829
+            },
+            {
+              "in": "load_manifest",
+              "kind": "raise",
+              "line": 831
+            },
+            {
+              "in": "load_manifest",
+              "kind": "raise",
+              "line": 834
+            },
+            {
+              "in": "load_manifest",
+              "kind": "raise",
+              "line": 836
+            },
+            {
+              "in": "verify_manifest",
+              "kind": "except",
+              "line": 909
+            },
+            {
+              "in": "reader_pins",
+              "kind": "raise",
+              "line": 1039
+            },
+            {
+              "in": "_find_reader_entry",
+              "kind": "raise",
+              "line": 1169
+            },
+            {
+              "in": "compare_arms",
+              "kind": "raise",
+              "line": 1186
+            },
+            {
+              "in": "compare_arms",
+              "kind": "raise",
+              "line": 1194
+            },
+            {
+              "in": "compare_arms",
+              "kind": "raise",
+              "line": 1220
+            },
+            {
+              "in": "compare_arms",
+              "kind": "raise",
+              "line": 1228
+            }
+          ],
           "hash": "84852f3a633d6623eba96c703557929d6c736f4f2a456766a656c1a549256b29",
           "importOrder": [
             "src/reasoning_dataset_lab/errors.py",
@@ -7501,6 +11566,38 @@
             "load_variety_targets",
             "normalize_claim_text"
           ],
+          "failurePaths": [
+            {
+              "in": "load_variety_targets",
+              "kind": "raise",
+              "line": 92
+            },
+            {
+              "in": "_resolve_build_files",
+              "kind": "raise",
+              "line": 597
+            },
+            {
+              "in": "_evaluate_variety_from_records",
+              "kind": "raise",
+              "line": 637
+            },
+            {
+              "in": "_evaluate_variety_from_records",
+              "kind": "raise",
+              "line": 1042
+            },
+            {
+              "in": "evaluate_build_variety",
+              "kind": "raise",
+              "line": 1095
+            },
+            {
+              "in": "evaluate_pregate_variety",
+              "kind": "raise",
+              "line": 1129
+            }
+          ],
           "hash": "2ae202febd06576d086839cbdf6ba2a8e21319cf17932b7555f8dd6399765dc5",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
@@ -7524,10 +11621,638 @@
             "write_public_report",
             "write_sealed_part"
           ],
+          "failurePaths": [
+            {
+              "in": "record",
+              "kind": "raise",
+              "line": 255
+            },
+            {
+              "in": "record",
+              "kind": "raise",
+              "line": 264
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "except",
+              "line": 425
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "raise",
+              "line": 430
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "except",
+              "line": 507
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "raise",
+              "line": 512
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "except",
+              "line": 612
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "raise",
+              "line": 614
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "except",
+              "line": 652
+            },
+            {
+              "in": "run_pilot_b_waves",
+              "kind": "raise",
+              "line": 654
+            },
+            {
+              "in": "_normalise",
+              "kind": "raise",
+              "line": 814
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1078
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1086
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1088
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1090
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1093
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1098
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1100
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1109
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1112
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1114
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1116
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1118
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1120
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1124
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1128
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1131
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1133
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1136
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1138
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1142
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1145
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1148
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1150
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1169
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1171
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1174
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1177
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1179
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1182
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1184
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1187
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1190
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1193
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1196
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1200
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1203
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1205
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1208
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1212
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1219
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1221
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1236
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1239
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1248
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1250
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1259
+            },
+            {
+              "in": "_check_render_inputs",
+              "kind": "raise",
+              "line": 1267
+            },
+            {
+              "in": "_check_sealed_rows",
+              "kind": "raise",
+              "line": 1276
+            },
+            {
+              "in": "_check_sealed_rows",
+              "kind": "raise",
+              "line": 1279
+            },
+            {
+              "in": "write_sealed_part",
+              "kind": "raise",
+              "line": 1560
+            },
+            {
+              "in": "write_sealed_part",
+              "kind": "raise",
+              "line": 1571
+            },
+            {
+              "in": "write_sealed_part",
+              "kind": "raise",
+              "line": 1577
+            },
+            {
+              "in": "write_sealed_part",
+              "kind": "raise",
+              "line": 1598
+            },
+            {
+              "in": "write_sealed_part",
+              "kind": "raise",
+              "line": 1606
+            },
+            {
+              "in": "_scan_object_for_forbidden_keys",
+              "kind": "raise",
+              "line": 1730
+            },
+            {
+              "in": "_verify_provenance_digests",
+              "kind": "raise",
+              "line": 1817
+            },
+            {
+              "in": "_verify_provenance_digests",
+              "kind": "raise",
+              "line": 1823
+            },
+            {
+              "in": "_verify_provenance_digests",
+              "kind": "raise",
+              "line": 1826
+            },
+            {
+              "in": "_verify_provenance_digests",
+              "kind": "raise",
+              "line": 1831
+            },
+            {
+              "in": "_verify_provenance_digests",
+              "kind": "raise",
+              "line": 1835
+            },
+            {
+              "in": "_verify_provenance_digests",
+              "kind": "raise",
+              "line": 1838
+            },
+            {
+              "in": "_verify_provenance_digests",
+              "kind": "raise",
+              "line": 1842
+            },
+            {
+              "in": "_verify_provenance_digests",
+              "kind": "raise",
+              "line": 1846
+            },
+            {
+              "in": "_verify_provenance_digests",
+              "kind": "raise",
+              "line": 1849
+            },
+            {
+              "in": "_verify_provenance_digests",
+              "kind": "raise",
+              "line": 1852
+            },
+            {
+              "in": "_check_content_leak",
+              "kind": "raise",
+              "line": 1875
+            },
+            {
+              "in": "_check_content_leak",
+              "kind": "raise",
+              "line": 1888
+            },
+            {
+              "in": "_validated_store",
+              "kind": "raise",
+              "line": 1904
+            },
+            {
+              "in": "_validated_store",
+              "kind": "raise",
+              "line": 1911
+            },
+            {
+              "in": "_validated_store",
+              "kind": "raise",
+              "line": 1918
+            },
+            {
+              "in": "_validated_store",
+              "kind": "raise",
+              "line": 1924
+            },
+            {
+              "in": "_validated_store",
+              "kind": "raise",
+              "line": 1931
+            },
+            {
+              "in": "_validated_store",
+              "kind": "raise",
+              "line": 1937
+            },
+            {
+              "in": "_validated_store",
+              "kind": "raise",
+              "line": 1944
+            },
+            {
+              "in": "_schema_errors",
+              "kind": "raise",
+              "line": 1957
+            },
+            {
+              "in": "_check_part_shapes",
+              "kind": "raise",
+              "line": 1970
+            },
+            {
+              "in": "_check_part_shapes",
+              "kind": "raise",
+              "line": 1978
+            },
+            {
+              "in": "_check_part_shapes",
+              "kind": "raise",
+              "line": 1989
+            },
+            {
+              "in": "_check_part_shapes",
+              "kind": "raise",
+              "line": 1997
+            },
+            {
+              "in": "_shuffle_seed_passes_key_order_for_counts",
+              "kind": "except",
+              "line": 2017
+            },
+            {
+              "in": "draw_valid_shuffle_seed",
+              "kind": "raise",
+              "line": 2034
+            },
+            {
+              "in": "check_items_not_in_key_order",
+              "kind": "raise",
+              "line": 2055
+            },
+            {
+              "in": "check_items_not_in_key_order",
+              "kind": "raise",
+              "line": 2062
+            },
+            {
+              "in": "_verify_known_leaks",
+              "kind": "raise",
+              "line": 2074
+            },
+            {
+              "in": "_verify_known_leaks",
+              "kind": "raise",
+              "line": 2080
+            },
+            {
+              "in": "_verify_known_leaks",
+              "kind": "raise",
+              "line": 2088
+            },
+            {
+              "in": "_verify_known_leaks",
+              "kind": "raise",
+              "line": 2097
+            },
+            {
+              "in": "_verify_known_leaks",
+              "kind": "raise",
+              "line": 2107
+            },
+            {
+              "in": "_verify_known_leaks",
+              "kind": "raise",
+              "line": 2119
+            },
+            {
+              "in": "_verify_known_leaks",
+              "kind": "raise",
+              "line": 2147
+            },
+            {
+              "in": "_verify_known_leaks",
+              "kind": "raise",
+              "line": 2183
+            },
+            {
+              "in": "_verify_known_leaks",
+              "kind": "raise",
+              "line": 2190
+            },
+            {
+              "in": "_check_report_coverage",
+              "kind": "raise",
+              "line": 2206
+            },
+            {
+              "in": "_check_report_coverage",
+              "kind": "raise",
+              "line": 2216
+            },
+            {
+              "in": "_check_report_coverage",
+              "kind": "raise",
+              "line": 2218
+            },
+            {
+              "in": "_check_report_coverage",
+              "kind": "raise",
+              "line": 2221
+            },
+            {
+              "in": "_check_report_coverage",
+              "kind": "raise",
+              "line": 2223
+            },
+            {
+              "in": "_verify_render",
+              "kind": "raise",
+              "line": 2241
+            },
+            {
+              "in": "_verify_render",
+              "kind": "raise",
+              "line": 2263
+            },
+            {
+              "in": "_verify_render",
+              "kind": "raise",
+              "line": 2277
+            },
+            {
+              "in": "_verify_render",
+              "kind": "raise",
+              "line": 2279
+            },
+            {
+              "in": "_verify_render",
+              "kind": "raise",
+              "line": 2281
+            },
+            {
+              "in": "_verify_render",
+              "kind": "raise",
+              "line": 2287
+            },
+            {
+              "in": "_verify_render",
+              "kind": "raise",
+              "line": 2290
+            },
+            {
+              "in": "_verify_render",
+              "kind": "raise",
+              "line": 2306
+            },
+            {
+              "in": "_verify_render",
+              "kind": "raise",
+              "line": 2313
+            },
+            {
+              "in": "verify_sealed_part",
+              "kind": "except",
+              "line": 2332
+            },
+            {
+              "in": "verify_sealed_part",
+              "kind": "raise",
+              "line": 2333
+            },
+            {
+              "in": "verify_sealed_part",
+              "kind": "except",
+              "line": 2334
+            },
+            {
+              "in": "verify_sealed_part",
+              "kind": "raise",
+              "line": 2335
+            },
+            {
+              "in": "verify_sealed_part",
+              "kind": "except",
+              "line": 2338
+            },
+            {
+              "in": "verify_sealed_part",
+              "kind": "raise",
+              "line": 2339
+            },
+            {
+              "in": "verify_sealed_part",
+              "kind": "except",
+              "line": 2340
+            },
+            {
+              "in": "verify_sealed_part",
+              "kind": "raise",
+              "line": 2341
+            }
+          ],
           "hash": "730057d536d26f1dd6e9db889a51f346e976b4cd6e16c2158f42572a66a72745",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/ollama.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/schema_check.py",
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
             "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py",
@@ -7541,6 +12266,7 @@
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
             "src/reasoning_dataset_lab/pilot_b/ollama.py",
             "src/reasoning_dataset_lab/pilot_b/rendering.py",
+            "src/reasoning_dataset_lab/pilot_b/schema_check.py",
             "src/reasoning_dataset_lab/pilot_b/unanimity.py"
           ],
           "path": "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py"
@@ -7571,20 +12297,11 @@
       "outsideReads": 77,
       "outsideWrites": 27,
       "role": "code",
-      "testedBy": 33,
-      "unresolvedNamed": [
-        {
-          "path": "src/reasoning_dataset_lab/errors.py",
-          "specifier": "reasoning_dataset_lab.pilot_b.device",
-          "why": "unplaced"
-        },
-        {
-          "path": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
-          "specifier": "reasoning_dataset_lab.pilot_b.device",
-          "why": "unplaced"
-        }
+      "testRunners": [
+        "pytest"
       ],
-      "unresolvedSites": 2
+      "testedBy": 33,
+      "unresolvedSites": 0
     },
     {
       "dynamicReads": 0,
@@ -7715,7 +12432,8 @@
             "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
             "tests/anchored_fixtures.py"
           ],
-          "path": "tests/test_anchored_two_hop.py"
+          "path": "tests/test_anchored_two_hop.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7745,7 +12463,8 @@
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py"
           ],
-          "path": "tests/test_bakeoff_bootstrap_p.py"
+          "path": "tests/test_bakeoff_bootstrap_p.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7772,7 +12491,8 @@
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
           ],
-          "path": "tests/test_bakeoff_judge_d3_transport.py"
+          "path": "tests/test_bakeoff_judge_d3_transport.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7805,7 +12525,8 @@
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_part.py"
           ],
-          "path": "tests/test_bakeoff_judge_harness.py"
+          "path": "tests/test_bakeoff_judge_harness.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7839,7 +12560,8 @@
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py"
           ],
-          "path": "tests/test_bakeoff_judge_score_splits.py"
+          "path": "tests/test_bakeoff_judge_score_splits.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7916,7 +12638,8 @@
             "tests/test_pilot_b_ollama_adapters.py",
             "tests/test_pilot_b_part_d.py"
           ],
-          "path": "tests/test_bakeoff_part.py"
+          "path": "tests/test_bakeoff_part.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -7976,6 +12699,15 @@
             "test_winner_strict_followup_item2_mixed_part_raises_and_pure_parts_resolve"
           ],
           "hash": "d07bdc0432fc9517b78c2860e40f318de1010814d1b8dd98ee924aee4e22530b",
+          "importOrder": [
+            "src/reasoning_dataset_lab/cli.py",
+            "src/reasoning_dataset_lab/errors.py",
+            "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
+            "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py",
+            "tests/test_bakeoff_judge_score_splits.py"
+          ],
           "importsFiles": [
             "src/reasoning_dataset_lab/cli.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -7985,7 +12717,8 @@
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
             "tests/test_bakeoff_judge_score_splits.py"
           ],
-          "path": "tests/test_bakeoff_prereg_build.py"
+          "path": "tests/test_bakeoff_prereg_build.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8001,7 +12734,8 @@
             "src/reasoning_dataset_lab/cli.py",
             "src/reasoning_dataset_lab/errors.py"
           ],
-          "path": "tests/test_cli.py"
+          "path": "tests/test_cli.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8140,14 +12874,17 @@
             "test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local",
             "test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log"
           ],
-          "hash": "9bc796d5e6a56a157fb1013e9d139c38bd787cf932e397414e75c5d980fc6441",
+          "hash": "8d56acb4d593c505f5a641824ac0bfa991d39baab66dacaaec42a7ce14431ecc",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
             "tests/fixtures/fake_colab.py",
-            "scripts/colab/generate_weights_table.py"
+            "scripts/colab/generate_weights_table.py",
+            "src/reasoning_dataset_lab/pilot_b/judge_download.py",
+            "src/reasoning_dataset_lab/pilot_b/device.py"
           ],
           "importsFiles": [
             "scripts/colab/generate_weights_table.py",
@@ -8155,9 +12892,13 @@
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
+            "src/reasoning_dataset_lab/pilot_b/device.py",
+            "src/reasoning_dataset_lab/pilot_b/judge_download.py",
             "tests/fixtures/fake_colab.py"
           ],
-          "path": "tests/test_colab_judge_launcher.py"
+          "path": "tests/test_colab_judge_launcher.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8175,7 +12916,8 @@
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/map.py"
           ],
-          "path": "tests/test_config.py"
+          "path": "tests/test_config.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8190,7 +12932,8 @@
             "src/reasoning_dataset_lab/generators/base.py",
             "src/reasoning_dataset_lab/map.py"
           ],
-          "path": "tests/test_generators_base.py"
+          "path": "tests/test_generators_base.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8221,7 +12964,8 @@
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/map.py"
           ],
-          "path": "tests/test_map.py"
+          "path": "tests/test_map.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8280,7 +13024,8 @@
             "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
             "tests/pilot_b_fakes.py"
           ],
-          "path": "tests/test_pilot_b_ollama_adapters.py"
+          "path": "tests/test_pilot_b_ollama_adapters.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8316,7 +13061,8 @@
             "src/reasoning_dataset_lab/pilot_b/variety.py",
             "tests/pilot_b_fakes.py"
           ],
-          "path": "tests/test_pilot_b_part_a.py"
+          "path": "tests/test_pilot_b_part_a.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8346,7 +13092,8 @@
             "src/reasoning_dataset_lab/pilot_b/rendering.py",
             "tests/pilot_b_fakes.py"
           ],
-          "path": "tests/test_pilot_b_part_b.py"
+          "path": "tests/test_pilot_b_part_b.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8372,7 +13119,8 @@
             "src/reasoning_dataset_lab/pilot_b/unanimity.py",
             "tests/pilot_b_fakes.py"
           ],
-          "path": "tests/test_pilot_b_part_c.py"
+          "path": "tests/test_pilot_b_part_c.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8403,7 +13151,8 @@
             "tests/pilot_b_fakes.py",
             "tests/test_pilot_b_ollama_adapters.py"
           ],
-          "path": "tests/test_pilot_b_part_d.py"
+          "path": "tests/test_pilot_b_part_d.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8425,7 +13174,8 @@
             "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
             "tests/test_pilot_b_ollama_adapters.py"
           ],
-          "path": "tests/test_pilot_b_part_e.py"
+          "path": "tests/test_pilot_b_part_e.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8464,7 +13214,8 @@
             "src/reasoning_dataset_lab/pilot_b/unanimity.py",
             "tests/pilot_b_fakes.py"
           ],
-          "path": "tests/test_pilot_b_render_failure_rate.py"
+          "path": "tests/test_pilot_b_render_failure_rate.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8495,7 +13246,8 @@
             "src/reasoning_dataset_lab/pilot_b/rendering.py",
             "tests/pilot_b_fakes.py"
           ],
-          "path": "tests/test_pilot_b_render_rules.py"
+          "path": "tests/test_pilot_b_render_rules.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8609,6 +13361,7 @@
             "tests/test_pilot_b_ollama_adapters.py",
             "tests/test_pilot_b_part_d.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/schema_check.py",
             "src/reasoning_dataset_lab/pilot_b/rendering.py"
           ],
           "importsFiles": [
@@ -8618,12 +13371,14 @@
             "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
             "src/reasoning_dataset_lab/pilot_b/ollama.py",
             "src/reasoning_dataset_lab/pilot_b/rendering.py",
+            "src/reasoning_dataset_lab/pilot_b/schema_check.py",
             "src/reasoning_dataset_lab/pilot_b/unanimity.py",
             "src/reasoning_dataset_lab/pilot_b/waves_and_sealing.py",
             "tests/test_pilot_b_ollama_adapters.py",
             "tests/test_pilot_b_part_d.py"
           ],
-          "path": "tests/test_pilot_b_sealing_seed.py"
+          "path": "tests/test_pilot_b_sealing_seed.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8728,6 +13483,7 @@
             "src/reasoning_dataset_lab/cli.py",
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/value_certification.py",
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
             "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
             "src/reasoning_dataset_lab/pilot_b/unanimity.py",
@@ -8740,9 +13496,11 @@
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
             "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
             "src/reasoning_dataset_lab/pilot_b/ollama.py",
-            "src/reasoning_dataset_lab/pilot_b/unanimity.py"
+            "src/reasoning_dataset_lab/pilot_b/unanimity.py",
+            "src/reasoning_dataset_lab/pilot_b/value_certification.py"
           ],
-          "path": "tests/test_pilot_b_value_certification.py"
+          "path": "tests/test_pilot_b_value_certification.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8755,7 +13513,8 @@
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py"
           ],
-          "path": "tests/test_pilot_b_value_fallbacks.py"
+          "path": "tests/test_pilot_b_value_fallbacks.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8783,7 +13542,8 @@
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/fact_tables.py"
           ],
-          "path": "tests/test_pilot_b_value_sets.py"
+          "path": "tests/test_pilot_b_value_sets.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8816,7 +13576,8 @@
             "src/reasoning_dataset_lab/pilot_b/variety.py",
             "tests/pilot_b_fakes.py"
           ],
-          "path": "tests/test_pilot_b_variety.py"
+          "path": "tests/test_pilot_b_variety.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8832,11 +13593,13 @@
           "hash": "4e75f0e6755f63fd3570b6843209b54ebde93153c0f1563c7324ce6d4e5a485c",
           "importOrder": [
             "src/reasoning_dataset_lab/generators/__init__.py",
+            "src/reasoning_dataset_lab/generators/role_set.py",
             "src/reasoning_dataset_lab/__init__.py"
           ],
           "importsFiles": [
             "src/reasoning_dataset_lab/__init__.py",
-            "src/reasoning_dataset_lab/generators/__init__.py"
+            "src/reasoning_dataset_lab/generators/__init__.py",
+            "src/reasoning_dataset_lab/generators/role_set.py"
           ],
           "path": "tests/test_python_support.py"
         },
@@ -8866,7 +13629,8 @@
             "src/reasoning_dataset_lab/generators/role_set.py",
             "src/reasoning_dataset_lab/map.py"
           ],
-          "path": "tests/test_role_set_adapter.py"
+          "path": "tests/test_role_set_adapter.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8891,7 +13655,8 @@
             "src/reasoning_dataset_lab/pilot_b/shortcut_probe.py",
             "src/reasoning_dataset_lab/pilot_b/variety.py"
           ],
-          "path": "tests/test_shortcut_probe.py"
+          "path": "tests/test_shortcut_probe.py",
+          "testFramework": "pytest"
         },
         {
           "exports": [
@@ -8912,6 +13677,9 @@
       "name": "tests",
       "origin": "authored",
       "role": "test",
+      "testRunners": [
+        "pytest"
+      ],
       "testedBy": 0,
       "unresolvedNamed": [
         {
@@ -8928,6 +13696,7 @@
       "checksCount": 0,
       "commands": [
         {
+          "dir": "",
           "job": "test",
           "programs": [
             "uv"
@@ -8935,6 +13704,7 @@
           "step": "Install dependencies"
         },
         {
+          "dir": "",
           "job": "test",
           "programs": [
             "uv"
@@ -8942,6 +13712,7 @@
           "step": "Run pytest with coverage (floor 90%)"
         },
         {
+          "dir": "",
           "job": "test",
           "programs": [
             "uv"
@@ -8949,6 +13720,7 @@
           "step": "Validate example map"
         },
         {
+          "dir": "",
           "job": "test",
           "programs": [
             "npx"
@@ -8956,6 +13728,7 @@
           "step": "Atlas check"
         },
         {
+          "dir": "site",
           "job": "test",
           "programs": [
             "npm"
@@ -8963,6 +13736,7 @@
           "step": "Audit the site's npm tree"
         },
         {
+          "dir": "",
           "job": "test-py313",
           "programs": [
             "uv"
@@ -8970,6 +13744,7 @@
           "step": "Install dependencies"
         },
         {
+          "dir": "",
           "job": "test-py313",
           "programs": [
             "uv"
@@ -8977,6 +13752,7 @@
           "step": "Run pytest (no coverage on this leg)"
         },
         {
+          "dir": "",
           "job": "test-py313",
           "programs": [
             "uv"
@@ -8984,6 +13760,7 @@
           "step": "Validate example map"
         },
         {
+          "dir": "",
           "job": "test-py314",
           "programs": [
             "uv"
@@ -8991,6 +13768,7 @@
           "step": "Install dependencies"
         },
         {
+          "dir": "",
           "job": "test-py314",
           "programs": [
             "uv"
@@ -8998,6 +13776,7 @@
           "step": "Run pytest (no coverage on this leg)"
         },
         {
+          "dir": "",
           "job": "test-py314",
           "programs": [
             "uv"
@@ -9007,6 +13786,69 @@
       ],
       "elsewhere": [],
       "file": ".github/workflows/ci.yml",
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "test",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "22",
+                  "range": ">=22.0.0 <23.0.0-0"
+                }
+              ],
+              "step": "6",
+              "uses": "actions/setup-node",
+              "version": "22"
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "name": "test-py313",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "name": "test-py314",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        }
+      ],
       "landings": [
         "src/reasoning_dataset_lab/pilot_b/canary_config.json"
       ],
@@ -9052,7 +13894,7 @@
             "file": "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py",
             "from": "tests/anchored_fixtures.py"
           },
-          "files": 22
+          "files": 25
         }
       ],
       "readers": [
@@ -9102,6 +13944,32 @@
         "releases": false
       },
       "stages": [],
+      "tests": [
+        {
+          "config": "pyproject.toml",
+          "coverage": true,
+          "files": 35,
+          "job": "test",
+          "runner": "pytest",
+          "step": "Run pytest with coverage (floor 90%)"
+        },
+        {
+          "config": "pyproject.toml",
+          "coverage": true,
+          "files": 35,
+          "job": "test-py313",
+          "runner": "pytest",
+          "step": "Run pytest (no coverage on this leg)"
+        },
+        {
+          "config": "pyproject.toml",
+          "coverage": true,
+          "files": 35,
+          "job": "test-py314",
+          "runner": "pytest",
+          "step": "Run pytest (no coverage on this leg)"
+        }
+      ],
       "triggers": [
         {
           "event": "pull_request"
@@ -9129,6 +13997,35 @@
           "event": "workflow_dispatch"
         }
       ],
+      "unresolvedChecks": [
+        {
+          "job": "test",
+          "manifest": "pyproject.toml",
+          "requires": ">=3.13",
+          "rule": "D1-python",
+          "step": "Install dependencies",
+          "tool": "uv sync",
+          "why": "no setup-python step before it"
+        },
+        {
+          "job": "test-py313",
+          "manifest": "pyproject.toml",
+          "requires": ">=3.13",
+          "rule": "D1-python",
+          "step": "Install dependencies",
+          "tool": "uv sync",
+          "why": "no setup-python step before it"
+        },
+        {
+          "job": "test-py314",
+          "manifest": "pyproject.toml",
+          "requires": ">=3.13",
+          "rule": "D1-python",
+          "step": "Install dependencies",
+          "tool": "uv sync",
+          "why": "no setup-python step before it"
+        }
+      ],
       "uses": [
         "actions/checkout",
         "actions/setup-node",
@@ -9141,6 +14038,7 @@
       "checksCount": 0,
       "commands": [
         {
+          "dir": "site",
           "job": "build",
           "programs": [
             "npm"
@@ -9148,6 +14046,7 @@
           "step": "Install site dependencies"
         },
         {
+          "dir": "site",
           "job": "build",
           "programs": [
             "npm"
@@ -9157,6 +14056,56 @@
       ],
       "elsewhere": [],
       "file": ".github/workflows/pages.yml",
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "build",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ],
+          "setup": [
+            {
+              "ranges": [
+                {
+                  "from": "22",
+                  "range": ">=22.0.0 <23.0.0-0"
+                }
+              ],
+              "step": "1",
+              "uses": "actions/setup-node",
+              "version": "22"
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "environment": {
+            "name": "github-pages"
+          },
+          "name": "deploy",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        }
+      ],
       "landings": [],
       "mentions": [],
       "name": "Deploy site to GitHub Pages",
@@ -9231,6 +14180,7 @@
       "checksCount": 1,
       "commands": [
         {
+          "dir": "",
           "job": "build",
           "programs": [
             "python"
@@ -9238,6 +14188,7 @@
           "step": "The tag matches the version"
         },
         {
+          "dir": "",
           "job": "build",
           "programs": [
             "uv"
@@ -9245,6 +14196,7 @@
           "step": "Build"
         },
         {
+          "dir": "",
           "job": "upload",
           "programs": [
             "gh"
@@ -9254,6 +14206,59 @@
       ],
       "elsewhere": [],
       "file": ".github/workflows/release.yml",
+      "jobs": [
+        {
+          "basis": "declared",
+          "name": "build",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "environment": {
+            "name": "pypi"
+          },
+          "name": "publish",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        },
+        {
+          "basis": "declared",
+          "name": "upload",
+          "runsOn": [
+            {
+              "labels": [
+                "ubuntu-latest"
+              ],
+              "platform": {
+                "cpu": "x64",
+                "libc": "glibc",
+                "os": "linux"
+              }
+            }
+          ]
+        }
+      ],
       "landings": [],
       "mentions": [
         {
@@ -9273,7 +14278,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 24
+          "files": 25
         }
       ],
       "readers": [],
@@ -9339,7 +14344,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 19
+          "files": 21
         }
       ],
       "readers": [
@@ -9393,10 +14398,10 @@
       "to": "src"
     }
   ],
-  "engine": "1.23.0",
+  "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "11c6690939f7264d27bd19cb7450ff9bef34c99b",
-    "tracked": 152
+    "commit": "030b68e1bfbfbf2dedfc19ae964df5aa3060634a",
+    "tracked": 153
   },
   "landings": [
     {
