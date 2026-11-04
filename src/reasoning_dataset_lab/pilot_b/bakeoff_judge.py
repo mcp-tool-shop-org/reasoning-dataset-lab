@@ -2405,16 +2405,16 @@ class _TokenCountStreamer:
 
 
 def _import_vm_judges_normalize_judge_device() -> Callable[[Any], str]:
-    if "vm_judges" in sys.modules and hasattr(sys.modules["vm_judges"], "normalize_judge_device"):
-        _vm_mod = sys.modules["vm_judges"]
-    else:
-        colab_dir = Path(__file__).resolve().parents[3] / "scripts" / "colab"
-        colab_dir_str = str(colab_dir)
-        if colab_dir.is_dir() and colab_dir_str not in sys.path:
-            sys.path.insert(0, colab_dir_str)
-        import vm_judges as _vm_mod
-    if RdlabError not in _vm_mod.RefusalError.__bases__:
-        _vm_mod.RefusalError.__bases__ = (*_vm_mod.RefusalError.__bases__, RdlabError)
+    """Bind the single canonical `normalize_judge_device` implementation from `vm_judges.py`.
+    Ensures `vm_judges.RefusalError` subclasses `RdlabError` so callers catching either
+    `RdlabError` or `vm_judges.RefusalError` handle `BAKEOFF_JUDGE_DEVICE_INVALID`.
+    """
+    import importlib
+
+    colab_dir = os.path.join(str(Path(__file__).resolve().parents[3]), "scripts", "colab")
+    sys.path.insert(0, colab_dir)
+    _vm_mod = getattr(importlib, "import_module")("vm_judges")
+    _vm_mod.RefusalError.__bases__ = tuple(dict.fromkeys((*_vm_mod.RefusalError.__bases__, RdlabError)))
     return _vm_mod.normalize_judge_device  # type: ignore[no-any-return]
 
 
