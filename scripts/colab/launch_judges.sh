@@ -28,6 +28,8 @@ RUN_ID="${RDLAB_RUN_ID:-judges-$(date -u +%Y%m%dT%H%M%SZ)}"
 ITEMS_FILE="${RDLAB_ITEMS_FILE:-}"
 RECEIPTS_DIR="${RDLAB_RECEIPTS_DIR:-}"
 EXPLICIT_CAP="${RDLAB_CAP_UNITS:-}"
+GOLDEN_ANCHOR_MANIFEST=""
+WINDOW_ID=""
 
 EXPECTED_JUDGE_LOCK_SHA256="608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
 EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
@@ -43,10 +45,15 @@ Options:
   --probe              Run the read-only CPU VM environment probe (CPU at 0.08/h, wall 300s, cap 0.01)
   --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
   --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
+  --lock-check         Run the A100 114-item lock-check window (--gpu A100 at 4.27/h, wall 7200s)
+  --lock-check-stub    Run the CPU stub lock-check window (CPU at 0.08/h, deterministic stub transport)
   --counted            Run a counted A100 shard window (--gpu A100 at 5.30/h, strict determinism)
+  --counted-stub       Run a counted CPU stub shard window (CPU at 0.08/h, deterministic stub transport)
   --shard k/n          Shard index k of n (1-indexed, default 1/1; or set RDLAB_SHARD)
   --shard-manifest F   Pre-built shard_manifest.json path (or set RDLAB_SHARD_MANIFEST)
   --shard-manifest-sha256 SHA  Expected sha256 of shard_manifest.json (or set RDLAB_SHARD_MANIFEST_SHA256)
+  --golden-anchor-manifest F   Pre-built golden_anchor_manifest.json path
+  --boot-gatekeeper-goldens F  Boot gatekeeper goldens JSON path (or set RDLAB_BOOT_GATEKEEPER_GOLDENS)
   --loop ORDER         Loop order: subblock (default) or judge_outer (or set RDLAB_LOOP)
   --subblock-items B   Items per sub-block when --loop subblock (default 50; or set RDLAB_SUBBLOCK_ITEMS)
   --replacement-session  Mark window as replacement session requiring 3-item-pair overlap check
@@ -86,6 +93,47 @@ while [[ $# -gt 0 ]]; do
     --counted)
       MODE="counted"
       SESSION_SMOKE_FLAG=0
+      shift
+      ;;
+    --counted-stub)
+      MODE="counted-stub"
+      SESSION_SMOKE_FLAG=0
+      shift
+      ;;
+    --lock-check)
+      MODE="lock-check"
+      SESSION_SMOKE_FLAG=0
+      shift
+      ;;
+    --lock-check-stub)
+      MODE="lock-check-stub"
+      SESSION_SMOKE_FLAG=0
+      shift
+      ;;
+    --golden-anchor-manifest)
+      GOLDEN_ANCHOR_MANIFEST="${2:-}"
+      shift 2
+      ;;
+    --golden-anchor-manifest=*)
+      GOLDEN_ANCHOR_MANIFEST="${1#*=}"
+      shift
+      ;;
+    --boot-gatekeeper-goldens)
+      export RDLAB_BOOT_GATEKEEPER_GOLDENS="${2:-}"
+      shift 2
+      ;;
+    --boot-gatekeeper-goldens=*)
+      export RDLAB_BOOT_GATEKEEPER_GOLDENS="${1#*=}"
+      shift
+      ;;
+    --window-id)
+      WINDOW_ID="${2:-}"
+      export RDLAB_SESSION_ID="$WINDOW_ID"
+      shift 2
+      ;;
+    --window-id=*)
+      WINDOW_ID="${1#*=}"
+      export RDLAB_SESSION_ID="$WINDOW_ID"
       shift
       ;;
     --shard)
@@ -220,6 +268,12 @@ elif [[ "$MODE" == "counted" ]]; then
   COLAB_NEW_FLAGS=(--gpu A100)
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
   RATE_UNITS_PER_HOUR="5.30"
+  VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
+elif [[ "$MODE" == "lock-check" ]]; then
+  CARD="A100"
+  COLAB_NEW_FLAGS=(--gpu A100)
+  WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
+  RATE_UNITS_PER_HOUR="4.27"
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
 elif [[ "$MODE" == "probe" ]]; then
   CARD="CPU"
@@ -577,7 +631,11 @@ build_exec_env_args() {
     EXEC_ENV_ARGS+=(--env "RDLAB_REPLACEMENT_SESSION=$RDLAB_REPLACEMENT_SESSION")
   fi
   if [[ -n "${RDLAB_BOOT_GATEKEEPER_GOLDENS+x}" ]] && [[ -n "${RDLAB_BOOT_GATEKEEPER_GOLDENS}" ]]; then
-    EXEC_ENV_ARGS+=(--env "RDLAB_BOOT_GATEKEEPER_GOLDENS=$RDLAB_BOOT_GATEKEEPER_GOLDENS")
+    if [[ -f "${RDLAB_BOOT_GATEKEEPER_GOLDENS}" ]] && [[ "${RDLAB_BOOT_GATEKEEPER_GOLDENS}" != /content/* ]]; then
+      EXEC_ENV_ARGS+=(--env "RDLAB_BOOT_GATEKEEPER_GOLDENS=/content/rdlab/boot_gatekeeper_goldens.candidate.json")
+    else
+      EXEC_ENV_ARGS+=(--env "RDLAB_BOOT_GATEKEEPER_GOLDENS=$RDLAB_BOOT_GATEKEEPER_GOLDENS")
+    fi
   fi
   if [[ -n "${RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES+x}" ]] && [[ -n "${RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES=$RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES")
@@ -868,7 +926,7 @@ if tar_path.is_file():
                 for f in sorted(src_sub.glob(pat)):
                     if f.is_file() and not (dst_sub / f.name).is_file():
                         shutil.copyfile(f, dst_sub / f.name)
-        for exact_cp in ("child_progress.jsonl", "session_env.json", "shard_manifest.json", "shard_manifest.json.sha256", "boot_gatekeeper.json"):
+        for exact_cp in ("child_progress.jsonl", "session_env.json", "shard_manifest.json", "shard_manifest.json.sha256", "golden_anchor_manifest.json", "golden_anchor_manifest.json.sha256", "boot_gatekeeper.json", "boot_gatekeeper_goldens.filled.json", "p0a_report.json", "window.json"):
             src_cp = tmp_ext / exact_cp
             if src_cp.is_file() and not (out_dir / exact_cp).is_file():
                 shutil.copyfile(src_cp, out_dir / exact_cp)
@@ -1496,7 +1554,7 @@ then
 fi
 
 mkdir -p "$STAGE_DIR"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" <<'PY'
 import shutil
 import sys
 import tarfile
@@ -1509,6 +1567,7 @@ receipts_dir = Path(sys.argv[4])
 receipts_tar = Path(sys.argv[5])
 repo_tar = Path(sys.argv[6])
 device_py_dst = Path(sys.argv[7])
+raw_golden_manifest = sys.argv[8].strip() if len(sys.argv) > 8 else ""
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -1558,6 +1617,16 @@ with tarfile.open(repo_tar, "w:gz") as tf:
         if not sm_path.is_file():
             raise SystemExit(f"SHARD_MANIFEST_INVALID: file does not exist: {sm_path}")
         tf.add(sm_path, arcname="shard_manifest.json", recursive=False)
+    if raw_golden_manifest:
+        gm_path = Path(raw_golden_manifest)
+        if not gm_path.is_file():
+            raise SystemExit(f"GOLDEN_ANCHOR_MANIFEST_MISSING: file does not exist: {gm_path}")
+        tf.add(gm_path, arcname="golden_anchor_manifest.json", recursive=False)
+    raw_bg_goldens = (_os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
+    if raw_bg_goldens and not raw_bg_goldens.startswith("/content/"):
+        bg_path = Path(raw_bg_goldens)
+        if bg_path.is_file():
+            tf.add(bg_path, arcname="boot_gatekeeper_goldens.candidate.json", recursive=False)
 PY
 then
   RUN_WHY="staging of items, receipts, or repo bundle failed on rig"
@@ -2019,7 +2088,12 @@ for rel_name in (
     "session_env.json",
     "shard_manifest.json",
     "shard_manifest.json.sha256",
+    "golden_anchor_manifest.json",
+    "golden_anchor_manifest.json.sha256",
     "boot_gatekeeper.json",
+    "boot_gatekeeper_goldens.filled.json",
+    "p0a_report.json",
+    "window.json",
 ):
     src = extract_dir / rel_name
     if src.is_file():

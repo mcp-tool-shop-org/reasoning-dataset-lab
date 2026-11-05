@@ -1279,12 +1279,12 @@ def pin_and_read_sdpa_backend() -> str:
 
 
 COUNTED_WINDOW_MODES: frozenset[str] = frozenset(
-    {"counted", "time-one", "time_one", "shard", "sharded", "counted-shard", "sharded-counted"}
+    {"counted", "lock-check", "lock_check", "time-one", "time_one", "shard", "sharded", "counted-shard", "sharded-counted"}
 )
 NON_COUNTED_WINDOW_MODES: frozenset[str] = frozenset(
-    {"stub", "dryrun", "dry-run", "knob", "probe"}
+    {"stub", "dryrun", "dry-run", "knob", "probe", "lock-check-stub", "lock_check_stub", "counted-stub", "counted_stub"}
 )
-STUB_OR_DRYRUN_WINDOW_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run"})
+STUB_OR_DRYRUN_WINDOW_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run", "lock-check-stub", "lock_check_stub", "counted-stub", "counted_stub"})
 
 
 def is_real_mode(
@@ -2372,73 +2372,68 @@ def build_golden_anchor_manifest(
     lock_check_dir_or_rows: Path | str | Sequence[Mapping[str, Any]],
     *,
     anchor_item_ids: Iterable[str] | None = None,
+    items_or_path: Sequence[JudgeInputItem] | Path | str | None = None,
+    schedule: JudgeSchedule | None = None,
+    num_shards: int = 2,
+    schedule_seed: int = DEFAULT_SCHEDULE_SEED,
+    limit_items: int | None = None,
+    anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_count: int = DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT,
+    canary_anchor_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_item_ids: Sequence[str] | None = None,
+    canary_item_ids: Sequence[str] | None = None,
+    canary_telemetry_sha256: str | None = None,
+    items_sha256: str | None = None,
+    schedule_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Build the golden anchor manifest from the lock-check window's anchor rows (all 500 rows).
 
     Records only hashes, normalized verdict codes (`yes`/`no`/`unparseable`), and row states (`parsed`/`unparseable`/`length_stop`).
     Never stores item text, prompts, keys, or raw judge generation text.
     """
-    raw_rows: list[Mapping[str, Any]] = []
-    if isinstance(lock_check_dir_or_rows, (Path, str)):
-        base = Path(lock_check_dir_or_rows)
-        jsonl_files: list[Path] = []
-        if base.is_file():
-            jsonl_files = [base]
-        elif base.is_dir():
-            anchor_sub = base / ANCHOR_ROWS_DIRNAME
-            rows_sub = base / ROWS_DIRNAME
-            source_dir = anchor_sub if (anchor_sub.is_dir() and list(anchor_sub.glob("*.jsonl"))) else rows_sub
-            jsonl_files = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
-        for rf in jsonl_files:
-            for ln in rf.read_text(encoding="utf-8").splitlines():
-                if ln.strip():
-                    obj = json.loads(ln)
-                    if isinstance(obj, Mapping):
-                        raw_rows.append(obj)
-    else:
-        raw_rows = list(lock_check_dir_or_rows)
-
-    wanted_anchors = {str(x) for x in anchor_item_ids} if anchor_item_ids is not None else None
-    rows_map: dict[str, dict[str, Any]] = {}
-    judges_seen: set[str] = set()
-    items_seen: set[str] = set()
-    for r in raw_rows:
-        iid = str(r.get("item_id") or "").strip()
-        ord_s = str(r.get("order") or "").strip()
-        jid = str(r.get("judge_id") or "").strip()
-        if not iid or not ord_s or not jid:
-            continue
-        if wanted_anchors is not None and iid not in wanted_anchors:
-            continue
-        key = f"{jid}:{iid}:{ord_s}"
-        row_state = str(r.get("state") or r.get("verdict_parse_status") or "parsed").strip()
-        verdict_code = normalize_anchor_verdict_code(r)
-        out_sha = str(r.get("output_token_ids_sha256") or "").strip()
-        in_sha = str(r.get("input_token_ids_sha256") or "").strip()
-        prompt_sha = str(r.get("prompt_sha256") or "").strip()
-        rows_map[key] = {
-            "judge_id": jid,
-            "item_id": iid,
-            "order": ord_s,
-            "row_state": row_state,
-            "verdict_code": verdict_code,
-            "output_token_ids_sha256": out_sha,
-            "input_token_ids_sha256": in_sha,
-            "prompt_sha256": prompt_sha,
-        }
-        judges_seen.add(jid)
-        items_seen.add(iid)
-
-    doc: dict[str, Any] = {
-        "schema_version": "1.0",
-        "anchor_item_count": len(items_seen),
-        "judge_count": len(judges_seen),
-        "row_count": len(rows_map),
-        "rows": dict(sorted(rows_map.items())),
-    }
-    body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    doc["golden_anchor_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
-    return doc
+    return _build_golden_anchor_manifest_impl(
+        lock_check_dir_or_rows,
+        anchor_item_ids=anchor_item_ids,
+        items_or_path=items_or_path,
+        schedule=schedule,
+        num_shards=num_shards,
+        schedule_seed=schedule_seed,
+        limit_items=limit_items,
+        anchor_count=anchor_count,
+        stratified_anchor_count=stratified_anchor_count,
+        canary_anchor_count=canary_anchor_count,
+        stratified_anchor_item_ids=stratified_anchor_item_ids,
+        canary_item_ids=canary_item_ids,
+        canary_telemetry_sha256=canary_telemetry_sha256,
+        items_sha256=items_sha256,
+        schedule_sha256=schedule_sha256,
+    )
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
+    #
 
 
 def write_golden_anchor_manifest(golden_doc: Mapping[str, Any], path: Path) -> str:
@@ -2563,6 +2558,7 @@ def build_shard_manifest(
         "anchor_count": len(anchor_item_ids),
         "anchor_item_ids": anchor_item_ids,
         "input_token_ids_sha256_by_call": dict(sorted(input_token_ids_sha256_by_call.items())),
+        **_build_shard_manifest_extra_fields(schedule, stratified_anchor_ids, resolved_telemetry_sha, anchor_item_ids),
     }
     doc["manifest_sha256"] = _compute_shard_manifest_body_sha256(doc)
     return doc
@@ -2681,6 +2677,7 @@ class DeterministicFakeJudgeTransport:
     - remote-code gate enforcement identical to real model loading.
     """
 
+    is_stub_transport: bool = True
     def __init__(
         self,
         *,
@@ -2714,7 +2711,7 @@ class DeterministicFakeJudgeTransport:
         sdpa_backend = pin_and_read_sdpa_backend()
         # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
         library_pins: dict[str, Any] = {
-            "transport": "DeterministicFakeJudgeTransport",
+            "transport": "DeterministicFakeJudgeTransport", "stub_transport": True,
             "python": sys.version.split()[0],
             "torch": "2.14.1+cu132 (pinned-not-loaded)",
             "transformers": "5.19.0 (pinned-not-loaded)",
@@ -4762,7 +4759,7 @@ def run_bakeoff_judge(
             for iid in manifest_doc.get("anchor_item_ids", [])
             if str(iid) in items_by_id
         ]
-        if str(eff_window_mode or "").strip().lower() == "counted":
+        if str(eff_window_mode or "").strip().lower() in ("counted", "counted-stub", "counted_stub"):
             manifest_canaries = manifest_doc.get("canary_item_ids")
             if not isinstance(manifest_canaries, list) or not manifest_canaries:
                 raise refused_error(
@@ -4771,15 +4768,17 @@ def run_bakeoff_judge(
                     "Build shard_manifest.json with lock_check_telemetry_path or canary_item_ids before running a counted shard.",
                 )
             eff_golden_path_raw = (
-                str(golden_anchor_manifest_path)
-                if golden_anchor_manifest_path is not None
-                else os.environ.get("RDLAB_GOLDEN_ANCHOR_MANIFEST", "").strip()
+                str(golden_anchor_manifest_path) if golden_anchor_manifest_path is not None else ""
+            ).strip()
+            has_golden_manifest = (
+                Path(eff_golden_path_raw).is_file()
+                if eff_golden_path_raw
+                else (
+                    bool(manifest_doc.get("golden_anchor_manifest_sha256"))
+                    or (resolved_out / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file()
+                    or (target_manifest_path.parent / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file()
+                )
             )
-            has_golden_manifest = bool(manifest_doc.get("golden_anchor_manifest_sha256")) or (
-                bool(eff_golden_path_raw) and Path(eff_golden_path_raw).is_file()
-            ) or (resolved_out / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file() or (
-                target_manifest_path.parent / GOLDEN_ANCHOR_MANIFEST_FILENAME
-            ).is_file()
             if not has_golden_manifest:
                 raise refused_error(
                     "GOLDEN_ANCHOR_MANIFEST_MISSING",
@@ -5594,6 +5593,792 @@ def close_bakeoff_outputs(
     return closed_doc
 
 
+P0A_REPORT_FILENAME = "p0a_report.json"
+WINDOW_MANIFEST_FILENAME = "window.json"
+CANARY_ANCHOR_SELECTION_RULE = "min_verdict_token_margin_asc_exclude_stratified_25_tiebreak_item_id"
+PILOT_BURNED_PART_ID = "part-pilot-40b"
+PILOT_BURNED_ITEM_COUNT = 114
+PILOT_BURNED_CALL_COUNT = 228
+P0A_PROFILER_CALL_COUNT = 10
+P0A_LOW_MARGIN_RERUN_ITEM_COUNT = 20
+P0A_PHASE_NAMES: tuple[str, ...] = ("tokenise", "prefill", "decode", "post_processing")
+
+
+def _compute_canary_inputs_sha256(
+    *,
+    canary_selection_rule: str,
+    items_sha256: str,
+    schedule_sha256: str,
+    stratified_anchor_item_ids: Sequence[str],
+    canary_telemetry_sha256: str,
+) -> str:
+    payload = {
+        "canary_selection_rule": str(canary_selection_rule),
+        "items_sha256": str(items_sha256 or ""),
+        "schedule_sha256": str(schedule_sha256 or ""),
+        "stratified_anchor_item_ids": [str(x) for x in stratified_anchor_item_ids],
+        "canary_telemetry_sha256": str(canary_telemetry_sha256 or ""),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _build_shard_manifest_extra_fields(
+    schedule: JudgeSchedule,
+    stratified_anchor_ids: Sequence[str],
+    resolved_telemetry_sha: str | None,
+    anchor_item_ids: Sequence[str],
+) -> dict[str, Any]:
+    canary_inputs_sha = _compute_canary_inputs_sha256(
+        canary_selection_rule=CANARY_ANCHOR_SELECTION_RULE,
+        items_sha256=schedule.items_sha256,
+        schedule_sha256=schedule.schedule_sha256,
+        stratified_anchor_item_ids=stratified_anchor_ids,
+        canary_telemetry_sha256=str(resolved_telemetry_sha or ""),
+    )
+    return {
+        "canary_selection_rule": CANARY_ANCHOR_SELECTION_RULE,
+        "canary_inputs_sha256": canary_inputs_sha,
+        "anchor_item_count": len(anchor_item_ids),
+        "anchor_pair_count": len(anchor_item_ids) * len(BAKEOFF_JUDGE_SPECS),
+    }
+
+
+def _build_golden_anchor_manifest_impl(
+    lock_check_dir_or_rows: Path | str | Sequence[Mapping[str, Any]],
+    *,
+    anchor_item_ids: Iterable[str] | None = None,
+    items_or_path: Sequence[JudgeInputItem] | Path | str | None = None,
+    schedule: JudgeSchedule | None = None,
+    num_shards: int = 2,
+    schedule_seed: int = DEFAULT_SCHEDULE_SEED,
+    limit_items: int | None = None,
+    anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_count: int = DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT,
+    canary_anchor_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_item_ids: Sequence[str] | None = None,
+    canary_item_ids: Sequence[str] | None = None,
+    canary_telemetry_sha256: str | None = None,
+    items_sha256: str | None = None,
+    schedule_sha256: str | None = None,
+) -> dict[str, Any]:
+    raw_rows: list[Mapping[str, Any]] = []
+    telemetry_hasher = hashlib.sha256()
+    if isinstance(lock_check_dir_or_rows, (Path, str)):
+        base = Path(lock_check_dir_or_rows)
+        anchor_sub = base / ANCHOR_ROWS_DIRNAME
+        rows_sub = base / ROWS_DIRNAME
+        prefer_rows = anchor_item_ids is None and (items_or_path is not None or schedule is not None)
+        source_dir = rows_sub if (prefer_rows or not (anchor_sub.is_dir() and list(anchor_sub.glob("*.jsonl")))) else anchor_sub
+        jsonl_files = [base] if base.is_file() else (sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else [])
+        for rf in jsonl_files:
+            rf_bytes = rf.read_bytes()
+            telemetry_hasher.update(rf_bytes)
+            for ln in rf_bytes.decode("utf-8").splitlines():
+                if ln.strip():
+                    obj = json.loads(ln)
+                    if isinstance(obj, Mapping):
+                        raw_rows.append(obj)
+        computed_telemetry_sha = (
+            hashlib.sha256(jsonl_files[0].read_bytes()).hexdigest()
+            if len(jsonl_files) == 1
+            else (telemetry_hasher.hexdigest() if jsonl_files else "")
+        )
+    else:
+        raw_rows = list(lock_check_dir_or_rows)
+        for r in raw_rows:
+            telemetry_hasher.update(
+                json.dumps(dict(r), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                + b"\n"
+            )
+        computed_telemetry_sha = telemetry_hasher.hexdigest() if raw_rows else ""
+
+    eff_items_sha = str(items_sha256 or "")
+    eff_schedule_sha = str(schedule_sha256 or "")
+    resolved_stratified_ids: list[str] = (
+        [str(x) for x in stratified_anchor_item_ids] if stratified_anchor_item_ids is not None else []
+    )
+    resolved_canary_ids: list[str] = (
+        [str(x) for x in canary_item_ids] if canary_item_ids is not None else []
+    )
+    resolved_telemetry_sha = str(canary_telemetry_sha256 or computed_telemetry_sha)
+
+    if items_or_path is not None or schedule is not None:
+        loaded_items: Sequence[JudgeInputItem] = ()
+        if isinstance(items_or_path, (Path, str)):
+            loaded_items, loaded_items_sha = load_judge_items(Path(items_or_path), limit=limit_items)
+            eff_items_sha = eff_items_sha or loaded_items_sha
+        elif items_or_path is not None:
+            loaded_items = tuple(items_or_path)
+        if schedule is None and loaded_items:
+            schedule = build_schedule(loaded_items, seed=schedule_seed, items_sha256=eff_items_sha)
+        if schedule is not None:
+            verify_schedule_invariants(schedule)
+            eff_schedule_sha = eff_schedule_sha or schedule.schedule_sha256
+            eff_items_sha = eff_items_sha or schedule.items_sha256
+            if not resolved_stratified_ids:
+                eff_num_shards = max(1, int(num_shards))
+                pass1_entries = schedule.entries[: schedule.item_count]
+                shard1_items = [
+                    entry.item_id
+                    for pass1_idx, entry in enumerate(pass1_entries)
+                    if (pass1_idx % eff_num_shards) == 0
+                ]
+                eff_strat_max = min(int(stratified_anchor_count), int(anchor_count))
+                target_strat_n = min(max(0, eff_strat_max), len(shard1_items))
+                resolved_stratified_ids = (
+                    list(shard1_items)
+                    if target_strat_n >= len(shard1_items)
+                    else [
+                        shard1_items[int((i * len(shard1_items)) // target_strat_n)]
+                        for i in range(target_strat_n)
+                    ]
+                )
+            if not resolved_canary_ids and isinstance(lock_check_dir_or_rows, (Path, str)):
+                all_sched_ids = [e.item_id for e in schedule.entries[: schedule.item_count]]
+                remaining_budget = max(0, int(anchor_count) - len(resolved_stratified_ids))
+                target_canary_n = min(max(0, int(canary_anchor_count)), remaining_budget)
+                resolved_canary_ids, sel_tel_sha = select_lock_check_canary_anchors(
+                    all_sched_ids,
+                    lock_check_dir_or_rows,
+                    excluded_item_ids=resolved_stratified_ids,
+                    canary_count=target_canary_n,
+                )
+                resolved_telemetry_sha = str(canary_telemetry_sha256 or sel_tel_sha)
+
+    resolved_anchor_list = (
+        [str(x) for x in anchor_item_ids]
+        if anchor_item_ids is not None
+        else [*resolved_stratified_ids, *resolved_canary_ids]
+    )
+    wanted_anchors = set(resolved_anchor_list) if resolved_anchor_list else None
+
+    rows_map: dict[str, dict[str, Any]] = {}
+    judges_seen: set[str] = set()
+    items_seen: set[str] = set()
+    for r in (r for r in raw_rows if r.get("item_id") and r.get("order") and r.get("judge_id")):
+        iid = str(r.get("item_id") or "").strip()
+        ord_s = str(r.get("order") or "").strip()
+        jid = str(r.get("judge_id") or "").strip()
+        if wanted_anchors is not None and iid not in wanted_anchors:
+            continue
+        key = f"{jid}:{iid}:{ord_s}"
+        row_state = str(r.get("state") or r.get("verdict_parse_status") or "parsed").strip()
+        verdict_code = normalize_anchor_verdict_code(r)
+        out_sha = str(r.get("output_token_ids_sha256") or "").strip()
+        in_sha = str(r.get("input_token_ids_sha256") or "").strip()
+        prompt_sha = str(r.get("prompt_sha256") or "").strip()
+        rows_map[key] = {
+            "judge_id": jid,
+            "item_id": iid,
+            "order": ord_s,
+            "row_state": row_state,
+            "verdict_code": verdict_code,
+            "output_token_ids_sha256": out_sha,
+            "input_token_ids_sha256": in_sha,
+            "prompt_sha256": prompt_sha,
+        }
+        judges_seen.add(jid)
+        items_seen.add(iid)
+
+    resolved_anchor_list = resolved_anchor_list or sorted(items_seen)
+    canary_inputs_sha = _compute_canary_inputs_sha256(
+        canary_selection_rule=CANARY_ANCHOR_SELECTION_RULE,
+        items_sha256=eff_items_sha,
+        schedule_sha256=eff_schedule_sha,
+        stratified_anchor_item_ids=resolved_stratified_ids,
+        canary_telemetry_sha256=resolved_telemetry_sha,
+    )
+    doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "canary_selection_rule": CANARY_ANCHOR_SELECTION_RULE,
+        "canary_inputs_sha256": canary_inputs_sha,
+        "canary_telemetry_sha256": resolved_telemetry_sha,
+        "items_sha256": eff_items_sha,
+        "schedule_sha256": eff_schedule_sha,
+        "stratified_anchor_count": len(resolved_stratified_ids),
+        "stratified_anchor_item_ids": resolved_stratified_ids,
+        "canary_anchor_count": len(resolved_canary_ids),
+        "canary_item_ids": resolved_canary_ids,
+        "anchor_item_ids": resolved_anchor_list,
+        "anchor_item_count": len(items_seen),
+        "anchor_pair_count": len(items_seen) * len(judges_seen),
+        "pair_count": len(items_seen) * len(judges_seen),
+        "judge_count": len(judges_seen),
+        "row_count": len(rows_map),
+        "rows": dict(sorted(rows_map.items())),
+    }
+    body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    doc["golden_anchor_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
+    return doc
+
+
+class _MonotonicTimingEvent:
+    """CPU monotonic timing event with the same `.record()`, `.synchronize()`, and `.elapsed_time(end_ev)` interface as `torch.cuda.Event(enable_timing=True)`."""
+
+    def __init__(self) -> None:
+        self._timestamp: float = time.perf_counter()
+
+    def record(self) -> None:
+        self._timestamp = time.perf_counter()
+
+    def synchronize(self) -> None:
+        return None
+
+    def elapsed_time(self, end_event: _MonotonicTimingEvent) -> float:
+        return round(max(0.0001, (end_event._timestamp - self._timestamp) * 1000.0), 6)
+
+
+def _extract_row_logprob_value(row: Mapping[str, Any]) -> float:
+    raw_lp = row.get("top1_logprob")
+    if isinstance(raw_lp, (int, float)):
+        return round(float(raw_lp), 6)
+    top_lps = row.get("top_logprobs") or row.get("verdict_top_logprobs") or ()
+    first_entry = top_lps[0] if isinstance(top_lps, Sequence) and top_lps else {}
+    lp_val = first_entry.get("logprob") if isinstance(first_entry, Mapping) else getattr(first_entry, "logprob", 0.0)
+    return round(float(lp_val or 0.0), 6)
+
+
+def compare_p0a_baseline_passes(
+    pass1_rows: Sequence[Mapping[str, Any]],
+    pass2_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Compare two baseline passes over the 228 burned pilot calls bitwise in the same session.
+
+    Returns counts, max |Δ log-prob|, and SHA-256 digests only (never item text, prompts, keys, or completions).
+    """
+    pass1_by_key: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    pass2_by_key: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    pass1_hasher = hashlib.sha256()
+    pass2_hasher = hashlib.sha256()
+
+    for r in pass1_rows:
+        jid = str(r.get("judge_id") or "").strip()
+        iid = str(r.get("item_id") or "").strip()
+        ord_s = str(r.get("order") or "").strip()
+        if jid and iid and ord_s:
+            pass1_by_key[(jid, iid, ord_s)] = r
+    for r in pass2_rows:
+        jid = str(r.get("judge_id") or "").strip()
+        iid = str(r.get("item_id") or "").strip()
+        ord_s = str(r.get("order") or "").strip()
+        if jid and iid and ord_s:
+            pass2_by_key[(jid, iid, ord_s)] = r
+
+    all_keys = sorted(set(pass1_by_key.keys()) | set(pass2_by_key.keys()))
+    token_hash_mismatch_count = 0
+    verdict_flip_count = 0
+    max_abs_delta_logprob = 0.0
+    by_judge: dict[str, dict[str, Any]] = {}
+
+    for jid, iid, ord_s in all_keys:
+        r1 = pass1_by_key.get((jid, iid, ord_s), {})
+        r2 = pass2_by_key.get((jid, iid, ord_s), {})
+        out1 = str(r1.get("output_token_ids_sha256") or "")
+        out2 = str(r2.get("output_token_ids_sha256") or "")
+        v1 = normalize_anchor_verdict_code(r1) if r1 else "missing"
+        v2 = normalize_anchor_verdict_code(r2) if r2 else "missing"
+        lp1 = _extract_row_logprob_value(r1)
+        lp2 = _extract_row_logprob_value(r2)
+        delta_lp = round(abs(lp1 - lp2), 8)
+
+        pass1_hasher.update(f"{jid}:{iid}:{ord_s}:{out1}:{v1}:{lp1:.6f}\n".encode("utf-8"))
+        pass2_hasher.update(f"{jid}:{iid}:{ord_s}:{out2}:{v2}:{lp2:.6f}\n".encode("utf-8"))
+
+        j_stat = by_judge.setdefault(
+            jid,
+            {
+                "call_count": 0,
+                "token_hash_mismatch_count": 0,
+                "verdict_flip_count": 0,
+                "max_abs_delta_logprob": 0.0,
+            },
+        )
+        j_stat["call_count"] += 1
+        if out1 != out2 or not out1 or not out2:
+            token_hash_mismatch_count += 1
+            j_stat["token_hash_mismatch_count"] += 1
+        if v1 != v2:
+            verdict_flip_count += 1
+            j_stat["verdict_flip_count"] += 1
+        if delta_lp > max_abs_delta_logprob:
+            max_abs_delta_logprob = delta_lp
+        if delta_lp > float(j_stat["max_abs_delta_logprob"]):
+            j_stat["max_abs_delta_logprob"] = delta_lp
+
+    for jid, j_stat in by_judge.items():
+        j_stat["bitwise_identical"] = (
+            int(j_stat["token_hash_mismatch_count"]) == 0
+            and int(j_stat["verdict_flip_count"]) == 0
+            and float(j_stat["max_abs_delta_logprob"]) == 0.0
+        )
+
+    pass1_sha = pass1_hasher.hexdigest()
+    pass2_sha = pass2_hasher.hexdigest()
+    bitwise_identical = (
+        token_hash_mismatch_count == 0
+        and verdict_flip_count == 0
+        and max_abs_delta_logprob == 0.0
+        and pass1_sha == pass2_sha
+    )
+    return {
+        "call_count": len(all_keys),
+        "token_hash_mismatch_count": token_hash_mismatch_count,
+        "max_abs_delta_logprob": round(max_abs_delta_logprob, 8),
+        "verdict_flip_count": verdict_flip_count,
+        "bitwise_identical": bitwise_identical,
+        "pass1_sha256": pass1_sha,
+        "pass2_sha256": pass2_sha,
+        "by_judge": dict(sorted(by_judge.items())),
+    }
+
+
+def extract_verdict_probabilities(
+    judge_id: str,
+    response: JudgeTransportResponse,
+    *,
+    pass_mode: PassMode = "binary",
+    polarity_map: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Extract normalized verdict probabilities (`p_yes`, `p_no`, `choice_probabilities`) for `judge_id`."""
+    _ = polarity_map
+    spec = BAKEOFF_JUDGE_SPECS[judge_id]
+    adapter = build_judge_adapter(spec)
+    parsed = adapter.parse_response(response, pass_mode=pass_mode)
+    p_yes = parsed.p_yes
+    p_no = round(1.0 - float(p_yes), 6) if p_yes is not None else None
+    return {
+        "p_yes": p_yes,
+        "p_no": p_no,
+        "choice_probabilities": parsed.choice_probabilities,
+    }
+
+
+def run_p0a_phase_profiler(
+    spec: JudgeSpec,
+    adapter: JudgeAdapter,
+    transport: JudgeTransport,
+    items: Sequence[JudgeInputItem],
+    *,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+    call_count: int = P0A_PROFILER_CALL_COUNT,
+    pass_mode: PassMode = "binary",
+    event_factory: Any = None,
+    timing_backend: str | None = None,
+) -> dict[str, Any]:
+    """Run a `call_count` (10)-call profiler step for `spec` with per-phase timing (`tokenise`, `prefill`, `decode`, `post_processing`)."""
+    eff_factory = event_factory if callable(event_factory) else _MonotonicTimingEvent
+    eff_backend = timing_backend or ("cuda_event" if event_factory is not None else "cpu_monotonic")
+    target_calls = max(1, int(call_count))
+    polarity_map = POLARITY_MAP_BY_JUDGE.get(spec.judge_id, {"inverted": "false"})
+    orders: tuple[OrderMode, ...] = ("AB", "BA")
+
+    phase_samples: dict[str, list[float]] = {ph: [] for ph in P0A_PHASE_NAMES}
+    call_records: list[dict[str, Any]] = []
+    out_hasher = hashlib.sha256()
+
+    for call_idx in range(target_calls):
+        item = items[(call_idx // 2) % len(items)]
+        ord_mode: OrderMode = orders[call_idx % 2]
+        ev0 = eff_factory()
+        ev1 = eff_factory()
+        ev2 = eff_factory()
+        ev3 = eff_factory()
+        ev4 = eff_factory()
+
+        ev0.record()
+        prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode=pass_mode)
+        in_tok_ids = encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+        in_tok_sha = compute_token_ids_sha256(in_tok_ids)
+        ev1.record()
+
+        # Prefill + decode execution
+        ev2.record()
+        resp = transport.generate(spec, prompt, seed=seed)
+        ev3.record()
+
+        # Post-processing (verdict parsing + token probability extraction)
+        parsed = adapter.parse_response(resp, pass_mode=pass_mode)
+        _ = extract_verdict_probabilities(spec.judge_id, resp, pass_mode=pass_mode, polarity_map=polarity_map)
+        out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+            spec.judge_id,
+            resp.tokens,
+            system_one_result=resp.system_one_result,
+        )
+        ev4.record()
+        ev4.synchronize()
+
+        t_tok = round(max(0.0001, float(ev0.elapsed_time(ev1))), 6)
+        t_pre = round(max(0.0001, float(ev1.elapsed_time(ev2))), 6)
+        t_dec = round(max(0.0001, float(ev2.elapsed_time(ev3))), 6)
+        t_post = round(max(0.0001, float(ev3.elapsed_time(ev4))), 6)
+
+        phase_samples["tokenise"].append(t_tok)
+        phase_samples["prefill"].append(t_pre)
+        phase_samples["decode"].append(t_dec)
+        phase_samples["post_processing"].append(t_post)
+
+        out_hasher.update(f"{item.item_id}:{ord_mode}:{in_tok_sha}:{out_sha}:{parsed.state}\n".encode("utf-8"))
+        call_records.append(
+            {
+                "call_index": call_idx,
+                "item_id": item.item_id,
+                "order": ord_mode,
+                "input_token_ids_sha256": in_tok_sha,
+                "output_token_ids_sha256": out_sha,
+                "phases_ms": {
+                    "tokenise": t_tok,
+                    "prefill": t_pre,
+                    "decode": t_dec,
+                    "post_processing": t_post,
+                },
+            }
+        )
+
+    phases_summary: dict[str, dict[str, float]] = {}
+    for ph in P0A_PHASE_NAMES:
+        vals = sorted(phase_samples[ph])
+        p95_idx = min(len(vals) - 1, max(0, int(math.ceil(0.95 * len(vals))) - 1))
+        phases_summary[ph] = {
+            "mean_ms": round(sum(vals) / len(vals), 6),
+            "min_ms": round(min(vals), 6),
+            "max_ms": round(max(vals), 6),
+            "p95_ms": round(vals[p95_idx], 6),
+            "total_ms": round(sum(vals), 6),
+        }
+
+    return {
+        "judge_id": spec.judge_id,
+        "call_count": len(call_records),
+        "timing_backend": eff_backend,
+        "phases": phases_summary,
+        "phases_ms": phases_summary,
+        "calls": call_records,
+        "profiler_outputs_sha256": out_hasher.hexdigest(),
+    }
+
+
+def select_p0a_lowest_margin_items(
+    telemetry_rows: Sequence[Mapping[str, Any]],
+    *,
+    valid_item_ids: Iterable[str] | None = None,
+    count: int = P0A_LOW_MARGIN_RERUN_ITEM_COUNT,
+) -> list[str]:
+    """Select the `count` (20) lowest-margin items ranked ascending by minimum `verdict_token_margin` across all judges and both orders."""
+    allowed_ids = {str(x) for x in valid_item_ids} if valid_item_ids is not None else None
+    min_margin_by_item: dict[str, float] = {}
+    seen_ids: set[str] = set()
+    for r in telemetry_rows:
+        iid = str(r.get("item_id") or "").strip()
+        raw_margin = r.get("verdict_token_margin", r.get("min_top2_logit_margin"))
+        if iid and (allowed_ids is None or iid in allowed_ids) and raw_margin is not None:
+            seen_ids.add(iid)
+            m_val = float(raw_margin)
+            prev = min_margin_by_item.get(iid)
+            if prev is None or m_val < prev:
+                min_margin_by_item[iid] = m_val
+
+    candidate_pool = sorted(allowed_ids if allowed_ids is not None else seen_ids)
+    target_n = min(max(0, int(count)), len(candidate_pool))
+    ranked = sorted(
+        candidate_pool,
+        key=lambda iid: (min_margin_by_item.get(iid, float("inf")), iid),
+    )
+    return ranked[:target_n]
+
+
+def run_p0a_reversed_low_margin_rerun(
+    *,
+    judges: Sequence[JudgeSpec],
+    adapters: Mapping[str, JudgeAdapter],
+    transports: Mapping[str, JudgeTransport],
+    items_by_id: Mapping[str, JudgeInputItem],
+    selected_item_ids: Sequence[str],
+    baseline_rows: Sequence[Mapping[str, Any]],
+    seed: int = DEFAULT_SCHEDULE_SEED,
+    pass_mode: PassMode = "binary",
+) -> dict[str, Any]:
+    """Re-run the `selected_item_ids` (20 lowest-margin items) in reversed item and order sequence (`BA` then `AB`),
+    reporting order independence and comparison against `baseline_rows`.
+    """
+    baseline_by_key: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    for r in baseline_rows:
+        jid = str(r.get("judge_id") or "").strip()
+        iid = str(r.get("item_id") or "").strip()
+        ord_s = str(r.get("order") or "").strip()
+        if jid and iid and ord_s:
+            baseline_by_key[(jid, iid, ord_s)] = r
+
+    selected_list = [str(iid) for iid in selected_item_ids if str(iid) in items_by_id]
+    reversed_items = list(reversed(selected_list))
+    rerun_rows: list[dict[str, Any]] = []
+    filtered_baseline_rows: list[Mapping[str, Any]] = []
+
+    ab_ba_agreement_count = 0
+    ab_ba_flip_count = 0
+    total_pairs = 0
+    by_judge_order: dict[str, dict[str, Any]] = {}
+
+    for spec in judges:
+        jid = spec.judge_id
+        adapter = adapters[jid]
+        transport = transports[jid]
+        polarity_map = POLARITY_MAP_BY_JUDGE.get(jid, {"inverted": "false"})
+        j_agree = 0
+        j_flip = 0
+        for iid in reversed_items:
+            item = items_by_id[iid]
+            verdict_by_order: dict[str, str] = {}
+            for ord_mode in ("BA", "AB"):
+                prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode=pass_mode)
+                resp = transport.generate(spec, prompt, seed=seed)
+                parsed = adapter.parse_response(resp, pass_mode=pass_mode)
+                probs = extract_verdict_probabilities(jid, resp, pass_mode=pass_mode, polarity_map=polarity_map)
+                out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                    jid,
+                    resp.tokens,
+                    system_one_result=resp.system_one_result,
+                )
+                top1_lp = round(float(resp.verdict_top_logprobs[0].logprob), 6) if resp.verdict_top_logprobs else 0.0
+                row_rec: dict[str, Any] = {
+                    "judge_id": jid,
+                    "item_id": iid,
+                    "order": ord_mode,
+                    "state": parsed.state,
+                    "raw_verdict": parsed.raw_verdict,
+                    "output_token_ids_sha256": out_sha,
+                    "top1_logprob": top1_lp,
+                    "p_yes": probs.get("p_yes"),
+                    "verdict_token_margin": resp.verdict_token_margin,
+                }
+                verdict_by_order[ord_mode] = normalize_anchor_verdict_code(row_rec)
+                rerun_rows.append(row_rec)
+                base_r = baseline_by_key.get((jid, iid, ord_mode))
+                if base_r is not None:
+                    filtered_baseline_rows.append(base_r)
+
+            total_pairs += 1
+            agreed = int(verdict_by_order.get("AB") == verdict_by_order.get("BA"))
+            flipped = 1 - agreed
+            ab_ba_agreement_count += agreed
+            ab_ba_flip_count += flipped
+            j_agree += agreed
+            j_flip += flipped
+        j_total = j_agree + j_flip
+        by_judge_order[jid] = {
+            "item_count": j_total,
+            "ab_ba_agreement_count": j_agree,
+            "ab_ba_flip_count": j_flip,
+            "order_independence_rate": round(j_agree / j_total, 6) if j_total > 0 else 1.0,
+        }
+
+    baseline_comparison = compare_p0a_baseline_passes(filtered_baseline_rows, rerun_rows)
+    order_indep_rate = round(ab_ba_agreement_count / total_pairs, 6) if total_pairs > 0 else 1.0
+    return {
+        "selected_item_count": len(selected_list),
+        "selected_item_ids": selected_list,
+        "reversed_execution_item_ids": reversed_items,
+        "pair_count": total_pairs,
+        "call_count": len(rerun_rows),
+        "ab_ba_agreement_count": ab_ba_agreement_count,
+        "ab_ba_flip_count": ab_ba_flip_count,
+        "order_independence_rate": order_indep_rate,
+        "by_judge": dict(sorted(by_judge_order.items())),
+        "baseline_comparison": baseline_comparison,
+    }
+
+
+def run_lock_check_p0a(
+    *,
+    part_dir: Path,
+    output_dir: Path,
+    baseline_rows: Sequence[Mapping[str, Any]],
+    judges: Sequence[JudgeSpec] | None = None,
+    judge_ids: Sequence[str] | None = None,
+    transports_by_judge: Mapping[str, JudgeTransport] | None = None,
+    fake_transport: bool = False,
+    receipts_dir: Path | None = None,
+    hf_home: Path | None = None,
+    device: str = "cpu",
+    dtype: str = DEFAULT_TORCH_DTYPE,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+    schedule_seed: int | None = None,
+    limit_items: int | None = None,
+    pass_mode: PassMode = "binary",
+    profiler_call_count: int = P0A_PROFILER_CALL_COUNT,
+    low_margin_item_count: int = P0A_LOW_MARGIN_RERUN_ITEM_COUNT,
+    event_factory: Any = None,
+    timing_backend: str | None = None,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Run P0a inside the lock-check window and write `p0a_report.json` into `output_dir`:
+      (a) second full baseline pass over the burned pilot calls in the same session, compared bitwise with `baseline_rows`;
+      (b) 10-call phase profiler per judge (`tokenise`, `prefill`, `decode`, `post_processing`);
+      (c) reversed re-run of the 20 lowest-margin items, reporting order independence and comparison against baseline.
+    """
+    resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
+    part_name = Path(part_dir).name.strip().lower()
+    if any(part_name.startswith(prefix) for prefix in ("part01", "part02", "part03", "part04", "part05")):
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), never on counted part '{Path(part_dir).name}'.",
+            f"Pass the burned pilot part directory ('{PILOT_BURNED_PART_ID}') to --lock-check.",
+        )
+
+    eff_seed = int(schedule_seed if schedule_seed is not None else seed)
+    items, items_sha256 = load_judge_items(part_dir, limit=limit_items)
+    items_by_id = {it.item_id: it for it in items}
+    schedule = load_or_create_schedule(resolved_out, items, seed=eff_seed, items_sha256=items_sha256)
+    target_jids = judge_ids if judge_ids is not None else sorted(BAKEOFF_JUDGE_SPECS.keys())
+    active_judges = (
+        list(judges)
+        if judges is not None
+        else [BAKEOFF_JUDGE_SPECS[jid] for jid in target_jids if jid in BAKEOFF_JUDGE_SPECS]
+    )
+    adapters: dict[str, JudgeAdapter] = {spec.judge_id: build_judge_adapter(spec) for spec in active_judges}
+    resolved_transports: dict[str, JudgeTransport] = {}
+    for spec in active_judges:
+        if transports_by_judge is not None and spec.judge_id in transports_by_judge:
+            resolved_transports[spec.judge_id] = transports_by_judge[spec.judge_id]
+        else:
+            resolved_transports[spec.judge_id] = DeterministicFakeJudgeTransport(torch_dtype=dtype)
+
+    # (a) Second full baseline pass over the schedule in the same session
+    pass2_rows: list[dict[str, Any]] = []
+    for spec in active_judges:
+        jid = spec.judge_id
+        adapter = adapters[jid]
+        transport = resolved_transports[jid]
+        polarity_map = POLARITY_MAP_BY_JUDGE.get(jid, {"inverted": "false"})
+        for entry in schedule.entries:
+            it = items_by_id[entry.item_id]
+            prompt = adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
+            resp = transport.generate(spec, prompt, seed=schedule.seed)
+            parsed = adapter.parse_response(resp, pass_mode=pass_mode)
+            probs = extract_verdict_probabilities(jid, resp, pass_mode=pass_mode, polarity_map=polarity_map)
+            out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                jid,
+                resp.tokens,
+                system_one_result=resp.system_one_result,
+            )
+            top1_lp = round(float(resp.verdict_top_logprobs[0].logprob), 6) if resp.verdict_top_logprobs else 0.0
+            pass2_rows.append(
+                {
+                    "judge_id": jid,
+                    "item_id": it.item_id,
+                    "order": entry.order,
+                    "state": parsed.state,
+                    "raw_verdict": parsed.raw_verdict,
+                    "output_token_ids_sha256": out_sha,
+                    "top1_logprob": top1_lp,
+                    "p_yes": probs.get("p_yes"),
+                    "verdict_token_margin": resp.verdict_token_margin,
+                }
+            )
+
+    baseline_repeat = compare_p0a_baseline_passes(baseline_rows, pass2_rows)
+
+    # (b) 10-call phase profiler per judge
+    profiler_by_judge: dict[str, dict[str, Any]] = {}
+    for spec in active_judges:
+        jid = spec.judge_id
+        profiler_by_judge[jid] = run_p0a_phase_profiler(
+            spec,
+            adapters[jid],
+            resolved_transports[jid],
+            items,
+            seed=schedule.seed,
+            call_count=profiler_call_count,
+            pass_mode=pass_mode,
+            event_factory=event_factory,
+            timing_backend=timing_backend,
+        )
+
+    # (c) Reversed re-run of the 20 lowest-margin items
+    selected_low_margin_ids = select_p0a_lowest_margin_items(
+        baseline_rows,
+        valid_item_ids=[it.item_id for it in items],
+        count=low_margin_item_count,
+    )
+    reversed_low_margin = run_p0a_reversed_low_margin_rerun(
+        judges=active_judges,
+        adapters=adapters,
+        transports=resolved_transports,
+        items_by_id=items_by_id,
+        selected_item_ids=selected_low_margin_ids,
+        baseline_rows=baseline_rows,
+        seed=schedule.seed,
+        pass_mode=pass_mode,
+    )
+
+    report_doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "part_id": Path(part_dir).name,
+        "item_count": len(items),
+        "calls_per_judge": len(schedule.entries),
+        "judge_count": len(active_judges),
+        "schedule_seed": schedule.seed,
+        "schedule_sha256": schedule.schedule_sha256,
+        "items_sha256": items_sha256,
+        "baseline_repeat": baseline_repeat,
+        "phase_profiler": {
+            "calls_per_judge": int(profiler_call_count),
+            "phases": list(P0A_PHASE_NAMES),
+            "by_judge": dict(sorted(profiler_by_judge.items())),
+        },
+        "reversed_low_margin_rerun": reversed_low_margin,
+    }
+    body_bytes = json.dumps(report_doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    report_doc["p0a_report_sha256"] = hashlib.sha256(body_bytes).hexdigest()
+
+    report_path = resolved_out / P0A_REPORT_FILENAME
+    report_path.write_text(
+        json.dumps(report_doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return report_doc
+
+
+def build_window_manifest(
+    run_dir: Path,
+    *,
+    window_id: str | None = None,
+    mode: str | None = None,
+) -> dict[str, Any]:
+    """Write `window.json` in `run_dir` listing every file in `run_dir` with its `sha256` and `bytes`."""
+    resolved_dir = Path(run_dir).resolve()
+    files_map: dict[str, dict[str, Any]] = {}
+    for p in sorted(resolved_dir.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(resolved_dir).as_posix()
+        if rel == WINDOW_MANIFEST_FILENAME or rel.endswith(".tar.gz") or "/.tmp" in f"/{rel}":
+            continue
+        raw = p.read_bytes()
+        files_map[rel] = {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+        }
+    doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "window_id": str(window_id or resolved_dir.name),
+        "mode": str(mode or "unknown"),
+        "file_count": len(files_map),
+        "files": dict(sorted(files_map.items())),
+    }
+    body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    doc["window_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
+    window_path = resolved_dir / WINDOW_MANIFEST_FILENAME
+    window_path.write_text(
+        json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return doc
+
+
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
 TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
 MALFORMED_TEST_HOOK = "MALFORMED_TEST_HOOK"
@@ -5809,6 +6594,13 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
         help="Expected SHA-256 of shard_manifest.json.",
     )
     parser.add_argument(
+        "--golden-anchor-manifest",
+        dest="golden_anchor_manifest_path",
+        type=Path,
+        default=None,
+        help="Optional path to golden_anchor_manifest.json from lock-check window.",
+    )
+    parser.add_argument(
         "--active-item-ids",
         default=None,
         help="Optional comma-separated list of item IDs to run in this sub-block.",
@@ -5870,6 +6662,7 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             shard_spec=args.shard_spec,
             shard_manifest_path=args.shard_manifest_path,
             shard_manifest_sha256=args.shard_manifest_sha256,
+            golden_anchor_manifest_path=args.golden_anchor_manifest_path,
             active_item_ids=parsed_active_ids,
             anchor_prefix_only=bool(args.anchor_prefix_only),
             session_fingerprint_sha256=args.session_fingerprint_sha256,

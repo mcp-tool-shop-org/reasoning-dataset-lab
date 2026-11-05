@@ -33,7 +33,17 @@ from reasoning_dataset_lab.pilot_b.bakeoff_judge import normalize_anchor_verdict
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
 TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
-STUB_OR_DRYRUN_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run"})
+STUB_OR_DRYRUN_MODES: frozenset[str] = frozenset(
+    {
+        "stub",
+        "dryrun",
+        "dry-run",
+        "lock-check-stub",
+        "lock_check_stub",
+        "counted-stub",
+        "counted_stub",
+    }
+)
 FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES: tuple[str, ...] = ("FAKE_COLAB_",)
 FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES: tuple[str, ...] = (
     "_OVERRIDE",
@@ -1076,7 +1086,10 @@ def merge_shards(
                 if isinstance(sdoc, dict):
                     s_mode = str(sdoc.get("mode") or "")
                     s_dryrun = bool(sdoc.get("dryrun", False))
-                    if s_mode in ("counted", "time-one") and not s_dryrun:
+                    if (
+                        s_mode in ("counted", "time-one", "lock-check")
+                        and not s_dryrun
+                    ) or s_mode in ("counted-stub", "counted_stub"):
                         any_counted = True
                     if is_real_mode(s_mode, dryrun=s_dryrun):
                         any_real = True

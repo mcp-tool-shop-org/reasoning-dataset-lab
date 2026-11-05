@@ -19772,6 +19772,1061 @@ def test_fix4_group_e_verdict_token_margin_canary_ranking_fill_uninitialized_mem
         assert jrep["fill_uninitialized_memory"] is False, jid
 
 
+def test_lock_check_item1_mode_exists_is_real_and_refuses_hooks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Item 1: `--lock-check` mode exists in `launch_judges.sh` and `vm_judges.py`,
+    `is_real_mode` is True, test hooks are refused, strict determinism is enforced like counted,
+    and keep-all raw generations + `verdict_token_margin` are recorded.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    assert "lock-check" in vm_judges.VALID_VM_MODES
+    assert "lock-check-stub" in vm_judges.VALID_VM_MODES
+    assert "counted-stub" in vm_judges.VALID_VM_MODES
+    assert "lock-check" in bakeoff_judge.COUNTED_WINDOW_MODES
+    assert "lock-check-stub" in bakeoff_judge.STUB_OR_DRYRUN_WINDOW_MODES
+    assert "counted-stub" in bakeoff_judge.STUB_OR_DRYRUN_WINDOW_MODES
+
+    parsed_lc = vm_judges.parse_args(["--lock-check", "--window-id", "win-lc-01"])
+    assert parsed_lc.mode == "lock-check"
+    assert parsed_lc.window_id == "win-lc-01"
+    assert parsed_lc.wall_seconds == 7200
+
+    parsed_lcs = vm_judges.parse_args(["--lock-check-stub"])
+    assert parsed_lcs.mode == "lock-check-stub"
+    parsed_cs = vm_judges.parse_args(["--counted-stub"])
+    assert parsed_cs.mode == "counted-stub"
+
+    assert vm_judges.is_real_mode("lock-check", dryrun=False) is True
+    assert vm_judges.is_real_mode("lock-check", dryrun=True) is False
+    assert vm_judges.is_real_mode("lock-check-stub", dryrun=False) is False
+    assert vm_judges.is_real_mode("counted-stub", dryrun=False) is False
+    assert vm_judges.is_counted_or_time_one_mode("lock-check") is True
+    assert vm_judges.is_counted_or_time_one_mode("lock-check-stub") is False
+    assert vm_judges.is_counted_or_time_one_mode("counted-stub") is False
+    assert vm_judges.resolve_judge_device(mode="lock-check", dryrun=False) == "cuda:0"
+    assert vm_judges.resolve_judge_device(mode="lock-check-stub", dryrun=False) == "cpu"
+    assert vm_judges.resolve_judge_device(mode="counted-stub", dryrun=False) == "cpu"
+
+    monkeypatch.setenv("FAKE_COLAB_GPU_GATE_MODE", "not_available")
+    with pytest.raises(vm_judges.RefusalError) as exc_hook:
+        vm_judges.guard_no_test_hooks_in_counted_mode("lock-check", dryrun=False)
+    assert exc_hook.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+    monkeypatch.delenv("FAKE_COLAB_GPU_GATE_MODE", raising=False)
+
+    monkeypatch.setenv("RDLAB_DETERMINISM_WARN_ONLY", "1")
+    with pytest.raises(vm_judges.RefusalError) as exc_det:
+        vm_judges.guard_no_test_hooks_in_counted_mode("lock-check", dryrun=False)
+    assert exc_det.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+    with pytest.raises(RdlabError) as exc_det_bj:
+        bakeoff_judge.configure_torch_determinism_with_reason(window_mode="lock-check")
+    assert exc_det_bj.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+    monkeypatch.delenv("RDLAB_DETERMINISM_WARN_ONLY", raising=False)
+
+    # Verify launch_judges.sh --lock-check --dry and --lock-check-stub --dry
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "lc_dry_env")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    items_path = _make_stratified_public_items(tmp_path / "lc_items", count=4)
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "open.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_path,
+    )
+    for flag, exp_mode, exp_hw in (
+        ("--lock-check", "lock-check", "--gpu A100"),
+        ("--lock-check-stub", "lock-check-stub", "CPU"),
+        ("--counted-stub", "counted-stub", "CPU"),
+    ):
+        proc_dry = subprocess.run(
+            [
+                "bash",
+                "-c",
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' {flag} --dry --window-id win-dry-1 --run-id lc-dry",
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_dry.returncode == 0, proc_dry.stderr
+        assert f"RDLAB_MODE={exp_mode}" in proc_dry.stdout
+        if exp_hw == "--gpu A100":
+            assert "--gpu A100" in proc_dry.stdout
+
+
+def test_lock_check_item2_and_3_committed_goldens_and_manifest_unchanged(
+    tmp_path: Path,
+) -> None:
+    """Card Items 2 & 3: `scripts/colab/boot_gatekeeper_goldens.json` and any committed manifest
+    are read-only to every run mode; hash before and after is identical, and `promote_goldens.py`
+    refuses writing to the live repo without `--allow-in-place-repo`.
+    """
+    import promote_goldens
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    committed_goldens = SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json"
+    sha_before = hashlib.sha256(committed_goldens.read_bytes()).hexdigest()
+
+    run_dir = tmp_path / "lc_readonly_run"
+    senv_rep = vm_judges.collect_and_write_session_env(
+        run_dir,
+        receipts_dir=REPO_ROOT / "configs" / "pilot_b" / "judge_model_receipts",
+        mode="lock-check-stub",
+        shard_spec="1/1",
+        phase="start",
+        dryrun=True,
+        repo_dir=REPO_ROOT,
+    )
+    bg_rep = vm_judges.run_boot_gatekeeper(
+        run_dir=run_dir,
+        repo_root=REPO_ROOT,
+        mode="lock-check-stub",
+        dryrun=True,
+        session_env_report=senv_rep,
+        window_id="win-ro-01",
+    )
+    assert bg_rep["status"] == "ok"
+    assert bg_rep["record_mode"] is True
+    filled_path = run_dir / vm_judges.BOOT_GATEKEEPER_FILLED_FILENAME
+    assert filled_path.is_file()
+
+    # Live repo goldens file must be untouched
+    sha_after_gatekeeper = hashlib.sha256(committed_goldens.read_bytes()).hexdigest()
+    assert sha_before == sha_after_gatekeeper
+
+    # promote_goldens.py refuses writing in-place to the live repo's boot_gatekeeper_goldens.json
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_live:
+        promote_goldens.promote_goldens_file(
+            filled_path,
+            output_path=committed_goldens,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_live.value.code == "PROMOTE_GOLDENS_LIVE_REPO_REFUSED"
+    assert hashlib.sha256(committed_goldens.read_bytes()).hexdigest() == sha_before
+
+    # Also verify CLI returns exit code 2 when targeting live repo without --allow-in-place-repo
+    rc_live = promote_goldens.main(
+        [
+            "--filled",
+            str(filled_path),
+            "--output",
+            str(committed_goldens),
+            "--repo-root",
+            str(REPO_ROOT),
+        ]
+    )
+    assert rc_live == 2
+    assert hashlib.sha256(committed_goldens.read_bytes()).hexdigest() == sha_before
+
+    # Building golden anchor manifest inside repo_root is refused by check_output_dir_outside_repo
+    items_path = _make_stratified_public_items(tmp_path / "ro_items", count=6)
+    with pytest.raises(RdlabError) as exc_in_repo:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=REPO_ROOT / "forbidden_in_repo_out",
+            judge="mu-judge",
+            fake_transport=True,
+            window_mode="lock-check-stub",
+            repo_root=REPO_ROOT,
+        )
+    assert exc_in_repo.value.code == "BAKEOFF_JUDGE_OUTPUT_INSIDE_REPO"
+
+
+def test_lock_check_item2_golden_anchor_manifest_canary_selection_and_hashes(
+    tmp_path: Path,
+) -> None:
+    """Card Item 2: Golden anchor manifest is written to the output dir, with 25 stratified +
+    25 canary anchors chosen by `verdict_token_margin` ascending (excluding stratified 25, tie-break by `item_id`),
+    and the selection rule and input hashes are recorded in both `golden_anchor_manifest.json` and `shard_manifest.json`.
+    Also verifies counted mode refuses when canaries or golden manifest are missing.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    items_path = _make_stratified_public_items(tmp_path / "item2_items", count=60)
+    items, items_sha = bakeoff_judge.load_judge_items(items_path)
+    schedule = bakeoff_judge.build_schedule(items, seed=0, items_sha256=items_sha)
+
+    # Create synthetic lock-check telemetry across all 5 judges and both orders for 60 items
+    # Assign controlled verdict_token_margin so we know the exact canary ranking
+    lc_dir = tmp_path / "lc_telemetry"
+    rows_dir = lc_dir / "rows"
+    rows_dir.mkdir(parents=True, exist_ok=True)
+
+    initial_sm = bakeoff_judge.build_shard_manifest(
+        items_path,
+        schedule,
+        num_shards=2,
+        anchor_count=50,
+        stratified_anchor_count=25,
+        canary_anchor_count=0,
+    )
+    stratified_25 = list(initial_sm["stratified_anchor_item_ids"])
+    assert len(stratified_25) == 25
+    assert initial_sm["canary_item_ids"] == []
+    assert initial_sm["canary_telemetry_sha256"] is None
+
+    non_stratified = sorted(
+        it.item_id for it in items if it.item_id not in set(stratified_25)
+    )
+    assert len(non_stratified) == 35
+
+    in_memory_rows: list[dict[str, Any]] = []
+    for j_idx, jid in enumerate(sorted(bakeoff_judge.BAKEOFF_JUDGE_SPECS.keys())):
+        j_lines: list[str] = []
+        for it in items:
+            if it.item_id in set(stratified_25):
+                # Give stratified items tiny margin (0.001) to prove they are excluded from canary_item_ids
+                margin_val = 0.001
+            else:
+                rank_idx = non_stratified.index(it.item_id)
+                # Make first two non-stratified items tie at 0.010 to test item_id tie-breaking
+                margin_val = 0.010 if rank_idx in (0, 1) else round(0.020 + rank_idx * 0.01, 6)
+            for ord_s in ("AB", "BA"):
+                out_sha = hashlib.sha256(f"{jid}:{it.item_id}:{ord_s}".encode("utf-8")).hexdigest()
+                row_obj = {
+                    "judge_id": jid,
+                    "item_id": it.item_id,
+                    "order": ord_s,
+                    "state": "parsed",
+                    "raw_verdict": "yes",
+                    "p_yes": 0.9,
+                    "p_no": 0.1,
+                    "top1_logprob": -0.1,
+                    "min_top2_logit_margin": 9.99,
+                    "verdict_token_margin": margin_val + j_idx * 0.0001,
+                    "output_token_ids_sha256": out_sha,
+                }
+                in_memory_rows.append(row_obj)
+                j_lines.append(json.dumps(row_obj, sort_keys=True))
+        (rows_dir / f"{jid}.jsonl").write_text("\n".join(j_lines) + "\n", encoding="utf-8")
+
+    expected_canary_25 = non_stratified[:25]
+    canaries_from_dir, tel_sha_dir = bakeoff_judge.select_lock_check_canary_anchors(
+        items,
+        lc_dir,
+        excluded_item_ids=stratified_25,
+        canary_count=25,
+    )
+    canaries_from_file, tel_sha_file = bakeoff_judge.select_lock_check_canary_anchors(
+        items,
+        rows_dir / "d3-mini.jsonl",
+        excluded_item_ids=stratified_25,
+        canary_count=25,
+    )
+    assert canaries_from_dir == expected_canary_25
+    assert canaries_from_file == expected_canary_25
+    assert set(canaries_from_dir).isdisjoint(set(stratified_25))
+    assert len(tel_sha_dir) == 64
+    assert len(tel_sha_file) == 64
+
+    golden_from_mem = bakeoff_judge.build_golden_anchor_manifest(
+        in_memory_rows,
+        items_or_path=items,
+        schedule=None,
+        schedule_seed=0,
+        canary_item_ids=expected_canary_25,
+        num_shards=2,
+    )
+    assert golden_from_mem["anchor_item_count"] == 50
+
+    golden_doc = bakeoff_judge.build_golden_anchor_manifest(
+        lc_dir,
+        items_or_path=items_path,
+        schedule=schedule,
+        num_shards=2,
+    )
+    golden_path = tmp_path / "out_manifest" / "golden_anchor_manifest.json"
+    golden_file_sha = bakeoff_judge.write_golden_anchor_manifest(golden_doc, golden_path)
+    assert golden_path.is_file()
+    assert len(golden_file_sha) == 64
+    assert golden_doc["stratified_anchor_item_ids"] == stratified_25
+    assert golden_doc["canary_item_ids"] == expected_canary_25
+    assert golden_doc["anchor_item_count"] == 50
+    assert golden_doc["pair_count"] == 250
+    assert golden_doc["row_count"] == 500
+    assert golden_doc["canary_selection_rule"] == bakeoff_judge.CANARY_ANCHOR_SELECTION_RULE
+    assert len(golden_doc["canary_inputs_sha256"]) == 64
+    assert golden_doc["canary_telemetry_sha256"] == tel_sha_dir
+    assert golden_from_mem["canary_item_ids"] == expected_canary_25
+    assert golden_from_mem["row_count"] == 500
+
+    full_sm = bakeoff_judge.build_shard_manifest(
+        items_path,
+        schedule,
+        num_shards=2,
+        lock_check_telemetry_path=lc_dir,
+        golden_anchor_manifest_sha256=golden_doc["golden_anchor_manifest_sha256"],
+    )
+    assert full_sm["stratified_anchor_item_ids"] == stratified_25
+    assert full_sm["canary_item_ids"] == expected_canary_25
+    assert len(full_sm["anchor_item_ids"]) == 50
+    assert full_sm["anchor_pair_count"] == 250
+    assert full_sm["canary_selection_rule"] == bakeoff_judge.CANARY_ANCHOR_SELECTION_RULE
+    assert len(full_sm["canary_inputs_sha256"]) == 64
+    assert full_sm["canary_telemetry_sha256"] == tel_sha_dir
+    assert full_sm["golden_anchor_manifest_sha256"] == golden_doc["golden_anchor_manifest_sha256"]
+
+    # Verify vm_judges.build_shard_manifest_stdlib records matching canary fields
+    stdlib_sm = vm_judges.build_shard_manifest_stdlib(
+        items_path,
+        num_shards=2,
+        schedule_seed=0,
+        canary_item_ids=expected_canary_25,
+        canary_telemetry_sha256=tel_sha_dir,
+        golden_anchor_manifest_sha256=golden_doc["golden_anchor_manifest_sha256"],
+    )
+    assert stdlib_sm["canary_item_ids"] == expected_canary_25
+    assert stdlib_sm["anchor_item_count"] == 50
+    assert stdlib_sm["anchor_pair_count"] == 250
+
+    # Verify counted-stub refuses when shard_manifest is missing the 25 canary anchors
+    no_canary_sm_path = tmp_path / "no_canary_sm.json"
+    no_canary_sm_sha = bakeoff_judge.write_shard_manifest(initial_sm, no_canary_sm_path)
+    with pytest.raises(RdlabError) as exc_no_can:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=tmp_path / "counted_no_canary_out",
+            judge="mu-judge",
+            fake_transport=True,
+            window_mode="counted-stub",
+            shard_spec="1/2",
+            shard_manifest_path=no_canary_sm_path,
+            shard_manifest_sha256=no_canary_sm_sha,
+            golden_anchor_manifest_path=golden_path,
+        )
+    assert exc_no_can.value.code == "SHARD_MANIFEST_CANARY_MISSING"
+
+    # Verify counted-stub refuses when golden_anchor_manifest.json is missing
+    full_sm_path = tmp_path / "full_sm.json"
+    full_sm_sha = bakeoff_judge.write_shard_manifest(full_sm, full_sm_path)
+    with pytest.raises(RdlabError) as exc_no_gm:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=tmp_path / "counted_no_gm_out",
+            judge="mu-judge",
+            fake_transport=True,
+            window_mode="counted-stub",
+            shard_spec="1/2",
+            shard_manifest_path=full_sm_path,
+            shard_manifest_sha256=full_sm_sha,
+            golden_anchor_manifest_path=tmp_path / "nonexistent_golden_manifest.json",
+        )
+    assert exc_no_gm.value.code == "GOLDEN_ANCHOR_MANIFEST_MISSING"
+
+
+def test_lock_check_item3_filled_goldens_real_transport_and_stub_refusal(
+    tmp_path: Path,
+) -> None:
+    """Card Item 3: Filled goldens use the real transport in `lock-check` mode;
+    the stub transport is marked (`is_stub_transport=True`, `library_pins['stub_transport']=True`),
+    and real mode (`lock-check`, `counted`, `time-one` with `dryrun=False`) refuses the stub transport
+    or stub-promoted goldens with `BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED`.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    fake_tr = bakeoff_judge.DeterministicFakeJudgeTransport()
+    assert fake_tr.is_stub_transport is True
+    spec = bakeoff_judge.BAKEOFF_JUDGE_SPECS["nemotron-3-nano-4b"]
+    adapter = bakeoff_judge.build_judge_adapter(spec)
+    sample_prompt = adapter.assemble_prompt(
+        bakeoff_judge.JudgeInputItem(
+            item_id="synth-01",
+            material="1. Alpha.\n2. Beta.",
+            claim="Claim.",
+        ),
+        order="AB",
+        pass_mode="binary",
+    )
+    fake_resp = fake_tr.generate(spec, sample_prompt, seed=0)
+    assert fake_resp.library_pins.get("stub_transport") is True
+
+    # Real lock-check mode refuses stub transport in run_boot_gatekeeper
+    with pytest.raises(vm_judges.RefusalError) as exc_stub_tr:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=tmp_path / "refuse_stub_lc",
+            repo_root=REPO_ROOT,
+            mode="lock-check",
+            dryrun=False,
+            transport=fake_tr,
+        )
+    assert exc_stub_tr.value.failure_class == "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED"
+
+    # Real lock-check mode with a non-stub transport records boot_gatekeeper_goldens.filled.json
+    class _MockRealGatekeeperTransport:
+        is_stub_transport = False
+
+        def generate(self, judge_spec: Any, prompt: Any, *, seed: int = 0) -> Any:
+            h = hashlib.sha256(
+                f"real:{judge_spec.judge_id}:{prompt.item_id}:{prompt.order}:{seed}".encode("utf-8")
+            ).hexdigest()
+            return bakeoff_judge.JudgeTransportResponse(
+                raw_text="yes",
+                tokens=("yes",),
+                verdict_top_logprobs=(bakeoff_judge.TopLogprobEntry(token="yes", logprob=-0.01, token_id=1),),
+                done_reason="stop",
+                seconds=0.01,
+                model_digest=judge_spec.revision,
+                server_binary="mock-real-transport",
+                library_pins={"stub_transport": False},
+                output_token_ids_sha256=h,
+                min_top2_logit_margin=2.5,
+                verdict_token_margin=2.5,
+            )
+
+    real_lc_dir = tmp_path / "real_lc_run"
+    senv_file = real_lc_dir / "session_env.json"
+    real_lc_dir.mkdir(parents=True, exist_ok=True)
+    senv_file.write_text(json.dumps({"session_fingerprint_sha256": "a" * 64}) + "\n", encoding="utf-8")
+    senv_sha = hashlib.sha256(senv_file.read_bytes()).hexdigest()
+
+    bg_real = vm_judges.run_boot_gatekeeper(
+        run_dir=real_lc_dir,
+        repo_root=REPO_ROOT,
+        mode="lock-check",
+        card_type="A100",
+        dryrun=False,
+        transport=_MockRealGatekeeperTransport(),
+        window_id="win-real-lc-01",
+    )
+    assert bg_real["status"] == "ok"
+    assert bg_real["record_mode"] is True
+    assert bg_real["hash_source"] == "real_transport"
+    assert bg_real["synthetic_fake_hash"] is False
+    assert bg_real["window_id"] == "win-real-lc-01"
+    assert bg_real["session_env_sha256"] == senv_sha
+
+    filled_file = real_lc_dir / "boot_gatekeeper_goldens.filled.json"
+    assert filled_file.is_file()
+    filled_doc = json.loads(filled_file.read_text(encoding="utf-8"))
+    assert filled_doc["provenance"]["window_id"] == "win-real-lc-01"
+    assert filled_doc["provenance"]["session_env_sha256"] == senv_sha
+    assert filled_doc["provenance"]["stub_transport"] is False
+    assert filled_doc["provenance"]["hash_source"] == "real_transport"
+
+    # Real counted mode refuses a goldens file that has stub_transport=True in promoted_provenance
+    stub_goldens_path = tmp_path / "stub_promoted_goldens.json"
+    stub_goldens_doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    stub_goldens_doc["promoted_provenance"] = {"stub_transport": True}
+    stub_goldens_path.write_text(json.dumps(stub_goldens_doc), encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc_stub_gold:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=tmp_path / "counted_stub_gold_refuse",
+            repo_root=REPO_ROOT,
+            mode="counted",
+            goldens_path=stub_goldens_path,
+            dryrun=False,
+            transport=_MockRealGatekeeperTransport(),
+        )
+    assert exc_stub_gold.value.failure_class == "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED"
+
+
+def test_lock_check_item3_promote_goldens_cli_validation_and_refusals(
+    tmp_path: Path,
+) -> None:
+    """Card Item 3: `scripts/colab/promote_goldens.py` validates schema, judge_id, prompt_ids,
+    64-hex hashes, body sha256, receipt sha256, and provenance (`window_id`, `session_env_sha256`),
+    writes the candidate file to a non-live path, and refuses malformed files or sha mismatches.
+    """
+    import promote_goldens
+
+    run_dir = tmp_path / "promote_run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    senv_path = run_dir / "session_env.json"
+    senv_path.write_text(json.dumps({"mode": "lock-check-stub"}) + "\n", encoding="utf-8")
+    senv_sha = hashlib.sha256(senv_path.read_bytes()).hexdigest()
+
+    bg_rep = vm_judges.run_boot_gatekeeper(
+        run_dir=run_dir,
+        repo_root=REPO_ROOT,
+        mode="lock-check-stub",
+        card_type="A100",
+        dryrun=True,
+        window_id="win-prom-01",
+    )
+    filled_path = run_dir / "boot_gatekeeper_goldens.filled.json"
+    receipt_path = run_dir / "receipt.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "filled_goldens_sha256": bg_rep["filled_goldens_sha256"],
+                "boot_gatekeeper": bg_rep,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    candidate_out = tmp_path / "temp_repo" / "scripts" / "colab" / "boot_gatekeeper_goldens.json"
+    rc_ok = promote_goldens.main(
+        [
+            "--filled",
+            str(filled_path),
+            "--output",
+            str(candidate_out),
+            "--expected-sha256",
+            str(bg_rep["filled_goldens_sha256"]),
+            "--receipt",
+            str(receipt_path),
+            "--session-env",
+            str(senv_path),
+            "--repo-root",
+            str(REPO_ROOT),
+        ]
+    )
+    assert rc_ok == 0
+    assert candidate_out.is_file()
+    cand_doc = json.loads(candidate_out.read_text(encoding="utf-8"))
+    assert cand_doc["judge_id"] == "nemotron-3-nano-4b"
+    assert cand_doc["promoted_provenance"]["window_id"] == "win-prom-01"
+    assert cand_doc["promoted_provenance"]["session_env_sha256"] == senv_sha
+    assert cand_doc["promoted_provenance"]["filled_goldens_sha256"] == bg_rep["filled_goldens_sha256"]
+
+    # Refusal 1: Missing file
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_missing:
+        promote_goldens.verify_filled_goldens(tmp_path / "missing.json")
+    assert exc_missing.value.code == "PROMOTE_GOLDENS_FILE_NOT_FOUND"
+
+    # Refusal 2: Invalid JSON
+    bad_json = tmp_path / "bad.json"
+    bad_json.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_json:
+        promote_goldens.verify_filled_goldens(bad_json)
+    assert exc_json.value.code == "PROMOTE_GOLDENS_SCHEMA_INVALID"
+
+    # Refusal 3: Expected file sha256 mismatch
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_sha:
+        promote_goldens.verify_filled_goldens(filled_path, expected_sha256="0" * 64)
+    assert exc_sha.value.code == "PROMOTE_GOLDENS_SHA_MISMATCH"
+
+    # Refusal 4: Tampered internal body sha256
+    base_doc = json.loads(filled_path.read_text(encoding="utf-8"))
+    tampered_body = dict(base_doc)
+    tampered_body["filled_goldens_body_sha256"] = "f" * 64
+    tampered_body_p = tmp_path / "tampered_body.json"
+    tampered_body_p.write_text(json.dumps(tampered_body), encoding="utf-8")
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_bsha:
+        promote_goldens.verify_filled_goldens(tampered_body_p)
+    assert exc_bsha.value.code == "PROMOTE_GOLDENS_SHA_MISMATCH"
+
+    # Refusal 5: Wrong judge_id
+    bad_judge = json.loads(filled_path.read_text(encoding="utf-8"))
+    bad_judge["judge_id"] = "mu-judge"
+    bad_judge["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(bad_judge)
+    bad_judge_p = tmp_path / "bad_judge.json"
+    bad_judge_p.write_text(json.dumps(bad_judge), encoding="utf-8")
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_jg:
+        promote_goldens.verify_filled_goldens(bad_judge_p)
+    assert exc_jg.value.code == "PROMOTE_GOLDENS_SCHEMA_INVALID"
+
+    # Refusal 6: Non-64-hex hash in expected_output_token_ids_sha256
+    bad_hash = json.loads(filled_path.read_text(encoding="utf-8"))
+    bad_hash["card_types"]["A100"]["expected_output_token_ids_sha256"]["boot_gatekeeper_synthetic_1"] = "not-a-sha"
+    bad_hash["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(bad_hash)
+    bad_hash_p = tmp_path / "bad_hash.json"
+    bad_hash_p.write_text(json.dumps(bad_hash), encoding="utf-8")
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_hi:
+        promote_goldens.verify_filled_goldens(bad_hash_p)
+    assert exc_hi.value.code == "PROMOTE_GOLDENS_BAD_HEX"
+
+    # Refusal 7: Missing provenance window_id
+    bad_prov = json.loads(filled_path.read_text(encoding="utf-8"))
+    bad_prov["provenance"]["window_id"] = ""
+    bad_prov["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(bad_prov)
+    bad_prov_p = tmp_path / "bad_prov.json"
+    bad_prov_p.write_text(json.dumps(bad_prov), encoding="utf-8")
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_pv:
+        promote_goldens.verify_filled_goldens(bad_prov_p)
+    assert exc_pv.value.code == "PROMOTE_GOLDENS_PROVENANCE_MISMATCH"
+
+    # Refusal 8: Session env sha256 mismatch
+    other_senv = tmp_path / "other_session_env.json"
+    other_senv.write_text(json.dumps({"mode": "tampered"}) + "\n", encoding="utf-8")
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_se:
+        promote_goldens.verify_filled_goldens(filled_path, session_env_path=other_senv)
+    assert exc_se.value.code == "PROMOTE_GOLDENS_PROVENANCE_MISMATCH"
+
+    # Refusal 9: Receipt sha256 mismatch
+    bad_rec = tmp_path / "bad_receipt.json"
+    bad_rec.write_text(json.dumps({"filled_goldens_sha256": "1" * 64}), encoding="utf-8")
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_rm:
+        promote_goldens.verify_filled_goldens(filled_path, receipt_path=bad_rec)
+    assert exc_rm.value.code == "PROMOTE_GOLDENS_SHA_MISMATCH"
+
+    # Refusal 10: --forbid-stub-transport refuses stub-recorded goldens
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_sf:
+        promote_goldens.verify_filled_goldens(filled_path, forbid_stub_transport=True)
+    assert exc_sf.value.code == "PROMOTE_GOLDENS_STUB_REFUSED"
+    assert promote_goldens.main(["--filled", str(filled_path)]) == 2
+
+
+def test_lock_check_item4_p0a_bitwise_profiler_and_reversed_low_margin_rerun(
+    tmp_path: Path,
+) -> None:
+    """Card Item 4: P0a inside the lock-check window:
+    (a) bitwise comparison and mismatch counting on fixtures (`token_hash_mismatch_count`, `max_abs_delta_logprob`);
+    (b) 10-call profiler step with per-phase timing (`tokenise`, `prefill`, `decode`, `post_processing`) per judge;
+    (c) reversed re-run picks the exact 20 lowest-margin items by `verdict_token_margin` and reports order independence;
+    writes `p0a_report.json` with counts, timings, and hashes only (never item text or completions).
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    # (a) Bitwise comparison on matching vs mismatched fixtures
+    pass1_fixture = [
+        {
+            "judge_id": "mu-judge",
+            "item_id": "item-0001",
+            "order": "AB",
+            "output_token_ids_sha256": "a" * 64,
+            "top1_logprob": -0.10,
+            "p_yes": 0.90,
+            "raw_verdict": "yes",
+        },
+        {
+            "judge_id": "mu-judge",
+            "item_id": "item-0001",
+            "order": "BA",
+            "output_token_ids_sha256": "b" * 64,
+            "top1_logprob": -0.20,
+            "p_yes": 0.82,
+            "raw_verdict": "yes",
+        },
+    ]
+    cmp_exact = bakeoff_judge.compare_p0a_baseline_passes(pass1_fixture, list(pass1_fixture))
+    assert cmp_exact["bitwise_identical"] is True
+    assert cmp_exact["token_hash_mismatch_count"] == 0
+    assert cmp_exact["verdict_flip_count"] == 0
+    assert cmp_exact["max_abs_delta_logprob"] == 0.0
+
+    pass2_mutated = [
+        dict(pass1_fixture[0]),
+        {
+            **pass1_fixture[1],
+            "output_token_ids_sha256": "c" * 64,
+            "top1_logprob": -0.45,
+            "p_yes": 0.15,
+            "raw_verdict": "no",
+        },
+    ]
+    cmp_mismatch = bakeoff_judge.compare_p0a_baseline_passes(pass1_fixture, pass2_mutated)
+    assert cmp_mismatch["bitwise_identical"] is False
+    assert cmp_mismatch["token_hash_mismatch_count"] == 1
+    assert cmp_mismatch["verdict_flip_count"] == 1
+    assert cmp_mismatch["max_abs_delta_logprob"] == pytest.approx(0.25)
+    assert cmp_mismatch["by_judge"]["mu-judge"]["token_hash_mismatch_count"] == 1
+
+    # (b) 10-call profiler step per judge with CUDA-event style timing per phase
+    items_path = _make_stratified_public_items(tmp_path / "p0a_items", count=25)
+    items, _ = bakeoff_judge.load_judge_items(items_path)
+    spec = bakeoff_judge.BAKEOFF_JUDGE_SPECS["mu-judge"]
+    adapter = bakeoff_judge.build_judge_adapter(spec)
+    transport = bakeoff_judge.DeterministicFakeJudgeTransport()
+
+    class _FakeCudaEvent:
+        _clock = 0.0
+
+        def __init__(self) -> None:
+            self.ts = 0.0
+
+        def record(self) -> None:
+            _FakeCudaEvent._clock += 1.25
+            self.ts = _FakeCudaEvent._clock
+
+        def synchronize(self) -> None:
+            return None
+
+        def elapsed_time(self, end_event: "_FakeCudaEvent") -> float:
+            return float(end_event.ts - self.ts)
+
+    prof_res = bakeoff_judge.run_p0a_phase_profiler(
+        spec,
+        adapter,
+        transport,
+        items,
+        seed=0,
+        call_count=10,
+        event_factory=_FakeCudaEvent,
+        timing_backend="cuda_events",
+    )
+    assert prof_res["call_count"] == 10
+    assert prof_res["timing_backend"] == "cuda_events"
+    assert set(prof_res["phases_ms"].keys()) == {
+        "tokenise",
+        "prefill",
+        "decode",
+        "post_processing",
+    }
+    for phase_name in bakeoff_judge.P0A_PHASE_NAMES:
+        p_stats = prof_res["phases_ms"][phase_name]
+        assert p_stats["total_ms"] > 0.0
+        assert p_stats["mean_ms"] > 0.0
+        assert p_stats["p95_ms"] > 0.0
+
+    # (c) Reversed re-run picks the exact 20 lowest-margin items by verdict_token_margin
+    synthetic_baseline_rows: list[dict[str, Any]] = []
+    # Assign lowest margins to items 5..24 so they must be selected in ascending margin order
+    expected_lowest_20 = [items[idx].item_id for idx in range(5, 25)]
+    for idx, it in enumerate(items):
+        margin = (0.01 + (idx - 5) * 0.01) if 5 <= idx < 25 else (5.0 + idx)
+        for jid in ("mu-judge", "flow-judge-v0.1"):
+            j_spec = bakeoff_judge.BAKEOFF_JUDGE_SPECS[jid]
+            j_adap = bakeoff_judge.build_judge_adapter(j_spec)
+            for ord_s in ("AB", "BA"):
+                pr = j_adap.assemble_prompt(it, order=ord_s, pass_mode="binary")
+                resp = transport.generate(j_spec, pr, seed=0)
+                parsed = j_adap.parse_response(resp, pass_mode="binary")
+                probs = bakeoff_judge.extract_verdict_probabilities(
+                    jid,
+                    resp,
+                    pass_mode="binary",
+                    polarity_map=bakeoff_judge.POLARITY_MAP_BY_JUDGE[jid],
+                )
+                synthetic_baseline_rows.append(
+                    {
+                        "judge_id": jid,
+                        "item_id": it.item_id,
+                        "order": ord_s,
+                        "state": parsed.state,
+                        "raw_verdict": parsed.raw_verdict,
+                        "output_token_ids_sha256": resp.output_token_ids_sha256,
+                        "top1_logprob": resp.verdict_top_logprobs[0].logprob,
+                        "p_yes": probs.get("p_yes"),
+                        "verdict_token_margin": margin,
+                    }
+                )
+
+    picked_20 = bakeoff_judge.select_p0a_lowest_margin_items(
+        synthetic_baseline_rows,
+        valid_item_ids=[it.item_id for it in items],
+        count=20,
+    )
+    assert picked_20 == expected_lowest_20
+
+    # Run full run_lock_check_p0a and verify p0a_report.json structure & privacy
+    p0a_out = tmp_path / "p0a_out"
+    p0a_report = bakeoff_judge.run_lock_check_p0a(
+        part_dir=items_path,
+        output_dir=p0a_out,
+        baseline_rows=synthetic_baseline_rows,
+        judge_ids=["mu-judge", "flow-judge-v0.1"],
+        transports_by_judge={"mu-judge": transport},
+        fake_transport=True,
+        seed=0,
+        profiler_call_count=10,
+        low_margin_item_count=20,
+        repo_root=REPO_ROOT,
+    )
+    p0a_file = p0a_out / "p0a_report.json"
+    assert p0a_file.is_file()
+    assert len(p0a_report["p0a_report_sha256"]) == 64
+    assert p0a_report["baseline_repeat"]["bitwise_identical"] is True
+    assert p0a_report["baseline_repeat"]["token_hash_mismatch_count"] == 0
+    assert p0a_report["phase_profiler"]["calls_per_judge"] == 10
+    assert p0a_report["phase_profiler"]["phases"] == [
+        "tokenise",
+        "prefill",
+        "decode",
+        "post_processing",
+    ]
+    assert p0a_report["reversed_low_margin_rerun"]["selected_item_count"] == 20
+    assert p0a_report["reversed_low_margin_rerun"]["selected_item_ids"] == expected_lowest_20
+    assert p0a_report["reversed_low_margin_rerun"]["reversed_execution_item_ids"] == list(
+        reversed(expected_lowest_20)
+    )
+    assert p0a_report["reversed_low_margin_rerun"]["baseline_comparison"]["bitwise_identical"] is True
+    raw_p0a_text = p0a_file.read_text(encoding="utf-8")
+    assert "Alpha premise" not in raw_p0a_text
+    assert "Unique synthetic claim" not in raw_p0a_text
+
+    # Counted part directory is refused by run_lock_check_p0a
+    counted_part_dir = tmp_path / "part01"
+    counted_part_dir.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(RdlabError) as exc_cpart:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=counted_part_dir,
+            output_dir=tmp_path / "p0a_refused_out",
+            baseline_rows=[],
+            fake_transport=True,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_cpart.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+
+
+def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card Items 5 & 6: Full CPU stub path on fake transport end-to-end:
+    1. `lock-check-stub` produces `golden_anchor_manifest.json` (500 rows), `shard_manifest.json` (50 anchors: 25 stratified + 25 canary),
+       `boot_gatekeeper_goldens.filled.json`, `p0a_report.json`, `session_env.json`, `receipt.json`, and `window.json` in `result.tar.gz`.
+    2. `promote_goldens.py` writes the candidate `boot_gatekeeper_goldens.json` into a TEMP repo copy (live repo unchanged).
+    3. Negative case: without the candidate goldens, counted-stub refuses at `boot_gatekeeper` with `BOOT_GATEKEEPER_GOLDEN_MISSING`.
+    4. With the candidate goldens, 2 shards in `counted-stub` mode (`1/2` and `2/2`) plus `merge_shards.py` against that stub manifest
+       both succeed and pass all 5 merge gates.
+    """
+    import tarfile
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+    import merge_shards
+    import promote_goldens
+
+    committed_goldens = SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json"
+    committed_goldens_sha_before = hashlib.sha256(committed_goldens.read_bytes()).hexdigest()
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "chain_env")
+    items_file = _make_stratified_public_items(tmp_path / "pilot-40b", count=114)
+    # Copy items_file per window because vm_judges deletes the uploaded items_file after judge_pass
+    lc_items = tmp_path / "lc_items" / "items.jsonl"
+    lc_items.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(items_file, lc_items)
+    shutil.copyfile(items_file.parent / "manifest.json", lc_items.parent / "manifest.json")
+
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+
+    lc_run_dir = tmp_path / "lc_run"
+    lc_work_dir = tmp_path / "lc_work"
+    lc_tar = tmp_path / "lc_result.tar.gz"
+    lc_status = tmp_path / "lc_status.json"
+
+    rc_lc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--lock-check-stub",
+            "--window-id",
+            "window-lc-stub-01",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--items-file",
+            str(lc_items),
+            "--run-dir",
+            str(lc_run_dir),
+            "--work-dir",
+            str(lc_work_dir),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(lc_tar),
+            "--status-file",
+            str(lc_status),
+            "--dryrun",
+        ]
+    )
+    assert rc_lc == 0
+    assert lc_tar.is_file()
+
+    # Verify result.tar.gz contains all Item 5 artifacts and window.json hashes match every file
+    with tarfile.open(lc_tar, "r:gz") as tf:
+        tar_names = set(tf.getnames())
+    for required_member in (
+        "golden_anchor_manifest.json",
+        "shard_manifest.json",
+        "boot_gatekeeper_goldens.filled.json",
+        "p0a_report.json",
+        "session_env.json",
+        "receipt.json",
+        "window.json",
+    ):
+        assert required_member in tar_names, f"Missing {required_member} in result.tar.gz"
+
+    window_doc = json.loads((lc_run_dir / "window.json").read_text(encoding="utf-8"))
+    assert window_doc["window_id"] == "window-lc-stub-01"
+    assert window_doc["mode"] == "lock-check-stub"
+    rebuilt_window_doc = bakeoff_judge.build_window_manifest(
+        lc_run_dir,
+        window_id="window-lc-stub-01",
+        mode="lock-check-stub",
+    )
+    assert rebuilt_window_doc["window_manifest_sha256"] == window_doc["window_manifest_sha256"]
+    for rel_path, meta in window_doc["files"].items():
+        disk_file = lc_run_dir / rel_path
+        assert disk_file.is_file(), f"window.json listed missing file {rel_path}"
+        assert hashlib.sha256(disk_file.read_bytes()).hexdigest() == meta["sha256"]
+        assert disk_file.stat().st_size == meta["bytes"]
+
+    # Also verify bakeoff_judge.main_judge_runner accepts --golden-anchor-manifest in-process
+    cli_items = _make_stratified_public_items(tmp_path / "cli_items_check", count=4)
+    rc_cli = bakeoff_judge.main_judge_runner(
+        [
+            "--judge",
+            "mu-judge",
+            "--part-dir",
+            str(cli_items),
+            "--output-dir",
+            str(tmp_path / "cli_out_check"),
+            "--fake-transport",
+            "--window-mode",
+            "lock-check-stub",
+            "--golden-anchor-manifest",
+            str(lc_run_dir / "golden_anchor_manifest.json"),
+            "--repo-root",
+            str(REPO_ROOT),
+        ]
+    )
+    assert rc_cli == 0
+
+    gm_doc = json.loads((lc_run_dir / "golden_anchor_manifest.json").read_text(encoding="utf-8"))
+    sm_doc = json.loads((lc_run_dir / "shard_manifest.json").read_text(encoding="utf-8"))
+    p0a_doc = json.loads((lc_run_dir / "p0a_report.json").read_text(encoding="utf-8"))
+    assert gm_doc["anchor_item_count"] == 50
+    assert gm_doc["pair_count"] == 250
+    assert gm_doc["row_count"] == 500
+    assert len(sm_doc["stratified_anchor_item_ids"]) == 25
+    assert len(sm_doc["canary_item_ids"]) == 25
+    assert len(sm_doc["anchor_item_ids"]) == 50
+    assert p0a_doc["baseline_repeat"]["bitwise_identical"] is True
+    assert p0a_doc["reversed_low_margin_rerun"]["selected_item_count"] == 20
+
+    # Step 2: Promote filled goldens into a TEMP repo copy (never the live repo)
+    temp_repo_goldens = tmp_path / "temp_repo" / "scripts" / "colab" / "boot_gatekeeper_goldens.json"
+    rc_prom = promote_goldens.main(
+        [
+            "--filled",
+            str(lc_run_dir / "boot_gatekeeper_goldens.filled.json"),
+            "--output",
+            str(temp_repo_goldens),
+            "--receipt",
+            str(lc_run_dir / "receipt.json"),
+            "--session-env",
+            str(lc_run_dir / "session_env.json"),
+            "--repo-root",
+            str(REPO_ROOT),
+        ]
+    )
+    assert rc_prom == 0
+    assert temp_repo_goldens.is_file()
+    assert hashlib.sha256(committed_goldens.read_bytes()).hexdigest() == committed_goldens_sha_before
+
+    # Step 3 (Negative case): Running counted-stub WITHOUT the candidate goldens refuses with BOOT_GATEKEEPER_GOLDEN_MISSING
+    neg_items = tmp_path / "neg_items" / "items.jsonl"
+    neg_items.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(items_file, neg_items)
+    shutil.copyfile(items_file.parent / "manifest.json", neg_items.parent / "manifest.json")
+    neg_status = tmp_path / "neg_status.json"
+    rc_neg = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--counted-stub",
+            "--shard",
+            "1/2",
+            "--shard-manifest",
+            str(lc_run_dir / "shard_manifest.json"),
+            "--golden-anchor-manifest",
+            str(lc_run_dir / "golden_anchor_manifest.json"),
+            "--boot-gatekeeper-goldens",
+            str(committed_goldens),
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--items-file",
+            str(neg_items),
+            "--run-dir",
+            str(tmp_path / "neg_run"),
+            "--work-dir",
+            str(lc_work_dir),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(tmp_path / "neg_result.tar.gz"),
+            "--status-file",
+            str(neg_status),
+            "--dryrun",
+        ]
+    )
+    assert rc_neg == 2
+    neg_status_doc = json.loads(neg_status.read_text(encoding="utf-8"))
+    assert neg_status_doc["failure_class"] == "BOOT_GATEKEEPER_GOLDEN_MISSING"
+
+    # Step 4: Run 2 shards (1/2 and 2/2) in counted-stub mode WITH the promoted candidate goldens
+    shard_run_dirs: list[Path] = []
+    for shard_idx in (1, 2):
+        s_items = tmp_path / f"s{shard_idx}_items" / "items.jsonl"
+        s_items.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(items_file, s_items)
+        shutil.copyfile(items_file.parent / "manifest.json", s_items.parent / "manifest.json")
+        s_run_dir = tmp_path / f"counted_shard_{shard_idx}"
+        s_tar = tmp_path / f"counted_shard_{shard_idx}.tar.gz"
+        s_status = tmp_path / f"counted_shard_{shard_idx}_status.json"
+        rc_s = vm_judges.main(
+            [
+                "--step",
+                "run",
+                "--counted-stub",
+                "--shard",
+                f"{shard_idx}/2",
+                "--shard-manifest",
+                str(lc_run_dir / "shard_manifest.json"),
+                "--golden-anchor-manifest",
+                str(lc_run_dir / "golden_anchor_manifest.json"),
+                "--boot-gatekeeper-goldens",
+                str(temp_repo_goldens),
+                "--repo-dir",
+                str(REPO_ROOT),
+                "--receipts-dir",
+                str(receipts_dir),
+                "--items-file",
+                str(s_items),
+                "--run-dir",
+                str(s_run_dir),
+                "--work-dir",
+                str(lc_work_dir),
+                "--hf-home",
+                str(hf_home),
+                "--result-tar",
+                str(s_tar),
+                "--status-file",
+                str(s_status),
+                "--dryrun",
+            ]
+        )
+        assert rc_s == 0, s_status.read_text(encoding="utf-8")
+        vm_judges.write_outputs_closed(s_run_dir)
+        shard_run_dirs.append(s_run_dir)
+
+    # Step 5: Merge the two counted-stub shards with merge_shards.py and verify all 5 gates pass
+    merged_dir = tmp_path / "merged_counted_stub"
+    # Negative check: counted-stub merge without golden_anchor_manifest refuses
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_mg_no_gm:
+        merge_shards.merge_shards(
+            shard_dirs=shard_run_dirs,
+            manifest_path=shard_run_dirs[0] / "shard_manifest.json",
+            output_dir=tmp_path / "merged_no_gm",
+            golden_anchor_manifest_path=None,
+        )
+    assert exc_mg_no_gm.value.failure_class == "GOLDEN_ANCHOR_MANIFEST_MISSING"
+
+    merge_report = merge_shards.merge_shards(
+        shard_dirs=shard_run_dirs,
+        manifest_path=lc_run_dir / "shard_manifest.json",
+        output_dir=merged_dir,
+        golden_anchor_manifest_path=lc_run_dir / "golden_anchor_manifest.json",
+    )
+    assert merge_report["status"] == "ok"
+    for gate_key in (
+        "bijection_and_input_token_sha",
+        "colocation",
+        "session_env_and_zero_ecc",
+        "anchor_agreement",
+        "row_done_sha",
+    ):
+        assert merge_report["gates"][gate_key] == "ok", gate_key
+    assert merge_report["anchor_agreement"]["anchor_item_count"] == 50
+    assert merge_report["anchor_agreement"]["flip_count"] == 0
+
+    assert hashlib.sha256(committed_goldens.read_bytes()).hexdigest() == committed_goldens_sha_before
+
+
+
 
 
 
