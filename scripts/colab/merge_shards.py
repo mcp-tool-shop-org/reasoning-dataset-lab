@@ -24,6 +24,12 @@ import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+_REPO_SRC_DIR = str(Path(__file__).resolve().parents[2] / "src")
+if _REPO_SRC_DIR not in sys.path:
+    sys.path.insert(0, _REPO_SRC_DIR)
+
+from reasoning_dataset_lab.pilot_b.bakeoff_judge import normalize_anchor_verdict_code
+
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
 TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
@@ -373,29 +379,6 @@ def load_and_verify_merge_config(
         "max_replacement_sessions_per_run": max_replacements,
         "config_sha256": _canonical_json_sha256(doc),
     }
-
-
-def normalize_anchor_verdict_code(row: dict[str, Any]) -> str:
-    """Normalize an anchor row verdict into {'yes', 'no', 'unparseable'}."""
-    parse_status = (
-        str(row.get("verdict_parse_status") or row.get("state") or "").strip().lower()
-    )
-    if parse_status in ("unparseable", "length_stop", "failed_to_run"):
-        return "unparseable"
-    raw_v = str(row.get("raw_verdict") or "").strip().lower()
-    if raw_v in ("yes", "y", "pass", "true", "1", "a", "b"):
-        if raw_v in ("yes", "y", "pass", "true", "1"):
-            return "yes"
-        passed = row.get("passed_gate")
-        if isinstance(passed, bool):
-            return "yes" if passed else "no"
-        return "yes"
-    if raw_v in ("no", "n", "fail", "false", "0"):
-        return "no"
-    passed = row.get("passed_gate")
-    if isinstance(passed, bool):
-        return "yes" if passed else "no"
-    return "unparseable"
 
 
 def normalize_anchor_row_state(row: dict[str, Any]) -> str:

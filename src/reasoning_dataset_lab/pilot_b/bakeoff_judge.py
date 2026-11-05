@@ -2328,17 +2328,37 @@ def select_lock_check_canary_anchors(
     return ranked[:target_n], telemetry_sha256
 
 
+ANCHOR_VERDICT_CODE_BY_LABEL: dict[str, str] = {
+    "yes": "yes",
+    "no": "no",
+    "supported": "yes",
+    "unsupported": "no",
+    "cannot_tell": "unparseable",
+}
+ANCHOR_PARSE_FAILURE_STATES: frozenset[str] = frozenset(
+    {"unparseable", "length_stop", "failed_to_run"}
+)
+
+
 def normalize_anchor_verdict_code(row: Mapping[str, Any]) -> str:
-    """Normalize an anchor row verdict to one of `'yes'`, `'no'`, or `'unparseable'` (counts/codes only)."""
-    state = str(row.get("state") or row.get("verdict_parse_status") or "").strip().lower()
-    if state in ("unparseable", "length_stop"):
-        return "unparseable"
+    """Normalize an anchor row verdict to one of `'yes'`, `'no'`, or `'unparseable'` (counts/codes only).
+
+    Explicitly maps every raw verdict label emitted by the five judges' parsers:
+      - binary (`mu-judge`, `nemotron-3-nano-4b`, `d3-mini`, `granite-guardian-4.1-8b`, `flow-judge-v0.1`):
+        `'yes'` -> `'yes'`, `'no'` -> `'no'`
+      - 3-way (`mu-judge`, `nemotron-3-nano-4b`, `d3-mini`, `flow-judge-v0.1`):
+        `'supported'` -> `'yes'`, `'unsupported'` -> `'no'`, `'cannot_tell'` -> `'unparseable'`
+    Any parse-failure or failed-to-run state (`unparseable`, `length_stop`, `failed_to_run`, or any status
+    outside `parsed`/`ok`) and any unknown label map to `'unparseable'`. `passed_gate` never overrides.
+    """
+    for status_key in ("state", "verdict_parse_status", "row_state", "run_status"):
+        raw_status = str(row.get(status_key) or "").strip().lower()
+        if raw_status in ANCHOR_PARSE_FAILURE_STATES or (
+            raw_status and raw_status not in ("parsed", "ok")
+        ):
+            return "unparseable"
     verdict = str(row.get("raw_verdict") or "").strip().lower()
-    if verdict in ("yes", "supported", "pass", "a", "3", "true", "1"):
-        return "yes"
-    if verdict in ("no", "unsupported", "fail", "b", "false", "0"):
-        return "no"
-    return "unparseable"
+    return ANCHOR_VERDICT_CODE_BY_LABEL.get(verdict, "unparseable")
 
 
 def build_golden_anchor_manifest(

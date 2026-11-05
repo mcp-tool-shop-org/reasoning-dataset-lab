@@ -19136,6 +19136,100 @@ def test_fix4_group_b_merge_gates_ecc_replacement_determinism_gatekeeper_and_tok
     assert exc_b5_kpool.value.failure_class == "MERGE_ANCHOR_DRIFT_REFUSED"
 
 
+def test_fix4_group_c_single_anchor_verdict_normaliser_table() -> None:
+    """Fix-4 Group C:
+    - Single `normalize_anchor_verdict_code` in `bakeoff_judge`, imported by `merge_shards` (same function object).
+    - Explicit mapping for every raw verdict label the five judges' parsers can emit:
+      `yes` -> `yes`, `no` -> `no`, `supported` -> `yes`, `unsupported` -> `no`, `cannot_tell` -> `unparseable`.
+    - Any parse-failure or failed-to-run state (`unparseable`, `length_stop`, `failed_to_run`) maps to `unparseable`, never `yes`.
+    - Unknown labels (`b`, `a`, `c`, `y`, `n`, `pass`, `fail`, `true`, `false`, `1`, `0`, `3`, `2`, `maybe`, ``, None) map to `unparseable`.
+    - `passed_gate` never overrides an explicit label or unknown label.
+    """
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    assert (
+        merge_shards.normalize_anchor_verdict_code
+        is bakeoff_judge.normalize_anchor_verdict_code
+    )
+    expected_table = {
+        "yes": "yes",
+        "no": "no",
+        "supported": "yes",
+        "unsupported": "no",
+        "cannot_tell": "unparseable",
+    }
+    assert bakeoff_judge.ANCHOR_VERDICT_CODE_BY_LABEL == expected_table
+
+    # Pin the full explicit label table across parsed/ok states and ensure passed_gate never overrides
+    for raw_label, expected_code in expected_table.items():
+        for variant in (raw_label, raw_label.upper(), f"  {raw_label}  "):
+            for st in ("parsed", "ok", ""):
+                assert (
+                    bakeoff_judge.normalize_anchor_verdict_code(
+                        {"state": st, "raw_verdict": variant}
+                    )
+                    == expected_code
+                )
+                for pg in (True, False):
+                    assert (
+                        bakeoff_judge.normalize_anchor_verdict_code(
+                            {
+                                "state": st,
+                                "raw_verdict": variant,
+                                "passed_gate": pg,
+                            }
+                        )
+                        == expected_code
+                    )
+
+    # Parse-failure and failed-to-run states always map to "unparseable", never to "yes"
+    for bad_state in ("unparseable", "length_stop", "failed_to_run", "error"):
+        for status_field in ("state", "verdict_parse_status", "row_state", "run_status"):
+            row_with_bad_status: dict[str, Any] = {
+                "raw_verdict": "yes",
+                "passed_gate": True,
+                status_field: bad_state,
+            }
+            assert (
+                bakeoff_judge.normalize_anchor_verdict_code(row_with_bad_status)
+                == "unparseable"
+            )
+
+    # Unknown / un-emitted labels map to "unparseable", and passed_gate never overrides them
+    for unknown_label in (
+        "b",
+        "a",
+        "c",
+        "y",
+        "n",
+        "pass",
+        "fail",
+        "true",
+        "false",
+        "1",
+        "0",
+        "3",
+        "2",
+        "maybe",
+        "unknown",
+        "",
+        None,
+    ):
+        for pg in (None, True, False):
+            row_unknown: dict[str, Any] = {
+                "state": "parsed",
+                "raw_verdict": unknown_label,
+            }
+            if pg is not None:
+                row_unknown["passed_gate"] = pg
+            assert (
+                bakeoff_judge.normalize_anchor_verdict_code(row_unknown)
+                == "unparseable"
+            )
+
+
+
 
 
 
