@@ -441,7 +441,12 @@ def test_d3_transport_loads_automodel_from_local_dir_with_exact_kwargs_and_parse
     assert args == (str(snapshot_dir),), "AutoModel.from_pretrained must get the snapshot directory as its only positional"
     assert Path(args[0]).is_dir()
     assert args[0] != D3_SPEC.repo_id and D3_SPEC.repo_id not in args[0]
-    assert kwargs == {"local_files_only": True, "trust_remote_code": True, "device": "cpu"}
+    assert kwargs == {
+        "local_files_only": True,
+        "trust_remote_code": True,
+        "device": "cpu",
+        "attn_implementation": "sdpa",
+    }
 
     readout_bin = adapter.parse_response(resp_bin, pass_mode="binary")
     assert readout_bin.state == "parsed"

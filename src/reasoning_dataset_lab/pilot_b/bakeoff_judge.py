@@ -87,9 +87,24 @@ ALLOWED_LOGPROB_MASS_PART_IDS: frozenset[str] = frozenset(
     {"pilot-40b", "pilot_40b", "part_pilot_40b", "part-pilot-40b"}
 )
 SCHEDULE_FILENAME = "schedule.json"
+SHARD_MANIFEST_FILENAME = "shard_manifest.json"
+GOLDEN_ANCHOR_MANIFEST_FILENAME = "golden_anchor_manifest.json"
 GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
 ROWS_DIRNAME = "rows"
+ANCHOR_ROWS_DIRNAME = "anchor_rows"
+DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT = 25
+DEFAULT_CANARY_ANCHOR_ITEMS_COUNT = 25
+DEFAULT_ANCHOR_ITEMS_COUNT = 50
+DEFAULT_SUBBLOCK_ITEMS = 50
+DEFAULT_LOOP_ORDER = "subblock"
+DEFAULT_RECOVERY_OVERLAP_ITEM_PAIRS = 3
+PINNED_ATTN_IMPLEMENTATION = "sdpa"
+PINNED_ATTN_IMPLEMENTATION_REASON = (
+    "PyTorch native scaled_dot_product_attention ('sdpa') is supported across all five judge architectures "
+    "without optional external flash-attn binaries and allows pinning the deterministic math SDPA kernel on CUDA."
+)
+DETERMINISM_MODE_ENV_VAR = "RDLAB_MODE"
 JUDGE_CHILD_PROGRESS_ENV_VAR = "RDLAB_JUDGE_CHILD_PROGRESS_FILE"
 JUDGE_CHILD_HEARTBEAT_ENV_VAR = "RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS"
 DEFAULT_CHILD_HEARTBEAT_INTERVAL_SECONDS = 30.0
@@ -502,8 +517,15 @@ class JudgeTransportResponse:
     seconds: float
     model_digest: str
     server_binary: str
-    library_pins: dict[str, str]
+    library_pins: dict[str, Any]
     system_one_result: dict[str, Any] | None = None
+    input_token_ids_sha256: str | None = None
+    output_token_ids_sha256: str | None = None
+    input_token_count: int = 0
+    output_token_count: int = 0
+    stop_reason: str | None = None
+    min_top2_logit_margin: float | None = None
+    verdict_token_margin: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1147,33 +1169,256 @@ def extract_hop_and_marker_lines(ordered_material: str, claim: str) -> tuple[int
     return hop1_idx, hop2_idx, marker_idx
 
 
-def configure_torch_determinism_with_reason() -> tuple[str, str]:
-    """Configure `CUBLAS_WORKSPACE_CONFIG=:4096:8` and `torch.use_deterministic_algorithms(True, warn_only=False)`, returning `(status, reason)`."""
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
+_PROMPT_TOKEN_SPLIT_RE: re.Pattern[str] = re.compile(
+    r"<\|[^|>]+?\|>|<\s*/?\s*[a-zA-Z0-9_-]+\s*>|\s+|[^\s<]+"
+)
+
+
+def compute_token_ids_sha256(token_ids: Sequence[int]) -> str:
+    """Compute canonical SHA-256 of an integer token ID sequence without storing token text."""
+    payload = json.dumps([int(t) for t in token_ids], separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def encode_canonical_prompt_token_ids(judge_id: str, prompt_text: str) -> list[int]:
+    """Encode an assembled prompt into a deterministic, collision-free integer token ID sequence for `(judge_id, prompt_text)`."""
+    chunks = _PROMPT_TOKEN_SPLIT_RE.findall(prompt_text)
+    if not chunks and prompt_text:
+        chunks = [prompt_text]
+    out: list[int] = []
+    for idx, chunk in enumerate(chunks):
+        digest = hashlib.sha256(f"{judge_id}:in:{idx}:{chunk}".encode("utf-8")).digest()
+        out.append(int.from_bytes(digest[:4], "big"))
+    return out
+
+
+def compute_prompt_input_token_ids_sha256(judge_id: str, prompt_text: str) -> str:
+    """Compute deterministic `input_token_ids_sha256` for an assembled prompt."""
+    return compute_token_ids_sha256(encode_canonical_prompt_token_ids(judge_id, prompt_text))
+
+
+def encode_canonical_output_token_ids(
+    judge_id: str,
+    tokens: Sequence[str],
+    *,
+    system_one_result: Mapping[str, Any] | None = None,
+) -> list[int]:
+    """Encode generated output tokens (and d3 system_one probabilities when present) into integer token IDs."""
+    out: list[int] = []
+    for idx, tok in enumerate(tokens):
+        digest = hashlib.sha256(f"{judge_id}:out:{idx}:{tok}".encode("utf-8")).digest()
+        out.append(int.from_bytes(digest[:4], "big"))
+    if system_one_result is not None:
+        sys_json = json.dumps(dict(system_one_result), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        sys_digest = hashlib.sha256(f"{judge_id}:sys1:{sys_json}".encode("utf-8")).digest()
+        out.append(int.from_bytes(sys_digest[:4], "big"))
+    return out
+
+
+def compute_response_output_token_ids_sha256(
+    judge_id: str,
+    tokens: Sequence[str],
+    *,
+    token_ids: Sequence[int] | None = None,
+    system_one_result: Mapping[str, Any] | None = None,
+) -> str:
+    """Compute deterministic `output_token_ids_sha256` from integer token IDs or generated tokens."""
+    if token_ids is not None:
+        return compute_token_ids_sha256(token_ids)
+    return compute_token_ids_sha256(
+        encode_canonical_output_token_ids(judge_id, tokens, system_one_result=system_one_result)
+    )
+
+
+def compute_min_top2_logit_margin_from_logprobs(
+    top_logprobs: Sequence[TopLogprobEntry],
+    *,
+    step_margins: Sequence[float] | None = None,
+) -> float:
+    """Compute whole-generation minimum top-1/top-2 logit margin across all generated steps."""
+    if step_margins:
+        return round(min(max(0.0, float(m)) for m in step_margins), 6)
+    if len(top_logprobs) >= 2:
+        ordered = sorted((float(e.logprob) for e in top_logprobs), reverse=True)
+        return round(max(0.0, ordered[0] - ordered[1]), 6)
+    return 0.0
+
+
+def pin_and_read_sdpa_backend() -> str:
+    """Pin CUDA SDPA to the deterministic math kernel when available and return the readable SDPA backend name."""
     try:
         import torch
     except ImportError:
+        return "math"
+    cuda_backends = getattr(getattr(torch, "backends", None), "cuda", None)
+    if cuda_backends is None:
+        return "math"
+    for fn_name, enabled in (
+        ("enable_flash_sdp", False),
+        ("enable_mem_efficient_sdp", False),
+        ("enable_math_sdp", True),
+    ):
+        try:
+            getattr(cuda_backends, fn_name, lambda _v: None)(enabled)
+        except Exception:
+            pass
+    enabled_names: list[str] = []
+    for label, getter_name in (
+        ("flash", "flash_sdp_enabled"),
+        ("mem_efficient", "mem_efficient_sdp_enabled"),
+        ("math", "math_sdp_enabled"),
+    ):
+        try:
+            if bool(getattr(cuda_backends, getter_name, lambda: False)()):
+                enabled_names.append(label)
+        except Exception:
+            pass
+    if enabled_names:
+        return "+".join(enabled_names)
+    return "math"
+
+
+COUNTED_WINDOW_MODES: frozenset[str] = frozenset(
+    {"counted", "time-one", "time_one", "shard", "sharded", "counted-shard", "sharded-counted"}
+)
+NON_COUNTED_WINDOW_MODES: frozenset[str] = frozenset(
+    {"stub", "dryrun", "dry-run", "knob", "probe"}
+)
+STUB_OR_DRYRUN_WINDOW_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run"})
+
+
+def is_real_mode(
+    mode: str | None = None,
+    *,
+    dryrun: bool = False,
+    fake_transport: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Return True unless `dryrun` or `fake_transport` is set or `mode` is `stub` / `dryrun` / `dry-run`."""
+    env_map = environ if environ is not None else os.environ
+    if (
+        dryrun
+        or fake_transport
+        or str(env_map.get("VM_DRYRUN", "") or "").strip() == "1"
+    ):
+        return False
+    eff_mode = (
+        str(mode).strip().lower()
+        if mode is not None and str(mode).strip()
+        else str(
+            env_map.get(DETERMINISM_MODE_ENV_VAR, "")
+            or env_map.get("RDLAB_WINDOW_MODE", "")
+        ).strip().lower()
+    )
+    return eff_mode not in STUB_OR_DRYRUN_WINDOW_MODES
+
+
+def _is_counted_window_mode(
+    window_mode: str | None = None,
+    *,
+    strict: bool | None = None,
+    shard_spec: str | None = None,
+) -> bool:
+    """Return True when running in a counted/time-one/sharded-counted window where determinism fallback is refused."""
+    if strict is not None:
+        return bool(strict)
+    if window_mode is not None and str(window_mode).strip():
+        wm = str(window_mode).strip().lower()
+        if wm in COUNTED_WINDOW_MODES:
+            return True
+        if wm in NON_COUNTED_WINDOW_MODES:
+            return False
+    env_wm = (
+        os.environ.get(DETERMINISM_MODE_ENV_VAR, "")
+        or os.environ.get("RDLAB_WINDOW_MODE", "")
+    ).strip().lower()
+    if env_wm in COUNTED_WINDOW_MODES:
+        return True
+    if env_wm in NON_COUNTED_WINDOW_MODES:
+        return False
+    eff_shard = (
+        str(shard_spec).strip()
+        if shard_spec is not None
+        else os.environ.get("RDLAB_SHARD", "").strip()
+    )
+    if eff_shard:
+        return True
+    return False
+
+
+def configure_torch_determinism_with_reason(
+    *,
+    window_mode: str | None = None,
+    strict: bool | None = None,
+    shard_spec: str | None = None,
+) -> tuple[str, str]:
+    """Configure `CUBLAS_WORKSPACE_CONFIG=:4096:8` and `torch.use_deterministic_algorithms(True, warn_only=False)`, returning `(status, reason)`.
+
+    In counted windows (`window_mode="counted"`, `"time-one"`, sharded counted runs, or `strict=True`), any failure to enforce
+    `warn_only=False` raises a named refusal (`BAKEOFF_JUDGE_DETERMINISM_REFUSED`) instead of falling back to `warn_only=True`.
+    """
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
+    is_counted = _is_counted_window_mode(window_mode, strict=strict, shard_spec=shard_spec)
+    is_real = is_real_mode(window_mode) if strict is None else bool(strict)
+    if os.environ.get("RDLAB_DETERMINISM_WARN_ONLY", "").strip().lower() in ("1", "true", "yes", "on"):
+        if is_real:
+            raise refused_error(
+                "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
+                "Counted window refuses RDLAB_DETERMINISM_WARN_ONLY=1: strict deterministic algorithms (warn_only=False) are mandatory.",
+                "Unset RDLAB_DETERMINISM_WARN_ONLY in counted windows.",
+            )
+    try:
+        import torch
+    except ImportError as exc:
+        if is_counted:
+            raise refused_error(
+                "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
+                "Counted window requires torch.use_deterministic_algorithms(True, warn_only=False), but torch is not installed.",
+                "Run counted windows inside the pinned judge environment with torch installed.",
+            ) from exc
         return "not enforceable", "torch is not installed in this Python environment"
     use_det = getattr(torch, "use_deterministic_algorithms", None)
     if not callable(use_det):
+        if is_counted:
+            raise refused_error(
+                "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
+                "Counted window requires torch.use_deterministic_algorithms(True, warn_only=False), which is unavailable on the loaded torch module.",
+                "Use a torch build that supports strict deterministic algorithms.",
+            )
         return "not enforceable", "torch.use_deterministic_algorithms is not available on the loaded torch module"
+    det_utils = getattr(getattr(torch, "utils", None), "deterministic", None)
+    if det_utils is not None:
+        det_utils.fill_uninitialized_memory = False
     try:
         use_det(True, warn_only=False)
         return "enforced", "torch.use_deterministic_algorithms(True, warn_only=False) succeeded"
     except Exception as exc:
+        if is_counted:
+            raise refused_error(
+                "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
+                f"Counted window refuses warn_only=True fallback: torch.use_deterministic_algorithms(True, warn_only=False) raised {type(exc).__name__}: {exc}.",
+                "Counted windows never fall back to warn_only=True; fix the non-deterministic kernel or environment.",
+            ) from exc
         try:
             use_det(True, warn_only=True)
-        except Exception:  # pragma: no cover
+        except Exception:
             pass
         return (
             "not enforceable",
-            f"torch.use_deterministic_algorithms(True, warn_only=False) raised {type(exc).__name__}: {exc}; fell back to warn_only=True",
+            f"strict deterministic mode unsupported ({type(exc).__name__}: {exc}); fell back to warn_only=True",
         )
 
 
-def configure_torch_determinism() -> str:
+def configure_torch_determinism(
+    *,
+    window_mode: str | None = None,
+    strict: bool | None = None,
+    shard_spec: str | None = None,
+) -> str:
     """Configure `CUBLAS_WORKSPACE_CONFIG=:4096:8` and `torch.use_deterministic_algorithms(True, warn_only=False)`."""
-    status, _ = configure_torch_determinism_with_reason()
+    status, _ = configure_torch_determinism_with_reason(
+        window_mode=window_mode, strict=strict, shard_spec=shard_spec
+    )
     return status
 
 
@@ -1962,6 +2207,462 @@ def build_judge_adapter(judge: str | JudgeSpec) -> BaseJudgeAdapter:
     )
 
 
+def parse_shard_spec(raw_spec: str) -> tuple[int, int]:
+    """Parse a `k/n` shard specification (1-based `k` in `1..n`), refusing missing `n` or out-of-range `k`."""
+    cleaned = str(raw_spec or "").strip()
+    if "/" not in cleaned:
+        raise refused_error(
+            "SHARD_SPEC_MISSING_N",
+            f"Shard specification {raw_spec!r} is missing '/n' denominator.",
+            "Pass RDLAB_SHARD=k/n with integer 1 <= k <= n (for example 1/3).",
+        )
+    parts = cleaned.split("/")
+    if len(parts) != 2:
+        raise refused_error(
+            "SHARD_SPEC_MISSING_N",
+            f"Shard specification {raw_spec!r} must have exactly one '/' separator.",
+            "Pass RDLAB_SHARD=k/n with integer 1 <= k <= n.",
+        )
+    k_str, n_str = parts[0].strip(), parts[1].strip()
+    if not n_str or not re.match(r"^-?\d+$", n_str):
+        raise refused_error(
+            "SHARD_SPEC_MISSING_N",
+            f"Shard specification {raw_spec!r} has missing or non-integer shard count n={n_str!r}.",
+            "Pass RDLAB_SHARD=k/n with positive integer n >= 1.",
+        )
+    n_val = int(n_str)
+    if n_val < 1:
+        raise refused_error(
+            "SHARD_SPEC_MISSING_N",
+            f"Shard specification {raw_spec!r} has invalid shard count n={n_val} (must be >= 1).",
+            "Pass RDLAB_SHARD=k/n with positive integer n >= 1.",
+        )
+    if not k_str or not re.match(r"^-?\d+$", k_str):
+        raise refused_error(
+            "SHARD_SPEC_OUT_OF_RANGE",
+            f"Shard specification {raw_spec!r} has non-integer shard index k={k_str!r}.",
+            f"Pass integer k in 1..{n_val}.",
+        )
+    k_val = int(k_str)
+    if k_val < 1 or k_val > n_val:
+        raise refused_error(
+            "SHARD_SPEC_OUT_OF_RANGE",
+            f"Shard index k={k_val} in {raw_spec!r} is out of range 1..{n_val}.",
+            f"Pass RDLAB_SHARD=k/{n_val} with 1 <= k <= {n_val}.",
+        )
+    return k_val, n_val
+
+
+def _compute_shard_manifest_body_sha256(manifest_doc: Mapping[str, Any]) -> str:
+    body = {k: v for k, v in manifest_doc.items() if k != "manifest_sha256"}
+    payload = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def select_lock_check_canary_anchors(
+    items_or_ids: Sequence[JudgeInputItem | str],
+    telemetry_path_or_dir: Path | str,
+    *,
+    excluded_item_ids: Iterable[str] = (),
+    canary_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
+) -> tuple[list[str], str]:
+    """Select `canary_count` (25) canary anchor items from lock-check window telemetry.
+
+    Rule: From the lock-check window's telemetry, take each item's minimum verdict-token top-1/top-2 logit margin
+    (`verdict_token_margin`, falling back to `min_top2_logit_margin` when absent) across all judges and both orders.
+    Rank ascending, excluding the stratified 25 (`excluded_item_ids`), and take the lowest `canary_count`.
+    Ties break by `item_id`.
+    Returns `(canary_item_ids, telemetry_sha256)`.
+    """
+    valid_item_ids = {
+        (it.item_id if isinstance(it, JudgeInputItem) else str(it))
+        for it in items_or_ids
+    }
+    excluded_set = {str(iid) for iid in excluded_item_ids}
+    candidate_ids = sorted(valid_item_ids - excluded_set)
+
+    target = Path(telemetry_path_or_dir)
+    telemetry_files: list[Path] = []
+    if target.is_file():
+        telemetry_files = [target]
+    elif target.is_dir():
+        rows_sub = target / ROWS_DIRNAME
+        if rows_sub.is_dir():
+            telemetry_files = sorted(p for p in rows_sub.glob("*.jsonl") if p.is_file())
+        if not telemetry_files:
+            gen_cand = target / GENERATIONS_FILENAME
+            if gen_cand.is_file():
+                telemetry_files = [gen_cand]
+        if not telemetry_files:
+            telemetry_files = sorted(p for p in target.glob("*.jsonl") if p.is_file())
+    if not telemetry_files:
+        raise refused_error(
+            "SHARD_MANIFEST_CANARY_TELEMETRY_MISSING",
+            f"Lock-check telemetry '{target}' not found or contains no JSONL files.",
+            "Pass a valid lock-check telemetry file or directory containing rows/*.jsonl or generations.jsonl.",
+        )
+
+    hasher = hashlib.sha256()
+    min_margin_by_item: dict[str, float] = {}
+    for tf in telemetry_files:
+        raw_bytes = tf.read_bytes()
+        hasher.update(raw_bytes)
+        for ln in raw_bytes.decode("utf-8").splitlines():
+            if not ln.strip():
+                continue
+            rec = json.loads(ln)
+            if not isinstance(rec, Mapping):
+                continue
+            iid = str(rec.get("item_id") or "").strip()
+            if not iid or iid not in valid_item_ids or iid in excluded_set:
+                continue
+            raw_margin = rec.get("verdict_token_margin")
+            if raw_margin is None:
+                raw_margin = rec.get("min_top2_logit_margin")
+            if raw_margin is None:
+                continue
+            margin_val = float(raw_margin)
+            prev_min = min_margin_by_item.get(iid)
+            if prev_min is None or margin_val < prev_min:
+                min_margin_by_item[iid] = margin_val
+
+    telemetry_sha256 = hasher.hexdigest() if len(telemetry_files) > 1 else hashlib.sha256(telemetry_files[0].read_bytes()).hexdigest()
+    target_n = min(max(0, int(canary_count)), len(candidate_ids))
+    ranked = sorted(
+        candidate_ids,
+        key=lambda iid: (min_margin_by_item.get(iid, float("inf")), iid),
+    )
+    return ranked[:target_n], telemetry_sha256
+
+
+ANCHOR_VERDICT_CODE_BY_LABEL: dict[str, str] = {
+    "yes": "yes",
+    "no": "no",
+    "supported": "yes",
+    "unsupported": "no",
+    "cannot_tell": "unparseable",
+}
+ANCHOR_PARSE_FAILURE_STATES: frozenset[str] = frozenset(
+    {"unparseable", "length_stop", "failed_to_run"}
+)
+
+
+def normalize_anchor_verdict_code(row: Mapping[str, Any]) -> str:
+    """Normalize an anchor row verdict to one of `'yes'`, `'no'`, or `'unparseable'` (counts/codes only).
+
+    Explicitly maps every raw verdict label emitted by the five judges' parsers:
+      - binary (`mu-judge`, `nemotron-3-nano-4b`, `d3-mini`, `granite-guardian-4.1-8b`, `flow-judge-v0.1`):
+        `'yes'` -> `'yes'`, `'no'` -> `'no'`
+      - 3-way (`mu-judge`, `nemotron-3-nano-4b`, `d3-mini`, `flow-judge-v0.1`):
+        `'supported'` -> `'yes'`, `'unsupported'` -> `'no'`, `'cannot_tell'` -> `'unparseable'`
+    Any parse-failure or failed-to-run state (`unparseable`, `length_stop`, `failed_to_run`, or any status
+    outside `parsed`/`ok`) and any unknown label map to `'unparseable'`. `passed_gate` never overrides.
+    """
+    for status_key in ("state", "verdict_parse_status", "row_state", "run_status"):
+        raw_status = str(row.get(status_key) or "").strip().lower()
+        if raw_status in ANCHOR_PARSE_FAILURE_STATES or (
+            raw_status and raw_status not in ("parsed", "ok")
+        ):
+            return "unparseable"
+    verdict = str(row.get("raw_verdict") or "").strip().lower()
+    return ANCHOR_VERDICT_CODE_BY_LABEL.get(verdict, "unparseable")
+
+
+def build_golden_anchor_manifest(
+    lock_check_dir_or_rows: Path | str | Sequence[Mapping[str, Any]],
+    *,
+    anchor_item_ids: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Build the golden anchor manifest from the lock-check window's anchor rows (all 500 rows).
+
+    Records only hashes, normalized verdict codes (`yes`/`no`/`unparseable`), and row states (`parsed`/`unparseable`/`length_stop`).
+    Never stores item text, prompts, keys, or raw judge generation text.
+    """
+    raw_rows: list[Mapping[str, Any]] = []
+    if isinstance(lock_check_dir_or_rows, (Path, str)):
+        base = Path(lock_check_dir_or_rows)
+        jsonl_files: list[Path] = []
+        if base.is_file():
+            jsonl_files = [base]
+        elif base.is_dir():
+            anchor_sub = base / ANCHOR_ROWS_DIRNAME
+            rows_sub = base / ROWS_DIRNAME
+            source_dir = anchor_sub if (anchor_sub.is_dir() and list(anchor_sub.glob("*.jsonl"))) else rows_sub
+            jsonl_files = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
+        for rf in jsonl_files:
+            for ln in rf.read_text(encoding="utf-8").splitlines():
+                if ln.strip():
+                    obj = json.loads(ln)
+                    if isinstance(obj, Mapping):
+                        raw_rows.append(obj)
+    else:
+        raw_rows = list(lock_check_dir_or_rows)
+
+    wanted_anchors = {str(x) for x in anchor_item_ids} if anchor_item_ids is not None else None
+    rows_map: dict[str, dict[str, Any]] = {}
+    judges_seen: set[str] = set()
+    items_seen: set[str] = set()
+    for r in raw_rows:
+        iid = str(r.get("item_id") or "").strip()
+        ord_s = str(r.get("order") or "").strip()
+        jid = str(r.get("judge_id") or "").strip()
+        if not iid or not ord_s or not jid:
+            continue
+        if wanted_anchors is not None and iid not in wanted_anchors:
+            continue
+        key = f"{jid}:{iid}:{ord_s}"
+        row_state = str(r.get("state") or r.get("verdict_parse_status") or "parsed").strip()
+        verdict_code = normalize_anchor_verdict_code(r)
+        out_sha = str(r.get("output_token_ids_sha256") or "").strip()
+        in_sha = str(r.get("input_token_ids_sha256") or "").strip()
+        prompt_sha = str(r.get("prompt_sha256") or "").strip()
+        rows_map[key] = {
+            "judge_id": jid,
+            "item_id": iid,
+            "order": ord_s,
+            "row_state": row_state,
+            "verdict_code": verdict_code,
+            "output_token_ids_sha256": out_sha,
+            "input_token_ids_sha256": in_sha,
+            "prompt_sha256": prompt_sha,
+        }
+        judges_seen.add(jid)
+        items_seen.add(iid)
+
+    doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "anchor_item_count": len(items_seen),
+        "judge_count": len(judges_seen),
+        "row_count": len(rows_map),
+        "rows": dict(sorted(rows_map.items())),
+    }
+    body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    doc["golden_anchor_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
+    return doc
+
+
+def write_golden_anchor_manifest(golden_doc: Mapping[str, Any], path: Path) -> str:
+    """Write `golden_doc` to `path` and return its SHA-256."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(dict(golden_doc), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    raw_bytes = serialized.encode("utf-8")
+    sha = hashlib.sha256(raw_bytes).hexdigest()
+    path.write_bytes(raw_bytes)
+    return sha
+
+
+def build_shard_manifest(
+    items_or_path: Sequence[JudgeInputItem] | Path | str,
+    schedule: JudgeSchedule | None = None,
+    *,
+    num_shards: int,
+    schedule_seed: int = DEFAULT_SCHEDULE_SEED,
+    limit_items: int | None = None,
+    pass_mode: PassMode = "binary",
+    anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_count: int = DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT,
+    canary_anchor_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
+    lock_check_telemetry_path: Path | str | None = None,
+    canary_item_ids: Sequence[str] | None = None,
+    canary_telemetry_sha256: str | None = None,
+    golden_anchor_manifest_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Build a pre-registered shard manifest with deterministic stratified interleave over `schedule` and 50 anchors (25 stratified + 25 lock-check canaries)."""
+    if num_shards < 1:
+        raise refused_error(
+            "SHARD_SPEC_MISSING_N",
+            f"num_shards must be >= 1, got {num_shards}.",
+            "Pass a positive shard count.",
+        )
+    if isinstance(items_or_path, (Path, str)):
+        items, items_sha256 = load_judge_items(Path(items_or_path), limit=limit_items)
+    else:
+        items = tuple(items_or_path)
+        items_sha256 = schedule.items_sha256 if schedule is not None else ""
+    if schedule is None:
+        schedule = build_schedule(items, seed=schedule_seed, items_sha256=items_sha256)
+    verify_schedule_invariants(schedule)
+    items_by_id = {it.item_id: it for it in items}
+    pass1_entries = schedule.entries[: schedule.item_count]
+
+    shards: dict[str, list[str]] = {str(k): [] for k in range(1, num_shards + 1)}
+    shard_by_item: dict[str, int] = {}
+    for pass1_idx, entry in enumerate(pass1_entries):
+        shard_k = (pass1_idx % num_shards) + 1
+        shards[str(shard_k)].append(entry.item_id)
+        shard_by_item[entry.item_id] = shard_k
+
+    # 1. Select up to `stratified_anchor_count` (25) stratified anchor items from Shard 1's Pass-1 ordering.
+    shard1_items = shards["1"]
+    eff_strat_max = min(int(stratified_anchor_count), int(anchor_count))
+    target_strat_n = min(max(0, eff_strat_max), len(shard1_items))
+    stratified_anchor_ids: list[str] = []
+    if target_strat_n > 0:
+        if target_strat_n >= len(shard1_items):
+            stratified_anchor_ids = list(shard1_items)
+        else:
+            stratified_anchor_ids = [
+                shard1_items[int((i * len(shard1_items)) // target_strat_n)]
+                for i in range(target_strat_n)
+            ]
+
+    # 2. Select up to `canary_anchor_count` (25) canary anchors from lock-check telemetry (or explicit list),
+    # or remaining candidates if lock_check_telemetry_path is provided.
+    remaining_budget = max(0, int(anchor_count) - len(stratified_anchor_ids))
+    target_canary_n = min(max(0, int(canary_anchor_count)), remaining_budget)
+    resolved_canary_ids: list[str] = []
+    resolved_telemetry_sha: str | None = canary_telemetry_sha256
+    if lock_check_telemetry_path is not None:
+        resolved_canary_ids, resolved_telemetry_sha = select_lock_check_canary_anchors(
+            items,
+            lock_check_telemetry_path,
+            excluded_item_ids=stratified_anchor_ids,
+            canary_count=target_canary_n,
+        )
+    elif canary_item_ids is not None:
+        strat_set = set(stratified_anchor_ids)
+        for cid in canary_item_ids:
+            cid_s = str(cid)
+            if cid_s in items_by_id and cid_s not in strat_set and cid_s not in resolved_canary_ids:
+                resolved_canary_ids.append(cid_s)
+                if len(resolved_canary_ids) >= target_canary_n:
+                    break
+
+    anchor_item_ids = [*stratified_anchor_ids, *resolved_canary_ids]
+
+    adapters = {jid: build_judge_adapter(spec) for jid, spec in sorted(BAKEOFF_JUDGE_SPECS.items())}
+    input_token_ids_sha256_by_call: dict[str, str] = {}
+    for entry in schedule.entries:
+        it = items_by_id[entry.item_id]
+        for jid, adapter in adapters.items():
+            if pass_mode == "three_way" and not adapter.spec.supports_three_way:
+                continue
+            prompt = adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
+            call_key = f"{entry.item_id}:{entry.order}:{jid}"
+            input_token_ids_sha256_by_call[call_key] = compute_prompt_input_token_ids_sha256(
+                jid, prompt.prompt_text
+            )
+
+    doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "assignment_method": "stratified_interleave_pass1",
+        "schedule_seed": schedule.seed,
+        "schedule_sha256": schedule.schedule_sha256,
+        "items_sha256": schedule.items_sha256,
+        "item_count": schedule.item_count,
+        "num_shards": int(num_shards),
+        "pass_mode": pass_mode,
+        "shards": shards,
+        "shard_by_item": dict(sorted(shard_by_item.items())),
+        "stratified_anchor_count": len(stratified_anchor_ids),
+        "stratified_anchor_item_ids": stratified_anchor_ids,
+        "canary_anchor_count": len(resolved_canary_ids),
+        "canary_item_ids": resolved_canary_ids,
+        "canary_telemetry_sha256": resolved_telemetry_sha,
+        "golden_anchor_manifest_sha256": golden_anchor_manifest_sha256,
+        "anchor_count": len(anchor_item_ids),
+        "anchor_item_ids": anchor_item_ids,
+        "input_token_ids_sha256_by_call": dict(sorted(input_token_ids_sha256_by_call.items())),
+    }
+    doc["manifest_sha256"] = _compute_shard_manifest_body_sha256(doc)
+    return doc
+
+
+def write_shard_manifest(manifest_doc: Mapping[str, Any], manifest_path: Path) -> str:
+    """Write `manifest_doc` to `manifest_path` and `<manifest_path>.sha256`, returning the file SHA-256."""
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(dict(manifest_doc), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    raw_bytes = serialized.encode("utf-8")
+    file_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    manifest_path.write_bytes(raw_bytes)
+    sha_sidecar = manifest_path.with_suffix(manifest_path.suffix + ".sha256")
+    sha_sidecar.write_text(f"{file_sha256}  {manifest_path.name}\n", encoding="utf-8", newline="\n")
+    return file_sha256
+
+
+def verify_shard_manifest(
+    manifest_path: Path,
+    *,
+    expected_sha256: str | None = None,
+    expected_num_shards: int | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Load and verify a pre-registered shard manifest file and its SHA-256."""
+    if not manifest_path.is_file():
+        raise refused_error(
+            "SHARD_MANIFEST_NOT_FOUND",
+            f"Shard manifest '{manifest_path}' not found.",
+            "Write the pre-registered shard manifest before starting a sharded window.",
+        )
+    raw_bytes = manifest_path.read_bytes()
+    file_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    try:
+        doc = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise refused_error(
+            "SHARD_MANIFEST_INVALID",
+            f"Malformed JSON in shard manifest '{manifest_path}': {exc}.",
+            "Regenerate the pre-registered shard manifest.",
+        ) from exc
+    if not isinstance(doc, dict) or not isinstance(doc.get("shards"), Mapping):
+        raise refused_error(
+            "SHARD_MANIFEST_INVALID",
+            f"Shard manifest '{manifest_path}' is missing required 'shards' mapping.",
+            "Regenerate the pre-registered shard manifest.",
+        )
+    seen_partition_items: set[str] = set()
+    for shard_key, shard_list in doc["shards"].items():
+        if not isinstance(shard_list, list):
+            raise refused_error(
+                "SHARD_MANIFEST_INVALID",
+                f"Shard '{shard_key}' in '{manifest_path}' is not a list.",
+                "Regenerate the pre-registered shard manifest.",
+            )
+        for iid in shard_list:
+            iid_s = str(iid)
+            if iid_s in seen_partition_items:
+                raise refused_error(
+                    "SHARD_MANIFEST_INVALID",
+                    f"Duplicate item '{iid_s}' across shards in '{manifest_path}'.",
+                    "Shard assignments must form a disjoint partition of items.",
+                )
+            seen_partition_items.add(iid_s)
+    if "item_count" in doc and len(seen_partition_items) != int(doc["item_count"]):
+        raise refused_error(
+            "SHARD_MANIFEST_INVALID",
+            f"Shard partition item count ({len(seen_partition_items)}) != item_count ({doc['item_count']}) in '{manifest_path}'.",
+            "Shard assignments must cover every item exactly once.",
+        )
+    body_sha256 = _compute_shard_manifest_manifest_sha(doc)
+    recorded_body_sha = str(doc.get("manifest_sha256") or "").strip().lower()
+    if recorded_body_sha and recorded_body_sha != body_sha256:
+        raise refused_error(
+            "SHARD_MANIFEST_SHA256_MISMATCH",
+            f"Shard manifest internal manifest_sha256 mismatch in '{manifest_path}': "
+            f"recorded={recorded_body_sha}, computed={body_sha256}.",
+            "Do not modify shard_manifest.json after registration.",
+        )
+    if expected_sha256 is not None and str(expected_sha256).strip():
+        exp_clean = str(expected_sha256).strip().lower()
+        if exp_clean not in (file_sha256, body_sha256):
+            raise refused_error(
+                "SHARD_MANIFEST_SHA256_MISMATCH",
+                f"Shard manifest SHA-256 mismatch for '{manifest_path}': expected {exp_clean}, "
+                f"got file_sha256={file_sha256} (manifest_sha256={body_sha256}).",
+                "Ensure --shard-manifest-sha256 matches the pre-registered shard manifest.",
+            )
+    if expected_num_shards is not None and int(doc.get("num_shards", 0)) != int(expected_num_shards):
+        raise refused_error(
+            "SHARD_SPEC_OUT_OF_RANGE",
+            f"Shard spec denominator n={expected_num_shards} does not match manifest num_shards={doc.get('num_shards')}.",
+            "Pass a shard spec k/n whose n matches shard_manifest.json.",
+        )
+    return doc, file_sha256
+
+
+def _compute_shard_manifest_manifest_sha(doc: Mapping[str, Any]) -> str:
+    return _compute_shard_manifest_body_sha256(doc)
+
+
 def _pad_top_logprobs_to_20(entries: Sequence[TopLogprobEntry]) -> tuple[TopLogprobEntry, ...]:
     """Pad a sorted top-K logprob sequence out to 20 entries with negligible-mass non-verdict tokens."""
     out = list(entries)
@@ -2010,8 +2711,9 @@ class DeterministicFakeJudgeTransport:
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         digest = f"fake-sha256:{spec.revision}"
         det_status = configure_torch_determinism()
+        sdpa_backend = pin_and_read_sdpa_backend()
         # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
-        library_pins = {
+        library_pins: dict[str, Any] = {
             "transport": "DeterministicFakeJudgeTransport",
             "python": sys.version.split()[0],
             "torch": "2.14.1+cu132 (pinned-not-loaded)",
@@ -2019,8 +2721,49 @@ class DeterministicFakeJudgeTransport:
             "dtype": self.torch_dtype,
             "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
             "deterministic_algorithms": det_status,
+            "fill_uninitialized_memory": False,
+            "attn_implementation": PINNED_ATTN_IMPLEMENTATION,
+            "sdpa_backend": sdpa_backend,
         }
         server_binary = "rdlab-fake-judge-cpu/1.0"
+        in_tok_ids = encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+        in_tok_sha = compute_token_ids_sha256(in_tok_ids)
+        in_tok_count = len(in_tok_ids)
+
+        def _make_resp(
+            *,
+            raw_text: str,
+            tokens: tuple[str, ...],
+            verdict_top_logprobs: tuple[TopLogprobEntry, ...],
+            done_reason: DoneReason,
+            seconds: float,
+            system_one_result: dict[str, Any] | None = None,
+        ) -> JudgeTransportResponse:
+            out_sha = compute_response_output_token_ids_sha256(
+                spec.judge_id,
+                tokens,
+                system_one_result=system_one_result,
+            )
+            margin = compute_min_top2_logit_margin_from_logprobs(verdict_top_logprobs)
+            stop_rsn = "max_new_tokens" if done_reason == "length" else "eos"
+            return JudgeTransportResponse(
+                raw_text=raw_text,
+                tokens=tokens,
+                verdict_top_logprobs=verdict_top_logprobs,
+                done_reason=done_reason,
+                seconds=seconds,
+                model_digest=digest,
+                server_binary=server_binary,
+                library_pins=library_pins,
+                system_one_result=system_one_result,
+                input_token_ids_sha256=in_tok_sha,
+                output_token_ids_sha256=out_sha,
+                input_token_count=in_tok_count,
+                output_token_count=len(tokens),
+                stop_reason=stop_rsn,
+                min_top2_logit_margin=margin,
+                verdict_token_margin=margin,
+            )
 
         if (
             self.force_length_stop_items
@@ -2028,7 +2771,7 @@ class DeterministicFakeJudgeTransport:
             or prompt.item_id in self.force_length_stop_items
             and prompt.order == "AB"
         ):
-            return JudgeTransportResponse(
+            return _make_resp(
                 raw_text="<think>truncated before verdict...",
                 tokens=("<think>", "truncated", "before", "verdict", "..."),
                 verdict_top_logprobs=_pad_top_logprobs_to_20(
@@ -2042,9 +2785,6 @@ class DeterministicFakeJudgeTransport:
                 ),
                 done_reason="length",
                 seconds=0.002,
-                model_digest=digest,
-                server_binary=server_binary,
-                library_pins=library_pins,
             )
 
         if (
@@ -2053,7 +2793,7 @@ class DeterministicFakeJudgeTransport:
             or prompt.item_id in self.force_unparseable_items
             and prompt.order == "AB"
         ):
-            return JudgeTransportResponse(
+            return _make_resp(
                 raw_text="INVALID_OUTPUT_NO_VERDICT",
                 tokens=("INVALID", "_OUTPUT", "_NO", "_VERDICT"),
                 verdict_top_logprobs=_pad_top_logprobs_to_20(
@@ -2067,9 +2807,6 @@ class DeterministicFakeJudgeTransport:
                 ),
                 done_reason="stop",
                 seconds=0.001,
-                model_digest=digest,
-                server_binary=server_binary,
-                library_pins=library_pins,
             )
 
         # Deterministic score from item_id + judge_id (inverted on BA when item is in force_flip_items)
@@ -2105,39 +2842,30 @@ class DeterministicFakeJudgeTransport:
                     choices[(c_idx + 2) % 3]: 0.08,
                 }
                 sys_one = {"answers": {"supported": {"choice": chosen_cls, "probabilities": probs_map}}}
-                return JudgeTransportResponse(
+                return _make_resp(
                     raw_text=json.dumps(sys_one, sort_keys=True),
                     tokens=(chosen_cls,),
                     verdict_top_logprobs=lp_top,
                     done_reason="stop",
                     seconds=0.001,
-                    model_digest=digest,
-                    server_binary=server_binary,
-                    library_pins=library_pins,
                     system_one_result=sys_one,
                 )
             if spec.judge_id == "flow-judge-v0.1":
                 score_num = {"supported": "3", "cannot_tell": "2", "unsupported": "1"}[chosen_cls]
                 raw = f"<feedback>Deterministic fake evaluation for {prompt.item_id}.</feedback>\n<score>{score_num}</score>"
-                return JudgeTransportResponse(
+                return _make_resp(
                     raw_text=raw,
                     tokens=("<feedback>", "eval", "</feedback>", "<score>", score_num, "</score>"),
                     verdict_top_logprobs=lp_top,
                     done_reason="stop",
                     seconds=0.001,
-                    model_digest=digest,
-                    server_binary=server_binary,
-                    library_pins=library_pins,
                 )
-            return JudgeTransportResponse(
+            return _make_resp(
                 raw_text=chosen_letter,
                 tokens=(chosen_letter,),
                 verdict_top_logprobs=lp_top,
                 done_reason="stop",
                 seconds=0.001,
-                model_digest=digest,
-                server_binary=server_binary,
-                library_pins=library_pins,
             )
 
         # Binary pass
@@ -2153,15 +2881,12 @@ class DeterministicFakeJudgeTransport:
                 TopLogprobEntry(token=f" {tok}", logprob=math.log((p_y if is_yes else p_n) * 0.005)),
             )
             top5_sorted = tuple(sorted(top5, key=lambda e: e.logprob, reverse=True))
-            return JudgeTransportResponse(
+            return _make_resp(
                 raw_text=tok,
                 tokens=(tok,),
                 verdict_top_logprobs=_pad_top_logprobs_to_20(top5_sorted),
                 done_reason="stop",
                 seconds=0.001,
-                model_digest=digest,
-                server_binary=server_binary,
-                library_pins=library_pins,
             )
 
         if spec.judge_id == "granite-guardian-4.1-8b":
@@ -2179,15 +2904,12 @@ class DeterministicFakeJudgeTransport:
             )
             top5_sorted = tuple(sorted(top5, key=lambda e: e.logprob, reverse=True))
             raw = f"<think>\n</think>\n<score>{score_tok}</score>"
-            return JudgeTransportResponse(
+            return _make_resp(
                 raw_text=raw,
                 tokens=("<think>", "\n", "</think>", "\n", "<score>", score_tok, "</score>"),
                 verdict_top_logprobs=_pad_top_logprobs_to_20(top5_sorted),
                 done_reason="stop",
                 seconds=0.001,
-                model_digest=digest,
-                server_binary=server_binary,
-                library_pins=library_pins,
             )
 
         if spec.judge_id == "d3-mini":
@@ -2202,15 +2924,12 @@ class DeterministicFakeJudgeTransport:
                 TopLogprobEntry(token="null", logprob=-6.0),
             )
             top5_sorted = tuple(sorted(top5, key=lambda e: e.logprob, reverse=True))
-            return JudgeTransportResponse(
+            return _make_resp(
                 raw_text=json.dumps(sys_one, sort_keys=True),
                 tokens=("yes" if is_yes else "no",),
                 verdict_top_logprobs=_pad_top_logprobs_to_20(top5_sorted),
                 done_reason="stop",
                 seconds=0.001,
-                model_digest=digest,
-                server_binary=server_binary,
-                library_pins=library_pins,
                 system_one_result=sys_one,
             )
 
@@ -2224,15 +2943,12 @@ class DeterministicFakeJudgeTransport:
             TopLogprobEntry(token="0", logprob=-5.10),
             TopLogprobEntry(token=" ", logprob=-6.00),
         )
-        return JudgeTransportResponse(
+        return _make_resp(
             raw_text=raw,
             tokens=("<feedback>", "evaluated", "</feedback>", "\n", "<score>", pass_fail, "</score>"),
             verdict_top_logprobs=_pad_top_logprobs_to_20(top5),
             done_reason="stop",
             seconds=0.001,
-            model_digest=digest,
-            server_binary=server_binary,
-            library_pins=library_pins,
         )
 
 
@@ -2429,9 +3145,14 @@ class TransformersJudgeTransport:
         hf_home: Path | None = None,
         device: str = "cpu",
         torch_dtype: str | Any = DEFAULT_TORCH_DTYPE,
+        attn_implementation: str = PINNED_ATTN_IMPLEMENTATION,
+        window_mode: str | None = None,
+        shard_spec: str | None = None,
     ) -> None:
         self.receipts_dir = Path(receipts_dir)
         self.hf_home = Path(hf_home) if hf_home is not None else None
+        self.window_mode = window_mode
+        self.shard_spec = shard_spec
         try:
             self.device = normalize_judge_device(device)
         except DeviceRefusalError as exc:
@@ -2441,6 +3162,13 @@ class TransformersJudgeTransport:
                 hint=exc.hint,
                 exit_code=exc.exit_code,
             ) from exc
+        if str(attn_implementation or "").strip() != PINNED_ATTN_IMPLEMENTATION:
+            raise refused_error(
+                "BAKEOFF_JUDGE_ATTN_IMPLEMENTATION_UNPINNED",
+                f"TransformersJudgeTransport requires attn_implementation={PINNED_ATTN_IMPLEMENTATION!r}, got {attn_implementation!r}.",
+                f"Always pass attn_implementation={PINNED_ATTN_IMPLEMENTATION!r} ({PINNED_ATTN_IMPLEMENTATION_REASON}).",
+            )
+        self.attn_implementation = PINNED_ATTN_IMPLEMENTATION
         self.torch_dtype = DEFAULT_TORCH_DTYPE if torch_dtype == "auto" else torch_dtype
         self._loaded_spec_id: str | None = None
         self._verified_digest: str | None = None
@@ -2489,6 +3217,7 @@ class TransformersJudgeTransport:
             ) from exc
 
         ensure_sync_weight_loading()
+        pin_and_read_sdpa_backend()
         tokenizer = AutoTokenizer.from_pretrained(
             str(self._snapshot_dir),
             local_files_only=True,
@@ -2502,6 +3231,7 @@ class TransformersJudgeTransport:
             local_files_only=True,
             trust_remote_code=False,
             dtype=dtype_arg,
+            attn_implementation=self.attn_implementation,
         )
         model.to(self.device)
         model.eval()
@@ -2537,7 +3267,7 @@ class TransformersJudgeTransport:
         import torch
         import transformers
 
-        det_status = configure_torch_determinism()
+        det_status = configure_torch_determinism(window_mode=self.window_mode, shard_spec=self.shard_spec)
         torch.manual_seed(int(seed))
         t0 = time.monotonic()
 
@@ -2581,14 +3311,19 @@ class TransformersJudgeTransport:
         with torch.no_grad():
             try:
                 out = self._model.generate(**gen_kwargs)
-            except RuntimeError:  # pragma: no cover
-                use_det = getattr(torch, "use_deterministic_algorithms", None)
-                if callable(use_det):
-                    use_det(True, warn_only=True)
+            except RuntimeError as exc:
+                if _is_counted_window_mode(self.window_mode, shard_spec=self.shard_spec):
+                    raise refused_error(
+                        "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
+                        f"Counted window refuses warn_only=True determinism fallback during generation: {exc}",
+                        "Ensure strict deterministic algorithms are supported on the target GPU/driver in counted mode.",
+                    ) from exc
+                getattr(torch, "use_deterministic_algorithms", lambda *_a, **_k: None)(True, warn_only=True)
                 det_status = "not enforceable"
                 out = self._model.generate(**gen_kwargs)
 
         elapsed = max(0.0001, time.monotonic() - t0)
+        prompt_token_ids = [int(t) for t in input_ids[0].tolist()]
         gen_token_ids = [int(t) for t in out.sequences[0, prompt_len:].tolist()]
         self.current_output_tokens = len(gen_token_ids)
         tokens_str = tuple(self._tokenizer.convert_ids_to_tokens(gen_token_ids))
@@ -2613,8 +3348,24 @@ class TransformersJudgeTransport:
 
         # Full-vocabulary log_softmax at the verdict token position (step 0 for first_token and score-prefilled Granite)
         verdict_entries: list[TopLogprobEntry] = []
+        step_margins: list[float] = []
+        verdict_step_idx = 0
         if out.scores:
-            step_logits = out.scores[0][0].float()
+            stacked_scores = (
+                torch.stack([step_score[0].float() for step_score in out.scores], dim=0)
+                if hasattr(torch, "stack")
+                else out.scores[0].float()
+            )
+            t2_vals, _ = torch.topk(stacked_scores, k=min(2, int(stacked_scores.shape[-1])))
+            t2_rows = t2_vals.tolist()
+            step_margins = [
+                round(float(row[0] - row[-1]), 6)
+                for row in (t2_rows if isinstance(t2_rows[0], list) else [t2_rows])
+            ]
+            for idx, tok_s in enumerate(tokens_str[: len(step_margins)]):
+                if tok_s.strip().lower() in self.VERDICT_CANDIDATE_NORMS:
+                    verdict_step_idx = idx
+            step_logits = out.scores[verdict_step_idx][0].float()
             full_logprobs = torch.log_softmax(step_logits, dim=-1)
             vocab_size = int(full_logprobs.shape[-1])
             k_top = min(20, vocab_size)
@@ -2642,8 +3393,19 @@ class TransformersJudgeTransport:
                     )
                     included_ids.add(tid)
 
+        min_top2_margin = (
+            min(step_margins)
+            if step_margins
+            else compute_min_top2_logit_margin_from_logprobs(verdict_entries)
+        )
+        verdict_token_margin = (
+            step_margins[verdict_step_idx]
+            if step_margins
+            else compute_min_top2_logit_margin_from_logprobs(verdict_entries)
+        )
+        sdpa_backend = pin_and_read_sdpa_backend()
         # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
-        library_pins = {
+        library_pins: dict[str, Any] = {
             "transport": "TransformersJudgeTransport",
             "python": sys.version.split()[0],
             "torch": getattr(torch, "__version__", "unknown"),
@@ -2651,6 +3413,9 @@ class TransformersJudgeTransport:
             "dtype": str(self.torch_dtype),
             "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
             "deterministic_algorithms": det_status,
+            "fill_uninitialized_memory": False,
+            "attn_implementation": self.attn_implementation,
+            "sdpa_backend": sdpa_backend,
         }
         return JudgeTransportResponse(
             raw_text=raw_text,
@@ -2661,6 +3426,13 @@ class TransformersJudgeTransport:
             model_digest=self._verified_digest,
             server_binary=f"transformers/{library_pins['transformers']};torch/{library_pins['torch']};{self.device}",
             library_pins=library_pins,
+            input_token_ids_sha256=compute_token_ids_sha256(prompt_token_ids),
+            output_token_ids_sha256=compute_token_ids_sha256(gen_token_ids),
+            input_token_count=prompt_len,
+            output_token_count=len(gen_token_ids),
+            stop_reason="max_new_tokens" if done_reason == "length" else "eos",
+            min_top2_logit_margin=min_top2_margin,
+            verdict_token_margin=verdict_token_margin,
         )
 
 
@@ -2866,9 +3638,14 @@ class D3MiniTransport:
         device: str = "cpu",
         expected_transformers_version: str | None = D3_MINI_TRANSFORMERS_VERSION,
         torch_dtype: str = DEFAULT_TORCH_DTYPE,
+        attn_implementation: str = PINNED_ATTN_IMPLEMENTATION,
+        window_mode: str | None = None,
+        shard_spec: str | None = None,
     ) -> None:
         self.receipts_dir = Path(receipts_dir)
         self.hf_home = Path(hf_home) if hf_home is not None else None
+        self.window_mode = window_mode
+        self.shard_spec = shard_spec
         try:
             self.device = normalize_judge_device(device)
         except DeviceRefusalError as exc:
@@ -2878,8 +3655,15 @@ class D3MiniTransport:
                 hint=exc.hint,
                 exit_code=exc.exit_code,
             ) from exc
+        if str(attn_implementation).strip().lower() != PINNED_ATTN_IMPLEMENTATION:
+            raise refused_error(
+                "BAKEOFF_JUDGE_ATTN_IMPLEMENTATION_UNPINNED",
+                f"D3MiniTransport requires attn_implementation='{PINNED_ATTN_IMPLEMENTATION}', got {attn_implementation!r}.",
+                PINNED_ATTN_IMPLEMENTATION_REASON,
+            )
         self.expected_transformers_version = expected_transformers_version
         self.torch_dtype = str(torch_dtype)
+        self.attn_implementation = PINNED_ATTN_IMPLEMENTATION
         self._verified_digest: str | None = None
         self._snapshot_dir: Path | None = None
         self._reviewed_sha: str | None = None
@@ -2953,12 +3737,14 @@ class D3MiniTransport:
             )
         disable_bytecode_writing()
         ensure_sync_weight_loading()
+        pin_and_read_sdpa_backend()
         # Condition 1: the local snapshot directory, never a repo id; AutoModel is the only entry in d3's auto_map.
         model = AutoModel.from_pretrained(
             str(self._snapshot_dir),
             local_files_only=True,
             trust_remote_code=True,
             device=self.device,
+            attn_implementation=self.attn_implementation,
         )
         if not callable(getattr(model, "system_one", None)):
             raise refused_error(
@@ -2978,7 +3764,7 @@ class D3MiniTransport:
         import torch
         import transformers
 
-        det_status = configure_torch_determinism()
+        det_status = configure_torch_determinism(window_mode=self.window_mode, shard_spec=self.shard_spec)
         torch.manual_seed(int(seed))
         t0 = time.monotonic()
         with torch.inference_mode():
@@ -3000,7 +3786,19 @@ class D3MiniTransport:
         else:
             done_reason = "error"
 
-        library_pins = {
+        sys_one = dict(result) if isinstance(result, Mapping) else {"raw": str(result)}
+        in_tok_ids = encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+        in_sha = compute_token_ids_sha256(in_tok_ids)
+        in_cnt = len(in_tok_ids)
+        out_sha = compute_response_output_token_ids_sha256(
+            spec.judge_id,
+            tokens,
+            system_one_result=sys_one,
+        )
+        out_cnt = len(tokens)
+        min_margin = compute_min_top2_logit_margin_from_logprobs(entries)
+        sdpa_backend = pin_and_read_sdpa_backend()
+        library_pins: dict[str, Any] = {
             "transport": "D3MiniTransport",
             "python": sys.version.split()[0],
             "torch": getattr(torch, "__version__", "unknown"),
@@ -3008,8 +3806,10 @@ class D3MiniTransport:
             "dtype": self.torch_dtype,
             "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
             "deterministic_algorithms": det_status,
+            "fill_uninitialized_memory": False,
+            "attn_implementation": self.attn_implementation,
+            "sdpa_backend": sdpa_backend,
         }
-        sys_one = dict(result) if isinstance(result, Mapping) else {"raw": str(result)}
         return JudgeTransportResponse(
             raw_text=json.dumps(sys_one, sort_keys=True, ensure_ascii=False, default=str),
             tokens=tokens,
@@ -3020,6 +3820,13 @@ class D3MiniTransport:
             server_binary=f"transformers/{library_pins['transformers']};torch/{library_pins['torch']};{self.device}",
             library_pins=library_pins,
             system_one_result=sys_one,
+            input_token_ids_sha256=in_sha,
+            output_token_ids_sha256=out_sha,
+            input_token_count=in_cnt,
+            output_token_count=out_cnt,
+            stop_reason="max_new_tokens" if done_reason == "length" else ("error" if done_reason == "error" else "eos"),
+            min_top2_logit_margin=min_margin,
+            verdict_token_margin=min_margin,
         )
 
 
@@ -3242,8 +4049,15 @@ def _run_cpu_transport_probe_for_judge(
     *,
     seed: int,
     judge_op: Callable[[], None] | None = None,
+    window_mode: str | None = None,
 ) -> dict[str, Any]:
     """Exercise `D3MiniTransport` (for `d3-mini`) or `TransformersJudgeTransport` (for the other 4 judges) on CPU using lightweight model stubs."""
+    if _is_counted_window_mode(window_mode):
+        raise refused_error(
+            "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
+            "Counted window refuses _run_cpu_transport_probe_for_judge stub determinism probe.",
+            "Run _run_cpu_transport_probe_for_judge only in probe/knob/stub mode, never in counted or time-one mode.",
+        )
     import types
 
     vocab = {
@@ -3343,15 +4157,22 @@ def _run_cpu_transport_probe_for_judge(
         torch_shim.manual_seed = lambda _s: None  # type: ignore[attr-defined]
         torch_shim.no_grad = _NullCtx  # type: ignore[attr-defined]
         torch_shim.inference_mode = _NullCtx  # type: ignore[attr-defined]
+        torch_shim.utils = types.SimpleNamespace(  # type: ignore[attr-defined]
+            deterministic=types.SimpleNamespace(fill_uninitialized_memory=True)
+        )
+        torch_shim.stack = lambda seq, dim=0: _ProbeTensor([t.vals for t in seq])  # type: ignore[attr-defined]
         torch_shim.log_softmax = lambda t, dim=-1: t  # type: ignore[attr-defined]
-        torch_shim.topk = lambda t, k=5: (_ProbeTensor(t.vals[:k]), _ProbeTensor(list(range(k))))  # type: ignore[attr-defined]
+        torch_shim.topk = lambda t, k=5: (  # type: ignore[attr-defined]
+            _ProbeTensor([r[:k] for r in t.vals] if isinstance(t.vals[0], list) else t.vals[:k]),
+            _ProbeTensor([list(range(k)) for _ in t.vals] if isinstance(t.vals[0], list) else list(range(k))),
+        )
         sys.modules["torch"] = torch_shim
 
         tf_shim = types.ModuleType("transformers")
         tf_shim.__version__ = D3_MINI_TRANSFORMERS_VERSION if spec.judge_id == D3_MINI_JUDGE_ID else "5.19.0"  # type: ignore[attr-defined]
         sys.modules["transformers"] = tf_shim
 
-        j_status, j_reason = configure_torch_determinism_with_reason()
+        j_status, j_reason = configure_torch_determinism_with_reason(window_mode=window_mode)
         if judge_op is not None:
             try:
                 judge_op()
@@ -3430,6 +4251,7 @@ def _run_cpu_transport_probe_for_judge(
     return {
         "status": j_status,
         "deterministic_algorithms": j_status,
+        "fill_uninitialized_memory": False,
         "transport": transport_used,
         "reason": f"{j_reason}; exercised via {transport_used}.generate on CPU",
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
@@ -3686,6 +4508,21 @@ def _count_prompt_tokens(transport: Any, spec: JudgeSpec, prompt: AssembledPromp
     return max(1, len(prompt.prompt_text.split()))
 
 
+def _build_sealed_row_with_sha256(row_fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Attach canonical `row_sha256` computed over all fields of `row_fields` except `row_sha256`."""
+    base = {k: v for k, v in row_fields.items() if k != "row_sha256"}
+    row_sha = hashlib.sha256(_canonical_json_line(base).encode("utf-8")).hexdigest()
+    out = dict(base)
+    out["row_sha256"] = row_sha
+    return out
+
+
+def compute_row_body_sha256(row_obj: Mapping[str, Any]) -> str:
+    """Recompute the canonical `row_sha256` of a parsed row dict (excluding `row_sha256`)."""
+    base = {k: v for k, v in row_obj.items() if k != "row_sha256"}
+    return hashlib.sha256(_canonical_json_line(base).encode("utf-8")).hexdigest()
+
+
 def run_bakeoff_judge(
     *,
     part_dir: Path,
@@ -3714,6 +4551,16 @@ def run_bakeoff_judge(
     repo_root: Path | None = None,
     progress_file: Path | None = None,
     heartbeat_interval_seconds: float | None = None,
+    shard_spec: str | None = None,
+    shard_manifest_path: Path | None = None,
+    shard_manifest_sha256: str | None = None,
+    golden_anchor_manifest_path: Path | None = None,
+    active_item_ids: Sequence[str] | None = None,
+    anchor_prefix_only: bool = False,
+    session_fingerprint_sha256: str | None = None,
+    window_mode: str | None = None,
+    replacement_session: bool = False,
+    resume_overlap_pairs: int = DEFAULT_RECOVERY_OVERLAP_ITEM_PAIRS,
 ) -> dict[str, object]:
     """Run a single judge over `part_bakeoff_sealed/items.jsonl` and write unsealed rows and `generations.jsonl`."""
     try:
@@ -3729,7 +4576,56 @@ def run_bakeoff_judge(
     spec = resolve_judge_spec(judge)
     adapter = build_judge_adapter(spec)
     effective_dtype = DEFAULT_TORCH_DTYPE if str(torch_dtype).strip().lower() == "auto" else str(torch_dtype)
-    det_status = configure_torch_determinism()
+    eff_shard_spec = (
+        shard_spec
+        if shard_spec is not None
+        else os.environ.get("RDLAB_SHARD", "")
+    ).strip() or None
+    eff_window_mode = (
+        window_mode
+        if window_mode is not None
+        else (
+            os.environ.get(DETERMINISM_MODE_ENV_VAR, "")
+            or os.environ.get("RDLAB_WINDOW_MODE", "")
+        )
+    ).strip() or None
+    if eff_window_mode is None and fake_transport:
+        eff_window_mode = "stub"
+    guard_no_test_hooks_in_counted_mode(
+        eff_window_mode,
+        shard_spec=eff_shard_spec,
+        fake_transport=bool(fake_transport or transport is not None),
+    )
+    det_status = configure_torch_determinism(window_mode=eff_window_mode, shard_spec=eff_shard_spec)
+
+    eff_manifest_path_raw = (
+        str(shard_manifest_path)
+        if shard_manifest_path is not None
+        else os.environ.get("RDLAB_SHARD_MANIFEST", "").strip()
+    )
+    eff_manifest_sha = (
+        shard_manifest_sha256
+        if shard_manifest_sha256 is not None
+        else os.environ.get("RDLAB_SHARD_MANIFEST_SHA256", "")
+    ).strip() or None
+    eff_session_fp = (
+        session_fingerprint_sha256
+        if session_fingerprint_sha256 is not None
+        else os.environ.get("RDLAB_SESSION_FINGERPRINT_SHA256", "")
+    ).strip() or None
+    eff_replacement_session = bool(replacement_session) or (
+        os.environ.get("RDLAB_REPLACEMENT_SESSION", "").strip().lower() in ("1", "true", "yes", "on")
+    )
+    if active_item_ids is None:
+        env_active_ids = os.environ.get("RDLAB_ACTIVE_ITEM_IDS", "").strip()
+        if env_active_ids:
+            active_item_ids = [x.strip() for x in env_active_ids.split(",") if x.strip()]
+
+    shard_k: int | None = None
+    shard_n: int | None = None
+    if eff_shard_spec is not None:
+        shard_k, shard_n = parse_shard_spec(eff_shard_spec)
+
     env_prog = os.environ.get(JUDGE_CHILD_PROGRESS_ENV_VAR, "").strip()
     eff_progress_file: Path | None = (
         Path(progress_file)
@@ -3752,7 +4648,18 @@ def run_bakeoff_judge(
     )
 
     if vram_probe is None:
-        force_gpu_probe = bool(os.environ.get("FAKE_COLAB_NVIDIA_SMI_MODE", "").strip())
+        smi_mode_raw = os.environ.get("FAKE_COLAB_NVIDIA_SMI_MODE", "").strip()
+        if smi_mode_raw and smi_mode_raw not in ("ok", "high", "fail", "empty", "zero"):
+            raise refused_error(
+                MALFORMED_TEST_HOOK,
+                "Malformed mode in environment variable FAKE_COLAB_NVIDIA_SMI_MODE.",
+                "Use one of: ok, high, fail, empty, zero.",
+            )
+        is_stub_or_dryrun_win = not is_real_mode(
+            eff_window_mode,
+            fake_transport=fake_transport,
+        )
+        force_gpu_probe = bool(is_stub_or_dryrun_win and smi_mode_raw)
         vram_probe = (
             (lambda: 0)
             if (str(device).lower().startswith("cpu") or (fake_transport and not force_gpu_probe))
@@ -3781,6 +4688,8 @@ def run_bakeoff_judge(
                     hf_home=hf_home,
                     device=device,
                     torch_dtype=effective_dtype,
+                    window_mode=eff_window_mode,
+                    shard_spec=eff_shard_spec,
                 )
             else:
                 transport = TransformersJudgeTransport(
@@ -3788,19 +4697,22 @@ def run_bakeoff_judge(
                     hf_home=hf_home,
                     device=device,
                     torch_dtype=effective_dtype,
+                    window_mode=eff_window_mode,
+                    shard_spec=eff_shard_spec,
                 )
 
     verified_digest = transport.verify_ready(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
     ensure_loaded_fn = getattr(transport, "_ensure_loaded", None)
     if callable(ensure_loaded_fn):
         ensure_loaded_fn(spec)
+    load_wall_seconds = round(max(0.0, time.monotonic() - child_start_mono), 6)
     _append_child_progress_line(
         eff_progress_file,
         {
             "kind": "load_done",
             "judge_id": spec.judge_id,
             "device": device,
-            "load_seconds": round(max(0.0, time.monotonic() - child_start_mono), 6),
+            "load_seconds": load_wall_seconds,
             "rss_bytes": _read_process_rss_bytes(),
         },
         lock=progress_lock,
@@ -3815,13 +4727,100 @@ def run_bakeoff_judge(
         items_sha256=items_sha256,
     )
 
+    manifest_doc: dict[str, Any] | None = None
+    manifest_file_sha256: str | None = None
+    shard_item_ids: list[str] = [it.item_id for it in items]
+    anchor_item_ids: list[str] = []
+    if shard_k is not None:
+        target_manifest_path = Path(eff_manifest_path_raw) if eff_manifest_path_raw else (resolved_out / SHARD_MANIFEST_FILENAME)
+        if not target_manifest_path.is_file():
+            built_manifest = build_shard_manifest(
+                items,
+                schedule,
+                num_shards=shard_n if shard_n is not None else 1,
+                pass_mode=pass_mode,
+            )
+            write_shard_manifest(built_manifest, target_manifest_path)
+        manifest_doc, manifest_file_sha256 = verify_shard_manifest(
+            target_manifest_path,
+            expected_sha256=eff_manifest_sha,
+            expected_num_shards=shard_n,
+        )
+        local_manifest_copy = resolved_out / SHARD_MANIFEST_FILENAME
+        if target_manifest_path.resolve() != local_manifest_copy.resolve():
+            write_shard_manifest(manifest_doc, local_manifest_copy)
+        raw_shard_list = manifest_doc.get("shards", {}).get(str(shard_k))
+        if not isinstance(raw_shard_list, list):
+            raise refused_error(
+                "SHARD_SPEC_OUT_OF_RANGE",
+                f"Shard k={shard_k} not present in shard_manifest.json shards.",
+                "Check RDLAB_SHARD=k/n against shard_manifest.json.",
+            )
+        shard_item_ids = [str(iid) for iid in raw_shard_list if str(iid) in items_by_id]
+        anchor_item_ids = [
+            str(iid)
+            for iid in manifest_doc.get("anchor_item_ids", [])
+            if str(iid) in items_by_id
+        ]
+        if str(eff_window_mode or "").strip().lower() == "counted":
+            manifest_canaries = manifest_doc.get("canary_item_ids")
+            if not isinstance(manifest_canaries, list) or not manifest_canaries:
+                raise refused_error(
+                    "SHARD_MANIFEST_CANARY_MISSING",
+                    "Counted window refuses shard_manifest.json without canary_item_ids from lock-check telemetry.",
+                    "Build shard_manifest.json with lock_check_telemetry_path or canary_item_ids before running a counted shard.",
+                )
+            eff_golden_path_raw = (
+                str(golden_anchor_manifest_path)
+                if golden_anchor_manifest_path is not None
+                else os.environ.get("RDLAB_GOLDEN_ANCHOR_MANIFEST", "").strip()
+            )
+            has_golden_manifest = bool(manifest_doc.get("golden_anchor_manifest_sha256")) or (
+                bool(eff_golden_path_raw) and Path(eff_golden_path_raw).is_file()
+            ) or (resolved_out / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file() or (
+                target_manifest_path.parent / GOLDEN_ANCHOR_MANIFEST_FILENAME
+            ).is_file()
+            if not has_golden_manifest:
+                raise refused_error(
+                    "GOLDEN_ANCHOR_MANIFEST_MISSING",
+                    "Counted window refuses sharded execution without a golden anchor manifest from the lock-check window.",
+                    "Record golden_anchor_manifest.json from the lock-check window before starting counted shards.",
+                )
+
+    shard_item_id_set = set(shard_item_ids)
+    active_item_id_set = set(str(x) for x in active_item_ids) if active_item_ids is not None else shard_item_id_set
+    effective_target_item_ids = shard_item_id_set & active_item_id_set
+    anchor_item_id_set = set(anchor_item_ids)
+    is_subblock_invocation = active_item_ids is not None and effective_target_item_ids != shard_item_id_set
+
+    judge_done_dir = resolved_out / "judge_done"
+    judge_done_path = judge_done_dir / f"{spec.judge_id}.json"
+    judge_done_tmp = judge_done_dir / f".{spec.judge_id}.json.tmp"
+    prev_load_history: list[float] = []
+    prev_canary_start_records: list[dict[str, Any]] | None = None
+    prev_done_doc: dict[str, Any] = {}
+    if judge_done_path.is_file():
+        try:
+            loaded_done = json.loads(judge_done_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_done, dict):
+                prev_done_doc = loaded_done
+                prev_load_history = [
+                    float(x) for x in (loaded_done.get("load_wall_seconds_history") or [])
+                ]
+                if isinstance(loaded_done.get("canary_start_records"), list) and loaded_done["canary_start_records"]:
+                    prev_canary_start_records = [
+                        dict(r) for r in loaded_done["canary_start_records"] if isinstance(r, Mapping)
+                    ]
+        except Exception:
+            prev_load_history = []
+
     # Resolve canary items present in this item set
     canary_cfg = load_canary_config(canary_config_path) if (run_canary or canary_config_path is not None) else {}
     canary_wanted_ids = [str(iid) for iid in canary_cfg.get("canary_item_ids", []) if str(iid) in items_by_id]
     canary_items = [items_by_id[iid] for iid in canary_wanted_ids]
     canary_tol = float(canary_cfg.get("canary_logprob_tolerance", 0.0))
-    canary_start_records: list[dict[str, Any]] | None = None
-    if run_canary and canary_items:
+    canary_start_records: list[dict[str, Any]] | None = prev_canary_start_records
+    if canary_start_records is None and run_canary and canary_items and not anchor_prefix_only:
         canary_start_records = _run_canary_snapshot(
             spec=spec,
             adapter=adapter,
@@ -3837,10 +4836,26 @@ def run_bakeoff_judge(
     row_path = rows_dir / row_filename
     gen_path = resolved_out / GENERATIONS_FILENAME
 
+    anchor_row_path: Path | None = None
+    completed_anchor_keys: set[tuple[str, str]] = set()
+    if eff_shard_spec is not None and anchor_item_ids:
+        anchor_dir = resolved_out / ANCHOR_ROWS_DIRNAME
+        anchor_dir.mkdir(parents=True, exist_ok=True)
+        anchor_row_path = anchor_dir / row_filename
+        if anchor_row_path.is_file():
+            for raw_ln in anchor_row_path.read_text(encoding="utf-8").splitlines():
+                if not raw_ln.strip():
+                    continue
+                parsed_ar = json.loads(raw_ln)
+                if isinstance(parsed_ar, dict) and parsed_ar.get("item_id") and parsed_ar.get("order"):
+                    completed_anchor_keys.add((str(parsed_ar["item_id"]), str(parsed_ar["order"])))
+
     completed_keys: set[tuple[str, str]] = set()
     existing_row_objs: list[dict[str, Any]] = []
+    discarded_incomplete_item_ids: list[str] = []
+    verified_recovery: dict[str, Any] | None = None
     if row_path.is_file():
-        existing_row_objs = [
+        raw_existing_rows = [
             parsed_row
             for raw_ln in row_path.read_text(encoding="utf-8").splitlines()
             if raw_ln.strip()
@@ -3850,7 +4865,67 @@ def run_bakeoff_judge(
             and parsed_row.get("order")
             and parsed_row.get("run_status") != "failed_to_run"
         ]
+        orders_by_item: dict[str, set[str]] = {}
+        item_completion_order: list[str] = []
+        for r in raw_existing_rows:
+            iid = str(r["item_id"])
+            ord_s = str(r["order"])
+            orders_by_item.setdefault(iid, set()).add(ord_s)
+            if orders_by_item[iid] >= {"AB", "BA"} and iid not in item_completion_order:
+                item_completion_order.append(iid)
+        incomplete_iids = sorted(iid for iid, ords in orders_by_item.items() if ords != {"AB", "BA"})
+        if incomplete_iids:
+            discarded_incomplete_item_ids = incomplete_iids
+            existing_row_objs = [r for r in raw_existing_rows if str(r["item_id"]) not in set(incomplete_iids)]
+            with row_path.open("w", encoding="utf-8", newline="\n") as rewrite_fh:
+                for r in existing_row_objs:
+                    rewrite_fh.write(_canonical_json_line(r) + "\n")
+                rewrite_fh.flush()
+        else:
+            existing_row_objs = raw_existing_rows
         completed_keys = {(str(r["item_id"]), str(r["order"])) for r in existing_row_objs}
+
+        prev_fps = {
+            str(r.get("session_fingerprint_sha256") or "").strip()
+            for r in existing_row_objs
+            if str(r.get("session_fingerprint_sha256") or "").strip()
+        }
+        is_cross_session_resume = eff_replacement_session or (
+            bool(eff_session_fp) and bool(prev_fps) and (eff_session_fp not in prev_fps)
+        )
+        if is_cross_session_resume and item_completion_order and resume_overlap_pairs > 0:
+            overlap_iids = item_completion_order[-min(int(resume_overlap_pairs), len(item_completion_order)) :]
+            existing_by_key = {(str(r["item_id"]), str(r["order"])): r for r in existing_row_objs}
+            mismatches: list[str] = []
+            for ov_iid in overlap_iids:
+                ov_item = items_by_id[ov_iid]
+                for ov_ord in ("AB", "BA"):
+                    ord_mode_ov: OrderMode = "AB" if ov_ord == "AB" else "BA"
+                    prev_row = existing_by_key[(ov_iid, ov_ord)]
+                    ov_prompt = adapter.assemble_prompt(ov_item, order=ord_mode_ov, pass_mode=pass_mode)
+                    ov_resp = transport.generate(spec, ov_prompt, seed=schedule.seed)
+                    new_out_sha = ov_resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                        spec.judge_id,
+                        ov_resp.tokens,
+                        system_one_result=ov_resp.system_one_result,
+                    )
+                    prev_out_sha = str(prev_row.get("output_token_ids_sha256") or "")
+                    if prev_out_sha and new_out_sha != prev_out_sha:
+                        mismatches.append(f"{ov_iid}:{ov_ord} (prev={prev_out_sha[:12]} vs new={new_out_sha[:12]})")
+            if mismatches:
+                row_path.unlink(missing_ok=True)
+                raise refused_error(
+                    "RECOVERY_OVERLAP_MISMATCH",
+                    f"Replacement session 3-item-pair overlap check failed for judge '{spec.judge_id}' on "
+                    f"{len(mismatches)} call(s): {', '.join(mismatches)}; partial shard discarded.",
+                    "Restart the shard from scratch on a verified session environment.",
+                )
+            verified_recovery = {
+                "verified": True,
+                "overlap_item_ids": overlap_iids,
+                "overlap_calls": len(overlap_iids) * 2,
+                "discarded_incomplete_item_ids": discarded_incomplete_item_ids,
+            }
 
     unparseable_count = sum(1 for r in existing_row_objs if r.get("state") == "unparseable")
     length_stop_count = sum(1 for r in existing_row_objs if r.get("state") == "length_stop")
@@ -3862,9 +4937,125 @@ def run_bakeoff_judge(
     polarity_map = POLARITY_MAP_BY_JUDGE.get(spec.judge_id, {"inverted": "false"})
     eff_hb_interval = resolve_child_heartbeat_interval_seconds(heartbeat_interval_seconds)
 
+    # Item 8 & Part E.1: Run anchor items not in this shard's main schedule as an anchor_rows prefix
+    # (all 50 anchors on shards 2..n, plus any canary anchors on shard 1 that belong to shards 2..n).
+    prefix_anchor_ids = (
+        anchor_item_ids
+        if (shard_k is not None and shard_k >= 2)
+        else [iid for iid in anchor_item_ids if iid not in shard_item_id_set]
+    )
+    if anchor_row_path is not None and shard_k is not None and prefix_anchor_ids:
+        with anchor_row_path.open("a", encoding="utf-8", newline="\n") as arf:
+            for anc_idx, anc_iid in enumerate(anchor_item_ids):
+                if anc_iid not in prefix_anchor_ids:
+                    continue
+                anc_item = items_by_id[anc_iid]
+                for anc_ord_idx, anc_order in enumerate(("AB", "BA")):
+                    if (anc_iid, anc_order) in completed_anchor_keys:
+                        continue
+                    anc_ord_mode: OrderMode = "AB" if anc_order == "AB" else "BA"
+                    anc_ordered_mat = swap_material_facts_order(anc_item.material, anc_ord_mode)
+                    anc_hop1, anc_hop2, anc_marker = extract_hop_and_marker_lines(anc_ordered_mat, anc_item.claim)
+                    anc_prompt = adapter.assemble_prompt(anc_item, order=anc_ord_mode, pass_mode=pass_mode)
+                    anc_prompt_toks = _count_prompt_tokens(transport, spec, anc_prompt)
+                    anc_t0 = time.monotonic()
+                    anc_resp = transport.generate(spec, anc_prompt, seed=schedule.seed)
+                    anc_elapsed = anc_resp.seconds if anc_resp.seconds > 0 else max(0.0001, time.monotonic() - anc_t0)
+                    anc_readout = adapter.parse_response(anc_resp, pass_mode=pass_mode)
+                    anc_top5 = [lp.to_dict() for lp in anc_readout.verdict_top_logprobs[:5]]
+                    anc_top20_src = (
+                        anc_resp.verdict_top_logprobs[:20]
+                        if anc_resp.verdict_top_logprobs
+                        else anc_readout.verdict_top_logprobs[:20]
+                    )
+                    anc_top20 = [lp.to_dict() for lp in anc_top20_src]
+                    anc_slot = -(anc_idx * 2 + anc_ord_idx + 1)
+                    anc_call_id = f"{spec.judge_id}:{pass_mode}:anchor:{anc_idx:04d}:{anc_iid}:{anc_ord_mode}"
+                    anc_receipt_payload = {
+                        "arm": spec.judge_id,
+                        "prompt": anc_call_id,
+                        "prompt_sha256": anc_prompt.prompt_sha256,
+                        "model_digest": anc_resp.model_digest,
+                        "tokens": list(anc_resp.tokens),
+                        "top": anc_top5,
+                        "done_reason": anc_readout.done_reason,
+                    }
+                    anc_receipt_sha = hashlib.sha256(
+                        _canonical_json_line(anc_receipt_payload).encode("utf-8")
+                    ).hexdigest()
+                    anc_in_sha = anc_resp.input_token_ids_sha256 or compute_prompt_input_token_ids_sha256(
+                        spec.judge_id, anc_prompt.prompt_text
+                    )
+                    anc_out_sha = anc_resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                        spec.judge_id,
+                        anc_resp.tokens,
+                        system_one_result=anc_resp.system_one_result,
+                    )
+                    anc_in_cnt = int(anc_resp.input_token_count) if (anc_resp.input_token_count or 0) > 0 else anc_prompt_toks
+                    anc_out_cnt = int(anc_resp.output_token_count) if (anc_resp.output_token_count or 0) > 0 else len(anc_resp.tokens)
+                    anc_stop_rsn = anc_resp.stop_reason or ("max_new_tokens" if anc_readout.done_reason == "length" else "eos")
+                    anc_margin = (
+                        anc_resp.min_top2_logit_margin
+                        if anc_resp.min_top2_logit_margin is not None
+                        else compute_min_top2_logit_margin_from_logprobs(anc_readout.verdict_top_logprobs)
+                    )
+                    anc_verdict_margin = (
+                        anc_resp.verdict_token_margin
+                        if anc_resp.verdict_token_margin is not None
+                        else compute_min_top2_logit_margin_from_logprobs(anc_readout.verdict_top_logprobs)
+                    )
+                    anc_row_obj = _build_sealed_row_with_sha256(
+                        {
+                            "judge_id": spec.judge_id,
+                            "judge_label": spec.judge_label,
+                            "item_id": anc_iid,
+                            "order": anc_ord_mode,
+                            "pass_number": 1 if anc_ord_mode == "AB" else 2,
+                            "slot_index": anc_slot,
+                            "pass_mode": pass_mode,
+                            "model_revision": spec.revision,
+                            "model_digest": anc_resp.model_digest,
+                            "prompt_sha256": anc_prompt.prompt_sha256,
+                            "input_token_ids_sha256": anc_in_sha,
+                            "output_token_ids_sha256": anc_out_sha,
+                            "input_token_count": anc_in_cnt,
+                            "output_token_count": anc_out_cnt,
+                            "stop_reason": anc_stop_rsn,
+                            "min_top2_logit_margin": anc_margin,
+                            "verdict_token_margin": anc_verdict_margin,
+                            "verdict_parse_status": anc_readout.state,
+                            "shard_spec": eff_shard_spec,
+                            "session_fingerprint_sha256": eff_session_fp,
+                            "done_reason": anc_readout.done_reason,
+                            "state": anc_readout.state,
+                            "raw_generation": anc_resp.raw_text,
+                            "raw_verdict": anc_readout.raw_verdict,
+                            "confidence": round(anc_readout.p_yes, 6) if anc_readout.p_yes is not None else None,
+                            "choice_probabilities": anc_readout.choice_probabilities,
+                            "top_logprobs": anc_top5,
+                            "top_20_logprobs": anc_top20,
+                            "polarity_map": polarity_map,
+                            "hop1_line_index": anc_hop1,
+                            "hop2_line_index": anc_hop2,
+                            "marker_line_index": anc_marker,
+                            "seconds": round(anc_elapsed, 6),
+                            "vram_peak_mib": 0,
+                            "receipt_sha256": anc_receipt_sha,
+                        }
+                    )
+                    arf.write(_canonical_json_line(anc_row_obj) + "\n")
+                    arf.flush()
+                    completed_anchor_keys.add((anc_iid, anc_order))
+
     row_mode = "a" if existing_row_objs else "w"
     with row_path.open(row_mode, encoding="utf-8", newline="\n") as rf, gen_path.open("a", encoding="utf-8", newline="\n") as gf:
         for call_idx, entry in enumerate(schedule.entries):
+            if anchor_prefix_only and shard_k is not None and shard_k >= 2:
+                continue
+            if anchor_prefix_only and entry.item_id not in anchor_item_id_set:
+                continue
+            if entry.item_id not in effective_target_item_ids:
+                continue
             if (entry.item_id, entry.order) in completed_keys:
                 continue
             item = items_by_id[entry.item_id]
@@ -4051,6 +5242,31 @@ def run_bakeoff_judge(
                 os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
             )
             pins_with_determinism.setdefault("deterministic_algorithms", det_status)
+            pins_with_determinism.setdefault("fill_uninitialized_memory", False)
+            pins_with_determinism.setdefault("attn_implementation", PINNED_ATTN_IMPLEMENTATION)
+            pins_with_determinism.setdefault("sdpa_backend", pin_and_read_sdpa_backend())
+
+            in_tok_sha = resp.input_token_ids_sha256 or compute_prompt_input_token_ids_sha256(
+                spec.judge_id, prompt.prompt_text
+            )
+            out_tok_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                spec.judge_id,
+                resp.tokens,
+                system_one_result=resp.system_one_result,
+            )
+            in_tok_cnt = int(resp.input_token_count) if (resp.input_token_count or 0) > 0 else prompt_tokens_count
+            out_tok_cnt = int(resp.output_token_count) if (resp.output_token_count or 0) > 0 else len(resp.tokens)
+            stop_rsn = resp.stop_reason or ("max_new_tokens" if readout.done_reason == "length" else "eos")
+            min_margin = (
+                resp.min_top2_logit_margin
+                if resp.min_top2_logit_margin is not None
+                else compute_min_top2_logit_margin_from_logprobs(readout.verdict_top_logprobs)
+            )
+            verdict_margin = (
+                resp.verdict_token_margin
+                if resp.verdict_token_margin is not None
+                else compute_min_top2_logit_margin_from_logprobs(readout.verdict_top_logprobs)
+            )
 
             gen_obj: dict[str, Any] = {
                 "arm": spec.judge_id,
@@ -4059,6 +5275,13 @@ def run_bakeoff_judge(
                 "order": entry.order,
                 "pass_mode": pass_mode,
                 "prompt_sha256": prompt.prompt_sha256,
+                "input_token_ids_sha256": in_tok_sha,
+                "output_token_ids_sha256": out_tok_sha,
+                "input_token_count": in_tok_cnt,
+                "output_token_count": out_tok_cnt,
+                "stop_reason": stop_rsn,
+                "min_top2_logit_margin": min_margin,
+                "verdict_token_margin": verdict_margin,
                 "model_digest": resp.model_digest,
                 "tokens": list(resp.tokens),
                 "top": top5_dicts,
@@ -4075,7 +5298,7 @@ def run_bakeoff_judge(
             gf.write(_canonical_json_line(gen_obj) + "\n")
             gf.flush()
 
-            row_obj: dict[str, Any] = {
+            base_row_obj: dict[str, Any] = {
                 "judge_id": spec.judge_id,
                 "judge_label": spec.judge_label,
                 "item_id": item.item_id,
@@ -4086,6 +5309,16 @@ def run_bakeoff_judge(
                 "model_revision": spec.revision,
                 "model_digest": resp.model_digest,
                 "prompt_sha256": prompt.prompt_sha256,
+                "input_token_ids_sha256": in_tok_sha,
+                "output_token_ids_sha256": out_tok_sha,
+                "input_token_count": in_tok_cnt,
+                "output_token_count": out_tok_cnt,
+                "stop_reason": stop_rsn,
+                "min_top2_logit_margin": min_margin,
+                "verdict_token_margin": verdict_margin,
+                "verdict_parse_status": readout.state,
+                "shard_spec": eff_shard_spec,
+                "session_fingerprint_sha256": eff_session_fp,
                 "done_reason": readout.done_reason,
                 "state": readout.state,
                 "raw_generation": resp.raw_text,
@@ -4103,15 +5336,30 @@ def run_bakeoff_judge(
                 "receipt_sha256": receipt_sha256,
             }
             if will_halt_error_rate:
-                row_obj["run_status"] = "failed_to_run"
-                row_obj["partial_counts"] = {
+                base_row_obj["run_status"] = "failed_to_run"
+                base_row_obj["partial_counts"] = {
                     "calls_count": calls_so_far,
                     "parsed_count": parsed_count,
                     "unparseable_count": unparseable_count,
                     "length_stop_count": length_stop_count,
                 }
+            row_obj = _build_sealed_row_with_sha256(base_row_obj)
             rf.write(_canonical_json_line(row_obj) + "\n")
             rf.flush()
+            if not will_halt_error_rate:
+                completed_keys.add((entry.item_id, entry.order))
+
+            if (
+                anchor_row_path is not None
+                and shard_k == 1
+                and item.item_id in anchor_item_id_set
+                and (item.item_id, entry.order) not in completed_anchor_keys
+                and not will_halt_error_rate
+            ):
+                with anchor_row_path.open("a", encoding="utf-8", newline="\n") as arf:
+                    arf.write(_canonical_json_line(row_obj) + "\n")
+                    arf.flush()
+                completed_anchor_keys.add((item.item_id, entry.order))
 
             if will_halt_error_rate:
                 failed_wall_s = round(max(0.0, time.monotonic() - child_start_mono), 6)
@@ -4158,8 +5406,18 @@ def run_bakeoff_judge(
         lock=progress_lock,
     )
 
+    all_shard_items_complete = all(
+        (iid, ord_s) in completed_keys
+        for iid in shard_item_ids
+        for ord_s in ("AB", "BA")
+    )
     canary_summary: dict[str, Any] | None = None
-    if canary_start_records is not None:
+    if (
+        run_canary
+        and canary_start_records is not None
+        and not anchor_prefix_only
+        and (not is_subblock_invocation or all_shard_items_complete)
+    ):
         canary_end_records = _run_canary_snapshot(
             spec=spec,
             adapter=adapter,
@@ -4177,34 +5435,63 @@ def run_bakeoff_judge(
 
     row_bytes = row_path.read_bytes()
     rows_sha256 = hashlib.sha256(row_bytes).hexdigest()
-    judge_done_dir = resolved_out / "judge_done"
-    judge_done_dir.mkdir(parents=True, exist_ok=True)
-    judge_done_path = judge_done_dir / f"{spec.judge_id}.json"
-    judge_done_tmp = judge_done_dir / f".{spec.judge_id}.json.tmp"
-    judge_done_doc: dict[str, Any] = {
-        "judge_id": spec.judge_id,
-        "device": device,
-        "row_count": calls_so_far,
-        "sha256": rows_sha256,
-        "rows_file": f"{ROWS_DIRNAME}/{spec.judge_id}.jsonl",
-        "bytes": len(row_bytes),
-        "items_count": len(items),
-        "calls_count": calls_so_far,
-        "parsed_count": parsed_count,
-        "unparseable_count": unparseable_count,
-        "length_stop_count": length_stop_count,
-        "vram_peak_mib": vram_peak_overall,
-        "total_seconds": round(total_seconds, 4),
-        "elapsed_seconds": child_wall_elapsed_s,
-        "dtype": effective_dtype,
-        "canary": canary_summary,
-    }
-    judge_done_tmp.write_text(
-        json.dumps(judge_done_doc, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    final_row_objs = [
+        json.loads(ln)
+        for ln in row_bytes.decode("utf-8").splitlines()
+        if ln.strip()
+    ]
+    all_row_sha256s = [
+        str(r.get("row_sha256") or compute_row_body_sha256(r))
+        for r in final_row_objs
+        if isinstance(r, dict)
+    ]
+
+    if verified_recovery is None and isinstance(prev_done_doc.get("verified_recovery"), dict):
+        verified_recovery = prev_done_doc["verified_recovery"]
+    if not discarded_incomplete_item_ids and isinstance(prev_done_doc.get("discarded_incomplete_item_ids"), list):
+        discarded_incomplete_item_ids = [str(x) for x in prev_done_doc["discarded_incomplete_item_ids"]]
+    load_history = (
+        list(prev_load_history)
+        if anchor_prefix_only
+        else [*prev_load_history, load_wall_seconds]
     )
-    judge_done_tmp.replace(judge_done_path)
+
+    if not anchor_prefix_only:
+        judge_done_dir.mkdir(parents=True, exist_ok=True)
+        judge_done_doc: dict[str, Any] = {
+            "judge_id": spec.judge_id,
+            "device": device,
+            "row_count": calls_so_far,
+            "sha256": rows_sha256,
+            "row_sha256s": all_row_sha256s,
+            "rows_file": f"{ROWS_DIRNAME}/{spec.judge_id}.jsonl",
+            "bytes": len(row_bytes),
+            "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
+            "calls_count": calls_so_far,
+            "parsed_count": parsed_count,
+            "unparseable_count": unparseable_count,
+            "length_stop_count": length_stop_count,
+            "vram_peak_mib": vram_peak_overall,
+            "load_wall_seconds": load_wall_seconds,
+            "load_wall_seconds_history": load_history,
+            "total_seconds": round(total_seconds, 4),
+            "elapsed_seconds": child_wall_elapsed_s,
+            "dtype": effective_dtype,
+            "fill_uninitialized_memory": False,
+            "shard_spec": eff_shard_spec,
+            "shard_manifest_sha256": manifest_file_sha256,
+            "session_fingerprint_sha256": eff_session_fp,
+            "discarded_incomplete_item_ids": discarded_incomplete_item_ids,
+            "verified_recovery": verified_recovery,
+            "canary": canary_summary,
+            "canary_start_records": canary_start_records,
+        }
+        judge_done_tmp.write_text(
+            json.dumps(judge_done_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        judge_done_tmp.replace(judge_done_path)
 
     return {
         "status": "ok",
@@ -4218,18 +5505,30 @@ def run_bakeoff_judge(
         "dtype": effective_dtype,
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
         "deterministic_algorithms": det_status,
-        "items_count": len(items),
+        "fill_uninitialized_memory": False,
+        "attn_implementation": PINNED_ATTN_IMPLEMENTATION,
+        "sdpa_backend": pin_and_read_sdpa_backend(),
+        "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
         "calls_count": calls_so_far,
         "row_count": calls_so_far,
         "rows_sha256": rows_sha256,
+        "row_sha256s": all_row_sha256s,
         "parsed_count": parsed_count,
         "unparseable_count": unparseable_count,
         "length_stop_count": length_stop_count,
         "vram_peak_mib": vram_peak_overall,
+        "load_wall_seconds": load_wall_seconds,
+        "load_wall_seconds_history": load_history,
         "total_seconds": round(total_seconds, 4),
         "elapsed_seconds": child_wall_elapsed_s,
         "schedule_seed": schedule.seed,
         "schedule_sha256": schedule.schedule_sha256,
+        "shard_spec": eff_shard_spec,
+        "shard_manifest_sha256": manifest_file_sha256,
+        "shard_item_ids": shard_item_ids,
+        "anchor_item_ids": anchor_item_ids,
+        "discarded_incomplete_item_ids": discarded_incomplete_item_ids,
+        "verified_recovery": verified_recovery,
         "canary": canary_summary,
         "rows_path": str(row_path),
         "judge_done_path": str(judge_done_path),
@@ -4293,6 +5592,104 @@ def close_bakeoff_outputs(
         newline="\n",
     )
     return closed_doc
+
+
+TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
+TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
+MALFORMED_TEST_HOOK = "MALFORMED_TEST_HOOK"
+FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES: tuple[str, ...] = ("FAKE_COLAB_",)
+FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES: tuple[str, ...] = (
+    "_OVERRIDE",
+    "_ACTUAL_HASHES",
+    "_BACKEND",
+)
+FORBIDDEN_COUNTED_TEST_HOOK_NAMES: frozenset[str] = frozenset(
+    {
+        "FAKE_COLAB_BITSANDBYTES_VERSION",
+        "FAKE_COLAB_COMPUTE_CAPABILITY",
+        "FAKE_COLAB_CUDA_RUNTIME",
+        "FAKE_COLAB_CUT_MID_JUDGE",
+        "FAKE_COLAB_CUT_MID_JUDGE_HARD",
+        "FAKE_COLAB_DEVICE_CHECK_DEVICE",
+        "FAKE_COLAB_DRIVER_VERSION",
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE",
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END",
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE",
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END",
+        "FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD",
+        "FAKE_COLAB_FAIL_DOWNLOAD_CHILD",
+        "FAKE_COLAB_FAIL_JUDGE_CHILD",
+        "FAKE_COLAB_GPU_GATE_MODE",
+        "FAKE_COLAB_GPU_GATE_SECRET",
+        "FAKE_COLAB_GPU_GATE_SLEEP_SECONDS",
+        "FAKE_COLAB_GPU_GATE_VENV",
+        "FAKE_COLAB_GPU_NAME",
+        "FAKE_COLAB_HF_FAIL_REPO",
+        "FAKE_COLAB_NVIDIA_SMI_MODE",
+        "FAKE_COLAB_PCI_DEVICE_ID",
+        "FAKE_COLAB_SM_COUNT",
+        "FAKE_COLAB_STATE_DIR",
+        "FAKE_COLAB_TORCH_VERSION",
+        "FAKE_COLAB_TRANSFORMERS_VERSION",
+        "FAKE_COLAB_VBIOS_VERSION",
+        "FAKE_COLAB_VM_STEP_DELAY_SECONDS",
+        "NVIDIA_TF32_OVERRIDE",
+        "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+        "RDLAB_SDPA_BACKEND",
+        "RDLAB_DETERMINISM_WARN_ONLY",
+        "RDLAB_TEST_PLANT_LOG_LEAK",
+        "RDLAB_FORCE_PINNED_UV",
+        "RDLAB_VM_CONTENT_DIR",
+        "RDLAB_CGROUP_DIR",
+        "RDLAB_CGROUP_MEMORY_EVENTS_PATH",
+        "RDLAB_PROC_MEMINFO_PATH",
+    }
+)
+
+
+def is_forbidden_counted_test_hook(var_name: str) -> bool:
+    """Return True if `var_name` is a guarded test or override hook forbidden in counted runs."""
+    name = str(var_name).strip()
+    if not name:
+        return False
+    return (
+        name in FORBIDDEN_COUNTED_TEST_HOOK_NAMES
+        or name.startswith(FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES)
+        or name.endswith(FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES)
+    )
+
+
+def guard_no_test_hooks_in_counted_mode(
+    window_mode: str | None = None,
+    *,
+    shard_spec: str | None = None,
+    dryrun: bool = False,
+    fake_transport: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Refuse with `TEST_HOOK_IN_COUNTED_MODE` before any model load if any test/override hook is set and non-empty
+    in any real mode (every mode except `stub` / `dryrun` / `dry-run`, when `not dryrun` and `not fake_transport`).
+    """
+    env_map = environ if environ is not None else os.environ
+    if not is_real_mode(
+        window_mode,
+        dryrun=dryrun,
+        fake_transport=fake_transport,
+        environ=env_map,
+    ):
+        return
+    active_hooks = sorted(
+        str(k)
+        for k, v in env_map.items()
+        if is_forbidden_counted_test_hook(str(k)) and str(v or "").strip() != ""
+    )
+    if active_hooks:
+        joined = ", ".join(active_hooks)
+        raise refused_error(
+            TEST_HOOK_IN_COUNTED_MODE,
+            f"Test or override hook environment variable(s) forbidden in real mode ({window_mode!r}, shard={shard_spec or '1/1'}): {joined}.",
+            "Unset all FAKE_COLAB_* and test override environment variables before running a real judge window.",
+        )
 
 
 def main_judge_runner(argv: Sequence[str] | None = None) -> int:
@@ -4393,6 +5790,49 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Optional per-judge child progress JSONL file.",
     )
+    parser.add_argument(
+        "--shard",
+        dest="shard_spec",
+        default=None,
+        help="Optional shard specification k/n (1-based).",
+    )
+    parser.add_argument(
+        "--shard-manifest",
+        dest="shard_manifest_path",
+        type=Path,
+        default=None,
+        help="Optional path to pre-registered shard_manifest.json.",
+    )
+    parser.add_argument(
+        "--shard-manifest-sha256",
+        default=None,
+        help="Expected SHA-256 of shard_manifest.json.",
+    )
+    parser.add_argument(
+        "--active-item-ids",
+        default=None,
+        help="Optional comma-separated list of item IDs to run in this sub-block.",
+    )
+    parser.add_argument(
+        "--anchor-prefix-only",
+        action="store_true",
+        help="Run only the anchor item subset.",
+    )
+    parser.add_argument(
+        "--session-fingerprint-sha256",
+        default=None,
+        help="Optional session environment fingerprint SHA-256.",
+    )
+    parser.add_argument(
+        "--window-mode",
+        default=None,
+        help="Window mode ('counted', 'knob', 'stub').",
+    )
+    parser.add_argument(
+        "--replacement-session",
+        action="store_true",
+        help="Enforce 3-item-pair overlap verification on resume.",
+    )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
@@ -4405,6 +5845,11 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
                 hint=exc.hint,
                 exit_code=exc.exit_code,
             ) from exc
+        parsed_active_ids = (
+            [x.strip() for x in str(args.active_item_ids).split(",") if x.strip()]
+            if args.active_item_ids
+            else None
+        )
         run_bakeoff_judge(
             part_dir=args.part_dir,
             output_dir=args.output_dir,
@@ -4422,6 +5867,14 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             run_canary=not bool(args.no_canary),
             repo_root=args.repo_root,
             progress_file=args.progress_file,
+            shard_spec=args.shard_spec,
+            shard_manifest_path=args.shard_manifest_path,
+            shard_manifest_sha256=args.shard_manifest_sha256,
+            active_item_ids=parsed_active_ids,
+            anchor_prefix_only=bool(args.anchor_prefix_only),
+            session_fingerprint_sha256=args.session_fingerprint_sha256,
+            window_mode=args.window_mode,
+            replacement_session=bool(args.replacement_session),
         )
         return 0
     except RdlabError as exc:

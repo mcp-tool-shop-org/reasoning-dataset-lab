@@ -1076,10 +1076,60 @@ def run_fake_uv(argv: list[str]) -> int:
             )
         if not (torch_pkg_dir / "__init__.py").is_file():
             (torch_pkg_dir / "__init__.py").write_text(
-                "import os, time\n"
+                "import os, time, types\n"
                 "__version__ = '2.14.1+cu132'\n"
                 "float16 = 'float16'\n"
                 "bfloat16 = 'bfloat16'\n"
+                "_DETERMINISTIC_ALGORITHMS = True\n"
+                "_DETERMINISTIC_WARN_ONLY = False\n"
+                "def use_deterministic_algorithms(mode, *, warn_only=False):\n"
+                "    global _DETERMINISTIC_ALGORITHMS, _DETERMINISTIC_WARN_ONLY\n"
+                "    _DETERMINISTIC_ALGORITHMS = bool(mode)\n"
+                "    _DETERMINISTIC_WARN_ONLY = bool(warn_only)\n"
+                "def are_deterministic_algorithms_enabled():\n"
+                "    return _DETERMINISTIC_ALGORITHMS\n"
+                "def is_deterministic_algorithms_warn_only_enabled():\n"
+                "    return _DETERMINISTIC_WARN_ONLY\n"
+                "def manual_seed(_seed):\n"
+                "    return None\n"
+                "class _NullCtx:\n"
+                "    def __enter__(self):\n"
+                "        return None\n"
+                "    def __exit__(self, *_a):\n"
+                "        return None\n"
+                "def no_grad():\n"
+                "    return _NullCtx()\n"
+                "def inference_mode():\n"
+                "    return _NullCtx()\n"
+                "class backends:\n"
+                "    class cuda:\n"
+                "        class matmul:\n"
+                "            allow_tf32 = False\n"
+                "        _flash = False\n"
+                "        _mem_eff = False\n"
+                "        _math = True\n"
+                "        @classmethod\n"
+                "        def enable_flash_sdp(cls, val):\n"
+                "            cls._flash = bool(val)\n"
+                "        @classmethod\n"
+                "        def enable_mem_efficient_sdp(cls, val):\n"
+                "            cls._mem_eff = bool(val)\n"
+                "        @classmethod\n"
+                "        def enable_math_sdp(cls, val):\n"
+                "            cls._math = bool(val)\n"
+                "        @classmethod\n"
+                "        def flash_sdp_enabled(cls):\n"
+                "            return cls._flash\n"
+                "        @classmethod\n"
+                "        def mem_efficient_sdp_enabled(cls):\n"
+                "            return cls._mem_eff\n"
+                "        @classmethod\n"
+                "        def math_sdp_enabled(cls):\n"
+                "            return cls._math\n"
+                "    class cudnn:\n"
+                "        allow_tf32 = False\n"
+                "        benchmark = False\n"
+                "        deterministic = True\n"
                 "class version:\n"
                 "    cuda = '13.2'\n"
                 "def _active_mode():\n"
@@ -1094,13 +1144,38 @@ def run_fake_uv(argv: list[str]) -> int:
                 "        return 'not_available'\n"
                 "    return 'ok'\n"
                 "class _FakeTensor:\n"
-                "    def __init__(self, shape, dtype=None, device=None, finite=True):\n"
+                "    def __init__(self, shape, dtype=None, device=None, finite=True, vals=None):\n"
                 "        self.shape = tuple(shape)\n"
                 "        self.dtype = dtype\n"
                 "        self.device = device\n"
                 "        self._finite = finite\n"
+                "        self.vals = vals if vals is not None else [[1, 3]]\n"
                 "    def all(self):\n"
                 "        return self._finite\n"
+                "    def to(self, _dev):\n"
+                "        return self\n"
+                "    def float(self):\n"
+                "        return self\n"
+                "    def tolist(self):\n"
+                "        return self.vals\n"
+                "    def item(self):\n"
+                "        return float(self.vals[0]) if isinstance(self.vals, list) and self.vals else 0.0\n"
+                "    def __getitem__(self, idx):\n"
+                "        if isinstance(idx, tuple):\n"
+                "            r, sl = idx\n"
+                "            row_v = self.vals[r] if isinstance(self.vals, list) and isinstance(self.vals[0], list) else self.vals\n"
+                "            sub = row_v[sl]\n"
+                "            return _FakeTensor((len(sub),), vals=sub)\n"
+                "        v = self.vals[idx]\n"
+                "        if isinstance(v, (int, float)):\n"
+                "            return _FakeTensor((1,), vals=[v])\n"
+                "        return _FakeTensor((len(v),), vals=v)\n"
+                "def log_softmax(t, dim=-1):\n"
+                "    return t\n"
+                "def topk(t, k=5):\n"
+                "    arr = t.vals if isinstance(t.vals, list) else [-0.1, -2.2, -8.0, -8.0, -8.0]\n"
+                "    use_k = min(int(k), len(arr))\n"
+                "    return (_FakeTensor((use_k,), vals=arr[:use_k]), _FakeTensor((use_k,), vals=list(range(use_k))))\n"
                 "def ones(shape, dtype=None, device=None):\n"
                 "    return _FakeTensor(shape, dtype=dtype, device=device, finite=True)\n"
                 "def matmul(a, b):\n"
@@ -1183,6 +1258,65 @@ def run_fake_uv(argv: list[str]) -> int:
                 "    @staticmethod\n"
                 "    def cudart():\n"
                 "        return _FakeCudart()\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        tf_ver = "5.17.0" if is_d3_venv else "5.19.0"
+        tf_pkg_dir = site_pkgs / "transformers"
+        tf_pkg_dir.mkdir(parents=True, exist_ok=True)
+        if not (tf_pkg_dir / "__init__.py").is_file():
+            (tf_pkg_dir / "__init__.py").write_text(
+                "import hashlib, types, torch\n"
+                f"__version__ = {tf_ver!r}\n"
+                "_VOCAB = {'<unk>': 0, '<s>': 1, '</s>': 2, 'yes': 3, 'no': 4, '<feedback>ok</feedback><score>Pass</score>': 5}\n"
+                "class AutoTokenizer:\n"
+                "    pad_token_id = 0\n"
+                "    eos_token_id = 2\n"
+                "    @classmethod\n"
+                "    def from_pretrained(cls, *_a, **_kw):\n"
+                "        return cls()\n"
+                "    def get_vocab(self):\n"
+                "        return dict(_VOCAB)\n"
+                "    def __call__(self, text, **_kw):\n"
+                "        h = int.from_bytes(hashlib.sha256(str(text).encode('utf-8')).digest()[:2], 'big') % 2\n"
+                "        ids = [[1, 3 + h]]\n"
+                "        return {'input_ids': torch._FakeTensor((1, 2), vals=ids), 'attention_mask': torch._FakeTensor((1, 2), vals=[[1, 1]])}\n"
+                "    def convert_ids_to_tokens(self, ids):\n"
+                "        inv = {v: k for k, v in _VOCAB.items()}\n"
+                "        return inv.get(ids, '<unk>') if isinstance(ids, int) else [inv.get(int(i), '<unk>') for i in ids]\n"
+                "    def convert_tokens_to_string(self, toks):\n"
+                "        return ''.join(toks)\n"
+                "    def decode(self, ids, **_kw):\n"
+                "        return ' '.join(self.convert_ids_to_tokens(ids))\n"
+                "class AutoModelForCausalLM:\n"
+                "    generation_config = types.SimpleNamespace(eos_token_id=[2])\n"
+                "    @classmethod\n"
+                "    def from_pretrained(cls, *_a, **_kw):\n"
+                "        return cls()\n"
+                "    def to(self, _dev):\n"
+                "        return self\n"
+                "    def eval(self):\n"
+                "        return self\n"
+                "    def generate(self, **kw):\n"
+                "        in_ids = kw['input_ids'].tolist()[0]\n"
+                "        out_tok = 3 if (sum(in_ids) % 2 == 0) else 4\n"
+                "        seq = [*in_ids, out_tok]\n"
+                "        logits = [-8.0, -8.0, -8.0, -0.15, -2.05, -8.0] if out_tok == 3 else [-8.0, -8.0, -8.0, -2.05, -0.15, -8.0]\n"
+                "        streamer = kw.get('streamer')\n"
+                "        if streamer is not None and hasattr(streamer, 'put'):\n"
+                "            streamer.put(torch._FakeTensor((1, 1), vals=[[out_tok]]))\n"
+                "        if streamer is not None and hasattr(streamer, 'end'):\n"
+                "            streamer.end()\n"
+                "        return types.SimpleNamespace(\n"
+                "            sequences=torch._FakeTensor((1, len(seq)), vals=[seq]),\n"
+                "            scores=[torch._FakeTensor((1, len(logits)), vals=[logits])],\n"
+                "        )\n"
+                "class AutoModel:\n"
+                "    @classmethod\n"
+                "    def from_pretrained(cls, *_a, **_kw):\n"
+                "        return cls()\n"
+                "    def system_one(self, *, state, questions):\n"
+                "        return {'answers': {'supported': {'noul': 0.85}}}\n",
                 encoding="utf-8",
                 newline="\n",
             )
@@ -1683,6 +1817,21 @@ def main(argv: list[str] | None = None) -> int:
                 return vals[-1]
         return None
 
+    active_sid = _get_opt("-s", "--session")
+    if active_sid and os.environ.get("FAKE_COLAB_ISOLATE_SESSION_FS") == "1":
+        safe_sid = re.sub(r"[^A-Za-z0-9_.-]+", "_", active_sid)
+        vm_fs = state_dir / f"vm_fs_{safe_sid}"
+        vm_fs.mkdir(parents=True, exist_ok=True)
+
+    sessions_lock_path = state_dir / "sessions.lock"
+    sessions_lock_fh = sessions_lock_path.open("a+", encoding="utf-8")
+    try:
+        import fcntl
+
+        fcntl.flock(sessions_lock_fh.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        pass
+
     lock_held = False
     if lock_file.exists():
         try:
@@ -1792,6 +1941,13 @@ def main(argv: list[str] | None = None) -> int:
         sessions_file.write_text(json.dumps(sessions), encoding="utf-8", newline="\n")
         print(f"Created session [{sid}] ({gpu})")
         return 0
+
+    try:
+        import fcntl as _fcntl
+
+        _fcntl.flock(sessions_lock_fh.fileno(), _fcntl.LOCK_UN)
+    except Exception:
+        pass
 
     if subcmd == "upload":
         sid = _get_opt("-s", "--session")
@@ -2393,6 +2549,13 @@ def main(argv: list[str] | None = None) -> int:
         if not sid:
             sys.stderr.write("colab stop requires -s/--session\n")
             return 2
+        try:
+            import fcntl as _fcntl
+
+            _fcntl.flock(sessions_lock_fh.fileno(), _fcntl.LOCK_EX)
+        except Exception:
+            pass
+        sessions = json.loads(sessions_file.read_text(encoding="utf-8"))
         stopped_file = state_dir / "stopped_sessions.jsonl"
         with stopped_file.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps({"session_id": sid, "ts": time.time()}) + "\n")

@@ -38,6 +38,7 @@ import io
 import json
 import math
 import os
+import random
 import re
 import shutil
 import signal
@@ -184,8 +185,22 @@ CHILD_PROGRESS_FILENAME = "child_progress.jsonl"
 CHILD_PROGRESS_DIRNAME = "child_progress"
 JUDGE_CHILD_PROGRESS_ENV_VAR = "RDLAB_JUDGE_CHILD_PROGRESS_FILE"
 ROWS_DIRNAME = "rows"
+ANCHOR_ROWS_DIRNAME = "anchor_rows"
 JUDGE_DONE_DIRNAME = "judge_done"
 DOWNLOAD_DONE_DIRNAME = "download_done"
+SESSION_ENV_FILENAME = "session_env.json"
+SHARD_MANIFEST_FILENAME = "shard_manifest.json"
+SHARD_MANIFEST_SHA256_FILENAME = "shard_manifest.json.sha256"
+BOOT_GATEKEEPER_FILENAME = "boot_gatekeeper.json"
+DEFAULT_LOOP_ORDER = "subblock"
+ALLOWED_LOOP_ORDERS: tuple[str, str] = ("subblock", "judge_outer")
+DEFAULT_SUBBLOCK_ITEMS = 50
+DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT = 25
+DEFAULT_CANARY_ANCHOR_ITEMS_COUNT = 25
+DEFAULT_ANCHOR_ITEMS_COUNT = 50
+MERGE_CONFIG_FILENAME = "merge_config.json"
+GOLDEN_ANCHOR_MANIFEST_FILENAME = "golden_anchor_manifest.json"
+PINNED_ATTN_IMPLEMENTATION = "sdpa"
 
 EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
     "venv-judge": {
@@ -532,11 +547,16 @@ TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
         "vm_receipt.json",
         PROGRESS_FILENAME,
         CHILD_PROGRESS_FILENAME,
+        SESSION_ENV_FILENAME,
+        SHARD_MANIFEST_FILENAME,
+        SHARD_MANIFEST_SHA256_FILENAME,
+        BOOT_GATEKEEPER_FILENAME,
     }
 )
 TAR_ALLOWED_DIRS: frozenset[str] = frozenset(
     {
         ROWS_DIRNAME,
+        ANCHOR_ROWS_DIRNAME,
         JUDGE_DONE_DIRNAME,
         CHILD_PROGRESS_DIRNAME,
         "logs",
@@ -2206,10 +2226,63 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
     torch_init = torch_pkg_dir / "__init__.py"
     if not torch_init.is_file():
         torch_init.write_text(
-            "import os, time\n"
+            "import os, time, types\n"
             "__version__ = '2.14.1+cu132'\n"
             "float16 = 'float16'\n"
             "bfloat16 = 'bfloat16'\n"
+            "_DETERMINISTIC_ALGORITHMS = True\n"
+            "_DETERMINISTIC_WARN_ONLY = False\n"
+            "def use_deterministic_algorithms(mode, *, warn_only=False):\n"
+            "    global _DETERMINISTIC_ALGORITHMS, _DETERMINISTIC_WARN_ONLY\n"
+            "    _DETERMINISTIC_ALGORITHMS = bool(mode)\n"
+            "    _DETERMINISTIC_WARN_ONLY = bool(warn_only)\n"
+            "def are_deterministic_algorithms_enabled():\n"
+            "    return _DETERMINISTIC_ALGORITHMS\n"
+            "def is_deterministic_algorithms_warn_only_enabled():\n"
+            "    return _DETERMINISTIC_WARN_ONLY\n"
+            "def manual_seed(_seed):\n"
+            "    return None\n"
+            "class _NullCtx:\n"
+            "    def __enter__(self):\n"
+            "        return None\n"
+            "    def __exit__(self, *_a):\n"
+            "        return None\n"
+            "def no_grad():\n"
+            "    return _NullCtx()\n"
+            "def inference_mode():\n"
+            "    return _NullCtx()\n"
+            "class backends:\n"
+            "    class cuda:\n"
+            "        class matmul:\n"
+            "            allow_tf32 = False\n"
+            "        _flash = False\n"
+            "        _mem_eff = False\n"
+            "        _math = True\n"
+            "        @classmethod\n"
+            "        def enable_flash_sdp(cls, val):\n"
+            "            cls._flash = bool(val)\n"
+            "        @classmethod\n"
+            "        def enable_mem_efficient_sdp(cls, val):\n"
+            "            cls._mem_eff = bool(val)\n"
+            "        @classmethod\n"
+            "        def enable_math_sdp(cls, val):\n"
+            "            cls._math = bool(val)\n"
+            "        @classmethod\n"
+            "        def flash_sdp_enabled(cls):\n"
+            "            return cls._flash\n"
+            "        @classmethod\n"
+            "        def mem_efficient_sdp_enabled(cls):\n"
+            "            return cls._mem_eff\n"
+            "        @classmethod\n"
+            "        def math_sdp_enabled(cls):\n"
+            "            return cls._math\n"
+            "    class cudnn:\n"
+            "        allow_tf32 = False\n"
+            "        benchmark = False\n"
+            "        deterministic = True\n"
+            "class utils:\n"
+            "    class deterministic:\n"
+            "        fill_uninitialized_memory = False\n"
             "class version:\n"
             "    cuda = '13.2'\n"
             "class device:\n"
@@ -2250,13 +2323,38 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "        return 'not_available'\n"
             "    return 'ok'\n"
             "class _FakeTensor:\n"
-            "    def __init__(self, shape, dtype=None, device=None, finite=True):\n"
+            "    def __init__(self, shape, dtype=None, device=None, finite=True, vals=None):\n"
             "        self.shape = tuple(shape)\n"
             "        self.dtype = dtype\n"
             "        self.device = device\n"
             "        self._finite = finite\n"
+            "        self.vals = vals if vals is not None else [[1, 3]]\n"
             "    def all(self):\n"
             "        return self._finite\n"
+            "    def to(self, _dev):\n"
+            "        return self\n"
+            "    def float(self):\n"
+            "        return self\n"
+            "    def tolist(self):\n"
+            "        return self.vals\n"
+            "    def item(self):\n"
+            "        return float(self.vals[0]) if isinstance(self.vals, list) and self.vals else 0.0\n"
+            "    def __getitem__(self, idx):\n"
+            "        if isinstance(idx, tuple):\n"
+            "            r, sl = idx\n"
+            "            row_v = self.vals[r] if isinstance(self.vals, list) and isinstance(self.vals[0], list) else self.vals\n"
+            "            sub = row_v[sl]\n"
+            "            return _FakeTensor((len(sub),), vals=sub)\n"
+            "        v = self.vals[idx]\n"
+            "        if isinstance(v, (int, float)):\n"
+            "            return _FakeTensor((1,), vals=[v])\n"
+            "        return _FakeTensor((len(v),), vals=v)\n"
+            "def log_softmax(t, dim=-1):\n"
+            "    return t\n"
+            "def topk(t, k=5):\n"
+            "    arr = t.vals if isinstance(t.vals, list) else [-0.1, -2.2, -8.0, -8.0, -8.0]\n"
+            "    use_k = min(int(k), len(arr))\n"
+            "    return (_FakeTensor((use_k,), vals=arr[:use_k]), _FakeTensor((use_k,), vals=list(range(use_k))))\n"
             "def ones(shape, dtype=None, device=None):\n"
             "    return _FakeTensor(shape, dtype=dtype, device=device, finite=True)\n"
             "def matmul(a, b):\n"
@@ -2311,6 +2409,66 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "    @staticmethod\n"
             "    def cudart():\n"
             "        return _FakeCudart()\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    tf_ver = "5.17.0" if is_d3_venv else "5.19.0"
+    tf_pkg_dir = site_pkgs / "transformers"
+    tf_pkg_dir.mkdir(parents=True, exist_ok=True)
+    tf_init = tf_pkg_dir / "__init__.py"
+    if not tf_init.is_file():
+        tf_init.write_text(
+            "import hashlib, types, torch\n"
+            f"__version__ = {tf_ver!r}\n"
+            "_VOCAB = {'<unk>': 0, '<s>': 1, '</s>': 2, 'yes': 3, 'no': 4, '<feedback>ok</feedback><score>Pass</score>': 5}\n"
+            "class AutoTokenizer:\n"
+            "    pad_token_id = 0\n"
+            "    eos_token_id = 2\n"
+            "    @classmethod\n"
+            "    def from_pretrained(cls, *_a, **_kw):\n"
+            "        return cls()\n"
+            "    def get_vocab(self):\n"
+            "        return dict(_VOCAB)\n"
+            "    def __call__(self, text, **_kw):\n"
+            "        h = int.from_bytes(hashlib.sha256(str(text).encode('utf-8')).digest()[:2], 'big') % 2\n"
+            "        ids = [[1, 3 + h]]\n"
+            "        return {'input_ids': torch._FakeTensor((1, 2), vals=ids), 'attention_mask': torch._FakeTensor((1, 2), vals=[[1, 1]])}\n"
+            "    def convert_ids_to_tokens(self, ids):\n"
+            "        inv = {v: k for k, v in _VOCAB.items()}\n"
+            "        return inv.get(ids, '<unk>') if isinstance(ids, int) else [inv.get(int(i), '<unk>') for i in ids]\n"
+            "    def convert_tokens_to_string(self, toks):\n"
+            "        return ''.join(toks)\n"
+            "    def decode(self, ids, **_kw):\n"
+            "        return ' '.join(self.convert_ids_to_tokens(ids))\n"
+            "class AutoModelForCausalLM:\n"
+            "    generation_config = types.SimpleNamespace(eos_token_id=[2])\n"
+            "    @classmethod\n"
+            "    def from_pretrained(cls, *_a, **_kw):\n"
+            "        return cls()\n"
+            "    def to(self, _dev):\n"
+            "        return self\n"
+            "    def eval(self):\n"
+            "        return self\n"
+            "    def generate(self, **kw):\n"
+            "        in_ids = kw['input_ids'].tolist()[0]\n"
+            "        out_tok = 3 if (sum(in_ids) % 2 == 0) else 4\n"
+            "        seq = [*in_ids, out_tok]\n"
+            "        logits = [-8.0, -8.0, -8.0, -0.15, -2.05, -8.0] if out_tok == 3 else [-8.0, -8.0, -8.0, -2.05, -0.15, -8.0]\n"
+            "        streamer = kw.get('streamer')\n"
+            "        if streamer is not None and hasattr(streamer, 'put'):\n"
+            "            streamer.put(torch._FakeTensor((1, 1), vals=[[out_tok]]))\n"
+            "        if streamer is not None and hasattr(streamer, 'end'):\n"
+            "            streamer.end()\n"
+            "        return types.SimpleNamespace(\n"
+            "            sequences=torch._FakeTensor((1, len(seq)), vals=[seq]),\n"
+            "            scores=[torch._FakeTensor((1, len(logits)), vals=[logits])],\n"
+            "        )\n"
+            "class AutoModel:\n"
+            "    @classmethod\n"
+            "    def from_pretrained(cls, *_a, **_kw):\n"
+            "        return cls()\n"
+            "    def system_one(self, *, state, questions):\n"
+            "        return {'answers': {'supported': {'noul': 0.85}}}\n",
             encoding="utf-8",
             newline="\n",
         )
@@ -3864,7 +4022,16 @@ def write_outputs_closed(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     candidate_rels: list[str] = []
-    for exact_name in (SCHEDULE_FILENAME, GENERATIONS_FILENAME, "time_one_summary.json", "vm_receipt.json"):
+    for exact_name in (
+        SCHEDULE_FILENAME,
+        GENERATIONS_FILENAME,
+        "time_one_summary.json",
+        "vm_receipt.json",
+        SESSION_ENV_FILENAME,
+        SHARD_MANIFEST_FILENAME,
+        SHARD_MANIFEST_SHA256_FILENAME,
+        BOOT_GATEKEEPER_FILENAME,
+    ):
         if (output_dir / exact_name).is_file():
             candidate_rels.append(exact_name)
 
@@ -3873,6 +4040,12 @@ def write_outputs_closed(
         for rf in sorted(rows_dir.glob("*.jsonl")):
             if rf.is_file():
                 candidate_rels.append(rf.relative_to(output_dir).as_posix())
+
+    anchor_rows_dir = output_dir / ANCHOR_ROWS_DIRNAME
+    if anchor_rows_dir.is_dir():
+        for arf in sorted(anchor_rows_dir.glob("*.jsonl")):
+            if arf.is_file():
+                candidate_rels.append(arf.relative_to(output_dir).as_posix())
 
     judge_done_dir = output_dir / JUDGE_DONE_DIRNAME
     if judge_done_dir.is_dir():
@@ -4148,6 +4321,8 @@ def is_allowed_tar_member(rel_posix_path: str) -> bool:
     if cleaned in TAR_ALLOWED_DIRS or cleaned in TAR_ALLOWED_EXACT_FILES:
         return True
     if len(parts) == 2 and parts[0] == ROWS_DIRNAME and parts[1].endswith(".jsonl"):
+        return True
+    if len(parts) == 2 and parts[0] == ANCHOR_ROWS_DIRNAME and parts[1].endswith(".jsonl"):
         return True
     if len(parts) == 2 and parts[0] == JUDGE_DONE_DIRNAME and parts[1].endswith(".json"):
         return True
@@ -4577,6 +4752,7 @@ def run_device_check(
     *,
     device: str | None = None,
     dryrun: bool = False,
+    mode: str = "stub",
     timeout_seconds: float | None = None,
     progress_path: Path | None = None,
     gate_status_path: Path | None = None,
@@ -4592,9 +4768,10 @@ def run_device_check(
         if timeout_seconds is not None
         else resolve_gpu_gate_timeout_seconds()
     )
+    is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
     if device is not None:
         target_device = str(device)
-    elif "FAKE_COLAB_DEVICE_CHECK_DEVICE" in os.environ:
+    elif is_stub_or_dryrun and "FAKE_COLAB_DEVICE_CHECK_DEVICE" in os.environ:
         target_device = os.environ["FAKE_COLAB_DEVICE_CHECK_DEVICE"]
     else:
         target_device = resolve_judge_device(
@@ -5219,6 +5396,13 @@ def run_judges_pipeline(
     judge_order_source: str = "default",
     real_load_on_cpu: bool = False,
     child_timeout_seconds: float | None = None,
+    shard_spec: str | None = None,
+    shard_manifest_path: Path | None = None,
+    shard_manifest_sha256: str | None = None,
+    loop_order: str | None = None,
+    subblock_items: int | None = None,
+    session_fingerprint_sha256: str | None = None,
+    replacement_session: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run all 5 judges (or `only_judge_ids`) as separate child subprocesses in their synced venvs and compute readouts."""
     eff_repo_dir = (repo_root or resolve_repo_dir()).resolve()
@@ -5231,11 +5415,73 @@ def run_judges_pipeline(
             )
         )
     )
-    limit_items = (
-        2
-        if real_load_on_cpu
-        else (TIME_ONE_ITEMS_LIMIT if mode == "time-one" else 2)
+    eff_loop_order, eff_subblock_items = validate_loop_order(
+        loop_order, subblock_items
     )
+    raw_shard_for_parse = (
+        str(shard_spec).strip()
+        if shard_spec is not None and str(shard_spec).strip()
+        else (os.environ.get("RDLAB_SHARD", "").strip() or "1/1")
+    )
+    _, parsed_shard_n = parse_shard_spec(raw_shard_for_parse)
+    explicit_limit_env = os.environ.get("RDLAB_LIMIT_ITEMS", "").strip()
+    if real_load_on_cpu:
+        limit_items: int | None = 2
+    elif explicit_limit_env and explicit_limit_env.isdigit():
+        limit_items = int(explicit_limit_env)
+    elif mode == "time-one":
+        limit_items = TIME_ONE_ITEMS_LIMIT
+    elif mode == "counted":
+        limit_items = None
+    elif parsed_shard_n > 1:
+        items_candidate = (
+            part_dir / "items.jsonl" if part_dir.is_dir() else Path(part_dir)
+        )
+        if items_candidate.is_file():
+            total_lines = sum(
+                1
+                for ln in items_candidate.read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+                if ln.strip()
+            )
+            limit_items = max(2, total_lines)
+        else:
+            limit_items = 2 * parsed_shard_n
+    else:
+        limit_items = 2
+
+    shard_info = ensure_shard_manifest_for_run(
+        items_file=part_dir,
+        run_dir=run_dir,
+        raw_shard_spec=raw_shard_for_parse,
+        shard_manifest_path=shard_manifest_path,
+        expected_manifest_sha256=shard_manifest_sha256,
+        limit_items=limit_items,
+        schedule_seed=DEFAULT_SCHEDULE_SEED,
+    )
+    shard_item_ids: list[str] = list(shard_info["shard_item_ids"])
+    has_explicit_shard = bool(
+        shard_spec is not None
+        or os.environ.get("RDLAB_SHARD", "").strip()
+        or shard_manifest_path is not None
+        or os.environ.get("RDLAB_SHARD_MANIFEST", "").strip()
+    )
+    eff_session_fp = (
+        str(session_fingerprint_sha256).strip()
+        if session_fingerprint_sha256 is not None
+        else os.environ.get("RDLAB_SESSION_FINGERPRINT_SHA256", "").strip()
+    )
+    eff_replacement_session = bool(
+        replacement_session or os.environ.get("RDLAB_REPLACEMENT_SESSION") == "1"
+    )
+    if eff_loop_order == "subblock" and len(shard_item_ids) > eff_subblock_items:
+        subblock_chunks: list[list[str]] = [
+            shard_item_ids[i : i + eff_subblock_items]
+            for i in range(0, len(shard_item_ids), eff_subblock_items)
+        ]
+    else:
+        subblock_chunks = [shard_item_ids]
     configured_child_timeout = (
         float(child_timeout_seconds)
         if child_timeout_seconds is not None
@@ -5271,7 +5517,21 @@ def run_judges_pipeline(
     )
 
     per_judge_metrics: dict[str, Any] = {}
-    for judge_id, spec in selected_specs:
+    load_history_by_judge: dict[str, list[float]] = {}
+    cum_wall_by_judge: dict[str, float] = {}
+    run_anchor_prefix_prepass = bool(
+        len(subblock_chunks) > 1
+        and int(shard_info["shard_k"]) >= 2
+        and shard_info["anchor_item_ids"]
+    )
+    pipeline_passes: list[tuple[bool, int, list[str]]] = []
+    if run_anchor_prefix_prepass:
+        pipeline_passes.append((True, -1, []))
+    for sb_idx, active_chunk in enumerate(subblock_chunks):
+        pipeline_passes.append((False, sb_idx, active_chunk))
+
+    for is_anchor_prefix_pass, subblock_idx, active_chunk in pipeline_passes:
+      for judge_id, spec in selected_specs:
         is_d3 = judge_id == D3_MINI_JUDGE_ID
         venv_name = "venv-d3" if is_d3 else "venv-judge"
         venv_python = eff_work_dir / venv_name / "bin" / "python"
@@ -5316,17 +5576,45 @@ def run_judges_pipeline(
             str(DEFAULT_SCHEDULE_SEED),
             "--vram-halt-mib",
             str(vram_halt_mib),
-            "--limit-items",
-            str(limit_items),
-            "--repo-root",
-            str(eff_repo_dir),
-            "--progress-file",
-            str(child_progress_file),
         ]
+        if limit_items is not None:
+            child_cmd.extend(["--limit-items", str(limit_items)])
+        child_cmd.extend(
+            [
+                "--repo-root",
+                str(eff_repo_dir),
+                "--progress-file",
+                str(child_progress_file),
+            ]
+        )
         if allow_remote_sha is not None:
             child_cmd.extend(["--allow-remote-code-reviewed", allow_remote_sha])
         if (dryrun or mode == "stub") and not real_load_on_cpu:
             child_cmd.append("--stub")
+        if has_explicit_shard or len(subblock_chunks) > 1:
+            child_cmd.extend(
+                [
+                    "--shard",
+                    str(shard_info["shard_spec"]),
+                    "--shard-manifest",
+                    str(shard_info["shard_manifest_path"]),
+                    "--shard-manifest-sha256",
+                    str(shard_info["shard_manifest_sha256"]),
+                ]
+            )
+        if len(subblock_chunks) > 1:
+            if is_anchor_prefix_pass:
+                child_cmd.extend(["--anchor-prefix-only", "--no-canary"])
+            else:
+                child_cmd.extend(["--active-item-ids", ",".join(active_chunk)])
+                if 0 < subblock_idx < len(subblock_chunks) - 1:
+                    child_cmd.append("--no-canary")
+        if eff_session_fp:
+            child_cmd.extend(["--session-fingerprint-sha256", eff_session_fp])
+        if eff_replacement_session:
+            child_cmd.append("--replacement-session")
+        if mode:
+            child_cmd.extend(["--window-mode", str(mode)])
 
         child_env = build_judge_child_env(
             hf_home,
@@ -5656,6 +5944,14 @@ def run_judges_pipeline(
                 timeout_seconds=eff_child_timeout,
             )
 
+        if is_anchor_prefix_pass:
+            anchor_row_file = run_dir / "anchor_rows" / f"{judge_id}.jsonl"
+            if not anchor_row_file.is_file():
+                _fail_child_postcheck(
+                    f"Judge {judge_id} anchor prefix pass exited 0 but {anchor_row_file} is missing"
+                )
+            continue
+
         row_file = run_dir / ROWS_DIRNAME / f"{judge_id}.jsonl"
         done_file = judge_done_dir / f"{judge_id}.json"
         if not row_file.is_file():
@@ -5706,7 +6002,18 @@ def run_judges_pipeline(
 
         call_durations = [float(r.get("seconds", 0.0)) for r in row_objs]
         sum_call_s = sum(call_durations)
-        load_time_s = round(max(0.0, wall_elapsed - sum_call_s), 6)
+        child_reported_load = done_doc.get("load_wall_seconds")
+        load_time_s = (
+            round(float(child_reported_load), 6)
+            if isinstance(child_reported_load, (int, float))
+            and not isinstance(child_reported_load, bool)
+            else round(max(0.0, wall_elapsed - sum_call_s), 6)
+        )
+        load_history_by_judge.setdefault(judge_id, []).append(load_time_s)
+        cum_wall_by_judge[judge_id] = round(
+            cum_wall_by_judge.get(judge_id, 0.0) + wall_elapsed, 6
+        )
+        total_load_s = round(sum(load_history_by_judge[judge_id]), 6)
         per_call_s = (
             round(float(sum_call_s / len(call_durations)), 6)
             if call_durations
@@ -5741,9 +6048,13 @@ def run_judges_pipeline(
         enriched_done_doc = dict(done_doc)
         enriched_done_doc["device"] = device_str
         enriched_done_doc.setdefault("dtype", dtype_str)
-        enriched_done_doc["elapsed_seconds"] = round(wall_elapsed, 6)
-        enriched_done_doc["load_time_seconds"] = load_time_s
-        enriched_done_doc["load_seconds"] = load_time_s
+        enriched_done_doc["elapsed_seconds"] = cum_wall_by_judge[judge_id]
+        enriched_done_doc["load_time_seconds"] = total_load_s
+        enriched_done_doc["load_seconds"] = total_load_s
+        enriched_done_doc["load_wall_seconds"] = load_time_s
+        enriched_done_doc["load_wall_seconds_history"] = list(
+            load_history_by_judge[judge_id]
+        )
         enriched_done_doc["per_call_seconds"] = per_call_s
         enriched_done_doc["per_call_median_seconds"] = median_s
         enriched_done_doc["per_call_p95_seconds"] = p95_s
@@ -5769,6 +6080,9 @@ def run_judges_pipeline(
                 "elapsed_seconds": round(wall_elapsed, 6),
                 "load_time_seconds": load_time_s,
                 "load_seconds": load_time_s,
+                "load_wall_seconds_history": list(load_history_by_judge[judge_id]),
+                "subblock_index": subblock_idx,
+                "subblock_count": len(subblock_chunks),
                 "per_call_seconds": per_call_s,
                 "per_call_median_seconds": median_s,
                 "per_call_p95_seconds": p95_s,
@@ -5789,13 +6103,14 @@ def run_judges_pipeline(
             "device": device_str,
             "row_count": len(row_objs),
             "rows_sha256": actual_rows_sha,
-            "items_count": int(done_doc.get("items_count", limit_items)),
+            "items_count": int(done_doc.get("items_count", len(shard_item_ids))),
             "orders": ["AB", "BA"],
             "calls_count": int(done_doc.get("calls_count", len(row_objs))),
-            "elapsed_seconds": round(wall_elapsed, 6),
-            "load_time": load_time_s,
-            "load_seconds": load_time_s,
-            "load_time_seconds": load_time_s,
+            "elapsed_seconds": cum_wall_by_judge[judge_id],
+            "load_time": total_load_s,
+            "load_seconds": total_load_s,
+            "load_time_seconds": total_load_s,
+            "load_wall_seconds_history": list(load_history_by_judge[judge_id]),
             "per_call_seconds": per_call_s,
             "per_call_median": median_s,
             "per_call_median_seconds": median_s,
@@ -5818,11 +6133,18 @@ def run_judges_pipeline(
         "mode": mode,
         "wall_seconds": TIME_ONE_WALL_SECONDS if mode == "time-one" else 7200,
         "cap_units": TIME_ONE_CAP_UNITS if mode == "time-one" else 0.16,
-        "items_per_judge": limit_items,
+        "items_per_judge": len(shard_item_ids),
         "orders": ["AB", "BA"],
         "judge_order": eff_judge_order,
         "judge_order_source": judge_order_source,
         "only_judges": list(only_judges) if only_judges is not None else None,
+        "loop_order": eff_loop_order,
+        "subblock_items": eff_subblock_items,
+        "subblock_count": len(subblock_chunks),
+        "shard_spec": shard_info["shard_spec"],
+        "shard_manifest_sha256": shard_info["shard_manifest_sha256"],
+        "shard_item_ids": shard_item_ids,
+        "anchor_item_ids": shard_info["anchor_item_ids"],
         "vram_sample_interval_seconds": VRAM_SAMPLE_INTERVAL_SECONDS,
         "judges": per_judge_metrics,
         "harness_readouts": {
@@ -5946,6 +6268,16 @@ def write_vm_status_file(
     )
 
 
+VALID_VM_MODES: tuple[str, ...] = (
+    "stub",
+    "dryrun",
+    "dry-run",
+    "time-one",
+    "counted",
+    "probe",
+)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     env_or = lambda k, d=None: os.environ.get(k) or d
     env_int = lambda k, d: int(os.environ[k]) if os.environ.get(k) else d
@@ -5959,7 +6291,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=("stub", "time-one", "probe"),
+        choices=VALID_VM_MODES,
         default=env_or("RDLAB_MODE", "stub"),
     )
     parser.add_argument(
@@ -6060,6 +6392,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--resume",
         action="store_true",
         default=(os.environ.get("RDLAB_RESUME") == "1"),
+    )
+    parser.add_argument(
+        "--shard",
+        default=env_or("RDLAB_SHARD", None),
+    )
+    parser.add_argument(
+        "--shard-manifest",
+        type=Path,
+        default=env_path("RDLAB_SHARD_MANIFEST", None),
+    )
+    parser.add_argument(
+        "--shard-manifest-sha256",
+        default=env_or("RDLAB_SHARD_MANIFEST_SHA256", None),
+    )
+    parser.add_argument(
+        "--loop",
+        default=env_or("RDLAB_LOOP", None),
+    )
+    parser.add_argument(
+        "--subblock-items",
+        default=env_or("RDLAB_SUBBLOCK_ITEMS", None),
+    )
+    parser.add_argument(
+        "--replacement-session",
+        action="store_true",
+        default=(os.environ.get("RDLAB_REPLACEMENT_SESSION") == "1"),
+    )
+    parser.add_argument(
+        "--boot-gatekeeper-goldens",
+        type=Path,
+        default=env_path("RDLAB_BOOT_GATEKEEPER_GOLDENS", None),
     )
     parser.add_argument(
         "--dryrun",
@@ -6296,6 +6659,175 @@ def validate_force_pinned_uv(
             f"(got mode={mode!r}, RDLAB_FORCE_PINNED_UV={raw_val!r}, session_smoke={session_smoke!r})",
         )
     return True
+
+
+TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
+TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
+MALFORMED_TEST_HOOK = "MALFORMED_TEST_HOOK"
+SDPA_BACKEND_MISMATCH = "SDPA_BACKEND_MISMATCH"
+PINNED_SDPA_BACKEND = "math"
+STUB_OR_DRYRUN_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run"})
+VALID_SDPA_BACKENDS: frozenset[str] = frozenset(
+    {
+        "math",
+        "flash",
+        "mem_efficient",
+        "flash+math",
+        "mem_efficient+math",
+        "flash+mem_efficient",
+        "flash+mem_efficient+math",
+    }
+)
+FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES: tuple[str, ...] = ("FAKE_COLAB_",)
+FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES: tuple[str, ...] = (
+    "_OVERRIDE",
+    "_ACTUAL_HASHES",
+    "_BACKEND",
+)
+FORBIDDEN_COUNTED_TEST_HOOK_NAMES: frozenset[str] = frozenset(
+    {
+        "FAKE_COLAB_BITSANDBYTES_VERSION",
+        "FAKE_COLAB_COMPUTE_CAPABILITY",
+        "FAKE_COLAB_CUDA_RUNTIME",
+        "FAKE_COLAB_CUT_MID_JUDGE",
+        "FAKE_COLAB_CUT_MID_JUDGE_HARD",
+        "FAKE_COLAB_DEVICE_CHECK_DEVICE",
+        "FAKE_COLAB_DRIVER_VERSION",
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE",
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END",
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE",
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END",
+        "FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD",
+        "FAKE_COLAB_FAIL_DOWNLOAD_CHILD",
+        "FAKE_COLAB_FAIL_JUDGE_CHILD",
+        "FAKE_COLAB_GPU_GATE_MODE",
+        "FAKE_COLAB_GPU_GATE_SECRET",
+        "FAKE_COLAB_GPU_GATE_SLEEP_SECONDS",
+        "FAKE_COLAB_GPU_GATE_VENV",
+        "FAKE_COLAB_GPU_NAME",
+        "FAKE_COLAB_HF_FAIL_REPO",
+        "FAKE_COLAB_NVIDIA_SMI_MODE",
+        "FAKE_COLAB_PCI_DEVICE_ID",
+        "FAKE_COLAB_SM_COUNT",
+        "FAKE_COLAB_STATE_DIR",
+        "FAKE_COLAB_TORCH_VERSION",
+        "FAKE_COLAB_TRANSFORMERS_VERSION",
+        "FAKE_COLAB_VBIOS_VERSION",
+        "FAKE_COLAB_VM_STEP_DELAY_SECONDS",
+        "NVIDIA_TF32_OVERRIDE",
+        "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+        "RDLAB_SDPA_BACKEND",
+        "RDLAB_DETERMINISM_WARN_ONLY",
+        "RDLAB_TEST_PLANT_LOG_LEAK",
+        "RDLAB_FORCE_PINNED_UV",
+        "RDLAB_VM_CONTENT_DIR",
+        "RDLAB_CGROUP_DIR",
+        "RDLAB_CGROUP_MEMORY_EVENTS_PATH",
+        "RDLAB_PROC_MEMINFO_PATH",
+    }
+)
+
+
+def is_forbidden_counted_test_hook(var_name: str) -> bool:
+    """Return True if `var_name` is a guarded test or override hook forbidden in counted runs."""
+    name = str(var_name).strip()
+    if not name:
+        return False
+    return (
+        name in FORBIDDEN_COUNTED_TEST_HOOK_NAMES
+        or name.startswith(FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES)
+        or name.endswith(FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES)
+    )
+
+
+def is_counted_or_time_one_mode(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    shard_spec: str | None = None,
+) -> bool:
+    """Return True in `time-one`, `counted`, and every sharded counted mode (when `not dryrun`)."""
+    if dryrun:
+        return False
+    norm_mode = str(mode or "").strip().lower()
+    if norm_mode in ("stub", "dryrun", "dry-run"):
+        return False
+    if norm_mode in (
+        "time-one",
+        "time_one",
+        "counted",
+        "shard",
+        "sharded",
+        "counted-shard",
+        "sharded-counted",
+    ):
+        return True
+    eff_shard = str(shard_spec or "").strip()
+    return bool(eff_shard and eff_shard != "1/1")
+
+
+def is_real_mode(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+) -> bool:
+    """Return True unless `dryrun` is set or `mode` is `stub` / `dryrun` / `dry-run`."""
+    if dryrun:
+        return False
+    norm_mode = str(mode or "").strip().lower()
+    return norm_mode not in STUB_OR_DRYRUN_MODES
+
+
+def guard_no_test_hooks_in_counted_mode(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    shard_spec: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Refuse with `TEST_HOOK_IN_COUNTED_MODE` before any model load if any test/override hook is set and non-empty
+    in any real mode (every mode except `stub` / `dryrun` / `dry-run`, when `not dryrun`). Names the variable(s), never their values.
+    """
+    env_map = environ if environ is not None else os.environ
+    eff_dryrun = bool(dryrun or str(env_map.get("VM_DRYRUN", "") or "").strip() == "1")
+    if not is_real_mode(mode, dryrun=eff_dryrun):
+        return
+    active_hooks = sorted(
+        str(k)
+        for k, v in env_map.items()
+        if is_forbidden_counted_test_hook(str(k)) and str(v or "").strip() != ""
+    )
+    if active_hooks:
+        joined = ", ".join(active_hooks)
+        raise RefusalError(
+            TEST_HOOK_IN_COUNTED_MODE,
+            f"Test or override hook environment variable(s) forbidden in real mode ({mode!r}, shard={shard_spec or '1/1'}): {joined}",
+        )
+
+
+def _parse_nonneg_int_hook(
+    var_name: str,
+    raw_value: str,
+    default: int,
+    *,
+    positive_only: bool = False,
+) -> int:
+    """Parse an integer test hook value, refusing by variable name if malformed."""
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return default
+    if not re.fullmatch(r"\d+", raw):
+        raise RefusalError(
+            MALFORMED_TEST_HOOK,
+            f"Malformed integer test hook in environment variable {var_name}",
+        )
+    val = int(raw)
+    if positive_only and val <= 0:
+        raise RefusalError(
+            MALFORMED_TEST_HOOK,
+            f"Malformed positive integer test hook in environment variable {var_name}",
+        )
+    return val
 
 
 def _is_unsafe_zip_member(zinfo: zipfile.ZipInfo) -> str | None:
@@ -7183,6 +7715,1993 @@ def validate_first_load_judge_id(
     return raw_val, "env"
 
 
+def parse_shard_spec(raw_spec: str) -> tuple[int, int]:
+    """Parse a `k/n` shard specification (`1 <= k <= n`), refusing missing `n` or out-of-range `k`."""
+    cleaned = str(raw_spec or "").strip()
+    if "/" not in cleaned:
+        raise RefusalError(
+            "SHARD_SPEC_MISSING_N",
+            f"Shard specification {raw_spec!r} is missing '/n' denominator (expected k/n).",
+        )
+    parts = cleaned.split("/")
+    if len(parts) != 2:
+        raise RefusalError(
+            "SHARD_SPEC_MISSING_N",
+            f"Shard specification {raw_spec!r} must have exactly one '/' separator.",
+        )
+    k_str, n_str = parts[0].strip(), parts[1].strip()
+    if not n_str or not re.match(r"^-?\d+$", n_str):
+        raise RefusalError(
+            "SHARD_SPEC_MISSING_N",
+            f"Shard specification {raw_spec!r} has missing or non-integer shard count n={n_str!r}.",
+        )
+    n_val = int(n_str)
+    if n_val < 1:
+        raise RefusalError(
+            "SHARD_SPEC_MISSING_N",
+            f"Shard specification {raw_spec!r} has invalid shard count n={n_val} (must be >= 1).",
+        )
+    if not k_str or not re.match(r"^-?\d+$", k_str):
+        raise RefusalError(
+            "SHARD_SPEC_OUT_OF_RANGE",
+            f"Shard specification {raw_spec!r} has non-integer shard index k={k_str!r}.",
+        )
+    k_val = int(k_str)
+    if k_val < 1 or k_val > n_val:
+        raise RefusalError(
+            "SHARD_SPEC_OUT_OF_RANGE",
+            f"Shard index k={k_val} in {raw_spec!r} is out of range 1..{n_val}.",
+        )
+    return k_val, n_val
+
+
+def validate_loop_order(
+    raw_loop: str | None = None,
+    raw_subblock_items: Any = None,
+) -> tuple[str, int]:
+    """Validate `RDLAB_LOOP=subblock|judge_outer` (default `subblock`) and `RDLAB_SUBBLOCK_ITEMS` (default `50`)."""
+    eff_loop_raw = (
+        str(raw_loop)
+        if raw_loop is not None
+        else os.environ.get("RDLAB_LOOP", DEFAULT_LOOP_ORDER)
+    )
+    eff_loop = eff_loop_raw.strip() or DEFAULT_LOOP_ORDER
+    if eff_loop not in ALLOWED_LOOP_ORDERS:
+        raise RefusalError(
+            "LOOP_ORDER_INVALID",
+            f"RDLAB_LOOP must be one of {list(ALLOWED_LOOP_ORDERS)}, got {eff_loop_raw!r}.",
+        )
+    eff_sub_raw = (
+        raw_subblock_items
+        if raw_subblock_items is not None
+        else os.environ.get("RDLAB_SUBBLOCK_ITEMS", str(DEFAULT_SUBBLOCK_ITEMS))
+    )
+    eff_sub_str = str(eff_sub_raw).strip() or str(DEFAULT_SUBBLOCK_ITEMS)
+    if not re.match(r"^-?\d+$", eff_sub_str):
+        raise RefusalError(
+            "SUBBLOCK_ITEMS_INVALID",
+            f"RDLAB_SUBBLOCK_ITEMS must be a positive integer, got {eff_sub_raw!r}.",
+        )
+    subblock_items = int(eff_sub_str)
+    if subblock_items < 1:
+        raise RefusalError(
+            "SUBBLOCK_ITEMS_INVALID",
+            f"RDLAB_SUBBLOCK_ITEMS must be >= 1, got {subblock_items}.",
+        )
+    return eff_loop, subblock_items
+
+
+def _compute_shard_manifest_body_sha256_stdlib(manifest_doc: Mapping[str, Any]) -> str:
+    body = {k: v for k, v in manifest_doc.items() if k != "manifest_sha256"}
+    payload = json.dumps(
+        body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def verify_shard_manifest_file(
+    manifest_path: Path,
+    *,
+    expected_sha256: str | None = None,
+    expected_num_shards: int | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Verify a pre-registered `shard_manifest.json` file and its SHA-256 on the VM."""
+    ensure_not_drive_path(manifest_path)
+    if not manifest_path.is_file():
+        raise RefusalError(
+            "SHARD_MANIFEST_NOT_FOUND",
+            f"Shard manifest not found at {manifest_path}",
+        )
+    raw_bytes = manifest_path.read_bytes()
+    file_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    try:
+        doc = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise RefusalError(
+            "SHARD_MANIFEST_INVALID",
+            f"Malformed JSON in shard manifest {manifest_path}: {exc}",
+        ) from exc
+    if not isinstance(doc, dict) or not isinstance(doc.get("shards"), Mapping):
+        raise RefusalError(
+            "SHARD_MANIFEST_INVALID",
+            f"Shard manifest {manifest_path} is missing required 'shards' mapping.",
+        )
+    body_sha256 = _compute_shard_manifest_body_sha256_stdlib(doc)
+    recorded_body_sha = str(doc.get("manifest_sha256") or "").strip().lower()
+    if recorded_body_sha and recorded_body_sha != body_sha256:
+        raise RefusalError(
+            "SHARD_MANIFEST_SHA256_MISMATCH",
+            f"Shard manifest internal manifest_sha256 mismatch in {manifest_path}: "
+            f"recorded={recorded_body_sha}, computed={body_sha256}",
+        )
+    if expected_sha256 is not None and str(expected_sha256).strip():
+        exp_clean = str(expected_sha256).strip().lower()
+        if exp_clean not in (file_sha256, body_sha256):
+            raise RefusalError(
+                "SHARD_MANIFEST_SHA256_MISMATCH",
+                f"Shard manifest SHA-256 mismatch for {manifest_path}: expected {exp_clean}, "
+                f"got file_sha256={file_sha256} (manifest_sha256={body_sha256})",
+            )
+    if expected_num_shards is not None and int(doc.get("num_shards", 0)) != int(
+        expected_num_shards
+    ):
+        raise RefusalError(
+            "SHARD_SPEC_OUT_OF_RANGE",
+            f"Shard spec denominator n={expected_num_shards} does not match manifest num_shards={doc.get('num_shards')}",
+        )
+    return doc, file_sha256
+
+
+_STDLIB_PROMPT_TOKEN_SPLIT_RE = re.compile(
+    r"<\|[^|>]+?\|>|<\s*/?\s*[a-zA-Z0-9_-]+\s*>|\s+|[^\s<]+"
+)
+_STDLIB_NUMBERED_FACT_LINE_RE = re.compile(r"^(\s*)(\d+)(\.\s+)(.+?)\s*$")
+
+
+def _stdlib_swap_material_facts_order(material: str, order: str) -> str:
+    lines = [ln for ln in material.splitlines() if ln.strip()]
+    parsed_bodies: list[tuple[str, str, str]] = []
+    for ln in lines:
+        m = _STDLIB_NUMBERED_FACT_LINE_RE.match(ln)
+        if m is not None:
+            parsed_bodies.append((m.group(1), m.group(3), m.group(4)))
+        else:
+            parsed_bodies.append(("", ". ", ln.strip()))
+    if order == "AB":
+        return "\n".join(
+            f"{lead}{idx}{sep}{body}"
+            for idx, (lead, sep, body) in enumerate(parsed_bodies, start=1)
+        )
+    rev_bodies = list(reversed(parsed_bodies))
+    return "\n".join(
+        f"{lead}{idx}{sep}{body}"
+        for idx, (lead, sep, body) in enumerate(rev_bodies, start=1)
+    )
+
+
+def _stdlib_assemble_prompt_text(
+    judge_id: str,
+    material: str,
+    claim: str,
+    order: str,
+) -> str:
+    ordered_mat = _stdlib_swap_material_facts_order(material, order)
+    if judge_id in ("mu-judge", "nemotron-3-nano-4b"):
+        sys_p = (
+            "You are the judge model inside a coding agent. The agent sends you its STATE at a decision point and one "
+            "QUESTION about it. Judge only from STATE. Reply with the answer label alone."
+        )
+        q_block = f"QUESTION (yes or no): Is the following claim supported by STATE? Claim: {claim}\nAnswer yes or no."
+        u_content = f"STATE:\n{ordered_mat}\n\n{q_block}"
+        return (
+            f"<|im_start|>system\n{sys_p}<|im_end|>\n"
+            f"<|im_start|>user\n{u_content}<|im_end|>\n"
+            "<|im_start|>assistant\n<think></think>"
+        )
+    if judge_id == "d3-mini":
+        payload = {
+            "model": "vllm-sr/d3-mini",
+            "state": ordered_mat,
+            "questions": {
+                "supported": {
+                    "type": "noul",
+                    "instructions": f"Is the following claim supported by the state? Claim: {claim}",
+                }
+            },
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False)
+    if judge_id == "granite-guardian-4.1-8b":
+        doc_prefix = (
+            "You are a helpful assistant with access to the following documents. You may use one or more documents to assist "
+            "with the user query.\n\nYou are given a list of documents within <documents></documents> XML tags:\n<documents>"
+        )
+        doc_suffix = (
+            "\n</documents>\n\nWrite the response to the user's input by strictly aligning with the facts in the provided "
+            "documents. If the information needed to answer the question is not available in the documents, inform the user "
+            "that the question cannot be answered based on the available data."
+        )
+        guardian_block = (
+            "<no-think>As a judge agent, assess whether the provided text meets the given "
+            "judging criteria using all available information, including conversations, "
+            "documents, and tools. Provide your score immediately without explanation. "
+            "Output empty <think>\n</think> tags followed by your score in <score></score> tags.\n\n"
+            "### Criteria: A text is considered ungrounded or unfaithful if it includes information "
+            "lacking support from, or directly contradicting, the provided document(s). "
+            "This risk arises when the text fabricates details, misinterprets the content, "
+            "or makes unsupported extrapolations beyond what is explicitly stated in the "
+            "document(s).\n\n"
+            "### Scoring Schema: If the last assistant's text meets the criteria, return 'yes'; otherwise, return 'no'."
+        )
+        doc_json = json.dumps({"doc_id": "0", "text": ordered_mat}, ensure_ascii=False)
+        sys_msg = f"{doc_prefix}\n{doc_json}{doc_suffix}"
+        return (
+            f"<|start_of_role|>system<|end_of_role|>{sys_msg}<|end_of_text|>\n"
+            f"<|start_of_role|>assistant<|end_of_role|>{claim}<|end_of_text|>\n"
+            f"<|start_of_role|>user<|end_of_role|>{guardian_block}<|end_of_text|>\n"
+            "<|start_of_role|>assistant<|end_of_role|><think>\n</think>\n<score>"
+        )
+    # flow-judge-v0.1
+    tpl = (
+        "# GOAL\n"
+        "Your job is to evaluate a task carried out by an AI system powered by a large language model.\n"
+        "You will be provided with the inputs and output of the task, as well as the evaluation criteria and scoring rubric. "
+        "Your task is to evaluate the output of the AI system based on the evaluation criteria and scoring rubric provided.\n\n"
+        "# INPUT\n"
+        "Below are the inputs required for performing the task:\n"
+        "<inputs>\n"
+        f"{ordered_mat}\n"
+        "</inputs>\n\n"
+        "# OUTPUT\n"
+        "Below is the output of the task:\n"
+        "<output>\n"
+        f"{claim}\n"
+        "</output>\n\n"
+        "# EVALUATION CRITERIA AND SCORING RUBRIC\n"
+        "Here are the evaluation criteria and the rubric that you need to use for evaluating the task:\n"
+        "<evaluation_criteria>\n"
+        "Is the claim supported by the inputs?\n"
+        "</evaluation_criteria>\n\n"
+        "<scoring_rubric>\n"
+        "Pass if the claim is supported by the inputs; fail otherwise\n"
+        "</scoring_rubric>\n\n"
+        "# INSTRUCTIONS FOR THE EVALUATION\n"
+        "1. Understand the task and criteria: Familiarize yourself with the task to be evaluated. Review the evaluation criteria and scoring rubric to understand the different levels of performance and the descriptions for each score.\n"
+        "2. Review the inputs and output: Look at the inputs provided for the task. Examine the output generated from completing the task.\n"
+        "3. Compare output to score descriptions: Compare the output against the criteria and score descriptions in the scoring rubric. For each criterion,decide which description best matches the output.\n"
+        "4. After comparing the output to the score descriptions, pay attention to the small details that might impact the final score that you assign. Sometimes a small difference can dictate the final score.\n"
+        "5. Write verbal feedback justifying your evaluation that includes a detailed rationale, referring to specific aspects of the output and comparing them to the rubric.\n"
+        "6. Assign a final score based on the scoring rubric.\n\n"
+        "## FORMAT FOR THE EVALUATION\n"
+        "- Write the verbal feedback inside <feedback> tags without any additional surrounding text.\n"
+        "- Write the numeric score inside <score> tags, without any additional surrounding text and always after the feedback.\n\n"
+        "Please accurately evaluate the task. Strictly adhere to the evaluation criteria and rubric."
+    )
+    return f"<s><|user|>\n{tpl}<|endoftext|>\n<|assistant|>\n"
+
+
+def _stdlib_compute_prompt_input_token_ids_sha256(judge_id: str, prompt_text: str) -> str:
+    chunks = _STDLIB_PROMPT_TOKEN_SPLIT_RE.findall(prompt_text)
+    if not chunks and prompt_text:
+        chunks = [prompt_text]
+    tok_ids: list[int] = []
+    for idx, chunk in enumerate(chunks):
+        digest = hashlib.sha256(f"{judge_id}:in:{idx}:{chunk}".encode("utf-8")).digest()
+        tok_ids.append(int.from_bytes(digest[:4], "big"))
+    payload = json.dumps(tok_ids, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _stdlib_spread_pass_items_by_material(
+    items: Sequence[dict[str, str]],
+    *,
+    rng: random.Random,
+    avoid_first_material_sha: str | None = None,
+) -> list[dict[str, str]]:
+    groups_by_sha: dict[str, list[dict[str, str]]] = {}
+    for it in items:
+        groups_by_sha.setdefault(it["material_sha256"], []).append(it)
+    group_keys = sorted(groups_by_sha.keys())
+    rng.shuffle(group_keys)
+    max_len = max((len(g) for g in groups_by_sha.values()), default=0)
+    for k in group_keys:
+        rng.shuffle(groups_by_sha[k])
+    ordered: list[dict[str, str]] = []
+    for wave_idx in range(max_len):
+        wave_items = [
+            groups_by_sha[k][wave_idx]
+            for k in group_keys
+            if wave_idx < len(groups_by_sha[k])
+        ]
+        rng.shuffle(wave_items)
+        if (
+            ordered
+            and wave_items
+            and wave_items[0]["material_sha256"] == ordered[-1]["material_sha256"]
+        ):
+            for swap_idx in range(1, len(wave_items)):
+                if (
+                    wave_items[swap_idx]["material_sha256"]
+                    != ordered[-1]["material_sha256"]
+                ):
+                    wave_items[0], wave_items[swap_idx] = (
+                        wave_items[swap_idx],
+                        wave_items[0],
+                    )
+                    break
+        ordered.extend(wave_items)
+    if (
+        avoid_first_material_sha is not None
+        and ordered
+        and ordered[0]["material_sha256"] == avoid_first_material_sha
+    ):
+        for swap_idx in range(1, len(ordered)):
+            if ordered[swap_idx]["material_sha256"] != avoid_first_material_sha and (
+                swap_idx == 1
+                or (
+                    (
+                        swap_idx + 1 >= len(ordered)
+                        or ordered[0]["material_sha256"]
+                        != ordered[swap_idx + 1]["material_sha256"]
+                    )
+                    and ordered[0]["material_sha256"]
+                    != ordered[swap_idx - 1]["material_sha256"]
+                )
+            ):
+                ordered[0], ordered[swap_idx] = ordered[swap_idx], ordered[0]
+                break
+    for i in range(len(ordered) - 1):
+        if ordered[i]["material_sha256"] == ordered[i + 1]["material_sha256"]:
+            for j in range(len(ordered)):
+                if j in (i, i + 1):
+                    continue
+                cand = ordered[j]
+                if cand["material_sha256"] == ordered[i]["material_sha256"]:
+                    continue
+                if (
+                    i + 2 < len(ordered)
+                    and cand["material_sha256"] == ordered[i + 2]["material_sha256"]
+                ):
+                    continue
+                orig = ordered[i + 1]
+                if (
+                    j > 0
+                    and orig["material_sha256"] == ordered[j - 1]["material_sha256"]
+                ):
+                    continue
+                if (
+                    j + 1 < len(ordered)
+                    and orig["material_sha256"] == ordered[j + 1]["material_sha256"]
+                ):
+                    continue
+                ordered[i + 1], ordered[j] = ordered[j], ordered[i + 1]
+                break
+    return ordered
+
+
+def build_shard_manifest_stdlib(
+    items_file: Path,
+    *,
+    num_shards: int,
+    schedule_seed: int = DEFAULT_SCHEDULE_SEED,
+    limit_items: int | None = None,
+    anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_count: int = DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT,
+    canary_anchor_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
+    canary_item_ids: Sequence[str] | None = None,
+    canary_telemetry_sha256: str | None = None,
+    golden_anchor_manifest_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Pure-stdlib builder producing the exact pre-registered shard manifest as `bakeoff_judge.build_shard_manifest`."""
+    if num_shards < 1:
+        raise RefusalError(
+            "SHARD_SPEC_MISSING_N",
+            f"num_shards must be >= 1, got {num_shards}",
+        )
+    eff_items_path = (
+        items_file / "items.jsonl" if items_file.is_dir() else Path(items_file)
+    )
+    raw_bytes = eff_items_path.read_bytes()
+    items_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    items: list[dict[str, str]] = []
+    for raw_ln in raw_bytes.decode("utf-8").splitlines():
+        if not raw_ln.strip():
+            continue
+        obj = json.loads(raw_ln)
+        mat = str(obj["material"]).strip()
+        items.append(
+            {
+                "item_id": str(obj["id"]).strip(),
+                "material": mat,
+                "claim": str(obj["claim"]).strip(),
+                "material_sha256": hashlib.sha256(mat.encode("utf-8")).hexdigest(),
+            }
+        )
+        if limit_items is not None and len(items) >= int(limit_items):
+            break
+
+    items_by_id = {it["item_id"]: it for it in items}
+    first_order_by_item: dict[str, str] = {}
+    for it in sorted(items, key=lambda x: x["item_id"]):
+        item_rng = random.Random(
+            f"rdlab-bakeoff-item-first-order-v1:{int(schedule_seed)}:{it['item_id']}"
+        )
+        first_order_by_item[it["item_id"]] = (
+            "AB" if item_rng.randint(0, 1) == 0 else "BA"
+        )
+    pass1_rng = random.Random(f"rdlab-bakeoff-schedule-pass1-v1:{int(schedule_seed)}")
+    pass2_rng = random.Random(f"rdlab-bakeoff-schedule-pass2-v1:{int(schedule_seed)}")
+    pass1_items = _stdlib_spread_pass_items_by_material(items, rng=pass1_rng)
+    last_pass1_sha = pass1_items[-1]["material_sha256"] if pass1_items else None
+    pass2_items = _stdlib_spread_pass_items_by_material(
+        items, rng=pass2_rng, avoid_first_material_sha=last_pass1_sha
+    )
+    entries: list[dict[str, Any]] = []
+    for idx, it in enumerate(pass1_items):
+        entries.append(
+            {
+                "slot_index": idx,
+                "pass_number": 1,
+                "item_id": it["item_id"],
+                "order": first_order_by_item[it["item_id"]],
+                "material_sha256": it["material_sha256"],
+            }
+        )
+    for idx, it in enumerate(pass2_items, start=len(pass1_items)):
+        first_ord = first_order_by_item[it["item_id"]]
+        second_ord = "BA" if first_ord == "AB" else "AB"
+        entries.append(
+            {
+                "slot_index": idx,
+                "pass_number": 2,
+                "item_id": it["item_id"],
+                "order": second_ord,
+                "material_sha256": it["material_sha256"],
+            }
+        )
+    unique_materials = len({it["material_sha256"] for it in items})
+    sched_body = {
+        "seed": int(schedule_seed),
+        "items_sha256": items_sha256,
+        "item_count": len(items),
+        "triad_count_by_material": unique_materials,
+        "first_order_by_item": dict(sorted(first_order_by_item.items())),
+        "entries": entries,
+    }
+    schedule_sha256 = hashlib.sha256(
+        json.dumps(sched_body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    shards: dict[str, list[str]] = {str(k): [] for k in range(1, num_shards + 1)}
+    shard_by_item: dict[str, int] = {}
+    for pass1_idx, entry in enumerate(entries[: len(items)]):
+        shard_k = (pass1_idx % num_shards) + 1
+        shards[str(shard_k)].append(str(entry["item_id"]))
+        shard_by_item[str(entry["item_id"])] = shard_k
+
+    shard1_items = shards["1"]
+    eff_strat_max = min(int(stratified_anchor_count), int(anchor_count))
+    target_strat_n = min(max(0, eff_strat_max), len(shard1_items))
+    stratified_anchor_ids: list[str] = []
+    if target_strat_n > 0:
+        if target_strat_n >= len(shard1_items):
+            stratified_anchor_ids = list(shard1_items)
+        else:
+            seen_anchor: set[str] = set()
+            for i in range(target_strat_n):
+                idx = int((i * len(shard1_items)) // target_strat_n)
+                cand_id = shard1_items[idx]
+                if cand_id not in seen_anchor:
+                    stratified_anchor_ids.append(cand_id)
+                    seen_anchor.add(cand_id)
+            for cand_id in shard1_items:
+                if len(stratified_anchor_ids) >= target_strat_n:
+                    break
+                if cand_id not in seen_anchor:
+                    stratified_anchor_ids.append(cand_id)
+                    seen_anchor.add(cand_id)
+
+    remaining_budget = max(0, int(anchor_count) - len(stratified_anchor_ids))
+    target_canary_n = min(max(0, int(canary_anchor_count)), remaining_budget)
+    resolved_canary_ids: list[str] = []
+    if canary_item_ids is not None:
+        strat_set = set(stratified_anchor_ids)
+        for cid in canary_item_ids:
+            cid_s = str(cid)
+            if cid_s in items_by_id and cid_s not in strat_set and cid_s not in resolved_canary_ids:
+                resolved_canary_ids.append(cid_s)
+                if len(resolved_canary_ids) >= target_canary_n:
+                    break
+
+    anchor_item_ids = [*stratified_anchor_ids, *resolved_canary_ids]
+
+    input_token_ids_sha256_by_call: dict[str, str] = {}
+    for entry in entries:
+        it = items_by_id[str(entry["item_id"])]
+        ord_s = str(entry["order"])
+        for jid in sorted(BAKEOFF_JUDGE_SPECS.keys()):
+            prompt_text = _stdlib_assemble_prompt_text(
+                jid, it["material"], it["claim"], ord_s
+            )
+            call_key = f"{it['item_id']}:{ord_s}:{jid}"
+            input_token_ids_sha256_by_call[call_key] = (
+                _stdlib_compute_prompt_input_token_ids_sha256(jid, prompt_text)
+            )
+
+    doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "assignment_method": "stratified_interleave_pass1",
+        "schedule_seed": int(schedule_seed),
+        "schedule_sha256": schedule_sha256,
+        "items_sha256": items_sha256,
+        "item_count": len(items),
+        "num_shards": int(num_shards),
+        "pass_mode": "binary",
+        "shards": shards,
+        "shard_by_item": dict(sorted(shard_by_item.items())),
+        "stratified_anchor_count": len(stratified_anchor_ids),
+        "stratified_anchor_item_ids": stratified_anchor_ids,
+        "canary_anchor_count": len(resolved_canary_ids),
+        "canary_item_ids": resolved_canary_ids,
+        "canary_telemetry_sha256": canary_telemetry_sha256,
+        "golden_anchor_manifest_sha256": golden_anchor_manifest_sha256,
+        "anchor_count": len(anchor_item_ids),
+        "anchor_item_ids": anchor_item_ids,
+        "input_token_ids_sha256_by_call": dict(
+            sorted(input_token_ids_sha256_by_call.items())
+        ),
+    }
+    doc["manifest_sha256"] = _compute_shard_manifest_body_sha256_stdlib(doc)
+    return doc
+
+
+def write_shard_manifest_stdlib(
+    manifest_doc: Mapping[str, Any], manifest_path: Path
+) -> str:
+    """Write `manifest_doc` and `<manifest_path>.sha256`, returning the file SHA-256."""
+    ensure_not_drive_path(manifest_path)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = (
+        json.dumps(dict(manifest_doc), indent=2, sort_keys=True, ensure_ascii=False)
+        + "\n"
+    )
+    raw_bytes = serialized.encode("utf-8")
+    file_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    manifest_path.write_bytes(raw_bytes)
+    sha_sidecar = manifest_path.with_suffix(manifest_path.suffix + ".sha256")
+    sha_sidecar.write_text(
+        f"{file_sha256}  {manifest_path.name}\n", encoding="utf-8", newline="\n"
+    )
+    return file_sha256
+
+
+def ensure_shard_manifest_for_run(
+    *,
+    items_file: Path,
+    run_dir: Path,
+    raw_shard_spec: str | None = None,
+    shard_manifest_path: Path | None = None,
+    expected_manifest_sha256: str | None = None,
+    limit_items: int | None = None,
+    schedule_seed: int = DEFAULT_SCHEDULE_SEED,
+) -> dict[str, Any]:
+    """Validate `k/n`, verify or build `shard_manifest.json` in `run_dir`, and return shard metadata."""
+    eff_spec_raw = (
+        str(raw_shard_spec).strip()
+        if raw_shard_spec is not None and str(raw_shard_spec).strip()
+        else (os.environ.get("RDLAB_SHARD", "").strip() or "1/1")
+    )
+    shard_k, shard_n = parse_shard_spec(eff_spec_raw)
+    eff_shard_spec = f"{shard_k}/{shard_n}"
+    eff_expected_sha = (
+        str(expected_manifest_sha256).strip()
+        if expected_manifest_sha256 is not None and str(expected_manifest_sha256).strip()
+        else os.environ.get("RDLAB_SHARD_MANIFEST_SHA256", "").strip() or None
+    )
+
+    eff_items_path = (
+        items_file / "items.jsonl" if items_file.is_dir() else Path(items_file)
+    )
+    candidate_manifest_paths: list[Path] = []
+    if shard_manifest_path is not None:
+        candidate_manifest_paths.append(Path(shard_manifest_path))
+    env_manifest = os.environ.get("RDLAB_SHARD_MANIFEST", "").strip()
+    if env_manifest:
+        candidate_manifest_paths.append(Path(env_manifest))
+    candidate_manifest_paths.append(eff_items_path.parent / SHARD_MANIFEST_FILENAME)
+    candidate_manifest_paths.append(run_dir / SHARD_MANIFEST_FILENAME)
+
+    existing_manifest: Path | None = None
+    for cand in candidate_manifest_paths:
+        if cand.is_file():
+            existing_manifest = cand
+            break
+
+    target_in_run_dir = run_dir / SHARD_MANIFEST_FILENAME
+    if existing_manifest is None:
+        if shard_manifest_path is not None or env_manifest:
+            missing_p = shard_manifest_path or Path(env_manifest)
+            raise RefusalError(
+                "SHARD_MANIFEST_NOT_FOUND",
+                f"Pre-registered shard manifest not found at {missing_p}",
+            )
+        built_doc = build_shard_manifest_stdlib(
+            eff_items_path,
+            num_shards=shard_n,
+            schedule_seed=schedule_seed,
+            limit_items=limit_items,
+        )
+        write_shard_manifest_stdlib(built_doc, target_in_run_dir)
+        existing_manifest = target_in_run_dir
+
+    manifest_doc, file_sha256 = verify_shard_manifest_file(
+        existing_manifest,
+        expected_sha256=eff_expected_sha,
+        expected_num_shards=shard_n,
+    )
+    if existing_manifest.resolve() != target_in_run_dir.resolve():
+        write_shard_manifest_stdlib(manifest_doc, target_in_run_dir)
+
+    shard_items = [
+        str(iid) for iid in manifest_doc.get("shards", {}).get(str(shard_k), [])
+    ]
+    anchor_items = [str(iid) for iid in manifest_doc.get("anchor_item_ids", [])]
+    return {
+        "shard_spec": eff_shard_spec,
+        "shard_k": shard_k,
+        "shard_n": shard_n,
+        "shard_manifest_path": str(target_in_run_dir),
+        "shard_manifest_sha256": file_sha256,
+        "manifest_body_sha256": str(manifest_doc.get("manifest_sha256") or ""),
+        "shard_item_ids": shard_items,
+        "anchor_item_ids": anchor_items,
+    }
+
+
+def _collect_judge_receipt_digests(
+    receipts_dir: Path,
+) -> dict[str, dict[str, str]]:
+    """Compute per-judge `weights_sha256` and `tokenizer_sha256` from `<owner>__<repo>.sha256.json` receipts."""
+    tokenizer_names = {
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "vocab.json",
+        "merges.txt",
+        "tokenizer.model",
+        "added_tokens.json",
+    }
+    out: dict[str, dict[str, str]] = {}
+    for jid, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+        slug = spec.repo_id.replace("/", "__")
+        rec_file = receipts_dir / f"{slug}.sha256.json"
+        w_entries: list[str] = []
+        t_entries: list[str] = []
+        if rec_file.is_file():
+            try:
+                rdoc = json.loads(rec_file.read_text(encoding="utf-8"))
+                files_obj = rdoc.get("files", [])
+                if isinstance(files_obj, list):
+                    for fitem in files_obj:
+                        if isinstance(fitem, Mapping):
+                            p_str = str(fitem.get("path") or "")
+                            h_str = str(fitem.get("sha256") or "")
+                            if Path(p_str).name in tokenizer_names:
+                                t_entries.append(f"{p_str}:{h_str}")
+                            else:
+                                w_entries.append(f"{p_str}:{h_str}")
+                elif isinstance(files_obj, Mapping):
+                    for p_str, h_val in sorted(files_obj.items()):
+                        h_str = (
+                            str(h_val.get("sha256") or "")
+                            if isinstance(h_val, Mapping)
+                            else str(h_val)
+                        )
+                        if Path(str(p_str)).name in tokenizer_names:
+                            t_entries.append(f"{p_str}:{h_str}")
+                        else:
+                            w_entries.append(f"{p_str}:{h_str}")
+            except Exception:
+                pass
+        if not w_entries:
+            w_entries.append(f"{spec.repo_id}@{spec.revision}:weights")
+        if not t_entries:
+            t_entries.append(f"{spec.repo_id}@{spec.revision}:tokenizer")
+        w_sha = hashlib.sha256(
+            "\n".join(sorted(w_entries)).encode("utf-8")
+        ).hexdigest()
+        t_sha = hashlib.sha256(
+            "\n".join(sorted(t_entries)).encode("utf-8")
+        ).hexdigest()
+        out[jid] = {
+            "repo_id": spec.repo_id,
+            "revision": spec.revision,
+            "weights_sha256": w_sha,
+            "tokenizer_sha256": t_sha,
+        }
+    return out
+
+
+def _query_gpu_and_ecc_snapshot(*, dryrun: bool = False, mode: str = "stub") -> dict[str, Any]:
+    """Query GPU identity and uncorrected ECC counts from `nvidia-smi` or deterministic stub/dryrun overrides."""
+    is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
+    sm_hook = _parse_nonneg_int_hook(
+        "FAKE_COLAB_SM_COUNT",
+        os.environ.get("FAKE_COLAB_SM_COUNT", ""),
+        108,
+        positive_only=True,
+    )
+    vol_hook = _parse_nonneg_int_hook(
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE",
+        os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE", ""),
+        0,
+    )
+    agg_hook = _parse_nonneg_int_hook(
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE",
+        os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE", ""),
+        0,
+    )
+
+    if is_stub_or_dryrun:
+        default_gpu_name = (
+            os.environ.get("FAKE_COLAB_GPU_NAME", "").strip()
+            or "NVIDIA A100-SXM4-40GB"
+        )
+        default_pci = os.environ.get("FAKE_COLAB_PCI_DEVICE_ID", "").strip() or "0x20B010DE"
+        default_vbios = os.environ.get("FAKE_COLAB_VBIOS_VERSION", "").strip() or "92.00.68.00.01"
+        default_sm = sm_hook
+        default_cc = os.environ.get("FAKE_COLAB_COMPUTE_CAPABILITY", "").strip() or "8.0"
+        default_drv = os.environ.get("FAKE_COLAB_DRIVER_VERSION", "").strip() or "560.35.03"
+        ecc_vol = vol_hook
+        ecc_agg = agg_hook
+    else:
+        default_gpu_name = "NVIDIA A100-SXM4-40GB"
+        default_pci = "0x20B010DE"
+        default_vbios = "92.00.68.00.01"
+        default_sm = 108
+        default_cc = "8.0"
+        default_drv = "560.35.03"
+        ecc_vol = 0
+        ecc_agg = 0
+
+    smi_bin = shutil.which("nvidia-smi")
+    if smi_bin and not is_stub_or_dryrun:
+        try:
+            proc = subprocess.run(
+                [
+                    smi_bin,
+                    "--query-gpu=name,pci.device_id,vbios_version,driver_version,compute_cap,ecc.errors.uncorrected.volatile.total,ecc.errors.uncorrected.aggregate.total",
+                    "--format=csv,noheader,nounits",
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                first_ln = proc.stdout.strip().splitlines()[0]
+                cols = [c.strip() for c in first_ln.split(",")]
+                if len(cols) >= 7:
+                    default_gpu_name = cols[0] or default_gpu_name
+                    default_pci = cols[1] or default_pci
+                    default_vbios = cols[2] or default_vbios
+                    default_drv = cols[3] or default_drv
+                    default_cc = cols[4] or default_cc
+                    if cols[5].isdigit():
+                        ecc_vol = int(cols[5])
+                    if cols[6].isdigit():
+                        ecc_agg = int(cols[6])
+        except Exception:
+            pass
+    drv_major = default_drv.split(".")[0] if default_drv else "unknown"
+    return {
+        "name": scrub_log_text(default_gpu_name),
+        "pci.device_id": scrub_log_text(default_pci),
+        "pci_device_id": scrub_log_text(default_pci),
+        "vbios": scrub_log_text(default_vbios),
+        "vbios_version": scrub_log_text(default_vbios),
+        "sm_count": default_sm,
+        "compute_capability": scrub_log_text(default_cc),
+        "driver": scrub_log_text(default_drv),
+        "driver_version": scrub_log_text(default_drv),
+        "driver_major": scrub_log_text(drv_major),
+        "ecc_uncorrected_volatile": ecc_vol,
+        "ecc_uncorrected_aggregate": ecc_agg,
+    }
+
+
+def _read_host_cpu_model(cpuinfo_path: Path | None = None) -> str:
+    """Read host CPU model from `/proc/cpuinfo` or `platform.processor()`, returning `'unreadable: <reason>'` if unavailable."""
+    eff_cpuinfo = Path(cpuinfo_path) if cpuinfo_path is not None else Path("/proc/cpuinfo")
+    if eff_cpuinfo.is_file():
+        try:
+            for ln in eff_cpuinfo.read_text(encoding="utf-8", errors="replace").splitlines():
+                if ":" in ln:
+                    k, v = ln.split(":", 1)
+                    if k.strip().lower() in ("model name", "cpu model", "hardware", "processor"):
+                        val = v.strip()
+                        if val and not val.isdigit():
+                            return scrub_log_text(val)
+        except Exception as exc:
+            return f"unreadable: {type(exc).__name__}: {exc}"
+    import platform
+
+    proc_str = (platform.processor() or platform.machine() or "").strip()
+    if proc_str:
+        return scrub_log_text(proc_str)
+    return "unreadable: host CPU model not found in /proc/cpuinfo or platform.processor()"
+
+
+def _load_merge_config_for_session_env(repo_dir: Path | None = None) -> dict[str, Any]:
+    """Load the committed `scripts/colab/merge_config.json` caps and `delta_min` for inclusion in the hashed session fingerprint."""
+    eff_repo = resolve_repo_dir(repo_dir)
+    candidates = [
+        eff_repo / "scripts" / "colab" / MERGE_CONFIG_FILENAME,
+        Path.cwd() / "scripts" / "colab" / MERGE_CONFIG_FILENAME,
+    ]
+    for cand in candidates:
+        if cand.is_file():
+            try:
+                raw_bytes = cand.read_bytes()
+                doc = json.loads(raw_bytes.decode("utf-8"))
+                if isinstance(doc, Mapping):
+                    clean_cfg = {k: v for k, v in doc.items() if k != "_comment"}
+                    cfg_sha = hashlib.sha256(
+                        json.dumps(clean_cfg, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    ).hexdigest()
+                    return {
+                        "merge_config_sha256": cfg_sha,
+                        "delta_min": doc.get("delta_min", 0.03),
+                        "anchor_count": doc.get("anchor_count", 50),
+                        "stratified_anchor_count": doc.get("stratified_anchor_count", 25),
+                        "canary_anchor_count": doc.get("canary_anchor_count", 25),
+                        "k_pool_by_num_shards": doc.get("k_pool_by_num_shards", {"2": 3, "3": 2}),
+                        "k_judge": doc.get("k_judge", 1),
+                        "k_judge_label": doc.get("k_judge_label", "detection check, not a bias guarantee"),
+                        "double_order_flip_cap": doc.get("double_order_flip_cap", 0),
+                        "output_token_ids_sha256_diff_cap": doc.get("output_token_ids_sha256_diff_cap", 0),
+                        "max_replacement_sessions_per_run": doc.get("max_replacement_sessions_per_run", 1),
+                    }
+            except Exception:
+                pass
+    fallback = {
+        "delta_min": 0.03,
+        "anchor_count": 50,
+        "stratified_anchor_count": 25,
+        "canary_anchor_count": 25,
+        "k_pool_by_num_shards": {"2": 3, "3": 2},
+        "k_judge": 1,
+        "k_judge_label": "detection check, not a bias guarantee",
+        "double_order_flip_cap": 0,
+        "output_token_ids_sha256_diff_cap": 0,
+        "max_replacement_sessions_per_run": 1,
+    }
+    fallback["merge_config_sha256"] = hashlib.sha256(
+        json.dumps(fallback, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return fallback
+
+
+_VENV_RUNTIME_PROBE_SCRIPT = (
+    "import importlib.metadata, json, os, sys\n"
+    "out = {}\n"
+    "try:\n"
+    "    import torch\n"
+    "    tv = getattr(torch, '__version__', None)\n"
+    "    out['torch_version'] = str(tv) if tv else 'unreadable: torch.__version__ missing'\n"
+    "    cv = getattr(getattr(torch, 'version', None), 'cuda', None)\n"
+    "    out['cuda_runtime'] = str(cv) if cv else 'unreadable: torch.version.cuda is None'\n"
+    "    try:\n"
+    "        use_det = getattr(torch, 'use_deterministic_algorithms', None)\n"
+    "        if callable(use_det):\n"
+    "            use_det(True, warn_only=False)\n"
+    "        det_u = getattr(getattr(torch, 'utils', None), 'deterministic', None)\n"
+    "        if det_u is not None:\n"
+    "            det_u.fill_uninitialized_memory = False\n"
+    "        out['fill_uninitialized_memory'] = bool(getattr(det_u, 'fill_uninitialized_memory', False)) if det_u is not None else False\n"
+    "        are_en = getattr(torch, 'are_deterministic_algorithms_enabled', None)\n"
+    "        is_wo = getattr(torch, 'is_deterministic_algorithms_warn_only_enabled', None)\n"
+    "        en_val = bool(are_en()) if callable(are_en) else True\n"
+    "        wo_val = bool(is_wo()) if callable(is_wo) else False\n"
+    "        out['determinism_status'] = 'warn_only' if wo_val else ('enforced' if en_val else 'disabled')\n"
+    "        out['determinism_warn_only'] = wo_val\n"
+    "    except Exception as de:\n"
+    "        out['determinism_status'] = f'unreadable: {type(de).__name__}: {de}'\n"
+    "        out['determinism_warn_only'] = None\n"
+    "        out['fill_uninitialized_memory'] = False\n"
+    "    try:\n"
+    "        cudnn_mod = getattr(getattr(torch, 'backends', None), 'cudnn', None)\n"
+    "        if cudnn_mod is None or not hasattr(cudnn_mod, 'benchmark'):\n"
+    "            out['cudnn_benchmark'] = 'unreadable: torch.backends.cudnn.benchmark missing'\n"
+    "        else:\n"
+    "            cudnn_mod.benchmark = False\n"
+    "            out['cudnn_benchmark'] = bool(cudnn_mod.benchmark)\n"
+    "    except Exception as ce:\n"
+    "        out['cudnn_benchmark'] = f'unreadable: {type(ce).__name__}: {ce}'\n"
+    "    try:\n"
+    "        cuda_be = getattr(getattr(torch, 'backends', None), 'cuda', None)\n"
+    "        if cuda_be is None:\n"
+    "            out['sdpa_backend'] = 'unreadable: torch.backends.cuda missing'\n"
+    "        else:\n"
+    "            for fn_n, flag in (('enable_flash_sdp', False), ('enable_mem_efficient_sdp', False), ('enable_math_sdp', True)):\n"
+    "                fn = getattr(cuda_be, fn_n, None)\n"
+    "                if callable(fn):\n"
+    "                    fn(flag)\n"
+    "            names = []\n"
+    "            for lbl, g_n in (('flash', 'flash_sdp_enabled'), ('mem_efficient', 'mem_efficient_sdp_enabled'), ('math', 'math_sdp_enabled')):\n"
+    "                g = getattr(cuda_be, g_n, None)\n"
+    "                if callable(g) and bool(g()):\n"
+    "                    names.append(lbl)\n"
+    "            out['sdpa_backend'] = '+'.join(names) if names else 'math'\n"
+    "    except Exception as se:\n"
+    "        out['sdpa_backend'] = f'unreadable: {type(se).__name__}: {se}'\n"
+    "except Exception as te:\n"
+    "    reason = f'unreadable: {type(te).__name__}: {te}'\n"
+    "    out['torch_version'] = reason\n"
+    "    out['cuda_runtime'] = reason\n"
+    "    out['determinism_status'] = reason\n"
+    "    out['determinism_warn_only'] = None\n"
+    "    out['cudnn_benchmark'] = reason\n"
+    "    out['sdpa_backend'] = reason\n"
+    "try:\n"
+    "    import transformers\n"
+    "    tfv = getattr(transformers, '__version__', None)\n"
+    "    out['transformers_version'] = str(tfv) if tfv else 'unreadable: transformers.__version__ missing'\n"
+    "except Exception as tfe:\n"
+    "    out['transformers_version'] = f'unreadable: {type(tfe).__name__}: {tfe}'\n"
+    "try:\n"
+    "    import bitsandbytes\n"
+    "    bnbv = getattr(bitsandbytes, '__version__', None)\n"
+    "    out['bitsandbytes_version'] = str(bnbv) if bnbv else 'unreadable: bitsandbytes.__version__ missing'\n"
+    "except ImportError:\n"
+    "    try:\n"
+    "        out['bitsandbytes_version'] = importlib.metadata.version('bitsandbytes')\n"
+    "    except importlib.metadata.PackageNotFoundError:\n"
+    "        out['bitsandbytes_version'] = 'not_installed'\n"
+    "    except Exception as be:\n"
+    "        out['bitsandbytes_version'] = f'unreadable: {type(be).__name__}: {be}'\n"
+    "except Exception as be:\n"
+    "    out['bitsandbytes_version'] = f'unreadable: {type(be).__name__}: {be}'\n"
+    "print(json.dumps(out, sort_keys=True))\n"
+)
+
+
+def _query_judge_venv_runtime(
+    *,
+    work_dir: Path | None = None,
+    venv_python: Path | None = None,
+) -> dict[str, Any]:
+    """Read installed package versions and runtime attributes from `venv-judge` without any `FAKE_COLAB_*` defaults."""
+    eff_venv_py: Path | None = None
+    if venv_python is not None:
+        eff_venv_py = Path(venv_python)
+    elif work_dir is not None:
+        eff_venv_py = Path(work_dir) / "venv-judge" / "bin" / "python"
+    else:
+        env_wd = os.environ.get("RDLAB_WORK_DIR", "").strip()
+        if env_wd:
+            eff_venv_py = Path(env_wd) / "venv-judge" / "bin" / "python"
+
+    if eff_venv_py is not None:
+        if not eff_venv_py.exists():
+            reason = f"unreadable: judge venv python not found at {eff_venv_py}"
+            return {
+                "torch_version": reason,
+                "cuda_runtime": reason,
+                "transformers_version": reason,
+                "bitsandbytes_version": reason,
+                "determinism_status": reason,
+                "determinism_warn_only": None,
+                "cudnn_benchmark": reason,
+                "sdpa_backend": reason,
+            }
+        try:
+            proc = subprocess.run(
+                [str(eff_venv_py), "-c", _VENV_RUNTIME_PROBE_SCRIPT],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+            if proc.returncode != 0 or not proc.stdout.strip():
+                err_txt = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip().splitlines()[-1]
+                reason = f"unreadable: subprocess failed ({err_txt})"
+                return {
+                    "torch_version": reason,
+                    "cuda_runtime": reason,
+                    "transformers_version": reason,
+                    "bitsandbytes_version": reason,
+                    "determinism_status": reason,
+                    "determinism_warn_only": None,
+                    "cudnn_benchmark": reason,
+                    "sdpa_backend": reason,
+                }
+            parsed = json.loads(proc.stdout.strip().splitlines()[-1])
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception as exc:
+            reason = f"unreadable: {type(exc).__name__}: {exc}"
+            return {
+                "torch_version": reason,
+                "cuda_runtime": reason,
+                "transformers_version": reason,
+                "bitsandbytes_version": reason,
+                "determinism_status": reason,
+                "determinism_warn_only": None,
+                "cudnn_benchmark": reason,
+                "sdpa_backend": reason,
+            }
+
+    # In-process fallback when no venv path is configured (e.g., direct unit tests with monkeypatched sys.modules)
+    import importlib
+    import importlib.metadata
+
+    out: dict[str, Any] = {}
+    try:
+        torch_mod = sys.modules.get("torch")
+        if torch_mod is None:
+            torch_mod = importlib.import_module("torch")
+        tv = getattr(torch_mod, "__version__", None)
+        out["torch_version"] = str(tv) if tv else "unreadable: torch.__version__ missing"
+        cv = getattr(getattr(torch_mod, "version", None), "cuda", None)
+        out["cuda_runtime"] = str(cv) if cv else "unreadable: torch.version.cuda is None"
+        try:
+            use_det = getattr(torch_mod, "use_deterministic_algorithms", None)
+            if callable(use_det):
+                use_det(True, warn_only=False)
+            det_u = getattr(getattr(torch_mod, "utils", None), "deterministic", None)
+            if det_u is not None:
+                det_u.fill_uninitialized_memory = False
+            out["fill_uninitialized_memory"] = (
+                bool(getattr(det_u, "fill_uninitialized_memory", False))
+                if det_u is not None
+                else False
+            )
+            are_en = getattr(torch_mod, "are_deterministic_algorithms_enabled", None)
+            is_wo = getattr(torch_mod, "is_deterministic_algorithms_warn_only_enabled", None)
+            en_val = bool(are_en()) if callable(are_en) else True
+            wo_val = bool(is_wo()) if callable(is_wo) else False
+            out["determinism_status"] = "warn_only" if wo_val else ("enforced" if en_val else "disabled")
+            out["determinism_warn_only"] = wo_val
+        except Exception as de:
+            out["determinism_status"] = f"unreadable: {type(de).__name__}: {de}"
+            out["determinism_warn_only"] = None
+            out["fill_uninitialized_memory"] = False
+        try:
+            cudnn_mod = getattr(getattr(torch_mod, "backends", None), "cudnn", None)
+            if cudnn_mod is None or not hasattr(cudnn_mod, "benchmark"):
+                out["cudnn_benchmark"] = "unreadable: torch.backends.cudnn.benchmark missing"
+            else:
+                cudnn_mod.benchmark = False
+                out["cudnn_benchmark"] = bool(cudnn_mod.benchmark)
+        except Exception as ce:
+            out["cudnn_benchmark"] = f"unreadable: {type(ce).__name__}: {ce}"
+        try:
+            cuda_be = getattr(getattr(torch_mod, "backends", None), "cuda", None)
+            if cuda_be is None:
+                out["sdpa_backend"] = "unreadable: torch.backends.cuda missing"
+            else:
+                for fn_n, flag in (("enable_flash_sdp", False), ("enable_mem_efficient_sdp", False), ("enable_math_sdp", True)):
+                    fn = getattr(cuda_be, fn_n, None)
+                    if callable(fn):
+                        fn(flag)
+                names = []
+                for lbl, g_n in (("flash", "flash_sdp_enabled"), ("mem_efficient", "mem_efficient_sdp_enabled"), ("math", "math_sdp_enabled")):
+                    g = getattr(cuda_be, g_n, None)
+                    if callable(g) and bool(g()):
+                        names.append(lbl)
+                out["sdpa_backend"] = "+".join(names) if names else "math"
+        except Exception as se:
+            out["sdpa_backend"] = f"unreadable: {type(se).__name__}: {se}"
+    except Exception as te:
+        reason = f"unreadable: {type(te).__name__}: {te}"
+        out["torch_version"] = reason
+        out["cuda_runtime"] = reason
+        out["determinism_status"] = reason
+        out["determinism_warn_only"] = None
+        out["cudnn_benchmark"] = reason
+        out["sdpa_backend"] = reason
+
+    try:
+        tf_mod = sys.modules.get("transformers")
+        if tf_mod is None:
+            tf_mod = importlib.import_module("transformers")
+        tfv = getattr(tf_mod, "__version__", None)
+        out["transformers_version"] = str(tfv) if tfv else "unreadable: transformers.__version__ missing"
+    except Exception as tfe:
+        out["transformers_version"] = f"unreadable: {type(tfe).__name__}: {tfe}"
+
+    if "bitsandbytes" in sys.modules:
+        bnb_mod = sys.modules["bitsandbytes"]
+        if bnb_mod is None:
+            out["bitsandbytes_version"] = "unreadable: bitsandbytes module is None"
+        else:
+            bnbv = getattr(bnb_mod, "__version__", None)
+            out["bitsandbytes_version"] = str(bnbv) if bnbv else "unreadable: bitsandbytes.__version__ missing"
+    else:
+        try:
+            bnb_mod = importlib.import_module("bitsandbytes")
+            bnbv = getattr(bnb_mod, "__version__", None)
+            out["bitsandbytes_version"] = str(bnbv) if bnbv else "unreadable: bitsandbytes.__version__ missing"
+        except ImportError:
+            try:
+                out["bitsandbytes_version"] = importlib.metadata.version("bitsandbytes")
+            except importlib.metadata.PackageNotFoundError:
+                out["bitsandbytes_version"] = "not_installed"
+            except Exception as be:
+                out["bitsandbytes_version"] = f"unreadable: {type(be).__name__}: {be}"
+        except Exception as be:
+            out["bitsandbytes_version"] = f"unreadable: {type(be).__name__}: {be}"
+
+    return out
+
+
+def collect_and_write_session_env(
+    run_dir: Path,
+    *,
+    receipts_dir: Path,
+    mode: str,
+    shard_spec: str = "1/1",
+    phase: str = "start",
+    dryrun: bool = False,
+    prior_session_env: Mapping[str, Any] | None = None,
+    work_dir: Path | None = None,
+    venv_python: Path | None = None,
+    repo_dir: Path | None = None,
+    sdpa_backend_requested: str | None = PINNED_SDPA_BACKEND,
+) -> dict[str, Any]:
+    """Write `session_env.json` at session start (`phase='start'`) and at session end (`phase='end'`).
+
+    Outside `stub` and `dryrun`, reads installed versions (`torch`, `transformers`, `bitsandbytes`, CUDA runtime,
+    actual determinism status, `torch.backends.cudnn.benchmark`, and SDPA backend) from the judge venv and never
+    uses `FAKE_COLAB_*` defaults or `RDLAB_SDPA_BACKEND`. If any value cannot be read, records `'unreadable: <reason>'`
+    and refuses in counted mode.
+    """
+    ensure_not_drive_path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    snap = _query_gpu_and_ecc_snapshot(dryrun=dryrun, mode=mode)
+    judges_digests = _collect_judge_receipt_digests(receipts_dir)
+    merge_cfg_block = _load_merge_config_for_session_env(repo_dir)
+
+    is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
+    det_warn_only_env = os.environ.get("RDLAB_DETERMINISM_WARN_ONLY", "").strip()
+    if not is_stub_or_dryrun and det_warn_only_env == "1":
+        raise RefusalError(
+            "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
+            "Counted window refuses warn_only=True determinism fallback.",
+        )
+
+    sdpa_hook_raw = os.environ.get("RDLAB_SDPA_BACKEND", "").strip()
+    if sdpa_hook_raw and sdpa_hook_raw not in VALID_SDPA_BACKENDS:
+        raise RefusalError(
+            MALFORMED_TEST_HOOK,
+            "Malformed SDPA backend in environment variable RDLAB_SDPA_BACKEND",
+        )
+    eff_sdpa_requested = (
+        str(sdpa_backend_requested).strip()
+        if sdpa_backend_requested is not None and str(sdpa_backend_requested).strip()
+        else PINNED_SDPA_BACKEND
+    )
+
+    host_cpu_model = _read_host_cpu_model()
+    cublas_ws_cfg = os.environ.get("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    nvidia_tf32_override = os.environ.get("NVIDIA_TF32_OVERRIDE", "unset")
+    python_hash_seed = os.environ.get("PYTHONHASHSEED", "unset")
+
+    if is_stub_or_dryrun:
+        det_warn_only: bool | None = det_warn_only_env == "1"
+        det_status = "warn_only" if det_warn_only else "enforced"
+        fill_uninit_mem: bool = False
+        sdpa_backend = sdpa_hook_raw or "math"
+        cudnn_benchmark: Any = False
+        runtime_block = {
+            "cuda_runtime": os.environ.get("FAKE_COLAB_CUDA_RUNTIME", "13.2"),
+            "torch_version": os.environ.get("FAKE_COLAB_TORCH_VERSION", "2.14.1+cu132"),
+            "transformers_version": os.environ.get(
+                "FAKE_COLAB_TRANSFORMERS_VERSION", "5.19.0"
+            ),
+            "bitsandbytes_version": os.environ.get(
+                "FAKE_COLAB_BITSANDBYTES_VERSION", "absent"
+            ),
+        }
+    else:
+        probed = _query_judge_venv_runtime(work_dir=work_dir, venv_python=venv_python)
+        runtime_block = {
+            "cuda_runtime": str(probed.get("cuda_runtime") or "unreadable: empty cuda_runtime"),
+            "torch_version": str(probed.get("torch_version") or "unreadable: empty torch_version"),
+            "transformers_version": str(probed.get("transformers_version") or "unreadable: empty transformers_version"),
+            "bitsandbytes_version": str(probed.get("bitsandbytes_version") or "unreadable: empty bitsandbytes_version"),
+        }
+        det_status = str(probed.get("determinism_status") or "unreadable: empty determinism_status")
+        det_warn_only = probed.get("determinism_warn_only")
+        fill_uninit_mem = bool(probed.get("fill_uninitialized_memory", False))
+        sdpa_backend = str(probed.get("sdpa_backend") or "unreadable: empty sdpa_backend")
+        cudnn_benchmark = probed.get("cudnn_benchmark")
+        if cudnn_benchmark is None:
+            cudnn_benchmark = "unreadable: torch.backends.cudnn.benchmark is None"
+
+    gpu_block = {
+        "name": snap["name"],
+        "pci.device_id": snap["pci.device_id"],
+        "pci_device_id": snap["pci_device_id"],
+        "vbios": snap["vbios"],
+        "vbios_version": snap["vbios_version"],
+        "sm_count": snap["sm_count"],
+        "compute_capability": snap["compute_capability"],
+        "driver": snap["driver"],
+        "driver_version": snap["driver_version"],
+        "driver_major": snap["driver_major"],
+        "host_cpu_model": host_cpu_model,
+    }
+    det_block = {
+        "status": det_status,
+        "warn_only": det_warn_only,
+        "fill_uninitialized_memory": fill_uninit_mem,
+        "cublas_workspace_config": cublas_ws_cfg,
+        "CUBLAS_WORKSPACE_CONFIG": cublas_ws_cfg,
+        "NVIDIA_TF32_OVERRIDE": nvidia_tf32_override,
+        "PYTHONHASHSEED": python_hash_seed,
+        "torch.backends.cudnn.benchmark": cudnn_benchmark,
+    }
+    attn_block = {
+        "attn_implementation": PINNED_ATTN_IMPLEMENTATION,
+        "sdpa_backend": sdpa_backend,
+        "sdpa_backend_requested": eff_sdpa_requested,
+    }
+    fingerprint_fields = {
+        "host_cpu_model": host_cpu_model,
+        "CUBLAS_WORKSPACE_CONFIG": cublas_ws_cfg,
+        "NVIDIA_TF32_OVERRIDE": nvidia_tf32_override,
+        "PYTHONHASHSEED": python_hash_seed,
+        "torch.backends.cudnn.benchmark": cudnn_benchmark,
+    }
+
+    comparable_payload = {
+        "gpu": gpu_block,
+        "runtime": runtime_block,
+        "determinism": det_block,
+        "attention": attn_block,
+        "fingerprint_fields": fingerprint_fields,
+        "merge_config": merge_cfg_block,
+        "judges": judges_digests,
+    }
+    env_comparability_sha256 = hashlib.sha256(
+        json.dumps(comparable_payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+    explicit_fp = os.environ.get("RDLAB_SESSION_FINGERPRINT_SHA256", "").strip()
+    if explicit_fp:
+        session_fp = explicit_fp
+    elif prior_session_env and prior_session_env.get("session_fingerprint_sha256"):
+        session_fp = str(prior_session_env["session_fingerprint_sha256"])
+    else:
+        session_tag = (
+            os.environ.get("RDLAB_SESSION_ID", "").strip()
+            or os.environ.get("RDLAB_RUN_ID", "").strip()
+            or str(run_dir.resolve())
+        )
+        session_fp = hashlib.sha256(
+            f"session-fp-v1:{session_tag}:{shard_spec}:{env_comparability_sha256}".encode(
+                "utf-8"
+            )
+        ).hexdigest()
+
+    now_iso = _utc_now_iso()
+    if prior_session_env is not None:
+        start_ts = str(prior_session_env.get("written_at_start") or now_iso)
+        prev_ecc = prior_session_env.get("ecc", {})
+        vol_start = int(prev_ecc.get("uncorrected_volatile_start", snap["ecc_uncorrected_volatile"]))
+        agg_start = int(prev_ecc.get("uncorrected_aggregate_start", snap["ecc_uncorrected_aggregate"]))
+    else:
+        start_ts = now_iso
+        vol_start = int(snap["ecc_uncorrected_volatile"])
+        agg_start = int(snap["ecc_uncorrected_aggregate"])
+
+    if phase == "end":
+        vol_end_hook = _parse_nonneg_int_hook(
+            "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END",
+            os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END", ""),
+            int(snap["ecc_uncorrected_volatile"]),
+        )
+        agg_end_hook = _parse_nonneg_int_hook(
+            "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END",
+            os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END", ""),
+            int(snap["ecc_uncorrected_aggregate"]),
+        )
+        if is_stub_or_dryrun:
+            vol_end: int | None = vol_end_hook
+            agg_end: int | None = agg_end_hook
+        else:
+            vol_end = int(snap["ecc_uncorrected_volatile"])
+            agg_end = int(snap["ecc_uncorrected_aggregate"])
+        vol_delta: int | None = max(0, vol_end - vol_start)
+        agg_delta: int | None = max(0, agg_end - agg_start)
+        end_ts: str | None = now_iso
+    else:
+        vol_end = None
+        agg_end = None
+        vol_delta = None
+        agg_delta = None
+        end_ts = None
+
+    doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "phase": phase,
+        "mode": mode,
+        "shard_spec": shard_spec,
+        "written_at_start": start_ts,
+        "written_at_end": end_ts,
+        "session_fingerprint_sha256": session_fp,
+        "env_comparability_sha256": env_comparability_sha256,
+        "host_cpu_model": host_cpu_model,
+        "CUBLAS_WORKSPACE_CONFIG": cublas_ws_cfg,
+        "NVIDIA_TF32_OVERRIDE": nvidia_tf32_override,
+        "PYTHONHASHSEED": python_hash_seed,
+        "torch.backends.cudnn.benchmark": cudnn_benchmark,
+        "fill_uninitialized_memory": fill_uninit_mem,
+        "sdpa_backend_requested": eff_sdpa_requested,
+        "fingerprint_fields": fingerprint_fields,
+        "merge_config": merge_cfg_block,
+        "gpu": gpu_block,
+        "runtime": runtime_block,
+        "determinism": det_block,
+        "attention": attn_block,
+        "judges": judges_digests,
+        "ecc": {
+            "uncorrected_volatile_start": vol_start,
+            "uncorrected_volatile_end": vol_end,
+            "uncorrected_volatile_delta": vol_delta,
+            "uncorrected_aggregate_start": agg_start,
+            "uncorrected_aggregate_end": agg_end,
+            "uncorrected_aggregate_delta": agg_delta,
+        },
+    }
+    session_env_path = run_dir / SESSION_ENV_FILENAME
+    session_env_path.write_text(
+        json.dumps(doc, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    unreadable_fields: list[str] = []
+    for k, v in (
+        ("runtime.cuda_runtime", runtime_block["cuda_runtime"]),
+        ("runtime.torch_version", runtime_block["torch_version"]),
+        ("runtime.transformers_version", runtime_block["transformers_version"]),
+        ("runtime.bitsandbytes_version", runtime_block["bitsandbytes_version"]),
+        ("determinism.status", det_status),
+        ("attention.sdpa_backend", sdpa_backend),
+        ("host_cpu_model", host_cpu_model),
+        ("torch.backends.cudnn.benchmark", cudnn_benchmark),
+    ):
+        if isinstance(v, str) and v.startswith("unreadable:"):
+            unreadable_fields.append(f"{k}={v}")
+
+    if unreadable_fields and is_real_mode(mode, dryrun=dryrun):
+        raise RefusalError(
+            "SESSION_ENV_UNREADABLE",
+            f"Counted window refuses unreadable session_env fields: {'; '.join(unreadable_fields)}",
+        )
+    if det_status == "warn_only" and is_real_mode(mode, dryrun=dryrun):
+        raise RefusalError(
+            "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
+            "Counted window refuses warn_only=True determinism status in session_env.",
+        )
+    if is_real_mode(mode, dryrun=dryrun) and eff_sdpa_requested and sdpa_backend != eff_sdpa_requested:
+        raise RefusalError(
+            SDPA_BACKEND_MISMATCH,
+            f"Counted window refuses SDPA backend mismatch: sdpa_backend_requested={eff_sdpa_requested!r}, probed sdpa_backend={sdpa_backend!r}",
+        )
+
+    return doc
+
+
+BOOT_GATEKEEPER_SYNTHETIC_PROMPTS: tuple[dict[str, str], ...] = (
+    {
+        "prompt_id": "boot_gatekeeper_synthetic_1",
+        "material": "1. Signal alpha-1 recorded pressure 102 kPa at station north.\n2. Station north currently records status nominal.",
+        "claim": "Station north recorded pressure 102 kPa and status nominal.",
+        "order": "AB",
+        "pass_mode": "binary",
+    },
+    {
+        "prompt_id": "boot_gatekeeper_synthetic_2",
+        "material": "1. Relay beta-4 logged 12 volts on channel two.\n2. Channel two does not record any overvoltage event.",
+        "claim": "Channel two recorded an overvoltage event on relay beta-4.",
+        "order": "BA",
+        "pass_mode": "binary",
+    },
+)
+
+
+def _compute_synthetic_gatekeeper_output_sha256(
+    prompt_id: str,
+    *,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+    judge_id: str = FIRST_LOAD_JUDGE_ID,
+) -> str:
+    """Compute synthetic fake `output_token_ids_sha256` for `stub` and `dryrun` modes only."""
+    h_bytes = hashlib.sha256(
+        f"fake-judge-v1:{seed}:{judge_id}:{prompt_id}:BOTH:binary".encode("utf-8")
+    ).digest()
+    u = int.from_bytes(h_bytes[:4], "big") / 0xFFFFFFFF
+    p_yes_target = round(0.05 + 0.90 * u, 4)
+    is_yes = p_yes_target >= 0.5
+    pass_fail = "Pass" if is_yes else "Fail"
+    tokens = (
+        "<feedback>",
+        "evaluated",
+        "</feedback>",
+        "\n",
+        "<score>",
+        pass_fail,
+        "</score>",
+    )
+    tok_ids: list[int] = []
+    for idx, tok in enumerate(tokens):
+        digest = hashlib.sha256(f"{judge_id}:out:{idx}:{tok}".encode("utf-8")).digest()
+        tok_ids.append(int.from_bytes(digest[:4], "big"))
+    payload = json.dumps(tok_ids, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _hash_token_ids_list(token_ids: Sequence[int]) -> str:
+    payload = json.dumps([int(x) for x in token_ids], separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+_BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
+    "import hashlib, json, sys\n"
+    "from pathlib import Path\n"
+    "from reasoning_dataset_lab.pilot_b.bakeoff_judge import (\n"
+    "    JudgeInputItem, TransformersJudgeTransport, D3MiniTransport, D3_MINI_JUDGE_ID,\n"
+    "    build_judge_adapter, resolve_judge_spec, compute_response_output_token_ids_sha256\n"
+    ")\n"
+    "cfg = json.loads(sys.argv[1])\n"
+    "spec = resolve_judge_spec(cfg['judge_id'])\n"
+    "adapter = build_judge_adapter(spec)\n"
+    "receipts_dir = Path(cfg['receipts_dir'])\n"
+    "hf_home = Path(cfg['hf_home']) if cfg.get('hf_home') else None\n"
+    "device = cfg.get('device', 'cpu')\n"
+    "window_mode = cfg.get('window_mode', 'counted')\n"
+    "seed = int(cfg.get('seed', 20261030))\n"
+    "if spec.judge_id == D3_MINI_JUDGE_ID:\n"
+    "    transport = D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home, device=device, window_mode=window_mode)\n"
+    "else:\n"
+    "    transport = TransformersJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home, device=device, window_mode=window_mode)\n"
+    "transport.verify_ready(spec, allow_remote_code_reviewed=cfg.get('allow_remote_code_reviewed'))\n"
+    "out_hashes = {}\n"
+    "for sp in cfg['prompts']:\n"
+    "    pid = str(sp['prompt_id'])\n"
+    "    item = JudgeInputItem(item_id=pid, material=str(sp['material']), claim=str(sp['claim']))\n"
+    "    ord_mode = 'BA' if str(sp.get('order', 'AB')) == 'BA' else 'AB'\n"
+    "    prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode='binary')\n"
+    "    resp = transport.generate(spec, prompt, seed=seed)\n"
+    "    sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(\n"
+    "        spec.judge_id, resp.tokens, system_one_result=resp.system_one_result\n"
+    "    )\n"
+    "    out_hashes[pid] = sha\n"
+    "print(json.dumps({'status': 'ok', 'hashes': out_hashes}, sort_keys=True))\n"
+)
+
+
+def _run_real_boot_gatekeeper_prompts(
+    *,
+    judge_id: str,
+    prompts: Sequence[Mapping[str, Any]],
+    seed: int,
+    mode: str,
+    repo_root: Path,
+    work_dir: Path | None = None,
+    receipts_dir: Path | None = None,
+    hf_home: Path | None = None,
+    device: str = "cpu",
+    transport: Any | None = None,
+) -> dict[str, str]:
+    """Load the smallest judge (`nemotron-3-nano-4b`) through the real transport and run the 2 fixed synthetic prompts."""
+    if transport is not None:
+        import importlib
+
+        bakeoff_judge = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
+
+        spec = bakeoff_judge.resolve_judge_spec(judge_id)
+        adapter = bakeoff_judge.build_judge_adapter(spec)
+        verify_fn = getattr(transport, "verify_ready", None)
+        if callable(verify_fn):
+            verify_fn(
+                spec,
+                allow_remote_code_reviewed=(
+                    D3_MINI_REVIEWED_REVISION if judge_id == D3_MINI_JUDGE_ID else None
+                ),
+            )
+        hashes: dict[str, str] = {}
+        for sp in prompts:
+            pid = str(sp.get("prompt_id") or "")
+            if not pid:
+                continue
+            mat = str(sp.get("material") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["material"])
+            clm = str(sp.get("claim") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["claim"])
+            ord_s: Any = "BA" if str(sp.get("order") or "AB") == "BA" else "AB"
+            item = bakeoff_judge.JudgeInputItem(item_id=pid, material=mat, claim=clm)
+            prompt = adapter.assemble_prompt(item, order=ord_s, pass_mode="binary")
+            resp = transport.generate(spec, prompt, seed=seed)
+            raw_tok_ids = getattr(resp, "token_ids", None) or getattr(resp, "output_token_ids", None)
+            if isinstance(raw_tok_ids, Sequence) and not isinstance(raw_tok_ids, (str, bytes)):
+                hashes[pid] = _hash_token_ids_list([int(t) for t in raw_tok_ids])
+            elif getattr(resp, "output_token_ids_sha256", None):
+                hashes[pid] = str(resp.output_token_ids_sha256)
+            else:
+                toks = getattr(resp, "tokens", ())
+                if toks and all(isinstance(t, int) for t in toks):
+                    hashes[pid] = _hash_token_ids_list([int(t) for t in toks])
+                else:
+                    hashes[pid] = bakeoff_judge.compute_response_output_token_ids_sha256(
+                        spec.judge_id,
+                        tuple(str(t) for t in toks),
+                        system_one_result=getattr(resp, "system_one_result", None),
+                    )
+        return hashes
+
+    import importlib
+
+    bakeoff_judge = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
+    spec = bakeoff_judge.resolve_judge_spec(judge_id)
+    receipt_file = (
+        Path(receipts_dir) / f"{spec.repo_id.replace('/', '__')}.sha256.json"
+        if receipts_dir is not None
+        else None
+    )
+
+    eff_work = (
+        Path(work_dir)
+        if work_dir is not None
+        else (
+            Path(os.environ["RDLAB_WORK_DIR"])
+            if os.environ.get("RDLAB_WORK_DIR", "").strip()
+            else None
+        )
+    )
+    venv_name = "venv-d3" if judge_id == D3_MINI_JUDGE_ID else "venv-judge"
+    if eff_work is not None:
+        venv_py = eff_work / venv_name / "bin" / "python"
+        if not venv_py.is_file():
+            raise RefusalError(
+                "VENV_PYTHON_MISSING",
+                f"Boot gatekeeper venv python not found at {venv_py}",
+            )
+        if receipt_file is None or not receipt_file.is_file():
+            raise RefusalError(
+                "BOOT_GATEKEEPER_RECEIPT_MISSING",
+                f"Boot gatekeeper receipt not found for {judge_id!r} at {receipt_file}",
+            )
+        cfg_payload = {
+            "judge_id": judge_id,
+            "receipts_dir": str(receipts_dir),
+            "hf_home": str(hf_home) if hf_home is not None else None,
+            "device": device,
+            "window_mode": mode,
+            "seed": int(seed),
+            "allow_remote_code_reviewed": (
+                D3_MINI_REVIEWED_REVISION if judge_id == D3_MINI_JUDGE_ID else None
+            ),
+            "prompts": [
+                {
+                    "prompt_id": str(sp.get("prompt_id") or ""),
+                    "material": str(sp.get("material") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["material"]),
+                    "claim": str(sp.get("claim") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["claim"]),
+                    "order": str(sp.get("order") or "AB"),
+                }
+                for sp in prompts
+                if sp.get("prompt_id")
+            ],
+        }
+        child_env = build_judge_child_env(
+            hf_home if hf_home is not None else (eff_work / "hf_home"),
+            repo_root,
+        )
+        proc = subprocess.run(
+            [str(venv_py), "-c", _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT, json.dumps(cfg_payload)],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env,
+            timeout=120,
+            check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout.strip():
+            err_tail = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+            raise RefusalError(
+                "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
+                f"Boot gatekeeper subprocess failed (rc={proc.returncode}): {err_tail[:240]}",
+            )
+        try:
+            parsed = json.loads(proc.stdout.strip().splitlines()[-1])
+        except Exception as exc:
+            raise RefusalError(
+                "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
+                f"Boot gatekeeper subprocess produced malformed JSON: {exc}",
+            ) from exc
+        if not isinstance(parsed, Mapping) or not isinstance(parsed.get("hashes"), Mapping):
+            raise RefusalError(
+                "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
+                "Boot gatekeeper subprocess output missing 'hashes' mapping",
+            )
+        return {str(k): str(v) for k, v in parsed["hashes"].items()}
+
+    if receipt_file is None or not receipt_file.is_file():
+        raise RefusalError(
+            "BOOT_GATEKEEPER_RECEIPT_MISSING",
+            f"Boot gatekeeper receipt not found for {judge_id!r} at {receipt_file}",
+        )
+
+    try:
+        torch_mod = sys.modules.get("torch")
+        if torch_mod is None and "torch" not in sys.modules:
+            torch_mod = importlib.import_module("torch")
+    except Exception as exc:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_TORCH_MISSING",
+            f"Boot gatekeeper requires torch in real mode: {exc}",
+        ) from exc
+    if torch_mod is None:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_TORCH_MISSING",
+            "Boot gatekeeper requires torch in real mode (torch is missing)",
+        )
+
+    try:
+        tf_mod = sys.modules.get("transformers")
+        if tf_mod is None and "transformers" not in sys.modules:
+            tf_mod = importlib.import_module("transformers")
+    except Exception as exc:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_TRANSFORMERS_MISSING",
+            f"Boot gatekeeper requires transformers in real mode: {exc}",
+        ) from exc
+    if tf_mod is None:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_TRANSFORMERS_MISSING",
+            "Boot gatekeeper requires transformers in real mode (transformers is missing)",
+        )
+
+    adapter = bakeoff_judge.build_judge_adapter(spec)
+    real_tr: Any = (
+        bakeoff_judge.D3MiniTransport(
+            receipts_dir=Path(receipts_dir),
+            hf_home=Path(hf_home) if hf_home is not None else None,
+            device=device,
+            window_mode=mode,
+        )
+        if judge_id == D3_MINI_JUDGE_ID
+        else bakeoff_judge.TransformersJudgeTransport(
+            receipts_dir=Path(receipts_dir),
+            hf_home=Path(hf_home) if hf_home is not None else None,
+            device=device,
+            window_mode=mode,
+        )
+    )
+    real_tr.verify_ready(
+        spec,
+        allow_remote_code_reviewed=(
+            D3_MINI_REVIEWED_REVISION if judge_id == D3_MINI_JUDGE_ID else None
+        ),
+    )
+    out_map: dict[str, str] = {}
+    for sp in prompts:
+        pid = str(sp.get("prompt_id") or "")
+        if not pid:
+            continue
+        mat = str(sp.get("material") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["material"])
+        clm = str(sp.get("claim") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["claim"])
+        ord_s2: Any = "BA" if str(sp.get("order") or "AB") == "BA" else "AB"
+        item = bakeoff_judge.JudgeInputItem(item_id=pid, material=mat, claim=clm)
+        prompt = adapter.assemble_prompt(item, order=ord_s2, pass_mode="binary")
+        resp = real_tr.generate(spec, prompt, seed=seed)
+        out_map[pid] = resp.output_token_ids_sha256 or bakeoff_judge.compute_response_output_token_ids_sha256(
+            spec.judge_id, resp.tokens, system_one_result=resp.system_one_result
+        )
+    return out_map
+
+
+def run_boot_gatekeeper(
+    *,
+    run_dir: Path,
+    repo_root: Path,
+    mode: str,
+    card_type: str | None = None,
+    goldens_path: Path | None = None,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+    dryrun: bool = False,
+    work_dir: Path | None = None,
+    receipts_dir: Path | None = None,
+    hf_home: Path | None = None,
+    device: str = "cpu",
+    transport: Any | None = None,
+) -> dict[str, Any]:
+    """Run the 2-prompt synthetic boot gatekeeper on the smallest judge (`nemotron-3-nano-4b`) before a shard runs.
+
+    - In `time-one` and `counted` mode (when `not dryrun`), loads the smallest judge through the real transport
+      and runs the 2 fixed synthetic prompts built in code with no item text, comparing real `output_token_ids_sha256`
+      with the golden for `card_type`.
+    - In `stub` and `dryrun`, uses `_compute_synthetic_gatekeeper_output_sha256` and labels the report with
+      `"hash_source": "synthetic_fake_stub_dryrun"` and `"synthetic_fake_hash": True`.
+    - Until the lock-check window fills the goldens, `counted` mode refuses with `"no golden"` (`BOOT_GATEKEEPER_GOLDEN_MISSING`).
+    """
+    ensure_not_drive_path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    eff_goldens_path = (
+        Path(goldens_path)
+        if goldens_path is not None
+        else (
+            Path(os.environ["RDLAB_BOOT_GATEKEEPER_GOLDENS"])
+            if os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS", "").strip()
+            else (repo_root / "scripts" / "colab" / "boot_gatekeeper_goldens.json")
+        )
+    )
+    eff_card_type = (
+        str(card_type).strip()
+        if card_type is not None and str(card_type).strip()
+        else (os.environ.get("RDLAB_CARD_TYPE", "").strip() or "A100")
+    )
+
+    if not eff_goldens_path.is_file():
+        raise RefusalError(
+            "BOOT_GATEKEEPER_GOLDEN_MISSING",
+            f"Boot gatekeeper golden file not found at {eff_goldens_path}",
+        )
+    try:
+        goldens_doc = json.loads(eff_goldens_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_GOLDEN_MISSING",
+            f"Malformed boot gatekeeper golden file {eff_goldens_path}: {exc}",
+        ) from exc
+
+    judge_id = str(goldens_doc.get("judge_id") or FIRST_LOAD_JUDGE_ID)
+    synth_prompts = list(BOOT_GATEKEEPER_SYNTHETIC_PROMPTS)
+    doc_prompts = goldens_doc.get("synthetic_prompts")
+    if isinstance(doc_prompts, list) and doc_prompts:
+        synth_prompts = [
+            {
+                "prompt_id": str(sp.get("prompt_id") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["prompt_id"]),
+                "material": str(sp.get("material") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["material"]),
+                "claim": str(sp.get("claim") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["claim"]),
+                "order": str(sp.get("order") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["order"]),
+                "pass_mode": str(sp.get("pass_mode") or "binary"),
+            }
+            for idx, sp in enumerate(doc_prompts)
+            if isinstance(sp, Mapping) and sp.get("prompt_id")
+        ]
+
+    override_hashes_raw = os.environ.get(
+        "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES", ""
+    ).strip()
+    override_map: dict[str, str] = {}
+    if override_hashes_raw:
+        try:
+            loaded_ov = json.loads(override_hashes_raw)
+        except Exception as exc:
+            raise RefusalError(
+                MALFORMED_TEST_HOOK,
+                "Malformed JSON in environment variable RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+            ) from exc
+        if not isinstance(loaded_ov, Mapping) or not loaded_ov:
+            raise RefusalError(
+                MALFORMED_TEST_HOOK,
+                "Malformed mapping in environment variable RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+            )
+        for k, v in loaded_ov.items():
+            if (
+                not isinstance(k, str)
+                or not k.strip()
+                or not isinstance(v, str)
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", v.strip())
+            ):
+                raise RefusalError(
+                    MALFORMED_TEST_HOOK,
+                    "Malformed sha256 entry in environment variable RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+                )
+            override_map[str(k)] = str(v).strip().lower()
+
+    card_types_map = goldens_doc.get("card_types", {})
+    card_entry = (
+        card_types_map.get(eff_card_type)
+        if isinstance(card_types_map, Mapping)
+        else None
+    )
+    card_prompts = (
+        card_entry.get("prompts")
+        if isinstance(card_entry, Mapping)
+        and isinstance(card_entry.get("prompts"), Mapping)
+        else None
+    )
+    has_all_goldens = bool(card_entry is not None and isinstance(card_prompts, Mapping))
+    if has_all_goldens and isinstance(card_prompts, Mapping):
+        for sp in synth_prompts:
+            pid = str(sp.get("prompt_id") or "")
+            if not pid:
+                continue
+            p_gold = card_prompts.get(pid)
+            exp_sha_raw = (
+                p_gold.get("output_token_ids_sha256")
+                if isinstance(p_gold, Mapping)
+                else (p_gold if isinstance(p_gold, str) else None)
+            )
+            if not (str(exp_sha_raw).strip() if exp_sha_raw else ""):
+                has_all_goldens = False
+                break
+
+    is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
+    use_synthetic_fake = bool(is_stub_or_dryrun and transport is None)
+    if use_synthetic_fake:
+        hash_source = "synthetic_fake_stub_dryrun"
+        synthetic_fake_hash = True
+        actual_by_prompt: dict[str, str] = {}
+        for sp in synth_prompts:
+            pid = str(sp.get("prompt_id") or "")
+            if not pid:
+                continue
+            actual_by_prompt[pid] = override_map.get(
+                pid,
+                _compute_synthetic_gatekeeper_output_sha256(
+                    pid, seed=seed, judge_id=judge_id
+                ),
+            )
+    elif (
+        not has_all_goldens
+        and transport is None
+        and work_dir is None
+        and receipts_dir is None
+        and not os.environ.get("RDLAB_WORK_DIR", "").strip()
+    ):
+        hash_source = "no_golden"
+        synthetic_fake_hash = False
+        actual_by_prompt = {
+            str(sp.get("prompt_id") or ""): ""
+            for sp in synth_prompts
+            if sp.get("prompt_id")
+        }
+    else:
+        hash_source = "real_transport"
+        synthetic_fake_hash = False
+        real_hashes = _run_real_boot_gatekeeper_prompts(
+            judge_id=judge_id,
+            prompts=synth_prompts,
+            seed=seed,
+            mode=mode,
+            repo_root=repo_root,
+            work_dir=work_dir,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            device=device,
+            transport=transport,
+        )
+        if is_stub_or_dryrun:
+            actual_by_prompt = {
+                pid: override_map.get(pid, real_sha)
+                for pid, real_sha in real_hashes.items()
+            }
+        else:
+            actual_by_prompt = dict(real_hashes)
+
+    missing_prompts: list[str] = []
+    mismatched_prompts: list[dict[str, str]] = []
+    expected_by_prompt: dict[str, str | None] = {}
+    for pid, actual_sha in actual_by_prompt.items():
+        p_gold = (
+            card_prompts.get(pid)
+            if isinstance(card_prompts, Mapping)
+            else None
+        )
+        exp_sha_raw = (
+            p_gold.get("output_token_ids_sha256")
+            if isinstance(p_gold, Mapping)
+            else (p_gold if isinstance(p_gold, str) else None)
+        )
+        exp_sha = str(exp_sha_raw).strip().lower() if exp_sha_raw else None
+        expected_by_prompt[pid] = exp_sha
+        if not exp_sha:
+            missing_prompts.append(pid)
+        elif exp_sha != actual_sha.lower():
+            mismatched_prompts.append(
+                {
+                    "prompt_id": pid,
+                    "expected_output_token_ids_sha256": exp_sha,
+                    "actual_output_token_ids_sha256": actual_sha,
+                }
+            )
+
+    gatekeeper_out_path = run_dir / BOOT_GATEKEEPER_FILENAME
+    if mismatched_prompts:
+        refused_doc = {
+            "status": "refused",
+            "failure_class": "BOOT_GATEKEEPER_GOLDEN_MISMATCH",
+            "card_type": eff_card_type,
+            "judge_id": judge_id,
+            "hash_source": hash_source,
+            "synthetic_fake_hash": synthetic_fake_hash,
+            "actual_output_token_ids_sha256": actual_by_prompt,
+            "expected_output_token_ids_sha256": expected_by_prompt,
+            "mismatches": mismatched_prompts,
+        }
+        gatekeeper_out_path.write_text(
+            json.dumps(refused_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        first_m = mismatched_prompts[0]
+        raise RefusalError(
+            "BOOT_GATEKEEPER_GOLDEN_MISMATCH",
+            f"Boot gatekeeper golden mismatch on card_type={eff_card_type!r} for {first_m['prompt_id']}: "
+            f"expected {first_m['expected_output_token_ids_sha256']}, got {first_m['actual_output_token_ids_sha256']}",
+        )
+
+    if card_entry is None or missing_prompts:
+        if is_real_mode(mode, dryrun=dryrun):
+            missing_doc = {
+                "status": "no golden",
+                "failure_class": "BOOT_GATEKEEPER_GOLDEN_MISSING",
+                "card_type": eff_card_type,
+                "judge_id": judge_id,
+                "hash_source": hash_source,
+                "synthetic_fake_hash": synthetic_fake_hash,
+                "missing_prompts": missing_prompts or list(actual_by_prompt.keys()),
+                "actual_output_token_ids_sha256": actual_by_prompt,
+            }
+            gatekeeper_out_path.write_text(
+                json.dumps(missing_doc, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            raise RefusalError(
+                "BOOT_GATEKEEPER_GOLDEN_MISSING",
+                f"no golden: Boot gatekeeper golden hashes are missing/unfilled for card_type={eff_card_type!r} "
+                f"(missing={missing_prompts or list(actual_by_prompt.keys())}); counted mode refuses until lock-check fills them.",
+            )
+        no_golden_doc = {
+            "status": "no golden",
+            "card_type": eff_card_type,
+            "judge_id": judge_id,
+            "hash_source": hash_source,
+            "synthetic_fake_hash": synthetic_fake_hash,
+            "missing_prompts": missing_prompts or list(actual_by_prompt.keys()),
+            "actual_output_token_ids_sha256": actual_by_prompt,
+            "expected_output_token_ids_sha256": expected_by_prompt,
+        }
+        gatekeeper_out_path.write_text(
+            json.dumps(no_golden_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        return no_golden_doc
+
+    ok_doc = {
+        "status": "ok",
+        "card_type": eff_card_type,
+        "judge_id": judge_id,
+        "hash_source": hash_source,
+        "synthetic_fake_hash": synthetic_fake_hash,
+        "actual_output_token_ids_sha256": actual_by_prompt,
+        "expected_output_token_ids_sha256": expected_by_prompt,
+    }
+    gatekeeper_out_path.write_text(
+        json.dumps(ok_doc, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return ok_doc
+
+
+
 def run_gate(args: argparse.Namespace) -> int:
     """Execute the pre-upload VM gate: create `/content/rdlab_items/`, check disk, find-or-install Python 3.15.1, and write `/content/gate_status.json`."""
     import platform
@@ -7844,13 +10363,35 @@ def main(argv: list[str] | None = None) -> int:
     first_load_judge_id_source: str = "default"
     device_check_report: dict[str, Any] | None = None
     gpu_gate_report: dict[str, Any] | None = None
+    shard_info_report: dict[str, Any] | None = None
+    session_env_report: dict[str, Any] | None = None
+    boot_gatekeeper_report: dict[str, Any] | None = None
+    loop_order_val: str = DEFAULT_LOOP_ORDER
+    subblock_items_val: int = DEFAULT_SUBBLOCK_ITEMS
     try:
         current_step = "validate_until_option"
         until_step = validate_until_option(args.mode, getattr(args, "until", None))
         stopped_after: str | None = None
 
+        current_step = "validate_loop_order"
+        loop_order_val, subblock_items_val = validate_loop_order(
+            getattr(args, "loop", None),
+            getattr(args, "subblock_items", None),
+        )
+
+        current_step = "validate_shard_spec"
+        raw_shard_arg = getattr(args, "shard", None) or os.environ.get("RDLAB_SHARD") or "1/1"
+        parse_shard_spec(raw_shard_arg)
+
         current_step = "validate_force_pinned_uv"
         validate_force_pinned_uv(args.mode)
+
+        current_step = "guard_no_test_hooks"
+        guard_no_test_hooks_in_counted_mode(
+            args.mode,
+            dryrun=dryrun,
+            shard_spec=raw_shard_arg,
+        )
 
         current_step = "validate_only_judges"
         only_judges = validate_only_judges(
@@ -7918,6 +10459,36 @@ def main(argv: list[str] | None = None) -> int:
             step_order=step_order,
         )
 
+        current_step = "ensure_shard_manifest"
+        _, parsed_main_shard_n = parse_shard_spec(raw_shard_arg)
+        env_main_limit = os.environ.get("RDLAB_LIMIT_ITEMS", "").strip()
+        main_limit_items: int | None = (
+            int(env_main_limit)
+            if env_main_limit.isdigit() and int(env_main_limit) > 0
+            else (
+                2
+                if until_step == "first_load"
+                else (
+                    TIME_ONE_ITEMS_LIMIT
+                    if args.mode == "time-one"
+                    else (
+                        None
+                        if args.mode == "counted"
+                        else (None if parsed_main_shard_n > 1 else 2)
+                    )
+                )
+            )
+        )
+        shard_info_report = ensure_shard_manifest_for_run(
+            items_file=args.items_file,
+            run_dir=args.run_dir,
+            raw_shard_spec=raw_shard_arg,
+            shard_manifest_path=getattr(args, "shard_manifest", None),
+            expected_manifest_sha256=getattr(args, "shard_manifest_sha256", None),
+            limit_items=main_limit_items,
+            schedule_seed=DEFAULT_SCHEDULE_SEED,
+        )
+
         current_step = "verify_lock_digests"
         t_locks, start_locks, _ = _record_step_start(
             "lock_digests", progress_path=progress_path
@@ -7980,6 +10551,18 @@ def main(argv: list[str] | None = None) -> int:
             step_order=step_order,
         )
 
+        current_step = "session_env_start"
+        session_env_report = collect_and_write_session_env(
+            args.run_dir,
+            receipts_dir=args.receipts_dir,
+            mode=args.mode,
+            shard_spec=str(shard_info_report["shard_spec"]),
+            phase="start",
+            dryrun=dryrun,
+            work_dir=args.work_dir,
+            repo_dir=args.repo_dir,
+        )
+
         verified_snapshots: dict[str, str] = {}
         time_one_summary: dict[str, Any] | None = None
         pilot_mass_readout: dict[str, Any] | None = None
@@ -7996,6 +10579,7 @@ def main(argv: list[str] | None = None) -> int:
             device_check_report = run_device_check(
                 args.work_dir,
                 dryrun=dryrun,
+                mode=args.mode,
                 progress_path=progress_path,
                 gate_status_path=gate_status_path,
                 step_timings=step_timings,
@@ -8004,7 +10588,7 @@ def main(argv: list[str] | None = None) -> int:
             if until_step == "device_check":
                 stopped_after = "device_check"
             else:
-                if args.mode == "time-one" or until_step == "gpu_gate":
+                if args.mode in ("time-one", "counted") or until_step == "gpu_gate":
                     current_step = "gpu_gate"
                     gpu_gate_report = run_gpu_gate(
                         args.work_dir,
@@ -8115,6 +10699,19 @@ def main(argv: list[str] | None = None) -> int:
                         hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
                     )
 
+                    current_step = "boot_gatekeeper"
+                    boot_gatekeeper_report = run_boot_gatekeeper(
+                        run_dir=args.run_dir,
+                        repo_root=args.repo_dir,
+                        mode=args.mode,
+                        goldens_path=getattr(args, "boot_gatekeeper_goldens", None),
+                        dryrun=dryrun,
+                        work_dir=args.work_dir,
+                        receipts_dir=args.receipts_dir,
+                        hf_home=args.hf_home,
+                        device=resolve_judge_device(mode=args.mode, dryrun=dryrun),
+                    )
+
                     current_step = "run_judges_pipeline"
                     t_jpass, start_jpass, _ = _record_step_start(
                         "judge_pass", progress_path=progress_path
@@ -8135,6 +10732,21 @@ def main(argv: list[str] | None = None) -> int:
                         judge_order=judge_order,
                         judge_order_source=judge_order_source,
                         only_judges=only_judges,
+                        shard_spec=str(shard_info_report["shard_spec"]),
+                        shard_manifest_path=Path(
+                            str(shard_info_report["shard_manifest_path"])
+                        ),
+                        shard_manifest_sha256=str(
+                            shard_info_report["shard_manifest_sha256"]
+                        ),
+                        loop_order=loop_order_val,
+                        subblock_items=subblock_items_val,
+                        session_fingerprint_sha256=str(
+                            session_env_report["session_fingerprint_sha256"]
+                        ),
+                        replacement_session=bool(
+                            getattr(args, "replacement_session", False)
+                        ),
                     )
                     _record_step_end(
                         "judge_pass",
@@ -8150,6 +10762,23 @@ def main(argv: list[str] | None = None) -> int:
             [args.items_file]
         )
 
+        current_step = "session_env_end"
+        session_env_report = collect_and_write_session_env(
+            args.run_dir,
+            receipts_dir=args.receipts_dir,
+            mode=args.mode,
+            shard_spec=(
+                str(shard_info_report["shard_spec"])
+                if shard_info_report is not None
+                else "1/1"
+            ),
+            phase="end",
+            dryrun=dryrun,
+            prior_session_env=session_env_report,
+            work_dir=args.work_dir,
+            repo_dir=args.repo_dir,
+        )
+
         with vm_log_path.open("a", encoding="utf-8", newline="\n") as log_fh:
             until_sfx = (
                 f" until={until_step} stopped_after={stopped_after}"
@@ -8157,7 +10786,11 @@ def main(argv: list[str] | None = None) -> int:
                 else ""
             )
             log_fh.write(f"VM_RUN_OK mode={args.mode} dryrun={dryrun}{until_sfx}\n")
-            planted_leak = os.environ.get("RDLAB_TEST_PLANT_LOG_LEAK", "").strip()
+            planted_leak = (
+                os.environ.get("RDLAB_TEST_PLANT_LOG_LEAK", "").strip()
+                if not is_real_mode(args.mode, dryrun=dryrun)
+                else ""
+            )
             if planted_leak:
                 log_fh.write(f"planted_test_leak={planted_leak}\n")
 
@@ -8183,7 +10816,41 @@ def main(argv: list[str] | None = None) -> int:
         receipt_doc: dict[str, Any] = {
             "status": "ok",
             "mode": args.mode,
-            "hardware": "A100" if args.mode == "time-one" else "CPU",
+            "hardware": "A100" if args.mode in ("time-one", "counted") else "CPU",
+            "shard_spec": (
+                shard_info_report["shard_spec"]
+                if shard_info_report is not None
+                else "1/1"
+            ),
+            "shard_manifest_sha256": (
+                shard_info_report["shard_manifest_sha256"]
+                if shard_info_report is not None
+                else None
+            ),
+            "shard_item_ids": (
+                shard_info_report["shard_item_ids"]
+                if shard_info_report is not None
+                else []
+            ),
+            "anchor_item_ids": (
+                shard_info_report["anchor_item_ids"]
+                if shard_info_report is not None
+                else []
+            ),
+            "loop_order": loop_order_val,
+            "subblock_items": subblock_items_val,
+            "session_fingerprint_sha256": (
+                session_env_report["session_fingerprint_sha256"]
+                if session_env_report is not None
+                else None
+            ),
+            "session_env": session_env_report,
+            "fill_uninitialized_memory": (
+                session_env_report.get("fill_uninitialized_memory", False)
+                if session_env_report is not None
+                else False
+            ),
+            "boot_gatekeeper": boot_gatekeeper_report,
             "uv_source": py_rep["uv_source"],
             "uv_path": py_rep["uv_path"],
             "uv_version": venv_info["uv_version"],
@@ -8271,6 +10938,34 @@ def main(argv: list[str] | None = None) -> int:
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
 
         status_extra: dict[str, Any] = {
+            "shard_spec": (
+                shard_info_report["shard_spec"]
+                if shard_info_report is not None
+                else "1/1"
+            ),
+            "shard_manifest_sha256": (
+                shard_info_report["shard_manifest_sha256"]
+                if shard_info_report is not None
+                else None
+            ),
+            "shard_item_ids": (
+                shard_info_report["shard_item_ids"]
+                if shard_info_report is not None
+                else []
+            ),
+            "anchor_item_ids": (
+                shard_info_report["anchor_item_ids"]
+                if shard_info_report is not None
+                else []
+            ),
+            "loop_order": loop_order_val,
+            "subblock_items": subblock_items_val,
+            "session_fingerprint_sha256": (
+                session_env_report["session_fingerprint_sha256"]
+                if session_env_report is not None
+                else None
+            ),
+            "boot_gatekeeper": boot_gatekeeper_report,
             "uv_source": py_rep["uv_source"],
             "uv_path": py_rep["uv_path"],
             "uv_version": venv_info["uv_version"],
@@ -8401,7 +11096,24 @@ def main(argv: list[str] | None = None) -> int:
             "judge_order": list(judge_order),
             "judge_order_source": judge_order_source,
             "only_judges": list(only_judges) if only_judges is not None else None,
+            "loop_order": loop_order_val,
+            "subblock_items": subblock_items_val,
         }
+        if shard_info_report is not None:
+            for sk in ("shard_spec", "shard_manifest_sha256", "shard_item_ids", "anchor_item_ids"):
+                fail_receipt[sk] = shard_info_report.get(sk)
+                status_fail_extra[sk] = shard_info_report.get(sk)
+        if session_env_report is not None:
+            fail_receipt["session_env"] = session_env_report
+            fail_receipt["session_fingerprint_sha256"] = session_env_report.get(
+                "session_fingerprint_sha256"
+            )
+            status_fail_extra["session_fingerprint_sha256"] = session_env_report.get(
+                "session_fingerprint_sha256"
+            )
+        if boot_gatekeeper_report is not None:
+            fail_receipt["boot_gatekeeper"] = boot_gatekeeper_report
+            status_fail_extra["boot_gatekeeper"] = boot_gatekeeper_report
         if device_check_report is not None:
             status_fail_extra["device_check"] = device_check_report
         if gpu_gate_report is not None:

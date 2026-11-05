@@ -33,57 +33,26 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 7,
-      "changed": 1,
+      "added": 0,
+      "changed": 2,
       "moved": 0,
-      "parts": 1,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "tests/fixtures/historical_git_fixtures_manifest.json is now read by tests/fixtures/historical_git_fixtures.py.",
-        "subjects": [
-          "tests/fixtures/historical_git_fixtures_manifest.json",
-          "tests/fixtures/historical_git_fixtures.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "tests/test_colab_judge_launcher.py is now read by tests/test_colab_judge_launcher.py.",
-        "subjects": [
-          "tests/test_colab_judge_launcher.py",
-          "tests/test_colab_judge_launcher.py"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "7 files added and 1 changed content, across 1 part.",
+        "sentence": "Nothing structural changed since 2026-11-05; 2 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "034ee76329d409d4843ac964bccbe389511bdb2f",
-      "generatedAt": "2026-11-04T18:40:55.454Z"
+      "commit": "ea76016286b78525e2bb61c55c0d486da2b07ce7",
+      "generatedAt": "2026-11-05T08:01:26.198Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
-    {
-      "a": "scripts/colab/vm_judges.py",
-      "b": "tests/test_colab_judge_launcher.py",
-      "either": 14,
-      "partLabels": [
-        "scripts",
-        "tests"
-      ],
-      "parts": [
-        "scripts",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 14
-    },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/value_certification.py",
       "b": "tests/test_pilot_b_value_certification.py",
@@ -101,8 +70,8 @@
     },
     {
       "a": "scripts/colab/vm_judges.py",
-      "b": "tests/fixtures/fake_colab.py",
-      "either": 14,
+      "b": "tests/test_colab_judge_launcher.py",
+      "either": 19,
       "partLabels": [
         "scripts",
         "tests"
@@ -112,22 +81,22 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 12
+      "shared": 17
     },
     {
-      "a": "tests/fixtures/fake_colab.py",
-      "b": "tests/test_colab_judge_launcher.py",
-      "either": 14,
+      "a": "scripts/colab/vm_judges.py",
+      "b": "tests/fixtures/fake_colab.py",
+      "either": 17,
       "partLabels": [
-        "tests",
+        "scripts",
         "tests"
       ],
       "parts": [
-        "tests",
+        "scripts",
         "tests"
       ],
-      "relation": "inside",
-      "shared": 12
+      "relation": "b-imports-a",
+      "shared": 14
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
@@ -143,17 +112,32 @@
       ],
       "relation": "b-imports-a",
       "shared": 9
+    },
+    {
+      "a": "tests/fixtures/fake_colab.py",
+      "b": "tests/test_colab_judge_launcher.py",
+      "either": 19,
+      "partLabels": [
+        "tests",
+        "tests"
+      ],
+      "parts": [
+        "tests",
+        "tests"
+      ],
+      "relation": "inside",
+      "shared": 14
     }
   ],
   "changesTogetherNote": [
     "1 file changed together with its own test, as expected.",
     "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
-    "Window: 180 days; a pair counts from 3 shared commits, since 7 source files reach 10 revisions; the floor rises to 10 when 25 do."
+    "Window: 180 days; a pair counts from 3 shared commits, since 8 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "7955c811cf347c35cad8c09c7990e7e5e51a052d",
+  "commit": "5e03ddc3d191aa24355013b43e8f6cf6c26c47eb",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (67 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (68 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -175,7 +159,7 @@
         {
           "boundary": "scripts",
           "depth": 1,
-          "files": 2
+          "files": 3
         },
         {
           "boundary": "src",
@@ -308,13 +292,13 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-04T20:16:02.859Z",
+  "generatedAt": "2026-11-05T09:12:54.225Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "3 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
-    "11 writes and 26 reads use paths built at run time and are not named here.",
-    "49 writes and 114 reads go to a path their caller passes, not to this repository.",
-    "3 reads go to the directory the command is run in, not to this repository.",
+    "13 writes and 31 reads use paths built at run time and are not named here.",
+    "61 writes and 135 reads go to a path their caller passes, not to this repository.",
+    "6 reads go to the directory the command is run in, not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
   "mainDoor": ".github/workflows/ci.yml",
@@ -349,7 +333,7 @@
     "scripts": 1,
     "src": 34
   },
-  "unnamedWrites": 11,
+  "unnamedWrites": 13,
   "unread": [],
   "unreadFiles": 0,
   "unreadNote": [],

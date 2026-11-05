@@ -1,0 +1,37 @@
+{
+  "_comment": [
+    "Anchor-drift rules (Publisher ruling, 2026-11-04):",
+    "1. 50 anchors = 25 stratified + 25 lock-check canaries (lowest min_top2_logit_margin across all judges and both orders, excluding the stratified 25, ties broken by item_id).",
+    "2. Formula: delta_min = 0.03, N = 50 anchors * 5 judges * 2 orders = 500 rows.",
+    "   Observed flip rate <= (S/(S-1)) * 0.10 * delta_min AND exact one-sided 95% Clopper-Pearson upper bound U95(k, N) <= (S/(S-1)) * 0.40 * delta_min.",
+    "   k_pool is the largest integer count meeting both bounds:",
+    "   - S = 3: rate cap = (3/2)*0.10*0.03 = 0.0045 (2.25/500), U95 cap = (3/2)*0.40*0.03 = 0.0180; U95(2,500) = 0.012541 <= 0.0180 -> k_pool = 2.",
+    "   - S = 2: rate cap = (2/1)*0.10*0.03 = 0.0060 (3.00/500), U95 cap = (2/1)*0.40*0.03 = 0.0240; U95(3,500) = 0.015442 <= 0.0240 -> k_pool = 3.",
+    "3. Per-judge verdict flips <= k_judge = 1 (detection check, not a bias guarantee).",
+    "4. Zero items whose verdict flips in both orders (AB and BA) for the same judge (hard abort: pipeline-bug class).",
+    "5. Zero output_token_ids_sha256 differences (batch-1 greedy stack) and equal row_state (parsed / unparseable / length_stop) on every anchor row.",
+    "6. At most 1 replacement session per run; a shard failing the anchor check is quarantined, marked tombstoned, and excluded from every merge."
+  ],
+  "anchor_count": 50,
+  "canary_anchor_count": 25,
+  "clopper_pearson_confidence": 0.95,
+  "cp_upper_bound_fraction_of_delta_min": 0.4,
+  "delta_min": 0.03,
+  "double_order_flip_cap": 0,
+  "double_order_flip_failure_class": "MERGE_ANCHOR_DOUBLE_ORDER_PIPELINE_BUG",
+  "equal_row_state_required": true,
+  "judges_count": 5,
+  "k_judge": 1,
+  "k_judge_label": "detection check, not a bias guarantee",
+  "k_pool_by_num_shards": {
+    "2": 3,
+    "3": 2
+  },
+  "max_replacement_sessions_per_run": 1,
+  "observed_flip_rate_fraction_of_delta_min": 0.1,
+  "orders_count": 2,
+  "output_token_ids_sha256_diff_cap": 0,
+  "schema_version": "1.0",
+  "stratified_anchor_count": 25,
+  "total_anchor_rows": 500
+}
