@@ -517,7 +517,7 @@ class JudgeTransportResponse:
     seconds: float
     model_digest: str
     server_binary: str
-    library_pins: dict[str, str]
+    library_pins: dict[str, Any]
     system_one_result: dict[str, Any] | None = None
     input_token_ids_sha256: str | None = None
     output_token_ids_sha256: str | None = None
@@ -525,6 +525,7 @@ class JudgeTransportResponse:
     output_token_count: int = 0
     stop_reason: str | None = None
     min_top2_logit_margin: float | None = None
+    verdict_token_margin: float | None = None
 
 
 @dataclass(frozen=True)
@@ -1385,6 +1386,9 @@ def configure_torch_determinism_with_reason(
                 "Use a torch build that supports strict deterministic algorithms.",
             )
         return "not enforceable", "torch.use_deterministic_algorithms is not available on the loaded torch module"
+    det_utils = getattr(getattr(torch, "utils", None), "deterministic", None)
+    if det_utils is not None:
+        det_utils.fill_uninitialized_memory = False
     try:
         use_det(True, warn_only=False)
         return "enforced", "torch.use_deterministic_algorithms(True, warn_only=False) succeeded"
@@ -2264,9 +2268,10 @@ def select_lock_check_canary_anchors(
 ) -> tuple[list[str], str]:
     """Select `canary_count` (25) canary anchor items from lock-check window telemetry.
 
-    Rule: From the lock-check window's telemetry, take each item's minimum top-1/top-2 logit margin
-    across all judges and both orders. Rank ascending, excluding the stratified 25 (`excluded_item_ids`),
-    and take the lowest `canary_count`. Ties break by `item_id`.
+    Rule: From the lock-check window's telemetry, take each item's minimum verdict-token top-1/top-2 logit margin
+    (`verdict_token_margin`, falling back to `min_top2_logit_margin` when absent) across all judges and both orders.
+    Rank ascending, excluding the stratified 25 (`excluded_item_ids`), and take the lowest `canary_count`.
+    Ties break by `item_id`.
     Returns `(canary_item_ids, telemetry_sha256)`.
     """
     valid_item_ids = {
@@ -2311,7 +2316,9 @@ def select_lock_check_canary_anchors(
             iid = str(rec.get("item_id") or "").strip()
             if not iid or iid not in valid_item_ids or iid in excluded_set:
                 continue
-            raw_margin = rec.get("min_top2_logit_margin")
+            raw_margin = rec.get("verdict_token_margin")
+            if raw_margin is None:
+                raw_margin = rec.get("min_top2_logit_margin")
             if raw_margin is None:
                 continue
             margin_val = float(raw_margin)
@@ -2706,7 +2713,7 @@ class DeterministicFakeJudgeTransport:
         det_status = configure_torch_determinism()
         sdpa_backend = pin_and_read_sdpa_backend()
         # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
-        library_pins = {
+        library_pins: dict[str, Any] = {
             "transport": "DeterministicFakeJudgeTransport",
             "python": sys.version.split()[0],
             "torch": "2.14.1+cu132 (pinned-not-loaded)",
@@ -2714,6 +2721,7 @@ class DeterministicFakeJudgeTransport:
             "dtype": self.torch_dtype,
             "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
             "deterministic_algorithms": det_status,
+            "fill_uninitialized_memory": False,
             "attn_implementation": PINNED_ATTN_IMPLEMENTATION,
             "sdpa_backend": sdpa_backend,
         }
@@ -2754,6 +2762,7 @@ class DeterministicFakeJudgeTransport:
                 output_token_count=len(tokens),
                 stop_reason=stop_rsn,
                 min_top2_logit_margin=margin,
+                verdict_token_margin=margin,
             )
 
         if (
@@ -3340,12 +3349,23 @@ class TransformersJudgeTransport:
         # Full-vocabulary log_softmax at the verdict token position (step 0 for first_token and score-prefilled Granite)
         verdict_entries: list[TopLogprobEntry] = []
         step_margins: list[float] = []
+        verdict_step_idx = 0
         if out.scores:
-            for step_score in out.scores:
-                s_logits = step_score[0].float()
-                t2_vals, _ = torch.topk(s_logits, k=min(2, int(s_logits.shape[-1])))
-                step_margins.append(round(float(t2_vals[0].item() - t2_vals[-1].item()), 6))
-            step_logits = out.scores[0][0].float()
+            stacked_scores = (
+                torch.stack([step_score[0].float() for step_score in out.scores], dim=0)
+                if hasattr(torch, "stack")
+                else out.scores[0].float()
+            )
+            t2_vals, _ = torch.topk(stacked_scores, k=min(2, int(stacked_scores.shape[-1])))
+            t2_rows = t2_vals.tolist()
+            step_margins = [
+                round(float(row[0] - row[-1]), 6)
+                for row in (t2_rows if isinstance(t2_rows[0], list) else [t2_rows])
+            ]
+            for idx, tok_s in enumerate(tokens_str[: len(step_margins)]):
+                if tok_s.strip().lower() in self.VERDICT_CANDIDATE_NORMS:
+                    verdict_step_idx = idx
+            step_logits = out.scores[verdict_step_idx][0].float()
             full_logprobs = torch.log_softmax(step_logits, dim=-1)
             vocab_size = int(full_logprobs.shape[-1])
             k_top = min(20, vocab_size)
@@ -3378,9 +3398,14 @@ class TransformersJudgeTransport:
             if step_margins
             else compute_min_top2_logit_margin_from_logprobs(verdict_entries)
         )
+        verdict_token_margin = (
+            step_margins[verdict_step_idx]
+            if step_margins
+            else compute_min_top2_logit_margin_from_logprobs(verdict_entries)
+        )
         sdpa_backend = pin_and_read_sdpa_backend()
         # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
-        library_pins = {
+        library_pins: dict[str, Any] = {
             "transport": "TransformersJudgeTransport",
             "python": sys.version.split()[0],
             "torch": getattr(torch, "__version__", "unknown"),
@@ -3388,6 +3413,7 @@ class TransformersJudgeTransport:
             "dtype": str(self.torch_dtype),
             "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
             "deterministic_algorithms": det_status,
+            "fill_uninitialized_memory": False,
             "attn_implementation": self.attn_implementation,
             "sdpa_backend": sdpa_backend,
         }
@@ -3406,6 +3432,7 @@ class TransformersJudgeTransport:
             output_token_count=len(gen_token_ids),
             stop_reason="max_new_tokens" if done_reason == "length" else "eos",
             min_top2_logit_margin=min_top2_margin,
+            verdict_token_margin=verdict_token_margin,
         )
 
 
@@ -3771,7 +3798,7 @@ class D3MiniTransport:
         out_cnt = len(tokens)
         min_margin = compute_min_top2_logit_margin_from_logprobs(entries)
         sdpa_backend = pin_and_read_sdpa_backend()
-        library_pins = {
+        library_pins: dict[str, Any] = {
             "transport": "D3MiniTransport",
             "python": sys.version.split()[0],
             "torch": getattr(torch, "__version__", "unknown"),
@@ -3779,6 +3806,7 @@ class D3MiniTransport:
             "dtype": self.torch_dtype,
             "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
             "deterministic_algorithms": det_status,
+            "fill_uninitialized_memory": False,
             "attn_implementation": self.attn_implementation,
             "sdpa_backend": sdpa_backend,
         }
@@ -3798,6 +3826,7 @@ class D3MiniTransport:
             output_token_count=out_cnt,
             stop_reason="max_new_tokens" if done_reason == "length" else ("error" if done_reason == "error" else "eos"),
             min_top2_logit_margin=min_margin,
+            verdict_token_margin=min_margin,
         )
 
 
@@ -4128,8 +4157,15 @@ def _run_cpu_transport_probe_for_judge(
         torch_shim.manual_seed = lambda _s: None  # type: ignore[attr-defined]
         torch_shim.no_grad = _NullCtx  # type: ignore[attr-defined]
         torch_shim.inference_mode = _NullCtx  # type: ignore[attr-defined]
+        torch_shim.utils = types.SimpleNamespace(  # type: ignore[attr-defined]
+            deterministic=types.SimpleNamespace(fill_uninitialized_memory=True)
+        )
+        torch_shim.stack = lambda seq, dim=0: _ProbeTensor([t.vals for t in seq])  # type: ignore[attr-defined]
         torch_shim.log_softmax = lambda t, dim=-1: t  # type: ignore[attr-defined]
-        torch_shim.topk = lambda t, k=5: (_ProbeTensor(t.vals[:k]), _ProbeTensor(list(range(k))))  # type: ignore[attr-defined]
+        torch_shim.topk = lambda t, k=5: (  # type: ignore[attr-defined]
+            _ProbeTensor([r[:k] for r in t.vals] if isinstance(t.vals[0], list) else t.vals[:k]),
+            _ProbeTensor([list(range(k)) for _ in t.vals] if isinstance(t.vals[0], list) else list(range(k))),
+        )
         sys.modules["torch"] = torch_shim
 
         tf_shim = types.ModuleType("transformers")
@@ -4215,6 +4251,7 @@ def _run_cpu_transport_probe_for_judge(
     return {
         "status": j_status,
         "deterministic_algorithms": j_status,
+        "fill_uninitialized_memory": False,
         "transport": transport_used,
         "reason": f"{j_reason}; exercised via {transport_used}.generate on CPU",
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
@@ -4962,6 +4999,11 @@ def run_bakeoff_judge(
                         if anc_resp.min_top2_logit_margin is not None
                         else compute_min_top2_logit_margin_from_logprobs(anc_readout.verdict_top_logprobs)
                     )
+                    anc_verdict_margin = (
+                        anc_resp.verdict_token_margin
+                        if anc_resp.verdict_token_margin is not None
+                        else compute_min_top2_logit_margin_from_logprobs(anc_readout.verdict_top_logprobs)
+                    )
                     anc_row_obj = _build_sealed_row_with_sha256(
                         {
                             "judge_id": spec.judge_id,
@@ -4980,6 +5022,7 @@ def run_bakeoff_judge(
                             "output_token_count": anc_out_cnt,
                             "stop_reason": anc_stop_rsn,
                             "min_top2_logit_margin": anc_margin,
+                            "verdict_token_margin": anc_verdict_margin,
                             "verdict_parse_status": anc_readout.state,
                             "shard_spec": eff_shard_spec,
                             "session_fingerprint_sha256": eff_session_fp,
@@ -5199,6 +5242,7 @@ def run_bakeoff_judge(
                 os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
             )
             pins_with_determinism.setdefault("deterministic_algorithms", det_status)
+            pins_with_determinism.setdefault("fill_uninitialized_memory", False)
             pins_with_determinism.setdefault("attn_implementation", PINNED_ATTN_IMPLEMENTATION)
             pins_with_determinism.setdefault("sdpa_backend", pin_and_read_sdpa_backend())
 
@@ -5218,6 +5262,11 @@ def run_bakeoff_judge(
                 if resp.min_top2_logit_margin is not None
                 else compute_min_top2_logit_margin_from_logprobs(readout.verdict_top_logprobs)
             )
+            verdict_margin = (
+                resp.verdict_token_margin
+                if resp.verdict_token_margin is not None
+                else compute_min_top2_logit_margin_from_logprobs(readout.verdict_top_logprobs)
+            )
 
             gen_obj: dict[str, Any] = {
                 "arm": spec.judge_id,
@@ -5232,6 +5281,7 @@ def run_bakeoff_judge(
                 "output_token_count": out_tok_cnt,
                 "stop_reason": stop_rsn,
                 "min_top2_logit_margin": min_margin,
+                "verdict_token_margin": verdict_margin,
                 "model_digest": resp.model_digest,
                 "tokens": list(resp.tokens),
                 "top": top5_dicts,
@@ -5265,6 +5315,7 @@ def run_bakeoff_judge(
                 "output_token_count": out_tok_cnt,
                 "stop_reason": stop_rsn,
                 "min_top2_logit_margin": min_margin,
+                "verdict_token_margin": verdict_margin,
                 "verdict_parse_status": readout.state,
                 "shard_spec": eff_shard_spec,
                 "session_fingerprint_sha256": eff_session_fp,
@@ -5426,6 +5477,7 @@ def run_bakeoff_judge(
             "total_seconds": round(total_seconds, 4),
             "elapsed_seconds": child_wall_elapsed_s,
             "dtype": effective_dtype,
+            "fill_uninitialized_memory": False,
             "shard_spec": eff_shard_spec,
             "shard_manifest_sha256": manifest_file_sha256,
             "session_fingerprint_sha256": eff_session_fp,
@@ -5453,6 +5505,7 @@ def run_bakeoff_judge(
         "dtype": effective_dtype,
         "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG", CUBLAS_WORKSPACE_CONFIG_VALUE),
         "deterministic_algorithms": det_status,
+        "fill_uninitialized_memory": False,
         "attn_implementation": PINNED_ATTN_IMPLEMENTATION,
         "sdpa_backend": pin_and_read_sdpa_backend(),
         "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),

@@ -19419,6 +19419,361 @@ def test_fix4_group_d_guard_no_strict_bypass_and_anchor_prefix_subblock_canary(
     assert res_sb2["canary"]["passed"] is True
 
 
+def test_fix4_group_e_verdict_token_margin_canary_ranking_fill_uninitialized_memory_and_single_pass_topk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-4 Group E (E1-E3):
+    - E1: Record `verdict_token_margin` beside `min_top2_logit_margin` in `rows/<judge_id>.jsonl`,
+      `anchor_rows/<judge_id>.jsonl`, and `generations.jsonl`, and rank `select_lock_check_canary_anchors`
+      by `verdict_token_margin` (not `min_top2_logit_margin` across filler tokens).
+    - E2: Explicitly set `torch.utils.deterministic.fill_uninitialized_memory = False` after
+      `torch.use_deterministic_algorithms(True, warn_only=False)` and record `"fill_uninitialized_memory": False`
+      in the receipt (`judge_done/<judge_id>.json`, `session_env.json`, `vm_receipt.json`, `library_pins`).
+    - E3: Compute `step_margins` in `TransformersJudgeTransport.generate` via a single `torch.stack` +
+      `torch.topk(..., k=2)` and one `.tolist()` host transfer instead of a per-step `.item()` loop.
+    """
+    import types
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    monkeypatch.delenv("RDLAB_MODE", raising=False)
+    monkeypatch.delenv("RDLAB_WINDOW_MODE", raising=False)
+    monkeypatch.delenv("RDLAB_WORK_DIR", raising=False)
+
+    # E2: Verify configure_torch_determinism_with_reason sets fill_uninitialized_memory = False
+    class _DetUtilsObj:
+        fill_uninitialized_memory = True
+
+    class _MockTorchE:
+        __version__ = "2.14.1+cu132"
+        version = types.SimpleNamespace(cuda="13.2")
+        utils = types.SimpleNamespace(deterministic=_DetUtilsObj)
+        stack_calls = 0
+        topk_calls: list[tuple[tuple[int, ...], int]] = []
+        item_calls_on_step_scores = 0
+        tolist_calls_on_step_topk = 0
+
+        @staticmethod
+        def use_deterministic_algorithms(_mode: bool, *, warn_only: bool = False) -> None:
+            return None
+
+        @staticmethod
+        def are_deterministic_algorithms_enabled() -> bool:
+            return True
+
+        @staticmethod
+        def is_deterministic_algorithms_warn_only_enabled() -> bool:
+            return False
+
+        @staticmethod
+        def manual_seed(_seed: int) -> None:
+            return None
+
+        class _NoGrad:
+            def __enter__(self) -> None:
+                return None
+
+            def __exit__(self, *_a: Any) -> None:
+                return None
+
+        no_grad = _NoGrad
+        inference_mode = _NoGrad
+        backends = types.SimpleNamespace(
+            cudnn=types.SimpleNamespace(benchmark=False, deterministic=True, allow_tf32=False),
+            cuda=types.SimpleNamespace(
+                matmul=types.SimpleNamespace(allow_tf32=False),
+                enable_flash_sdp=lambda _v: None,
+                enable_mem_efficient_sdp=lambda _v: None,
+                enable_math_sdp=lambda _v: None,
+                flash_sdp_enabled=lambda: False,
+                mem_efficient_sdp_enabled=lambda: False,
+                math_sdp_enabled=lambda: True,
+            ),
+        )
+
+    class _StepTensor:
+        def __init__(self, vals: Any, *, is_step_score: bool = False, is_step_topk: bool = False) -> None:
+            self.vals = vals
+            self.is_step_score = is_step_score
+            self.is_step_topk = is_step_topk
+
+        @property
+        def shape(self) -> tuple[int, ...]:
+            if isinstance(self.vals, list) and self.vals and isinstance(self.vals[0], list):
+                return (len(self.vals), len(self.vals[0]))
+            return (len(self.vals),)
+
+        def to(self, _dev: str) -> "_StepTensor":
+            return self
+
+        def float(self) -> "_StepTensor":
+            return self
+
+        def tolist(self) -> Any:
+            if self.is_step_topk:
+                _MockTorchE.tolist_calls_on_step_topk += 1
+            return self.vals
+
+        def item(self) -> float:
+            if self.is_step_score:
+                _MockTorchE.item_calls_on_step_scores += 1
+            if isinstance(self.vals, list):
+                return float(self.vals[0])
+            return float(self.vals)
+
+        def __getitem__(self, idx: Any) -> Any:
+            if isinstance(idx, tuple):
+                r, c = idx
+                return _StepTensor(self.vals[r][c], is_step_score=self.is_step_score)
+            v = self.vals[idx]
+            if isinstance(v, (int, float)):
+                return _StepTensor([v], is_step_score=self.is_step_score)
+            return _StepTensor(v, is_step_score=self.is_step_score)
+
+    def _stack(tensors: list[_StepTensor], dim: int = 0) -> _StepTensor:
+        assert dim == 0
+        _MockTorchE.stack_calls += 1
+        return _StepTensor([t.vals for t in tensors], is_step_score=True)
+
+    def _topk(tensor: _StepTensor, k: int = 2) -> tuple[_StepTensor, _StepTensor]:
+        _MockTorchE.topk_calls.append((tensor.shape, int(k)))
+        if isinstance(tensor.vals[0], list):
+            val_rows: list[list[float]] = []
+            idx_rows: list[list[int]] = []
+            for row in tensor.vals:
+                pairs = sorted(enumerate(row), key=lambda iv: float(iv[1]), reverse=True)[: int(k)]
+                val_rows.append([float(v) for _, v in pairs])
+                idx_rows.append([int(i) for i, _ in pairs])
+            return (
+                _StepTensor(val_rows, is_step_score=tensor.is_step_score, is_step_topk=True),
+                _StepTensor(idx_rows),
+            )
+        pairs_1d = sorted(enumerate(tensor.vals), key=lambda iv: float(iv[1]), reverse=True)[: int(k)]
+        return (
+            _StepTensor([float(v) for _, v in pairs_1d], is_step_score=tensor.is_step_score),
+            _StepTensor([int(i) for i, _ in pairs_1d]),
+        )
+
+    _MockTorchE.stack = staticmethod(_stack)  # type: ignore[attr-defined]
+    _MockTorchE.topk = staticmethod(_topk)  # type: ignore[attr-defined]
+    _MockTorchE.log_softmax = staticmethod(lambda t, dim=-1: _StepTensor(t.vals, is_step_score=False))  # type: ignore[attr-defined]
+
+    fake_tf = types.ModuleType("transformers")
+    fake_tf.__version__ = "5.19.0"  # type: ignore[attr-defined]
+    fake_bnb = types.ModuleType("bitsandbytes")
+    fake_bnb.__version__ = "0.45.0"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", _MockTorchE)
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf)
+    monkeypatch.setitem(sys.modules, "bitsandbytes", fake_bnb)
+
+    assert _DetUtilsObj.fill_uninitialized_memory is True
+    det_status, det_reason = bakeoff_judge.configure_torch_determinism_with_reason(strict=True)
+    assert det_status == "enforced"
+    assert "succeeded" in det_reason
+    assert _DetUtilsObj.fill_uninitialized_memory is False
+
+    # Also verify _query_judge_venv_runtime and collect_and_write_session_env set and record fill_uninitialized_memory=False
+    _DetUtilsObj.fill_uninitialized_memory = True
+    monkeypatch.setattr(
+        vm_judges,
+        "_query_gpu_and_ecc_snapshot",
+        lambda **_kw: {
+            "name": "NVIDIA A100-SXM4-40GB",
+            "pci.device_id": "0x20B010DE",
+            "pci_device_id": "0x20B010DE",
+            "vbios": "92.00.36.00.04",
+            "vbios_version": "92.00.36.00.04",
+            "sm_count": 108,
+            "compute_capability": "8.0",
+            "driver": "565.57.01",
+            "driver_version": "565.57.01",
+            "driver_major": 565,
+            "ecc_uncorrected_volatile": 0,
+            "ecc_uncorrected_aggregate": 0,
+        },
+    )
+    senv_e2 = vm_judges.collect_and_write_session_env(
+        tmp_path / "e2_senv_run",
+        receipts_dir=REPO_ROOT / "configs" / "pilot_b" / "judge_model_receipts",
+        mode="counted",
+        shard_spec="1/1",
+        phase="start",
+        dryrun=False,
+        repo_dir=REPO_ROOT,
+    )
+    assert _DetUtilsObj.fill_uninitialized_memory is False
+    assert senv_e2["fill_uninitialized_memory"] is False
+    assert senv_e2["determinism"]["fill_uninitialized_memory"] is False
+
+    # E1 & E3: Test TransformersJudgeTransport.generate on multi-step output (e.g. flow-judge-v0.1 with reasoning filler)
+    # Step 0 ("<feedback>"): top-2 logits [-1.0, -1.05] -> margin 0.05 (tight filler token)
+    # Step 1 ("good"):       top-2 logits [-1.0, -1.12] -> margin 0.12 (filler token)
+    # Step 2 ("Pass"):       top-2 logits [-0.1, -1.95] -> margin 1.85 (the actual verdict token!)
+    # Step 3 ("</score>"):   top-2 logits [-0.5, -0.58] -> margin 0.08 (trailing tag token)
+    flow_spec = bakeoff_judge.BAKEOFF_JUDGE_SPECS["flow-judge-v0.1"]
+    flow_adapter = bakeoff_judge.build_judge_adapter(flow_spec)
+    sample_flow_prompt = flow_adapter.assemble_prompt(
+        bakeoff_judge.JudgeInputItem(
+            item_id="it-flow-e",
+            material="1. Premise one.\n2. Premise two.",
+            claim="Claim.",
+        ),
+        order="AB",
+        pass_mode="binary",
+    )
+    step_toks = ["<feedback>", "good", "Pass", "</score>"]
+
+    class _MultiStepTokenizer:
+        pad_token_id = 0
+        eos_token_id = 2
+
+        def __call__(self, _text: str, **_kw: Any) -> dict[str, _StepTensor]:
+            return {"input_ids": _StepTensor([[1, 3]]), "attention_mask": _StepTensor([[1, 1]])}
+
+        def convert_ids_to_tokens(self, ids: int | list[int]) -> Any:
+            mapping = {10: "<feedback>", 11: "good", 12: "Pass", 13: "</score>", 0: "Pass", 1: "Fail"}
+            if isinstance(ids, int):
+                return mapping.get(ids, f"tok_{ids}")
+            return [mapping.get(i, f"tok_{i}") for i in ids]
+
+        def convert_tokens_to_string(self, toks: list[str]) -> str:
+            return "".join(toks)
+
+        def decode(self, _ids: list[int], **_kw: Any) -> str:
+            return "<feedback>good</feedback><score>Pass</score>"
+
+    class _MultiStepModel:
+        generation_config = types.SimpleNamespace(eos_token_id=2)
+
+        def generate(self, **_kw: Any) -> Any:
+            return types.SimpleNamespace(
+                sequences=_StepTensor([[1, 3, 10, 11, 12, 13]]),
+                scores=[
+                    _StepTensor([[-1.0, -1.05, -8.0, -9.0]], is_step_score=True),
+                    _StepTensor([[-1.0, -1.12, -8.0, -9.0]], is_step_score=True),
+                    _StepTensor([[-0.1, -1.95, -8.0, -9.0]], is_step_score=True),
+                    _StepTensor([[-0.5, -0.58, -8.0, -9.0]], is_step_score=True),
+                ],
+            )
+
+    tp_flow = bakeoff_judge.TransformersJudgeTransport(
+        receipts_dir=tmp_path,
+        hf_home=tmp_path,
+        device="cpu",
+        window_mode="stub",
+        shard_spec="1/1",
+    )
+    tp_flow._loaded_spec_id = flow_spec.judge_id
+    tp_flow._verified_digest = f"sha256:{flow_spec.revision}:0000"
+    tp_flow._snapshot_dir = tmp_path
+    tp_flow._tokenizer = _MultiStepTokenizer()
+    tp_flow._model = _MultiStepModel()
+    tp_flow._candidate_token_ids = {0: "Pass", 1: "Fail"}
+
+    _MockTorchE.stack_calls = 0
+    _MockTorchE.topk_calls.clear()
+    _MockTorchE.item_calls_on_step_scores = 0
+    _MockTorchE.tolist_calls_on_step_topk = 0
+
+    resp_flow = tp_flow.generate(flow_spec, sample_flow_prompt, seed=0)
+    assert resp_flow.tokens == tuple(step_toks)
+    # E3: 1 torch.stack call, 1 2D torch.topk(..., k=2) call on all 4 steps at once, 1 .tolist() transfer, 0 .item() calls on step scores
+    assert _MockTorchE.stack_calls == 1
+    assert _MockTorchE.topk_calls[0] == ((4, 4), 2)
+    assert _MockTorchE.tolist_calls_on_step_topk == 1
+    assert _MockTorchE.item_calls_on_step_scores == 0
+    # E1: min_top2_logit_margin is the min across all 4 steps (0.05), while verdict_token_margin is step 2 ("Pass") = 1.85
+    assert resp_flow.min_top2_logit_margin == pytest.approx(0.05)
+    assert resp_flow.verdict_token_margin == pytest.approx(1.85)
+    assert resp_flow.library_pins["fill_uninitialized_memory"] is False
+
+    # E1: Verify rows/<judge_id>.jsonl, anchor_rows/<judge_id>.jsonl, and generations.jsonl record verdict_token_margin
+    # beside min_top2_logit_margin, and judge_done/<judge_id>.json records fill_uninitialized_memory=False
+    items_e1 = _make_stratified_public_items(tmp_path / "e1_items", count=4)
+    mf_e1 = bakeoff_judge.build_shard_manifest(
+        items_e1,
+        num_shards=2,
+        anchor_count=2,
+        stratified_anchor_count=2,
+        canary_anchor_count=0,
+    )
+    mf_e1_path = tmp_path / "e1_manifest.json"
+    mf_e1_sha = bakeoff_judge.write_shard_manifest(mf_e1, mf_e1_path)
+    out_e1 = tmp_path / "e1_out"
+    res_e1 = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_e1,
+        output_dir=out_e1,
+        judge="mu-judge",
+        fake_transport=True,
+        shard_spec="2/2",
+        shard_manifest_path=mf_e1_path,
+        shard_manifest_sha256=mf_e1_sha,
+    )
+    assert res_e1["fill_uninitialized_memory"] is False
+    jdone_e1 = json.loads((out_e1 / "judge_done" / "mu-judge.json").read_text(encoding="utf-8"))
+    assert jdone_e1["fill_uninitialized_memory"] is False
+
+    for jsonl_path in (
+        out_e1 / "rows" / "mu-judge.jsonl",
+        out_e1 / "anchor_rows" / "mu-judge.jsonl",
+        out_e1 / "generations.jsonl",
+    ):
+        recs = [
+            json.loads(ln)
+            for ln in jsonl_path.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        assert len(recs) > 0
+        for r in recs:
+            assert "min_top2_logit_margin" in r
+            assert "verdict_token_margin" in r
+            assert isinstance(r["verdict_token_margin"], float)
+            if jsonl_path.name == "generations.jsonl":
+                assert r["library_pins"]["fill_uninitialized_memory"] is False
+
+    # E1: Verify select_lock_check_canary_anchors ranks by verdict_token_margin (not min_top2_logit_margin)
+    # Item A ("item_filler_tight"): filler token has tiny min_top2_logit_margin=0.01, but verdict_token_margin=2.50 (confident verdict)
+    # Item B ("item_verdict_tight"): no tight filler (min_top2_logit_margin=0.40), but verdict_token_margin=0.02 (near-boundary verdict!)
+    lock_dir = tmp_path / "e1_lock_check_dir"
+    (lock_dir / "rows").mkdir(parents=True, exist_ok=True)
+    lock_rows = [
+        {
+            "item_id": "item_filler_tight",
+            "judge_id": "flow-judge-v0.1",
+            "min_top2_logit_margin": 0.01,
+            "verdict_token_margin": 2.50,
+        },
+        {
+            "item_id": "item_verdict_tight",
+            "judge_id": "flow-judge-v0.1",
+            "min_top2_logit_margin": 0.40,
+            "verdict_token_margin": 0.02,
+        },
+    ]
+    (lock_dir / "rows" / "flow-judge-v0.1.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in lock_rows) + "\n",
+        encoding="utf-8",
+    )
+    selected_canaries, tel_sha = bakeoff_judge.select_lock_check_canary_anchors(
+        ["item_filler_tight", "item_verdict_tight"],
+        lock_dir,
+        excluded_item_ids=[],
+        canary_count=1,
+    )
+    assert selected_canaries == ["item_verdict_tight"]
+    assert len(tel_sha) == 64
+
+    probe_rep = bakeoff_judge.probe_judge_determinism()
+    for jid, jrep in probe_rep["judges"].items():
+        assert jrep["fill_uninitialized_memory"] is False, jid
+
+
+
+
 
 
 

@@ -2280,6 +2280,9 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "        allow_tf32 = False\n"
             "        benchmark = False\n"
             "        deterministic = True\n"
+            "class utils:\n"
+            "    class deterministic:\n"
+            "        fill_uninitialized_memory = False\n"
             "class version:\n"
             "    cuda = '13.2'\n"
             "class device:\n"
@@ -8594,6 +8597,10 @@ _VENV_RUNTIME_PROBE_SCRIPT = (
     "        use_det = getattr(torch, 'use_deterministic_algorithms', None)\n"
     "        if callable(use_det):\n"
     "            use_det(True, warn_only=False)\n"
+    "        det_u = getattr(getattr(torch, 'utils', None), 'deterministic', None)\n"
+    "        if det_u is not None:\n"
+    "            det_u.fill_uninitialized_memory = False\n"
+    "        out['fill_uninitialized_memory'] = bool(getattr(det_u, 'fill_uninitialized_memory', False)) if det_u is not None else False\n"
     "        are_en = getattr(torch, 'are_deterministic_algorithms_enabled', None)\n"
     "        is_wo = getattr(torch, 'is_deterministic_algorithms_warn_only_enabled', None)\n"
     "        en_val = bool(are_en()) if callable(are_en) else True\n"
@@ -8603,6 +8610,7 @@ _VENV_RUNTIME_PROBE_SCRIPT = (
     "    except Exception as de:\n"
     "        out['determinism_status'] = f'unreadable: {type(de).__name__}: {de}'\n"
     "        out['determinism_warn_only'] = None\n"
+    "        out['fill_uninitialized_memory'] = False\n"
     "    try:\n"
     "        cudnn_mod = getattr(getattr(torch, 'backends', None), 'cudnn', None)\n"
     "        if cudnn_mod is None or not hasattr(cudnn_mod, 'benchmark'):\n"
@@ -8746,6 +8754,14 @@ def _query_judge_venv_runtime(
             use_det = getattr(torch_mod, "use_deterministic_algorithms", None)
             if callable(use_det):
                 use_det(True, warn_only=False)
+            det_u = getattr(getattr(torch_mod, "utils", None), "deterministic", None)
+            if det_u is not None:
+                det_u.fill_uninitialized_memory = False
+            out["fill_uninitialized_memory"] = (
+                bool(getattr(det_u, "fill_uninitialized_memory", False))
+                if det_u is not None
+                else False
+            )
             are_en = getattr(torch_mod, "are_deterministic_algorithms_enabled", None)
             is_wo = getattr(torch_mod, "is_deterministic_algorithms_warn_only_enabled", None)
             en_val = bool(are_en()) if callable(are_en) else True
@@ -8755,6 +8771,7 @@ def _query_judge_venv_runtime(
         except Exception as de:
             out["determinism_status"] = f"unreadable: {type(de).__name__}: {de}"
             out["determinism_warn_only"] = None
+            out["fill_uninitialized_memory"] = False
         try:
             cudnn_mod = getattr(getattr(torch_mod, "backends", None), "cudnn", None)
             if cudnn_mod is None or not hasattr(cudnn_mod, "benchmark"):
@@ -8879,6 +8896,7 @@ def collect_and_write_session_env(
     if is_stub_or_dryrun:
         det_warn_only: bool | None = det_warn_only_env == "1"
         det_status = "warn_only" if det_warn_only else "enforced"
+        fill_uninit_mem: bool = False
         sdpa_backend = sdpa_hook_raw or "math"
         cudnn_benchmark: Any = False
         runtime_block = {
@@ -8901,6 +8919,7 @@ def collect_and_write_session_env(
         }
         det_status = str(probed.get("determinism_status") or "unreadable: empty determinism_status")
         det_warn_only = probed.get("determinism_warn_only")
+        fill_uninit_mem = bool(probed.get("fill_uninitialized_memory", False))
         sdpa_backend = str(probed.get("sdpa_backend") or "unreadable: empty sdpa_backend")
         cudnn_benchmark = probed.get("cudnn_benchmark")
         if cudnn_benchmark is None:
@@ -8922,6 +8941,7 @@ def collect_and_write_session_env(
     det_block = {
         "status": det_status,
         "warn_only": det_warn_only,
+        "fill_uninitialized_memory": fill_uninit_mem,
         "cublas_workspace_config": cublas_ws_cfg,
         "CUBLAS_WORKSPACE_CONFIG": cublas_ws_cfg,
         "NVIDIA_TF32_OVERRIDE": nvidia_tf32_override,
@@ -9025,6 +9045,7 @@ def collect_and_write_session_env(
         "NVIDIA_TF32_OVERRIDE": nvidia_tf32_override,
         "PYTHONHASHSEED": python_hash_seed,
         "torch.backends.cudnn.benchmark": cudnn_benchmark,
+        "fill_uninitialized_memory": fill_uninit_mem,
         "sdpa_backend_requested": eff_sdpa_requested,
         "fingerprint_fields": fingerprint_fields,
         "merge_config": merge_cfg_block,
@@ -10824,6 +10845,11 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
             "session_env": session_env_report,
+            "fill_uninitialized_memory": (
+                session_env_report.get("fill_uninitialized_memory", False)
+                if session_env_report is not None
+                else False
+            ),
             "boot_gatekeeper": boot_gatekeeper_report,
             "uv_source": py_rep["uv_source"],
             "uv_path": py_rep["uv_path"],
