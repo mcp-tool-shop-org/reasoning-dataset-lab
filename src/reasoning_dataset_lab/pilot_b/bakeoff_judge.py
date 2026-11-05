@@ -4754,14 +4754,36 @@ def run_bakeoff_judge(
     active_item_id_set = set(str(x) for x in active_item_ids) if active_item_ids is not None else shard_item_id_set
     effective_target_item_ids = shard_item_id_set & active_item_id_set
     anchor_item_id_set = set(anchor_item_ids)
+    is_subblock_invocation = active_item_ids is not None and effective_target_item_ids != shard_item_id_set
+
+    judge_done_dir = resolved_out / "judge_done"
+    judge_done_path = judge_done_dir / f"{spec.judge_id}.json"
+    judge_done_tmp = judge_done_dir / f".{spec.judge_id}.json.tmp"
+    prev_load_history: list[float] = []
+    prev_canary_start_records: list[dict[str, Any]] | None = None
+    prev_done_doc: dict[str, Any] = {}
+    if judge_done_path.is_file():
+        try:
+            loaded_done = json.loads(judge_done_path.read_text(encoding="utf-8"))
+            if isinstance(loaded_done, dict):
+                prev_done_doc = loaded_done
+                prev_load_history = [
+                    float(x) for x in (loaded_done.get("load_wall_seconds_history") or [])
+                ]
+                if isinstance(loaded_done.get("canary_start_records"), list) and loaded_done["canary_start_records"]:
+                    prev_canary_start_records = [
+                        dict(r) for r in loaded_done["canary_start_records"] if isinstance(r, Mapping)
+                    ]
+        except Exception:
+            prev_load_history = []
 
     # Resolve canary items present in this item set
     canary_cfg = load_canary_config(canary_config_path) if (run_canary or canary_config_path is not None) else {}
     canary_wanted_ids = [str(iid) for iid in canary_cfg.get("canary_item_ids", []) if str(iid) in items_by_id]
     canary_items = [items_by_id[iid] for iid in canary_wanted_ids]
     canary_tol = float(canary_cfg.get("canary_logprob_tolerance", 0.0))
-    canary_start_records: list[dict[str, Any]] | None = None
-    if run_canary and canary_items:
+    canary_start_records: list[dict[str, Any]] | None = prev_canary_start_records
+    if canary_start_records is None and run_canary and canary_items and not anchor_prefix_only:
         canary_start_records = _run_canary_snapshot(
             spec=spec,
             adapter=adapter,
@@ -5273,6 +5295,8 @@ def run_bakeoff_judge(
             row_obj = _build_sealed_row_with_sha256(base_row_obj)
             rf.write(_canonical_json_line(row_obj) + "\n")
             rf.flush()
+            if not will_halt_error_rate:
+                completed_keys.add((entry.item_id, entry.order))
 
             if (
                 anchor_row_path is not None
@@ -5331,8 +5355,18 @@ def run_bakeoff_judge(
         lock=progress_lock,
     )
 
+    all_shard_items_complete = all(
+        (iid, ord_s) in completed_keys
+        for iid in shard_item_ids
+        for ord_s in ("AB", "BA")
+    )
     canary_summary: dict[str, Any] | None = None
-    if canary_start_records is not None:
+    if (
+        run_canary
+        and canary_start_records is not None
+        and not anchor_prefix_only
+        and (not is_subblock_invocation or all_shard_items_complete)
+    ):
         canary_end_records = _run_canary_snapshot(
             spec=spec,
             adapter=adapter,
@@ -5361,56 +5395,51 @@ def run_bakeoff_judge(
         if isinstance(r, dict)
     ]
 
-    judge_done_dir = resolved_out / "judge_done"
-    judge_done_dir.mkdir(parents=True, exist_ok=True)
-    judge_done_path = judge_done_dir / f"{spec.judge_id}.json"
-    judge_done_tmp = judge_done_dir / f".{spec.judge_id}.json.tmp"
-    prev_load_history: list[float] = []
-    if judge_done_path.is_file():
-        try:
-            prev_done = json.loads(judge_done_path.read_text(encoding="utf-8"))
-            if isinstance(prev_done, dict):
-                prev_load_history = [float(x) for x in (prev_done.get("load_wall_seconds_history") or [])]
-                if verified_recovery is None and isinstance(prev_done.get("verified_recovery"), dict):
-                    verified_recovery = prev_done["verified_recovery"]
-                if not discarded_incomplete_item_ids and isinstance(prev_done.get("discarded_incomplete_item_ids"), list):
-                    discarded_incomplete_item_ids = [str(x) for x in prev_done["discarded_incomplete_item_ids"]]
-        except Exception:
-            prev_load_history = []
-    load_history = [*prev_load_history, load_wall_seconds]
-
-    judge_done_doc: dict[str, Any] = {
-        "judge_id": spec.judge_id,
-        "device": device,
-        "row_count": calls_so_far,
-        "sha256": rows_sha256,
-        "row_sha256s": all_row_sha256s,
-        "rows_file": f"{ROWS_DIRNAME}/{spec.judge_id}.jsonl",
-        "bytes": len(row_bytes),
-        "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
-        "calls_count": calls_so_far,
-        "parsed_count": parsed_count,
-        "unparseable_count": unparseable_count,
-        "length_stop_count": length_stop_count,
-        "vram_peak_mib": vram_peak_overall,
-        "load_wall_seconds": load_wall_seconds,
-        "load_wall_seconds_history": load_history,
-        "total_seconds": round(total_seconds, 4),
-        "elapsed_seconds": child_wall_elapsed_s,
-        "dtype": effective_dtype,
-        "shard_spec": eff_shard_spec,
-        "shard_manifest_sha256": manifest_file_sha256,
-        "session_fingerprint_sha256": eff_session_fp,
-        "discarded_incomplete_item_ids": discarded_incomplete_item_ids,
-        "verified_recovery": verified_recovery,
-        "canary": canary_summary,
-    }
-    judge_done_tmp.write_text(
-        json.dumps(judge_done_doc, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    if verified_recovery is None and isinstance(prev_done_doc.get("verified_recovery"), dict):
+        verified_recovery = prev_done_doc["verified_recovery"]
+    if not discarded_incomplete_item_ids and isinstance(prev_done_doc.get("discarded_incomplete_item_ids"), list):
+        discarded_incomplete_item_ids = [str(x) for x in prev_done_doc["discarded_incomplete_item_ids"]]
+    load_history = (
+        list(prev_load_history)
+        if anchor_prefix_only
+        else [*prev_load_history, load_wall_seconds]
     )
-    judge_done_tmp.replace(judge_done_path)
+
+    if not anchor_prefix_only:
+        judge_done_dir.mkdir(parents=True, exist_ok=True)
+        judge_done_doc: dict[str, Any] = {
+            "judge_id": spec.judge_id,
+            "device": device,
+            "row_count": calls_so_far,
+            "sha256": rows_sha256,
+            "row_sha256s": all_row_sha256s,
+            "rows_file": f"{ROWS_DIRNAME}/{spec.judge_id}.jsonl",
+            "bytes": len(row_bytes),
+            "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
+            "calls_count": calls_so_far,
+            "parsed_count": parsed_count,
+            "unparseable_count": unparseable_count,
+            "length_stop_count": length_stop_count,
+            "vram_peak_mib": vram_peak_overall,
+            "load_wall_seconds": load_wall_seconds,
+            "load_wall_seconds_history": load_history,
+            "total_seconds": round(total_seconds, 4),
+            "elapsed_seconds": child_wall_elapsed_s,
+            "dtype": effective_dtype,
+            "shard_spec": eff_shard_spec,
+            "shard_manifest_sha256": manifest_file_sha256,
+            "session_fingerprint_sha256": eff_session_fp,
+            "discarded_incomplete_item_ids": discarded_incomplete_item_ids,
+            "verified_recovery": verified_recovery,
+            "canary": canary_summary,
+            "canary_start_records": canary_start_records,
+        }
+        judge_done_tmp.write_text(
+            json.dumps(judge_done_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        judge_done_tmp.replace(judge_done_path)
 
     return {
         "status": "ok",
@@ -5580,7 +5609,6 @@ def is_forbidden_counted_test_hook(var_name: str) -> bool:
 def guard_no_test_hooks_in_counted_mode(
     window_mode: str | None = None,
     *,
-    strict: bool | None = None,
     shard_spec: str | None = None,
     dryrun: bool = False,
     fake_transport: bool = False,
@@ -5590,7 +5618,7 @@ def guard_no_test_hooks_in_counted_mode(
     in any real mode (every mode except `stub` / `dryrun` / `dry-run`, when `not dryrun` and `not fake_transport`).
     """
     env_map = environ if environ is not None else os.environ
-    if strict is False or not is_real_mode(
+    if not is_real_mode(
         window_mode,
         dryrun=dryrun,
         fake_transport=fake_transport,

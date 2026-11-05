@@ -18255,11 +18255,6 @@ def test_fix3_guard_and_readers_refuse_every_real_mode_including_lock_check_prob
         )
         bakeoff_judge.guard_no_test_hooks_in_counted_mode(
             dry_check_mode,
-            strict=False,
-            environ={hook_name: sentinel_secret},
-        )
-        bakeoff_judge.guard_no_test_hooks_in_counted_mode(
-            dry_check_mode,
             environ={hook_name: sentinel_secret, "VM_DRYRUN": "1"},
         )
 
@@ -19227,6 +19222,202 @@ def test_fix4_group_c_single_anchor_verdict_normaliser_table() -> None:
                 bakeoff_judge.normalize_anchor_verdict_code(row_unknown)
                 == "unparseable"
             )
+
+
+def test_fix4_group_d_guard_no_strict_bypass_and_anchor_prefix_subblock_canary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-4 Group D:
+    D1: `bakeoff_judge.guard_no_test_hooks_in_counted_mode` has no `strict` escape; a real mode cannot skip the guard.
+    D2:
+      - `--anchor-prefix-only` runs do not write `judge_done/<judge_id>.json` and do not append to `load_wall_seconds_history`.
+      - In subblock mode, `--no-canary` is passed on intermediate sub-blocks, so the start and end canary come from
+        the first and last sub-blocks only.
+    """
+    import inspect
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    # D1: No strict escape on guard_no_test_hooks_in_counted_mode; real modes always refuse
+    sig_params = inspect.signature(
+        bakeoff_judge.guard_no_test_hooks_in_counted_mode
+    ).parameters
+    assert "strict" not in sig_params
+    for real_mode in ("counted", "time-one", "probe", "lock-check"):
+        with pytest.raises((RdlabError, TypeError)):
+            bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+                real_mode,
+                strict=False,  # type: ignore[call-arg]
+                environ={"FAKE_COLAB_GPU_NAME": "A100"},
+            )
+        with pytest.raises(RdlabError) as exc_d1:
+            bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+                real_mode,
+                environ={"FAKE_COLAB_GPU_NAME": "A100"},
+            )
+        assert exc_d1.value.code == "TEST_HOOK_IN_COUNTED_MODE"
+
+    # D2(a): --anchor-prefix-only does not write judge_done/<judge_id>.json and does not add to load_wall_seconds_history
+    items_path = _make_stratified_public_items(tmp_path / "d2_items", count=12)
+    manifest_doc = bakeoff_judge.build_shard_manifest(
+        items_path,
+        num_shards=2,
+        anchor_count=2,
+        stratified_anchor_count=2,
+        canary_anchor_count=0,
+    )
+    manifest_path = tmp_path / "d2_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+
+    prefix_out_dir = tmp_path / "d2_prefix_only"
+    res_prefix = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=prefix_out_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        shard_spec="2/2",
+        shard_manifest_path=manifest_path,
+        shard_manifest_sha256=manifest_sha,
+        anchor_prefix_only=True,
+        run_canary=False,
+    )
+    assert res_prefix["status"] == "ok"
+    assert not (prefix_out_dir / "judge_done" / "mu-judge.json").exists()
+    assert res_prefix["load_wall_seconds_history"] == []
+    assert (prefix_out_dir / "anchor_rows" / "mu-judge.jsonl").is_file()
+
+    # D2(b): Subblock mode with 3 sub-blocks (6 items on shard 2/2, subblock_items=2):
+    # - Pre-pass runs with --anchor-prefix-only --no-canary, does not add to load_wall_seconds_history
+    # - Subblock 0 (first) runs WITHOUT --no-canary (runs start canary only)
+    # - Subblock 1 (intermediate) runs WITH --no-canary (runs 0 canaries)
+    # - Subblock 2 (last) runs WITHOUT --no-canary (loads start canary from subblock 0, runs end canary only, compares)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "d2_snaps"
+    )
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "d2_env")
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(fake_env["state_dir"]))
+    run_sub3 = tmp_path / "d2_run_sub3"
+    work_sub3 = tmp_path / "d2_work_sub3"
+    vm_judges.run_judges_pipeline(
+        mode="stub",
+        part_dir=items_path.parent,
+        run_dir=run_sub3,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        dryrun=True,
+        repo_root=REPO_ROOT,
+        work_dir=work_sub3,
+        progress_path=run_sub3 / "progress.jsonl",
+        shard_spec="2/2",
+        shard_manifest_path=manifest_path,
+        shard_manifest_sha256=manifest_sha,
+        loop_order="subblock",
+        subblock_items=2,
+        session_fingerprint_sha256="d" * 64,
+        only_judge_ids=["mu-judge"],
+    )
+    subprocs = [
+        json.loads(ln)
+        for ln in (fake_env["state_dir"] / "judge_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    # 1 anchor-prefix pass + 3 sub-blocks = 4 subprocesses for mu-judge
+    assert len(subprocs) == 4
+    assert "--anchor-prefix-only" in subprocs[0]["cmd"]
+    assert "--no-canary" in subprocs[0]["cmd"]
+    # First sub-block (index 1): no --no-canary
+    assert "--anchor-prefix-only" not in subprocs[1]["cmd"]
+    assert "--no-canary" not in subprocs[1]["cmd"]
+    # Intermediate sub-block (index 2): has --no-canary
+    assert "--anchor-prefix-only" not in subprocs[2]["cmd"]
+    assert "--no-canary" in subprocs[2]["cmd"]
+    # Last sub-block (index 3): no --no-canary
+    assert "--anchor-prefix-only" not in subprocs[3]["cmd"]
+    assert "--no-canary" not in subprocs[3]["cmd"]
+
+    jdone_sub3 = json.loads(
+        (run_sub3 / "judge_done" / "mu-judge.json").read_text(encoding="utf-8")
+    )
+    # Only the 3 sub-blocks contribute to load_wall_seconds_history (not the anchor-prefix pass)
+    assert len(jdone_sub3["load_wall_seconds_history"]) == 3
+
+    # Verify in-process across 3 sub-blocks with canary items that _run_canary_snapshot runs ONLY
+    # once on sub-block 0 (start canary) and once on sub-block 2 (end canary), and compares them
+    s2_items = manifest_doc["shards"]["2"]
+    assert len(s2_items) == 6
+    canary_cfg_path = tmp_path / "d2_canary_cfg.json"
+    canary_cfg_path.write_text(
+        json.dumps(
+            {
+                "canary_item_ids": [s2_items[0]],
+                "canary_logprob_tolerance": 0.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    canary_calls: list[int] = []
+    orig_run_canary = bakeoff_judge._run_canary_snapshot
+
+    def _counting_canary_snapshot(**kwargs: Any) -> list[dict[str, Any]]:
+        canary_calls.append(1)
+        return orig_run_canary(**kwargs)
+
+    monkeypatch.setattr(
+        bakeoff_judge, "_run_canary_snapshot", _counting_canary_snapshot
+    )
+    inproc_sub3_dir = tmp_path / "d2_inproc_sub3"
+
+    # Sub-block 0 (first): runs start canary only (1 call), canary summary is None until last sub-block
+    res_sb0 = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=inproc_sub3_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        shard_spec="2/2",
+        shard_manifest_path=manifest_path,
+        shard_manifest_sha256=manifest_sha,
+        active_item_ids=s2_items[0:2],
+        canary_config_path=canary_cfg_path,
+        run_canary=True,
+    )
+    assert len(canary_calls) == 1
+    assert res_sb0["canary"] is None
+
+    # Sub-block 1 (intermediate): run_canary=False (--no-canary), 0 new canary calls
+    res_sb1 = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=inproc_sub3_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        shard_spec="2/2",
+        shard_manifest_path=manifest_path,
+        shard_manifest_sha256=manifest_sha,
+        active_item_ids=s2_items[2:4],
+        canary_config_path=canary_cfg_path,
+        run_canary=False,
+    )
+    assert len(canary_calls) == 1
+    assert res_sb1["canary"] is None
+
+    # Sub-block 2 (last): loads start canary from sub-block 0, runs end canary only (+1 call = 2 total), compares
+    res_sb2 = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=inproc_sub3_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        shard_spec="2/2",
+        shard_manifest_path=manifest_path,
+        shard_manifest_sha256=manifest_sha,
+        active_item_ids=s2_items[4:6],
+        canary_config_path=canary_cfg_path,
+        run_canary=True,
+    )
+    assert len(canary_calls) == 2
+    assert isinstance(res_sb2["canary"], dict)
+    assert res_sb2["canary"]["passed"] is True
+
 
 
 

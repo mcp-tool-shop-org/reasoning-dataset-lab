@@ -5604,6 +5604,8 @@ def run_judges_pipeline(
                 child_cmd.extend(["--anchor-prefix-only", "--no-canary"])
             else:
                 child_cmd.extend(["--active-item-ids", ",".join(active_chunk)])
+                if 0 < subblock_idx < len(subblock_chunks) - 1:
+                    child_cmd.append("--no-canary")
         if eff_session_fp:
             child_cmd.extend(["--session-fingerprint-sha256", eff_session_fp])
         if eff_replacement_session:
@@ -5938,6 +5940,14 @@ def run_judges_pipeline(
                 completed_judges=per_judge_metrics,
                 timeout_seconds=eff_child_timeout,
             )
+
+        if is_anchor_prefix_pass:
+            anchor_row_file = run_dir / "anchor_rows" / f"{judge_id}.jsonl"
+            if not anchor_row_file.is_file():
+                _fail_child_postcheck(
+                    f"Judge {judge_id} anchor prefix pass exited 0 but {anchor_row_file} is missing"
+                )
+            continue
 
         row_file = run_dir / ROWS_DIRNAME / f"{judge_id}.jsonl"
         done_file = judge_done_dir / f"{judge_id}.json"
