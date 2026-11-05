@@ -6,6 +6,29 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+## [0.5.0] - 2026-11-05
+
+**The judge bake-off: build a sealed test part, run five local judges on it, score them without anyone seeing the keys first, and run the judges on Colab.** Tests: 1,164.
+
+### Added
+
+- **`rdlab bakeoff-part`** builds the writer-only Kind-D (T10) judge bake-off part from certified value sets, into an output directory outside the repo, with a sealed key store. `--resume` continues from a per-triad sealed checkpoint. `--construction anchored-two-hop` builds the anchored two-hop variant (domains, closures, entities and anchors rotate).
+- **`rdlab bakeoff-probe`** runs the out-of-fold shortcut probe and the role and closure class-share gates on a part, so a part whose answers can be guessed from surface features fails before any judge sees it.
+- **`rdlab bakeoff-judge`** runs one judge over the part's items without opening the sealed store, then closes its outputs into `outputs-closed.json`.
+- **`rdlab bakeoff-judge-score`** verifies the closed outputs, joins them with the sealed keys, and writes sealed per-row records plus public aggregates. It refuses rows without timings (`BAKEOFF_SCORE_MISSING_ROW_SECONDS`) and parts that mix sources (`BAKEOFF_SCORE_MIXED_PART`).
+- **`rdlab bakeoff-canary-tolerance`** measures the empirical log-prob drift of a 10-item canary set over repeated runs, and **`rdlab bakeoff-logprob-mass`** checks that yes/no probability mass covers at least 0.99 for binary calls.
+- **Winner selection follows the pre-registration exactly.** No lenient fallbacks: explicit lower confidence bounds, per-class precision, pairwise rows, eligibility floors decided before the Holm candidate set, and registered domains only.
+- **Colab launcher for the five-judge bake-off** (`scripts/colab/launch_judges.sh`). Each judge runs as its own subprocess in a hash-locked venv on CPython 3.15.1 with a pinned uv. The launcher checks the GPU, the disk and the device before any download, records step and per-judge timings with memory telemetry, caps spend from the live Colab rate, and stops its own session. Modes: `--session-smoke`, `--probe`, `--stub`, `--time-one`, `--counted` and `--dry`, plus `--resume` and `--until STEP` for stubs. Timing windows on A100s have run with it; see `REAL_SERVICE_ASSUMPTIONS.md` for what each real-service step relies on.
+- New environment variables: `RDLAB_JUDGE_ORDER`, `RDLAB_FIRST_LOAD_JUDGE_ID`, `RDLAB_ONLY_JUDGES` and `RDLAB_FORCE_PINNED_UV`. `REQUEST_TIMEOUT` now defaults to 60 s.
+
+### Experimental
+
+- **Sharded counted windows** (`--shard k/n`, `--shard-manifest`, `--loop subblock|judge_outer`, `--subblock-items`, and `scripts/colab/merge_shards.py`). The merge refuses on any real-mode guard failure, a determinism mismatch, a missing or changed golden anchor, a missing ECC key, or verdict flips above the anchor budget, and it reports output-token drift as a warning. **No counted sharded run has completed yet**, and the mode that records the golden anchors is not in this release, so a counted run refuses at boot until it is.
+
+### Changed
+
+- CI test legs time out at 25 minutes and run under pytest-xdist. Tests use committed fixtures instead of git history or the network.
+
 ## [0.4.0] - 2026-10-29
 
 ### Changed
