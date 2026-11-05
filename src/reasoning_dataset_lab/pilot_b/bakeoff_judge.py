@@ -2475,19 +2475,17 @@ def build_shard_manifest(
                 for i in range(target_strat_n)
             ]
 
-    # 2. Select up to `canary_anchor_count` (25) canary anchors from lock-check telemetry (or explicit list),
-    # or remaining candidates if lock_check_telemetry_path is provided.
     remaining_budget = max(0, int(anchor_count) - len(stratified_anchor_ids))
     target_canary_n = min(max(0, int(canary_anchor_count)), remaining_budget)
     resolved_canary_ids: list[str] = []
     resolved_telemetry_sha: str | None = canary_telemetry_sha256
     if lock_check_telemetry_path is not None:
-        resolved_canary_ids, resolved_telemetry_sha = select_lock_check_canary_anchors(
-            items,
-            lock_check_telemetry_path,
-            excluded_item_ids=stratified_anchor_ids,
-            canary_count=target_canary_n,
+        s_ids, resolved_canary_ids, resolved_telemetry_sha, golden_anchor_manifest_sha256 = _resolve_lock_check_anchors_for_shard_manifest(
+            items, items_by_id, lock_check_telemetry_path, stratified_anchor_ids=stratified_anchor_ids, target_canary_n=target_canary_n,
+            anchor_count=int(anchor_count), stratified_anchor_count=int(stratified_anchor_count), canary_anchor_count=int(canary_anchor_count),
+            canary_item_ids=canary_item_ids, resolved_telemetry_sha=resolved_telemetry_sha, golden_anchor_manifest_sha256=golden_anchor_manifest_sha256,
         )
+        stratified_anchor_ids = s_ids
     elif canary_item_ids is not None:
         strat_set = set(stratified_anchor_ids)
         for cid in canary_item_ids:
@@ -4768,11 +4766,8 @@ def run_bakeoff_judge(
                 "Check RDLAB_SHARD=k/n against shard_manifest.json.",
             )
         shard_item_ids = [str(iid) for iid in raw_shard_list if str(iid) in items_by_id]
-        anchor_item_ids = [
-            str(iid)
-            for iid in manifest_doc.get("anchor_item_ids", [])
-            if str(iid) in items_by_id
-        ]
+        raw_manifest_anchors = [str(iid) for iid in manifest_doc.get("anchor_item_ids", [])]
+        anchor_item_ids = [iid for iid in raw_manifest_anchors if iid in items_by_id]
         if str(eff_window_mode or "").strip().lower() in ("counted", "counted-stub", "counted_stub"):
             manifest_canaries = manifest_doc.get("canary_item_ids")
             if not isinstance(manifest_canaries, list) or not manifest_canaries:
@@ -4780,6 +4775,14 @@ def run_bakeoff_judge(
                     "SHARD_MANIFEST_CANARY_MISSING",
                     "Counted window refuses shard_manifest.json without canary_item_ids from lock-check telemetry.",
                     "Build shard_manifest.json with lock_check_telemetry_path or canary_item_ids before running a counted shard.",
+                )
+            missing_anchors = [iid for iid in raw_manifest_anchors if iid not in items_by_id]
+            if missing_anchors or not raw_manifest_anchors:
+                raise refused_error(
+                    "SHARD_MANIFEST_ANCHOR_MISSING",
+                    f"Counted shard requires all {len(raw_manifest_anchors)} manifest anchor items in part_dir (kept={len(anchor_item_ids)}, "
+                    f"manifest={len(raw_manifest_anchors)}, missing={missing_anchors[:5]}).",
+                    "Ensure the lock-check --anchor-items were drawn from the counted part so all 50 anchors are present.",
                 )
             eff_golden_path_raw = (
                 str(golden_anchor_manifest_path) if golden_anchor_manifest_path is not None else ""
@@ -5887,12 +5890,298 @@ def _is_stub_or_fake_transport(transport: Any) -> bool:
     return False
 
 
+def _resolve_lock_check_anchors_for_shard_manifest(
+    items: Sequence[JudgeInputItem],
+    items_by_id: Mapping[str, Any],
+    lock_check_telemetry_path: Path | str,
+    *,
+    stratified_anchor_ids: list[str],
+    target_canary_n: int,
+    anchor_count: int,
+    stratified_anchor_count: int,
+    canary_anchor_count: int,
+    canary_item_ids: Sequence[str] | None,
+    resolved_telemetry_sha: str | None,
+    golden_anchor_manifest_sha256: str | None,
+) -> tuple[list[str], list[str], str | None, str | None]:
+    """Resolve stratified and canary anchors from `golden_anchor_manifest.json` or lock-check telemetry."""
+    loaded_golden = _load_golden_anchors_for_shard_manifest(
+        lock_check_telemetry_path,
+        items_by_id=items_by_id,
+        anchor_count=anchor_count,
+        stratified_anchor_count=stratified_anchor_count,
+        canary_anchor_count=canary_anchor_count,
+        canary_item_ids=canary_item_ids,
+    )
+    if loaded_golden is not None:
+        gm_strat, gm_can, gm_tel_sha, gm_sha = loaded_golden
+        return (
+            gm_strat,
+            gm_can,
+            resolved_telemetry_sha or gm_tel_sha,
+            golden_anchor_manifest_sha256 or gm_sha,
+        )
+    can_ids, tel_sha = select_lock_check_canary_anchors(
+        items,
+        lock_check_telemetry_path,
+        excluded_item_ids=stratified_anchor_ids,
+        canary_count=target_canary_n,
+    )
+    return stratified_anchor_ids, can_ids, tel_sha, golden_anchor_manifest_sha256
+
+
+def _load_golden_anchors_for_shard_manifest(
+    lock_check_telemetry_path: Path | str,
+    *,
+    items_by_id: Mapping[str, Any],
+    anchor_count: int,
+    stratified_anchor_count: int,
+    canary_anchor_count: int,
+    canary_item_ids: Sequence[str] | None = None,
+) -> tuple[list[str], list[str], str | None, str | None] | None:
+    """Load pre-selected stratified and canary anchor IDs from `golden_anchor_manifest.json` when present."""
+    if canary_item_ids is not None:
+        return None
+    tel_p = Path(lock_check_telemetry_path)
+    cand_gm = tel_p if (tel_p.is_file() and tel_p.name == GOLDEN_ANCHOR_MANIFEST_FILENAME) else (
+        (tel_p / GOLDEN_ANCHOR_MANIFEST_FILENAME) if tel_p.is_dir() else None
+    )
+    if cand_gm is None or not cand_gm.is_file():
+        return None
+    try:
+        gm_doc = json.loads(cand_gm.read_text(encoding="utf-8"))
+        gm_strat = [str(x) for x in (gm_doc.get("stratified_anchor_item_ids") or [])]
+        gm_can = [str(x) for x in (gm_doc.get("canary_item_ids") or [])]
+        gm_all = [str(x) for x in (gm_doc.get("anchor_item_ids") or [*gm_strat, *gm_can])]
+        if not gm_all or len(gm_all) != int(anchor_count):
+            return None
+        missing_in_part = [iid for iid in gm_all if iid not in items_by_id]
+        if missing_in_part:
+            raise refused_error(
+                "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                f"Lock-check golden_anchor_manifest.json contains {len(missing_in_part)} anchor item(s) "
+                f"not present in the counted part (first={missing_in_part[0]!r}).",
+                "Ensure --anchor-items contains the exact 50 anchor items from the counted part.",
+            )
+        strat_ids = gm_strat if len(gm_strat) == int(stratified_anchor_count) else gm_all[: int(stratified_anchor_count)]
+        can_ids = gm_can if len(gm_can) == int(canary_anchor_count) else gm_all[len(strat_ids) :]
+        gm_tel_sha = str(gm_doc.get("canary_telemetry_sha256") or "") or None
+        gm_sha = str(gm_doc.get("golden_anchor_manifest_sha256") or "") or None
+        return strat_ids, can_ids, gm_tel_sha, gm_sha
+    except RdlabError:
+        raise
+    except Exception:
+        return None
+
+
+def _extract_counted_item_ids_from_source(
+    counted_source: Iterable[str] | Mapping[str, Any] | Path | str | None,
+) -> set[str]:
+    """Extract counted item IDs from an iterable of IDs, a manifest dict, a `shard_manifest.json`, or an `items.jsonl` / part dir."""
+    if counted_source is None:
+        return set()
+    if isinstance(counted_source, Mapping):
+        out_ids: set[str] = set()
+        if isinstance(counted_source.get("shard_by_item"), Mapping):
+            out_ids.update(str(k) for k in counted_source["shard_by_item"].keys())
+        if isinstance(counted_source.get("shards"), Mapping):
+            for slist in counted_source["shards"].values():
+                if isinstance(slist, list):
+                    out_ids.update(str(x) for x in slist)
+        if isinstance(counted_source.get("anchor_item_ids"), list):
+            out_ids.update(str(x) for x in counted_source["anchor_item_ids"])
+        if isinstance(counted_source.get("item_ids"), list):
+            out_ids.update(str(x) for x in counted_source["item_ids"])
+        return {x.strip() for x in out_ids if x.strip()}
+    if isinstance(counted_source, (Path, str)):
+        p = Path(counted_source)
+        if not p.exists():
+            return set()
+        if p.is_dir():
+            sm_p = p / SHARD_MANIFEST_FILENAME
+            if sm_p.is_file():
+                return _extract_counted_item_ids_from_source(sm_p)
+            items_p = resolve_items_jsonl_path(p)
+            loaded, _ = load_judge_items(items_p)
+            return {it.item_id for it in loaded}
+        if p.suffix.lower() == ".json":
+            doc = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(doc, Mapping):
+                return _extract_counted_item_ids_from_source(doc)
+            if isinstance(doc, list):
+                return {str(x).strip() for x in doc if str(x).strip()}
+            return set()
+        loaded, _ = load_judge_items(p)
+        return {it.item_id for it in loaded}
+    out_set: set[str] = set()
+    for elem in counted_source:
+        if isinstance(elem, JudgeInputItem):
+            out_set.add(elem.item_id)
+        elif isinstance(elem, Mapping) and elem.get("id") or (isinstance(elem, Mapping) and elem.get("item_id")):
+            out_set.add(str(elem.get("id") or elem.get("item_id")).strip())
+        else:
+            s = str(elem).strip()
+            if s:
+                out_set.add(s)
+    return out_set
+
+
+def verify_lock_check_two_inputs(
+    *,
+    anchor_items_or_path: Sequence[JudgeInputItem] | Path | str,
+    p0a_items_or_path: Sequence[JudgeInputItem] | Path | str,
+    counted_items_or_manifest: Iterable[str] | Mapping[str, Any] | Path | str | None = None,
+    expected_anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
+) -> dict[str, Any]:
+    """Validate `--lock-check`'s two inputs (`--anchor-items` and `--p0a-items`):
+    1. `--anchor-items` must be `expected_anchor_count` (50) items from the counted part (never from burned pilot `pilot-40b`,
+       and every anchor item ID must belong to `counted_items_or_manifest` when provided) -> `LOCK_CHECK_ANCHOR_ITEMS_INVALID`.
+    2. `--p0a-items` must be the 114 burned pilot items (`pilot-40b`, 228 calls) -> `P0A_COUNTED_PART_FORBIDDEN`.
+    3. No item ID may appear in both `--anchor-items` and `--p0a-items` -> `LOCK_CHECK_INPUT_OVERLAP`.
+    4. No item ID in `--p0a-items` may appear in the counted part's manifest or item ID list -> `P0A_COUNTED_ITEM`.
+    """
+    if isinstance(anchor_items_or_path, (Path, str)):
+        anchor_path = Path(anchor_items_or_path)
+        anchor_items, anchor_sha256 = load_judge_items(anchor_path)
+        anchor_dir = anchor_path.resolve().parent if anchor_path.is_file() else anchor_path.resolve()
+        anchor_manifest_part_id = _resolve_part_id_from_dir(anchor_path)
+        if anchor_dir.name.strip().lower() in ALLOWED_LOGPROB_MASS_PART_IDS or (
+            anchor_manifest_part_id is not None and anchor_manifest_part_id.strip().lower() in ALLOWED_LOGPROB_MASS_PART_IDS
+        ):
+            raise refused_error(
+                "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                f"--anchor-items must be 50 anchor items from the counted part, not burned pilot '{PILOT_BURNED_PART_ID}'.",
+                "Pass 50 anchor items from the counted part to --anchor-items and the 114 burned pilot items to --p0a-items.",
+            )
+        anchor_jsonl = resolve_items_jsonl_path(anchor_path)
+        for raw_ln in anchor_jsonl.read_text(encoding="utf-8").splitlines():
+            if not raw_ln.strip():
+                continue
+            obj = json.loads(raw_ln)
+            if isinstance(obj, Mapping) and obj.get("part_id") is not None:
+                rpid = str(obj["part_id"]).strip().lower()
+                if rpid in ALLOWED_LOGPROB_MASS_PART_IDS:
+                    raise refused_error(
+                        "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                        f"--anchor-items contains burned pilot part_id={obj['part_id']!r}; anchors must come from the counted part.",
+                        "Pass 50 anchor items from the counted part to --anchor-items.",
+                    )
+    else:
+        anchor_items = tuple(anchor_items_or_path)
+        anchor_sha256 = ""
+
+    if isinstance(p0a_items_or_path, (Path, str)):
+        p0a_path: Path | None = Path(p0a_items_or_path)
+        p0a_items, p0a_sha256 = load_judge_items(p0a_path)
+    else:
+        p0a_path = None
+        p0a_items = tuple(p0a_items_or_path)
+        p0a_sha256 = ""
+
+    anchor_ids = [it.item_id for it in anchor_items]
+    p0a_ids = [it.item_id for it in p0a_items]
+    anchor_id_set = set(anchor_ids)
+    p0a_id_set = set(p0a_ids)
+
+    counted_id_set = _extract_counted_item_ids_from_source(counted_items_or_manifest)
+
+    # Check 1: Overlap between anchor items and P0a items
+    overlap_ids = sorted(anchor_id_set & p0a_id_set)
+    if overlap_ids:
+        raise refused_error(
+            "LOCK_CHECK_INPUT_OVERLAP",
+            f"--anchor-items and --p0a-items share {len(overlap_ids)} item ID(s) (first={overlap_ids[0]!r}).",
+            "Ensure --anchor-items (50 counted-part anchors) and --p0a-items (114 burned pilot items) are disjoint.",
+        )
+
+    # Check 2: P0a items containing any ID from the counted part's manifest or ID list
+    if counted_id_set:
+        counted_in_p0a = sorted(p0a_id_set & counted_id_set)
+        if counted_in_p0a:
+            raise refused_error(
+                "P0A_COUNTED_ITEM",
+                f"--p0a-items contains {len(counted_in_p0a)} item ID(s) from the counted part (first={counted_in_p0a[0]!r}).",
+                "Run P0a only on the 114 burned pilot items, never on any item ID from the counted part.",
+            )
+
+    # Check 3: Anchor input must be 50 unique items from the counted part
+    if len(anchor_items) != int(expected_anchor_count) or len(anchor_id_set) != int(expected_anchor_count):
+        raise refused_error(
+            "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+            f"--anchor-items must contain {expected_anchor_count} unique items from the counted part, got {len(anchor_items)} item(s) ({len(anchor_id_set)} unique).",
+            f"Pass {expected_anchor_count} anchor items (25 stratified + 25 canaries) from the counted part to --anchor-items.",
+        )
+    if counted_id_set:
+        not_in_counted = sorted(anchor_id_set - counted_id_set)
+        if not_in_counted:
+            raise refused_error(
+                "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                f"--anchor-items contains {len(not_in_counted)} item ID(s) not present in the counted part (first={not_in_counted[0]!r}).",
+                "Ensure all 50 --anchor-items come from the counted part.",
+            )
+
+    # Check 4: Keep fix 1's 114/228 burned-pilot check on the P0a input
+    p0a_schedule = build_schedule(p0a_items, seed=DEFAULT_SCHEDULE_SEED, items_sha256=p0a_sha256)
+    if p0a_path is not None:
+        _verify_burned_pilot_for_p0a(
+            p0a_path,
+            p0a_items,
+            p0a_schedule,
+            counted_item_ids=(counted_id_set | anchor_id_set),
+        )
+    elif len(p0a_items) != PILOT_BURNED_ITEM_COUNT or len(p0a_schedule.entries) != PILOT_BURNED_CALL_COUNT:
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a requires the burned pilot ('{PILOT_BURNED_PART_ID}') with {PILOT_BURNED_ITEM_COUNT} items and "
+            f"{PILOT_BURNED_CALL_COUNT} calls, got {len(p0a_items)} items and {len(p0a_schedule.entries)} calls.",
+            f"Run P0a only on the 114-item ({PILOT_BURNED_CALL_COUNT}-call) burned pilot part '{PILOT_BURNED_PART_ID}'.",
+        )
+
+    return {
+        "anchor_item_count": len(anchor_ids),
+        "p0a_item_count": len(p0a_ids),
+        "anchor_item_ids": anchor_ids,
+        "p0a_item_ids": p0a_ids,
+        "anchor_items_sha256": anchor_sha256,
+        "p0a_items_sha256": p0a_sha256,
+    }
+
+
 def _verify_burned_pilot_for_p0a(
     part_dir: Path,
     items: Sequence[JudgeInputItem],
     schedule: JudgeSchedule,
+    *,
+    counted_item_ids: Iterable[str] | None = None,
+    counted_manifest_path: Path | str | None = None,
+    anchor_item_ids: Iterable[str] | None = None,
 ) -> str:
-    """Verify `part_dir` and `items` belong to the burned pilot (`pilot-40b`) and have exact counts 114 items / 228 calls."""
+    """Verify `part_dir` and `items` belong to the burned pilot (`pilot-40b`), have no overlap with anchor or counted items, and have exact counts 114 items / 228 calls."""
+    p0a_id_set = {it.item_id for it in items}
+    if anchor_item_ids is not None:
+        anchor_set = {str(x).strip() for x in anchor_item_ids if str(x).strip()}
+        overlap = sorted(p0a_id_set & anchor_set)
+        if overlap:
+            raise refused_error(
+                "LOCK_CHECK_INPUT_OVERLAP",
+                f"P0a input shares {len(overlap)} item ID(s) with --anchor-items (first={overlap[0]!r}).",
+                "Ensure --anchor-items and --p0a-items have disjoint item IDs.",
+            )
+
+    forbid_counted_ids: set[str] = set()
+    if counted_item_ids is not None:
+        forbid_counted_ids.update(_extract_counted_item_ids_from_source(counted_item_ids))
+    if counted_manifest_path is not None:
+        forbid_counted_ids.update(_extract_counted_item_ids_from_source(counted_manifest_path))
+    if forbid_counted_ids:
+        counted_hits = sorted(p0a_id_set & forbid_counted_ids)
+        if counted_hits:
+            raise refused_error(
+                "P0A_COUNTED_ITEM",
+                f"P0a input contains {len(counted_hits)} item ID(s) from the counted part (first={counted_hits[0]!r}).",
+                "Run P0a only on the 114 burned pilot items, never on any counted-part item ID.",
+            )
+
     resolved = Path(part_dir).resolve()
     base_dir = resolved.parent if resolved.is_file() else resolved
     part_name = base_dir.name.strip().lower()
@@ -5928,7 +6217,10 @@ def _verify_burned_pilot_for_p0a(
                         f"Pass the burned pilot part ('{PILOT_BURNED_PART_ID}') to --lock-check.",
                     )
 
-    dir_name_burned = part_name in ALLOWED_LOGPROB_MASS_PART_IDS
+    dir_name_burned = part_name in ALLOWED_LOGPROB_MASS_PART_IDS or resolved.stem.strip().lower() in (
+        *ALLOWED_LOGPROB_MASS_PART_IDS,
+        "p0a_items",
+    )
     if manifest_part_id is None and not row_part_ids and not dir_name_burned:
         raise refused_error(
             "P0A_COUNTED_PART_FORBIDDEN",
@@ -6313,7 +6605,10 @@ def run_lock_check_p0a(
     *,
     part_dir: Path,
     output_dir: Path,
-    baseline_rows: Sequence[Mapping[str, Any]],
+    baseline_rows: Sequence[Mapping[str, Any]] | None = None,
+    anchor_items: Sequence[JudgeInputItem] | Path | str | None = None,
+    counted_item_ids: Iterable[str] | None = None,
+    counted_manifest_path: Path | str | None = None,
     judges: Sequence[JudgeSpec] | None = None,
     judge_ids: Sequence[str] | None = None,
     transports_by_judge: Mapping[str, JudgeTransport] | None = None,
@@ -6378,11 +6673,41 @@ def run_lock_check_p0a(
             f"Pass the burned pilot part directory ('{PILOT_BURNED_PART_ID}') to --lock-check.",
         )
 
+    resolved_anchor_ids: list[str] | None = None
+    if anchor_items is not None:
+        if isinstance(anchor_items, (Path, str)):
+            loaded_anc, _ = load_judge_items(Path(anchor_items))
+            resolved_anchor_ids = [it.item_id for it in loaded_anc]
+        else:
+            resolved_anchor_ids = [
+                it.item_id if isinstance(it, JudgeInputItem) else str(it)
+                for it in anchor_items
+            ]
+
     eff_seed = int(schedule_seed if schedule_seed is not None else seed)
     items, items_sha256 = load_judge_items(part_dir, limit=limit_items)
     items_by_id = {it.item_id: it for it in items}
-    schedule = load_or_create_schedule(resolved_out, items, seed=eff_seed, items_sha256=items_sha256)
-    verified_part_id = _verify_burned_pilot_for_p0a(part_dir, items, schedule)
+    existing_sched_path = resolved_out / SCHEDULE_FILENAME
+    if existing_sched_path.is_file():
+        try:
+            existing_sched_doc = json.loads(existing_sched_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing_sched_doc = {}
+        if int(existing_sched_doc.get("item_count", -1)) == len(items) and str(existing_sched_doc.get("items_sha256") or "") == items_sha256:
+            schedule = load_or_create_schedule(resolved_out, items, seed=eff_seed, items_sha256=items_sha256)
+        else:
+            schedule = build_schedule(items, seed=eff_seed, items_sha256=items_sha256)
+    else:
+        schedule = load_or_create_schedule(resolved_out, items, seed=eff_seed, items_sha256=items_sha256)
+
+    verified_part_id = _verify_burned_pilot_for_p0a(
+        part_dir,
+        items,
+        schedule,
+        counted_item_ids=counted_item_ids,
+        counted_manifest_path=counted_manifest_path,
+        anchor_item_ids=resolved_anchor_ids,
+    )
 
     target_jids = judge_ids if judge_ids is not None else sorted(BAKEOFF_JUDGE_SPECS.keys())
     active_judges = (
@@ -6447,40 +6772,52 @@ def run_lock_check_p0a(
         eff_event_factory = _MonotonicTimingEvent
         eff_timing_backend = timing_backend or "cpu_monotonic"
 
-    # (a) Second full baseline pass over the schedule in the same session
-    pass2_rows: list[dict[str, Any]] = []
-    for spec in active_judges:
-        jid = spec.judge_id
-        adapter = adapters[jid]
-        transport = resolved_transports[jid]
-        polarity_map = POLARITY_MAP_BY_JUDGE.get(jid, {"inverted": "false"})
-        for entry in schedule.entries:
-            it = items_by_id[entry.item_id]
-            prompt = adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
-            resp = transport.generate(spec, prompt, seed=schedule.seed)
-            parsed = adapter.parse_response(resp, pass_mode=pass_mode)
-            probs = extract_verdict_probabilities(jid, resp, pass_mode=pass_mode, polarity_map=polarity_map)
-            out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
-                jid,
-                resp.tokens,
-                system_one_result=resp.system_one_result,
-            )
-            top1_lp = round(float(resp.verdict_top_logprobs[0].logprob), 6) if resp.verdict_top_logprobs else 0.0
-            pass2_rows.append(
-                {
-                    "judge_id": jid,
-                    "item_id": it.item_id,
-                    "order": entry.order,
-                    "state": parsed.state,
-                    "raw_verdict": parsed.raw_verdict,
-                    "output_token_ids_sha256": out_sha,
-                    "top1_logprob": top1_lp,
-                    "p_yes": probs.get("p_yes"),
-                    "verdict_token_margin": resp.verdict_token_margin,
-                }
-            )
+    def _execute_p0a_schedule_pass() -> list[dict[str, Any]]:
+        rows_out: list[dict[str, Any]] = []
+        for spec in active_judges:
+            jid = spec.judge_id
+            adapter = adapters[jid]
+            transport = resolved_transports[jid]
+            polarity_map = POLARITY_MAP_BY_JUDGE.get(jid, {"inverted": "false"})
+            for entry in schedule.entries:
+                it = items_by_id[entry.item_id]
+                prompt = adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
+                resp = transport.generate(spec, prompt, seed=schedule.seed)
+                parsed = adapter.parse_response(resp, pass_mode=pass_mode)
+                probs = extract_verdict_probabilities(jid, resp, pass_mode=pass_mode, polarity_map=polarity_map)
+                out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                    jid,
+                    resp.tokens,
+                    system_one_result=resp.system_one_result,
+                )
+                top1_lp = round(float(resp.verdict_top_logprobs[0].logprob), 6) if resp.verdict_top_logprobs else 0.0
+                rows_out.append(
+                    {
+                        "judge_id": jid,
+                        "item_id": it.item_id,
+                        "order": entry.order,
+                        "state": parsed.state,
+                        "raw_verdict": parsed.raw_verdict,
+                        "output_token_ids_sha256": out_sha,
+                        "top1_logprob": top1_lp,
+                        "p_yes": probs.get("p_yes"),
+                        "verdict_token_margin": resp.verdict_token_margin,
+                    }
+                )
+        return rows_out
 
-    baseline_repeat = compare_p0a_baseline_passes(baseline_rows, pass2_rows)
+    matching_baseline_rows = [
+        r for r in (baseline_rows or ())
+        if str(r.get("item_id") or "").strip() in items_by_id
+    ]
+    eff_pass1_rows: Sequence[Mapping[str, Any]] = (
+        matching_baseline_rows if matching_baseline_rows else _execute_p0a_schedule_pass()
+    )
+
+    # (a) Second full baseline pass over the schedule in the same session
+    pass2_rows = _execute_p0a_schedule_pass()
+
+    baseline_repeat = compare_p0a_baseline_passes(eff_pass1_rows, pass2_rows)
 
     # (b) 10-call phase profiler per judge
     profiler_by_judge: dict[str, dict[str, Any]] = {}
@@ -6500,7 +6837,7 @@ def run_lock_check_p0a(
 
     # (c) Reversed re-run of the 20 lowest-margin items
     selected_low_margin_ids = select_p0a_lowest_margin_items(
-        baseline_rows,
+        eff_pass1_rows,
         valid_item_ids=[it.item_id for it in items],
         count=low_margin_item_count,
     )
@@ -6510,7 +6847,7 @@ def run_lock_check_p0a(
         transports=resolved_transports,
         items_by_id=items_by_id,
         selected_item_ids=selected_low_margin_ids,
-        baseline_rows=baseline_rows,
+        baseline_rows=eff_pass1_rows,
         seed=schedule.seed,
         pass_mode=pass_mode,
     )
@@ -6551,9 +6888,24 @@ def build_window_manifest(
     *,
     window_id: str | None = None,
     mode: str | None = None,
+    anchor_items_sha256: str | None = None,
+    p0a_items_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Write `window.json` in `run_dir` listing every file in `run_dir` with its `sha256` and `bytes`."""
     resolved_dir = Path(run_dir).resolve()
+    existing_win_path = resolved_dir / WINDOW_MANIFEST_FILENAME
+    prev_anchor_sha: str | None = None
+    prev_p0a_sha: str | None = None
+    if existing_win_path.is_file():
+        try:
+            prev_win_doc = json.loads(existing_win_path.read_text(encoding="utf-8"))
+            if isinstance(prev_win_doc, Mapping):
+                prev_anchor_sha = str(prev_win_doc.get("anchor_items_sha256") or "").strip() or None
+                prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
+        except Exception:
+            pass
+    eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
+    eff_p0a_sha = (str(p0a_items_sha256).strip() if p0a_items_sha256 else None) or prev_p0a_sha
     files_map: dict[str, dict[str, Any]] = {}
     for p in sorted(resolved_dir.rglob("*")):
         if not p.is_file():
@@ -6573,6 +6925,10 @@ def build_window_manifest(
         "file_count": len(files_map),
         "files": dict(sorted(files_map.items())),
     }
+    if eff_anchor_sha is not None:
+        doc["anchor_items_sha256"] = eff_anchor_sha
+    if eff_p0a_sha is not None:
+        doc["p0a_items_sha256"] = eff_p0a_sha
     body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     doc["window_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
     window_path = resolved_dir / WINDOW_MANIFEST_FILENAME

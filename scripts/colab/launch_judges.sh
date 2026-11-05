@@ -26,6 +26,10 @@ fi
 OUT_DIR="${RDLAB_OUT_DIR:-}"
 RUN_ID="${RDLAB_RUN_ID:-judges-$(date -u +%Y%m%dT%H%M%SZ)}"
 ITEMS_FILE="${RDLAB_ITEMS_FILE:-}"
+ANCHOR_ITEMS_FILE="${RDLAB_ANCHOR_ITEMS_FILE:-}"
+P0A_ITEMS_FILE="${RDLAB_P0A_ITEMS_FILE:-}"
+COUNTED_ITEMS_FILE="${RDLAB_COUNTED_ITEMS_FILE:-}"
+COUNTED_MANIFEST_FILE="${RDLAB_COUNTED_MANIFEST:-}"
 RECEIPTS_DIR="${RDLAB_RECEIPTS_DIR:-}"
 EXPLICIT_CAP="${RDLAB_CAP_UNITS:-}"
 GOLDEN_ANCHOR_MANIFEST=""
@@ -38,14 +42,14 @@ EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--receipts-dir DIR] [--cap UNITS]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--anchor-items FILE] [--p0a-items FILE] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
   --probe              Run the read-only CPU VM environment probe (CPU at 0.08/h, wall 300s, cap 0.01)
   --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
   --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
-  --lock-check         Run the A100 lock-check window: boot gatekeeper golden recording, 5-judge 114-item (228-call) burned-pilot pass, 50-item golden anchor & shard manifests, and P0a repeat/profiler/reversed-low-margin rerun (--gpu A100 at 5.30/h, wall 7200s)
+  --lock-check         Run the A100 lock-check window: boot gatekeeper golden recording, 5-judge 50-item (250-row) counted-part anchor pass, 50-item golden anchor & shard manifests, and P0a on 114 burned pilot items (--gpu A100 at 5.30/h, wall 7200s)
   --lock-check-stub    Run the CPU stub lock-check window (CPU at 0.08/h, deterministic stub transport)
   --counted            Run a counted A100 shard window (--gpu A100 at 5.30/h, strict determinism)
   --counted-stub       Run a counted CPU stub shard window (CPU at 0.08/h, deterministic stub transport)
@@ -62,7 +66,11 @@ Options:
   --resume             Resume from existing schedule/generations state in --out-dir
   --run-id ID          Run identifier (session name is rdlab-<ID>)
   --out-dir DIR        Rig output directory (default: /tmp/rdlab-colab-runs/<ID>)
-  --items-file FILE    Public item JSONL file to upload (or set RDLAB_ITEMS_FILE)
+  --items-file FILE    Public item JSONL file to upload for non-lock-check modes (or set RDLAB_ITEMS_FILE)
+  --anchor-items FILE  For --lock-check / --lock-check-stub: the 50 anchor items from the counted part (25 stratified + 25 canaries) for the 5-judge anchor pass, golden_anchor_manifest.json, and boot_gatekeeper_goldens.filled.json (or set RDLAB_ANCHOR_ITEMS_FILE)
+  --p0a-items FILE     For --lock-check / --lock-check-stub: the 114 burned pilot items (pilot-40b) for P0a only (or set RDLAB_P0A_ITEMS_FILE)
+  --counted-items FILE Optional counted part items JSONL to build shard_manifest.json and verify anchor membership and P0a exclusion during --lock-check (or set RDLAB_COUNTED_ITEMS_FILE)
+  --counted-manifest F Optional counted part manifest JSON to verify anchor membership and P0a exclusion during --lock-check (or set RDLAB_COUNTED_MANIFEST)
   --receipts-dir DIR   Directory containing <owner>__<repo>.sha256.json receipts (or RDLAB_RECEIPTS_DIR)
   --cap UNITS          Explicit compute-unit cap override (or set RDLAB_CAP_UNITS)
 EOF
@@ -217,6 +225,42 @@ while [[ $# -gt 0 ]]; do
     --items-file)
       ITEMS_FILE="$2"
       shift 2
+      ;;
+    --items-file=*)
+      ITEMS_FILE="${1#*=}"
+      shift
+      ;;
+    --anchor-items)
+      ANCHOR_ITEMS_FILE="${2:-}"
+      shift 2
+      ;;
+    --anchor-items=*)
+      ANCHOR_ITEMS_FILE="${1#*=}"
+      shift
+      ;;
+    --p0a-items)
+      P0A_ITEMS_FILE="${2:-}"
+      shift 2
+      ;;
+    --p0a-items=*)
+      P0A_ITEMS_FILE="${1#*=}"
+      shift
+      ;;
+    --counted-items)
+      COUNTED_ITEMS_FILE="${2:-}"
+      shift 2
+      ;;
+    --counted-items=*)
+      COUNTED_ITEMS_FILE="${1#*=}"
+      shift
+      ;;
+    --counted-manifest)
+      COUNTED_MANIFEST_FILE="${2:-}"
+      shift 2
+      ;;
+    --counted-manifest=*)
+      COUNTED_MANIFEST_FILE="${1#*=}"
+      shift
       ;;
     --receipts-dir)
       RECEIPTS_DIR="$2"
@@ -503,6 +547,8 @@ STAGED_DEVICE_PY="$STAGE_DIR/device.py"
 REPO_TAR="$STAGE_DIR/repo_bundle.tar.gz"
 RECEIPTS_TAR="$STAGE_DIR/receipts_bundle.tar.gz"
 STAGED_ITEMS_FILE="$STAGE_DIR/items.jsonl"
+STAGED_ANCHOR_ITEMS_FILE="$STAGE_DIR/anchor_items.jsonl"
+STAGED_P0A_ITEMS_FILE="$STAGE_DIR/p0a_items.jsonl"
 RESUME_TAR="$STAGE_DIR/resume_state.tar.gz"
 
 EFFECTIVE_RESUME=0
@@ -646,13 +692,49 @@ build_exec_env_args() {
   if [[ -n "${RDLAB_LIMIT_ITEMS+x}" ]] && [[ -n "${RDLAB_LIMIT_ITEMS}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_LIMIT_ITEMS=$RDLAB_LIMIT_ITEMS")
   fi
+  if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
+    EXEC_ENV_ARGS+=(
+      --env "RDLAB_ANCHOR_ITEMS_FILE=/content/rdlab_items/anchor_items.jsonl"
+      --env "RDLAB_P0A_ITEMS_FILE=/content/rdlab_items/p0a_items.jsonl"
+    )
+    if [[ -n "$COUNTED_ITEMS_FILE" ]]; then
+      EXEC_ENV_ARGS+=(--env "RDLAB_COUNTED_ITEMS_FILE=/content/rdlab/counted_items.jsonl")
+    fi
+    if [[ -n "$COUNTED_MANIFEST_FILE" ]]; then
+      EXEC_ENV_ARGS+=(--env "RDLAB_COUNTED_MANIFEST=/content/rdlab/counted_manifest.json")
+    fi
+  fi
   if [[ -n "${RDLAB_SESSION_ID+x}" ]] && [[ -n "${RDLAB_SESSION_ID}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_SESSION_ID=$RDLAB_SESSION_ID")
   fi
 }
 
 if [[ "$DRY_FLAG" == "1" ]]; then
-  if [[ "$MODE" != "probe" ]] && [[ -n "$ITEMS_FILE" ]]; then
+  if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
+    for lc_item_f in "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE"; do
+      if [[ -n "$lc_item_f" ]]; then
+        "$PYTHON_BIN" - "$REPO_ROOT" "$lc_item_f" "$SESSION_SMOKE_FLAG" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+items_file = Path(sys.argv[2])
+is_smoke = sys.argv[3] == "1"
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+try:
+    vm_judges.check_upload_path_allowed(items_file)
+    if not is_smoke or items_file.is_file():
+        vm_judges.verify_items_allowlist(items_file)
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+      fi
+    done
+  elif [[ "$MODE" != "probe" ]] && [[ -n "$ITEMS_FILE" ]]; then
     "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$SESSION_SMOKE_FLAG" <<'PY'
 import sys
 from pathlib import Path
@@ -714,7 +796,12 @@ PY
     printf 'colab upload -s %s %s /content/device.py\n' "$SESSION_NAME" "$STAGED_DEVICE_PY"
     printf 'colab upload -s %s %s /content/repo_bundle.tar.gz\n' "$SESSION_NAME" "$REPO_TAR"
     printf 'colab upload -s %s %s /content/receipts_bundle.tar.gz\n' "$SESSION_NAME" "$RECEIPTS_TAR"
-    printf 'colab upload -s %s %s /content/rdlab_items/items.jsonl\n' "$SESSION_NAME" "$STAGED_ITEMS_FILE"
+    if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
+      printf 'colab upload -s %s %s /content/rdlab_items/anchor_items.jsonl\n' "$SESSION_NAME" "$STAGED_ANCHOR_ITEMS_FILE"
+      printf 'colab upload -s %s %s /content/rdlab_items/p0a_items.jsonl\n' "$SESSION_NAME" "$STAGED_P0A_ITEMS_FILE"
+    else
+      printf 'colab upload -s %s %s /content/rdlab_items/items.jsonl\n' "$SESSION_NAME" "$STAGED_ITEMS_FILE"
+    fi
     if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
       printf 'colab upload -s %s %s /content/resume_state.tar.gz\n' "$SESSION_NAME" "$RESUME_TAR"
     fi
@@ -1476,21 +1563,23 @@ fi
 
 log_msg "WINDOW_START id=$RUN_ID mode=$MODE card=$CARD wall_s=$WALL_SECONDS vm_wall_s=$VM_WALL_SECONDS exec_timeout_s=$EXEC_TIMEOUT_SECONDS watchdog_sleep_s=$WATCHDOG_SLEEP_SECONDS rig_timeout_s=$RIG_TIMEOUT rate_uh=$RATE_UNITS_PER_HOUR cap_units=$CAP_UNITS vram_halt_mib=$VRAM_HALT_MIB"
 
-if [[ -z "$ITEMS_FILE" ]]; then
-  RUN_WHY="RDLAB_ITEMS_FILE or --items-file is required"
-  echo "ITEMS_FILE_MISSING: RDLAB_ITEMS_FILE or --items-file is required" >&2
-  exit 2
-fi
-if ! "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'src')); sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.check_upload_path_allowed(sys.argv[2])" "$REPO_ROOT" "$ITEMS_FILE"; then
-  RUN_WHY="upload path refused by key/sealed-store guard: $ITEMS_FILE"
-  exit 2
-fi
-if [[ ! -f "$ITEMS_FILE" ]]; then
-  RUN_WHY="items file does not exist: $ITEMS_FILE"
-  echo "ITEMS_FILE_MISSING: $ITEMS_FILE" >&2
-  exit 2
-fi
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" <<'PY'
+if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
+  if [[ -z "$ANCHOR_ITEMS_FILE" ]] || [[ -z "$P0A_ITEMS_FILE" ]]; then
+    RUN_WHY="--lock-check requires both --anchor-items (50 anchor items from the counted part) and --p0a-items (114 burned pilot items)"
+    echo "LOCK_CHECK_ANCHOR_ITEMS_INVALID: $RUN_WHY" >&2
+    exit 2
+  fi
+  for lc_req_f in "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE"; do
+    if ! "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'src')); sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.check_upload_path_allowed(sys.argv[2])" "$REPO_ROOT" "$lc_req_f"; then
+      RUN_WHY="upload path refused by key/sealed-store guard: $lc_req_f"
+      exit 2
+    fi
+    if [[ ! -f "$lc_req_f" ]]; then
+      RUN_WHY="items file does not exist: $lc_req_f"
+      echo "ITEMS_FILE_MISSING: $lc_req_f" >&2
+      exit 2
+    fi
+    if ! "$PYTHON_BIN" - "$REPO_ROOT" "$lc_req_f" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1506,9 +1595,107 @@ except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
     raise SystemExit(2)
 PY
-then
-  RUN_WHY="items file refused by field allow-list guard: $ITEMS_FILE"
-  exit 2
+    then
+      RUN_WHY="items file refused by field allow-list guard: $lc_req_f"
+      exit 2
+    fi
+  done
+  if [[ -n "$COUNTED_ITEMS_FILE" ]]; then
+    if ! "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'src')); sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.check_upload_path_allowed(sys.argv[2])" "$REPO_ROOT" "$COUNTED_ITEMS_FILE"; then
+      RUN_WHY="upload path refused by key/sealed-store guard: $COUNTED_ITEMS_FILE"
+      exit 2
+    fi
+    if [[ ! -f "$COUNTED_ITEMS_FILE" ]]; then
+      RUN_WHY="counted items file does not exist: $COUNTED_ITEMS_FILE"
+      echo "ITEMS_FILE_MISSING: $COUNTED_ITEMS_FILE" >&2
+      exit 2
+    fi
+    if ! "$PYTHON_BIN" - "$REPO_ROOT" "$COUNTED_ITEMS_FILE" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+items_file = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+try:
+    vm_judges.verify_items_allowlist(items_file)
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+    then
+      RUN_WHY="counted items file refused by field allow-list guard: $COUNTED_ITEMS_FILE"
+      exit 2
+    fi
+  fi
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+anchor_f = Path(sys.argv[2])
+p0a_f = Path(sys.argv[3])
+counted_f = Path(sys.argv[4]) if sys.argv[4].strip() else None
+counted_mf = Path(sys.argv[5]) if sys.argv[5].strip() else None
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+try:
+    bakeoff_judge.verify_lock_check_two_inputs(
+        anchor_items_or_path=anchor_f,
+        p0a_items_or_path=p0a_f,
+        counted_items_or_manifest=(counted_mf if counted_mf is not None else counted_f),
+    )
+except bakeoff_judge.RdlabError as exc:
+    sys.stderr.write(f"[{exc.code}] {exc.message}\n")
+    raise SystemExit(2)
+PY
+  then
+    RUN_WHY="lock-check two-input validation failed before session open"
+    exit 2
+  fi
+  if [[ -z "$ITEMS_FILE" ]]; then
+    ITEMS_FILE="$ANCHOR_ITEMS_FILE"
+  fi
+else
+  if [[ -z "$ITEMS_FILE" ]]; then
+    RUN_WHY="RDLAB_ITEMS_FILE or --items-file is required"
+    echo "ITEMS_FILE_MISSING: RDLAB_ITEMS_FILE or --items-file is required" >&2
+    exit 2
+  fi
+  if ! "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'src')); sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.check_upload_path_allowed(sys.argv[2])" "$REPO_ROOT" "$ITEMS_FILE"; then
+    RUN_WHY="upload path refused by key/sealed-store guard: $ITEMS_FILE"
+    exit 2
+  fi
+  if [[ ! -f "$ITEMS_FILE" ]]; then
+    RUN_WHY="items file does not exist: $ITEMS_FILE"
+    echo "ITEMS_FILE_MISSING: $ITEMS_FILE" >&2
+    exit 2
+  fi
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+items_file = Path(sys.argv[2])
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+try:
+    vm_judges.verify_items_allowlist(items_file)
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+  then
+    RUN_WHY="items file refused by field allow-list guard: $ITEMS_FILE"
+    exit 2
+  fi
 fi
 
 if [[ -z "$RECEIPTS_DIR" ]] || [[ ! -d "$RECEIPTS_DIR" ]]; then
@@ -1554,7 +1741,7 @@ then
 fi
 
 mkdir -p "$STAGE_DIR"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" <<'PY'
 import shutil
 import sys
 import tarfile
@@ -1568,6 +1755,12 @@ receipts_tar = Path(sys.argv[5])
 repo_tar = Path(sys.argv[6])
 device_py_dst = Path(sys.argv[7])
 raw_golden_manifest = sys.argv[8].strip() if len(sys.argv) > 8 else ""
+raw_anchor_src = sys.argv[9].strip() if len(sys.argv) > 9 else ""
+raw_anchor_dst = sys.argv[10].strip() if len(sys.argv) > 10 else ""
+raw_p0a_src = sys.argv[11].strip() if len(sys.argv) > 11 else ""
+raw_p0a_dst = sys.argv[12].strip() if len(sys.argv) > 12 else ""
+raw_counted_items = sys.argv[13].strip() if len(sys.argv) > 13 else ""
+raw_counted_manifest = sys.argv[14].strip() if len(sys.argv) > 14 else ""
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -1578,6 +1771,18 @@ vm_judges.check_upload_path_allowed(items_src)
 vm_judges.verify_items_allowlist(items_src)
 _ = vm_judges.collect_claim_ngram_sha256s(items_src)
 shutil.copyfile(items_src, items_dst)
+if raw_anchor_src and raw_anchor_dst:
+    anchor_src = Path(raw_anchor_src)
+    vm_judges.check_upload_path_allowed(anchor_src)
+    vm_judges.verify_items_allowlist(anchor_src)
+    _ = vm_judges.collect_claim_ngram_sha256s(anchor_src)
+    shutil.copyfile(anchor_src, Path(raw_anchor_dst))
+if raw_p0a_src and raw_p0a_dst:
+    p0a_src = Path(raw_p0a_src)
+    vm_judges.check_upload_path_allowed(p0a_src)
+    vm_judges.verify_items_allowlist(p0a_src)
+    _ = vm_judges.collect_claim_ngram_sha256s(p0a_src)
+    shutil.copyfile(p0a_src, Path(raw_p0a_dst))
 shutil.copyfile(repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py", device_py_dst)
 
 with tarfile.open(receipts_tar, "w:gz") as tf:
@@ -1622,6 +1827,19 @@ with tarfile.open(repo_tar, "w:gz") as tf:
         if not gm_path.is_file():
             raise SystemExit(f"GOLDEN_ANCHOR_MANIFEST_MISSING: file does not exist: {gm_path}")
         tf.add(gm_path, arcname="golden_anchor_manifest.json", recursive=False)
+    if raw_counted_items:
+        ci_path = Path(raw_counted_items)
+        if not ci_path.is_file():
+            raise SystemExit(f"COUNTED_ITEMS_MISSING: file does not exist: {ci_path}")
+        vm_judges.check_upload_path_allowed(ci_path)
+        vm_judges.verify_items_allowlist(ci_path)
+        tf.add(ci_path, arcname="counted_items.jsonl", recursive=False)
+    if raw_counted_manifest:
+        cm_path = Path(raw_counted_manifest)
+        if not cm_path.is_file():
+            raise SystemExit(f"COUNTED_MANIFEST_MISSING: file does not exist: {cm_path}")
+        vm_judges.check_upload_path_allowed(cm_path)
+        tf.add(cm_path, arcname="counted_manifest.json", recursive=False)
     raw_bg_goldens = (_os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
     if raw_bg_goldens and not raw_bg_goldens.startswith("/content/"):
         bg_path = Path(raw_bg_goldens)
@@ -1823,10 +2041,21 @@ timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content
   RUN_WHY="colab upload failed for /content/receipts_bundle.tar.gz on session $S"
   exit 1
 }
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-  RUN_WHY="colab upload failed for /content/rdlab_items/items.jsonl on session $S"
-  exit 1
-}
+if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
+  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ANCHOR_ITEMS_FILE" "/content/rdlab_items/anchor_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    RUN_WHY="colab upload failed for /content/rdlab_items/anchor_items.jsonl on session $S"
+    exit 1
+  }
+  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_ITEMS_FILE" "/content/rdlab_items/p0a_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    RUN_WHY="colab upload failed for /content/rdlab_items/p0a_items.jsonl on session $S"
+    exit 1
+  }
+else
+  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    RUN_WHY="colab upload failed for /content/rdlab_items/items.jsonl on session $S"
+    exit 1
+  }
+fi
 if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
   timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
     RUN_WHY="colab upload failed for /content/resume_state.tar.gz on session $S"
@@ -2056,7 +2285,7 @@ if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
 fi
 
 # Extract result.tar.gz, run log guard on all kept logs and outputs, and write outputs-closed.json before any key read.
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" "$ITEMS_FILE" "$CLI_LOG" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" "$ITEMS_FILE" "$CLI_LOG" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" <<'PY'
 import json
 import shutil
 import sys
@@ -2067,6 +2296,9 @@ repo_root = Path(sys.argv[1])
 out_dir = Path(sys.argv[2])
 items_file = Path(sys.argv[3])
 cli_log = Path(sys.argv[4])
+raw_anchor_file = sys.argv[5].strip() if len(sys.argv) > 5 else ""
+raw_p0a_file = sys.argv[6].strip() if len(sys.argv) > 6 else ""
+raw_counted_file = sys.argv[7].strip() if len(sys.argv) > 7 else ""
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -2138,6 +2370,11 @@ for lf in (extract_dir / "logs").glob("*.log"):
     vm_judges.scrub_log_file_in_place(lf)
 
 claim_hashes = vm_judges.collect_claim_ngram_sha256s(items_file)
+for extra_item_src in (raw_anchor_file, raw_p0a_file, raw_counted_file):
+    if extra_item_src:
+        ep = Path(extra_item_src)
+        if ep.is_file():
+            claim_hashes.update(vm_judges.collect_claim_ngram_sha256s(ep))
 paths_to_check: list[Path] = [cli_log]
 for top_f in (
     out_dir / "progress.jsonl",

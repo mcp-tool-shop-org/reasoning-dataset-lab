@@ -415,8 +415,16 @@ def resolve_repo_dir(repo_dir: Path | None = None) -> Path:
 
 
 def _ensure_repo_imports(repo_dir: Path | None = None) -> None:
-    """No-op compatibility stub (parent process never mutates `sys.path`)."""
-    _ = repo_dir
+    """Add `RDLAB_REPO_DIR/src` to `sys.path` if not already present."""
+    candidate_roots = [resolve_repo_dir(repo_dir)]
+    if repo_dir is not None:
+        candidate_roots.insert(0, Path(repo_dir))
+    for root in candidate_roots:
+        src_dir = root / "src"
+        if src_dir.is_dir():
+            src_str = str(src_dir)
+            if src_str not in sys.path:
+                sys.path.insert(0, src_str)
 
 
 EXPECTED_JUDGE_LOCK_SHA256 = (
@@ -4428,6 +4436,8 @@ def write_window_manifest(
     *,
     window_id: str | None = None,
     mode: str | None = None,
+    anchor_items_sha256: str | None = None,
+    p0a_items_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Build and write `run_dir / window.json` listing `{sha256, bytes}` for every allow-listed artifact in `run_dir`."""
     ensure_not_drive_path(run_dir)
@@ -4447,6 +4457,19 @@ def write_window_manifest(
         if mode is not None and str(mode).strip()
         else (os.environ.get("RDLAB_MODE", "").strip() or "stub")
     )
+    existing_win_path = run_dir / WINDOW_MANIFEST_FILENAME
+    prev_anchor_sha: str | None = None
+    prev_p0a_sha: str | None = None
+    if existing_win_path.is_file():
+        try:
+            prev_win_doc = json.loads(existing_win_path.read_text(encoding="utf-8"))
+            if isinstance(prev_win_doc, Mapping):
+                prev_anchor_sha = str(prev_win_doc.get("anchor_items_sha256") or "").strip() or None
+                prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
+        except Exception:
+            pass
+    eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
+    eff_p0a_sha = (str(p0a_items_sha256).strip() if p0a_items_sha256 else None) or prev_p0a_sha
     files_map: dict[str, dict[str, Any]] = {}
     for p in sorted(run_dir.rglob("*")):
         if not p.is_file() or p.is_symlink():
@@ -4466,6 +4489,10 @@ def write_window_manifest(
         "file_count": len(files_map),
         "files": files_map,
     }
+    if eff_anchor_sha is not None:
+        doc["anchor_items_sha256"] = eff_anchor_sha
+    if eff_p0a_sha is not None:
+        doc["p0a_items_sha256"] = eff_p0a_sha
     body_bytes = json.dumps(
         doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
@@ -5482,12 +5509,16 @@ def run_judges_pipeline(
     shard_manifest_path: Path | None = None,
     shard_manifest_sha256: str | None = None,
     golden_anchor_manifest_path: Path | None = None,
+    anchor_items_file: Path | None = None,
+    p0a_items_file: Path | None = None,
+    counted_items_or_manifest: Path | None = None,
     loop_order: str | None = None,
     subblock_items: int | None = None,
     session_fingerprint_sha256: str | None = None,
     replacement_session: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run all 5 judges (or `only_judge_ids`) as separate child subprocesses in their synced venvs and compute readouts."""
+    _ensure_repo_imports(repo_root)
     eff_repo_dir = (repo_root or resolve_repo_dir()).resolve()
     eff_work_dir = (
         work_dir
@@ -5509,6 +5540,48 @@ def run_judges_pipeline(
     _, parsed_shard_n = parse_shard_spec(raw_shard_for_parse)
     explicit_limit_env = os.environ.get("RDLAB_LIMIT_ITEMS", "").strip()
     norm_mode = str(mode or "").strip().lower()
+    is_lock_check_window = norm_mode in (
+        "lock-check",
+        "lock_check",
+        "lock-check-stub",
+        "lock_check_stub",
+    )
+    eff_anchor_file: Path | None = None
+    eff_p0a_file: Path | None = None
+    eff_counted_source: Path | None = counted_items_or_manifest
+    if is_lock_check_window:
+        env_anc = os.environ.get("RDLAB_ANCHOR_ITEMS_FILE", "").strip()
+        env_p0a = os.environ.get("RDLAB_P0A_ITEMS_FILE", "").strip()
+        env_cnt = os.environ.get("RDLAB_COUNTED_ITEMS_FILE", "").strip() or os.environ.get("RDLAB_COUNTED_MANIFEST", "").strip()
+        eff_anchor_file = anchor_items_file if anchor_items_file is not None else (Path(env_anc) if env_anc else None)
+        eff_p0a_file = p0a_items_file if p0a_items_file is not None else (Path(env_p0a) if env_p0a else None)
+        if eff_counted_source is None and env_cnt:
+            eff_counted_source = Path(env_cnt)
+        if eff_counted_source is None and shard_manifest_path is not None and shard_manifest_path.is_file():
+            eff_counted_source = shard_manifest_path
+        if eff_anchor_file is None or eff_p0a_file is None:
+            raise RefusalError(
+                "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                "--lock-check requires both --anchor-items (50 anchor items from the counted part) and --p0a-items (114 burned pilot items).",
+            )
+        import importlib
+
+        _ensure_repo_imports(eff_repo_dir)
+        bakeoff_judge_pre = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
+        try:
+            bakeoff_judge_pre.verify_lock_check_two_inputs(
+                anchor_items_or_path=eff_anchor_file,
+                p0a_items_or_path=eff_p0a_file,
+                counted_items_or_manifest=eff_counted_source,
+            )
+        except bakeoff_judge_pre.RdlabError as exc:
+            raise RefusalError(exc.code, exc.message) from exc
+        anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
+        anchor_stage_dir.mkdir(parents=True, exist_ok=True)
+        src_anchor_jsonl = eff_anchor_file / "items.jsonl" if eff_anchor_file.is_dir() else eff_anchor_file
+        if (anchor_stage_dir / "items.jsonl").resolve() != src_anchor_jsonl.resolve():
+            shutil.copyfile(src_anchor_jsonl, anchor_stage_dir / "items.jsonl")
+        part_dir = anchor_stage_dir
     if real_load_on_cpu:
         limit_items: int | None = 2
     elif explicit_limit_env and explicit_limit_env.isdigit():
@@ -6251,29 +6324,41 @@ def run_judges_pipeline(
         bakeoff_judge = importlib.import_module(
             "reasoning_dataset_lab.pilot_b.bakeoff_judge"
         )
-        golden_doc = bakeoff_judge.build_golden_anchor_manifest(
-            run_dir,
-            items_or_path=part_dir,
-            limit_items=limit_items,
-            schedule_seed=DEFAULT_SCHEDULE_SEED,
-        )
-        bakeoff_judge.write_golden_anchor_manifest(
-            golden_doc, run_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME
-        )
-        golden_anchor_manifest_sha256 = str(
-            golden_doc["golden_anchor_manifest_sha256"]
-        )
-        rebuilt_shard_doc = bakeoff_judge.build_shard_manifest(
-            part_dir,
-            num_shards=(parsed_shard_n if parsed_shard_n > 1 else 2),
-            schedule_seed=DEFAULT_SCHEDULE_SEED,
-            limit_items=limit_items,
-            lock_check_telemetry_path=run_dir,
-            golden_anchor_manifest_sha256=golden_anchor_manifest_sha256,
-        )
-        rebuilt_file_sha = bakeoff_judge.write_shard_manifest(
-            rebuilt_shard_doc, run_dir / SHARD_MANIFEST_FILENAME
-        )
+        try:
+            golden_doc = bakeoff_judge.build_golden_anchor_manifest(
+                run_dir,
+                items_or_path=part_dir,
+                limit_items=limit_items,
+                schedule_seed=DEFAULT_SCHEDULE_SEED,
+            )
+            bakeoff_judge.write_golden_anchor_manifest(
+                golden_doc, run_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME
+            )
+            golden_anchor_manifest_sha256 = str(
+                golden_doc["golden_anchor_manifest_sha256"]
+            )
+            manifest_items_source: Path = (
+                eff_counted_source
+                if (
+                    eff_counted_source is not None
+                    and eff_counted_source.exists()
+                    and (eff_counted_source.is_dir() or eff_counted_source.suffix.lower() == ".jsonl")
+                )
+                else part_dir
+            )
+            rebuilt_shard_doc = bakeoff_judge.build_shard_manifest(
+                manifest_items_source,
+                num_shards=(parsed_shard_n if parsed_shard_n > 1 else 2),
+                schedule_seed=DEFAULT_SCHEDULE_SEED,
+                limit_items=limit_items,
+                lock_check_telemetry_path=run_dir,
+                golden_anchor_manifest_sha256=golden_anchor_manifest_sha256,
+            )
+            rebuilt_file_sha = bakeoff_judge.write_shard_manifest(
+                rebuilt_shard_doc, run_dir / SHARD_MANIFEST_FILENAME
+            )
+        except bakeoff_judge.RdlabError as exc:
+            raise RefusalError(exc.code, exc.message) from exc
         shard_info["shard_manifest_sha256"] = rebuilt_file_sha
         shard_info["manifest_body_sha256"] = str(rebuilt_shard_doc["manifest_sha256"])
         shard_info["anchor_item_ids"] = list(rebuilt_shard_doc["anchor_item_ids"])
@@ -6281,13 +6366,11 @@ def run_judges_pipeline(
         anchor_set = set(rebuilt_shard_doc["anchor_item_ids"])
         anchor_rows_dir = run_dir / "anchor_rows"
         anchor_rows_dir.mkdir(parents=True, exist_ok=True)
-        all_baseline_rows: list[dict[str, Any]] = []
         for jid, _ in selected_specs:
             rf = run_dir / ROWS_DIRNAME / f"{jid}.jsonl"
             j_anchor_lines: list[str] = []
             for ln in (rf.read_text(encoding="utf-8").splitlines() if rf.is_file() else ()):
                 robj = json.loads(ln)
-                all_baseline_rows.append(robj)
                 if str(robj.get("item_id") or "") in anchor_set:
                     j_anchor_lines.append(json.dumps(robj, sort_keys=True))
             (anchor_rows_dir / f"{jid}.jsonl").write_text(
@@ -6297,30 +6380,64 @@ def run_judges_pipeline(
             )
 
         real_mode_active = is_real_mode(mode, dryrun=dryrun)
-        p0a_doc = bakeoff_judge.run_lock_check_p0a(
-            part_dir=part_dir,
-            output_dir=run_dir,
-            baseline_rows=all_baseline_rows,
-            receipts_dir=receipts_dir,
-            hf_home=hf_home,
-            device=resolve_judge_device(
-                mode=mode, dryrun=dryrun, real_load_on_cpu=real_load_on_cpu
-            ),
-            dtype=DEFAULT_TORCH_DTYPE,
-            schedule_seed=DEFAULT_SCHEDULE_SEED,
-            limit_items=limit_items,
-            fake_transport=not real_mode_active,
-            window_mode=mode,
-            event_factory=(
-                bakeoff_judge._make_cuda_timing_event
-                if real_mode_active
-                else None
-            ),
-            timing_backend="cuda_event" if real_mode_active else "cpu_monotonic",
-            repo_root=eff_repo_dir,
-            judge_ids=[jid for jid, _ in selected_specs],
+        eff_p0a_part_dir = eff_p0a_file if eff_p0a_file is not None else part_dir
+        p0a_src_jsonl = (
+            eff_p0a_part_dir / "items.jsonl"
+            if eff_p0a_part_dir.is_dir()
+            else eff_p0a_part_dir
         )
+        p0a_stage_dir = run_dir.parent / f".{run_dir.name}_p0a_part"
+        p0a_stage_dir.mkdir(parents=True, exist_ok=True)
+        if (p0a_stage_dir / "items.jsonl").resolve() != p0a_src_jsonl.resolve():
+            shutil.copyfile(p0a_src_jsonl, p0a_stage_dir / "items.jsonl")
+        src_p0a_mf = p0a_src_jsonl.parent / "manifest.json"
+        if src_p0a_mf.is_file():
+            shutil.copyfile(src_p0a_mf, p0a_stage_dir / "manifest.json")
+        elif p0a_src_jsonl.parent.name.strip().lower() in ("pilot-40b", "pilot_40b") or p0a_src_jsonl.stem.strip().lower() in (
+            "pilot-40b",
+            "pilot_40b",
+            "p0a_items",
+        ):
+            (p0a_stage_dir / "manifest.json").write_text(
+                json.dumps({"part_id": "pilot-40b", "schema_version": "1.0"}, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+        try:
+            p0a_doc = bakeoff_judge.run_lock_check_p0a(
+                part_dir=p0a_stage_dir,
+                output_dir=run_dir,
+                baseline_rows=None,
+                anchor_items=part_dir,
+                counted_item_ids=(
+                    eff_counted_source
+                    if eff_counted_source is not None
+                    else list(rebuilt_shard_doc.get("shard_by_item", {}).keys())
+                ),
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                device=resolve_judge_device(
+                    mode=mode, dryrun=dryrun, real_load_on_cpu=real_load_on_cpu
+                ),
+                dtype=DEFAULT_TORCH_DTYPE,
+                schedule_seed=DEFAULT_SCHEDULE_SEED,
+                limit_items=limit_items,
+                fake_transport=not real_mode_active,
+                window_mode=mode,
+                event_factory=(
+                    bakeoff_judge._make_cuda_timing_event
+                    if real_mode_active
+                    else None
+                ),
+                timing_backend="cuda_event" if real_mode_active else "cpu_monotonic",
+                repo_root=eff_repo_dir,
+                judge_ids=[jid for jid, _ in selected_specs],
+            )
+        except bakeoff_judge.RdlabError as exc:
+            raise RefusalError(exc.code, exc.message) from exc
         p0a_report_sha256 = str(p0a_doc.get("p0a_report_sha256") or "")
+        shutil.rmtree(p0a_stage_dir, ignore_errors=True)
+        shutil.rmtree(part_dir, ignore_errors=True)
 
     raw_mass_check = check_bakeoff_logprob_mass(run_dir, part_id="pilot-40b")
     pilot_mass_readout: dict[str, Any] = {
@@ -6553,6 +6670,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--items-file",
         type=Path,
         default=env_path("RDLAB_ITEMS_FILE", Path("/content/rdlab_items/items.jsonl")),
+    )
+    parser.add_argument(
+        "--anchor-items",
+        "--anchor-items-file",
+        dest="anchor_items_file",
+        type=Path,
+        default=env_path("RDLAB_ANCHOR_ITEMS_FILE", None),
+        help="50 anchor items from the counted part (25 stratified + 25 canaries) for --lock-check.",
+    )
+    parser.add_argument(
+        "--p0a-items",
+        "--p0a-items-file",
+        dest="p0a_items_file",
+        type=Path,
+        default=env_path("RDLAB_P0A_ITEMS_FILE", None),
+        help="114 burned pilot items (pilot-40b) for --lock-check P0a.",
+    )
+    parser.add_argument(
+        "--counted-items",
+        "--counted-manifest",
+        dest="counted_items_file",
+        type=Path,
+        default=env_path(
+            "RDLAB_COUNTED_ITEMS_FILE",
+            env_path("RDLAB_COUNTED_MANIFEST", None),
+        ),
+        help="Optional counted part items.jsonl or shard_manifest.json used to verify --anchor-items and --p0a-items.",
     )
     parser.add_argument(
         "--resume-tar",
@@ -9470,6 +9614,7 @@ def _run_real_boot_gatekeeper_prompts(
     transport: Any | None = None,
 ) -> dict[str, str]:
     """Load the smallest judge (`nemotron-3-nano-4b`) through the real transport and run the 2 fixed synthetic prompts."""
+    _ensure_repo_imports(repo_root)
     if transport is not None:
         import importlib
 
@@ -10690,6 +10835,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.step == "probe":
         return run_probe(args)
 
+    is_lock_check_main = args.mode in ("lock-check", "lock-check-stub")
+    anchor_items_arg = getattr(args, "anchor_items_file", None)
+    p0a_items_arg = getattr(args, "p0a_items_file", None)
+    counted_items_arg = getattr(args, "counted_items_file", None)
+
     for p in (
         args.repo_dir,
         args.receipts_dir,
@@ -10699,6 +10849,9 @@ def main(argv: list[str] | None = None) -> int:
         args.hf_home,
         args.result_tar,
         args.status_file,
+        *([anchor_items_arg] if anchor_items_arg is not None else []),
+        *([p0a_items_arg] if p0a_items_arg is not None else []),
+        *([counted_items_arg] if counted_items_arg is not None else []),
     ):
         ensure_not_drive_path(p)
 
@@ -10842,10 +10995,35 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         current_step = "check_upload_path_allowed"
-        check_upload_path_allowed(args.items_file)
+        uploaded_item_files: list[Path] = []
+        anchor_items_sha256: str | None = None
+        p0a_items_sha256: str | None = None
+        if is_lock_check_main:
+            if anchor_items_arg is None or p0a_items_arg is None:
+                raise RefusalError(
+                    "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                    "--lock-check requires both --anchor-items <file> (50 anchor items from the counted part) and --p0a-items <file> (114 burned pilot items).",
+                )
+            eff_anchor_jsonl = anchor_items_arg / "items.jsonl" if anchor_items_arg.is_dir() else anchor_items_arg
+            eff_p0a_jsonl = p0a_items_arg / "items.jsonl" if p0a_items_arg.is_dir() else p0a_items_arg
+            check_upload_path_allowed(eff_anchor_jsonl)
+            check_upload_path_allowed(eff_p0a_jsonl)
+            uploaded_item_files = [eff_anchor_jsonl, eff_p0a_jsonl]
+            if args.items_file.is_file() and args.items_file not in uploaded_item_files:
+                check_upload_path_allowed(args.items_file)
+                uploaded_item_files.append(args.items_file)
 
-        current_step = "verify_items_allowlist"
-        verify_items_allowlist(args.items_file)
+            current_step = "verify_items_allowlist"
+            verify_items_allowlist(eff_anchor_jsonl)
+            verify_items_allowlist(eff_p0a_jsonl)
+            anchor_items_sha256 = sha256_file(eff_anchor_jsonl)
+            p0a_items_sha256 = sha256_file(eff_p0a_jsonl)
+        else:
+            check_upload_path_allowed(args.items_file)
+            uploaded_item_files = [args.items_file]
+
+            current_step = "verify_items_allowlist"
+            verify_items_allowlist(args.items_file)
 
         cgroup_chain_at_start = read_cgroup_limit_chain()
 
@@ -10873,6 +11051,24 @@ def main(argv: list[str] | None = None) -> int:
             step_order=step_order,
         )
 
+        if is_lock_check_main and anchor_items_arg is not None and p0a_items_arg is not None:
+            current_step = "verify_lock_check_two_inputs"
+            import importlib
+
+            bakeoff_judge_mod = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
+            try:
+                bakeoff_judge_mod.verify_lock_check_two_inputs(
+                    anchor_items_or_path=anchor_items_arg,
+                    p0a_items_or_path=p0a_items_arg,
+                    counted_items_or_manifest=(
+                        counted_items_arg
+                        if counted_items_arg is not None
+                        else getattr(args, "shard_manifest", None)
+                    ),
+                )
+            except bakeoff_judge_mod.RdlabError as exc:
+                raise RefusalError(exc.code, exc.message) from exc
+
         current_step = "ensure_shard_manifest"
         _, parsed_main_shard_n = parse_shard_spec(raw_shard_arg)
         env_main_limit = os.environ.get("RDLAB_LIMIT_ITEMS", "").strip()
@@ -10899,8 +11095,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         )
+        manifest_items_file = (
+            (anchor_items_arg / "items.jsonl" if anchor_items_arg.is_dir() else anchor_items_arg)
+            if (is_lock_check_main and anchor_items_arg is not None)
+            else args.items_file
+        )
         shard_info_report = ensure_shard_manifest_for_run(
-            items_file=args.items_file,
+            items_file=manifest_items_file,
             run_dir=args.run_dir,
             raw_shard_spec=raw_shard_arg,
             shard_manifest_path=getattr(args, "shard_manifest", None),
@@ -11167,6 +11368,9 @@ def main(argv: list[str] | None = None) -> int:
                         golden_anchor_manifest_path=getattr(
                             args, "golden_anchor_manifest", None
                         ),
+                        anchor_items_file=anchor_items_arg,
+                        p0a_items_file=p0a_items_arg,
+                        counted_items_or_manifest=counted_items_arg,
                         loop_order=loop_order_val,
                         subblock_items=subblock_items_val,
                         session_fingerprint_sha256=str(
@@ -11196,7 +11400,7 @@ def main(argv: list[str] | None = None) -> int:
 
         current_step = "delete_uploaded_items"
         deleted_items_receipt = delete_uploaded_items_and_record_receipt(
-            [args.items_file]
+            uploaded_item_files
         )
 
         current_step = "session_env_end"
@@ -11410,6 +11614,10 @@ def main(argv: list[str] | None = None) -> int:
                 receipt_doc["first_load_note"] = fl_note
                 receipt_doc["first_judge_id"] = first_load_judge_id
                 receipt_doc["first_judge_receipt_bytes"] = fl_receipt_bytes
+        if anchor_items_sha256 is not None:
+            receipt_doc["anchor_items_sha256"] = anchor_items_sha256
+        if p0a_items_sha256 is not None:
+            receipt_doc["p0a_items_sha256"] = p0a_items_sha256
         receipt_serialized = json.dumps(receipt_doc, indent=2) + "\n"
         receipt_path.write_text(
             receipt_serialized,
@@ -11425,6 +11633,8 @@ def main(argv: list[str] | None = None) -> int:
             args.run_dir,
             window_id=getattr(args, "window_id", None),
             mode=args.mode,
+            anchor_items_sha256=anchor_items_sha256,
+            p0a_items_sha256=p0a_items_sha256,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         _record_step_end(
@@ -11451,6 +11661,8 @@ def main(argv: list[str] | None = None) -> int:
             args.run_dir,
             window_id=getattr(args, "window_id", None),
             mode=args.mode,
+            anchor_items_sha256=anchor_items_sha256,
+            p0a_items_sha256=p0a_items_sha256,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
 
@@ -11553,6 +11765,8 @@ def main(argv: list[str] | None = None) -> int:
             args.run_dir,
             window_id=getattr(args, "window_id", None),
             mode=args.mode,
+            anchor_items_sha256=anchor_items_sha256,
+            p0a_items_sha256=p0a_items_sha256,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         return 0
@@ -11571,10 +11785,15 @@ def main(argv: list[str] | None = None) -> int:
             gpu_gate_report = err.gpu_gate_report
         if isinstance(err, DeviceIndexCheckError):
             device_check_report = err.device_check_report
-        if deleted_items_receipt is None and args.items_file is not None:
+        cleanup_paths = [
+            p
+            for p in (anchor_items_arg, p0a_items_arg, args.items_file)
+            if p is not None
+        ]
+        if deleted_items_receipt is None and cleanup_paths:
             try:
                 deleted_items_receipt = delete_uploaded_items_and_record_receipt(
-                    [args.items_file]
+                    cleanup_paths
                 )
             except Exception:
                 pass
@@ -11724,13 +11943,21 @@ def main(argv: list[str] | None = None) -> int:
 
     except Exception as exc:
         exc_type = type(exc).__name__
-        if deleted_items_receipt is None and args.items_file is not None:
-            try:
-                deleted_items_receipt = delete_uploaded_items_and_record_receipt(
-                    [args.items_file]
-                )
-            except Exception:
-                pass
+        if deleted_items_receipt is None:
+            fallback_delete_paths: list[Path] = []
+            if args.items_file is not None:
+                fallback_delete_paths.append(args.items_file)
+            if anchor_items_arg is not None and anchor_items_arg not in fallback_delete_paths:
+                fallback_delete_paths.append(anchor_items_arg)
+            if p0a_items_arg is not None and p0a_items_arg not in fallback_delete_paths:
+                fallback_delete_paths.append(p0a_items_arg)
+            if fallback_delete_paths:
+                try:
+                    deleted_items_receipt = delete_uploaded_items_and_record_receipt(
+                        fallback_delete_paths
+                    )
+                except Exception:
+                    pass
         for lf in logs_dir.glob("*.log"):
             scrub_log_file_in_place(lf)
         write_vm_status_file(

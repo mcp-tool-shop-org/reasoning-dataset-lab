@@ -19829,6 +19829,19 @@ def test_lock_check_item1_mode_exists_is_real_and_refuses_hooks(
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "lc_dry_env")
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
     items_path = _make_stratified_public_items(tmp_path / "lc_items", count=4)
+    anchor_items_path = _make_stratified_public_items(tmp_path / "lc_anchor", count=50)
+    (anchor_items_path.parent / "manifest.json").write_text(
+        json.dumps({"part_id": "part01", "schema_version": "1.0"}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    anchor_rows = []
+    for ln in anchor_items_path.read_text(encoding="utf-8").splitlines():
+        if ln.strip():
+            obj = json.loads(ln)
+            obj["id"] = f"counted-{obj['id']}"
+            anchor_rows.append(json.dumps(obj, sort_keys=True))
+    anchor_items_path.write_text("\n".join(anchor_rows) + "\n", encoding="utf-8")
+    p0a_items_path = _make_stratified_public_items(tmp_path / "lc_p0a", count=114)
     exports = _base_launcher_exports(
         env_paths,
         open_lock=tmp_path / "open.lock",
@@ -19841,11 +19854,17 @@ def test_lock_check_item1_mode_exists_is_real_and_refuses_hooks(
         ("--lock-check-stub", "lock-check-stub", "CPU"),
         ("--counted-stub", "counted-stub", "CPU"),
     ):
+        extra_lc_flags = ""
+        if exp_mode in ("lock-check", "lock-check-stub"):
+            extra_lc_flags = (
+                f" --anchor-items '{_to_wsl_path(anchor_items_path)}'"
+                f" --p0a-items '{_to_wsl_path(p0a_items_path)}'"
+            )
         proc_dry = subprocess.run(
             [
                 "bash",
                 "-c",
-                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' {flag} --dry --window-id win-dry-1 --run-id lc-dry",
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' {flag}{extra_lc_flags} --dry --window-id win-dry-1 --run-id lc-dry",
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -19855,6 +19874,9 @@ def test_lock_check_item1_mode_exists_is_real_and_refuses_hooks(
         )
         assert proc_dry.returncode == 0, proc_dry.stderr
         assert f"RDLAB_MODE={exp_mode}" in proc_dry.stdout
+        if exp_mode in ("lock-check", "lock-check-stub"):
+            assert "RDLAB_ANCHOR_ITEMS_FILE=/content/rdlab_items/anchor_items.jsonl" in proc_dry.stdout
+            assert "RDLAB_P0A_ITEMS_FILE=/content/rdlab_items/p0a_items.jsonl" in proc_dry.stdout
         if exp_hw == "--gpu A100":
             assert "--gpu A100" in proc_dry.stdout
 
@@ -20557,6 +20579,63 @@ def test_lock_check_item4_p0a_bitwise_profiler_and_reversed_low_margin_rerun(
     assert exc_cpart.value.code == "P0A_COUNTED_PART_FORBIDDEN"
 
 
+def _make_counted_part_and_50_anchors_and_114_p0a(
+    base_dir: Path,
+    *,
+    counted_count: int = 100,
+    counted_part_id: str = "part01",
+) -> tuple[Path, Path, Path]:
+    """Create:
+    1) A counted part directory (`part01`, `counted_count` items, IDs `counted-item-<stratum>-<idx:04d>`),
+    2) A 50-item `--anchor-items` file extracted from that counted part (with no overlap with `pilot-40b`),
+    3) A 114-item `--p0a-items` file from the burned pilot (`pilot-40b`, IDs `pilot-item-<stratum>-<idx:04d>`).
+    """
+    counted_raw = _make_stratified_public_items(base_dir / "counted_part", count=counted_count)
+    counted_dir = counted_raw.parent
+    counted_rows_objs: list[dict[str, Any]] = []
+    counted_lines: list[str] = []
+    for ln in counted_raw.read_text(encoding="utf-8").splitlines():
+        if ln.strip():
+            obj = json.loads(ln)
+            obj["id"] = f"counted-{obj['id']}"
+            counted_rows_objs.append(obj)
+            counted_lines.append(json.dumps(obj, sort_keys=True))
+    counted_raw.write_text("\n".join(counted_lines) + "\n", encoding="utf-8", newline="\n")
+    (counted_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "part_id": counted_part_id,
+                "schema_version": "1.0",
+                "item_ids": [o["id"] for o in counted_rows_objs],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    anchor_dir = base_dir / "anchor_input"
+    anchor_dir.mkdir(parents=True, exist_ok=True)
+    anchor_file = anchor_dir / "anchor_items.jsonl"
+    anchor_objs = counted_rows_objs[:50]
+    anchor_file.write_text(
+        "\n".join(json.dumps(o, sort_keys=True) for o in anchor_objs) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    p0a_raw = _make_stratified_public_items(base_dir / "pilot-40b", count=114)
+    p0a_lines: list[str] = []
+    for ln in p0a_raw.read_text(encoding="utf-8").splitlines():
+        if ln.strip():
+            obj = json.loads(ln)
+            obj["id"] = f"pilot-{obj['id']}"
+            p0a_lines.append(json.dumps(obj, sort_keys=True))
+    p0a_raw.write_text("\n".join(p0a_lines) + "\n", encoding="utf-8", newline="\n")
+    return counted_raw, anchor_file, p0a_raw
+
+
 def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -20578,12 +20657,15 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     committed_goldens_sha_before = hashlib.sha256(committed_goldens.read_bytes()).hexdigest()
 
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "chain_env")
-    items_file = _make_stratified_public_items(tmp_path / "pilot-40b", count=114)
-    # Copy items_file per window because vm_judges deletes the uploaded items_file after judge_pass
-    lc_items = tmp_path / "lc_items" / "items.jsonl"
-    lc_items.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(items_file, lc_items)
-    shutil.copyfile(items_file.parent / "manifest.json", lc_items.parent / "manifest.json")
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "two_inputs", counted_count=100
+    )
+    # Copy anchor and p0a files per window because vm_judges deletes both uploaded files after the run
+    lc_anchor = tmp_path / "lc_uploaded" / "anchor_items.jsonl"
+    lc_p0a = tmp_path / "lc_uploaded" / "p0a_items.jsonl"
+    lc_anchor.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(anchor_items_src, lc_anchor)
+    shutil.copyfile(p0a_items_src, lc_p0a)
 
     monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
     monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
@@ -20605,8 +20687,12 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
             str(REPO_ROOT),
             "--receipts-dir",
             str(receipts_dir),
-            "--items-file",
-            str(lc_items),
+            "--anchor-items",
+            str(lc_anchor),
+            "--p0a-items",
+            str(lc_p0a),
+            "--counted-items",
+            str(counted_items_file),
             "--run-dir",
             str(lc_run_dir),
             "--work-dir",
@@ -20620,8 +20706,10 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
             "--dryrun",
         ]
     )
-    assert rc_lc == 0
+    assert rc_lc == 0, lc_status.read_text(encoding="utf-8")
     assert lc_tar.is_file()
+    assert not lc_anchor.exists()
+    assert not lc_p0a.exists()
 
     # Verify result.tar.gz contains all Item 5 artifacts and window.json hashes match every file
     with tarfile.open(lc_tar, "r:gz") as tf:
@@ -20638,8 +20726,15 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
         assert required_member in tar_names, f"Missing {required_member} in result.tar.gz"
 
     window_doc = json.loads((lc_run_dir / "window.json").read_text(encoding="utf-8"))
+    receipt_doc = json.loads((lc_run_dir / "receipt.json").read_text(encoding="utf-8"))
     assert window_doc["window_id"] == "window-lc-stub-01"
     assert window_doc["mode"] == "lock-check-stub"
+    assert len(window_doc["anchor_items_sha256"]) == 64
+    assert len(window_doc["p0a_items_sha256"]) == 64
+    assert receipt_doc["anchor_items_sha256"] == window_doc["anchor_items_sha256"]
+    assert receipt_doc["p0a_items_sha256"] == window_doc["p0a_items_sha256"]
+    assert receipt_doc["deleted_items_receipt"]["all_absent"] is True
+    assert len(receipt_doc["deleted_items_receipt"]["files"]) == 2
     rebuilt_window_doc = bakeoff_judge.build_window_manifest(
         lc_run_dir,
         window_id="window-lc-stub-01",
@@ -20682,6 +20777,10 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     assert len(sm_doc["stratified_anchor_item_ids"]) == 25
     assert len(sm_doc["canary_item_ids"]) == 25
     assert len(sm_doc["anchor_item_ids"]) == 50
+    assert set(sm_doc["anchor_item_ids"]) == set(gm_doc["anchor_item_ids"])
+    assert all(aid.startswith("counted-") for aid in gm_doc["anchor_item_ids"])
+    assert p0a_doc["part_id"] == "pilot-40b"
+    assert p0a_doc["item_count"] == 114
     assert p0a_doc["baseline_repeat"]["bitwise_identical"] is True
     assert p0a_doc["reversed_low_margin_rerun"]["selected_item_count"] == 20
 
@@ -20708,8 +20807,8 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     # Step 3 (Negative case): Running counted-stub WITHOUT the candidate goldens refuses with BOOT_GATEKEEPER_GOLDEN_MISSING
     neg_items = tmp_path / "neg_items" / "items.jsonl"
     neg_items.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(items_file, neg_items)
-    shutil.copyfile(items_file.parent / "manifest.json", neg_items.parent / "manifest.json")
+    shutil.copyfile(counted_items_file, neg_items)
+    shutil.copyfile(counted_items_file.parent / "manifest.json", neg_items.parent / "manifest.json")
     neg_status = tmp_path / "neg_status.json"
     rc_neg = vm_judges.main(
         [
@@ -20752,8 +20851,8 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     for shard_idx in (1, 2):
         s_items = tmp_path / f"s{shard_idx}_items" / "items.jsonl"
         s_items.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(items_file, s_items)
-        shutil.copyfile(items_file.parent / "manifest.json", s_items.parent / "manifest.json")
+        shutil.copyfile(counted_items_file, s_items)
+        shutil.copyfile(counted_items_file.parent / "manifest.json", s_items.parent / "manifest.json")
         s_run_dir = tmp_path / f"counted_shard_{shard_idx}"
         s_tar = tmp_path / f"counted_shard_{shard_idx}.tar.gz"
         s_status = tmp_path / f"counted_shard_{shard_idx}_status.json"
@@ -21353,6 +21452,483 @@ def test_fix1_item5_cosmetics_manifest_sha256_no_empty_comment_block_and_launch_
     assert "4.27" not in sh_src
     assert 'elif [[ "$MODE" == "lock-check" ]]; then' in sh_src
     assert "--gpu A100 at 5.30/h, wall 7200s" in sh_src
+
+
+def test_fix2_item1_and_3_two_input_lock_check_and_shard_merge_chain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix2 Items 1 & 3:
+    - `lock-check` / `lock-check-stub` takes two distinct inputs (`--anchor-items`: 50 anchor items from the counted part;
+      `--p0a-items`: 114 burned pilot items `pilot-40b` for P0a only).
+    - `golden_anchor_manifest.json` and `shard_manifest.json` are built from the 50 counted-part anchor items, while
+      `p0a_report.json` is built from the 114 burned pilot items (`pilot-40b`).
+    - When `counted-stub` shards `1/2` and `2/2` run on the counted part, all 50 `anchor_item_ids` are present in
+      `items_by_id` (none filtered out; `len(anchor_rows) == 100` per judge per shard), and `merge_shards.py` accepts
+      with `anchor_item_count == 50` and `flip_count == 0`.
+    - When any of the 50 `anchor_item_ids` in `shard_manifest.json` is missing from a counted shard's `items_by_id`
+      (e.g., if `shard_manifest.json` was built from `pilot-40b` instead of the counted part), `run_bakeoff_judge`
+      refuses with `SHARD_MANIFEST_ANCHOR_MISSING`.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+    import merge_shards
+    import promote_goldens
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "f2_env")
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "f2_inputs", counted_count=100
+    )
+    lc_anchor = tmp_path / "f2_lc_up" / "anchor_items.jsonl"
+    lc_p0a = tmp_path / "f2_lc_up" / "p0a_items.jsonl"
+    lc_anchor.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(anchor_items_src, lc_anchor)
+    shutil.copyfile(p0a_items_src, lc_p0a)
+
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+
+    lc_run_dir = tmp_path / "f2_lc_run"
+    lc_work_dir = tmp_path / "f2_lc_work"
+    lc_tar = tmp_path / "f2_lc_result.tar.gz"
+    lc_status = tmp_path / "f2_lc_status.json"
+
+    rc_lc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--lock-check-stub",
+            "--window-id",
+            "window-fix2-lc-01",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--anchor-items",
+            str(lc_anchor),
+            "--p0a-items",
+            str(lc_p0a),
+            "--counted-items",
+            str(counted_items_file),
+            "--run-dir",
+            str(lc_run_dir),
+            "--work-dir",
+            str(lc_work_dir),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(lc_tar),
+            "--status-file",
+            str(lc_status),
+            "--dryrun",
+        ]
+    )
+    assert rc_lc == 0, lc_status.read_text(encoding="utf-8")
+
+    gm_doc = json.loads((lc_run_dir / "golden_anchor_manifest.json").read_text(encoding="utf-8"))
+    sm_doc = json.loads((lc_run_dir / "shard_manifest.json").read_text(encoding="utf-8"))
+    p0a_doc = json.loads((lc_run_dir / "p0a_report.json").read_text(encoding="utf-8"))
+
+    counted_ids = set(bakeoff_judge.load_judge_items(counted_items_file)[0][i].item_id for i in range(100))
+    anchor_ids = set(gm_doc["anchor_item_ids"])
+    assert len(anchor_ids) == 50
+    assert anchor_ids.issubset(counted_ids)
+    assert set(sm_doc["anchor_item_ids"]) == anchor_ids
+    assert set(sm_doc["stratified_anchor_item_ids"]) | set(sm_doc["canary_item_ids"]) == anchor_ids
+    assert sm_doc["item_count"] == 100
+    assert set(sm_doc["shards"]["1"]) | set(sm_doc["shards"]["2"]) == counted_ids
+    assert p0a_doc["part_id"] == "pilot-40b"
+    assert p0a_doc["item_count"] == 114
+
+    temp_goldens = tmp_path / "f2_cand_goldens" / "boot_gatekeeper_goldens.json"
+    assert (
+        promote_goldens.main(
+            [
+                "--filled",
+                str(lc_run_dir / "boot_gatekeeper_goldens.filled.json"),
+                "--output",
+                str(temp_goldens),
+                "--receipt",
+                str(lc_run_dir / "receipt.json"),
+                "--session-env",
+                str(lc_run_dir / "session_env.json"),
+                "--repo-root",
+                str(REPO_ROOT),
+            ]
+        )
+        == 0
+    )
+
+    shard_dirs: list[Path] = []
+    for shard_idx in (1, 2):
+        s_items = tmp_path / f"f2_s{shard_idx}_items" / "items.jsonl"
+        s_items.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(counted_items_file, s_items)
+        shutil.copyfile(counted_items_file.parent / "manifest.json", s_items.parent / "manifest.json")
+        s_run_dir = tmp_path / f"f2_shard_{shard_idx}"
+        s_status = tmp_path / f"f2_shard_{shard_idx}_status.json"
+        rc_s = vm_judges.main(
+            [
+                "--step",
+                "run",
+                "--counted-stub",
+                "--shard",
+                f"{shard_idx}/2",
+                "--shard-manifest",
+                str(lc_run_dir / "shard_manifest.json"),
+                "--golden-anchor-manifest",
+                str(lc_run_dir / "golden_anchor_manifest.json"),
+                "--boot-gatekeeper-goldens",
+                str(temp_goldens),
+                "--repo-dir",
+                str(REPO_ROOT),
+                "--receipts-dir",
+                str(receipts_dir),
+                "--items-file",
+                str(s_items),
+                "--run-dir",
+                str(s_run_dir),
+                "--work-dir",
+                str(lc_work_dir),
+                "--hf-home",
+                str(hf_home),
+                "--result-tar",
+                str(tmp_path / f"f2_shard_{shard_idx}.tar.gz"),
+                "--status-file",
+                str(s_status),
+                "--dryrun",
+            ]
+        )
+        assert rc_s == 0, s_status.read_text(encoding="utf-8")
+        # Verify none of the 50 anchor items was filtered out on this counted shard
+        for jid in bakeoff_judge.BAKEOFF_JUDGE_SPECS:
+            ar_lines = [
+                json.loads(ln)
+                for ln in (s_run_dir / "anchor_rows" / f"{jid}.jsonl").read_text(encoding="utf-8").splitlines()
+                if ln.strip()
+            ]
+            assert len(ar_lines) == 100  # 50 anchor items * 2 orders (AB, BA)
+            assert {r["item_id"] for r in ar_lines} == anchor_ids
+        vm_judges.write_outputs_closed(s_run_dir)
+        shard_dirs.append(s_run_dir)
+
+    merge_rep = merge_shards.merge_shards(
+        shard_dirs=shard_dirs,
+        manifest_path=lc_run_dir / "shard_manifest.json",
+        output_dir=tmp_path / "f2_merged",
+        golden_anchor_manifest_path=lc_run_dir / "golden_anchor_manifest.json",
+    )
+    assert merge_rep["status"] == "ok"
+    assert merge_rep["anchor_agreement"]["anchor_item_count"] == 50
+    assert merge_rep["anchor_agreement"]["flip_count"] == 0
+
+    # Negative check: if shard_manifest.json has anchor_item_ids from pilot-40b while counted shard runs on part01,
+    # run_bakeoff_judge refuses with SHARD_MANIFEST_ANCHOR_MISSING (instead of filtering anchor_item_ids to [])
+    p0a_loaded_items, _ = bakeoff_judge.load_judge_items(p0a_items_src)
+    mismatched_sm = bakeoff_judge.build_shard_manifest(
+        p0a_items_src,
+        num_shards=2,
+        anchor_count=50,
+        stratified_anchor_count=25,
+        canary_anchor_count=25,
+        canary_item_ids=[it.item_id for it in p0a_loaded_items[50:75]],
+    )
+    mismatched_sm_path = tmp_path / "mismatched_pilot_shard_manifest.json"
+    mismatched_sm_sha = bakeoff_judge.write_shard_manifest(mismatched_sm, mismatched_sm_path)
+    with pytest.raises(RdlabError) as exc_missing_anc:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=counted_items_file,
+            output_dir=tmp_path / "counted_missing_anc_out",
+            judge="mu-judge",
+            fake_transport=True,
+            window_mode="counted-stub",
+            shard_spec="1/2",
+            shard_manifest_path=mismatched_sm_path,
+            shard_manifest_sha256=mismatched_sm_sha,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_missing_anc.value.code == "SHARD_MANIFEST_ANCHOR_MISSING"
+
+
+def test_fix2_item2_input_guards_overlap_counted_in_p0a_and_anchor_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix2 Item 2:
+    - `LOCK_CHECK_INPUT_OVERLAP`: any item ID appearing in both `--anchor-items` and `--p0a-items` is refused.
+    - `P0A_COUNTED_ITEM`: running P0a on any ID from the counted part (checked against the counted part's manifest or ID list) is refused.
+    - `LOCK_CHECK_ANCHOR_ITEMS_INVALID`: anchor input that isn't 50 items from the counted part (wrong count != 50,
+      from `pilot-40b`, or item ID not in the counted part's manifest/ID list, or missing `--anchor-items`/`--p0a-items`) is refused.
+    - `P0A_COUNTED_PART_FORBIDDEN`: Fix 1's 114-item / 228-call check on `--p0a-items` still holds.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "guards_base", counted_count=100
+    )
+    counted_manifest = counted_items_file.parent / "manifest.json"
+
+    # Valid two-input check passes
+    ver_ok = bakeoff_judge.verify_lock_check_two_inputs(
+        anchor_items_or_path=anchor_items_src,
+        p0a_items_or_path=p0a_items_src,
+        counted_items_or_manifest=counted_manifest,
+    )
+    assert ver_ok["anchor_item_count"] == 50
+    assert ver_ok["p0a_item_count"] == 114
+
+    # 1. LOCK_CHECK_INPUT_OVERLAP: plant one anchor item ID into p0a_items
+    p0a_overlap = tmp_path / "p0a_overlap" / "p0a_items.jsonl"
+    p0a_overlap.parent.mkdir(parents=True, exist_ok=True)
+    p0a_objs = [
+        json.loads(ln)
+        for ln in p0a_items_src.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    first_anchor_id = json.loads(anchor_items_src.read_text(encoding="utf-8").splitlines()[0])["id"]
+    p0a_objs[0]["id"] = first_anchor_id
+    p0a_overlap.write_text(
+        "\n".join(json.dumps(o, sort_keys=True) for o in p0a_objs) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_ov:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_items_src,
+            p0a_items_or_path=p0a_overlap,
+        )
+    assert exc_ov.value.code == "LOCK_CHECK_INPUT_OVERLAP"
+    assert first_anchor_id in exc_ov.value.message
+
+    with pytest.raises(RdlabError) as exc_ov_p0a:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=p0a_overlap,
+            output_dir=tmp_path / "out_ov_p0a",
+            anchor_items=anchor_items_src,
+            judge_ids=["mu-judge"],
+            fake_transport=True,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_ov_p0a.value.code == "LOCK_CHECK_INPUT_OVERLAP"
+
+    # 2. P0A_COUNTED_ITEM: plant a non-anchor counted item ID (index 75) into p0a_items and check against counted_manifest / counted_item_ids
+    non_anchor_counted_id = json.loads(counted_items_file.read_text(encoding="utf-8").splitlines()[75])["id"]
+    assert non_anchor_counted_id not in set(ver_ok["anchor_item_ids"])
+    p0a_with_counted = tmp_path / "p0a_with_counted" / "p0a_items.jsonl"
+    p0a_with_counted.parent.mkdir(parents=True, exist_ok=True)
+    p0a_objs_c = [
+        json.loads(ln)
+        for ln in p0a_items_src.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    p0a_objs_c[10]["id"] = non_anchor_counted_id
+    p0a_with_counted.write_text(
+        "\n".join(json.dumps(o, sort_keys=True) for o in p0a_objs_c) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_p0a_cnt_mf:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_items_src,
+            p0a_items_or_path=p0a_with_counted,
+            counted_items_or_manifest=counted_manifest,
+        )
+    assert exc_p0a_cnt_mf.value.code == "P0A_COUNTED_ITEM"
+    assert non_anchor_counted_id in exc_p0a_cnt_mf.value.message
+
+    with pytest.raises(RdlabError) as exc_p0a_cnt_run:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=p0a_with_counted,
+            output_dir=tmp_path / "out_p0a_cnt",
+            counted_item_ids=[non_anchor_counted_id],
+            judge_ids=["mu-judge"],
+            fake_transport=True,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_p0a_cnt_run.value.code == "P0A_COUNTED_ITEM"
+
+    # 3. LOCK_CHECK_ANCHOR_ITEMS_INVALID:
+    # (a) Wrong item count (e.g. 25 or 114 instead of 50)
+    anchor_25 = tmp_path / "anchor_25" / "anchor_items.jsonl"
+    anchor_25.parent.mkdir(parents=True, exist_ok=True)
+    anchor_25.write_text(
+        "\n".join(anchor_items_src.read_text(encoding="utf-8").splitlines()[:25]) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_anc_25:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_25,
+            p0a_items_or_path=p0a_items_src,
+        )
+    assert exc_anc_25.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    # (b) Anchor items from pilot-40b (by directory name or manifest)
+    anchor_pilot = tmp_path / "pilot-40b" / "anchor_items.jsonl"
+    anchor_pilot.parent.mkdir(parents=True, exist_ok=True)
+    anchor_pilot.write_text(
+        "\n".join(p0a_items_src.read_text(encoding="utf-8").splitlines()[:50]) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_anc_pilot:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_pilot,
+            p0a_items_or_path=p0a_items_src,
+        )
+    assert exc_anc_pilot.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    # (c) Anchor item ID not present in counted part's manifest/ID list
+    anchor_foreign = tmp_path / "anchor_foreign" / "anchor_items.jsonl"
+    anchor_foreign.parent.mkdir(parents=True, exist_ok=True)
+    anc_objs_f = [
+        json.loads(ln)
+        for ln in anchor_items_src.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    anc_objs_f[0]["id"] = "foreign-not-in-counted-part-0001"
+    anchor_foreign.write_text(
+        "\n".join(json.dumps(o, sort_keys=True) for o in anc_objs_f) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_anc_foreign:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_foreign,
+            p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest=counted_manifest,
+        )
+    assert exc_anc_foreign.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    # (d) Missing --anchor-items or --p0a-items in vm_judges.main refuses with LOCK_CHECK_ANCHOR_ITEMS_INVALID
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "guards_vm")
+    miss_status = tmp_path / "miss_status.json"
+    rc_miss = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--lock-check-stub",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--items-file",
+            str(p0a_items_src),
+            "--run-dir",
+            str(tmp_path / "miss_run"),
+            "--work-dir",
+            str(tmp_path / "miss_work"),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(tmp_path / "miss.tar.gz"),
+            "--status-file",
+            str(miss_status),
+            "--dryrun",
+        ]
+    )
+    assert rc_miss == 2
+    assert json.loads(miss_status.read_text(encoding="utf-8"))["failure_class"] == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+
+def test_fix2_item4_launcher_two_input_flags_help_upload_check_and_delete(
+    tmp_path: Path,
+) -> None:
+    """Fix2 Item 4:
+    - `launch_judges.sh --help` documents `--anchor-items <file>` and `--p0a-items <file>` and explains which is which.
+    - In `lock-check` / `lock-check-stub` mode, `launch_judges.sh` requires both `--anchor-items` and `--p0a-items`,
+      checks both before opening a session (refusing overlap, wrong counts, or disallowed key fields), uploads both to
+      `/content/rdlab_items/anchor_items.jsonl` and `/content/rdlab_items/p0a_items.jsonl`, deletes both on the VM after the run,
+      and records both `anchor_items_sha256` and `p0a_items_sha256` in `window.json` and `vm_receipt.json`.
+    """
+    proc_help = subprocess.run(
+        ["bash", str(_to_wsl_path(LAUNCH_JUDGES_SH)), "--help"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    assert proc_help.returncode == 0
+    assert "--anchor-items FILE" in proc_help.stdout
+    assert "--p0a-items FILE" in proc_help.stdout
+    assert "50 anchor items from the counted part" in proc_help.stdout
+    assert "114 burned pilot items (pilot-40b)" in proc_help.stdout
+
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "f2_launch_env")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "f2_launch_rec")
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "f2_launch_inputs", counted_count=100
+    )
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "open.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=counted_items_file,
+    )
+
+    # 1. Pre-open refusal when --anchor-items or --p0a-items is missing in --lock-check-stub
+    proc_no_anc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"{exports} RDLAB_ITEMS_FILE='' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check-stub --p0a-items '{_to_wsl_path(p0a_items_src)}' --out-dir '{_to_wsl_path(tmp_path / 'out_no_anc')}' --run-id no-anc-01",
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_no_anc.returncode == 2
+    assert "LOCK_CHECK_ANCHOR_ITEMS_INVALID" in proc_no_anc.stderr
+    assert not env_paths["calls_log"].exists()
+
+    # 2. Full end-to-end launch_judges.sh --lock-check-stub run with --anchor-items, --p0a-items, and --counted-items
+    out_lc = tmp_path / "out_f2_launch_lc"
+    proc_lc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check-stub "
+                f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
+                f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
+                f"--counted-items '{_to_wsl_path(counted_items_file)}' "
+                f"--window-id win-f2-launch-01 --run-id f2-launch-01 "
+                f"--out-dir '{_to_wsl_path(out_lc)}'"
+            ),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc_lc.returncode == 0, (
+        f"stdout={proc_lc.stdout}\nstderr={proc_lc.stderr}\n"
+        f"status={(out_lc / 'status.json').read_text(encoding='utf-8') if (out_lc / 'status.json').is_file() else 'missing'}\n"
+        f"outcome={(out_lc / 'outcome.draft.json').read_text(encoding='utf-8') if (out_lc / 'outcome.draft.json').is_file() else 'missing'}\n"
+        f"cli_log={(out_lc / 'colab-cli.log').read_text(encoding='utf-8')[-1200:] if (out_lc / 'colab-cli.log').is_file() else 'missing'}"
+    )
+
+    exp_anchor_sha = hashlib.sha256(anchor_items_src.read_bytes()).hexdigest()
+    exp_p0a_sha = hashlib.sha256(p0a_items_src.read_bytes()).hexdigest()
+
+    vm_receipt = json.loads((out_lc / "vm_receipt.json").read_text(encoding="utf-8"))
+    window_doc = json.loads((out_lc / "window.json").read_text(encoding="utf-8"))
+    assert vm_receipt["anchor_items_sha256"] == exp_anchor_sha
+    assert vm_receipt["p0a_items_sha256"] == exp_p0a_sha
+    assert window_doc["anchor_items_sha256"] == exp_anchor_sha
+    assert window_doc["p0a_items_sha256"] == exp_p0a_sha
+
+    del_rec = vm_receipt["deleted_items_receipt"]
+    assert del_rec["all_absent"] is True
+    assert len(del_rec["files"]) == 2
+    assert all(f["absent"] is True and f["test_not_e_rc"] == 0 for f in del_rec["files"])
+    vm_items_dir = env_paths["state_dir"] / "vm_fs" / "rdlab_items"
+    assert not (vm_items_dir / "anchor_items.jsonl").exists()
+    assert not (vm_items_dir / "p0a_items.jsonl").exists()
+
 
 
 
