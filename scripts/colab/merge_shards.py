@@ -454,6 +454,7 @@ def _compare_anchor_sets(
     token_sha_diff_count = 0
     row_state_diff_count = 0
     drift_examples: list[dict[str, Any]] = []
+    output_sha_mismatches: list[dict[str, Any]] = []
 
     for atriple in expected_anchor_triples:
         a_item, jid, order = atriple
@@ -512,6 +513,17 @@ def _compare_anchor_sets(
         if sha_diff:
             token_sha_diff_count += 1
             per_judge_token_sha_diffs[jid] += 1
+            output_sha_mismatches.append(
+                {
+                    "ref": ref_label,
+                    "cmp": cmp_label,
+                    "item_id": a_item,
+                    "judge_id": jid,
+                    "order": order,
+                    "ref_output_token_ids_sha256": r_out_sha,
+                    "cmp_output_token_ids_sha256": c_out_sha,
+                }
+            )
         if state_diff:
             row_state_diff_count += 1
             per_judge_row_state_diffs[jid] += 1
@@ -553,6 +565,7 @@ def _compare_anchor_sets(
         "double_order_flip_count": len(double_order_flips),
         "double_order_flips": double_order_flips,
         "output_sha_mismatch_count": token_sha_diff_count,
+        "output_sha_mismatches": output_sha_mismatches,
         "per_judge_token_sha_diffs": per_judge_token_sha_diffs,
         "row_state_mismatch_count": row_state_diff_count,
         "per_judge_row_state_diffs": per_judge_row_state_diffs,
@@ -570,7 +583,7 @@ def _evaluate_anchor_comparison_rules(
     merge_cfg: dict[str, Any],
     accepted_anchor_drift_bound: float | None = None,
 ) -> tuple[bool, str | None, str | None]:
-    """Check all 5 anchor agreement rules; return (passed, failure_class, detail)."""
+    """Check anchor agreement halt rules; return (passed, failure_class, detail)."""
     if int(cmp_report["double_order_flip_count"]) > int(
         merge_cfg.get("double_order_flip_cap", 0)
     ):
@@ -580,16 +593,6 @@ def _evaluate_anchor_comparison_rules(
             f"{cmp_report['cmp']} vs {cmp_report['ref']}: double-order flip count "
             f"{cmp_report['double_order_flip_count']} > 0 ({cmp_report['double_order_flips']}) — hard abort pipeline bug",
         )
-
-    if accepted_anchor_drift_bound is not None:
-        n_cmp = max(1, int(cmp_report["total_comparisons"]))
-        total_drift = max(
-            int(cmp_report["pooled_verdict_flips"]),
-            int(cmp_report["output_sha_mismatch_count"]),
-            int(cmp_report["row_state_mismatch_count"]),
-        )
-        if (total_drift / float(n_cmp)) <= float(accepted_anchor_drift_bound):
-            return (True, None, None)
 
     if bool(merge_cfg.get("require_equal_row_state", True)) and int(
         cmp_report["row_state_mismatch_count"]
@@ -601,15 +604,14 @@ def _evaluate_anchor_comparison_rules(
             f"{cmp_report['row_state_mismatch_count']} > 0",
         )
 
-    if int(cmp_report["output_sha_mismatch_count"]) > int(
-        merge_cfg.get("output_token_ids_sha256_diff_cap", 0)
-    ):
-        return (
-            False,
-            "MERGE_ANCHOR_DRIFT_REFUSED",
-            f"{cmp_report['cmp']} vs {cmp_report['ref']}: output_token_ids_sha256 differences "
-            f"{cmp_report['output_sha_mismatch_count']} > {merge_cfg.get('output_token_ids_sha256_diff_cap', 0)}",
+    if accepted_anchor_drift_bound is not None:
+        n_cmp = max(1, int(cmp_report["total_comparisons"]))
+        total_drift = max(
+            int(cmp_report["pooled_verdict_flips"]),
+            int(cmp_report["row_state_mismatch_count"]),
         )
+        if (total_drift / float(n_cmp)) <= float(accepted_anchor_drift_bound):
+            return (True, None, None)
 
     k_pool = int(merge_cfg["k_pool"])
     if int(cmp_report["pooled_verdict_flips"]) > k_pool:
@@ -685,6 +687,8 @@ def _load_golden_anchor_rows(
 def _extract_comparable_env_profile(
     session_env: dict[str, Any],
     expected_judge_ids: tuple[str, ...] = EXPECTED_JUDGE_IDS,
+    *,
+    any_real: bool | None = None,
 ) -> dict[str, Any]:
     gpu = session_env.get("gpu") if isinstance(session_env.get("gpu"), dict) else {}
     runtime = (
@@ -761,6 +765,11 @@ def _extract_comparable_env_profile(
         },
         "judges": judge_hashes,
     }
+    shard_is_real = is_real_mode(
+        str(session_env.get("mode") or ""),
+        dryrun=bool(session_env.get("dryrun", False)),
+    )
+    eff_real = bool(any_real) or shard_is_real
     sdpa_req = str(
         attention.get("sdpa_backend_requested")
         or session_env.get("sdpa_backend_requested")
@@ -768,13 +777,7 @@ def _extract_comparable_env_profile(
     ).strip()
     if sdpa_req:
         profile["attention"]["sdpa_backend_requested"] = sdpa_req
-        if (
-            is_real_mode(
-                str(session_env.get("mode") or ""),
-                dryrun=bool(session_env.get("dryrun", False)),
-            )
-            and profile["attention"]["sdpa_backend"] != sdpa_req
-        ):
+        if eff_real and profile["attention"]["sdpa_backend"] != sdpa_req:
             raise MergeRefusalError(
                 "SDPA_BACKEND_MISMATCH",
                 f"session_env.json has sdpa_backend={profile['attention']['sdpa_backend']!r} != sdpa_backend_requested={sdpa_req!r}",
@@ -795,6 +798,32 @@ def _extract_comparable_env_profile(
         profile["determinism"]["torch.backends.cudnn.benchmark"] = determinism.get(
             "torch.backends.cudnn.benchmark"
         )
+    if eff_real:
+        det_status = str(determinism.get("status") or "")
+        det_warn_only = determinism.get("warn_only")
+        tf32_det = str(determinism.get("NVIDIA_TF32_OVERRIDE") or "").strip()
+        tf32_top = str(session_env.get("NVIDIA_TF32_OVERRIDE") or "").strip()
+        cudnn_det = determinism.get("torch.backends.cudnn.benchmark")
+        cudnn_top = session_env.get("torch.backends.cudnn.benchmark")
+        cudnn_ok = (
+            (cudnn_det is False or cudnn_top is False)
+            and (cudnn_det is None or cudnn_det is False)
+            and (cudnn_top is None or cudnn_top is False)
+        )
+        if (
+            det_status != "enforced"
+            or det_warn_only is not False
+            or tf32_det == "1"
+            or tf32_top == "1"
+            or not cudnn_ok
+        ):
+            raise MergeRefusalError(
+                "MERGE_SESSION_ENV_MISMATCH",
+                "BAKEOFF_JUDGE_DETERMINISM_REFUSED: real-mode shard session_env.json failed determinism check "
+                f"(status={det_status!r}, warn_only={det_warn_only!r}, "
+                f"NVIDIA_TF32_OVERRIDE={tf32_det or tf32_top!r}, "
+                f"cudnn_benchmark={cudnn_det if cudnn_det is not None else cudnn_top!r})",
+            )
     return profile
 
 
@@ -817,6 +846,8 @@ def _check_ecc_zero(session_env: dict[str, Any], shard_label: str) -> None:
         "uncorrected_volatile_start",
         "uncorrected_volatile_end",
         "uncorrected_volatile_delta",
+        "uncorrected_aggregate_start",
+        "uncorrected_aggregate_end",
         "uncorrected_aggregate_delta",
     )
     candidates: list[tuple[str, Any]] = []
@@ -827,17 +858,6 @@ def _check_ecc_zero(session_env: dict[str, Any], shard_label: str) -> None:
                 f"{shard_label}: session_env.json missing or null ecc.{k}",
             )
         candidates.append((f"ecc.{k}", ecc_block.get(k)))
-    if (
-        "uncorrected_aggregate_end" in ecc_block
-        and ecc_block.get("uncorrected_aggregate_end") is None
-    ):
-        raise MergeRefusalError(
-            "MERGE_ECC_UNCORRECTED_NONZERO",
-            f"{shard_label}: session_env.json has null ecc.uncorrected_aggregate_end",
-        )
-    for opt_k in ("uncorrected_aggregate_start", "uncorrected_aggregate_end"):
-        if opt_k in ecc_block and ecc_block.get(opt_k) is not None:
-            candidates.append((f"ecc.{opt_k}", ecc_block.get(opt_k)))
 
     top_gpu = session_env.get("gpu")
     if isinstance(top_gpu, dict) and "ecc_uncorrected_volatile_total" in top_gpu:
@@ -1062,19 +1082,20 @@ def merge_shards(
             f"provided {len(replacement_by_spec)} replacement sessions, max allowed is {merge_cfg['max_replacement_sessions_per_run']}",
         )
 
-    # Check if any shard is in counted or real mode and resolve golden anchor manifest
+    # Check if any shard (including replacement shards) is in counted or real mode and resolve golden anchor manifest
     any_counted = False
     any_real = False
-    for shard_idx, sdir in enumerate(shard_dirs, start=1):
+    for sdir in (*shard_dirs, *replacement_by_spec.values()):
         senv_file = sdir / "session_env.json"
         if senv_file.is_file():
             try:
                 sdoc = json.loads(senv_file.read_text(encoding="utf-8"))
                 if isinstance(sdoc, dict):
                     s_mode = str(sdoc.get("mode") or "")
-                    if s_mode in ("counted", "time-one"):
+                    s_dryrun = bool(sdoc.get("dryrun", False))
+                    if s_mode in ("counted", "time-one") and not s_dryrun:
                         any_counted = True
-                    if is_real_mode(s_mode):
+                    if is_real_mode(s_mode, dryrun=s_dryrun):
                         any_real = True
                 else:
                     any_real = True
@@ -1091,7 +1112,7 @@ def merge_shards(
         if cand_golden.is_file():
             eff_golden_path = cand_golden
         else:
-            for sdir in shard_dirs:
+            for sdir in (*shard_dirs, *replacement_by_spec.values()):
                 if (sdir / "golden_anchor_manifest.json").is_file():
                     eff_golden_path = sdir / "golden_anchor_manifest.json"
                     break
@@ -1275,6 +1296,34 @@ def merge_shards(
         )
         _check_ecc_zero(session_env, f"shard {expected_spec}")
 
+        shard_is_real = is_real_mode(
+            str(session_env.get("mode") or ""),
+            dryrun=bool(session_env.get("dryrun", False)),
+        )
+        gk_path = sdir / "boot_gatekeeper.json"
+        gk_doc: dict[str, Any] | None = None
+        if gk_path.is_file():
+            gk_doc = _load_json_dict(
+                gk_path,
+                "MERGE_BOOT_GATEKEEPER_FAILED",
+                f"shard {expected_spec} boot_gatekeeper.json",
+            )
+        if shard_is_real or any_real:
+            if gk_doc is None:
+                raise MergeRefusalError(
+                    "MERGE_BOOT_GATEKEEPER_FAILED",
+                    f"shard {expected_spec} missing boot_gatekeeper.json in real mode",
+                )
+            if (
+                str(gk_doc.get("status") or "") != "ok"
+                or gk_doc.get("synthetic_fake_hash") is True
+            ):
+                raise MergeRefusalError(
+                    "MERGE_BOOT_GATEKEEPER_FAILED",
+                    f"shard {expected_spec} boot_gatekeeper.json failed or used synthetic fake hash "
+                    f"(status={gk_doc.get('status')!r}, synthetic_fake_hash={gk_doc.get('synthetic_fake_hash')!r})",
+                )
+
         senv_mc = session_env.get("merge_config")
         if isinstance(senv_mc, dict) and "delta_min" in senv_mc:
             if abs(float(senv_mc["delta_min"]) - float(merge_cfg["delta_min"])) > 1e-9:
@@ -1285,7 +1334,9 @@ def merge_shards(
                 )
 
         env_profile = _extract_comparable_env_profile(
-            session_env, expected_judge_ids=expected_judge_ids
+            session_env,
+            expected_judge_ids=expected_judge_ids,
+            any_real=any_real,
         )
         env_profile_sha = _canonical_json_sha256(env_profile)
         per_shard_env_digests[expected_spec] = env_profile_sha
@@ -1489,6 +1540,10 @@ def merge_shards(
     # Gate (d): Anchor-subset cross-session & golden agreement
     golden_comparisons: dict[str, dict[str, Any]] = {}
     deviant_shards_vs_golden: list[str] = []
+    per_shard_output_sha_mismatch_counts: dict[str, int] = {
+        f"{idx}/{num_shards}": 0 for idx in range(1, num_shards + 1)
+    }
+    output_sha_mismatch_warnings: list[dict[str, Any]] = []
     if golden_anchor_rows is not None and anchor_item_ids:
         for shard_idx in range(1, num_shards + 1):
             spec = f"{shard_idx}/{num_shards}"
@@ -1502,6 +1557,25 @@ def merge_shards(
                 f"shard {spec}",
             )
             golden_comparisons[spec] = g_rep
+            per_shard_output_sha_mismatch_counts[spec] = int(
+                g_rep["output_sha_mismatch_count"]
+            )
+            for m in g_rep["output_sha_mismatches"]:
+                sys.stderr.write(
+                    f"WARNING: output_token_ids_sha256 mismatch on shard {spec} vs golden: "
+                    f"item_id={m['item_id']} judge_id={m['judge_id']} order={m['order']}\n"
+                )
+                output_sha_mismatch_warnings.append(
+                    {
+                        "shard_spec": spec,
+                        "ref": "golden",
+                        "item_id": m["item_id"],
+                        "judge_id": m["judge_id"],
+                        "order": m["order"],
+                        "ref_output_token_ids_sha256": m["ref_output_token_ids_sha256"],
+                        "cmp_output_token_ids_sha256": m["cmp_output_token_ids_sha256"],
+                    }
+                )
             g_ok, g_cls, g_det = _evaluate_anchor_comparison_rules(
                 g_rep,
                 merge_cfg=merge_cfg,
@@ -1537,6 +1611,7 @@ def merge_shards(
                     f"shard {spec_1} missing anchor row for {atriple}",
                 )
         total_anchor_comparisons = len(expected_anchor_triples)
+        output_sha_mismatch_count = int(per_shard_output_sha_mismatch_counts[spec_1])
     else:
         for i_idx in range(1, num_shards + 1):
             for j_idx in range(i_idx + 1, num_shards + 1):
@@ -1558,6 +1633,30 @@ def merge_shards(
                     output_sha_mismatch_count += int(
                         pair_rep["output_sha_mismatch_count"]
                     )
+                    if golden_anchor_rows is None:
+                        per_shard_output_sha_mismatch_counts[spec_j] = int(
+                            pair_rep["output_sha_mismatch_count"]
+                        )
+                        for m in pair_rep["output_sha_mismatches"]:
+                            sys.stderr.write(
+                                f"WARNING: output_token_ids_sha256 mismatch on shard {spec_j} vs shard {spec_i}: "
+                                f"item_id={m['item_id']} judge_id={m['judge_id']} order={m['order']}\n"
+                            )
+                            output_sha_mismatch_warnings.append(
+                                {
+                                    "shard_spec": spec_j,
+                                    "ref": f"shard {spec_i}",
+                                    "item_id": m["item_id"],
+                                    "judge_id": m["judge_id"],
+                                    "order": m["order"],
+                                    "ref_output_token_ids_sha256": m[
+                                        "ref_output_token_ids_sha256"
+                                    ],
+                                    "cmp_output_token_ids_sha256": m[
+                                        "cmp_output_token_ids_sha256"
+                                    ],
+                                }
+                            )
                     verdict_flip_count += int(pair_rep["pooled_verdict_flips"])
                     row_state_mismatch_count += int(
                         pair_rep["row_state_mismatch_count"]
@@ -1590,7 +1689,7 @@ def merge_shards(
                     raise MergeRefusalError(p_cls, p_det)
 
     drift_count = max(
-        output_sha_mismatch_count, verdict_flip_count, row_state_mismatch_count
+        verdict_flip_count, row_state_mismatch_count
     )
     denom = max(1, total_anchor_comparisons)
     flip_rate = drift_count / float(denom)
@@ -1625,6 +1724,9 @@ def merge_shards(
         "k_judge_label": str(merge_cfg["k_judge_label"]),
         "quarantined_shards_replaced": len(quarantined_shards),
         "quarantined_shards": quarantined_shards,
+        "output_sha_mismatch_count": output_sha_mismatch_count,
+        "per_shard_output_sha_mismatch_counts": per_shard_output_sha_mismatch_counts,
+        "output_sha_mismatch_warnings": output_sha_mismatch_warnings,
         "per_judge_row_counts": per_judge_row_counts,
         "per_judge_parse_status_counts": per_judge_parse_status_counts,
         "per_judge_stop_reason_counts": per_judge_stop_reason_counts,
@@ -1641,6 +1743,9 @@ def merge_shards(
             "per_judge_verdict_flip_counts": per_judge_total_flips,
             "double_order_flip_count": double_order_flip_count,
             "output_token_ids_sha256_diff_count": output_sha_mismatch_count,
+            "output_sha_mismatch_count": output_sha_mismatch_count,
+            "per_shard_output_sha_mismatch_counts": per_shard_output_sha_mismatch_counts,
+            "output_sha_mismatch_warnings": output_sha_mismatch_warnings,
             "row_state_mismatch_count": row_state_mismatch_count,
             "per_pair_verdict_table_3x3": per_pair_verdict_tables_3x3,
             "per_pair_bowker_symmetry": per_pair_bowker_symmetry,
@@ -1658,6 +1763,9 @@ def merge_shards(
         "k_judge_label": str(merge_cfg["k_judge_label"]),
         "quarantined_shards_replaced": len(quarantined_shards),
         "quarantined_shards": quarantined_shards,
+        "output_sha_mismatch_count": output_sha_mismatch_count,
+        "per_shard_output_sha_mismatch_counts": per_shard_output_sha_mismatch_counts,
+        "output_sha_mismatch_warnings": output_sha_mismatch_warnings,
         "env_comparability_sha256": next(iter(per_shard_env_digests.values())),
         "per_shard_env_comparability_sha256": per_shard_env_digests,
         "per_shard_session_fingerprint_sha256": per_shard_session_fingerprints,
@@ -1679,6 +1787,8 @@ def merge_shards(
             "per_judge_verdict_flip_counts": per_judge_total_flips,
             "double_order_flip_count": double_order_flip_count,
             "output_sha_mismatch_count": output_sha_mismatch_count,
+            "per_shard_output_sha_mismatch_counts": per_shard_output_sha_mismatch_counts,
+            "output_sha_mismatch_warnings": output_sha_mismatch_warnings,
             "row_state_mismatch_count": row_state_mismatch_count,
             "drift_count": drift_count,
             "flip_rate": round(flip_rate, 6),

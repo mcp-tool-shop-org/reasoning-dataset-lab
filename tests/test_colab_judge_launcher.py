@@ -15658,11 +15658,12 @@ def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
     assert ecc_exc.value.failure_class == "MERGE_ECC_UNCORRECTED_NONZERO"
     senv_p.write_text(orig_senv_text, encoding="utf-8")
 
-    # Gate (d): Anchor drift refused unless --accepted-anchor-drift-bound permits
+    # Gate (d): Token sha diff is a warning (not a halt), while row_state or verdict drift refuses
     ar_p = shard_dirs[1] / "anchor_rows" / "d3-mini.jsonl"
     orig_ar_text = ar_p.read_text(encoding="utf-8")
     ar_rows = [json.loads(ln) for ln in orig_ar_text.splitlines() if ln.strip()]
     ar_rows[0]["output_token_ids_sha256"] = "1" * 64
+    ar_rows[0]["row_state"] = "unparseable"
     ar_p.write_text(
         "\n".join(json.dumps(r) for r in ar_rows) + "\n", encoding="utf-8"
     )
@@ -18797,6 +18798,343 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
     # 9. Verify main() passes device=resolve_judge_device(mode=args.mode, dryrun=dryrun) into run_boot_gatekeeper
     main_src = Path(vm_judges.__file__).read_text(encoding="utf-8")
     assert "device=resolve_judge_device(mode=args.mode, dryrun=dryrun)" in main_src
+
+
+def test_fix4_group_b_merge_gates_ecc_replacement_determinism_gatekeeper_and_token_sha_warning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Fix-4 Group B (B1-B5):
+    - B1: `uncorrected_aggregate_start` and `uncorrected_aggregate_end` in `required_ecc_keys` refuse when missing or None.
+    - B2: `replacement_shard_dirs` included in the `any_real` / `any_counted` scan before the swap.
+    - B3: Merge-level determinism check refuses when any shard is real unless `determinism.status == "enforced"`,
+      `warn_only is False`, `NVIDIA_TF32_OVERRIDE != "1"`, and `torch.backends.cudnn.benchmark is False`.
+    - B4: Merge reads each shard's `boot_gatekeeper.json` and refuses if missing or failed in a real-mode shard.
+    - B5: `output_token_ids_sha256_diff_cap` no longer halts; sha mismatches are logged per shard, counted in
+      `merge_receipt.json`, and carried into `merged_readout.json`; flips over `k_pool` still refuse.
+    """
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+
+    receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "b_rec")
+    senv_base = vm_judges.collect_and_write_session_env(
+        tmp_path / "b_senv_base",
+        receipts_dir=receipts_dir,
+        mode="stub",
+        shard_spec="1/2",
+        phase="end",
+        dryrun=True,
+    )
+
+    # B1: Missing or None `uncorrected_aggregate_start` / `uncorrected_aggregate_end` refuses with MERGE_ECC_UNCORRECTED_NONZERO
+    for ecc_key in ("uncorrected_aggregate_start", "uncorrected_aggregate_end"):
+        senv_missing = json.loads(json.dumps(senv_base))
+        del senv_missing["ecc"][ecc_key]
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_b1_miss:
+            merge_shards._check_ecc_zero(senv_missing, "shard 1/2")
+        assert exc_b1_miss.value.failure_class == "MERGE_ECC_UNCORRECTED_NONZERO"
+        assert f"ecc.{ecc_key}" in exc_b1_miss.value.detail
+
+        senv_null = json.loads(json.dumps(senv_base))
+        senv_null["ecc"][ecc_key] = None
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_b1_null:
+            merge_shards._check_ecc_zero(senv_null, "shard 1/2")
+        assert exc_b1_null.value.failure_class == "MERGE_ECC_UNCORRECTED_NONZERO"
+        assert f"ecc.{ecc_key}" in exc_b1_null.value.detail
+
+    # B3: Merge-level determinism check when any shard is real
+    senv_real_ok = json.loads(json.dumps(senv_base))
+    senv_real_ok["mode"] = "counted"
+    senv_real_ok["determinism"]["status"] = "enforced"
+    senv_real_ok["determinism"]["warn_only"] = False
+    senv_real_ok["determinism"]["NVIDIA_TF32_OVERRIDE"] = "0"
+    senv_real_ok["NVIDIA_TF32_OVERRIDE"] = "0"
+    senv_real_ok["determinism"]["torch.backends.cudnn.benchmark"] = False
+    senv_real_ok["torch.backends.cudnn.benchmark"] = False
+    prof_ok = merge_shards._extract_comparable_env_profile(senv_real_ok, any_real=True)
+    assert prof_ok["determinism"]["status"] == "enforced"
+
+    # (a) determinism.status != "enforced"
+    bad_status = json.loads(json.dumps(senv_real_ok))
+    bad_status["determinism"]["status"] = "not enforceable"
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_b3_st:
+        merge_shards._extract_comparable_env_profile(bad_status)
+    assert exc_b3_st.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
+    assert "BAKEOFF_JUDGE_DETERMINISM_REFUSED" in exc_b3_st.value.detail
+
+    # (b) warn_only is not False
+    for bad_wo in (True, None):
+        bad_warn = json.loads(json.dumps(senv_real_ok))
+        bad_warn["determinism"]["warn_only"] = bad_wo
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_b3_wo:
+            merge_shards._extract_comparable_env_profile(bad_warn)
+        assert exc_b3_wo.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
+
+    # (c) NVIDIA_TF32_OVERRIDE == "1" (in determinism or top-level)
+    bad_tf32_det = json.loads(json.dumps(senv_real_ok))
+    bad_tf32_det["determinism"]["NVIDIA_TF32_OVERRIDE"] = "1"
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_b3_tf1:
+        merge_shards._extract_comparable_env_profile(bad_tf32_det)
+    assert exc_b3_tf1.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
+
+    bad_tf32_top = json.loads(json.dumps(senv_real_ok))
+    bad_tf32_top["NVIDIA_TF32_OVERRIDE"] = "1"
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_b3_tf2:
+        merge_shards._extract_comparable_env_profile(bad_tf32_top)
+    assert exc_b3_tf2.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
+
+    # (d) cudnn benchmark is True or None
+    bad_cudnn = json.loads(json.dumps(senv_real_ok))
+    bad_cudnn["determinism"]["torch.backends.cudnn.benchmark"] = True
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_b3_cu:
+        merge_shards._extract_comparable_env_profile(bad_cudnn)
+    assert exc_b3_cu.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
+
+    # Even if shard's own mode is "stub", when any_real=True at merge level, a non-enforced shard refuses
+    stub_unenforced = json.loads(json.dumps(senv_real_ok))
+    stub_unenforced["mode"] = "stub"
+    stub_unenforced["determinism"]["status"] = "warn_only"
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_b3_any:
+        merge_shards._extract_comparable_env_profile(stub_unenforced, any_real=True)
+    assert exc_b3_any.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
+
+    # Build a 2-shard fixture for B2, B4, and B5
+    items_path = _make_stratified_public_items(tmp_path / "b_merge", count=6)
+    manifest_doc = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=2, anchor_count=2, stratified_anchor_count=2, canary_anchor_count=0
+    )
+    manifest_path = tmp_path / "b_merge" / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+
+    def _make_shard(sdir: Path, shard_k: int, *, mode: str = "stub") -> None:
+        sdir.mkdir(parents=True, exist_ok=True)
+        spec_str = f"{shard_k}/2"
+        shutil.copyfile(manifest_path, sdir / "shard_manifest.json")
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir,
+            receipts_dir=receipts_dir,
+            mode="stub",
+            shard_spec=spec_str,
+            phase="start",
+            dryrun=True,
+        )
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir,
+            receipts_dir=receipts_dir,
+            mode="stub",
+            shard_spec=spec_str,
+            phase="end",
+            dryrun=True,
+            prior_session_env=s_env,
+        )
+        if mode != "stub":
+            s_env["mode"] = mode
+            (sdir / "session_env.json").write_text(
+                json.dumps(s_env, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+        for jid in BAKEOFF_JUDGE_SPECS:
+            bakeoff_judge.run_bakeoff_judge(
+                part_dir=items_path,
+                output_dir=sdir,
+                judge=jid,
+                fake_transport=True,
+                allow_remote_code_reviewed=(
+                    bakeoff_judge.D3_MINI_REVIEWED_REVISION if jid == "d3-mini" else None
+                ),
+                shard_spec=spec_str,
+                shard_manifest_path=manifest_path,
+                shard_manifest_sha256=manifest_sha,
+                session_fingerprint_sha256=s_env["session_fingerprint_sha256"],
+            )
+        (sdir / "boot_gatekeeper.json").write_text(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "card_type": "A100",
+                    "judge_id": "nemotron-3-nano-4b",
+                    "hash_source": "real_transport",
+                    "synthetic_fake_hash": False,
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        vm_judges.write_outputs_closed(sdir)
+
+    s1_dir = tmp_path / "b_merge" / "shard_1"
+    s2_dir = tmp_path / "b_merge" / "shard_2"
+    repl_real_dir = tmp_path / "b_merge" / "shard_2_repl_real"
+    _make_shard(s1_dir, 1, mode="stub")
+    _make_shard(s2_dir, 2, mode="stub")
+    _make_shard(repl_real_dir, 2, mode="counted")
+
+    # B2: When shard_dirs are "stub" but replacement_shard_dirs has a real/counted shard,
+    #     any_real and any_counted are True before the swap (refusing test hooks & requiring golden manifest)
+    with monkeypatch.context() as mp:
+        mp.setenv("FAKE_COLAB_GPU_NAME", "HOOK_ON_REPLACEMENT_SHARD")
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_b2_hook:
+            merge_shards.merge_shards(
+                shard_dirs=[s1_dir, s2_dir],
+                manifest_path=manifest_path,
+                output_dir=tmp_path / "b_merge" / "out_b2_hook",
+                replacement_shard_dirs=[repl_real_dir],
+            )
+        assert exc_b2_hook.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_b2_gold:
+        merge_shards.merge_shards(
+            shard_dirs=[s1_dir, s2_dir],
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "b_merge" / "out_b2_gold",
+            replacement_shard_dirs=[repl_real_dir],
+        )
+    assert exc_b2_gold.value.failure_class == "GOLDEN_ANCHOR_MANIFEST_MISSING"
+
+    # Build golden anchor manifest from shard 1
+    golden_doc = bakeoff_judge.build_golden_anchor_manifest(
+        s1_dir, anchor_item_ids=manifest_doc["anchor_item_ids"]
+    )
+    golden_path = tmp_path / "b_merge" / "golden_anchor_manifest.json"
+    bakeoff_judge.write_golden_anchor_manifest(golden_doc, golden_path)
+
+    # Also test finding golden_anchor_manifest.json inside replacement_shard_dirs when not at manifest_path.parent
+    golden_in_repl = repl_real_dir / "golden_anchor_manifest.json"
+    shutil.copyfile(golden_path, golden_in_repl)
+    golden_path.unlink()
+
+    # B4: Boot gatekeeper at merge in a real-mode shard
+    s1_real = tmp_path / "b_merge" / "shard_1_real"
+    s2_real = tmp_path / "b_merge" / "shard_2_real"
+    _make_shard(s1_real, 1, mode="counted")
+    _make_shard(s2_real, 2, mode="counted")
+    shutil.copyfile(golden_in_repl, golden_path)
+
+    # (a) Missing boot_gatekeeper.json in real-mode shard -> MERGE_BOOT_GATEKEEPER_FAILED
+    gk_s2 = s2_real / "boot_gatekeeper.json"
+    orig_gk_s2 = gk_s2.read_text(encoding="utf-8")
+    gk_s2.unlink()
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_b4_miss:
+        merge_shards.merge_shards(
+            shard_dirs=[s1_real, s2_real],
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "b_merge" / "out_b4_miss",
+            golden_anchor_manifest_path=golden_path,
+        )
+    assert exc_b4_miss.value.failure_class == "MERGE_BOOT_GATEKEEPER_FAILED"
+
+    # (b) Failed status or synthetic_fake_hash=True in boot_gatekeeper.json -> MERGE_BOOT_GATEKEEPER_FAILED
+    for bad_gk in (
+        {"status": "no golden", "synthetic_fake_hash": False},
+        {"status": "refused", "synthetic_fake_hash": False},
+        {"status": "ok", "synthetic_fake_hash": True},
+    ):
+        gk_s2.write_text(json.dumps(bad_gk) + "\n", encoding="utf-8")
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_b4_fail:
+            merge_shards.merge_shards(
+                shard_dirs=[s1_real, s2_real],
+                manifest_path=manifest_path,
+                output_dir=tmp_path / "b_merge" / "out_b4_fail",
+                golden_anchor_manifest_path=golden_path,
+            )
+        assert exc_b4_fail.value.failure_class == "MERGE_BOOT_GATEKEEPER_FAILED"
+
+    # Restore valid boot_gatekeeper.json -> real-mode merge passes
+    gk_s2.write_text(orig_gk_s2, encoding="utf-8")
+    rec_real_ok = merge_shards.merge_shards(
+        shard_dirs=[s1_real, s2_real],
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "b_merge" / "out_b4_ok",
+        golden_anchor_manifest_path=golden_path,
+    )
+    assert rec_real_ok["status"] == "ok"
+
+    # B5: Token-hash cap -> WARNING (does not halt when verdicts & row_state match)
+    ar_s2_mu = s2_dir / "anchor_rows" / "mu-judge.jsonl"
+    orig_ar_s2_mu = ar_s2_mu.read_text(encoding="utf-8")
+    s2_mu_rows = [json.loads(ln) for ln in orig_ar_s2_mu.splitlines() if ln.strip()]
+    # Introduce 2 output_token_ids_sha256 diffs on shard 2/2 with no verdict or row_state change
+    s2_mu_rows[0]["output_token_ids_sha256"] = "e" * 64
+    s2_mu_rows[1]["output_token_ids_sha256"] = "f" * 64
+    ar_s2_mu.write_text(
+        "\n".join(json.dumps(r) for r in s2_mu_rows) + "\n", encoding="utf-8"
+    )
+
+    # Test both without golden_anchor_manifest (pairwise warning) and with golden_anchor_manifest (vs-golden warning)
+    golden_path.unlink()
+    capsys.readouterr()
+    out_b5_pair = tmp_path / "b_merge" / "out_b5_pair"
+    rec_b5_pair = merge_shards.merge_shards(
+        shard_dirs=[s1_dir, s2_dir],
+        manifest_path=manifest_path,
+        output_dir=out_b5_pair,
+    )
+    err_pair = capsys.readouterr().err
+    assert "WARNING: output_token_ids_sha256 mismatch on shard 2/2 vs shard 1/2" in err_pair
+    assert rec_b5_pair["status"] == "ok"
+    assert rec_b5_pair["output_sha_mismatch_count"] == 2
+    assert rec_b5_pair["per_shard_output_sha_mismatch_counts"] == {"1/2": 0, "2/2": 2}
+    assert len(rec_b5_pair["output_sha_mismatch_warnings"]) == 2
+    assert rec_b5_pair["anchor_agreement"]["output_sha_mismatch_count"] == 2
+    assert rec_b5_pair["anchor_agreement"]["per_shard_output_sha_mismatch_counts"] == {
+        "1/2": 0,
+        "2/2": 2,
+    }
+    readout_b5_pair = json.loads(
+        (out_b5_pair / "merged_readout.json").read_text(encoding="utf-8")
+    )
+    assert readout_b5_pair["output_sha_mismatch_count"] == 2
+    assert readout_b5_pair["per_shard_output_sha_mismatch_counts"] == {
+        "1/2": 0,
+        "2/2": 2,
+    }
+    assert (
+        readout_b5_pair["anchor_diagnostics"]["output_token_ids_sha256_diff_count"] == 2
+    )
+    assert (
+        readout_b5_pair["anchor_diagnostics"]["per_shard_output_sha_mismatch_counts"]
+        == {"1/2": 0, "2/2": 2}
+    )
+
+    shutil.copyfile(golden_in_repl, golden_path)
+    capsys.readouterr()
+    out_b5_gold = tmp_path / "b_merge" / "out_b5_gold"
+    rec_b5_gold = merge_shards.merge_shards(
+        shard_dirs=[s1_dir, s2_dir],
+        manifest_path=manifest_path,
+        output_dir=out_b5_gold,
+        golden_anchor_manifest_path=golden_path,
+    )
+    err_gold = capsys.readouterr().err
+    assert "WARNING: output_token_ids_sha256 mismatch on shard 2/2 vs golden" in err_gold
+    assert rec_b5_gold["status"] == "ok"
+    assert rec_b5_gold["per_shard_output_sha_mismatch_counts"] == {"1/2": 0, "2/2": 2}
+    assert len(rec_b5_gold["output_sha_mismatch_warnings"]) == 2
+
+    # Flips over k_pool still refuse with MERGE_ANCHOR_DRIFT_REFUSED
+    # (For S=2, k_pool=3; flip 1 AB verdict on each of 4 judges -> 4 pooled flips > k_pool=3, each judge <= k_judge=1)
+    ar_s2_mu.write_text(orig_ar_s2_mu, encoding="utf-8")
+    for jid in ("mu-judge", "nemotron-3-nano-4b", "d3-mini", "granite-guardian-4.1-8b"):
+        jp = s2_dir / "anchor_rows" / f"{jid}.jsonl"
+        jrows = [json.loads(ln) for ln in jp.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        jrows[0]["raw_verdict"] = "no" if jrows[0].get("raw_verdict") == "yes" else "yes"
+        jp.write_text("\n".join(json.dumps(r) for r in jrows) + "\n", encoding="utf-8")
+
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_b5_kpool:
+        merge_shards.merge_shards(
+            shard_dirs=[s1_dir, s2_dir],
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "b_merge" / "out_b5_kpool",
+            golden_anchor_manifest_path=golden_path,
+        )
+    assert exc_b5_kpool.value.failure_class == "MERGE_ANCHOR_DRIFT_REFUSED"
+
 
 
 
