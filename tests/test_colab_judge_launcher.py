@@ -15833,4 +15833,1502 @@ def test_item11_ast_network_guard_catches_rebound_variable_across_scopes(
     assert any("forbidden git fetch subprocess call" in v for v in violations)
 
 
+def test_fix1_part_a_counted_determinism_refusal_in_transport_and_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-1 Part A:
+    - `TransformersJudgeTransport.generate()` in counted mode (`window_mode="counted"`, `RDLAB_MODE="time-one"`,
+      or `RDLAB_SHARD="1/2"`) refuses when `self._model.generate` raises `RuntimeError` instead of falling back
+      to `warn_only=True`.
+    - `_run_cpu_transport_probe_for_judge` refuses in counted mode when `torch.use_deterministic_algorithms(True, warn_only=False)`
+      raises `RuntimeError`.
+    """
+    import types
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    spec_nem = bakeoff_judge.BAKEOFF_JUDGE_SPECS["nemotron-3-nano-4b"]
+    adapter = bakeoff_judge.build_judge_adapter(spec_nem)
+    sample_prompt = adapter.assemble_prompt(
+        bakeoff_judge.JudgeInputItem(
+            item_id="it-part-a",
+            material="1. Premise one.\n2. Premise two.",
+            claim="Claim.",
+        ),
+        order="AB",
+        pass_mode="binary",
+    )
+
+    class _FakeTensor:
+        def __init__(self, vals: list[Any]) -> None:
+            self.vals = vals
+
+        @property
+        def shape(self) -> tuple[int, int]:
+            return (1, len(self.vals[0]) if isinstance(self.vals[0], list) else len(self.vals))
+
+        def to(self, _d: str) -> "_FakeTensor":
+            return self
+
+        def float(self) -> "_FakeTensor":
+            return self
+
+        def tolist(self) -> Any:
+            return self.vals
+
+        def item(self) -> float:
+            return float(self.vals[0])
+
+        def __getitem__(self, idx: Any) -> Any:
+            if isinstance(idx, tuple):
+                r, sl = idx
+                return _FakeTensor(self.vals[r][sl])
+            v = self.vals[idx]
+            return _FakeTensor([v]) if isinstance(v, (int, float)) else _FakeTensor(v)
+
+    class _FakeTokenizer:
+        pad_token_id = 0
+        eos_token_id = 2
+
+        def __call__(self, _text: str, **_kw: Any) -> dict[str, _FakeTensor]:
+            return {"input_ids": _FakeTensor([[1, 3]]), "attention_mask": _FakeTensor([[1, 1]])}
+
+        def convert_ids_to_tokens(self, ids: int | list[int]) -> Any:
+            return "yes" if isinstance(ids, int) else ["yes" for _ in ids]
+
+        def convert_tokens_to_string(self, toks: list[str]) -> str:
+            return "".join(toks)
+
+        def decode(self, _ids: list[int], **_kw: Any) -> str:
+            return "yes"
+
+    class _RaisingModel:
+        generation_config = types.SimpleNamespace(eos_token_id=2)
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, **_kw: Any) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("CuBLAS deterministic kernel error during generate")
+            return types.SimpleNamespace(
+                sequences=_FakeTensor([[1, 3, 4]]),
+                scores=[_FakeTensor([[-0.1, -2.5, -8.0, -9.0, -10.0]])],
+            )
+
+    t_mod = types.ModuleType("torch")
+    t_mod.__version__ = "2.14.1+cu132"  # type: ignore[attr-defined]
+    t_mod.use_deterministic_algorithms = lambda _m, warn_only=False: None  # type: ignore[attr-defined]
+    t_mod.manual_seed = lambda _s: None  # type: ignore[attr-defined]
+
+    class _NoGrad:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, *_a: Any) -> None:
+            return None
+
+    t_mod.no_grad = _NoGrad  # type: ignore[attr-defined]
+    t_mod.inference_mode = _NoGrad  # type: ignore[attr-defined]
+    t_mod.log_softmax = lambda t, dim=-1: t  # type: ignore[attr-defined]
+    t_mod.topk = lambda t, k=2: (
+        _FakeTensor(t.vals[: int(k)]),
+        _FakeTensor(list(range(int(k)))),
+    )  # type: ignore[attr-defined]
+    tf_mod = types.ModuleType("transformers")
+    tf_mod.__version__ = "5.19.0"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", t_mod)
+    monkeypatch.setitem(sys.modules, "transformers", tf_mod)
+
+    def _build_ready_transport(
+        *, window_mode: str | None = None, shard_spec: str | None = None
+    ) -> bakeoff_judge.TransformersJudgeTransport:
+        tp = bakeoff_judge.TransformersJudgeTransport(
+            receipts_dir=tmp_path,
+            hf_home=tmp_path,
+            device="cpu",
+            window_mode=window_mode,
+            shard_spec=shard_spec,
+        )
+        tp._loaded_spec_id = spec_nem.judge_id
+        tp._verified_digest = f"sha256:{spec_nem.revision}:0000"
+        tp._snapshot_dir = tmp_path
+        tp._tokenizer = _FakeTokenizer()
+        tp._model = _RaisingModel()
+        tp._candidate_token_ids = {0: "yes", 1: "no"}
+        return tp
+
+    # 1. Explicit window_mode="counted" -> refuses
+    monkeypatch.delenv("RDLAB_MODE", raising=False)
+    monkeypatch.delenv("RDLAB_SHARD", raising=False)
+    tp_counted = _build_ready_transport(window_mode="counted")
+    with pytest.raises(RdlabError) as exc_wm:
+        tp_counted.generate(spec_nem, sample_prompt, seed=20261030)
+    assert exc_wm.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+    # 2. RDLAB_MODE="time-one" via env -> refuses
+    monkeypatch.setenv("RDLAB_MODE", "time-one")
+    tp_time_one = _build_ready_transport()
+    with pytest.raises(RdlabError) as exc_t1:
+        tp_time_one.generate(spec_nem, sample_prompt, seed=20261030)
+    assert exc_t1.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+    # 3. RDLAB_SHARD="1/2" via env (without stub/dryrun) -> refuses
+    monkeypatch.delenv("RDLAB_MODE", raising=False)
+    monkeypatch.setenv("RDLAB_SHARD", "1/2")
+    tp_shard = _build_ready_transport()
+    with pytest.raises(RdlabError) as exc_sh:
+        tp_shard.generate(spec_nem, sample_prompt, seed=20261030)
+    assert exc_sh.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+    # 4. In stub mode, fallback to warn_only=True is allowed and returns "not enforceable"
+    monkeypatch.setenv("RDLAB_MODE", "stub")
+    monkeypatch.delenv("RDLAB_SHARD", raising=False)
+    tp_stub = _build_ready_transport(window_mode="stub")
+    resp_stub = tp_stub.generate(spec_nem, sample_prompt, seed=20261030)
+    assert resp_stub.library_pins["deterministic_algorithms"] == "not enforceable"
+
+    # 5. _run_cpu_transport_probe_for_judge refuses in counted mode when determinism is unsupported
+    def _raise_strict_det(mode: bool, *, warn_only: bool = False) -> None:
+        if mode and not warn_only:
+            raise RuntimeError("strict determinism unsupported in probe")
+
+    t_mod.use_deterministic_algorithms = _raise_strict_det  # type: ignore[attr-defined]
+    monkeypatch.setenv("RDLAB_MODE", "counted")
+    probe_item = bakeoff_judge.JudgeInputItem(
+        item_id="probe-000",
+        material="1. Premise one.\n2. Premise two.",
+        claim="Claim.",
+    )
+    with pytest.raises(RdlabError) as exc_probe:
+        bakeoff_judge._run_cpu_transport_probe_for_judge(
+            spec_nem,
+            adapter,
+            [probe_item],
+            seed=20261030,
+            window_mode="counted",
+        )
+    assert exc_probe.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+
+def test_fix1_part_b_boot_gatekeeper_real_transport_vs_stub_and_missing_golden(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-1 Part B:
+    - Real `run_boot_gatekeeper` path (via a fake transport returning token IDs) loads the smallest
+      judge (`nemotron-3-nano-4b`), runs the 2 fixed synthetic prompts, and compares `output_token_ids_sha256`
+      with the golden for the card type (`A100` / `L4`).
+    - `stub` / `dryrun` path uses `_compute_synthetic_gatekeeper_output_sha256` and labels the report
+      as a synthetic fake hash (`hash_source == "synthetic_fake_stub_dryrun"`, `synthetic_fake_hash is True`).
+    - `"no golden"` refusal in counted mode (`BOOT_GATEKEEPER_GOLDEN_MISSING`).
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    goldens_path = SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json"
+    goldens_doc = json.loads(goldens_path.read_text(encoding="utf-8"))
+    assert goldens_doc["judge_id"] == "nemotron-3-nano-4b"
+
+    class _TokenIdFakeTransport:
+        def __init__(self, tok_map: dict[str, list[int]]) -> None:
+            self.tok_map = tok_map
+            self.verified_specs: list[str] = []
+            self.generated_prompts: list[str] = []
+
+        def verify_ready(
+            self,
+            spec: bakeoff_judge.JudgeSpec,
+            *,
+            allow_remote_code_reviewed: str | None = None,
+        ) -> str:
+            self.verified_specs.append(spec.judge_id)
+            return f"sha256:{spec.revision}:fake"
+
+        def generate(
+            self,
+            spec: bakeoff_judge.JudgeSpec,
+            prompt: bakeoff_judge.AssembledPrompt,
+            *,
+            seed: int,
+        ) -> Any:
+            self.generated_prompts.append(prompt.item_id)
+            tids = self.tok_map[prompt.item_id]
+            return type(
+                "_Resp",
+                (),
+                {
+                    "token_ids": tids,
+                    "tokens": tuple(str(x) for x in tids),
+                    "output_token_ids_sha256": bakeoff_judge.compute_token_ids_sha256(
+                        tids
+                    ),
+                    "system_one_result": None,
+                },
+            )()
+
+    tok_map = {
+        "boot_gatekeeper_synthetic_1": [101, 202, 303],
+        "boot_gatekeeper_synthetic_2": [404, 505, 606],
+    }
+    exp_sha_1 = bakeoff_judge.compute_token_ids_sha256(
+        tok_map["boot_gatekeeper_synthetic_1"]
+    )
+    exp_sha_2 = bakeoff_judge.compute_token_ids_sha256(
+        tok_map["boot_gatekeeper_synthetic_2"]
+    )
+
+    filled_real = json.loads(goldens_path.read_text(encoding="utf-8"))
+    filled_real["card_types"]["A100"]["prompts"]["boot_gatekeeper_synthetic_1"] = {
+        "output_token_ids_sha256": exp_sha_1
+    }
+    filled_real["card_types"]["A100"]["prompts"]["boot_gatekeeper_synthetic_2"] = {
+        "output_token_ids_sha256": exp_sha_2
+    }
+    filled_real_path = tmp_path / "real_goldens.json"
+    filled_real_path.write_text(json.dumps(filled_real, indent=2), encoding="utf-8")
+
+    # 1. Real path via fake transport returning token IDs
+    tp = _TokenIdFakeTransport(tok_map)
+    real_run_dir = tmp_path / "gk_real"
+    rep_real = vm_judges.run_boot_gatekeeper(
+        run_dir=real_run_dir,
+        repo_root=REPO_ROOT,
+        mode="counted",
+        card_type="A100",
+        goldens_path=filled_real_path,
+        dryrun=False,
+        transport=tp,
+    )
+    assert rep_real["status"] == "ok"
+    assert rep_real["judge_id"] == "nemotron-3-nano-4b"
+    assert rep_real["hash_source"] == "real_transport"
+    assert rep_real["synthetic_fake_hash"] is False
+    assert tp.verified_specs == ["nemotron-3-nano-4b"]
+    assert tp.generated_prompts == [
+        "boot_gatekeeper_synthetic_1",
+        "boot_gatekeeper_synthetic_2",
+    ]
+    assert rep_real["actual_output_token_ids_sha256"] == {
+        "boot_gatekeeper_synthetic_1": exp_sha_1,
+        "boot_gatekeeper_synthetic_2": exp_sha_2,
+    }
+
+    # Mismatch on real transport -> BOOT_GATEKEEPER_GOLDEN_MISMATCH
+    tp_bad = _TokenIdFakeTransport(
+        {
+            "boot_gatekeeper_synthetic_1": [999],
+            "boot_gatekeeper_synthetic_2": [404, 505, 606],
+        }
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_mm:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=tmp_path / "gk_real_mm",
+            repo_root=REPO_ROOT,
+            mode="counted",
+            card_type="A100",
+            goldens_path=filled_real_path,
+            dryrun=False,
+            transport=tp_bad,
+        )
+    assert exc_mm.value.failure_class == "BOOT_GATEKEEPER_GOLDEN_MISMATCH"
+
+    # 2. Stub / dryrun path labels report with synthetic_fake_hash=True
+    stub_run_dir = tmp_path / "gk_stub"
+    rep_stub = vm_judges.run_boot_gatekeeper(
+        run_dir=stub_run_dir,
+        repo_root=REPO_ROOT,
+        mode="stub",
+        card_type="A100",
+        goldens_path=goldens_path,
+        dryrun=True,
+    )
+    assert rep_stub["status"] == "no golden"
+    assert rep_stub["hash_source"] == "synthetic_fake_stub_dryrun"
+    assert rep_stub["synthetic_fake_hash"] is True
+
+    # 3. "no golden" refusal in counted mode (L4 is unfilled)
+    with pytest.raises(vm_judges.RefusalError) as exc_no_gold:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=tmp_path / "gk_l4_missing",
+            repo_root=REPO_ROOT,
+            mode="counted",
+            card_type="L4",
+            goldens_path=filled_real_path,
+            dryrun=False,
+            transport=tp,
+        )
+    assert exc_no_gold.value.failure_class == "BOOT_GATEKEEPER_GOLDEN_MISSING"
+
+
+def test_fix1_part_c_session_env_real_venv_reads_unreadable_refusal_and_5_fingerprint_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-1 Part C:
+    - Outside `stub` and `dryrun`, `collect_and_write_session_env` reads `torch.__version__`, `torch.version.cuda`,
+      `transformers.__version__`, `bitsandbytes`, actual determinism status, `torch.backends.cudnn.benchmark`,
+      and SDPA backend from the judge venv (`work_dir / 'venv-judge' / 'bin' / 'python'`).
+    - Never contains a `FAKE_COLAB_*` default in real mode even if `FAKE_COLAB_TORCH_VERSION` is set in env.
+    - Records `"unreadable: <reason>"` when a value cannot be read and refuses in counted mode (`SESSION_ENV_UNREADABLE`).
+    - Includes all 5 new fingerprint fields (`host_cpu_model`, `CUBLAS_WORKSPACE_CONFIG`, `NVIDIA_TF32_OVERRIDE`,
+      `PYTHONHASHSEED`, `torch.backends.cudnn.benchmark`) and `merge_config` (`delta_min`, caps) in the hashed
+      session fingerprint.
+    """
+    receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+    work_dir = tmp_path / "work_c"
+    venv_py = work_dir / "venv-judge" / "bin" / "python"
+    vm_judges._ensure_dryrun_venv_python_wrapper(venv_py)
+
+    # Set sentinel FAKE_COLAB_* env vars and verify real mode (`mode="time-one", dryrun=False`) ignores them
+    # and reads the judge venv's installed package versions instead.
+    monkeypatch.setenv("FAKE_COLAB_TORCH_VERSION", "FAKE_COLAB_SENTINEL_TORCH_0.0.0")
+    monkeypatch.setenv(
+        "FAKE_COLAB_TRANSFORMERS_VERSION", "FAKE_COLAB_SENTINEL_TF_0.0.0"
+    )
+    monkeypatch.setenv("FAKE_COLAB_CUDA_RUNTIME", "FAKE_COLAB_SENTINEL_CUDA_0.0")
+    monkeypatch.setenv("FAKE_COLAB_BITSANDBYTES_VERSION", "FAKE_COLAB_SENTINEL_BNB")
+    monkeypatch.setenv("NVIDIA_TF32_OVERRIDE", "0")
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
+    # Mock nvidia-smi in PATH so _query_gpu_and_ecc_snapshot works with dryrun=False
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env_c")
+    monkeypatch.setenv("PATH", _hermetic_path_for(fake_env))
+
+    run_dir_real = tmp_path / "run_real_c"
+    doc_real = vm_judges.collect_and_write_session_env(
+        run_dir_real,
+        receipts_dir=receipts_dir,
+        mode="time-one",
+        shard_spec="1/2",
+        phase="start",
+        dryrun=False,
+        work_dir=work_dir,
+        repo_dir=REPO_ROOT,
+    )
+    raw_json = json.dumps(doc_real)
+    assert "FAKE_COLAB_SENTINEL" not in raw_json
+    assert doc_real["runtime"]["torch_version"] == "2.14.1+cu132"
+    assert doc_real["runtime"]["cuda_runtime"] == "13.2"
+    assert doc_real["runtime"]["transformers_version"] == "5.19.0"
+    assert doc_real["determinism"]["status"] == "enforced"
+    assert doc_real["attention"]["sdpa_backend"] == "math"
+
+    # Verify all 5 new fingerprint fields + merge_config are present and hashed into env_comparability_sha256
+    for field in (
+        "host_cpu_model",
+        "CUBLAS_WORKSPACE_CONFIG",
+        "NVIDIA_TF32_OVERRIDE",
+        "PYTHONHASHSEED",
+        "torch.backends.cudnn.benchmark",
+    ):
+        assert field in doc_real
+        assert field in doc_real["fingerprint_fields"]
+    assert isinstance(doc_real["host_cpu_model"], str) and doc_real["host_cpu_model"]
+    assert doc_real["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
+    assert doc_real["NVIDIA_TF32_OVERRIDE"] == "0"
+    assert doc_real["PYTHONHASHSEED"] == "0"
+    assert doc_real["torch.backends.cudnn.benchmark"] is False
+    assert doc_real["merge_config"]["delta_min"] == 0.03
+
+    # Changing any of the 5 fields changes env_comparability_sha256 and session_fingerprint_sha256
+    monkeypatch.setenv("PYTHONHASHSEED", "42")
+    doc_real_2 = vm_judges.collect_and_write_session_env(
+        tmp_path / "run_real_c2",
+        receipts_dir=receipts_dir,
+        mode="time-one",
+        shard_spec="1/2",
+        phase="start",
+        dryrun=False,
+        work_dir=work_dir,
+        repo_dir=REPO_ROOT,
+    )
+    assert (
+        doc_real_2["env_comparability_sha256"] != doc_real["env_comparability_sha256"]
+    )
+
+    # Unreadable venv in non-counted mode records "unreadable: <reason>"; in counted mode refuses with SESSION_ENV_UNREADABLE
+    bad_venv_py = tmp_path / "missing_venv" / "bin" / "python"
+    doc_unreadable = vm_judges.collect_and_write_session_env(
+        tmp_path / "run_unreadable_t1",
+        receipts_dir=receipts_dir,
+        mode="time-one",
+        shard_spec="1/2",
+        phase="start",
+        dryrun=False,
+        venv_python=bad_venv_py,
+        repo_dir=REPO_ROOT,
+    )
+    assert doc_unreadable["runtime"]["torch_version"].startswith("unreadable:")
+
+    with pytest.raises(vm_judges.RefusalError) as exc_unread:
+        vm_judges.collect_and_write_session_env(
+            tmp_path / "run_unreadable_counted",
+            receipts_dir=receipts_dir,
+            mode="counted",
+            shard_spec="1/2",
+            phase="start",
+            dryrun=False,
+            venv_python=bad_venv_py,
+            repo_dir=REPO_ROOT,
+        )
+    assert exc_unread.value.failure_class == "SESSION_ENV_UNREADABLE"
+
+
+def test_fix1_part_d_ecc_end_gate_anchor_prefix_before_subblock0_and_verified_recovery_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-1 Part D:
+    1. A start-only `session_env.json` (`phase == "start"`, `uncorrected_volatile_end: null`) fails
+       Gate (c) in `merge_shards.py` (`MERGE_ECC_UNCORRECTED_NONZERO`).
+    2. Shards `2..n` in `subblock` mode run `--anchor-prefix-only` across all 5 judges before sub-block 0.
+    3. `verified_recovery` written during a replacement-session resume survives later sub-block invocations
+       in `judge_done/<judge_id>.json` and is accepted by `merge_shards.py` Gate (b).
+    """
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    items_path = _make_stratified_public_items(tmp_path, count=8)
+    manifest_doc = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=2, anchor_count=2, stratified_anchor_count=2, canary_anchor_count=0
+    )
+    manifest_path = tmp_path / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
+
+    # Part D.2: Run shard 2/2 with loop_order="subblock" and subblock_items=2 (4 items -> 2 subblocks)
+    # and verify the first 5 judge subprocesses all run with `--anchor-prefix-only` before sub-block 0.
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env_d2")
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(fake_env["state_dir"]))
+    run_s2_sub = tmp_path / "run_s2_subblock"
+    work_s2 = tmp_path / "work_s2"
+    vm_judges.run_judges_pipeline(
+        mode="stub",
+        part_dir=items_path.parent,
+        run_dir=run_s2_sub,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        dryrun=True,
+        repo_root=REPO_ROOT,
+        work_dir=work_s2,
+        progress_path=run_s2_sub / "progress.jsonl",
+        shard_spec="2/2",
+        shard_manifest_path=manifest_path,
+        shard_manifest_sha256=manifest_sha,
+        loop_order="subblock",
+        subblock_items=2,
+        session_fingerprint_sha256="a" * 64,
+    )
+    subprocs = [
+        json.loads(ln)
+        for ln in (fake_env["state_dir"] / "judge_subprocesses.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    # 5 judges * (1 anchor_prefix pass + 2 subblocks) = 15 invocations
+    assert len(subprocs) == 15
+    for idx in range(5):
+        assert "--anchor-prefix-only" in subprocs[idx]["cmd"]
+        assert "--active-item-ids" not in subprocs[idx]["cmd"]
+    for idx in range(5, 15):
+        assert "--anchor-prefix-only" not in subprocs[idx]["cmd"]
+        assert "--active-item-ids" in subprocs[idx]["cmd"]
+
+    # Part D.3: Verify `verified_recovery` survives subsequent sub-block invocations in `judge_done/<judge_id>.json`
+    s2_items = manifest_doc["shards"]["2"]
+    assert len(s2_items) == 4
+    rec_dir = tmp_path / "rec_persist"
+    # Subblock 0 on original session fingerprint
+    bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=rec_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        shard_spec="2/2",
+        shard_manifest_path=manifest_path,
+        shard_manifest_sha256=manifest_sha,
+        active_item_ids=s2_items[:2],
+        session_fingerprint_sha256="1" * 64,
+    )
+    # Resume on replacement session for subblock 1 part 1 (triggers 3-item-pair overlap check & sets verified_recovery)
+    res_mid = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=rec_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        shard_spec="2/2",
+        shard_manifest_path=manifest_path,
+        shard_manifest_sha256=manifest_sha,
+        active_item_ids=s2_items[2:3],
+        replacement_session=True,
+        session_fingerprint_sha256="2" * 64,
+    )
+    assert isinstance(res_mid["verified_recovery"], dict)
+    assert res_mid["verified_recovery"]["verified"] is True
+
+    # Final subblock on same replacement session ("2"*64 -> is_cross_session_resume is False on this invocation!)
+    res_final = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_path,
+        output_dir=rec_dir,
+        judge="mu-judge",
+        fake_transport=True,
+        shard_spec="2/2",
+        shard_manifest_path=manifest_path,
+        shard_manifest_sha256=manifest_sha,
+        active_item_ids=s2_items[3:4],
+        replacement_session=False,
+        session_fingerprint_sha256="2" * 64,
+    )
+    jdone_doc = json.loads(
+        (rec_dir / "judge_done" / "mu-judge.json").read_text(encoding="utf-8")
+    )
+    assert isinstance(jdone_doc["verified_recovery"], dict)
+    assert jdone_doc["verified_recovery"]["verified"] is True
+    assert isinstance(res_final["verified_recovery"], dict)
+    assert merge_shards._shard_has_verified_recovery(rec_dir) is True
+
+    # Part D.1: A start-only session_env.json fails Gate (c) in merge_shards.py
+    senv_start = vm_judges.collect_and_write_session_env(
+        tmp_path / "start_only_senv",
+        receipts_dir=receipts_dir,
+        mode="stub",
+        shard_spec="1/2",
+        phase="start",
+        dryrun=True,
+    )
+    assert senv_start["phase"] == "start"
+    assert senv_start["ecc"]["uncorrected_volatile_end"] is None
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_start_only:
+        merge_shards._check_ecc_zero(senv_start, "shard 1/2")
+    assert exc_start_only.value.failure_class == "MERGE_ECC_UNCORRECTED_NONZERO"
+    assert "phase='start'" in str(exc_start_only.value)
+
+    senv_end_null_ecc = dict(senv_start)
+    senv_end_null_ecc["phase"] = "end"
+    senv_end_null_ecc["written_at_end"] = "2026-11-04T00:00:00Z"
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_null_ecc:
+        merge_shards._check_ecc_zero(senv_end_null_ecc, "shard 1/2")
+    assert exc_null_ecc.value.failure_class == "MERGE_ECC_UNCORRECTED_NONZERO"
+    assert "ecc.uncorrected_volatile_end" in str(exc_null_ecc.value)
+
+
+def test_fix1_part_e_anchors_clopper_pearson_golden_quarantine_and_bowker_readout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-1 Part E:
+    1. 50 anchors (25 stratified + 25 canaries from lock-check telemetry ranked ascending by minimum
+       top-1/top-2 logit margin across all judges and both orders, excluding stratified 25, ties broken
+       by `item_id`), `canary_telemetry_sha256` in manifest, and counted mode refusing without canary list.
+    2. Exact one-sided 95% Clopper-Pearson upper bound:
+       `U_95(2, 500) ≈ 0.01254 <= 0.018` (`S=3 -> k_pool=2`), `U_95(3, 500) ≈ 0.01544 > 0.015` on `S=3`
+       WAIT: for `S=3`, `S/(S-1) * 0.40 * 0.03 = 1.5 * 0.012 = 0.018` and observed cap is `1.5 * 0.10 * 0.03 = 0.0045`
+       (`2/500 = 0.004 <= 0.0045`, `3/500 = 0.006 > 0.0045` -> `k_pool = 2`);
+       for `S=2`, `S/(S-1) * 0.40 * 0.03 = 2.0 * 0.012 = 0.024` and observed cap is `2.0 * 0.10 * 0.03 = 0.006`
+       (`3/500 = 0.006 <= 0.006` and `U_95(3, 500) ≈ 0.01544 <= 0.024` -> `k_pool = 3`).
+       `merge_shards.py` recomputes `k_pool` from `delta_min`, `S`, and `N=500`, refusing if config `k_pool`
+       exceeds the formula (`MERGE_CONFIG_K_POOL_EXCEEDS_FORMULA`).
+    3. `k_judge = 1` labelled `"detection check, not a bias guarantee"`; double-order flip cap `0` hard aborts
+       as `MERGE_ANCHOR_DOUBLE_ORDER_PIPELINE_BUG`; `output_token_ids_sha256` diff cap `0`; equal `row_state`.
+    4. Golden anchor manifest from lock-check window checked against every shard so `S=2` names the deviant
+       shard; counted mode refuses if golden anchor manifest is missing (`GOLDEN_ANCHOR_MANIFEST_MISSING`).
+    5. Quarantine & tombstone (`TOMBSTONE.json`) + at most 1 replacement session per run
+       (`quarantined_shards_replaced == 1`), hard abort if a second shard fails or replacement fails.
+    6. Readout includes 3x3 verdict table (`yes`, `no`, `unparseable`) and Bowker's symmetry statistic.
+    """
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    # 1. Clopper-Pearson exact values and k_pool formula
+    u95_2 = merge_shards.clopper_pearson_upper_bound(2, 500, confidence=0.95)
+    u95_3 = merge_shards.clopper_pearson_upper_bound(3, 500, confidence=0.95)
+    assert round(u95_2, 4) == pytest.approx(0.0125, abs=1e-4)
+    assert round(u95_3, 4) == pytest.approx(0.0154, abs=1e-4)
+    assert merge_shards.compute_k_pool(0.03, num_shards=3, total_anchor_rows=500) == 2
+    assert merge_shards.compute_k_pool(0.03, num_shards=2, total_anchor_rows=500) == 3
+
+    # Config with k_pool exceeding formula is refused with MERGE_CONFIG_K_POOL_EXCEEDS_FORMULA
+    bad_cfg_path = tmp_path / "bad_merge_config.json"
+    bad_cfg_doc = json.loads(
+        (SCRIPTS_COLAB_DIR / "merge_config.json").read_text(encoding="utf-8")
+    )
+    bad_cfg_doc["k_pool_by_num_shards"]["3"] = 3
+    bad_cfg_path.write_text(json.dumps(bad_cfg_doc), encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_cfg:
+        merge_shards.load_and_verify_merge_config(
+            bad_cfg_path, num_shards=3, total_anchor_rows=500
+        )
+    assert exc_cfg.value.failure_class == "MERGE_CONFIG_K_POOL_EXCEEDS_FORMULA"
+
+    # 2. Canary selection from lock-check telemetry (minimum top-2 margin across all judges & orders,
+    #    excluding stratified anchors, tie-broken by item_id)
+    items_path = _make_stratified_public_items(tmp_path, count=60)
+    base_manifest = bakeoff_judge.build_shard_manifest(
+        items_path,
+        num_shards=2,
+        anchor_count=50,
+        stratified_anchor_count=25,
+        canary_anchor_count=0,
+    )
+    strat_25 = base_manifest["stratified_anchor_item_ids"]
+    assert len(strat_25) == 25
+
+    all_items, _ = bakeoff_judge.load_judge_items(items_path)
+    non_strat = sorted(it.item_id for it in all_items if it.item_id not in set(strat_25))
+    assert len(non_strat) == 35
+
+    # Construct synthetic lock-check telemetry giving known min margins across judges & orders
+    telemetry_file = tmp_path / "lock_check_telemetry.jsonl"
+    t_lines: list[str] = []
+    # Give the first 5 non_strat items equal margin 0.0125 to test tie-breaking by item_id,
+    # and increasing margins for the rest; also give a stratified item margin 0.0001 to verify exclusion.
+    t_lines.append(
+        json.dumps(
+            {
+                "item_id": strat_25[0],
+                "judge_id": "mu-judge",
+                "order": "AB",
+                "min_top2_logit_margin": 0.0001,
+            }
+        )
+    )
+    for idx, iid in enumerate(non_strat):
+        base_m = 0.0125 if idx < 5 else round(0.02 + idx * 0.01, 6)
+        # Write multiple judges/orders; minimum across all judges & orders should govern
+        t_lines.append(
+            json.dumps(
+                {
+                    "item_id": iid,
+                    "judge_id": "mu-judge",
+                    "order": "AB",
+                    "min_top2_logit_margin": base_m + 0.5,
+                }
+            )
+        )
+        t_lines.append(
+            json.dumps(
+                {
+                    "item_id": iid,
+                    "judge_id": "d3-mini",
+                    "order": "BA",
+                    "min_top2_logit_margin": base_m,
+                }
+            )
+        )
+    telemetry_file.write_text("\n".join(t_lines) + "\n", encoding="utf-8")
+
+    full_manifest = bakeoff_judge.build_shard_manifest(
+        items_path,
+        num_shards=2,
+        anchor_count=50,
+        stratified_anchor_count=25,
+        canary_anchor_count=25,
+        lock_check_telemetry_path=telemetry_file,
+    )
+    assert full_manifest["stratified_anchor_count"] == 25
+    assert full_manifest["canary_anchor_count"] == 25
+    assert full_manifest["anchor_count"] == 50
+    assert len(full_manifest["anchor_item_ids"]) == 50
+    assert set(full_manifest["stratified_anchor_item_ids"]).isdisjoint(
+        full_manifest["canary_item_ids"]
+    )
+    assert full_manifest["canary_item_ids"] == non_strat[:25]
+    assert len(full_manifest["canary_telemetry_sha256"]) == 64
+
+    # Counted mode refuses shard_manifest without canary_item_ids (SHARD_MANIFEST_CANARY_MISSING)
+    import types
+
+    t_stub = types.ModuleType("torch")
+    t_stub.__version__ = "2.14.1+cu132"  # type: ignore[attr-defined]
+    t_stub.use_deterministic_algorithms = lambda _m, warn_only=False: None  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", t_stub)
+
+    no_canary_manifest_path = tmp_path / "no_canary_manifest.json"
+    no_canary_sha = bakeoff_judge.write_shard_manifest(
+        base_manifest, no_canary_manifest_path
+    )
+    with pytest.raises(RdlabError) as exc_no_can:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=tmp_path / "out_no_canary",
+            judge="mu-judge",
+            fake_transport=True,
+            shard_spec="1/2",
+            shard_manifest_path=no_canary_manifest_path,
+            shard_manifest_sha256=no_canary_sha,
+            window_mode="counted",
+        )
+    assert exc_no_can.value.code == "SHARD_MANIFEST_CANARY_MISSING"
+
+    # Counted mode refuses shard_manifest with canary_item_ids if golden_anchor_manifest.json is missing
+    full_manifest_path = tmp_path / "full_manifest_no_golden.json"
+    full_manifest_sha = bakeoff_judge.write_shard_manifest(
+        full_manifest, full_manifest_path
+    )
+    with pytest.raises(RdlabError) as exc_no_gold:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=tmp_path / "out_no_golden",
+            judge="mu-judge",
+            fake_transport=True,
+            shard_spec="1/2",
+            shard_manifest_path=full_manifest_path,
+            shard_manifest_sha256=full_manifest_sha,
+            window_mode="counted",
+        )
+    assert exc_no_gold.value.code == "GOLDEN_ANCHOR_MANIFEST_MISSING"
+
+    # 3. End-to-end 2-shard merge with golden anchor manifest, quarantine/tombstone + replacement session,
+    #    double-order flip pipeline bug abort, and Bowker 3x3 readout
+    small_items_path = _make_stratified_public_items(tmp_path / "small_e", count=6)
+    small_items, _ = bakeoff_judge.load_judge_items(small_items_path)
+    small_t_path = tmp_path / "small_e" / "telemetry.jsonl"
+    small_t_path.write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "item_id": it.item_id,
+                    "judge_id": "mu-judge",
+                    "order": "AB",
+                    "min_top2_logit_margin": 0.01 * (i + 1),
+                }
+            )
+            for i, it in enumerate(small_items)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    sm_manifest = bakeoff_judge.build_shard_manifest(
+        small_items_path,
+        num_shards=2,
+        anchor_count=4,
+        stratified_anchor_count=2,
+        canary_anchor_count=2,
+        lock_check_telemetry_path=small_t_path,
+    )
+    sm_manifest_path = tmp_path / "small_e" / "shard_manifest.json"
+    sm_manifest_sha = bakeoff_judge.write_shard_manifest(sm_manifest, sm_manifest_path)
+    receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "small_e")
+
+    def _populate_shard_dir(sdir: Path, shard_k: int) -> None:
+        sdir.mkdir(parents=True, exist_ok=True)
+        spec_str = f"{shard_k}/2"
+        shutil.copyfile(sm_manifest_path, sdir / "shard_manifest.json")
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir,
+            receipts_dir=receipts_dir,
+            mode="stub",
+            shard_spec=spec_str,
+            phase="start",
+            dryrun=True,
+        )
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir,
+            receipts_dir=receipts_dir,
+            mode="stub",
+            shard_spec=spec_str,
+            phase="end",
+            dryrun=True,
+            prior_session_env=s_env,
+        )
+        for jid in BAKEOFF_JUDGE_SPECS:
+            bakeoff_judge.run_bakeoff_judge(
+                part_dir=small_items_path,
+                output_dir=sdir,
+                judge=jid,
+                fake_transport=True,
+                allow_remote_code_reviewed=(
+                    bakeoff_judge.D3_MINI_REVIEWED_REVISION if jid == "d3-mini" else None
+                ),
+                shard_spec=spec_str,
+                shard_manifest_path=sm_manifest_path,
+                shard_manifest_sha256=sm_manifest_sha,
+                session_fingerprint_sha256=s_env["session_fingerprint_sha256"],
+            )
+        vm_judges.write_outputs_closed(sdir)
+
+    s1_dir = tmp_path / "small_e" / "shard_1"
+    s2_bad_dir = tmp_path / "small_e" / "shard_2_bad"
+    s2_repl_dir = tmp_path / "small_e" / "shard_2_repl"
+    _populate_shard_dir(s1_dir, 1)
+    _populate_shard_dir(s2_bad_dir, 2)
+    _populate_shard_dir(s2_repl_dir, 2)
+
+    # Build golden anchor manifest from clean shard 1 anchor rows
+    golden_doc = bakeoff_judge.build_golden_anchor_manifest(
+        s1_dir,
+        anchor_item_ids=sm_manifest["anchor_item_ids"],
+    )
+    golden_path = tmp_path / "small_e" / "golden_anchor_manifest.json"
+    bakeoff_judge.write_golden_anchor_manifest(golden_doc, golden_path)
+
+    # Corrupt 2 anchor verdicts for mu-judge in s2_bad_dir (> k_judge = 1)
+    ar_mu_bad = s2_bad_dir / "anchor_rows" / "mu-judge.jsonl"
+    orig_ar_mu_lines = [
+        json.loads(ln)
+        for ln in ar_mu_bad.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    # Flip AB on item 0 and AB on item 1 (2 single-order flips for mu-judge -> exceeds k_judge=1)
+    seen_items_flipped: list[str] = []
+    for r in orig_ar_mu_lines:
+        if r["order"] == "AB" and len(seen_items_flipped) < 2:
+            r["raw_verdict"] = "no" if r.get("raw_verdict") == "yes" else "yes"
+            seen_items_flipped.append(r["item_id"])
+    ar_mu_bad.write_text(
+        "\n".join(json.dumps(r) for r in orig_ar_mu_lines) + "\n", encoding="utf-8"
+    )
+
+    # Without replacement shard, S=2 against golden names shard 2/2 as deviant and refuses
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_deviant:
+        merge_shards.merge_shards(
+            shard_dirs=[s1_dir, s2_bad_dir],
+            manifest_path=sm_manifest_path,
+            output_dir=tmp_path / "small_e" / "merged_fail_no_repl",
+            golden_anchor_manifest_path=golden_path,
+        )
+    assert exc_deviant.value.failure_class == "MERGE_ANCHOR_DRIFT_REFUSED"
+    assert "2/2" in exc_deviant.value.detail
+
+    # With replacement shard s2_repl_dir: s2_bad_dir is quarantined & tombstoned, s2_repl_dir replaces it,
+    # and quarantined_shards_replaced == 1 in readout & receipt
+    merged_repl_out = tmp_path / "small_e" / "merged_with_repl"
+    rec_repl = merge_shards.merge_shards(
+        shard_dirs=[s1_dir, s2_bad_dir],
+        manifest_path=sm_manifest_path,
+        output_dir=merged_repl_out,
+        golden_anchor_manifest_path=golden_path,
+        replacement_shard_dirs=[s2_repl_dir],
+    )
+    assert rec_repl["status"] == "ok"
+    assert rec_repl["quarantined_shards_replaced"] == 1
+    assert (s2_bad_dir / "TOMBSTONE.json").is_file()
+    readout_repl = json.loads(
+        (merged_repl_out / "merged_readout.json").read_text(encoding="utf-8")
+    )
+    assert readout_repl["quarantined_shards_replaced"] == 1
+    assert readout_repl["k_judge_label"] == "detection check, not a bias guarantee"
+    assert "1/2_vs_2/2" in readout_repl["anchor_diagnostics"]["per_pair_verdict_table_3x3"]
+    assert "1/2_vs_2/2" in readout_repl["anchor_diagnostics"]["per_pair_bowker_symmetry"]
+    assert (
+        readout_repl["anchor_diagnostics"]["per_pair_bowker_symmetry"]["1/2_vs_2/2"][
+            "statistic"
+        ]
+        == 0.0
+    )
+
+    # Tombstoned shard is refused if passed directly to a later merge
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_tomb:
+        merge_shards.merge_shards(
+            shard_dirs=[s1_dir, s2_bad_dir],
+            manifest_path=sm_manifest_path,
+            output_dir=tmp_path / "small_e" / "merged_tomb",
+            golden_anchor_manifest_path=golden_path,
+        )
+    assert exc_tomb.value.failure_class == "MERGE_SHARD_TOMBSTONED"
+
+    # Double-order flip (both AB and BA flip on same item & judge) -> hard abort MERGE_ANCHOR_DOUBLE_ORDER_PIPELINE_BUG
+    (s2_bad_dir / "TOMBSTONE.json").unlink()
+    target_iid = orig_ar_mu_lines[0]["item_id"]
+    double_flip_lines = [
+        json.loads(ln)
+        for ln in (s2_repl_dir / "anchor_rows" / "mu-judge.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if ln.strip()
+    ]
+    for r in double_flip_lines:
+        if r["item_id"] == target_iid:
+            r["raw_verdict"] = "no" if r.get("raw_verdict") == "yes" else "yes"
+    ar_mu_bad.write_text(
+        "\n".join(json.dumps(r) for r in double_flip_lines) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_dbl:
+        merge_shards.merge_shards(
+            shard_dirs=[s1_dir, s2_bad_dir],
+            manifest_path=sm_manifest_path,
+            output_dir=tmp_path / "small_e" / "merged_dbl_bug",
+            golden_anchor_manifest_path=golden_path,
+            replacement_shard_dirs=[s2_repl_dir],
+        )
+    assert (
+        exc_dbl.value.failure_class == "MERGE_ANCHOR_DOUBLE_ORDER_PIPELINE_BUG"
+    )
+
+
+def test_fix1_part_f_100_percent_patch_coverage_on_bakeoff_judge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-1 Part F:
+    Exercise all new/modified lines and branches in `src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py`
+    without any `pragma: no cover`, `# nocov`, `coverage:ignore`, or omit-list entry.
+    """
+    import types
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    # 1. compute_response_output_token_ids_sha256 & compute_min_top2_logit_margin_from_logprobs
+    assert bakeoff_judge.compute_response_output_token_ids_sha256(
+        "mu-judge", ("yes",), token_ids=[11, 22, 33]
+    ) == bakeoff_judge.compute_token_ids_sha256([11, 22, 33])
+    assert (
+        bakeoff_judge.compute_min_top2_logit_margin_from_logprobs(
+            [], step_margins=[0.4, 0.15]
+        )
+        == 0.15
+    )
+    assert bakeoff_judge.compute_min_top2_logit_margin_from_logprobs([]) == 0.0
+
+    # 2. pin_and_read_sdpa_backend across ImportError, no cuda backends, raising setters/getters, and enabled backends
+    with monkeypatch.context() as mp:
+        mp.setitem(sys.modules, "torch", None)
+        assert bakeoff_judge.pin_and_read_sdpa_backend() == "math"
+
+    with monkeypatch.context() as mp:
+        t_no_cuda = types.ModuleType("torch")
+        t_no_cuda.backends = types.SimpleNamespace(cuda=None)  # type: ignore[attr-defined]
+        mp.setitem(sys.modules, "torch", t_no_cuda)
+        assert bakeoff_judge.pin_and_read_sdpa_backend() == "math"
+
+    with monkeypatch.context() as mp:
+        def _raise_err(*_a: Any) -> Any:
+            raise RuntimeError("unsupported")
+
+        t_cuda_err = types.ModuleType("torch")
+        t_cuda_err.backends = types.SimpleNamespace(  # type: ignore[attr-defined]
+            cuda=types.SimpleNamespace(
+                enable_flash_sdp=_raise_err,
+                enable_mem_efficient_sdp=lambda _v: None,
+                enable_math_sdp=lambda _v: None,
+                flash_sdp_enabled=_raise_err,
+                mem_efficient_sdp_enabled=lambda: False,
+                math_sdp_enabled=lambda: False,
+            )
+        )
+        mp.setitem(sys.modules, "torch", t_cuda_err)
+        assert bakeoff_judge.pin_and_read_sdpa_backend() == "math"
+
+    with monkeypatch.context() as mp:
+        t_cuda_ok = types.ModuleType("torch")
+        t_cuda_ok.backends = types.SimpleNamespace(  # type: ignore[attr-defined]
+            cuda=types.SimpleNamespace(
+                enable_flash_sdp=lambda _v: None,
+                enable_mem_efficient_sdp=lambda _v: None,
+                enable_math_sdp=lambda _v: None,
+                flash_sdp_enabled=lambda: False,
+                mem_efficient_sdp_enabled=lambda: False,
+                math_sdp_enabled=lambda: True,
+            )
+        )
+        mp.setitem(sys.modules, "torch", t_cuda_ok)
+        assert bakeoff_judge.pin_and_read_sdpa_backend() == "math"
+
+    # 3. _is_counted_window_mode and configure_torch_determinism_with_reason branches
+    assert bakeoff_judge._is_counted_window_mode(strict=True) is True
+    assert bakeoff_judge._is_counted_window_mode(strict=False) is False
+    assert bakeoff_judge._is_counted_window_mode("counted") is True
+    assert bakeoff_judge._is_counted_window_mode("stub") is False
+    with monkeypatch.context() as mp:
+        mp.setenv("RDLAB_MODE", "counted")
+        assert bakeoff_judge._is_counted_window_mode("custom_unknown") is True
+    with monkeypatch.context() as mp:
+        mp.setenv("RDLAB_MODE", "stub")
+        assert bakeoff_judge._is_counted_window_mode(None) is False
+    with monkeypatch.context() as mp:
+        mp.delenv("RDLAB_MODE", raising=False)
+        mp.delenv("RDLAB_WINDOW_MODE", raising=False)
+        assert bakeoff_judge._is_counted_window_mode(None, shard_spec="1/2") is True
+        assert bakeoff_judge._is_counted_window_mode(None, shard_spec="") is False
+
+    with monkeypatch.context() as mp:
+        mp.setitem(sys.modules, "torch", None)
+        st, rsn = bakeoff_judge.configure_torch_determinism_with_reason(window_mode="stub")
+        assert st == "not enforceable"
+        assert "not installed" in rsn
+        with pytest.raises(RdlabError) as exc_no_t:
+            bakeoff_judge.configure_torch_determinism_with_reason(window_mode="counted")
+        assert exc_no_t.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+    with monkeypatch.context() as mp:
+        t_no_fn = types.ModuleType("torch")
+        mp.setitem(sys.modules, "torch", t_no_fn)
+        st2, rsn2 = bakeoff_judge.configure_torch_determinism_with_reason(window_mode="stub")
+        assert st2 == "not enforceable"
+        assert "not available" in rsn2
+        with pytest.raises(RdlabError) as exc_no_fn:
+            bakeoff_judge.configure_torch_determinism_with_reason(window_mode="counted")
+        assert exc_no_fn.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+    # 4. parse_shard_spec error branches
+    for bad_spec, exp_code in (
+        ("1", "SHARD_SPEC_MISSING_N"),
+        ("1/2/3", "SHARD_SPEC_MISSING_N"),
+        ("1/abc", "SHARD_SPEC_MISSING_N"),
+        ("1/0", "SHARD_SPEC_MISSING_N"),
+        ("abc/2", "SHARD_SPEC_OUT_OF_RANGE"),
+        ("0/2", "SHARD_SPEC_OUT_OF_RANGE"),
+        ("3/2", "SHARD_SPEC_OUT_OF_RANGE"),
+    ):
+        with pytest.raises(RdlabError) as exc_sp:
+            bakeoff_judge.parse_shard_spec(bad_spec)
+        assert exc_sp.value.code == exp_code
+
+    # 5. select_lock_check_canary_anchors branches (rows/*.jsonl, generations.jsonl, *.jsonl, missing, non-dict/null lines)
+    with pytest.raises(RdlabError) as exc_tel_miss:
+        bakeoff_judge.select_lock_check_canary_anchors(
+            ["item-1"], tmp_path / "no_such_telemetry_dir"
+        )
+    assert exc_tel_miss.value.code == "SHARD_MANIFEST_CANARY_TELEMETRY_MISSING"
+
+    dir_rows = tmp_path / "tel_rows_dir"
+    (dir_rows / "rows").mkdir(parents=True)
+    (dir_rows / "rows" / "mu-judge.jsonl").write_text(
+        "\n"
+        + "[1, 2, 3]\n"
+        + json.dumps({"item_id": "", "min_top2_logit_margin": 0.1})
+        + "\n"
+        + json.dumps({"item_id": "item-1", "min_top2_logit_margin": None})
+        + "\n"
+        + json.dumps({"item_id": "item-1", "min_top2_logit_margin": 0.05})
+        + "\n",
+        encoding="utf-8",
+    )
+    (dir_rows / "rows" / "d3-mini.jsonl").write_text(
+        json.dumps({"item_id": "item-1", "min_top2_logit_margin": 0.02}) + "\n",
+        encoding="utf-8",
+    )
+    c_ids, c_sha = bakeoff_judge.select_lock_check_canary_anchors(
+        ["item-1"], dir_rows, canary_count=1
+    )
+    assert c_ids == ["item-1"] and len(c_sha) == 64
+
+    dir_gen = tmp_path / "tel_gen_dir"
+    dir_gen.mkdir(parents=True)
+    (dir_gen / "generations.jsonl").write_text(
+        json.dumps({"item_id": "item-1", "min_top2_logit_margin": 0.03}) + "\n",
+        encoding="utf-8",
+    )
+    c_ids_g, _ = bakeoff_judge.select_lock_check_canary_anchors(
+        ["item-1"], dir_gen, canary_count=1
+    )
+    assert c_ids_g == ["item-1"]
+
+    dir_misc = tmp_path / "tel_misc_dir"
+    dir_misc.mkdir(parents=True)
+    (dir_misc / "custom.jsonl").write_text(
+        json.dumps({"item_id": "item-1", "min_top2_logit_margin": 0.04}) + "\n",
+        encoding="utf-8",
+    )
+    c_ids_m, _ = bakeoff_judge.select_lock_check_canary_anchors(
+        ["item-1"], dir_misc, canary_count=1
+    )
+    assert c_ids_m == ["item-1"]
+
+    # 6. normalize_anchor_verdict_code & build_golden_anchor_manifest branches (file, dir with rows/, sequence)
+    assert bakeoff_judge.normalize_anchor_verdict_code({"state": "length_stop", "raw_verdict": "yes"}) == "unparseable"
+    assert bakeoff_judge.normalize_anchor_verdict_code({"state": "parsed", "raw_verdict": "yes"}) == "yes"
+    assert bakeoff_judge.normalize_anchor_verdict_code({"state": "parsed", "raw_verdict": "no"}) == "no"
+    assert bakeoff_judge.normalize_anchor_verdict_code({"state": "parsed", "raw_verdict": "maybe"}) == "unparseable"
+
+    golden_file_in = tmp_path / "golden_input.jsonl"
+    golden_file_in.write_text(
+        "\n"
+        + json.dumps({"item_id": "", "order": "AB", "judge_id": "mu-judge"})
+        + "\n"
+        + json.dumps(
+            {
+                "item_id": "item-1",
+                "order": "AB",
+                "judge_id": "mu-judge",
+                "state": "parsed",
+                "raw_verdict": "yes",
+                "output_token_ids_sha256": "a" * 64,
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "item_id": "item-2",
+                "order": "AB",
+                "judge_id": "mu-judge",
+                "state": "parsed",
+                "raw_verdict": "no",
+                "output_token_ids_sha256": "b" * 64,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    g_from_file = bakeoff_judge.build_golden_anchor_manifest(
+        golden_file_in, anchor_item_ids=["item-1"]
+    )
+    assert g_from_file["row_count"] == 1
+    g_from_seq = bakeoff_judge.build_golden_anchor_manifest(
+        [
+            {
+                "item_id": "item-1",
+                "order": "BA",
+                "judge_id": "mu-judge",
+                "state": "parsed",
+                "raw_verdict": "no",
+                "output_token_ids_sha256": "c" * 64,
+            }
+        ]
+    )
+    assert g_from_seq["row_count"] == 1
+
+    # 7. build_shard_manifest & verify_shard_manifest error/edge branches
+    with pytest.raises(RdlabError) as exc_ns0:
+        bakeoff_judge.build_shard_manifest([], num_shards=0)
+    assert exc_ns0.value.code == "SHARD_SPEC_MISSING_N"
+
+    items_p = _make_stratified_public_items(tmp_path / "cov_items", count=6)
+    loaded_items, _ = bakeoff_judge.load_judge_items(items_p)
+    # Pass sequence of JudgeInputItems, target_strat_n < len(shard1_items) (1 < 3), explicit canary_item_ids, pass_mode="three_way"
+    m_seq = bakeoff_judge.build_shard_manifest(
+        loaded_items,
+        num_shards=2,
+        anchor_count=2,
+        stratified_anchor_count=1,
+        canary_anchor_count=1,
+        canary_item_ids=[loaded_items[-1].item_id, loaded_items[-2].item_id],
+        pass_mode="three_way",
+    )
+    assert m_seq["stratified_anchor_count"] == 1
+    assert m_seq["canary_anchor_count"] == 1
+
+    with pytest.raises(RdlabError) as exc_mf_nf:
+        bakeoff_judge.verify_shard_manifest(tmp_path / "missing_manifest.json")
+    assert exc_mf_nf.value.code == "SHARD_MANIFEST_NOT_FOUND"
+
+    bad_json_mf = tmp_path / "bad_json_mf.json"
+    bad_json_mf.write_text("{not-json", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_mf_json:
+        bakeoff_judge.verify_shard_manifest(bad_json_mf)
+    assert exc_mf_json.value.code == "SHARD_MANIFEST_INVALID"
+
+    no_shards_mf = tmp_path / "no_shards_mf.json"
+    no_shards_mf.write_text(json.dumps({"schema_version": "1.0"}), encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_mf_ns:
+        bakeoff_judge.verify_shard_manifest(no_shards_mf)
+    assert exc_mf_ns.value.code == "SHARD_MANIFEST_INVALID"
+
+    non_list_mf = tmp_path / "non_list_mf.json"
+    non_list_mf.write_text(json.dumps({"shards": {"1": "not-a-list"}}), encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_mf_nl:
+        bakeoff_judge.verify_shard_manifest(non_list_mf)
+    assert exc_mf_nl.value.code == "SHARD_MANIFEST_INVALID"
+
+    dup_mf = tmp_path / "dup_mf.json"
+    dup_mf.write_text(
+        json.dumps({"shards": {"1": ["a"], "2": ["a"]}}), encoding="utf-8"
+    )
+    with pytest.raises(RdlabError) as exc_mf_dup:
+        bakeoff_judge.verify_shard_manifest(dup_mf)
+    assert exc_mf_dup.value.code == "SHARD_MANIFEST_INVALID"
+
+    cnt_mf = tmp_path / "cnt_mf.json"
+    cnt_mf.write_text(
+        json.dumps({"shards": {"1": ["a"]}, "item_count": 2}), encoding="utf-8"
+    )
+    with pytest.raises(RdlabError) as exc_mf_cnt:
+        bakeoff_judge.verify_shard_manifest(cnt_mf)
+    assert exc_mf_cnt.value.code == "SHARD_MANIFEST_INVALID"
+
+    bad_body_mf = tmp_path / "bad_body_mf.json"
+    bad_body_doc = dict(m_seq, manifest_sha256="0" * 64)
+    bad_body_mf.write_text(json.dumps(bad_body_doc), encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_mf_body:
+        bakeoff_judge.verify_shard_manifest(bad_body_mf)
+    assert exc_mf_body.value.code == "SHARD_MANIFEST_SHA256_MISMATCH"
+
+    valid_mf = tmp_path / "valid_mf.json"
+    bakeoff_judge.write_shard_manifest(m_seq, valid_mf)
+    with pytest.raises(RdlabError) as exc_mf_exp_sha:
+        bakeoff_judge.verify_shard_manifest(valid_mf, expected_sha256="f" * 64)
+    assert exc_mf_exp_sha.value.code == "SHARD_MANIFEST_SHA256_MISMATCH"
+    with pytest.raises(RdlabError) as exc_mf_exp_n:
+        bakeoff_judge.verify_shard_manifest(valid_mf, expected_num_shards=5)
+    assert exc_mf_exp_n.value.code == "SHARD_SPEC_OUT_OF_RANGE"
+
+    # 8. resolve_child_heartbeat_interval_seconds & compute_row_body_sha256
+    assert bakeoff_judge.resolve_child_heartbeat_interval_seconds(0.25) == 0.25
+    with monkeypatch.context() as mp:
+        mp.setenv("RDLAB_JUDGE_CHILD_HEARTBEAT_SECONDS", "not-a-float")
+        assert (
+            bakeoff_judge.resolve_child_heartbeat_interval_seconds(None)
+            == bakeoff_judge.DEFAULT_CHILD_HEARTBEAT_INTERVAL_SECONDS
+        )
+    row_sample = bakeoff_judge._build_sealed_row_with_sha256({"item_id": "x", "order": "AB"})
+    assert bakeoff_judge.compute_row_body_sha256(row_sample) == row_sample["row_sha256"]
+
+    # 9. run_bakeoff_judge branches:
+    #    - RDLAB_ACTIVE_ITEM_IDS env var
+    #    - auto-building shard_manifest.json when target_manifest_path does not exist yet
+    #    - anchor_row_path pre-existing with a blank line & completed anchor key
+    #    - judge_done/<judge_id>.json pre-existing with malformed JSON
+    #    - anchor_prefix_only=True on shard 1
+    out_auto_mf = tmp_path / "out_auto_mf"
+    (out_auto_mf / "anchor_rows").mkdir(parents=True, exist_ok=True)
+    (out_auto_mf / "anchor_rows" / "mu-judge.jsonl").write_text(
+        "\n"
+        + json.dumps({"item_id": loaded_items[0].item_id, "order": "AB"})
+        + "\n",
+        encoding="utf-8",
+    )
+    (out_auto_mf / "judge_done").mkdir(parents=True, exist_ok=True)
+    (out_auto_mf / "judge_done" / "mu-judge.json").write_text("{corrupt-json", encoding="utf-8")
+    with monkeypatch.context() as mp:
+        mp.setenv("RDLAB_ACTIVE_ITEM_IDS", f"{loaded_items[0].item_id},{loaded_items[1].item_id}")
+        res_auto = bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_p,
+            output_dir=out_auto_mf,
+            judge="mu-judge",
+            fake_transport=True,
+            shard_spec="1/2",
+            anchor_prefix_only=True,
+            run_canary=False,
+        )
+    assert res_auto["status"] == "ok"
+    assert (out_auto_mf / "shard_manifest.json").is_file()
+
+    # Also test shard_k missing from manifest["shards"]
+    missing_k_mf = tmp_path / "missing_k_mf.json"
+    missing_k_doc = dict(m_seq)
+    # Create a manifest where num_shards=2 but keys are "1" and "99"
+    missing_k_doc["shards"] = {"1": m_seq["shards"]["1"], "99": m_seq["shards"]["2"]}
+    missing_k_doc["manifest_sha256"] = bakeoff_judge._compute_shard_manifest_body_sha256(
+        missing_k_doc
+    )
+    bakeoff_judge.write_shard_manifest(missing_k_doc, missing_k_mf)
+    with pytest.raises(RdlabError) as exc_mk:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_p,
+            output_dir=tmp_path / "out_missing_k",
+            judge="mu-judge",
+            fake_transport=True,
+            shard_spec="2/2",
+            shard_manifest_path=missing_k_mf,
+            run_canary=False,
+        )
+    assert exc_mk.value.code == "SHARD_SPEC_OUT_OF_RANGE"
+
+    # Also test fake_transport=False, transport=None instantiating D3MiniTransport and TransformersJudgeTransport
+    # (which then fail at verify_ready because receipts_dir is empty)
+    empty_rec_dir = tmp_path / "empty_receipts"
+    empty_rec_dir.mkdir(parents=True, exist_ok=True)
+    with monkeypatch.context() as mp:
+        mp.setenv("HF_HUB_OFFLINE", "1")
+        mp.setenv("TRANSFORMERS_OFFLINE", "1")
+        with pytest.raises(RdlabError):
+            bakeoff_judge.run_bakeoff_judge(
+                part_dir=items_p,
+                output_dir=tmp_path / "out_real_tp_d3",
+                judge="d3-mini",
+                fake_transport=False,
+                receipts_dir=empty_rec_dir,
+                allow_remote_code_reviewed=bakeoff_judge.D3_MINI_REVIEWED_REVISION,
+                window_mode="stub",
+            )
+        with pytest.raises(RdlabError):
+            bakeoff_judge.run_bakeoff_judge(
+                part_dir=items_p,
+                output_dir=tmp_path / "out_real_tp_tf",
+                judge="mu-judge",
+                fake_transport=False,
+                receipts_dir=empty_rec_dir,
+                window_mode="stub",
+            )
+
+    # 10. main_judge_runner CLI entrypoint with all new flags
+    cli_out = tmp_path / "out_cli_runner"
+    rc_cli = bakeoff_judge.main_judge_runner(
+        [
+            "--judge",
+            "mu-judge",
+            "--items",
+            str(items_p),
+            "--output-dir",
+            str(cli_out),
+            "--device",
+            "cpu",
+            "--stub",
+            "--no-canary",
+            "--shard",
+            "1/2",
+            "--shard-manifest",
+            str(valid_mf),
+            "--active-item-ids",
+            loaded_items[0].item_id,
+            "--anchor-prefix-only",
+            "--session-fingerprint-sha256",
+            "a" * 64,
+            "--window-mode",
+            "stub",
+            "--replacement-session",
+        ]
+    )
+    assert rc_cli == 0
+
+    # Also test main_judge_runner without --active-item-ids and with invalid --device / --judge
+    rc_bad_dev = bakeoff_judge.main_judge_runner(
+        [
+            "--judge",
+            "mu-judge",
+            "--items",
+            str(items_p),
+            "--output-dir",
+            str(tmp_path / "out_bad_dev"),
+            "--device",
+            "invalid-device:99",
+            "--stub",
+        ]
+    )
+    assert rc_bad_dev != 0
+
+    # Extra branch coverage for RDLAB_DETERMINISM_WARN_ONLY in stub mode, golden manifest edge cases,
+    # counted sharded run succeeding when golden_anchor_manifest.json is present, and judge_done non-dict JSON
+    with monkeypatch.context() as mp:
+        mp.setenv("RDLAB_DETERMINISM_WARN_ONLY", "1")
+        st_wo, _ = bakeoff_judge.configure_torch_determinism_with_reason(window_mode="stub")
+        assert st_wo in ("enforced", "not enforceable")
+
+    assert bakeoff_judge.build_golden_anchor_manifest(tmp_path / "nonexistent_golden_src")["row_count"] == 0
+    empty_gold_dir = tmp_path / "empty_gold_dir"
+    empty_gold_dir.mkdir(parents=True, exist_ok=True)
+    assert bakeoff_judge.build_golden_anchor_manifest(empty_gold_dir)["row_count"] == 0
+    non_map_gold = tmp_path / "non_map_gold.jsonl"
+    non_map_gold.write_text("[1, 2]\n", encoding="utf-8")
+    assert bakeoff_judge.build_golden_anchor_manifest(non_map_gold)["row_count"] == 0
+
+    m_zero_strat = bakeoff_judge.build_shard_manifest(
+        loaded_items,
+        num_shards=2,
+        anchor_count=2,
+        stratified_anchor_count=0,
+        canary_anchor_count=2,
+        canary_item_ids=["unknown-id", loaded_items[0].item_id],
+    )
+    assert m_zero_strat["stratified_anchor_count"] == 0
+    assert m_zero_strat["canary_anchor_count"] == 1
+
+    # Counted sharded run succeeding when golden_anchor_manifest_sha256 is present in manifest
+    m_with_gold = dict(m_seq, golden_anchor_manifest_sha256="a" * 64)
+    m_with_gold["manifest_sha256"] = bakeoff_judge._compute_shard_manifest_body_sha256(m_with_gold)
+    out_counted_ok = tmp_path / "out_counted_ok"
+    bakeoff_judge.write_shard_manifest(m_with_gold, out_counted_ok / "shard_manifest.json")
+    (out_counted_ok / "anchor_rows").mkdir(parents=True, exist_ok=True)
+    (out_counted_ok / "anchor_rows" / "mu-judge.jsonl").write_text("[1, 2]\n", encoding="utf-8")
+    (out_counted_ok / "judge_done").mkdir(parents=True, exist_ok=True)
+    (out_counted_ok / "judge_done" / "mu-judge.json").write_text("[1, 2]\n", encoding="utf-8")
+    with monkeypatch.context() as mp:
+        t_ok = types.ModuleType("torch")
+        t_ok.__version__ = "2.14.1+cu132"  # type: ignore[attr-defined]
+        t_ok.use_deterministic_algorithms = lambda _m, warn_only=False: None  # type: ignore[attr-defined]
+        mp.setitem(sys.modules, "torch", t_ok)
+        res_cnt_ok = bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_p,
+            output_dir=out_counted_ok,
+            judge="mu-judge",
+            fake_transport=True,
+            shard_spec="1/2",
+            window_mode="counted",
+            run_canary=False,
+        )
+    assert res_cnt_ok["status"] == "ok"
+
+    res_s2_prefix = bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_p,
+        output_dir=tmp_path / "out_s2_prefix_inproc",
+        judge="mu-judge",
+        fake_transport=True,
+        shard_spec="2/2",
+        shard_manifest_path=valid_mf,
+        anchor_prefix_only=True,
+        run_canary=False,
+    )
+    assert res_s2_prefix["status"] == "ok"
+
+    # Cover encode_canonical_prompt_token_ids("<") and empty out.scores in TransformersJudgeTransport.generate
+    assert len(bakeoff_judge.encode_canonical_prompt_token_ids("mu-judge", "<")) == 1
+    assert bakeoff_judge.encode_canonical_prompt_token_ids("mu-judge", "") == []
+    with monkeypatch.context() as mp:
+        t_gen = types.ModuleType("torch")
+        t_gen.__version__ = "2.14.1+cu132"  # type: ignore[attr-defined]
+        t_gen.use_deterministic_algorithms = lambda _m, warn_only=False: None  # type: ignore[attr-defined]
+        t_gen.manual_seed = lambda _s: None  # type: ignore[attr-defined]
+
+        class _NoGrad:
+            def __enter__(self) -> None:
+                return None
+
+            def __exit__(self, *_a: Any) -> None:
+                return None
+
+        t_gen.no_grad = _NoGrad  # type: ignore[attr-defined]
+        tf_gen = types.ModuleType("transformers")
+        tf_gen.__version__ = "5.19.0"  # type: ignore[attr-defined]
+        mp.setitem(sys.modules, "torch", t_gen)
+        mp.setitem(sys.modules, "transformers", tf_gen)
+        tr_empty_scores = bakeoff_judge.TransformersJudgeTransport(
+            receipts_dir=tmp_path, device="cpu", window_mode="stub"
+        )
+        spec_mu = bakeoff_judge.resolve_judge_spec("mu-judge")
+
+        class _MiniTensor:
+            def __init__(self, vals: Any) -> None:
+                self.vals = vals
+
+            @property
+            def shape(self) -> tuple[int, int]:
+                return (1, len(self.vals[0]))
+
+            def to(self, _d: str) -> "_MiniTensor":
+                return self
+
+            def tolist(self) -> Any:
+                return self.vals
+
+            def __getitem__(self, idx: Any) -> "_MiniTensor":
+                if isinstance(idx, tuple):
+                    r, sl = idx
+                    return _MiniTensor(self.vals[r][sl])
+                return _MiniTensor(self.vals[idx])
+
+        class _MiniTok:
+            pad_token_id = 0
+            eos_token_id = 2
+
+            def __call__(self, _txt: str, **_kw: Any) -> dict[str, _MiniTensor]:
+                return {"input_ids": _MiniTensor([[1, 2]])}
+
+            def convert_ids_to_tokens(self, ids: list[int]) -> list[str]:
+                return ["yes" for _ in ids]
+
+            def decode(self, _ids: Any, **_kw: Any) -> str:
+                return "yes"
+
+        tr_empty_scores._tokenizer = _MiniTok()
+        tr_empty_scores._model = types.SimpleNamespace(
+            generation_config=types.SimpleNamespace(eos_token_id=2),
+            generate=lambda **_kw: types.SimpleNamespace(
+                sequences=_MiniTensor([[1, 2, 3]]), scores=[]
+            ),
+        )
+        tr_empty_scores._loaded_spec_id = spec_mu.judge_id
+        tr_empty_scores._snapshot_dir = tmp_path
+        tr_empty_scores._verified_digest = spec_mu.revision
+        p_mu = bakeoff_judge.build_judge_adapter(spec_mu).assemble_prompt(
+            loaded_items[0], order="AB", pass_mode="binary"
+        )
+        resp_empty_scores = tr_empty_scores.generate(spec_mu, p_mu, seed=1)
+        assert resp_empty_scores.min_top2_logit_margin == 0.0
+
+
+
+
+
 

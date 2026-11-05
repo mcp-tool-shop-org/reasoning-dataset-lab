@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "judge_id": "flow-judge-v0.1",
+  "judge_id": "nemotron-3-nano-4b",
   "synthetic_prompts": [
     {
       "prompt_id": "boot_gatekeeper_synthetic_1",

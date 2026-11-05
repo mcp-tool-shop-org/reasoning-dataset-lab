@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-04 from commit 580c41d by Atlas 1.23.0.
+Mapped at 2026-11-05 from commit 8755a01 by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,9 +8,10 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (68 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-04 (c24372a)
+## What changed since 2026-11-04 (580c41d)
 
-Nothing structural changed since 2026-11-04; 3 files changed content.
+- scripts/colab/merge_config.json is now read by scripts/colab/merge_shards.py.
+- 1 file added and 7 changed content, across 3 parts.
 
 ## What comes in
 
@@ -22,7 +23,7 @@ Nothing structural changed since 2026-11-04; 3 files changed content.
 ## What happens through ci
 
 1. The workflow runs tests/ in tests.
-2. That reaches scripts (3 files) and src (23 files).
+2. That reaches scripts (3 files) and src (25 files).
 3. It writes to src/reasoning_dataset_lab/pilot_b/canary_config.json.
 4. It uploads coverage to Codecov.
 
@@ -46,10 +47,10 @@ Only ci itself reads what it writes.
 ## What tends to change together
 
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
-- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 15 of 16 commits, and the tests part imports the scripts part.
+- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 15 of 17 commits, and the tests part imports the scripts part.
 - **scripts/colab/vm_judges.py** and **tests/fixtures/fake_colab.py** changed together in 13 of 15 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 9 of 11 commits, and the tests part imports the src part.
-- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 13 of 16 commits, inside the tests part.
+- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 13 of 17 commits, inside the tests part.
 
 1 file changed together with its own test, as expected.
 
@@ -87,9 +88,9 @@ Read those in order to follow one run of rdlab end to end. This path follows rdl
 
 - 8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
 - 3 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.
-- 13 writes and 28 reads use paths built at run time and are not named here.
-- 58 writes and 127 reads go to a path their caller passes, not to this repository.
-- 5 reads go to the directory the command is run in, not to this repository.
+- 13 writes and 31 reads use paths built at run time and are not named here.
+- 61 writes and 135 reads go to a path their caller passes, not to this repository.
+- 6 reads go to the directory the command is run in, not to this repository.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.

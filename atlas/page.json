@@ -33,24 +33,32 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 0,
-      "changed": 3,
+      "added": 1,
+      "changed": 7,
       "moved": 0,
       "parts": 3,
       "removed": 0
     },
     "items": [
       {
+        "kind": "landing",
+        "sentence": "scripts/colab/merge_config.json is now read by scripts/colab/merge_shards.py.",
+        "subjects": [
+          "scripts/colab/merge_config.json",
+          "scripts/colab/merge_shards.py"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-04; 3 files changed content.",
+        "sentence": "1 file added and 7 changed content, across 3 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "c24372a558046ca0a671640de861571b9bb23238",
-      "generatedAt": "2026-11-04T22:56:42.474Z"
+      "commit": "580c41d213ef2dfbb7d656ff9c569574bc781c82",
+      "generatedAt": "2026-11-04T23:38:32.818Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [
     {
@@ -71,7 +79,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 16,
+      "either": 17,
       "partLabels": [
         "scripts",
         "tests"
@@ -116,7 +124,7 @@
     {
       "a": "tests/fixtures/fake_colab.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 16,
+      "either": 17,
       "partLabels": [
         "tests",
         "tests"
@@ -135,7 +143,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 7 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "580c41d213ef2dfbb7d656ff9c569574bc781c82",
+  "commit": "8755a019b2f0af855b04fbfd46421e1f81d4ca7c",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (68 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -164,7 +172,7 @@
         {
           "boundary": "src",
           "depth": 1,
-          "files": 23
+          "files": 25
         }
       ],
       "runs": [
@@ -259,7 +267,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 20
+          "files": 21
         }
       ],
       "runs": [
@@ -282,7 +290,7 @@
       "to": "src"
     }
   ],
-  "engine": "1.23.0",
+  "engine": "1.24.0",
   "generated": [
     {
       "block": true,
@@ -292,13 +300,13 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-04T23:38:32.818Z",
+  "generatedAt": "2026-11-05T03:55:51.196Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "3 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
-    "13 writes and 28 reads use paths built at run time and are not named here.",
-    "58 writes and 127 reads go to a path their caller passes, not to this repository.",
-    "5 reads go to the directory the command is run in, not to this repository.",
+    "13 writes and 31 reads use paths built at run time and are not named here.",
+    "61 writes and 135 reads go to a path their caller passes, not to this repository.",
+    "6 reads go to the directory the command is run in, not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
   "mainDoor": ".github/workflows/ci.yml",

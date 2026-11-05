@@ -88,11 +88,14 @@ ALLOWED_LOGPROB_MASS_PART_IDS: frozenset[str] = frozenset(
 )
 SCHEDULE_FILENAME = "schedule.json"
 SHARD_MANIFEST_FILENAME = "shard_manifest.json"
+GOLDEN_ANCHOR_MANIFEST_FILENAME = "golden_anchor_manifest.json"
 GENERATIONS_FILENAME = "generations.jsonl"
 OUTPUTS_CLOSED_FILENAME = "outputs-closed.json"
 ROWS_DIRNAME = "rows"
 ANCHOR_ROWS_DIRNAME = "anchor_rows"
-DEFAULT_ANCHOR_ITEMS_COUNT = 25
+DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT = 25
+DEFAULT_CANARY_ANCHOR_ITEMS_COUNT = 25
+DEFAULT_ANCHOR_ITEMS_COUNT = 50
 DEFAULT_SUBBLOCK_ITEMS = 50
 DEFAULT_LOOP_ORDER = "subblock"
 DEFAULT_RECOVERY_OVERLAP_ITEM_PAIRS = 3
@@ -1254,58 +1257,80 @@ def pin_and_read_sdpa_backend() -> str:
         ("enable_mem_efficient_sdp", False),
         ("enable_math_sdp", True),
     ):
-        fn = getattr(cuda_backends, fn_name, None)
-        if callable(fn):
-            try:
-                fn(enabled)
-            except Exception:  # pragma: no cover
-                pass
+        try:
+            getattr(cuda_backends, fn_name, lambda _v: None)(enabled)
+        except Exception:
+            pass
     enabled_names: list[str] = []
     for label, getter_name in (
         ("flash", "flash_sdp_enabled"),
         ("mem_efficient", "mem_efficient_sdp_enabled"),
         ("math", "math_sdp_enabled"),
     ):
-        getter = getattr(cuda_backends, getter_name, None)
-        if callable(getter):
-            try:
-                if bool(getter()):
-                    enabled_names.append(label)
-            except Exception:  # pragma: no cover
-                pass
+        try:
+            if bool(getattr(cuda_backends, getter_name, lambda: False)()):
+                enabled_names.append(label)
+        except Exception:
+            pass
     if enabled_names:
         return "+".join(enabled_names)
     return "math"
+
+
+COUNTED_WINDOW_MODES: frozenset[str] = frozenset(
+    {"counted", "time-one", "time_one", "shard", "sharded", "counted-shard", "sharded-counted"}
+)
+NON_COUNTED_WINDOW_MODES: frozenset[str] = frozenset(
+    {"stub", "dryrun", "dry-run", "knob", "probe"}
+)
 
 
 def _is_counted_window_mode(
     window_mode: str | None = None,
     *,
     strict: bool | None = None,
+    shard_spec: str | None = None,
 ) -> bool:
-    """Return True when running in a counted window where determinism fallback is refused."""
+    """Return True when running in a counted/time-one/sharded-counted window where determinism fallback is refused."""
     if strict is not None:
         return bool(strict)
-    eff_mode = (
-        window_mode
-        if window_mode is not None
-        else os.environ.get(DETERMINISM_MODE_ENV_VAR, "")
+    if window_mode is not None and str(window_mode).strip():
+        wm = str(window_mode).strip().lower()
+        if wm in COUNTED_WINDOW_MODES:
+            return True
+        if wm in NON_COUNTED_WINDOW_MODES:
+            return False
+    env_wm = (
+        os.environ.get(DETERMINISM_MODE_ENV_VAR, "")
+        or os.environ.get("RDLAB_WINDOW_MODE", "")
     ).strip().lower()
-    return eff_mode == "counted"
+    if env_wm in COUNTED_WINDOW_MODES:
+        return True
+    if env_wm in NON_COUNTED_WINDOW_MODES:
+        return False
+    eff_shard = (
+        str(shard_spec).strip()
+        if shard_spec is not None
+        else os.environ.get("RDLAB_SHARD", "").strip()
+    )
+    if eff_shard:
+        return True
+    return False
 
 
 def configure_torch_determinism_with_reason(
     *,
     window_mode: str | None = None,
     strict: bool | None = None,
+    shard_spec: str | None = None,
 ) -> tuple[str, str]:
     """Configure `CUBLAS_WORKSPACE_CONFIG=:4096:8` and `torch.use_deterministic_algorithms(True, warn_only=False)`, returning `(status, reason)`.
 
-    In counted windows (`window_mode="counted"`, `RDLAB_MODE="counted"`, or `strict=True`), any failure to enforce
+    In counted windows (`window_mode="counted"`, `"time-one"`, sharded counted runs, or `strict=True`), any failure to enforce
     `warn_only=False` raises a named refusal (`BAKEOFF_JUDGE_DETERMINISM_REFUSED`) instead of falling back to `warn_only=True`.
     """
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
-    is_counted = _is_counted_window_mode(window_mode, strict=strict)
+    is_counted = _is_counted_window_mode(window_mode, strict=strict, shard_spec=shard_spec)
     if os.environ.get("RDLAB_DETERMINISM_WARN_ONLY", "").strip().lower() in ("1", "true", "yes", "on"):
         if is_counted:
             raise refused_error(
@@ -1356,9 +1381,12 @@ def configure_torch_determinism(
     *,
     window_mode: str | None = None,
     strict: bool | None = None,
+    shard_spec: str | None = None,
 ) -> str:
     """Configure `CUBLAS_WORKSPACE_CONFIG=:4096:8` and `torch.use_deterministic_algorithms(True, warn_only=False)`."""
-    status, _ = configure_torch_determinism_with_reason(window_mode=window_mode, strict=strict)
+    status, _ = configure_torch_determinism_with_reason(
+        window_mode=window_mode, strict=strict, shard_spec=shard_spec
+    )
     return status
 
 
@@ -2199,6 +2227,175 @@ def _compute_shard_manifest_body_sha256(manifest_doc: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def select_lock_check_canary_anchors(
+    items_or_ids: Sequence[JudgeInputItem | str],
+    telemetry_path_or_dir: Path | str,
+    *,
+    excluded_item_ids: Iterable[str] = (),
+    canary_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
+) -> tuple[list[str], str]:
+    """Select `canary_count` (25) canary anchor items from lock-check window telemetry.
+
+    Rule: From the lock-check window's telemetry, take each item's minimum top-1/top-2 logit margin
+    across all judges and both orders. Rank ascending, excluding the stratified 25 (`excluded_item_ids`),
+    and take the lowest `canary_count`. Ties break by `item_id`.
+    Returns `(canary_item_ids, telemetry_sha256)`.
+    """
+    valid_item_ids = {
+        (it.item_id if isinstance(it, JudgeInputItem) else str(it))
+        for it in items_or_ids
+    }
+    excluded_set = {str(iid) for iid in excluded_item_ids}
+    candidate_ids = sorted(valid_item_ids - excluded_set)
+
+    target = Path(telemetry_path_or_dir)
+    telemetry_files: list[Path] = []
+    if target.is_file():
+        telemetry_files = [target]
+    elif target.is_dir():
+        rows_sub = target / ROWS_DIRNAME
+        if rows_sub.is_dir():
+            telemetry_files = sorted(p for p in rows_sub.glob("*.jsonl") if p.is_file())
+        if not telemetry_files:
+            gen_cand = target / GENERATIONS_FILENAME
+            if gen_cand.is_file():
+                telemetry_files = [gen_cand]
+        if not telemetry_files:
+            telemetry_files = sorted(p for p in target.glob("*.jsonl") if p.is_file())
+    if not telemetry_files:
+        raise refused_error(
+            "SHARD_MANIFEST_CANARY_TELEMETRY_MISSING",
+            f"Lock-check telemetry '{target}' not found or contains no JSONL files.",
+            "Pass a valid lock-check telemetry file or directory containing rows/*.jsonl or generations.jsonl.",
+        )
+
+    hasher = hashlib.sha256()
+    min_margin_by_item: dict[str, float] = {}
+    for tf in telemetry_files:
+        raw_bytes = tf.read_bytes()
+        hasher.update(raw_bytes)
+        for ln in raw_bytes.decode("utf-8").splitlines():
+            if not ln.strip():
+                continue
+            rec = json.loads(ln)
+            if not isinstance(rec, Mapping):
+                continue
+            iid = str(rec.get("item_id") or "").strip()
+            if not iid or iid not in valid_item_ids or iid in excluded_set:
+                continue
+            raw_margin = rec.get("min_top2_logit_margin")
+            if raw_margin is None:
+                continue
+            margin_val = float(raw_margin)
+            prev_min = min_margin_by_item.get(iid)
+            if prev_min is None or margin_val < prev_min:
+                min_margin_by_item[iid] = margin_val
+
+    telemetry_sha256 = hasher.hexdigest() if len(telemetry_files) > 1 else hashlib.sha256(telemetry_files[0].read_bytes()).hexdigest()
+    target_n = min(max(0, int(canary_count)), len(candidate_ids))
+    ranked = sorted(
+        candidate_ids,
+        key=lambda iid: (min_margin_by_item.get(iid, float("inf")), iid),
+    )
+    return ranked[:target_n], telemetry_sha256
+
+
+def normalize_anchor_verdict_code(row: Mapping[str, Any]) -> str:
+    """Normalize an anchor row verdict to one of `'yes'`, `'no'`, or `'unparseable'` (counts/codes only)."""
+    state = str(row.get("state") or row.get("verdict_parse_status") or "").strip().lower()
+    if state in ("unparseable", "length_stop"):
+        return "unparseable"
+    verdict = str(row.get("raw_verdict") or "").strip().lower()
+    if verdict in ("yes", "supported", "pass", "a", "3", "true", "1"):
+        return "yes"
+    if verdict in ("no", "unsupported", "fail", "b", "false", "0"):
+        return "no"
+    return "unparseable"
+
+
+def build_golden_anchor_manifest(
+    lock_check_dir_or_rows: Path | str | Sequence[Mapping[str, Any]],
+    *,
+    anchor_item_ids: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Build the golden anchor manifest from the lock-check window's anchor rows (all 500 rows).
+
+    Records only hashes, normalized verdict codes (`yes`/`no`/`unparseable`), and row states (`parsed`/`unparseable`/`length_stop`).
+    Never stores item text, prompts, keys, or raw judge generation text.
+    """
+    raw_rows: list[Mapping[str, Any]] = []
+    if isinstance(lock_check_dir_or_rows, (Path, str)):
+        base = Path(lock_check_dir_or_rows)
+        jsonl_files: list[Path] = []
+        if base.is_file():
+            jsonl_files = [base]
+        elif base.is_dir():
+            anchor_sub = base / ANCHOR_ROWS_DIRNAME
+            rows_sub = base / ROWS_DIRNAME
+            source_dir = anchor_sub if (anchor_sub.is_dir() and list(anchor_sub.glob("*.jsonl"))) else rows_sub
+            jsonl_files = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
+        for rf in jsonl_files:
+            for ln in rf.read_text(encoding="utf-8").splitlines():
+                if ln.strip():
+                    obj = json.loads(ln)
+                    if isinstance(obj, Mapping):
+                        raw_rows.append(obj)
+    else:
+        raw_rows = list(lock_check_dir_or_rows)
+
+    wanted_anchors = {str(x) for x in anchor_item_ids} if anchor_item_ids is not None else None
+    rows_map: dict[str, dict[str, Any]] = {}
+    judges_seen: set[str] = set()
+    items_seen: set[str] = set()
+    for r in raw_rows:
+        iid = str(r.get("item_id") or "").strip()
+        ord_s = str(r.get("order") or "").strip()
+        jid = str(r.get("judge_id") or "").strip()
+        if not iid or not ord_s or not jid:
+            continue
+        if wanted_anchors is not None and iid not in wanted_anchors:
+            continue
+        key = f"{jid}:{iid}:{ord_s}"
+        row_state = str(r.get("state") or r.get("verdict_parse_status") or "parsed").strip()
+        verdict_code = normalize_anchor_verdict_code(r)
+        out_sha = str(r.get("output_token_ids_sha256") or "").strip()
+        in_sha = str(r.get("input_token_ids_sha256") or "").strip()
+        prompt_sha = str(r.get("prompt_sha256") or "").strip()
+        rows_map[key] = {
+            "judge_id": jid,
+            "item_id": iid,
+            "order": ord_s,
+            "row_state": row_state,
+            "verdict_code": verdict_code,
+            "output_token_ids_sha256": out_sha,
+            "input_token_ids_sha256": in_sha,
+            "prompt_sha256": prompt_sha,
+        }
+        judges_seen.add(jid)
+        items_seen.add(iid)
+
+    doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "anchor_item_count": len(items_seen),
+        "judge_count": len(judges_seen),
+        "row_count": len(rows_map),
+        "rows": dict(sorted(rows_map.items())),
+    }
+    body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    doc["golden_anchor_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
+    return doc
+
+
+def write_golden_anchor_manifest(golden_doc: Mapping[str, Any], path: Path) -> str:
+    """Write `golden_doc` to `path` and return its SHA-256."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(dict(golden_doc), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    raw_bytes = serialized.encode("utf-8")
+    sha = hashlib.sha256(raw_bytes).hexdigest()
+    path.write_bytes(raw_bytes)
+    return sha
+
+
 def build_shard_manifest(
     items_or_path: Sequence[JudgeInputItem] | Path | str,
     schedule: JudgeSchedule | None = None,
@@ -2208,8 +2405,14 @@ def build_shard_manifest(
     limit_items: int | None = None,
     pass_mode: PassMode = "binary",
     anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_count: int = DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT,
+    canary_anchor_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
+    lock_check_telemetry_path: Path | str | None = None,
+    canary_item_ids: Sequence[str] | None = None,
+    canary_telemetry_sha256: str | None = None,
+    golden_anchor_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Build a pre-registered shard manifest with deterministic stratified interleave over `schedule` and a stratified anchor set."""
+    """Build a pre-registered shard manifest with deterministic stratified interleave over `schedule` and 50 anchors (25 stratified + 25 lock-check canaries)."""
     if num_shards < 1:
         raise refused_error(
             "SHARD_SPEC_MISSING_N",
@@ -2234,28 +2437,43 @@ def build_shard_manifest(
         shards[str(shard_k)].append(entry.item_id)
         shard_by_item[entry.item_id] = shard_k
 
-    # Select up to `anchor_count` (25) stratified anchor items from Shard 1's stratified Pass-1 ordering
-    # so Shard 1 runs them in its normal schedule and Shards 2..n run them as a prefix.
+    # 1. Select up to `stratified_anchor_count` (25) stratified anchor items from Shard 1's Pass-1 ordering.
     shard1_items = shards["1"]
-    target_anchor_n = min(max(0, int(anchor_count)), len(shard1_items))
-    anchor_item_ids: list[str] = []
-    if target_anchor_n > 0:
-        if target_anchor_n >= len(shard1_items):
-            anchor_item_ids = list(shard1_items)
+    eff_strat_max = min(int(stratified_anchor_count), int(anchor_count))
+    target_strat_n = min(max(0, eff_strat_max), len(shard1_items))
+    stratified_anchor_ids: list[str] = []
+    if target_strat_n > 0:
+        if target_strat_n >= len(shard1_items):
+            stratified_anchor_ids = list(shard1_items)
         else:
-            seen_anchor: set[str] = set()
-            for i in range(target_anchor_n):
-                idx = int((i * len(shard1_items)) // target_anchor_n)
-                cand_id = shard1_items[idx]
-                if cand_id not in seen_anchor:
-                    anchor_item_ids.append(cand_id)
-                    seen_anchor.add(cand_id)
-            for cand_id in shard1_items:
-                if len(anchor_item_ids) >= target_anchor_n:
+            stratified_anchor_ids = [
+                shard1_items[int((i * len(shard1_items)) // target_strat_n)]
+                for i in range(target_strat_n)
+            ]
+
+    # 2. Select up to `canary_anchor_count` (25) canary anchors from lock-check telemetry (or explicit list),
+    # or remaining candidates if lock_check_telemetry_path is provided.
+    remaining_budget = max(0, int(anchor_count) - len(stratified_anchor_ids))
+    target_canary_n = min(max(0, int(canary_anchor_count)), remaining_budget)
+    resolved_canary_ids: list[str] = []
+    resolved_telemetry_sha: str | None = canary_telemetry_sha256
+    if lock_check_telemetry_path is not None:
+        resolved_canary_ids, resolved_telemetry_sha = select_lock_check_canary_anchors(
+            items,
+            lock_check_telemetry_path,
+            excluded_item_ids=stratified_anchor_ids,
+            canary_count=target_canary_n,
+        )
+    elif canary_item_ids is not None:
+        strat_set = set(stratified_anchor_ids)
+        for cid in canary_item_ids:
+            cid_s = str(cid)
+            if cid_s in items_by_id and cid_s not in strat_set and cid_s not in resolved_canary_ids:
+                resolved_canary_ids.append(cid_s)
+                if len(resolved_canary_ids) >= target_canary_n:
                     break
-                if cand_id not in seen_anchor:
-                    anchor_item_ids.append(cand_id)
-                    seen_anchor.add(cand_id)
+
+    anchor_item_ids = [*stratified_anchor_ids, *resolved_canary_ids]
 
     adapters = {jid: build_judge_adapter(spec) for jid, spec in sorted(BAKEOFF_JUDGE_SPECS.items())}
     input_token_ids_sha256_by_call: dict[str, str] = {}
@@ -2281,6 +2499,12 @@ def build_shard_manifest(
         "pass_mode": pass_mode,
         "shards": shards,
         "shard_by_item": dict(sorted(shard_by_item.items())),
+        "stratified_anchor_count": len(stratified_anchor_ids),
+        "stratified_anchor_item_ids": stratified_anchor_ids,
+        "canary_anchor_count": len(resolved_canary_ids),
+        "canary_item_ids": resolved_canary_ids,
+        "canary_telemetry_sha256": resolved_telemetry_sha,
+        "golden_anchor_manifest_sha256": golden_anchor_manifest_sha256,
         "anchor_count": len(anchor_item_ids),
         "anchor_item_ids": anchor_item_ids,
         "input_token_ids_sha256_by_call": dict(sorted(input_token_ids_sha256_by_call.items())),
@@ -2865,9 +3089,13 @@ class TransformersJudgeTransport:
         device: str = "cpu",
         torch_dtype: str | Any = DEFAULT_TORCH_DTYPE,
         attn_implementation: str = PINNED_ATTN_IMPLEMENTATION,
+        window_mode: str | None = None,
+        shard_spec: str | None = None,
     ) -> None:
         self.receipts_dir = Path(receipts_dir)
         self.hf_home = Path(hf_home) if hf_home is not None else None
+        self.window_mode = window_mode
+        self.shard_spec = shard_spec
         try:
             self.device = normalize_judge_device(device)
         except DeviceRefusalError as exc:
@@ -2982,7 +3210,7 @@ class TransformersJudgeTransport:
         import torch
         import transformers
 
-        det_status = configure_torch_determinism()
+        det_status = configure_torch_determinism(window_mode=self.window_mode, shard_spec=self.shard_spec)
         torch.manual_seed(int(seed))
         t0 = time.monotonic()
 
@@ -3026,16 +3254,14 @@ class TransformersJudgeTransport:
         with torch.no_grad():
             try:
                 out = self._model.generate(**gen_kwargs)
-            except RuntimeError as exc:  # pragma: no cover
-                if _is_counted_window_mode():
+            except RuntimeError as exc:
+                if _is_counted_window_mode(self.window_mode, shard_spec=self.shard_spec):
                     raise refused_error(
                         "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
                         f"Counted window refuses warn_only=True determinism fallback during generation: {exc}",
                         "Ensure strict deterministic algorithms are supported on the target GPU/driver in counted mode.",
                     ) from exc
-                use_det = getattr(torch, "use_deterministic_algorithms", None)
-                if callable(use_det):
-                    use_det(True, warn_only=True)
+                getattr(torch, "use_deterministic_algorithms", lambda *_a, **_k: None)(True, warn_only=True)
                 det_status = "not enforceable"
                 out = self._model.generate(**gen_kwargs)
 
@@ -3069,10 +3295,8 @@ class TransformersJudgeTransport:
         if out.scores:
             for step_score in out.scores:
                 s_logits = step_score[0].float()
-                s_vocab = int(s_logits.shape[-1])
-                if s_vocab >= 2:
-                    t2_vals, _ = torch.topk(s_logits, k=2)
-                    step_margins.append(round(float(t2_vals[0].item() - t2_vals[1].item()), 6))
+                t2_vals, _ = torch.topk(s_logits, k=min(2, int(s_logits.shape[-1])))
+                step_margins.append(round(float(t2_vals[0].item() - t2_vals[-1].item()), 6))
             step_logits = out.scores[0][0].float()
             full_logprobs = torch.log_softmax(step_logits, dim=-1)
             vocab_size = int(full_logprobs.shape[-1])
@@ -3340,9 +3564,13 @@ class D3MiniTransport:
         expected_transformers_version: str | None = D3_MINI_TRANSFORMERS_VERSION,
         torch_dtype: str = DEFAULT_TORCH_DTYPE,
         attn_implementation: str = PINNED_ATTN_IMPLEMENTATION,
+        window_mode: str | None = None,
+        shard_spec: str | None = None,
     ) -> None:
         self.receipts_dir = Path(receipts_dir)
         self.hf_home = Path(hf_home) if hf_home is not None else None
+        self.window_mode = window_mode
+        self.shard_spec = shard_spec
         try:
             self.device = normalize_judge_device(device)
         except DeviceRefusalError as exc:
@@ -3461,7 +3689,7 @@ class D3MiniTransport:
         import torch
         import transformers
 
-        det_status = configure_torch_determinism()
+        det_status = configure_torch_determinism(window_mode=self.window_mode, shard_spec=self.shard_spec)
         torch.manual_seed(int(seed))
         t0 = time.monotonic()
         with torch.inference_mode():
@@ -3744,8 +3972,15 @@ def _run_cpu_transport_probe_for_judge(
     *,
     seed: int,
     judge_op: Callable[[], None] | None = None,
+    window_mode: str | None = None,
 ) -> dict[str, Any]:
     """Exercise `D3MiniTransport` (for `d3-mini`) or `TransformersJudgeTransport` (for the other 4 judges) on CPU using lightweight model stubs."""
+    if _is_counted_window_mode(window_mode):
+        raise refused_error(
+            "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
+            "Counted window refuses _run_cpu_transport_probe_for_judge stub determinism probe.",
+            "Run _run_cpu_transport_probe_for_judge only in probe/knob/stub mode, never in counted or time-one mode.",
+        )
     import types
 
     vocab = {
@@ -3853,7 +4088,7 @@ def _run_cpu_transport_probe_for_judge(
         tf_shim.__version__ = D3_MINI_TRANSFORMERS_VERSION if spec.judge_id == D3_MINI_JUDGE_ID else "5.19.0"  # type: ignore[attr-defined]
         sys.modules["transformers"] = tf_shim
 
-        j_status, j_reason = configure_torch_determinism_with_reason()
+        j_status, j_reason = configure_torch_determinism_with_reason(window_mode=window_mode)
         if judge_op is not None:
             try:
                 judge_op()
@@ -4234,6 +4469,7 @@ def run_bakeoff_judge(
     shard_spec: str | None = None,
     shard_manifest_path: Path | None = None,
     shard_manifest_sha256: str | None = None,
+    golden_anchor_manifest_path: Path | None = None,
     active_item_ids: Sequence[str] | None = None,
     anchor_prefix_only: bool = False,
     session_fingerprint_sha256: str | None = None,
@@ -4255,18 +4491,23 @@ def run_bakeoff_judge(
     spec = resolve_judge_spec(judge)
     adapter = build_judge_adapter(spec)
     effective_dtype = DEFAULT_TORCH_DTYPE if str(torch_dtype).strip().lower() == "auto" else str(torch_dtype)
-    eff_window_mode = (
-        window_mode
-        if window_mode is not None
-        else os.environ.get(DETERMINISM_MODE_ENV_VAR, "")
-    ).strip() or None
-    det_status = configure_torch_determinism(window_mode=eff_window_mode)
-
     eff_shard_spec = (
         shard_spec
         if shard_spec is not None
         else os.environ.get("RDLAB_SHARD", "")
     ).strip() or None
+    eff_window_mode = (
+        window_mode
+        if window_mode is not None
+        else (
+            os.environ.get(DETERMINISM_MODE_ENV_VAR, "")
+            or os.environ.get("RDLAB_WINDOW_MODE", "")
+        )
+    ).strip() or None
+    if eff_window_mode is None and fake_transport:
+        eff_window_mode = "stub"
+    det_status = configure_torch_determinism(window_mode=eff_window_mode, shard_spec=eff_shard_spec)
+
     eff_manifest_path_raw = (
         str(shard_manifest_path)
         if shard_manifest_path is not None
@@ -4346,6 +4587,8 @@ def run_bakeoff_judge(
                     hf_home=hf_home,
                     device=device,
                     torch_dtype=effective_dtype,
+                    window_mode=eff_window_mode,
+                    shard_spec=eff_shard_spec,
                 )
             else:
                 transport = TransformersJudgeTransport(
@@ -4353,6 +4596,8 @@ def run_bakeoff_judge(
                     hf_home=hf_home,
                     device=device,
                     torch_dtype=effective_dtype,
+                    window_mode=eff_window_mode,
+                    shard_spec=eff_shard_spec,
                 )
 
     verified_digest = transport.verify_ready(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
@@ -4385,7 +4630,7 @@ def run_bakeoff_judge(
     manifest_file_sha256: str | None = None
     shard_item_ids: list[str] = [it.item_id for it in items]
     anchor_item_ids: list[str] = []
-    if eff_shard_spec is not None or eff_manifest_path_raw:
+    if shard_k is not None:
         target_manifest_path = Path(eff_manifest_path_raw) if eff_manifest_path_raw else (resolved_out / SHARD_MANIFEST_FILENAME)
         if not target_manifest_path.is_file():
             built_manifest = build_shard_manifest(
@@ -4403,20 +4648,43 @@ def run_bakeoff_judge(
         local_manifest_copy = resolved_out / SHARD_MANIFEST_FILENAME
         if target_manifest_path.resolve() != local_manifest_copy.resolve():
             write_shard_manifest(manifest_doc, local_manifest_copy)
-        if shard_k is not None:
-            raw_shard_list = manifest_doc.get("shards", {}).get(str(shard_k))
-            if not isinstance(raw_shard_list, list):
-                raise refused_error(
-                    "SHARD_SPEC_OUT_OF_RANGE",
-                    f"Shard k={shard_k} not present in shard_manifest.json shards.",
-                    "Check RDLAB_SHARD=k/n against shard_manifest.json.",
-                )
-            shard_item_ids = [str(iid) for iid in raw_shard_list if str(iid) in items_by_id]
+        raw_shard_list = manifest_doc.get("shards", {}).get(str(shard_k))
+        if not isinstance(raw_shard_list, list):
+            raise refused_error(
+                "SHARD_SPEC_OUT_OF_RANGE",
+                f"Shard k={shard_k} not present in shard_manifest.json shards.",
+                "Check RDLAB_SHARD=k/n against shard_manifest.json.",
+            )
+        shard_item_ids = [str(iid) for iid in raw_shard_list if str(iid) in items_by_id]
         anchor_item_ids = [
             str(iid)
             for iid in manifest_doc.get("anchor_item_ids", [])
             if str(iid) in items_by_id
         ]
+        if str(eff_window_mode or "").strip().lower() == "counted":
+            manifest_canaries = manifest_doc.get("canary_item_ids")
+            if not isinstance(manifest_canaries, list) or not manifest_canaries:
+                raise refused_error(
+                    "SHARD_MANIFEST_CANARY_MISSING",
+                    "Counted window refuses shard_manifest.json without canary_item_ids from lock-check telemetry.",
+                    "Build shard_manifest.json with lock_check_telemetry_path or canary_item_ids before running a counted shard.",
+                )
+            eff_golden_path_raw = (
+                str(golden_anchor_manifest_path)
+                if golden_anchor_manifest_path is not None
+                else os.environ.get("RDLAB_GOLDEN_ANCHOR_MANIFEST", "").strip()
+            )
+            has_golden_manifest = bool(manifest_doc.get("golden_anchor_manifest_sha256")) or (
+                bool(eff_golden_path_raw) and Path(eff_golden_path_raw).is_file()
+            ) or (resolved_out / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file() or (
+                target_manifest_path.parent / GOLDEN_ANCHOR_MANIFEST_FILENAME
+            ).is_file()
+            if not has_golden_manifest:
+                raise refused_error(
+                    "GOLDEN_ANCHOR_MANIFEST_MISSING",
+                    "Counted window refuses sharded execution without a golden anchor manifest from the lock-check window.",
+                    "Record golden_anchor_manifest.json from the lock-check window before starting counted shards.",
+                )
 
     shard_item_id_set = set(shard_item_ids)
     active_item_id_set = set(str(x) for x in active_item_ids) if active_item_ids is not None else shard_item_id_set
@@ -4507,14 +4775,10 @@ def run_bakeoff_judge(
             existing_by_key = {(str(r["item_id"]), str(r["order"])): r for r in existing_row_objs}
             mismatches: list[str] = []
             for ov_iid in overlap_iids:
-                ov_item = items_by_id.get(ov_iid)
-                if ov_item is None:
-                    continue
+                ov_item = items_by_id[ov_iid]
                 for ov_ord in ("AB", "BA"):
                     ord_mode_ov: OrderMode = "AB" if ov_ord == "AB" else "BA"
-                    prev_row = existing_by_key.get((ov_iid, ov_ord))
-                    if prev_row is None:
-                        continue
+                    prev_row = existing_by_key[(ov_iid, ov_ord)]
                     ov_prompt = adapter.assemble_prompt(ov_item, order=ord_mode_ov, pass_mode=pass_mode)
                     ov_resp = transport.generate(spec, ov_prompt, seed=schedule.seed)
                     new_out_sha = ov_resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
@@ -4550,10 +4814,18 @@ def run_bakeoff_judge(
     polarity_map = POLARITY_MAP_BY_JUDGE.get(spec.judge_id, {"inverted": "false"})
     eff_hb_interval = resolve_child_heartbeat_interval_seconds(heartbeat_interval_seconds)
 
-    # Item 8: For Shards 2..n, run the 25 anchor items in both AB and BA orders as a prefix before shard items
-    if anchor_row_path is not None and shard_k is not None and shard_k >= 2 and anchor_item_ids:
+    # Item 8 & Part E.1: Run anchor items not in this shard's main schedule as an anchor_rows prefix
+    # (all 50 anchors on shards 2..n, plus any canary anchors on shard 1 that belong to shards 2..n).
+    prefix_anchor_ids = (
+        anchor_item_ids
+        if (shard_k is not None and shard_k >= 2)
+        else [iid for iid in anchor_item_ids if iid not in shard_item_id_set]
+    )
+    if anchor_row_path is not None and shard_k is not None and prefix_anchor_ids:
         with anchor_row_path.open("a", encoding="utf-8", newline="\n") as arf:
             for anc_idx, anc_iid in enumerate(anchor_item_ids):
+                if anc_iid not in prefix_anchor_ids:
+                    continue
                 anc_item = items_by_id[anc_iid]
                 for anc_ord_idx, anc_order in enumerate(("AB", "BA")):
                     if (anc_iid, anc_order) in completed_anchor_keys:
@@ -4649,6 +4921,8 @@ def run_bakeoff_judge(
     row_mode = "a" if existing_row_objs else "w"
     with row_path.open(row_mode, encoding="utf-8", newline="\n") as rf, gen_path.open("a", encoding="utf-8", newline="\n") as gf:
         for call_idx, entry in enumerate(schedule.entries):
+            if anchor_prefix_only and shard_k is not None and shard_k >= 2:
+                continue
             if anchor_prefix_only and entry.item_id not in anchor_item_id_set:
                 continue
             if entry.item_id not in effective_target_item_ids:
@@ -5031,8 +5305,12 @@ def run_bakeoff_judge(
     if judge_done_path.is_file():
         try:
             prev_done = json.loads(judge_done_path.read_text(encoding="utf-8"))
-            if isinstance(prev_done, dict) and isinstance(prev_done.get("load_wall_seconds_history"), list):
-                prev_load_history = [float(x) for x in prev_done["load_wall_seconds_history"]]
+            if isinstance(prev_done, dict):
+                prev_load_history = [float(x) for x in (prev_done.get("load_wall_seconds_history") or [])]
+                if verified_recovery is None and isinstance(prev_done.get("verified_recovery"), dict):
+                    verified_recovery = prev_done["verified_recovery"]
+                if not discarded_incomplete_item_ids and isinstance(prev_done.get("discarded_incomplete_item_ids"), list):
+                    discarded_incomplete_item_ids = [str(x) for x in prev_done["discarded_incomplete_item_ids"]]
         except Exception:
             prev_load_history = []
     load_history = [*prev_load_history, load_wall_seconds]
@@ -5323,9 +5601,11 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
                 hint=exc.hint,
                 exit_code=exc.exit_code,
             ) from exc
-        parsed_active_ids: list[str] | None = None
-        if args.active_item_ids:
-            parsed_active_ids = [x.strip() for x in str(args.active_item_ids).split(",") if x.strip()]
+        parsed_active_ids = (
+            [x.strip() for x in str(args.active_item_ids).split(",") if x.strip()]
+            if args.active_item_ids
+            else None
+        )
         run_bakeoff_judge(
             part_dir=args.part_dir,
             output_dir=args.output_dir,
