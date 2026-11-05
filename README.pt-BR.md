@@ -26,7 +26,7 @@ sobre o item. `rdlab` é construído de forma que a chave nunca dependa de um av
 pip install reasoning-dataset-lab
 ```
 
-Python 3.13 ou mais recente (3.15 é o objetivo principal; os testes de CI usam 3.13, 3.14 e 3.15). Depende de
+Python 3.13 ou mais recente (3.15 é o principal alvo; os testes de CI usam 3.13, 3.14 e 3.15). Depende de
 [aspire-si-gates](https://pypi.org/project/aspire-si-gates/) e [role-set](https://pypi.org/project/role-set/).
 
 ## O que você pode fazer sem nenhum modelo
@@ -37,20 +37,36 @@ rdlab project fingerprint . --map examples/t10-pilot-a.map.yaml
 rdlab --help
 ```
 
-- `rdlab map check` valida um mapa de conjunto de dados (seus eixos, o alvo de cada célula em relação à capacidade do gerador, limites e tetos compartilhados, limites de variedade, critérios de aceitação) e imprime o SHA-256 canônico do mapa. A saída 0 é um mapa válido. A saída 1 é uma rejeição, como um objeto JSON `{code, message, hint}` em stderr. A saída 2 é um erro de uso ou arquivo.
+- `rdlab map check` valida um mapa de conjunto de dados (seus eixos, o alvo de cada célula em relação à capacidade do gerador, limites e tetos compartilhados, limites de variedade, critérios de aceitação) e imprime o SHA-256 canônico do mapa. A saída 0 é um mapa válido. A saída 1 é uma rejeição, como um objeto JSON `{code, message, hint}` em stderr. A saída 2 é um erro de uso ou de arquivo.
 - `rdlab project fingerprint` calcula o hash dos cinco arquivos do projeto, do mapa e de `canon/` em uma ordem fixa, para que uma construção possa indicar
 exatamente a partir do que foi construída.
 - `rdlab models` lista os modelos que uma construção Pilot B usa e `rdlab variety` calcula o relatório de variedade determinística
 para uma construção.
 
-## O que precisa de uma GPU e modelos locais
+## O que precisa de uma GPU e de modelos locais
 
-`rdlab pilot-b` cria o conjunto de testes de avaliação Pilot B: tríades de afirmações suportadas, não suportadas e que não podem ser determinadas, criadas a partir
-de tabelas de fatos tipadas. Ele executa modelos locais reais por meio do Ollama em loopback (um escritor e dois leitores cegos de famílias diferentes), precisa de uma GPU e precisa de um arquivo de registro de licenças que indique que cada modelo pode ser usado para avaliação. Ele nunca baixa
+`rdlab pilot-b` cria o conjunto de testes de avaliação Pilot B: tríades de afirmações suportadas, não suportadas e que não podem ser determinadas, criadas a partir de
+tabelas de fatos tipadas. Ele executa modelos locais reais por meio do Ollama em loopback (um escritor e dois leitores cegos de famílias diferentes), precisa de uma GPU e precisa de um arquivo de registro de licenças que indique que cada modelo pode ser usado para avaliação. Ele nunca baixa
 um modelo para você e nunca chama um endpoint na nuvem. As flags completas, o plano de memória e as configurações `num_predict` estão em
 [handbook](https://mcp-tool-shop-org.github.io/reasoning-dataset-lab/handbook/).
 
-## O princípio do "mapa em primeiro lugar"
+## A avaliação dos avaliadores
+
+Qual modelo local deve avaliar uma afirmação? `rdlab` responde da mesma forma que constrói as chaves: por construção, com as respostas
+seladas até que a avaliação termine.
+
+```bash
+rdlab bakeoff-part --output-dir <dir> ...      # build a sealed test part from certified value sets
+rdlab bakeoff-probe --part-dir <dir> ...       # fail the part if its answers can be guessed from surface features
+rdlab bakeoff-judge --part-dir <dir> ...       # run one judge without opening the sealed keys
+rdlab bakeoff-judge-score --judge-dir <dir>    # only now join the judge's rows with the keys
+```
+
+A seleção do vencedor segue exatamente o pré-registro, sem alternativas flexíveis. `scripts/colab/launch_judges.sh` executa
+os cinco avaliadores em sua própria conta do Google Colab, cada um em seu próprio ambiente com hash, sob um limite de gastos lido da
+taxa ativa do Colab. Dividir uma execução contada em vários cartões é algo que está sendo desenvolvido, mas ainda não foi concluído.
+
+## O princípio do mapa em primeiro lugar
 
 1. **Comprove primeiro, formule depois.** O código constrói um estado formal e comprova a chave antes que um modelo escreva qualquer texto. Um
 tipo de item que não pode ser comprovado por construção é marcado como `judged` e entra apenas por meio de um filtro de unanimidade multifamiliar.
@@ -63,23 +79,24 @@ reduzido para escondê-la.
 ## O que foi medido
 
 Os conjuntos de valores do gerador (as listas dentro das quais os valores de uma afirmação são trocados) são certificados antes do uso. Na execução v3, 44
-de 50 conjuntos foram certificados, em comparação com 26 antes que os conjuntos fossem reparados. Aqui, "certificado" significa que dois leitores cegos de famílias diferentes consideraram que cada par ordenado era uma contradição, e uma chave cega independente já havia concordado. É evidência, não
-prova: os leitores do modelo fizeram parte disso. A formulação de um item renderizado ainda pode diferir de sua chave, e a leitura manual de uma pessoa é a verificação disso. Nada que `rdlab` escreve é um dado de treinamento até que uma pessoa o tenha verificado. A execução e seus
-arquivos estão em [certification/v3](certification/v3).
+de 50 conjuntos foram certificados, em comparação com 26 antes da reparação dos conjuntos. Aqui, "certificado" significa que dois leitores cegos de famílias diferentes consideraram que cada par ordenado era uma contradição, e uma chave cega independente já havia concordado. É uma evidência, não uma prova: os leitores do modelo fizeram parte disso. A formulação de um item renderizado ainda pode diferir de sua chave, e a leitura manual de uma pessoa é a verificação disso. Nada que `rdlab` escreve é um dado de treinamento até que uma pessoa o tenha verificado. A execução e seus arquivos estão em [certification/v3](certification/v3).
 
 ## Segurança e dados
 
 - **Leituras:** o mapa, os arquivos do projeto e o cânone que você aponta para ele.
 - **Escritas:** o diretório de saída que você fornece.
-- **Rede:** apenas Ollama em loopback (`127.0.0.1`), e apenas para `pilot-b` e `models --verify-live`. Qualquer outra coisa
-é rejeitada. Sem telemetria.
+- **Rede:** o comando `rdlab` alcança apenas o Ollama em loopback (`127.0.0.1`) e apenas para `pilot-b` e
+`models --verify-live`. Qualquer outra coisa é rejeitada. Sem telemetria.
+- **Colab opcional:** `scripts/colab/` carrega os itens e os avaliadores que você aponta para ele em sua própria conta do Colab e
+baixa os resultados. As chaves de resposta nunca saem da sua máquina; a pontuação é executada localmente.
 - **Permissões:** nenhuma além desses arquivos e dessa porta local.
 
 Relate uma vulnerabilidade em particular; consulte [SECURITY.md](SECURITY.md).
 
 ## Status
 
-Versão 0.4.0, a primeira versão PyPI. É alfa: as interfaces e as formas de dados podem mudar sem aviso prévio. A cobertura dos próprios testes deste repositório é de 95%, com o limite em 90.
+Versão 0.5.0. É uma versão alfa: as interfaces e as formas de dados podem mudar sem aviso prévio. 1.162 testes são aprovados (2 ignorados); o CI mantém
+a cobertura em 90% ou mais.
 
 ## Licença
 

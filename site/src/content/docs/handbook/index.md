@@ -21,5 +21,5 @@ asked only to put the item into words.
 
 ## Status
 
-Alpha. The first PyPI release is 0.4.0. Interfaces and data shapes can change without notice. Nothing `rdlab` writes is
+Alpha, at 0.5.0, which adds the judge bake-off and its Colab launcher. Interfaces and data shapes can change without notice. Nothing `rdlab` writes is
 training data until a person has checked it.

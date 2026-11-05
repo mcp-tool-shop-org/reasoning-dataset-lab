@@ -53,6 +53,22 @@ families), needs a GPU, and needs a licence registry file that says each model m
 a model for you and never calls a cloud endpoint. The full flags, the memory plan and the `num_predict` settings are in
 the [handbook](https://mcp-tool-shop-org.github.io/reasoning-dataset-lab/handbook/).
 
+## The judge bake-off
+
+Which local model should judge a claim? `rdlab` answers it the same way it builds keys: by construction, with the answers
+sealed until the judging is over.
+
+```bash
+rdlab bakeoff-part --output-dir <dir> ...      # build a sealed test part from certified value sets
+rdlab bakeoff-probe --part-dir <dir> ...       # fail the part if its answers can be guessed from surface features
+rdlab bakeoff-judge --part-dir <dir> ...       # run one judge without opening the sealed keys
+rdlab bakeoff-judge-score --judge-dir <dir>    # only now join the judge's rows with the keys
+```
+
+Winner selection follows the pre-registration exactly, with no lenient fallbacks. `scripts/colab/launch_judges.sh` runs
+the five judges on your own Google Colab account, each in its own hash-locked environment, under a spending cap read from
+the live Colab rate. Splitting a counted run across several cards is built but has not completed a real run yet.
+
 ## The map-first principle
 
 1. **Prove first, word second.** Code constructs a formal state and proves the key before a model writes any prose. A
@@ -77,16 +93,18 @@ files are in [certification/v3](certification/v3).
 
 - **Reads:** the map, project files and canon you point it at.
 - **Writes:** the output directory you give it.
-- **Network:** only Ollama on loopback (`127.0.0.1`), and only for `pilot-b` and `models --verify-live`. Anything else
-  is refused. No telemetry.
+- **Network:** the `rdlab` command reaches only Ollama on loopback (`127.0.0.1`), and only for `pilot-b` and
+  `models --verify-live`. Anything else is refused. No telemetry.
+- **Opt-in Colab:** `scripts/colab/` uploads the items and judges you point it at to your own Colab account and
+  downloads the results. The answer keys never leave your machine; scoring runs locally.
 - **Permissions:** none beyond those files and that local port.
 
 Report a vulnerability privately; see [SECURITY.md](SECURITY.md).
 
 ## Status
 
-Version 0.4.0, the first PyPI release. It is alpha: interfaces and data shapes can change without notice. Coverage of
-this repository's own tests is 95%, with the floor at 90.
+Version 0.5.0. It is alpha: interfaces and data shapes can change without notice. 1,162 tests pass (2 skipped); CI holds
+coverage at 90% or more.
 
 ## License
 
