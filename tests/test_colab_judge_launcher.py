@@ -20421,7 +20421,7 @@ def test_lock_check_item4_p0a_bitwise_profiler_and_reversed_low_margin_rerun(
     assert cmp_mismatch["by_judge"]["mu-judge"]["token_hash_mismatch_count"] == 1
 
     # (b) 10-call profiler step per judge with CUDA-event style timing per phase
-    items_path = _make_stratified_public_items(tmp_path / "p0a_items", count=25)
+    items_path = _make_stratified_public_items(tmp_path / "p0a_items", count=114)
     items, _ = bakeoff_judge.load_judge_items(items_path)
     spec = bakeoff_judge.BAKEOFF_JUDGE_SPECS["mu-judge"]
     adapter = bakeoff_judge.build_judge_adapter(spec)
@@ -20824,6 +20824,535 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     assert merge_report["anchor_agreement"]["flip_count"] == 0
 
     assert hashlib.sha256(committed_goldens.read_bytes()).hexdigest() == committed_goldens_sha_before
+
+
+def test_fix1_item1_p0a_builds_real_transports_in_real_mode_and_refuses_stub(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix1 Item 1: `run_lock_check_p0a` builds real transports (`TransformersJudgeTransport` / `D3MiniTransport`)
+    when `not fake_transport` (forwarding `receipts_dir`, `hf_home`, `device`, `dtype`, `window_mode`),
+    and refuses a stub transport or `fake_transport=True` in real mode.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    monkeypatch.setenv("RDLAB_MODE", "lock-check")
+
+    items_path = _make_stratified_public_items(tmp_path / "pilot-40b", count=114)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "real_p0a_env")
+
+    # 1. Stub transport injected in real mode is refused with P0A_STUB_TRANSPORT_REFUSED
+    stub_tr = bakeoff_judge.DeterministicFakeJudgeTransport()
+    with pytest.raises(RdlabError) as exc_stub_inj:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=items_path,
+            output_dir=tmp_path / "p0a_stub_inj_out",
+            baseline_rows=[],
+            judge_ids=["mu-judge"],
+            transports_by_judge={"mu-judge": stub_tr},
+            fake_transport=False,
+            window_mode="lock-check",
+            repo_root=REPO_ROOT,
+        )
+    assert exc_stub_inj.value.code == "P0A_STUB_TRANSPORT_REFUSED"
+
+    # 2. fake_transport=True in real mode is refused with P0A_STUB_TRANSPORT_REFUSED
+    with pytest.raises(RdlabError) as exc_fake_flag:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=items_path,
+            output_dir=tmp_path / "p0a_fake_flag_out",
+            baseline_rows=[],
+            judge_ids=["mu-judge"],
+            fake_transport=True,
+            window_mode="lock-check",
+            repo_root=REPO_ROOT,
+        )
+    assert exc_fake_flag.value.code == "P0A_STUB_TRANSPORT_REFUSED"
+
+    # 3. Missing receipts_dir when not fake_transport refuses with BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED
+    with pytest.raises(RdlabError) as exc_no_rec:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=items_path,
+            output_dir=tmp_path / "p0a_no_rec_out",
+            baseline_rows=[],
+            judge_ids=["mu-judge"],
+            fake_transport=False,
+            receipts_dir=None,
+            hf_home=hf_home,
+            device="cpu",
+            window_mode="lock-check",
+            repo_root=REPO_ROOT,
+        )
+    assert exc_no_rec.value.code == "BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED"
+
+    # 4. Real mode with no transports given builds the real transport classes (TransformersJudgeTransport and D3MiniTransport)
+    constructed_transports: dict[str, Any] = {}
+    orig_tf_init = bakeoff_judge.TransformersJudgeTransport.__init__
+    orig_d3_init = bakeoff_judge.D3MiniTransport.__init__
+
+    def _spy_tf_init(self: Any, **kwargs: Any) -> None:
+        orig_tf_init(self, **kwargs)
+        constructed_transports["TransformersJudgeTransport"] = self
+
+    def _spy_d3_init(self: Any, **kwargs: Any) -> None:
+        orig_d3_init(self, **kwargs)
+        constructed_transports["D3MiniTransport"] = self
+
+    def _fast_real_generate(self: Any, spec: bakeoff_judge.JudgeSpec, prompt: bakeoff_judge.AssembledPrompt, *, seed: int) -> bakeoff_judge.JudgeTransportResponse:
+        _ = seed
+        in_ids = bakeoff_judge.encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+        in_sha = bakeoff_judge.compute_token_ids_sha256(in_ids)
+        sys_one = {"answers": {"supported": {"noul": 0.85}}} if spec.judge_id == "d3-mini" else None
+        toks = ("yes",)
+        out_sha = bakeoff_judge.compute_response_output_token_ids_sha256(
+            spec.judge_id,
+            toks,
+            system_one_result=sys_one,
+        )
+        top_lps = (
+            bakeoff_judge.TopLogprobEntry(token="yes", logprob=-0.162519, token_id=3),
+            bakeoff_judge.TopLogprobEntry(token="no", logprob=-1.89712, token_id=4),
+        )
+        return bakeoff_judge.JudgeTransportResponse(
+            raw_text=json.dumps(sys_one) if sys_one else "yes",
+            tokens=toks,
+            verdict_top_logprobs=top_lps,
+            done_reason="stop",
+            seconds=0.001,
+            model_digest=self._verified_digest or f"sha256:{spec.revision}",
+            server_binary="transformers/5.19.0;torch/2.14.1+cu132;cpu",
+            library_pins={
+                "transport": type(self).__name__,
+                "stub_transport": False,
+                "dtype": self.torch_dtype,
+            },
+            system_one_result=sys_one,
+            input_token_ids_sha256=in_sha,
+            output_token_ids_sha256=out_sha,
+            input_token_count=len(in_ids),
+            output_token_count=1,
+            stop_reason="eos",
+            min_top2_logit_margin=1.734601,
+            verdict_token_margin=1.734601,
+        )
+
+    monkeypatch.setattr(bakeoff_judge.TransformersJudgeTransport, "__init__", _spy_tf_init)
+    monkeypatch.setattr(bakeoff_judge.D3MiniTransport, "__init__", _spy_d3_init)
+    monkeypatch.setattr(bakeoff_judge.TransformersJudgeTransport, "generate", _fast_real_generate)
+    monkeypatch.setattr(bakeoff_judge.D3MiniTransport, "generate", _fast_real_generate)
+    monkeypatch.setattr(bakeoff_judge.TransformersJudgeTransport, "prefill", lambda self, spec, prompt, *, seed=0: None)
+    monkeypatch.setattr(bakeoff_judge.D3MiniTransport, "prefill", lambda self, spec, prompt, *, seed=0: None)
+
+    class _MockCudaEv:
+        _c = 0.0
+
+        def __init__(self) -> None:
+            self.t = 0.0
+
+        def record(self) -> None:
+            _MockCudaEv._c += 1.0
+            self.t = _MockCudaEv._c
+
+        def synchronize(self) -> None:
+            return None
+
+        def elapsed_time(self, end_ev: "_MockCudaEv") -> float:
+            return float(end_ev.t - self.t)
+
+    monkeypatch.setattr(bakeoff_judge, "_make_cuda_timing_event", _MockCudaEv)
+
+    p0a_real_out = tmp_path / "p0a_real_out"
+    p0a_real_doc = bakeoff_judge.run_lock_check_p0a(
+        part_dir=items_path,
+        output_dir=p0a_real_out,
+        baseline_rows=[],
+        judge_ids=["mu-judge", "d3-mini"],
+        fake_transport=False,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        device="cpu",
+        dtype="bfloat16",
+        window_mode="lock-check",
+        profiler_call_count=2,
+        low_margin_item_count=2,
+        repo_root=REPO_ROOT,
+    )
+    assert "TransformersJudgeTransport" in constructed_transports
+    assert "D3MiniTransport" in constructed_transports
+    tf_inst = constructed_transports["TransformersJudgeTransport"]
+    d3_inst = constructed_transports["D3MiniTransport"]
+    assert isinstance(tf_inst, bakeoff_judge.TransformersJudgeTransport)
+    assert isinstance(d3_inst, bakeoff_judge.D3MiniTransport)
+    assert tf_inst.receipts_dir == receipts_dir
+    assert tf_inst.hf_home == hf_home
+    assert tf_inst.device == "cpu"
+    assert tf_inst.torch_dtype == "bfloat16"
+    assert tf_inst.window_mode == "lock-check"
+    assert d3_inst.receipts_dir == receipts_dir
+    assert d3_inst.hf_home == hf_home
+    assert p0a_real_doc["timing_backend"] == "cuda_event"
+
+
+def test_fix1_item2_promote_goldens_refuses_any_git_work_tree_and_allows_outside_tree(
+    tmp_path: Path,
+) -> None:
+    """Fix1 Item 2: `promote_goldens.py` has no `--allow-in-place-repo` flag or parameter,
+    refuses writing into the live repo or any other git checkout/work tree, and succeeds outside any git work tree.
+    """
+    import inspect
+    import promote_goldens
+
+    sig = inspect.signature(promote_goldens.promote_goldens_file)
+    assert "allow_in_place_repo" not in sig.parameters
+
+    senv_doc = {
+        "schema_version": "1.0",
+        "window_id": "window-lc-fix1-02",
+        "mode": "lock-check",
+        "session_fingerprint_sha256": "c" * 64,
+    }
+    senv_path = tmp_path / "session_env.json"
+    senv_bytes = (json.dumps(senv_doc, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    senv_path.write_bytes(senv_bytes)
+    senv_sha = hashlib.sha256(senv_bytes).hexdigest()
+
+    filled_doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "judge_id": "nemotron-3-nano-4b",
+        "synthetic_prompts": [
+            {
+                "prompt_id": "boot_gatekeeper_synthetic_1",
+                "prompt_sha256": "1" * 64,
+                "input_token_ids_sha256": "2" * 64,
+            },
+            {
+                "prompt_id": "boot_gatekeeper_synthetic_2",
+                "prompt_sha256": "3" * 64,
+                "input_token_ids_sha256": "4" * 64,
+            },
+        ],
+        "card_types": {
+            "A100-SXM4-40GB": {
+                "expected_output_token_ids_sha256": {
+                    "boot_gatekeeper_synthetic_1": "5" * 64,
+                    "boot_gatekeeper_synthetic_2": "6" * 64,
+                }
+            }
+        },
+        "provenance": {
+            "window_id": "window-lc-fix1-02",
+            "session_env_sha256": senv_sha,
+            "session_fingerprint_sha256": "c" * 64,
+            "mode": "lock-check",
+            "card_type": "A100-SXM4-40GB",
+            "stub_transport": False,
+        },
+    }
+    filled_doc["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(filled_doc)
+    filled_path = tmp_path / "boot_gatekeeper_goldens.filled.json"
+    filled_path.write_text(json.dumps(filled_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    # 1. --allow-in-place-repo is rejected by argparse
+    with pytest.raises(SystemExit) as exc_arg:
+        promote_goldens.main(
+            [
+                "--filled",
+                str(filled_path),
+                "--output",
+                str(tmp_path / "cand.json"),
+                "--allow-in-place-repo",
+            ]
+        )
+    assert exc_arg.value.code != 0
+
+    # 2. Live repo path is refused
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_live:
+        promote_goldens.promote_goldens_file(
+            filled_path,
+            output_path=SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json",
+            repo_root=REPO_ROOT,
+        )
+    assert exc_live.value.failure_class == "PROMOTE_GOLDENS_LIVE_REPO_REFUSED"
+
+    # 3. Any path inside the live repo work tree (even a non-goldens filename) is refused
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_in_repo:
+        promote_goldens.promote_goldens_file(
+            filled_path,
+            output_path=REPO_ROOT / "tmp_candidate_goldens.json",
+            repo_root=REPO_ROOT,
+        )
+    assert exc_in_repo.value.failure_class == "PROMOTE_GOLDENS_LIVE_REPO_REFUSED"
+
+    # 4. Another git checkout (directory with .git) is refused via --target-repo and --output
+    other_checkout = tmp_path / "other_checkout"
+    (other_checkout / ".git").mkdir(parents=True, exist_ok=True)
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_other_target:
+        promote_goldens.promote_goldens_file(
+            filled_path,
+            target_repo_root=other_checkout,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_other_target.value.failure_class == "PROMOTE_GOLDENS_LIVE_REPO_REFUSED"
+
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_other_out:
+        promote_goldens.promote_goldens_file(
+            filled_path,
+            output_path=other_checkout / "nested" / "boot_gatekeeper_goldens.json",
+            repo_root=REPO_ROOT,
+        )
+    assert exc_other_out.value.failure_class == "PROMOTE_GOLDENS_LIVE_REPO_REFUSED"
+
+    # 5. Path outside every git work tree succeeds
+    outside_out = tmp_path / "outside_candidates" / "boot_gatekeeper_goldens.json"
+    res = promote_goldens.promote_goldens_file(
+        filled_path,
+        output_path=outside_out,
+        repo_root=REPO_ROOT,
+    )
+    assert res["status"] == "ok"
+    assert outside_out.is_file()
+
+
+def test_fix1_item3_p0a_cuda_event_timing_and_prefill_vs_decode_separation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix1 Item 3: P0a phase profiler separates `prefill` (`ev1..ev2`) from `decode` (`ev2..ev3`),
+    uses `torch.cuda.Event(enable_timing=True)` in real mode, and records `timing_backend` in `p0a_report.json`.
+    """
+    import types
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    monkeypatch.setenv("RDLAB_MODE", "lock-check")
+
+    phase_log: list[str] = []
+
+    class _PhaseTrackingEvent:
+        _clock_ms = 0.0
+        instances: list["_PhaseTrackingEvent"] = []
+
+        def __init__(self, enable_timing: bool = True) -> None:
+            self.enable_timing = enable_timing
+            self.ts = 0.0
+            _PhaseTrackingEvent.instances.append(self)
+
+        def record(self) -> None:
+            self.ts = _PhaseTrackingEvent._clock_ms
+
+        def synchronize(self) -> None:
+            phase_log.append("sync")
+
+        def elapsed_time(self, end_event: "_PhaseTrackingEvent") -> float:
+            return float(end_event.ts - self.ts)
+
+    class _PhaseTransport:
+        is_stub_transport = False
+
+        def verify_ready(self, spec: bakeoff_judge.JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
+            _ = allow_remote_code_reviewed
+            return f"sha256:{spec.revision}"
+
+        def prefill(self, spec: bakeoff_judge.JudgeSpec, prompt: bakeoff_judge.AssembledPrompt, *, seed: int = 0) -> None:
+            _ = (spec, prompt, seed)
+            phase_log.append("prefill")
+            _PhaseTrackingEvent._clock_ms += 12.5
+
+        def generate(self, spec: bakeoff_judge.JudgeSpec, prompt: bakeoff_judge.AssembledPrompt, *, seed: int = 0) -> bakeoff_judge.JudgeTransportResponse:
+            _ = seed
+            phase_log.append("decode")
+            _PhaseTrackingEvent._clock_ms += 37.5
+            in_ids = bakeoff_judge.encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+            in_sha = bakeoff_judge.compute_token_ids_sha256(in_ids)
+            out_sha = bakeoff_judge.compute_response_output_token_ids_sha256(spec.judge_id, ("yes",))
+            return bakeoff_judge.JudgeTransportResponse(
+                raw_text="yes",
+                tokens=("yes",),
+                verdict_top_logprobs=(
+                    bakeoff_judge.TopLogprobEntry(token="yes", logprob=-0.1, token_id=3),
+                    bakeoff_judge.TopLogprobEntry(token="no", logprob=-2.3, token_id=4),
+                ),
+                done_reason="stop",
+                seconds=0.05,
+                model_digest=f"sha256:{spec.revision}",
+                server_binary="transformers/5.19.0;torch/2.14.1+cu132;cuda:0",
+                library_pins={"transport": "TransformersJudgeTransport", "stub_transport": False},
+                input_token_ids_sha256=in_sha,
+                output_token_ids_sha256=out_sha,
+                input_token_count=len(in_ids),
+                output_token_count=1,
+                stop_reason="eos",
+                min_top2_logit_margin=2.2,
+                verdict_token_margin=2.2,
+            )
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(Event=_PhaseTrackingEvent)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    items_path = _make_stratified_public_items(tmp_path / "pilot-40b", count=114)
+    p0a_out = tmp_path / "p0a_cuda_out"
+    p0a_doc = bakeoff_judge.run_lock_check_p0a(
+        part_dir=items_path,
+        output_dir=p0a_out,
+        baseline_rows=[],
+        judge_ids=["mu-judge"],
+        transports_by_judge={"mu-judge": _PhaseTransport()},  # type: ignore[dict-item]
+        fake_transport=False,
+        window_mode="lock-check",
+        profiler_call_count=4,
+        low_margin_item_count=2,
+        repo_root=REPO_ROOT,
+    )
+    assert p0a_doc["timing_backend"] == "cuda_event"
+    assert p0a_doc["phase_profiler"]["timing_backend"] == "cuda_event"
+    mu_prof = p0a_doc["phase_profiler"]["by_judge"]["mu-judge"]
+    assert mu_prof["timing_backend"] == "cuda_event"
+    assert mu_prof["phases_ms"]["prefill"]["mean_ms"] == pytest.approx(12.5)
+    assert mu_prof["phases_ms"]["decode"]["mean_ms"] == pytest.approx(37.5)
+    assert len(_PhaseTrackingEvent.instances) == 4 * 5
+    assert all(ev.enable_timing is True for ev in _PhaseTrackingEvent.instances)
+    assert "prefill" in phase_log and "decode" in phase_log
+
+
+def test_fix1_item4_burned_pilot_guard_enforced_by_manifest_or_item_part_id_and_counts(
+    tmp_path: Path,
+) -> None:
+    """Fix1 Item 4: `run_lock_check_p0a` enforces the burned pilot (`pilot-40b`) by manifest or item `part_id`
+    and exact counts 114 items / 228 calls (`PILOT_BURNED_ITEM_COUNT`, `PILOT_BURNED_CALL_COUNT`), even when
+    `part_dir` is a generic VM staging directory name like `rdlab_items`.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    # 1. Staging dir without manifest or item part_id is refused even if it has 114 items
+    staging_unmarked = tmp_path / "rdlab_items_unmarked"
+    items_unmarked = _make_stratified_public_items(staging_unmarked, count=114)
+    (items_unmarked.parent / "manifest.json").unlink()
+    raw_Staging = staging_unmarked / "staging"
+    raw_Staging.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(items_unmarked, raw_Staging / "items.jsonl")
+    with pytest.raises(RdlabError) as exc_unmarked:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=raw_Staging,
+            output_dir=tmp_path / "out_unmarked",
+            baseline_rows=[],
+            judge_ids=["mu-judge"],
+            fake_transport=True,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_unmarked.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+
+    # 2. Staging dir with manifest part_id="part01" is refused even if dir name is "rdlab_items"
+    staging_counted = tmp_path / "rdlab_items_counted"
+    items_counted = _make_stratified_public_items(staging_counted, count=114)
+    (items_counted.parent / "manifest.json").write_text(
+        json.dumps({"part_id": "part01", "schema_version": "1.0"}) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_counted_mf:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=items_counted.parent,
+            output_dir=tmp_path / "out_counted_mf",
+            baseline_rows=[],
+            judge_ids=["mu-judge"],
+            fake_transport=True,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_counted_mf.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+
+    # 3. Staging dir with item part_id="part02" is refused
+    staging_row_bad = tmp_path / "rdlab_items_row_bad"
+    items_row_bad = _make_stratified_public_items(staging_row_bad, count=114)
+    (items_row_bad.parent / "manifest.json").unlink()
+    bad_lines = []
+    for ln in items_row_bad.read_text(encoding="utf-8").splitlines():
+        if ln.strip():
+            obj = json.loads(ln)
+            obj["part_id"] = "part02"
+            bad_lines.append(json.dumps(obj, sort_keys=True))
+    items_row_bad.write_text("\n".join(bad_lines) + "\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_row_bad:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=items_row_bad.parent,
+            output_dir=tmp_path / "out_row_bad",
+            baseline_rows=[],
+            judge_ids=["mu-judge"],
+            fake_transport=True,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_row_bad.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+
+    # 4. Wrong item count (e.g. 25 items / 50 calls instead of 114 items / 228 calls) is refused even with pilot-40b manifest
+    wrong_count_dir = tmp_path / "pilot-40b-25"
+    items_25 = _make_stratified_public_items(wrong_count_dir, count=25)
+    with pytest.raises(RdlabError) as exc_wrong_cnt:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=items_25.parent,
+            output_dir=tmp_path / "out_wrong_cnt",
+            baseline_rows=[],
+            judge_ids=["mu-judge"],
+            fake_transport=True,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_wrong_cnt.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+
+    # 5. Staging dir named "rdlab_items" with item part_id="pilot-40b" and 114 items / 228 calls succeeds
+    staging_ok = tmp_path / "rdlab_items"
+    items_ok = _make_stratified_public_items(staging_ok, count=114)
+    (items_ok.parent / "manifest.json").unlink()
+    ok_lines = []
+    for ln in items_ok.read_text(encoding="utf-8").splitlines():
+        if ln.strip():
+            obj = json.loads(ln)
+            obj["part_id"] = bakeoff_judge.PILOT_BURNED_PART_ID
+            ok_lines.append(json.dumps(obj, sort_keys=True))
+    items_ok.write_text("\n".join(ok_lines) + "\n", encoding="utf-8")
+    doc_ok = bakeoff_judge.run_lock_check_p0a(
+        part_dir=items_ok.parent,
+        output_dir=tmp_path / "out_staging_ok",
+        baseline_rows=[],
+        judge_ids=["mu-judge"],
+        fake_transport=True,
+        profiler_call_count=2,
+        low_margin_item_count=2,
+        repo_root=REPO_ROOT,
+    )
+    assert doc_ok["part_id"] == bakeoff_judge.PILOT_BURNED_PART_ID
+    assert doc_ok["item_count"] == bakeoff_judge.PILOT_BURNED_ITEM_COUNT == 114
+    assert doc_ok["calls_per_judge"] == bakeoff_judge.PILOT_BURNED_CALL_COUNT == 228
+
+
+def test_fix1_item5_cosmetics_manifest_sha256_no_empty_comment_block_and_launch_help() -> None:
+    """Fix1 Item 5:
+    - `vm_judges.py` has no `"manifest_sha56"` typo.
+    - `bakeoff_judge.py` has no block of empty `#` comment lines.
+    - `launch_judges.sh` header comment, `usage` help text, and `lock-check` `RATE_UNITS_PER_HOUR="5.30"` are aligned.
+    """
+    vm_src = (SCRIPTS_COLAB_DIR / "vm_judges.py").read_text(encoding="utf-8")
+    assert "manifest_sha56" not in vm_src
+
+    bj_lines = (REPO_ROOT / "src" / "reasoning_dataset_lab" / "pilot_b" / "bakeoff_judge.py").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    empty_hash_lines = [idx for idx, ln in enumerate(bj_lines, start=1) if ln.strip() == "#"]
+    assert empty_hash_lines == []
+
+    sh_src = LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
+    sh_lines = sh_src.splitlines()
+    assert "--lock-check (A100)" in sh_lines[2]
+    assert "--lock-check-stub (CPU)" in sh_lines[2]
+    assert "--counted (A100)" in sh_lines[2]
+    assert "--counted-stub (CPU)" in sh_lines[2]
+    assert "4.27" not in sh_src
+    assert 'elif [[ "$MODE" == "lock-check" ]]; then' in sh_src
+    assert "--gpu A100 at 5.30/h, wall 7200s" in sh_src
 
 
 

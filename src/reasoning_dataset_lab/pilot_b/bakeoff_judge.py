@@ -2408,32 +2408,6 @@ def build_golden_anchor_manifest(
         items_sha256=items_sha256,
         schedule_sha256=schedule_sha256,
     )
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
 
 
 def write_golden_anchor_manifest(golden_doc: Mapping[str, Any], path: Path) -> str:
@@ -2704,6 +2678,10 @@ class DeterministicFakeJudgeTransport:
                 "Verify the pinned revision in BAKEOFF_JUDGE_SPECS.",
             )
         return f"fake-sha256:{spec.revision}"
+
+    def prefill(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int = 0) -> None:
+        _ = seed
+        encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
 
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         digest = f"fake-sha256:{spec.revision}"
@@ -3257,6 +3235,30 @@ class TransformersJudgeTransport:
         )
         return int(enc["input_ids"].shape[1])
 
+    def prefill(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int = 0) -> None:
+        self._ensure_loaded(spec)
+        assert self._tokenizer is not None and self._model is not None
+
+        import torch
+
+        configure_torch_determinism(window_mode=self.window_mode, shard_spec=self.shard_spec)
+        torch.manual_seed(int(seed))
+        enc = self._tokenizer(
+            prompt.prompt_text,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )
+        input_ids = enc["input_ids"].to(self.device)
+        attention_mask = enc.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(self.device)
+        with torch.no_grad():
+            if callable(self._model):
+                if attention_mask is not None:
+                    self._model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+                else:
+                    self._model(input_ids=input_ids, use_cache=False)
+
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         self._ensure_loaded(spec)
         assert self._tokenizer is not None and self._model is not None and self._verified_digest is not None
@@ -3750,6 +3752,18 @@ class D3MiniTransport:
                 "Check decision_config.json is present in the receipt-verified snapshot.",
             )
         self._model = model
+
+    def prefill(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int = 0) -> None:
+        self._ensure_loaded(spec)
+        assert self._model is not None
+        state, questions = check_d3_text_only_inputs(prompt.structured_payload or {})
+        import torch
+
+        configure_torch_determinism(window_mode=self.window_mode, shard_spec=self.shard_spec)
+        torch.manual_seed(int(seed))
+        with torch.inference_mode():
+            if callable(self._model):
+                self._model(state=state, questions=questions)
 
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         self._ensure_loaded(spec)
@@ -5830,6 +5844,109 @@ class _MonotonicTimingEvent:
         return round(max(0.0001, (end_event._timestamp - self._timestamp) * 1000.0), 6)
 
 
+def _make_cuda_timing_event() -> Any:
+    """Construct a `torch.cuda.Event(enable_timing=True)` instance for real-mode P0a phase profiling."""
+    import torch
+
+    return torch.cuda.Event(enable_timing=True)
+
+
+def _run_transport_prefill(
+    transport: Any,
+    spec: JudgeSpec,
+    prompt: AssembledPrompt,
+    *,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+) -> None:
+    """Execute the transport's forward/prefill phase separately from decode for `run_p0a_phase_profiler`."""
+    prefill_fn = getattr(transport, "prefill", None)
+    if callable(prefill_fn):
+        prefill_fn(spec, prompt, seed=seed)
+        return
+    model_obj = getattr(transport, "_model", None)
+    if callable(model_obj):
+        model_obj(prompt.prompt_text)
+        return
+    encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+
+
+def _is_stub_or_fake_transport(transport: Any) -> bool:
+    """Return True if `transport` is a stub or fake transport."""
+    if transport is None:
+        return False
+    if bool(getattr(transport, "is_stub_transport", False) or getattr(transport, "is_stub", False)):
+        return True
+    if isinstance(transport, DeterministicFakeJudgeTransport):
+        return True
+    cls_name = type(transport).__name__
+    if "FakeJudgeTransport" in cls_name or "Stub" in cls_name:
+        return True
+    pins = getattr(transport, "library_pins", None)
+    if isinstance(pins, Mapping) and bool(pins.get("stub_transport")):
+        return True
+    return False
+
+
+def _verify_burned_pilot_for_p0a(
+    part_dir: Path,
+    items: Sequence[JudgeInputItem],
+    schedule: JudgeSchedule,
+) -> str:
+    """Verify `part_dir` and `items` belong to the burned pilot (`pilot-40b`) and have exact counts 114 items / 228 calls."""
+    resolved = Path(part_dir).resolve()
+    base_dir = resolved.parent if resolved.is_file() else resolved
+    part_name = base_dir.name.strip().lower()
+    if any(part_name.startswith(prefix) for prefix in ("part01", "part02", "part03", "part04", "part05")):
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), never on counted part '{base_dir.name}'.",
+            f"Pass the burned pilot part directory ('{PILOT_BURNED_PART_ID}') to --lock-check.",
+        )
+
+    manifest_part_id = _resolve_part_id_from_dir(part_dir)
+    if manifest_part_id is not None and manifest_part_id.strip().lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), got manifest part_id={manifest_part_id!r}.",
+            f"Pass the burned pilot part ('{PILOT_BURNED_PART_ID}') to --lock-check.",
+        )
+
+    items_path = resolve_items_jsonl_path(part_dir)
+    row_part_ids: list[str] = []
+    for raw_ln in items_path.read_text(encoding="utf-8").splitlines():
+        if not raw_ln.strip():
+            continue
+        obj = json.loads(raw_ln)
+        if isinstance(obj, Mapping) and obj.get("part_id") is not None:
+            pid = str(obj["part_id"]).strip()
+            if pid:
+                row_part_ids.append(pid)
+                if pid.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+                    raise refused_error(
+                        "P0A_COUNTED_PART_FORBIDDEN",
+                        f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), got item part_id={pid!r}.",
+                        f"Pass the burned pilot part ('{PILOT_BURNED_PART_ID}') to --lock-check.",
+                    )
+
+    dir_name_burned = part_name in ALLOWED_LOGPROB_MASS_PART_IDS
+    if manifest_part_id is None and not row_part_ids and not dir_name_burned:
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a requires burned pilot part_id '{PILOT_BURNED_PART_ID}' in manifest or items, got unverified directory '{base_dir.name}'.",
+            f"Provide manifest.json with part_id='{PILOT_BURNED_PART_ID}' or item part_id='{PILOT_BURNED_PART_ID}'.",
+        )
+
+    if len(items) != PILOT_BURNED_ITEM_COUNT or len(schedule.entries) != PILOT_BURNED_CALL_COUNT:
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a requires the burned pilot ('{PILOT_BURNED_PART_ID}') with {PILOT_BURNED_ITEM_COUNT} items and "
+            f"{PILOT_BURNED_CALL_COUNT} calls, got {len(items)} items and {len(schedule.entries)} calls.",
+            f"Run P0a only on the 114-item ({PILOT_BURNED_CALL_COUNT}-call) burned pilot part '{PILOT_BURNED_PART_ID}'.",
+        )
+
+    return manifest_part_id or (row_part_ids[0] if row_part_ids else PILOT_BURNED_PART_ID)
+
+
 def _extract_row_logprob_value(row: Mapping[str, Any]) -> float:
     raw_lp = row.get("top1_logprob")
     if isinstance(raw_lp, (int, float)):
@@ -5993,8 +6110,11 @@ def run_p0a_phase_profiler(
         in_tok_sha = compute_token_ids_sha256(in_tok_ids)
         ev1.record()
 
-        # Prefill + decode execution
+        # Prefill phase (forward pass on prompt tokens)
+        _run_transport_prefill(transport, spec, prompt, seed=seed)
         ev2.record()
+
+        # Decode phase (verdict generation)
         resp = transport.generate(spec, prompt, seed=seed)
         ev3.record()
 
@@ -6210,6 +6330,8 @@ def run_lock_check_p0a(
     low_margin_item_count: int = P0A_LOW_MARGIN_RERUN_ITEM_COUNT,
     event_factory: Any = None,
     timing_backend: str | None = None,
+    window_mode: str | None = None,
+    allow_remote_code_reviewed: str | None = None,
     repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Run P0a inside the lock-check window and write `p0a_report.json` into `output_dir`:
@@ -6217,7 +6339,37 @@ def run_lock_check_p0a(
       (b) 10-call phase profiler per judge (`tokenise`, `prefill`, `decode`, `post_processing`);
       (c) reversed re-run of the 20 lowest-margin items, reporting order independence and comparison against baseline.
     """
+    try:
+        device = normalize_judge_device(device)
+    except DeviceRefusalError as exc:
+        raise RdlabError(
+            code="BAKEOFF_JUDGE_DEVICE_INVALID",
+            message=exc.message,
+            hint=exc.hint,
+            exit_code=exc.exit_code,
+        ) from exc
     resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
+    effective_dtype = DEFAULT_TORCH_DTYPE if str(dtype).strip().lower() == "auto" else str(dtype)
+    eff_window_mode = (
+        window_mode
+        if window_mode is not None
+        else (
+            os.environ.get(DETERMINISM_MODE_ENV_VAR, "")
+            or os.environ.get("RDLAB_WINDOW_MODE", "")
+        )
+    ).strip() or None
+    if eff_window_mode is None and fake_transport:
+        eff_window_mode = "stub"
+    in_real_mode = is_real_mode(eff_window_mode, fake_transport=False) and (
+        eff_window_mode is not None or not fake_transport
+    )
+    if in_real_mode and fake_transport:
+        raise refused_error(
+            "P0A_STUB_TRANSPORT_REFUSED",
+            f"Real mode ({eff_window_mode!r}) refuses fake_transport=True in run_lock_check_p0a.",
+            "Run with fake_transport=False in real mode, or use lock-check-stub mode for stub transports.",
+        )
+
     part_name = Path(part_dir).name.strip().lower()
     if any(part_name.startswith(prefix) for prefix in ("part01", "part02", "part03", "part04", "part05")):
         raise refused_error(
@@ -6230,6 +6382,8 @@ def run_lock_check_p0a(
     items, items_sha256 = load_judge_items(part_dir, limit=limit_items)
     items_by_id = {it.item_id: it for it in items}
     schedule = load_or_create_schedule(resolved_out, items, seed=eff_seed, items_sha256=items_sha256)
+    verified_part_id = _verify_burned_pilot_for_p0a(part_dir, items, schedule)
+
     target_jids = judge_ids if judge_ids is not None else sorted(BAKEOFF_JUDGE_SPECS.keys())
     active_judges = (
         list(judges)
@@ -6240,9 +6394,58 @@ def run_lock_check_p0a(
     resolved_transports: dict[str, JudgeTransport] = {}
     for spec in active_judges:
         if transports_by_judge is not None and spec.judge_id in transports_by_judge:
-            resolved_transports[spec.judge_id] = transports_by_judge[spec.judge_id]
+            tr = transports_by_judge[spec.judge_id]
+            if (in_real_mode or not fake_transport) and _is_stub_or_fake_transport(tr):
+                raise refused_error(
+                    "P0A_STUB_TRANSPORT_REFUSED",
+                    f"Real mode refuses stub/fake transport {type(tr).__name__} for judge '{spec.judge_id}' in run_lock_check_p0a.",
+                    "Pass a real transport (TransformersJudgeTransport / D3MiniTransport) or run in stub mode.",
+                )
+            resolved_transports[spec.judge_id] = tr
+        elif fake_transport:
+            resolved_transports[spec.judge_id] = DeterministicFakeJudgeTransport(torch_dtype=effective_dtype)
         else:
-            resolved_transports[spec.judge_id] = DeterministicFakeJudgeTransport(torch_dtype=dtype)
+            eff_rc = (
+                allow_remote_code_reviewed
+                if allow_remote_code_reviewed is not None
+                else (D3_MINI_REVIEWED_REVISION if spec.judge_id == D3_MINI_JUDGE_ID else None)
+            )
+            check_remote_code_gate(spec, allow_remote_code_reviewed=eff_rc)
+            if receipts_dir is None:
+                raise refused_error(
+                    "BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED",
+                    f"Real-model loading for '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}) in P0a requires "
+                    "--receipts-dir containing the pinned <owner>__<repo>.sha256.json receipt.",
+                    "Pass receipts_dir (and hf_home or set HF_HOME), or use fake_transport=True in stub mode.",
+                )
+            if spec.judge_id == D3_MINI_JUDGE_ID:
+                tr_real: JudgeTransport = D3MiniTransport(
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    device=device,
+                    torch_dtype=effective_dtype,
+                    window_mode=eff_window_mode,
+                )
+            else:
+                tr_real = TransformersJudgeTransport(
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    device=device,
+                    torch_dtype=effective_dtype,
+                    window_mode=eff_window_mode,
+                )
+            tr_real.verify_ready(spec, allow_remote_code_reviewed=eff_rc)
+            resolved_transports[spec.judge_id] = tr_real
+
+    if event_factory is not None:
+        eff_event_factory = event_factory
+        eff_timing_backend = timing_backend or "cuda_event"
+    elif in_real_mode and not fake_transport:
+        eff_event_factory = _make_cuda_timing_event
+        eff_timing_backend = timing_backend or "cuda_event"
+    else:
+        eff_event_factory = _MonotonicTimingEvent
+        eff_timing_backend = timing_backend or "cpu_monotonic"
 
     # (a) Second full baseline pass over the schedule in the same session
     pass2_rows: list[dict[str, Any]] = []
@@ -6291,8 +6494,8 @@ def run_lock_check_p0a(
             seed=schedule.seed,
             call_count=profiler_call_count,
             pass_mode=pass_mode,
-            event_factory=event_factory,
-            timing_backend=timing_backend,
+            event_factory=eff_event_factory,
+            timing_backend=eff_timing_backend,
         )
 
     # (c) Reversed re-run of the 20 lowest-margin items
@@ -6314,16 +6517,18 @@ def run_lock_check_p0a(
 
     report_doc: dict[str, Any] = {
         "schema_version": "1.0",
-        "part_id": Path(part_dir).name,
+        "part_id": verified_part_id,
         "item_count": len(items),
         "calls_per_judge": len(schedule.entries),
         "judge_count": len(active_judges),
         "schedule_seed": schedule.seed,
         "schedule_sha256": schedule.schedule_sha256,
         "items_sha256": items_sha256,
+        "timing_backend": eff_timing_backend,
         "baseline_repeat": baseline_repeat,
         "phase_profiler": {
             "calls_per_judge": int(profiler_call_count),
+            "timing_backend": eff_timing_backend,
             "phases": list(P0A_PHASE_NAMES),
             "by_judge": dict(sorted(profiler_by_judge.items())),
         },

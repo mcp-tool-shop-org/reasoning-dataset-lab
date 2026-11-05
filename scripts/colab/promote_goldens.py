@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Host-side helper to verify `boot_gatekeeper_goldens.filled.json` from a `--lock-check` window
-and write a candidate `boot_gatekeeper_goldens.json` file for operator review.
+and write a candidate `boot_gatekeeper_goldens.json` file outside every git work tree for operator review.
 
-Never runs `git commit` or modifies the live repository's `scripts/colab/boot_gatekeeper_goldens.json`
-unless `--allow-in-place-repo` is explicitly passed.
+Never runs `git commit` or writes into any git work tree (live repo or any other checkout);
+the Publisher's PR carries the reviewed file into the repository.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -211,6 +212,42 @@ def verify_filled_goldens(
     return doc, file_sha256
 
 
+def _is_inside_any_git_work_tree(
+    path: Path,
+    *,
+    repo_root: Path | None = None,
+) -> tuple[bool, Path | None]:
+    """Return `(True, git_root)` if `path` lies inside any git work tree (by `.git` ancestor or `git rev-parse --show-toplevel`)."""
+    resolved = Path(path).resolve()
+    live_repo_root = LIVE_REPO_GOLDENS_PATH.resolve().parents[2]
+    explicit_repo_root = Path(repo_root).resolve() if repo_root is not None else None
+    ancestors = [resolved.parent, *resolved.parent.parents]
+    for anc in ancestors:
+        if (anc / ".git").exists():
+            return True, anc
+        if explicit_repo_root is not None and anc == explicit_repo_root:
+            return True, anc
+        if anc == live_repo_root:
+            return True, anc
+
+    probe_dir = next((anc for anc in ancestors if anc.is_dir()), None)
+    if probe_dir is not None:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(probe_dir), "rev-parse", "--show-toplevel"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                return True, Path(proc.stdout.strip()).resolve()
+        except OSError:
+            pass
+    return False, None
+
+
 def promote_goldens_file(
     filled_path: Path,
     *,
@@ -222,9 +259,8 @@ def promote_goldens_file(
     session_env_path: Path | None = None,
     expected_window_id: str | None = None,
     forbid_stub_transport: bool = False,
-    allow_in_place_repo: bool = False,
 ) -> dict[str, Any]:
-    """Validate `filled_path` and write a candidate `boot_gatekeeper_goldens.json` without running git commit."""
+    """Validate `filled_path` and write a candidate `boot_gatekeeper_goldens.json` outside every git work tree."""
     resolved_out = (
         Path(output_path).resolve()
         if output_path is not None
@@ -237,7 +273,7 @@ def promote_goldens_file(
     if resolved_out is None:
         raise PromoteGoldensRefusalError(
             "PROMOTE_GOLDENS_OUTPUT_REQUIRED",
-            "Specify --output <candidate_path> or --target-repo <temp_repo_dir>.",
+            "Specify --output <candidate_path> outside any git work tree.",
         )
 
     live_goldens = (
@@ -245,11 +281,12 @@ def promote_goldens_file(
         if repo_root is not None
         else LIVE_REPO_GOLDENS_PATH.resolve()
     )
-    if (resolved_out == live_goldens or resolved_out == LIVE_REPO_GOLDENS_PATH.resolve()) and not allow_in_place_repo:
+    in_git_tree, git_root = _is_inside_any_git_work_tree(resolved_out, repo_root=repo_root)
+    if in_git_tree or resolved_out == live_goldens or resolved_out == LIVE_REPO_GOLDENS_PATH.resolve():
         raise PromoteGoldensRefusalError(
             "PROMOTE_GOLDENS_LIVE_REPO_REFUSED",
-            f"Refusing to overwrite live repository file '{live_goldens}' without --allow-in-place-repo.",
-            hint="Write to a candidate path or a temp repo copy for operator review.",
+            f"Refusing to write candidate goldens file '{resolved_out}' inside git work tree '{git_root or live_goldens.parent}'.",
+            hint="Write to a candidate path outside every git work tree; the Publisher's PR carries the file into the repo.",
         )
 
     filled_doc, filled_file_sha = verify_filled_goldens(
@@ -356,11 +393,6 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Refuse filled goldens recorded with stub_transport=True.",
     )
-    parser.add_argument(
-        "--allow-in-place-repo",
-        action="store_true",
-        help="Explicitly allow writing to scripts/colab/boot_gatekeeper_goldens.json in the live repo.",
-    )
     args = parser.parse_args(argv)
     eff_filled = args.filled_opt if args.filled_opt is not None else args.filled_goldens
     try:
@@ -374,7 +406,6 @@ def main(argv: list[str] | None = None) -> int:
             session_env_path=args.session_env,
             expected_window_id=args.window_id,
             forbid_stub_transport=bool(args.forbid_stub_transport),
-            allow_in_place_repo=bool(args.allow_in_place_repo),
         )
     except PromoteGoldensRefusalError as exc:
         sys.stderr.write(f"{exc.failure_class}: {exc.message}\n")

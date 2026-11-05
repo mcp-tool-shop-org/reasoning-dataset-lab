@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Per-window Google Colab launcher for the reasoning-dataset-lab five-judge bake-off.
-# Modes: --session-smoke, --probe (CPU), --stub (CPU), --time-one (A100), --dry, --resume.
+# Modes: --session-smoke, --probe (CPU), --stub (CPU), --time-one (A100), --lock-check (A100), --lock-check-stub (CPU), --counted (A100), --counted-stub (CPU), --dry, --resume.
 
 set -euo pipefail
 
@@ -38,14 +38,14 @@ EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--receipts-dir DIR] [--cap UNITS]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--receipts-dir DIR] [--cap UNITS]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
   --probe              Run the read-only CPU VM environment probe (CPU at 0.08/h, wall 300s, cap 0.01)
   --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
   --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
-  --lock-check         Run the A100 114-item lock-check window (--gpu A100 at 4.27/h, wall 7200s)
+  --lock-check         Run the A100 lock-check window: boot gatekeeper golden recording, 5-judge 114-item (228-call) burned-pilot pass, 50-item golden anchor & shard manifests, and P0a repeat/profiler/reversed-low-margin rerun (--gpu A100 at 5.30/h, wall 7200s)
   --lock-check-stub    Run the CPU stub lock-check window (CPU at 0.08/h, deterministic stub transport)
   --counted            Run a counted A100 shard window (--gpu A100 at 5.30/h, strict determinism)
   --counted-stub       Run a counted CPU stub shard window (CPU at 0.08/h, deterministic stub transport)
@@ -273,7 +273,7 @@ elif [[ "$MODE" == "lock-check" ]]; then
   CARD="A100"
   COLAB_NEW_FLAGS=(--gpu A100)
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
-  RATE_UNITS_PER_HOUR="4.27"
+  RATE_UNITS_PER_HOUR="5.30"
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
 elif [[ "$MODE" == "probe" ]]; then
   CARD="CPU"

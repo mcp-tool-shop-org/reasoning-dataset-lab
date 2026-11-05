@@ -2417,7 +2417,19 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "            raise RuntimeError('CUDA not available')\n"
             "    @staticmethod\n"
             "    def cudart():\n"
-            "        return _FakeCudart()\n",
+            "        return _FakeCudart()\n"
+            "    class Event:\n"
+            "        _clock = 0.0\n"
+            "        def __init__(self, enable_timing=False):\n"
+            "            self.enable_timing = bool(enable_timing)\n"
+            "            self._ts = 0.0\n"
+            "        def record(self, *_a, **_kw):\n"
+            "            cuda.Event._clock += 1.0\n"
+            "            self._ts = cuda.Event._clock\n"
+            "        def synchronize(self):\n"
+            "            return None\n"
+            "        def elapsed_time(self, end_event):\n"
+            "            return max(0.0001, float(end_event._ts - self._ts))\n",
             encoding="utf-8",
             newline="\n",
         )
@@ -2458,6 +2470,8 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "        return self\n"
             "    def eval(self):\n"
             "        return self\n"
+            "    def __call__(self, *_a, **_kw):\n"
+            "        return types.SimpleNamespace(logits=torch._FakeTensor((1, 2, 6), vals=[[[-8.0, -8.0, -8.0, -0.15, -2.05, -8.0], [-8.0, -8.0, -8.0, -0.15, -2.05, -8.0]]]))\n"
             "    def generate(self, **kw):\n"
             "        in_ids = kw['input_ids'].tolist()[0]\n"
             "        out_tok = 3 if (sum(in_ids) % 2 == 0) else 4\n"
@@ -2476,6 +2490,8 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "    @classmethod\n"
             "    def from_pretrained(cls, *_a, **_kw):\n"
             "        return cls()\n"
+            "    def __call__(self, *_a, **_kw):\n"
+            "        return {'answers': {'supported': {'noul': 0.85}}}\n"
             "    def system_one(self, *, state, questions):\n"
             "        return {'answers': {'supported': {'noul': 0.85}}}\n",
             encoding="utf-8",
@@ -5568,7 +5584,12 @@ def run_judges_pipeline(
         )
     )
     part_manifest = part_dir / "manifest.json"
-    if not part_manifest.is_file():
+    if not part_manifest.is_file() and norm_mode not in (
+        "lock-check",
+        "lock_check",
+        "lock-check-stub",
+        "lock_check_stub",
+    ):
         part_manifest.write_text(
             json.dumps({"part_id": "pilot-40b", "schema_version": "1.0"}, indent=2)
             + "\n",
@@ -6254,7 +6275,7 @@ def run_judges_pipeline(
             rebuilt_shard_doc, run_dir / SHARD_MANIFEST_FILENAME
         )
         shard_info["shard_manifest_sha256"] = rebuilt_file_sha
-        shard_info["manifest_body_sha256"] = str(rebuilt_shard_doc["manifest_sha56" if "manifest_sha56" in rebuilt_shard_doc else "manifest_sha256"])
+        shard_info["manifest_body_sha256"] = str(rebuilt_shard_doc["manifest_sha256"])
         shard_info["anchor_item_ids"] = list(rebuilt_shard_doc["anchor_item_ids"])
 
         anchor_set = set(rebuilt_shard_doc["anchor_item_ids"])
@@ -6275,6 +6296,7 @@ def run_judges_pipeline(
                 newline="\n",
             )
 
+        real_mode_active = is_real_mode(mode, dryrun=dryrun)
         p0a_doc = bakeoff_judge.run_lock_check_p0a(
             part_dir=part_dir,
             output_dir=run_dir,
@@ -6287,7 +6309,14 @@ def run_judges_pipeline(
             dtype=DEFAULT_TORCH_DTYPE,
             schedule_seed=DEFAULT_SCHEDULE_SEED,
             limit_items=limit_items,
-            fake_transport=not is_real_mode(mode, dryrun=dryrun),
+            fake_transport=not real_mode_active,
+            window_mode=mode,
+            event_factory=(
+                bakeoff_judge._make_cuda_timing_event
+                if real_mode_active
+                else None
+            ),
+            timing_backend="cuda_event" if real_mode_active else "cpu_monotonic",
             repo_root=eff_repo_dir,
             judge_ids=[jid for jid, _ in selected_specs],
         )
