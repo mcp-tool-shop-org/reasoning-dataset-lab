@@ -1369,7 +1369,7 @@ def configure_torch_determinism_with_reason(
             ) from exc
         try:
             use_det(True, warn_only=True)
-        except Exception:  # pragma: no cover
+        except Exception:
             pass
         return (
             "not enforceable",
@@ -4506,6 +4506,11 @@ def run_bakeoff_judge(
     ).strip() or None
     if eff_window_mode is None and fake_transport:
         eff_window_mode = "stub"
+    guard_no_test_hooks_in_counted_mode(
+        eff_window_mode,
+        shard_spec=eff_shard_spec,
+        fake_transport=bool(fake_transport or transport is not None),
+    )
     det_status = configure_torch_determinism(window_mode=eff_window_mode, shard_spec=eff_shard_spec)
 
     eff_manifest_path_raw = (
@@ -4558,7 +4563,18 @@ def run_bakeoff_judge(
     )
 
     if vram_probe is None:
-        force_gpu_probe = bool(os.environ.get("FAKE_COLAB_NVIDIA_SMI_MODE", "").strip())
+        smi_mode_raw = os.environ.get("FAKE_COLAB_NVIDIA_SMI_MODE", "").strip()
+        if smi_mode_raw and smi_mode_raw not in ("ok", "high", "fail", "empty", "zero"):
+            raise refused_error(
+                MALFORMED_TEST_HOOK,
+                "Malformed mode in environment variable FAKE_COLAB_NVIDIA_SMI_MODE.",
+                "Use one of: ok, high, fail, empty, zero.",
+            )
+        is_stub_or_dryrun_win = bool(
+            fake_transport
+            or str(eff_window_mode or "").strip().lower() in ("stub", "dryrun", "dry-run")
+        )
+        force_gpu_probe = bool(is_stub_or_dryrun_win and smi_mode_raw)
         vram_probe = (
             (lambda: 0)
             if (str(device).lower().startswith("cpu") or (fake_transport and not force_gpu_probe))
@@ -5446,6 +5462,100 @@ def close_bakeoff_outputs(
         newline="\n",
     )
     return closed_doc
+
+
+TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
+MALFORMED_TEST_HOOK = "MALFORMED_TEST_HOOK"
+FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES: tuple[str, ...] = ("FAKE_COLAB_",)
+FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES: tuple[str, ...] = (
+    "_OVERRIDE",
+    "_ACTUAL_HASHES",
+    "_BACKEND",
+)
+FORBIDDEN_COUNTED_TEST_HOOK_NAMES: frozenset[str] = frozenset(
+    {
+        "FAKE_COLAB_BITSANDBYTES_VERSION",
+        "FAKE_COLAB_COMPUTE_CAPABILITY",
+        "FAKE_COLAB_CUDA_RUNTIME",
+        "FAKE_COLAB_CUT_MID_JUDGE",
+        "FAKE_COLAB_CUT_MID_JUDGE_HARD",
+        "FAKE_COLAB_DEVICE_CHECK_DEVICE",
+        "FAKE_COLAB_DRIVER_VERSION",
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE",
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END",
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE",
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END",
+        "FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD",
+        "FAKE_COLAB_FAIL_DOWNLOAD_CHILD",
+        "FAKE_COLAB_FAIL_JUDGE_CHILD",
+        "FAKE_COLAB_GPU_GATE_MODE",
+        "FAKE_COLAB_GPU_GATE_SECRET",
+        "FAKE_COLAB_GPU_GATE_SLEEP_SECONDS",
+        "FAKE_COLAB_GPU_GATE_VENV",
+        "FAKE_COLAB_GPU_NAME",
+        "FAKE_COLAB_HF_FAIL_REPO",
+        "FAKE_COLAB_NVIDIA_SMI_MODE",
+        "FAKE_COLAB_PCI_DEVICE_ID",
+        "FAKE_COLAB_SM_COUNT",
+        "FAKE_COLAB_STATE_DIR",
+        "FAKE_COLAB_TORCH_VERSION",
+        "FAKE_COLAB_TRANSFORMERS_VERSION",
+        "FAKE_COLAB_VBIOS_VERSION",
+        "FAKE_COLAB_VM_STEP_DELAY_SECONDS",
+        "NVIDIA_TF32_OVERRIDE",
+        "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+        "RDLAB_SDPA_BACKEND",
+        "RDLAB_DETERMINISM_WARN_ONLY",
+        "RDLAB_TEST_PLANT_LOG_LEAK",
+        "RDLAB_FORCE_PINNED_UV",
+        "RDLAB_VM_CONTENT_DIR",
+        "RDLAB_CGROUP_DIR",
+        "RDLAB_CGROUP_MEMORY_EVENTS_PATH",
+        "RDLAB_PROC_MEMINFO_PATH",
+    }
+)
+
+
+def is_forbidden_counted_test_hook(var_name: str) -> bool:
+    """Return True if `var_name` is a guarded test or override hook forbidden in counted runs."""
+    name = str(var_name).strip()
+    if not name:
+        return False
+    return (
+        name in FORBIDDEN_COUNTED_TEST_HOOK_NAMES
+        or name.startswith(FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES)
+        or name.endswith(FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES)
+    )
+
+
+def guard_no_test_hooks_in_counted_mode(
+    window_mode: str | None = None,
+    *,
+    strict: bool | None = None,
+    shard_spec: str | None = None,
+    fake_transport: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Refuse with `TEST_HOOK_IN_COUNTED_MODE` before any model load if any test/override hook is set and non-empty
+    in a counted/time-one/sharded window (when `not fake_transport` and `VM_DRYRUN != '1'`).
+    """
+    env_map = environ if environ is not None else os.environ
+    if fake_transport or str(env_map.get("VM_DRYRUN", "") or "").strip() == "1":
+        return
+    if not _is_counted_window_mode(window_mode, strict=strict, shard_spec=shard_spec):
+        return
+    active_hooks = sorted(
+        str(k)
+        for k, v in env_map.items()
+        if is_forbidden_counted_test_hook(str(k)) and str(v or "").strip() != ""
+    )
+    if active_hooks:
+        joined = ", ".join(active_hooks)
+        raise refused_error(
+            TEST_HOOK_IN_COUNTED_MODE,
+            f"Test or override hook environment variable(s) forbidden in counted mode ({window_mode!r}, shard={shard_spec or '1/1'}): {joined}.",
+            "Unset all FAKE_COLAB_* and test override environment variables before running a counted judge window.",
+        )
 
 
 def main_judge_runner(argv: Sequence[str] | None = None) -> int:

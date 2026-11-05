@@ -15314,11 +15314,12 @@ def test_item6_boot_gatekeeper_passes_on_matching_hashes_and_refuses_on_mismatch
         mode="counted",
         card_type="A100",
         goldens_path=filled_path,
+        dryrun=True,
     )
     assert ok_res["status"] == "ok"
     assert (run_dir / "boot_gatekeeper.json").is_file()
 
-    # Now override actual hash to simulate kernel drift -> BOOT_GATEKEEPER_GOLDEN_MISMATCH
+    # Now override actual hash in dryrun mode to simulate kernel drift -> BOOT_GATEKEEPER_GOLDEN_MISMATCH
     monkeypatch.setenv(
         "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
         json.dumps(
@@ -15334,6 +15335,7 @@ def test_item6_boot_gatekeeper_passes_on_matching_hashes_and_refuses_on_mismatch
             mode="counted",
             card_type="A100",
             goldens_path=filled_path,
+            dryrun=True,
         )
     assert mismatch_exc.value.failure_class == "BOOT_GATEKEEPER_GOLDEN_MISMATCH"
 
@@ -16765,7 +16767,7 @@ def test_fix1_part_f_100_percent_patch_coverage_on_bakeoff_judge(
 ) -> None:
     """Fix-1 Part F:
     Exercise all new/modified lines and branches in `src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py`
-    without any `pragma: no cover`, `# nocov`, `coverage:ignore`, or omit-list entry.
+    through real unit tests with zero coverage-exclusion directives.
     """
     import types
     from reasoning_dataset_lab.pilot_b import bakeoff_judge
@@ -17328,7 +17330,737 @@ def test_fix1_part_f_100_percent_patch_coverage_on_bakeoff_judge(
         assert resp_empty_scores.min_top2_logit_margin == 0.0
 
 
+def _discover_codebase_test_and_override_hooks(
+    extra_sources: tuple[tuple[str, str], ...] | list[tuple[str, str]] = (),
+) -> dict[str, list[str]]:
+    """Parse `vm_judges.py`, `merge_shards.py`, and `src/` for every `os.environ` read of a name
+    starting `FAKE_COLAB_` or ending `_OVERRIDE`, `_ACTUAL_HASHES`, or `_BACKEND`.
+    """
+    import ast
+
+    hook_prefixes = ("FAKE_COLAB_",)
+    hook_suffixes = ("_OVERRIDE", "_ACTUAL_HASHES", "_BACKEND")
+
+    def _matches_hook_pattern(name: str) -> bool:
+        return name.startswith(hook_prefixes) or name.endswith(hook_suffixes)
+
+    targets: list[tuple[str, str]] = [
+        ("scripts/colab/vm_judges.py", (REPO_ROOT / "scripts" / "colab" / "vm_judges.py").read_text(encoding="utf-8")),
+        ("scripts/colab/merge_shards.py", (REPO_ROOT / "scripts" / "colab" / "merge_shards.py").read_text(encoding="utf-8")),
+    ]
+    for py_path in sorted((REPO_ROOT / "src").rglob("*.py")):
+        rel = py_path.relative_to(REPO_ROOT).as_posix()
+        targets.append((rel, py_path.read_text(encoding="utf-8")))
+    targets.extend(extra_sources)
+
+    found: dict[str, list[str]] = {}
+
+    def _record(name: str, loc: str) -> None:
+        if _matches_hook_pattern(name):
+            found.setdefault(name, [])
+            if loc not in found[name]:
+                found[name].append(loc)
+
+    env_call_re = re.compile(
+        r"""os\.(?:environ(?:\.get)?|getenv)\s*[\(\[]\s*['"]([A-Za-z0-9_]+)['"]"""
+    )
+    env_in_re = re.compile(r"""['"]([A-Za-z0-9_]+)['"]\s+in\s+os\.environ""")
+    shell_fake_re = re.compile(r"""\$\{?(FAKE_COLAB_[A-Za-z0-9_]+)""")
+
+    for rel, src in targets:
+        tree = ast.parse(src, filename=rel)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                if (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "get"
+                    and isinstance(node.func.value, ast.Attribute)
+                    and node.func.value.attr == "environ"
+                    and isinstance(node.func.value.value, ast.Name)
+                    and node.func.value.value.id == "os"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                ):
+                    _record(node.args[0].value, f"{rel}:{node.lineno}")
+                elif (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "getenv"
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "os"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and isinstance(node.args[0].value, str)
+                ):
+                    _record(node.args[0].value, f"{rel}:{node.lineno}")
+            elif isinstance(node, ast.Subscript):
+                if (
+                    isinstance(node.value, ast.Attribute)
+                    and node.value.attr == "environ"
+                    and isinstance(node.value.value, ast.Name)
+                    and node.value.value.id == "os"
+                    and isinstance(node.slice, ast.Constant)
+                    and isinstance(node.slice.value, str)
+                ):
+                    _record(node.slice.value, f"{rel}:{node.lineno}")
+            elif isinstance(node, ast.Compare):
+                for comp in node.comparators:
+                    if (
+                        isinstance(comp, ast.Attribute)
+                        and comp.attr == "environ"
+                        and isinstance(comp.value, ast.Name)
+                        and comp.value.id == "os"
+                        and isinstance(node.left, ast.Constant)
+                        and isinstance(node.left.value, str)
+                    ):
+                        _record(node.left.value, f"{rel}:{node.lineno}")
+        for lineno, line in enumerate(src.splitlines(), 1):
+            for rx in (env_call_re, env_in_re, shell_fake_re):
+                for m in rx.finditer(line):
+                    _record(m.group(1), f"{rel}:{lineno}")
+    return found
 
 
+def test_fix2_item1_guard_at_start_refuses_test_hooks_in_counted_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-2 Item 1:
+    In `time-one`, `counted`, and every sharded counted mode (not `dryrun`), refuse before any model load
+    with `TEST_HOOK_IN_COUNTED_MODE` if any `FAKE_COLAB_*`, `RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES`,
+    `RDLAB_SDPA_BACKEND`, or any other test/override hook is set and non-empty.
+    The refusal names the variable and never its value.
+    Runs in the VM entry point (`vm_judges.main`), child entry (`bakeoff_judge`), and `merge_shards.py`.
+    """
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+
+    sentinel_secret = "SUPER_SECRET_" + "HOOK_VALUE_88421"
+
+    # 1. Every guarded hook refuses in counted, time-one, and sharded counted modes via guard_no_test_hooks_in_counted_mode
+    all_guarded = sorted(vm_judges.FORBIDDEN_COUNTED_TEST_HOOK_NAMES)
+    assert len(all_guarded) >= 31
+    for hook_name in all_guarded:
+        for mode_arg, shard_arg in (
+            ("counted", "1/1"),
+            ("time-one", "1/1"),
+            ("counted", "1/2"),
+            ("sharded-counted", "2/3"),
+        ):
+            with pytest.raises(vm_judges.RefusalError) as exc_vm:
+                vm_judges.guard_no_test_hooks_in_counted_mode(
+                    mode_arg,
+                    dryrun=False,
+                    shard_spec=shard_arg,
+                    environ={hook_name: sentinel_secret},
+                )
+            assert exc_vm.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+            assert hook_name in exc_vm.value.detail
+            assert sentinel_secret not in exc_vm.value.detail
+            assert sentinel_secret not in str(exc_vm.value)
+
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_ms:
+            merge_shards.guard_no_test_hooks_in_counted_mode(
+                any_counted=True,
+                environ={hook_name: sentinel_secret},
+            )
+        assert exc_ms.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+        assert hook_name in exc_ms.value.detail
+        assert sentinel_secret not in exc_ms.value.detail
+
+        with pytest.raises(RdlabError) as exc_bj:
+            bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+                "counted",
+                shard_spec="1/2",
+                fake_transport=False,
+                environ={hook_name: sentinel_secret},
+            )
+        assert exc_bj.value.code == "TEST_HOOK_IN_COUNTED_MODE"
+        assert hook_name in exc_bj.value.message
+        assert sentinel_secret not in exc_bj.value.message
+
+    # Dynamic prefix/suffix coverage (any new FAKE_COLAB_*, *_OVERRIDE, *_ACTUAL_HASHES, *_BACKEND)
+    for dyn_name in (
+        "FAKE_COLAB_FUTURE_HOOK",
+        "RDLAB_FUTURE_OVERRIDE",
+        "RDLAB_FUTURE_ACTUAL_HASHES",
+        "RDLAB_FUTURE_BACKEND",
+    ):
+        assert vm_judges.is_forbidden_counted_test_hook(dyn_name)
+        assert merge_shards.is_forbidden_counted_test_hook(dyn_name)
+        assert bakeoff_judge.is_forbidden_counted_test_hook(dyn_name)
+        assert not vm_judges.is_forbidden_counted_test_hook("")
+        assert not merge_shards.is_forbidden_counted_test_hook("")
+        assert not bakeoff_judge.is_forbidden_counted_test_hook("")
+
+    # Allowed in stub or dryrun
+    vm_judges.guard_no_test_hooks_in_counted_mode(
+        "stub", dryrun=False, shard_spec="1/1", environ={"FAKE_COLAB_GPU_NAME": "L4"}
+    )
+    vm_judges.guard_no_test_hooks_in_counted_mode(
+        "counted", dryrun=True, shard_spec="1/2", environ={"FAKE_COLAB_GPU_NAME": "L4"}
+    )
+    vm_judges.guard_no_test_hooks_in_counted_mode(
+        "counted", dryrun=False, shard_spec="1/1", environ={}
+    )
+    assert vm_judges.is_counted_or_time_one_mode("", dryrun=False, shard_spec="1/2") is True
+    assert vm_judges.is_counted_or_time_one_mode("", dryrun=False, shard_spec="1/1") is False
+    merge_shards.guard_no_test_hooks_in_counted_mode(
+        any_counted=False, environ={"FAKE_COLAB_GPU_NAME": "L4"}
+    )
+    merge_shards.guard_no_test_hooks_in_counted_mode(
+        any_counted=True, environ={}
+    )
+    bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+        "stub", fake_transport=False, environ={"FAKE_COLAB_GPU_NAME": "L4"}
+    )
+    bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+        "counted", fake_transport=True, environ={"FAKE_COLAB_GPU_NAME": "L4"}
+    )
+    bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+        "counted", fake_transport=False, environ={}
+    )
+
+    # 2. End-to-end VM entry point (`vm_judges.main`) refuses before unpack/model load with TEST_HOOK_IN_COUNTED_MODE
+    for hook_to_test in (
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END",
+        "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+        "RDLAB_SDPA_BACKEND",
+    ):
+        with monkeypatch.context() as mp:
+            mp.setenv(hook_to_test, sentinel_secret)
+            items_for_vm = _make_stratified_public_items(
+                tmp_path / f"vm_entry_{hook_to_test}", count=2
+            )
+            run_dir = tmp_path / f"vm_run_{hook_to_test}"
+            status_file = tmp_path / f"status_{hook_to_test}.json"
+            rc = vm_judges.main(
+                [
+                    "--step",
+                    "run",
+                    "--mode",
+                    "counted",
+                    "--repo-dir",
+                    str(REPO_ROOT),
+                    "--items-file",
+                    str(items_for_vm),
+                    "--run-dir",
+                    str(run_dir),
+                    "--work-dir",
+                    str(tmp_path / f"work_{hook_to_test}"),
+                    "--receipts-dir",
+                    str(tmp_path / f"receipts_{hook_to_test}"),
+                    "--hf-home",
+                    str(tmp_path / f"hf_{hook_to_test}"),
+                    "--status-file",
+                    str(status_file),
+                    "--result-tar",
+                    str(tmp_path / f"result_{hook_to_test}.tar.gz"),
+                ]
+            )
+            assert rc == 2
+            st_doc = json.loads(status_file.read_text(encoding="utf-8"))
+            assert st_doc["failure_class"] == "TEST_HOOK_IN_COUNTED_MODE"
+            assert hook_to_test in st_doc["reason"]
+            assert sentinel_secret not in json.dumps(st_doc)
+
+    # 3. `merge_shards.merge_shards` refuses counted shards when a hook is set in os.environ
+    items_file = _make_stratified_public_items(tmp_path / "ms_items", count=2)
+    s1_dir = tmp_path / "ms_counted_s1"
+    s2_dir = tmp_path / "ms_counted_s2"
+    s1_dir.mkdir(parents=True, exist_ok=True)
+    s2_dir.mkdir(parents=True, exist_ok=True)
+    for idx, sdir in enumerate((s1_dir, s2_dir), start=1):
+        (sdir / "session_env.json").write_text(
+            json.dumps({"mode": "counted", "phase": "end", "shard_spec": f"{idx}/2"}),
+            encoding="utf-8",
+        )
+    mf_doc = bakeoff_judge.build_shard_manifest(
+        items_file, num_shards=2, anchor_count=2, stratified_anchor_count=2, canary_anchor_count=0
+    )
+    mf_path = tmp_path / "ms_counted_manifest.json"
+    bakeoff_judge.write_shard_manifest(mf_doc, mf_path)
+    with monkeypatch.context() as mp:
+        mp.setenv("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END", sentinel_secret)
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_ms_entry:
+            merge_shards.merge_shards(
+                shard_dirs=[s1_dir, s2_dir],
+                manifest_path=mf_path,
+                output_dir=tmp_path / "ms_out",
+            )
+        assert exc_ms_entry.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+        assert "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END" in exc_ms_entry.value.detail
+        assert sentinel_secret not in exc_ms_entry.value.detail
+
+    # 4. `bakeoff_judge.run_bakeoff_judge` refuses before model load when hook is set in counted mode
+    with monkeypatch.context() as mp:
+        mp.setenv("RDLAB_SDPA_BACKEND", sentinel_secret)
+        with pytest.raises(RdlabError) as exc_bj_entry:
+            bakeoff_judge.run_bakeoff_judge(
+                part_dir=items_file,
+                output_dir=tmp_path / "bj_counted_out",
+                judge="mu-judge",
+                fake_transport=False,
+                window_mode="counted",
+            )
+        assert exc_bj_entry.value.code == "TEST_HOOK_IN_COUNTED_MODE"
+        assert "RDLAB_SDPA_BACKEND" in exc_bj_entry.value.message
+        assert sentinel_secret not in exc_bj_entry.value.message
+
+
+def test_fix2_item2_readers_never_apply_hooks_outside_stub_and_dryrun_and_malformed_refuses_by_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-2 Item 2:
+    Even with the guard in place, each reader applies its hook ONLY when `dryrun or mode in ("stub", "dryrun")`.
+    A malformed hook value refuses by variable name (`MALFORMED_TEST_HOOK`); it is never silently ignored.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+
+    # 1. Boot gatekeeper: RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES ignored in real mode (`mode="counted", dryrun=False`)
+    goldens_src = REPO_ROOT / "scripts" / "colab" / "boot_gatekeeper_goldens.json"
+    goldens_doc = json.loads(goldens_src.read_text(encoding="utf-8"))
+    tok_map = {
+        "boot_gatekeeper_synthetic_1": [101, 202, 303],
+        "boot_gatekeeper_synthetic_2": [404, 505, 606],
+    }
+    exp_sha_1 = bakeoff_judge.compute_token_ids_sha256(tok_map["boot_gatekeeper_synthetic_1"])
+    exp_sha_2 = bakeoff_judge.compute_token_ids_sha256(tok_map["boot_gatekeeper_synthetic_2"])
+    goldens_doc["card_types"]["A100"]["prompts"]["boot_gatekeeper_synthetic_1"] = {
+        "output_token_ids_sha256": exp_sha_1
+    }
+    goldens_doc["card_types"]["A100"]["prompts"]["boot_gatekeeper_synthetic_2"] = {
+        "output_token_ids_sha256": exp_sha_2
+    }
+    filled_goldens = tmp_path / "gk_goldens.json"
+    filled_goldens.write_text(json.dumps(goldens_doc, indent=2), encoding="utf-8")
+
+    class _DriftTransport:
+        def verify_ready(self, spec: Any, *, allow_remote_code_reviewed: bool = False) -> str:
+            return str(spec.revision)
+
+        def generate(self, spec: Any, prompt: Any, *, seed: int) -> Any:
+            bad_toks = [999, 888]
+            out_sha = bakeoff_judge.compute_token_ids_sha256(bad_toks)
+            in_sha = bakeoff_judge.compute_token_ids_sha256([1, 2])
+            return bakeoff_judge.JudgeTransportResponse(
+                raw_text="no",
+                tokens=("no",),
+                verdict_top_logprobs=(
+                    bakeoff_judge.TopLogprobEntry(token="no", logprob=-0.1, token_id=4),
+                    bakeoff_judge.TopLogprobEntry(token="yes", logprob=-2.3, token_id=3),
+                ),
+                done_reason="stop",
+                seconds=0.01,
+                model_digest=str(spec.revision),
+                server_binary="fake",
+                library_pins={"transport": "fake"},
+                input_token_ids_sha256=in_sha,
+                output_token_ids_sha256=out_sha,
+                input_token_count=2,
+                output_token_count=2,
+                stop_reason="stop",
+                min_top2_logit_margin=2.2,
+            )
+
+    # Set RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES to the GOLDEN hashes; in real mode (`mode="counted", dryrun=False`),
+    # the reader must ignore the hook and still refuse because _DriftTransport produced mismatched hashes!
+    with monkeypatch.context() as mp:
+        mp.setenv(
+            "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+            json.dumps(
+                {
+                    "boot_gatekeeper_synthetic_1": exp_sha_1,
+                    "boot_gatekeeper_synthetic_2": exp_sha_2,
+                }
+            ),
+        )
+        with pytest.raises(vm_judges.RefusalError) as exc_gk_real:
+            vm_judges.run_boot_gatekeeper(
+                run_dir=tmp_path / "gk_real_ignores_hook",
+                repo_root=REPO_ROOT,
+                mode="counted",
+                card_type="A100",
+                goldens_path=filled_goldens,
+                dryrun=False,
+                transport=_DriftTransport(),
+            )
+        assert exc_gk_real.value.failure_class == "BOOT_GATEKEEPER_GOLDEN_MISMATCH"
+
+        # In dryrun=True with transport provided, stub/dryrun branch applies override_map and succeeds
+        rep_dry_tr = vm_judges.run_boot_gatekeeper(
+            run_dir=tmp_path / "gk_dry_tr_applies_hook",
+            repo_root=REPO_ROOT,
+            mode="stub",
+            card_type="A100",
+            goldens_path=filled_goldens,
+            dryrun=True,
+            transport=_DriftTransport(),
+        )
+        assert rep_dry_tr["status"] == "ok"
+
+    # Malformed RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES refuses by variable name (never silently ignored)
+    for bad_gk_val in (
+        "{bad_json_secret_val",
+        "[]",
+        "{}",
+        json.dumps({"boot_gatekeeper_synthetic_1": "not_64_hex_secret"}),
+    ):
+        with monkeypatch.context() as mp:
+            mp.setenv("RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES", bad_gk_val)
+            with pytest.raises(vm_judges.RefusalError) as exc_bad_gk:
+                vm_judges.run_boot_gatekeeper(
+                    run_dir=tmp_path / "gk_malformed",
+                    repo_root=REPO_ROOT,
+                    mode="stub",
+                    card_type="A100",
+                    goldens_path=filled_goldens,
+                    dryrun=True,
+                )
+            assert exc_bad_gk.value.failure_class == "MALFORMED_TEST_HOOK"
+            assert "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES" in exc_bad_gk.value.detail
+            assert "bad_json_secret_val" not in exc_bad_gk.value.detail
+            assert "not_64_hex_secret" not in exc_bad_gk.value.detail
+
+    # 2. _query_gpu_and_ecc_snapshot & collect_and_write_session_env:
+    # FAKE_COLAB_* GPU/ECC hooks are ignored outside stub/dryrun, and malformed integer hooks refuse by name.
+    import types
+
+    fake_torch_mod = types.ModuleType("torch")
+    fake_torch_mod.__version__ = "2.14.1+cu132"  # type: ignore[attr-defined]
+    fake_torch_mod.version = types.SimpleNamespace(cuda="13.2")  # type: ignore[attr-defined]
+    fake_torch_mod.use_deterministic_algorithms = lambda _m, warn_only=False: None  # type: ignore[attr-defined]
+    fake_torch_mod.are_deterministic_algorithms_enabled = lambda: True  # type: ignore[attr-defined]
+    fake_torch_mod.is_deterministic_algorithms_warn_only_enabled = lambda: False  # type: ignore[attr-defined]
+    fake_torch_mod.backends = types.SimpleNamespace(  # type: ignore[attr-defined]
+        cudnn=types.SimpleNamespace(benchmark=False),
+        cuda=types.SimpleNamespace(
+            enable_flash_sdp=lambda _v: None,
+            enable_mem_efficient_sdp=lambda _v: None,
+            enable_math_sdp=lambda _v: None,
+            flash_sdp_enabled=lambda: False,
+            mem_efficient_sdp_enabled=lambda: False,
+            math_sdp_enabled=lambda: True,
+        ),
+    )
+    fake_tf_mod = types.ModuleType("transformers")
+    fake_tf_mod.__version__ = "5.19.0"  # type: ignore[attr-defined]
+    fake_bnb_mod = types.ModuleType("bitsandbytes")
+    fake_bnb_mod.__version__ = "0.45.0"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", fake_torch_mod)
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf_mod)
+    monkeypatch.setitem(sys.modules, "bitsandbytes", fake_bnb_mod)
+    monkeypatch.delenv("RDLAB_WORK_DIR", raising=False)
+
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env_item2")
+    monkeypatch.setenv("PATH", _hermetic_path_for(fake_env))
+    receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec_item2")
+    work_dir = tmp_path / "work_item2"
+    for vname in vm_judges.DEVICE_CHECK_VENVS:
+        vm_judges._ensure_dryrun_venv_python_wrapper(work_dir / vname / "bin" / "python")
+
+    with monkeypatch.context() as mp:
+        mp.setenv("FAKE_COLAB_GPU_NAME", "FAKE_GPU_HOOK_SENTINEL")
+        mp.setenv("FAKE_COLAB_PCI_DEVICE_ID", "0xDEAD10DE")
+        mp.setenv("FAKE_COLAB_VBIOS_VERSION", "99.99.99.99.99")
+        mp.setenv("FAKE_COLAB_SM_COUNT", "999")
+        mp.setenv("FAKE_COLAB_COMPUTE_CAPABILITY", "9.9")
+        mp.setenv("FAKE_COLAB_DRIVER_VERSION", "999.99.99")
+        mp.setenv("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE", "4")
+        mp.setenv("FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE", "6")
+        mp.setenv("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END", "11")
+        mp.setenv("FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END", "13")
+
+        snap_real = vm_judges._query_gpu_and_ecc_snapshot(dryrun=False, mode="counted")
+        assert snap_real["name"] != "FAKE_GPU_HOOK_SENTINEL"
+        assert snap_real["pci_device_id"] != "0xDEAD10DE"
+        assert snap_real["vbios_version"] != "99.99.99.99.99"
+        assert snap_real["sm_count"] == 108
+        assert snap_real["compute_capability"] != "9.9"
+        assert snap_real["driver_version"] != "999.99.99"
+        assert snap_real["ecc_uncorrected_volatile"] == 0
+        assert snap_real["ecc_uncorrected_aggregate"] == 0
+
+        doc_end_real = vm_judges.collect_and_write_session_env(
+            tmp_path / "senv_end_real",
+            receipts_dir=receipts_dir,
+            mode="counted",
+            shard_spec="1/2",
+            phase="end",
+            dryrun=False,
+            repo_dir=REPO_ROOT,
+        )
+        assert doc_end_real["ecc"]["uncorrected_volatile_end"] == 0
+        assert doc_end_real["ecc"]["uncorrected_aggregate_end"] == 0
+        assert doc_end_real["ecc"]["uncorrected_volatile_delta"] == 0
+        assert doc_end_real["ecc"]["uncorrected_aggregate_delta"] == 0
+
+        # In stub/dryrun mode, the hooks DO apply
+        doc_end_stub = vm_judges.collect_and_write_session_env(
+            tmp_path / "senv_end_stub",
+            receipts_dir=receipts_dir,
+            mode="stub",
+            shard_spec="1/2",
+            phase="end",
+            dryrun=True,
+            repo_dir=REPO_ROOT,
+        )
+        assert doc_end_stub["gpu"]["name"] == "FAKE_GPU_HOOK_SENTINEL"
+        assert doc_end_stub["gpu"]["sm_count"] == 999
+        assert doc_end_stub["ecc"]["uncorrected_volatile_end"] == 11
+        assert doc_end_stub["ecc"]["uncorrected_aggregate_end"] == 13
+
+    # Malformed integer hooks refuse by variable name
+    for int_hook_name, bad_int_val in (
+        ("FAKE_COLAB_SM_COUNT", "0"),
+        ("FAKE_COLAB_SM_COUNT", "not_int_secret"),
+        ("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE", "-1"),
+        ("FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE", "bad_agg_secret"),
+        ("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END", "bad_vol_end_secret"),
+        ("FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END", "-5"),
+    ):
+        with monkeypatch.context() as mp:
+            mp.setenv(int_hook_name, bad_int_val)
+            with pytest.raises(vm_judges.RefusalError) as exc_bad_int:
+                vm_judges.collect_and_write_session_env(
+                    tmp_path / f"senv_bad_{int_hook_name}",
+                    receipts_dir=receipts_dir,
+                    mode="stub",
+                    phase="end",
+                    dryrun=True,
+                    repo_dir=REPO_ROOT,
+                )
+            assert exc_bad_int.value.failure_class == "MALFORMED_TEST_HOOK"
+            assert int_hook_name in exc_bad_int.value.detail
+            assert bad_int_val not in exc_bad_int.value.detail
+
+    # 3. run_device_check: FAKE_COLAB_DEVICE_CHECK_DEVICE ignored outside stub/dryrun
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            subprocess,
+            "run",
+            lambda cmd, **_kw: types.SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {
+                        "ok": True,
+                        "device": cmd[-1],
+                        "device_type": "cuda",
+                        "device_index": 0,
+                        "torch_version": "2.14.1+cu132",
+                    }
+                )
+                + "\n",
+                stderr="",
+            ),
+        )
+        mp.setenv("FAKE_COLAB_DEVICE_CHECK_DEVICE", "cpu")
+        rep_dev_real = vm_judges.run_device_check(
+            work_dir,
+            dryrun=False,
+            mode="counted",
+        )
+        assert rep_dev_real["device"] == "cuda:0"
+        rep_dev_stub = vm_judges.run_device_check(
+            work_dir,
+            dryrun=True,
+            mode="stub",
+        )
+        assert rep_dev_stub["device"] == "cpu"
+
+    # 4. bakeoff_judge: malformed FAKE_COLAB_NVIDIA_SMI_MODE refuses by variable name
+    items_p = _make_stratified_public_items(tmp_path / "smi_items", count=2)
+    with monkeypatch.context() as mp:
+        mp.setenv("FAKE_COLAB_NVIDIA_SMI_MODE", "malformed_smi_secret")
+        with pytest.raises(RdlabError) as exc_bad_smi:
+            bakeoff_judge.run_bakeoff_judge(
+                part_dir=items_p,
+                output_dir=tmp_path / "smi_out",
+                judge="mu-judge",
+                fake_transport=True,
+                window_mode="stub",
+            )
+        assert exc_bad_smi.value.code == "MALFORMED_TEST_HOOK"
+        assert "FAKE_COLAB_NVIDIA_SMI_MODE" in exc_bad_smi.value.message
+        assert "malformed_smi_secret" not in exc_bad_smi.value.message
+
+
+def test_fix2_item3_sdpa_backend_measured_not_declared_and_pin_mismatch_refuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-2 Item 3:
+    The SDPA backend is measured, not declared. In real mode, `session_env.json` records the probed backend
+    (ignoring `RDLAB_SDPA_BACKEND`), records `sdpa_backend_requested` as a separate field, and refuses in
+    counted mode (`SDPA_BACKEND_MISMATCH`) when requested and probed backends disagree.
+    """
+    import types
+    import merge_shards
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("RDLAB_WORK_DIR", raising=False)
+
+    fake_torch_mod = types.ModuleType("torch")
+    fake_torch_mod.__version__ = "2.14.1+cu132"  # type: ignore[attr-defined]
+    fake_torch_mod.version = types.SimpleNamespace(cuda="13.2")  # type: ignore[attr-defined]
+    fake_torch_mod.use_deterministic_algorithms = lambda _m, warn_only=False: None  # type: ignore[attr-defined]
+    fake_torch_mod.are_deterministic_algorithms_enabled = lambda: True  # type: ignore[attr-defined]
+    fake_torch_mod.is_deterministic_algorithms_warn_only_enabled = lambda: False  # type: ignore[attr-defined]
+    fake_torch_mod.backends = types.SimpleNamespace(  # type: ignore[attr-defined]
+        cudnn=types.SimpleNamespace(benchmark=False),
+        cuda=types.SimpleNamespace(
+            enable_flash_sdp=lambda _v: None,
+            enable_mem_efficient_sdp=lambda _v: None,
+            enable_math_sdp=lambda _v: None,
+            flash_sdp_enabled=lambda: False,
+            mem_efficient_sdp_enabled=lambda: False,
+            math_sdp_enabled=lambda: True,
+        ),
+    )
+    fake_tf_mod = types.ModuleType("transformers")
+    fake_tf_mod.__version__ = "5.19.0"  # type: ignore[attr-defined]
+    fake_bnb_mod = types.ModuleType("bitsandbytes")
+    fake_bnb_mod.__version__ = "0.45.0"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", fake_torch_mod)
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf_mod)
+    monkeypatch.setitem(sys.modules, "bitsandbytes", fake_bnb_mod)
+
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env_item3")
+    monkeypatch.setenv("PATH", _hermetic_path_for(fake_env))
+    receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec_item3")
+
+    # 1. In real mode, setting RDLAB_SDPA_BACKEND="flash" does NOT override the probed "math" backend
+    with monkeypatch.context() as mp:
+        mp.setenv("RDLAB_SDPA_BACKEND", "flash")
+        doc_real = vm_judges.collect_and_write_session_env(
+            tmp_path / "senv_sdpa_real",
+            receipts_dir=receipts_dir,
+            mode="counted",
+            shard_spec="1/2",
+            phase="start",
+            dryrun=False,
+            repo_dir=REPO_ROOT,
+            sdpa_backend_requested="math",
+        )
+        assert doc_real["attention"]["sdpa_backend"] == "math"
+        assert doc_real["attention"]["sdpa_backend_requested"] == "math"
+        assert doc_real["sdpa_backend_requested"] == "math"
+
+    # 2. When sdpa_backend_requested="flash" (or "") but probed backend is "math", counted mode refuses with SDPA_BACKEND_MISMATCH
+    with pytest.raises(vm_judges.RefusalError) as exc_sdpa_mm:
+        vm_judges.collect_and_write_session_env(
+            tmp_path / "senv_sdpa_mismatch",
+            receipts_dir=receipts_dir,
+            mode="counted",
+            shard_spec="1/2",
+            phase="start",
+            dryrun=False,
+            repo_dir=REPO_ROOT,
+            sdpa_backend_requested="flash",
+        )
+    assert exc_sdpa_mm.value.failure_class == "SDPA_BACKEND_MISMATCH"
+    assert "sdpa_backend_requested='flash'" in exc_sdpa_mm.value.detail
+    assert "sdpa_backend='math'" in exc_sdpa_mm.value.detail
+
+    # 3. merge_shards._extract_comparable_env_profile also refuses if a counted session_env has sdpa_backend != sdpa_backend_requested
+    bad_senv = json.loads(json.dumps(doc_real))
+    bad_senv["attention"]["sdpa_backend"] = "flash"
+    bad_senv["attention"]["sdpa_backend_requested"] = "math"
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_ms_sdpa:
+        merge_shards._extract_comparable_env_profile(
+            bad_senv,
+            expected_judge_ids=merge_shards.EXPECTED_JUDGE_IDS,
+        )
+    assert exc_ms_sdpa.value.failure_class == "SDPA_BACKEND_MISMATCH"
+
+    # 4. Malformed RDLAB_SDPA_BACKEND refuses by variable name
+    with monkeypatch.context() as mp:
+        mp.setenv("RDLAB_SDPA_BACKEND", "bogus_sdpa_secret")
+        with pytest.raises(vm_judges.RefusalError) as exc_bad_sdpa:
+            vm_judges.collect_and_write_session_env(
+                tmp_path / "senv_sdpa_bad",
+                receipts_dir=receipts_dir,
+                mode="stub",
+                dryrun=True,
+                repo_dir=REPO_ROOT,
+            )
+        assert exc_bad_sdpa.value.failure_class == "MALFORMED_TEST_HOOK"
+        assert "RDLAB_SDPA_BACKEND" in exc_bad_sdpa.value.detail
+        assert "bogus_sdpa_secret" not in exc_bad_sdpa.value.detail
+
+    # Also cover configure_torch_determinism_with_reason fallback when warn_only=True also raises in stub mode
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    class _FakeTorchBothRaise:
+        @staticmethod
+        def use_deterministic_algorithms(_mode: bool, *, warn_only: bool = False) -> None:
+            raise RuntimeError(f"unsupported warn_only={warn_only}")
+
+    with monkeypatch.context() as mp:
+        mp.setitem(sys.modules, "torch", _FakeTorchBothRaise())
+        st_both, rsn_both = bakeoff_judge.configure_torch_determinism_with_reason(
+            window_mode="stub", strict=False
+        )
+        assert st_both == "not enforceable"
+        assert "fell back to warn_only=True" in rsn_both
+
+
+def test_fix2_item4_ast_and_regex_env_hook_scan_covered_by_guard() -> None:
+    """Fix-2 Item 4: Parse `vm_judges.py`, `merge_shards.py`, and `src/` for every `os.environ` read
+    of a name starting `FAKE_COLAB_` or ending `_OVERRIDE`, `_ACTUAL_HASHES`, or `_BACKEND`, and
+    assert each name is covered by the guard (`FORBIDDEN_COUNTED_TEST_HOOK_NAMES`).
+    A newly added hook fails the suite until it is guarded.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+    from scripts.colab import merge_shards
+
+    discovered = _discover_codebase_test_and_override_hooks()
+    assert "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES" in discovered
+    assert "RDLAB_SDPA_BACKEND" in discovered
+    assert "NVIDIA_TF32_OVERRIDE" in discovered
+    assert "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END" in discovered
+    assert "FAKE_COLAB_NVIDIA_SMI_MODE" in discovered
+
+    vm_guarded = set(getattr(vm_judges, "FORBIDDEN_COUNTED_TEST_HOOK_NAMES", ()))
+    merge_guarded = set(getattr(merge_shards, "FORBIDDEN_COUNTED_TEST_HOOK_NAMES", ()))
+    bj_guarded = set(getattr(bakeoff_judge, "FORBIDDEN_COUNTED_TEST_HOOK_NAMES", ()))
+    uncovered_vm = sorted(set(discovered) - vm_guarded)
+    uncovered_merge = sorted(set(discovered) - merge_guarded)
+    uncovered_bj = sorted(set(discovered) - bj_guarded)
+    assert not uncovered_vm, f"Hooks read in codebase but missing from vm_judges guard: {uncovered_vm}"
+    assert not uncovered_merge, f"Hooks read in codebase but missing from merge_shards guard: {uncovered_merge}"
+    assert not uncovered_bj, f"Hooks read in codebase but missing from bakeoff_judge guard: {uncovered_bj}"
+
+    # Verify a newly added hook in source (`os.environ.get`, `os.getenv`, `os.environ[...]`, `in os.environ`)
+    # is detected by `_discover_codebase_test_and_override_hooks` and fails the `FORBIDDEN_COUNTED_TEST_HOOK_NAMES` check until added
+    synthetic_src = (
+        "import os\n"
+        "a = os.environ.get('RDLAB_NEW_KERNEL_OVERRIDE', '')\n"
+        "b = os.getenv('FAKE_COLAB_NEW_SYNTH_HOOK', '')\n"
+        "c = os.environ['RDLAB_NEW_ATTN_BACKEND']\n"
+        "d = 'RDLAB_NEW_PROMPT_ACTUAL_HASHES' in os.environ\n"
+    )
+    discovered_with_new = _discover_codebase_test_and_override_hooks(
+        extra_sources=[("synthetic_new_module.py", synthetic_src)]
+    )
+    newly_uncovered = sorted(set(discovered_with_new) - vm_guarded)
+    assert newly_uncovered == [
+        "FAKE_COLAB_NEW_SYNTH_HOOK",
+        "RDLAB_NEW_ATTN_BACKEND",
+        "RDLAB_NEW_KERNEL_OVERRIDE",
+        "RDLAB_NEW_PROMPT_ACTUAL_HASHES",
+    ]
 
 

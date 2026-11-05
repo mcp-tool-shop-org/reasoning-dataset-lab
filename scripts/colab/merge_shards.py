@@ -18,12 +18,114 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
+FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES: tuple[str, ...] = ("FAKE_COLAB_",)
+FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES: tuple[str, ...] = (
+    "_OVERRIDE",
+    "_ACTUAL_HASHES",
+    "_BACKEND",
+)
+FORBIDDEN_COUNTED_TEST_HOOK_NAMES: frozenset[str] = frozenset(
+    {
+        "FAKE_COLAB_BITSANDBYTES_VERSION",
+        "FAKE_COLAB_COMPUTE_CAPABILITY",
+        "FAKE_COLAB_CUDA_RUNTIME",
+        "FAKE_COLAB_CUT_MID_JUDGE",
+        "FAKE_COLAB_CUT_MID_JUDGE_HARD",
+        "FAKE_COLAB_DEVICE_CHECK_DEVICE",
+        "FAKE_COLAB_DRIVER_VERSION",
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE",
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END",
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE",
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END",
+        "FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD",
+        "FAKE_COLAB_FAIL_DOWNLOAD_CHILD",
+        "FAKE_COLAB_FAIL_JUDGE_CHILD",
+        "FAKE_COLAB_GPU_GATE_MODE",
+        "FAKE_COLAB_GPU_GATE_SECRET",
+        "FAKE_COLAB_GPU_GATE_SLEEP_SECONDS",
+        "FAKE_COLAB_GPU_GATE_VENV",
+        "FAKE_COLAB_GPU_NAME",
+        "FAKE_COLAB_HF_FAIL_REPO",
+        "FAKE_COLAB_NVIDIA_SMI_MODE",
+        "FAKE_COLAB_PCI_DEVICE_ID",
+        "FAKE_COLAB_SM_COUNT",
+        "FAKE_COLAB_STATE_DIR",
+        "FAKE_COLAB_TORCH_VERSION",
+        "FAKE_COLAB_TRANSFORMERS_VERSION",
+        "FAKE_COLAB_VBIOS_VERSION",
+        "FAKE_COLAB_VM_STEP_DELAY_SECONDS",
+        "NVIDIA_TF32_OVERRIDE",
+        "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+        "RDLAB_SDPA_BACKEND",
+        "RDLAB_DETERMINISM_WARN_ONLY",
+        "RDLAB_TEST_PLANT_LOG_LEAK",
+        "RDLAB_FORCE_PINNED_UV",
+        "RDLAB_VM_CONTENT_DIR",
+        "RDLAB_CGROUP_DIR",
+        "RDLAB_CGROUP_MEMORY_EVENTS_PATH",
+        "RDLAB_PROC_MEMINFO_PATH",
+    }
+)
+
+
+def is_forbidden_counted_test_hook(var_name: str) -> bool:
+    """Return True if `var_name` is a guarded test or override hook forbidden in counted runs."""
+    name = str(var_name).strip()
+    if not name:
+        return False
+    return (
+        name in FORBIDDEN_COUNTED_TEST_HOOK_NAMES
+        or name.startswith(FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES)
+        or name.endswith(FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES)
+    )
+
+
+def guard_no_test_hooks_in_counted_mode(
+    any_counted: bool = True,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Refuse with `TEST_HOOK_IN_COUNTED_MODE` if any test/override hook is set in counted merge mode."""
+    env_map = environ if environ is not None else os.environ
+    env_mode = str(env_map.get("RDLAB_MODE", "") or "").strip().lower()
+    is_dryrun = str(env_map.get("VM_DRYRUN", "") or "").strip() == "1"
+    eff_counted = bool(
+        not is_dryrun
+        and (
+            any_counted
+            or env_mode
+            in (
+                "time-one",
+                "time_one",
+                "counted",
+                "shard",
+                "sharded",
+                "counted-shard",
+                "sharded-counted",
+            )
+        )
+    )
+    if not eff_counted:
+        return
+    active_hooks = sorted(
+        str(k)
+        for k, v in env_map.items()
+        if is_forbidden_counted_test_hook(str(k)) and str(v or "").strip() != ""
+    )
+    if active_hooks:
+        joined = ", ".join(active_hooks)
+        raise MergeRefusalError(
+            TEST_HOOK_IN_COUNTED_MODE,
+            f"Test or override hook environment variable(s) forbidden in counted shard merge: {joined}",
+        )
 
 EXPECTED_JUDGE_IDS: tuple[str, ...] = (
     "mu-judge",
@@ -641,6 +743,21 @@ def _extract_comparable_env_profile(
         },
         "judges": judge_hashes,
     }
+    sdpa_req = str(
+        attention.get("sdpa_backend_requested")
+        or session_env.get("sdpa_backend_requested")
+        or ""
+    ).strip()
+    if sdpa_req:
+        profile["attention"]["sdpa_backend_requested"] = sdpa_req
+        if (
+            str(session_env.get("mode") or "") == "counted"
+            and profile["attention"]["sdpa_backend"] != sdpa_req
+        ):
+            raise MergeRefusalError(
+                "SDPA_BACKEND_MISMATCH",
+                f"session_env.json has sdpa_backend={profile['attention']['sdpa_backend']!r} != sdpa_backend_requested={sdpa_req!r}",
+            )
     if "host_cpu_model" in session_env or "host_cpu_model" in runtime:
         profile["host_cpu_model"] = str(
             session_env.get("host_cpu_model") or runtime.get("host_cpu_model") or ""
@@ -931,10 +1048,12 @@ def merge_shards(
         if senv_file.is_file():
             try:
                 sdoc = json.loads(senv_file.read_text(encoding="utf-8"))
-                if isinstance(sdoc, dict) and str(sdoc.get("mode") or "") == "counted":
+                if isinstance(sdoc, dict) and str(sdoc.get("mode") or "") in ("counted", "time-one"):
                     any_counted = True
             except Exception:
                 pass
+
+    guard_no_test_hooks_in_counted_mode(any_counted=any_counted)
 
     eff_golden_path = golden_anchor_manifest_path
     if eff_golden_path is None:

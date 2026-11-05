@@ -33,32 +33,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 1,
-      "changed": 7,
+      "added": 0,
+      "changed": 2,
       "moved": 0,
-      "parts": 3,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "scripts/colab/merge_config.json is now read by scripts/colab/merge_shards.py.",
-        "subjects": [
-          "scripts/colab/merge_config.json",
-          "scripts/colab/merge_shards.py"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "1 file added and 7 changed content, across 3 parts.",
+        "sentence": "Nothing structural changed since 2026-11-05; 2 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "580c41d213ef2dfbb7d656ff9c569574bc781c82",
-      "generatedAt": "2026-11-04T23:38:32.818Z"
+      "commit": "ea76016286b78525e2bb61c55c0d486da2b07ce7",
+      "generatedAt": "2026-11-05T08:01:26.198Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -79,6 +71,21 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
+      "either": 19,
+      "partLabels": [
+        "scripts",
+        "tests"
+      ],
+      "parts": [
+        "scripts",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 17
+    },
+    {
+      "a": "scripts/colab/vm_judges.py",
+      "b": "tests/fixtures/fake_colab.py",
       "either": 17,
       "partLabels": [
         "scripts",
@@ -89,22 +96,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 15
-    },
-    {
-      "a": "scripts/colab/vm_judges.py",
-      "b": "tests/fixtures/fake_colab.py",
-      "either": 15,
-      "partLabels": [
-        "scripts",
-        "tests"
-      ],
-      "parts": [
-        "scripts",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 13
+      "shared": 14
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
@@ -124,7 +116,7 @@
     {
       "a": "tests/fixtures/fake_colab.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 17,
+      "either": 19,
       "partLabels": [
         "tests",
         "tests"
@@ -134,16 +126,16 @@
         "tests"
       ],
       "relation": "inside",
-      "shared": 13
+      "shared": 14
     }
   ],
   "changesTogetherNote": [
     "1 file changed together with its own test, as expected.",
     "Confidence is low: fewer than 25 source files reach 10 revisions in the window.",
-    "Window: 180 days; a pair counts from 3 shared commits, since 7 source files reach 10 revisions; the floor rises to 10 when 25 do."
+    "Window: 180 days; a pair counts from 3 shared commits, since 8 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "8755a019b2f0af855b04fbfd46421e1f81d4ca7c",
+  "commit": "5e03ddc3d191aa24355013b43e8f6cf6c26c47eb",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (68 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -300,7 +292,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-05T03:55:51.196Z",
+  "generatedAt": "2026-11-05T09:12:54.225Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "3 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",

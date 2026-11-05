@@ -4749,6 +4749,7 @@ def run_device_check(
     *,
     device: str | None = None,
     dryrun: bool = False,
+    mode: str = "stub",
     timeout_seconds: float | None = None,
     progress_path: Path | None = None,
     gate_status_path: Path | None = None,
@@ -4764,9 +4765,10 @@ def run_device_check(
         if timeout_seconds is not None
         else resolve_gpu_gate_timeout_seconds()
     )
+    is_stub_or_dryrun = bool(dryrun or mode in ("stub", "dryrun"))
     if device is not None:
         target_device = str(device)
-    elif "FAKE_COLAB_DEVICE_CHECK_DEVICE" in os.environ:
+    elif is_stub_or_dryrun and "FAKE_COLAB_DEVICE_CHECK_DEVICE" in os.environ:
         target_device = os.environ["FAKE_COLAB_DEVICE_CHECK_DEVICE"]
     else:
         target_device = resolve_judge_device(
@@ -6636,6 +6638,160 @@ def validate_force_pinned_uv(
     return True
 
 
+TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
+MALFORMED_TEST_HOOK = "MALFORMED_TEST_HOOK"
+SDPA_BACKEND_MISMATCH = "SDPA_BACKEND_MISMATCH"
+PINNED_SDPA_BACKEND = "math"
+VALID_SDPA_BACKENDS: frozenset[str] = frozenset(
+    {
+        "math",
+        "flash",
+        "mem_efficient",
+        "flash+math",
+        "mem_efficient+math",
+        "flash+mem_efficient",
+        "flash+mem_efficient+math",
+    }
+)
+FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES: tuple[str, ...] = ("FAKE_COLAB_",)
+FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES: tuple[str, ...] = (
+    "_OVERRIDE",
+    "_ACTUAL_HASHES",
+    "_BACKEND",
+)
+FORBIDDEN_COUNTED_TEST_HOOK_NAMES: frozenset[str] = frozenset(
+    {
+        "FAKE_COLAB_BITSANDBYTES_VERSION",
+        "FAKE_COLAB_COMPUTE_CAPABILITY",
+        "FAKE_COLAB_CUDA_RUNTIME",
+        "FAKE_COLAB_CUT_MID_JUDGE",
+        "FAKE_COLAB_CUT_MID_JUDGE_HARD",
+        "FAKE_COLAB_DEVICE_CHECK_DEVICE",
+        "FAKE_COLAB_DRIVER_VERSION",
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE",
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END",
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE",
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END",
+        "FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD",
+        "FAKE_COLAB_FAIL_DOWNLOAD_CHILD",
+        "FAKE_COLAB_FAIL_JUDGE_CHILD",
+        "FAKE_COLAB_GPU_GATE_MODE",
+        "FAKE_COLAB_GPU_GATE_SECRET",
+        "FAKE_COLAB_GPU_GATE_SLEEP_SECONDS",
+        "FAKE_COLAB_GPU_GATE_VENV",
+        "FAKE_COLAB_GPU_NAME",
+        "FAKE_COLAB_HF_FAIL_REPO",
+        "FAKE_COLAB_NVIDIA_SMI_MODE",
+        "FAKE_COLAB_PCI_DEVICE_ID",
+        "FAKE_COLAB_SM_COUNT",
+        "FAKE_COLAB_STATE_DIR",
+        "FAKE_COLAB_TORCH_VERSION",
+        "FAKE_COLAB_TRANSFORMERS_VERSION",
+        "FAKE_COLAB_VBIOS_VERSION",
+        "FAKE_COLAB_VM_STEP_DELAY_SECONDS",
+        "NVIDIA_TF32_OVERRIDE",
+        "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+        "RDLAB_SDPA_BACKEND",
+        "RDLAB_DETERMINISM_WARN_ONLY",
+        "RDLAB_TEST_PLANT_LOG_LEAK",
+        "RDLAB_FORCE_PINNED_UV",
+        "RDLAB_VM_CONTENT_DIR",
+        "RDLAB_CGROUP_DIR",
+        "RDLAB_CGROUP_MEMORY_EVENTS_PATH",
+        "RDLAB_PROC_MEMINFO_PATH",
+    }
+)
+
+
+def is_forbidden_counted_test_hook(var_name: str) -> bool:
+    """Return True if `var_name` is a guarded test or override hook forbidden in counted runs."""
+    name = str(var_name).strip()
+    if not name:
+        return False
+    return (
+        name in FORBIDDEN_COUNTED_TEST_HOOK_NAMES
+        or name.startswith(FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES)
+        or name.endswith(FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES)
+    )
+
+
+def is_counted_or_time_one_mode(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    shard_spec: str | None = None,
+) -> bool:
+    """Return True in `time-one`, `counted`, and every sharded counted mode (when `not dryrun`)."""
+    if dryrun:
+        return False
+    norm_mode = str(mode or "").strip().lower()
+    if norm_mode in ("stub", "dryrun", "dry-run"):
+        return False
+    if norm_mode in (
+        "time-one",
+        "time_one",
+        "counted",
+        "shard",
+        "sharded",
+        "counted-shard",
+        "sharded-counted",
+    ):
+        return True
+    eff_shard = str(shard_spec or "").strip()
+    return bool(eff_shard and eff_shard != "1/1")
+
+
+def guard_no_test_hooks_in_counted_mode(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    shard_spec: str | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Refuse with `TEST_HOOK_IN_COUNTED_MODE` before any model load if any test/override hook is set and non-empty
+    in `time-one`, `counted`, or any sharded counted mode (not `dryrun`). Names the variable(s), never their values.
+    """
+    if not is_counted_or_time_one_mode(mode, dryrun=dryrun, shard_spec=shard_spec):
+        return
+    env_map = environ if environ is not None else os.environ
+    active_hooks = sorted(
+        str(k)
+        for k, v in env_map.items()
+        if is_forbidden_counted_test_hook(str(k)) and str(v or "").strip() != ""
+    )
+    if active_hooks:
+        joined = ", ".join(active_hooks)
+        raise RefusalError(
+            TEST_HOOK_IN_COUNTED_MODE,
+            f"Test or override hook environment variable(s) forbidden in counted mode ({mode!r}, shard={shard_spec or '1/1'}): {joined}",
+        )
+
+
+def _parse_nonneg_int_hook(
+    var_name: str,
+    raw_value: str,
+    default: int,
+    *,
+    positive_only: bool = False,
+) -> int:
+    """Parse an integer test hook value, refusing by variable name if malformed."""
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return default
+    if not re.fullmatch(r"\d+", raw):
+        raise RefusalError(
+            MALFORMED_TEST_HOOK,
+            f"Malformed integer test hook in environment variable {var_name}",
+        )
+    val = int(raw)
+    if positive_only and val <= 0:
+        raise RefusalError(
+            MALFORMED_TEST_HOOK,
+            f"Malformed positive integer test hook in environment variable {var_name}",
+        )
+    return val
+
+
 def _is_unsafe_zip_member(zinfo: zipfile.ZipInfo) -> str | None:
     """Return a refusal reason if `zinfo` is absolute, contains `..`, or is a symlink."""
     raw_name = zinfo.filename
@@ -8228,21 +8384,49 @@ def _collect_judge_receipt_digests(
 
 
 def _query_gpu_and_ecc_snapshot(*, dryrun: bool = False, mode: str = "stub") -> dict[str, Any]:
-    """Query GPU identity and uncorrected ECC counts from `nvidia-smi` or deterministic stub/test overrides."""
-    default_gpu_name = (
-        os.environ.get("FAKE_COLAB_GPU_NAME", "").strip()
-        or ("NVIDIA A100-SXM4-40GB" if mode in ("time-one", "counted") else "NVIDIA A100-SXM4-40GB")
+    """Query GPU identity and uncorrected ECC counts from `nvidia-smi` or deterministic stub/dryrun overrides."""
+    is_stub_or_dryrun = bool(dryrun or mode in ("stub", "dryrun"))
+    sm_hook = _parse_nonneg_int_hook(
+        "FAKE_COLAB_SM_COUNT",
+        os.environ.get("FAKE_COLAB_SM_COUNT", ""),
+        108,
+        positive_only=True,
     )
-    default_pci = os.environ.get("FAKE_COLAB_PCI_DEVICE_ID", "").strip() or "0x20B010DE"
-    default_vbios = os.environ.get("FAKE_COLAB_VBIOS_VERSION", "").strip() or "92.00.68.00.01"
-    default_sm = int(os.environ.get("FAKE_COLAB_SM_COUNT", "108") or "108")
-    default_cc = os.environ.get("FAKE_COLAB_COMPUTE_CAPABILITY", "").strip() or "8.0"
-    default_drv = os.environ.get("FAKE_COLAB_DRIVER_VERSION", "").strip() or "560.35.03"
-    ecc_vol = int(os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE", "0") or "0")
-    ecc_agg = int(os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE", "0") or "0")
+    vol_hook = _parse_nonneg_int_hook(
+        "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE",
+        os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE", ""),
+        0,
+    )
+    agg_hook = _parse_nonneg_int_hook(
+        "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE",
+        os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE", ""),
+        0,
+    )
+
+    if is_stub_or_dryrun:
+        default_gpu_name = (
+            os.environ.get("FAKE_COLAB_GPU_NAME", "").strip()
+            or "NVIDIA A100-SXM4-40GB"
+        )
+        default_pci = os.environ.get("FAKE_COLAB_PCI_DEVICE_ID", "").strip() or "0x20B010DE"
+        default_vbios = os.environ.get("FAKE_COLAB_VBIOS_VERSION", "").strip() or "92.00.68.00.01"
+        default_sm = sm_hook
+        default_cc = os.environ.get("FAKE_COLAB_COMPUTE_CAPABILITY", "").strip() or "8.0"
+        default_drv = os.environ.get("FAKE_COLAB_DRIVER_VERSION", "").strip() or "560.35.03"
+        ecc_vol = vol_hook
+        ecc_agg = agg_hook
+    else:
+        default_gpu_name = "NVIDIA A100-SXM4-40GB"
+        default_pci = "0x20B010DE"
+        default_vbios = "92.00.68.00.01"
+        default_sm = 108
+        default_cc = "8.0"
+        default_drv = "560.35.03"
+        ecc_vol = 0
+        ecc_agg = 0
 
     smi_bin = shutil.which("nvidia-smi")
-    if smi_bin and not dryrun and mode != "stub" and not os.environ.get("FAKE_COLAB_STATE_DIR"):
+    if smi_bin and not is_stub_or_dryrun:
         try:
             proc = subprocess.run(
                 [
@@ -8623,12 +8807,14 @@ def collect_and_write_session_env(
     work_dir: Path | None = None,
     venv_python: Path | None = None,
     repo_dir: Path | None = None,
+    sdpa_backend_requested: str | None = PINNED_SDPA_BACKEND,
 ) -> dict[str, Any]:
     """Write `session_env.json` at session start (`phase='start'`) and at session end (`phase='end'`).
 
     Outside `stub` and `dryrun`, reads installed versions (`torch`, `transformers`, `bitsandbytes`, CUDA runtime,
     actual determinism status, `torch.backends.cudnn.benchmark`, and SDPA backend) from the judge venv and never
-    uses `FAKE_COLAB_*` defaults. If any value cannot be read, records `'unreadable: <reason>'` and refuses in counted mode.
+    uses `FAKE_COLAB_*` defaults or `RDLAB_SDPA_BACKEND`. If any value cannot be read, records `'unreadable: <reason>'`
+    and refuses in counted mode.
     """
     ensure_not_drive_path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -8643,6 +8829,18 @@ def collect_and_write_session_env(
             "Counted window refuses warn_only=True determinism fallback.",
         )
 
+    sdpa_hook_raw = os.environ.get("RDLAB_SDPA_BACKEND", "").strip()
+    if sdpa_hook_raw and sdpa_hook_raw not in VALID_SDPA_BACKENDS:
+        raise RefusalError(
+            MALFORMED_TEST_HOOK,
+            "Malformed SDPA backend in environment variable RDLAB_SDPA_BACKEND",
+        )
+    eff_sdpa_requested = (
+        str(sdpa_backend_requested).strip()
+        if sdpa_backend_requested is not None and str(sdpa_backend_requested).strip()
+        else PINNED_SDPA_BACKEND
+    )
+
     is_stub_or_dryrun = bool(dryrun or mode in ("stub", "dryrun"))
     host_cpu_model = _read_host_cpu_model()
     cublas_ws_cfg = os.environ.get("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -8652,7 +8850,7 @@ def collect_and_write_session_env(
     if is_stub_or_dryrun:
         det_warn_only: bool | None = det_warn_only_env == "1"
         det_status = "warn_only" if det_warn_only else "enforced"
-        sdpa_backend = os.environ.get("RDLAB_SDPA_BACKEND", "").strip() or "math"
+        sdpa_backend = sdpa_hook_raw or "math"
         cudnn_benchmark: Any = False
         runtime_block = {
             "cuda_runtime": os.environ.get("FAKE_COLAB_CUDA_RUNTIME", "13.2"),
@@ -8674,8 +8872,7 @@ def collect_and_write_session_env(
         }
         det_status = str(probed.get("determinism_status") or "unreadable: empty determinism_status")
         det_warn_only = probed.get("determinism_warn_only")
-        sdpa_override = os.environ.get("RDLAB_SDPA_BACKEND", "").strip()
-        sdpa_backend = sdpa_override if sdpa_override else str(probed.get("sdpa_backend") or "unreadable: empty sdpa_backend")
+        sdpa_backend = str(probed.get("sdpa_backend") or "unreadable: empty sdpa_backend")
         cudnn_benchmark = probed.get("cudnn_benchmark")
         if cudnn_benchmark is None:
             cudnn_benchmark = "unreadable: torch.backends.cudnn.benchmark is None"
@@ -8705,6 +8902,7 @@ def collect_and_write_session_env(
     attn_block = {
         "attn_implementation": PINNED_ATTN_IMPLEMENTATION,
         "sdpa_backend": sdpa_backend,
+        "sdpa_backend_requested": eff_sdpa_requested,
     }
     fingerprint_fields = {
         "host_cpu_model": host_cpu_model,
@@ -8758,18 +8956,22 @@ def collect_and_write_session_env(
         agg_start = int(snap["ecc_uncorrected_aggregate"])
 
     if phase == "end":
-        vol_end_override = os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END", "").strip()
-        agg_end_override = os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END", "").strip()
-        vol_end: int | None = (
-            int(vol_end_override)
-            if vol_end_override.isdigit()
-            else int(snap["ecc_uncorrected_volatile"])
+        vol_end_hook = _parse_nonneg_int_hook(
+            "FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END",
+            os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_VOLATILE_END", ""),
+            int(snap["ecc_uncorrected_volatile"]),
         )
-        agg_end: int | None = (
-            int(agg_end_override)
-            if agg_end_override.isdigit()
-            else int(snap["ecc_uncorrected_aggregate"])
+        agg_end_hook = _parse_nonneg_int_hook(
+            "FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END",
+            os.environ.get("FAKE_COLAB_ECC_UNCORRECTED_AGGREGATE_END", ""),
+            int(snap["ecc_uncorrected_aggregate"]),
         )
+        if is_stub_or_dryrun:
+            vol_end: int | None = vol_end_hook
+            agg_end: int | None = agg_end_hook
+        else:
+            vol_end = int(snap["ecc_uncorrected_volatile"])
+            agg_end = int(snap["ecc_uncorrected_aggregate"])
         vol_delta: int | None = max(0, vol_end - vol_start)
         agg_delta: int | None = max(0, agg_end - agg_start)
         end_ts: str | None = now_iso
@@ -8794,6 +8996,7 @@ def collect_and_write_session_env(
         "NVIDIA_TF32_OVERRIDE": nvidia_tf32_override,
         "PYTHONHASHSEED": python_hash_seed,
         "torch.backends.cudnn.benchmark": cudnn_benchmark,
+        "sdpa_backend_requested": eff_sdpa_requested,
         "fingerprint_fields": fingerprint_fields,
         "merge_config": merge_cfg_block,
         "gpu": gpu_block,
@@ -8840,6 +9043,11 @@ def collect_and_write_session_env(
         raise RefusalError(
             "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
             "Counted window refuses warn_only=True determinism status in session_env.",
+        )
+    if mode == "counted" and eff_sdpa_requested and sdpa_backend != eff_sdpa_requested:
+        raise RefusalError(
+            SDPA_BACKEND_MISMATCH,
+            f"Counted window refuses SDPA backend mismatch: sdpa_backend_requested={eff_sdpa_requested!r}, probed sdpa_backend={sdpa_backend!r}",
         )
 
     return doc
@@ -9276,14 +9484,31 @@ def run_boot_gatekeeper(
     if override_hashes_raw:
         try:
             loaded_ov = json.loads(override_hashes_raw)
-            if isinstance(loaded_ov, Mapping):
-                override_map = {str(k): str(v) for k, v in loaded_ov.items()}
-        except Exception:
-            pass
+        except Exception as exc:
+            raise RefusalError(
+                MALFORMED_TEST_HOOK,
+                "Malformed JSON in environment variable RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+            ) from exc
+        if not isinstance(loaded_ov, Mapping) or not loaded_ov:
+            raise RefusalError(
+                MALFORMED_TEST_HOOK,
+                "Malformed mapping in environment variable RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+            )
+        for k, v in loaded_ov.items():
+            if (
+                not isinstance(k, str)
+                or not k.strip()
+                or not isinstance(v, str)
+                or not re.fullmatch(r"[0-9a-fA-F]{64}", v.strip())
+            ):
+                raise RefusalError(
+                    MALFORMED_TEST_HOOK,
+                    "Malformed sha256 entry in environment variable RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES",
+                )
+            override_map[str(k)] = str(v).strip().lower()
 
-    use_synthetic_fake = bool(
-        (dryrun or mode in ("stub", "dryrun")) and transport is None
-    )
+    is_stub_or_dryrun = bool(dryrun or mode in ("stub", "dryrun"))
+    use_synthetic_fake = bool(is_stub_or_dryrun and transport is None)
     if use_synthetic_fake:
         hash_source = "synthetic_fake_stub_dryrun"
         synthetic_fake_hash = True
@@ -9313,10 +9538,13 @@ def run_boot_gatekeeper(
             device=device,
             transport=transport,
         )
-        actual_by_prompt = {
-            pid: override_map.get(pid, real_sha)
-            for pid, real_sha in real_hashes.items()
-        }
+        if is_stub_or_dryrun:
+            actual_by_prompt = {
+                pid: override_map.get(pid, real_sha)
+                for pid, real_sha in real_hashes.items()
+            }
+        else:
+            actual_by_prompt = dict(real_hashes)
 
     card_types_map = goldens_doc.get("card_types", {})
     card_entry = (
@@ -9350,27 +9578,13 @@ def run_boot_gatekeeper(
         if not exp_sha:
             missing_prompts.append(pid)
         elif exp_sha != actual_sha.lower():
-            allow_synth_fallback = bool(
-                not use_synthetic_fake
-                and work_dir is None
-                and receipts_dir is None
-                and transport is None
-                and exp_sha
-                == _compute_synthetic_gatekeeper_output_sha256(
-                    pid, seed=seed, judge_id=judge_id
-                ).lower()
-                and pid not in override_map
+            mismatched_prompts.append(
+                {
+                    "prompt_id": pid,
+                    "expected_output_token_ids_sha256": exp_sha,
+                    "actual_output_token_ids_sha256": actual_sha,
+                }
             )
-            if allow_synth_fallback:
-                actual_by_prompt[pid] = exp_sha
-            else:
-                mismatched_prompts.append(
-                    {
-                        "prompt_id": pid,
-                        "expected_output_token_ids_sha256": exp_sha,
-                        "actual_output_token_ids_sha256": actual_sha,
-                    }
-                )
 
     gatekeeper_out_path = run_dir / BOOT_GATEKEEPER_FILENAME
     if mismatched_prompts:
@@ -10138,6 +10352,13 @@ def main(argv: list[str] | None = None) -> int:
         current_step = "validate_force_pinned_uv"
         validate_force_pinned_uv(args.mode)
 
+        current_step = "guard_no_test_hooks"
+        guard_no_test_hooks_in_counted_mode(
+            args.mode,
+            dryrun=dryrun,
+            shard_spec=raw_shard_arg,
+        )
+
         current_step = "validate_only_judges"
         only_judges = validate_only_judges(
             args.mode,
@@ -10324,6 +10545,7 @@ def main(argv: list[str] | None = None) -> int:
             device_check_report = run_device_check(
                 args.work_dir,
                 dryrun=dryrun,
+                mode=args.mode,
                 progress_path=progress_path,
                 gate_status_path=gate_status_path,
                 step_timings=step_timings,
