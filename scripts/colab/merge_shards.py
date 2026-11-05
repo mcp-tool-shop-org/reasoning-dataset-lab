@@ -769,7 +769,10 @@ def _extract_comparable_env_profile(
     if sdpa_req:
         profile["attention"]["sdpa_backend_requested"] = sdpa_req
         if (
-            str(session_env.get("mode") or "") == "counted"
+            is_real_mode(
+                str(session_env.get("mode") or ""),
+                dryrun=bool(session_env.get("dryrun", False)),
+            )
             and profile["attention"]["sdpa_backend"] != sdpa_req
         ):
             raise MergeRefusalError(

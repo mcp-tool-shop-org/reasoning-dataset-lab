@@ -6255,6 +6255,16 @@ def write_vm_status_file(
     )
 
 
+VALID_VM_MODES: tuple[str, ...] = (
+    "stub",
+    "dryrun",
+    "dry-run",
+    "time-one",
+    "counted",
+    "probe",
+)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     env_or = lambda k, d=None: os.environ.get(k) or d
     env_int = lambda k, d: int(os.environ[k]) if os.environ.get(k) else d
@@ -6268,6 +6278,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
+        choices=VALID_VM_MODES,
         default=env_or("RDLAB_MODE", "stub"),
     )
     parser.add_argument(
@@ -8649,15 +8660,11 @@ def _query_judge_venv_runtime(
     if venv_python is not None:
         eff_venv_py = Path(venv_python)
     elif work_dir is not None:
-        cand = Path(work_dir) / "venv-judge" / "bin" / "python"
-        if cand.exists():
-            eff_venv_py = cand
+        eff_venv_py = Path(work_dir) / "venv-judge" / "bin" / "python"
     else:
         env_wd = os.environ.get("RDLAB_WORK_DIR", "").strip()
         if env_wd:
-            cand = Path(env_wd) / "venv-judge" / "bin" / "python"
-            if cand.exists():
-                eff_venv_py = cand
+            eff_venv_py = Path(env_wd) / "venv-judge" / "bin" / "python"
 
     if eff_venv_py is not None:
         if not eff_venv_py.exists():
@@ -9046,17 +9053,17 @@ def collect_and_write_session_env(
         if isinstance(v, str) and v.startswith("unreadable:"):
             unreadable_fields.append(f"{k}={v}")
 
-    if unreadable_fields and mode == "counted":
+    if unreadable_fields and is_real_mode(mode, dryrun=dryrun):
         raise RefusalError(
             "SESSION_ENV_UNREADABLE",
             f"Counted window refuses unreadable session_env fields: {'; '.join(unreadable_fields)}",
         )
-    if det_status == "warn_only" and mode == "counted":
+    if det_status == "warn_only" and is_real_mode(mode, dryrun=dryrun):
         raise RefusalError(
             "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
             "Counted window refuses warn_only=True determinism status in session_env.",
         )
-    if mode == "counted" and eff_sdpa_requested and sdpa_backend != eff_sdpa_requested:
+    if is_real_mode(mode, dryrun=dryrun) and eff_sdpa_requested and sdpa_backend != eff_sdpa_requested:
         raise RefusalError(
             SDPA_BACKEND_MISMATCH,
             f"Counted window refuses SDPA backend mismatch: sdpa_backend_requested={eff_sdpa_requested!r}, probed sdpa_backend={sdpa_backend!r}",
@@ -9211,6 +9218,16 @@ def _run_real_boot_gatekeeper_prompts(
                     )
         return hashes
 
+    import importlib
+
+    bakeoff_judge = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
+    spec = bakeoff_judge.resolve_judge_spec(judge_id)
+    receipt_file = (
+        Path(receipts_dir) / f"{spec.repo_id.replace('/', '__')}.sha256.json"
+        if receipts_dir is not None
+        else None
+    )
+
     eff_work = (
         Path(work_dir)
         if work_dir is not None
@@ -9221,8 +9238,18 @@ def _run_real_boot_gatekeeper_prompts(
         )
     )
     venv_name = "venv-d3" if judge_id == D3_MINI_JUDGE_ID else "venv-judge"
-    venv_py = (eff_work / venv_name / "bin" / "python") if eff_work is not None else None
-    if venv_py is not None and venv_py.exists() and receipts_dir is not None:
+    if eff_work is not None:
+        venv_py = eff_work / venv_name / "bin" / "python"
+        if not venv_py.is_file():
+            raise RefusalError(
+                "VENV_PYTHON_MISSING",
+                f"Boot gatekeeper venv python not found at {venv_py}",
+            )
+        if receipt_file is None or not receipt_file.is_file():
+            raise RefusalError(
+                "BOOT_GATEKEEPER_RECEIPT_MISSING",
+                f"Boot gatekeeper receipt not found for {judge_id!r} at {receipt_file}",
+            )
         cfg_payload = {
             "judge_id": judge_id,
             "receipts_dir": str(receipts_dir),
@@ -9259,164 +9286,99 @@ def _run_real_boot_gatekeeper_prompts(
             timeout=120,
             check=False,
         )
-        if proc.returncode == 0 and proc.stdout.strip():
+        if proc.returncode != 0 or not proc.stdout.strip():
+            err_tail = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+            raise RefusalError(
+                "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
+                f"Boot gatekeeper subprocess failed (rc={proc.returncode}): {err_tail[:240]}",
+            )
+        try:
             parsed = json.loads(proc.stdout.strip().splitlines()[-1])
-            if isinstance(parsed, Mapping) and isinstance(parsed.get("hashes"), Mapping):
-                return {str(k): str(v) for k, v in parsed["hashes"].items()}
+        except Exception as exc:
+            raise RefusalError(
+                "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
+                f"Boot gatekeeper subprocess produced malformed JSON: {exc}",
+            ) from exc
+        if not isinstance(parsed, Mapping) or not isinstance(parsed.get("hashes"), Mapping):
+            raise RefusalError(
+                "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
+                "Boot gatekeeper subprocess output missing 'hashes' mapping",
+            )
+        return {str(k): str(v) for k, v in parsed["hashes"].items()}
 
-    # In-process real transport execution (when called directly in tests with receipts_dir or in-process fake torch/transformers)
-    import importlib
+    if receipt_file is None or not receipt_file.is_file():
+        raise RefusalError(
+            "BOOT_GATEKEEPER_RECEIPT_MISSING",
+            f"Boot gatekeeper receipt not found for {judge_id!r} at {receipt_file}",
+        )
 
-    bakeoff_judge = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
+    try:
+        torch_mod = sys.modules.get("torch")
+        if torch_mod is None and "torch" not in sys.modules:
+            torch_mod = importlib.import_module("torch")
+    except Exception as exc:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_TORCH_MISSING",
+            f"Boot gatekeeper requires torch in real mode: {exc}",
+        ) from exc
+    if torch_mod is None:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_TORCH_MISSING",
+            "Boot gatekeeper requires torch in real mode (torch is missing)",
+        )
 
-    spec = bakeoff_judge.resolve_judge_spec(judge_id)
+    try:
+        tf_mod = sys.modules.get("transformers")
+        if tf_mod is None and "transformers" not in sys.modules:
+            tf_mod = importlib.import_module("transformers")
+    except Exception as exc:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_TRANSFORMERS_MISSING",
+            f"Boot gatekeeper requires transformers in real mode: {exc}",
+        ) from exc
+    if tf_mod is None:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_TRANSFORMERS_MISSING",
+            "Boot gatekeeper requires transformers in real mode (transformers is missing)",
+        )
+
     adapter = bakeoff_judge.build_judge_adapter(spec)
-    if receipts_dir is not None and (Path(receipts_dir) / f"{spec.repo_id.replace('/', '__')}.sha256.json").is_file():
-        real_tr: Any = (
-            bakeoff_judge.D3MiniTransport(
-                receipts_dir=Path(receipts_dir),
-                hf_home=Path(hf_home) if hf_home is not None else None,
-                device=device,
-                window_mode=mode,
-            )
-            if judge_id == D3_MINI_JUDGE_ID
-            else bakeoff_judge.TransformersJudgeTransport(
-                receipts_dir=Path(receipts_dir),
-                hf_home=Path(hf_home) if hf_home is not None else None,
-                device=device,
-                window_mode=mode,
-            )
-        )
-        real_tr.verify_ready(
-            spec,
-            allow_remote_code_reviewed=(
-                D3_MINI_REVIEWED_REVISION if judge_id == D3_MINI_JUDGE_ID else None
-            ),
-        )
-    else:
-        import types
-
-        vocab = {"<unk>": 0, "<s>": 1, "</s>": 2, "yes": 3, "no": 4}
-        real_tr = bakeoff_judge.TransformersJudgeTransport(
-            receipts_dir=Path(receipts_dir) if receipts_dir is not None else repo_root,
-            device="cpu",
+    real_tr: Any = (
+        bakeoff_judge.D3MiniTransport(
+            receipts_dir=Path(receipts_dir),
+            hf_home=Path(hf_home) if hf_home is not None else None,
+            device=device,
             window_mode=mode,
         )
-
-        class _InProcTensor:
-            def __init__(self, vals: list[Any]) -> None:
-                self.vals = vals
-
-            @property
-            def shape(self) -> tuple[int, int]:
-                if isinstance(self.vals[0], list):
-                    return (len(self.vals), len(self.vals[0]))
-                return (len(self.vals), len(self.vals))
-
-            def to(self, _d: str) -> "_InProcTensor":
-                return self
-
-            def float(self) -> "_InProcTensor":
-                return self
-
-            def tolist(self) -> Any:
-                return self.vals
-
-            def item(self) -> float:
-                return float(self.vals[0])
-
-            def __getitem__(self, idx: Any) -> Any:
-                if isinstance(idx, tuple):
-                    r, sl = idx
-                    return _InProcTensor(self.vals[r][sl])
-                v = self.vals[idx]
-                return _InProcTensor([v]) if isinstance(v, (int, float)) else _InProcTensor(v)
-
-        class _InProcTok:
-            pad_token_id = 0
-            eos_token_id = 2
-
-            def __call__(self, text: str, **_kw: Any) -> dict[str, _InProcTensor]:
-                h = int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:2], "big") % 2
-                return {"input_ids": _InProcTensor([[1, 3 + h]]), "attention_mask": _InProcTensor([[1, 1]])}
-
-            def convert_ids_to_tokens(self, ids: int | list[int]) -> Any:
-                inv = {v: k for k, v in vocab.items()}
-                return inv.get(ids, "<unk>") if isinstance(ids, int) else [inv.get(int(i), "<unk>") for i in ids]
-
-            def convert_tokens_to_string(self, toks: list[str]) -> str:
-                return "".join(toks)
-
-            def decode(self, ids: list[int], **_kw: Any) -> str:
-                return " ".join(self.convert_ids_to_tokens(ids))
-
-        class _InProcModel:
-            generation_config = types.SimpleNamespace(eos_token_id=[2])
-
-            def generate(self, **kw: Any) -> Any:
-                in_ids = kw["input_ids"].tolist()[0]
-                out_tok = 3 if (sum(in_ids) % 2 == 0) else 4
-                seq = [*in_ids, out_tok]
-                logits = [-8.0, -8.0, -8.0, -0.15, -2.05] if out_tok == 3 else [-8.0, -8.0, -8.0, -2.05, -0.15]
-                return types.SimpleNamespace(sequences=_InProcTensor([seq]), scores=[_InProcTensor([logits])])
-
-        real_tr._tokenizer = _InProcTok()
-        real_tr._model = _InProcModel()
-        real_tr._candidate_token_ids = {3: "yes", 4: "no"}
-        real_tr._loaded_spec_id = spec.judge_id
-        real_tr._snapshot_dir = repo_root
-        real_tr._verified_digest = spec.revision
-
-    saved_torch = sys.modules.get("torch")
-    saved_tf = sys.modules.get("transformers")
-    try:
-        if saved_torch is None:
-            import types
-
-            t_mod = types.ModuleType("torch")
-            t_mod.__version__ = "2.14.1+cu132"  # type: ignore[attr-defined]
-            t_mod.use_deterministic_algorithms = lambda _m, warn_only=False: None  # type: ignore[attr-defined]
-            t_mod.manual_seed = lambda _s: None  # type: ignore[attr-defined]
-
-            class _NC:
-                def __enter__(self) -> None:
-                    return None
-
-                def __exit__(self, *_a: Any) -> None:
-                    return None
-
-            t_mod.no_grad = _NC  # type: ignore[attr-defined]
-            t_mod.inference_mode = _NC  # type: ignore[attr-defined]
-            t_mod.log_softmax = lambda t, dim=-1: t  # type: ignore[attr-defined]
-            t_mod.topk = lambda t, k=5: (t[: min(int(k), len(t.vals))], type(t)(list(range(min(int(k), len(t.vals))))))  # type: ignore[attr-defined]
-            sys.modules["torch"] = t_mod
-        if saved_tf is None:
-            import types
-
-            tf_m = types.ModuleType("transformers")
-            tf_m.__version__ = "5.19.0"  # type: ignore[attr-defined]
-            sys.modules["transformers"] = tf_m
-
-        out_map: dict[str, str] = {}
-        for sp in prompts:
-            pid = str(sp.get("prompt_id") or "")
-            if not pid:
-                continue
-            mat = str(sp.get("material") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["material"])
-            clm = str(sp.get("claim") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["claim"])
-            ord_s2: Any = "BA" if str(sp.get("order") or "AB") == "BA" else "AB"
-            item = bakeoff_judge.JudgeInputItem(item_id=pid, material=mat, claim=clm)
-            prompt = adapter.assemble_prompt(item, order=ord_s2, pass_mode="binary")
-            resp = real_tr.generate(spec, prompt, seed=seed)
-            out_map[pid] = resp.output_token_ids_sha256 or bakeoff_judge.compute_response_output_token_ids_sha256(
-                spec.judge_id, resp.tokens, system_one_result=resp.system_one_result
-            )
-        return out_map
-    finally:
-        if saved_torch is None:
-            sys.modules.pop("torch", None)
-        if saved_tf is None:
-            sys.modules.pop("transformers", None)
+        if judge_id == D3_MINI_JUDGE_ID
+        else bakeoff_judge.TransformersJudgeTransport(
+            receipts_dir=Path(receipts_dir),
+            hf_home=Path(hf_home) if hf_home is not None else None,
+            device=device,
+            window_mode=mode,
+        )
+    )
+    real_tr.verify_ready(
+        spec,
+        allow_remote_code_reviewed=(
+            D3_MINI_REVIEWED_REVISION if judge_id == D3_MINI_JUDGE_ID else None
+        ),
+    )
+    out_map: dict[str, str] = {}
+    for sp in prompts:
+        pid = str(sp.get("prompt_id") or "")
+        if not pid:
+            continue
+        mat = str(sp.get("material") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["material"])
+        clm = str(sp.get("claim") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["claim"])
+        ord_s2: Any = "BA" if str(sp.get("order") or "AB") == "BA" else "AB"
+        item = bakeoff_judge.JudgeInputItem(item_id=pid, material=mat, claim=clm)
+        prompt = adapter.assemble_prompt(item, order=ord_s2, pass_mode="binary")
+        resp = real_tr.generate(spec, prompt, seed=seed)
+        out_map[pid] = resp.output_token_ids_sha256 or bakeoff_judge.compute_response_output_token_ids_sha256(
+            spec.judge_id, resp.tokens, system_one_result=resp.system_one_result
+        )
+    return out_map
 
 
 def run_boot_gatekeeper(
@@ -9519,6 +9481,34 @@ def run_boot_gatekeeper(
                 )
             override_map[str(k)] = str(v).strip().lower()
 
+    card_types_map = goldens_doc.get("card_types", {})
+    card_entry = (
+        card_types_map.get(eff_card_type)
+        if isinstance(card_types_map, Mapping)
+        else None
+    )
+    card_prompts = (
+        card_entry.get("prompts")
+        if isinstance(card_entry, Mapping)
+        and isinstance(card_entry.get("prompts"), Mapping)
+        else None
+    )
+    has_all_goldens = bool(card_entry is not None and isinstance(card_prompts, Mapping))
+    if has_all_goldens and isinstance(card_prompts, Mapping):
+        for sp in synth_prompts:
+            pid = str(sp.get("prompt_id") or "")
+            if not pid:
+                continue
+            p_gold = card_prompts.get(pid)
+            exp_sha_raw = (
+                p_gold.get("output_token_ids_sha256")
+                if isinstance(p_gold, Mapping)
+                else (p_gold if isinstance(p_gold, str) else None)
+            )
+            if not (str(exp_sha_raw).strip() if exp_sha_raw else ""):
+                has_all_goldens = False
+                break
+
     is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
     use_synthetic_fake = bool(is_stub_or_dryrun and transport is None)
     if use_synthetic_fake:
@@ -9535,6 +9525,20 @@ def run_boot_gatekeeper(
                     pid, seed=seed, judge_id=judge_id
                 ),
             )
+    elif (
+        not has_all_goldens
+        and transport is None
+        and work_dir is None
+        and receipts_dir is None
+        and not os.environ.get("RDLAB_WORK_DIR", "").strip()
+    ):
+        hash_source = "no_golden"
+        synthetic_fake_hash = False
+        actual_by_prompt = {
+            str(sp.get("prompt_id") or ""): ""
+            for sp in synth_prompts
+            if sp.get("prompt_id")
+        }
     else:
         hash_source = "real_transport"
         synthetic_fake_hash = False
@@ -9557,19 +9561,6 @@ def run_boot_gatekeeper(
             }
         else:
             actual_by_prompt = dict(real_hashes)
-
-    card_types_map = goldens_doc.get("card_types", {})
-    card_entry = (
-        card_types_map.get(eff_card_type)
-        if isinstance(card_types_map, Mapping)
-        else None
-    )
-    card_prompts = (
-        card_entry.get("prompts")
-        if isinstance(card_entry, Mapping)
-        and isinstance(card_entry.get("prompts"), Mapping)
-        else None
-    )
 
     missing_prompts: list[str] = []
     mismatched_prompts: list[dict[str, str]] = []
@@ -9624,7 +9615,7 @@ def run_boot_gatekeeper(
         )
 
     if card_entry is None or missing_prompts:
-        if mode == "counted":
+        if is_real_mode(mode, dryrun=dryrun):
             missing_doc = {
                 "status": "no golden",
                 "failure_class": "BOOT_GATEKEEPER_GOLDEN_MISSING",
@@ -10687,6 +10678,7 @@ def main(argv: list[str] | None = None) -> int:
                         work_dir=args.work_dir,
                         receipts_dir=args.receipts_dir,
                         hf_home=args.hf_home,
+                        device=resolve_judge_device(mode=args.mode, dryrun=dryrun),
                     )
 
                     current_step = "run_judges_pipeline"

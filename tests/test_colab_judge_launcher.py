@@ -16252,18 +16252,22 @@ def test_fix1_part_c_session_env_real_venv_reads_unreadable_refusal_and_5_finger
         doc_real_2["env_comparability_sha256"] != doc_real["env_comparability_sha256"]
     )
 
-    # Unreadable venv in non-counted mode records "unreadable: <reason>"; in counted mode refuses with SESSION_ENV_UNREADABLE
+    # Unreadable venv in any real mode (time-one and counted) records "unreadable: <reason>" in session_env.json and refuses with SESSION_ENV_UNREADABLE
     bad_venv_py = tmp_path / "missing_venv" / "bin" / "python"
-    doc_unreadable = vm_judges.collect_and_write_session_env(
-        tmp_path / "run_unreadable_t1",
-        receipts_dir=receipts_dir,
-        mode="time-one",
-        shard_spec="1/2",
-        phase="start",
-        dryrun=False,
-        venv_python=bad_venv_py,
-        repo_dir=REPO_ROOT,
-    )
+    t1_unread_dir = tmp_path / "run_unreadable_t1"
+    with pytest.raises(vm_judges.RefusalError) as exc_unread_t1:
+        vm_judges.collect_and_write_session_env(
+            t1_unread_dir,
+            receipts_dir=receipts_dir,
+            mode="time-one",
+            shard_spec="1/2",
+            phase="start",
+            dryrun=False,
+            venv_python=bad_venv_py,
+            repo_dir=REPO_ROOT,
+        )
+    assert exc_unread_t1.value.failure_class == "SESSION_ENV_UNREADABLE"
+    doc_unreadable = json.loads((t1_unread_dir / "session_env.json").read_text(encoding="utf-8"))
     assert doc_unreadable["runtime"]["torch_version"].startswith("unreadable:")
 
     with pytest.raises(vm_judges.RefusalError) as exc_unread:
@@ -18276,35 +18280,40 @@ def test_fix3_guard_and_readers_refuse_every_real_mode_including_lock_check_prob
         with monkeypatch.context() as mp:
             mp.setenv("FAKE_COLAB_GPU_NAME", sentinel_secret)
             status_file = tmp_path / f"status_fix3_{safe_tag}.json"
-            rc = vm_judges.main(
-                [
-                    "--step",
-                    "run",
-                    "--mode",
-                    entry_mode,
-                    "--repo-dir",
-                    str(REPO_ROOT),
-                    "--items-file",
-                    str(items_for_fix3),
-                    "--run-dir",
-                    str(tmp_path / f"run_fix3_{safe_tag}"),
-                    "--work-dir",
-                    str(tmp_path / f"work_fix3_{safe_tag}"),
-                    "--receipts-dir",
-                    str(tmp_path / f"rec_fix3_{safe_tag}"),
-                    "--hf-home",
-                    str(tmp_path / f"hf_fix3_{safe_tag}"),
-                    "--status-file",
-                    str(status_file),
-                    "--result-tar",
-                    str(tmp_path / f"res_fix3_{safe_tag}.tar.gz"),
-                ]
-            )
-            assert rc == 2
-            st_doc = json.loads(status_file.read_text(encoding="utf-8"))
-            assert st_doc["failure_class"] == "TEST_HOOK_IN_COUNTED_MODE"
-            assert "FAKE_COLAB_GPU_NAME" in st_doc["reason"]
-            assert sentinel_secret not in json.dumps(st_doc)
+            vm_argv = [
+                "--step",
+                "run",
+                "--mode",
+                entry_mode,
+                "--repo-dir",
+                str(REPO_ROOT),
+                "--items-file",
+                str(items_for_fix3),
+                "--run-dir",
+                str(tmp_path / f"run_fix3_{safe_tag}"),
+                "--work-dir",
+                str(tmp_path / f"work_fix3_{safe_tag}"),
+                "--receipts-dir",
+                str(tmp_path / f"rec_fix3_{safe_tag}"),
+                "--hf-home",
+                str(tmp_path / f"hf_fix3_{safe_tag}"),
+                "--status-file",
+                str(status_file),
+                "--result-tar",
+                str(tmp_path / f"res_fix3_{safe_tag}.tar.gz"),
+            ]
+            if entry_mode in vm_judges.VALID_VM_MODES:
+                rc = vm_judges.main(vm_argv)
+                assert rc == 2
+                st_doc = json.loads(status_file.read_text(encoding="utf-8"))
+                assert st_doc["failure_class"] == "TEST_HOOK_IN_COUNTED_MODE"
+                assert "FAKE_COLAB_GPU_NAME" in st_doc["reason"]
+                assert sentinel_secret not in json.dumps(st_doc)
+            else:
+                with pytest.raises(SystemExit) as exc_parse:
+                    vm_judges.parse_args(vm_argv)
+                assert exc_parse.value.code == 2
+                assert vm_judges.main(vm_argv) == 2
 
             s1_dir = tmp_path / f"ms_fix3_{safe_tag}_s1"
             s2_dir = tmp_path / f"ms_fix3_{safe_tag}_s2"
@@ -18430,6 +18439,365 @@ def test_fix3_guard_and_readers_refuse_every_real_mode_including_lock_check_prob
             )
             assert senv_doc["gpu"]["name"] != "FAKE_GPU_HOOK_SENTINEL"
             assert senv_doc["attention"]["sdpa_backend"] == "math"
+
+
+def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_gatekeeper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-4 Group A (A1-A4):
+    A1. Refusals at `vm_judges.py` (unreadable fields, warn_only, SDPA mismatch) and `merge_shards.py`
+        test `is_real_mode(mode, dryrun=...)` so `time-one`, shard modes, `probe`, and every other real mode refuse.
+    A2. `_query_judge_venv_runtime` sets candidate venv python unconditionally when `work_dir` or `RDLAB_WORK_DIR`
+        is given; missing interpreter reports `unreadable: judge venv python not found` and never falls through to `sys.modules`.
+    A3. `vm_judges.parse_args` validates `--mode` against `VALID_VM_MODES`; misspelt mode exits at parse time.
+    A4. `main()` passes `device=resolve_judge_device(mode=..., dryrun=...)` into `run_boot_gatekeeper`;
+        `_run_real_boot_gatekeeper_prompts` refuses when venv python is missing, subprocess fails, receipt is missing,
+        or torch/transformers are missing (never falling back to `_InProcTok`/`_InProcModel` or stub `torch`);
+        and golden-missing refusal uses `is_real_mode` (`time-one` included).
+    """
+    import importlib
+    import types
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("RDLAB_WORK_DIR", raising=False)
+
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env_fix4_a")
+    monkeypatch.setenv("PATH", _hermetic_path_for(fake_env))
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
+        tmp_path / "rec_fix4_a"
+    )
+
+    class _FakeTorchCustomizable:
+        def __init__(self, *, warn_only: bool = False, sdpa: str = "math") -> None:
+            self.__version__ = "2.14.1+cu132"
+            self.version = types.SimpleNamespace(cuda="13.2")
+            self._warn_only = warn_only
+            self.backends = types.SimpleNamespace(
+                cudnn=types.SimpleNamespace(benchmark=False),
+                cuda=types.SimpleNamespace(
+                    enable_flash_sdp=lambda _v: None,
+                    enable_mem_efficient_sdp=lambda _v: None,
+                    enable_math_sdp=lambda _v: None,
+                    flash_sdp_enabled=lambda: sdpa == "flash",
+                    mem_efficient_sdp_enabled=lambda: False,
+                    math_sdp_enabled=lambda: sdpa == "math",
+                ),
+            )
+
+        def use_deterministic_algorithms(self, _mode: bool, *, warn_only: bool = False) -> None:
+            return None
+
+        def are_deterministic_algorithms_enabled(self) -> bool:
+            return True
+
+        def is_deterministic_algorithms_warn_only_enabled(self) -> bool:
+            return self._warn_only
+
+    fake_tf_mod = types.ModuleType("transformers")
+    fake_tf_mod.__version__ = "5.19.0"  # type: ignore[attr-defined]
+    fake_bnb_mod = types.ModuleType("bitsandbytes")
+    fake_bnb_mod.__version__ = "0.45.0"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf_mod)
+    monkeypatch.setitem(sys.modules, "bitsandbytes", fake_bnb_mod)
+
+    # A2: When work_dir or RDLAB_WORK_DIR is given without venv-judge/bin/python, _query_judge_venv_runtime
+    # reports "unreadable: judge venv python not found" and never falls through to sys.modules["torch"]
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorchCustomizable())
+    empty_work = tmp_path / "empty_work_a2"
+    empty_work.mkdir(parents=True, exist_ok=True)
+    probed_wd = vm_judges._query_judge_venv_runtime(work_dir=empty_work)
+    assert probed_wd["torch_version"].startswith("unreadable: judge venv python not found")
+    with monkeypatch.context() as mp:
+        mp.setenv("RDLAB_WORK_DIR", str(empty_work))
+        probed_env_wd = vm_judges._query_judge_venv_runtime()
+    assert probed_env_wd["torch_version"].startswith("unreadable: judge venv python not found")
+
+    # A1: Real modes ("time-one", "shard", "probe") refuse on unreadable fields, warn_only, and SDPA mismatch
+    for real_m in ("time-one", "shard", "probe"):
+        with pytest.raises(vm_judges.RefusalError) as exc_a1_unr:
+            vm_judges.collect_and_write_session_env(
+                tmp_path / f"a1_unr_{real_m}",
+                receipts_dir=receipts_dir,
+                mode=real_m,
+                dryrun=False,
+                work_dir=empty_work,
+                repo_dir=REPO_ROOT,
+            )
+        assert exc_a1_unr.value.failure_class == "SESSION_ENV_UNREADABLE"
+
+        with monkeypatch.context() as mp:
+            mp.setitem(sys.modules, "torch", _FakeTorchCustomizable(warn_only=True))
+            with pytest.raises(vm_judges.RefusalError) as exc_a1_wo:
+                vm_judges.collect_and_write_session_env(
+                    tmp_path / f"a1_wo_{real_m}",
+                    receipts_dir=receipts_dir,
+                    mode=real_m,
+                    dryrun=False,
+                    repo_dir=REPO_ROOT,
+                )
+            assert exc_a1_wo.value.failure_class == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+        with monkeypatch.context() as mp:
+            mp.setitem(sys.modules, "torch", _FakeTorchCustomizable(sdpa="flash"))
+            with pytest.raises(vm_judges.RefusalError) as exc_a1_sdpa:
+                vm_judges.collect_and_write_session_env(
+                    tmp_path / f"a1_sdpa_{real_m}",
+                    receipts_dir=receipts_dir,
+                    mode=real_m,
+                    dryrun=False,
+                    repo_dir=REPO_ROOT,
+                    sdpa_backend_requested="math",
+                )
+            assert exc_a1_sdpa.value.failure_class == "SDPA_BACKEND_MISMATCH"
+
+        senv_ok = vm_judges.collect_and_write_session_env(
+            tmp_path / f"a1_ok_{real_m}",
+            receipts_dir=receipts_dir,
+            mode=real_m,
+            dryrun=False,
+            repo_dir=REPO_ROOT,
+        )
+        bad_senv_a1 = json.loads(json.dumps(senv_ok))
+        bad_senv_a1["attention"]["sdpa_backend"] = "flash"
+        bad_senv_a1["attention"]["sdpa_backend_requested"] = "math"
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_ms_a1:
+            merge_shards._extract_comparable_env_profile(
+                bad_senv_a1,
+                expected_judge_ids=merge_shards.EXPECTED_JUDGE_IDS,
+            )
+        assert exc_ms_a1.value.failure_class == "SDPA_BACKEND_MISMATCH"
+
+    # A3: Misspelt --mode exits at parse time
+    for valid_m in ("stub", "dryrun", "dry-run", "time-one", "counted", "probe"):
+        parsed_ns = vm_judges.parse_args(["--mode", valid_m])
+        assert parsed_ns.mode == valid_ns.mode if (valid_ns := parsed_ns) else True
+        assert parsed_ns.mode == valid_m
+    for bad_m in ("counetd", "time_one", "shard", "unknown-mode"):
+        with pytest.raises(SystemExit) as exc_a3:
+            vm_judges.parse_args(["--mode", bad_m])
+        assert exc_a3.value.code == 2
+
+    # A4: Boot gatekeeper
+    # 1. Golden-missing refusal uses is_real_mode (time-one included)
+    goldens_unfilled = REPO_ROOT / "scripts" / "colab" / "boot_gatekeeper_goldens.json"
+    with pytest.raises(vm_judges.RefusalError) as exc_gk_t1_miss:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=tmp_path / "gk_t1_missing",
+            repo_root=REPO_ROOT,
+            mode="time-one",
+            card_type="A100",
+            goldens_path=goldens_unfilled,
+            dryrun=False,
+        )
+    assert exc_gk_t1_miss.value.failure_class == "BOOT_GATEKEEPER_GOLDEN_MISSING"
+
+    filled_gk_doc = json.loads(goldens_unfilled.read_text(encoding="utf-8"))
+    for p_entry in filled_gk_doc["synthetic_prompts"]:
+        pid = p_entry["prompt_id"]
+        filled_gk_doc["card_types"]["A100"]["prompts"][pid] = {
+            "output_token_ids_sha256": "a" * 64
+        }
+    filled_gk_path = tmp_path / "filled_gk_a4.json"
+    filled_gk_path.write_text(json.dumps(filled_gk_doc, indent=2), encoding="utf-8")
+
+    # 2. Missing venv python in _run_real_boot_gatekeeper_prompts refuses
+    with pytest.raises(vm_judges.RefusalError) as exc_gk_no_venv:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=tmp_path / "gk_no_venv",
+            repo_root=REPO_ROOT,
+            mode="time-one",
+            card_type="A100",
+            goldens_path=filled_gk_path,
+            dryrun=False,
+            work_dir=empty_work,
+            receipts_dir=receipts_dir,
+        )
+    assert exc_gk_no_venv.value.failure_class == "VENV_PYTHON_MISSING"
+
+    # 3. Missing receipt with work_dir (venv exists) refuses
+    work_with_venv = tmp_path / "work_with_venv_a4"
+    venv_py_a4 = work_with_venv / "venv-judge" / "bin" / "python"
+    vm_judges._ensure_dryrun_venv_python_wrapper(venv_py_a4)
+    with pytest.raises(vm_judges.RefusalError) as exc_gk_no_rec_wd:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=tmp_path / "gk_no_rec_wd",
+            repo_root=REPO_ROOT,
+            mode="time-one",
+            card_type="A100",
+            goldens_path=filled_gk_path,
+            dryrun=False,
+            work_dir=work_with_venv,
+            receipts_dir=tmp_path / "missing_receipts_dir",
+        )
+    assert exc_gk_no_rec_wd.value.failure_class == "BOOT_GATEKEEPER_RECEIPT_MISSING"
+
+    # 4. Subprocess failure (non-zero returncode, malformed JSON, missing 'hashes') refuses
+    for bad_proc in (
+        types.SimpleNamespace(returncode=1, stdout="", stderr="CUDA error"),
+        types.SimpleNamespace(returncode=0, stdout="{not-json\n", stderr=""),
+        types.SimpleNamespace(returncode=0, stdout=json.dumps({"status": "ok"}) + "\n", stderr=""),
+    ):
+        with monkeypatch.context() as mp:
+            mp.setattr(subprocess, "run", lambda *_a, **_k: bad_proc)
+            with pytest.raises(vm_judges.RefusalError) as exc_gk_sub:
+                vm_judges.run_boot_gatekeeper(
+                    run_dir=tmp_path / "gk_sub_fail",
+                    repo_root=REPO_ROOT,
+                    mode="time-one",
+                    card_type="A100",
+                    goldens_path=filled_gk_path,
+                    dryrun=False,
+                    work_dir=work_with_venv,
+                    receipts_dir=receipts_dir,
+                )
+            assert exc_gk_sub.value.failure_class == "BOOT_GATEKEEPER_SUBPROCESS_FAILED"
+
+    # 5. Subprocess success returns hashes
+    good_proc = types.SimpleNamespace(
+        returncode=0,
+        stdout=json.dumps(
+            {
+                "status": "ok",
+                "hashes": {
+                    "boot_gatekeeper_synthetic_1": "a" * 64,
+                    "boot_gatekeeper_synthetic_2": "a" * 64,
+                },
+            }
+        )
+        + "\n",
+        stderr="",
+    )
+    with monkeypatch.context() as mp:
+        mp.setattr(subprocess, "run", lambda *_a, **_k: good_proc)
+        rep_sub_ok = vm_judges.run_boot_gatekeeper(
+            run_dir=tmp_path / "gk_sub_ok",
+            repo_root=REPO_ROOT,
+            mode="time-one",
+            card_type="A100",
+            goldens_path=filled_gk_path,
+            dryrun=False,
+            work_dir=work_with_venv,
+            receipts_dir=receipts_dir,
+        )
+    assert rep_sub_ok["status"] == "ok"
+    assert rep_sub_ok["hash_source"] == "real_transport"
+
+    # 6. In-process path: missing receipt refuses (never falls back to _InProcTok/_InProcModel)
+    with pytest.raises(vm_judges.RefusalError) as exc_gk_no_rec_inproc:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=tmp_path / "gk_no_rec_inproc",
+            repo_root=REPO_ROOT,
+            mode="time-one",
+            card_type="A100",
+            goldens_path=filled_gk_path,
+            dryrun=False,
+            receipts_dir=tmp_path / "missing_receipts_dir",
+        )
+    assert exc_gk_no_rec_inproc.value.failure_class == "BOOT_GATEKEEPER_RECEIPT_MISSING"
+
+    # 7. In-process path: missing torch or transformers refuses (never injects stub module)
+    with monkeypatch.context() as mp:
+        mp.setitem(sys.modules, "torch", None)
+        with pytest.raises(vm_judges.RefusalError) as exc_gk_no_torch:
+            vm_judges.run_boot_gatekeeper(
+                run_dir=tmp_path / "gk_no_torch",
+                repo_root=REPO_ROOT,
+                mode="time-one",
+                card_type="A100",
+                goldens_path=filled_gk_path,
+                dryrun=False,
+                receipts_dir=receipts_dir,
+            )
+        assert exc_gk_no_torch.value.failure_class == "BOOT_GATEKEEPER_TORCH_MISSING"
+
+    with monkeypatch.context() as mp:
+        mp.delitem(sys.modules, "torch", raising=False)
+        mp.setattr(importlib, "import_module", lambda name, *a, **k: (_ for _ in ()).throw(ImportError("no torch")) if name == "torch" else sys.modules[name])
+        with pytest.raises(vm_judges.RefusalError) as exc_gk_imp_torch:
+            vm_judges._run_real_boot_gatekeeper_prompts(
+                judge_id="nemotron-3-nano-4b",
+                prompts=vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS,
+                seed=20261030,
+                mode="time-one",
+                repo_root=REPO_ROOT,
+                receipts_dir=receipts_dir,
+            )
+        assert exc_gk_imp_torch.value.failure_class == "BOOT_GATEKEEPER_TORCH_MISSING"
+
+    with monkeypatch.context() as mp:
+        mp.setitem(sys.modules, "transformers", None)
+        with pytest.raises(vm_judges.RefusalError) as exc_gk_no_tf:
+            vm_judges.run_boot_gatekeeper(
+                run_dir=tmp_path / "gk_no_tf",
+                repo_root=REPO_ROOT,
+                mode="time-one",
+                card_type="A100",
+                goldens_path=filled_gk_path,
+                dryrun=False,
+                receipts_dir=receipts_dir,
+            )
+        assert exc_gk_no_tf.value.failure_class == "BOOT_GATEKEEPER_TRANSFORMERS_MISSING"
+
+    with monkeypatch.context() as mp:
+        mp.delitem(sys.modules, "transformers", raising=False)
+        orig_imp = importlib.import_module
+        mp.setattr(
+            importlib,
+            "import_module",
+            lambda name, *a, **k: (_ for _ in ()).throw(ImportError("no tf"))
+            if name == "transformers"
+            else orig_imp(name, *a, **k),
+        )
+        with pytest.raises(vm_judges.RefusalError) as exc_gk_imp_tf:
+            vm_judges._run_real_boot_gatekeeper_prompts(
+                judge_id="nemotron-3-nano-4b",
+                prompts=vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS,
+                seed=20261030,
+                mode="time-one",
+                repo_root=REPO_ROOT,
+                receipts_dir=receipts_dir,
+            )
+        assert exc_gk_imp_tf.value.failure_class == "BOOT_GATEKEEPER_TRANSFORMERS_MISSING"
+
+    # 8. In-process path with fake TransformersJudgeTransport and D3MiniTransport when torch & transformers are present
+    class _FakeRealTr:
+        def __init__(self, **_kw: Any) -> None:
+            self.kw = _kw
+
+        def verify_ready(self, spec: Any, *, allow_remote_code_reviewed: Any = None) -> str:
+            return str(spec.revision)
+
+        def generate(self, spec: Any, prompt: Any, *, seed: int) -> Any:
+            return types.SimpleNamespace(
+                tokens=("yes",),
+                output_token_ids_sha256="a" * 64,
+                system_one_result=None,
+            )
+
+    with monkeypatch.context() as mp:
+        mp.setattr(bakeoff_judge, "TransformersJudgeTransport", _FakeRealTr)
+        mp.setattr(bakeoff_judge, "D3MiniTransport", _FakeRealTr)
+        h_inproc = vm_judges._run_real_boot_gatekeeper_prompts(
+            judge_id="nemotron-3-nano-4b",
+            prompts=[{"prompt_id": ""}, *vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS],
+            seed=20261030,
+            mode="time-one",
+            repo_root=REPO_ROOT,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            device="cuda:0",
+        )
+        assert h_inproc["boot_gatekeeper_synthetic_1"] == "a" * 64
+
+    # 9. Verify main() passes device=resolve_judge_device(mode=args.mode, dryrun=dryrun) into run_boot_gatekeeper
+    main_src = Path(vm_judges.__file__).read_text(encoding="utf-8")
+    assert "device=resolve_judge_device(mode=args.mode, dryrun=dryrun)" in main_src
+
 
 
 
