@@ -12480,6 +12480,7 @@ def test_non_stub_child_argv_uses_cuda_0_and_runner_normalizes_cuda_for_d3_trans
 
     # 3. `bakeoff_judge` normalises `--device cuda` to `"cuda:0"` so `D3MiniTransport` passes `device="cuda:0"`
     #    to `AutoModel.from_pretrained`
+    monkeypatch.delenv("FAKE_COLAB_STATE_DIR", raising=False)
     for name in bj_mod.OFFLINE_ENV_VARS:
         monkeypatch.setenv(name, "1")
 
@@ -12587,6 +12588,7 @@ def test_fake_d3_runtime_rejects_indexless_cuda_and_passes_with_normalized_devic
     )
     items_file = _make_synthetic_public_items(tmp_path / "d3_idx_data", count=2)
 
+    monkeypatch.delenv("FAKE_COLAB_STATE_DIR", raising=False)
     for name in bj_mod.OFFLINE_ENV_VARS:
         monkeypatch.setenv(name, "1")
 
