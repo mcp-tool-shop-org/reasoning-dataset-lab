@@ -200,6 +200,10 @@ DEFAULT_CANARY_ANCHOR_ITEMS_COUNT = 25
 DEFAULT_ANCHOR_ITEMS_COUNT = 50
 MERGE_CONFIG_FILENAME = "merge_config.json"
 GOLDEN_ANCHOR_MANIFEST_FILENAME = "golden_anchor_manifest.json"
+BOOT_GATEKEEPER_FILLED_FILENAME = "boot_gatekeeper_goldens.filled.json"
+P0A_REPORT_FILENAME = "p0a_report.json"
+WINDOW_MANIFEST_FILENAME = "window.json"
+CANARY_ANCHOR_SELECTION_RULE = "min_verdict_token_margin_asc_exclude_stratified_25_tiebreak_item_id"
 PINNED_ATTN_IMPLEMENTATION = "sdpa"
 
 EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
@@ -411,8 +415,16 @@ def resolve_repo_dir(repo_dir: Path | None = None) -> Path:
 
 
 def _ensure_repo_imports(repo_dir: Path | None = None) -> None:
-    """No-op compatibility stub (parent process never mutates `sys.path`)."""
-    _ = repo_dir
+    """Add `RDLAB_REPO_DIR/src` to `sys.path` if not already present."""
+    candidate_roots = [resolve_repo_dir(repo_dir)]
+    if repo_dir is not None:
+        candidate_roots.insert(0, Path(repo_dir))
+    for root in candidate_roots:
+        src_dir = root / "src"
+        if src_dir.is_dir():
+            src_str = str(src_dir)
+            if src_str not in sys.path:
+                sys.path.insert(0, src_str)
 
 
 EXPECTED_JUDGE_LOCK_SHA256 = (
@@ -545,12 +557,17 @@ TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
         GENERATIONS_FILENAME,
         "time_one_summary.json",
         "vm_receipt.json",
+        "receipt.json",
         PROGRESS_FILENAME,
         CHILD_PROGRESS_FILENAME,
         SESSION_ENV_FILENAME,
         SHARD_MANIFEST_FILENAME,
         SHARD_MANIFEST_SHA256_FILENAME,
         BOOT_GATEKEEPER_FILENAME,
+        GOLDEN_ANCHOR_MANIFEST_FILENAME,
+        BOOT_GATEKEEPER_FILLED_FILENAME,
+        P0A_REPORT_FILENAME,
+        WINDOW_MANIFEST_FILENAME,
     }
 )
 TAR_ALLOWED_DIRS: frozenset[str] = frozenset(
@@ -2408,7 +2425,19 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "            raise RuntimeError('CUDA not available')\n"
             "    @staticmethod\n"
             "    def cudart():\n"
-            "        return _FakeCudart()\n",
+            "        return _FakeCudart()\n"
+            "    class Event:\n"
+            "        _clock = 0.0\n"
+            "        def __init__(self, enable_timing=False):\n"
+            "            self.enable_timing = bool(enable_timing)\n"
+            "            self._ts = 0.0\n"
+            "        def record(self, *_a, **_kw):\n"
+            "            cuda.Event._clock += 1.0\n"
+            "            self._ts = cuda.Event._clock\n"
+            "        def synchronize(self):\n"
+            "            return None\n"
+            "        def elapsed_time(self, end_event):\n"
+            "            return max(0.0001, float(end_event._ts - self._ts))\n",
             encoding="utf-8",
             newline="\n",
         )
@@ -2449,6 +2478,8 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "        return self\n"
             "    def eval(self):\n"
             "        return self\n"
+            "    def __call__(self, *_a, **_kw):\n"
+            "        return types.SimpleNamespace(logits=torch._FakeTensor((1, 2, 6), vals=[[[-8.0, -8.0, -8.0, -0.15, -2.05, -8.0], [-8.0, -8.0, -8.0, -0.15, -2.05, -8.0]]]))\n"
             "    def generate(self, **kw):\n"
             "        in_ids = kw['input_ids'].tolist()[0]\n"
             "        out_tok = 3 if (sum(in_ids) % 2 == 0) else 4\n"
@@ -2467,6 +2498,8 @@ def _ensure_dryrun_venv_python_wrapper(venv_python: Path) -> None:
             "    @classmethod\n"
             "    def from_pretrained(cls, *_a, **_kw):\n"
             "        return cls()\n"
+            "    def __call__(self, *_a, **_kw):\n"
+            "        return {'answers': {'supported': {'noul': 0.85}}}\n"
             "    def system_one(self, *, state, questions):\n"
             "        return {'answers': {'supported': {'noul': 0.85}}}\n",
             encoding="utf-8",
@@ -3975,11 +4008,17 @@ def check_upload_path_allowed(path: str | Path) -> None:
 def delete_uploaded_items_and_record_receipt(
     uploaded_paths: Sequence[Path],
 ) -> dict[str, Any]:
-    """Delete uploaded item files on the VM and verify absence with `test ! -e` per file."""
+    """Delete uploaded item files and any un-uploaded `manifest.json` in their directories, verifying absence with `test ! -e`."""
     file_records: list[dict[str, Any]] = []
+    manifest_cleanup_errors: list[dict[str, str]] = []
     all_absent = True
+    uploaded_resolved = {Path(p).resolve() for p in uploaded_paths}
+    parent_dirs: list[Path] = []
     for item_path in uploaded_paths:
         p = Path(item_path)
+        parent_d = p if p.is_dir() else p.parent
+        if parent_d not in parent_dirs:
+            parent_dirs.append(parent_d)
         if p.exists() or p.is_symlink():
             try:
                 p.unlink()
@@ -4001,15 +4040,32 @@ def delete_uploaded_items_and_record_receipt(
                 "absent": absent,
             }
         )
+    for parent_d in parent_dirs:
+        leftover_mf = parent_d / "manifest.json"
+        if leftover_mf.resolve() not in uploaded_resolved and (
+            leftover_mf.exists() or leftover_mf.is_symlink()
+        ):
+            try:
+                leftover_mf.unlink()
+            except OSError as exc:
+                manifest_cleanup_errors.append(
+                    {
+                        "path": str(leftover_mf).replace("\\", "/"),
+                        "error": str(exc),
+                    }
+                )
     if not all_absent:
         raise RefusalError(
             "UPLOADED_ITEMS_NOT_DELETED",
             f"Uploaded item file(s) still present after deletion: {file_records}",
         )
-    return {
+    receipt_out: dict[str, Any] = {
         "all_absent": all_absent,
         "files": file_records,
     }
+    if manifest_cleanup_errors:
+        receipt_out["manifest_cleanup_errors"] = manifest_cleanup_errors
+    return receipt_out
 
 
 def write_outputs_closed(
@@ -4398,6 +4454,87 @@ def build_allowlisted_result_tar(run_dir: Path, tar_path: Path) -> list[str]:
     return rel_files
 
 
+def write_window_manifest(
+    run_dir: Path,
+    *,
+    window_id: str | None = None,
+    mode: str | None = None,
+    anchor_items_sha256: str | None = None,
+    p0a_items_sha256: str | None = None,
+    counted_source_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Build and write `run_dir / window.json` listing `{sha256, bytes}` for every allow-listed artifact in `run_dir`."""
+    ensure_not_drive_path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    eff_window_id = (
+        str(window_id).strip()
+        if window_id is not None and str(window_id).strip()
+        else (
+            os.environ.get("RDLAB_SESSION_ID", "").strip()
+            or os.environ.get("RDLAB_RUN_ID", "").strip()
+            or run_dir.name
+            or "window-local"
+        )
+    )
+    eff_mode = (
+        str(mode).strip()
+        if mode is not None and str(mode).strip()
+        else (os.environ.get("RDLAB_MODE", "").strip() or "stub")
+    )
+    existing_win_path = run_dir / WINDOW_MANIFEST_FILENAME
+    prev_anchor_sha: str | None = None
+    prev_p0a_sha: str | None = None
+    prev_counted_sha: str | None = None
+    if existing_win_path.is_file():
+        try:
+            prev_win_doc = json.loads(existing_win_path.read_text(encoding="utf-8"))
+            if isinstance(prev_win_doc, Mapping):
+                prev_anchor_sha = str(prev_win_doc.get("anchor_items_sha256") or "").strip() or None
+                prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
+                prev_counted_sha = str(prev_win_doc.get("counted_source_sha256") or "").strip() or None
+        except Exception:
+            pass
+    eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
+    eff_p0a_sha = (str(p0a_items_sha256).strip() if p0a_items_sha256 else None) or prev_p0a_sha
+    eff_counted_sha = (str(counted_source_sha256).strip() if counted_source_sha256 else None) or prev_counted_sha
+    files_map: dict[str, dict[str, Any]] = {}
+    for p in sorted(run_dir.rglob("*")):
+        if not p.is_file() or p.is_symlink():
+            continue
+        rel = p.relative_to(run_dir).as_posix()
+        if rel == WINDOW_MANIFEST_FILENAME or not is_allowed_tar_member(rel):
+            continue
+        raw = p.read_bytes()
+        files_map[rel] = {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+        }
+    doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "window_id": eff_window_id,
+        "mode": eff_mode,
+        "file_count": len(files_map),
+        "files": files_map,
+    }
+    if eff_anchor_sha is not None:
+        doc["anchor_items_sha256"] = eff_anchor_sha
+    if eff_p0a_sha is not None:
+        doc["p0a_items_sha256"] = eff_p0a_sha
+    if eff_counted_sha is not None:
+        doc["counted_source_sha256"] = eff_counted_sha
+    body_bytes = json.dumps(
+        doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    doc["window_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
+    out_path = run_dir / WINDOW_MANIFEST_FILENAME
+    out_path.write_text(
+        json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return doc
+
+
 def compute_percentile(vals: Sequence[float], pct: float) -> float:
     """Compute percentile (`0 <= pct <= 100`) over `vals`."""
     if not vals:
@@ -4682,7 +4819,8 @@ def resolve_judge_device(
 ) -> str:
     """Resolve and normalise the `--device` string passed to a judge child subprocess."""
     _ = dryrun
-    if real_load_on_cpu or mode == "stub":
+    norm_mode = str(mode or "").strip().lower()
+    if real_load_on_cpu or norm_mode in STUB_OR_DRYRUN_MODES:
         candidate: Any = "cpu" if raw_device is None else raw_device
     else:
         candidate = "cuda" if raw_device is None else raw_device
@@ -5375,6 +5513,84 @@ def run_gpu_gate(
     return ok_report
 
 
+def _ensure_part_manifest_for_run(
+    part_dir: Path,
+    *,
+    mode: str,
+    dryrun: bool = False,
+) -> tuple[dict[str, Any], bool]:
+    """Ensure `part_dir / manifest.json` exists or refuse with `PART_MANIFEST_MISSING` in real modes.
+
+    Only stub or dryrun modes may synthesize a part manifest, and any synthesized manifest is
+    labelled `"part_id": "stub"`, `"synthesized": True` (never `"pilot-40b"`).
+    Returns `(manifest_doc, was_synthesized)`.
+    """
+    part_manifest = part_dir / "manifest.json"
+    real_mode_active = is_real_mode(mode, dryrun=dryrun)
+    if part_manifest.is_file():
+        try:
+            loaded = json.loads(part_manifest.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part manifest at {part_manifest} failed to parse as JSON (parse error): {exc}",
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part manifest at {part_manifest} root is not a JSON object (not a dict): got {type(loaded).__name__}",
+            )
+        raw_pid = loaded.get("part_id")
+        if not isinstance(raw_pid, str) or not raw_pid.strip():
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part manifest at {part_manifest} has no non-empty string part_id (no part_id)",
+            )
+        was_synth = bool(loaded.get("synthesized")) or raw_pid.strip().lower() == "stub"
+        if real_mode_active and was_synth:
+            raise RefusalError(
+                "PART_MANIFEST_SYNTHESIZED",
+                f"Part manifest at {part_manifest} is a synthesized stub manifest (part_id={raw_pid!r}, synthesized={bool(loaded.get('synthesized'))}) and is forbidden in real mode {mode!r}.",
+            )
+        return loaded, bool(loaded.get("synthesized"))
+    if real_mode_active:
+        raise RefusalError(
+            "PART_MANIFEST_MISSING",
+            f"Part manifest not found at {part_manifest} in real mode {mode!r}; real mode never synthesizes a part manifest.",
+        )
+    stub_doc: dict[str, Any] = {
+        "part_id": "stub",
+        "schema_version": "1.0",
+        "synthesized": True,
+    }
+    part_dir.mkdir(parents=True, exist_ok=True)
+    part_manifest.write_text(
+        json.dumps(stub_doc, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return stub_doc, True
+
+
+def _resolve_single_counted_source(
+    counted_items_file: Path | None = None,
+    counted_manifest_file: Path | None = None,
+    *,
+    check_env: bool = True,
+) -> Path | None:
+    """Enforce that at most one of `--counted-items` (`RDLAB_COUNTED_ITEMS_FILE`) and `--counted-manifest` (`RDLAB_COUNTED_MANIFEST`) is given."""
+    env_items_raw = os.environ.get("RDLAB_COUNTED_ITEMS_FILE", "").strip() if check_env else ""
+    env_mf_raw = os.environ.get("RDLAB_COUNTED_MANIFEST", "").strip() if check_env else ""
+    eff_items = counted_items_file if counted_items_file is not None else (Path(env_items_raw) if env_items_raw else None)
+    eff_mf = counted_manifest_file if counted_manifest_file is not None else (Path(env_mf_raw) if env_mf_raw else None)
+    if eff_items is not None and eff_mf is not None:
+        raise RefusalError(
+            "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+            "Cannot specify both --counted-items (RDLAB_COUNTED_ITEMS_FILE) and --counted-manifest (RDLAB_COUNTED_MANIFEST); pass only one counted source.",
+        )
+    return eff_items if eff_items is not None else eff_mf
+
+
 def run_judges_pipeline(
     *,
     mode: str,
@@ -5399,12 +5615,117 @@ def run_judges_pipeline(
     shard_spec: str | None = None,
     shard_manifest_path: Path | None = None,
     shard_manifest_sha256: str | None = None,
+    golden_anchor_manifest_path: Path | None = None,
+    anchor_items_file: Path | None = None,
+    p0a_items_file: Path | None = None,
+    counted_items_or_manifest: Path | None = None,
+    counted_manifest_file: Path | None = None,
     loop_order: str | None = None,
     subblock_items: int | None = None,
     session_fingerprint_sha256: str | None = None,
     replacement_session: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run all 5 judges (or `only_judge_ids`) as separate child subprocesses in their synced venvs and compute readouts."""
+    anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
+    p0a_stage_dir = run_dir.parent / f".{run_dir.name}_p0a_part"
+    orig_part_dir = part_dir if part_dir.is_dir() else part_dir.parent
+    orig_part_manifest = orig_part_dir / "manifest.json"
+    preexisting_part_manifest = orig_part_manifest.is_file()
+    t1_summary: dict[str, Any] | None = None
+    try:
+        t1_summary, mass_readout = _run_judges_pipeline_body(
+            mode=mode,
+            part_dir=part_dir,
+            run_dir=run_dir,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            vram_halt_mib=vram_halt_mib,
+            dryrun=dryrun,
+            repo_root=repo_root,
+            work_dir=work_dir,
+            progress_path=progress_path,
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
+            proc_meminfo_path=proc_meminfo_path,
+            only_judge_ids=only_judge_ids,
+            only_judges=only_judges,
+            judge_order=judge_order,
+            judge_order_source=judge_order_source,
+            real_load_on_cpu=real_load_on_cpu,
+            child_timeout_seconds=child_timeout_seconds,
+            shard_spec=shard_spec,
+            shard_manifest_path=shard_manifest_path,
+            shard_manifest_sha256=shard_manifest_sha256,
+            golden_anchor_manifest_path=golden_anchor_manifest_path,
+            anchor_items_file=anchor_items_file,
+            p0a_items_file=p0a_items_file,
+            counted_items_or_manifest=counted_items_or_manifest,
+            counted_manifest_file=counted_manifest_file,
+            loop_order=loop_order,
+            subblock_items=subblock_items,
+            session_fingerprint_sha256=session_fingerprint_sha256,
+            replacement_session=replacement_session,
+        )
+        return t1_summary, mass_readout
+    finally:
+        shutil.rmtree(p0a_stage_dir, ignore_errors=True)
+        shutil.rmtree(anchor_stage_dir, ignore_errors=True)
+        if not preexisting_part_manifest and orig_part_manifest.is_file():
+            try:
+                orig_part_manifest.unlink()
+            except OSError as exc:
+                if t1_summary is not None:
+                    err_entry = {
+                        "path": str(orig_part_manifest).replace("\\", "/"),
+                        "error": str(exc),
+                    }
+                    t1_summary.setdefault("manifest_cleanup_errors", []).append(
+                        err_entry
+                    )
+                    summary_file = run_dir / "time_one_summary.json"
+                    if summary_file.parent.is_dir():
+                        summary_file.write_text(
+                            json.dumps(t1_summary, indent=2) + "\n",
+                            encoding="utf-8",
+                            newline="\n",
+                        )
+
+
+def _run_judges_pipeline_body(
+    *,
+    mode: str,
+    part_dir: Path,
+    run_dir: Path,
+    receipts_dir: Path,
+    hf_home: Path,
+    vram_halt_mib: int = DEFAULT_VRAM_HALT_MIB,
+    dryrun: bool = False,
+    repo_root: Path | None = None,
+    work_dir: Path | None = None,
+    progress_path: Path | None = None,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+    proc_meminfo_path: Path | None = None,
+    only_judge_ids: Sequence[str] | None = None,
+    only_judges: Sequence[str] | None = None,
+    judge_order: Sequence[str] | None = None,
+    judge_order_source: str = "default",
+    real_load_on_cpu: bool = False,
+    child_timeout_seconds: float | None = None,
+    shard_spec: str | None = None,
+    shard_manifest_path: Path | None = None,
+    shard_manifest_sha256: str | None = None,
+    golden_anchor_manifest_path: Path | None = None,
+    anchor_items_file: Path | None = None,
+    p0a_items_file: Path | None = None,
+    counted_items_or_manifest: Path | None = None,
+    counted_manifest_file: Path | None = None,
+    loop_order: str | None = None,
+    subblock_items: int | None = None,
+    session_fingerprint_sha256: str | None = None,
+    replacement_session: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    _ensure_repo_imports(repo_root)
     eff_repo_dir = (repo_root or resolve_repo_dir()).resolve()
     eff_work_dir = (
         work_dir
@@ -5425,13 +5746,64 @@ def run_judges_pipeline(
     )
     _, parsed_shard_n = parse_shard_spec(raw_shard_for_parse)
     explicit_limit_env = os.environ.get("RDLAB_LIMIT_ITEMS", "").strip()
+    norm_mode = str(mode or "").strip().lower()
+    is_lock_check_window = norm_mode in (
+        "lock-check",
+        "lock_check",
+        "lock-check-stub",
+        "lock_check_stub",
+    )
+    eff_anchor_file: Path | None = None
+    eff_p0a_file: Path | None = None
+    eff_counted_source: Path | None = _resolve_single_counted_source(
+        counted_items_or_manifest,
+        counted_manifest_file,
+        check_env=is_lock_check_window,
+    )
+    if is_lock_check_window:
+        env_anc = os.environ.get("RDLAB_ANCHOR_ITEMS_FILE", "").strip()
+        env_p0a = os.environ.get("RDLAB_P0A_ITEMS_FILE", "").strip()
+        eff_anchor_file = anchor_items_file if anchor_items_file is not None else (Path(env_anc) if env_anc else None)
+        eff_p0a_file = p0a_items_file if p0a_items_file is not None else (Path(env_p0a) if env_p0a else None)
+        if eff_anchor_file is None or eff_p0a_file is None:
+            raise RefusalError(
+                "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                "--lock-check requires both --anchor-items (50 anchor items from the counted part) and --p0a-items (114 burned pilot items).",
+            )
+        import importlib
+
+        _ensure_repo_imports(eff_repo_dir)
+        bakeoff_judge_pre = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
+        try:
+            bakeoff_judge_pre.verify_lock_check_two_inputs(
+                anchor_items_or_path=eff_anchor_file,
+                p0a_items_or_path=eff_p0a_file,
+                counted_items_or_manifest=eff_counted_source,
+            )
+            bakeoff_judge_pre._resolve_items_from_manifest_source(eff_counted_source)
+        except bakeoff_judge_pre.RdlabError as exc:
+            raise RefusalError(exc.code, exc.message) from exc
+        anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
+        anchor_stage_dir.mkdir(parents=True, exist_ok=True)
+        src_anchor_jsonl = eff_anchor_file / "items.jsonl" if eff_anchor_file.is_dir() else eff_anchor_file
+        if (anchor_stage_dir / "items.jsonl").resolve() != src_anchor_jsonl.resolve():
+            shutil.copyfile(src_anchor_jsonl, anchor_stage_dir / "items.jsonl")
+        part_dir = anchor_stage_dir
     if real_load_on_cpu:
         limit_items: int | None = 2
     elif explicit_limit_env and explicit_limit_env.isdigit():
         limit_items = int(explicit_limit_env)
-    elif mode == "time-one":
+    elif norm_mode in ("time-one", "time_one"):
         limit_items = TIME_ONE_ITEMS_LIMIT
-    elif mode == "counted":
+    elif norm_mode in (
+        "counted",
+        "counted-stub",
+        "counted_stub",
+        "lock-check",
+        "lock_check",
+        "lock-check-stub",
+        "lock_check_stub",
+    ):
         limit_items = None
     elif parsed_shard_n > 1:
         items_candidate = (
@@ -5491,13 +5863,13 @@ def run_judges_pipeline(
             else resolve_judge_child_timeout_seconds()
         )
     )
-    part_manifest = part_dir / "manifest.json"
-    if not part_manifest.is_file():
-        part_manifest.write_text(
-            json.dumps({"part_id": "pilot-40b", "schema_version": "1.0"}, indent=2)
-            + "\n",
-            encoding="utf-8",
-            newline="\n",
+    part_manifest_doc: dict[str, Any] | None = None
+    part_manifest_synthesized: bool = False
+    if not is_lock_check_window:
+        part_manifest_doc, part_manifest_synthesized = _ensure_part_manifest_for_run(
+            part_dir if part_dir.is_dir() else part_dir.parent,
+            mode=mode,
+            dryrun=dryrun,
         )
 
     judge_done_dir = run_dir / JUDGE_DONE_DIRNAME
@@ -5589,9 +5961,32 @@ def run_judges_pipeline(
         )
         if allow_remote_sha is not None:
             child_cmd.extend(["--allow-remote-code-reviewed", allow_remote_sha])
-        if (dryrun or mode == "stub") and not real_load_on_cpu:
+        if (dryrun or norm_mode in STUB_OR_DRYRUN_MODES) and not real_load_on_cpu:
             child_cmd.append("--stub")
-        if has_explicit_shard or len(subblock_chunks) > 1:
+        eff_golden_manifest = (
+            Path(golden_anchor_manifest_path)
+            if golden_anchor_manifest_path is not None
+            else (
+                (run_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME)
+                if (run_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file()
+                else (
+                    (part_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME)
+                    if (part_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file()
+                    else (
+                        (eff_repo_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME)
+                        if (eff_repo_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file()
+                        else None
+                    )
+                )
+            )
+        )
+        if eff_golden_manifest is not None:
+            child_cmd.extend(["--golden-anchor-manifest", str(eff_golden_manifest)])
+        if (
+            has_explicit_shard
+            or len(subblock_chunks) > 1
+            or norm_mode in ("counted", "counted-stub", "counted_stub")
+        ):
             child_cmd.extend(
                 [
                     "--shard",
@@ -6123,7 +6518,161 @@ def run_judges_pipeline(
             "canary_drift": canary_info,
         }
 
-    raw_mass_check = check_bakeoff_logprob_mass(run_dir, part_id="pilot-40b")
+    golden_anchor_manifest_file_sha256: str | None = None
+    p0a_report_sha256: str | None = None
+    if norm_mode in ("lock-check", "lock_check", "lock-check-stub", "lock_check_stub"):
+        import importlib
+
+        bakeoff_judge = importlib.import_module(
+            "reasoning_dataset_lab.pilot_b.bakeoff_judge"
+        )
+        try:
+            golden_doc = bakeoff_judge.build_golden_anchor_manifest(
+                run_dir,
+                items_or_path=part_dir,
+                limit_items=limit_items,
+                schedule_seed=DEFAULT_SCHEDULE_SEED,
+            )
+            golden_file_sha = bakeoff_judge.write_golden_anchor_manifest(
+                golden_doc, run_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME
+            )
+            golden_anchor_manifest_file_sha256 = str(golden_file_sha)
+            if eff_counted_source is None or not eff_counted_source.exists():
+                raise RefusalError(
+                    "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+                    "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
+                )
+            rebuilt_shard_doc = bakeoff_judge.build_shard_manifest(
+                eff_counted_source,
+                num_shards=(parsed_shard_n if parsed_shard_n > 1 else 2),
+                schedule_seed=DEFAULT_SCHEDULE_SEED,
+                limit_items=limit_items,
+                lock_check_telemetry_path=run_dir,
+                golden_anchor_manifest_file_sha256=golden_anchor_manifest_file_sha256,
+            )
+            counted_id_set = bakeoff_judge._extract_counted_item_ids_from_source(eff_counted_source)
+            rebuilt_all_ids = set(
+                str(x)
+                for x in (
+                    rebuilt_shard_doc.get("all_item_ids")
+                    or rebuilt_shard_doc.get("shard_by_item", {}).keys()
+                )
+            )
+            if rebuilt_all_ids != counted_id_set:
+                raise RefusalError(
+                    "SHARD_MANIFEST_COUNTED_ITEMS_MISMATCH",
+                    f"Lock-check shard_manifest.json all_item_ids ({len(rebuilt_all_ids)} items) differ from counted source ({len(counted_id_set)} items).",
+                )
+            rebuilt_file_sha = bakeoff_judge.write_shard_manifest(
+                rebuilt_shard_doc, run_dir / SHARD_MANIFEST_FILENAME
+            )
+        except bakeoff_judge.RdlabError as exc:
+            raise RefusalError(exc.code, exc.message) from exc
+        shard_info["shard_manifest_sha256"] = rebuilt_file_sha
+        shard_info["manifest_body_sha256"] = str(rebuilt_shard_doc["manifest_sha256"])
+        shard_info["anchor_item_ids"] = list(rebuilt_shard_doc["anchor_item_ids"])
+
+        anchor_set = set(rebuilt_shard_doc["anchor_item_ids"])
+        anchor_rows_dir = run_dir / "anchor_rows"
+        anchor_rows_dir.mkdir(parents=True, exist_ok=True)
+        for jid, _ in selected_specs:
+            rf = run_dir / ROWS_DIRNAME / f"{jid}.jsonl"
+            j_anchor_lines: list[str] = []
+            for ln in (rf.read_text(encoding="utf-8").splitlines() if rf.is_file() else ()):
+                robj = json.loads(ln)
+                if str(robj.get("item_id") or "") in anchor_set:
+                    j_anchor_lines.append(json.dumps(robj, sort_keys=True))
+            (anchor_rows_dir / f"{jid}.jsonl").write_text(
+                ("\n".join(j_anchor_lines) + "\n") if j_anchor_lines else "",
+                encoding="utf-8",
+                newline="\n",
+            )
+
+        real_mode_active = is_real_mode(mode, dryrun=dryrun)
+        eff_p0a_part_dir = eff_p0a_file if eff_p0a_file is not None else part_dir
+        p0a_src_jsonl = (
+            eff_p0a_part_dir / "items.jsonl"
+            if eff_p0a_part_dir.is_dir()
+            else eff_p0a_part_dir
+        )
+        p0a_stage_dir = run_dir.parent / f".{run_dir.name}_p0a_part"
+        p0a_stage_dir.mkdir(parents=True, exist_ok=True)
+        if (p0a_stage_dir / "items.jsonl").resolve() != p0a_src_jsonl.resolve():
+            shutil.copyfile(p0a_src_jsonl, p0a_stage_dir / "items.jsonl")
+        p0a_in_shared_dir = (
+            p0a_src_jsonl.name.lower() == "p0a_items.jsonl"
+            or (p0a_src_jsonl.parent / "anchor_items.jsonl").exists()
+            or p0a_src_jsonl.parent.name.lower() == "rdlab_items"
+        )
+        p0a_mf_candidates = (
+            (p0a_src_jsonl.parent / "p0a_manifest.json",)
+            if p0a_in_shared_dir
+            else (
+                p0a_src_jsonl.parent / "p0a_manifest.json",
+                p0a_src_jsonl.parent / "manifest.json",
+            )
+        )
+        for cand_mf in p0a_mf_candidates:
+            if cand_mf.is_file():
+                try:
+                    cand_mf_doc = json.loads(cand_mf.read_text(encoding="utf-8"))
+                    if isinstance(cand_mf_doc, dict) and cand_mf_doc.get("synthesized"):
+                        continue
+                except Exception:
+                    pass
+                shutil.copyfile(cand_mf, p0a_stage_dir / "manifest.json")
+                break
+        try:
+            p0a_doc = bakeoff_judge.run_lock_check_p0a(
+                part_dir=p0a_stage_dir,
+                output_dir=run_dir,
+                baseline_rows=None,
+                anchor_items=part_dir,
+                counted_item_ids=eff_counted_source,
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                device=resolve_judge_device(
+                    mode=mode, dryrun=dryrun, real_load_on_cpu=real_load_on_cpu
+                ),
+                dtype=DEFAULT_TORCH_DTYPE,
+                schedule_seed=DEFAULT_SCHEDULE_SEED,
+                limit_items=limit_items,
+                fake_transport=not real_mode_active,
+                window_mode=mode,
+                event_factory=(
+                    bakeoff_judge._make_cuda_timing_event
+                    if real_mode_active
+                    else None
+                ),
+                timing_backend="cuda_event" if real_mode_active else "cpu_monotonic",
+                repo_root=eff_repo_dir,
+                judge_ids=[jid for jid, _ in selected_specs],
+            )
+        except bakeoff_judge.RdlabError as exc:
+            raise RefusalError(exc.code, exc.message) from exc
+        p0a_report_sha256 = str(p0a_doc.get("p0a_report_sha256") or "")
+
+    real_part_id: str | None = None
+    if isinstance(part_manifest_doc, Mapping) and not part_manifest_synthesized:
+        raw_pid = str(part_manifest_doc.get("part_id") or "").strip()
+        if raw_pid:
+            real_part_id = raw_pid
+    if is_lock_check_window:
+        raw_mass_check = check_bakeoff_logprob_mass(
+            run_dir, part_id=(real_part_id or "pilot-40b")
+        )
+    elif norm_mode in ("time-one", "time_one") and real_part_id in (None, "pilot-40b"):
+        raw_mass_check = check_bakeoff_logprob_mass(
+            run_dir, part_id=(real_part_id or "pilot-40b")
+        )
+    else:
+        raw_mass_check = {
+            "schema_version": "1.0",
+            "status": "not_applicable",
+            "part_id": real_part_id or "stub",
+            "threshold": 0.99,
+            "judges": {},
+        }
     pilot_mass_readout: dict[str, Any] = {
         "kind": "harness_readout",
         "is_result": False,
@@ -6131,6 +6680,7 @@ def run_judges_pipeline(
     }
     time_one_summary: dict[str, Any] = {
         "mode": mode,
+        "part_manifest": part_manifest_doc,
         "wall_seconds": TIME_ONE_WALL_SECONDS if mode == "time-one" else 7200,
         "cap_units": TIME_ONE_CAP_UNITS if mode == "time-one" else 0.16,
         "items_per_judge": len(shard_item_ids),
@@ -6145,6 +6695,8 @@ def run_judges_pipeline(
         "shard_manifest_sha256": shard_info["shard_manifest_sha256"],
         "shard_item_ids": shard_item_ids,
         "anchor_item_ids": shard_info["anchor_item_ids"],
+        "golden_anchor_manifest_file_sha256": golden_anchor_manifest_file_sha256,
+        "p0a_report_sha256": p0a_report_sha256,
         "vram_sample_interval_seconds": VRAM_SAMPLE_INTERVAL_SECONDS,
         "judges": per_judge_metrics,
         "harness_readouts": {
@@ -6274,6 +6826,9 @@ VALID_VM_MODES: tuple[str, ...] = (
     "dry-run",
     "time-one",
     "counted",
+    "counted-stub",
+    "lock-check",
+    "lock-check-stub",
     "probe",
 )
 
@@ -6293,6 +6848,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--mode",
         choices=VALID_VM_MODES,
         default=env_or("RDLAB_MODE", "stub"),
+    )
+    parser.add_argument(
+        "--lock-check",
+        dest="mode",
+        action="store_const",
+        const="lock-check",
+        help="Run the 114-item lock-check window mode.",
+    )
+    parser.add_argument(
+        "--lock-check-stub",
+        dest="mode",
+        action="store_const",
+        const="lock-check-stub",
+        help="Run the 114-item lock-check window mode on deterministic CPU stub transport.",
+    )
+    parser.add_argument(
+        "--counted-stub",
+        dest="mode",
+        action="store_const",
+        const="counted-stub",
+        help="Run counted sharded mode on deterministic CPU stub transport.",
     )
     parser.add_argument(
         "--wall-seconds",
@@ -6328,6 +6904,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--items-file",
         type=Path,
         default=env_path("RDLAB_ITEMS_FILE", Path("/content/rdlab_items/items.jsonl")),
+    )
+    parser.add_argument(
+        "--anchor-items",
+        "--anchor-items-file",
+        dest="anchor_items_file",
+        type=Path,
+        default=env_path("RDLAB_ANCHOR_ITEMS_FILE", None),
+        help="50 anchor items from the counted part (25 stratified + 25 canaries) for --lock-check.",
+    )
+    parser.add_argument(
+        "--p0a-items",
+        "--p0a-items-file",
+        dest="p0a_items_file",
+        type=Path,
+        default=env_path("RDLAB_P0A_ITEMS_FILE", None),
+        help="114 burned pilot items (pilot-40b) for --lock-check P0a.",
+    )
+    parser.add_argument(
+        "--counted-items",
+        dest="counted_items_file",
+        type=Path,
+        default=env_path("RDLAB_COUNTED_ITEMS_FILE", None),
+        help="Counted part items.jsonl (required for --lock-check and --lock-check-stub unless --counted-manifest is given) used to verify --anchor-items and --p0a-items.",
+    )
+    parser.add_argument(
+        "--counted-manifest",
+        dest="counted_manifest_file",
+        type=Path,
+        default=env_path("RDLAB_COUNTED_MANIFEST", None),
+        help="Counted part manifest.json or shard_manifest.json (required for --lock-check and --lock-check-stub unless --counted-items is given) used to verify --anchor-items and --p0a-items.",
     )
     parser.add_argument(
         "--resume-tar",
@@ -6423,6 +7029,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--boot-gatekeeper-goldens",
         type=Path,
         default=env_path("RDLAB_BOOT_GATEKEEPER_GOLDENS", None),
+    )
+    parser.add_argument(
+        "--golden-anchor-manifest",
+        type=Path,
+        default=None,
+    )
+    parser.add_argument(
+        "--window-id",
+        default=None,
     )
     parser.add_argument(
         "--dryrun",
@@ -6666,7 +7281,17 @@ TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
 MALFORMED_TEST_HOOK = "MALFORMED_TEST_HOOK"
 SDPA_BACKEND_MISMATCH = "SDPA_BACKEND_MISMATCH"
 PINNED_SDPA_BACKEND = "math"
-STUB_OR_DRYRUN_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run"})
+STUB_OR_DRYRUN_MODES: frozenset[str] = frozenset(
+    {
+        "stub",
+        "dryrun",
+        "dry-run",
+        "lock-check-stub",
+        "lock_check_stub",
+        "counted-stub",
+        "counted_stub",
+    }
+)
 VALID_SDPA_BACKENDS: frozenset[str] = frozenset(
     {
         "math",
@@ -6746,15 +7371,17 @@ def is_counted_or_time_one_mode(
     dryrun: bool = False,
     shard_spec: str | None = None,
 ) -> bool:
-    """Return True in `time-one`, `counted`, and every sharded counted mode (when `not dryrun`)."""
+    """Return True in `time-one`, `lock-check`, `counted`, and every sharded counted mode (when `not dryrun`)."""
     if dryrun:
         return False
     norm_mode = str(mode or "").strip().lower()
-    if norm_mode in ("stub", "dryrun", "dry-run"):
+    if norm_mode in STUB_OR_DRYRUN_MODES:
         return False
     if norm_mode in (
         "time-one",
         "time_one",
+        "lock-check",
+        "lock_check",
         "counted",
         "shard",
         "sharded",
@@ -8089,6 +8716,7 @@ def build_shard_manifest_stdlib(
     canary_anchor_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
     canary_item_ids: Sequence[str] | None = None,
     canary_telemetry_sha256: str | None = None,
+    golden_anchor_manifest_file_sha256: str | None = None,
     golden_anchor_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Pure-stdlib builder producing the exact pre-registered shard manifest as `bakeoff_judge.build_shard_manifest`."""
@@ -8227,6 +8855,20 @@ def build_shard_manifest_stdlib(
                 _stdlib_compute_prompt_input_token_ids_sha256(jid, prompt_text)
             )
 
+    eff_canary_inputs_sha = hashlib.sha256(
+        json.dumps(
+            {
+                "items_sha256": items_sha256,
+                "schedule_sha256": schedule_sha256,
+                "stratified_anchor_item_ids": list(stratified_anchor_ids),
+                "canary_telemetry_sha256": canary_telemetry_sha256,
+                "canary_selection_rule": CANARY_ANCHOR_SELECTION_RULE,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
     doc: dict[str, Any] = {
         "schema_version": "1.0",
         "assignment_method": "stratified_interleave_pass1",
@@ -8234,6 +8876,7 @@ def build_shard_manifest_stdlib(
         "schedule_sha256": schedule_sha256,
         "items_sha256": items_sha256,
         "item_count": len(items),
+        "all_item_ids": [str(it["item_id"]) for it in items],
         "num_shards": int(num_shards),
         "pass_mode": "binary",
         "shards": shards,
@@ -8242,9 +8885,17 @@ def build_shard_manifest_stdlib(
         "stratified_anchor_item_ids": stratified_anchor_ids,
         "canary_anchor_count": len(resolved_canary_ids),
         "canary_item_ids": resolved_canary_ids,
+        "canary_selection_rule": CANARY_ANCHOR_SELECTION_RULE,
+        "canary_inputs_sha256": eff_canary_inputs_sha,
         "canary_telemetry_sha256": canary_telemetry_sha256,
-        "golden_anchor_manifest_sha256": golden_anchor_manifest_sha256,
+        "golden_anchor_manifest_file_sha256": (
+            golden_anchor_manifest_file_sha256
+            if golden_anchor_manifest_file_sha256 is not None
+            else golden_anchor_manifest_sha256
+        ),
         "anchor_count": len(anchor_item_ids),
+        "anchor_item_count": len(anchor_item_ids),
+        "anchor_pair_count": len(anchor_item_ids) * len(BAKEOFF_JUDGE_SPECS),
         "anchor_item_ids": anchor_item_ids,
         "input_token_ids_sha256_by_call": dict(
             sorted(input_token_ids_sha256_by_call.items())
@@ -9206,6 +9857,7 @@ def _run_real_boot_gatekeeper_prompts(
     transport: Any | None = None,
 ) -> dict[str, str]:
     """Load the smallest judge (`nemotron-3-nano-4b`) through the real transport and run the 2 fixed synthetic prompts."""
+    _ensure_repo_imports(repo_root)
     if transport is not None:
         import importlib
 
@@ -9426,18 +10078,34 @@ def run_boot_gatekeeper(
     hf_home: Path | None = None,
     device: str = "cpu",
     transport: Any | None = None,
+    session_env_report: Mapping[str, Any] | None = None,
+    window_id: str | None = None,
 ) -> dict[str, Any]:
     """Run the 2-prompt synthetic boot gatekeeper on the smallest judge (`nemotron-3-nano-4b`) before a shard runs.
 
     - In `time-one` and `counted` mode (when `not dryrun`), loads the smallest judge through the real transport
       and runs the 2 fixed synthetic prompts built in code with no item text, comparing real `output_token_ids_sha256`
       with the golden for `card_type`.
+    - In `lock-check` / `lock-check-stub`, runs in record mode and writes `boot_gatekeeper_goldens.filled.json` in `run_dir`
+      without modifying `scripts/colab/boot_gatekeeper_goldens.json`.
     - In `stub` and `dryrun`, uses `_compute_synthetic_gatekeeper_output_sha256` and labels the report with
       `"hash_source": "synthetic_fake_stub_dryrun"` and `"synthetic_fake_hash": True`.
-    - Until the lock-check window fills the goldens, `counted` mode refuses with `"no golden"` (`BOOT_GATEKEEPER_GOLDEN_MISSING`).
+    - Until the lock-check window fills the goldens, `counted` and `counted-stub` modes refuse with `"no golden"` (`BOOT_GATEKEEPER_GOLDEN_MISSING`).
     """
     ensure_not_drive_path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+    norm_mode = str(mode or "").strip().lower()
+    is_lock_check_mode = norm_mode in (
+        "lock-check",
+        "lock_check",
+        "lock-check-stub",
+        "lock_check_stub",
+    )
+    is_counted_like_mode = norm_mode in (
+        "counted",
+        "counted-stub",
+        "counted_stub",
+    )
     eff_goldens_path = (
         Path(goldens_path)
         if goldens_path is not None
@@ -9518,27 +10186,45 @@ def run_boot_gatekeeper(
         if isinstance(card_types_map, Mapping)
         else None
     )
-    card_prompts = (
-        card_entry.get("prompts")
-        if isinstance(card_entry, Mapping)
-        and isinstance(card_entry.get("prompts"), Mapping)
-        else None
-    )
-    has_all_goldens = bool(card_entry is not None and isinstance(card_prompts, Mapping))
-    if has_all_goldens and isinstance(card_prompts, Mapping):
-        for sp in synth_prompts:
-            pid = str(sp.get("prompt_id") or "")
-            if not pid:
-                continue
-            p_gold = card_prompts.get(pid)
-            exp_sha_raw = (
-                p_gold.get("output_token_ids_sha256")
-                if isinstance(p_gold, Mapping)
-                else (p_gold if isinstance(p_gold, str) else None)
+
+    if is_real_mode(mode, dryrun=dryrun):
+        if transport is not None and (
+            bool(getattr(transport, "is_stub_transport", False))
+            or bool(getattr(transport, "is_stub", False))
+            or "FakeJudgeTransport" in type(transport).__name__
+            or bool(
+                isinstance(getattr(transport, "library_pins", None), Mapping)
+                and getattr(transport, "library_pins", {}).get("stub_transport")
             )
-            if not (str(exp_sha_raw).strip() if exp_sha_raw else ""):
-                has_all_goldens = False
-                break
+        ):
+            raise RefusalError(
+                "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+                f"Real mode ({mode!r}) refuses stub/fake transport {type(transport).__name__} in boot gatekeeper.",
+            )
+        prom_prov = goldens_doc.get("promoted_provenance")
+        if not is_lock_check_mode and (
+            (isinstance(prom_prov, Mapping) and bool(prom_prov.get("stub_transport")))
+            or (isinstance(card_entry, Mapping) and bool(card_entry.get("synthetic_fake_hash")))
+        ):
+            raise RefusalError(
+                "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+                f"Real mode ({mode!r}) refuses boot gatekeeper goldens recorded with stub/fake transport.",
+            )
+
+    def _extract_expected_sha(c_entry: Any, prompt_id_key: str) -> str | None:
+        exp_map = c_entry.get("expected_output_token_ids_sha256") if isinstance(c_entry, Mapping) else None
+        p_map = c_entry.get("prompts") if isinstance(c_entry, Mapping) else None
+        p_gold = p_map.get(prompt_id_key) if isinstance(p_map, Mapping) else None
+        raw_v = (
+            (exp_map.get(prompt_id_key) if isinstance(exp_map, Mapping) else None)
+            or (p_gold.get("output_token_ids_sha256") if isinstance(p_gold, Mapping) else p_gold)
+        )
+        return raw_v.strip().lower() if isinstance(raw_v, str) and raw_v.strip() else None
+
+    has_all_goldens = bool(
+        card_entry is not None
+        and all(_extract_expected_sha(card_entry, str(sp.get("prompt_id") or "")) for sp in synth_prompts)
+    )
 
     is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
     use_synthetic_fake = bool(is_stub_or_dryrun and transport is None)
@@ -9557,7 +10243,8 @@ def run_boot_gatekeeper(
                 ),
             )
     elif (
-        not has_all_goldens
+        not is_lock_check_mode
+        and not has_all_goldens
         and transport is None
         and work_dir is None
         and receipts_dir is None
@@ -9571,8 +10258,16 @@ def run_boot_gatekeeper(
             if sp.get("prompt_id")
         }
     else:
-        hash_source = "real_transport"
-        synthetic_fake_hash = False
+        is_tr_stub = bool(
+            transport is not None
+            and (
+                bool(getattr(transport, "is_stub_transport", False))
+                or bool(getattr(transport, "is_stub", False))
+                or "FakeJudgeTransport" in type(transport).__name__
+            )
+        )
+        hash_source = "synthetic_fake_stub_dryrun" if (is_stub_or_dryrun or is_tr_stub) else "real_transport"
+        synthetic_fake_hash = bool(is_stub_or_dryrun or is_tr_stub)
         real_hashes = _run_real_boot_gatekeeper_prompts(
             judge_id=judge_id,
             prompts=synth_prompts,
@@ -9593,21 +10288,129 @@ def run_boot_gatekeeper(
         else:
             actual_by_prompt = dict(real_hashes)
 
+    gatekeeper_out_path = run_dir / BOOT_GATEKEEPER_FILENAME
+    if is_lock_check_mode:
+        eff_window_id = (
+            str(window_id).strip()
+            if window_id is not None and str(window_id).strip()
+            else (
+                os.environ.get("RDLAB_SESSION_ID", "").strip()
+                or os.environ.get("RDLAB_RUN_ID", "").strip()
+                or run_dir.name
+                or "window-lock-check"
+            )
+        )
+        session_env_file = run_dir / SESSION_ENV_FILENAME
+        session_env_sha256 = (
+            sha256_file(session_env_file)
+            if session_env_file.is_file()
+            else str(
+                (session_env_report or {}).get("session_fingerprint_sha256")
+                or hashlib.sha256(
+                    f"lock-check-env:{eff_window_id}:{eff_card_type}".encode("utf-8")
+                ).hexdigest()
+            )
+        )
+        session_fp_sha256 = (
+            str(session_env_report.get("session_fingerprint_sha256") or "")
+            if isinstance(session_env_report, Mapping)
+            else ""
+        )
+
+        enriched_synth_prompts: list[dict[str, Any]] = []
+        for sp in synth_prompts:
+            pid = str(sp.get("prompt_id") or "")
+            mat = str(sp.get("material") or "")
+            clm = str(sp.get("claim") or "")
+            ord_s = str(sp.get("order") or "AB")
+            p_text = _stdlib_assemble_prompt_text(judge_id, mat, clm, ord_s)
+            p_sha = hashlib.sha256(p_text.encode("utf-8")).hexdigest()
+            in_tok_sha = _stdlib_compute_prompt_input_token_ids_sha256(judge_id, p_text)
+            enriched_synth_prompts.append(
+                {
+                    "prompt_id": pid,
+                    "material": mat,
+                    "claim": clm,
+                    "order": ord_s,
+                    "pass_mode": str(sp.get("pass_mode") or "binary"),
+                    "prompt_sha256": p_sha,
+                    "input_token_ids_sha256": in_tok_sha,
+                }
+            )
+
+        filled_card_types: dict[str, Any] = {}
+        if isinstance(card_types_map, Mapping):
+            for ck, cv in card_types_map.items():
+                if isinstance(cv, Mapping):
+                    filled_card_types[str(ck)] = dict(cv)
+        filled_card_types[eff_card_type] = {
+            "status": "filled",
+            "synthetic_fake_hash": synthetic_fake_hash,
+            "expected_output_token_ids_sha256": dict(actual_by_prompt),
+            "prompts": {
+                pid: {"output_token_ids_sha256": sha_v}
+                for pid, sha_v in actual_by_prompt.items()
+            },
+        }
+        filled_doc: dict[str, Any] = {
+            "schema_version": "1.0",
+            "judge_id": judge_id,
+            "description": "Boot gatekeeper golden output_token_ids_sha256 hashes recorded by --lock-check window.",
+            "synthetic_prompts": enriched_synth_prompts,
+            "card_types": filled_card_types,
+            "provenance": {
+                "window_id": eff_window_id,
+                "session_env_sha256": session_env_sha256,
+                "session_fingerprint_sha256": session_fp_sha256,
+                "mode": mode,
+                "card_type": eff_card_type,
+                "hash_source": hash_source,
+                "stub_transport": bool(synthetic_fake_hash),
+            },
+        }
+        body_payload = json.dumps(
+            filled_doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        filled_body_sha = hashlib.sha256(body_payload).hexdigest()
+        filled_doc["filled_goldens_body_sha256"] = filled_body_sha
+        filled_out_path = run_dir / BOOT_GATEKEEPER_FILLED_FILENAME
+        filled_serialized = (
+            json.dumps(filled_doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+        )
+        filled_out_path.write_text(
+            filled_serialized, encoding="utf-8", newline="\n"
+        )
+        filled_file_sha = hashlib.sha256(
+            filled_serialized.encode("utf-8")
+        ).hexdigest()
+
+        record_doc = {
+            "status": "ok",
+            "record_mode": True,
+            "card_type": eff_card_type,
+            "judge_id": judge_id,
+            "hash_source": hash_source,
+            "synthetic_fake_hash": synthetic_fake_hash,
+            "window_id": eff_window_id,
+            "session_env_sha256": session_env_sha256,
+            "filled_goldens_path": str(filled_out_path),
+            "filled_goldens_sha256": filled_file_sha,
+            "filled_goldens_body_sha256": filled_body_sha,
+            "actual_output_token_ids_sha256": actual_by_prompt,
+            "expected_output_token_ids_sha256": dict(actual_by_prompt),
+        }
+        gatekeeper_out_path.write_text(
+            json.dumps(record_doc, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        return record_doc
+
     missing_prompts: list[str] = []
     mismatched_prompts: list[dict[str, str]] = []
     expected_by_prompt: dict[str, str | None] = {}
     for pid, actual_sha in actual_by_prompt.items():
-        p_gold = (
-            card_prompts.get(pid)
-            if isinstance(card_prompts, Mapping)
-            else None
-        )
-        exp_sha_raw = (
-            p_gold.get("output_token_ids_sha256")
-            if isinstance(p_gold, Mapping)
-            else (p_gold if isinstance(p_gold, str) else None)
-        )
-        exp_sha = str(exp_sha_raw).strip().lower() if exp_sha_raw else None
+        exp_sha = _extract_expected_sha(card_entry, pid)
         expected_by_prompt[pid] = exp_sha
         if not exp_sha:
             missing_prompts.append(pid)
@@ -9620,7 +10423,6 @@ def run_boot_gatekeeper(
                 }
             )
 
-    gatekeeper_out_path = run_dir / BOOT_GATEKEEPER_FILENAME
     if mismatched_prompts:
         refused_doc = {
             "status": "refused",
@@ -9646,7 +10448,7 @@ def run_boot_gatekeeper(
         )
 
     if card_entry is None or missing_prompts:
-        if is_real_mode(mode, dryrun=dryrun):
+        if is_real_mode(mode, dryrun=dryrun) or is_counted_like_mode:
             missing_doc = {
                 "status": "no golden",
                 "failure_class": "BOOT_GATEKEEPER_GOLDEN_MISSING",
@@ -10276,6 +11078,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.step == "probe":
         return run_probe(args)
 
+    is_lock_check_main = args.mode in ("lock-check", "lock-check-stub")
+    anchor_items_arg = getattr(args, "anchor_items_file", None)
+    p0a_items_arg = getattr(args, "p0a_items_file", None)
+    raw_counted_items_arg = getattr(args, "counted_items_file", None)
+    raw_counted_manifest_arg = getattr(args, "counted_manifest_file", None)
+    counted_items_arg = raw_counted_items_arg if raw_counted_items_arg is not None else raw_counted_manifest_arg
+
     for p in (
         args.repo_dir,
         args.receipts_dir,
@@ -10285,6 +11094,10 @@ def main(argv: list[str] | None = None) -> int:
         args.hf_home,
         args.result_tar,
         args.status_file,
+        *([anchor_items_arg] if anchor_items_arg is not None else []),
+        *([p0a_items_arg] if p0a_items_arg is not None else []),
+        *([raw_counted_items_arg] if raw_counted_items_arg is not None else []),
+        *([raw_counted_manifest_arg] if raw_counted_manifest_arg is not None else []),
     ):
         ensure_not_drive_path(p)
 
@@ -10368,6 +11181,7 @@ def main(argv: list[str] | None = None) -> int:
     boot_gatekeeper_report: dict[str, Any] | None = None
     loop_order_val: str = DEFAULT_LOOP_ORDER
     subblock_items_val: int = DEFAULT_SUBBLOCK_ITEMS
+    uploaded_item_files: list[Path] = []
     try:
         current_step = "validate_until_option"
         until_step = validate_until_option(args.mode, getattr(args, "until", None))
@@ -10428,10 +11242,50 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         current_step = "check_upload_path_allowed"
-        check_upload_path_allowed(args.items_file)
+        uploaded_item_files: list[Path] = []
+        anchor_items_sha256: str | None = None
+        p0a_items_sha256: str | None = None
+        counted_source_sha256: str | None = None
+        counted_items_arg = _resolve_single_counted_source(
+            raw_counted_items_arg,
+            raw_counted_manifest_arg,
+            check_env=False,
+        )
+        if is_lock_check_main:
+            if anchor_items_arg is None or p0a_items_arg is None:
+                raise RefusalError(
+                    "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                    "--lock-check requires both --anchor-items <file> (50 anchor items from the counted part) and --p0a-items <file> (114 burned pilot items).",
+                )
+            if counted_items_arg is None:
+                raise RefusalError(
+                    "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+                    "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
+                )
+            eff_anchor_jsonl = anchor_items_arg / "items.jsonl" if anchor_items_arg.is_dir() else anchor_items_arg
+            eff_p0a_jsonl = p0a_items_arg / "items.jsonl" if p0a_items_arg.is_dir() else p0a_items_arg
+            check_upload_path_allowed(eff_anchor_jsonl)
+            check_upload_path_allowed(eff_p0a_jsonl)
+            uploaded_item_files = [eff_anchor_jsonl, eff_p0a_jsonl]
+            p0a_sidecar_mf = eff_p0a_jsonl.parent / "p0a_manifest.json"
+            if p0a_sidecar_mf.is_file() and p0a_sidecar_mf not in uploaded_item_files:
+                check_upload_path_allowed(p0a_sidecar_mf)
+                uploaded_item_files.append(p0a_sidecar_mf)
+            if args.items_file.is_file() and args.items_file not in uploaded_item_files:
+                check_upload_path_allowed(args.items_file)
+                uploaded_item_files.append(args.items_file)
 
-        current_step = "verify_items_allowlist"
-        verify_items_allowlist(args.items_file)
+            current_step = "verify_items_allowlist"
+            verify_items_allowlist(eff_anchor_jsonl)
+            verify_items_allowlist(eff_p0a_jsonl)
+            anchor_items_sha256 = sha256_file(eff_anchor_jsonl)
+            p0a_items_sha256 = sha256_file(eff_p0a_jsonl)
+        else:
+            check_upload_path_allowed(args.items_file)
+            uploaded_item_files = [args.items_file]
+
+            current_step = "verify_items_allowlist"
+            verify_items_allowlist(args.items_file)
 
         cgroup_chain_at_start = read_cgroup_limit_chain()
 
@@ -10459,6 +11313,40 @@ def main(argv: list[str] | None = None) -> int:
             step_order=step_order,
         )
 
+        if is_lock_check_main:
+            if counted_items_arg is None or not counted_items_arg.exists():
+                raise RefusalError(
+                    "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+                    "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
+                )
+            eff_counted_file = counted_items_arg / "items.jsonl" if counted_items_arg.is_dir() else counted_items_arg
+            check_upload_path_allowed(eff_counted_file)
+            if eff_counted_file.is_file() and eff_counted_file not in uploaded_item_files:
+                uploaded_item_files.append(eff_counted_file)
+            if eff_counted_file.is_file() and eff_counted_file.suffix.lower() == ".json":
+                sibling_counted_items = eff_counted_file.parent / "items.jsonl"
+                if sibling_counted_items.is_file():
+                    check_upload_path_allowed(sibling_counted_items)
+                    if sibling_counted_items not in uploaded_item_files:
+                        uploaded_item_files.append(sibling_counted_items)
+            if eff_counted_file.is_file():
+                counted_source_sha256 = sha256_file(eff_counted_file)
+
+        if is_lock_check_main and anchor_items_arg is not None and p0a_items_arg is not None:
+            current_step = "verify_lock_check_two_inputs"
+            import importlib
+
+            bakeoff_judge_mod = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
+            try:
+                bakeoff_judge_mod.verify_lock_check_two_inputs(
+                    anchor_items_or_path=anchor_items_arg,
+                    p0a_items_or_path=p0a_items_arg,
+                    counted_items_or_manifest=counted_items_arg,
+                )
+                bakeoff_judge_mod._resolve_items_from_manifest_source(counted_items_arg)
+            except bakeoff_judge_mod.RdlabError as exc:
+                raise RefusalError(exc.code, exc.message) from exc
+
         current_step = "ensure_shard_manifest"
         _, parsed_main_shard_n = parse_shard_spec(raw_shard_arg)
         env_main_limit = os.environ.get("RDLAB_LIMIT_ITEMS", "").strip()
@@ -10473,14 +11361,25 @@ def main(argv: list[str] | None = None) -> int:
                     if args.mode == "time-one"
                     else (
                         None
-                        if args.mode == "counted"
+                        if args.mode
+                        in (
+                            "counted",
+                            "counted-stub",
+                            "lock-check",
+                            "lock-check-stub",
+                        )
                         else (None if parsed_main_shard_n > 1 else 2)
                     )
                 )
             )
         )
+        manifest_items_file = (
+            (anchor_items_arg / "items.jsonl" if anchor_items_arg.is_dir() else anchor_items_arg)
+            if (is_lock_check_main and anchor_items_arg is not None)
+            else args.items_file
+        )
         shard_info_report = ensure_shard_manifest_for_run(
-            items_file=args.items_file,
+            items_file=manifest_items_file,
             run_dir=args.run_dir,
             raw_shard_spec=raw_shard_arg,
             shard_manifest_path=getattr(args, "shard_manifest", None),
@@ -10588,7 +11487,10 @@ def main(argv: list[str] | None = None) -> int:
             if until_step == "device_check":
                 stopped_after = "device_check"
             else:
-                if args.mode in ("time-one", "counted") or until_step == "gpu_gate":
+                if (
+                    args.mode in ("time-one", "counted", "lock-check")
+                    or until_step == "gpu_gate"
+                ):
                     current_step = "gpu_gate"
                     gpu_gate_report = run_gpu_gate(
                         args.work_dir,
@@ -10710,6 +11612,8 @@ def main(argv: list[str] | None = None) -> int:
                         receipts_dir=args.receipts_dir,
                         hf_home=args.hf_home,
                         device=resolve_judge_device(mode=args.mode, dryrun=dryrun),
+                        session_env_report=session_env_report,
+                        window_id=getattr(args, "window_id", None),
                     )
 
                     current_step = "run_judges_pipeline"
@@ -10739,6 +11643,12 @@ def main(argv: list[str] | None = None) -> int:
                         shard_manifest_sha256=str(
                             shard_info_report["shard_manifest_sha256"]
                         ),
+                        golden_anchor_manifest_path=getattr(
+                            args, "golden_anchor_manifest", None
+                        ),
+                        anchor_items_file=anchor_items_arg,
+                        p0a_items_file=p0a_items_arg,
+                        counted_items_or_manifest=counted_items_arg,
                         loop_order=loop_order_val,
                         subblock_items=subblock_items_val,
                         session_fingerprint_sha256=str(
@@ -10748,6 +11658,15 @@ def main(argv: list[str] | None = None) -> int:
                             getattr(args, "replacement_session", False)
                         ),
                     )
+                    if time_one_summary is not None:
+                        shard_info_report["shard_manifest_sha256"] = time_one_summary.get(
+                            "shard_manifest_sha256",
+                            shard_info_report["shard_manifest_sha256"],
+                        )
+                        shard_info_report["anchor_item_ids"] = time_one_summary.get(
+                            "anchor_item_ids",
+                            shard_info_report["anchor_item_ids"],
+                        )
                     _record_step_end(
                         "judge_pass",
                         t_jpass,
@@ -10759,8 +11678,16 @@ def main(argv: list[str] | None = None) -> int:
 
         current_step = "delete_uploaded_items"
         deleted_items_receipt = delete_uploaded_items_and_record_receipt(
-            [args.items_file]
+            uploaded_item_files
         )
+        if (
+            time_one_summary is not None
+            and isinstance(time_one_summary.get("manifest_cleanup_errors"), list)
+            and time_one_summary["manifest_cleanup_errors"]
+        ):
+            deleted_items_receipt.setdefault("manifest_cleanup_errors", []).extend(
+                time_one_summary["manifest_cleanup_errors"]
+            )
 
         current_step = "session_env_end"
         session_env_report = collect_and_write_session_env(
@@ -10778,6 +11705,45 @@ def main(argv: list[str] | None = None) -> int:
             work_dir=args.work_dir,
             repo_dir=args.repo_dir,
         )
+        filled_goldens_file = args.run_dir / BOOT_GATEKEEPER_FILLED_FILENAME
+        session_env_file = args.run_dir / SESSION_ENV_FILENAME
+        if (
+            filled_goldens_file.is_file()
+            and session_env_file.is_file()
+            and isinstance(boot_gatekeeper_report, dict)
+        ):
+            final_env_sha = sha256_file(session_env_file)
+            fg_doc = json.loads(filled_goldens_file.read_text(encoding="utf-8"))
+            if isinstance(fg_doc, dict) and isinstance(fg_doc.get("provenance"), dict):
+                fg_doc["provenance"]["session_env_sha256"] = final_env_sha
+                fg_doc.pop("filled_goldens_body_sha256", None)
+                fg_body_sha = hashlib.sha256(
+                    json.dumps(
+                        fg_doc,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                ).hexdigest()
+                fg_doc["filled_goldens_body_sha256"] = fg_body_sha
+                fg_serialized = (
+                    json.dumps(fg_doc, indent=2, sort_keys=True, ensure_ascii=False)
+                    + "\n"
+                )
+                filled_goldens_file.write_text(
+                    fg_serialized, encoding="utf-8", newline="\n"
+                )
+                fg_file_sha = hashlib.sha256(
+                    fg_serialized.encode("utf-8")
+                ).hexdigest()
+                boot_gatekeeper_report["session_env_sha256"] = final_env_sha
+                boot_gatekeeper_report["filled_goldens_sha256"] = fg_file_sha
+                boot_gatekeeper_report["filled_goldens_body_sha256"] = fg_body_sha
+                (args.run_dir / BOOT_GATEKEEPER_FILENAME).write_text(
+                    json.dumps(boot_gatekeeper_report, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
 
         with vm_log_path.open("a", encoding="utf-8", newline="\n") as log_fh:
             until_sfx = (
@@ -10816,7 +11782,11 @@ def main(argv: list[str] | None = None) -> int:
         receipt_doc: dict[str, Any] = {
             "status": "ok",
             "mode": args.mode,
-            "hardware": "A100" if args.mode in ("time-one", "counted") else "CPU",
+            "hardware": (
+                "A100"
+                if args.mode in ("time-one", "counted", "lock-check")
+                else "CPU"
+            ),
             "shard_spec": (
                 shard_info_report["shard_spec"]
                 if shard_info_report is not None
@@ -10825,6 +11795,21 @@ def main(argv: list[str] | None = None) -> int:
             "shard_manifest_sha256": (
                 shard_info_report["shard_manifest_sha256"]
                 if shard_info_report is not None
+                else None
+            ),
+            "golden_anchor_manifest_file_sha256": (
+                time_one_summary.get("golden_anchor_manifest_file_sha256")
+                if time_one_summary is not None
+                else None
+            ),
+            "p0a_report_sha256": (
+                time_one_summary.get("p0a_report_sha256")
+                if time_one_summary is not None
+                else None
+            ),
+            "filled_goldens_sha256": (
+                boot_gatekeeper_report.get("filled_goldens_sha256")
+                if isinstance(boot_gatekeeper_report, Mapping)
                 else None
             ),
             "shard_item_ids": (
@@ -10889,6 +11874,11 @@ def main(argv: list[str] | None = None) -> int:
                 else {}
             ),
             "time_one_summary": time_one_summary,
+            "part_manifest": (
+                time_one_summary.get("part_manifest")
+                if time_one_summary is not None
+                else None
+            ),
             "pilot_mass_check": pilot_mass_readout,
             "harness_readouts": {
                 "pilot_mass_check": pilot_mass_readout,
@@ -10915,10 +11905,30 @@ def main(argv: list[str] | None = None) -> int:
                 receipt_doc["first_load_note"] = fl_note
                 receipt_doc["first_judge_id"] = first_load_judge_id
                 receipt_doc["first_judge_receipt_bytes"] = fl_receipt_bytes
+        if anchor_items_sha256 is not None:
+            receipt_doc["anchor_items_sha256"] = anchor_items_sha256
+        if p0a_items_sha256 is not None:
+            receipt_doc["p0a_items_sha256"] = p0a_items_sha256
+        if counted_source_sha256 is not None:
+            receipt_doc["counted_source_sha256"] = counted_source_sha256
+        receipt_serialized = json.dumps(receipt_doc, indent=2) + "\n"
         receipt_path.write_text(
-            json.dumps(receipt_doc, indent=2) + "\n",
+            receipt_serialized,
             encoding="utf-8",
             newline="\n",
+        )
+        (args.run_dir / "receipt.json").write_text(
+            receipt_serialized,
+            encoding="utf-8",
+            newline="\n",
+        )
+        write_window_manifest(
+            args.run_dir,
+            window_id=getattr(args, "window_id", None),
+            mode=args.mode,
+            anchor_items_sha256=anchor_items_sha256,
+            p0a_items_sha256=p0a_items_sha256,
+            counted_source_sha256=counted_source_sha256,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         _record_step_end(
@@ -10930,10 +11940,24 @@ def main(argv: list[str] | None = None) -> int:
             step_order=step_order,
         )
         receipt_doc["timings"] = _build_timings_block()
+        receipt_serialized_final = json.dumps(receipt_doc, indent=2) + "\n"
         receipt_path.write_text(
-            json.dumps(receipt_doc, indent=2) + "\n",
+            receipt_serialized_final,
             encoding="utf-8",
             newline="\n",
+        )
+        (args.run_dir / "receipt.json").write_text(
+            receipt_serialized_final,
+            encoding="utf-8",
+            newline="\n",
+        )
+        window_manifest_doc = write_window_manifest(
+            args.run_dir,
+            window_id=getattr(args, "window_id", None),
+            mode=args.mode,
+            anchor_items_sha256=anchor_items_sha256,
+            p0a_items_sha256=p0a_items_sha256,
+            counted_source_sha256=counted_source_sha256,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
 
@@ -11032,6 +12056,15 @@ def main(argv: list[str] | None = None) -> int:
             progress_path,
             run_end_payload,
         )
+        write_window_manifest(
+            args.run_dir,
+            window_id=getattr(args, "window_id", None),
+            mode=args.mode,
+            anchor_items_sha256=anchor_items_sha256,
+            p0a_items_sha256=p0a_items_sha256,
+            counted_source_sha256=counted_source_sha256,
+        )
+        build_allowlisted_result_tar(args.run_dir, args.result_tar)
         return 0
 
     except (RefusalError, RdlabError) as err:
@@ -11048,10 +12081,27 @@ def main(argv: list[str] | None = None) -> int:
             gpu_gate_report = err.gpu_gate_report
         if isinstance(err, DeviceIndexCheckError):
             device_check_report = err.device_check_report
-        if deleted_items_receipt is None and args.items_file is not None:
+        cleanup_paths: list[Path] = list(uploaded_item_files)
+        if not cleanup_paths:
+            for p in (
+                anchor_items_arg,
+                p0a_items_arg,
+                counted_items_arg,
+                raw_counted_items_arg,
+                raw_counted_manifest_arg,
+                args.items_file,
+                (
+                    (p0a_items_arg / "items.jsonl" if p0a_items_arg.is_dir() else p0a_items_arg).parent / "p0a_manifest.json"
+                    if p0a_items_arg is not None
+                    else None
+                ),
+            ):
+                if p is not None and p not in cleanup_paths and (p.is_file() or p.is_symlink() or p in (anchor_items_arg, p0a_items_arg, counted_items_arg, args.items_file)):
+                    cleanup_paths.append(p)
+        if deleted_items_receipt is None and cleanup_paths:
             try:
                 deleted_items_receipt = delete_uploaded_items_and_record_receipt(
-                    [args.items_file]
+                    cleanup_paths
                 )
             except Exception:
                 pass
@@ -11201,13 +12251,27 @@ def main(argv: list[str] | None = None) -> int:
 
     except Exception as exc:
         exc_type = type(exc).__name__
-        if deleted_items_receipt is None and args.items_file is not None:
-            try:
-                deleted_items_receipt = delete_uploaded_items_and_record_receipt(
-                    [args.items_file]
-                )
-            except Exception:
-                pass
+        if deleted_items_receipt is None:
+            fallback_delete_paths: list[Path] = []
+            if args.items_file is not None:
+                fallback_delete_paths.append(args.items_file)
+            if anchor_items_arg is not None and anchor_items_arg not in fallback_delete_paths:
+                fallback_delete_paths.append(anchor_items_arg)
+            if p0a_items_arg is not None and p0a_items_arg not in fallback_delete_paths:
+                fallback_delete_paths.append(p0a_items_arg)
+            if counted_items_arg is not None and counted_items_arg not in fallback_delete_paths:
+                fallback_delete_paths.append(counted_items_arg)
+            if p0a_items_arg is not None:
+                p0a_mf_fb = (p0a_items_arg / "items.jsonl" if p0a_items_arg.is_dir() else p0a_items_arg).parent / "p0a_manifest.json"
+                if p0a_mf_fb.is_file() and p0a_mf_fb not in fallback_delete_paths:
+                    fallback_delete_paths.append(p0a_mf_fb)
+            if fallback_delete_paths:
+                try:
+                    deleted_items_receipt = delete_uploaded_items_and_record_receipt(
+                        fallback_delete_paths
+                    )
+                except Exception:
+                    pass
         for lf in logs_dir.glob("*.log"):
             scrub_log_file_in_place(lf)
         write_vm_status_file(

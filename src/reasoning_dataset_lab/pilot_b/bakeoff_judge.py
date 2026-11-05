@@ -1279,12 +1279,12 @@ def pin_and_read_sdpa_backend() -> str:
 
 
 COUNTED_WINDOW_MODES: frozenset[str] = frozenset(
-    {"counted", "time-one", "time_one", "shard", "sharded", "counted-shard", "sharded-counted"}
+    {"counted", "lock-check", "lock_check", "time-one", "time_one", "shard", "sharded", "counted-shard", "sharded-counted"}
 )
 NON_COUNTED_WINDOW_MODES: frozenset[str] = frozenset(
-    {"stub", "dryrun", "dry-run", "knob", "probe"}
+    {"stub", "dryrun", "dry-run", "knob", "probe", "lock-check-stub", "lock_check_stub", "counted-stub", "counted_stub"}
 )
-STUB_OR_DRYRUN_WINDOW_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run"})
+STUB_OR_DRYRUN_WINDOW_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run", "lock-check-stub", "lock_check_stub", "counted-stub", "counted_stub"})
 
 
 def is_real_mode(
@@ -2372,73 +2372,42 @@ def build_golden_anchor_manifest(
     lock_check_dir_or_rows: Path | str | Sequence[Mapping[str, Any]],
     *,
     anchor_item_ids: Iterable[str] | None = None,
+    items_or_path: Sequence[JudgeInputItem] | Path | str | None = None,
+    schedule: JudgeSchedule | None = None,
+    num_shards: int = 2,
+    schedule_seed: int = DEFAULT_SCHEDULE_SEED,
+    limit_items: int | None = None,
+    anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_count: int = DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT,
+    canary_anchor_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_item_ids: Sequence[str] | None = None,
+    canary_item_ids: Sequence[str] | None = None,
+    canary_telemetry_sha256: str | None = None,
+    items_sha256: str | None = None,
+    schedule_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Build the golden anchor manifest from the lock-check window's anchor rows (all 500 rows).
 
     Records only hashes, normalized verdict codes (`yes`/`no`/`unparseable`), and row states (`parsed`/`unparseable`/`length_stop`).
     Never stores item text, prompts, keys, or raw judge generation text.
     """
-    raw_rows: list[Mapping[str, Any]] = []
-    if isinstance(lock_check_dir_or_rows, (Path, str)):
-        base = Path(lock_check_dir_or_rows)
-        jsonl_files: list[Path] = []
-        if base.is_file():
-            jsonl_files = [base]
-        elif base.is_dir():
-            anchor_sub = base / ANCHOR_ROWS_DIRNAME
-            rows_sub = base / ROWS_DIRNAME
-            source_dir = anchor_sub if (anchor_sub.is_dir() and list(anchor_sub.glob("*.jsonl"))) else rows_sub
-            jsonl_files = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
-        for rf in jsonl_files:
-            for ln in rf.read_text(encoding="utf-8").splitlines():
-                if ln.strip():
-                    obj = json.loads(ln)
-                    if isinstance(obj, Mapping):
-                        raw_rows.append(obj)
-    else:
-        raw_rows = list(lock_check_dir_or_rows)
-
-    wanted_anchors = {str(x) for x in anchor_item_ids} if anchor_item_ids is not None else None
-    rows_map: dict[str, dict[str, Any]] = {}
-    judges_seen: set[str] = set()
-    items_seen: set[str] = set()
-    for r in raw_rows:
-        iid = str(r.get("item_id") or "").strip()
-        ord_s = str(r.get("order") or "").strip()
-        jid = str(r.get("judge_id") or "").strip()
-        if not iid or not ord_s or not jid:
-            continue
-        if wanted_anchors is not None and iid not in wanted_anchors:
-            continue
-        key = f"{jid}:{iid}:{ord_s}"
-        row_state = str(r.get("state") or r.get("verdict_parse_status") or "parsed").strip()
-        verdict_code = normalize_anchor_verdict_code(r)
-        out_sha = str(r.get("output_token_ids_sha256") or "").strip()
-        in_sha = str(r.get("input_token_ids_sha256") or "").strip()
-        prompt_sha = str(r.get("prompt_sha256") or "").strip()
-        rows_map[key] = {
-            "judge_id": jid,
-            "item_id": iid,
-            "order": ord_s,
-            "row_state": row_state,
-            "verdict_code": verdict_code,
-            "output_token_ids_sha256": out_sha,
-            "input_token_ids_sha256": in_sha,
-            "prompt_sha256": prompt_sha,
-        }
-        judges_seen.add(jid)
-        items_seen.add(iid)
-
-    doc: dict[str, Any] = {
-        "schema_version": "1.0",
-        "anchor_item_count": len(items_seen),
-        "judge_count": len(judges_seen),
-        "row_count": len(rows_map),
-        "rows": dict(sorted(rows_map.items())),
-    }
-    body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    doc["golden_anchor_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
-    return doc
+    return _build_golden_anchor_manifest_impl(
+        lock_check_dir_or_rows,
+        anchor_item_ids=anchor_item_ids,
+        items_or_path=items_or_path,
+        schedule=schedule,
+        num_shards=num_shards,
+        schedule_seed=schedule_seed,
+        limit_items=limit_items,
+        anchor_count=anchor_count,
+        stratified_anchor_count=stratified_anchor_count,
+        canary_anchor_count=canary_anchor_count,
+        stratified_anchor_item_ids=stratified_anchor_item_ids,
+        canary_item_ids=canary_item_ids,
+        canary_telemetry_sha256=canary_telemetry_sha256,
+        items_sha256=items_sha256,
+        schedule_sha256=schedule_sha256,
+    )
 
 
 def write_golden_anchor_manifest(golden_doc: Mapping[str, Any], path: Path) -> str:
@@ -2451,8 +2420,73 @@ def write_golden_anchor_manifest(golden_doc: Mapping[str, Any], path: Path) -> s
     return sha
 
 
+def _resolve_items_from_manifest_source(
+    manifest_or_path: Mapping[str, Any] | Path | str,
+    *,
+    limit_items: int | None = None,
+    lock_check_telemetry_path: Path | str | None = None,
+) -> tuple[tuple[JudgeInputItem, ...], str]:
+    """Resolve `JudgeInputItem`s and `items_sha256` from a counted manifest path or mapping, refusing without real items."""
+    _ = lock_check_telemetry_path
+    if isinstance(manifest_or_path, (Path, str)):
+        p = Path(manifest_or_path)
+        if p.is_dir() or p.suffix.lower() != ".json":
+            loaded_items, loaded_sha = load_judge_items(p, limit=limit_items)
+            resolved_p = resolve_items_jsonl_path(p)
+            sibling_mf = resolved_p.parent / "manifest.json"
+            if sibling_mf.is_file() and limit_items is None:
+                try:
+                    sib_doc = json.loads(sibling_mf.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    raise refused_error(
+                        "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+                        f"Malformed JSON in counted part manifest '{sibling_mf}': {exc}.",
+                        "Ensure the counted part's manifest.json is valid JSON.",
+                    ) from exc
+                _validate_manifest_item_count(sib_doc, len(loaded_items), source_label=str(sibling_mf))
+            return loaded_items, loaded_sha
+
+        raw_bytes = p.read_bytes()
+        parsed = json.loads(raw_bytes.decode("utf-8"))
+        manifest_doc = parsed if isinstance(parsed, Mapping) else {"item_ids": parsed}
+        sibling_items = p.parent / "items.jsonl"
+        if sibling_items.is_file():
+            loaded_items, loaded_sha = load_judge_items(sibling_items, limit=limit_items)
+            if limit_items is None:
+                _validate_manifest_item_count(manifest_doc, len(loaded_items), source_label=str(p))
+            extracted_id_set = _extract_counted_item_ids_from_source(manifest_doc)
+            if extracted_id_set and limit_items is None:
+                loaded_id_set = {it.item_id for it in loaded_items}
+                if loaded_id_set != extracted_id_set:
+                    raise refused_error(
+                        "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+                        f"Counted manifest '{p}' declared {len(extracted_id_set)} item ID(s), "
+                        f"but sibling items.jsonl '{sibling_items}' has {len(loaded_id_set)} item ID(s) "
+                        f"(symmetric_diff={len(loaded_id_set ^ extracted_id_set)}).",
+                        "Ensure the counted manifest's item IDs and item_count match its sibling items.jsonl.",
+                    )
+            return loaded_items, loaded_sha
+        extracted_id_set = _extract_counted_item_ids_from_source(manifest_doc)
+    else:
+        manifest_doc = manifest_or_path
+        extracted_id_set = _extract_counted_item_ids_from_source(manifest_doc)
+
+    if not extracted_id_set:
+        raise refused_error(
+            "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+            f"Counted manifest '{manifest_or_path}' yielded zero item IDs.",
+            "Pass a counted manifest or items.jsonl containing the counted part's item IDs.",
+        )
+    raise refused_error(
+        "COUNTED_ITEMS_REQUIRED",
+        f"Counted manifest source '{manifest_or_path}' has {len(extracted_id_set)} item ID(s) but no real items.jsonl file; "
+        "building shard_manifest.json never invents placeholder item text or labels a manifest SHA-256 as items_sha256.",
+        "Pass --counted-items <items.jsonl> (or a manifest.json located next to its real items.jsonl).",
+    )
+
+
 def build_shard_manifest(
-    items_or_path: Sequence[JudgeInputItem] | Path | str,
+    items_or_path: Sequence[JudgeInputItem] | Mapping[str, Any] | Path | str,
     schedule: JudgeSchedule | None = None,
     *,
     num_shards: int,
@@ -2465,6 +2499,7 @@ def build_shard_manifest(
     lock_check_telemetry_path: Path | str | None = None,
     canary_item_ids: Sequence[str] | None = None,
     canary_telemetry_sha256: str | None = None,
+    golden_anchor_manifest_file_sha256: str | None = None,
     golden_anchor_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Build a pre-registered shard manifest with deterministic stratified interleave over `schedule` and 50 anchors (25 stratified + 25 lock-check canaries)."""
@@ -2474,8 +2509,12 @@ def build_shard_manifest(
             f"num_shards must be >= 1, got {num_shards}.",
             "Pass a positive shard count.",
         )
-    if isinstance(items_or_path, (Path, str)):
-        items, items_sha256 = load_judge_items(Path(items_or_path), limit=limit_items)
+    if isinstance(items_or_path, (Path, str, Mapping)):
+        items, items_sha256 = _resolve_items_from_manifest_source(
+            items_or_path,
+            limit_items=limit_items,
+            lock_check_telemetry_path=lock_check_telemetry_path,
+        )
     else:
         items = tuple(items_or_path)
         items_sha256 = schedule.items_sha256 if schedule is not None else ""
@@ -2506,19 +2545,18 @@ def build_shard_manifest(
                 for i in range(target_strat_n)
             ]
 
-    # 2. Select up to `canary_anchor_count` (25) canary anchors from lock-check telemetry (or explicit list),
-    # or remaining candidates if lock_check_telemetry_path is provided.
     remaining_budget = max(0, int(anchor_count) - len(stratified_anchor_ids))
     target_canary_n = min(max(0, int(canary_anchor_count)), remaining_budget)
     resolved_canary_ids: list[str] = []
     resolved_telemetry_sha: str | None = canary_telemetry_sha256
+    resolved_golden_file_sha = golden_anchor_manifest_file_sha256 if golden_anchor_manifest_file_sha256 is not None else golden_anchor_manifest_sha256
     if lock_check_telemetry_path is not None:
-        resolved_canary_ids, resolved_telemetry_sha = select_lock_check_canary_anchors(
-            items,
-            lock_check_telemetry_path,
-            excluded_item_ids=stratified_anchor_ids,
-            canary_count=target_canary_n,
+        s_ids, resolved_canary_ids, resolved_telemetry_sha, resolved_golden_file_sha = _resolve_lock_check_anchors_for_shard_manifest(
+            items, items_by_id, lock_check_telemetry_path, stratified_anchor_ids=stratified_anchor_ids, target_canary_n=target_canary_n,
+            anchor_count=int(anchor_count), stratified_anchor_count=int(stratified_anchor_count), canary_anchor_count=int(canary_anchor_count),
+            canary_item_ids=canary_item_ids, resolved_telemetry_sha=resolved_telemetry_sha, golden_anchor_manifest_file_sha256=resolved_golden_file_sha,
         )
+        stratified_anchor_ids = s_ids
     elif canary_item_ids is not None:
         strat_set = set(stratified_anchor_ids)
         for cid in canary_item_ids:
@@ -2550,6 +2588,7 @@ def build_shard_manifest(
         "schedule_sha256": schedule.schedule_sha256,
         "items_sha256": schedule.items_sha256,
         "item_count": schedule.item_count,
+        "all_item_ids": [it.item_id for it in items],
         "num_shards": int(num_shards),
         "pass_mode": pass_mode,
         "shards": shards,
@@ -2559,10 +2598,11 @@ def build_shard_manifest(
         "canary_anchor_count": len(resolved_canary_ids),
         "canary_item_ids": resolved_canary_ids,
         "canary_telemetry_sha256": resolved_telemetry_sha,
-        "golden_anchor_manifest_sha256": golden_anchor_manifest_sha256,
+        "golden_anchor_manifest_file_sha256": resolved_golden_file_sha,
         "anchor_count": len(anchor_item_ids),
         "anchor_item_ids": anchor_item_ids,
         "input_token_ids_sha256_by_call": dict(sorted(input_token_ids_sha256_by_call.items())),
+        **_build_shard_manifest_extra_fields(schedule, stratified_anchor_ids, resolved_telemetry_sha, anchor_item_ids),
     }
     doc["manifest_sha256"] = _compute_shard_manifest_body_sha256(doc)
     return doc
@@ -2681,6 +2721,7 @@ class DeterministicFakeJudgeTransport:
     - remote-code gate enforcement identical to real model loading.
     """
 
+    is_stub_transport: bool = True
     def __init__(
         self,
         *,
@@ -2708,13 +2749,17 @@ class DeterministicFakeJudgeTransport:
             )
         return f"fake-sha256:{spec.revision}"
 
+    def prefill(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int = 0) -> None:
+        _ = seed
+        encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         digest = f"fake-sha256:{spec.revision}"
         det_status = configure_torch_determinism()
         sdpa_backend = pin_and_read_sdpa_backend()
         # cu134 not used because it exists only as a nightly (2.16.0.dev); move when a stable cu134 ships.
         library_pins: dict[str, Any] = {
-            "transport": "DeterministicFakeJudgeTransport",
+            "transport": "DeterministicFakeJudgeTransport", "stub_transport": True,
             "python": sys.version.split()[0],
             "torch": "2.14.1+cu132 (pinned-not-loaded)",
             "transformers": "5.19.0 (pinned-not-loaded)",
@@ -3260,6 +3305,30 @@ class TransformersJudgeTransport:
         )
         return int(enc["input_ids"].shape[1])
 
+    def prefill(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int = 0) -> None:
+        self._ensure_loaded(spec)
+        assert self._tokenizer is not None and self._model is not None
+
+        import torch
+
+        configure_torch_determinism(window_mode=self.window_mode, shard_spec=self.shard_spec)
+        torch.manual_seed(int(seed))
+        enc = self._tokenizer(
+            prompt.prompt_text,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )
+        input_ids = enc["input_ids"].to(self.device)
+        attention_mask = enc.get("attention_mask")
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(self.device)
+        with torch.no_grad():
+            if callable(self._model):
+                if attention_mask is not None:
+                    self._model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+                else:
+                    self._model(input_ids=input_ids, use_cache=False)
+
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         self._ensure_loaded(spec)
         assert self._tokenizer is not None and self._model is not None and self._verified_digest is not None
@@ -3753,6 +3822,18 @@ class D3MiniTransport:
                 "Check decision_config.json is present in the receipt-verified snapshot.",
             )
         self._model = model
+
+    def prefill(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int = 0) -> None:
+        self._ensure_loaded(spec)
+        assert self._model is not None
+        state, questions = check_d3_text_only_inputs(prompt.structured_payload or {})
+        import torch
+
+        configure_torch_determinism(window_mode=self.window_mode, shard_spec=self.shard_spec)
+        torch.manual_seed(int(seed))
+        with torch.inference_mode():
+            if callable(self._model):
+                self._model(state=state, questions=questions)
 
     def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
         self._ensure_loaded(spec)
@@ -4313,22 +4394,34 @@ def probe_judge_determinism(
     }
 
 
-def _resolve_part_id_from_dir(part_dir_or_file: Path) -> str | None:
-    """Inspect `manifest.json` or `reports/bakeoff_part_report.json` near `part_dir_or_file` to identify `part_id`."""
+def _resolve_part_id_from_dir(
+    part_dir_or_file: Path,
+    *,
+    include_p0a_manifest: bool = True,
+    only_p0a_manifest: bool = False,
+    allow_synthesized: bool = False,
+) -> str | None:
+    """Inspect `manifest.json`, `p0a_manifest.json` (when `include_p0a_manifest=True`), or `reports/bakeoff_part_report.json` near `part_dir_or_file` to identify `part_id`."""
     resolved = Path(part_dir_or_file).resolve()
     base_dir = resolved.parent if resolved.is_file() else resolved
-    candidates = [
-        base_dir / "manifest.json",
-        base_dir / "part_bakeoff_sealed" / "manifest.json",
-        base_dir / "reports" / "bakeoff_part_report.json",
-        base_dir.parent / "reports" / "bakeoff_part_report.json",
-    ]
+    if only_p0a_manifest:
+        candidates = [base_dir / "p0a_manifest.json"] if include_p0a_manifest else []
+    else:
+        candidates = [
+            base_dir / "manifest.json",
+            *([base_dir / "p0a_manifest.json"] if include_p0a_manifest else []),
+            base_dir / "part_bakeoff_sealed" / "manifest.json",
+            base_dir / "reports" / "bakeoff_part_report.json",
+            base_dir.parent / "reports" / "bakeoff_part_report.json",
+        ]
     found_part_ids = [
         str(doc["part_id"]).strip()
         for cand in candidates
         if cand.is_file()
         for doc in (json.loads(cand.read_text(encoding="utf-8")),)
-        if isinstance(doc, Mapping) and doc.get("part_id")
+        if isinstance(doc, Mapping)
+        and doc.get("part_id")
+        and (allow_synthesized or not bool(doc.get("synthesized")))
     ]
     return found_part_ids[0] if found_part_ids else None
 
@@ -4757,12 +4850,9 @@ def run_bakeoff_judge(
                 "Check RDLAB_SHARD=k/n against shard_manifest.json.",
             )
         shard_item_ids = [str(iid) for iid in raw_shard_list if str(iid) in items_by_id]
-        anchor_item_ids = [
-            str(iid)
-            for iid in manifest_doc.get("anchor_item_ids", [])
-            if str(iid) in items_by_id
-        ]
-        if str(eff_window_mode or "").strip().lower() == "counted":
+        raw_manifest_anchors = [str(iid) for iid in manifest_doc.get("anchor_item_ids", [])]
+        anchor_item_ids = [iid for iid in raw_manifest_anchors if iid in items_by_id]
+        if str(eff_window_mode or "").strip().lower() in ("counted", "counted-stub", "counted_stub"):
             manifest_canaries = manifest_doc.get("canary_item_ids")
             if not isinstance(manifest_canaries, list) or not manifest_canaries:
                 raise refused_error(
@@ -4770,21 +4860,86 @@ def run_bakeoff_judge(
                     "Counted window refuses shard_manifest.json without canary_item_ids from lock-check telemetry.",
                     "Build shard_manifest.json with lock_check_telemetry_path or canary_item_ids before running a counted shard.",
                 )
+            missing_anchors = [iid for iid in raw_manifest_anchors if iid not in items_by_id]
+            if missing_anchors or not raw_manifest_anchors:
+                raise refused_error(
+                    "SHARD_MANIFEST_ANCHOR_MISSING",
+                    f"Counted shard requires all {len(raw_manifest_anchors)} manifest anchor items in part_dir (kept={len(anchor_item_ids)}, "
+                    f"manifest={len(raw_manifest_anchors)}, missing={missing_anchors[:5]}).",
+                    "Ensure the lock-check --anchor-items were drawn from the counted part so all 50 anchors are present.",
+                )
+            manifest_all_ids = [
+                str(iid)
+                for iid in (
+                    manifest_doc.get("all_item_ids")
+                    or manifest_doc.get("shard_by_item", {}).keys()
+                )
+            ]
+            if set(manifest_all_ids) != set(items_by_id.keys()):
+                raise refused_error(
+                    "SHARD_MANIFEST_COUNTED_ITEMS_MISMATCH",
+                    f"Shard manifest all_item_ids ({len(set(manifest_all_ids))} items) do not match counted part items ({len(items_by_id)} items).",
+                    "Rebuild shard_manifest.json from the full counted part's item IDs, never from the 50 anchors.",
+                )
             eff_golden_path_raw = (
-                str(golden_anchor_manifest_path)
-                if golden_anchor_manifest_path is not None
-                else os.environ.get("RDLAB_GOLDEN_ANCHOR_MANIFEST", "").strip()
-            )
-            has_golden_manifest = bool(manifest_doc.get("golden_anchor_manifest_sha256")) or (
-                bool(eff_golden_path_raw) and Path(eff_golden_path_raw).is_file()
-            ) or (resolved_out / GOLDEN_ANCHOR_MANIFEST_FILENAME).is_file() or (
-                target_manifest_path.parent / GOLDEN_ANCHOR_MANIFEST_FILENAME
-            ).is_file()
-            if not has_golden_manifest:
+                str(golden_anchor_manifest_path) if golden_anchor_manifest_path is not None else ""
+            ).strip() or os.environ.get("RDLAB_GOLDEN_ANCHOR_MANIFEST", "").strip()
+            resolved_golden_path: Path | None = None
+            if eff_golden_path_raw:
+                cand_gp = Path(eff_golden_path_raw)
+                if cand_gp.is_file():
+                    resolved_golden_path = cand_gp
+            else:
+                for cand_gp in (
+                    resolved_out / GOLDEN_ANCHOR_MANIFEST_FILENAME,
+                    target_manifest_path.parent / GOLDEN_ANCHOR_MANIFEST_FILENAME,
+                ):
+                    if cand_gp.is_file():
+                        resolved_golden_path = cand_gp
+                        break
+            if resolved_golden_path is None:
                 raise refused_error(
                     "GOLDEN_ANCHOR_MANIFEST_MISSING",
-                    "Counted window refuses sharded execution without a golden anchor manifest from the lock-check window.",
+                    "Counted window refuses sharded execution without a golden anchor manifest file on disk from the lock-check window.",
                     "Record golden_anchor_manifest.json from the lock-check window before starting counted shards.",
+                )
+            try:
+                gm_doc = json.loads(resolved_golden_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise refused_error(
+                    "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                    f"Malformed JSON in golden anchor manifest '{resolved_golden_path}': {exc}.",
+                    "Regenerate golden_anchor_manifest.json from the lock-check window.",
+                ) from exc
+            if not isinstance(gm_doc, Mapping):
+                raise refused_error(
+                    "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                    f"Golden anchor manifest '{resolved_golden_path}' root must be a JSON object.",
+                    "Regenerate golden_anchor_manifest.json from the lock-check window.",
+                )
+            gm_strat = [str(x) for x in (gm_doc.get("stratified_anchor_item_ids") or [])]
+            gm_can = [str(x) for x in (gm_doc.get("canary_item_ids") or [])]
+            gm_anchors = [str(x) for x in (gm_doc.get("anchor_item_ids") or [*gm_strat, *gm_can])]
+            if len(gm_anchors) != DEFAULT_ANCHOR_ITEMS_COUNT or len(set(gm_anchors)) != DEFAULT_ANCHOR_ITEMS_COUNT:
+                raise refused_error(
+                    "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                    f"Golden anchor manifest '{resolved_golden_path}' must hold {DEFAULT_ANCHOR_ITEMS_COUNT} unique anchors, got {len(gm_anchors)}.",
+                    "Ensure golden_anchor_manifest.json contains 50 unique anchor item IDs.",
+                )
+            if len(raw_manifest_anchors) != DEFAULT_ANCHOR_ITEMS_COUNT or set(gm_anchors) != set(raw_manifest_anchors) or gm_anchors != raw_manifest_anchors:
+                raise refused_error(
+                    "SHARD_MANIFEST_ANCHOR_MISMATCH",
+                    f"Counted shard anchor IDs in shard_manifest.json ({len(raw_manifest_anchors)} items) do not match golden_anchor_manifest.json ({len(gm_anchors)} items).",
+                    "Ensure shard_manifest.json was built from the same golden_anchor_manifest.json with the exact 50 anchor item IDs.",
+                )
+            expected_golden_sha = str(manifest_doc.get("golden_anchor_manifest_file_sha256") or "").strip().lower()
+            actual_golden_file_sha = hashlib.sha256(resolved_golden_path.read_bytes()).hexdigest().lower()
+            if not expected_golden_sha or actual_golden_file_sha != expected_golden_sha:
+                raise refused_error(
+                    "SHARD_MANIFEST_GOLDEN_SHA_MISMATCH",
+                    f"Counted shard golden anchor manifest file SHA-256 ({actual_golden_file_sha}) does not match "
+                    f"shard_manifest.json golden_anchor_manifest_file_sha256 ({expected_golden_sha or 'missing'}).",
+                    "Pass the exact golden_anchor_manifest.json file whose SHA-256 is recorded in shard_manifest.json.",
                 )
 
     shard_item_id_set = set(shard_item_ids)
@@ -5594,6 +5749,1440 @@ def close_bakeoff_outputs(
     return closed_doc
 
 
+P0A_REPORT_FILENAME = "p0a_report.json"
+WINDOW_MANIFEST_FILENAME = "window.json"
+CANARY_ANCHOR_SELECTION_RULE = "min_verdict_token_margin_asc_exclude_stratified_25_tiebreak_item_id"
+PILOT_BURNED_PART_ID = "part-pilot-40b"
+PILOT_BURNED_ITEM_COUNT = 114
+PILOT_BURNED_CALL_COUNT = 228
+P0A_PROFILER_CALL_COUNT = 10
+P0A_LOW_MARGIN_RERUN_ITEM_COUNT = 20
+P0A_PHASE_NAMES: tuple[str, ...] = ("tokenise", "prefill", "decode", "post_processing")
+
+
+def _compute_canary_inputs_sha256(
+    *,
+    canary_selection_rule: str,
+    items_sha256: str,
+    schedule_sha256: str,
+    stratified_anchor_item_ids: Sequence[str],
+    canary_telemetry_sha256: str,
+) -> str:
+    payload = {
+        "canary_selection_rule": str(canary_selection_rule),
+        "items_sha256": str(items_sha256 or ""),
+        "schedule_sha256": str(schedule_sha256 or ""),
+        "stratified_anchor_item_ids": [str(x) for x in stratified_anchor_item_ids],
+        "canary_telemetry_sha256": str(canary_telemetry_sha256 or ""),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _build_shard_manifest_extra_fields(
+    schedule: JudgeSchedule,
+    stratified_anchor_ids: Sequence[str],
+    resolved_telemetry_sha: str | None,
+    anchor_item_ids: Sequence[str],
+) -> dict[str, Any]:
+    canary_inputs_sha = _compute_canary_inputs_sha256(
+        canary_selection_rule=CANARY_ANCHOR_SELECTION_RULE,
+        items_sha256=schedule.items_sha256,
+        schedule_sha256=schedule.schedule_sha256,
+        stratified_anchor_item_ids=stratified_anchor_ids,
+        canary_telemetry_sha256=str(resolved_telemetry_sha or ""),
+    )
+    return {
+        "canary_selection_rule": CANARY_ANCHOR_SELECTION_RULE,
+        "canary_inputs_sha256": canary_inputs_sha,
+        "anchor_item_count": len(anchor_item_ids),
+        "anchor_pair_count": len(anchor_item_ids) * len(BAKEOFF_JUDGE_SPECS),
+    }
+
+
+def _build_golden_anchor_manifest_impl(
+    lock_check_dir_or_rows: Path | str | Sequence[Mapping[str, Any]],
+    *,
+    anchor_item_ids: Iterable[str] | None = None,
+    items_or_path: Sequence[JudgeInputItem] | Path | str | None = None,
+    schedule: JudgeSchedule | None = None,
+    num_shards: int = 2,
+    schedule_seed: int = DEFAULT_SCHEDULE_SEED,
+    limit_items: int | None = None,
+    anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_count: int = DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT,
+    canary_anchor_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
+    stratified_anchor_item_ids: Sequence[str] | None = None,
+    canary_item_ids: Sequence[str] | None = None,
+    canary_telemetry_sha256: str | None = None,
+    items_sha256: str | None = None,
+    schedule_sha256: str | None = None,
+) -> dict[str, Any]:
+    raw_rows: list[Mapping[str, Any]] = []
+    telemetry_hasher = hashlib.sha256()
+    if isinstance(lock_check_dir_or_rows, (Path, str)):
+        base = Path(lock_check_dir_or_rows)
+        anchor_sub = base / ANCHOR_ROWS_DIRNAME
+        rows_sub = base / ROWS_DIRNAME
+        prefer_rows = anchor_item_ids is None and (items_or_path is not None or schedule is not None)
+        source_dir = rows_sub if (prefer_rows or not (anchor_sub.is_dir() and list(anchor_sub.glob("*.jsonl")))) else anchor_sub
+        jsonl_files = [base] if base.is_file() else (sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else [])
+        for rf in jsonl_files:
+            rf_bytes = rf.read_bytes()
+            telemetry_hasher.update(rf_bytes)
+            for ln in rf_bytes.decode("utf-8").splitlines():
+                if ln.strip():
+                    obj = json.loads(ln)
+                    if isinstance(obj, Mapping):
+                        raw_rows.append(obj)
+        computed_telemetry_sha = (
+            hashlib.sha256(jsonl_files[0].read_bytes()).hexdigest()
+            if len(jsonl_files) == 1
+            else (telemetry_hasher.hexdigest() if jsonl_files else "")
+        )
+    else:
+        raw_rows = list(lock_check_dir_or_rows)
+        for r in raw_rows:
+            telemetry_hasher.update(
+                json.dumps(dict(r), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+                + b"\n"
+            )
+        computed_telemetry_sha = telemetry_hasher.hexdigest() if raw_rows else ""
+
+    eff_items_sha = str(items_sha256 or "")
+    eff_schedule_sha = str(schedule_sha256 or "")
+    resolved_stratified_ids: list[str] = (
+        [str(x) for x in stratified_anchor_item_ids] if stratified_anchor_item_ids is not None else []
+    )
+    resolved_canary_ids: list[str] = (
+        [str(x) for x in canary_item_ids] if canary_item_ids is not None else []
+    )
+    resolved_telemetry_sha = str(canary_telemetry_sha256 or computed_telemetry_sha)
+
+    if items_or_path is not None or schedule is not None:
+        loaded_items: Sequence[JudgeInputItem] = ()
+        if isinstance(items_or_path, (Path, str)):
+            loaded_items, loaded_items_sha = load_judge_items(Path(items_or_path), limit=limit_items)
+            eff_items_sha = eff_items_sha or loaded_items_sha
+        elif items_or_path is not None:
+            loaded_items = tuple(items_or_path)
+        if schedule is None and loaded_items:
+            schedule = build_schedule(loaded_items, seed=schedule_seed, items_sha256=eff_items_sha)
+        if schedule is not None:
+            verify_schedule_invariants(schedule)
+            eff_schedule_sha = eff_schedule_sha or schedule.schedule_sha256
+            eff_items_sha = eff_items_sha or schedule.items_sha256
+            if not resolved_stratified_ids:
+                eff_num_shards = max(1, int(num_shards))
+                pass1_entries = schedule.entries[: schedule.item_count]
+                shard1_items = [
+                    entry.item_id
+                    for pass1_idx, entry in enumerate(pass1_entries)
+                    if (pass1_idx % eff_num_shards) == 0
+                ]
+                eff_strat_max = min(int(stratified_anchor_count), int(anchor_count))
+                target_strat_n = min(max(0, eff_strat_max), len(shard1_items))
+                resolved_stratified_ids = (
+                    list(shard1_items)
+                    if target_strat_n >= len(shard1_items)
+                    else [
+                        shard1_items[int((i * len(shard1_items)) // target_strat_n)]
+                        for i in range(target_strat_n)
+                    ]
+                )
+            if not resolved_canary_ids and isinstance(lock_check_dir_or_rows, (Path, str)):
+                all_sched_ids = [e.item_id for e in schedule.entries[: schedule.item_count]]
+                remaining_budget = max(0, int(anchor_count) - len(resolved_stratified_ids))
+                target_canary_n = min(max(0, int(canary_anchor_count)), remaining_budget)
+                resolved_canary_ids, sel_tel_sha = select_lock_check_canary_anchors(
+                    all_sched_ids,
+                    lock_check_dir_or_rows,
+                    excluded_item_ids=resolved_stratified_ids,
+                    canary_count=target_canary_n,
+                )
+                resolved_telemetry_sha = str(canary_telemetry_sha256 or sel_tel_sha)
+
+    resolved_anchor_list = (
+        [str(x) for x in anchor_item_ids]
+        if anchor_item_ids is not None
+        else [*resolved_stratified_ids, *resolved_canary_ids]
+    )
+    wanted_anchors = set(resolved_anchor_list) if resolved_anchor_list else None
+
+    rows_map: dict[str, dict[str, Any]] = {}
+    judges_seen: set[str] = set()
+    items_seen: set[str] = set()
+    for r in (r for r in raw_rows if r.get("item_id") and r.get("order") and r.get("judge_id")):
+        iid = str(r.get("item_id") or "").strip()
+        ord_s = str(r.get("order") or "").strip()
+        jid = str(r.get("judge_id") or "").strip()
+        if wanted_anchors is not None and iid not in wanted_anchors:
+            continue
+        key = f"{jid}:{iid}:{ord_s}"
+        row_state = str(r.get("state") or r.get("verdict_parse_status") or "parsed").strip()
+        verdict_code = normalize_anchor_verdict_code(r)
+        out_sha = str(r.get("output_token_ids_sha256") or "").strip()
+        in_sha = str(r.get("input_token_ids_sha256") or "").strip()
+        prompt_sha = str(r.get("prompt_sha256") or "").strip()
+        rows_map[key] = {
+            "judge_id": jid,
+            "item_id": iid,
+            "order": ord_s,
+            "row_state": row_state,
+            "verdict_code": verdict_code,
+            "output_token_ids_sha256": out_sha,
+            "input_token_ids_sha256": in_sha,
+            "prompt_sha256": prompt_sha,
+        }
+        judges_seen.add(jid)
+        items_seen.add(iid)
+
+    resolved_anchor_list = resolved_anchor_list or sorted(items_seen)
+    canary_inputs_sha = _compute_canary_inputs_sha256(
+        canary_selection_rule=CANARY_ANCHOR_SELECTION_RULE,
+        items_sha256=eff_items_sha,
+        schedule_sha256=eff_schedule_sha,
+        stratified_anchor_item_ids=resolved_stratified_ids,
+        canary_telemetry_sha256=resolved_telemetry_sha,
+    )
+    doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "canary_selection_rule": CANARY_ANCHOR_SELECTION_RULE,
+        "canary_inputs_sha256": canary_inputs_sha,
+        "canary_telemetry_sha256": resolved_telemetry_sha,
+        "items_sha256": eff_items_sha,
+        "schedule_sha256": eff_schedule_sha,
+        "stratified_anchor_count": len(resolved_stratified_ids),
+        "stratified_anchor_item_ids": resolved_stratified_ids,
+        "canary_anchor_count": len(resolved_canary_ids),
+        "canary_item_ids": resolved_canary_ids,
+        "anchor_item_ids": resolved_anchor_list,
+        "anchor_item_count": len(items_seen),
+        "anchor_pair_count": len(items_seen) * len(judges_seen),
+        "pair_count": len(items_seen) * len(judges_seen),
+        "judge_count": len(judges_seen),
+        "row_count": len(rows_map),
+        "rows": dict(sorted(rows_map.items())),
+    }
+    body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    doc["golden_anchor_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
+    return doc
+
+
+class _MonotonicTimingEvent:
+    """CPU monotonic timing event with the same `.record()`, `.synchronize()`, and `.elapsed_time(end_ev)` interface as `torch.cuda.Event(enable_timing=True)`."""
+
+    def __init__(self) -> None:
+        self._timestamp: float = time.perf_counter()
+
+    def record(self) -> None:
+        self._timestamp = time.perf_counter()
+
+    def synchronize(self) -> None:
+        return None
+
+    def elapsed_time(self, end_event: _MonotonicTimingEvent) -> float:
+        return round(max(0.0001, (end_event._timestamp - self._timestamp) * 1000.0), 6)
+
+
+def _make_cuda_timing_event() -> Any:
+    """Construct a `torch.cuda.Event(enable_timing=True)` instance for real-mode P0a phase profiling."""
+    import torch
+
+    return torch.cuda.Event(enable_timing=True)
+
+
+def _run_transport_prefill(
+    transport: Any,
+    spec: JudgeSpec,
+    prompt: AssembledPrompt,
+    *,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+) -> None:
+    """Execute the transport's forward/prefill phase separately from decode for `run_p0a_phase_profiler`."""
+    prefill_fn = getattr(transport, "prefill", None)
+    if callable(prefill_fn):
+        prefill_fn(spec, prompt, seed=seed)
+        return
+    model_obj = getattr(transport, "_model", None)
+    if callable(model_obj):
+        model_obj(prompt.prompt_text)
+        return
+    encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+
+
+def _is_stub_or_fake_transport(transport: Any) -> bool:
+    """Return True if `transport` is a stub or fake transport."""
+    if transport is None:
+        return False
+    if bool(getattr(transport, "is_stub_transport", False) or getattr(transport, "is_stub", False)):
+        return True
+    if isinstance(transport, DeterministicFakeJudgeTransport):
+        return True
+    cls_name = type(transport).__name__
+    if "FakeJudgeTransport" in cls_name or "Stub" in cls_name:
+        return True
+    pins = getattr(transport, "library_pins", None)
+    if isinstance(pins, Mapping) and bool(pins.get("stub_transport")):
+        return True
+    return False
+
+
+def _resolve_lock_check_anchors_for_shard_manifest(
+    items: Sequence[JudgeInputItem],
+    items_by_id: Mapping[str, Any],
+    lock_check_telemetry_path: Path | str,
+    *,
+    stratified_anchor_ids: list[str],
+    target_canary_n: int,
+    anchor_count: int,
+    stratified_anchor_count: int,
+    canary_anchor_count: int,
+    canary_item_ids: Sequence[str] | None,
+    resolved_telemetry_sha: str | None,
+    golden_anchor_manifest_file_sha256: str | None,
+) -> tuple[list[str], list[str], str | None, str | None]:
+    """Resolve stratified and canary anchors from `golden_anchor_manifest.json` or lock-check telemetry."""
+    loaded_golden = _load_golden_anchors_for_shard_manifest(
+        lock_check_telemetry_path,
+        items_by_id=items_by_id,
+        anchor_count=anchor_count,
+        stratified_anchor_count=stratified_anchor_count,
+        canary_anchor_count=canary_anchor_count,
+        canary_item_ids=canary_item_ids,
+    )
+    if loaded_golden is not None:
+        gm_strat, gm_can, gm_tel_sha, gm_sha = loaded_golden
+        return (
+            gm_strat,
+            gm_can,
+            resolved_telemetry_sha or gm_tel_sha,
+            golden_anchor_manifest_file_sha256 or gm_sha,
+        )
+    can_ids, tel_sha = select_lock_check_canary_anchors(
+        items,
+        lock_check_telemetry_path,
+        excluded_item_ids=stratified_anchor_ids,
+        canary_count=target_canary_n,
+    )
+    return stratified_anchor_ids, can_ids, tel_sha, golden_anchor_manifest_file_sha256
+
+
+def _load_golden_anchors_for_shard_manifest(
+    lock_check_telemetry_path: Path | str,
+    *,
+    items_by_id: Mapping[str, Any],
+    anchor_count: int,
+    stratified_anchor_count: int,
+    canary_anchor_count: int,
+    canary_item_ids: Sequence[str] | None = None,
+) -> tuple[list[str], list[str], str | None, str | None] | None:
+    """Load pre-selected stratified and canary anchor IDs from `golden_anchor_manifest.json` when present."""
+    if canary_item_ids is not None:
+        return None
+    tel_p = Path(lock_check_telemetry_path)
+    cand_gm = tel_p if (tel_p.is_file() and tel_p.name == GOLDEN_ANCHOR_MANIFEST_FILENAME) else (
+        (tel_p / GOLDEN_ANCHOR_MANIFEST_FILENAME) if tel_p.is_dir() else None
+    )
+    if cand_gm is None or not cand_gm.is_file():
+        return None
+    try:
+        gm_doc = json.loads(cand_gm.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise refused_error(
+            "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+            f"Malformed JSON in golden_anchor_manifest.json at '{cand_gm}': {exc}.",
+            "Regenerate golden_anchor_manifest.json from the lock-check window.",
+        ) from exc
+    if not isinstance(gm_doc, Mapping):
+        raise refused_error(
+            "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+            f"Lock-check golden_anchor_manifest.json at '{cand_gm}' root must be a JSON object.",
+            "Regenerate golden_anchor_manifest.json from the lock-check window.",
+        )
+    gm_strat = [str(x) for x in (gm_doc.get("stratified_anchor_item_ids") or [])]
+    gm_can = [str(x) for x in (gm_doc.get("canary_item_ids") or [])]
+    gm_all = [str(x) for x in (gm_doc.get("anchor_item_ids") or [*gm_strat, *gm_can])]
+    if len(gm_all) != int(anchor_count) or len(set(gm_all)) != int(anchor_count):
+        raise refused_error(
+            "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+            f"Lock-check golden_anchor_manifest.json at '{cand_gm}' must hold {anchor_count} unique anchors, got {len(gm_all)} ({len(set(gm_all))} unique).",
+            "Ensure golden_anchor_manifest.json holds the exact 50 anchor items from the counted part.",
+        )
+    missing_in_part = [iid for iid in gm_all if iid not in items_by_id]
+    if missing_in_part:
+        raise refused_error(
+            "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+            f"Lock-check golden_anchor_manifest.json contains {len(missing_in_part)} anchor item(s) "
+            f"not present in the counted part (first={missing_in_part[0]!r}).",
+            "Ensure --anchor-items contains the exact 50 anchor items from the counted part.",
+        )
+    strat_ids = gm_strat if len(gm_strat) == int(stratified_anchor_count) else gm_all[: int(stratified_anchor_count)]
+    can_ids = gm_can if len(gm_can) == int(canary_anchor_count) else gm_all[len(strat_ids) :]
+    gm_tel_sha = str(gm_doc.get("canary_telemetry_sha256") or "") or None
+    gm_sha = hashlib.sha256(cand_gm.read_bytes()).hexdigest()
+    return strat_ids, can_ids, gm_tel_sha, gm_sha
+
+
+def _validate_manifest_item_count(
+    mf_doc: Any,
+    actual_count: int,
+    *,
+    source_label: str,
+) -> None:
+    """Validate that `mf_doc['item_count']` (when present and not synthesized) matches `actual_count`."""
+    raw_cnt = mf_doc.get("item_count") if isinstance(mf_doc, Mapping) and not bool(mf_doc.get("synthesized")) else None
+    if raw_cnt is not None and (isinstance(raw_cnt, bool) or not isinstance(raw_cnt, int) or int(raw_cnt) != actual_count):
+        raise refused_error(
+            "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+            f"Counted source manifest '{source_label}' declared item_count={raw_cnt!r}, "
+            f"but found {actual_count} item(s).",
+            "Ensure the counted manifest's item_count matches the number of counted items.",
+        )
+
+
+def _extract_counted_item_ids_from_source(
+    counted_source: Iterable[str] | Mapping[str, Any] | Path | str | None,
+) -> set[str]:
+    """Extract counted item IDs from an iterable of IDs, a manifest dict, a `shard_manifest.json`, or an `items.jsonl` / part dir."""
+    if counted_source is None:
+        return set()
+    if isinstance(counted_source, Mapping):
+        out_ids: set[str] = set()
+        if isinstance(counted_source.get("all_item_ids"), list):
+            out_ids.update(str(x) for x in counted_source["all_item_ids"])
+        if isinstance(counted_source.get("shard_by_item"), Mapping):
+            out_ids.update(str(k) for k in counted_source["shard_by_item"].keys())
+        if isinstance(counted_source.get("shards"), Mapping):
+            for slist in counted_source["shards"].values():
+                if isinstance(slist, list):
+                    out_ids.update(str(x) for x in slist)
+        if isinstance(counted_source.get("anchor_item_ids"), list):
+            out_ids.update(str(x) for x in counted_source["anchor_item_ids"])
+        if isinstance(counted_source.get("item_ids"), list):
+            out_ids.update(str(x) for x in counted_source["item_ids"])
+        result_ids = {x.strip() for x in out_ids if x.strip()}
+        _validate_manifest_item_count(counted_source, len(result_ids), source_label="<mapping>")
+        return result_ids
+    if isinstance(counted_source, (Path, str)):
+        p = Path(counted_source)
+        if not p.exists():
+            return set()
+        if p.is_dir():
+            sm_p = p / SHARD_MANIFEST_FILENAME
+            if sm_p.is_file():
+                return _extract_counted_item_ids_from_source(sm_p)
+            return _extract_counted_item_ids_from_source(resolve_items_jsonl_path(p))
+        if p.suffix.lower() == ".json":
+            doc = json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(doc, Mapping):
+                return _extract_counted_item_ids_from_source(doc)
+            if isinstance(doc, list):
+                return {str(x).strip() for x in doc if str(x).strip()}
+            return set()
+        loaded, _ = load_judge_items(p)
+        result_ids = {it.item_id for it in loaded}
+        sibling_mf = p.parent / "manifest.json"
+        if sibling_mf.is_file():
+            mf_doc = json.loads(sibling_mf.read_text(encoding="utf-8"))
+            _validate_manifest_item_count(mf_doc, len(result_ids), source_label=str(sibling_mf))
+        return result_ids
+    out_set: set[str] = set()
+    for elem in counted_source:
+        if isinstance(elem, JudgeInputItem):
+            out_set.add(elem.item_id)
+        elif isinstance(elem, Mapping) and (elem.get("id") or elem.get("item_id")):
+            out_set.add(str(elem.get("id") or elem.get("item_id")).strip())
+        else:
+            s = str(elem).strip()
+            if s:
+                out_set.add(s)
+    return out_set
+
+
+def verify_lock_check_two_inputs(
+    *,
+    anchor_items_or_path: Sequence[JudgeInputItem] | Path | str,
+    p0a_items_or_path: Sequence[JudgeInputItem] | Path | str,
+    counted_items_or_manifest: Iterable[str] | Mapping[str, Any] | Path | str | None = None,
+    expected_anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
+) -> dict[str, Any]:
+    """Validate `--lock-check`'s inputs (`--anchor-items`, `--p0a-items`, and required `--counted-items` / `--counted-manifest`):
+    1. `counted_items_or_manifest` is required; missing, unreadable, or yielding zero IDs -> `LOCK_CHECK_COUNTED_SOURCE_MISSING`.
+    2. Counted ID set equal to or a subset of the anchor ID set -> `LOCK_CHECK_COUNTED_SOURCE_INVALID`.
+    3. `--anchor-items` must be `expected_anchor_count` (50) items from the counted part (never from burned pilot `pilot-40b`,
+       and every anchor item ID must belong to `counted_items_or_manifest`) -> `LOCK_CHECK_ANCHOR_ITEMS_INVALID`.
+    4. `--p0a-items` must be the 114 burned pilot items (`pilot-40b`, 228 calls) -> `P0A_COUNTED_PART_FORBIDDEN`.
+    5. No item ID may appear in both `--anchor-items` and `--p0a-items` -> `LOCK_CHECK_INPUT_OVERLAP`.
+    6. No item ID in `--p0a-items` may appear in the counted part's manifest or item ID list -> `P0A_COUNTED_ITEM`.
+    """
+    if counted_items_or_manifest is None:
+        raise refused_error(
+            "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+            "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
+            "Pass --counted-items <file> or --counted-manifest <file> to --lock-check / --lock-check-stub.",
+        )
+    if isinstance(counted_items_or_manifest, (Path, str)) and not Path(counted_items_or_manifest).exists():
+        raise refused_error(
+            "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+            f"Counted source '{counted_items_or_manifest}' does not exist.",
+            "Pass an existing --counted-items or --counted-manifest file.",
+        )
+    try:
+        counted_id_set = _extract_counted_item_ids_from_source(counted_items_or_manifest)
+    except RdlabError:
+        raise
+    except Exception as exc:
+        raise refused_error(
+            "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+            f"Counted source '{counted_items_or_manifest}' could not be read: {exc}.",
+            "Pass a readable --counted-items or --counted-manifest file containing the counted part's item IDs.",
+        ) from exc
+    if not counted_id_set:
+        raise refused_error(
+            "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+            f"Counted source '{counted_items_or_manifest}' yielded zero item IDs.",
+            "Pass a --counted-items or --counted-manifest file containing the counted part's item IDs.",
+        )
+
+    if isinstance(anchor_items_or_path, (Path, str)):
+        anchor_path = Path(anchor_items_or_path)
+        anchor_items, anchor_sha256 = load_judge_items(anchor_path)
+        anchor_dir = anchor_path.resolve().parent if anchor_path.is_file() else anchor_path.resolve()
+        is_shared_anchor_dir = (
+            (anchor_path.resolve().is_file() and anchor_path.resolve().name == "anchor_items.jsonl")
+            or (anchor_dir / "anchor_items.jsonl").exists()
+            or (anchor_dir / "p0a_items.jsonl").exists()
+            or anchor_dir.name.strip().lower() == "rdlab_items"
+        )
+        anchor_manifest_part_id = (
+            None
+            if is_shared_anchor_dir
+            else _resolve_part_id_from_dir(
+                anchor_path,
+                include_p0a_manifest=False,
+                allow_synthesized=False,
+            )
+        )
+        if anchor_dir.name.strip().lower() in ALLOWED_LOGPROB_MASS_PART_IDS or (
+            anchor_manifest_part_id is not None and anchor_manifest_part_id.strip().lower() in ALLOWED_LOGPROB_MASS_PART_IDS
+        ):
+            raise refused_error(
+                "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                f"--anchor-items must be 50 anchor items from the counted part, not burned pilot '{PILOT_BURNED_PART_ID}'.",
+                "Pass 50 anchor items from the counted part to --anchor-items and the 114 burned pilot items to --p0a-items.",
+            )
+        anchor_jsonl = resolve_items_jsonl_path(anchor_path)
+        for raw_ln in anchor_jsonl.read_text(encoding="utf-8").splitlines():
+            if not raw_ln.strip():
+                continue
+            obj = json.loads(raw_ln)
+            if isinstance(obj, Mapping) and obj.get("part_id") is not None:
+                rpid = str(obj["part_id"]).strip().lower()
+                if rpid in ALLOWED_LOGPROB_MASS_PART_IDS:
+                    raise refused_error(
+                        "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                        f"--anchor-items contains burned pilot part_id={obj['part_id']!r}; anchors must come from the counted part.",
+                        "Pass 50 anchor items from the counted part to --anchor-items.",
+                    )
+    else:
+        anchor_items = tuple(anchor_items_or_path)
+        anchor_sha256 = ""
+
+    if isinstance(p0a_items_or_path, (Path, str)):
+        p0a_path: Path | None = Path(p0a_items_or_path)
+        p0a_items, p0a_sha256 = load_judge_items(p0a_path)
+    else:
+        p0a_path = None
+        p0a_items = tuple(p0a_items_or_path)
+        p0a_sha256 = ""
+
+    anchor_ids = [it.item_id for it in anchor_items]
+    p0a_ids = [it.item_id for it in p0a_items]
+    anchor_id_set = set(anchor_ids)
+    p0a_id_set = set(p0a_ids)
+
+    # Check 1: Overlap between anchor items and P0a items
+    overlap_ids = sorted(anchor_id_set & p0a_id_set)
+    if overlap_ids:
+        raise refused_error(
+            "LOCK_CHECK_INPUT_OVERLAP",
+            f"--anchor-items and --p0a-items share {len(overlap_ids)} item ID(s) (first={overlap_ids[0]!r}).",
+            "Ensure --anchor-items (50 counted-part anchors) and --p0a-items (114 burned pilot items) are disjoint.",
+        )
+
+    # Check 2: P0a items containing any ID from the counted part's manifest or ID list (unconditional)
+    counted_in_p0a = sorted(p0a_id_set & counted_id_set)
+    if counted_in_p0a:
+        raise refused_error(
+            "P0A_COUNTED_ITEM",
+            f"--p0a-items contains {len(counted_in_p0a)} item ID(s) from the counted part (first={counted_in_p0a[0]!r}).",
+            "Run P0a only on the 114 burned pilot items, never on any item ID from the counted part.",
+        )
+
+    # Check 3: Anchor input must be 50 unique items from the counted part (unconditional)
+    if len(anchor_items) != int(expected_anchor_count) or len(anchor_id_set) != int(expected_anchor_count):
+        raise refused_error(
+            "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+            f"--anchor-items must contain {expected_anchor_count} unique items from the counted part, got {len(anchor_items)} item(s) ({len(anchor_id_set)} unique).",
+            f"Pass {expected_anchor_count} anchor items (25 stratified + 25 canaries) from the counted part to --anchor-items.",
+        )
+    not_in_counted = sorted(anchor_id_set - counted_id_set)
+    if not_in_counted:
+        raise refused_error(
+            "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+            f"--anchor-items contains {len(not_in_counted)} item ID(s) not present in the counted part (first={not_in_counted[0]!r}).",
+            "Ensure all 50 --anchor-items come from the counted part.",
+        )
+    if counted_id_set <= anchor_id_set:
+        raise refused_error(
+            "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+            f"Counted source ({len(counted_id_set)} IDs) equals or is a subset of --anchor-items ({len(anchor_id_set)} IDs); "
+            "the counted source must represent the full counted part, not just the 50 anchors.",
+            "Pass the full counted part's items.jsonl or manifest to --counted-items / --counted-manifest.",
+        )
+
+    # Check 4: Keep fix 1's 114/228 burned-pilot check on the P0a input
+    p0a_schedule = build_schedule(p0a_items, seed=DEFAULT_SCHEDULE_SEED, items_sha256=p0a_sha256)
+    if p0a_path is not None:
+        _verify_burned_pilot_for_p0a(
+            p0a_path,
+            p0a_items,
+            p0a_schedule,
+            counted_item_ids=(counted_id_set | anchor_id_set),
+        )
+    elif len(p0a_items) != PILOT_BURNED_ITEM_COUNT or len(p0a_schedule.entries) != PILOT_BURNED_CALL_COUNT:
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a requires the burned pilot ('{PILOT_BURNED_PART_ID}') with {PILOT_BURNED_ITEM_COUNT} items and "
+            f"{PILOT_BURNED_CALL_COUNT} calls, got {len(p0a_items)} items and {len(p0a_schedule.entries)} calls.",
+            f"Run P0a only on the 114-item ({PILOT_BURNED_CALL_COUNT}-call) burned pilot part '{PILOT_BURNED_PART_ID}'.",
+        )
+
+    return {
+        "anchor_item_count": len(anchor_ids),
+        "p0a_item_count": len(p0a_ids),
+        "counted_item_count": len(counted_id_set),
+        "anchor_item_ids": anchor_ids,
+        "p0a_item_ids": p0a_ids,
+        "anchor_items_sha256": anchor_sha256,
+        "p0a_items_sha256": p0a_sha256,
+    }
+
+
+def _verify_burned_pilot_for_p0a(
+    part_dir: Path,
+    items: Sequence[JudgeInputItem],
+    schedule: JudgeSchedule,
+    *,
+    counted_item_ids: Iterable[str] | None = None,
+    counted_manifest_path: Path | str | None = None,
+    anchor_item_ids: Iterable[str] | None = None,
+) -> str:
+    """Verify `part_dir` and `items` belong to the burned pilot (`pilot-40b`), have no overlap with anchor or counted items, and have exact counts 114 items / 228 calls."""
+    p0a_id_set = {it.item_id for it in items}
+    if anchor_item_ids is not None:
+        anchor_set = {str(x).strip() for x in anchor_item_ids if str(x).strip()}
+        overlap = sorted(p0a_id_set & anchor_set)
+        if overlap:
+            raise refused_error(
+                "LOCK_CHECK_INPUT_OVERLAP",
+                f"P0a input shares {len(overlap)} item ID(s) with --anchor-items (first={overlap[0]!r}).",
+                "Ensure --anchor-items and --p0a-items have disjoint item IDs.",
+            )
+
+    forbid_counted_ids: set[str] = set()
+    if counted_item_ids is not None:
+        forbid_counted_ids.update(_extract_counted_item_ids_from_source(counted_item_ids))
+    if counted_manifest_path is not None:
+        forbid_counted_ids.update(_extract_counted_item_ids_from_source(counted_manifest_path))
+    if forbid_counted_ids:
+        counted_hits = sorted(p0a_id_set & forbid_counted_ids)
+        if counted_hits:
+            raise refused_error(
+                "P0A_COUNTED_ITEM",
+                f"P0a input contains {len(counted_hits)} item ID(s) from the counted part (first={counted_hits[0]!r}).",
+                "Run P0a only on the 114 burned pilot items, never on any counted-part item ID.",
+            )
+
+    resolved = Path(part_dir).resolve()
+    base_dir = resolved.parent if resolved.is_file() else resolved
+    part_name = base_dir.name.strip().lower()
+    if any(part_name.startswith(prefix) for prefix in ("part01", "part02", "part03", "part04", "part05")):
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), never on counted part '{base_dir.name}'.",
+            f"Pass the burned pilot part directory ('{PILOT_BURNED_PART_ID}') to --lock-check.",
+        )
+
+    is_shared_items_dir = (
+        (resolved.is_file() and resolved.name == "p0a_items.jsonl")
+        or (base_dir / "anchor_items.jsonl").exists()
+        or (base_dir / "p0a_items.jsonl").exists()
+        or part_name == "rdlab_items"
+    )
+    manifest_part_id = _resolve_part_id_from_dir(
+        part_dir,
+        only_p0a_manifest=is_shared_items_dir,
+        allow_synthesized=False,
+    )
+    if manifest_part_id is not None and manifest_part_id.strip().lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), got manifest part_id={manifest_part_id!r}.",
+            f"Pass the burned pilot part ('{PILOT_BURNED_PART_ID}') to --lock-check.",
+        )
+
+    items_path = resolve_items_jsonl_path(part_dir)
+    raw_nonempty_lines = [ln for ln in items_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    row_part_ids: list[str] = []
+    for raw_ln in raw_nonempty_lines:
+        obj = json.loads(raw_ln)
+        if isinstance(obj, Mapping) and obj.get("part_id") is not None:
+            pid = str(obj["part_id"]).strip()
+            if pid:
+                row_part_ids.append(pid)
+                if pid.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+                    raise refused_error(
+                        "P0A_COUNTED_PART_FORBIDDEN",
+                        f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), got item part_id={pid!r}.",
+                        f"Pass the burned pilot part ('{PILOT_BURNED_PART_ID}') to --lock-check.",
+                    )
+
+    has_valid_manifest_proof = (
+        manifest_part_id is not None and manifest_part_id.strip().lower() in ALLOWED_LOGPROB_MASS_PART_IDS
+    )
+    has_valid_all_rows_proof = (
+        bool(raw_nonempty_lines)
+        and len(row_part_ids) == len(raw_nonempty_lines)
+        and all(pid.lower() in ALLOWED_LOGPROB_MASS_PART_IDS for pid in row_part_ids)
+    )
+    if not (has_valid_manifest_proof or has_valid_all_rows_proof):
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a requires a real burned pilot proof (manifest.json with part_id='{PILOT_BURNED_PART_ID}' or every row's part_id='{PILOT_BURNED_PART_ID}'), got manifest_part_id={manifest_part_id!r} and {len(row_part_ids)}/{len(raw_nonempty_lines)} tagged rows.",
+            f"Provide the burned pilot's real manifest.json with part_id='{PILOT_BURNED_PART_ID}' or tag every row with part_id='{PILOT_BURNED_PART_ID}'.",
+        )
+
+    if len(items) != PILOT_BURNED_ITEM_COUNT or len(schedule.entries) != PILOT_BURNED_CALL_COUNT:
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a requires the burned pilot ('{PILOT_BURNED_PART_ID}') with {PILOT_BURNED_ITEM_COUNT} items and "
+            f"{PILOT_BURNED_CALL_COUNT} calls, got {len(items)} items and {len(schedule.entries)} calls.",
+            f"Run P0a only on the 114-item ({PILOT_BURNED_CALL_COUNT}-call) burned pilot part '{PILOT_BURNED_PART_ID}'.",
+        )
+
+    return manifest_part_id or (row_part_ids[0] if row_part_ids else PILOT_BURNED_PART_ID)
+
+
+def _extract_row_logprob_value(row: Mapping[str, Any]) -> float:
+    raw_lp = row.get("top1_logprob")
+    if isinstance(raw_lp, (int, float)):
+        return round(float(raw_lp), 6)
+    top_lps = row.get("top_logprobs") or row.get("verdict_top_logprobs") or ()
+    first_entry = top_lps[0] if isinstance(top_lps, Sequence) and top_lps else {}
+    lp_val = first_entry.get("logprob") if isinstance(first_entry, Mapping) else getattr(first_entry, "logprob", 0.0)
+    return round(float(lp_val or 0.0), 6)
+
+
+def compare_p0a_baseline_passes(
+    pass1_rows: Sequence[Mapping[str, Any]],
+    pass2_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Compare two baseline passes over the 228 burned pilot calls bitwise in the same session.
+
+    Returns counts, max |Δ log-prob|, and SHA-256 digests only (never item text, prompts, keys, or completions).
+    """
+    pass1_by_key: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    pass2_by_key: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    pass1_hasher = hashlib.sha256()
+    pass2_hasher = hashlib.sha256()
+
+    for r in pass1_rows:
+        jid = str(r.get("judge_id") or "").strip()
+        iid = str(r.get("item_id") or "").strip()
+        ord_s = str(r.get("order") or "").strip()
+        if jid and iid and ord_s:
+            pass1_by_key[(jid, iid, ord_s)] = r
+    for r in pass2_rows:
+        jid = str(r.get("judge_id") or "").strip()
+        iid = str(r.get("item_id") or "").strip()
+        ord_s = str(r.get("order") or "").strip()
+        if jid and iid and ord_s:
+            pass2_by_key[(jid, iid, ord_s)] = r
+
+    all_keys = sorted(set(pass1_by_key.keys()) | set(pass2_by_key.keys()))
+    token_hash_mismatch_count = 0
+    verdict_flip_count = 0
+    max_abs_delta_logprob = 0.0
+    by_judge: dict[str, dict[str, Any]] = {}
+
+    for jid, iid, ord_s in all_keys:
+        r1 = pass1_by_key.get((jid, iid, ord_s), {})
+        r2 = pass2_by_key.get((jid, iid, ord_s), {})
+        out1 = str(r1.get("output_token_ids_sha256") or "")
+        out2 = str(r2.get("output_token_ids_sha256") or "")
+        v1 = normalize_anchor_verdict_code(r1) if r1 else "missing"
+        v2 = normalize_anchor_verdict_code(r2) if r2 else "missing"
+        lp1 = _extract_row_logprob_value(r1)
+        lp2 = _extract_row_logprob_value(r2)
+        delta_lp = round(abs(lp1 - lp2), 8)
+
+        pass1_hasher.update(f"{jid}:{iid}:{ord_s}:{out1}:{v1}:{lp1:.6f}\n".encode("utf-8"))
+        pass2_hasher.update(f"{jid}:{iid}:{ord_s}:{out2}:{v2}:{lp2:.6f}\n".encode("utf-8"))
+
+        j_stat = by_judge.setdefault(
+            jid,
+            {
+                "call_count": 0,
+                "token_hash_mismatch_count": 0,
+                "verdict_flip_count": 0,
+                "max_abs_delta_logprob": 0.0,
+            },
+        )
+        j_stat["call_count"] += 1
+        if out1 != out2 or not out1 or not out2:
+            token_hash_mismatch_count += 1
+            j_stat["token_hash_mismatch_count"] += 1
+        if v1 != v2:
+            verdict_flip_count += 1
+            j_stat["verdict_flip_count"] += 1
+        if delta_lp > max_abs_delta_logprob:
+            max_abs_delta_logprob = delta_lp
+        if delta_lp > float(j_stat["max_abs_delta_logprob"]):
+            j_stat["max_abs_delta_logprob"] = delta_lp
+
+    for jid, j_stat in by_judge.items():
+        j_stat["bitwise_identical"] = (
+            int(j_stat["token_hash_mismatch_count"]) == 0
+            and int(j_stat["verdict_flip_count"]) == 0
+            and float(j_stat["max_abs_delta_logprob"]) == 0.0
+        )
+
+    pass1_sha = pass1_hasher.hexdigest()
+    pass2_sha = pass2_hasher.hexdigest()
+    bitwise_identical = (
+        token_hash_mismatch_count == 0
+        and verdict_flip_count == 0
+        and max_abs_delta_logprob == 0.0
+        and pass1_sha == pass2_sha
+    )
+    return {
+        "call_count": len(all_keys),
+        "token_hash_mismatch_count": token_hash_mismatch_count,
+        "max_abs_delta_logprob": round(max_abs_delta_logprob, 8),
+        "verdict_flip_count": verdict_flip_count,
+        "bitwise_identical": bitwise_identical,
+        "pass1_sha256": pass1_sha,
+        "pass2_sha256": pass2_sha,
+        "by_judge": dict(sorted(by_judge.items())),
+    }
+
+
+def extract_verdict_probabilities(
+    judge_id: str,
+    response: JudgeTransportResponse,
+    *,
+    pass_mode: PassMode = "binary",
+    polarity_map: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Extract normalized verdict probabilities (`p_yes`, `p_no`, `choice_probabilities`) for `judge_id`."""
+    _ = polarity_map
+    spec = BAKEOFF_JUDGE_SPECS[judge_id]
+    adapter = build_judge_adapter(spec)
+    parsed = adapter.parse_response(response, pass_mode=pass_mode)
+    p_yes = parsed.p_yes
+    p_no = round(1.0 - float(p_yes), 6) if p_yes is not None else None
+    return {
+        "p_yes": p_yes,
+        "p_no": p_no,
+        "choice_probabilities": parsed.choice_probabilities,
+    }
+
+
+def run_p0a_phase_profiler(
+    spec: JudgeSpec,
+    adapter: JudgeAdapter,
+    transport: JudgeTransport,
+    items: Sequence[JudgeInputItem],
+    *,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+    call_count: int = P0A_PROFILER_CALL_COUNT,
+    pass_mode: PassMode = "binary",
+    event_factory: Any = None,
+    timing_backend: str | None = None,
+) -> dict[str, Any]:
+    """Run a `call_count` (10)-call profiler step for `spec` with per-phase timing (`tokenise`, `prefill`, `decode`, `post_processing`)."""
+    eff_factory = event_factory if callable(event_factory) else _MonotonicTimingEvent
+    eff_backend = timing_backend or ("cuda_event" if event_factory is not None else "cpu_monotonic")
+    target_calls = max(1, int(call_count))
+    polarity_map = POLARITY_MAP_BY_JUDGE.get(spec.judge_id, {"inverted": "false"})
+    orders: tuple[OrderMode, ...] = ("AB", "BA")
+
+    phase_samples: dict[str, list[float]] = {ph: [] for ph in P0A_PHASE_NAMES}
+    call_records: list[dict[str, Any]] = []
+    out_hasher = hashlib.sha256()
+
+    for call_idx in range(target_calls):
+        item = items[(call_idx // 2) % len(items)]
+        ord_mode: OrderMode = orders[call_idx % 2]
+        ev0 = eff_factory()
+        ev1 = eff_factory()
+        ev2 = eff_factory()
+        ev3 = eff_factory()
+        ev4 = eff_factory()
+
+        ev0.record()
+        prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode=pass_mode)
+        in_tok_ids = encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+        in_tok_sha = compute_token_ids_sha256(in_tok_ids)
+        ev1.record()
+
+        # Prefill phase (forward pass on prompt tokens)
+        _run_transport_prefill(transport, spec, prompt, seed=seed)
+        ev2.record()
+
+        # Decode phase (verdict generation)
+        resp = transport.generate(spec, prompt, seed=seed)
+        ev3.record()
+
+        # Post-processing (verdict parsing + token probability extraction)
+        parsed = adapter.parse_response(resp, pass_mode=pass_mode)
+        _ = extract_verdict_probabilities(spec.judge_id, resp, pass_mode=pass_mode, polarity_map=polarity_map)
+        out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+            spec.judge_id,
+            resp.tokens,
+            system_one_result=resp.system_one_result,
+        )
+        ev4.record()
+        ev4.synchronize()
+
+        t_tok = round(max(0.0001, float(ev0.elapsed_time(ev1))), 6)
+        t_pre = round(max(0.0001, float(ev1.elapsed_time(ev2))), 6)
+        t_dec = round(max(0.0001, float(ev2.elapsed_time(ev3))), 6)
+        t_post = round(max(0.0001, float(ev3.elapsed_time(ev4))), 6)
+
+        phase_samples["tokenise"].append(t_tok)
+        phase_samples["prefill"].append(t_pre)
+        phase_samples["decode"].append(t_dec)
+        phase_samples["post_processing"].append(t_post)
+
+        out_hasher.update(f"{item.item_id}:{ord_mode}:{in_tok_sha}:{out_sha}:{parsed.state}\n".encode("utf-8"))
+        call_records.append(
+            {
+                "call_index": call_idx,
+                "item_id": item.item_id,
+                "order": ord_mode,
+                "input_token_ids_sha256": in_tok_sha,
+                "output_token_ids_sha256": out_sha,
+                "phases_ms": {
+                    "tokenise": t_tok,
+                    "prefill": t_pre,
+                    "decode": t_dec,
+                    "post_processing": t_post,
+                },
+            }
+        )
+
+    phases_summary: dict[str, dict[str, float]] = {}
+    for ph in P0A_PHASE_NAMES:
+        vals = sorted(phase_samples[ph])
+        p95_idx = min(len(vals) - 1, max(0, int(math.ceil(0.95 * len(vals))) - 1))
+        phases_summary[ph] = {
+            "mean_ms": round(sum(vals) / len(vals), 6),
+            "min_ms": round(min(vals), 6),
+            "max_ms": round(max(vals), 6),
+            "p95_ms": round(vals[p95_idx], 6),
+            "total_ms": round(sum(vals), 6),
+        }
+
+    return {
+        "judge_id": spec.judge_id,
+        "call_count": len(call_records),
+        "timing_backend": eff_backend,
+        "phases": phases_summary,
+        "phases_ms": phases_summary,
+        "calls": call_records,
+        "profiler_outputs_sha256": out_hasher.hexdigest(),
+    }
+
+
+def select_p0a_lowest_margin_items(
+    telemetry_rows: Sequence[Mapping[str, Any]],
+    *,
+    valid_item_ids: Iterable[str] | None = None,
+    count: int = P0A_LOW_MARGIN_RERUN_ITEM_COUNT,
+) -> list[str]:
+    """Select the `count` (20) lowest-margin items ranked ascending by minimum `verdict_token_margin` across all judges and both orders."""
+    allowed_ids = {str(x) for x in valid_item_ids} if valid_item_ids is not None else None
+    min_margin_by_item: dict[str, float] = {}
+    seen_ids: set[str] = set()
+    for r in telemetry_rows:
+        iid = str(r.get("item_id") or "").strip()
+        raw_margin = r.get("verdict_token_margin", r.get("min_top2_logit_margin"))
+        if iid and (allowed_ids is None or iid in allowed_ids) and raw_margin is not None:
+            seen_ids.add(iid)
+            m_val = float(raw_margin)
+            prev = min_margin_by_item.get(iid)
+            if prev is None or m_val < prev:
+                min_margin_by_item[iid] = m_val
+
+    candidate_pool = sorted(allowed_ids if allowed_ids is not None else seen_ids)
+    target_n = min(max(0, int(count)), len(candidate_pool))
+    ranked = sorted(
+        candidate_pool,
+        key=lambda iid: (min_margin_by_item.get(iid, float("inf")), iid),
+    )
+    return ranked[:target_n]
+
+
+def run_p0a_reversed_low_margin_rerun(
+    *,
+    judges: Sequence[JudgeSpec],
+    adapters: Mapping[str, JudgeAdapter],
+    transports: Mapping[str, JudgeTransport],
+    items_by_id: Mapping[str, JudgeInputItem],
+    selected_item_ids: Sequence[str],
+    baseline_rows: Sequence[Mapping[str, Any]],
+    seed: int = DEFAULT_SCHEDULE_SEED,
+    pass_mode: PassMode = "binary",
+) -> dict[str, Any]:
+    """Re-run the `selected_item_ids` (20 lowest-margin items) in reversed item and order sequence (`BA` then `AB`),
+    reporting order independence and comparison against `baseline_rows`.
+    """
+    baseline_by_key: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+    for r in baseline_rows:
+        jid = str(r.get("judge_id") or "").strip()
+        iid = str(r.get("item_id") or "").strip()
+        ord_s = str(r.get("order") or "").strip()
+        if jid and iid and ord_s:
+            baseline_by_key[(jid, iid, ord_s)] = r
+
+    selected_list = [str(iid) for iid in selected_item_ids if str(iid) in items_by_id]
+    reversed_items = list(reversed(selected_list))
+    rerun_rows: list[dict[str, Any]] = []
+    filtered_baseline_rows: list[Mapping[str, Any]] = []
+
+    ab_ba_agreement_count = 0
+    ab_ba_flip_count = 0
+    total_pairs = 0
+    by_judge_order: dict[str, dict[str, Any]] = {}
+
+    for spec in judges:
+        jid = spec.judge_id
+        adapter = adapters[jid]
+        transport = transports[jid]
+        polarity_map = POLARITY_MAP_BY_JUDGE.get(jid, {"inverted": "false"})
+        j_agree = 0
+        j_flip = 0
+        for iid in reversed_items:
+            item = items_by_id[iid]
+            verdict_by_order: dict[str, str] = {}
+            for ord_mode in ("BA", "AB"):
+                prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode=pass_mode)
+                resp = transport.generate(spec, prompt, seed=seed)
+                parsed = adapter.parse_response(resp, pass_mode=pass_mode)
+                probs = extract_verdict_probabilities(jid, resp, pass_mode=pass_mode, polarity_map=polarity_map)
+                out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                    jid,
+                    resp.tokens,
+                    system_one_result=resp.system_one_result,
+                )
+                top1_lp = round(float(resp.verdict_top_logprobs[0].logprob), 6) if resp.verdict_top_logprobs else 0.0
+                row_rec: dict[str, Any] = {
+                    "judge_id": jid,
+                    "item_id": iid,
+                    "order": ord_mode,
+                    "state": parsed.state,
+                    "raw_verdict": parsed.raw_verdict,
+                    "output_token_ids_sha256": out_sha,
+                    "top1_logprob": top1_lp,
+                    "p_yes": probs.get("p_yes"),
+                    "verdict_token_margin": resp.verdict_token_margin,
+                }
+                verdict_by_order[ord_mode] = normalize_anchor_verdict_code(row_rec)
+                rerun_rows.append(row_rec)
+                base_r = baseline_by_key.get((jid, iid, ord_mode))
+                if base_r is not None:
+                    filtered_baseline_rows.append(base_r)
+
+            total_pairs += 1
+            agreed = int(verdict_by_order.get("AB") == verdict_by_order.get("BA"))
+            flipped = 1 - agreed
+            ab_ba_agreement_count += agreed
+            ab_ba_flip_count += flipped
+            j_agree += agreed
+            j_flip += flipped
+        j_total = j_agree + j_flip
+        by_judge_order[jid] = {
+            "item_count": j_total,
+            "ab_ba_agreement_count": j_agree,
+            "ab_ba_flip_count": j_flip,
+            "order_independence_rate": round(j_agree / j_total, 6) if j_total > 0 else 1.0,
+        }
+
+    baseline_comparison = compare_p0a_baseline_passes(filtered_baseline_rows, rerun_rows)
+    order_indep_rate = round(ab_ba_agreement_count / total_pairs, 6) if total_pairs > 0 else 1.0
+    return {
+        "selected_item_count": len(selected_list),
+        "selected_item_ids": selected_list,
+        "reversed_execution_item_ids": reversed_items,
+        "pair_count": total_pairs,
+        "call_count": len(rerun_rows),
+        "ab_ba_agreement_count": ab_ba_agreement_count,
+        "ab_ba_flip_count": ab_ba_flip_count,
+        "order_independence_rate": order_indep_rate,
+        "by_judge": dict(sorted(by_judge_order.items())),
+        "baseline_comparison": baseline_comparison,
+    }
+
+
+def run_lock_check_p0a(
+    *,
+    part_dir: Path,
+    output_dir: Path,
+    baseline_rows: Sequence[Mapping[str, Any]] | None = None,
+    anchor_items: Sequence[JudgeInputItem] | Path | str | None = None,
+    counted_item_ids: Iterable[str] | None = None,
+    counted_manifest_path: Path | str | None = None,
+    judges: Sequence[JudgeSpec] | None = None,
+    judge_ids: Sequence[str] | None = None,
+    transports_by_judge: Mapping[str, JudgeTransport] | None = None,
+    fake_transport: bool = False,
+    receipts_dir: Path | None = None,
+    hf_home: Path | None = None,
+    device: str = "cpu",
+    dtype: str = DEFAULT_TORCH_DTYPE,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+    schedule_seed: int | None = None,
+    limit_items: int | None = None,
+    pass_mode: PassMode = "binary",
+    profiler_call_count: int = P0A_PROFILER_CALL_COUNT,
+    low_margin_item_count: int = P0A_LOW_MARGIN_RERUN_ITEM_COUNT,
+    event_factory: Any = None,
+    timing_backend: str | None = None,
+    window_mode: str | None = None,
+    allow_remote_code_reviewed: str | None = None,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Run P0a inside the lock-check window and write `p0a_report.json` into `output_dir`:
+      (a) second full baseline pass over the burned pilot calls in the same session, compared bitwise with `baseline_rows`;
+      (b) 10-call phase profiler per judge (`tokenise`, `prefill`, `decode`, `post_processing`);
+      (c) reversed re-run of the 20 lowest-margin items, reporting order independence and comparison against baseline.
+    """
+    try:
+        device = normalize_judge_device(device)
+    except DeviceRefusalError as exc:
+        raise RdlabError(
+            code="BAKEOFF_JUDGE_DEVICE_INVALID",
+            message=exc.message,
+            hint=exc.hint,
+            exit_code=exc.exit_code,
+        ) from exc
+    resolved_out = check_output_dir_outside_repo(output_dir, repo_root=repo_root)
+    effective_dtype = DEFAULT_TORCH_DTYPE if str(dtype).strip().lower() == "auto" else str(dtype)
+    eff_window_mode = (
+        window_mode
+        if window_mode is not None
+        else (
+            os.environ.get(DETERMINISM_MODE_ENV_VAR, "")
+            or os.environ.get("RDLAB_WINDOW_MODE", "")
+        )
+    ).strip() or None
+    if eff_window_mode is None and fake_transport:
+        eff_window_mode = "stub"
+    in_real_mode = is_real_mode(eff_window_mode, fake_transport=False) and (
+        eff_window_mode is not None or not fake_transport
+    )
+    if in_real_mode and fake_transport:
+        raise refused_error(
+            "P0A_STUB_TRANSPORT_REFUSED",
+            f"Real mode ({eff_window_mode!r}) refuses fake_transport=True in run_lock_check_p0a.",
+            "Run with fake_transport=False in real mode, or use lock-check-stub mode for stub transports.",
+        )
+
+    part_name = Path(part_dir).name.strip().lower()
+    if any(part_name.startswith(prefix) for prefix in ("part01", "part02", "part03", "part04", "part05")):
+        raise refused_error(
+            "P0A_COUNTED_PART_FORBIDDEN",
+            f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), never on counted part '{Path(part_dir).name}'.",
+            f"Pass the burned pilot part directory ('{PILOT_BURNED_PART_ID}') to --lock-check.",
+        )
+
+    resolved_anchor_ids: list[str] | None = None
+    if anchor_items is not None:
+        if isinstance(anchor_items, (Path, str)):
+            loaded_anc, _ = load_judge_items(Path(anchor_items))
+            resolved_anchor_ids = [it.item_id for it in loaded_anc]
+        else:
+            resolved_anchor_ids = [
+                it.item_id if isinstance(it, JudgeInputItem) else str(it)
+                for it in anchor_items
+            ]
+
+    eff_seed = int(schedule_seed if schedule_seed is not None else seed)
+    items, items_sha256 = load_judge_items(part_dir, limit=limit_items)
+    items_by_id = {it.item_id: it for it in items}
+    existing_sched_path = resolved_out / SCHEDULE_FILENAME
+    if existing_sched_path.is_file():
+        try:
+            existing_sched_doc = json.loads(existing_sched_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing_sched_doc = {}
+        if int(existing_sched_doc.get("item_count", -1)) == len(items) and str(existing_sched_doc.get("items_sha256") or "") == items_sha256:
+            schedule = load_or_create_schedule(resolved_out, items, seed=eff_seed, items_sha256=items_sha256)
+        else:
+            schedule = build_schedule(items, seed=eff_seed, items_sha256=items_sha256)
+    else:
+        schedule = load_or_create_schedule(resolved_out, items, seed=eff_seed, items_sha256=items_sha256)
+
+    verified_part_id = _verify_burned_pilot_for_p0a(
+        part_dir,
+        items,
+        schedule,
+        counted_item_ids=counted_item_ids,
+        counted_manifest_path=counted_manifest_path,
+        anchor_item_ids=resolved_anchor_ids,
+    )
+
+    target_jids = judge_ids if judge_ids is not None else sorted(BAKEOFF_JUDGE_SPECS.keys())
+    active_judges = (
+        list(judges)
+        if judges is not None
+        else [BAKEOFF_JUDGE_SPECS[jid] for jid in target_jids if jid in BAKEOFF_JUDGE_SPECS]
+    )
+    adapters: dict[str, JudgeAdapter] = {spec.judge_id: build_judge_adapter(spec) for spec in active_judges}
+    resolved_transports: dict[str, JudgeTransport] = {}
+    for spec in active_judges:
+        if transports_by_judge is not None and spec.judge_id in transports_by_judge:
+            tr = transports_by_judge[spec.judge_id]
+            if (in_real_mode or not fake_transport) and _is_stub_or_fake_transport(tr):
+                raise refused_error(
+                    "P0A_STUB_TRANSPORT_REFUSED",
+                    f"Real mode refuses stub/fake transport {type(tr).__name__} for judge '{spec.judge_id}' in run_lock_check_p0a.",
+                    "Pass a real transport (TransformersJudgeTransport / D3MiniTransport) or run in stub mode.",
+                )
+            resolved_transports[spec.judge_id] = tr
+        elif fake_transport:
+            resolved_transports[spec.judge_id] = DeterministicFakeJudgeTransport(torch_dtype=effective_dtype)
+        else:
+            eff_rc = (
+                allow_remote_code_reviewed
+                if allow_remote_code_reviewed is not None
+                else (D3_MINI_REVIEWED_REVISION if spec.judge_id == D3_MINI_JUDGE_ID else None)
+            )
+            check_remote_code_gate(spec, allow_remote_code_reviewed=eff_rc)
+            if receipts_dir is None:
+                raise refused_error(
+                    "BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED",
+                    f"Real-model loading for '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}) in P0a requires "
+                    "--receipts-dir containing the pinned <owner>__<repo>.sha256.json receipt.",
+                    "Pass receipts_dir (and hf_home or set HF_HOME), or use fake_transport=True in stub mode.",
+                )
+            if spec.judge_id == D3_MINI_JUDGE_ID:
+                tr_real: JudgeTransport = D3MiniTransport(
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    device=device,
+                    torch_dtype=effective_dtype,
+                    window_mode=eff_window_mode,
+                )
+            else:
+                tr_real = TransformersJudgeTransport(
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    device=device,
+                    torch_dtype=effective_dtype,
+                    window_mode=eff_window_mode,
+                )
+            tr_real.verify_ready(spec, allow_remote_code_reviewed=eff_rc)
+            resolved_transports[spec.judge_id] = tr_real
+
+    if event_factory is not None:
+        eff_event_factory = event_factory
+        eff_timing_backend = timing_backend or "cuda_event"
+    elif in_real_mode and not fake_transport:
+        eff_event_factory = _make_cuda_timing_event
+        eff_timing_backend = timing_backend or "cuda_event"
+    else:
+        eff_event_factory = _MonotonicTimingEvent
+        eff_timing_backend = timing_backend or "cpu_monotonic"
+
+    def _execute_p0a_schedule_pass() -> list[dict[str, Any]]:
+        rows_out: list[dict[str, Any]] = []
+        for spec in active_judges:
+            jid = spec.judge_id
+            adapter = adapters[jid]
+            transport = resolved_transports[jid]
+            polarity_map = POLARITY_MAP_BY_JUDGE.get(jid, {"inverted": "false"})
+            for entry in schedule.entries:
+                it = items_by_id[entry.item_id]
+                prompt = adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
+                resp = transport.generate(spec, prompt, seed=schedule.seed)
+                parsed = adapter.parse_response(resp, pass_mode=pass_mode)
+                probs = extract_verdict_probabilities(jid, resp, pass_mode=pass_mode, polarity_map=polarity_map)
+                out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+                    jid,
+                    resp.tokens,
+                    system_one_result=resp.system_one_result,
+                )
+                top1_lp = round(float(resp.verdict_top_logprobs[0].logprob), 6) if resp.verdict_top_logprobs else 0.0
+                rows_out.append(
+                    {
+                        "judge_id": jid,
+                        "item_id": it.item_id,
+                        "order": entry.order,
+                        "state": parsed.state,
+                        "raw_verdict": parsed.raw_verdict,
+                        "output_token_ids_sha256": out_sha,
+                        "top1_logprob": top1_lp,
+                        "p_yes": probs.get("p_yes"),
+                        "verdict_token_margin": resp.verdict_token_margin,
+                    }
+                )
+        return rows_out
+
+    matching_baseline_rows = [
+        r for r in (baseline_rows or ())
+        if str(r.get("item_id") or "").strip() in items_by_id
+    ]
+    eff_pass1_rows: Sequence[Mapping[str, Any]] = (
+        matching_baseline_rows if matching_baseline_rows else _execute_p0a_schedule_pass()
+    )
+
+    # (a) Second full baseline pass over the schedule in the same session
+    pass2_rows = _execute_p0a_schedule_pass()
+
+    baseline_repeat = compare_p0a_baseline_passes(eff_pass1_rows, pass2_rows)
+
+    # (b) 10-call phase profiler per judge
+    profiler_by_judge: dict[str, dict[str, Any]] = {}
+    for spec in active_judges:
+        jid = spec.judge_id
+        profiler_by_judge[jid] = run_p0a_phase_profiler(
+            spec,
+            adapters[jid],
+            resolved_transports[jid],
+            items,
+            seed=schedule.seed,
+            call_count=profiler_call_count,
+            pass_mode=pass_mode,
+            event_factory=eff_event_factory,
+            timing_backend=eff_timing_backend,
+        )
+
+    # (c) Reversed re-run of the 20 lowest-margin items
+    selected_low_margin_ids = select_p0a_lowest_margin_items(
+        eff_pass1_rows,
+        valid_item_ids=[it.item_id for it in items],
+        count=low_margin_item_count,
+    )
+    reversed_low_margin = run_p0a_reversed_low_margin_rerun(
+        judges=active_judges,
+        adapters=adapters,
+        transports=resolved_transports,
+        items_by_id=items_by_id,
+        selected_item_ids=selected_low_margin_ids,
+        baseline_rows=eff_pass1_rows,
+        seed=schedule.seed,
+        pass_mode=pass_mode,
+    )
+
+    report_doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "part_id": verified_part_id,
+        "item_count": len(items),
+        "calls_per_judge": len(schedule.entries),
+        "judge_count": len(active_judges),
+        "schedule_seed": schedule.seed,
+        "schedule_sha256": schedule.schedule_sha256,
+        "items_sha256": items_sha256,
+        "timing_backend": eff_timing_backend,
+        "baseline_repeat": baseline_repeat,
+        "phase_profiler": {
+            "calls_per_judge": int(profiler_call_count),
+            "timing_backend": eff_timing_backend,
+            "phases": list(P0A_PHASE_NAMES),
+            "by_judge": dict(sorted(profiler_by_judge.items())),
+        },
+        "reversed_low_margin_rerun": reversed_low_margin,
+    }
+    body_bytes = json.dumps(report_doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    report_doc["p0a_report_sha256"] = hashlib.sha256(body_bytes).hexdigest()
+
+    report_path = resolved_out / P0A_REPORT_FILENAME
+    report_path.write_text(
+        json.dumps(report_doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return report_doc
+
+
+def build_window_manifest(
+    run_dir: Path,
+    *,
+    window_id: str | None = None,
+    mode: str | None = None,
+    anchor_items_sha256: str | None = None,
+    p0a_items_sha256: str | None = None,
+    counted_source_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Write `window.json` in `run_dir` listing every file in `run_dir` with its `sha256` and `bytes`."""
+    resolved_dir = Path(run_dir).resolve()
+    existing_win_path = resolved_dir / WINDOW_MANIFEST_FILENAME
+    prev_anchor_sha: str | None = None
+    prev_p0a_sha: str | None = None
+    prev_counted_sha: str | None = None
+    if existing_win_path.is_file():
+        try:
+            prev_win_doc = json.loads(existing_win_path.read_text(encoding="utf-8"))
+            if isinstance(prev_win_doc, Mapping):
+                prev_anchor_sha = str(prev_win_doc.get("anchor_items_sha256") or "").strip() or None
+                prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
+                prev_counted_sha = str(prev_win_doc.get("counted_source_sha256") or "").strip() or None
+        except Exception:
+            pass
+    eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
+    eff_p0a_sha = (str(p0a_items_sha256).strip() if p0a_items_sha256 else None) or prev_p0a_sha
+    eff_counted_sha = (str(counted_source_sha256).strip() if counted_source_sha256 else None) or prev_counted_sha
+    files_map: dict[str, dict[str, Any]] = {}
+    for p in sorted(resolved_dir.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(resolved_dir).as_posix()
+        if rel == WINDOW_MANIFEST_FILENAME or rel.endswith(".tar.gz") or "/.tmp" in f"/{rel}":
+            continue
+        raw = p.read_bytes()
+        files_map[rel] = {
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "bytes": len(raw),
+        }
+    doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "window_id": str(window_id or resolved_dir.name),
+        "mode": str(mode or "unknown"),
+        "file_count": len(files_map),
+        "files": dict(sorted(files_map.items())),
+    }
+    if eff_anchor_sha is not None:
+        doc["anchor_items_sha256"] = eff_anchor_sha
+    if eff_p0a_sha is not None:
+        doc["p0a_items_sha256"] = eff_p0a_sha
+    if eff_counted_sha is not None:
+        doc["counted_source_sha256"] = eff_counted_sha
+    body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    doc["window_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
+    window_path = resolved_dir / WINDOW_MANIFEST_FILENAME
+    window_path.write_text(
+        json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return doc
+
+
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
 TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
 MALFORMED_TEST_HOOK = "MALFORMED_TEST_HOOK"
@@ -5809,6 +7398,13 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
         help="Expected SHA-256 of shard_manifest.json.",
     )
     parser.add_argument(
+        "--golden-anchor-manifest",
+        dest="golden_anchor_manifest_path",
+        type=Path,
+        default=None,
+        help="Optional path to golden_anchor_manifest.json from lock-check window.",
+    )
+    parser.add_argument(
         "--active-item-ids",
         default=None,
         help="Optional comma-separated list of item IDs to run in this sub-block.",
@@ -5870,6 +7466,7 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             shard_spec=args.shard_spec,
             shard_manifest_path=args.shard_manifest_path,
             shard_manifest_sha256=args.shard_manifest_sha256,
+            golden_anchor_manifest_path=args.golden_anchor_manifest_path,
             active_item_ids=parsed_active_ids,
             anchor_prefix_only=bool(args.anchor_prefix_only),
             session_fingerprint_sha256=args.session_fingerprint_sha256,
