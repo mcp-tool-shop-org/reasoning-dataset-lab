@@ -2426,62 +2426,63 @@ def _resolve_items_from_manifest_source(
     limit_items: int | None = None,
     lock_check_telemetry_path: Path | str | None = None,
 ) -> tuple[tuple[JudgeInputItem, ...], str]:
-    """Resolve `JudgeInputItem`s and `items_sha256` from a counted manifest path or mapping."""
-    anchor_items_by_id: dict[str, JudgeInputItem] = {}
-    if lock_check_telemetry_path is not None:
-        tel_p = Path(lock_check_telemetry_path)
-        base_dir = tel_p.parent if tel_p.is_file() else tel_p
-        cand_anchor_dir = base_dir.parent / f".{base_dir.name}_anchor_part"
-        for cand_p in (cand_anchor_dir / "items.jsonl", base_dir / "items.jsonl"):
-            if cand_p.is_file():
-                loaded_anc, _ = load_judge_items(cand_p)
-                for it in loaded_anc:
-                    anchor_items_by_id[it.item_id] = it
-                break
-
-    manifest_doc: Mapping[str, Any] | None = None
-    raw_sha = ""
+    """Resolve `JudgeInputItem`s and `items_sha256` from a counted manifest path or mapping, refusing without real items."""
+    _ = lock_check_telemetry_path
     if isinstance(manifest_or_path, (Path, str)):
         p = Path(manifest_or_path)
         if p.is_dir() or p.suffix.lower() != ".json":
-            return load_judge_items(p, limit=limit_items)
-        sibling_items = p.parent / "items.jsonl"
-        if sibling_items.is_file():
-            return load_judge_items(sibling_items, limit=limit_items)
+            loaded_items, loaded_sha = load_judge_items(p, limit=limit_items)
+            resolved_p = resolve_items_jsonl_path(p)
+            sibling_mf = resolved_p.parent / "manifest.json"
+            if sibling_mf.is_file() and limit_items is None:
+                try:
+                    sib_doc = json.loads(sibling_mf.read_text(encoding="utf-8"))
+                except Exception as exc:
+                    raise refused_error(
+                        "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+                        f"Malformed JSON in counted part manifest '{sibling_mf}': {exc}.",
+                        "Ensure the counted part's manifest.json is valid JSON.",
+                    ) from exc
+                _validate_manifest_item_count(sib_doc, len(loaded_items), source_label=str(sibling_mf))
+            return loaded_items, loaded_sha
+
         raw_bytes = p.read_bytes()
-        raw_sha = hashlib.sha256(raw_bytes).hexdigest()
         parsed = json.loads(raw_bytes.decode("utf-8"))
         manifest_doc = parsed if isinstance(parsed, Mapping) else {"item_ids": parsed}
+        sibling_items = p.parent / "items.jsonl"
+        if sibling_items.is_file():
+            loaded_items, loaded_sha = load_judge_items(sibling_items, limit=limit_items)
+            if limit_items is None:
+                _validate_manifest_item_count(manifest_doc, len(loaded_items), source_label=str(p))
+            extracted_id_set = _extract_counted_item_ids_from_source(manifest_doc)
+            if extracted_id_set and limit_items is None:
+                loaded_id_set = {it.item_id for it in loaded_items}
+                if loaded_id_set != extracted_id_set:
+                    raise refused_error(
+                        "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+                        f"Counted manifest '{p}' declared {len(extracted_id_set)} item ID(s), "
+                        f"but sibling items.jsonl '{sibling_items}' has {len(loaded_id_set)} item ID(s) "
+                        f"(symmetric_diff={len(loaded_id_set ^ extracted_id_set)}).",
+                        "Ensure the counted manifest's item IDs and item_count match its sibling items.jsonl.",
+                    )
+            return loaded_items, loaded_sha
+        extracted_id_set = _extract_counted_item_ids_from_source(manifest_doc)
     else:
         manifest_doc = manifest_or_path
+        extracted_id_set = _extract_counted_item_ids_from_source(manifest_doc)
 
-    extracted_ids = sorted(_extract_counted_item_ids_from_source(manifest_doc if manifest_doc is not None else manifest_or_path))
-    if not extracted_ids:
+    if not extracted_id_set:
         raise refused_error(
             "LOCK_CHECK_COUNTED_SOURCE_MISSING",
             f"Counted manifest '{manifest_or_path}' yielded zero item IDs.",
             "Pass a counted manifest or items.jsonl containing the counted part's item IDs.",
         )
-    if limit_items is not None:
-        extracted_ids = extracted_ids[: int(limit_items)]
-    items_sha256 = (
-        str(manifest_doc.get("items_sha256") or "")
-        if isinstance(manifest_doc, Mapping)
-        else ""
-    ) or raw_sha
-    built_items: list[JudgeInputItem] = []
-    for idx, iid in enumerate(extracted_ids):
-        if iid in anchor_items_by_id:
-            built_items.append(anchor_items_by_id[iid])
-        else:
-            built_items.append(
-                JudgeInputItem(
-                    item_id=iid,
-                    material=f"1. Fact alpha for {iid} group {idx}.\n2. Fact beta for {iid} group {idx}.",
-                    claim=f"The claim for {iid} holds.",
-                )
-            )
-    return tuple(built_items), items_sha256
+    raise refused_error(
+        "COUNTED_ITEMS_REQUIRED",
+        f"Counted manifest source '{manifest_or_path}' has {len(extracted_id_set)} item ID(s) but no real items.jsonl file; "
+        "building shard_manifest.json never invents placeholder item text or labels a manifest SHA-256 as items_sha256.",
+        "Pass --counted-items <items.jsonl> (or a manifest.json located next to its real items.jsonl).",
+    )
 
 
 def build_shard_manifest(
@@ -4395,23 +4396,30 @@ def _resolve_part_id_from_dir(
     part_dir_or_file: Path,
     *,
     include_p0a_manifest: bool = True,
+    only_p0a_manifest: bool = False,
+    allow_synthesized: bool = False,
 ) -> str | None:
     """Inspect `manifest.json`, `p0a_manifest.json` (when `include_p0a_manifest=True`), or `reports/bakeoff_part_report.json` near `part_dir_or_file` to identify `part_id`."""
     resolved = Path(part_dir_or_file).resolve()
     base_dir = resolved.parent if resolved.is_file() else resolved
-    candidates = [
-        base_dir / "manifest.json",
-        *([base_dir / "p0a_manifest.json"] if include_p0a_manifest else []),
-        base_dir / "part_bakeoff_sealed" / "manifest.json",
-        base_dir / "reports" / "bakeoff_part_report.json",
-        base_dir.parent / "reports" / "bakeoff_part_report.json",
-    ]
+    if only_p0a_manifest:
+        candidates = [base_dir / "p0a_manifest.json"] if include_p0a_manifest else []
+    else:
+        candidates = [
+            base_dir / "manifest.json",
+            *([base_dir / "p0a_manifest.json"] if include_p0a_manifest else []),
+            base_dir / "part_bakeoff_sealed" / "manifest.json",
+            base_dir / "reports" / "bakeoff_part_report.json",
+            base_dir.parent / "reports" / "bakeoff_part_report.json",
+        ]
     found_part_ids = [
         str(doc["part_id"]).strip()
         for cand in candidates
         if cand.is_file()
         for doc in (json.loads(cand.read_text(encoding="utf-8")),)
-        if isinstance(doc, Mapping) and doc.get("part_id")
+        if isinstance(doc, Mapping)
+        and doc.get("part_id")
+        and (allow_synthesized or not bool(doc.get("synthesized")))
     ]
     return found_part_ids[0] if found_part_ids else None
 
@@ -4921,6 +4929,15 @@ def run_bakeoff_judge(
                     "SHARD_MANIFEST_ANCHOR_MISMATCH",
                     f"Counted shard anchor IDs in shard_manifest.json ({len(raw_manifest_anchors)} items) do not match golden_anchor_manifest.json ({len(gm_anchors)} items).",
                     "Ensure shard_manifest.json was built from the same golden_anchor_manifest.json with the exact 50 anchor item IDs.",
+                )
+            expected_golden_sha = str(manifest_doc.get("golden_anchor_manifest_sha256") or "").strip().lower()
+            actual_golden_file_sha = hashlib.sha256(resolved_golden_path.read_bytes()).hexdigest().lower()
+            if not expected_golden_sha or actual_golden_file_sha != expected_golden_sha:
+                raise refused_error(
+                    "SHARD_MANIFEST_GOLDEN_SHA_MISMATCH",
+                    f"Counted shard golden anchor manifest file SHA-256 ({actual_golden_file_sha}) does not match "
+                    f"shard_manifest.json golden_anchor_manifest_sha256 ({expected_golden_sha or 'missing'}).",
+                    "Pass the exact golden_anchor_manifest.json file whose SHA-256 is recorded in shard_manifest.json.",
                 )
 
     shard_item_id_set = set(shard_item_ids)
@@ -6102,8 +6119,25 @@ def _load_golden_anchors_for_shard_manifest(
     strat_ids = gm_strat if len(gm_strat) == int(stratified_anchor_count) else gm_all[: int(stratified_anchor_count)]
     can_ids = gm_can if len(gm_can) == int(canary_anchor_count) else gm_all[len(strat_ids) :]
     gm_tel_sha = str(gm_doc.get("canary_telemetry_sha256") or "") or None
-    gm_sha = str(gm_doc.get("golden_anchor_manifest_sha256") or "") or None
+    gm_sha = hashlib.sha256(cand_gm.read_bytes()).hexdigest()
     return strat_ids, can_ids, gm_tel_sha, gm_sha
+
+
+def _validate_manifest_item_count(
+    mf_doc: Any,
+    actual_count: int,
+    *,
+    source_label: str,
+) -> None:
+    """Validate that `mf_doc['item_count']` (when present and not synthesized) matches `actual_count`."""
+    raw_cnt = mf_doc.get("item_count") if isinstance(mf_doc, Mapping) and not bool(mf_doc.get("synthesized")) else None
+    if raw_cnt is not None and (isinstance(raw_cnt, bool) or not isinstance(raw_cnt, int) or int(raw_cnt) != actual_count):
+        raise refused_error(
+            "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+            f"Counted source manifest '{source_label}' declared item_count={raw_cnt!r}, "
+            f"but found {actual_count} item(s).",
+            "Ensure the counted manifest's item_count matches the number of counted items.",
+        )
 
 
 def _extract_counted_item_ids_from_source(
@@ -6126,7 +6160,9 @@ def _extract_counted_item_ids_from_source(
             out_ids.update(str(x) for x in counted_source["anchor_item_ids"])
         if isinstance(counted_source.get("item_ids"), list):
             out_ids.update(str(x) for x in counted_source["item_ids"])
-        return {x.strip() for x in out_ids if x.strip()}
+        result_ids = {x.strip() for x in out_ids if x.strip()}
+        _validate_manifest_item_count(counted_source, len(result_ids), source_label="<mapping>")
+        return result_ids
     if isinstance(counted_source, (Path, str)):
         p = Path(counted_source)
         if not p.exists():
@@ -6135,9 +6171,7 @@ def _extract_counted_item_ids_from_source(
             sm_p = p / SHARD_MANIFEST_FILENAME
             if sm_p.is_file():
                 return _extract_counted_item_ids_from_source(sm_p)
-            items_p = resolve_items_jsonl_path(p)
-            loaded, _ = load_judge_items(items_p)
-            return {it.item_id for it in loaded}
+            return _extract_counted_item_ids_from_source(resolve_items_jsonl_path(p))
         if p.suffix.lower() == ".json":
             doc = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(doc, Mapping):
@@ -6146,7 +6180,12 @@ def _extract_counted_item_ids_from_source(
                 return {str(x).strip() for x in doc if str(x).strip()}
             return set()
         loaded, _ = load_judge_items(p)
-        return {it.item_id for it in loaded}
+        result_ids = {it.item_id for it in loaded}
+        sibling_mf = p.parent / "manifest.json"
+        if sibling_mf.is_file():
+            mf_doc = json.loads(sibling_mf.read_text(encoding="utf-8"))
+            _validate_manifest_item_count(mf_doc, len(result_ids), source_label=str(sibling_mf))
+        return result_ids
     out_set: set[str] = set()
     for elem in counted_source:
         if isinstance(elem, JudgeInputItem):
@@ -6190,6 +6229,8 @@ def verify_lock_check_two_inputs(
         )
     try:
         counted_id_set = _extract_counted_item_ids_from_source(counted_items_or_manifest)
+    except RdlabError:
+        raise
     except Exception as exc:
         raise refused_error(
             "LOCK_CHECK_COUNTED_SOURCE_MISSING",
@@ -6207,9 +6248,20 @@ def verify_lock_check_two_inputs(
         anchor_path = Path(anchor_items_or_path)
         anchor_items, anchor_sha256 = load_judge_items(anchor_path)
         anchor_dir = anchor_path.resolve().parent if anchor_path.is_file() else anchor_path.resolve()
-        anchor_manifest_part_id = _resolve_part_id_from_dir(
-            anchor_path,
-            include_p0a_manifest=False,
+        is_shared_anchor_dir = (
+            (anchor_path.resolve().is_file() and anchor_path.resolve().name == "anchor_items.jsonl")
+            or (anchor_dir / "anchor_items.jsonl").exists()
+            or (anchor_dir / "p0a_items.jsonl").exists()
+            or anchor_dir.name.strip().lower() == "rdlab_items"
+        )
+        anchor_manifest_part_id = (
+            None
+            if is_shared_anchor_dir
+            else _resolve_part_id_from_dir(
+                anchor_path,
+                include_p0a_manifest=False,
+                allow_synthesized=False,
+            )
         )
         if anchor_dir.name.strip().lower() in ALLOWED_LOGPROB_MASS_PART_IDS or (
             anchor_manifest_part_id is not None and anchor_manifest_part_id.strip().lower() in ALLOWED_LOGPROB_MASS_PART_IDS
@@ -6362,7 +6414,17 @@ def _verify_burned_pilot_for_p0a(
             f"Pass the burned pilot part directory ('{PILOT_BURNED_PART_ID}') to --lock-check.",
         )
 
-    manifest_part_id = _resolve_part_id_from_dir(part_dir)
+    is_shared_items_dir = (
+        (resolved.is_file() and resolved.name == "p0a_items.jsonl")
+        or (base_dir / "anchor_items.jsonl").exists()
+        or (base_dir / "p0a_items.jsonl").exists()
+        or part_name == "rdlab_items"
+    )
+    manifest_part_id = _resolve_part_id_from_dir(
+        part_dir,
+        only_p0a_manifest=is_shared_items_dir,
+        allow_synthesized=False,
+    )
     if manifest_part_id is not None and manifest_part_id.strip().lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
         raise refused_error(
             "P0A_COUNTED_PART_FORBIDDEN",

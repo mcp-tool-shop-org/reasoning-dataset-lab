@@ -712,6 +712,10 @@ build_exec_env_args() {
 
 if [[ "$DRY_FLAG" == "1" ]]; then
   if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
+    if [[ -n "$COUNTED_ITEMS_FILE" ]] && [[ -n "$COUNTED_MANIFEST_FILE" ]]; then
+      echo "LOCK_CHECK_COUNTED_SOURCE_INVALID: cannot specify both --counted-items and --counted-manifest; pass only one counted source" >&2
+      exit 2
+    fi
     if [[ -z "$COUNTED_ITEMS_FILE" ]] && [[ -z "$COUNTED_MANIFEST_FILE" ]]; then
       echo "LOCK_CHECK_COUNTED_SOURCE_MISSING: --lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest" >&2
       exit 2
@@ -1593,6 +1597,11 @@ if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
   if [[ -z "$ANCHOR_ITEMS_FILE" ]] || [[ -z "$P0A_ITEMS_FILE" ]]; then
     RUN_WHY="--lock-check requires both --anchor-items (50 anchor items from the counted part) and --p0a-items (114 burned pilot items)"
     echo "LOCK_CHECK_ANCHOR_ITEMS_INVALID: $RUN_WHY" >&2
+    exit 2
+  fi
+  if [[ -n "$COUNTED_ITEMS_FILE" ]] && [[ -n "$COUNTED_MANIFEST_FILE" ]]; then
+    RUN_WHY="cannot specify both --counted-items and --counted-manifest; pass only one counted source"
+    echo "LOCK_CHECK_COUNTED_SOURCE_INVALID: $RUN_WHY" >&2
     exit 2
   fi
   if [[ -z "$COUNTED_ITEMS_FILE" ]] && [[ -z "$COUNTED_MANIFEST_FILE" ]]; then

@@ -4008,11 +4008,16 @@ def check_upload_path_allowed(path: str | Path) -> None:
 def delete_uploaded_items_and_record_receipt(
     uploaded_paths: Sequence[Path],
 ) -> dict[str, Any]:
-    """Delete uploaded item files on the VM and verify absence with `test ! -e` per file."""
+    """Delete uploaded item files and any un-uploaded `manifest.json` in their directories, verifying absence with `test ! -e`."""
     file_records: list[dict[str, Any]] = []
     all_absent = True
+    uploaded_resolved = {Path(p).resolve() for p in uploaded_paths}
+    parent_dirs: list[Path] = []
     for item_path in uploaded_paths:
         p = Path(item_path)
+        parent_d = p if p.is_dir() else p.parent
+        if parent_d not in parent_dirs:
+            parent_dirs.append(parent_d)
         if p.exists() or p.is_symlink():
             try:
                 p.unlink()
@@ -4034,6 +4039,15 @@ def delete_uploaded_items_and_record_receipt(
                 "absent": absent,
             }
         )
+    for parent_d in parent_dirs:
+        leftover_mf = parent_d / "manifest.json"
+        if leftover_mf.resolve() not in uploaded_resolved and (
+            leftover_mf.exists() or leftover_mf.is_symlink()
+        ):
+            try:
+                leftover_mf.unlink()
+            except OSError:
+                pass
     if not all_absent:
         raise RefusalError(
             "UPLOADED_ITEMS_NOT_DELETED",
@@ -5490,6 +5504,65 @@ def run_gpu_gate(
     return ok_report
 
 
+def _ensure_part_manifest_for_run(
+    part_dir: Path,
+    *,
+    mode: str,
+    dryrun: bool = False,
+) -> tuple[dict[str, Any], bool]:
+    """Ensure `part_dir / manifest.json` exists or refuse with `PART_MANIFEST_MISSING` in real modes.
+
+    Only stub or dryrun modes may synthesize a part manifest, and any synthesized manifest is
+    labelled `"part_id": "stub"`, `"synthesized": True` (never `"pilot-40b"`).
+    Returns `(manifest_doc, was_synthesized)`.
+    """
+    part_manifest = part_dir / "manifest.json"
+    if part_manifest.is_file():
+        try:
+            loaded = json.loads(part_manifest.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                return loaded, bool(loaded.get("synthesized"))
+        except Exception:
+            pass
+        return {"part_id": part_dir.name, "schema_version": "1.0"}, False
+    if is_real_mode(mode, dryrun=dryrun):
+        raise RefusalError(
+            "PART_MANIFEST_MISSING",
+            f"Part manifest not found at {part_manifest} in real mode {mode!r}; real mode never synthesizes a part manifest.",
+        )
+    stub_doc: dict[str, Any] = {
+        "part_id": "stub",
+        "schema_version": "1.0",
+        "synthesized": True,
+    }
+    part_dir.mkdir(parents=True, exist_ok=True)
+    part_manifest.write_text(
+        json.dumps(stub_doc, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return stub_doc, True
+
+
+def _resolve_single_counted_source(
+    counted_items_file: Path | None = None,
+    counted_manifest_file: Path | None = None,
+    *,
+    check_env: bool = True,
+) -> Path | None:
+    """Enforce that at most one of `--counted-items` (`RDLAB_COUNTED_ITEMS_FILE`) and `--counted-manifest` (`RDLAB_COUNTED_MANIFEST`) is given."""
+    env_items_raw = os.environ.get("RDLAB_COUNTED_ITEMS_FILE", "").strip() if check_env else ""
+    env_mf_raw = os.environ.get("RDLAB_COUNTED_MANIFEST", "").strip() if check_env else ""
+    eff_items = counted_items_file if counted_items_file is not None else (Path(env_items_raw) if env_items_raw else None)
+    eff_mf = counted_manifest_file if counted_manifest_file is not None else (Path(env_mf_raw) if env_mf_raw else None)
+    if eff_items is not None and eff_mf is not None:
+        raise RefusalError(
+            "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+            "Cannot specify both --counted-items (RDLAB_COUNTED_ITEMS_FILE) and --counted-manifest (RDLAB_COUNTED_MANIFEST); pass only one counted source.",
+        )
+    return eff_items if eff_items is not None else eff_mf
+
+
 def run_judges_pipeline(
     *,
     mode: str,
@@ -5518,6 +5591,7 @@ def run_judges_pipeline(
     anchor_items_file: Path | None = None,
     p0a_items_file: Path | None = None,
     counted_items_or_manifest: Path | None = None,
+    counted_manifest_file: Path | None = None,
     loop_order: str | None = None,
     subblock_items: int | None = None,
     session_fingerprint_sha256: str | None = None,
@@ -5526,6 +5600,9 @@ def run_judges_pipeline(
     """Run all 5 judges (or `only_judge_ids`) as separate child subprocesses in their synced venvs and compute readouts."""
     anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
     p0a_stage_dir = run_dir.parent / f".{run_dir.name}_p0a_part"
+    orig_part_dir = part_dir if part_dir.is_dir() else part_dir.parent
+    orig_part_manifest = orig_part_dir / "manifest.json"
+    preexisting_part_manifest = orig_part_manifest.is_file()
     try:
         return _run_judges_pipeline_body(
             mode=mode,
@@ -5554,6 +5631,7 @@ def run_judges_pipeline(
             anchor_items_file=anchor_items_file,
             p0a_items_file=p0a_items_file,
             counted_items_or_manifest=counted_items_or_manifest,
+            counted_manifest_file=counted_manifest_file,
             loop_order=loop_order,
             subblock_items=subblock_items,
             session_fingerprint_sha256=session_fingerprint_sha256,
@@ -5562,6 +5640,11 @@ def run_judges_pipeline(
     finally:
         shutil.rmtree(p0a_stage_dir, ignore_errors=True)
         shutil.rmtree(anchor_stage_dir, ignore_errors=True)
+        if not preexisting_part_manifest and orig_part_manifest.is_file():
+            try:
+                orig_part_manifest.unlink()
+            except OSError:
+                pass
 
 
 def _run_judges_pipeline_body(
@@ -5592,6 +5675,7 @@ def _run_judges_pipeline_body(
     anchor_items_file: Path | None = None,
     p0a_items_file: Path | None = None,
     counted_items_or_manifest: Path | None = None,
+    counted_manifest_file: Path | None = None,
     loop_order: str | None = None,
     subblock_items: int | None = None,
     session_fingerprint_sha256: str | None = None,
@@ -5627,15 +5711,16 @@ def _run_judges_pipeline_body(
     )
     eff_anchor_file: Path | None = None
     eff_p0a_file: Path | None = None
-    eff_counted_source: Path | None = counted_items_or_manifest
+    eff_counted_source: Path | None = _resolve_single_counted_source(
+        counted_items_or_manifest,
+        counted_manifest_file,
+        check_env=is_lock_check_window,
+    )
     if is_lock_check_window:
         env_anc = os.environ.get("RDLAB_ANCHOR_ITEMS_FILE", "").strip()
         env_p0a = os.environ.get("RDLAB_P0A_ITEMS_FILE", "").strip()
-        env_cnt = os.environ.get("RDLAB_COUNTED_ITEMS_FILE", "").strip() or os.environ.get("RDLAB_COUNTED_MANIFEST", "").strip()
         eff_anchor_file = anchor_items_file if anchor_items_file is not None else (Path(env_anc) if env_anc else None)
         eff_p0a_file = p0a_items_file if p0a_items_file is not None else (Path(env_p0a) if env_p0a else None)
-        if eff_counted_source is None and env_cnt:
-            eff_counted_source = Path(env_cnt)
         if eff_anchor_file is None or eff_p0a_file is None:
             raise RefusalError(
                 "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
@@ -5733,18 +5818,13 @@ def _run_judges_pipeline_body(
             else resolve_judge_child_timeout_seconds()
         )
     )
-    part_manifest = part_dir / "manifest.json"
-    if not part_manifest.is_file() and norm_mode not in (
-        "lock-check",
-        "lock_check",
-        "lock-check-stub",
-        "lock_check_stub",
-    ):
-        part_manifest.write_text(
-            json.dumps({"part_id": "pilot-40b", "schema_version": "1.0"}, indent=2)
-            + "\n",
-            encoding="utf-8",
-            newline="\n",
+    part_manifest_doc: dict[str, Any] | None = None
+    part_manifest_synthesized: bool = False
+    if not is_lock_check_window:
+        part_manifest_doc, part_manifest_synthesized = _ensure_part_manifest_for_run(
+            part_dir if part_dir.is_dir() else part_dir.parent,
+            mode=mode,
+            dryrun=dryrun,
         )
 
     judge_done_dir = run_dir / JUDGE_DONE_DIRNAME
@@ -6408,12 +6488,10 @@ def _run_judges_pipeline_body(
                 limit_items=limit_items,
                 schedule_seed=DEFAULT_SCHEDULE_SEED,
             )
-            bakeoff_judge.write_golden_anchor_manifest(
+            golden_file_sha = bakeoff_judge.write_golden_anchor_manifest(
                 golden_doc, run_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME
             )
-            golden_anchor_manifest_sha256 = str(
-                golden_doc["golden_anchor_manifest_sha256"]
-            )
+            golden_anchor_manifest_sha256 = str(golden_file_sha)
             if eff_counted_source is None or not eff_counted_source.exists():
                 raise RefusalError(
                     "LOCK_CHECK_COUNTED_SOURCE_MISSING",
@@ -6476,11 +6554,27 @@ def _run_judges_pipeline_body(
         p0a_stage_dir.mkdir(parents=True, exist_ok=True)
         if (p0a_stage_dir / "items.jsonl").resolve() != p0a_src_jsonl.resolve():
             shutil.copyfile(p0a_src_jsonl, p0a_stage_dir / "items.jsonl")
-        for cand_mf in (
-            p0a_src_jsonl.parent / "p0a_manifest.json",
-            p0a_src_jsonl.parent / "manifest.json",
-        ):
+        p0a_in_shared_dir = (
+            p0a_src_jsonl.name.lower() == "p0a_items.jsonl"
+            or (p0a_src_jsonl.parent / "anchor_items.jsonl").exists()
+            or p0a_src_jsonl.parent.name.lower() == "rdlab_items"
+        )
+        p0a_mf_candidates = (
+            (p0a_src_jsonl.parent / "p0a_manifest.json",)
+            if p0a_in_shared_dir
+            else (
+                p0a_src_jsonl.parent / "p0a_manifest.json",
+                p0a_src_jsonl.parent / "manifest.json",
+            )
+        )
+        for cand_mf in p0a_mf_candidates:
             if cand_mf.is_file():
+                try:
+                    cand_mf_doc = json.loads(cand_mf.read_text(encoding="utf-8"))
+                    if isinstance(cand_mf_doc, dict) and cand_mf_doc.get("synthesized"):
+                        continue
+                except Exception:
+                    pass
                 shutil.copyfile(cand_mf, p0a_stage_dir / "manifest.json")
                 break
         try:
@@ -6513,7 +6607,27 @@ def _run_judges_pipeline_body(
             raise RefusalError(exc.code, exc.message) from exc
         p0a_report_sha256 = str(p0a_doc.get("p0a_report_sha256") or "")
 
-    raw_mass_check = check_bakeoff_logprob_mass(run_dir, part_id="pilot-40b")
+    real_part_id: str | None = None
+    if isinstance(part_manifest_doc, Mapping) and not part_manifest_synthesized:
+        raw_pid = str(part_manifest_doc.get("part_id") or "").strip()
+        if raw_pid:
+            real_part_id = raw_pid
+    if is_lock_check_window:
+        raw_mass_check = check_bakeoff_logprob_mass(
+            run_dir, part_id=(real_part_id or "pilot-40b")
+        )
+    elif norm_mode in ("time-one", "time_one") and real_part_id in (None, "pilot-40b"):
+        raw_mass_check = check_bakeoff_logprob_mass(
+            run_dir, part_id=(real_part_id or "pilot-40b")
+        )
+    else:
+        raw_mass_check = {
+            "schema_version": "1.0",
+            "status": "not_applicable",
+            "part_id": real_part_id or "stub",
+            "threshold": 0.99,
+            "judges": {},
+        }
     pilot_mass_readout: dict[str, Any] = {
         "kind": "harness_readout",
         "is_result": False,
@@ -6521,6 +6635,7 @@ def _run_judges_pipeline_body(
     }
     time_one_summary: dict[str, Any] = {
         "mode": mode,
+        "part_manifest": part_manifest_doc,
         "wall_seconds": TIME_ONE_WALL_SECONDS if mode == "time-one" else 7200,
         "cap_units": TIME_ONE_CAP_UNITS if mode == "time-one" else 0.16,
         "items_per_judge": len(shard_item_ids),
@@ -6763,14 +6878,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--counted-items",
-        "--counted-manifest",
         dest="counted_items_file",
         type=Path,
-        default=env_path(
-            "RDLAB_COUNTED_ITEMS_FILE",
-            env_path("RDLAB_COUNTED_MANIFEST", None),
-        ),
-        help="Counted part items.jsonl or shard_manifest.json (required for --lock-check and --lock-check-stub) used to verify --anchor-items and --p0a-items.",
+        default=env_path("RDLAB_COUNTED_ITEMS_FILE", None),
+        help="Counted part items.jsonl (required for --lock-check and --lock-check-stub unless --counted-manifest is given) used to verify --anchor-items and --p0a-items.",
+    )
+    parser.add_argument(
+        "--counted-manifest",
+        dest="counted_manifest_file",
+        type=Path,
+        default=env_path("RDLAB_COUNTED_MANIFEST", None),
+        help="Counted part manifest.json or shard_manifest.json (required for --lock-check and --lock-check-stub unless --counted-items is given) used to verify --anchor-items and --p0a-items.",
     )
     parser.add_argument(
         "--resume-tar",
@@ -10913,7 +11031,9 @@ def main(argv: list[str] | None = None) -> int:
     is_lock_check_main = args.mode in ("lock-check", "lock-check-stub")
     anchor_items_arg = getattr(args, "anchor_items_file", None)
     p0a_items_arg = getattr(args, "p0a_items_file", None)
-    counted_items_arg = getattr(args, "counted_items_file", None)
+    raw_counted_items_arg = getattr(args, "counted_items_file", None)
+    raw_counted_manifest_arg = getattr(args, "counted_manifest_file", None)
+    counted_items_arg = raw_counted_items_arg if raw_counted_items_arg is not None else raw_counted_manifest_arg
 
     for p in (
         args.repo_dir,
@@ -10926,7 +11046,8 @@ def main(argv: list[str] | None = None) -> int:
         args.status_file,
         *([anchor_items_arg] if anchor_items_arg is not None else []),
         *([p0a_items_arg] if p0a_items_arg is not None else []),
-        *([counted_items_arg] if counted_items_arg is not None else []),
+        *([raw_counted_items_arg] if raw_counted_items_arg is not None else []),
+        *([raw_counted_manifest_arg] if raw_counted_manifest_arg is not None else []),
     ):
         ensure_not_drive_path(p)
 
@@ -11010,6 +11131,7 @@ def main(argv: list[str] | None = None) -> int:
     boot_gatekeeper_report: dict[str, Any] | None = None
     loop_order_val: str = DEFAULT_LOOP_ORDER
     subblock_items_val: int = DEFAULT_SUBBLOCK_ITEMS
+    uploaded_item_files: list[Path] = []
     try:
         current_step = "validate_until_option"
         until_step = validate_until_option(args.mode, getattr(args, "until", None))
@@ -11074,6 +11196,11 @@ def main(argv: list[str] | None = None) -> int:
         anchor_items_sha256: str | None = None
         p0a_items_sha256: str | None = None
         counted_source_sha256: str | None = None
+        counted_items_arg = _resolve_single_counted_source(
+            raw_counted_items_arg,
+            raw_counted_manifest_arg,
+            check_env=False,
+        )
         if is_lock_check_main:
             if anchor_items_arg is None or p0a_items_arg is None:
                 raise RefusalError(
@@ -11682,6 +11809,11 @@ def main(argv: list[str] | None = None) -> int:
                 else {}
             ),
             "time_one_summary": time_one_summary,
+            "part_manifest": (
+                time_one_summary.get("part_manifest")
+                if time_one_summary is not None
+                else None
+            ),
             "pilot_mass_check": pilot_mass_readout,
             "harness_readouts": {
                 "pilot_mass_check": pilot_mass_readout,
@@ -11884,20 +12016,23 @@ def main(argv: list[str] | None = None) -> int:
             gpu_gate_report = err.gpu_gate_report
         if isinstance(err, DeviceIndexCheckError):
             device_check_report = err.device_check_report
-        cleanup_paths: list[Path] = []
-        for p in (
-            anchor_items_arg,
-            p0a_items_arg,
-            counted_items_arg,
-            args.items_file,
-            (
-                (p0a_items_arg / "items.jsonl" if p0a_items_arg.is_dir() else p0a_items_arg).parent / "p0a_manifest.json"
-                if p0a_items_arg is not None
-                else None
-            ),
-        ):
-            if p is not None and p not in cleanup_paths and (p.is_file() or p.is_symlink() or p in (anchor_items_arg, p0a_items_arg, counted_items_arg, args.items_file)):
-                cleanup_paths.append(p)
+        cleanup_paths: list[Path] = list(uploaded_item_files)
+        if not cleanup_paths:
+            for p in (
+                anchor_items_arg,
+                p0a_items_arg,
+                counted_items_arg,
+                raw_counted_items_arg,
+                raw_counted_manifest_arg,
+                args.items_file,
+                (
+                    (p0a_items_arg / "items.jsonl" if p0a_items_arg.is_dir() else p0a_items_arg).parent / "p0a_manifest.json"
+                    if p0a_items_arg is not None
+                    else None
+                ),
+            ):
+                if p is not None and p not in cleanup_paths and (p.is_file() or p.is_symlink() or p in (anchor_items_arg, p0a_items_arg, counted_items_arg, args.items_file)):
+                    cleanup_paths.append(p)
         if deleted_items_receipt is None and cleanup_paths:
             try:
                 deleted_items_receipt = delete_uploaded_items_and_record_receipt(
