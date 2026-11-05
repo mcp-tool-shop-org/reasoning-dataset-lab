@@ -9,6 +9,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -15849,7 +15850,6 @@ def test_fix1_part_a_counted_determinism_refusal_in_transport_and_probe(
     - `_run_cpu_transport_probe_for_judge` refuses in counted mode when `torch.use_deterministic_algorithms(True, warn_only=False)`
       raises `RuntimeError`.
     """
-    import types
     from reasoning_dataset_lab.pilot_b import bakeoff_judge
 
     spec_nem = bakeoff_judge.BAKEOFF_JUDGE_SPECS["nemotron-3-nano-4b"]
@@ -16776,7 +16776,6 @@ def test_fix1_part_f_100_percent_patch_coverage_on_bakeoff_judge(
     Exercise all new/modified lines and branches in `src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py`
     through real unit tests with zero coverage-exclusion directives.
     """
-    import types
     from reasoning_dataset_lab.pilot_b import bakeoff_judge
 
     # 1. compute_response_output_token_ids_sha256 & compute_min_top2_logit_margin_from_logprobs
@@ -17224,10 +17223,31 @@ def test_fix1_part_f_100_percent_patch_coverage_on_bakeoff_judge(
     assert m_zero_strat["stratified_anchor_count"] == 0
     assert m_zero_strat["canary_anchor_count"] == 1
 
-    # Counted sharded run succeeding when golden_anchor_manifest_sha256 is present in manifest
-    m_with_gold = dict(m_seq, golden_anchor_manifest_sha256="a" * 64)
-    m_with_gold["manifest_sha256"] = bakeoff_judge._compute_shard_manifest_body_sha256(m_with_gold)
+    # Counted sharded run succeeding when golden_anchor_manifest.json is present on disk with 50 matching anchors
+    items_50_p = _make_stratified_public_items(tmp_path / "cov_items_50", count=50)
+    loaded_50_items, _ = bakeoff_judge.load_judge_items(items_50_p)
+    m_with_gold = bakeoff_judge.build_shard_manifest(
+        loaded_50_items,
+        num_shards=2,
+        anchor_count=50,
+        stratified_anchor_count=25,
+        canary_anchor_count=25,
+        canary_item_ids=[it.item_id for it in loaded_50_items],
+    )
     out_counted_ok = tmp_path / "out_counted_ok"
+    out_counted_ok.mkdir(parents=True, exist_ok=True)
+    gm_50_path = out_counted_ok / "golden_anchor_manifest.json"
+    gm_50_doc = {
+        "schema_version": "1.0",
+        "anchor_item_ids": list(m_with_gold["anchor_item_ids"]),
+        "stratified_anchor_item_ids": list(m_with_gold["stratified_anchor_item_ids"]),
+        "canary_item_ids": list(m_with_gold["canary_item_ids"]),
+        "canary_selection_telemetry_sha256": "b" * 64,
+        "manifest_sha256": "a" * 64,
+    }
+    gm_50_path.write_text(json.dumps(gm_50_doc, indent=2) + "\n", encoding="utf-8")
+    m_with_gold["golden_anchor_manifest_sha256"] = hashlib.sha256(gm_50_path.read_bytes()).hexdigest()
+    m_with_gold["manifest_sha256"] = bakeoff_judge._compute_shard_manifest_body_sha256(m_with_gold)
     bakeoff_judge.write_shard_manifest(m_with_gold, out_counted_ok / "shard_manifest.json")
     (out_counted_ok / "anchor_rows").mkdir(parents=True, exist_ok=True)
     (out_counted_ok / "anchor_rows" / "mu-judge.jsonl").write_text("[1, 2]\n", encoding="utf-8")
@@ -17239,7 +17259,7 @@ def test_fix1_part_f_100_percent_patch_coverage_on_bakeoff_judge(
         t_ok.use_deterministic_algorithms = lambda _m, warn_only=False: None  # type: ignore[attr-defined]
         mp.setitem(sys.modules, "torch", t_ok)
         res_cnt_ok = bakeoff_judge.run_bakeoff_judge(
-            part_dir=items_p,
+            part_dir=items_50_p,
             output_dir=out_counted_ok,
             judge="mu-judge",
             fake_transport=True,
@@ -19433,7 +19453,6 @@ def test_fix4_group_e_verdict_token_margin_canary_ranking_fill_uninitialized_mem
     - E3: Compute `step_margins` in `TransformersJudgeTransport.generate` via a single `torch.stack` +
       `torch.topk(..., k=2)` and one `.tolist()` host transfer instead of a per-step `.item()` loop.
     """
-    import types
     from reasoning_dataset_lab.pilot_b import bakeoff_judge
 
     for k in list(os.environ):
@@ -19859,6 +19878,7 @@ def test_lock_check_item1_mode_exists_is_real_and_refuses_hooks(
             extra_lc_flags = (
                 f" --anchor-items '{_to_wsl_path(anchor_items_path)}'"
                 f" --p0a-items '{_to_wsl_path(p0a_items_path)}'"
+                f" --counted-items '{_to_wsl_path(items_path)}'"
             )
         proc_dry = subprocess.run(
             [
@@ -20443,7 +20463,7 @@ def test_lock_check_item4_p0a_bitwise_profiler_and_reversed_low_margin_rerun(
     assert cmp_mismatch["by_judge"]["mu-judge"]["token_hash_mismatch_count"] == 1
 
     # (b) 10-call profiler step per judge with CUDA-event style timing per phase
-    items_path = _make_stratified_public_items(tmp_path / "p0a_items", count=114)
+    items_path = _make_stratified_public_items(tmp_path / "pilot-40b", count=114)
     items, _ = bakeoff_judge.load_judge_items(items_path)
     spec = bakeoff_judge.BAKEOFF_JUDGE_SPECS["mu-judge"]
     adapter = bakeoff_judge.build_judge_adapter(spec)
@@ -20660,12 +20680,16 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
         tmp_path / "two_inputs", counted_count=100
     )
-    # Copy anchor and p0a files per window because vm_judges deletes both uploaded files after the run
+    # Copy anchor, p0a, and counted files per window because vm_judges deletes uploaded files after the run
     lc_anchor = tmp_path / "lc_uploaded" / "anchor_items.jsonl"
     lc_p0a = tmp_path / "lc_uploaded" / "p0a_items.jsonl"
+    lc_p0a_mf = tmp_path / "lc_uploaded" / "p0a_manifest.json"
+    lc_counted = tmp_path / "lc_uploaded" / "counted_items.jsonl"
     lc_anchor.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(anchor_items_src, lc_anchor)
     shutil.copyfile(p0a_items_src, lc_p0a)
+    shutil.copyfile(p0a_items_src.parent / "manifest.json", lc_p0a_mf)
+    shutil.copyfile(counted_items_file, lc_counted)
 
     monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
     monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
@@ -20692,7 +20716,7 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
             "--p0a-items",
             str(lc_p0a),
             "--counted-items",
-            str(counted_items_file),
+            str(lc_counted),
             "--run-dir",
             str(lc_run_dir),
             "--work-dir",
@@ -20710,6 +20734,10 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     assert lc_tar.is_file()
     assert not lc_anchor.exists()
     assert not lc_p0a.exists()
+    assert not lc_p0a_mf.exists()
+    assert not lc_counted.exists()
+    assert not (lc_run_dir.parent / f".{lc_run_dir.name}_anchor_part").exists()
+    assert not (lc_run_dir.parent / f".{lc_run_dir.name}_p0a_part").exists()
 
     # Verify result.tar.gz contains all Item 5 artifacts and window.json hashes match every file
     with tarfile.open(lc_tar, "r:gz") as tf:
@@ -20731,10 +20759,12 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     assert window_doc["mode"] == "lock-check-stub"
     assert len(window_doc["anchor_items_sha256"]) == 64
     assert len(window_doc["p0a_items_sha256"]) == 64
+    assert len(window_doc["counted_source_sha256"]) == 64
     assert receipt_doc["anchor_items_sha256"] == window_doc["anchor_items_sha256"]
     assert receipt_doc["p0a_items_sha256"] == window_doc["p0a_items_sha256"]
+    assert receipt_doc["counted_source_sha256"] == window_doc["counted_source_sha256"]
     assert receipt_doc["deleted_items_receipt"]["all_absent"] is True
-    assert len(receipt_doc["deleted_items_receipt"]["files"]) == 2
+    assert len(receipt_doc["deleted_items_receipt"]["files"]) == 4
     rebuilt_window_doc = bakeoff_judge.build_window_manifest(
         lc_run_dir,
         window_id="window-lc-stub-01",
@@ -21223,7 +21253,6 @@ def test_fix1_item3_p0a_cuda_event_timing_and_prefill_vs_decode_separation(
     """Fix1 Item 3: P0a phase profiler separates `prefill` (`ev1..ev2`) from `decode` (`ev2..ev3`),
     uses `torch.cuda.Event(enable_timing=True)` in real mode, and records `timing_backend` in `p0a_report.json`.
     """
-    import types
     from reasoning_dataset_lab.pilot_b import bakeoff_judge
 
     for k in list(os.environ):
@@ -21480,9 +21509,13 @@ def test_fix2_item1_and_3_two_input_lock_check_and_shard_merge_chain(
     )
     lc_anchor = tmp_path / "f2_lc_up" / "anchor_items.jsonl"
     lc_p0a = tmp_path / "f2_lc_up" / "p0a_items.jsonl"
+    lc_p0a_mf = tmp_path / "f2_lc_up" / "p0a_manifest.json"
+    lc_counted = tmp_path / "f2_lc_up" / "counted_items.jsonl"
     lc_anchor.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(anchor_items_src, lc_anchor)
     shutil.copyfile(p0a_items_src, lc_p0a)
+    shutil.copyfile(p0a_items_src.parent / "manifest.json", lc_p0a_mf)
+    shutil.copyfile(counted_items_file, lc_counted)
 
     monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
     monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
@@ -21509,7 +21542,7 @@ def test_fix2_item1_and_3_two_input_lock_check_and_shard_merge_chain(
             "--p0a-items",
             str(lc_p0a),
             "--counted-items",
-            str(counted_items_file),
+            str(lc_counted),
             "--run-dir",
             str(lc_run_dir),
             "--work-dir",
@@ -21695,6 +21728,7 @@ def test_fix2_item2_input_guards_overlap_counted_in_p0a_and_anchor_invalid(
         bakeoff_judge.verify_lock_check_two_inputs(
             anchor_items_or_path=anchor_items_src,
             p0a_items_or_path=p0a_overlap,
+            counted_items_or_manifest=counted_manifest,
         )
     assert exc_ov.value.code == "LOCK_CHECK_INPUT_OVERLAP"
     assert first_anchor_id in exc_ov.value.message
@@ -21757,6 +21791,7 @@ def test_fix2_item2_input_guards_overlap_counted_in_p0a_and_anchor_invalid(
         bakeoff_judge.verify_lock_check_two_inputs(
             anchor_items_or_path=anchor_25,
             p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest=counted_manifest,
         )
     assert exc_anc_25.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
 
@@ -21771,6 +21806,7 @@ def test_fix2_item2_input_guards_overlap_counted_in_p0a_and_anchor_invalid(
         bakeoff_judge.verify_lock_check_two_inputs(
             anchor_items_or_path=anchor_pilot,
             p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest=counted_manifest,
         )
     assert exc_anc_pilot.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
 
@@ -21913,21 +21949,996 @@ def test_fix2_item4_launcher_two_input_flags_help_upload_check_and_delete(
 
     exp_anchor_sha = hashlib.sha256(anchor_items_src.read_bytes()).hexdigest()
     exp_p0a_sha = hashlib.sha256(p0a_items_src.read_bytes()).hexdigest()
+    exp_counted_sha = hashlib.sha256(counted_items_file.read_bytes()).hexdigest()
 
     vm_receipt = json.loads((out_lc / "vm_receipt.json").read_text(encoding="utf-8"))
     window_doc = json.loads((out_lc / "window.json").read_text(encoding="utf-8"))
     assert vm_receipt["anchor_items_sha256"] == exp_anchor_sha
     assert vm_receipt["p0a_items_sha256"] == exp_p0a_sha
+    assert vm_receipt["counted_source_sha256"] == exp_counted_sha
     assert window_doc["anchor_items_sha256"] == exp_anchor_sha
     assert window_doc["p0a_items_sha256"] == exp_p0a_sha
+    assert window_doc["counted_source_sha256"] == exp_counted_sha
 
     del_rec = vm_receipt["deleted_items_receipt"]
     assert del_rec["all_absent"] is True
-    assert len(del_rec["files"]) == 2
+    assert len(del_rec["files"]) == 4
     assert all(f["absent"] is True and f["test_not_e_rc"] == 0 for f in del_rec["files"])
     vm_items_dir = env_paths["state_dir"] / "vm_fs" / "rdlab_items"
     assert not (vm_items_dir / "anchor_items.jsonl").exists()
     assert not (vm_items_dir / "p0a_items.jsonl").exists()
+    assert not (vm_items_dir / "p0a_manifest.json").exists()
+
+
+def test_fix3_item6_refusals_counted_source_burned_pilot_golden_manifest_promote_and_staging_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix3 Item 6: Tests for each refusal (each fails at 627881f1):
+    - no counted source; a missing counted path; counted equals anchors; a counted id in P0a with a counted source given; non-counted anchors;
+    - a 114-item P0a file named `p0a_items.jsonl` with no manifest and no row part_id refuses;
+    - a golden manifest with 49 anchors, and a malformed one, refuse; a golden/shard anchor mismatch refuses;
+    - `--counted-manifest` alone does not yield a 50-item shard manifest;
+    - `--output` equal to `--filled` refuses;
+    - the staging directories are gone after a failed run.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+    import promote_goldens
+
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "f3_i6_base", counted_count=100
+    )
+    counted_manifest = counted_items_file.parent / "manifest.json"
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "f3_i6_rec")
+
+    # 1. No counted source refuses with LOCK_CHECK_COUNTED_SOURCE_MISSING
+    with pytest.raises(RdlabError) as exc_no_cnt:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_items_src,
+            p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest=None,
+        )
+    assert exc_no_cnt.value.code == "LOCK_CHECK_COUNTED_SOURCE_MISSING"
+
+    with pytest.raises(RdlabError) as exc_empty_cnt:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_items_src,
+            p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest={"item_ids": []},
+        )
+    assert exc_empty_cnt.value.code == "LOCK_CHECK_COUNTED_SOURCE_MISSING"
+
+    # Also verify vm_judges.main and run_judges_pipeline do NOT fall back to shard_manifest when counted source is omitted
+    sm_50_fallback = tmp_path / "sm_50_fallback.json"
+    sm_50_doc = bakeoff_judge.build_shard_manifest(anchor_items_src, num_shards=2)
+    bakeoff_judge.write_shard_manifest(sm_50_doc, sm_50_fallback)
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+    monkeypatch.delenv("RDLAB_COUNTED_ITEMS_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_COUNTED_MANIFEST", raising=False)
+
+    no_cnt_status = tmp_path / "no_cnt_status.json"
+    no_cnt_anc = tmp_path / "no_cnt_up" / "anchor_items.jsonl"
+    no_cnt_p0a = tmp_path / "no_cnt_up" / "p0a_items.jsonl"
+    no_cnt_anc.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(anchor_items_src, no_cnt_anc)
+    shutil.copyfile(p0a_items_src, no_cnt_p0a)
+    rc_no_cnt_main = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--lock-check-stub",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--anchor-items",
+            str(no_cnt_anc),
+            "--p0a-items",
+            str(no_cnt_p0a),
+            "--shard-manifest",
+            str(sm_50_fallback),
+            "--run-dir",
+            str(tmp_path / "no_cnt_run"),
+            "--work-dir",
+            str(tmp_path / "no_cnt_work"),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(tmp_path / "no_cnt.tar.gz"),
+            "--status-file",
+            str(no_cnt_status),
+            "--dryrun",
+        ]
+    )
+    assert rc_no_cnt_main == 2
+    assert json.loads(no_cnt_status.read_text(encoding="utf-8"))["failure_class"] == "LOCK_CHECK_COUNTED_SOURCE_MISSING"
+
+    with pytest.raises(vm_judges.RefusalError) as exc_no_cnt_pipe:
+        vm_judges.run_judges_pipeline(
+            mode="lock-check-stub",
+            part_dir=anchor_items_src.parent,
+            run_dir=tmp_path / "no_cnt_pipe_run",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            dryrun=True,
+            repo_root=REPO_ROOT,
+            work_dir=tmp_path / "no_cnt_pipe_work",
+            anchor_items_file=anchor_items_src,
+            p0a_items_file=p0a_items_src,
+            counted_items_or_manifest=None,
+            shard_manifest_path=sm_50_fallback,
+        )
+    assert exc_no_cnt_pipe.value.failure_class == "LOCK_CHECK_COUNTED_SOURCE_MISSING"
+
+    # 2. A missing counted path refuses with LOCK_CHECK_COUNTED_SOURCE_MISSING
+    missing_cnt_path = tmp_path / "nonexistent_counted_items.jsonl"
+    with pytest.raises(RdlabError) as exc_miss_cnt:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_items_src,
+            p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest=missing_cnt_path,
+        )
+    assert exc_miss_cnt.value.code == "LOCK_CHECK_COUNTED_SOURCE_MISSING"
+
+    unreadable_cnt_json = tmp_path / "unreadable_counted.json"
+    unreadable_cnt_json.write_text("{malformed-json", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_unreadable_cnt:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_items_src,
+            p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest=unreadable_cnt_json,
+        )
+    assert exc_unreadable_cnt.value.code == "LOCK_CHECK_COUNTED_SOURCE_MISSING"
+
+    # 3. Counted equals anchors (or is a subset of anchors) refuses with LOCK_CHECK_COUNTED_SOURCE_INVALID
+    with pytest.raises(RdlabError) as exc_cnt_eq_anc:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_items_src,
+            p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest=anchor_items_src,
+        )
+    assert exc_cnt_eq_anc.value.code == "LOCK_CHECK_COUNTED_SOURCE_INVALID"
+
+    # 4. A counted id in P0a with a counted source given refuses with P0A_COUNTED_ITEM
+    non_anchor_cnt_id = json.loads(counted_items_file.read_text(encoding="utf-8").splitlines()[80])["id"]
+    p0a_with_cnt = tmp_path / "p0a_with_cnt" / "items.jsonl"
+    p0a_with_cnt.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(p0a_items_src.parent / "manifest.json", p0a_with_cnt.parent / "manifest.json")
+    p0a_rows_mod = [json.loads(ln) for ln in p0a_items_src.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    p0a_rows_mod[5]["id"] = non_anchor_cnt_id
+    p0a_with_cnt.write_text("\n".join(json.dumps(r, sort_keys=True) for r in p0a_rows_mod) + "\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_cnt_in_p0a:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_items_src,
+            p0a_items_or_path=p0a_with_cnt,
+            counted_items_or_manifest=counted_items_file,
+        )
+    assert exc_cnt_in_p0a.value.code == "P0A_COUNTED_ITEM"
+
+    # 5. Non-counted anchors refuse with LOCK_CHECK_ANCHOR_ITEMS_INVALID
+    anc_non_cnt = tmp_path / "anc_non_cnt" / "anchor_items.jsonl"
+    anc_non_cnt.parent.mkdir(parents=True, exist_ok=True)
+    anc_rows_mod = [json.loads(ln) for ln in anchor_items_src.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    anc_rows_mod[0]["id"] = "non-counted-outside-id-0001"
+    anc_non_cnt.write_text("\n".join(json.dumps(r, sort_keys=True) for r in anc_rows_mod) + "\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_non_cnt_anc:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anc_non_cnt,
+            p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest=counted_items_file,
+        )
+    assert exc_non_cnt_anc.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    # Also test row-level part_id="pilot-40b" in anchor_items
+    anc_row_pilot = tmp_path / "anc_row_pilot" / "anchor_items.jsonl"
+    anc_row_pilot.parent.mkdir(parents=True, exist_ok=True)
+    anc_rows_pilot = [json.loads(ln) for ln in anchor_items_src.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    anc_rows_pilot[0]["part_id"] = "pilot-40b"
+    anc_row_pilot.write_text("\n".join(json.dumps(r, sort_keys=True) for r in anc_rows_pilot) + "\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_anc_rpid:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anc_row_pilot,
+            p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest=counted_items_file,
+        )
+    assert exc_anc_rpid.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    # 6. A 114-item P0a file named `p0a_items.jsonl` with no manifest and no row part_id refuses with P0A_COUNTED_PART_FORBIDDEN
+    bare_p0a_dir = tmp_path / "bare_upload_dir"
+    bare_p0a_dir.mkdir(parents=True, exist_ok=True)
+    bare_p0a_file = bare_p0a_dir / "p0a_items.jsonl"
+    shutil.copyfile(p0a_items_src, bare_p0a_file)
+    assert not (bare_p0a_dir / "manifest.json").exists()
+    assert not (bare_p0a_dir / "p0a_manifest.json").exists()
+    with pytest.raises(RdlabError) as exc_bare_p0a_two:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_items_src,
+            p0a_items_or_path=bare_p0a_file,
+            counted_items_or_manifest=counted_manifest,
+        )
+    assert exc_bare_p0a_two.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+
+    with pytest.raises(RdlabError) as exc_bare_p0a_run:
+        bakeoff_judge.run_lock_check_p0a(
+            part_dir=bare_p0a_file,
+            output_dir=tmp_path / "bare_p0a_out",
+            judge_ids=["mu-judge"],
+            fake_transport=True,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_bare_p0a_run.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+
+    # 7. A golden manifest with 49 anchors, and a malformed one, refuse (LOCK_CHECK_ANCHOR_ITEMS_INVALID);
+    #    a golden/shard anchor mismatch refuses (SHARD_MANIFEST_ANCHOR_MISMATCH)
+    counted_loaded, _ = bakeoff_judge.load_judge_items(counted_items_file)
+    counted_by_id = {it.item_id: it for it in counted_loaded}
+    gm_49_dir = tmp_path / "gm_49_dir"
+    gm_49_dir.mkdir(parents=True, exist_ok=True)
+    anchor_50_ids = [it.item_id for it in counted_loaded[:50]]
+    gm_49_path = gm_49_dir / "golden_anchor_manifest.json"
+    gm_49_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "stratified_anchor_item_ids": anchor_50_ids[:25],
+                "canary_item_ids": anchor_50_ids[25:49],
+                "anchor_item_ids": anchor_50_ids[:49],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_gm_49_load:
+        bakeoff_judge._load_golden_anchors_for_shard_manifest(
+            gm_49_dir,
+            items_by_id=counted_by_id,
+            anchor_count=50,
+            stratified_anchor_count=25,
+            canary_anchor_count=25,
+        )
+    assert exc_gm_49_load.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    gm_malformed_dir = tmp_path / "gm_malformed_dir"
+    gm_malformed_dir.mkdir(parents=True, exist_ok=True)
+    gm_malformed_path = gm_malformed_dir / "golden_anchor_manifest.json"
+    gm_malformed_path.write_text("{not-valid-json", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_gm_mal_load:
+        bakeoff_judge._load_golden_anchors_for_shard_manifest(
+            gm_malformed_dir,
+            items_by_id=counted_by_id,
+            anchor_count=50,
+            stratified_anchor_count=25,
+            canary_anchor_count=25,
+        )
+    assert exc_gm_mal_load.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    gm_non_dict_path = gm_malformed_dir / "golden_anchor_manifest.json"
+    gm_non_dict_path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_gm_nondict_load:
+        bakeoff_judge._load_golden_anchors_for_shard_manifest(
+            gm_non_dict_path,
+            items_by_id=counted_by_id,
+            anchor_count=50,
+            stratified_anchor_count=25,
+            canary_anchor_count=25,
+        )
+    assert exc_gm_nondict_load.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    # Also test counted shard in run_bakeoff_judge refusing 49-anchor golden manifest, malformed golden manifest, and golden/shard anchor mismatch
+    valid_sm_doc = bakeoff_judge.build_shard_manifest(
+        counted_items_file,
+        num_shards=2,
+        anchor_count=50,
+        stratified_anchor_count=25,
+        canary_anchor_count=25,
+        canary_item_ids=[it.item_id for it in counted_loaded[50:75]],
+    )
+    valid_sm_path = tmp_path / "valid_sm_100.json"
+    valid_sm_sha = bakeoff_judge.write_shard_manifest(valid_sm_doc, valid_sm_path)
+
+    with pytest.raises(RdlabError) as exc_rbj_gm49:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=counted_items_file,
+            output_dir=tmp_path / "rbj_gm49_out",
+            judge="mu-judge",
+            fake_transport=True,
+            window_mode="counted-stub",
+            shard_spec="1/2",
+            shard_manifest_path=valid_sm_path,
+            shard_manifest_sha256=valid_sm_sha,
+            golden_anchor_manifest_path=gm_49_path,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_rbj_gm49.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    gm_malformed_path.write_text("{broken-json", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_rbj_gmmal:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=counted_items_file,
+            output_dir=tmp_path / "rbj_gmmal_out",
+            judge="mu-judge",
+            fake_transport=True,
+            window_mode="counted-stub",
+            shard_spec="1/2",
+            shard_manifest_path=valid_sm_path,
+            shard_manifest_sha256=valid_sm_sha,
+            golden_anchor_manifest_path=gm_malformed_path,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_rbj_gmmal.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    gm_nondict_f = tmp_path / "gm_nondict_f.json"
+    gm_nondict_f.write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_rbj_gmnondict:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=counted_items_file,
+            output_dir=tmp_path / "rbj_gmnondict_out",
+            judge="mu-judge",
+            fake_transport=True,
+            window_mode="counted-stub",
+            shard_spec="1/2",
+            shard_manifest_path=valid_sm_path,
+            shard_manifest_sha256=valid_sm_sha,
+            golden_anchor_manifest_path=gm_nondict_f,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_rbj_gmnondict.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    # Golden/shard anchor mismatch (both have 50 valid counted anchors, but different 50 IDs)
+    gm_mismatch_path = tmp_path / "gm_mismatch_50.json"
+    alt_50_ids = [it.item_id for it in counted_loaded[10:60]]
+    assert len(alt_50_ids) == 50
+    assert set(alt_50_ids) != set(valid_sm_doc["anchor_item_ids"])
+    gm_mismatch_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "stratified_anchor_item_ids": alt_50_ids[:25],
+                "canary_item_ids": alt_50_ids[25:50],
+                "anchor_item_ids": alt_50_ids,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_rbj_mismatch:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=counted_items_file,
+            output_dir=tmp_path / "rbj_mismatch_out",
+            judge="mu-judge",
+            fake_transport=True,
+            window_mode="counted-stub",
+            shard_spec="1/2",
+            shard_manifest_path=valid_sm_path,
+            shard_manifest_sha256=valid_sm_sha,
+            golden_anchor_manifest_path=gm_mismatch_path,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_rbj_mismatch.value.code == "SHARD_MANIFEST_ANCHOR_MISMATCH"
+
+    # Also test SHARD_MANIFEST_COUNTED_ITEMS_MISMATCH when shard_manifest all_item_ids != counted part items
+    sm_subset_doc = dict(valid_sm_doc)
+    sm_subset_doc["all_item_ids"] = list(valid_sm_doc["anchor_item_ids"])
+    sm_subset_doc["manifest_sha256"] = bakeoff_judge._compute_shard_manifest_body_sha256(sm_subset_doc)
+    sm_subset_path = tmp_path / "sm_subset_50.json"
+    sm_subset_sha = bakeoff_judge.write_shard_manifest(sm_subset_doc, sm_subset_path)
+    gm_matching_path = tmp_path / "gm_matching_50.json"
+    gm_matching_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "stratified_anchor_item_ids": valid_sm_doc["stratified_anchor_item_ids"],
+                "canary_item_ids": valid_sm_doc["canary_item_ids"],
+                "anchor_item_ids": valid_sm_doc["anchor_item_ids"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_rbj_cnt_mismatch:
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=counted_items_file,
+            output_dir=tmp_path / "rbj_cnt_mismatch_out",
+            judge="mu-judge",
+            fake_transport=True,
+            window_mode="counted-stub",
+            shard_spec="1/2",
+            shard_manifest_path=sm_subset_path,
+            shard_manifest_sha256=sm_subset_sha,
+            golden_anchor_manifest_path=gm_matching_path,
+            repo_root=REPO_ROOT,
+        )
+    assert exc_rbj_cnt_mismatch.value.code == "SHARD_MANIFEST_COUNTED_ITEMS_MISMATCH"
+
+    # 8. `--counted-manifest` alone (in a directory with no sibling items.jsonl) does not yield a 50-item shard manifest;
+    #    it resolves all 100 item IDs from the manifest
+    standalone_mf_dir = tmp_path / "standalone_mf_only"
+    standalone_mf_dir.mkdir(parents=True, exist_ok=True)
+    standalone_mf_path = standalone_mf_dir / "counted_manifest.json"
+    shutil.copyfile(counted_manifest, standalone_mf_path)
+    assert not (standalone_mf_dir / "items.jsonl").exists()
+
+    sm_from_mf = bakeoff_judge.build_shard_manifest(
+        standalone_mf_path,
+        num_shards=2,
+        lock_check_telemetry_path=None,
+    )
+    assert sm_from_mf["item_count"] == 100
+    assert len(sm_from_mf["all_item_ids"]) == 100
+    assert set(sm_from_mf["all_item_ids"]) == set(counted_by_id.keys())
+
+    # Also test list JSON manifest with _resolve_items_from_manifest_source
+    list_mf_path = standalone_mf_dir / "list_manifest.json"
+    list_mf_path.write_text(json.dumps(list(counted_by_id.keys())), encoding="utf-8")
+    sm_from_list_mf = bakeoff_judge.build_shard_manifest(list_mf_path, num_shards=2, limit_items=60)
+    assert sm_from_list_mf["item_count"] == 60
+    assert len(sm_from_list_mf["all_item_ids"]) == 60
+
+    with pytest.raises(RdlabError) as exc_empty_mf_src:
+        bakeoff_judge.build_shard_manifest({"item_ids": []}, num_shards=2)
+    assert exc_empty_mf_src.value.code == "LOCK_CHECK_COUNTED_SOURCE_MISSING"
+
+    # 9. `promote_goldens` refuses `--output` equal to `--filled` (`PROMOTE_GOLDENS_SAME_FILE_REFUSED`)
+    dummy_filled = tmp_path / "same_filled.json"
+    dummy_filled.write_text("{}", encoding="utf-8")
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_same_file:
+        promote_goldens.promote_goldens_file(dummy_filled, output_path=dummy_filled)
+    assert exc_same_file.value.code == "PROMOTE_GOLDENS_SAME_FILE_REFUSED"
+    assert promote_goldens.main(["--filled", str(dummy_filled), "--output", str(dummy_filled)]) == 2
+
+    # 10. Staging directories (`.<run_dir>_anchor_part` and `.<run_dir>_p0a_part`) are gone after a failed run
+    fail_run_dir = tmp_path / "failed_lc_run"
+    exp_anc_stage = fail_run_dir.parent / f".{fail_run_dir.name}_anchor_part"
+    exp_p0a_stage = fail_run_dir.parent / f".{fail_run_dir.name}_p0a_part"
+    exp_anc_stage.mkdir(parents=True, exist_ok=True)
+    exp_p0a_stage.mkdir(parents=True, exist_ok=True)
+    (exp_anc_stage / "items.jsonl").write_text("{}", encoding="utf-8")
+    (exp_p0a_stage / "items.jsonl").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(vm_judges.RefusalError):
+        vm_judges.run_judges_pipeline(
+            mode="lock-check-stub",
+            part_dir=anchor_items_src.parent,
+            run_dir=fail_run_dir,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            dryrun=True,
+            repo_root=REPO_ROOT,
+            work_dir=tmp_path / "fail_work",
+            anchor_items_file=anchor_items_src,
+            p0a_items_file=p0a_items_src,
+            counted_items_or_manifest=None,
+        )
+    assert not exp_anc_stage.exists()
+    assert not exp_p0a_stage.exists()
+
+
+def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_and_window_sha_carryover(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix3 Item 7: Real-mode paths and helper branches tested with monkeypatched transport (no network):
+    1. `vm_judges` `--lock-check` with no counted source refuses with `LOCK_CHECK_COUNTED_SOURCE_MISSING`;
+    2. `launch_judges.sh` pre-session two-input check (stops before any `colab` call);
+    3. `RdlabError`-to-`RefusalError` wraps around golden/shard build and P0a in `run_judges_pipeline`;
+    4. `_extract_counted_item_ids_from_source` for a directory, a list JSON, and an iterable of mappings;
+    5. the non-path P0a count branch in `verify_lock_check_two_inputs`;
+    6. `window.json` sha carry-over (`anchor_items_sha256`, `p0a_items_sha256`, `counted_source_sha256`).
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "f3_i7_base", counted_count=100
+    )
+    counted_manifest = counted_items_file.parent / "manifest.json"
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "f3_i7_rec")
+
+    # 1. vm_judges `--lock-check` (real mode, dryrun=False) with no counted source refuses with LOCK_CHECK_COUNTED_SOURCE_MISSING
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    monkeypatch.delenv("RDLAB_COUNTED_ITEMS_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_COUNTED_MANIFEST", raising=False)
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+
+    real_lc_status = tmp_path / "real_lc_no_cnt_status.json"
+    real_lc_anc = tmp_path / "real_lc_up" / "anchor_items.jsonl"
+    real_lc_p0a = tmp_path / "real_lc_up" / "p0a_items.jsonl"
+    real_lc_anc.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(anchor_items_src, real_lc_anc)
+    shutil.copyfile(p0a_items_src, real_lc_p0a)
+    rc_real_lc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--lock-check",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--anchor-items",
+            str(real_lc_anc),
+            "--p0a-items",
+            str(real_lc_p0a),
+            "--run-dir",
+            str(tmp_path / "real_lc_no_cnt_run"),
+            "--work-dir",
+            str(tmp_path / "real_lc_no_cnt_work"),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(tmp_path / "real_lc_no_cnt.tar.gz"),
+            "--status-file",
+            str(real_lc_status),
+        ]
+    )
+    assert rc_real_lc == 2
+    assert json.loads(real_lc_status.read_text(encoding="utf-8"))["failure_class"] == "LOCK_CHECK_COUNTED_SOURCE_MISSING"
+
+    # 2. launch_judges.sh pre-session two-input check (stops before any `colab` call)
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "f3_i7_launch_env")
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "open_i7.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=counted_items_file,
+    )
+    # (a) Missing counted source in launch_judges.sh --lock-check (and --dry) stops before any colab call
+    for dry_opt in ("", "--dry"):
+        proc_no_cnt_sh = subprocess.run(
+            [
+                "bash",
+                "-c",
+                (
+                    f"{exports} RDLAB_COUNTED_ITEMS_FILE='' RDLAB_COUNTED_MANIFEST='' "
+                    f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check {dry_opt} "
+                    f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
+                    f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
+                    f"--out-dir '{_to_wsl_path(tmp_path / 'sh_no_cnt')}' --run-id sh-no-cnt"
+                ),
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_no_cnt_sh.returncode == 2
+        assert "LOCK_CHECK_COUNTED_SOURCE_MISSING" in proc_no_cnt_sh.stderr
+        assert not env_paths["calls_log"].exists()
+
+    # (b) Counted equals anchors in launch_judges.sh --lock-check stops at pre-session verify_lock_check_two_inputs before any colab call
+    proc_eq_sh = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check "
+                f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
+                f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
+                f"--counted-items '{_to_wsl_path(anchor_items_src)}' "
+                f"--out-dir '{_to_wsl_path(tmp_path / 'sh_eq_cnt')}' --run-id sh-eq-cnt"
+            ),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_eq_sh.returncode == 2
+    assert "LOCK_CHECK_COUNTED_SOURCE_INVALID" in proc_eq_sh.stderr
+    assert not env_paths["calls_log"].exists()
+
+    # (c) Missing counted-manifest path in launch_judges.sh --lock-check stops before any colab call
+    proc_miss_mf_sh = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check "
+                f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
+                f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
+                f"--counted-manifest '{_to_wsl_path(tmp_path / 'no_such_mf.json')}' "
+                f"--out-dir '{_to_wsl_path(tmp_path / 'sh_miss_mf')}' --run-id sh-miss-mf"
+            ),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_miss_mf_sh.returncode == 2
+    assert "LOCK_CHECK_COUNTED_SOURCE_MISSING" in proc_miss_mf_sh.stderr
+    assert not env_paths["calls_log"].exists()
+
+    # (d) --dry with --counted-manifest prints p0a_manifest.json upload when manifest.json exists next to --p0a-items
+    proc_dry_mf = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --dry "
+                f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
+                f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
+                f"--counted-manifest '{_to_wsl_path(counted_manifest)}' "
+                f"--out-dir '{_to_wsl_path(tmp_path / 'sh_dry_mf')}' --run-id sh-dry-mf"
+            ),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert proc_dry_mf.returncode == 0, proc_dry_mf.stderr
+    assert "/content/rdlab_items/p0a_manifest.json" in proc_dry_mf.stdout
+
+    # 3. RdlabError-to-RefusalError wraps around golden/shard build and P0a in run_judges_pipeline
+    monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_paths["state_dir"]))
+    monkeypatch.setenv("VM_DRYRUN", "1")
+
+    # (a) Wrap around build_golden_anchor_manifest / build_shard_manifest
+    with monkeypatch.context() as mp_wrap1:
+        mp_wrap1.setattr(
+            bakeoff_judge,
+            "build_golden_anchor_manifest",
+            lambda *_a, **_kw: (_ for _ in ()).throw(
+                bakeoff_judge.refused_error("GOLDEN_BUILD_TEST_REFUSAL", "simulated golden build refusal", "test hint")
+            ),
+        )
+        with pytest.raises(vm_judges.RefusalError) as exc_wrap_golden:
+            vm_judges.run_judges_pipeline(
+                mode="lock-check-stub",
+                part_dir=anchor_items_src.parent,
+                run_dir=tmp_path / "wrap_golden_run",
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                dryrun=True,
+                repo_root=REPO_ROOT,
+                work_dir=tmp_path / "wrap_golden_work",
+                anchor_items_file=anchor_items_src,
+                p0a_items_file=p0a_items_src,
+                counted_items_or_manifest=counted_manifest,
+                only_judge_ids=["mu-judge"],
+            )
+        assert exc_wrap_golden.value.failure_class == "GOLDEN_BUILD_TEST_REFUSAL"
+
+    # (b) Wrap around SHARD_MANIFEST_COUNTED_ITEMS_MISMATCH when rebuilt_shard_doc all_item_ids != counted_id_set
+    with monkeypatch.context() as mp_wrap_sm:
+        orig_bsm = bakeoff_judge.build_shard_manifest
+
+        def _short_bsm(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            doc = orig_bsm(*args, **kwargs)
+            doc["all_item_ids"] = doc["all_item_ids"][:10]
+            return doc
+
+        mp_wrap_sm.setattr(bakeoff_judge, "build_shard_manifest", _short_bsm)
+        with pytest.raises(vm_judges.RefusalError) as exc_wrap_sm_mis:
+            vm_judges.run_judges_pipeline(
+                mode="lock-check-stub",
+                part_dir=anchor_items_src.parent,
+                run_dir=tmp_path / "wrap_sm_run",
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                dryrun=True,
+                repo_root=REPO_ROOT,
+                work_dir=tmp_path / "wrap_sm_work",
+                anchor_items_file=anchor_items_src,
+                p0a_items_file=p0a_items_src,
+                counted_items_or_manifest=counted_manifest,
+                only_judge_ids=["mu-judge"],
+            )
+        assert exc_wrap_sm_mis.value.failure_class == "SHARD_MANIFEST_COUNTED_ITEMS_MISMATCH"
+
+    # (c) Wrap around run_lock_check_p0a raising RdlabError
+    with monkeypatch.context() as mp_wrap2:
+        mp_wrap2.setattr(
+            bakeoff_judge,
+            "run_lock_check_p0a",
+            lambda **_kw: (_ for _ in ()).throw(
+                bakeoff_judge.refused_error("P0A_RUN_TEST_REFUSAL", "simulated p0a refusal", "test hint")
+            ),
+        )
+        with pytest.raises(vm_judges.RefusalError) as exc_wrap_p0a:
+            vm_judges.run_judges_pipeline(
+                mode="lock-check-stub",
+                part_dir=anchor_items_src.parent,
+                run_dir=tmp_path / "wrap_p0a_run",
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                dryrun=True,
+                repo_root=REPO_ROOT,
+                work_dir=tmp_path / "wrap_p0a_work",
+                anchor_items_file=anchor_items_src,
+                p0a_items_file=p0a_items_src,
+                counted_items_or_manifest=counted_manifest,
+                only_judge_ids=["mu-judge"],
+            )
+        assert exc_wrap_p0a.value.failure_class == "P0A_RUN_TEST_REFUSAL"
+
+    # 4. `_extract_counted_item_ids_from_source` for a directory (with items.jsonl or shard_manifest.json), a list JSON, and an iterable of mappings/JudgeInputItems
+    assert bakeoff_judge._extract_counted_item_ids_from_source(None) == set()
+    assert bakeoff_judge._extract_counted_item_ids_from_source(tmp_path / "does_not_exist_dir") == set()
+    assert bakeoff_judge._extract_counted_item_ids_from_source(
+        {
+            "all_item_ids": ["all-1"],
+            "shard_by_item": {"sbi-1": 1, "sbi-2": 2},
+            "anchor_item_ids": ["anc-1"],
+        }
+    ) == {
+        "all-1",
+        "sbi-1",
+        "sbi-2",
+        "anc-1",
+    }
+
+    dir_with_items = counted_items_file.parent
+    ids_from_dir = bakeoff_judge._extract_counted_item_ids_from_source(dir_with_items)
+    assert len(ids_from_dir) == 100
+
+    dir_with_sm = tmp_path / "dir_with_sm"
+    dir_with_sm.mkdir(parents=True, exist_ok=True)
+    (dir_with_sm / "shard_manifest.json").write_text(
+        json.dumps({"shards": {"1": ["sm-id-1"], "2": ["sm-id-2"], "bad": "not-a-list"}}),
+        encoding="utf-8",
+    )
+    assert bakeoff_judge._extract_counted_item_ids_from_source(dir_with_sm) == {"sm-id-1", "sm-id-2"}
+
+    list_json_path = tmp_path / "counted_list.json"
+    list_json_path.write_text(json.dumps(["list-id-1", "list-id-2", "list-id-3"]), encoding="utf-8")
+    assert bakeoff_judge._extract_counted_item_ids_from_source(list_json_path) == {
+        "list-id-1",
+        "list-id-2",
+        "list-id-3",
+    }
+
+    scalar_json_path = tmp_path / "scalar.json"
+    scalar_json_path.write_text("123", encoding="utf-8")
+    assert bakeoff_judge._extract_counted_item_ids_from_source(scalar_json_path) == set()
+
+    iterable_of_mappings_and_items: list[Any] = [
+        {"id": "map-id-1"},
+        {"item_id": "map-id-2"},
+        bakeoff_judge.JudgeInputItem(item_id="jitem-id-3", material="1. A.\n2. B.", claim="C."),
+        "str-id-4",
+        "   ",
+    ]
+    assert bakeoff_judge._extract_counted_item_ids_from_source(iterable_of_mappings_and_items) == {
+        "map-id-1",
+        "map-id-2",
+        "jitem-id-3",
+        "str-id-4",
+    }
+
+    # 5. The non-path P0a count branch in `verify_lock_check_two_inputs` (passing sequences of JudgeInputItems)
+    loaded_anc_items, _ = bakeoff_judge.load_judge_items(anchor_items_src)
+    loaded_p0a_items, _ = bakeoff_judge.load_judge_items(p0a_items_src)
+    res_seq_ok = bakeoff_judge.verify_lock_check_two_inputs(
+        anchor_items_or_path=loaded_anc_items,
+        p0a_items_or_path=loaded_p0a_items,
+        counted_items_or_manifest=counted_manifest,
+    )
+    assert res_seq_ok["p0a_item_count"] == 114
+
+    with pytest.raises(RdlabError) as exc_nonpath_p0a:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=loaded_anc_items,
+            p0a_items_or_path=loaded_p0a_items[:20],
+            counted_items_or_manifest=counted_manifest,
+        )
+    assert exc_nonpath_p0a.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+
+    # Cover blank line in anchor_jsonl and non-burned row part_id in verify_lock_check_two_inputs
+    anc_with_blank_and_part = tmp_path / "anc_with_blank_and_part" / "anchor_items.jsonl"
+    anc_with_blank_and_part.parent.mkdir(parents=True, exist_ok=True)
+    raw_anc_lines = anchor_items_src.read_text(encoding="utf-8").splitlines()
+    tagged_anc_lines = [""]
+    for ln in raw_anc_lines:
+        row_obj = json.loads(ln)
+        row_obj["part_id"] = "part01"
+        tagged_anc_lines.append(json.dumps(row_obj))
+    anc_with_blank_and_part.write_text("\n".join(tagged_anc_lines) + "\n", encoding="utf-8")
+    res_tagged_anc = bakeoff_judge.verify_lock_check_two_inputs(
+        anchor_items_or_path=anc_with_blank_and_part,
+        p0a_items_or_path=p0a_items_src,
+        counted_items_or_manifest=counted_manifest,
+    )
+    assert res_tagged_anc["anchor_item_count"] == 50
+
+    # Cover _verify_burned_pilot_for_p0a with counted_manifest_path, part01 directory name, and empty part_id row
+    p0a_sched = bakeoff_judge.build_schedule(loaded_p0a_items, seed=20260417, items_sha256="0" * 64)
+    with pytest.raises(RdlabError) as exc_p0a_mf_hit:
+        bakeoff_judge._verify_burned_pilot_for_p0a(
+            p0a_items_src,
+            [bakeoff_judge.JudgeInputItem(item_id=loaded_anc_items[0].item_id, material="1. A.\n2. B.", claim="C.")],
+            p0a_sched,
+            counted_manifest_path=counted_manifest,
+        )
+    assert exc_p0a_mf_hit.value.code == "P0A_COUNTED_ITEM"
+
+    part01_p0a_dir = tmp_path / "part01_p0a"
+    part01_p0a_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(p0a_items_src, part01_p0a_dir / "items.jsonl")
+    with pytest.raises(RdlabError) as exc_part01_p0a:
+        bakeoff_judge._verify_burned_pilot_for_p0a(part01_p0a_dir / "items.jsonl", loaded_p0a_items, p0a_sched)
+    assert exc_part01_p0a.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+
+    p0a_empty_pid_dir = tmp_path / "p0a_empty_pid"
+    p0a_empty_pid_dir.mkdir(parents=True, exist_ok=True)
+    raw_p0a_lines = p0a_items_src.read_text(encoding="utf-8").splitlines()
+    first_p0a_obj = json.loads(raw_p0a_lines[0])
+    first_p0a_obj["part_id"] = "   "
+    (p0a_empty_pid_dir / "items.jsonl").write_text(
+        "\n".join([json.dumps(first_p0a_obj), *raw_p0a_lines[1:]]) + "\n",
+        encoding="utf-8",
+    )
+    (p0a_empty_pid_dir / "manifest.json").write_text(json.dumps({"part_id": "pilot-40b"}), encoding="utf-8")
+    assert bakeoff_judge._verify_burned_pilot_for_p0a(p0a_empty_pid_dir / "items.jsonl", loaded_p0a_items, p0a_sched) == "pilot-40b"
+
+    # 6. `window.json` sha carry-over (`anchor_items_sha256`, `p0a_items_sha256`, `counted_source_sha256`)
+    carry_dir = tmp_path / "win_carry_dir"
+    carry_dir.mkdir(parents=True, exist_ok=True)
+    (carry_dir / "schedule.json").write_text("{}", encoding="utf-8")
+    w1 = vm_judges.write_window_manifest(
+        carry_dir,
+        window_id="win-carry-1",
+        mode="lock-check-stub",
+        anchor_items_sha256="1" * 64,
+        p0a_items_sha256="2" * 64,
+        counted_source_sha256="3" * 64,
+    )
+    assert w1["anchor_items_sha256"] == "1" * 64
+    assert w1["p0a_items_sha256"] == "2" * 64
+    assert w1["counted_source_sha256"] == "3" * 64
+
+    # Subsequent calls without passing the shas carry over all three shas from existing window.json
+    w2 = vm_judges.write_window_manifest(carry_dir, window_id="win-carry-1", mode="lock-check-stub")
+    assert w2["anchor_items_sha256"] == "1" * 64
+    assert w2["p0a_items_sha256"] == "2" * 64
+    assert w2["counted_source_sha256"] == "3" * 64
+
+    w3 = bakeoff_judge.build_window_manifest(carry_dir, window_id="win-carry-1", mode="lock-check-stub")
+    assert w3["anchor_items_sha256"] == "1" * 64
+    assert w3["p0a_items_sha256"] == "2" * 64
+    assert w3["counted_source_sha256"] == "3" * 64
+
+    # Also cover corrupt existing window.json and non-mapping existing window.json in build_window_manifest
+    corrupt_win_dir = tmp_path / "win_corrupt_dir"
+    corrupt_win_dir.mkdir(parents=True, exist_ok=True)
+    (corrupt_win_dir / "window.json").write_text("{bad json", encoding="utf-8")
+    w_corrupt = bakeoff_judge.build_window_manifest(corrupt_win_dir, window_id="win-corrupt", mode="counted")
+    assert "counted_source_sha256" not in w_corrupt
+    (corrupt_win_dir / "window.json").write_text("[1, 2, 3]", encoding="utf-8")
+    w_list_win = bakeoff_judge.build_window_manifest(corrupt_win_dir, window_id="win-list", mode="counted")
+    assert "counted_source_sha256" not in w_list_win
+
+    no_sha_dir = tmp_path / "win_no_sha_dir"
+    no_sha_dir.mkdir(parents=True, exist_ok=True)
+    (no_sha_dir / "schedule.json").write_text("{}", encoding="utf-8")
+    w_no_sha = bakeoff_judge.build_window_manifest(no_sha_dir, window_id="win-no-sha", mode="counted")
+    assert "counted_source_sha256" not in w_no_sha
+
+    # Cover anchor_items_by_id hit in _resolve_items_from_manifest_source and missing_in_part in _load_golden_anchors_for_shard_manifest
+    tel_with_anc_dir = tmp_path / "tel_with_anc" / "run"
+    tel_with_anc_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(anchor_items_src, tel_with_anc_dir / "items.jsonl")
+    standalone_mf = tmp_path / "standalone_mf_dir" / "counted_manifest.json"
+    standalone_mf.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(counted_manifest, standalone_mf)
+    resolved_anc_items, _ = bakeoff_judge._resolve_items_from_manifest_source(
+        standalone_mf,
+        lock_check_telemetry_path=tel_with_anc_dir,
+    )
+    assert len(resolved_anc_items) == 100
+
+    assert (
+        bakeoff_judge._load_golden_anchors_for_shard_manifest(
+            tel_with_anc_dir,
+            items_by_id={it.item_id: it for it in resolved_anc_items},
+            anchor_count=50,
+            stratified_anchor_count=25,
+            canary_anchor_count=25,
+            canary_item_ids=["c1"],
+        )
+        is None
+    )
+
+    gm_missing_in_part_dir = tmp_path / "gm_missing_in_part"
+    gm_missing_in_part_dir.mkdir(parents=True, exist_ok=True)
+    anc_50_list = [it.item_id for it in resolved_anc_items[:49]] + ["not-in-counted-part-id-999"]
+    (gm_missing_in_part_dir / "golden_anchor_manifest.json").write_text(
+        json.dumps(
+            {
+                "anchor_item_ids": anc_50_list,
+                "stratified_anchor_item_ids": anc_50_list[:25],
+                "canary_item_ids": anc_50_list[25:50],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_gm_miss_part:
+        bakeoff_judge.build_shard_manifest(
+            standalone_mf,
+            num_shards=2,
+            lock_check_telemetry_path=gm_missing_in_part_dir,
+        )
+    assert exc_gm_miss_part.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+
+    # Cover TransformersJudgeTransport.prefill and D3MiniTransport.prefill and _run_transport_prefill branches
+    import types
+    with monkeypatch.context() as mp_pre:
+        fake_torch = types.ModuleType("torch")
+        fake_torch.manual_seed = lambda _s: None  # type: ignore[attr-defined]
+        fake_torch.use_deterministic_algorithms = lambda *_a, **_kw: None  # type: ignore[attr-defined]
+
+        class _NoGradCtx:
+            def __enter__(self) -> None:
+                return None
+
+            def __exit__(self, *_a: Any) -> None:
+                return None
+
+        fake_torch.no_grad = _NoGradCtx  # type: ignore[attr-defined]
+        fake_torch.inference_mode = _NoGradCtx  # type: ignore[attr-defined]
+        mp_pre.setitem(sys.modules, "torch", fake_torch)
+
+        class _FakeTensor:
+            shape = (1, 3)
+
+            def to(self, _dev: Any) -> "_FakeTensor":
+                return self
+
+        tf_tp = bakeoff_judge.TransformersJudgeTransport(
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            device="cpu",
+            window_mode="stub",
+        )
+        tf_tp._ensure_loaded = lambda _s: None  # type: ignore[method-assign]
+        tf_tp._model = lambda **_kw: None  # type: ignore[assignment]
+        tf_tp._tokenizer = lambda *_a, **_kw: {"input_ids": _FakeTensor(), "attention_mask": _FakeTensor()}  # type: ignore[assignment]
+        sample_prompt = bakeoff_judge.AssembledPrompt(
+            judge_id="mu-judge",
+            item_id="sample-item-1",
+            order="AB",
+            pass_mode="binary",
+            prompt_text="Prompt",
+            messages=({"role": "user", "content": "Prompt"},),
+            structured_payload={"state": "1. A.", "questions": {"supported": {"question": "Q1?", "type": "boolean"}}},
+        )
+        tf_tp.prefill(bakeoff_judge.BAKEOFF_JUDGE_SPECS["mu-judge"], sample_prompt, seed=1)
+        tf_tp._tokenizer = lambda *_a, **_kw: {"input_ids": _FakeTensor()}  # type: ignore[assignment]
+        tf_tp.prefill(bakeoff_judge.BAKEOFF_JUDGE_SPECS["mu-judge"], sample_prompt, seed=1)
+
+        d3_tp = bakeoff_judge.D3MiniTransport(
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            device="cpu",
+            window_mode="stub",
+        )
+        d3_tp._ensure_loaded = lambda _s: None  # type: ignore[method-assign]
+        d3_tp._model = lambda **_kw: None  # type: ignore[assignment]
+        d3_tp.prefill(bakeoff_judge.BAKEOFF_JUDGE_SPECS["d3-mini"], sample_prompt, seed=1)
+
+    bakeoff_judge._run_transport_prefill(
+        types.SimpleNamespace(_model=lambda _txt: None),
+        bakeoff_judge.BAKEOFF_JUDGE_SPECS["mu-judge"],
+        sample_prompt,
+    )
+    bakeoff_judge._run_transport_prefill(
+        types.SimpleNamespace(),
+        bakeoff_judge.BAKEOFF_JUDGE_SPECS["mu-judge"],
+        sample_prompt,
+    )
+    assert bakeoff_judge._is_stub_or_fake_transport(None) is False
+    assert bakeoff_judge._is_stub_or_fake_transport(types.SimpleNamespace(library_pins={"stub_transport": True})) is True
+    assert bakeoff_judge.is_forbidden_counted_test_hook("") is False
+
+
 
 
 

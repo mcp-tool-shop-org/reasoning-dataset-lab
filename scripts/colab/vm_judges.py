@@ -4438,6 +4438,7 @@ def write_window_manifest(
     mode: str | None = None,
     anchor_items_sha256: str | None = None,
     p0a_items_sha256: str | None = None,
+    counted_source_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Build and write `run_dir / window.json` listing `{sha256, bytes}` for every allow-listed artifact in `run_dir`."""
     ensure_not_drive_path(run_dir)
@@ -4460,16 +4461,19 @@ def write_window_manifest(
     existing_win_path = run_dir / WINDOW_MANIFEST_FILENAME
     prev_anchor_sha: str | None = None
     prev_p0a_sha: str | None = None
+    prev_counted_sha: str | None = None
     if existing_win_path.is_file():
         try:
             prev_win_doc = json.loads(existing_win_path.read_text(encoding="utf-8"))
             if isinstance(prev_win_doc, Mapping):
                 prev_anchor_sha = str(prev_win_doc.get("anchor_items_sha256") or "").strip() or None
                 prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
+                prev_counted_sha = str(prev_win_doc.get("counted_source_sha256") or "").strip() or None
         except Exception:
             pass
     eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
     eff_p0a_sha = (str(p0a_items_sha256).strip() if p0a_items_sha256 else None) or prev_p0a_sha
+    eff_counted_sha = (str(counted_source_sha256).strip() if counted_source_sha256 else None) or prev_counted_sha
     files_map: dict[str, dict[str, Any]] = {}
     for p in sorted(run_dir.rglob("*")):
         if not p.is_file() or p.is_symlink():
@@ -4493,6 +4497,8 @@ def write_window_manifest(
         doc["anchor_items_sha256"] = eff_anchor_sha
     if eff_p0a_sha is not None:
         doc["p0a_items_sha256"] = eff_p0a_sha
+    if eff_counted_sha is not None:
+        doc["counted_source_sha256"] = eff_counted_sha
     body_bytes = json.dumps(
         doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
@@ -5518,6 +5524,79 @@ def run_judges_pipeline(
     replacement_session: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run all 5 judges (or `only_judge_ids`) as separate child subprocesses in their synced venvs and compute readouts."""
+    anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
+    p0a_stage_dir = run_dir.parent / f".{run_dir.name}_p0a_part"
+    try:
+        return _run_judges_pipeline_body(
+            mode=mode,
+            part_dir=part_dir,
+            run_dir=run_dir,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            vram_halt_mib=vram_halt_mib,
+            dryrun=dryrun,
+            repo_root=repo_root,
+            work_dir=work_dir,
+            progress_path=progress_path,
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
+            proc_meminfo_path=proc_meminfo_path,
+            only_judge_ids=only_judge_ids,
+            only_judges=only_judges,
+            judge_order=judge_order,
+            judge_order_source=judge_order_source,
+            real_load_on_cpu=real_load_on_cpu,
+            child_timeout_seconds=child_timeout_seconds,
+            shard_spec=shard_spec,
+            shard_manifest_path=shard_manifest_path,
+            shard_manifest_sha256=shard_manifest_sha256,
+            golden_anchor_manifest_path=golden_anchor_manifest_path,
+            anchor_items_file=anchor_items_file,
+            p0a_items_file=p0a_items_file,
+            counted_items_or_manifest=counted_items_or_manifest,
+            loop_order=loop_order,
+            subblock_items=subblock_items,
+            session_fingerprint_sha256=session_fingerprint_sha256,
+            replacement_session=replacement_session,
+        )
+    finally:
+        shutil.rmtree(p0a_stage_dir, ignore_errors=True)
+        shutil.rmtree(anchor_stage_dir, ignore_errors=True)
+
+
+def _run_judges_pipeline_body(
+    *,
+    mode: str,
+    part_dir: Path,
+    run_dir: Path,
+    receipts_dir: Path,
+    hf_home: Path,
+    vram_halt_mib: int = DEFAULT_VRAM_HALT_MIB,
+    dryrun: bool = False,
+    repo_root: Path | None = None,
+    work_dir: Path | None = None,
+    progress_path: Path | None = None,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+    proc_meminfo_path: Path | None = None,
+    only_judge_ids: Sequence[str] | None = None,
+    only_judges: Sequence[str] | None = None,
+    judge_order: Sequence[str] | None = None,
+    judge_order_source: str = "default",
+    real_load_on_cpu: bool = False,
+    child_timeout_seconds: float | None = None,
+    shard_spec: str | None = None,
+    shard_manifest_path: Path | None = None,
+    shard_manifest_sha256: str | None = None,
+    golden_anchor_manifest_path: Path | None = None,
+    anchor_items_file: Path | None = None,
+    p0a_items_file: Path | None = None,
+    counted_items_or_manifest: Path | None = None,
+    loop_order: str | None = None,
+    subblock_items: int | None = None,
+    session_fingerprint_sha256: str | None = None,
+    replacement_session: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     _ensure_repo_imports(repo_root)
     eff_repo_dir = (repo_root or resolve_repo_dir()).resolve()
     eff_work_dir = (
@@ -5557,8 +5636,6 @@ def run_judges_pipeline(
         eff_p0a_file = p0a_items_file if p0a_items_file is not None else (Path(env_p0a) if env_p0a else None)
         if eff_counted_source is None and env_cnt:
             eff_counted_source = Path(env_cnt)
-        if eff_counted_source is None and shard_manifest_path is not None and shard_manifest_path.is_file():
-            eff_counted_source = shard_manifest_path
         if eff_anchor_file is None or eff_p0a_file is None:
             raise RefusalError(
                 "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
@@ -6337,23 +6414,32 @@ def run_judges_pipeline(
             golden_anchor_manifest_sha256 = str(
                 golden_doc["golden_anchor_manifest_sha256"]
             )
-            manifest_items_source: Path = (
-                eff_counted_source
-                if (
-                    eff_counted_source is not None
-                    and eff_counted_source.exists()
-                    and (eff_counted_source.is_dir() or eff_counted_source.suffix.lower() == ".jsonl")
+            if eff_counted_source is None or not eff_counted_source.exists():
+                raise RefusalError(
+                    "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+                    "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
                 )
-                else part_dir
-            )
             rebuilt_shard_doc = bakeoff_judge.build_shard_manifest(
-                manifest_items_source,
+                eff_counted_source,
                 num_shards=(parsed_shard_n if parsed_shard_n > 1 else 2),
                 schedule_seed=DEFAULT_SCHEDULE_SEED,
                 limit_items=limit_items,
                 lock_check_telemetry_path=run_dir,
                 golden_anchor_manifest_sha256=golden_anchor_manifest_sha256,
             )
+            counted_id_set = bakeoff_judge._extract_counted_item_ids_from_source(eff_counted_source)
+            rebuilt_all_ids = set(
+                str(x)
+                for x in (
+                    rebuilt_shard_doc.get("all_item_ids")
+                    or rebuilt_shard_doc.get("shard_by_item", {}).keys()
+                )
+            )
+            if rebuilt_all_ids != counted_id_set:
+                raise RefusalError(
+                    "SHARD_MANIFEST_COUNTED_ITEMS_MISMATCH",
+                    f"Lock-check shard_manifest.json all_item_ids ({len(rebuilt_all_ids)} items) differ from counted source ({len(counted_id_set)} items).",
+                )
             rebuilt_file_sha = bakeoff_judge.write_shard_manifest(
                 rebuilt_shard_doc, run_dir / SHARD_MANIFEST_FILENAME
             )
@@ -6390,30 +6476,20 @@ def run_judges_pipeline(
         p0a_stage_dir.mkdir(parents=True, exist_ok=True)
         if (p0a_stage_dir / "items.jsonl").resolve() != p0a_src_jsonl.resolve():
             shutil.copyfile(p0a_src_jsonl, p0a_stage_dir / "items.jsonl")
-        src_p0a_mf = p0a_src_jsonl.parent / "manifest.json"
-        if src_p0a_mf.is_file():
-            shutil.copyfile(src_p0a_mf, p0a_stage_dir / "manifest.json")
-        elif p0a_src_jsonl.parent.name.strip().lower() in ("pilot-40b", "pilot_40b") or p0a_src_jsonl.stem.strip().lower() in (
-            "pilot-40b",
-            "pilot_40b",
-            "p0a_items",
+        for cand_mf in (
+            p0a_src_jsonl.parent / "p0a_manifest.json",
+            p0a_src_jsonl.parent / "manifest.json",
         ):
-            (p0a_stage_dir / "manifest.json").write_text(
-                json.dumps({"part_id": "pilot-40b", "schema_version": "1.0"}, indent=2) + "\n",
-                encoding="utf-8",
-                newline="\n",
-            )
+            if cand_mf.is_file():
+                shutil.copyfile(cand_mf, p0a_stage_dir / "manifest.json")
+                break
         try:
             p0a_doc = bakeoff_judge.run_lock_check_p0a(
                 part_dir=p0a_stage_dir,
                 output_dir=run_dir,
                 baseline_rows=None,
                 anchor_items=part_dir,
-                counted_item_ids=(
-                    eff_counted_source
-                    if eff_counted_source is not None
-                    else list(rebuilt_shard_doc.get("shard_by_item", {}).keys())
-                ),
+                counted_item_ids=eff_counted_source,
                 receipts_dir=receipts_dir,
                 hf_home=hf_home,
                 device=resolve_judge_device(
@@ -6436,8 +6512,6 @@ def run_judges_pipeline(
         except bakeoff_judge.RdlabError as exc:
             raise RefusalError(exc.code, exc.message) from exc
         p0a_report_sha256 = str(p0a_doc.get("p0a_report_sha256") or "")
-        shutil.rmtree(p0a_stage_dir, ignore_errors=True)
-        shutil.rmtree(part_dir, ignore_errors=True)
 
     raw_mass_check = check_bakeoff_logprob_mass(run_dir, part_id="pilot-40b")
     pilot_mass_readout: dict[str, Any] = {
@@ -6696,7 +6770,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "RDLAB_COUNTED_ITEMS_FILE",
             env_path("RDLAB_COUNTED_MANIFEST", None),
         ),
-        help="Optional counted part items.jsonl or shard_manifest.json used to verify --anchor-items and --p0a-items.",
+        help="Counted part items.jsonl or shard_manifest.json (required for --lock-check and --lock-check-stub) used to verify --anchor-items and --p0a-items.",
     )
     parser.add_argument(
         "--resume-tar",
@@ -8638,6 +8712,7 @@ def build_shard_manifest_stdlib(
         "schedule_sha256": schedule_sha256,
         "items_sha256": items_sha256,
         "item_count": len(items),
+        "all_item_ids": [str(it["item_id"]) for it in items],
         "num_shards": int(num_shards),
         "pass_mode": "binary",
         "shards": shards,
@@ -10998,17 +11073,27 @@ def main(argv: list[str] | None = None) -> int:
         uploaded_item_files: list[Path] = []
         anchor_items_sha256: str | None = None
         p0a_items_sha256: str | None = None
+        counted_source_sha256: str | None = None
         if is_lock_check_main:
             if anchor_items_arg is None or p0a_items_arg is None:
                 raise RefusalError(
                     "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
                     "--lock-check requires both --anchor-items <file> (50 anchor items from the counted part) and --p0a-items <file> (114 burned pilot items).",
                 )
+            if counted_items_arg is None:
+                raise RefusalError(
+                    "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+                    "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
+                )
             eff_anchor_jsonl = anchor_items_arg / "items.jsonl" if anchor_items_arg.is_dir() else anchor_items_arg
             eff_p0a_jsonl = p0a_items_arg / "items.jsonl" if p0a_items_arg.is_dir() else p0a_items_arg
             check_upload_path_allowed(eff_anchor_jsonl)
             check_upload_path_allowed(eff_p0a_jsonl)
             uploaded_item_files = [eff_anchor_jsonl, eff_p0a_jsonl]
+            p0a_sidecar_mf = eff_p0a_jsonl.parent / "p0a_manifest.json"
+            if p0a_sidecar_mf.is_file() and p0a_sidecar_mf not in uploaded_item_files:
+                check_upload_path_allowed(p0a_sidecar_mf)
+                uploaded_item_files.append(p0a_sidecar_mf)
             if args.items_file.is_file() and args.items_file not in uploaded_item_files:
                 check_upload_path_allowed(args.items_file)
                 uploaded_item_files.append(args.items_file)
@@ -11051,6 +11136,19 @@ def main(argv: list[str] | None = None) -> int:
             step_order=step_order,
         )
 
+        if is_lock_check_main:
+            if counted_items_arg is None or not counted_items_arg.exists():
+                raise RefusalError(
+                    "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+                    "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
+                )
+            eff_counted_file = counted_items_arg / "items.jsonl" if counted_items_arg.is_dir() else counted_items_arg
+            check_upload_path_allowed(eff_counted_file)
+            if eff_counted_file.is_file() and eff_counted_file not in uploaded_item_files:
+                uploaded_item_files.append(eff_counted_file)
+            if eff_counted_file.is_file():
+                counted_source_sha256 = sha256_file(eff_counted_file)
+
         if is_lock_check_main and anchor_items_arg is not None and p0a_items_arg is not None:
             current_step = "verify_lock_check_two_inputs"
             import importlib
@@ -11060,11 +11158,7 @@ def main(argv: list[str] | None = None) -> int:
                 bakeoff_judge_mod.verify_lock_check_two_inputs(
                     anchor_items_or_path=anchor_items_arg,
                     p0a_items_or_path=p0a_items_arg,
-                    counted_items_or_manifest=(
-                        counted_items_arg
-                        if counted_items_arg is not None
-                        else getattr(args, "shard_manifest", None)
-                    ),
+                    counted_items_or_manifest=counted_items_arg,
                 )
             except bakeoff_judge_mod.RdlabError as exc:
                 raise RefusalError(exc.code, exc.message) from exc
@@ -11618,6 +11712,8 @@ def main(argv: list[str] | None = None) -> int:
             receipt_doc["anchor_items_sha256"] = anchor_items_sha256
         if p0a_items_sha256 is not None:
             receipt_doc["p0a_items_sha256"] = p0a_items_sha256
+        if counted_source_sha256 is not None:
+            receipt_doc["counted_source_sha256"] = counted_source_sha256
         receipt_serialized = json.dumps(receipt_doc, indent=2) + "\n"
         receipt_path.write_text(
             receipt_serialized,
@@ -11635,6 +11731,7 @@ def main(argv: list[str] | None = None) -> int:
             mode=args.mode,
             anchor_items_sha256=anchor_items_sha256,
             p0a_items_sha256=p0a_items_sha256,
+            counted_source_sha256=counted_source_sha256,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         _record_step_end(
@@ -11663,6 +11760,7 @@ def main(argv: list[str] | None = None) -> int:
             mode=args.mode,
             anchor_items_sha256=anchor_items_sha256,
             p0a_items_sha256=p0a_items_sha256,
+            counted_source_sha256=counted_source_sha256,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
 
@@ -11767,6 +11865,7 @@ def main(argv: list[str] | None = None) -> int:
             mode=args.mode,
             anchor_items_sha256=anchor_items_sha256,
             p0a_items_sha256=p0a_items_sha256,
+            counted_source_sha256=counted_source_sha256,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         return 0
@@ -11785,11 +11884,20 @@ def main(argv: list[str] | None = None) -> int:
             gpu_gate_report = err.gpu_gate_report
         if isinstance(err, DeviceIndexCheckError):
             device_check_report = err.device_check_report
-        cleanup_paths = [
-            p
-            for p in (anchor_items_arg, p0a_items_arg, args.items_file)
-            if p is not None
-        ]
+        cleanup_paths: list[Path] = []
+        for p in (
+            anchor_items_arg,
+            p0a_items_arg,
+            counted_items_arg,
+            args.items_file,
+            (
+                (p0a_items_arg / "items.jsonl" if p0a_items_arg.is_dir() else p0a_items_arg).parent / "p0a_manifest.json"
+                if p0a_items_arg is not None
+                else None
+            ),
+        ):
+            if p is not None and p not in cleanup_paths and (p.is_file() or p.is_symlink() or p in (anchor_items_arg, p0a_items_arg, counted_items_arg, args.items_file)):
+                cleanup_paths.append(p)
         if deleted_items_receipt is None and cleanup_paths:
             try:
                 deleted_items_receipt = delete_uploaded_items_and_record_receipt(
@@ -11951,6 +12059,12 @@ def main(argv: list[str] | None = None) -> int:
                 fallback_delete_paths.append(anchor_items_arg)
             if p0a_items_arg is not None and p0a_items_arg not in fallback_delete_paths:
                 fallback_delete_paths.append(p0a_items_arg)
+            if counted_items_arg is not None and counted_items_arg not in fallback_delete_paths:
+                fallback_delete_paths.append(counted_items_arg)
+            if p0a_items_arg is not None:
+                p0a_mf_fb = (p0a_items_arg / "items.jsonl" if p0a_items_arg.is_dir() else p0a_items_arg).parent / "p0a_manifest.json"
+                if p0a_mf_fb.is_file() and p0a_mf_fb not in fallback_delete_paths:
+                    fallback_delete_paths.append(p0a_mf_fb)
             if fallback_delete_paths:
                 try:
                     deleted_items_receipt = delete_uploaded_items_and_record_receipt(

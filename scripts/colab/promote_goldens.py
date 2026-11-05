@@ -276,6 +276,13 @@ def promote_goldens_file(
             "Specify --output <candidate_path> outside any git work tree.",
         )
 
+    if resolved_out == Path(filled_path).resolve():
+        raise PromoteGoldensRefusalError(
+            "PROMOTE_GOLDENS_SAME_FILE_REFUSED",
+            f"Refusing to overwrite input --filled file '{resolved_out}' with --output.",
+            hint="Specify a distinct --output path outside every git work tree.",
+        )
+
     live_goldens = (
         (Path(repo_root).resolve() / "scripts" / "colab" / "boot_gatekeeper_goldens.json").resolve()
         if repo_root is not None
