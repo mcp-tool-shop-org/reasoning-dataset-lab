@@ -4765,7 +4765,7 @@ def run_device_check(
         if timeout_seconds is not None
         else resolve_gpu_gate_timeout_seconds()
     )
-    is_stub_or_dryrun = bool(dryrun or mode in ("stub", "dryrun"))
+    is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
     if device is not None:
         target_device = str(device)
     elif is_stub_or_dryrun and "FAKE_COLAB_DEVICE_CHECK_DEVICE" in os.environ:
@@ -6268,7 +6268,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--mode",
-        choices=("stub", "time-one", "counted", "probe"),
         default=env_or("RDLAB_MODE", "stub"),
     )
     parser.add_argument(
@@ -6639,9 +6638,11 @@ def validate_force_pinned_uv(
 
 
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
+TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
 MALFORMED_TEST_HOOK = "MALFORMED_TEST_HOOK"
 SDPA_BACKEND_MISMATCH = "SDPA_BACKEND_MISMATCH"
 PINNED_SDPA_BACKEND = "math"
+STUB_OR_DRYRUN_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run"})
 VALID_SDPA_BACKENDS: frozenset[str] = frozenset(
     {
         "math",
@@ -6741,6 +6742,18 @@ def is_counted_or_time_one_mode(
     return bool(eff_shard and eff_shard != "1/1")
 
 
+def is_real_mode(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+) -> bool:
+    """Return True unless `dryrun` is set or `mode` is `stub` / `dryrun` / `dry-run`."""
+    if dryrun:
+        return False
+    norm_mode = str(mode or "").strip().lower()
+    return norm_mode not in STUB_OR_DRYRUN_MODES
+
+
 def guard_no_test_hooks_in_counted_mode(
     mode: str | None,
     *,
@@ -6749,11 +6762,12 @@ def guard_no_test_hooks_in_counted_mode(
     environ: Mapping[str, str] | None = None,
 ) -> None:
     """Refuse with `TEST_HOOK_IN_COUNTED_MODE` before any model load if any test/override hook is set and non-empty
-    in `time-one`, `counted`, or any sharded counted mode (not `dryrun`). Names the variable(s), never their values.
+    in any real mode (every mode except `stub` / `dryrun` / `dry-run`, when `not dryrun`). Names the variable(s), never their values.
     """
-    if not is_counted_or_time_one_mode(mode, dryrun=dryrun, shard_spec=shard_spec):
-        return
     env_map = environ if environ is not None else os.environ
+    eff_dryrun = bool(dryrun or str(env_map.get("VM_DRYRUN", "") or "").strip() == "1")
+    if not is_real_mode(mode, dryrun=eff_dryrun):
+        return
     active_hooks = sorted(
         str(k)
         for k, v in env_map.items()
@@ -6763,7 +6777,7 @@ def guard_no_test_hooks_in_counted_mode(
         joined = ", ".join(active_hooks)
         raise RefusalError(
             TEST_HOOK_IN_COUNTED_MODE,
-            f"Test or override hook environment variable(s) forbidden in counted mode ({mode!r}, shard={shard_spec or '1/1'}): {joined}",
+            f"Test or override hook environment variable(s) forbidden in real mode ({mode!r}, shard={shard_spec or '1/1'}): {joined}",
         )
 
 
@@ -8385,7 +8399,7 @@ def _collect_judge_receipt_digests(
 
 def _query_gpu_and_ecc_snapshot(*, dryrun: bool = False, mode: str = "stub") -> dict[str, Any]:
     """Query GPU identity and uncorrected ECC counts from `nvidia-smi` or deterministic stub/dryrun overrides."""
-    is_stub_or_dryrun = bool(dryrun or mode in ("stub", "dryrun"))
+    is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
     sm_hook = _parse_nonneg_int_hook(
         "FAKE_COLAB_SM_COUNT",
         os.environ.get("FAKE_COLAB_SM_COUNT", ""),
@@ -8557,13 +8571,12 @@ _VENV_RUNTIME_PROBE_SCRIPT = (
     "    out['cuda_runtime'] = str(cv) if cv else 'unreadable: torch.version.cuda is None'\n"
     "    try:\n"
     "        use_det = getattr(torch, 'use_deterministic_algorithms', None)\n"
-    "        warn_env = os.environ.get('RDLAB_DETERMINISM_WARN_ONLY', '').strip() == '1'\n"
     "        if callable(use_det):\n"
-    "            use_det(True, warn_only=warn_env)\n"
+    "            use_det(True, warn_only=False)\n"
     "        are_en = getattr(torch, 'are_deterministic_algorithms_enabled', None)\n"
     "        is_wo = getattr(torch, 'is_deterministic_algorithms_warn_only_enabled', None)\n"
     "        en_val = bool(are_en()) if callable(are_en) else True\n"
-    "        wo_val = bool(is_wo()) if callable(is_wo) else warn_env\n"
+    "        wo_val = bool(is_wo()) if callable(is_wo) else False\n"
     "        out['determinism_status'] = 'warn_only' if wo_val else ('enforced' if en_val else 'disabled')\n"
     "        out['determinism_warn_only'] = wo_val\n"
     "    except Exception as de:\n"
@@ -8714,13 +8727,12 @@ def _query_judge_venv_runtime(
         out["cuda_runtime"] = str(cv) if cv else "unreadable: torch.version.cuda is None"
         try:
             use_det = getattr(torch_mod, "use_deterministic_algorithms", None)
-            warn_env = os.environ.get("RDLAB_DETERMINISM_WARN_ONLY", "").strip() == "1"
             if callable(use_det):
-                use_det(True, warn_only=warn_env)
+                use_det(True, warn_only=False)
             are_en = getattr(torch_mod, "are_deterministic_algorithms_enabled", None)
             is_wo = getattr(torch_mod, "is_deterministic_algorithms_warn_only_enabled", None)
             en_val = bool(are_en()) if callable(are_en) else True
-            wo_val = bool(is_wo()) if callable(is_wo) else warn_env
+            wo_val = bool(is_wo()) if callable(is_wo) else False
             out["determinism_status"] = "warn_only" if wo_val else ("enforced" if en_val else "disabled")
             out["determinism_warn_only"] = wo_val
         except Exception as de:
@@ -8822,8 +8834,9 @@ def collect_and_write_session_env(
     judges_digests = _collect_judge_receipt_digests(receipts_dir)
     merge_cfg_block = _load_merge_config_for_session_env(repo_dir)
 
+    is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
     det_warn_only_env = os.environ.get("RDLAB_DETERMINISM_WARN_ONLY", "").strip()
-    if mode == "counted" and det_warn_only_env == "1":
+    if not is_stub_or_dryrun and det_warn_only_env == "1":
         raise RefusalError(
             "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
             "Counted window refuses warn_only=True determinism fallback.",
@@ -8841,7 +8854,6 @@ def collect_and_write_session_env(
         else PINNED_SDPA_BACKEND
     )
 
-    is_stub_or_dryrun = bool(dryrun or mode in ("stub", "dryrun"))
     host_cpu_model = _read_host_cpu_model()
     cublas_ws_cfg = os.environ.get("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     nvidia_tf32_override = os.environ.get("NVIDIA_TF32_OVERRIDE", "unset")
@@ -9507,7 +9519,7 @@ def run_boot_gatekeeper(
                 )
             override_map[str(k)] = str(v).strip().lower()
 
-    is_stub_or_dryrun = bool(dryrun or mode in ("stub", "dryrun"))
+    is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
     use_synthetic_fake = bool(is_stub_or_dryrun and transport is None)
     if use_synthetic_fake:
         hash_source = "synthetic_fake_stub_dryrun"
@@ -10751,7 +10763,11 @@ def main(argv: list[str] | None = None) -> int:
                 else ""
             )
             log_fh.write(f"VM_RUN_OK mode={args.mode} dryrun={dryrun}{until_sfx}\n")
-            planted_leak = os.environ.get("RDLAB_TEST_PLANT_LOG_LEAK", "").strip()
+            planted_leak = (
+                os.environ.get("RDLAB_TEST_PLANT_LOG_LEAK", "").strip()
+                if not is_real_mode(args.mode, dryrun=dryrun)
+                else ""
+            )
             if planted_leak:
                 log_fh.write(f"planted_test_leak={planted_leak}\n")
 

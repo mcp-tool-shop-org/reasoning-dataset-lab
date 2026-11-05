@@ -1283,6 +1283,33 @@ COUNTED_WINDOW_MODES: frozenset[str] = frozenset(
 NON_COUNTED_WINDOW_MODES: frozenset[str] = frozenset(
     {"stub", "dryrun", "dry-run", "knob", "probe"}
 )
+STUB_OR_DRYRUN_WINDOW_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run"})
+
+
+def is_real_mode(
+    mode: str | None = None,
+    *,
+    dryrun: bool = False,
+    fake_transport: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Return True unless `dryrun` or `fake_transport` is set or `mode` is `stub` / `dryrun` / `dry-run`."""
+    env_map = environ if environ is not None else os.environ
+    if (
+        dryrun
+        or fake_transport
+        or str(env_map.get("VM_DRYRUN", "") or "").strip() == "1"
+    ):
+        return False
+    eff_mode = (
+        str(mode).strip().lower()
+        if mode is not None and str(mode).strip()
+        else str(
+            env_map.get(DETERMINISM_MODE_ENV_VAR, "")
+            or env_map.get("RDLAB_WINDOW_MODE", "")
+        ).strip().lower()
+    )
+    return eff_mode not in STUB_OR_DRYRUN_WINDOW_MODES
 
 
 def _is_counted_window_mode(
@@ -1331,8 +1358,9 @@ def configure_torch_determinism_with_reason(
     """
     os.environ["CUBLAS_WORKSPACE_CONFIG"] = CUBLAS_WORKSPACE_CONFIG_VALUE
     is_counted = _is_counted_window_mode(window_mode, strict=strict, shard_spec=shard_spec)
+    is_real = is_real_mode(window_mode) if strict is None else bool(strict)
     if os.environ.get("RDLAB_DETERMINISM_WARN_ONLY", "").strip().lower() in ("1", "true", "yes", "on"):
-        if is_counted:
+        if is_real:
             raise refused_error(
                 "BAKEOFF_JUDGE_DETERMINISM_REFUSED",
                 "Counted window refuses RDLAB_DETERMINISM_WARN_ONLY=1: strict deterministic algorithms (warn_only=False) are mandatory.",
@@ -4570,9 +4598,9 @@ def run_bakeoff_judge(
                 "Malformed mode in environment variable FAKE_COLAB_NVIDIA_SMI_MODE.",
                 "Use one of: ok, high, fail, empty, zero.",
             )
-        is_stub_or_dryrun_win = bool(
-            fake_transport
-            or str(eff_window_mode or "").strip().lower() in ("stub", "dryrun", "dry-run")
+        is_stub_or_dryrun_win = not is_real_mode(
+            eff_window_mode,
+            fake_transport=fake_transport,
         )
         force_gpu_probe = bool(is_stub_or_dryrun_win and smi_mode_raw)
         vram_probe = (
@@ -5465,6 +5493,7 @@ def close_bakeoff_outputs(
 
 
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
+TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
 MALFORMED_TEST_HOOK = "MALFORMED_TEST_HOOK"
 FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES: tuple[str, ...] = ("FAKE_COLAB_",)
 FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES: tuple[str, ...] = (
@@ -5533,16 +5562,20 @@ def guard_no_test_hooks_in_counted_mode(
     *,
     strict: bool | None = None,
     shard_spec: str | None = None,
+    dryrun: bool = False,
     fake_transport: bool = False,
     environ: Mapping[str, str] | None = None,
 ) -> None:
     """Refuse with `TEST_HOOK_IN_COUNTED_MODE` before any model load if any test/override hook is set and non-empty
-    in a counted/time-one/sharded window (when `not fake_transport` and `VM_DRYRUN != '1'`).
+    in any real mode (every mode except `stub` / `dryrun` / `dry-run`, when `not dryrun` and `not fake_transport`).
     """
     env_map = environ if environ is not None else os.environ
-    if fake_transport or str(env_map.get("VM_DRYRUN", "") or "").strip() == "1":
-        return
-    if not _is_counted_window_mode(window_mode, strict=strict, shard_spec=shard_spec):
+    if strict is False or not is_real_mode(
+        window_mode,
+        dryrun=dryrun,
+        fake_transport=fake_transport,
+        environ=env_map,
+    ):
         return
     active_hooks = sorted(
         str(k)
@@ -5553,8 +5586,8 @@ def guard_no_test_hooks_in_counted_mode(
         joined = ", ".join(active_hooks)
         raise refused_error(
             TEST_HOOK_IN_COUNTED_MODE,
-            f"Test or override hook environment variable(s) forbidden in counted mode ({window_mode!r}, shard={shard_spec or '1/1'}): {joined}.",
-            "Unset all FAKE_COLAB_* and test override environment variables before running a counted judge window.",
+            f"Test or override hook environment variable(s) forbidden in real mode ({window_mode!r}, shard={shard_spec or '1/1'}): {joined}.",
+            "Unset all FAKE_COLAB_* and test override environment variables before running a real judge window.",
         )
 
 

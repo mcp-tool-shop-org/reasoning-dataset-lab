@@ -26,6 +26,8 @@ from typing import Any, Mapping, Sequence
 
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
+TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
+STUB_OR_DRYRUN_MODES: frozenset[str] = frozenset({"stub", "dryrun", "dry-run"})
 FORBIDDEN_COUNTED_TEST_HOOK_PREFIXES: tuple[str, ...] = ("FAKE_COLAB_",)
 FORBIDDEN_COUNTED_TEST_HOOK_SUFFIXES: tuple[str, ...] = (
     "_OVERRIDE",
@@ -88,32 +90,48 @@ def is_forbidden_counted_test_hook(var_name: str) -> bool:
     )
 
 
-def guard_no_test_hooks_in_counted_mode(
-    any_counted: bool = True,
+def is_real_mode(
+    mode: str | None,
     *,
+    dryrun: bool = False,
+) -> bool:
+    """Return True unless `dryrun` is set or `mode` is `stub` / `dryrun` / `dry-run`."""
+    if dryrun:
+        return False
+    norm_mode = str(mode or "").strip().lower()
+    return norm_mode not in STUB_OR_DRYRUN_MODES
+
+
+def guard_no_test_hooks_in_counted_mode(
+    any_counted: bool | str | None = None,
+    *,
+    mode: str | None = None,
+    dryrun: bool = False,
+    any_real: bool | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> None:
-    """Refuse with `TEST_HOOK_IN_COUNTED_MODE` if any test/override hook is set in counted merge mode."""
+    """Refuse with `TEST_HOOK_IN_COUNTED_MODE` if any test/override hook is set in any real merge mode."""
     env_map = environ if environ is not None else os.environ
-    env_mode = str(env_map.get("RDLAB_MODE", "") or "").strip().lower()
-    is_dryrun = str(env_map.get("VM_DRYRUN", "") or "").strip() == "1"
-    eff_counted = bool(
-        not is_dryrun
-        and (
-            any_counted
-            or env_mode
-            in (
-                "time-one",
-                "time_one",
-                "counted",
-                "shard",
-                "sharded",
-                "counted-shard",
-                "sharded-counted",
+    eff_dryrun = bool(dryrun or str(env_map.get("VM_DRYRUN", "") or "").strip() == "1")
+    if isinstance(any_counted, bool) or any_real is not None:
+        flag = bool(any_real if any_real is not None else any_counted)
+        raw_env_mode = str(env_map.get("RDLAB_MODE", "") or "").strip()
+        eff_real = bool(
+            not eff_dryrun
+            and (flag or (raw_env_mode and is_real_mode(raw_env_mode, dryrun=eff_dryrun)))
+        )
+    else:
+        eff_mode = (
+            mode
+            if mode is not None
+            else (
+                any_counted
+                if isinstance(any_counted, str)
+                else str(env_map.get("RDLAB_MODE", "") or "")
             )
         )
-    )
-    if not eff_counted:
+        eff_real = is_real_mode(eff_mode, dryrun=eff_dryrun)
+    if not eff_real:
         return
     active_hooks = sorted(
         str(k)
@@ -124,7 +142,7 @@ def guard_no_test_hooks_in_counted_mode(
         joined = ", ".join(active_hooks)
         raise MergeRefusalError(
             TEST_HOOK_IN_COUNTED_MODE,
-            f"Test or override hook environment variable(s) forbidden in counted shard merge: {joined}",
+            f"Test or override hook environment variable(s) forbidden in real shard merge: {joined}",
         )
 
 EXPECTED_JUDGE_IDS: tuple[str, ...] = (
@@ -1041,19 +1059,28 @@ def merge_shards(
             f"provided {len(replacement_by_spec)} replacement sessions, max allowed is {merge_cfg['max_replacement_sessions_per_run']}",
         )
 
-    # Check if any shard is in counted mode and resolve golden anchor manifest
+    # Check if any shard is in counted or real mode and resolve golden anchor manifest
     any_counted = False
+    any_real = False
     for shard_idx, sdir in enumerate(shard_dirs, start=1):
         senv_file = sdir / "session_env.json"
         if senv_file.is_file():
             try:
                 sdoc = json.loads(senv_file.read_text(encoding="utf-8"))
-                if isinstance(sdoc, dict) and str(sdoc.get("mode") or "") in ("counted", "time-one"):
-                    any_counted = True
+                if isinstance(sdoc, dict):
+                    s_mode = str(sdoc.get("mode") or "")
+                    if s_mode in ("counted", "time-one"):
+                        any_counted = True
+                    if is_real_mode(s_mode):
+                        any_real = True
+                else:
+                    any_real = True
             except Exception:
-                pass
+                any_real = True
+        else:
+            any_real = True
 
-    guard_no_test_hooks_in_counted_mode(any_counted=any_counted)
+    guard_no_test_hooks_in_counted_mode(any_real=any_real)
 
     eff_golden_path = golden_anchor_manifest_path
     if eff_golden_path is None:

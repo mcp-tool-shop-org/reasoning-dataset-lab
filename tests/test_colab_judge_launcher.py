@@ -18064,3 +18064,370 @@ def test_fix2_item4_ast_and_regex_env_hook_scan_covered_by_guard() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "real_mode",
+    (
+        "lock-check",
+        "probe",
+        "knob",
+        "gatekeeper",
+        "smoke",
+        "session-smoke",
+        "time-one",
+        "time_one",
+        "counted",
+        "shard",
+        "sharded",
+        "counted-shard",
+        "sharded-counted",
+        "unknown-mode",
+        "",
+        None,
+    ),
+)
+def test_fix3_guard_refuses_every_real_mode(
+    real_mode: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-3 Item 1 & Item 3: Every real mode, unknown mode, and empty mode refuses with TEST_HOOK_IN_COUNTED_MODE."""
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    monkeypatch.delenv("RDLAB_MODE", raising=False)
+    monkeypatch.delenv("RDLAB_WINDOW_MODE", raising=False)
+
+    sentinel_secret = "SUPER_SECRET_" + "FIX3_HOOK_VALUE_99123"
+    hook_name = "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES"
+
+    with pytest.raises(vm_judges.RefusalError) as exc_vm:
+        vm_judges.guard_no_test_hooks_in_counted_mode(
+            real_mode,
+            dryrun=False,
+            shard_spec="1/1",
+            environ={hook_name: sentinel_secret},
+        )
+    assert exc_vm.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+    assert exc_vm.value.failure_class == vm_judges.TEST_HOOK_IN_REAL_MODE
+    assert hook_name in exc_vm.value.detail
+    assert sentinel_secret not in exc_vm.value.detail
+
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_ms:
+        merge_shards.guard_no_test_hooks_in_counted_mode(
+            real_mode,
+            dryrun=False,
+            environ={hook_name: sentinel_secret},
+        )
+    assert exc_ms.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+    assert exc_ms.value.failure_class == merge_shards.TEST_HOOK_IN_REAL_MODE
+    assert hook_name in exc_ms.value.detail
+    assert sentinel_secret not in exc_ms.value.detail
+
+    with pytest.raises(RdlabError) as exc_bj:
+        bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+            real_mode,
+            shard_spec="1/1",
+            fake_transport=False,
+            environ={hook_name: sentinel_secret},
+        )
+    assert exc_bj.value.code == "TEST_HOOK_IN_COUNTED_MODE"
+    assert exc_bj.value.code == bakeoff_judge.TEST_HOOK_IN_REAL_MODE
+    assert hook_name in exc_bj.value.message
+    assert sentinel_secret not in exc_bj.value.message
+
+    assert vm_judges.is_real_mode(real_mode, dryrun=False) is True
+    assert merge_shards.is_real_mode(real_mode, dryrun=False) is True
+    assert (
+        bakeoff_judge.is_real_mode(
+            real_mode, dryrun=False, fake_transport=False, environ={}
+        )
+        is True
+    )
+    vm_judges.guard_no_test_hooks_in_counted_mode(
+        real_mode, dryrun=False, shard_spec="1/1", environ={}
+    )
+    merge_shards.guard_no_test_hooks_in_counted_mode(
+        real_mode, dryrun=False, environ={}
+    )
+    bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+        real_mode, shard_spec="1/1", fake_transport=False, environ={}
+    )
+
+
+def test_fix3_guard_and_readers_refuse_every_real_mode_including_lock_check_probe_knob(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix-3 Items 1-3:
+    1. `is_real_mode` (complement of stub and dryrun) gates `guard_no_test_hooks_in_counted_mode` in
+       `vm_judges.py`, `merge_shards.py`, and `bakeoff_judge.py`.
+    2. Every hook reader uses the same stub-or-dryrun check with no exemption for `lock-check`, `probe`, or `knob`.
+    3. `stub` and `dryrun` / `dry-run` (and `dryrun=True`) still accept hooks, while end-to-end entry points
+       and readers refuse in `lock-check`, `probe`, `knob`, `gatekeeper`, `smoke`, `unknown-mode`, and empty mode.
+    """
+    import types
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    monkeypatch.delenv("RDLAB_MODE", raising=False)
+    monkeypatch.delenv("RDLAB_WINDOW_MODE", raising=False)
+
+    sentinel_secret = "SUPER_SECRET_" + "FIX3_HOOK_VALUE_99123"
+    hook_name = "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES"
+
+    # 2. Stub and dryrun modes still accept hooks
+    for allowed_mode in ("stub", "dryrun", "dry-run"):
+        assert vm_judges.is_real_mode(allowed_mode, dryrun=False) is False
+        assert merge_shards.is_real_mode(allowed_mode, dryrun=False) is False
+        assert (
+            bakeoff_judge.is_real_mode(
+                allowed_mode, dryrun=False, fake_transport=False, environ={}
+            )
+            is False
+        )
+        vm_judges.guard_no_test_hooks_in_counted_mode(
+            allowed_mode,
+            dryrun=False,
+            shard_spec="1/2",
+            environ={hook_name: sentinel_secret},
+        )
+        merge_shards.guard_no_test_hooks_in_counted_mode(
+            allowed_mode,
+            dryrun=False,
+            environ={hook_name: sentinel_secret},
+        )
+        bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+            allowed_mode,
+            shard_spec="1/2",
+            fake_transport=False,
+            environ={hook_name: sentinel_secret},
+        )
+
+    for dry_check_mode in ("lock-check", "probe", "knob", "counted", "unknown-mode", ""):
+        assert vm_judges.is_real_mode(dry_check_mode, dryrun=True) is False
+        assert merge_shards.is_real_mode(dry_check_mode, dryrun=True) is False
+        assert bakeoff_judge.is_real_mode(dry_check_mode, dryrun=True) is False
+        vm_judges.guard_no_test_hooks_in_counted_mode(
+            dry_check_mode,
+            dryrun=True,
+            shard_spec="1/2",
+            environ={hook_name: sentinel_secret},
+        )
+        vm_judges.guard_no_test_hooks_in_counted_mode(
+            dry_check_mode,
+            dryrun=False,
+            shard_spec="1/1",
+            environ={hook_name: sentinel_secret, "VM_DRYRUN": "1"},
+        )
+        merge_shards.guard_no_test_hooks_in_counted_mode(
+            dry_check_mode,
+            dryrun=True,
+            environ={hook_name: sentinel_secret},
+        )
+        merge_shards.guard_no_test_hooks_in_counted_mode(
+            dry_check_mode,
+            dryrun=False,
+            environ={hook_name: sentinel_secret, "VM_DRYRUN": "1"},
+        )
+        bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+            dry_check_mode,
+            dryrun=True,
+            environ={hook_name: sentinel_secret},
+        )
+        bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+            dry_check_mode,
+            fake_transport=True,
+            environ={hook_name: sentinel_secret},
+        )
+        bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+            dry_check_mode,
+            strict=False,
+            environ={hook_name: sentinel_secret},
+        )
+        bakeoff_judge.guard_no_test_hooks_in_counted_mode(
+            dry_check_mode,
+            environ={hook_name: sentinel_secret, "VM_DRYRUN": "1"},
+        )
+
+    # 3. End-to-end entry points (`vm_judges.main`, `merge_shards.merge_shards`, `bakeoff_judge.run_bakeoff_judge`)
+    #    refuse in lock-check, probe, knob, unknown-mode, and empty mode when a hook is set
+    items_for_fix3 = _make_stratified_public_items(tmp_path / "fix3_items", count=2)
+    mf_doc = bakeoff_judge.build_shard_manifest(
+        items_for_fix3,
+        num_shards=2,
+        anchor_count=2,
+        stratified_anchor_count=2,
+        canary_anchor_count=0,
+    )
+    mf_path = tmp_path / "fix3_manifest.json"
+    bakeoff_judge.write_shard_manifest(mf_doc, mf_path)
+
+    for entry_mode in ("lock-check", "probe", "knob", "gatekeeper", "smoke", "unknown-mode", ""):
+        safe_tag = entry_mode or "empty"
+        with monkeypatch.context() as mp:
+            mp.setenv("FAKE_COLAB_GPU_NAME", sentinel_secret)
+            status_file = tmp_path / f"status_fix3_{safe_tag}.json"
+            rc = vm_judges.main(
+                [
+                    "--step",
+                    "run",
+                    "--mode",
+                    entry_mode,
+                    "--repo-dir",
+                    str(REPO_ROOT),
+                    "--items-file",
+                    str(items_for_fix3),
+                    "--run-dir",
+                    str(tmp_path / f"run_fix3_{safe_tag}"),
+                    "--work-dir",
+                    str(tmp_path / f"work_fix3_{safe_tag}"),
+                    "--receipts-dir",
+                    str(tmp_path / f"rec_fix3_{safe_tag}"),
+                    "--hf-home",
+                    str(tmp_path / f"hf_fix3_{safe_tag}"),
+                    "--status-file",
+                    str(status_file),
+                    "--result-tar",
+                    str(tmp_path / f"res_fix3_{safe_tag}.tar.gz"),
+                ]
+            )
+            assert rc == 2
+            st_doc = json.loads(status_file.read_text(encoding="utf-8"))
+            assert st_doc["failure_class"] == "TEST_HOOK_IN_COUNTED_MODE"
+            assert "FAKE_COLAB_GPU_NAME" in st_doc["reason"]
+            assert sentinel_secret not in json.dumps(st_doc)
+
+            s1_dir = tmp_path / f"ms_fix3_{safe_tag}_s1"
+            s2_dir = tmp_path / f"ms_fix3_{safe_tag}_s2"
+            s1_dir.mkdir(parents=True, exist_ok=True)
+            s2_dir.mkdir(parents=True, exist_ok=True)
+            for idx, sdir in enumerate((s1_dir, s2_dir), start=1):
+                (sdir / "session_env.json").write_text(
+                    json.dumps({"mode": entry_mode, "phase": "end", "shard_spec": f"{idx}/2"}),
+                    encoding="utf-8",
+                )
+            with pytest.raises(merge_shards.MergeRefusalError) as exc_ms_e2e:
+                merge_shards.merge_shards(
+                    shard_dirs=[s1_dir, s2_dir],
+                    manifest_path=mf_path,
+                    output_dir=tmp_path / f"ms_out_{safe_tag}",
+                )
+            assert exc_ms_e2e.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+            assert "FAKE_COLAB_GPU_NAME" in exc_ms_e2e.value.detail
+            assert sentinel_secret not in exc_ms_e2e.value.detail
+
+            with pytest.raises(RdlabError) as exc_bj_e2e:
+                bakeoff_judge.run_bakeoff_judge(
+                    part_dir=items_for_fix3,
+                    output_dir=tmp_path / f"bj_out_{safe_tag}",
+                    judge="mu-judge",
+                    fake_transport=False,
+                    window_mode=entry_mode,
+                )
+            assert exc_bj_e2e.value.code == "TEST_HOOK_IN_COUNTED_MODE"
+            assert "FAKE_COLAB_GPU_NAME" in exc_bj_e2e.value.message
+            assert sentinel_secret not in exc_bj_e2e.value.message
+
+    # Also verify merge_shards refuses when session_env.json is missing, corrupt, or non-dict and a hook is set
+    for case_idx, payload in enumerate((None, "{bad-json", "[1, 2]")):
+        s1_bad = tmp_path / f"ms_bad_senv_{case_idx}_1"
+        s2_bad = tmp_path / f"ms_bad_senv_{case_idx}_2"
+        s1_bad.mkdir(parents=True, exist_ok=True)
+        s2_bad.mkdir(parents=True, exist_ok=True)
+        if payload is not None:
+            (s1_bad / "session_env.json").write_text(payload, encoding="utf-8")
+            (s2_bad / "session_env.json").write_text(payload, encoding="utf-8")
+        with monkeypatch.context() as mp:
+            mp.setenv("FAKE_COLAB_GPU_NAME", sentinel_secret)
+            with pytest.raises(merge_shards.MergeRefusalError) as exc_ms_bad:
+                merge_shards.merge_shards(
+                    shard_dirs=[s1_bad, s2_bad],
+                    manifest_path=mf_path,
+                    output_dir=tmp_path / f"ms_bad_out_{case_idx}",
+                )
+            assert exc_ms_bad.value.failure_class == "TEST_HOOK_IN_COUNTED_MODE"
+
+    # 4. Readers have no exemption for lock-check, probe, or knob
+    class _FakeTorchStrictOk:
+        __version__ = "2.14.1+cu132"
+        version = types.SimpleNamespace(cuda="13.2")
+
+        @staticmethod
+        def use_deterministic_algorithms(_mode: bool, *, warn_only: bool = False) -> None:
+            return None
+
+        @staticmethod
+        def are_deterministic_algorithms_enabled() -> bool:
+            return True
+
+        @staticmethod
+        def is_deterministic_algorithms_warn_only_enabled() -> bool:
+            return False
+
+        backends = types.SimpleNamespace(
+            cudnn=types.SimpleNamespace(benchmark=False),
+            cuda=types.SimpleNamespace(
+                enable_flash_sdp=lambda _v: None,
+                enable_mem_efficient_sdp=lambda _v: None,
+                enable_math_sdp=lambda _v: None,
+                flash_sdp_enabled=lambda: False,
+                mem_efficient_sdp_enabled=lambda: False,
+                math_sdp_enabled=lambda: True,
+            ),
+        )
+
+    fake_tf_mod = types.ModuleType("transformers")
+    fake_tf_mod.__version__ = "5.19.0"  # type: ignore[attr-defined]
+    fake_bnb_mod = types.ModuleType("bitsandbytes")
+    fake_bnb_mod.__version__ = "0.45.0"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "torch", _FakeTorchStrictOk())
+    monkeypatch.setitem(sys.modules, "transformers", fake_tf_mod)
+    monkeypatch.setitem(sys.modules, "bitsandbytes", fake_bnb_mod)
+    monkeypatch.delenv("RDLAB_WORK_DIR", raising=False)
+    fake_env = fake_colab.setup_fake_colab_environment(tmp_path / "env_fix3_readers")
+    monkeypatch.setenv("PATH", _hermetic_path_for(fake_env))
+    receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec_fix3_readers")
+
+    for non_exempt_mode in ("lock-check", "probe", "knob"):
+        with monkeypatch.context() as mp:
+            mp.setenv("RDLAB_DETERMINISM_WARN_ONLY", "1")
+            with pytest.raises(RdlabError) as exc_det_bj:
+                bakeoff_judge.configure_torch_determinism_with_reason(
+                    window_mode=non_exempt_mode
+                )
+            assert exc_det_bj.value.code == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+            with pytest.raises(vm_judges.RefusalError) as exc_det_vm:
+                vm_judges.collect_and_write_session_env(
+                    tmp_path / f"senv_det_{non_exempt_mode}",
+                    receipts_dir=receipts_dir,
+                    mode=non_exempt_mode,
+                    phase="start",
+                    dryrun=False,
+                    repo_dir=REPO_ROOT,
+                )
+            assert exc_det_vm.value.failure_class == "BAKEOFF_JUDGE_DETERMINISM_REFUSED"
+
+        with monkeypatch.context() as mp:
+            mp.setenv("FAKE_COLAB_GPU_NAME", "FAKE_GPU_HOOK_SENTINEL")
+            mp.setenv("RDLAB_SDPA_BACKEND", "flash")
+            senv_doc = vm_judges.collect_and_write_session_env(
+                tmp_path / f"senv_clean_{non_exempt_mode}",
+                receipts_dir=receipts_dir,
+                mode=non_exempt_mode,
+                phase="end",
+                dryrun=False,
+                repo_dir=REPO_ROOT,
+            )
+            assert senv_doc["gpu"]["name"] != "FAKE_GPU_HOOK_SENTINEL"
+            assert senv_doc["attention"]["sdpa_backend"] == "math"
+
+
+
