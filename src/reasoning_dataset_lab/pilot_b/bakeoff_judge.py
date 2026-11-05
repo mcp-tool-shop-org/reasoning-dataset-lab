@@ -2499,6 +2499,7 @@ def build_shard_manifest(
     lock_check_telemetry_path: Path | str | None = None,
     canary_item_ids: Sequence[str] | None = None,
     canary_telemetry_sha256: str | None = None,
+    golden_anchor_manifest_file_sha256: str | None = None,
     golden_anchor_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Build a pre-registered shard manifest with deterministic stratified interleave over `schedule` and 50 anchors (25 stratified + 25 lock-check canaries)."""
@@ -2548,11 +2549,12 @@ def build_shard_manifest(
     target_canary_n = min(max(0, int(canary_anchor_count)), remaining_budget)
     resolved_canary_ids: list[str] = []
     resolved_telemetry_sha: str | None = canary_telemetry_sha256
+    resolved_golden_file_sha = golden_anchor_manifest_file_sha256 if golden_anchor_manifest_file_sha256 is not None else golden_anchor_manifest_sha256
     if lock_check_telemetry_path is not None:
-        s_ids, resolved_canary_ids, resolved_telemetry_sha, golden_anchor_manifest_sha256 = _resolve_lock_check_anchors_for_shard_manifest(
+        s_ids, resolved_canary_ids, resolved_telemetry_sha, resolved_golden_file_sha = _resolve_lock_check_anchors_for_shard_manifest(
             items, items_by_id, lock_check_telemetry_path, stratified_anchor_ids=stratified_anchor_ids, target_canary_n=target_canary_n,
             anchor_count=int(anchor_count), stratified_anchor_count=int(stratified_anchor_count), canary_anchor_count=int(canary_anchor_count),
-            canary_item_ids=canary_item_ids, resolved_telemetry_sha=resolved_telemetry_sha, golden_anchor_manifest_sha256=golden_anchor_manifest_sha256,
+            canary_item_ids=canary_item_ids, resolved_telemetry_sha=resolved_telemetry_sha, golden_anchor_manifest_file_sha256=resolved_golden_file_sha,
         )
         stratified_anchor_ids = s_ids
     elif canary_item_ids is not None:
@@ -2596,7 +2598,7 @@ def build_shard_manifest(
         "canary_anchor_count": len(resolved_canary_ids),
         "canary_item_ids": resolved_canary_ids,
         "canary_telemetry_sha256": resolved_telemetry_sha,
-        "golden_anchor_manifest_sha256": golden_anchor_manifest_sha256,
+        "golden_anchor_manifest_file_sha256": resolved_golden_file_sha,
         "anchor_count": len(anchor_item_ids),
         "anchor_item_ids": anchor_item_ids,
         "input_token_ids_sha256_by_call": dict(sorted(input_token_ids_sha256_by_call.items())),
@@ -4930,13 +4932,13 @@ def run_bakeoff_judge(
                     f"Counted shard anchor IDs in shard_manifest.json ({len(raw_manifest_anchors)} items) do not match golden_anchor_manifest.json ({len(gm_anchors)} items).",
                     "Ensure shard_manifest.json was built from the same golden_anchor_manifest.json with the exact 50 anchor item IDs.",
                 )
-            expected_golden_sha = str(manifest_doc.get("golden_anchor_manifest_sha256") or "").strip().lower()
+            expected_golden_sha = str(manifest_doc.get("golden_anchor_manifest_file_sha256") or "").strip().lower()
             actual_golden_file_sha = hashlib.sha256(resolved_golden_path.read_bytes()).hexdigest().lower()
             if not expected_golden_sha or actual_golden_file_sha != expected_golden_sha:
                 raise refused_error(
                     "SHARD_MANIFEST_GOLDEN_SHA_MISMATCH",
                     f"Counted shard golden anchor manifest file SHA-256 ({actual_golden_file_sha}) does not match "
-                    f"shard_manifest.json golden_anchor_manifest_sha256 ({expected_golden_sha or 'missing'}).",
+                    f"shard_manifest.json golden_anchor_manifest_file_sha256 ({expected_golden_sha or 'missing'}).",
                     "Pass the exact golden_anchor_manifest.json file whose SHA-256 is recorded in shard_manifest.json.",
                 )
 
@@ -6039,7 +6041,7 @@ def _resolve_lock_check_anchors_for_shard_manifest(
     canary_anchor_count: int,
     canary_item_ids: Sequence[str] | None,
     resolved_telemetry_sha: str | None,
-    golden_anchor_manifest_sha256: str | None,
+    golden_anchor_manifest_file_sha256: str | None,
 ) -> tuple[list[str], list[str], str | None, str | None]:
     """Resolve stratified and canary anchors from `golden_anchor_manifest.json` or lock-check telemetry."""
     loaded_golden = _load_golden_anchors_for_shard_manifest(
@@ -6056,7 +6058,7 @@ def _resolve_lock_check_anchors_for_shard_manifest(
             gm_strat,
             gm_can,
             resolved_telemetry_sha or gm_tel_sha,
-            golden_anchor_manifest_sha256 or gm_sha,
+            golden_anchor_manifest_file_sha256 or gm_sha,
         )
     can_ids, tel_sha = select_lock_check_canary_anchors(
         items,
@@ -6064,7 +6066,7 @@ def _resolve_lock_check_anchors_for_shard_manifest(
         excluded_item_ids=stratified_anchor_ids,
         canary_count=target_canary_n,
     )
-    return stratified_anchor_ids, can_ids, tel_sha, golden_anchor_manifest_sha256
+    return stratified_anchor_ids, can_ids, tel_sha, golden_anchor_manifest_file_sha256
 
 
 def _load_golden_anchors_for_shard_manifest(

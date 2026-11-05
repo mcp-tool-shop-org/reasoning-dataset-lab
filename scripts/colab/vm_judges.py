@@ -4010,6 +4010,7 @@ def delete_uploaded_items_and_record_receipt(
 ) -> dict[str, Any]:
     """Delete uploaded item files and any un-uploaded `manifest.json` in their directories, verifying absence with `test ! -e`."""
     file_records: list[dict[str, Any]] = []
+    manifest_cleanup_errors: list[dict[str, str]] = []
     all_absent = True
     uploaded_resolved = {Path(p).resolve() for p in uploaded_paths}
     parent_dirs: list[Path] = []
@@ -4046,17 +4047,25 @@ def delete_uploaded_items_and_record_receipt(
         ):
             try:
                 leftover_mf.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                manifest_cleanup_errors.append(
+                    {
+                        "path": str(leftover_mf).replace("\\", "/"),
+                        "error": str(exc),
+                    }
+                )
     if not all_absent:
         raise RefusalError(
             "UPLOADED_ITEMS_NOT_DELETED",
             f"Uploaded item file(s) still present after deletion: {file_records}",
         )
-    return {
+    receipt_out: dict[str, Any] = {
         "all_absent": all_absent,
         "files": file_records,
     }
+    if manifest_cleanup_errors:
+        receipt_out["manifest_cleanup_errors"] = manifest_cleanup_errors
+    return receipt_out
 
 
 def write_outputs_closed(
@@ -5517,15 +5526,34 @@ def _ensure_part_manifest_for_run(
     Returns `(manifest_doc, was_synthesized)`.
     """
     part_manifest = part_dir / "manifest.json"
+    real_mode_active = is_real_mode(mode, dryrun=dryrun)
     if part_manifest.is_file():
         try:
             loaded = json.loads(part_manifest.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                return loaded, bool(loaded.get("synthesized"))
-        except Exception:
-            pass
-        return {"part_id": part_dir.name, "schema_version": "1.0"}, False
-    if is_real_mode(mode, dryrun=dryrun):
+        except Exception as exc:
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part manifest at {part_manifest} failed to parse as JSON (parse error): {exc}",
+            ) from exc
+        if not isinstance(loaded, dict):
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part manifest at {part_manifest} root is not a JSON object (not a dict): got {type(loaded).__name__}",
+            )
+        raw_pid = loaded.get("part_id")
+        if not isinstance(raw_pid, str) or not raw_pid.strip():
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part manifest at {part_manifest} has no non-empty string part_id (no part_id)",
+            )
+        was_synth = bool(loaded.get("synthesized")) or raw_pid.strip().lower() == "stub"
+        if real_mode_active and was_synth:
+            raise RefusalError(
+                "PART_MANIFEST_SYNTHESIZED",
+                f"Part manifest at {part_manifest} is a synthesized stub manifest (part_id={raw_pid!r}, synthesized={bool(loaded.get('synthesized'))}) and is forbidden in real mode {mode!r}.",
+            )
+        return loaded, bool(loaded.get("synthesized"))
+    if real_mode_active:
         raise RefusalError(
             "PART_MANIFEST_MISSING",
             f"Part manifest not found at {part_manifest} in real mode {mode!r}; real mode never synthesizes a part manifest.",
@@ -5603,8 +5631,9 @@ def run_judges_pipeline(
     orig_part_dir = part_dir if part_dir.is_dir() else part_dir.parent
     orig_part_manifest = orig_part_dir / "manifest.json"
     preexisting_part_manifest = orig_part_manifest.is_file()
+    t1_summary: dict[str, Any] | None = None
     try:
-        return _run_judges_pipeline_body(
+        t1_summary, mass_readout = _run_judges_pipeline_body(
             mode=mode,
             part_dir=part_dir,
             run_dir=run_dir,
@@ -5637,14 +5666,29 @@ def run_judges_pipeline(
             session_fingerprint_sha256=session_fingerprint_sha256,
             replacement_session=replacement_session,
         )
+        return t1_summary, mass_readout
     finally:
         shutil.rmtree(p0a_stage_dir, ignore_errors=True)
         shutil.rmtree(anchor_stage_dir, ignore_errors=True)
         if not preexisting_part_manifest and orig_part_manifest.is_file():
             try:
                 orig_part_manifest.unlink()
-            except OSError:
-                pass
+            except OSError as exc:
+                if t1_summary is not None:
+                    err_entry = {
+                        "path": str(orig_part_manifest).replace("\\", "/"),
+                        "error": str(exc),
+                    }
+                    t1_summary.setdefault("manifest_cleanup_errors", []).append(
+                        err_entry
+                    )
+                    summary_file = run_dir / "time_one_summary.json"
+                    if summary_file.parent.is_dir():
+                        summary_file.write_text(
+                            json.dumps(t1_summary, indent=2) + "\n",
+                            encoding="utf-8",
+                            newline="\n",
+                        )
 
 
 def _run_judges_pipeline_body(
@@ -5736,6 +5780,7 @@ def _run_judges_pipeline_body(
                 p0a_items_or_path=eff_p0a_file,
                 counted_items_or_manifest=eff_counted_source,
             )
+            bakeoff_judge_pre._resolve_items_from_manifest_source(eff_counted_source)
         except bakeoff_judge_pre.RdlabError as exc:
             raise RefusalError(exc.code, exc.message) from exc
         anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
@@ -6473,7 +6518,7 @@ def _run_judges_pipeline_body(
             "canary_drift": canary_info,
         }
 
-    golden_anchor_manifest_sha256: str | None = None
+    golden_anchor_manifest_file_sha256: str | None = None
     p0a_report_sha256: str | None = None
     if norm_mode in ("lock-check", "lock_check", "lock-check-stub", "lock_check_stub"):
         import importlib
@@ -6491,7 +6536,7 @@ def _run_judges_pipeline_body(
             golden_file_sha = bakeoff_judge.write_golden_anchor_manifest(
                 golden_doc, run_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME
             )
-            golden_anchor_manifest_sha256 = str(golden_file_sha)
+            golden_anchor_manifest_file_sha256 = str(golden_file_sha)
             if eff_counted_source is None or not eff_counted_source.exists():
                 raise RefusalError(
                     "LOCK_CHECK_COUNTED_SOURCE_MISSING",
@@ -6503,7 +6548,7 @@ def _run_judges_pipeline_body(
                 schedule_seed=DEFAULT_SCHEDULE_SEED,
                 limit_items=limit_items,
                 lock_check_telemetry_path=run_dir,
-                golden_anchor_manifest_sha256=golden_anchor_manifest_sha256,
+                golden_anchor_manifest_file_sha256=golden_anchor_manifest_file_sha256,
             )
             counted_id_set = bakeoff_judge._extract_counted_item_ids_from_source(eff_counted_source)
             rebuilt_all_ids = set(
@@ -6650,7 +6695,7 @@ def _run_judges_pipeline_body(
         "shard_manifest_sha256": shard_info["shard_manifest_sha256"],
         "shard_item_ids": shard_item_ids,
         "anchor_item_ids": shard_info["anchor_item_ids"],
-        "golden_anchor_manifest_sha256": golden_anchor_manifest_sha256,
+        "golden_anchor_manifest_file_sha256": golden_anchor_manifest_file_sha256,
         "p0a_report_sha256": p0a_report_sha256,
         "vram_sample_interval_seconds": VRAM_SAMPLE_INTERVAL_SECONDS,
         "judges": per_judge_metrics,
@@ -8671,6 +8716,7 @@ def build_shard_manifest_stdlib(
     canary_anchor_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
     canary_item_ids: Sequence[str] | None = None,
     canary_telemetry_sha256: str | None = None,
+    golden_anchor_manifest_file_sha256: str | None = None,
     golden_anchor_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Pure-stdlib builder producing the exact pre-registered shard manifest as `bakeoff_judge.build_shard_manifest`."""
@@ -8842,7 +8888,11 @@ def build_shard_manifest_stdlib(
         "canary_selection_rule": CANARY_ANCHOR_SELECTION_RULE,
         "canary_inputs_sha256": eff_canary_inputs_sha,
         "canary_telemetry_sha256": canary_telemetry_sha256,
-        "golden_anchor_manifest_sha256": golden_anchor_manifest_sha256,
+        "golden_anchor_manifest_file_sha256": (
+            golden_anchor_manifest_file_sha256
+            if golden_anchor_manifest_file_sha256 is not None
+            else golden_anchor_manifest_sha256
+        ),
         "anchor_count": len(anchor_item_ids),
         "anchor_item_count": len(anchor_item_ids),
         "anchor_pair_count": len(anchor_item_ids) * len(BAKEOFF_JUDGE_SPECS),
@@ -11273,6 +11323,12 @@ def main(argv: list[str] | None = None) -> int:
             check_upload_path_allowed(eff_counted_file)
             if eff_counted_file.is_file() and eff_counted_file not in uploaded_item_files:
                 uploaded_item_files.append(eff_counted_file)
+            if eff_counted_file.is_file() and eff_counted_file.suffix.lower() == ".json":
+                sibling_counted_items = eff_counted_file.parent / "items.jsonl"
+                if sibling_counted_items.is_file():
+                    check_upload_path_allowed(sibling_counted_items)
+                    if sibling_counted_items not in uploaded_item_files:
+                        uploaded_item_files.append(sibling_counted_items)
             if eff_counted_file.is_file():
                 counted_source_sha256 = sha256_file(eff_counted_file)
 
@@ -11287,6 +11343,7 @@ def main(argv: list[str] | None = None) -> int:
                     p0a_items_or_path=p0a_items_arg,
                     counted_items_or_manifest=counted_items_arg,
                 )
+                bakeoff_judge_mod._resolve_items_from_manifest_source(counted_items_arg)
             except bakeoff_judge_mod.RdlabError as exc:
                 raise RefusalError(exc.code, exc.message) from exc
 
@@ -11623,6 +11680,14 @@ def main(argv: list[str] | None = None) -> int:
         deleted_items_receipt = delete_uploaded_items_and_record_receipt(
             uploaded_item_files
         )
+        if (
+            time_one_summary is not None
+            and isinstance(time_one_summary.get("manifest_cleanup_errors"), list)
+            and time_one_summary["manifest_cleanup_errors"]
+        ):
+            deleted_items_receipt.setdefault("manifest_cleanup_errors", []).extend(
+                time_one_summary["manifest_cleanup_errors"]
+            )
 
         current_step = "session_env_end"
         session_env_report = collect_and_write_session_env(
@@ -11732,8 +11797,8 @@ def main(argv: list[str] | None = None) -> int:
                 if shard_info_report is not None
                 else None
             ),
-            "golden_anchor_manifest_sha256": (
-                time_one_summary.get("golden_anchor_manifest_sha256")
+            "golden_anchor_manifest_file_sha256": (
+                time_one_summary.get("golden_anchor_manifest_file_sha256")
                 if time_one_summary is not None
                 else None
             ),

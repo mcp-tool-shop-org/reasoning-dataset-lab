@@ -17246,7 +17246,7 @@ def test_fix1_part_f_100_percent_patch_coverage_on_bakeoff_judge(
         "manifest_sha256": "a" * 64,
     }
     gm_50_path.write_text(json.dumps(gm_50_doc, indent=2) + "\n", encoding="utf-8")
-    m_with_gold["golden_anchor_manifest_sha256"] = hashlib.sha256(gm_50_path.read_bytes()).hexdigest()
+    m_with_gold["golden_anchor_manifest_file_sha256"] = hashlib.sha256(gm_50_path.read_bytes()).hexdigest()
     m_with_gold["manifest_sha256"] = bakeoff_judge._compute_shard_manifest_body_sha256(m_with_gold)
     bakeoff_judge.write_shard_manifest(m_with_gold, out_counted_ok / "shard_manifest.json")
     (out_counted_ok / "anchor_rows").mkdir(parents=True, exist_ok=True)
@@ -20102,7 +20102,7 @@ def test_lock_check_item2_golden_anchor_manifest_canary_selection_and_hashes(
         schedule,
         num_shards=2,
         lock_check_telemetry_path=lc_dir,
-        golden_anchor_manifest_sha256=golden_doc["golden_anchor_manifest_sha256"],
+        golden_anchor_manifest_file_sha256=golden_file_sha,
     )
     assert full_sm["stratified_anchor_item_ids"] == stratified_25
     assert full_sm["canary_item_ids"] == expected_canary_25
@@ -20111,7 +20111,7 @@ def test_lock_check_item2_golden_anchor_manifest_canary_selection_and_hashes(
     assert full_sm["canary_selection_rule"] == bakeoff_judge.CANARY_ANCHOR_SELECTION_RULE
     assert len(full_sm["canary_inputs_sha256"]) == 64
     assert full_sm["canary_telemetry_sha256"] == tel_sha_dir
-    assert full_sm["golden_anchor_manifest_sha256"] == golden_doc["golden_anchor_manifest_sha256"]
+    assert full_sm["golden_anchor_manifest_file_sha256"] == golden_file_sha
 
     # Verify vm_judges.build_shard_manifest_stdlib records matching canary fields
     stdlib_sm = vm_judges.build_shard_manifest_stdlib(
@@ -20120,9 +20120,10 @@ def test_lock_check_item2_golden_anchor_manifest_canary_selection_and_hashes(
         schedule_seed=0,
         canary_item_ids=expected_canary_25,
         canary_telemetry_sha256=tel_sha_dir,
-        golden_anchor_manifest_sha256=golden_doc["golden_anchor_manifest_sha256"],
+        golden_anchor_manifest_file_sha256=golden_file_sha,
     )
     assert stdlib_sm["canary_item_ids"] == expected_canary_25
+    assert stdlib_sm["golden_anchor_manifest_file_sha256"] == golden_file_sha
     assert stdlib_sm["anchor_item_count"] == 50
     assert stdlib_sm["anchor_pair_count"] == 250
 
@@ -22991,13 +22992,13 @@ def test_fix4_item1_synthesized_manifest_is_stub_deleted_after_run_and_ignored_b
     assert bakeoff_judge._resolve_part_id_from_dir(synth_dir, allow_synthesized=False) is None
     assert bakeoff_judge._resolve_part_id_from_dir(synth_dir, allow_synthesized=True) == "stub"
 
-    # Non-dict or malformed manifest.json fallback in _ensure_part_manifest_for_run
+    # Non-dict or malformed manifest.json in _ensure_part_manifest_for_run refuses with PART_MANIFEST_INVALID
     mal_mf_dir = tmp_path / "mal_mf_dir"
     mal_mf_dir.mkdir(parents=True, exist_ok=True)
     (mal_mf_dir / "manifest.json").write_text("[1, 2]", encoding="utf-8")
-    mal_doc, mal_synth = vm_judges._ensure_part_manifest_for_run(mal_mf_dir, mode="stub", dryrun=True)
-    assert mal_synth is False
-    assert mal_doc["part_id"] == "mal_mf_dir"
+    with pytest.raises(vm_judges.RefusalError) as exc_mal_mf:
+        vm_judges._ensure_part_manifest_for_run(mal_mf_dir, mode="stub", dryrun=True)
+    assert exc_mal_mf.value.failure_class == "PART_MANIFEST_INVALID"
 
     # 2. Shared /content/rdlab_items directory: run --stub first, then --lock-check-stub with 114 unmarked items in --p0a-items
     shared_items_dir = tmp_path / "rdlab_items"
@@ -23157,7 +23158,7 @@ def test_fix4_item2_counted_stub_logprob_mass_does_not_use_pilot_40b(
     gm_path = tmp_path / "f4_i2_gm.json"
     gm_file_sha = bakeoff_judge.write_golden_anchor_manifest(gm_doc, gm_path)
     sm_full_doc = dict(sm_base_doc)
-    sm_full_doc["golden_anchor_manifest_sha256"] = gm_file_sha
+    sm_full_doc["golden_anchor_manifest_file_sha256"] = gm_file_sha
     sm_full_doc["manifest_sha256"] = bakeoff_judge._compute_shard_manifest_body_sha256(sm_full_doc)
     sm_path = tmp_path / "f4_i2_sm.json"
     sm_sha = bakeoff_judge.write_shard_manifest(sm_full_doc, sm_path)
@@ -23272,7 +23273,7 @@ def test_fix4_item4_golden_file_sha_in_shard_manifest_and_tampered_row_refused(
     tmp_path: Path,
 ) -> None:
     """Fix4 Item 4 (6.6):
-    - `shard_manifest.json["golden_anchor_manifest_sha256"]` equals `golden_anchor_manifest.json.sha256` (the file's SHA-256).
+    - `shard_manifest.json["golden_anchor_manifest_file_sha256"]` equals `golden_anchor_manifest.json.sha256` (the file's SHA-256).
     - A counted shard whose `golden_anchor_manifest.json` has a tampered row (same 50 anchor IDs, altered `verdict_code` or `output_token_ids_sha256`)
       is refused (`SHARD_MANIFEST_GOLDEN_SHA_MISMATCH`).
     """
@@ -23315,7 +23316,7 @@ def test_fix4_item4_golden_file_sha_in_shard_manifest_and_tampered_row_refused(
         num_shards=2,
         lock_check_telemetry_path=lc_dir,
     )
-    assert sm_doc["golden_anchor_manifest_sha256"] == gm_file_sha
+    assert sm_doc["golden_anchor_manifest_file_sha256"] == gm_file_sha
     sm_path = tmp_path / "f4_i4_sm.json"
     sm_sha = bakeoff_judge.write_shard_manifest(sm_doc, sm_path)
 
@@ -23651,8 +23652,389 @@ def test_fix4_item7_real_mode_paths_with_monkeypatched_transport(
     assert (lc_real_run / "p0a_report.json").is_file()
     lc_sm_doc = json.loads((lc_real_run / "shard_manifest.json").read_text(encoding="utf-8"))
     lc_gm_sha = hashlib.sha256((lc_real_run / "golden_anchor_manifest.json").read_bytes()).hexdigest()
-    assert lc_sm_doc["golden_anchor_manifest_sha256"] == lc_gm_sha
-    assert lc_sum_real["golden_anchor_manifest_sha256"] == lc_gm_sha
+    assert lc_sm_doc["golden_anchor_manifest_file_sha256"] == lc_gm_sha
+    assert lc_sum_real["golden_anchor_manifest_file_sha256"] == lc_gm_sha
+
+
+def test_fix5_item1_malformed_and_nondict_manifest_refuse_in_real_and_stub_modes(
+    tmp_path: Path,
+) -> None:
+    """Fix5 Item 1 & Item 5.1:
+    - A malformed `manifest.json` (parse error), a non-dict `manifest.json` (`[1, 2]`), and a dict `manifest.json`
+      without a non-empty string `part_id` all refuse with `PART_MANIFEST_INVALID` (including the path and reason)
+      in both real mode (`dryrun=False`) and stub/dryrun mode (`dryrun=True`), never inventing `part_dir.name`.
+    """
+    cases = [
+        ("malformed", "{bad-json-parse", "parse error"),
+        ("nondict", "[1, 2, 3]", "not a dict"),
+        ("no_part_id", json.dumps({"schema_version": "1.0"}), "no part_id"),
+        ("empty_part_id", json.dumps({"part_id": "   ", "schema_version": "1.0"}), "no part_id"),
+    ]
+    for label, raw_content, expected_reason in cases:
+        part_d = tmp_path / f"f5_i1_{label}"
+        part_d.mkdir(parents=True, exist_ok=True)
+        mf_path = part_d / "manifest.json"
+        mf_path.write_text(raw_content, encoding="utf-8")
+        for mode_str, is_dry in (("counted", False), ("time-one", False), ("stub", True), ("counted-stub", True)):
+            with pytest.raises(vm_judges.RefusalError) as exc_info:
+                vm_judges._ensure_part_manifest_for_run(part_d, mode=mode_str, dryrun=is_dry)
+            assert exc_info.value.failure_class == "PART_MANIFEST_INVALID"
+            assert str(mf_path) in exc_info.value.detail
+            assert expected_reason in exc_info.value.detail
+
+
+def test_fix5_item2_synthesized_manifest_refuses_in_real_mode(
+    tmp_path: Path,
+) -> None:
+    """Fix5 Item 2 & Item 5.2:
+    - A leftover synthesized `manifest.json` (`"synthesized": True` or `"part_id": "stub"`) is refused in real mode
+      (`counted`, `time-one` with `dryrun=False`) with `PART_MANIFEST_SYNTHESIZED`.
+    """
+    synth_dir = tmp_path / "f5_i2_synth_dir"
+    synth_dir.mkdir(parents=True, exist_ok=True)
+    # First synthesize via stub/dryrun mode
+    stub_doc, was_synth = vm_judges._ensure_part_manifest_for_run(synth_dir, mode="stub", dryrun=True)
+    assert was_synth is True
+    assert stub_doc["synthesized"] is True
+    assert (synth_dir / "manifest.json").is_file()
+
+    # Now verify real mode refuses the leftover synthesized manifest with PART_MANIFEST_SYNTHESIZED
+    for real_mode in ("counted", "time-one"):
+        with pytest.raises(vm_judges.RefusalError) as exc_synth:
+            vm_judges._ensure_part_manifest_for_run(synth_dir, mode=real_mode, dryrun=False)
+        assert exc_synth.value.failure_class == "PART_MANIFEST_SYNTHESIZED"
+        assert str(synth_dir / "manifest.json") in exc_synth.value.detail
+
+
+def test_fix5_item2_cleanup_unlink_failure_recorded_in_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix5 Item 2 & Item 5.3:
+    - When unlinking a leftover/synthesized `manifest.json` raises `OSError` in `delete_uploaded_items_and_record_receipt`
+      or in `run_judges_pipeline`'s `finally` block (and `vm_judges.main`), the failure is recorded in
+      `manifest_cleanup_errors` in the receipt (`deleted_items_receipt` and `time_one_summary`) instead of being swallowed.
+    """
+    counted_items_file, _, _ = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "f5_i2_unlink_base", counted_count=100
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "f5_i2_unlink_rec")
+
+    # 1. Direct test on delete_uploaded_items_and_record_receipt when leftover manifest.json unlink raises OSError
+    up_dir = tmp_path / "f5_i2_up_dir"
+    up_dir.mkdir(parents=True, exist_ok=True)
+    up_items = up_dir / "items.jsonl"
+    shutil.copyfile(counted_items_file, up_items)
+    leftover_mf = up_dir / "manifest.json"
+    leftover_mf.write_text(json.dumps({"part_id": "stub", "synthesized": True}), encoding="utf-8")
+
+    orig_unlink = Path.unlink
+
+    def _failing_mf_unlink(self_path: Path, *args: Any, **kwargs: Any) -> None:
+        if self_path.name == "manifest.json":
+            raise OSError("simulated permission denied unlinking leftover manifest.json")
+        orig_unlink(self_path, *args, **kwargs)
+
+    with monkeypatch.context() as mp_del:
+        mp_del.setattr(Path, "unlink", _failing_mf_unlink)
+        del_receipt = vm_judges.delete_uploaded_items_and_record_receipt([up_items])
+    assert del_receipt["all_absent"] is True
+    assert "manifest_cleanup_errors" in del_receipt
+    assert len(del_receipt["manifest_cleanup_errors"]) == 1
+    assert del_receipt["manifest_cleanup_errors"][0]["path"] == str(leftover_mf).replace("\\", "/")
+    assert "simulated permission denied" in del_receipt["manifest_cleanup_errors"][0]["error"]
+    orig_unlink(leftover_mf)
+
+    # 2. End-to-end vm_judges.main (--mode stub --dryrun) where synthesized manifest.json unlink fails in
+    #    run_judges_pipeline finally AND delete_uploaded_items_and_record_receipt -> lands in vm_receipt.json
+    main_items_dir = tmp_path / "f5_i2_main_items"
+    main_items_dir.mkdir(parents=True, exist_ok=True)
+    main_items = main_items_dir / "items.jsonl"
+    shutil.copyfile(counted_items_file, main_items)
+
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+
+    main_run_dir = tmp_path / "f5_i2_main_run"
+    main_status = tmp_path / "f5_i2_main_status.json"
+    with monkeypatch.context() as mp_main:
+        mp_main.setattr(Path, "unlink", _failing_mf_unlink)
+        rc_main = vm_judges.main(
+            [
+                "--step",
+                "run",
+                "--mode",
+                "stub",
+                "--dryrun",
+                "--repo-dir",
+                str(REPO_ROOT),
+                "--receipts-dir",
+                str(receipts_dir),
+                "--items-file",
+                str(main_items),
+                "--run-dir",
+                str(main_run_dir),
+                "--work-dir",
+                str(tmp_path / "f5_i2_main_work"),
+                "--hf-home",
+                str(hf_home),
+                "--result-tar",
+                str(tmp_path / "f5_i2_main.tar.gz"),
+                "--status-file",
+                str(main_status),
+            ]
+        )
+    assert rc_main == 0, main_status.read_text(encoding="utf-8")
+    vm_rec = json.loads((main_run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    t1_sum = json.loads((main_run_dir / "time_one_summary.json").read_text(encoding="utf-8"))
+    assert len(t1_sum.get("manifest_cleanup_errors") or []) >= 1
+    assert "simulated permission denied" in t1_sum["manifest_cleanup_errors"][0]["error"]
+    assert len(vm_rec["deleted_items_receipt"].get("manifest_cleanup_errors") or []) >= 1
+    assert "simulated permission denied" in vm_rec["deleted_items_receipt"]["manifest_cleanup_errors"][0]["error"]
+
+
+def test_fix5_item3_manifest_only_counted_source_refuses_up_front_before_judge_or_colab_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix5 Item 3 & Item 5.4:
+    - A manifest-only counted source (`--counted-manifest` with no sibling `items.jsonl`) refuses up front with
+      `COUNTED_ITEMS_REQUIRED` in:
+      (a) `launch_judges.sh --dry` (before any output commands);
+      (b) `launch_judges.sh` live mode (before any `colab` call);
+      (c) `vm_judges.main` and `vm_judges.run_judges_pipeline` before any judge/transport call (asserting the mocked
+          transport / child judge runner has zero calls).
+    - Also verifies that when a sibling `items.jsonl` IS present next to `--counted-manifest`, `launch_judges.sh` stages
+      both into `repo.tar.gz` and the lock-check run succeeds.
+    """
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "f5_i3_base", counted_count=100
+    )
+    counted_manifest = counted_items_file.parent / "manifest.json"
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "f5_i3_rec")
+
+    # Prepare a manifest-only directory (counted_manifest.json with NO sibling items.jsonl)
+    mf_only_dir = tmp_path / "f5_i3_mf_only"
+    mf_only_dir.mkdir(parents=True, exist_ok=True)
+    mf_only_file = mf_only_dir / "counted_manifest.json"
+    shutil.copyfile(counted_manifest, mf_only_file)
+    assert not (mf_only_dir / "items.jsonl").exists()
+
+    # 1. Launcher (--dry and live) refuses up front with COUNTED_ITEMS_REQUIRED before any colab call
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "f5_i3_sh_env")
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "open_f5_i3.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=counted_items_file,
+    )
+    for dry_opt in ("--dry", ""):
+        proc_sh = subprocess.run(
+            [
+                "bash",
+                "-c",
+                (
+                    f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check-stub {dry_opt} "
+                    f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
+                    f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
+                    f"--counted-manifest '{_to_wsl_path(mf_only_file)}' "
+                    f"--out-dir '{_to_wsl_path(tmp_path / f'sh_mf_only_{bool(dry_opt)}')}' --run-id sh-mf-only"
+                ),
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert proc_sh.returncode == 2
+        assert "COUNTED_ITEMS_REQUIRED" in proc_sh.stderr
+        assert not env_paths["calls_log"].exists()
+
+    # 2. VM main and run_judges_pipeline refuse up front with COUNTED_ITEMS_REQUIRED before any judge/transport call
+    vm_in_dir = tmp_path / "f5_i3_vm_in"
+    vm_in_dir.mkdir(parents=True, exist_ok=True)
+    vm_anc = vm_in_dir / "anchor_items.jsonl"
+    vm_p0a = vm_in_dir / "p0a_items.jsonl"
+    vm_p0a_mf = vm_in_dir / "p0a_manifest.json"
+    shutil.copyfile(anchor_items_src, vm_anc)
+    shutil.copyfile(p0a_items_src, vm_p0a)
+    shutil.copyfile(p0a_items_src.parent / "manifest.json", vm_p0a_mf)
+
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+    monkeypatch.delenv("RDLAB_COUNTED_ITEMS_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_COUNTED_MANIFEST", raising=False)
+
+    transport_calls: list[Any] = []
+
+    def _spy_child_runner(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        transport_calls.append((args, kwargs))
+        raise AssertionError("Judge child / transport must not be called when counted source is manifest-only")
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _spy_child_runner)
+
+    vm_status = tmp_path / "f5_i3_vm_status.json"
+    rc_vm = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--lock-check-stub",
+            "--dryrun",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--anchor-items",
+            str(vm_anc),
+            "--p0a-items",
+            str(vm_p0a),
+            "--counted-manifest",
+            str(mf_only_file),
+            "--run-dir",
+            str(tmp_path / "f5_i3_vm_run"),
+            "--work-dir",
+            str(tmp_path / "f5_i3_vm_work"),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(tmp_path / "f5_i3_vm.tar.gz"),
+            "--status-file",
+            str(vm_status),
+        ]
+    )
+    assert rc_vm == 2
+    assert json.loads(vm_status.read_text(encoding="utf-8"))["failure_class"] == "COUNTED_ITEMS_REQUIRED"
+    assert transport_calls == []
+
+    # Re-create files since vm_judges.main cleans up uploaded_item_files on failure
+    shutil.copyfile(anchor_items_src, vm_anc)
+    shutil.copyfile(p0a_items_src, vm_p0a)
+    shutil.copyfile(p0a_items_src.parent / "manifest.json", vm_p0a_mf)
+    shutil.copyfile(counted_manifest, mf_only_file)
+
+    with pytest.raises(vm_judges.RefusalError) as exc_pipe_mf:
+        vm_judges.run_judges_pipeline(
+            mode="lock-check-stub",
+            part_dir=vm_anc.parent,
+            run_dir=tmp_path / "f5_i3_pipe_run",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            dryrun=True,
+            repo_root=REPO_ROOT,
+            work_dir=tmp_path / "f5_i3_vm_work",
+            anchor_items_file=vm_anc,
+            p0a_items_file=vm_p0a,
+            counted_manifest_file=mf_only_file,
+        )
+    assert exc_pipe_mf.value.failure_class == "COUNTED_ITEMS_REQUIRED"
+    assert transport_calls == []
+
+
+def test_fix5_item4_golden_anchor_manifest_file_sha256_round_trips(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix5 Item 4 & Item 5.5:
+    - `golden_anchor_manifest.json` retains its body hash field `golden_anchor_manifest_sha256`, while
+      `shard_manifest.json`, `time_one_summary.json`, and `vm_receipt.json` record the file digest under
+      `golden_anchor_manifest_file_sha256`.
+    - `run_bakeoff_judge` and `merge_shards.merge_shard_outputs` round-trip `golden_anchor_manifest_file_sha256`
+      and refuse (`SHARD_MANIFEST_GOLDEN_SHA_MISMATCH`) when the file digest does not match.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+    import merge_shards
+
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "f5_i4_base", counted_count=100
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "f5_i4_rec")
+
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+
+    vm_in = tmp_path / "f5_i4_in"
+    vm_in.mkdir(parents=True, exist_ok=True)
+    anc_in = vm_in / "anchor_items.jsonl"
+    p0a_in = vm_in / "p0a_items.jsonl"
+    p0a_mf_in = vm_in / "p0a_manifest.json"
+    cnt_mf_in = vm_in / "counted_manifest.json"
+    cnt_items_in = vm_in / "items.jsonl"
+    shutil.copyfile(anchor_items_src, anc_in)
+    shutil.copyfile(p0a_items_src, p0a_in)
+    shutil.copyfile(p0a_items_src.parent / "manifest.json", p0a_mf_in)
+    shutil.copyfile(counted_items_file.parent / "manifest.json", cnt_mf_in)
+    shutil.copyfile(counted_items_file, cnt_items_in)
+
+    lc_run_dir = tmp_path / "f5_i4_lc_run"
+    lc_status = tmp_path / "f5_i4_lc_status.json"
+    rc_lc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--lock-check-stub",
+            "--dryrun",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--anchor-items",
+            str(anc_in),
+            "--p0a-items",
+            str(p0a_in),
+            "--counted-manifest",
+            str(cnt_mf_in),
+            "--run-dir",
+            str(lc_run_dir),
+            "--work-dir",
+            str(tmp_path / "f5_i4_work"),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(tmp_path / "f5_i4_lc.tar.gz"),
+            "--status-file",
+            str(lc_status),
+        ]
+    )
+    assert rc_lc == 0, lc_status.read_text(encoding="utf-8")
+
+    gm_path = lc_run_dir / "golden_anchor_manifest.json"
+    sm_path = lc_run_dir / "shard_manifest.json"
+    gm_doc = json.loads(gm_path.read_text(encoding="utf-8"))
+    sm_doc = json.loads(sm_path.read_text(encoding="utf-8"))
+    t1_doc = json.loads((lc_run_dir / "time_one_summary.json").read_text(encoding="utf-8"))
+    rec_doc = json.loads((lc_run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+
+    actual_gm_file_sha = hashlib.sha256(gm_path.read_bytes()).hexdigest()
+    assert "golden_anchor_manifest_sha256" in gm_doc
+    assert gm_doc["golden_anchor_manifest_sha256"] != actual_gm_file_sha
+    assert "golden_anchor_manifest_sha256" not in sm_doc
+    assert sm_doc["golden_anchor_manifest_file_sha256"] == actual_gm_file_sha
+    assert t1_doc["golden_anchor_manifest_file_sha256"] == actual_gm_file_sha
+    assert rec_doc["golden_anchor_manifest_file_sha256"] == actual_gm_file_sha
+
+    # Round-trip shard_manifest.json + golden_anchor_manifest.json through run_bakeoff_judge
+    sm_file_sha = hashlib.sha256(sm_path.read_bytes()).hexdigest()
+    shard1_out = tmp_path / "f5_i4_shard1"
+    res_s1 = bakeoff_judge.run_bakeoff_judge(
+        part_dir=counted_items_file,
+        output_dir=shard1_out,
+        judge="mu-judge",
+        fake_transport=True,
+        window_mode="counted-stub",
+        shard_spec="1/2",
+        shard_manifest_path=sm_path,
+        shard_manifest_sha256=sm_file_sha,
+        golden_anchor_manifest_path=gm_path,
+        repo_root=REPO_ROOT,
+    )
+    assert res_s1["status"] == "ok"
+    assert merge_shards._load_golden_anchor_rows(gm_path, expected_sha256=sm_doc["golden_anchor_manifest_file_sha256"])[1]
+
 
 
 

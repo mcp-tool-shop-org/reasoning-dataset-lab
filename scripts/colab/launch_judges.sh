@@ -744,20 +744,27 @@ PY
       fi
     done
     if [[ -n "$COUNTED_MANIFEST_FILE" ]]; then
-      "$PYTHON_BIN" - "$REPO_ROOT" "$COUNTED_MANIFEST_FILE" <<'PY'
+      "$PYTHON_BIN" - "$REPO_ROOT" "$COUNTED_MANIFEST_FILE" "$SESSION_SMOKE_FLAG" <<'PY'
 import sys
 from pathlib import Path
 
 repo_root = Path(sys.argv[1])
 mf_file = Path(sys.argv[2])
+is_smoke = sys.argv[3] == "1"
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
+from reasoning_dataset_lab.pilot_b import bakeoff_judge
 
 try:
     vm_judges.check_upload_path_allowed(mf_file)
+    if not is_smoke or mf_file.is_file():
+        bakeoff_judge._resolve_items_from_manifest_source(mf_file)
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+except bakeoff_judge.RdlabError as exc:
+    sys.stderr.write(f"[{exc.code}] {exc.message}\n")
     raise SystemExit(2)
 PY
     fi
@@ -1696,11 +1703,14 @@ sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 from reasoning_dataset_lab.pilot_b import bakeoff_judge
 
 try:
+    eff_counted_src = counted_mf if counted_mf is not None else counted_f
     bakeoff_judge.verify_lock_check_two_inputs(
         anchor_items_or_path=anchor_f,
         p0a_items_or_path=p0a_f,
-        counted_items_or_manifest=(counted_mf if counted_mf is not None else counted_f),
+        counted_items_or_manifest=eff_counted_src,
     )
+    if eff_counted_src is not None:
+        bakeoff_judge._resolve_items_from_manifest_source(eff_counted_src)
 except bakeoff_judge.RdlabError as exc:
     sys.stderr.write(f"[{exc.code}] {exc.message}\n")
     raise SystemExit(2)
@@ -1896,6 +1906,11 @@ with tarfile.open(repo_tar, "w:gz") as tf:
             raise SystemExit(f"COUNTED_MANIFEST_MISSING: file does not exist: {cm_path}")
         vm_judges.check_upload_path_allowed(cm_path)
         tf.add(cm_path, arcname="counted_manifest.json", recursive=False)
+        sib_items = cm_path.parent / "items.jsonl"
+        if sib_items.is_file():
+            vm_judges.check_upload_path_allowed(sib_items)
+            vm_judges.verify_items_allowlist(sib_items)
+            tf.add(sib_items, arcname="items.jsonl", recursive=False)
     raw_bg_goldens = (_os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
     if raw_bg_goldens and not raw_bg_goldens.startswith("/content/"):
         bg_path = Path(raw_bg_goldens)

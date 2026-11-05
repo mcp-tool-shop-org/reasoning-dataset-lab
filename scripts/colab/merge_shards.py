@@ -1113,10 +1113,15 @@ def merge_shards(
                     eff_golden_path = sdir / "golden_anchor_manifest.json"
                     break
 
+    raw_manifest_golden_sha = (
+        manifest_doc.get("golden_anchor_manifest_file_sha256")
+        if manifest_doc.get("golden_anchor_manifest_file_sha256") is not None
+        else manifest_doc.get("golden_anchor_manifest_sha256")
+    )
     manifest_golden_sha = (
-        str(manifest_doc.get("golden_anchor_manifest_sha256")).strip().lower()
-        if isinstance(manifest_doc.get("golden_anchor_manifest_sha256"), str)
-        and str(manifest_doc.get("golden_anchor_manifest_sha256")).strip()
+        str(raw_manifest_golden_sha).strip().lower()
+        if isinstance(raw_manifest_golden_sha, str)
+        and str(raw_manifest_golden_sha).strip()
         else None
     )
     golden_anchor_rows: dict[tuple[str, str, str], dict[str, Any]] | None = None
