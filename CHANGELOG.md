@@ -8,7 +8,7 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## [0.5.0] - 2026-11-05
 
-**The judge bake-off: build a sealed test part, run five local judges on it, score them without anyone seeing the keys first, and run the judges on Colab.** Tests: 1,164.
+**The judge bake-off: build a sealed test part, run five local judges on it, score them without anyone seeing the keys first, and run the judges on Colab.** Tests: 1,162 passing, 2 skipped.
 
 ### Added
 
@@ -23,7 +23,7 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ### Experimental
 
-- **Sharded counted windows** (`--shard k/n`, `--shard-manifest`, `--loop subblock|judge_outer`, `--subblock-items`, and `scripts/colab/merge_shards.py`). The merge refuses on any real-mode guard failure, a determinism mismatch, a missing or changed golden anchor, a missing ECC key, or verdict flips above the anchor budget, and it reports output-token drift as a warning. **No counted sharded run has completed yet**, and the mode that records the golden anchors is not in this release, so a counted run refuses at boot until it is.
+- **Sharded counted windows** (`--shard k/n`, `--shard-manifest`, `--loop subblock|judge_outer`, `--subblock-items`, and `scripts/colab/merge_shards.py`). The merge refuses on any real-mode guard failure (including test hooks or overrides set in the environment), a determinism mismatch, a missing or changed golden anchor, missing ECC fields or any uncorrected ECC error, or verdict flips above the anchor budget, and it reports output-token drift as a warning. **No counted sharded run has completed yet.** The lock-check window that records the golden anchors is still in review and not in this release, so a counted run refuses at boot until it lands.
 
 ### Changed
 

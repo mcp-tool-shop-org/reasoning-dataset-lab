@@ -103,8 +103,8 @@ Report a vulnerability privately; see [SECURITY.md](SECURITY.md).
 
 ## Status
 
-Version 0.5.0. It is alpha: interfaces and data shapes can change without notice. 1,164 tests; CI holds coverage at 90%
-or more.
+Version 0.5.0. It is alpha: interfaces and data shapes can change without notice. 1,162 tests pass (2 skipped); CI holds
+coverage at 90% or more.
 
 ## License
 
