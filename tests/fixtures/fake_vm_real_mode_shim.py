@@ -16,7 +16,11 @@ body, deletion of uploaded items, receipts, the result tar) runs in the real mod
 the repo checkout, except the fake VM root, the fake CLI's state dir and the interpreter's prefix. `os.stat`-level
 checks and child processes are not guarded.
 
-The gatekeeper step keeps one contract of the real one: it refuses `BOOT_GATEKEEPER_SUBPROCESS_FAILED` (with the
+The gatekeeper step is the real `run_boot_gatekeeper` with dryrun (synthetic) hashes, so the goldens rule per mode is
+the real one: a time-one window records the hashes and writes `boot_gatekeeper_goldens.filled.json` ("recorded, not
+compared"); a counted window refuses `BOOT_GATEKEEPER_GOLDEN_MISSING` when the card's goldens are absent (VM `main`
+refuses that before venv sync) and `BOOT_GATEKEEPER_GOLDEN_MISMATCH` when they differ. Each outcome is recorded as a
+`boot_gatekeeper_outcome` row. The gatekeeper step also keeps one contract of the real one: it refuses `BOOT_GATEKEEPER_SUBPROCESS_FAILED` (with the
 `BAKEOFF_JUDGE_SNAPSHOT_NOT_FOUND` exception line the real subprocess raises) when the gatekeeper's judge (the goldens'
 `judge_id`) was not among the judges the weight step downloaded and verified. The weight step's row records the
 `only_judge_ids` it was given.
@@ -136,6 +140,28 @@ def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
                 kwargs["device"] = "cpu"
             if name == "run_boot_gatekeeper":
                 _require_gatekeeper_judge_verified(ns, kwargs, verified_judges, state_dir)
+                # The goldens rule per mode is the real function's (record in time-one, refuse "no golden" or a
+                # mismatch in counted); only the hashes are the dryrun's synthetic ones.
+                try:
+                    result = orig(*args, **kwargs)
+                except Exception as exc:
+                    _record(
+                        state_dir,
+                        {"call": "boot_gatekeeper_outcome", "failure_class": getattr(exc, "failure_class", None)},
+                    )
+                    raise
+                rep = result if isinstance(result, dict) else {}
+                _record(
+                    state_dir,
+                    {
+                        "call": "boot_gatekeeper_outcome",
+                        "status": rep.get("status"),
+                        "record_mode": rep.get("record_mode"),
+                        "gatekeeper": rep.get("gatekeeper"),
+                        "card_type": rep.get("card_type"),
+                    },
+                )
+                return result
             result = orig(*args, **kwargs)
             if name == "sync_judge_venvs":
                 work_dir = Path(args[0])

@@ -563,11 +563,14 @@ try:
             until=until_step,
             goldens_path=Path(raw_goldens) if raw_goldens else None,
             receipts_dir=Path(receipts_arg) if receipts_arg else None,
+            # The VM is not given RDLAB_CARD_TYPE, so its gatekeeper uses the default card type; check that one.
+            card_type=vm_judges.DEFAULT_BOOT_GATEKEEPER_CARD_TYPE,
         )
     if gk_plan is not None:
         print(
             f"[judges] timed={','.join(gk_plan['timed_judge_ids'])} boot_gatekeeper={gk_plan['judge_id']} "
-            f"download_verify={','.join(gk_plan['download_verify_judge_ids'])}"
+            f"download_verify={','.join(gk_plan['download_verify_judge_ids'])} "
+            f"gatekeeper=\"{gk_plan['gatekeeper']}\" card_type={gk_plan['card_type']}"
         )
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")

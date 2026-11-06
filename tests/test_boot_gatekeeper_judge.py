@@ -104,8 +104,10 @@ def _time_one_main_env(
     receipts_dir: Path,
     calls: list[dict[str, Any]],
     verify_ids: tuple[str, ...] | None = None,
+    mode: str = "time-one",
 ) -> list[str]:
-    """In-process VM `main` in real `time-one` mode with `--only-judges mu-judge`: every step before the weight step is
+    """In-process VM `main` in a real mode (`time-one` with `--only-judges mu-judge` by default; `counted` runs all five):
+    every step before the weight step is
     stubbed (it has its own tests); the plan, the weight step's arguments, the real boot gatekeeper (its subprocess is
     `work/venv-judge/bin/python`, written by the caller) and the refusal handler are the real code."""
     content_dir = tmp_path / "content"
@@ -171,9 +173,8 @@ def _time_one_main_env(
         "--step",
         "run",
         "--mode",
-        "time-one",
-        "--only-judges",
-        "mu-judge",
+        mode,
+        *(["--only-judges", "mu-judge"] if mode == "time-one" else []),
         "--repo-dir",
         str(REPO_ROOT),
         "--items-file",
@@ -243,6 +244,8 @@ def test_main_gatekeeper_subprocess_failure_reaches_status_receipt_and_vm_log(
         "added_for_gatekeeper": True,
         "timed_judge_ids": ["mu-judge"],
         "download_verify_judge_ids": ["mu-judge", GK],
+        "gatekeeper": "recorded, not compared",
+        "card_type": "A100",
         "verified": True,
     }
 
@@ -257,23 +260,20 @@ def test_main_gatekeeper_subprocess_failure_reaches_status_receipt_and_vm_log(
     assert vm_log.index("VM_BOOT_GATEKEEPER_JUDGE") < vm_log.index("VM_BOOT_GATEKEEPER_START")
 
 
-def test_main_gatekeeper_ok_logs_start_and_outcome_and_tags_its_download(
+def test_main_time_one_records_the_gatekeeper_with_unfilled_goldens(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The gatekeeper subprocess succeeds and matches the (filled, test) A100 goldens: vm.log has its start and
-    `status=ok` outcome, and the refusal that follows (the test stops the run at the judge pipeline) still records
-    the plan. (With the repo's unfilled goldens a real time-one refuses BOOT_GATEKEEPER_GOLDEN_MISSING here.)"""
+    """A real time-one `main` with the repo's UNFILLED goldens: the gatekeeper runs in record mode (its subprocess
+    answers), writes `boot_gatekeeper_goldens.filled.json` in the run dir in the lock-check format, compares nothing,
+    refuses nothing for the missing goldens, and the receipt and status say `gatekeeper: recorded, not compared` with
+    the card type and the recorded hashes. The repo's goldens file is not written.
+    Fails at ffa9f61f: a real time-one refused BOOT_GATEKEEPER_GOLDEN_MISSING after the gatekeeper ran."""
+    repo_goldens = SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json"
+    goldens_before = repo_goldens.read_bytes()
     receipts_dir, _ = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
     calls: list[dict[str, Any]] = []
     argv = _time_one_main_env(tmp_path, monkeypatch, receipts_dir=receipts_dir, calls=calls)
-    hashes = {sp["prompt_id"]: "a" * 64 for sp in vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS}
-    goldens_doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
-    goldens_doc["card_types"]["A100"]["prompts"] = {
-        pid: {"output_token_ids_sha256": h} for pid, h in hashes.items()
-    }
-    goldens = tmp_path / "goldens_filled.json"
-    goldens.write_text(json.dumps(goldens_doc), encoding="utf-8")
-    argv += ["--boot-gatekeeper-goldens", str(goldens)]
+    hashes = {sp["prompt_id"]: f"{i + 1}" * 64 for i, sp in enumerate(vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS)}
     _write_noisy_python(
         tmp_path / "work" / "venv-judge" / "bin" / "python",
         lines=3,
@@ -282,11 +282,59 @@ def test_main_gatekeeper_ok_logs_start_and_outcome_and_tags_its_download(
     )
     assert vm_judges.main(argv) == 2
     status, receipt, vm_log = _read_run(tmp_path)
-    assert status["failure_class"] == "TEST_STOP_AFTER_GATEKEEPER"
-    assert f'VM_BOOT_GATEKEEPER_END status="ok" judge_id={GK} hash_source=real_transport card_type=A100' in vm_log
-    assert receipt["boot_gatekeeper"]["judge_id"] == GK
+    assert status["failure_class"] == "TEST_STOP_AFTER_GATEKEEPER"  # the test stops the run at the judge pipeline
+    for doc in (status, receipt):
+        assert doc["gatekeeper"] == "recorded, not compared"
+        assert doc["gatekeeper_card_type"] == "A100"
+        assert doc["gatekeeper_recorded_output_token_ids_sha256"] == hashes
+    rep = receipt["boot_gatekeeper"]
+    assert rep["record_mode"] is True and rep["gatekeeper"] == "recorded, not compared"
+    assert rep["hash_source"] == "real_transport" and rep["status"] == "ok"
+    filled = json.loads((tmp_path / "run" / "boot_gatekeeper_goldens.filled.json").read_text(encoding="utf-8"))
+    assert filled["judge_id"] == GK and filled["provenance"]["mode"] == "time-one"
+    assert filled["card_types"]["A100"]["status"] == "filled"
+    assert filled["card_types"]["A100"]["prompts"] == {k: {"output_token_ids_sha256": v} for k, v in hashes.items()}
+    assert "filled_goldens_body_sha256" in filled
+    assert 'VM_BOOT_GATEKEEPER_END status="ok"' in vm_log and 'gatekeeper="recorded, not compared"' in vm_log
     assert receipt["boot_gatekeeper_judge"]["verified"] is True
     assert "failure_output_tail" not in receipt
+    assert repo_goldens.read_bytes() == goldens_before
+
+
+def test_main_counted_without_goldens_refuses_before_venv_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real counted `main` with the repo's unfilled goldens refuses `BOOT_GATEKEEPER_GOLDEN_MISSING` at
+    `preflight_boot_gatekeeper_judge`, after unpack and before venv sync, the device/GPU gate, the weight download and
+    the gatekeeper. With the card's goldens filled it passes that step and runs on to the weight step.
+    Fails at ffa9f61f: the refusal came only from the gatekeeper, after venv sync, the gates and the weight download."""
+    receipts_dir, _ = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    calls: list[dict[str, Any]] = []
+    argv = _time_one_main_env(tmp_path, monkeypatch, receipts_dir=receipts_dir, calls=calls, mode="counted")
+    items_path = Path(argv[argv.index("--items-file") + 1])
+    items_bytes = items_path.read_bytes()  # the run deletes the uploaded items; the second run needs them again
+    assert vm_judges.main(argv) == 2
+    status, receipt, _ = _read_run(tmp_path)
+    assert status["failure_class"] == "BOOT_GATEKEEPER_GOLDEN_MISSING", status
+    assert status["step"] == "preflight_boot_gatekeeper_judge"
+    assert "card_type='A100'" in status["reason"]
+    names = [c["call"] for c in calls]
+    for later in ("sync_judge_venvs", "run_device_check", "run_gpu_gate", "download_and_verify_all_judge_weights"):
+        assert later not in names, names
+    assert "gatekeeper" not in receipt
+
+    # Filled goldens for the card: the preflight passes and the run reaches the weight step.
+    goldens_doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    goldens_doc["card_types"]["A100"]["prompts"] = {
+        sp["prompt_id"]: {"output_token_ids_sha256": "a" * 64} for sp in vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS
+    }
+    goldens = tmp_path / "goldens_filled.json"
+    goldens.write_text(json.dumps(goldens_doc), encoding="utf-8")
+    calls.clear()
+    items_path.write_bytes(items_bytes)
+    assert vm_judges.main(argv + ["--boot-gatekeeper-goldens", str(goldens)]) == 2
+    names2 = [c["call"] for c in calls]
+    assert "sync_judge_venvs" in names2 and "download_and_verify_all_judge_weights" in names2, names2
 
 
 def test_main_refuses_when_the_weight_step_did_not_verify_the_gatekeeper_judge(
@@ -366,9 +414,37 @@ def test_plan_boot_gatekeeper_judge_per_mode(tmp_path: Path, monkeypatch: pytest
     assert p is not None and p["download_verify_judge_ids"] == ["mu-judge", GK] and p["added_for_gatekeeper"]
     p2 = vm_judges.plan_boot_gatekeeper_judge(mode="time-one", judge_order=(GK, "mu-judge"), repo_root=REPO_ROOT)
     assert p2 is not None and p2["download_verify_judge_ids"] == [GK, "mu-judge"] and p2["timed"]
+    assert p["gatekeeper"] == "recorded, not compared" and p["card_type"] == "A100"
+    filled_doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    filled_doc["card_types"]["A100"]["prompts"] = {
+        sp["prompt_id"]: {"output_token_ids_sha256": "b" * 64} for sp in vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS
+    }
+    filled_goldens = tmp_path / "goldens_filled_a100.json"
+    filled_goldens.write_text(json.dumps(filled_doc), encoding="utf-8")
     for mode in ("counted", "lock-check"):
-        pm = vm_judges.plan_boot_gatekeeper_judge(mode=mode, judge_order=five, repo_root=REPO_ROOT)
+        pm = vm_judges.plan_boot_gatekeeper_judge(
+            mode=mode, judge_order=five, repo_root=REPO_ROOT, goldens_path=filled_goldens
+        )
         assert pm is not None and pm["download_verify_judge_ids"] == list(five) and not pm["added_for_gatekeeper"]
+    assert pm["gatekeeper"] == "recorded, not compared"
+    pc = vm_judges.plan_boot_gatekeeper_judge(
+        mode="counted", judge_order=five, repo_root=REPO_ROOT, goldens_path=filled_goldens
+    )
+    assert pc is not None and pc["gatekeeper"] == "compared with goldens" and pc["card_type"] == "A100"
+    # Counted: the repo's unfilled goldens, or a card with no entry, refuse before any paid step.
+    for gp, card in ((None, None), (filled_goldens, "L4"), (filled_goldens, "H100")):
+        with pytest.raises(vm_judges.RefusalError) as e_gold:
+            vm_judges.plan_boot_gatekeeper_judge(
+                mode="counted", judge_order=five, repo_root=REPO_ROOT, goldens_path=gp, card_type=card
+            )
+        assert e_gold.value.failure_class == "BOOT_GATEKEEPER_GOLDEN_MISSING"
+    assert vm_judges.preflight_boot_gatekeeper_goldens(mode="counted", repo_root=REPO_ROOT, dryrun=True) is None
+    assert vm_judges.preflight_boot_gatekeeper_goldens(mode="time-one", repo_root=REPO_ROOT) is None
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "L4")
+    assert vm_judges.resolve_boot_gatekeeper_card_type() == "L4"
+    monkeypatch.delenv("RDLAB_CARD_TYPE")
+    assert vm_judges.resolve_boot_gatekeeper_card_type() == "A100"
+    assert vm_judges.boot_gatekeeper_record_mode("time-one") and not vm_judges.boot_gatekeeper_record_mode("counted")
     for kwargs in (
         {"mode": "stub"},
         {"mode": "counted-stub"},
@@ -531,7 +607,10 @@ def test_launcher_dry_lists_the_gatekeeper_judge_and_refuses_before_colab(tmp_pa
         tmp_path, "ok", receipts_dir=receipts_dir, hf_home=hf_home, extra_exports="export RDLAB_ONLY_JUDGES=mu-judge; "
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert f"[judges] timed=mu-judge boot_gatekeeper={GK} download_verify=mu-judge,{GK}" in proc.stdout
+    assert (
+        f'[judges] timed=mu-judge boot_gatekeeper={GK} download_verify=mu-judge,{GK} '
+        'gatekeeper="recorded, not compared" card_type=A100'
+    ) in proc.stdout
     run_lines = [ln for ln in proc.stdout.splitlines() if "RDLAB_STEP=run" in ln]
     assert len(run_lines) == 1 and "--env RDLAB_ONLY_JUDGES=mu-judge " in run_lines[0]
     assert GK not in run_lines[0]
@@ -766,3 +845,63 @@ def test_local_boot_gatekeeper_cli_refuses_cpu_as_a_script(tmp_path: Path) -> No
     )
     assert proc.returncode == 2, proc.stdout + proc.stderr
     assert local_boot_gatekeeper.LOCAL_GATEKEEPER_CPU_REFUSED in proc.stderr
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The goldens rule per mode (Publisher decision, 2026-11-06): time-one records, counted compares or refuses
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def test_e2e_fake_real_mode_time_one_records_gatekeeper_with_unfilled_goldens(tmp_path: Path) -> None:
+    """The free e2e gate, real `--time-one` with the repo's unfilled goldens (the launcher uploads them in the repo
+    bundle): the window passes, the shim's gatekeeper (the real function, dryrun hashes) ran in record mode, the run's
+    `boot_gatekeeper_goldens.filled.json` came back, and the receipt and `time_one_summary` say
+    `gatekeeper: recorded, not compared` with the card type and the recorded hashes.
+    Fails at ffa9f61f: time-one compared against the goldens; no filled file and no recorded-not-compared field."""
+    receipts_dir, hf_home, part, items = tcl._e2e_time_one_inputs(tmp_path)
+    res = tcl._e2e_fake_real_mode_window(
+        tmp_path, mode="time-one", items_file=items, part_dir=part, receipts_dir=receipts_dir, hf_home=hf_home
+    )
+    outcomes = [r for r in res["shim_rows"] if r["call"] == "boot_gatekeeper_outcome"]
+    assert outcomes == [
+        {**outcomes[0], "status": "ok", "record_mode": True, "gatekeeper": "recorded, not compared", "card_type": "A100"}
+    ], outcomes
+    receipt = res["receipt"]
+    assert receipt["gatekeeper"] == "recorded, not compared" and receipt["gatekeeper_card_type"] == "A100"
+    recorded = receipt["gatekeeper_recorded_output_token_ids_sha256"]
+    assert sorted(recorded) == sorted(sp["prompt_id"] for sp in vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS)
+    assert receipt["time_one_summary"]["gatekeeper"] == "recorded, not compared"
+    assert receipt["time_one_summary"]["gatekeeper_recorded_output_token_ids_sha256"] == recorded
+    status = json.loads((res["out_dir"] / "status.json").read_text(encoding="utf-8"))
+    assert status["gatekeeper"] == "recorded, not compared"
+    filled = json.loads((res["out_dir"] / "boot_gatekeeper_goldens.filled.json").read_text(encoding="utf-8"))
+    assert filled["provenance"]["mode"] == "time-one"
+    assert {k: v["output_token_ids_sha256"] for k, v in filled["card_types"]["A100"]["prompts"].items()} == recorded
+
+
+def test_launcher_counted_without_goldens_refuses_before_the_session_opens(tmp_path: Path) -> None:
+    """Real `--counted` with the repo's unfilled goldens is refused `BOOT_GATEKEEPER_GOLDEN_MISSING` by the launcher
+    before any colab call (no CLI call log), `--dry` and live. (The VM refuses the same window before venv sync:
+    `test_main_counted_without_goldens_refuses_before_venv_sync`.)
+    Fails at ffa9f61f: the launcher opened the session; the refusal came from the gatekeeper on the paid VM."""
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = tcl._make_builder_part(tmp_path / "c_build")
+    items = tcl._project_part_items(part, tmp_path / "c_inputs" / "counted-projected.jsonl")
+    for dry in (True, False):
+        env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"c_env{int(dry)}", uv_python_315_found=True)
+        exports = tcl._pm_real_mode_exports(
+            env_paths,
+            open_lock=tmp_path / f"c{int(dry)}.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items,
+            part_dir=part,
+        )
+        proc = tcl._pm_run_launcher(
+            exports,
+            f"--counted {'--dry ' if dry else ''}--out-dir '{tcl._to_wsl_path(tmp_path / f'c_out{int(dry)}')}' "
+            f"--run-id c{int(dry)}",
+        )
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        assert "BOOT_GATEKEEPER_GOLDEN_MISSING" in proc.stderr and "card_type='A100'" in proc.stderr
+        assert "colab new" not in proc.stdout and not env_paths["calls_log"].exists()

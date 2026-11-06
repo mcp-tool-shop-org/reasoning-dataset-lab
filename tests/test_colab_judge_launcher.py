@@ -18625,13 +18625,13 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
         assert exc_a3.value.code == 2
 
     # A4: Boot gatekeeper
-    # 1. Golden-missing refusal uses is_real_mode (time-one included)
+    # 1. Golden-missing refusal in a real counted window (time-one records instead of comparing since 2026-11-06)
     goldens_unfilled = REPO_ROOT / "scripts" / "colab" / "boot_gatekeeper_goldens.json"
     with pytest.raises(vm_judges.RefusalError) as exc_gk_t1_miss:
         vm_judges.run_boot_gatekeeper(
             run_dir=tmp_path / "gk_t1_missing",
             repo_root=REPO_ROOT,
-            mode="time-one",
+            mode="counted",
             card_type="A100",
             goldens_path=goldens_unfilled,
             dryrun=False,
@@ -24838,6 +24838,13 @@ def test_part_binding_launcher_binds_items_to_the_real_part_files_before_any_col
     rows = _part_rows(part)
     assert len(rows) == 12
     inputs = tmp_path / "pb1_inputs"
+    # A counted window without the card's goldens is refused before the session opens; give it filled (test) goldens.
+    pb1_goldens_doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    pb1_goldens_doc["card_types"]["A100"]["prompts"] = {
+        sp["prompt_id"]: {"output_token_ids_sha256": "c" * 64} for sp in pb1_goldens_doc["synthetic_prompts"]
+    }
+    pb1_goldens = tmp_path / "pb1_goldens_filled.json"
+    pb1_goldens.write_text(json.dumps(pb1_goldens_doc), encoding="utf-8")
 
     def _run(tag: str, mode: str, items: Path, part_dir: Path | None, *, live: bool) -> tuple[Any, dict[str, Path]]:
         env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"pb1_env_{tag}_{int(live)}")
@@ -24848,7 +24855,7 @@ def test_part_binding_launcher_binds_items_to_the_real_part_files_before_any_col
             hf_home=hf_home,
             items_file=items,
             part_dir=part_dir,
-        )
+        ) + f"export RDLAB_BOOT_GATEKEEPER_GOLDENS='{_to_wsl_path(pb1_goldens)}'; "
         out_dir = tmp_path / f"pb1_out_{tag}_{int(live)}"
         proc = _pm_run_launcher(
             exports, f"--{mode} {'' if live else '--dry '}--out-dir '{_to_wsl_path(out_dir)}' --run-id pb1-{tag}"

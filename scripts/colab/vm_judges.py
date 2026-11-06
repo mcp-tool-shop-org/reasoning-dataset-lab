@@ -10388,8 +10388,12 @@ def plan_boot_gatekeeper_judge(
     until: str | None = None,
     goldens_path: Path | None = None,
     receipts_dir: Path | None = None,
+    card_type: str | None = None,
 ) -> dict[str, Any] | None:
     """The boot gatekeeper's judge and the download/verify set for a run, or None when no real gatekeeper runs.
+
+    A real counted window whose card has no goldens is refused here (`preflight_boot_gatekeeper_goldens`); a time-one
+    window records the gatekeeper's hashes instead of comparing them (`"gatekeeper": "recorded, not compared"`).
 
     The gatekeeper judge is always downloaded and verified (once, appended when the timed judges do not include it);
     it is not a timed judge: `judge_order` / `RDLAB_ONLY_JUDGES` and the timing outputs stay as requested.
@@ -10397,6 +10401,9 @@ def plan_boot_gatekeeper_judge(
     if not runs_real_boot_gatekeeper(mode, dryrun=dryrun, until=until):
         return None
     gk_id = resolve_boot_gatekeeper_judge_id(repo_root, goldens_path)
+    goldens_check = preflight_boot_gatekeeper_goldens(
+        mode=mode, repo_root=repo_root, dryrun=dryrun, until=until, goldens_path=goldens_path, card_type=card_type
+    )
     timed = [str(j) for j in judge_order]
     download_ids = timed + ([gk_id] if gk_id not in timed else [])
     preflight_boot_gatekeeper_judge(gk_id, download_ids, receipts_dir=receipts_dir)
@@ -10407,6 +10414,10 @@ def plan_boot_gatekeeper_judge(
         "added_for_gatekeeper": gk_id not in timed,
         "timed_judge_ids": timed,
         "download_verify_judge_ids": download_ids,
+        "gatekeeper": (
+            BOOT_GATEKEEPER_RECORDED_NOT_COMPARED if boot_gatekeeper_record_mode(mode) else "compared with goldens"
+        ),
+        "card_type": goldens_check["card_type"] if goldens_check else resolve_boot_gatekeeper_card_type(card_type),
     }
 
 
@@ -10443,6 +10454,70 @@ _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
     "    out_hashes[pid] = sha\n"
     "print(json.dumps({'status': 'ok', 'hashes': out_hashes}, sort_keys=True))\n"
 )
+
+
+BOOT_GATEKEEPER_RECORDED_NOT_COMPARED = "recorded, not compared"
+# The launcher never forwards RDLAB_CARD_TYPE to the VM, so the gatekeeper's card type there is this default.
+DEFAULT_BOOT_GATEKEEPER_CARD_TYPE = "A100"
+
+
+def boot_gatekeeper_record_mode(mode: str | None) -> bool:
+    """True when the boot gatekeeper records its hashes instead of comparing them: `time-one` (real or dryrun) and
+    `lock-check` / `lock-check-stub`. A time-one window writes `boot_gatekeeper_goldens.filled.json` and reports
+    `gatekeeper: recorded, not compared`; it never refuses for missing goldens."""
+    return str(mode or "").strip().lower() in (
+        "time-one",
+        "time_one",
+        "lock-check",
+        "lock_check",
+        "lock-check-stub",
+        "lock_check_stub",
+    )
+
+
+def resolve_boot_gatekeeper_card_type(card_type: str | None = None) -> str:
+    """The gatekeeper's card type: `card_type`, else `RDLAB_CARD_TYPE`, else `DEFAULT_BOOT_GATEKEEPER_CARD_TYPE`."""
+    if card_type is not None and str(card_type).strip():
+        return str(card_type).strip()
+    return os.environ.get("RDLAB_CARD_TYPE", "").strip() or DEFAULT_BOOT_GATEKEEPER_CARD_TYPE
+
+
+def preflight_boot_gatekeeper_goldens(
+    *,
+    mode: str | None,
+    repo_root: Path,
+    dryrun: bool = False,
+    until: str | None = None,
+    goldens_path: Path | None = None,
+    card_type: str | None = None,
+) -> dict[str, Any] | None:
+    """Refuse a real counted window whose card has no goldens before any paid step (`BOOT_GATEKEEPER_GOLDEN_MISSING`).
+
+    The gatekeeper itself would refuse the same window only after venv sync, the device/GPU gate, the weight download
+    and the judge load. The goldens file travels in the repo bundle and the card type is fixed before the session opens,
+    so the check runs in the launcher before the session opens and in VM `main` before venv sync. Other modes: None.
+    """
+    norm_mode = str(mode or "").strip().lower()
+    if norm_mode != "counted" or not runs_real_boot_gatekeeper(norm_mode, dryrun=dryrun, until=until):
+        return None
+    eff_path = resolve_boot_gatekeeper_goldens_path(repo_root, goldens_path)
+    resolve_boot_gatekeeper_judge_id(repo_root, eff_path)  # refuses a missing or malformed goldens file
+    doc = json.loads(eff_path.read_text(encoding="utf-8"))
+    eff_card = resolve_boot_gatekeeper_card_type(card_type)
+    card_types_map = doc.get("card_types")
+    card_entry = card_types_map.get(eff_card) if isinstance(card_types_map, Mapping) else None
+    missing = [
+        str(sp["prompt_id"])
+        for sp in boot_gatekeeper_prompts(doc)
+        if not boot_gatekeeper_expected_sha(card_entry, str(sp["prompt_id"]))
+    ]
+    if card_entry is None or missing:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_GOLDEN_MISSING",
+            f"no golden: Boot gatekeeper golden hashes are missing/unfilled for card_type={eff_card!r} "
+            f"(missing={missing}); counted mode refuses before any paid step until lock-check fills them.",
+        )
+    return {"card_type": eff_card, "goldens_complete": True}
 
 
 def run_boot_gatekeeper_subprocess(
@@ -10761,16 +10836,22 @@ def run_boot_gatekeeper(
     session_env_report: Mapping[str, Any] | None = None,
     window_id: str | None = None,
 ) -> dict[str, Any]:
-    """Run the 2-prompt synthetic boot gatekeeper on the smallest judge (`nemotron-3-nano-4b`) before a shard runs.
+    """Run the 2-prompt synthetic boot gatekeeper on the goldens' judge (`nemotron-3-nano-4b`) before a shard runs.
 
-    - In `time-one` and `counted` mode (when `not dryrun`), loads the smallest judge through the real transport
-      and runs the 2 fixed synthetic prompts built in code with no item text, comparing real `output_token_ids_sha256`
-      with the golden for `card_type`.
-    - In `lock-check` / `lock-check-stub`, runs in record mode and writes `boot_gatekeeper_goldens.filled.json` in `run_dir`
-      without modifying `scripts/colab/boot_gatekeeper_goldens.json`.
-    - In `stub` and `dryrun`, uses `_compute_synthetic_gatekeeper_output_sha256` and labels the report with
-      `"hash_source": "synthetic_fake_stub_dryrun"` and `"synthetic_fake_hash": True`.
-    - Until the lock-check window fills the goldens, `counted` and `counted-stub` modes refuse with `"no golden"` (`BOOT_GATEKEEPER_GOLDEN_MISSING`).
+    The mode decides what is done with the hashes (`boot_gatekeeper_record_mode`):
+    - `time-one`: RECORD mode. In a real window it loads the judge through the real transport on the card and runs
+      the 2 fixed synthetic prompts (no item text); it writes `boot_gatekeeper_goldens.filled.json` in `run_dir` (the
+      lock-check format), compares nothing and refuses nothing for missing goldens. The report says
+      `"gatekeeper": "recorded, not compared"` with the card type and the recorded hashes.
+    - `lock-check` / `lock-check-stub`: RECORD mode, as before (writes `boot_gatekeeper_goldens.filled.json`).
+    - `counted` (real): loads the judge through the real transport and compares each `output_token_ids_sha256` with
+      the golden for `card_type`; refuses `BOOT_GATEKEEPER_GOLDEN_MISMATCH` on a mismatch and
+      `BOOT_GATEKEEPER_GOLDEN_MISSING` (`"no golden"`) when the card's goldens are unfilled. The launcher and VM `main`
+      refuse the missing case earlier, before the session opens / venv sync (`preflight_boot_gatekeeper_goldens`).
+    - `counted-stub`: compares like `counted` and refuses `"no golden"` the same way.
+    - `stub` and dryrun: hashes come from `_compute_synthetic_gatekeeper_output_sha256` (labelled
+      `"hash_source": "synthetic_fake_stub_dryrun"`, `"synthetic_fake_hash": True`); a dryrun time-one still records.
+    No window ever writes `scripts/colab/boot_gatekeeper_goldens.json`; promotion is `scripts/colab/promote_goldens.py`.
     """
     ensure_not_drive_path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -10786,6 +10867,8 @@ def run_boot_gatekeeper(
         "counted-stub",
         "counted_stub",
     )
+    is_time_one_record = boot_gatekeeper_record_mode(mode) and not is_lock_check_mode
+    is_record_mode = is_lock_check_mode or is_time_one_record
     eff_goldens_path = (
         Path(goldens_path)
         if goldens_path is not None
@@ -10795,11 +10878,7 @@ def run_boot_gatekeeper(
             else (repo_root / "scripts" / "colab" / "boot_gatekeeper_goldens.json")
         )
     )
-    eff_card_type = (
-        str(card_type).strip()
-        if card_type is not None and str(card_type).strip()
-        else (os.environ.get("RDLAB_CARD_TYPE", "").strip() or "A100")
-    )
+    eff_card_type = resolve_boot_gatekeeper_card_type(card_type)
 
     if not eff_goldens_path.is_file():
         raise RefusalError(
@@ -10869,7 +10948,7 @@ def run_boot_gatekeeper(
                 f"Real mode ({mode!r}) refuses stub/fake transport {type(transport).__name__} in boot gatekeeper.",
             )
         prom_prov = goldens_doc.get("promoted_provenance")
-        if not is_lock_check_mode and (
+        if not is_record_mode and (
             (isinstance(prom_prov, Mapping) and bool(prom_prov.get("stub_transport")))
             or (isinstance(card_entry, Mapping) and bool(card_entry.get("synthetic_fake_hash")))
         ):
@@ -10902,7 +10981,7 @@ def run_boot_gatekeeper(
                 ),
             )
     elif (
-        not is_lock_check_mode
+        not is_record_mode
         and not has_all_goldens
         and transport is None
         and work_dir is None
@@ -10948,7 +11027,7 @@ def run_boot_gatekeeper(
             actual_by_prompt = dict(real_hashes)
 
     gatekeeper_out_path = run_dir / BOOT_GATEKEEPER_FILENAME
-    if is_lock_check_mode:
+    if is_record_mode:
         eff_window_id = (
             str(window_id).strip()
             if window_id is not None and str(window_id).strip()
@@ -11014,7 +11093,11 @@ def run_boot_gatekeeper(
         filled_doc: dict[str, Any] = {
             "schema_version": "1.0",
             "judge_id": judge_id,
-            "description": "Boot gatekeeper golden output_token_ids_sha256 hashes recorded by --lock-check window.",
+            "description": (
+                "Boot gatekeeper golden output_token_ids_sha256 hashes recorded by --time-one window (recorded, not compared)."
+                if is_time_one_record
+                else "Boot gatekeeper golden output_token_ids_sha256 hashes recorded by --lock-check window."
+            ),
             "synthetic_prompts": enriched_synth_prompts,
             "card_types": filled_card_types,
             "provenance": {
@@ -11058,6 +11141,9 @@ def run_boot_gatekeeper(
             "actual_output_token_ids_sha256": actual_by_prompt,
             "expected_output_token_ids_sha256": dict(actual_by_prompt),
         }
+        if is_time_one_record:
+            record_doc["gatekeeper"] = BOOT_GATEKEEPER_RECORDED_NOT_COMPARED
+            record_doc["recorded_output_token_ids_sha256"] = dict(actual_by_prompt)
         gatekeeper_out_path.write_text(
             json.dumps(record_doc, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -11839,6 +11925,7 @@ def main(argv: list[str] | None = None) -> int:
     session_env_report: dict[str, Any] | None = None
     boot_gatekeeper_report: dict[str, Any] | None = None
     boot_gatekeeper_judge_plan: dict[str, Any] | None = None
+    gatekeeper_record_fields: dict[str, Any] = {}
     loop_order_val: str = DEFAULT_LOOP_ORDER
     subblock_items_val: int = DEFAULT_SUBBLOCK_ITEMS
     uploaded_item_files: list[Path] = []
@@ -12346,7 +12433,18 @@ def main(argv: list[str] | None = None) -> int:
                     _append_vm_log_line(
                         f"VM_BOOT_GATEKEEPER_END status={json.dumps(str(gk_rep.get('status') or 'ok'))}"
                         + "".join(f" {k}={gk_rep[k]}" for k in ("judge_id", "hash_source", "card_type") if k in gk_rep)
+                        + (f" gatekeeper={json.dumps(gk_rep['gatekeeper'])}" if gk_rep.get("gatekeeper") else "")
                     )
+                    if gk_rep.get("gatekeeper") == BOOT_GATEKEEPER_RECORDED_NOT_COMPARED:
+                        # time-one records the gatekeeper's hashes on the real card; nothing is compared.
+                        gatekeeper_record_fields = {
+                            "gatekeeper": BOOT_GATEKEEPER_RECORDED_NOT_COMPARED,
+                            "gatekeeper_card_type": gk_rep.get("card_type"),
+                            "gatekeeper_recorded_output_token_ids_sha256": dict(
+                                gk_rep.get("recorded_output_token_ids_sha256") or {}
+                            ),
+                            "gatekeeper_synthetic_fake_hash": bool(gk_rep.get("synthetic_fake_hash")),
+                        }
 
                     current_step = "run_judges_pipeline"
                     t_jpass, start_jpass, _ = _record_step_start(
@@ -12394,6 +12492,13 @@ def main(argv: list[str] | None = None) -> int:
                             getattr(args, "replacement_session", False)
                         ),
                     )
+                    if time_one_summary is not None and gatekeeper_record_fields:
+                        time_one_summary.update(gatekeeper_record_fields)
+                        (args.run_dir / "time_one_summary.json").write_text(
+                            json.dumps(time_one_summary, indent=2) + "\n",
+                            encoding="utf-8",
+                            newline="\n",
+                        )
                     if time_one_summary is not None:
                         shard_info_report["shard_manifest_sha256"] = time_one_summary.get(
                             "shard_manifest_sha256",
@@ -12628,6 +12733,7 @@ def main(argv: list[str] | None = None) -> int:
             # The gatekeeper's judge, downloaded and verified for the gatekeeper only when it is not a timed judge;
             # judge_order, only_judges and the timing outputs above stay as requested.
             receipt_doc["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
+        receipt_doc.update(gatekeeper_record_fields)
         if until_step is not None:
             receipt_doc["until"] = until_step
             receipt_doc["until_step"] = until_step
@@ -12757,6 +12863,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         if boot_gatekeeper_judge_plan is not None:
             status_extra["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
+        status_extra.update(gatekeeper_record_fields)
         if until_step is not None:
             status_extra["until"] = until_step
             status_extra["until_step"] = until_step
@@ -12924,6 +13031,8 @@ def main(argv: list[str] | None = None) -> int:
         if boot_gatekeeper_judge_plan is not None:
             fail_receipt["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
             status_fail_extra["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
+        fail_receipt.update(gatekeeper_record_fields)
+        status_fail_extra.update(gatekeeper_record_fields)
         if shard_info_report is not None:
             for sk in ("shard_spec", "shard_manifest_sha256", "shard_item_ids", "anchor_item_ids"):
                 fail_receipt[sk] = shard_info_report.get(sk)
