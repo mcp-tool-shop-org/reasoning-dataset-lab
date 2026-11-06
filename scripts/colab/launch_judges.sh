@@ -58,7 +58,7 @@ Options:
   --counted            Run a counted A100 shard window (--gpu A100, strict determinism; default wall 7200s; --max-rate
                        required)
   --counted-stub       Run a counted CPU stub shard window (CPU, deterministic stub transport)
-                       No rate is assumed. `colab usage` reports the account-wide rate (every open session), so the
+                       No rate is assumed. `colab usage` reports the account rate (every open session), so the
                        window's rate is read as post-open minus pre-open, accepted when two reads 5 s apart agree within
                        0.01 and clear the floor (1.00/h on a GPU card); the cap runtime is priced on max(--max-rate,
                        that rate).
@@ -90,7 +90,7 @@ Options:
   --counted-manifest F For --lock-check / --lock-check-stub: counted part manifest JSON (required unless --counted-items is given) to build shard_manifest.json and verify anchor membership and P0a exclusion (or set RDLAB_COUNTED_MANIFEST)
   --receipts-dir DIR   Directory containing <owner>__<repo>.sha256.json receipts (or RDLAB_RECEIPTS_DIR)
   --cap UNITS          Explicit compute-unit cap override (or set RDLAB_CAP_UNITS)
-  --max-rate U         Highest live usage rate (units/h, account-wide) this window accepts (or set RDLAB_MAX_RATE).
+  --max-rate U         Highest window rate (units/h) this window accepts (or set RDLAB_MAX_RATE).
                        Required for --time-one, --lock-check and --counted, no default; a live rate above it refuses
                        RATE_ABOVE_MAX right after the read and stops the session. Before the session opens, --dry
                        projects with it, labelled as an estimate.
@@ -389,14 +389,14 @@ else
 fi
 
 # --- The rate: never a constant. The only rate recorded as the window's is the live one read from `colab usage` after
-# the session opens (account-wide: it includes any other open session). Before that, a rate is used only as an
+# the session opens: the window rate, post-open minus pre-open account rate. Before that, a rate is used only as an
 # estimate taken from the request (--max-rate, the worst case the window accepts), and labelled so.
 if [[ -n "$MAX_RATE" ]] && ! [[ "$MAX_RATE" =~ ^[0-9]+([.][0-9]+)?$ && "$MAX_RATE" =~ [1-9] ]]; then
   echo "BAD_MAX_RATE: --max-rate must be a positive number of units per hour, got '$MAX_RATE'" >&2
   exit 2
 fi
 if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" == "time-one" || "$MODE" == "lock-check" || "$MODE" == "counted" ]] && [[ -z "$MAX_RATE" ]]; then
-  echo "MAX_RATE_REQUIRED: --$MODE requires --max-rate <units/h> (the highest live account-wide usage rate this window accepts; no default)" >&2
+  echo "MAX_RATE_REQUIRED: --$MODE requires --max-rate <units/h> (the highest window rate, units/h, this window accepts; no default)" >&2
   exit 2
 fi
 RATE_UNITS_PER_HOUR=""
@@ -702,7 +702,7 @@ else
   CAP_UNITS="$WALL_X_RATE"
 fi
 if [[ "$DRY_FLAG" -eq 1 ]] && [[ -n "$MAX_RATE" ]]; then
-  echo "[rate] max_rate=${MAX_RATE}/h (from --max-rate) estimate: wall_x_max_rate=${WALL_X_RATE} cap=${CAP_UNITS:-none} (a projection, not a recorded rate; the live account-wide rate is read after open and refused above max_rate)" >&2
+  echo "[rate] max_rate=${MAX_RATE}/h (from --max-rate) estimate: wall_x_max_rate=${WALL_X_RATE} cap=${CAP_UNITS:-none} window_rate=<measured after open: post - pre, two reads within ${RATE_STABLE_TOLERANCE}, >= floor> (a projection, not a recorded rate; the window rate is refused above max_rate and the cap is priced on max(max_rate, window rate))" >&2
 fi
 
 scrub_stream() {
@@ -1489,7 +1489,7 @@ rate_arg = float(sys.argv[5]) if sys.argv[5].strip() else None
 rate_source = os.environ.get("RDLAB_RATE_SOURCE", "").strip()
 max_rate_raw = os.environ.get("RDLAB_MAX_RATE", "").strip()
 max_rate = float(max_rate_raw) if max_rate_raw else None
-# The window's rate is recorded only when it was read live (account-wide); an estimate from --max-rate is labelled.
+# The window rate is recorded only when it was measured live (post - pre); an estimate from --max-rate is labelled.
 rate = rate_arg if rate_source == "live_window" else None
 
 
@@ -2636,6 +2636,7 @@ if [[ -z "$LIVE_RATE_UNITS_PER_HOUR" ]]; then
 fi
 RATE_UNITS_PER_HOUR="$LIVE_RATE_UNITS_PER_HOUR"
 RATE_SOURCE="live_window"
+echo "[rate] window_rate=${LIVE_RATE_UNITS_PER_HOUR}/h (measured: post ${POST_ACCOUNT_RATE} - pre ${PRE_ACCOUNT_RATE}) max_rate=${MAX_RATE:-none}/h" >&2
 log_msg "LIVE_USAGE_RATE_READ session=$S window_rate_uh=$LIVE_RATE_UNITS_PER_HOUR rate_scope=window pre_account_rate_uh=$PRE_ACCOUNT_RATE post_account_rate_uh=$POST_ACCOUNT_RATE max_rate=${MAX_RATE:-none}"
 if [[ -n "$MAX_RATE" ]] && "$PYTHON_BIN" -c "import sys; sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)" "$LIVE_RATE_UNITS_PER_HOUR" "$MAX_RATE"; then
   # Refused right after the read: the EXIT trap stops the session now, at the cost of the open alone.

@@ -251,14 +251,14 @@ def test_session_assigned_then_client_failed_still_books_rate_x_runtime(tmp_path
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# --max-rate: the live account-wide rate is checked right after it is read; no rate is a constant
+# --max-rate: the window rate is checked right after it is measured; no rate is a constant
 # ---------------------------------------------------------------------------------------------------------------------
 
 
 def test_live_rate_above_max_rate_refuses_and_stops_the_session(tmp_path: Path) -> None:
     """The fake `colab usage` reports 8.88/h (the A100 High-RAM rate, 2026-11-06). With `--max-rate 8.0` the window
     refuses `RATE_ABOVE_MAX` right after the read (no alive probe, gate, upload or exec), stops the session, and the
-    outcome draft records the live rate as the account-wide rate (`rate_scope: account`) and books it x runtime. With
+    outcome draft records the measured window rate (`rate_scope: window`) and books it x runtime. With
     `--max-rate 9.5` the same window goes on.
     Fails at a0f7d7af: there was no --max-rate; any live rate was accepted."""
     proc, env_paths, out_dir = _stub_window(
@@ -277,6 +277,7 @@ def test_live_rate_above_max_rate_refuses_and_stops_the_session(tmp_path: Path) 
     assert draft["max_rate"] == 8.0 and draft["cost_basis"] == "rate_x_runtime"
     cli_log = (out_dir / "colab-cli.log").read_text(encoding="utf-8")
     assert "LIVE_USAGE_RATE_READ" in cli_log and "rate_scope=window" in cli_log
+    assert "[rate] window_rate=8.8800/h (measured: post " in proc.stderr and "max_rate=8.0/h" in proc.stderr
 
     ok, ok_env, ok_out = _stub_window(tmp_path, "belowmax", "export FAKE_COLAB_USAGE_RATE=8.88; export RDLAB_MAX_RATE=9.5; ")
     assert ok.returncode == 0, ok.stdout + ok.stderr
@@ -317,6 +318,7 @@ def test_paid_modes_require_max_rate_before_any_colab_call(tmp_path: Path) -> No
     dry = tcl._pm_run_launcher(exports, f"--stub --max-rate 0.2 --dry --out-dir '{tcl._to_wsl_path(tmp_path / 'od')}'")
     assert dry.returncode == 0, dry.stderr
     assert "[rate] max_rate=0.2/h (from --max-rate) estimate:" in dry.stderr
+    assert "window_rate=<measured after open" in dry.stderr and "account-wide" not in dry.stderr
 
 
 # ---------------------------------------------------------------------------------------------------------------------
