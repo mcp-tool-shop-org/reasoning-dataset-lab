@@ -202,8 +202,9 @@ MERGE_CONFIG_FILENAME = "merge_config.json"
 GOLDEN_ANCHOR_MANIFEST_FILENAME = "golden_anchor_manifest.json"
 BOOT_GATEKEEPER_FILLED_FILENAME = "boot_gatekeeper_goldens.filled.json"
 P0A_REPORT_FILENAME = "p0a_report.json"
-# P0a run in per-judge children: the children's telemetry (no rows) in the run dir; their outputs stay in the P0a
-# stage dir beside it (deleted after the run), recorded here by SHA-256.
+# P0a run in per-judge children: each child's output (ids, verdict codes, log-probs, hashes; no item text) in
+# `p0a_children/<judge>.<stage>.json` under the run dir, and their telemetry in `p0a_children.json`, so a window that
+# stops on a failed child still brings back every finished child's work.
 P0A_CHILDREN_FILENAME = "p0a_children.json"
 P0A_CHILDREN_DIRNAME = "p0a_children"
 WINDOW_MANIFEST_FILENAME = "window.json"
@@ -597,6 +598,7 @@ TAR_ALLOWED_DIRS: frozenset[str] = frozenset(
         ANCHOR_ROWS_DIRNAME,
         JUDGE_DONE_DIRNAME,
         CHILD_PROGRESS_DIRNAME,
+        P0A_CHILDREN_DIRNAME,
         "logs",
     }
 )
@@ -4513,6 +4515,8 @@ def is_allowed_tar_member(rel_posix_path: str) -> bool:
         return True
     if len(parts) == 2 and parts[0] == CHILD_PROGRESS_DIRNAME and parts[1].endswith(".jsonl"):
         return True
+    if len(parts) == 2 and parts[0] == P0A_CHILDREN_DIRNAME and parts[1].endswith((".passes.json", ".rerun.json")):
+        return True
     if len(parts) == 2 and parts[0] == "logs" and parts[1].endswith(".log"):
         return True
     return False
@@ -6724,9 +6728,9 @@ def run_lock_check_p0a_in_children(
         repo_root=repo_root,
         pilot_identity=pilot_identity,
     )
-    # The children's outputs (rows: ids, verdict codes, log-probs, hashes) stay beside the staged P0a items, outside
-    # the run dir and the result tar; `p0a_children.json` records each one's SHA-256.
-    children_dir = p0a_part_dir / P0A_CHILDREN_DIRNAME
+    # The children's outputs (rows: ids, verdict codes, log-probs, hashes) go under the run dir, so they come back with
+    # the result tar even when a later child fails; `p0a_children.json` records each one's SHA-256.
+    children_dir = run_dir / P0A_CHILDREN_DIRNAME
     children_dir.mkdir(parents=True, exist_ok=True)
     child_progress_dir = run_dir / CHILD_PROGRESS_DIRNAME
     child_progress_dir.mkdir(parents=True, exist_ok=True)
@@ -6801,6 +6805,34 @@ def run_lock_check_p0a_in_children(
     telemetry_rows: list[dict[str, Any]] = []
     docs: dict[tuple[str, str], dict[str, Any]] = {}
 
+    def _children_doc(*, status: str, report_sha256: str | None, selected: Sequence[str] | None, failure: Mapping[str, Any] | None) -> dict[str, Any]:
+        return {
+            "schema_version": "1.0",
+            "kind": "p0a_children",
+            "is_result": False,
+            "status": status,
+            "failure": dict(failure) if failure is not None else None,
+            "p0a_report_sha256": report_sha256,
+            "judge_order": judge_ids,
+            "stages": ["passes", "rerun"],
+            "children": telemetry_rows,
+            "pids_by_child": {f"{r['judge_id']}.{r['stage']}": docs[(r["judge_id"], r["stage"])].get("pid") for r in telemetry_rows},
+            "transport_class_by_child": {
+                f"{r['judge_id']}.{r['stage']}": docs[(r["judge_id"], r["stage"])].get("transport_class")
+                for r in telemetry_rows
+            },
+            "selected_low_margin_item_ids_sha256": (
+                hashlib.sha256(json.dumps(list(selected)).encode("utf-8")).hexdigest() if selected is not None else None
+            ),
+        }
+
+    def _write_children_doc(doc: Mapping[str, Any]) -> str:
+        children_bytes = (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        (run_dir / P0A_CHILDREN_FILENAME).write_bytes(children_bytes)
+        return hashlib.sha256(children_bytes).hexdigest()
+
+    stage_selection: dict[str, Sequence[str] | None] = {"selected": None}
+
     def _run_stage(stage: str) -> None:
         for judge_id, spec in selected_specs:
             out_file = children_dir / f"{judge_id}.{stage}.json"
@@ -6810,8 +6842,8 @@ def run_lock_check_p0a_in_children(
             cmd, venv_python, venv_name, lock_file, lock_sha256 = _child_cmd(
                 judge_id, spec, stage, out_file, progress_file
             )
-            telemetry_rows.append(
-                _run_p0a_judge_child(
+            try:
+                child_telemetry = _run_p0a_judge_child(
                     judge_id=judge_id,
                     spec=spec,
                     stage=stage,
@@ -6831,8 +6863,25 @@ def run_lock_check_p0a_in_children(
                     proc_cgroup_path=proc_cgroup_path,
                     proc_meminfo_path=proc_meminfo_path,
                 )
-            )
-            docs[(judge_id, stage)] = _read_p0a_child_doc(out_file, judge_id=judge_id, stage=stage, ctx=ctx)
+                docs[(judge_id, stage)] = _read_p0a_child_doc(out_file, judge_id=judge_id, stage=stage, ctx=ctx)
+            except (JudgeChildProcessError, RefusalError) as exc:
+                # Keep every finished child's work: its output stays under the run dir, and a partial
+                # `p0a_children.json` names the failed child and lists each finished one with its output's SHA-256.
+                fc = str(getattr(exc, "failure_class", None) or getattr(exc, "code", "VM_REFUSAL"))
+                _write_children_doc(
+                    _children_doc(
+                        status="failed",
+                        report_sha256=None,
+                        selected=stage_selection["selected"],
+                        failure={"judge_id": judge_id, "stage": stage, "failure_class": fc},
+                    )
+                )
+                if isinstance(exc, JudgeChildProcessError):
+                    exc.completed_judges = {
+                        f"{r['judge_id']}.{r['stage']}": dict(r) for r in telemetry_rows
+                    }
+                raise
+            telemetry_rows.append(child_telemetry)
 
     _run_stage("passes")
     pass1_rows = [r for jid in judge_ids for r in docs[(jid, "passes")]["pass1_rows"]]
@@ -6850,6 +6899,7 @@ def run_lock_check_p0a_in_children(
         count=bj.P0A_LOW_MARGIN_RERUN_ITEM_COUNT,
     )
     selected_file.write_text(json.dumps(list(selected_ids)) + "\n", encoding="utf-8", newline="\n")
+    stage_selection["selected"] = list(selected_ids)
     _run_stage("rerun")
     for jid in judge_ids:
         if docs[(jid, "rerun")].get("selected_item_ids") != list(selected_ids):
@@ -6872,25 +6922,10 @@ def run_lock_check_p0a_in_children(
         reversed_low_margin=reversed_low_margin,
         timing_backend=timing_backend,
     )
-    children_doc = {
-        "schema_version": "1.0",
-        "kind": "p0a_children",
-        "is_result": False,
-        "p0a_report_sha256": report["p0a_report_sha256"],
-        "judge_order": judge_ids,
-        "stages": ["passes", "rerun"],
-        "children": telemetry_rows,
-        "pids_by_child": {f"{r['judge_id']}.{r['stage']}": docs[(r["judge_id"], r["stage"])].get("pid") for r in telemetry_rows},
-        "transport_class_by_child": {
-            f"{r['judge_id']}.{r['stage']}": docs[(r["judge_id"], r["stage"])].get("transport_class") for r in telemetry_rows
-        },
-        "selected_low_margin_item_ids_sha256": hashlib.sha256(
-            json.dumps(list(selected_ids)).encode("utf-8")
-        ).hexdigest(),
-    }
-    children_bytes = (json.dumps(children_doc, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    (run_dir / P0A_CHILDREN_FILENAME).write_bytes(children_bytes)
-    return report, hashlib.sha256(children_bytes).hexdigest()
+    children_sha = _write_children_doc(
+        _children_doc(status="complete", report_sha256=report["p0a_report_sha256"], selected=selected_ids, failure=None)
+    )
+    return report, children_sha
 
 
 def run_judges_pipeline(

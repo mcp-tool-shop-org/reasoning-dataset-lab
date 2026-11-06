@@ -27128,3 +27128,81 @@ def test_p0a_transport_resolution_refusals_and_timing(tmp_path: Path) -> None:
     assert bj.resolve_p0a_timing(ctx, event_factory=marker) == (marker, "cuda_event")
     ctx.in_real_mode = True
     assert bj.resolve_p0a_timing(ctx)[1] == "cuda_event"
+
+
+@pytest.mark.parametrize("fail_stage", ["passes", "rerun"])
+def test_lock_check_p0a_child_failure_keeps_every_finished_childs_output_in_the_fetched_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_stage: str,
+) -> None:
+    """A P0a child that is OOM-killed (exit 137) on a middle judge (granite, third of five), in `passes` and in
+    `rerun`, through a real `lock-check` VM `main` (phase `p0a`): the window refuses `JUDGE_CHILD_OOM` as before, and
+    the result tar (what the rig fetches) holds every finished child's output under `p0a_children/`, each matching the
+    SHA-256 the partial `p0a_children.json` records; that file names the failed judge, its stage and refusal class,
+    and the refusal's `completed_judges` lists the finished children.
+    Fails at 1ff6679f: the outputs were kept in the P0a stage dir outside the run dir (deleted after the run), the
+    error carried `completed_judges={}` and no `p0a_children.json` was written."""
+    import tarfile
+
+    calls, paths = _lock_check_vm_main_env(tmp_path, monkeypatch, f"lkf_{fail_stage}")
+    argv, run_dir, status = _lock_check_argv(tmp_path, f"lkf_{fail_stage}", paths, ["--lock-check-phase", "p0a"])
+    for venv_name in ("venv-judge", "venv-d3"):
+        vm_judges._ensure_dryrun_venv_python_wrapper(tmp_path / f"lkf_{fail_stage}_work" / venv_name / "bin" / "python")
+    failing = "granite-guardian-4.1-8b"
+    shim_child = vm_judges._run_child_with_group_timeout
+    raised: list[Any] = []
+
+    def _oom_one_child(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+        if (
+            "--p0a-stage" in cmd
+            and cmd[cmd.index("--p0a-stage") + 1] == fail_stage
+            and cmd[cmd.index("--judge") + 1] == failing
+        ):
+            calls.append(f"oom:{fail_stage}:{failing}")
+            return shim_child(["bash", "-c", "exit 137"], *args, **kwargs)
+        return shim_child(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _oom_one_child)
+    orig_p0a = vm_judges.run_lock_check_p0a_in_children
+
+    def _spy(**kwargs: Any) -> Any:
+        try:
+            return orig_p0a(**kwargs)
+        except vm_judges.JudgeChildProcessError as exc:
+            raised.append(exc)
+            raise
+
+    monkeypatch.setattr(vm_judges, "run_lock_check_p0a_in_children", _spy)
+
+    assert vm_judges.main(argv) == 2
+    st = json.loads(status.read_text(encoding="utf-8"))
+    assert st["failure_class"] == "JUDGE_CHILD_OOM", st
+    assert f"oom:{fail_stage}:{failing}" in calls
+
+    judges = sorted(vm_judges.BAKEOFF_JUDGE_SPECS)
+    k = judges.index(failing)
+    finished = [(j, "passes") for j in judges[:k]] if fail_stage == "passes" else [
+        *((j, "passes") for j in judges),
+        *((j, "rerun") for j in judges[:k]),
+    ]
+    assert len(finished) == (2 if fail_stage == "passes" else 7)
+
+    fetched = tmp_path / f"lkf_{fail_stage}_fetched"
+    with tarfile.open(tmp_path / f"lkf_{fail_stage}.tar.gz") as tf:
+        tf.extractall(fetched, filter="data")
+    doc = json.loads((fetched / "p0a_children.json").read_text(encoding="utf-8"))
+    assert doc["status"] == "failed" and doc["p0a_report_sha256"] is None
+    assert doc["failure"] == {"judge_id": failing, "stage": fail_stage, "failure_class": "JUDGE_CHILD_OOM"}
+    assert [(c["judge_id"], c["stage"]) for c in doc["children"]] == finished
+    for c in doc["children"]:
+        out = fetched / c["out_file"]
+        assert out.is_file(), c["out_file"]
+        assert hashlib.sha256(out.read_bytes()).hexdigest() == c["out_sha256"]
+        body = json.loads(out.read_text(encoding="utf-8"))
+        assert body["judge_id"] == c["judge_id"] and body["stage"] == c["stage"]
+        if c["stage"] == "passes":
+            assert body["pass1_rows"] and body["pass2_rows"]
+        assert "peak_vram_mib" in c
+    assert not (fetched / "p0a_report.json").exists()
+    assert raised and sorted(raised[0].completed_judges) == sorted(f"{j}.{s}" for j, s in finished)
