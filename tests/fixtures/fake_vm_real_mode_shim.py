@@ -16,6 +16,15 @@ body, deletion of uploaded items, receipts, the result tar) runs in the real mod
 the repo checkout, except the fake VM root, the fake CLI's state dir and the interpreter's prefix. `os.stat`-level
 checks and child processes are not guarded.
 
+The gatekeeper step is the real `run_boot_gatekeeper` with dryrun (synthetic) hashes, so the goldens rule per mode is
+the real one: a time-one window records the hashes and writes `boot_gatekeeper_goldens.filled.json` ("recorded, not
+compared"); a counted window refuses `BOOT_GATEKEEPER_GOLDEN_MISSING` when the card's goldens are absent (VM `main`
+refuses that before venv sync) and `BOOT_GATEKEEPER_GOLDEN_MISMATCH` when they differ. Each outcome is recorded as a
+`boot_gatekeeper_outcome` row. The gatekeeper step also keeps one contract of the real one: it refuses `BOOT_GATEKEEPER_SUBPROCESS_FAILED` (with the
+`BAKEOFF_JUDGE_SNAPSHOT_NOT_FOUND` exception line the real subprocess raises) when the gatekeeper's judge (the goldens'
+`judge_id`) was not among the judges the weight step downloaded and verified. The weight step's row records the
+`only_judge_ids` it was given.
+
 What a run through this shim does not prove: the real-mode checks inside the judge child; what the dryrun steps skip
 (the boot gatekeeper's golden comparison against real outputs, the weight size and SHA-256 checks against real
 snapshots, the venv build, the device and GPU gate); the child's test-hook guard in real mode; anything only a GPU VM
@@ -62,6 +71,50 @@ def _record(state_dir: str, row: dict[str, Any], *, name: str = CALLS_FILENAME) 
         fh.write(json.dumps({**row, "ts": time.time()}) + "\n")
 
 
+def _require_gatekeeper_judge_verified(
+    ns: dict[str, Any], kwargs: dict[str, Any], verified_judges: set[str], state_dir: str
+) -> None:
+    """The contract the real gatekeeper enforces: its judge's weights must be among the downloaded and verified ones.
+
+    The real gatekeeper loads the goldens' `judge_id` (default `nemotron-3-nano-4b`) in its own subprocess, and
+    `TransformersJudgeTransport.verify_ready` raises `RdlabError [BAKEOFF_JUDGE_SNAPSHOT_NOT_FOUND]` when that judge's
+    snapshot is not in the VM's HF home (timeone-mu, 2026-11-06). The dryrun gatekeeper never looks, so the shim
+    refuses here with the error class the real one raises.
+    """
+    raw_goldens = kwargs.get("goldens_path") or os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS", "").strip()
+    goldens = (
+        Path(raw_goldens)
+        if raw_goldens
+        else Path(kwargs["repo_root"]) / "scripts" / "colab" / "boot_gatekeeper_goldens.json"
+    )
+    try:
+        gk_judge = str(json.loads(goldens.read_text(encoding="utf-8")).get("judge_id") or "nemotron-3-nano-4b")
+    except (OSError, ValueError, AttributeError):
+        return  # the real gatekeeper refuses a missing or malformed goldens file itself
+    _record(state_dir, {"call": "gatekeeper_judge_check", "judge_id": gk_judge, "verified": sorted(verified_judges)})
+    if gk_judge in verified_judges:
+        return
+    exc_line = (
+        f"reasoning_dataset_lab.errors.RdlabError: [BAKEOFF_JUDGE_SNAPSHOT_NOT_FOUND] Local snapshot directory not "
+        f"found for {gk_judge!r} (fake VM: the gatekeeper judge was not among the downloaded and verified judges "
+        f"{sorted(verified_judges)})."
+    )
+    stderr = "Traceback (most recent call last):\n  File \"<string>\", line 19, in <module>\n" + exc_line + "\n"
+    err_cls = ns.get("BootGatekeeperSubprocessError")
+    if err_cls is not None:
+        raise err_cls(
+            judge_id=gk_judge,
+            venv_python="/content/rdlab_work/venv-judge/bin/python",
+            returncode=1,
+            stdout="",
+            stderr=stderr,
+            duration_seconds=0.0,
+        )
+    raise ns["RefusalError"](
+        "BOOT_GATEKEEPER_SUBPROCESS_FAILED", f"Boot gatekeeper subprocess failed (rc=1): {stderr}"
+    )
+
+
 def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
     """Patch the executed `vm_judges` namespace `ns` in place (see the module docstring)."""
     root = Path(vm_root)
@@ -71,19 +124,51 @@ def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
 
     ns["resolve_content_dir"] = _resolve_content_dir
 
+    verified_judges: set[str] = set()
+
     def _as_dryrun(name: str) -> Any:
         orig = ns[name]
 
         def _wrapped(*args: Any, **kwargs: Any) -> Any:
-            _record(state_dir, {"call": name, "mode": kwargs.get("mode")})
+            row: dict[str, Any] = {"call": name, "mode": kwargs.get("mode")}
+            if name == "download_and_verify_all_judge_weights":
+                only_ids = kwargs.get("only_judge_ids")
+                row["only_judge_ids"] = list(only_ids) if only_ids is not None else None
+            _record(state_dir, row)
             kwargs["dryrun"] = True
             if "device" in kwargs:
                 kwargs["device"] = "cpu"
+            if name == "run_boot_gatekeeper":
+                _require_gatekeeper_judge_verified(ns, kwargs, verified_judges, state_dir)
+                # The goldens rule per mode is the real function's (record in time-one, refuse "no golden" or a
+                # mismatch in counted); only the hashes are the dryrun's synthetic ones.
+                try:
+                    result = orig(*args, **kwargs)
+                except Exception as exc:
+                    _record(
+                        state_dir,
+                        {"call": "boot_gatekeeper_outcome", "failure_class": getattr(exc, "failure_class", None)},
+                    )
+                    raise
+                rep = result if isinstance(result, dict) else {}
+                _record(
+                    state_dir,
+                    {
+                        "call": "boot_gatekeeper_outcome",
+                        "status": rep.get("status"),
+                        "record_mode": rep.get("record_mode"),
+                        "gatekeeper": rep.get("gatekeeper"),
+                        "card_type": rep.get("card_type"),
+                    },
+                )
+                return result
             result = orig(*args, **kwargs)
             if name == "sync_judge_venvs":
                 work_dir = Path(args[0])
                 for venv_name in ("venv-judge", "venv-d3"):
                     ns["_ensure_dryrun_venv_python_wrapper"](work_dir / venv_name / "bin" / "python")
+            if name == "download_and_verify_all_judge_weights" and isinstance(result, dict):
+                verified_judges.update(str(k) for k in result)
             return result
 
         return _wrapped

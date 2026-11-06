@@ -475,6 +475,15 @@ PINNED_UV_WHEEL_EXTRACT_MEMBERS: dict[str, str] = {
     PINNED_UV_WHEEL_UVX_MEMBER: "uvx",
 }
 DEFAULT_PINNED_UV_DIR = Path("/tmp/uv-pinned")
+# Test hook (FAKE_COLAB_ prefix: refused in every real mode by `guard_no_test_hooks_in_counted_mode`): a per-test
+# pinned-uv directory, so parallel test workers never share /tmp/uv-pinned. A real launch never sets it.
+PINNED_UV_DIR_TEST_HOOK = "FAKE_COLAB_PINNED_UV_DIR"
+
+
+def resolve_pinned_uv_dir() -> Path:
+    """`/tmp/uv-pinned` on a real VM; the test hook's directory when `FAKE_COLAB_PINNED_UV_DIR` is set (tests only)."""
+    raw = os.environ.get(PINNED_UV_DIR_TEST_HOOK, "").strip()
+    return Path(raw) if raw else DEFAULT_PINNED_UV_DIR
 _STDLIB_URLOPEN = urllib.request.urlopen
 PINNED_PYTHON_VERSION = "3.15.1"
 PINNED_PYTHON_BUILD = "20261021"
@@ -495,6 +504,10 @@ PINNED_PYTHON_INSTALL_TIMEOUT_SECONDS = 120.0
 DEFAULT_VM_PYTHON_TEMP_DIR = Path("/tmp/rdlab-python-315")
 CU132_INDEX_URL = "https://download.pytorch.org/whl/cu132"
 SUBPROCESS_TAIL_BYTES = 4096
+# A refusal that comes from a subprocess keeps the last FAILURE_TAIL_LINES lines of its stderr (of stdout when stderr
+# is empty) in status.json, vm_receipt.json and vm.log, so the exception type and message are never cut off.
+FAILURE_TAIL_LINES = 40
+FAILURE_TAIL_MAX_BYTES = 8192
 
 PROBE_WALL_SECONDS = 240
 PROBE_EXEC_TIMEOUT_SECONDS = 270
@@ -549,6 +562,10 @@ HF_TOKEN_RE = re.compile(
 HF_ENV_RE = re.compile(
     r"\b(HF_TOKEN(?:_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)=(?!\[REDACTED\])[^\s\"';]+"
 )
+# GitHub tokens: classic/OAuth/user-to-server/server-to-server/refresh (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`) and
+# fine-grained personal access tokens (`github_pat_`), plus `GITHUB_TOKEN=` / `GH_TOKEN=` assignments.
+GITHUB_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])(gh[pousr]_|github_pat_)(?!\[REDACTED\])[A-Za-z0-9_]{16,}")
+GITHUB_ENV_RE = re.compile(r"\b((?:GITHUB|GH)_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_PAT)=(?!\[REDACTED\])[^\s\"';]+")
 WORD_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
@@ -646,7 +663,7 @@ def sha256_file(path: Path) -> str:
 
 
 def scrub_log_text(text: str) -> str:
-    """Scrub proxy tokens, Bearer/OAuth tokens, JWTs, and HF tokens from log text."""
+    """Scrub proxy tokens, Bearer/OAuth tokens, JWTs, HF tokens and GitHub tokens from log text."""
     out = PROXY_TOKEN_RE.sub(r"\1[REDACTED]", text)
     out = BEARER_TOKEN_RE.sub(r"\1[REDACTED]", out)
     out = OAUTH_YA29_RE.sub("[REDACTED_OAUTH_TOKEN]", out)
@@ -655,6 +672,8 @@ def scrub_log_text(text: str) -> str:
     out = JWT_RE.sub("[REDACTED_JWT]", out)
     out = HF_TOKEN_RE.sub("hf_[REDACTED]", out)
     out = HF_ENV_RE.sub(r"\1=[REDACTED]", out)
+    out = GITHUB_TOKEN_RE.sub(r"\1[REDACTED]", out)
+    out = GITHUB_ENV_RE.sub(r"\1=[REDACTED]", out)
     return out
 
 
@@ -1026,6 +1045,64 @@ def _scrub_and_tail(
     return scrub_log_text(scrubbed)
 
 
+def _failure_output_tail(
+    stderr: str | bytes | None,
+    stdout: str | bytes | None = None,
+    *,
+    max_lines: int = FAILURE_TAIL_LINES,
+    max_bytes: int = FAILURE_TAIL_MAX_BYTES,
+) -> str:
+    """Scrubbed last `max_lines` lines of `stderr`, or of `stdout` when stderr is blank (the end is always kept).
+
+    A refusal reason built from a subprocess failure uses this instead of the head of the output: the head of a
+    Python traceback is the frame list, and the exception type and message are its last line.
+    """
+    def _as_text(val: str | bytes | None) -> str:
+        if not val:
+            return ""
+        return val.decode("utf-8", errors="replace") if isinstance(val, bytes) else str(val)
+
+    text = _as_text(stderr)
+    if not text.strip():
+        text = _as_text(stdout)
+    if not text.strip():
+        return ""
+    lines = scrub_log_text(text).rstrip().splitlines()
+    tail = "\n".join(lines[-max(1, int(max_lines)) :])
+    encoded = tail.encode("utf-8", errors="replace")
+    if len(encoded) > max_bytes:
+        tail = encoded[-max_bytes:].decode("utf-8", errors="ignore")
+    return scrub_log_text(tail)
+
+
+_EXCEPTION_LINE_RE = re.compile(
+    r"^(?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*(?:Error|Exception|Exit|Interrupt|Expired)(?::.*)?$"
+)
+
+
+def _exception_line(text: str | None) -> str | None:
+    """The last line of `text` that reads `ExceptionType: message` (a traceback's final line), or None."""
+    if not text:
+        return None
+    for line in reversed(str(text).splitlines()):
+        stripped = line.strip()
+        if stripped and _EXCEPTION_LINE_RE.match(stripped):
+            return scrub_log_text(stripped)
+    return None
+
+
+def _append_vm_log_line(line: str) -> None:
+    """Append one scrubbed line to the active vm.log (no-op when no run is active)."""
+    if _ACTIVE_VM_LOG_PATH is None:
+        return
+    try:
+        _ACTIVE_VM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _ACTIVE_VM_LOG_PATH.open("a", encoding="utf-8", newline="\n") as lfh:
+            lfh.write(scrub_log_text(line.rstrip("\n")) + "\n")
+    except OSError:
+        pass
+
+
 class VmSubprocessResult:
     """Captured VM subprocess execution result with scrubbed ~4 KB stdout/stderr tails."""
 
@@ -1075,10 +1152,19 @@ class VmSubprocessError(RefusalError, subprocess.CalledProcessError):
         *,
         failure_class: str = "VM_SUBPROCESS_FAILED",
         duration_seconds: float = 0.0,
+        full_stdout: str | None = None,
+        full_stderr: str | None = None,
     ) -> None:
         cmd_list = [scrub_log_text(str(part)) for part in cmd]
         scrubbed_out = _scrub_and_tail(stdout_tail)
         scrubbed_err = _scrub_and_tail(stderr_tail)
+        # The last FAILURE_TAIL_LINES lines (of the full output when the caller has it, else of the ~4 KB tail),
+        # and the exception line: main writes both into status.json, vm_receipt.json and vm.log.
+        self.failure_tail = _failure_output_tail(
+            full_stderr if full_stderr is not None else scrubbed_err,
+            full_stdout if full_stdout is not None else scrubbed_out,
+        )
+        self.exception_line = _exception_line(self.failure_tail)
         subprocess.CalledProcessError.__init__(
             self,
             returncode=int(returncode),
@@ -1673,6 +1759,8 @@ def run_vm_subprocess(
             stderr_tail,
             failure_class=failure_class,
             duration_seconds=duration_s,
+            full_stdout=raw_out,
+            full_stderr=raw_err,
         )
     return result
 
@@ -1688,10 +1776,10 @@ def resolve_vm_python_temp_dir(content_dir: Path | None = None) -> Path:
 def _prepend_pinned_uv_to_path(
     env: dict[str, str],
     *,
-    pinned_uv_dir: Path = DEFAULT_PINNED_UV_DIR,
+    pinned_uv_dir: Path | None = None,
 ) -> None:
     """Prepend `/tmp/uv-pinned` to `env['PATH']` without touching `os.environ`."""
-    pinned_str = str(pinned_uv_dir)
+    pinned_str = str(pinned_uv_dir if pinned_uv_dir is not None else resolve_pinned_uv_dir())
     existing_path = env.get("PATH", "")
     parts = [p for p in existing_path.split(os.pathsep) if p and p != pinned_str]
     env["PATH"] = os.pathsep.join([pinned_str, *parts]) if parts else pinned_str
@@ -1701,7 +1789,7 @@ def build_vm_uv_env(
     base_env: Mapping[str, str] | None = None,
     *,
     content_dir: Path | None = None,
-    pinned_uv_dir: Path = DEFAULT_PINNED_UV_DIR,
+    pinned_uv_dir: Path | None = None,
 ) -> dict[str, str]:
     """Return the exact environment used by both `run_gate` and `sync_judge_venvs` when invoking `uv`."""
     env = dict(os.environ if base_env is None else base_env)
@@ -2674,8 +2762,22 @@ def verify_snapshot_against_receipt(
 
     Checks every file's `st_size` against receipt `bytes` first (`WEIGHT_SIZE_MISMATCH`) before calling `hashlib.sha256`.
     """
+    _, receipt_doc = check_judge_receipt_static(spec, receipts_dir=receipts_dir)
+
+    snapshot_dir = _resolve_snapshot_dir_for_spec(spec, hf_home=hf_home)
+    return _verify_snapshot_files_against_receipt(spec, snapshot_dir, receipt_doc)
+
+
+def check_judge_receipt_static(spec: JudgeSpec, *, receipts_dir: Path) -> tuple[Path, Mapping[str, Any]]:
+    """The receipt checks that need no weights: `<receipts_dir>/<owner>__<repo>.sha256.json` is present
+    (`BAKEOFF_JUDGE_RECEIPT_NOT_FOUND`), is a JSON object with a `files` mapping (`BAKEOFF_JUDGE_RECEIPT_INVALID`), and
+    its `repo` and `revision` equal the pinned spec (`BAKEOFF_JUDGE_RECEIPT_MISMATCH`).
+
+    `verify_snapshot_against_receipt` runs these first, after the weight download; `preflight_judge_receipts` runs the
+    same checks before any spend (launcher and VM `main`) for every judge that will be downloaded and verified.
+    """
     owner, repo = spec.repo_id.split("/", 1)
-    receipt_path = receipts_dir.resolve() / f"{owner}__{repo}.sha256.json"
+    receipt_path = Path(receipts_dir).resolve() / f"{owner}__{repo}.sha256.json"
     if not receipt_path.is_file():
         raise RefusalError(
             "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND",
@@ -2702,8 +2804,32 @@ def verify_snapshot_against_receipt(
             "BAKEOFF_JUDGE_RECEIPT_MISMATCH",
             f"Receipt '{receipt_path}' ({rec_repo} @ {rec_rev}) does not match pinned JudgeSpec ({spec.repo_id} @ {spec.revision}).",
         )
+    return receipt_path, receipt_doc
 
-    snapshot_dir = _resolve_snapshot_dir_for_spec(spec, hf_home=hf_home)
+
+def preflight_judge_receipts(judge_ids: Sequence[str], *, receipts_dir: Path) -> list[dict[str, Any]]:
+    """Run `check_judge_receipt_static` for every judge in `judge_ids` (the download/verify set) before any spend.
+
+    Refuses with the first failing judge's `BAKEOFF_JUDGE_RECEIPT_NOT_FOUND` / `_INVALID` / `_MISMATCH`, the codes the
+    VM's post-download verify would raise; otherwise returns one `{judge_id, receipt, repo, revision}` record per judge.
+    """
+    out: list[dict[str, Any]] = []
+    for jid in judge_ids:
+        spec = BAKEOFF_JUDGE_SPECS.get(str(jid))
+        if spec is None:
+            raise RefusalError(
+                "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND",
+                f"Judge {jid!r} is not a pinned judge (allowed: {sorted(BAKEOFF_JUDGE_SPECS)}); it has no receipt.",
+            )
+        receipt_path, _ = check_judge_receipt_static(spec, receipts_dir=receipts_dir)
+        out.append({"judge_id": str(jid), "receipt": receipt_path.name, "repo": spec.repo_id, "revision": spec.revision})
+    return out
+
+
+def _verify_snapshot_files_against_receipt(
+    spec: JudgeSpec, snapshot_dir: Path, receipt_doc: Mapping[str, Any]
+) -> tuple[Path, str]:
+    """Hash every file of `snapshot_dir` against a receipt `check_judge_receipt_static` accepted (sizes first)."""
     expected_files: Mapping[str, Any] = receipt_doc["files"]
     expected_rels = set(expected_files.keys())
 
@@ -3557,8 +3683,8 @@ def download_all_judge_weights(
                                 ),
                                 "path": child_env.get("PATH"),
                                 "uv_bin": (
-                                    str(DEFAULT_PINNED_UV_DIR / "uv")
-                                    if (DEFAULT_PINNED_UV_DIR / "uv").is_file()
+                                    str(resolve_pinned_uv_dir() / "uv")
+                                    if (resolve_pinned_uv_dir() / "uv").is_file()
                                     else (shutil.which("uv") or "absent")
                                 ),
                                 "hf_token_keys": sorted(
@@ -6737,8 +6863,8 @@ def _run_judges_pipeline_body(
                                 "hf_hub_offline": child_env.get("HF_HUB_OFFLINE"),
                                 "path": child_env.get("PATH"),
                                 "uv_bin": (
-                                    str(DEFAULT_PINNED_UV_DIR / "uv")
-                                    if (DEFAULT_PINNED_UV_DIR / "uv").is_file()
+                                    str(resolve_pinned_uv_dir() / "uv")
+                                    if (resolve_pinned_uv_dir() / "uv").is_file()
                                     else (shutil.which("uv") or "absent")
                                 ),
                                 "hf_token_keys": sorted(
@@ -8175,7 +8301,7 @@ def install_pinned_uv_wheel(
 ) -> dict[str, Any]:
     """Download, verify (`size == 17,211,825`, `sha256` before unpack), safely unpack (`uv` + `uvx`), and verify `/tmp/uv-pinned/uv --version == uv 0.13.5`."""
     target_dir = (
-        Path(pinned_uv_dir) if pinned_uv_dir is not None else DEFAULT_PINNED_UV_DIR
+        Path(pinned_uv_dir) if pinned_uv_dir is not None else resolve_pinned_uv_dir()
     )
     url = wheel_url if wheel_url is not None else PINNED_UV_WHEEL_URL
     scrubbed_url = scrub_log_text(url)
@@ -8191,7 +8317,7 @@ def install_pinned_uv_wheel(
     )
     exp_sha = resolve_expected_uv_wheel_sha256(expected_sha256)
 
-    if target_dir != DEFAULT_PINNED_UV_DIR:
+    if target_dir not in (DEFAULT_PINNED_UV_DIR, resolve_pinned_uv_dir()):
         shutil.rmtree(target_dir, ignore_errors=True)
 
     t_dl0 = time.monotonic()
@@ -8350,7 +8476,7 @@ def ensure_vm_uv(
 ) -> dict[str, Any]:
     """Ensure `uv 0.13.5` is available on the VM: use image `uv` when it is `0.13.5` (unless `RDLAB_FORCE_PINNED_UV=1`), otherwise install the pinned wheel into `/tmp/uv-pinned`."""
     target_dir = (
-        Path(pinned_uv_dir) if pinned_uv_dir is not None else DEFAULT_PINNED_UV_DIR
+        Path(pinned_uv_dir) if pinned_uv_dir is not None else resolve_pinned_uv_dir()
     )
     mode_env = os.environ.get("RDLAB_MODE", "stub").strip() or "stub"
     force_pinned = validate_force_pinned_uv(
@@ -10439,9 +10565,248 @@ def _hash_token_ids_list(token_ids: Sequence[int]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+# Covers torch import, verify_ready re-hashing the ~8 GB judge, the model load (a similar 4B judge loaded in 33-41 s
+# on an A100) and two generations; the measured phases are recorded (`boot_gatekeeper_timings`).
+BOOT_GATEKEEPER_SUBPROCESS_TIMEOUT_SECONDS = 300
+BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED = "BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED"
+# Modes whose boot gatekeeper loads its judge through the real transport (when not dryrun and with no --until).
+BOOT_GATEKEEPER_REAL_MODES: tuple[str, ...] = ("time-one", "counted", "lock-check")
+
+
+class BootGatekeeperSubprocessError(RefusalError):
+    """The boot gatekeeper's judge subprocess failed: carries the last FAILURE_TAIL_LINES lines and the exception line."""
+
+    def __init__(
+        self,
+        *,
+        judge_id: str,
+        venv_python: str,
+        returncode: int,
+        stdout: str,
+        stderr: str,
+        duration_seconds: float,
+        timed_out: bool = False,
+        subprocess_timings: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.subprocess_timings = dict(subprocess_timings) if subprocess_timings is not None else None
+        self.judge_id = judge_id
+        self.venv_python = scrub_log_text(venv_python)
+        self.returncode = int(returncode)
+        self.stdout_tail = _scrub_and_tail(stdout)
+        self.stderr_tail = _scrub_and_tail(stderr)
+        self.failure_tail = _failure_output_tail(stderr, stdout) or f"exit {int(returncode)} with no output"
+        self.exception_line = _exception_line(self.failure_tail)
+        self.duration_seconds = round(float(duration_seconds), 6)
+        self.timed_out = bool(timed_out)
+        n_lines = len(self.failure_tail.splitlines())
+        stream = "stderr" if (stderr or "").strip() else "stdout"
+        super().__init__(
+            "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
+            f"Boot gatekeeper subprocess failed for judge {judge_id!r} (rc={int(returncode)}"
+            f"{', timed out' if timed_out else ''}): {self.exception_line or 'no exception line in the output'}"
+            f" | last {n_lines} line(s) of {stream}:\n{self.failure_tail}",
+        )
+
+    def to_failure_record(self) -> dict[str, Any]:
+        return {
+            "cmd": [self.venv_python, "-c", "<_BOOT_GATEKEEPER_SUBPROCESS_SCRIPT>", "<gatekeeper config json>"],
+            "judge_id": self.judge_id,
+            "exit_code": self.returncode,
+            "rc": self.returncode,
+            "returncode": self.returncode,
+            "duration_seconds": self.duration_seconds,
+            "timed_out": self.timed_out,
+            "stdout_tail": self.stdout_tail,
+            "stderr_tail": self.stderr_tail,
+            "subprocess_timings": self.subprocess_timings,
+        }
+
+
+def _log_boot_gatekeeper_subprocess(
+    judge_id: str, venv_py: Path, rc: int, seconds: float, stdout: str, stderr: str
+) -> None:
+    """Log the gatekeeper subprocess to vm.log as the other VM subprocesses are logged (the script body is elided)."""
+    _append_vm_log_line(
+        f"VM_SUBPROCESS cmd={json.dumps(f'{venv_py} -c <_BOOT_GATEKEEPER_SUBPROCESS_SCRIPT> judge_id={judge_id}')}"
+        f" rc={int(rc)} duration_s={seconds:.6f}"
+    )
+    out_tail = _scrub_and_tail(stdout)
+    err_tail = _scrub_and_tail(stderr)
+    if out_tail:
+        _append_vm_log_line(f"VM_SUBPROCESS_STDOUT_TAIL: {json.dumps(out_tail)}")
+    if err_tail:
+        _append_vm_log_line(f"VM_SUBPROCESS_STDERR_TAIL: {json.dumps(err_tail)}")
+
+
+def resolve_boot_gatekeeper_goldens_path(repo_root: Path, goldens_path: Path | None = None) -> Path:
+    """The goldens file the boot gatekeeper reads: `goldens_path`, else `RDLAB_BOOT_GATEKEEPER_GOLDENS`, else the repo's."""
+    if goldens_path is not None:
+        return Path(goldens_path)
+    env_val = os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS", "").strip()
+    if env_val:
+        return Path(env_val)
+    return Path(repo_root) / "scripts" / "colab" / "boot_gatekeeper_goldens.json"
+
+
+def resolve_boot_gatekeeper_judge_id(repo_root: Path, goldens_path: Path | None = None) -> str:
+    """The judge the boot gatekeeper loads: the goldens' `judge_id` (default `FIRST_LOAD_JUDGE_ID`), as `run_boot_gatekeeper` reads it."""
+    eff_path = resolve_boot_gatekeeper_goldens_path(repo_root, goldens_path)
+    if not eff_path.is_file():
+        raise RefusalError(
+            "BOOT_GATEKEEPER_GOLDEN_MISSING",
+            f"Boot gatekeeper golden file not found at {eff_path}",
+        )
+    try:
+        doc = json.loads(eff_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_GOLDEN_MISSING",
+            f"Malformed boot gatekeeper golden file {eff_path}: {exc}",
+        ) from exc
+    if not isinstance(doc, Mapping):
+        raise RefusalError(
+            "BOOT_GATEKEEPER_GOLDEN_MISSING",
+            f"Malformed boot gatekeeper golden file {eff_path}: not a JSON object",
+        )
+    return str(doc.get("judge_id") or FIRST_LOAD_JUDGE_ID)
+
+
+def runs_real_boot_gatekeeper(mode: str | None, *, dryrun: bool = False, until: str | None = None) -> bool:
+    """True when VM `main` will run the boot gatekeeper through the real transport: a real time-one, counted or lock-check run with no `--until`."""
+    norm_mode = str(mode or "").strip().lower()
+    return (
+        norm_mode in BOOT_GATEKEEPER_REAL_MODES
+        and is_real_mode(norm_mode, dryrun=dryrun)
+        and (until is None or not str(until).strip())
+    )
+
+
+def preflight_boot_gatekeeper_judge(
+    gatekeeper_judge_id: str,
+    download_judge_ids: Sequence[str],
+    *,
+    receipts_dir: Path | None = None,
+) -> None:
+    """Refuse before any spend when the boot gatekeeper's judge would not be downloaded and verified on the VM.
+
+    - `BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED`: the judge is not a pinned judge, or is not in the download/verify set.
+    - `BOOT_GATEKEEPER_RECEIPT_MISSING`: `receipts_dir` exists and lacks the judge's `<owner>__<repo>.sha256.json`.
+    """
+    if gatekeeper_judge_id not in BAKEOFF_JUDGE_SPECS:
+        raise RefusalError(
+            BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED,
+            f"Boot gatekeeper judge {gatekeeper_judge_id!r} is not a pinned judge (allowed: {sorted(BAKEOFF_JUDGE_SPECS)}), "
+            "so its weights cannot be downloaded and verified",
+        )
+    if gatekeeper_judge_id not in tuple(download_judge_ids):
+        raise RefusalError(
+            BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED,
+            f"Boot gatekeeper judge {gatekeeper_judge_id!r} is not in the download/verify set {list(download_judge_ids)}; "
+            "the gatekeeper would find no verified snapshot for it",
+        )
+    if receipts_dir is not None and Path(receipts_dir).is_dir():
+        spec = BAKEOFF_JUDGE_SPECS[gatekeeper_judge_id]
+        receipt_name = f"{spec.repo_id.replace('/', '__')}.sha256.json"
+        if not (Path(receipts_dir) / receipt_name).is_file():
+            raise RefusalError(
+                "BOOT_GATEKEEPER_RECEIPT_MISSING",
+                f"Boot gatekeeper receipt not found for {gatekeeper_judge_id!r}: {receipt_name} is not in the receipts directory",
+            )
+
+
+def plan_boot_gatekeeper_judge(
+    *,
+    mode: str | None,
+    judge_order: Sequence[str],
+    repo_root: Path,
+    dryrun: bool = False,
+    until: str | None = None,
+    goldens_path: Path | None = None,
+    receipts_dir: Path | None = None,
+    card_type: str | None = None,
+) -> dict[str, Any] | None:
+    """The boot gatekeeper's judge and the download/verify set for a run, or None when no real gatekeeper runs.
+
+    A real counted window whose card has no goldens is refused here (`preflight_boot_gatekeeper_goldens`); a time-one
+    window records the gatekeeper's hashes instead of comparing them (`"gatekeeper": "recorded, not compared"`).
+
+    The gatekeeper judge is always downloaded and verified (once, appended when the timed judges do not include it);
+    it is not a timed judge: `judge_order` / `RDLAB_ONLY_JUDGES` and the timing outputs stay as requested.
+    """
+    if not runs_real_boot_gatekeeper(mode, dryrun=dryrun, until=until):
+        return None
+    gk_id = resolve_boot_gatekeeper_judge_id(repo_root, goldens_path)
+    goldens_check = preflight_boot_gatekeeper_goldens(
+        mode=mode, repo_root=repo_root, dryrun=dryrun, until=until, goldens_path=goldens_path, card_type=card_type
+    )
+    timed = [str(j) for j in judge_order]
+    download_ids = timed + ([gk_id] if gk_id not in timed else [])
+    preflight_boot_gatekeeper_judge(gk_id, download_ids, receipts_dir=receipts_dir)
+    # Every judge in the download/verify set: the static receipt checks the VM would otherwise run only after the
+    # weight download (present, valid JSON with `files`, repo and revision equal to the pin).
+    receipts_checked = (
+        preflight_judge_receipts(download_ids, receipts_dir=Path(receipts_dir))
+        if receipts_dir is not None and Path(receipts_dir).is_dir()
+        else None
+    )
+    return {
+        "receipts_preflight": (
+            {"status": "ok", "judges": receipts_checked} if receipts_checked is not None else {"status": "not_run"}
+        ),
+        "judge_id": gk_id,
+        "role": "boot_gatekeeper",
+        "timed": gk_id in timed,
+        "added_for_gatekeeper": gk_id not in timed,
+        "timed_judge_ids": timed,
+        "download_verify_judge_ids": download_ids,
+        "gatekeeper": (
+            BOOT_GATEKEEPER_RECORDED_NOT_COMPARED if boot_gatekeeper_record_mode(mode) else "compared with goldens"
+        ),
+        "card_type": (
+            goldens_check["card_type"]
+            if goldens_check
+            else (card_type or os.environ.get("RDLAB_CARD_TYPE", "").strip() or None)
+        ),
+    }
+
+
+# The boot gatekeeper's phases, timed in the child (`phase_seconds` in its JSON line, and one stderr line per phase as
+# it ends, so a timeout or crash still shows how far it got): torch import, verify_ready (re-hashes every weight file
+# against its receipt), model load, one throwaway warm-up forward (output unused, never hashed), one generation per
+# synthetic prompt, and the child's own total.
+BOOT_GATEKEEPER_PHASES: tuple[str, ...] = (
+    "torch_import",
+    "verify_ready",
+    "model_load",
+    "warmup",
+    "generation_1",
+    "generation_2",
+    "total",
+)
+BOOT_GATEKEEPER_PHASE_LINE_RE = re.compile(r"^BOOT_GATEKEEPER_PHASE (\S+) seconds=([0-9]+(?:\.[0-9]+)?)\s*$", re.M)
+BOOT_GATEKEEPER_DEPS_MISSING_EXIT = 3
+BOOT_GATEKEEPER_TOKEN_COUNT_MISMATCH = "BOOT_GATEKEEPER_TOKEN_COUNT_MISMATCH"
+# Judges whose transport forces `max_new_tokens=1, use_cache=False` (TransformersJudgeTransport.generate).
+BOOT_GATEKEEPER_ONE_TOKEN_JUDGES: tuple[str, ...] = ("mu-judge", "nemotron-3-nano-4b")
+
 _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
+    "import time\n"
+    "_t_start = time.monotonic()\n"
     "import hashlib, json, sys\n"
     "from pathlib import Path\n"
+    "phase_seconds = {}\n"
+    "def _phase(name, t0):\n"
+    "    phase_seconds[name] = round(time.monotonic() - t0, 6)\n"
+    "    sys.stderr.write(f'BOOT_GATEKEEPER_PHASE {name} seconds={phase_seconds[name]:.6f}\\n')\n"
+    "    sys.stderr.flush()\n"
+    "_t = time.monotonic()\n"
+    "try:\n"
+    "    import torch\n"
+    "except ImportError as _exc:\n"
+    "    # Refuse now, before verify_ready re-hashes the weights: the judge cannot load without torch.\n"
+    "    sys.stderr.write(f'BAKEOFF_JUDGE_DEPS_MISSING: torch is not importable in {sys.executable}: {_exc}\\n')\n"
+    "    sys.exit(3)\n"
+    "_phase('torch_import', _t)\n"
     "from reasoning_dataset_lab.pilot_b.bakeoff_judge import (\n"
     "    JudgeInputItem, TransformersJudgeTransport, D3MiniTransport, D3_MINI_JUDGE_ID,\n"
     "    build_judge_adapter, resolve_judge_spec, compute_response_output_token_ids_sha256\n"
@@ -10458,20 +10823,464 @@ _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
     "    transport = D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home, device=device, window_mode=window_mode)\n"
     "else:\n"
     "    transport = TransformersJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home, device=device, window_mode=window_mode)\n"
+    "_t = time.monotonic()\n"
     "transport.verify_ready(spec, allow_remote_code_reviewed=cfg.get('allow_remote_code_reviewed'))\n"
-    "out_hashes = {}\n"
-    "for sp in cfg['prompts']:\n"
-    "    pid = str(sp['prompt_id'])\n"
-    "    item = JudgeInputItem(item_id=pid, material=str(sp['material']), claim=str(sp['claim']))\n"
+    "_phase('verify_ready', _t)\n"
+    "_t = time.monotonic()\n"
+    "transport._ensure_loaded(spec)\n"
+    "_phase('model_load', _t)\n"
+    "def _assemble(sp):\n"
+    "    item = JudgeInputItem(item_id=str(sp['prompt_id']), material=str(sp['material']), claim=str(sp['claim']))\n"
     "    ord_mode = 'BA' if str(sp.get('order', 'AB')) == 'BA' else 'AB'\n"
-    "    prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode='binary')\n"
+    "    return adapter.assemble_prompt(item, order=ord_mode, pass_mode='binary')\n"
+    "_t = time.monotonic()\n"
+    "if cfg['prompts']:\n"
+    "    transport.prefill(spec, _assemble(cfg['prompts'][0]), seed=seed)  # warm-up: output unused, never hashed\n"
+    "_phase('warmup', _t)\n"
+    "out_hashes = {}\n"
+    "generation = {}\n"
+    "for _idx, sp in enumerate(cfg['prompts']):\n"
+    "    _t = time.monotonic()\n"
+    "    pid = str(sp['prompt_id'])\n"
+    "    prompt = _assemble(sp)\n"
     "    resp = transport.generate(spec, prompt, seed=seed)\n"
     "    sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(\n"
     "        spec.judge_id, resp.tokens, system_one_result=resp.system_one_result\n"
     "    )\n"
     "    out_hashes[pid] = sha\n"
-    "print(json.dumps({'status': 'ok', 'hashes': out_hashes}, sort_keys=True))\n"
+    "    _phase(f'generation_{_idx + 1}', _t)\n"
+    "    _mnt = int((getattr(prompt, 'structured_payload', None) or {}).get('max_new_tokens', getattr(spec, 'max_new_tokens', 0)) or 0)\n"
+    "    if spec.judge_id in ('mu-judge', 'nemotron-3-nano-4b'):\n"
+    "        _mnt = 1  # the transport forces max_new_tokens=1 for the Nemotron pair\n"
+    "    _cnt = getattr(resp, 'output_token_count', None)\n"
+    "    if not isinstance(_cnt, int) or (_cnt == 0 and getattr(resp, 'tokens', ())):\n"
+    "        _cnt = len(tuple(getattr(resp, 'tokens', ()) or ()))\n"
+    "    generation[pid] = {'output_token_count': int(_cnt), 'max_new_tokens': _mnt}\n"
+    "_phase('total', _t_start)\n"
+    "print(json.dumps({'status': 'ok', 'hashes': out_hashes, 'phase_seconds': phase_seconds, 'generation': generation}, sort_keys=True))\n"
 )
+
+
+def parse_boot_gatekeeper_phase_lines(text: str) -> dict[str, float]:
+    """The `BOOT_GATEKEEPER_PHASE <name> seconds=<s>` lines the child writes to stderr as each phase ends."""
+    return {m.group(1): float(m.group(2)) for m in BOOT_GATEKEEPER_PHASE_LINE_RE.finditer(text or "")}
+
+
+def boot_gatekeeper_timings(
+    parsed: Mapping[str, Any] | None, *, elapsed_seconds: float, timeout_seconds: float
+) -> dict[str, Any]:
+    """The gatekeeper's timing record: the child's `phase_seconds` (every `BOOT_GATEKEEPER_PHASES` key present, None
+    when the child did not report it) plus the parent's measured wall time of the subprocess and its timeout."""
+    raw = parsed.get("phase_seconds") if isinstance(parsed, Mapping) else None
+    raw_map: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    phases: dict[str, float | None] = {}
+    for name in BOOT_GATEKEEPER_PHASES:
+        val = raw_map.get(name)
+        phases[name] = round(float(val), 6) if isinstance(val, (int, float)) and not isinstance(val, bool) else None
+    for name, val in raw_map.items():
+        if str(name) not in phases and isinstance(val, (int, float)) and not isinstance(val, bool):
+            phases[str(name)] = round(float(val), 6)
+    return {
+        "phase_seconds": phases,
+        "subprocess_elapsed_seconds": round(float(elapsed_seconds), 6),
+        "timeout_seconds": float(timeout_seconds),
+    }
+
+
+def boot_gatekeeper_generation(parsed: Mapping[str, Any] | None, prompt_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Per prompt: `output_token_count` (generated tokens, prompt excluded) and the effective `max_new_tokens`. Never
+    any output text. Every prompt id is present; a child that did not report one gets None values."""
+    raw = parsed.get("generation") if isinstance(parsed, Mapping) else None
+    raw_map: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+
+    def _int(v: Any) -> int | None:
+        return int(v) if isinstance(v, int) and not isinstance(v, bool) else None
+
+    out: dict[str, dict[str, Any]] = {}
+    for pid in prompt_ids:
+        ent = raw_map.get(pid)
+        ent = ent if isinstance(ent, Mapping) else {}
+        out[str(pid)] = {
+            "output_token_count": _int(ent.get("output_token_count")),
+            "max_new_tokens": _int(ent.get("max_new_tokens")),
+        }
+    return out
+
+
+def check_boot_gatekeeper_token_counts(judge_id: str, generation: Mapping[str, Mapping[str, Any]]) -> None:
+    """A one-token judge (the transport forces `max_new_tokens=1`) must generate exactly `max_new_tokens` tokens per
+    prompt; anything else is refused `BOOT_GATEKEEPER_TOKEN_COUNT_MISMATCH`. Prompts the child did not report are
+    skipped (only stand-ins omit them)."""
+    if judge_id not in BOOT_GATEKEEPER_ONE_TOKEN_JUDGES:
+        return
+    for pid, ent in generation.items():
+        cnt, mnt = ent.get("output_token_count"), ent.get("max_new_tokens")
+        if cnt is None and mnt is None:
+            continue
+        if mnt != 1 or cnt != mnt:
+            raise RefusalError(
+                BOOT_GATEKEEPER_TOKEN_COUNT_MISMATCH,
+                f"Boot gatekeeper judge {judge_id!r} is a one-token judge, but prompt {pid!r} generated "
+                f"{cnt} token(s) with effective max_new_tokens={mnt}",
+            )
+
+
+def boot_gatekeeper_report_fields(gk_timings: Mapping[str, Any]) -> dict[str, Any]:
+    """The gatekeeper report's subprocess fields: `subprocess_timings` and `subprocess_generation` (empty when the
+    gatekeeper ran no subprocess)."""
+    if not gk_timings:
+        return {}
+    fields: dict[str, Any] = {
+        "subprocess_timings": {k: v for k, v in gk_timings.items() if k != "generation_by_prompt"}
+    }
+    if "generation_by_prompt" in gk_timings:
+        fields["subprocess_generation"] = dict(gk_timings["generation_by_prompt"])
+    return fields
+
+
+BOOT_GATEKEEPER_RECORDED_NOT_COMPARED = "recorded, not compared"
+# Stub and dryrun only: a labelled default card type (`card_type_source: "stub_default"`). A real mode never defaults:
+# the launcher forwards the card type of the session it actually opened (`RDLAB_CARD_TYPE`, read from the session's
+# `Hardware:` field in `colab sessions`), and VM `main` checks it against `nvidia-smi` before venv sync.
+STUB_DEFAULT_CARD_TYPE = "A100"
+CARD_TYPE_UNKNOWN = "CARD_TYPE_UNKNOWN"
+CARD_TYPE_MISMATCH = "CARD_TYPE_MISMATCH"
+
+
+# The card types: only (Hardware, Shape) pairs pinned to receipts where the SAME window recorded its own `colab
+# sessions` row and its own nvidia-smi line (`session_row_examples` in tests/fixtures/colab-cli-contract.json cites
+# each file and line). `Shape:` names the VM's host RAM, so the card is what the paired nvidia-smi line says:
+#   A100 / Standard -> A100     (NVIDIA A100-SXM4-40GB, 40960 MiB; windowC2-25, windowC2-37)
+#   A100 / High-RAM -> A100-80  (NVIDIA A100-SXM4-80GB, 81920 MiB; windowC2-54, windowC2-55, `--gpu A100 --high-mem`)
+#   G4 / Standard   -> G4       (NVIDIA RTX PRO 6000 Blackwell Server Edition; windowC2-48)
+#   L4 / Standard   -> L4       (NVIDIA L4; windowC2-26)
+#   T4 / Standard   -> T4       (Tesla T4; windowC2-12)
+# Any other pair (CPU, TPUs, an unpaired shape or card) is CARD_TYPE_UNKNOWN, never a guess; the VM's nvidia-smi
+# cross-check stays the authority. These names are the goldens' `card_types` keys (compare and record use them).
+SESSION_CARD_TYPES: dict[tuple[str, str], str] = {
+    ("A100", "STANDARD"): "A100",
+    ("A100", "HIGH-RAM"): "A100-80",
+    ("G4", "STANDARD"): "G4",
+    ("L4", "STANDARD"): "L4",
+    ("T4", "STANDARD"): "T4",
+}
+# nvidia-smi --query-gpu=name -> card type, for the VM's cross-check (first match wins).
+GPU_NAME_CARD_TYPES: tuple[tuple[str, str], ...] = (
+    (r"A100\b.*\b80GB\b|A100-SXM4-80GB", "A100-80"),
+    (r"A100\b.*\b40GB\b|A100-SXM4-40GB", "A100"),
+    (r"RTX PRO 6000", "G4"),
+    (r"(?<![A-Z0-9])L4(?![0-9A-Z])", "L4"),
+    (r"(?<![A-Z0-9])T4(?![0-9A-Z])", "T4"),
+)
+
+
+def card_type_from_session_fields(hardware: str | None, shape: str | None) -> str | None:
+    """The card type for a session's `Hardware:` and `Shape:` values (`SESSION_CARD_TYPES`, case and extra spaces
+    ignored), or None for anything not in the table."""
+    hw = " ".join(str(hardware or "").split()).upper()
+    sh = " ".join(str(shape or "").split()).upper()
+    return SESSION_CARD_TYPES.get((hw, sh))
+
+
+def card_type_from_sessions_output(text: str | None, session: str) -> tuple[str | None, str | None]:
+    """`(card_type, "Hardware/Shape")` for `session`'s row in `colab sessions` output
+    (`[<session>] <id> | Hardware: X | Shape: Y | Variant: Z`, extra spaces tolerated); `(None, what was seen)` when the
+    row, a field, or the pair is missing or not in `SESSION_CARD_TYPES`."""
+    for line in str(text or "").splitlines():
+        if not line.strip().startswith(f"[{session}]"):
+            continue
+        fields: dict[str, str] = {}
+        for field in line.split("|")[1:]:
+            key, sep, val = field.partition(":")
+            if sep:
+                fields[" ".join(key.split()).lower()] = " ".join(val.split())
+        hw, sh = fields.get("hardware"), fields.get("shape")
+        seen = f"{hw}/{sh}" if hw or sh else None
+        return card_type_from_session_fields(hw, sh), seen
+    return None, None
+
+
+def card_type_from_gpu_name(name: str | None) -> str | None:
+    """Map an `nvidia-smi --query-gpu=name` value to a card type (`GPU_NAME_CARD_TYPES`), or None."""
+    up = " ".join(str(name or "").split()).upper()
+    for pattern, card in GPU_NAME_CARD_TYPES:
+        if re.search(pattern, up):
+            return card
+    return None
+
+
+def read_vm_gpu_name() -> tuple[str | None, str]:
+    """`(gpu_name, detail)` from `nvidia-smi --query-gpu=name --format=csv,noheader` (the driver's own binary, on the
+    base image before any venv); `(None, why)` when it is absent or fails."""
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None, "nvidia-smi not found"
+    res = run_vm_subprocess(
+        [smi, "--query-gpu=name", "--format=csv,noheader"],
+        timeout=30,
+        check=False,
+        failure_class=CARD_TYPE_UNKNOWN,
+    )
+    first = (res.stdout or "").strip().splitlines()
+    if res.returncode != 0 or not first or not first[0].strip():
+        return None, f"nvidia-smi rc={res.returncode}: {(res.stderr_tail or res.stdout_tail or '').strip()[-200:]}"
+    return first[0].strip(), "nvidia-smi"
+
+
+def verify_vm_card_type(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    until: str | None = None,
+) -> dict[str, Any] | None:
+    """Real time-one / counted / lock-check: the forwarded `RDLAB_CARD_TYPE` (the opened session's card) must equal
+    the card `nvidia-smi` reports. Refuses `CARD_TYPE_UNKNOWN` (not forwarded, or the GPU name unreadable/unknown) or
+    `CARD_TYPE_MISMATCH`. Runs in VM `main` before venv sync. None in stub / dryrun / `--until` runs."""
+    if not runs_real_boot_gatekeeper(mode, dryrun=dryrun, until=until):
+        return None
+    forwarded = os.environ.get("RDLAB_CARD_TYPE", "").strip()
+    if not forwarded:
+        raise RefusalError(
+            CARD_TYPE_UNKNOWN,
+            "RDLAB_CARD_TYPE was not forwarded: a real window needs the card type of the session the launcher opened",
+        )
+    gpu_name, detail = read_vm_gpu_name()
+    measured = card_type_from_gpu_name(gpu_name)
+    if measured is None:
+        raise RefusalError(
+            CARD_TYPE_UNKNOWN,
+            f"cannot read this VM's card type: GPU name {gpu_name!r} ({detail}); forwarded card type {forwarded!r}",
+        )
+    if measured != forwarded:
+        raise RefusalError(
+            CARD_TYPE_MISMATCH,
+            f"forwarded card type {forwarded!r} (from the opened session) != this VM's card {measured!r} "
+            f"(nvidia-smi: {gpu_name!r})",
+        )
+    return {"card_type": forwarded, "gpu_name": gpu_name, "source": "colab sessions Hardware + nvidia-smi"}
+
+
+def receipt_hardware_fields(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    card_type_check: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The success receipt's `hardware` fields. A real time-one / counted / lock-check run records the card it ran on:
+    the forwarded `RDLAB_CARD_TYPE` that `verify_vm_card_type` cross-checked with `nvidia-smi`, and the `nvidia-smi`
+    GPU name. With no check (a `--until` run) the forwarded card type is recorded as unchecked. Stub, dryrun and
+    other modes record `CPU`, as before."""
+    norm_mode = str(mode or "").strip().lower()
+    if norm_mode not in BOOT_GATEKEEPER_REAL_MODES or not is_real_mode(norm_mode, dryrun=dryrun):
+        return {"hardware": "CPU", "hardware_source": "stub_or_synthetic", "gpu_name": None}
+    if card_type_check is not None:
+        return {
+            "hardware": str(card_type_check["card_type"]),
+            "hardware_source": "RDLAB_CARD_TYPE cross-checked with nvidia-smi",
+            "gpu_name": card_type_check.get("gpu_name"),
+        }
+    gpu_name, _detail = read_vm_gpu_name()
+    return {
+        "hardware": os.environ.get("RDLAB_CARD_TYPE", "").strip() or CARD_TYPE_UNKNOWN,
+        "hardware_source": "RDLAB_CARD_TYPE, not cross-checked (no card check in this run)",
+        "gpu_name": gpu_name,
+    }
+
+
+def boot_gatekeeper_record_mode(mode: str | None) -> bool:
+    """True when the boot gatekeeper records its hashes instead of comparing them: `time-one` (real or dryrun) and
+    `lock-check` / `lock-check-stub`. A time-one window writes `boot_gatekeeper_goldens.filled.json` and reports
+    `gatekeeper: recorded, not compared`; it never refuses for missing goldens."""
+    return str(mode or "").strip().lower() in (
+        "time-one",
+        "time_one",
+        "lock-check",
+        "lock_check",
+        "lock-check-stub",
+        "lock_check_stub",
+    )
+
+
+def resolve_boot_gatekeeper_card_type(card_type: str | None = None, *, real: bool = False) -> str:
+    """The gatekeeper's card type: `card_type`, else `RDLAB_CARD_TYPE`. In a real mode there is no default
+    (`CARD_TYPE_UNKNOWN`); stub and dryrun fall back to the labelled `STUB_DEFAULT_CARD_TYPE`."""
+    if card_type is not None and str(card_type).strip():
+        return str(card_type).strip()
+    env_val = os.environ.get("RDLAB_CARD_TYPE", "").strip()
+    if env_val:
+        return env_val
+    if real:
+        raise RefusalError(
+            CARD_TYPE_UNKNOWN,
+            "no card type in a real mode: RDLAB_CARD_TYPE (the opened session's card) is required; there is no default",
+        )
+    return STUB_DEFAULT_CARD_TYPE
+
+
+def preflight_boot_gatekeeper_goldens(
+    *,
+    mode: str | None,
+    repo_root: Path,
+    dryrun: bool = False,
+    until: str | None = None,
+    goldens_path: Path | None = None,
+    card_type: str | None = None,
+) -> dict[str, Any] | None:
+    """Refuse a real counted window whose card has no goldens before any paid step (`BOOT_GATEKEEPER_GOLDEN_MISSING`).
+
+    The gatekeeper itself would refuse the same window only after venv sync, the device/GPU gate, the weight download
+    and the judge load. The goldens file travels in the repo bundle and the card type is fixed before the session opens,
+    so the check runs in the launcher before the session opens and in VM `main` before venv sync. Other modes: None.
+    """
+    norm_mode = str(mode or "").strip().lower()
+    if norm_mode != "counted" or not runs_real_boot_gatekeeper(norm_mode, dryrun=dryrun, until=until):
+        return None
+    eff_path = resolve_boot_gatekeeper_goldens_path(repo_root, goldens_path)
+    resolve_boot_gatekeeper_judge_id(repo_root, eff_path)  # refuses a missing or malformed goldens file
+    doc = json.loads(eff_path.read_text(encoding="utf-8"))
+    card_types_map = doc.get("card_types")
+    if card_type is None and not os.environ.get("RDLAB_CARD_TYPE", "").strip():
+        # Before the session opens the card is not known yet: refuse only when no card type has complete goldens.
+        complete = sorted(
+            str(ck)
+            for ck, cv in (card_types_map.items() if isinstance(card_types_map, Mapping) else [])
+            if all(boot_gatekeeper_expected_sha(cv, str(sp["prompt_id"])) for sp in boot_gatekeeper_prompts(doc))
+        )
+        if not complete:
+            raise RefusalError(
+                "BOOT_GATEKEEPER_GOLDEN_MISSING",
+                "no golden: no card type has filled boot gatekeeper goldens; counted mode refuses before any paid step "
+                "until lock-check fills them.",
+            )
+        return {"card_type": None, "cards_with_goldens": complete}
+    eff_card = resolve_boot_gatekeeper_card_type(card_type, real=True)
+    card_entry = card_types_map.get(eff_card) if isinstance(card_types_map, Mapping) else None
+    missing = [
+        str(sp["prompt_id"])
+        for sp in boot_gatekeeper_prompts(doc)
+        if not boot_gatekeeper_expected_sha(card_entry, str(sp["prompt_id"]))
+    ]
+    if card_entry is None or missing:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_GOLDEN_MISSING",
+            f"no golden: Boot gatekeeper golden hashes are missing/unfilled for card_type={eff_card!r} "
+            f"(missing={missing}); counted mode refuses before any paid step until lock-check fills them.",
+        )
+    return {"card_type": eff_card, "goldens_complete": True}
+
+
+def run_boot_gatekeeper_subprocess(
+    *,
+    venv_py: Path,
+    judge_id: str,
+    prompts: Sequence[Mapping[str, Any]],
+    seed: int,
+    mode: str,
+    repo_root: Path,
+    receipts_dir: Path,
+    hf_home: Path | None,
+    child_hf_home: Path,
+    device: str,
+    timeout_seconds: float = BOOT_GATEKEEPER_SUBPROCESS_TIMEOUT_SECONDS,
+    timings_out: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Run `_BOOT_GATEKEEPER_SUBPROCESS_SCRIPT` in `venv_py` (real transport, offline) and return its per-prompt output hashes.
+
+    `timings_out`, when given, is filled with `boot_gatekeeper_timings` (the child's per-phase seconds, the measured
+    elapsed seconds of the subprocess and its timeout).
+
+    The VM's boot gatekeeper and `scripts/colab/local_boot_gatekeeper.py` both run the gatekeeper through here. A
+    failure raises `BootGatekeeperSubprocessError` carrying the last `FAILURE_TAIL_LINES` lines of the output.
+    """
+    cfg_payload = {
+        "judge_id": judge_id,
+        "receipts_dir": str(receipts_dir),
+        "hf_home": str(hf_home) if hf_home is not None else None,
+        "device": device,
+        "window_mode": mode,
+        "seed": int(seed),
+        "allow_remote_code_reviewed": (
+            D3_MINI_REVIEWED_REVISION if judge_id == D3_MINI_JUDGE_ID else None
+        ),
+        "prompts": [
+            {
+                "prompt_id": str(sp.get("prompt_id") or ""),
+                "material": str(sp.get("material") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["material"]),
+                "claim": str(sp.get("claim") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["claim"]),
+                "order": str(sp.get("order") or "AB"),
+            }
+            for sp in prompts
+            if sp.get("prompt_id")
+        ],
+    }
+    child_env = build_judge_child_env(child_hf_home, repo_root)
+    gk_cmd = [str(venv_py), "-c", _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT, json.dumps(cfg_payload)]
+    t_gk = time.monotonic()
+    try:
+        proc = subprocess.run(
+            gk_cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=child_env,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        gk_rc = int(proc.returncode)
+        gk_out = proc.stdout or ""
+        gk_err = proc.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        gk_rc = 124
+        gk_out = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else str(exc.stdout or "")
+        prior_err = exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else str(exc.stderr or "")
+        gk_err = f"{prior_err}\nsubprocess timed out after {timeout_seconds}s".lstrip("\n")
+    gk_seconds = max(0.0, time.monotonic() - t_gk)
+    _log_boot_gatekeeper_subprocess(judge_id, venv_py, gk_rc, gk_seconds, gk_out, gk_err)
+    if gk_rc == BOOT_GATEKEEPER_DEPS_MISSING_EXIT and "BAKEOFF_JUDGE_DEPS_MISSING" in gk_err:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_DEPS_MISSING",
+            f"Boot gatekeeper judge {judge_id!r}: {_exception_line(_scrub_and_tail(gk_err)) or _scrub_and_tail(gk_err)}"
+            " (refused before verify_ready and any model load)",
+        )
+    if gk_rc != 0 or not gk_out.strip():
+        # The phases the child completed before failing or timing out, from its stderr phase lines.
+        raise BootGatekeeperSubprocessError(
+            judge_id=judge_id,
+            venv_python=str(venv_py),
+            returncode=gk_rc,
+            stdout=gk_out,
+            stderr=gk_err,
+            duration_seconds=gk_seconds,
+            timed_out=gk_rc == 124,
+            subprocess_timings=boot_gatekeeper_timings(
+                {"phase_seconds": parse_boot_gatekeeper_phase_lines(gk_err)},
+                elapsed_seconds=gk_seconds,
+                timeout_seconds=timeout_seconds,
+            ),
+        )
+    try:
+        parsed = json.loads(gk_out.strip().splitlines()[-1])
+    except Exception as exc:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
+            f"Boot gatekeeper subprocess produced malformed JSON: {exc}",
+        ) from exc
+    if not isinstance(parsed, Mapping) or not isinstance(parsed.get("hashes"), Mapping):
+        raise RefusalError(
+            "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
+            "Boot gatekeeper subprocess output missing 'hashes' mapping",
+        )
+    if timings_out is not None:
+        timings_out.update(
+            boot_gatekeeper_timings(parsed, elapsed_seconds=gk_seconds, timeout_seconds=timeout_seconds)
+        )
+        timings_out["generation_by_prompt"] = boot_gatekeeper_generation(parsed, [str(k) for k in parsed["hashes"]])
+    check_boot_gatekeeper_token_counts(
+        judge_id, boot_gatekeeper_generation(parsed, [str(k) for k in parsed["hashes"]])
+    )
+    return {str(k): str(v) for k, v in parsed["hashes"].items()}
 
 
 def _run_real_boot_gatekeeper_prompts(
@@ -10486,6 +11295,7 @@ def _run_real_boot_gatekeeper_prompts(
     hf_home: Path | None = None,
     device: str = "cpu",
     transport: Any | None = None,
+    timings_out: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Load the smallest judge (`nemotron-3-nano-4b`) through the real transport and run the 2 fixed synthetic prompts."""
     _ensure_repo_imports(repo_root)
@@ -10564,61 +11374,19 @@ def _run_real_boot_gatekeeper_prompts(
                 "BOOT_GATEKEEPER_RECEIPT_MISSING",
                 f"Boot gatekeeper receipt not found for {judge_id!r} at {receipt_file}",
             )
-        cfg_payload = {
-            "judge_id": judge_id,
-            "receipts_dir": str(receipts_dir),
-            "hf_home": str(hf_home) if hf_home is not None else None,
-            "device": device,
-            "window_mode": mode,
-            "seed": int(seed),
-            "allow_remote_code_reviewed": (
-                D3_MINI_REVIEWED_REVISION if judge_id == D3_MINI_JUDGE_ID else None
-            ),
-            "prompts": [
-                {
-                    "prompt_id": str(sp.get("prompt_id") or ""),
-                    "material": str(sp.get("material") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["material"]),
-                    "claim": str(sp.get("claim") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[0]["claim"]),
-                    "order": str(sp.get("order") or "AB"),
-                }
-                for sp in prompts
-                if sp.get("prompt_id")
-            ],
-        }
-        child_env = build_judge_child_env(
-            hf_home if hf_home is not None else (eff_work / "hf_home"),
-            repo_root,
+        return run_boot_gatekeeper_subprocess(
+            venv_py=venv_py,
+            judge_id=judge_id,
+            prompts=prompts,
+            seed=seed,
+            mode=mode,
+            repo_root=repo_root,
+            receipts_dir=Path(receipts_dir),
+            hf_home=hf_home,
+            child_hf_home=hf_home if hf_home is not None else (eff_work / "hf_home"),
+            device=device,
+            timings_out=timings_out,
         )
-        proc = subprocess.run(
-            [str(venv_py), "-c", _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT, json.dumps(cfg_payload)],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=child_env,
-            timeout=120,
-            check=False,
-        )
-        if proc.returncode != 0 or not proc.stdout.strip():
-            err_tail = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
-            raise RefusalError(
-                "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
-                f"Boot gatekeeper subprocess failed (rc={proc.returncode}): {err_tail[:240]}",
-            )
-        try:
-            parsed = json.loads(proc.stdout.strip().splitlines()[-1])
-        except Exception as exc:
-            raise RefusalError(
-                "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
-                f"Boot gatekeeper subprocess produced malformed JSON: {exc}",
-            ) from exc
-        if not isinstance(parsed, Mapping) or not isinstance(parsed.get("hashes"), Mapping):
-            raise RefusalError(
-                "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
-                "Boot gatekeeper subprocess output missing 'hashes' mapping",
-            )
-        return {str(k): str(v) for k, v in parsed["hashes"].items()}
 
     if receipt_file is None or not receipt_file.is_file():
         raise RefusalError(
@@ -10695,6 +11463,37 @@ def _run_real_boot_gatekeeper_prompts(
     return out_map
 
 
+def boot_gatekeeper_prompts(goldens_doc: Mapping[str, Any]) -> list[dict[str, str]]:
+    """The gatekeeper's synthetic prompts: the goldens' `synthetic_prompts`, else `BOOT_GATEKEEPER_SYNTHETIC_PROMPTS`."""
+    synth_prompts: list[dict[str, str]] = [dict(sp) for sp in BOOT_GATEKEEPER_SYNTHETIC_PROMPTS]
+    doc_prompts = goldens_doc.get("synthetic_prompts")
+    if isinstance(doc_prompts, list) and doc_prompts:
+        synth_prompts = [
+            {
+                "prompt_id": str(sp.get("prompt_id") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["prompt_id"]),
+                "material": str(sp.get("material") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["material"]),
+                "claim": str(sp.get("claim") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["claim"]),
+                "order": str(sp.get("order") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["order"]),
+                "pass_mode": str(sp.get("pass_mode") or "binary"),
+            }
+            for idx, sp in enumerate(doc_prompts)
+            if isinstance(sp, Mapping) and sp.get("prompt_id")
+        ]
+    return synth_prompts
+
+
+def boot_gatekeeper_expected_sha(c_entry: Any, prompt_id_key: str) -> str | None:
+    """The golden `output_token_ids_sha256` for `prompt_id_key` in a goldens card-type entry, or None when unfilled."""
+    exp_map = c_entry.get("expected_output_token_ids_sha256") if isinstance(c_entry, Mapping) else None
+    p_map = c_entry.get("prompts") if isinstance(c_entry, Mapping) else None
+    p_gold = p_map.get(prompt_id_key) if isinstance(p_map, Mapping) else None
+    raw_v = (
+        (exp_map.get(prompt_id_key) if isinstance(exp_map, Mapping) else None)
+        or (p_gold.get("output_token_ids_sha256") if isinstance(p_gold, Mapping) else p_gold)
+    )
+    return raw_v.strip().lower() if isinstance(raw_v, str) and raw_v.strip() else None
+
+
 def run_boot_gatekeeper(
     *,
     run_dir: Path,
@@ -10712,16 +11511,22 @@ def run_boot_gatekeeper(
     session_env_report: Mapping[str, Any] | None = None,
     window_id: str | None = None,
 ) -> dict[str, Any]:
-    """Run the 2-prompt synthetic boot gatekeeper on the smallest judge (`nemotron-3-nano-4b`) before a shard runs.
+    """Run the 2-prompt synthetic boot gatekeeper on the goldens' judge (`nemotron-3-nano-4b`) before a shard runs.
 
-    - In `time-one` and `counted` mode (when `not dryrun`), loads the smallest judge through the real transport
-      and runs the 2 fixed synthetic prompts built in code with no item text, comparing real `output_token_ids_sha256`
-      with the golden for `card_type`.
-    - In `lock-check` / `lock-check-stub`, runs in record mode and writes `boot_gatekeeper_goldens.filled.json` in `run_dir`
-      without modifying `scripts/colab/boot_gatekeeper_goldens.json`.
-    - In `stub` and `dryrun`, uses `_compute_synthetic_gatekeeper_output_sha256` and labels the report with
-      `"hash_source": "synthetic_fake_stub_dryrun"` and `"synthetic_fake_hash": True`.
-    - Until the lock-check window fills the goldens, `counted` and `counted-stub` modes refuse with `"no golden"` (`BOOT_GATEKEEPER_GOLDEN_MISSING`).
+    The mode decides what is done with the hashes (`boot_gatekeeper_record_mode`):
+    - `time-one`: RECORD mode. In a real window it loads the judge through the real transport on the card and runs
+      the 2 fixed synthetic prompts (no item text); it writes `boot_gatekeeper_goldens.filled.json` in `run_dir` (the
+      lock-check format), compares nothing and refuses nothing for missing goldens. The report says
+      `"gatekeeper": "recorded, not compared"` with the card type and the recorded hashes.
+    - `lock-check` / `lock-check-stub`: RECORD mode, as before (writes `boot_gatekeeper_goldens.filled.json`).
+    - `counted` (real): loads the judge through the real transport and compares each `output_token_ids_sha256` with
+      the golden for `card_type`; refuses `BOOT_GATEKEEPER_GOLDEN_MISMATCH` on a mismatch and
+      `BOOT_GATEKEEPER_GOLDEN_MISSING` (`"no golden"`) when the card's goldens are unfilled. The launcher and VM `main`
+      refuse the missing case earlier, before the session opens / venv sync (`preflight_boot_gatekeeper_goldens`).
+    - `counted-stub`: compares like `counted` and refuses `"no golden"` the same way.
+    - `stub` and dryrun: hashes come from `_compute_synthetic_gatekeeper_output_sha256` (labelled
+      `"hash_source": "synthetic_fake_stub_dryrun"`, `"synthetic_fake_hash": True`); a dryrun time-one still records.
+    No window ever writes `scripts/colab/boot_gatekeeper_goldens.json`; promotion is `scripts/colab/promote_goldens.py`.
     """
     ensure_not_drive_path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -10737,6 +11542,8 @@ def run_boot_gatekeeper(
         "counted-stub",
         "counted_stub",
     )
+    is_time_one_record = boot_gatekeeper_record_mode(mode) and not is_lock_check_mode
+    is_record_mode = is_lock_check_mode or is_time_one_record
     eff_goldens_path = (
         Path(goldens_path)
         if goldens_path is not None
@@ -10746,10 +11553,11 @@ def run_boot_gatekeeper(
             else (repo_root / "scripts" / "colab" / "boot_gatekeeper_goldens.json")
         )
     )
-    eff_card_type = (
-        str(card_type).strip()
+    eff_card_type = resolve_boot_gatekeeper_card_type(card_type, real=is_real_mode(mode, dryrun=dryrun))
+    card_type_source = (
+        "argument"
         if card_type is not None and str(card_type).strip()
-        else (os.environ.get("RDLAB_CARD_TYPE", "").strip() or "A100")
+        else ("RDLAB_CARD_TYPE" if os.environ.get("RDLAB_CARD_TYPE", "").strip() else "stub_default")
     )
 
     if not eff_goldens_path.is_file():
@@ -10766,20 +11574,7 @@ def run_boot_gatekeeper(
         ) from exc
 
     judge_id = str(goldens_doc.get("judge_id") or FIRST_LOAD_JUDGE_ID)
-    synth_prompts = list(BOOT_GATEKEEPER_SYNTHETIC_PROMPTS)
-    doc_prompts = goldens_doc.get("synthetic_prompts")
-    if isinstance(doc_prompts, list) and doc_prompts:
-        synth_prompts = [
-            {
-                "prompt_id": str(sp.get("prompt_id") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["prompt_id"]),
-                "material": str(sp.get("material") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["material"]),
-                "claim": str(sp.get("claim") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["claim"]),
-                "order": str(sp.get("order") or BOOT_GATEKEEPER_SYNTHETIC_PROMPTS[idx % 2]["order"]),
-                "pass_mode": str(sp.get("pass_mode") or "binary"),
-            }
-            for idx, sp in enumerate(doc_prompts)
-            if isinstance(sp, Mapping) and sp.get("prompt_id")
-        ]
+    synth_prompts = boot_gatekeeper_prompts(goldens_doc)
 
     override_hashes_raw = os.environ.get(
         "RDLAB_BOOT_GATEKEEPER_ACTUAL_HASHES", ""
@@ -10833,7 +11628,7 @@ def run_boot_gatekeeper(
                 f"Real mode ({mode!r}) refuses stub/fake transport {type(transport).__name__} in boot gatekeeper.",
             )
         prom_prov = goldens_doc.get("promoted_provenance")
-        if not is_lock_check_mode and (
+        if not is_record_mode and (
             (isinstance(prom_prov, Mapping) and bool(prom_prov.get("stub_transport")))
             or (isinstance(card_entry, Mapping) and bool(card_entry.get("synthetic_fake_hash")))
         ):
@@ -10842,15 +11637,7 @@ def run_boot_gatekeeper(
                 f"Real mode ({mode!r}) refuses boot gatekeeper goldens recorded with stub/fake transport.",
             )
 
-    def _extract_expected_sha(c_entry: Any, prompt_id_key: str) -> str | None:
-        exp_map = c_entry.get("expected_output_token_ids_sha256") if isinstance(c_entry, Mapping) else None
-        p_map = c_entry.get("prompts") if isinstance(c_entry, Mapping) else None
-        p_gold = p_map.get(prompt_id_key) if isinstance(p_map, Mapping) else None
-        raw_v = (
-            (exp_map.get(prompt_id_key) if isinstance(exp_map, Mapping) else None)
-            or (p_gold.get("output_token_ids_sha256") if isinstance(p_gold, Mapping) else p_gold)
-        )
-        return raw_v.strip().lower() if isinstance(raw_v, str) and raw_v.strip() else None
+    _extract_expected_sha = boot_gatekeeper_expected_sha
 
     has_all_goldens = bool(
         card_entry is not None
@@ -10859,6 +11646,7 @@ def run_boot_gatekeeper(
 
     is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
     use_synthetic_fake = bool(is_stub_or_dryrun and transport is None)
+    gk_timings: dict[str, Any] = {}
     if use_synthetic_fake:
         hash_source = "synthetic_fake_stub_dryrun"
         synthetic_fake_hash = True
@@ -10874,7 +11662,7 @@ def run_boot_gatekeeper(
                 ),
             )
     elif (
-        not is_lock_check_mode
+        not is_record_mode
         and not has_all_goldens
         and transport is None
         and work_dir is None
@@ -10910,6 +11698,7 @@ def run_boot_gatekeeper(
             hf_home=hf_home,
             device=device,
             transport=transport,
+            timings_out=gk_timings,
         )
         if is_stub_or_dryrun:
             actual_by_prompt = {
@@ -10920,7 +11709,7 @@ def run_boot_gatekeeper(
             actual_by_prompt = dict(real_hashes)
 
     gatekeeper_out_path = run_dir / BOOT_GATEKEEPER_FILENAME
-    if is_lock_check_mode:
+    if is_record_mode:
         eff_window_id = (
             str(window_id).strip()
             if window_id is not None and str(window_id).strip()
@@ -10986,7 +11775,11 @@ def run_boot_gatekeeper(
         filled_doc: dict[str, Any] = {
             "schema_version": "1.0",
             "judge_id": judge_id,
-            "description": "Boot gatekeeper golden output_token_ids_sha256 hashes recorded by --lock-check window.",
+            "description": (
+                "Boot gatekeeper golden output_token_ids_sha256 hashes recorded by --time-one window (recorded, not compared)."
+                if is_time_one_record
+                else "Boot gatekeeper golden output_token_ids_sha256 hashes recorded by --lock-check window."
+            ),
             "synthetic_prompts": enriched_synth_prompts,
             "card_types": filled_card_types,
             "provenance": {
@@ -11019,6 +11812,7 @@ def run_boot_gatekeeper(
             "status": "ok",
             "record_mode": True,
             "card_type": eff_card_type,
+            "card_type_source": card_type_source,
             "judge_id": judge_id,
             "hash_source": hash_source,
             "synthetic_fake_hash": synthetic_fake_hash,
@@ -11030,6 +11824,10 @@ def run_boot_gatekeeper(
             "actual_output_token_ids_sha256": actual_by_prompt,
             "expected_output_token_ids_sha256": dict(actual_by_prompt),
         }
+        record_doc.update(boot_gatekeeper_report_fields(gk_timings))
+        if is_time_one_record:
+            record_doc["gatekeeper"] = BOOT_GATEKEEPER_RECORDED_NOT_COMPARED
+            record_doc["recorded_output_token_ids_sha256"] = dict(actual_by_prompt)
         gatekeeper_out_path.write_text(
             json.dumps(record_doc, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -11062,6 +11860,7 @@ def run_boot_gatekeeper(
             "judge_id": judge_id,
             "hash_source": hash_source,
             "synthetic_fake_hash": synthetic_fake_hash,
+            **boot_gatekeeper_report_fields(gk_timings),
             "actual_output_token_ids_sha256": actual_by_prompt,
             "expected_output_token_ids_sha256": expected_by_prompt,
             "mismatches": mismatched_prompts,
@@ -11087,6 +11886,7 @@ def run_boot_gatekeeper(
                 "judge_id": judge_id,
                 "hash_source": hash_source,
                 "synthetic_fake_hash": synthetic_fake_hash,
+                **boot_gatekeeper_report_fields(gk_timings),
                 "missing_prompts": missing_prompts or list(actual_by_prompt.keys()),
                 "actual_output_token_ids_sha256": actual_by_prompt,
             }
@@ -11106,6 +11906,7 @@ def run_boot_gatekeeper(
             "judge_id": judge_id,
             "hash_source": hash_source,
             "synthetic_fake_hash": synthetic_fake_hash,
+            **boot_gatekeeper_report_fields(gk_timings),
             "missing_prompts": missing_prompts or list(actual_by_prompt.keys()),
             "actual_output_token_ids_sha256": actual_by_prompt,
             "expected_output_token_ids_sha256": expected_by_prompt,
@@ -11120,9 +11921,11 @@ def run_boot_gatekeeper(
     ok_doc = {
         "status": "ok",
         "card_type": eff_card_type,
+        "card_type_source": card_type_source,
         "judge_id": judge_id,
         "hash_source": hash_source,
         "synthetic_fake_hash": synthetic_fake_hash,
+        **boot_gatekeeper_report_fields(gk_timings),
         "actual_output_token_ids_sha256": actual_by_prompt,
         "expected_output_token_ids_sha256": expected_by_prompt,
     }
@@ -11810,6 +12613,9 @@ def main(argv: list[str] | None = None) -> int:
     shard_info_report: dict[str, Any] | None = None
     session_env_report: dict[str, Any] | None = None
     boot_gatekeeper_report: dict[str, Any] | None = None
+    boot_gatekeeper_judge_plan: dict[str, Any] | None = None
+    gatekeeper_record_fields: dict[str, Any] = {}
+    card_type_check: dict[str, Any] | None = None
     loop_order_val: str = DEFAULT_LOOP_ORDER
     subblock_items_val: int = DEFAULT_SUBBLOCK_ITEMS
     uploaded_item_files: list[Path] = []
@@ -12044,6 +12850,40 @@ def main(argv: list[str] | None = None) -> int:
             schedule_seed=DEFAULT_SCHEDULE_SEED,
         )
 
+        # The boot gatekeeper loads its own judge (the goldens' judge_id), whatever RDLAB_ONLY_JUDGES selects for timing.
+        # Its weights join the download/verify set here, and a run that could not download and verify them is refused
+        # before venv sync, the device/GPU gate and any weight download (timeone-mu, 2026-11-06: only mu-judge's
+        # weights were on the VM and the gatekeeper's verify_ready failed after the paid setup).
+        # The card: the launcher forwards the opened session's card type (RDLAB_CARD_TYPE); it must equal what
+        # nvidia-smi (the driver's own binary, on the base image) reports, checked here before venv sync. By now the
+        # session is open and has run the alive probe, the gate (python/uv) and the uploads; nothing paid beyond that.
+        current_step = "verify_card_type"
+        card_type_check = verify_vm_card_type(args.mode, dryrun=dryrun, until=until_step)
+        if card_type_check is not None:
+            _append_vm_log_line(
+                f"VM_CARD_TYPE card_type={card_type_check['card_type']} gpu_name={json.dumps(card_type_check['gpu_name'])}"
+            )
+
+        current_step = "preflight_boot_gatekeeper_judge"
+        boot_gatekeeper_judge_plan = plan_boot_gatekeeper_judge(
+            mode=args.mode,
+            judge_order=judge_order,
+            repo_root=args.repo_dir,
+            dryrun=dryrun,
+            until=until_step,
+            goldens_path=getattr(args, "boot_gatekeeper_goldens", None),
+            receipts_dir=args.receipts_dir,
+            card_type=card_type_check["card_type"] if card_type_check is not None else None,
+        )
+        if boot_gatekeeper_judge_plan is not None:
+            _append_vm_log_line(
+                "VM_BOOT_GATEKEEPER_JUDGE"
+                f" judge_id={boot_gatekeeper_judge_plan['judge_id']}"
+                f" timed={str(boot_gatekeeper_judge_plan['timed']).lower()}"
+                f" download_verify={','.join(boot_gatekeeper_judge_plan['download_verify_judge_ids'])}"
+                f" receipts_preflight={boot_gatekeeper_judge_plan['receipts_preflight']['status']}"
+            )
+
         current_step = "verify_lock_digests"
         t_locks, start_locks, _ = _record_step_start(
             "lock_digests", progress_path=progress_path
@@ -12252,25 +13092,76 @@ def main(argv: list[str] | None = None) -> int:
                         judge_records_out=judge_download_records,
                         step_timings=step_timings,
                         step_order=step_order,
-                        only_judge_ids=judge_order,
+                        only_judge_ids=(
+                            tuple(boot_gatekeeper_judge_plan["download_verify_judge_ids"])
+                            if boot_gatekeeper_judge_plan is not None
+                            else judge_order
+                        ),
                         max_workers=dl_max_workers,
                         hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
                     )
+                    if boot_gatekeeper_judge_plan is not None:
+                        gk_judge = str(boot_gatekeeper_judge_plan["judge_id"])
+                        for dl_rec in judge_download_records:
+                            if dl_rec.get("judge_id") == gk_judge and not boot_gatekeeper_judge_plan["timed"]:
+                                dl_rec["purpose"] = "boot_gatekeeper"
+                        if gk_judge not in verified_snapshots:
+                            raise RefusalError(
+                                BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED,
+                                f"Boot gatekeeper judge {gk_judge!r} was not verified by the weight step "
+                                f"(verified: {sorted(verified_snapshots)})",
+                            )
+                        boot_gatekeeper_judge_plan["verified"] = True
 
                     current_step = "boot_gatekeeper"
-                    boot_gatekeeper_report = run_boot_gatekeeper(
-                        run_dir=args.run_dir,
-                        repo_root=args.repo_dir,
-                        mode=args.mode,
-                        goldens_path=getattr(args, "boot_gatekeeper_goldens", None),
-                        dryrun=dryrun,
-                        work_dir=args.work_dir,
-                        receipts_dir=args.receipts_dir,
-                        hf_home=args.hf_home,
-                        device=resolve_judge_device(mode=args.mode, dryrun=dryrun),
-                        session_env_report=session_env_report,
-                        window_id=getattr(args, "window_id", None),
+                    gk_start_judge = (
+                        str(boot_gatekeeper_judge_plan["judge_id"])
+                        if boot_gatekeeper_judge_plan is not None
+                        else "synthetic"
                     )
+                    _append_vm_log_line(
+                        f"VM_BOOT_GATEKEEPER_START mode={args.mode} dryrun={dryrun} judge_id={gk_start_judge}"
+                    )
+                    try:
+                        boot_gatekeeper_report = run_boot_gatekeeper(
+                            run_dir=args.run_dir,
+                            repo_root=args.repo_dir,
+                            mode=args.mode,
+                            goldens_path=getattr(args, "boot_gatekeeper_goldens", None),
+                            dryrun=dryrun,
+                            work_dir=args.work_dir,
+                            receipts_dir=args.receipts_dir,
+                            hf_home=args.hf_home,
+                            device=resolve_judge_device(mode=args.mode, dryrun=dryrun),
+                            session_env_report=session_env_report,
+                            window_id=getattr(args, "window_id", None),
+                        )
+                    except (RefusalError, RdlabError) as gk_err:
+                        gk_fc = getattr(gk_err, "failure_class", getattr(gk_err, "code", "VM_REFUSAL"))
+                        gk_exc_line = getattr(gk_err, "exception_line", None)
+                        _append_vm_log_line(
+                            f"VM_BOOT_GATEKEEPER_END status=refused failure_class={gk_fc}"
+                            + (f" exception={json.dumps(gk_exc_line)}" if gk_exc_line else "")
+                        )
+                        raise
+                    gk_rep: Mapping[str, Any] = (
+                        boot_gatekeeper_report if isinstance(boot_gatekeeper_report, Mapping) else {}
+                    )
+                    _append_vm_log_line(
+                        f"VM_BOOT_GATEKEEPER_END status={json.dumps(str(gk_rep.get('status') or 'ok'))}"
+                        + "".join(f" {k}={gk_rep[k]}" for k in ("judge_id", "hash_source", "card_type") if k in gk_rep)
+                        + (f" gatekeeper={json.dumps(gk_rep['gatekeeper'])}" if gk_rep.get("gatekeeper") else "")
+                    )
+                    if gk_rep.get("gatekeeper") == BOOT_GATEKEEPER_RECORDED_NOT_COMPARED:
+                        # time-one records the gatekeeper's hashes on the real card; nothing is compared.
+                        gatekeeper_record_fields = {
+                            "gatekeeper": BOOT_GATEKEEPER_RECORDED_NOT_COMPARED,
+                            "gatekeeper_card_type": gk_rep.get("card_type"),
+                            "gatekeeper_recorded_output_token_ids_sha256": dict(
+                                gk_rep.get("recorded_output_token_ids_sha256") or {}
+                            ),
+                            "gatekeeper_synthetic_fake_hash": bool(gk_rep.get("synthetic_fake_hash")),
+                        }
 
                     current_step = "run_judges_pipeline"
                     t_jpass, start_jpass, _ = _record_step_start(
@@ -12318,6 +13209,13 @@ def main(argv: list[str] | None = None) -> int:
                             getattr(args, "replacement_session", False)
                         ),
                     )
+                    if time_one_summary is not None and gatekeeper_record_fields:
+                        time_one_summary.update(gatekeeper_record_fields)
+                        (args.run_dir / "time_one_summary.json").write_text(
+                            json.dumps(time_one_summary, indent=2) + "\n",
+                            encoding="utf-8",
+                            newline="\n",
+                        )
                     if time_one_summary is not None:
                         shard_info_report["shard_manifest_sha256"] = time_one_summary.get(
                             "shard_manifest_sha256",
@@ -12443,11 +13341,7 @@ def main(argv: list[str] | None = None) -> int:
         receipt_doc: dict[str, Any] = {
             "status": "ok",
             "mode": args.mode,
-            "hardware": (
-                "A100"
-                if args.mode in ("time-one", "counted", "lock-check")
-                else "CPU"
-            ),
+            **receipt_hardware_fields(args.mode, dryrun=dryrun, card_type_check=card_type_check),
             "shard_spec": (
                 shard_info_report["shard_spec"]
                 if shard_info_report is not None
@@ -12548,6 +13442,13 @@ def main(argv: list[str] | None = None) -> int:
             "cgroup_limit_chain": cgroup_chain_at_start,
             "dryrun": dryrun,
         }
+        if boot_gatekeeper_judge_plan is not None:
+            # The gatekeeper's judge, downloaded and verified for the gatekeeper only when it is not a timed judge;
+            # judge_order, only_judges and the timing outputs above stay as requested.
+            receipt_doc["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
+        receipt_doc.update(gatekeeper_record_fields)
+        if card_type_check is not None:
+            receipt_doc["card_type_check"] = card_type_check
         if until_step is not None:
             receipt_doc["until"] = until_step
             receipt_doc["until_step"] = until_step
@@ -12675,6 +13576,11 @@ def main(argv: list[str] | None = None) -> int:
             "device_check": device_check_report,
             "gpu_gate": gpu_gate_report,
         }
+        if boot_gatekeeper_judge_plan is not None:
+            status_extra["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
+        status_extra.update(gatekeeper_record_fields)
+        if card_type_check is not None:
+            status_extra["card_type_check"] = card_type_check
         if until_step is not None:
             status_extra["until"] = until_step
             status_extra["until_step"] = until_step
@@ -12774,6 +13680,22 @@ def main(argv: list[str] | None = None) -> int:
                 deleted_items_receipt.setdefault("manifest_cleanup_errors", []),
                 err_cleanup_errors,
             )
+        # The last FAILURE_TAIL_LINES lines of the failing subprocess's output and its exception line, when the
+        # refusal came from a subprocess: written to vm.log here, and to vm_receipt.json and status.json below.
+        err_failure_tail = getattr(err, "failure_tail", None)
+        if not err_failure_tail and (err_stderr_tail or err_stdout_tail):
+            err_failure_tail = _failure_output_tail(err_stderr_tail, err_stdout_tail)
+        err_exception_line = getattr(err, "exception_line", None) or (
+            _exception_line(err_failure_tail) if err_failure_tail else None
+        )
+        _append_vm_log_line(
+            f"VM_RUN_REFUSED step={current_step} failure_class={failure_class}"
+            f" reason={json.dumps(scrub_log_text(f'{failure_class}: {detail}'))}"
+        )
+        if err_failure_tail:
+            if err_exception_line:
+                _append_vm_log_line(f"VM_REFUSAL_EXCEPTION: {json.dumps(err_exception_line)}")
+            _append_vm_log_line(f"VM_REFUSAL_OUTPUT_TAIL: {json.dumps(err_failure_tail)}")
         for lf in logs_dir.glob("*.log"):
             scrub_log_file_in_place(lf)
         fail_judge_venvs_map = _build_judge_venvs_map(args.work_dir)
@@ -12818,6 +13740,19 @@ def main(argv: list[str] | None = None) -> int:
             "loop_order": loop_order_val,
             "subblock_items": subblock_items_val,
         }
+        if err_failure_tail:
+            fail_receipt["failure_output_tail"] = err_failure_tail
+            fail_receipt["exception_line"] = err_exception_line
+            status_fail_extra["failure_output_tail"] = err_failure_tail
+            status_fail_extra["exception_line"] = err_exception_line
+        if boot_gatekeeper_judge_plan is not None:
+            fail_receipt["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
+            status_fail_extra["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
+        fail_receipt.update(gatekeeper_record_fields)
+        status_fail_extra.update(gatekeeper_record_fields)
+        if card_type_check is not None:
+            fail_receipt["card_type_check"] = card_type_check
+            status_fail_extra["card_type_check"] = card_type_check
         if shard_info_report is not None:
             for sk in ("shard_spec", "shard_manifest_sha256", "shard_item_ids", "anchor_item_ids"):
                 fail_receipt[sk] = shard_info_report.get(sk)

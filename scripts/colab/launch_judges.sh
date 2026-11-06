@@ -83,6 +83,18 @@ Options:
   --counted-manifest F For --lock-check / --lock-check-stub: counted part manifest JSON (required unless --counted-items is given) to build shard_manifest.json and verify anchor membership and P0a exclusion (or set RDLAB_COUNTED_MANIFEST)
   --receipts-dir DIR   Directory containing <owner>__<repo>.sha256.json receipts (or RDLAB_RECEIPTS_DIR)
   --cap UNITS          Explicit compute-unit cap override (or set RDLAB_CAP_UNITS)
+
+Environment:
+  RDLAB_ONLY_JUDGES    --time-one only: comma-separated subset of the 5 judges to time (no spaces, no duplicates).
+                       The boot gatekeeper's judge (the goldens' judge_id, nemotron-3-nano-4b) is downloaded and
+                       verified as well, once, in every real --time-one / --counted / --lock-check window, and is
+                       recorded as boot_gatekeeper_judge; it is not timed, and only_judges stays as given. --dry
+                       prints the set as a [judges] line. A window whose gatekeeper judge could not be downloaded
+                       and verified is refused before the session opens (BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED, or
+                       BOOT_GATEKEEPER_RECEIPT_MISSING when the receipts directory lacks its receipt). Every judge in
+                       the download/verify set has its receipt checked then too (present, valid JSON with a files
+                       mapping, repo and revision equal to the pin: BAKEOFF_JUDGE_RECEIPT_NOT_FOUND / _INVALID /
+                       _MISMATCH); --dry prints the result as a [receipts] line.
 EOF
 }
 
@@ -485,9 +497,10 @@ fi
 ALIVE_PROBE_MAX_TRIES="${RDLAB_ALIVE_PROBE_MAX_TRIES:-3}"
 ALIVE_PROBE_SLEEP_SECONDS="${RDLAB_ALIVE_PROBE_SLEEP_SECONDS:-20}"
 ALIVE_PROBE_TIMEOUT_SECONDS="${RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS:-60}"
+RESTART_KERNEL_TIMEOUT_SECONDS="${RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS:-60}"
 COST_CAP_POLL_SECONDS="${RDLAB_COST_CAP_POLL_SECONDS:-1}"
 
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -496,6 +509,7 @@ repo_root = Path(sys.argv[1])
 mode = sys.argv[2]
 until_step = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
 is_smoke = (len(sys.argv) > 4 and sys.argv[4] == "1")
+receipts_arg = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5].strip() else None
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
@@ -540,6 +554,52 @@ try:
             Path(raw_manifest_path),
             expected_sha256=os.environ.get("RDLAB_SHARD_MANIFEST_SHA256"),
         )
+    # The boot gatekeeper's judge (the goldens' judge_id) joins the download/verify set of every real window that
+    # runs the gatekeeper, whatever RDLAB_ONLY_JUDGES says; refused here, before the session opens, when it could not
+    # be downloaded and verified (BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED / BOOT_GATEKEEPER_RECEIPT_MISSING).
+    only_judges_t = vm_judges.validate_only_judges(
+        mode,
+        os.environ.get("RDLAB_ONLY_JUDGES", None),
+        raw_judge_order=os.environ.get("RDLAB_JUDGE_ORDER", None),
+        until=until_step,
+        session_smoke=is_smoke,
+    )
+    judge_order_t = (
+        only_judges_t
+        if only_judges_t is not None
+        else vm_judges.validate_judge_order(
+            mode, os.environ.get("RDLAB_JUDGE_ORDER", None), until=until_step, session_smoke=is_smoke
+        )[0]
+    )
+    raw_goldens = (os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
+    gk_plan = None
+    if not is_smoke:
+        gk_plan = vm_judges.plan_boot_gatekeeper_judge(
+            mode=mode,
+            judge_order=judge_order_t,
+            repo_root=repo_root,
+            dryrun=os.environ.get("VM_DRYRUN") == "1",
+            until=until_step,
+            goldens_path=Path(raw_goldens) if raw_goldens else None,
+            receipts_dir=Path(receipts_arg) if receipts_arg else None,
+            # The card is not known before the session opens (it is read from `colab sessions` after `colab new`):
+            # here a counted window is refused only when no card has goldens; the opened card is checked after open.
+            card_type=None,
+        )
+    if gk_plan is not None:
+        print(
+            f"[judges] timed={','.join(gk_plan['timed_judge_ids'])} boot_gatekeeper={gk_plan['judge_id']} "
+            f"download_verify={','.join(gk_plan['download_verify_judge_ids'])} "
+            f"gatekeeper=\"{gk_plan['gatekeeper']}\" card_type=<read from colab sessions after open>"
+        )
+        rp = gk_plan.get("receipts_preflight") or {}
+        if rp.get("status") == "ok":
+            print(
+                f"[receipts] preflight=ok judges={','.join(r['judge_id'] for r in rp['judges'])} "
+                "(present, valid JSON with files, repo and revision equal to the pin)"
+            )
+        else:
+            print("[receipts] preflight=not_run (no receipts directory; a live run refuses RECEIPTS_DIR_MISSING)")
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
     raise SystemExit(2)
@@ -565,7 +625,9 @@ scrub_stream() {
     -e 's/\bhf_(home|cache|low|match)\b/__RDLAB_HF_SAFE_\1__/g' \
     -e 's/\bhf_[A-Za-z0-9]+\b/hf_[REDACTED]/g' \
     -e 's/__RDLAB_HF_SAFE_(home|cache|low|match)__/hf_\1/g' \
-    -e 's/(HF_TOKEN(_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)=[^ "'"'"';]+/\1=[REDACTED]/g'
+    -e 's/(HF_TOKEN(_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)=[^ "'"'"';]+/\1=[REDACTED]/g' \
+    -e 's/(^|[^A-Za-z0-9_])(gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}/\1\2[REDACTED]/g' \
+    -e 's/((GITHUB|GH)_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_PAT)=[^ "'"'"';]+/\1=[REDACTED]/g'
 }
 
 STAGE_DIR="$OUT_DIR/stage"
@@ -681,6 +743,15 @@ build_probe_env_args() {
   )
 }
 
+# A real time-one / counted / lock-check window (no VM_DRYRUN, no --until): the VM needs the card type of the session
+# actually opened, read from `colab sessions` after `colab new` (never from --gpu), and checks it against nvidia-smi.
+OPENED_CARD_TYPE=""
+
+needs_opened_card_type() {
+  [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$UNTIL_STEP" ]] && [[ "$SESSION_SMOKE_FLAG" != "1" ]] \
+    && [[ "$MODE" == "time-one" || "$MODE" == "counted" || "$MODE" == "lock-check" ]]
+}
+
 build_exec_env_args() {
   local j_sha="${RDLAB_JUDGE_LOCK_SHA256:-$EXPECTED_JUDGE_LOCK_SHA256}"
   local d_sha="${RDLAB_D3_LOCK_SHA256:-$EXPECTED_D3_LOCK_SHA256}"
@@ -722,6 +793,9 @@ build_exec_env_args() {
   fi
   if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=/content/resume_state.tar.gz")
+  fi
+  if [[ -n "${OPENED_CARD_TYPE:-}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_CARD_TYPE=$OPENED_CARD_TYPE")
   fi
   if [[ "${VM_DRYRUN:-0}" == "1" ]]; then
     EXEC_ENV_ARGS+=(--env "VM_DRYRUN=1")
@@ -987,6 +1061,10 @@ PY
   fi
   build_gate_env_args
   DRY_GATE_ENV_STR="${GATE_ENV_ARGS[*]}"
+  if needs_opened_card_type; then
+    # Nothing is opened in --dry: the live run forwards the card type read from `colab sessions` after `colab new`.
+    OPENED_CARD_TYPE="<card-of-opened-session>"
+  fi
   build_exec_env_args
   DRY_ENV_STR="${EXEC_ENV_ARGS[*]}"
 
@@ -2253,6 +2331,61 @@ if ! printf '%s\n' "$MID_SESSIONS" | grep -q "^\[$S\]"; then
   exit 1
 fi
 
+# The card type of the session actually opened: its `Hardware:` field in `colab sessions` (not the --gpu request).
+# Unknown -> CARD_TYPE_UNKNOWN before the alive probe, the gate, any upload or exec (the trap stops the session).
+OPENED_CARD_TYPE=""
+if needs_opened_card_type; then
+  CARD_READ="$("$PYTHON_BIN" - "$REPO_ROOT" "$S" "$MID_SESSIONS" <<'PY' || true
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "colab"))
+import vm_judges
+
+card, token = vm_judges.card_type_from_sessions_output(sys.argv[3], sys.argv[2])
+print(f"{card or ''}\t{token or ''}")
+PY
+)"
+  OPENED_CARD_TYPE="${CARD_READ%%$'\t'*}"
+  OPENED_HARDWARE="${CARD_READ#*$'\t'}"
+  if [[ -z "$OPENED_CARD_TYPE" ]]; then
+    flock -u 9 || true
+    RUN_FAILURE_CLASS="CARD_TYPE_UNKNOWN"
+    RUN_WHY="CARD_TYPE_UNKNOWN: cannot read the card type of session $S from colab sessions (Hardware/Shape: '${OPENED_HARDWARE}')"
+    echo "$RUN_WHY" >&2
+    exit 2
+  fi
+  log_msg "CARD_TYPE session=$S card_type=$OPENED_CARD_TYPE hardware=$OPENED_HARDWARE requested=${COLAB_NEW_FLAGS[*]:-none}"
+  if [[ "$MODE" == "counted" ]]; then
+    GOLD_ERR="$("$PYTHON_BIN" - "$REPO_ROOT" "$OPENED_CARD_TYPE" <<'PY' 2>&1 >/dev/null
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+raw = (os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
+try:
+    vm_judges.preflight_boot_gatekeeper_goldens(
+        mode="counted", repo_root=repo_root, goldens_path=Path(raw) if raw else None, card_type=sys.argv[2]
+    )
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+)" || {
+      flock -u 9 || true
+      RUN_FAILURE_CLASS="BOOT_GATEKEEPER_GOLDEN_MISSING"
+      RUN_WHY="BOOT_GATEKEEPER_GOLDEN_MISSING on session $S (card $OPENED_CARD_TYPE): $GOLD_ERR"
+      echo "$RUN_WHY" >&2
+      exit 2
+    }
+  fi
+fi
+
 OPEN_CLOCK_EPOCH="$(now_epoch_seconds)"
 START_EPOCH="$OPEN_CLOCK_EPOCH"
 RATE_READ_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -2312,6 +2445,13 @@ while (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); do
   fi
   log_msg "ALIVE_PROBE_RETRY session=$S attempt=${ALIVE_ATTEMPT}/${ALIVE_PROBE_MAX_TRIES} rc=$ALIVE_RC"
   if (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); then
+    # One kernel per session (docs/colab-cli-contract.md): an attempt that timed out locally may still be running on
+    # the VM, and the next exec would queue behind it and time out too. Restart the kernel (ends that cell) first.
+    if [[ "$ALIVE_RC" -eq 124 || "$ALIVE_RC" -eq 137 ]] || printf '%s\n' "$ALIVE_OUT" | grep -qi 'timed out'; then
+      RESTART_RC=0
+      timeout "$RESTART_KERNEL_TIMEOUT_SECONDS" colab restart-kernel -s "$S" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || RESTART_RC=$?
+      log_msg "ALIVE_PROBE_KERNEL_RESTART session=$S after_attempt=${ALIVE_ATTEMPT} rc=$RESTART_RC reason=attempt_timed_out_locally_cell_may_still_run"
+    fi
     sleep "$ALIVE_PROBE_SLEEP_SECONDS"
   fi
 done
