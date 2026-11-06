@@ -26144,13 +26144,15 @@ def test_bakeoff_project_refuses_every_malformed_part(tmp_path: Path) -> None:
         "no_checksums": _variant("no_checksums", drop="checksums.txt"),
         "bad_checksums": _variant("bad_checksums", sums="not a line\n"),
         "dup_checksums": _variant("dup_checksums", sums=("0" * 64 + "  part.json\n") * 2),
-        "unlisted": _variant("unlisted", sums="\n" + "0" * 64 + "  part.json\n"),
+        "unlisted": _variant(
+            "unlisted", sums="\n" + hashlib.sha256((part / "part.json").read_bytes()).hexdigest() + "  part.json\n"
+        ),
         "sealed": _variant("sealed", under="sealed_store"),
         "meta_parse": _variant("meta_parse", meta="{not json"),
         "meta_fields": _variant("meta_fields", meta={"part_id": "", "items_count": 12}),
         "row_json": _variant("row_json", items=["{bad"]),
         "row_field": _variant("row_field", items=[json.dumps({"id": "x", "material": "m"})]),
-        "count": _variant("count", items=[json.dumps(r) for r in rows[:-1]]),
+        "count": _variant("count", items=["", *[json.dumps(r) for r in rows[:-1]]]),
         "dup_id": _variant("dup_id", meta=dict(good_meta, items_count=2), items=[json.dumps(rows[0])] * 2),
         "items_hash": _variant("items_hash", sums=(part / "checksums.txt").read_text(encoding="utf-8").replace(
             hashlib.sha256((part / "items.jsonl").read_bytes()).hexdigest(), "f" * 64)),
@@ -26161,3 +26163,30 @@ def test_bakeoff_project_refuses_every_malformed_part(tmp_path: Path) -> None:
             project_part_items(bad, out)
         assert exc.value.code == "PROJECTION_PART_INVALID", tag
         assert not out.exists() and not out.with_name(out.name + ".sha256").exists(), tag
+
+
+def test_p0a_identity_must_be_bound_whole_part_to_this_file() -> None:
+    """Item 1: `_check_p0a_pilot_identity` refuses `P0A_PILOT_IDENTITY_MISMATCH` for an identity with no binding, a
+    subset binding, another item count, another file's SHA-256 or no pin, and returns the real part_id otherwise.
+    Fails at ffa9f61f: there was no identity check (the label stood in for it).
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    good = {
+        "part_id": "bakeoff-d-t10-sealed",
+        "is_pilot_40b": True,
+        "pin": "burned_pilot",
+        "binding": {"rule": "whole_part_in_order", "uploaded_items": 114, "uploaded_items_sha256": "a" * 64},
+    }
+    assert bakeoff_judge._check_p0a_pilot_identity(good, item_count=114, items_sha256="a" * 64) == "bakeoff-d-t10-sealed"
+    for bad, kw in (
+        (dict(good, binding=None), {}),
+        (dict(good, binding=dict(good["binding"], rule="subset_of_part")), {}),
+        (good, {"item_count": 113}),
+        (good, {"items_sha256": "b" * 64}),
+        (dict(good, pin=None), {}),
+    ):
+        args = {"item_count": 114, "items_sha256": "a" * 64, **kw}
+        with pytest.raises(RdlabError) as exc:
+            bakeoff_judge._check_p0a_pilot_identity(bad, **args)
+        assert exc.value.code == "P0A_PILOT_IDENTITY_MISMATCH"
