@@ -27,6 +27,7 @@ EXPECTED_PROMPT_IDS: tuple[str, str] = (
 ALLOWED_LOCK_CHECK_PROVENANCE_MODES: frozenset[str] = frozenset(
     {"lock-check", "lock_check", "lock-check-stub", "lock_check_stub"}
 )
+PROMOTABLE_LOCK_CHECK_PHASES: frozenset[str] = frozenset({"", "anchors", "all"})
 HEX64_RE: re.Pattern[str] = re.compile(r"^[0-9a-f]{64}$")
 LIVE_REPO_GOLDENS_PATH: Path = Path(__file__).resolve().parent / "boot_gatekeeper_goldens.json"
 
@@ -187,6 +188,16 @@ def verify_filled_goldens(
             f"session_env_sha256={prov_env_sha!r}, mode={prov_mode!r}, card_type={prov_card!r}.",
         )
 
+    # Promotion takes the goldens of a lock-check window's `anchors` phase (or of an `all` window, and of windows from
+    # before the split, which record no phase). A `p0a` window records goldens too, but it is not the promoted window.
+    prov_phase = str(prov.get("lock_check_phase") or "").strip().lower()
+    if prov_phase not in PROMOTABLE_LOCK_CHECK_PHASES:
+        raise PromoteGoldensRefusalError(
+            "PROMOTE_GOLDENS_PHASE_REFUSED",
+            f"Filled goldens '{filled_path}' come from lock-check phase {prov_phase!r}; promotion takes the goldens "
+            "of the anchors phase (or an all window).",
+            hint="Promote boot_gatekeeper_goldens.filled.json from the --lock-check-phase anchors window.",
+        )
 
     adjacent_env = filled_path.parent / "session_env.json"
     eff_session_env_path = session_env_path if session_env_path is not None else (adjacent_env if adjacent_env.is_file() else None)

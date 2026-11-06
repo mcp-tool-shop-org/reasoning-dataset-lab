@@ -51,6 +51,7 @@ from reasoning_dataset_lab.pilot_b.shortcut_probe import (
     evaluate_bakeoff_probe_files,
 )
 from reasoning_dataset_lab.pilot_b.bakeoff_project import project_part_items
+from reasoning_dataset_lab.pilot_b.lockcheck_anchors import build_lc1_anchor_items
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     DEFAULT_SCHEDULE_SEED,
     DEFAULT_TORCH_DTYPE,
@@ -438,6 +439,43 @@ def _build_parser() -> _StructuredArgumentParser:
         type=Path,
         required=True,
         help="Output path for the JSON shortcut probe report.",
+    )
+
+    # rdlab bakeoff-lockcheck-anchors --part-dir <counted part dir> --out <file>
+    blca_parser = subparsers.add_parser(
+        "bakeoff-lockcheck-anchors",
+        help=(
+            "Write a lock-check window's 50 label-blind LC-1 anchors (rule rdlab-lc1-anchors-v1: 5 per domain x 10, one "
+            "per triad, canaries excluded) as the upload projection, with a manifest of the rule and its counts."
+        ),
+    )
+    blca_parser.add_argument(
+        "--part-dir",
+        dest="part_dir",
+        type=Path,
+        required=True,
+        help="The counted part directory (part_bakeoff_sealed: part.json, checksums.txt, items.jsonl).",
+    )
+    blca_parser.add_argument(
+        "--out",
+        dest="out_path",
+        type=Path,
+        required=True,
+        help="Output anchor items file (outside the part); <out>.sha256 is written beside it.",
+    )
+    blca_parser.add_argument(
+        "--manifest-out",
+        dest="manifest_path",
+        type=Path,
+        default=None,
+        help="Output manifest (default <out>.manifest.json).",
+    )
+    blca_parser.add_argument(
+        "--canary-config",
+        dest="canary_config_path",
+        type=Path,
+        default=None,
+        help="canary_config.json naming the 30 determinism-canary ids (default: the package's own).",
     )
 
     # rdlab bakeoff-project --part-dir <dir> --out <file>
@@ -1290,6 +1328,17 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(probe_rep, indent=2))
             return EXIT_CLEAN if probe_rep.get("passed") else EXIT_REFUSED
+
+        if args.command == "bakeoff-lockcheck-anchors":
+            anc_rep = build_lc1_anchor_items(
+                args.part_dir,
+                args.out_path,
+                manifest_path=args.manifest_path,
+                canary_config_path=args.canary_config_path,
+            )
+            anc_rep.pop("item_ids", None)
+            print(json.dumps(anc_rep, indent=2))
+            return EXIT_CLEAN
 
         if args.command == "bakeoff-project":
             print(json.dumps(project_part_items(args.part_dir, args.out_path), indent=2))

@@ -221,6 +221,13 @@ def _hermetic_path_for(env_paths: dict[str, Path]) -> str:
 
 
 @pytest.fixture(autouse=True)
+def _lock_check_phase_all_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lock-check windows require a phase (no default). Tests written before the split run as `all` (the behaviour
+    before it) through RDLAB_LOCK_CHECK_PHASE, which only lock-check modes read; the split's own tests unset it."""
+    monkeypatch.setenv("RDLAB_LOCK_CHECK_PHASE", "all")
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_fake_colab_and_uv_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -14310,6 +14317,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_PRE_ACCOUNT_RATE": "rig-only: write_outcome_draft's account usage rate read before open",
     "RDLAB_POST_ACCOUNT_RATE": "rig-only: write_outcome_draft's account usage rate at the accepted post-open read",
     "RDLAB_PRICING_RATE": "rig-only: write_outcome_draft's cap pricing rate, max(--max-rate, window rate)",
+    "RDLAB_OUTCOME_LOCK_CHECK_PHASE": "rig-only: write_outcome_draft's copy of the lock-check phase (the VM gets RDLAB_LOCK_CHECK_PHASE)",
     "RDLAB_RATE_POLL_MAX_READS": "rig-only: bound on post-open colab usage reads for a stable window rate",
     "RDLAB_RATE_POLL_SLEEP_SECONDS": "rig-only: seconds between post-open colab usage reads (default 5)",
     "RDLAB_USAGE_TIMEOUT_SECONDS": "rig-only: timeout -k bound on each colab usage call",
@@ -22788,11 +22796,11 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
             )
         assert exc_wrap_sm_mis.value.failure_class == "SHARD_MANIFEST_COUNTED_ITEMS_MISMATCH"
 
-    # (c) Wrap around run_lock_check_p0a raising RdlabError
+    # (c) Wrap around P0a raising RdlabError (P0a's in-parent preparation, before any child starts)
     with monkeypatch.context() as mp_wrap2:
         mp_wrap2.setattr(
             bakeoff_judge,
-            "run_lock_check_p0a",
+            "prepare_lock_check_p0a",
             lambda **_kw: (_ for _ in ()).throw(
                 bakeoff_judge.refused_error("P0A_RUN_TEST_REFUSAL", "simulated p0a refusal", "test hint")
             ),
@@ -24770,7 +24778,7 @@ def test_followup_item6_real_lock_check_through_vm_main_on_monkeypatched_transpo
         if vm_judges.JUDGE_RUNNER_MODULE not in cmd:
             transport_calls.append("other_child")
             return orig_child(cmd, *args, **kwargs)
-        transport_calls.append("judge_child")
+        transport_calls.append("p0a_child" if "--p0a-stage" in cmd else "judge_child")
         new_cmd = list(cmd)
         if "--device" in new_cmd:
             new_cmd[new_cmd.index("--device") + 1] = "cpu"
@@ -24782,22 +24790,8 @@ def test_followup_item6_real_lock_check_through_vm_main_on_monkeypatched_transpo
 
     monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _fake_child)
 
-    from reasoning_dataset_lab.pilot_b import bakeoff_judge
-
-    orig_p0a = bakeoff_judge.run_lock_check_p0a
-
-    def _fake_p0a(**kwargs: Any) -> Any:
-        transport_calls.append("p0a")
-        kwargs.update(
-            fake_transport=True,
-            event_factory=None,
-            timing_backend="cpu_monotonic",
-            device="cpu",
-            window_mode="lock-check-stub",
-        )
-        return orig_p0a(**kwargs)
-
-    monkeypatch.setattr(bakeoff_judge, "run_lock_check_p0a", _fake_p0a)
+    # P0a runs through the same child runner (one child per judge and stage), so the child patch above makes its
+    # transports the stub; nothing patches P0a itself (it used to be forced to fake transports in this process).
 
     # (1) bad counted source: refused at the preflight, nothing paid, nothing written
     anc_bad, p0a_bad = _followup_vm_inputs(
@@ -24844,7 +24838,7 @@ def test_followup_item6_real_lock_check_through_vm_main_on_monkeypatched_transpo
         vm_judges._ensure_dryrun_venv_python_wrapper(work_dir / venv_name / "bin" / "python")
     rc = vm_judges.main(argv)
     assert rc == 0, status.read_text(encoding="utf-8")
-    assert "judge_child" in transport_calls and "p0a" in transport_calls
+    assert "judge_child" in transport_calls and transport_calls.count("p0a_child") == 10
     assert transport_calls.index("sync_judge_venvs") < transport_calls.index("judge_child")
 
     gm_path = run_dir / "golden_anchor_manifest.json"
@@ -26428,3 +26422,575 @@ def test_p0a_identity_must_be_bound_whole_part_to_this_file() -> None:
         with pytest.raises(RdlabError) as exc:
             bakeoff_judge._check_p0a_pilot_identity(bad, **args)
         assert exc.value.code == "P0A_PILOT_IDENTITY_MISMATCH"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Lock-check split (--lock-check-phase anchors|p0a|all) and P0a per judge in child venvs.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# Peak VRAM a judge's model holds while resident (MiB), as a fake transport reports it. Five at once (~59 GB) cannot fit
+# a 40 GB A100; one at a time fits.
+_FAKE_JUDGE_FOOTPRINT_MIB = {
+    "d3-mini": 9314,
+    "flow-judge-v0.1": 15800,
+    "granite-guardian-4.1-8b": 17400,
+    "mu-judge": 7100,
+    "nemotron-3-nano-4b": 9300,
+}
+_A100_40GB_MIB = 40960
+
+
+def _write_p0a_residency_ledger_hook(work_dir: Path, ledger: Path) -> None:
+    """Make each judge venv's fake transport report a VRAM footprint: a `sitecustomize.py` in both dryrun venvs'
+    site-packages records, for a P0a child, when this process first holds a judge's transport (`resident`, with the
+    venv's `transformers.__version__` and the judge's footprint) and when the process exits (`exit`)."""
+    hook = (
+        "import atexit, json, os, sys, time\n"
+        f"_LEDGER = {str(ledger)!r}\n"
+        f"_FOOTPRINT = {_FAKE_JUDGE_FOOTPRINT_MIB!r}\n"
+        "def _w(row):\n"
+        "    with open(_LEDGER, 'a', encoding='utf-8') as fh:\n"
+        "        fh.write(json.dumps({**row, 'pid': os.getpid(), 't': time.time_ns()}) + '\\n')\n"
+        "if '--p0a-stage' in sys.argv:\n"
+        "    import transformers\n"
+        "    from reasoning_dataset_lab.pilot_b import bakeoff_judge as _bj\n"
+        "    _orig = _bj.DeterministicFakeJudgeTransport.generate\n"
+        "    _seen = set()\n"
+        "    def _generate(self, spec, prompt, *a, **kw):\n"
+        "        if (id(self), spec.judge_id) not in _seen:\n"
+        "            _seen.add((id(self), spec.judge_id))\n"
+        "            _w({'event': 'resident', 'judge_id': spec.judge_id, 'mib': _FOOTPRINT[spec.judge_id],\n"
+        "                'transformers': transformers.__version__,\n"
+        "                'stage': sys.argv[sys.argv.index('--p0a-stage') + 1]})\n"
+        "        return _orig(self, spec, prompt, *a, **kw)\n"
+        "    _bj.DeterministicFakeJudgeTransport.generate = _generate\n"
+        "    atexit.register(lambda: _w({'event': 'exit'}))\n"
+    )
+    for venv_name in ("venv-judge", "venv-d3"):
+        venv_py = work_dir / venv_name / "bin" / "python"
+        vm_judges._ensure_dryrun_venv_python_wrapper(venv_py)
+        (venv_py.parent.parent / "site-packages" / "sitecustomize.py").write_text(hook, encoding="utf-8")
+
+
+def _record_in_process_residency(monkeypatch: pytest.MonkeyPatch, ledger: Path) -> None:
+    """The same footprint report for a fake transport held by this (the VM parent's) process; it never exits during
+    the run, so anything it holds stays resident."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    orig = bakeoff_judge.DeterministicFakeJudgeTransport.generate
+    seen: set[tuple[int, str]] = set()
+
+    def _generate(self: Any, spec: Any, prompt: Any, *a: Any, **kw: Any) -> Any:
+        if (id(self), spec.judge_id) not in seen:
+            seen.add((id(self), spec.judge_id))
+            with ledger.open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "event": "resident",
+                            "judge_id": spec.judge_id,
+                            "mib": _FAKE_JUDGE_FOOTPRINT_MIB[spec.judge_id],
+                            "transformers": None,
+                            "stage": "in-process",
+                            "pid": os.getpid(),
+                            "t": time.time_ns(),
+                        }
+                    )
+                    + "\n"
+                )
+        return orig(self, spec, prompt, *a, **kw)
+
+    monkeypatch.setattr(bakeoff_judge.DeterministicFakeJudgeTransport, "generate", _generate)
+
+
+def _peak_resident_mib(ledger_rows: list[dict[str, Any]]) -> int:
+    """The largest sum of footprints resident at once: a process holds each judge it loaded from its first call until
+    it exits (or to the end, if it never wrote an exit)."""
+    events: list[tuple[int, int]] = []
+    by_pid: dict[int, dict[str, Any]] = {}
+    for r in ledger_rows:
+        p = by_pid.setdefault(int(r["pid"]), {"loads": [], "exit": None})
+        if r["event"] == "resident":
+            p["loads"].append((int(r["t"]), int(r["mib"])))
+        elif r["event"] == "exit":
+            p["exit"] = int(r["t"])
+    for p in by_pid.values():
+        for t_load, mib in p["loads"]:
+            events.append((t_load, mib))
+            if p["exit"] is not None:
+                events.append((p["exit"], -mib))
+    peak = cur = 0
+    for _, delta in sorted(events, key=lambda e: (e[0], e[1])):
+        cur += delta
+        peak = max(peak, cur)
+    return peak
+
+
+def _lock_check_vm_main_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tag: str
+) -> tuple[list[str], dict[str, Path]]:
+    """A real `lock-check` VM `main` as in follow-up item 6: every GPU, network and venv step runs its dryrun
+    behaviour, and the judge child runner runs each child (judge pass and P0a alike) on CPU with `--stub` and the
+    `lock-check-stub` window mode, as the fake VM shim does. Nothing patches P0a. Returns the call log and paths."""
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / f"{tag}_base", counted_count=100
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / f"{tag}_rec")
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    monkeypatch.delenv("RDLAB_LOCK_CHECK_PHASE", raising=False)
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", vm_judges.EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", vm_judges.EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "A100")
+    monkeypatch.setattr(vm_judges, "read_vm_gpu_name", lambda: ("NVIDIA A100-SXM4-40GB", "test"))
+    for var in ("RDLAB_COUNTED_ITEMS_FILE", "RDLAB_COUNTED_MANIFEST", "RDLAB_ANCHOR_ITEMS_FILE", "RDLAB_P0A_ITEMS_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    for var in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(var):
+            monkeypatch.delenv(var, raising=False)
+    calls: list[str] = []
+
+    def _as_dryrun(name: str) -> Any:
+        orig = getattr(vm_judges, name)
+
+        def _wrapped(*args: Any, **kwargs: Any) -> Any:
+            calls.append(name)
+            kwargs["dryrun"] = True
+            if "device" in kwargs:
+                kwargs["device"] = "cpu"
+            return orig(*args, **kwargs)
+
+        return _wrapped
+
+    for name in (
+        "sync_judge_venvs",
+        "run_device_check",
+        "run_gpu_gate",
+        "download_and_verify_all_judge_weights",
+        "run_boot_gatekeeper",
+        "collect_and_write_session_env",
+    ):
+        monkeypatch.setattr(vm_judges, name, _as_dryrun(name))
+    orig_child = vm_judges._run_child_with_group_timeout
+
+    def _fake_child(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+        if vm_judges.JUDGE_RUNNER_MODULE not in cmd:
+            calls.append("other_child")
+            return orig_child(cmd, *args, **kwargs)
+        jid = cmd[cmd.index("--judge") + 1]
+        calls.append(f"p0a_child:{cmd[cmd.index('--p0a-stage') + 1]}:{jid}" if "--p0a-stage" in cmd else f"judge_child:{jid}")
+        new_cmd = list(cmd)
+        new_cmd[new_cmd.index("--device") + 1] = "cpu"
+        new_cmd[new_cmd.index("--window-mode") + 1] = "lock-check-stub"
+        if "--stub" not in new_cmd:
+            new_cmd.append("--stub")
+        return orig_child(new_cmd, *args, **kwargs)
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _fake_child)
+    anc, p0a = _followup_vm_inputs(tmp_path / f"{tag}_in", anchor_items_src, p0a_items_src, monkeypatch=monkeypatch)
+    cnt_dir = tmp_path / f"{tag}_in_counted"
+    cnt_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(counted_items_file.parent / "manifest.json", cnt_dir / "counted_manifest.json")
+    shutil.copyfile(counted_items_file, cnt_dir / "items.jsonl")
+    return calls, {
+        "anc": anc,
+        "p0a": p0a,
+        "cnt": cnt_dir / "counted_manifest.json",
+        "receipts_dir": receipts_dir,
+        "hf_home": hf_home,
+        "p0a_src": p0a_items_src,
+        "anchor_src": anchor_items_src,
+        "counted_items": counted_items_file,
+    }
+
+
+def _lock_check_argv(tmp_path: Path, tag: str, paths: dict[str, Path], phase_args: list[str]) -> tuple[list[str], Path, Path]:
+    return _followup_main_args(
+        tmp_path,
+        tag,
+        mode_args=["--lock-check", *phase_args, "--window-id", f"win-{tag}"],
+        receipts_dir=paths["receipts_dir"],
+        hf_home=paths["hf_home"],
+        extra=[
+            "--anchor-items",
+            str(paths["anc"]),
+            "--p0a-items",
+            str(paths["p0a"]),
+            "--counted-manifest",
+            str(paths["cnt"]),
+        ],
+    )
+
+
+def _strip_p0a_timings(report: dict[str, Any]) -> dict[str, Any]:
+    """The P0a report without what a clock decides (profiler milliseconds and the digest over them)."""
+    doc = json.loads(json.dumps(report))
+    doc.pop("p0a_report_sha256", None)
+    for prof in doc["phase_profiler"]["by_judge"].values():
+        prof.pop("phases", None)
+        prof.pop("phases_ms", None)
+        for call in prof["calls"]:
+            call.pop("phases_ms", None)
+    return doc
+
+
+@pytest.mark.parametrize("phase", ["p0a", "all"])
+def test_lock_check_p0a_runs_each_judge_in_its_own_venv_child_one_model_resident(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+) -> None:
+    """The fake end-to-end on the real P0a path: a real `lock-check` VM `main` (phase `p0a`, and `all`), every
+    child through the same child runner and the venv wrappers, the fake transports reporting a VRAM footprint, and
+    nothing patching P0a.
+    - P0a runs in children only: two stages per judge (`passes`, then `rerun`), ten children, each a new process
+      running one judge; none of P0a's transports is held by the VM process.
+    - Two judges with conflicting transformers pins run in separate children: d3-mini's calls run under venv-d3's
+      transformers 5.17.0, the other four under venv-judge's 5.19.0.
+    - The peak resident sum is one judge's footprint: no co-residency (the five together, ~59 GB, would not fit 40 GB).
+    - The report keeps today's format: equal, but for the profiler's clock readings, to in-process P0a on the same
+      items (stub transports), and `p0a_children.json` records each child.
+    Fails at 056bc83a: there VM `main` ran P0a in its own process (`run_lock_check_p0a`), building a real transport for
+    all five judges and keeping them, so no P0a child ran and the VM process held every judge (in this e2e it refuses
+    loading the first real model on the synthetic snapshot); there was also no `--lock-check-phase`.
+    """
+    calls, paths = _lock_check_vm_main_env(tmp_path, monkeypatch, f"lcp_{phase}")
+    ledger = tmp_path / f"lcp_{phase}_ledger.jsonl"
+    argv, run_dir, status = _lock_check_argv(tmp_path, f"lcp_{phase}", paths, ["--lock-check-phase", phase])
+    _write_p0a_residency_ledger_hook(tmp_path / f"lcp_{phase}_work", ledger)
+    _record_in_process_residency(monkeypatch, ledger)
+
+    rc = vm_judges.main(argv)
+    assert rc == 0, status.read_text(encoding="utf-8")
+
+    p0a_calls = [c for c in calls if c.startswith("p0a_child:")]
+    judges = sorted(vm_judges.BAKEOFF_JUDGE_SPECS)
+    assert len(p0a_calls) == 10, calls
+    assert [c.split(":")[1] for c in p0a_calls] == ["passes"] * 5 + ["rerun"] * 5
+    assert sorted(c.split(":")[2] for c in p0a_calls[:5]) == judges
+    anchor_children = [c for c in calls if c.startswith("judge_child:")]
+    assert (anchor_children != []) == (phase == "all"), calls
+
+    rows = [json.loads(ln) for ln in ledger.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    resident = [r for r in rows if r["event"] == "resident"]
+    assert resident and all(r["pid"] != os.getpid() for r in resident), "P0a held a transport in the VM process"
+    by_pid: dict[int, set[str]] = {}
+    for r in resident:
+        by_pid.setdefault(r["pid"], set()).add(r["judge_id"])
+    assert len(by_pid) == 10 and all(len(j) == 1 for j in by_pid.values()), by_pid
+    tf_by_judge = {r["judge_id"]: set() for r in resident}
+    for r in resident:
+        tf_by_judge[r["judge_id"]].add(r["transformers"])
+    assert tf_by_judge["d3-mini"] == {"5.17.0"}
+    assert all(tf_by_judge[j] == {"5.19.0"} for j in judges if j != "d3-mini"), tf_by_judge
+    d3_pids = {r["pid"] for r in resident if r["judge_id"] == "d3-mini"}
+    assert d3_pids.isdisjoint({r["pid"] for r in resident if r["judge_id"] != "d3-mini"})
+    assert sum(_FAKE_JUDGE_FOOTPRINT_MIB.values()) > _A100_40GB_MIB
+    peak = _peak_resident_mib(rows)
+    assert peak <= max(_FAKE_JUDGE_FOOTPRINT_MIB.values()), f"co-resident P0a models: peak {peak} MiB"
+
+    report = json.loads((run_dir / "p0a_report.json").read_text(encoding="utf-8"))
+    children = json.loads((run_dir / "p0a_children.json").read_text(encoding="utf-8"))
+    assert children["p0a_report_sha256"] == report["p0a_report_sha256"]
+    assert [(c["judge_id"], c["stage"]) for c in children["children"]] == [
+        *((j, "passes") for j in judges),
+        *((j, "rerun") for j in judges),
+    ]
+    assert {c["venv"] for c in children["children"] if c["judge_id"] == "d3-mini"} == {"venv-d3"}
+    assert {c["venv"] for c in children["children"] if c["judge_id"] != "d3-mini"} == {"venv-judge"}
+    assert len(set(children["pids_by_child"].values())) == 10
+    t1 = json.loads((run_dir / "time_one_summary.json").read_text(encoding="utf-8"))
+    rec = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert t1["lock_check_phase"] == rec["lock_check_phase"] == phase
+    assert t1["p0a_report_sha256"] == rec["p0a_report_sha256"] == report["p0a_report_sha256"]
+    assert t1["p0a_children_sha256"] == hashlib.sha256((run_dir / "p0a_children.json").read_bytes()).hexdigest()
+    assert (run_dir / "golden_anchor_manifest.json").is_file() == (phase == "all")
+    assert not any((run_dir / "rows").glob("*.jsonl")) if phase == "p0a" else any((run_dir / "rows").glob("*.jsonl"))
+    assert not list(run_dir.parent.glob(f".{run_dir.name}_p0a_part"))  # the stage dir (child outputs) is gone
+
+    # Same format as in-process P0a on the same items with stub transports.
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    ref_part = tmp_path / f"lcp_{phase}_ref_part"
+    ref_part.mkdir()
+    shutil.copyfile(paths["p0a_src"], ref_part / "items.jsonl")
+    ref_out = tmp_path / f"lcp_{phase}_ref_out"
+    ref = bakeoff_judge.run_lock_check_p0a(
+        part_dir=ref_part,
+        output_dir=ref_out,
+        anchor_items=paths["anchor_src"],
+        counted_item_ids=paths["counted_items"],
+        judge_ids=judges,
+        fake_transport=True,
+        window_mode="lock-check-stub",
+    )
+    got = _strip_p0a_timings(report)
+    want = _strip_p0a_timings(ref)
+    got.pop("part_id")
+    want.pop("part_id")
+    assert got == want
+    assert sorted(report) == sorted(ref)
+
+
+def test_lock_check_anchors_phase_runs_no_p0a_and_its_goldens_promote(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--lock-check-phase anchors`: the goldens record and the five judges' pass over the 50 anchors, no P0a child,
+    no `p0a_report.json`; the receipts say `anchors`; and `promote_goldens` accepts this window's filled goldens (its
+    provenance mode `lock-check`, phase `anchors`, bound to the receipt) while it refuses a `p0a` window's.
+    Fails at 056bc83a: no phase; a lock-check window always ran P0a, and promotion read no phase."""
+    import promote_goldens
+
+    calls, paths = _lock_check_vm_main_env(tmp_path, monkeypatch, "lca")
+    argv, run_dir, status = _lock_check_argv(tmp_path, "lca", paths, ["--lock-check-phase", "anchors"])
+    for venv_name in ("venv-judge", "venv-d3"):
+        vm_judges._ensure_dryrun_venv_python_wrapper(tmp_path / "lca_work" / venv_name / "bin" / "python")
+    rc = vm_judges.main(argv)
+    assert rc == 0, status.read_text(encoding="utf-8")
+    assert not any(c.startswith("p0a_child:") for c in calls) and any(c.startswith("judge_child:") for c in calls)
+    assert not (run_dir / "p0a_report.json").exists() and not (run_dir / "p0a_children.json").exists()
+    assert (run_dir / "golden_anchor_manifest.json").is_file()
+    rec = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert rec["lock_check_phase"] == "anchors" and rec["p0a_report_sha256"] is None
+    filled = run_dir / "boot_gatekeeper_goldens.filled.json"
+    doc = json.loads(filled.read_text(encoding="utf-8"))
+    assert doc["provenance"]["mode"] == "lock-check" and doc["provenance"]["lock_check_phase"] == "anchors"
+    verified, _ = promote_goldens.verify_filled_goldens(filled, receipt_path=run_dir / "vm_receipt.json", allow_stub_transport=True)
+    assert verified["provenance"]["lock_check_phase"] == "anchors"
+
+    # A p0a window's goldens (same document, phase p0a, digest recomputed) are refused.
+    p0a_doc = json.loads(filled.read_text(encoding="utf-8"))
+    p0a_doc["provenance"]["lock_check_phase"] = "p0a"
+    p0a_doc["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(p0a_doc)
+    p0a_filled = tmp_path / "lca_p0a" / "boot_gatekeeper_goldens.filled.json"
+    p0a_filled.parent.mkdir()
+    p0a_filled.write_text(json.dumps(p0a_doc), encoding="utf-8")
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc:
+        promote_goldens.verify_filled_goldens(p0a_filled, allow_stub_transport=True)
+    assert exc.value.failure_class == "PROMOTE_GOLDENS_PHASE_REFUSED"
+    # Goldens from before the split carry no phase and still promote.
+    old_doc = json.loads(filled.read_text(encoding="utf-8"))
+    old_doc["provenance"].pop("lock_check_phase")
+    old_doc["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(old_doc)
+    old_filled = tmp_path / "lca_old" / "boot_gatekeeper_goldens.filled.json"
+    old_filled.parent.mkdir()
+    old_filled.write_text(json.dumps(old_doc), encoding="utf-8")
+    promote_goldens.verify_filled_goldens(old_filled, allow_stub_transport=True)
+
+
+def test_lock_check_phase_is_required_and_refused_outside_lock_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No default: a lock-check `main` with no phase refuses `LOCK_CHECK_PHASE_REQUIRED` before any upload check,
+    venv, device or weight step and before `shard_manifest.json`; an unknown phase refuses; a phase on any other mode
+    refuses `LOCK_CHECK_PHASE_INVALID`; RDLAB_LOCK_CHECK_PHASE is read only in lock-check modes.
+    Fails at 056bc83a: no phase existed, so the no-phase run went on into the paid steps."""
+    calls, paths = _lock_check_vm_main_env(tmp_path, monkeypatch, "lcr")
+    argv, run_dir, status = _lock_check_argv(tmp_path, "lcr", paths, [])
+    assert vm_judges.main(argv) == 2
+    st = json.loads(status.read_text(encoding="utf-8"))
+    assert st["failure_class"] == "LOCK_CHECK_PHASE_REQUIRED" and st["step"] == "validate_lock_check_phase", st
+    assert calls == [] and not (run_dir / "shard_manifest.json").exists()
+
+    monkeypatch.setenv("RDLAB_LOCK_CHECK_PHASE", "everything")
+    argv2, _, status2 = _lock_check_argv(tmp_path, "lcr2", paths, [])
+    assert vm_judges.main(argv2) == 2
+    assert json.loads(status2.read_text(encoding="utf-8"))["failure_class"] == "LOCK_CHECK_PHASE_INVALID"
+    assert calls == []
+    monkeypatch.delenv("RDLAB_LOCK_CHECK_PHASE")
+
+    with pytest.raises(SystemExit):
+        vm_judges.parse_args(["--lock-check", "--lock-check-phase", "bogus"])
+    for mode, raw, code in (
+        ("lock-check", None, "LOCK_CHECK_PHASE_REQUIRED"),
+        ("lock-check-stub", "", "LOCK_CHECK_PHASE_REQUIRED"),
+        ("lock-check", "both", "LOCK_CHECK_PHASE_INVALID"),
+        ("counted", "anchors", "LOCK_CHECK_PHASE_INVALID"),
+        ("stub", "p0a", "LOCK_CHECK_PHASE_INVALID"),
+    ):
+        with pytest.raises(vm_judges.RefusalError) as exc:
+            vm_judges.resolve_lock_check_phase(mode, raw)
+        assert exc.value.failure_class == code, (mode, raw)
+    assert vm_judges.resolve_lock_check_phase("counted", None) is None
+    assert [vm_judges.resolve_lock_check_phase("lock-check", p) for p in ("anchors", " P0A ", "all")] == [
+        "anchors",
+        "p0a",
+        "all",
+    ]
+    # The pipeline refuses on its own too, and reads the environment only in lock-check modes.
+    with pytest.raises(vm_judges.RefusalError) as exc:
+        vm_judges._run_judges_pipeline_body(
+            mode="lock-check-stub",
+            part_dir=tmp_path,
+            run_dir=tmp_path / "lcr_body_run",
+            receipts_dir=paths["receipts_dir"],
+            hf_home=paths["hf_home"],
+            dryrun=True,
+            repo_root=REPO_ROOT,
+        )
+    assert exc.value.failure_class == "LOCK_CHECK_PHASE_REQUIRED"
+    monkeypatch.setenv("RDLAB_LOCK_CHECK_PHASE", "p0a")
+    stub_status = tmp_path / "lcr_stub_status.json"
+    vm_judges.main(
+        ["--step", "run", "--mode", "stub", "--lock-check-phase", "p0a", "--status-file", str(stub_status), "--run-dir", str(tmp_path / "lcr_stub_run")]
+    )
+    assert json.loads(stub_status.read_text(encoding="utf-8"))["failure_class"] == "LOCK_CHECK_PHASE_INVALID"
+
+
+def test_p0a_children_failures_refuse_with_the_judge_child_classes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`run_lock_check_p0a_in_children` (stub window): a child that is OOM-killed (exit 137) refuses
+    `JUDGE_CHILD_OOM`, one that exits 1 `JUDGE_CHILD_FAILED` (stderr tail kept), naming the judge; no
+    `p0a_report.json` is written. A child output that names another items file refuses `P0A_CHILD_OUTPUT_INVALID`,
+    and the child CLI refuses a stage with no `--p0a-out` and a `rerun` with no selection.
+    Fails at 056bc83a: there was no child path for P0a."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    counted_items_file, anchor_src, p0a_src = _make_counted_part_and_50_anchors_and_114_p0a(tmp_path / "pcf", counted_count=100)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pcf_rec")
+    anchor_dir = anchor_src
+    for var in list(os.environ):
+        if var.startswith("FAKE_COLAB_FAIL"):
+            monkeypatch.delenv(var, raising=False)
+
+    def _run(tag: str) -> tuple[Path, Any]:
+        stage = tmp_path / f".pcf_{tag}_p0a_part"
+        stage.mkdir()
+        shutil.copyfile(p0a_src, stage / "items.jsonl")
+        run_dir = tmp_path / f"pcf_{tag}_run"
+        run_dir.mkdir()
+        return run_dir, lambda: vm_judges.run_lock_check_p0a_in_children(
+            bakeoff_judge_mod=bakeoff_judge,
+            p0a_part_dir=stage,
+            run_dir=run_dir,
+            anchor_part_dir=anchor_dir,
+            counted_source=counted_items_file,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            mode="lock-check-stub",
+            dryrun=True,
+            real_load_on_cpu=False,
+            limit_items=None,
+            selected_specs=vm_judges._select_judge_specs(None),
+            work_dir=tmp_path / f"pcf_{tag}_work",
+            repo_root=REPO_ROOT,
+            pilot_identity=None,
+            child_timeout_seconds=300.0,
+            vram_halt_mib=0,
+        )
+
+    run_ok, go_ok = _run("ok")
+    report, children_sha = go_ok()
+    assert (run_ok / "p0a_report.json").is_file() and len(children_sha) == 64
+    assert report["judge_count"] == 5 and report["reversed_low_margin_rerun"]["selected_item_count"] == 20
+
+    for mode, cls in (("exit137", "JUDGE_CHILD_OOM"), ("exit1", "JUDGE_CHILD_FAILED")):
+        monkeypatch.setenv("FAKE_COLAB_FAIL_JUDGE_CHILD", f"granite-guardian-4.1-8b:{mode}:p0a child boom")
+        run_dir, go = _run(mode)
+        with pytest.raises(vm_judges.JudgeChildProcessError) as exc:
+            go()
+        assert exc.value.failure_class == cls and exc.value.judge_id == "granite-guardian-4.1-8b"
+        if mode == "exit1":
+            assert "p0a child boom" in exc.value.stderr_tail
+        assert not (run_dir / "p0a_report.json").exists()
+    monkeypatch.delenv("FAKE_COLAB_FAIL_JUDGE_CHILD")
+
+    ctx = bakeoff_judge.prepare_lock_check_p0a(
+        part_dir=run_ok.parent / ".pcf_ok_p0a_part" if (run_ok.parent / ".pcf_ok_p0a_part").exists() else p0a_src.parent,
+        output_dir=tmp_path / "pcf_ctx",
+        fake_transport=True,
+        window_mode="lock-check-stub",
+        counted_item_ids=counted_items_file,
+        anchor_items=anchor_dir,
+    )
+    bad = tmp_path / "pcf_bad.json"
+    bad.write_text(json.dumps({"judge_id": "mu-judge", "stage": "passes", "part_id": ctx.verified_part_id,
+                               "items_sha256": "0" * 64, "schedule_sha256": ctx.schedule.schedule_sha256}), encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc:
+        vm_judges._read_p0a_child_doc(bad, judge_id="mu-judge", stage="passes", ctx=ctx)
+    assert exc.value.failure_class == "P0A_CHILD_OUTPUT_INVALID" and "items_sha256" in str(exc.value)
+
+    base_argv = ["--judge", "mu-judge", "--items", str(p0a_src.parent), "--output-dir", str(tmp_path / "pcf_cli"), "--stub",
+                 "--device", "cpu", "--window-mode", "lock-check-stub"]
+    assert bakeoff_judge.main_judge_runner([*base_argv, "--p0a-stage", "passes"]) == 2
+    assert bakeoff_judge.main_judge_runner([*base_argv, "--p0a-stage", "rerun", "--p0a-out", str(tmp_path / "pcf_cli" / "o.json"),
+                                            "--p0a-anchor-items", str(anchor_dir), "--p0a-counted-source", str(counted_items_file)]) != 0
+    with pytest.raises(RdlabError) as rexc:
+        bakeoff_judge.run_p0a_child_stage(stage="profile", judge="mu-judge", part_dir=p0a_src.parent, output_dir=tmp_path / "pcf_cli",
+                                          out_file=tmp_path / "x.json", anchor_items=None, counted_source=None, pilot_identity_file=None)
+    assert rexc.value.code == "P0A_CHILD_STAGE_INVALID"
+    with pytest.raises(RdlabError) as rexc:
+        bakeoff_judge.read_p0a_pilot_identity_file(tmp_path / "missing.json")
+    assert rexc.value.code == "P0A_PILOT_IDENTITY_MISSING"
+
+
+def test_launcher_lock_check_phase_required_and_dry_prints_phase_wall_and_price(tmp_path: Path) -> None:
+    """The launcher: `--lock-check` / `--lock-check-stub` with no phase refuse `LOCK_CHECK_PHASE_REQUIRED` before any
+    colab call, an unknown phase `LOCK_CHECK_PHASE_INVALID`, and a phase on `--stub` too. `--dry` prints the phase,
+    and the default wall and the max-rate pricing follow it (anchors 3600 s, p0a 5400 s, all 7200 s); the phase is
+    forwarded to the VM as RDLAB_LOCK_CHECK_PHASE.
+    Fails at 056bc83a: the launcher had no `--lock-check-phase` (unknown argument)."""
+    from reasoning_dataset_lab.pilot_b.bakeoff_project import project_part_items
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "lph_rec")
+    pilot = _pilot_like_part(tmp_path / "lph_pilot")
+    p0a = tmp_path / "lph_inputs" / "pilot-projected.jsonl"
+    project_part_items(pilot, p0a)
+    counted, anchors = _counted_and_anchor_files(tmp_path / "lph_counted")
+    pin_dir = tmp_path / "lph_pin"
+    pin_dir.mkdir()
+    (pin_dir / "sitecustomize.py").write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(_to_wsl_path(REPO_ROOT / 'src'))!r})\n"
+        f"sys.path.insert(0, {str(_to_wsl_path(SCRIPTS_COLAB_DIR))!r})\n"
+        "import vm_judges\n"
+        f"vm_judges.PILOT_40B_PART_JSON_SHA256 = {hashlib.sha256((pilot / 'part.json').read_bytes()).hexdigest()!r}\n"
+        f"vm_judges.PILOT_40B_ITEMS_JSONL_SHA256 = {hashlib.sha256((pilot / 'items.jsonl').read_bytes()).hexdigest()!r}\n",
+        encoding="utf-8",
+    )
+
+    def _run(tag: str, mode_and_phase: str) -> Any:
+        env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"lph_env_{tag}")
+        exports = (
+            _base_launcher_exports(
+                env_paths,
+                open_lock=tmp_path / f"lph_{tag}.lock",
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                items_file=anchors,
+            ).replace("export VM_DRYRUN=1; ", "")
+            + "unset VM_DRYRUN; unset RDLAB_LOCK_CHECK_PHASE; "
+            + f"export PYTHONPATH='{_to_wsl_path(pin_dir)}'; "
+        )
+        args = (
+            f"{mode_and_phase} --dry --anchor-items '{_to_wsl_path(anchors)}' --p0a-items '{_to_wsl_path(p0a)}' "
+            f"--counted-items '{_to_wsl_path(counted)}' --p0a-part-dir '{_to_wsl_path(pilot)}' --run-id lph-{tag} "
+            f"--out-dir '{_to_wsl_path(tmp_path / ('lph_out_' + tag))}'"
+        )
+        proc = _pm_run_launcher(exports, args)
+        assert not env_paths["calls_log"].exists(), tag
+        return proc
+
+    for tag, mp, code in (
+        ("none", "--lock-check --max-rate 9.5", "LOCK_CHECK_PHASE_REQUIRED"),
+        ("none_stub", "--lock-check-stub", "LOCK_CHECK_PHASE_REQUIRED"),
+        ("bad", "--lock-check --max-rate 9.5 --lock-check-phase both", "LOCK_CHECK_PHASE_INVALID"),
+        ("stubmode", "--stub --lock-check-phase anchors", "LOCK_CHECK_PHASE_INVALID"),
+    ):
+        proc = _run(tag, mp)
+        assert proc.returncode == 2, (tag, proc.stdout, proc.stderr)
+        assert code in proc.stderr, (tag, proc.stderr)
+        assert "colab new" not in proc.stdout
+
+    for phase, wall in (("anchors", 3600), ("p0a", 5400), ("all", 7200)):
+        proc = _run(f"ok_{phase}", f"--lock-check --max-rate 9.5 --lock-check-phase {phase}")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert f"[lock-check] phase={phase} " in proc.stderr and f"wall_s={wall} " in proc.stderr, proc.stderr
+        assert f"wall_x_max_rate={round(wall * 9.5 / 3600.0, 4):g} " in proc.stderr, proc.stderr
+        assert f"RDLAB_LOCK_CHECK_PHASE={phase}" in proc.stdout
+    proc = _run("ok_eq", "--lock-check-stub --lock-check-phase=p0a")
+    assert proc.returncode == 0, proc.stderr
+    assert "[lock-check] phase=p0a " in proc.stderr and "wall_s=7200 " in proc.stderr
