@@ -308,7 +308,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-06T01:13:16.278Z",
+  "generatedAt": "2026-11-06T01:15:50.432Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "3 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
@@ -331,7 +331,7 @@
   },
   "parts": 9,
   "readers": [],
-  "repo": "rdlab-pm-full",
+  "repo": "reasoning-dataset-lab",
   "sequences": [],
   "startDoor": "pyproject.toml#rdlab",
   "startHere": [

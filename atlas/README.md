@@ -1,4 +1,4 @@
-# rdlab-pm-full: how it works
+# reasoning-dataset-lab: how it works
 
 Mapped at 2026-11-06 from commit ef8f46b by Atlas 1.24.0.
 
