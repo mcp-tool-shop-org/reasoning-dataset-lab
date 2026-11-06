@@ -5973,9 +5973,15 @@ def bind_items_to_part(
         "uploaded_items": len(ids),
         "uploaded_items_sha256": sha256_file(Path(items_file)),
         "rule": "whole_part_in_order" if full_part else "subset_of_part",
-        "projection_checked": False,
+        # Never a default false: the VM, which has only the projection, did not run the projection check (null, with
+        # the reason); the launcher's path below sets true only after the check passes.
+        "projection_checked": None,
     }
     if part_items_file is None:
+        binding["projection_not_checked_reason"] = (
+            "the VM has only the uploaded projection, not the part's items.jsonl; the rig's check is carried in when "
+            "its binding record is uploaded (attach_launcher_binding)"
+        )
         return binding
     part_items = Path(part_items_file)
     if not part_items.is_file():
@@ -6101,8 +6107,11 @@ def launcher_binding_entry(identity: Mapping[str, Any]) -> dict[str, Any]:
 def attach_launcher_binding(identity: dict[str, Any], record_file: Path, *, key: str) -> None:
     """On the VM: carry the launcher's binding record for `key` into `identity["launcher_binding"]`, after checking it
     names this part (`part.json` and `items.jsonl` SHA-256) and this uploaded items file (SHA-256 and count); refuse
-    `PART_BINDING_RECORD_MISMATCH` otherwise. Absent record: `launcher_binding` is `None` (the receipt then shows only
-    the VM's own check, `checked_by: "vm"`, `projection_checked: false`). The VM never sets `projection_checked`."""
+    `PART_BINDING_RECORD_MISMATCH` otherwise. A record that matches is also carried into `identity["binding"]`: the
+    rig's result, labelled `checked_by: "rig"` (with `projection_checked: true`), and the VM's own re-check kept beside it
+    as `vm_recheck` (`checked_by: "vm"`). Absent record: `launcher_binding` is `None` and the binding is the VM's own
+    check, `checked_by: "vm"`, `projection_checked: null` (not run on the VM). The VM never claims the check itself and
+    never records a default `false`."""
     identity["launcher_binding"] = None
     if not Path(record_file).is_file():
         return
@@ -6138,6 +6147,10 @@ def attach_launcher_binding(identity: dict[str, Any], record_file: Path, *, key:
             f"The launcher's binding record ({key}) does not match what the VM received; field(s): {', '.join(problems)}",
         )
     identity["launcher_binding"] = dict(entry)
+    carried = dict(rec_binding)
+    carried["checked_by"] = "rig"
+    carried["vm_recheck"] = dict(vm_binding)
+    identity["binding"] = carried
 
 
 def p0a_pilot_identity_required(mode: str | None, *, dryrun: bool = False) -> bool:
@@ -7408,11 +7421,15 @@ def _run_judges_pipeline_body(
         "is_result": False,
         **raw_mass_check,
     }
+    window_limits = forwarded_window_limits()
     time_one_summary: dict[str, Any] = {
         "mode": mode,
         "part_identity": part_manifest_doc,
-        "wall_seconds": TIME_ONE_WALL_SECONDS if mode == "time-one" else 7200,
-        "cap_units": TIME_ONE_CAP_UNITS if mode == "time-one" else 0.16,
+        # The launch's own limits as the launcher forwarded them; null when not forwarded, never a default.
+        "wall_seconds": window_limits["rig_wall_seconds"],
+        "vm_wall_seconds": window_limits["vm_wall_seconds"],
+        "cap_units": window_limits["cap_units"],
+        "window_limits_source": window_limits["source"],
         "items_per_judge": len(shard_item_ids),
         "orders": ["AB", "BA"],
         "judge_order": eff_judge_order,
@@ -8122,6 +8139,32 @@ def is_counted_or_time_one_mode(
         return True
     eff_shard = str(shard_spec or "").strip()
     return bool(eff_shard and eff_shard != "1/1")
+
+
+def forwarded_window_limits(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The window's limits as the launcher forwarded them with `--env`: `RDLAB_RIG_WALL_SECONDS` (the rig's wall),
+    `RDLAB_WALL_SECONDS` (the VM's wall) and `RDLAB_WINDOW_CAP_UNITS` (the cap in units). A value that was not
+    forwarded, or is not a positive number, is `None`: the summary never writes a default as if it were the launch's."""
+    env = os.environ if environ is None else environ
+
+    def _pos_int(name: str) -> int | None:
+        raw = str(env.get(name) or "").strip()
+        return int(raw) if raw.isdigit() and int(raw) > 0 else None
+
+    def _pos_float(name: str) -> float | None:
+        raw = str(env.get(name) or "").strip()
+        try:
+            val = float(raw)
+        except ValueError:
+            return None
+        return val if val > 0 and math.isfinite(val) else None
+
+    return {
+        "rig_wall_seconds": _pos_int("RDLAB_RIG_WALL_SECONDS"),
+        "vm_wall_seconds": _pos_int("RDLAB_WALL_SECONDS"),
+        "cap_units": _pos_float("RDLAB_WINDOW_CAP_UNITS"),
+        "source": "forwarded_by_launcher",
+    }
 
 
 def is_real_mode(
@@ -11821,7 +11864,9 @@ def run_boot_gatekeeper(
             "filled_goldens_sha256": filled_file_sha,
             "filled_goldens_body_sha256": filled_body_sha,
             "actual_output_token_ids_sha256": actual_by_prompt,
-            "expected_output_token_ids_sha256": dict(actual_by_prompt),
+            # Record mode compares nothing, so there is no expected value (a copy of the actual hashes read like a
+            # comparison that passed: timeone-mu2b, 2026-11-06).
+            "expected_output_token_ids_sha256": None,
         }
         record_doc.update(boot_gatekeeper_report_fields(gk_timings))
         if is_time_one_record:

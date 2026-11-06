@@ -780,6 +780,8 @@ build_exec_env_args() {
     --env "RDLAB_STEP=run"
     --env "RDLAB_MODE=$MODE"
     --env "RDLAB_WALL_SECONDS=$VM_WALL_SECONDS"
+    --env "RDLAB_RIG_WALL_SECONDS=$WALL_SECONDS"
+    --env "RDLAB_WINDOW_CAP_UNITS=$CAP_UNITS"
     --env "RDLAB_VRAM_HALT_MIB=$VRAM_HALT_MIB"
     --env "RDLAB_JUDGE_LOCK_SHA256=$j_sha"
     --env "RDLAB_D3_LOCK_SHA256=$d_sha"

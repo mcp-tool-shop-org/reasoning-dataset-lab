@@ -14292,6 +14292,8 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_ALIVE_PROBE_SLEEP_SECONDS": "rig-only: sleep seconds between pre-gate alive probe retries on the rig",
     "RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS": "rig-only: per-try timeout on the rig for `colab exec` alive probe",
     "RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS": "rig-only: bound on `colab restart-kernel` before an alive-probe retry",
+    "RDLAB_COLAB_KILL_GRACE_SECONDS": "rig-only: the one SIGKILL grace (`timeout -k`) of every timeout-wrapped colab call",
+    "RDLAB_NO_SESSION_ASSIGNED": "rig-only: write_outcome_draft's flag for a colab new refused at assign (cost 0)",
     "RDLAB_CAP_UNITS": "rig-only: compute-unit cap enforced by the rig cost-cap monitor",
     "RDLAB_COLAB_IS_FAKE": "rig-only: marks fake CLI runs for `outcome.draft.json` on the rig",
     "RDLAB_COST_CAP_POLL_SECONDS": "rig-only: polling interval for the rig cost-cap background loop",
@@ -25256,7 +25258,7 @@ def test_part_binding_vm_main_refuses_before_any_paid_step(
         assert {k: ident["binding"][k] for k in ("uploaded_items", "rule", "projection_checked", "checked_by")} == {
             "uploaded_items": 12,
             "rule": "subset_of_part",
-            "projection_checked": False,
+            "projection_checked": None,
             "checked_by": "vm",
         }
     # not the burned pilot (by hash), so the pilot mass check does not run, and nothing is labelled pilot-40b
@@ -25513,9 +25515,15 @@ def _e2e_fake_real_mode_window(
 
     # The receipt shows both checks, each labelled by where it ran: the VM's re-check (identity, counts; no projection
     # check) and the launcher's row-by-row binding, which the outcome draft on the rig carries too.
-    vm_bind = receipt["part_identity"]["binding"]
-    assert vm_bind["checked_by"] == "vm" and vm_bind["projection_checked"] is False
+    # timeone-mu2b (2026-11-06): the receipt's binding said projection_checked false while the rig printed true. The
+    # binding is now the rig's result carried over (checked_by "rig", the launcher's value), the VM's re-check beside it.
+    rcpt_bind = receipt["part_identity"]["binding"]
     launcher_bind = receipt["part_identity"]["launcher_binding"]
+    assert rcpt_bind["checked_by"] == "rig"
+    assert rcpt_bind["projection_checked"] is True
+    assert rcpt_bind["projection_checked"] == launcher_bind["binding"]["projection_checked"]
+    assert rcpt_bind["vm_recheck"]["checked_by"] == "vm" and rcpt_bind["vm_recheck"]["projection_checked"] is None
+    assert receipt["time_one_summary"]["part_identity"]["binding"] == rcpt_bind
     assert launcher_bind["checked_by"] == "launcher" and launcher_bind["binding"]["projection_checked"] is True
     assert launcher_bind["binding"]["uploaded_items_sha256"] == hashlib.sha256(items_file.read_bytes()).hexdigest()
     assert launcher_bind["part_json_sha256"] == hashlib.sha256((part_dir / "part.json").read_bytes()).hexdigest()
@@ -25583,6 +25591,44 @@ def test_e2e_fake_real_mode_time_one_reaches_judges(tmp_path: Path) -> None:
     assert any(r["call"] == "run_gpu_gate" for r in res["shim_rows"])
     t1 = res["receipt"]["time_one_summary"]
     assert t1["harness_readouts"]["pilot_mass_check"]["status"] == "not_applicable"
+
+
+def test_e2e_time_one_summary_carries_the_launch_limits_and_the_rigs_projection_check(tmp_path: Path) -> None:
+    """A real `--time-one` (fake CLI) with a non-default rig wall (`RDLAB_WALL_SECONDS=1200`) and cap (`--cap 2.3`):
+    `time_one_summary.json` records this launch's rig wall, the VM wall the launcher forwarded and the cap
+    (`window_limits_source: forwarded_by_launcher`), never the 1500 / 2.5 defaults; and the receipt's part binding is the
+    rig's projection check carried over (`checked_by: rig`, the launcher's `projection_checked`), with the VM's re-check
+    beside it. Fails at a0f7d7af: the summary said wall 1500 / cap 2.5 and the binding said projection_checked false
+    (timeone-mu2b, 2026-11-06)."""
+    receipts_dir, hf_home, part, items = _e2e_time_one_inputs(tmp_path)
+    res = _e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_args="--cap 2.3",
+        extra_exports="export RDLAB_WALL_SECONDS=1200; ",
+        tag="limits",
+    )
+    t1 = res["receipt"]["time_one_summary"]
+    assert t1["wall_seconds"] == 1200, t1
+    assert t1["cap_units"] == 2.3
+    assert isinstance(t1["vm_wall_seconds"], int) and 0 < t1["vm_wall_seconds"] < 1200
+    assert t1["window_limits_source"] == "forwarded_by_launcher"
+    on_disk = json.loads((res["out_dir"] / "time_one_summary.json").read_text(encoding="utf-8")) if (
+        res["out_dir"] / "time_one_summary.json"
+    ).is_file() else t1
+    assert (on_disk["wall_seconds"], on_disk["cap_units"]) == (1200, 2.3)
+    bind = res["receipt"]["part_identity"]["binding"]
+    assert bind["checked_by"] == "rig" and bind["projection_checked"] is True
+    assert bind["projection_checked"] == res["receipt"]["part_identity"]["launcher_binding"]["binding"]["projection_checked"]
+    assert t1["part_identity"]["binding"]["checked_by"] == "rig"
+    # Not forwarded: null, never a default.
+    assert vm_judges.forwarded_window_limits({}) == {
+        "rig_wall_seconds": None, "vm_wall_seconds": None, "cap_units": None, "source": "forwarded_by_launcher"
+    }
 
 
 def test_e2e_fake_vm_cell_cannot_read_a_forwarded_host_path(tmp_path: Path) -> None:
@@ -25865,7 +25911,7 @@ def test_lock_check_p0a_is_keyed_on_the_pinned_pilot_identity_not_a_label(
     shutil.copyfile(pilot / "part.json", vm_items / vm_judges.P0A_PART_JSON_STAGED)
     shutil.copyfile(pilot / "checksums.txt", vm_items / vm_judges.P0A_CHECKSUMS_STAGED)
     vm_ident = vm_judges.verify_p0a_pilot_part(vm_items / "p0a_items.jsonl", mode="lock-check")
-    assert vm_ident["binding"]["checked_by"] == "vm" and vm_ident["binding"]["projection_checked"] is False
+    assert vm_ident["binding"]["checked_by"] == "vm" and vm_ident["binding"]["projection_checked"] is None
     assert vm_ident["launcher_binding"] is None
 
 
@@ -25975,14 +26021,17 @@ def test_launcher_binding_is_carried_into_the_vm_receipt_labelled_by_where_it_wa
     vm_items = _stage_vm_items_dir(tmp_path / "lb_vm" / "rdlab_items", projected, part)
     no_record = vm_judges.preflight_part_manifest(vm_items, mode="counted")
     assert no_record is not None
-    assert no_record["binding"]["checked_by"] == "vm" and no_record["binding"]["projection_checked"] is False
+    assert no_record["binding"]["checked_by"] == "vm" and no_record["binding"]["projection_checked"] is None
+    assert "projection_not_checked_reason" in no_record["binding"]
     assert no_record["launcher_binding"] is None
 
     record = {"schema_version": "1.0", "checked_by": "launcher", "window_part": entry, "p0a_part": None}
     (vm_items.parent / vm_judges.LAUNCHER_BINDING_FILENAME).write_text(json.dumps(record), encoding="utf-8")
     vm_ident = vm_judges.preflight_part_manifest(vm_items, mode="counted")
     assert vm_ident is not None
-    assert vm_ident["binding"]["checked_by"] == "vm" and vm_ident["binding"]["projection_checked"] is False
+    assert vm_ident["binding"]["checked_by"] == "rig" and vm_ident["binding"]["projection_checked"] is True
+    assert vm_ident["binding"]["vm_recheck"]["checked_by"] == "vm"
+    assert vm_ident["binding"]["vm_recheck"]["projection_checked"] is None
     assert vm_ident["launcher_binding"]["checked_by"] == "launcher"
     assert vm_ident["launcher_binding"]["binding"]["projection_checked"] is True
 
