@@ -550,7 +550,36 @@ STAGED_ITEMS_FILE="$STAGE_DIR/items.jsonl"
 STAGED_ANCHOR_ITEMS_FILE="$STAGE_DIR/anchor_items.jsonl"
 STAGED_P0A_ITEMS_FILE="$STAGE_DIR/p0a_items.jsonl"
 STAGED_P0A_MANIFEST_FILE="$STAGE_DIR/p0a_manifest.json"
+STAGED_PART_MANIFEST_FILE="$STAGE_DIR/manifest.json"
 RESUME_TAR="$STAGE_DIR/resume_state.tar.gz"
+
+# The part's own manifest.json beside the items file: checked by the VM's rules (vm_judges.preflight_part_manifest)
+# before any colab call. Present: the upload key/sealed guard plus parse/dict/part_id/not-synthesized. Absent: refused
+# PART_MANIFEST_MISSING in every window that needs one (real time-one, counted and other non-lock-check real modes).
+# Never creates one. Used by --dry and the live path alike.
+check_part_manifest_beside_items() {
+  "$PYTHON_BIN" - "$REPO_ROOT" "$1" "$MODE" "${VM_DRYRUN:-0}" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+items_file = Path(sys.argv[2])
+mode = sys.argv[3]
+vm_dryrun = sys.argv[4] == "1"
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+try:
+    part_mf = items_file.parent / vm_judges.PART_MANIFEST_FILENAME
+    if part_mf.is_file():
+        vm_judges.check_upload_path_allowed(part_mf)
+    vm_judges.preflight_part_manifest(items_file, mode=mode, dryrun=vm_dryrun)
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+}
 
 EFFECTIVE_RESUME=0
 if [[ "$RESUME_FLAG" -eq 1 ]] || [[ -f "$OUT_DIR/schedule.json" ]]; then
@@ -743,9 +772,38 @@ except vm_judges.RefusalError as exc:
 PY
       fi
     done
-    # The counted-source resolver runs for whichever counted source is given (--counted-manifest or
-    # --counted-items), as the live path and VM main do, so --dry never passes a source the live run refuses.
+    # The two-input check and the counted-source resolver run here as on the live path before the session opens
+    # (anchor + P0a both required, then bakeoff_judge.verify_lock_check_two_inputs, then the resolver for whichever
+    # counted source is given), so --dry refuses whatever the live path refuses before `colab new`.
+    if [[ -z "$ANCHOR_ITEMS_FILE" ]] || [[ -z "$P0A_ITEMS_FILE" ]]; then
+      echo "LOCK_CHECK_ANCHOR_ITEMS_INVALID: --lock-check requires both --anchor-items (50 anchor items from the counted part) and --p0a-items (114 burned pilot items)" >&2
+      exit 2
+    fi
     DRY_COUNTED_SOURCE="${COUNTED_MANIFEST_FILE:-$COUNTED_ITEMS_FILE}"
+    "$PYTHON_BIN" - "$REPO_ROOT" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$DRY_COUNTED_SOURCE" "$SESSION_SMOKE_FLAG" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+anchor_f = Path(sys.argv[2])
+p0a_f = Path(sys.argv[3])
+counted_src = Path(sys.argv[4]) if sys.argv[4].strip() else None
+is_smoke = sys.argv[5] == "1"
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+if not is_smoke or (anchor_f.is_file() and p0a_f.is_file()):
+    try:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_f,
+            p0a_items_or_path=p0a_f,
+            counted_items_or_manifest=counted_src,
+        )
+    except bakeoff_judge.RdlabError as exc:
+        sys.stderr.write(f"[{exc.code}] {exc.message}\n")
+        raise SystemExit(2)
+PY
     if [[ -n "$DRY_COUNTED_SOURCE" ]]; then
       "$PYTHON_BIN" - "$REPO_ROOT" "$DRY_COUNTED_SOURCE" "$SESSION_SMOKE_FLAG" <<'PY'
 import sys
@@ -791,6 +849,9 @@ except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
     raise SystemExit(2)
 PY
+    if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]]; then
+      check_part_manifest_beside_items "$ITEMS_FILE"
+    fi
   fi
   if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
     printf 'colab sessions\n'
@@ -841,6 +902,9 @@ PY
       fi
     else
       printf 'colab upload -s %s %s /content/rdlab_items/items.jsonl\n' "$SESSION_NAME" "$STAGED_ITEMS_FILE"
+      if [[ -n "$ITEMS_FILE" ]] && [[ -f "$(dirname "$ITEMS_FILE")/manifest.json" ]]; then
+        printf 'colab upload -s %s %s /content/rdlab_items/manifest.json\n' "$SESSION_NAME" "$STAGED_PART_MANIFEST_FILE"
+      fi
     fi
     if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
       printf 'colab upload -s %s %s /content/resume_state.tar.gz\n' "$SESSION_NAME" "$RESUME_TAR"
@@ -1760,6 +1824,10 @@ PY
     RUN_WHY="items file refused by field allow-list guard: $ITEMS_FILE"
     exit 2
   fi
+  if ! check_part_manifest_beside_items "$ITEMS_FILE"; then
+    RUN_WHY="part manifest beside the items file refused before session open: $(dirname "$ITEMS_FILE")/manifest.json"
+    exit 2
+  fi
 fi
 
 if [[ -z "$RECEIPTS_DIR" ]] || [[ ! -d "$RECEIPTS_DIR" ]]; then
@@ -1805,7 +1873,9 @@ then
 fi
 
 mkdir -p "$STAGE_DIR"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_P0A_MANIFEST_FILE" <<'PY'
+# A part manifest left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
+rm -f "$STAGED_PART_MANIFEST_FILE"
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_P0A_MANIFEST_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_MANIFEST_FILE" <<'PY'
 import shutil
 import sys
 import tarfile
@@ -1826,6 +1896,9 @@ raw_p0a_dst = sys.argv[12].strip() if len(sys.argv) > 12 else ""
 raw_counted_items = sys.argv[13].strip() if len(sys.argv) > 13 else ""
 raw_counted_manifest = sys.argv[14].strip() if len(sys.argv) > 14 else ""
 raw_p0a_manifest_dst = sys.argv[15].strip() if len(sys.argv) > 15 else ""
+stage_mode = sys.argv[16].strip() if len(sys.argv) > 16 else ""
+stage_vm_dryrun = (sys.argv[17].strip() == "1") if len(sys.argv) > 17 else False
+raw_part_manifest_dst = sys.argv[18].strip() if len(sys.argv) > 18 else ""
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -1836,6 +1909,15 @@ vm_judges.check_upload_path_allowed(items_src)
 vm_judges.verify_items_allowlist(items_src)
 _ = vm_judges.collect_claim_ngram_sha256s(items_src)
 shutil.copyfile(items_src, items_dst)
+if stage_mode not in ("lock-check", "lock-check-stub") and raw_part_manifest_dst:
+    # The part's own manifest.json goes to the VM beside items.jsonl, checked by the VM's own rules first; it is
+    # copied as given, never created or rewritten.
+    part_mf_src = items_src.parent / vm_judges.PART_MANIFEST_FILENAME
+    if part_mf_src.is_file():
+        vm_judges.check_upload_path_allowed(part_mf_src)
+    vm_judges.preflight_part_manifest(items_src, mode=stage_mode, dryrun=stage_vm_dryrun)
+    if part_mf_src.is_file():
+        shutil.copyfile(part_mf_src, Path(raw_part_manifest_dst))
 if raw_anchor_src and raw_anchor_dst:
     anchor_src = Path(raw_anchor_src)
     vm_judges.check_upload_path_allowed(anchor_src)
@@ -2135,6 +2217,12 @@ else
     RUN_WHY="colab upload failed for /content/rdlab_items/items.jsonl on session $S"
     exit 1
   }
+  if [[ -f "$STAGED_PART_MANIFEST_FILE" ]]; then
+    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_MANIFEST_FILE" "/content/rdlab_items/manifest.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+      RUN_WHY="colab upload failed for /content/rdlab_items/manifest.json on session $S"
+      exit 1
+    }
+  fi
 fi
 if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
   timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {

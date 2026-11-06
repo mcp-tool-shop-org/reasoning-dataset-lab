@@ -5530,6 +5530,90 @@ def run_gpu_gate(
     return ok_report
 
 
+PART_MANIFEST_FILENAME = "manifest.json"
+LOCK_CHECK_WINDOW_MODES: frozenset[str] = frozenset(
+    {"lock-check", "lock_check", "lock-check-stub", "lock_check_stub"}
+)
+
+
+def validate_part_manifest_file(
+    part_manifest: Path,
+    *,
+    mode: str,
+    dryrun: bool = False,
+) -> tuple[dict[str, Any], bool]:
+    """Read and validate an existing part `manifest.json`; the one rule set shared by the launcher, VM `main` and the
+    pipeline body.
+
+    Refuses `PART_MANIFEST_INVALID` (unparsable, not a JSON object, or no non-empty string `part_id`) in every mode, and
+    `PART_MANIFEST_SYNTHESIZED` (a stub/synthesized manifest) in real modes. Never writes anything.
+    Returns `(manifest_doc, synthesized_flag)`.
+    """
+    try:
+        loaded = json.loads(part_manifest.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RefusalError(
+            "PART_MANIFEST_INVALID",
+            f"Part manifest at {part_manifest} failed to parse as JSON (parse error): {exc}",
+        ) from exc
+    if not isinstance(loaded, dict):
+        raise RefusalError(
+            "PART_MANIFEST_INVALID",
+            f"Part manifest at {part_manifest} root is not a JSON object (not a dict): got {type(loaded).__name__}",
+        )
+    raw_pid = loaded.get("part_id")
+    if not isinstance(raw_pid, str) or not raw_pid.strip():
+        raise RefusalError(
+            "PART_MANIFEST_INVALID",
+            f"Part manifest at {part_manifest} has no non-empty string part_id (no part_id)",
+        )
+    was_synth = bool(loaded.get("synthesized")) or raw_pid.strip().lower() == "stub"
+    if is_real_mode(mode, dryrun=dryrun) and was_synth:
+        raise RefusalError(
+            "PART_MANIFEST_SYNTHESIZED",
+            f"Part manifest at {part_manifest} is a synthesized stub manifest (part_id={raw_pid!r}, synthesized={bool(loaded.get('synthesized'))}) and is forbidden in real mode {mode!r}.",
+        )
+    return loaded, bool(loaded.get("synthesized"))
+
+
+def part_manifest_required(mode: str | None, *, dryrun: bool = False) -> bool:
+    """Return True when a window must bring its part's own `manifest.json`: every real mode except the lock-check
+    windows (`time-one`, `counted` and any other non-stub mode). Lock-check windows read the anchor, P0a and counted
+    sources instead, each of which carries or resolves its own manifest, so they never need the items file's.
+    """
+    if not is_real_mode(mode, dryrun=dryrun):
+        return False
+    return str(mode or "").strip().lower() not in LOCK_CHECK_WINDOW_MODES
+
+
+def preflight_part_manifest(
+    items_file: Path,
+    *,
+    mode: str,
+    dryrun: bool = False,
+) -> Path | None:
+    """Check the part manifest beside `items_file` before any paid step; never creates one.
+
+    - Present: refused by the same rules as `validate_part_manifest_file` (invalid in any mode, synthesized in real mode).
+    - Absent: refused `PART_MANIFEST_MISSING` when `part_manifest_required(mode)`; otherwise `None` (stub and dryrun
+      windows may let the pipeline body synthesize a labelled stub manifest later).
+    Returns the manifest path when it exists, so the caller can list it with the uploaded item files.
+    """
+    eff_items = Path(items_file)
+    part_dir = eff_items if eff_items.is_dir() else eff_items.parent
+    part_manifest = part_dir / PART_MANIFEST_FILENAME
+    if part_manifest.is_file():
+        validate_part_manifest_file(part_manifest, mode=mode, dryrun=dryrun)
+        return part_manifest
+    if part_manifest_required(mode, dryrun=dryrun):
+        raise RefusalError(
+            "PART_MANIFEST_MISSING",
+            f"Part manifest not found at {part_manifest} in real mode {mode!r}; the launcher must stage the part's own "
+            "manifest.json beside items.jsonl, and real mode never synthesizes one.",
+        )
+    return None
+
+
 def _ensure_part_manifest_for_run(
     part_dir: Path,
     *,
@@ -5540,36 +5624,13 @@ def _ensure_part_manifest_for_run(
 
     Only stub or dryrun modes may synthesize a part manifest, and any synthesized manifest is
     labelled `"part_id": "stub"`, `"synthesized": True` (never `"pilot-40b"`).
+    VM `main` runs `preflight_part_manifest` before any paid step; this is the second line, in the pipeline body.
     Returns `(manifest_doc, was_synthesized)`.
     """
-    part_manifest = part_dir / "manifest.json"
+    part_manifest = part_dir / PART_MANIFEST_FILENAME
     real_mode_active = is_real_mode(mode, dryrun=dryrun)
     if part_manifest.is_file():
-        try:
-            loaded = json.loads(part_manifest.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise RefusalError(
-                "PART_MANIFEST_INVALID",
-                f"Part manifest at {part_manifest} failed to parse as JSON (parse error): {exc}",
-            ) from exc
-        if not isinstance(loaded, dict):
-            raise RefusalError(
-                "PART_MANIFEST_INVALID",
-                f"Part manifest at {part_manifest} root is not a JSON object (not a dict): got {type(loaded).__name__}",
-            )
-        raw_pid = loaded.get("part_id")
-        if not isinstance(raw_pid, str) or not raw_pid.strip():
-            raise RefusalError(
-                "PART_MANIFEST_INVALID",
-                f"Part manifest at {part_manifest} has no non-empty string part_id (no part_id)",
-            )
-        was_synth = bool(loaded.get("synthesized")) or raw_pid.strip().lower() == "stub"
-        if real_mode_active and was_synth:
-            raise RefusalError(
-                "PART_MANIFEST_SYNTHESIZED",
-                f"Part manifest at {part_manifest} is a synthesized stub manifest (part_id={raw_pid!r}, synthesized={bool(loaded.get('synthesized'))}) and is forbidden in real mode {mode!r}.",
-            )
-        return loaded, bool(loaded.get("synthesized"))
+        return validate_part_manifest_file(part_manifest, mode=mode, dryrun=dryrun)
     if real_mode_active:
         raise RefusalError(
             "PART_MANIFEST_MISSING",
@@ -11393,6 +11454,19 @@ def main(argv: list[str] | None = None) -> int:
 
             current_step = "verify_items_allowlist"
             verify_items_allowlist(args.items_file)
+
+            # The part manifest preflight: before the shard manifest, venv sync, the device/GPU gate and any weight
+            # download. The launcher stages the part's own manifest.json beside items.jsonl; it is listed (and deleted
+            # after the run) with the other uploaded item files even when it is refused here.
+            current_step = "verify_part_manifest"
+            staged_part_manifest = (
+                args.items_file if args.items_file.is_dir() else args.items_file.parent
+            ) / PART_MANIFEST_FILENAME
+            if staged_part_manifest.is_file():
+                check_upload_path_allowed(staged_part_manifest)
+                if staged_part_manifest not in uploaded_item_files:
+                    uploaded_item_files.append(staged_part_manifest)
+            preflight_part_manifest(args.items_file, mode=args.mode, dryrun=dryrun)
 
         cgroup_chain_at_start = read_cgroup_limit_chain()
 
