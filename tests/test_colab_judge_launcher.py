@@ -56,6 +56,14 @@ def _to_wsl_path(path: Path) -> str:
     return path.resolve().as_posix()
 
 
+def _use_per_test_pinned_uv_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Point the VM's pinned-uv dir at a per-test directory (test hook `FAKE_COLAB_PINNED_UV_DIR`, inherited by the
+    launcher, the fake CLI and its cells), so parallel workers never share `/tmp/uv-pinned`."""
+    pin = tmp_path / "uv-pinned"
+    monkeypatch.setenv(vm_judges.PINNED_UV_DIR_TEST_HOOK, str(pin))
+    return pin
+
+
 def _make_synthetic_judge_snapshots_and_receipts(base_dir: Path) -> tuple[Path, Path]:
     """Create synthetic local HF snapshots and matching `<owner>__<repo>.sha256.json` receipts for all 5 judges."""
     receipts_dir = base_dir / "receipts"
@@ -3697,6 +3705,7 @@ def test_gate_python_315_preflight_refuses_when_uv_absent_or_cannot_provide_315(
     using `build_vm_uv_env()` without installing anything, and refuses with `VM_PYTHON_UNAVAILABLE`
     carrying scrubbed output before any upload.
     """
+    _pin = _use_per_test_pinned_uv_dir(tmp_path, monkeypatch)
     import shutil as _shutil
 
     monkeypatch.setattr(
@@ -5481,6 +5490,7 @@ def test_find_or_install_case_8_uv_version_change_refuses_with_uv_version_change
     `find_or_install_vm_python_315` refuses with `UV_VERSION_CHANGED` (`rc == 2`), and succeeds when
     `RDLAB_EXPECT_UV_VERSION` matches the active `0.13.5`.
     """
+    _pin = _use_per_test_pinned_uv_dir(tmp_path, monkeypatch)
     _mock_sufficient_vm_disk(monkeypatch)
     env_8 = fake_colab.setup_fake_colab_environment(
         tmp_path / "env_case8",
@@ -5536,7 +5546,7 @@ def test_find_or_install_case_8_uv_version_change_refuses_with_uv_version_change
     doc_ok = json.loads(status_8_ok.read_text(encoding="utf-8"))
     assert doc_ok["rc"] == 0
     assert doc_ok["uv_source"] == "pinned-wheel"
-    assert doc_ok["uv_path"] == "/tmp/uv-pinned/uv"
+    assert doc_ok["uv_path"] == str(_pin / "uv")
     assert doc_ok["uv_version"] == "uv 0.13.5"
 
 
@@ -11780,8 +11790,10 @@ def test_pinned_uv_wheel_constants_match_table() -> None:
 
 def test_pinned_uv_image_0135_used_as_is_and_uv_source_is_image(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Card Item 5: an image uv at `0.13.5` is used as is, and `uv_source=image` in `gate_status.json`, `status.json`, and `vm_receipt.json`."""
+    _pin = _use_per_test_pinned_uv_dir(tmp_path, monkeypatch)
     env_img = fake_colab.setup_fake_colab_environment(
         tmp_path / "env_img_0135",
         uv_version="uv 0.13.5",
@@ -11830,7 +11842,7 @@ def test_pinned_uv_image_0135_used_as_is_and_uv_source_is_image(
     ]
     assert len(uv_calls) >= 2
     assert all(c["uv_source"] == "image" for c in uv_calls)
-    assert all(not str(c["uv_bin"]).startswith("/tmp/uv-pinned") for c in uv_calls)
+    assert all(not str(c["uv_bin"]).startswith(str(_pin)) for c in uv_calls)
 
 
 def test_pinned_uv_image_0134_installs_pinned_wheel_and_every_uv_call_site_uses_tmp_uv_pinned(
@@ -11841,6 +11853,7 @@ def test_pinned_uv_image_0134_installs_pinned_wheel_and_every_uv_call_site_uses_
     `uv_source=pinned-wheel`, and every uv call site (gate python find & install, venv creation &
     `uv pip sync`, download child env, and judge child env) uses `/tmp/uv-pinned/uv`.
     """
+    _pin = _use_per_test_pinned_uv_dir(tmp_path, monkeypatch)
     _mock_sufficient_vm_disk(monkeypatch)
     fixture_py_tar, fixture_py_sha, _ = fake_colab.build_fixture_python_archive(
         tmp_path / "fixture_py_0134"
@@ -11900,14 +11913,14 @@ def test_pinned_uv_image_0134_installs_pinned_wheel_and_every_uv_call_site_uses_
 
     for doc in (gate_doc, status_doc, receipt_doc):
         assert doc["uv_source"] == "pinned-wheel"
-        assert doc["uv_path"] == "/tmp/uv-pinned/uv"
+        assert doc["uv_path"] == str(_pin / "uv")
         assert doc["uv_version"] == "uv 0.13.5"
 
-    assert Path("/tmp/uv-pinned/uv").is_file()
-    assert Path("/tmp/uv-pinned/uvx").is_file()
-    assert (Path("/tmp/uv-pinned/uv").stat().st_mode & 0o777) == 0o755
-    assert (Path("/tmp/uv-pinned/uvx").stat().st_mode & 0o777) == 0o755
-    assert sorted(p.name for p in Path("/tmp/uv-pinned").iterdir()) == ["uv", "uvx"]
+    assert (_pin / "uv").is_file()
+    assert (_pin / "uvx").is_file()
+    assert ((_pin / "uv").stat().st_mode & 0o777) == 0o755
+    assert ((_pin / "uvx").stat().st_mode & 0o777) == 0o755
+    assert sorted(p.name for p in _pin.iterdir()) == ["uv", "uvx"]
 
     # Verify download child and judge child environments had `/tmp/uv-pinned` prepended to PATH
     dl_subprocs = [
@@ -11927,8 +11940,8 @@ def test_pinned_uv_image_0134_installs_pinned_wheel_and_every_uv_call_site_uses_
     assert len(dl_subprocs) == 5
     assert len(judge_subprocs) == 5
     for rec in dl_subprocs + judge_subprocs:
-        assert str(rec["path"]).split(os.pathsep)[0] == "/tmp/uv-pinned"
-        assert rec["uv_bin"] == "/tmp/uv-pinned/uv"
+        assert str(rec["path"]).split(os.pathsep)[0] == str(_pin)
+        assert rec["uv_bin"] == str(_pin / "uv")
 
     # 2. Also exercise `sync_judge_venvs(..., dryrun=False)` directly so `uv venv`, `uv pip install` (pyyaml sdist),
     #    and `uv pip sync` execute as real subprocesses and log into `uv_calls.jsonl`.
@@ -11946,9 +11959,9 @@ def test_pinned_uv_image_0134_installs_pinned_wheel_and_every_uv_call_site_uses_
         dryrun=False,
     )
     assert venv_res["uv_source"] == "pinned-wheel"
-    assert venv_res["uv_path"] == "/tmp/uv-pinned/uv"
+    assert venv_res["uv_path"] == str(_pin / "uv")
     assert venv_res["uv_version"] == "uv 0.13.5"
-    assert "/tmp/uv-pinned" not in os.environ.get("PATH", "").split(os.pathsep)
+    assert str(_pin) not in os.environ.get("PATH", "").split(os.pathsep)
 
     uv_calls = [
         json.loads(ln)
@@ -11963,9 +11976,9 @@ def test_pinned_uv_image_0134_installs_pinned_wheel_and_every_uv_call_site_uses_
     subsequent_calls = uv_calls[1:]
     assert len(subsequent_calls) >= 9
     for call in subsequent_calls:
-        assert call["uv_bin"] == "/tmp/uv-pinned/uv"
+        assert call["uv_bin"] == str(_pin / "uv")
         assert call["uv_source"] == "pinned-wheel"
-        assert str(call["path"]).split(os.pathsep)[0] == "/tmp/uv-pinned"
+        assert str(call["path"]).split(os.pathsep)[0] == str(_pin)
     seen_subcommands = [c["args"][:2] for c in subsequent_calls]
     assert ["--version"] in seen_subcommands
     assert ["python", "find"] in seen_subcommands
@@ -11977,8 +11990,10 @@ def test_pinned_uv_image_0134_installs_pinned_wheel_and_every_uv_call_site_uses_
 
 def test_pinned_uv_absent_in_image_installs_and_uses_pinned_wheel(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Card Item 5: no uv in the image means the pinned wheel is installed and used."""
+    _pin = _use_per_test_pinned_uv_dir(tmp_path, monkeypatch)
     env_absent = fake_colab.setup_fake_colab_environment(
         tmp_path / "env_uv_absent",
         uv_python_315_found=True,
@@ -12016,7 +12031,7 @@ def test_pinned_uv_absent_in_image_installs_and_uses_pinned_wheel(
 
     for doc in (gate_doc, status_doc, receipt_doc):
         assert doc["uv_source"] == "pinned-wheel"
-        assert doc["uv_path"] == "/tmp/uv-pinned/uv"
+        assert doc["uv_path"] == str(_pin / "uv")
         assert doc["uv_version"] == "uv 0.13.5"
 
     uv_calls = [
@@ -12026,7 +12041,7 @@ def test_pinned_uv_absent_in_image_installs_and_uses_pinned_wheel(
     ]
     assert len(uv_calls) >= 2
     for call in uv_calls:
-        assert call["uv_bin"] == "/tmp/uv-pinned/uv"
+        assert call["uv_bin"] == str(_pin / "uv")
         assert call["uv_source"] == "pinned-wheel"
 
 
@@ -12044,6 +12059,7 @@ def test_pinned_uv_named_refusals_sha256_size_short_read_bad_members_and_version
     - `--version` reporting `0.13.4` (`PINNED_UV_VERSION_MISMATCH`);
     - launcher's gate refusal-class grep reports `"VM gate refused"`, not `"liveness"`.
     """
+    _pin = _use_per_test_pinned_uv_dir(tmp_path, monkeypatch)
     _mock_sufficient_vm_disk(monkeypatch)
     valid_whl, valid_sha, _ = fake_colab.build_fixture_uv_wheel(
         tmp_path / "valid_whl",
@@ -12266,12 +12282,14 @@ def test_pinned_uv_named_refusals_sha256_size_short_read_bad_members_and_version
 
 def test_force_pinned_uv_knob_forces_pinned_in_stub_and_refuses_time_one_before_colab_new(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Card Item 5 & Item 6:
     - `RDLAB_FORCE_PINNED_UV=1` with `--stub` forces the pinned wheel path even when image uv is `0.13.5`;
     - `RDLAB_FORCE_PINNED_UV=1` with `--time-one` is refused with `FORCE_PINNED_UV_INVALID` before `colab new`;
     - `RDLAB_FORCE_PINNED_UV=1 scripts/colab/launch_judges.sh --stub --until venv_sync --dry` shows the forwarded `--env`.
     """
+    _pin = _use_per_test_pinned_uv_dir(tmp_path, monkeypatch)
     # 1. With `--time-one`, `RDLAB_FORCE_PINNED_UV=1` is refused before `colab new`
     env_t1 = fake_colab.setup_fake_colab_environment(tmp_path / "env_force_t1")
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
@@ -12354,7 +12372,7 @@ def test_force_pinned_uv_knob_forces_pinned_in_stub_and_refuses_time_one_before_
     receipt_doc = json.loads((out_stub / "vm_receipt.json").read_text(encoding="utf-8"))
     for doc in (gate_doc, status_doc, receipt_doc):
         assert doc["uv_source"] == "pinned-wheel"
-        assert doc["uv_path"] == "/tmp/uv-pinned/uv"
+        assert doc["uv_path"] == str(_pin / "uv")
         assert doc["uv_version"] == "uv 0.13.5"
 
 
@@ -13523,6 +13541,7 @@ def test_part2_item5_uv_wheel_sha_hook_behind_explicit_test_seam(
     or `uv_state.json`; with the production `resolve_expected_uv_wheel_sha256` unpatched, setting
     `FAKE_COLAB_STATE_DIR` has zero effect on the expected SHA-256 check.
     """
+    _pin = _use_per_test_pinned_uv_dir(tmp_path, monkeypatch)
     import inspect
 
     src = inspect.getsource(vm_judges.install_pinned_uv_wheel)
@@ -13560,6 +13579,7 @@ def test_part2_item6_pinned_uv_wheel_download_and_unpack_timing(
     `install_pinned_uv_wheel` times `uv_wheel_download_seconds` and `uv_wheel_unpack_seconds`
     and records them in `gate_status.json`, `vm_receipt.json`, and `status.json`.
     """
+    _pin = _use_per_test_pinned_uv_dir(tmp_path, monkeypatch)
     _mock_sufficient_vm_disk(monkeypatch)
     fixture_py_tar, fixture_py_sha, _ = fake_colab.build_fixture_python_archive(
         tmp_path / "fixture_py_item6"
@@ -14195,6 +14215,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_ALIVE_PROBE_MAX_TRIES": "rig-only: max retries for `launch_judges.sh` pre-gate alive probe loop",
     "RDLAB_ALIVE_PROBE_SLEEP_SECONDS": "rig-only: sleep seconds between pre-gate alive probe retries on the rig",
     "RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS": "rig-only: per-try timeout on the rig for `colab exec` alive probe",
+    "RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS": "rig-only: bound on `colab restart-kernel` before an alive-probe retry",
     "RDLAB_CAP_UNITS": "rig-only: compute-unit cap enforced by the rig cost-cap monitor",
     "RDLAB_COLAB_IS_FAKE": "rig-only: marks fake CLI runs for `outcome.draft.json` on the rig",
     "RDLAB_COST_CAP_POLL_SECONDS": "rig-only: polling interval for the rig cost-cap background loop",
@@ -14237,7 +14258,6 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_CGROUP_DIR": "vm-internal: `/sys/fs/cgroup` path override used in unit tests",
     "RDLAB_CGROUP_MEMORY_EVENTS_PATH": "vm-internal: `/sys/fs/cgroup/memory.events` path override used in unit tests",
     "RDLAB_PROC_MEMINFO_PATH": "vm-internal: `/proc/meminfo` path override used in unit tests",
-    "RDLAB_CARD_TYPE": "vm-internal: GPU card type override used in boot gatekeeper unit tests",
     "RDLAB_SDPA_BACKEND": "vm-internal: SDPA backend override used in session_env unit tests",
     "RDLAB_SESSION_FINGERPRINT_SHA256": "vm-internal: set by `vm_judges.py` when spawning judge child subprocesses",
 }
@@ -18625,13 +18645,13 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
         assert exc_a3.value.code == 2
 
     # A4: Boot gatekeeper
-    # 1. Golden-missing refusal uses is_real_mode (time-one included)
+    # 1. Golden-missing refusal in a real counted window (time-one records instead of comparing since 2026-11-06)
     goldens_unfilled = REPO_ROOT / "scripts" / "colab" / "boot_gatekeeper_goldens.json"
     with pytest.raises(vm_judges.RefusalError) as exc_gk_t1_miss:
         vm_judges.run_boot_gatekeeper(
             run_dir=tmp_path / "gk_t1_missing",
             repo_root=REPO_ROOT,
-            mode="time-one",
+            mode="counted",
             card_type="A100",
             goldens_path=goldens_unfilled,
             dryrun=False,
@@ -20211,6 +20231,7 @@ def test_lock_check_item3_filled_goldens_real_transport_and_stub_refusal(
             run_dir=tmp_path / "refuse_stub_lc",
             repo_root=REPO_ROOT,
             mode="lock-check",
+            card_type="A100",  # a real mode has no default card type
             dryrun=False,
             transport=fake_tr,
         )
@@ -20278,6 +20299,7 @@ def test_lock_check_item3_filled_goldens_real_transport_and_stub_refusal(
             run_dir=tmp_path / "counted_stub_gold_refuse",
             repo_root=REPO_ROOT,
             mode="counted",
+            card_type="A100",  # a real mode has no default card type
             goldens_path=stub_goldens_path,
             dryrun=False,
             transport=_MockRealGatekeeperTransport(),
@@ -24586,6 +24608,9 @@ def test_followup_item6_real_lock_check_through_vm_main_on_monkeypatched_transpo
     monkeypatch.delenv("VM_DRYRUN", raising=False)
     monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
     monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    # A real window: the launcher forwards the opened session's card; the VM's nvidia-smi agrees.
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "A100")
+    monkeypatch.setattr(vm_judges, "read_vm_gpu_name", lambda: ("NVIDIA A100-SXM4-40GB", "test"))
     for var in ("RDLAB_COUNTED_ITEMS_FILE", "RDLAB_COUNTED_MANIFEST", "RDLAB_ANCHOR_ITEMS_FILE", "RDLAB_P0A_ITEMS_FILE"):
         monkeypatch.delenv(var, raising=False)
     for var in list(os.environ):
@@ -24838,6 +24863,13 @@ def test_part_binding_launcher_binds_items_to_the_real_part_files_before_any_col
     rows = _part_rows(part)
     assert len(rows) == 12
     inputs = tmp_path / "pb1_inputs"
+    # A counted window without the card's goldens is refused before the session opens; give it filled (test) goldens.
+    pb1_goldens_doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    pb1_goldens_doc["card_types"]["A100"]["prompts"] = {
+        sp["prompt_id"]: {"output_token_ids_sha256": "c" * 64} for sp in pb1_goldens_doc["synthetic_prompts"]
+    }
+    pb1_goldens = tmp_path / "pb1_goldens_filled.json"
+    pb1_goldens.write_text(json.dumps(pb1_goldens_doc), encoding="utf-8")
 
     def _run(tag: str, mode: str, items: Path, part_dir: Path | None, *, live: bool) -> tuple[Any, dict[str, Path]]:
         env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"pb1_env_{tag}_{int(live)}")
@@ -24848,7 +24880,7 @@ def test_part_binding_launcher_binds_items_to_the_real_part_files_before_any_col
             hf_home=hf_home,
             items_file=items,
             part_dir=part_dir,
-        )
+        ) + f"export RDLAB_BOOT_GATEKEEPER_GOLDENS='{_to_wsl_path(pb1_goldens)}'; "
         out_dir = tmp_path / f"pb1_out_{tag}_{int(live)}"
         proc = _pm_run_launcher(
             exports, f"--{mode} {'' if live else '--dry '}--out-dir '{_to_wsl_path(out_dir)}' --run-id pb1-{tag}"
@@ -24945,6 +24977,9 @@ def test_part_binding_vm_main_refuses_before_any_paid_step(
     monkeypatch.delenv("VM_DRYRUN", raising=False)
     monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
     monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    # A real window: the launcher forwards the opened session's card; the VM's nvidia-smi agrees.
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "A100")
+    monkeypatch.setattr(vm_judges, "read_vm_gpu_name", lambda: ("NVIDIA A100-SXM4-40GB", "test"))
     for var in (
         "RDLAB_SHARD",
         "RDLAB_SHARD_MANIFEST",
@@ -25217,6 +25252,11 @@ def _e2e_fake_real_mode_window(
     extra_args: str = "",
     exec_env_extra: dict[str, str] | None = None,
     tag: str = "",
+    extra_exports: str = "",
+    session_hardware: str | None = None,
+    vm_gpu_name: str | None = None,
+    expect_fail: bool = False,
+    double_space_rows: bool = False,
 ) -> dict[str, Any]:
     """Drive the REAL `launch_judges.sh` live path (not `--dry`) in a real mode (no stub mode, no VM_DRYRUN) against the
     fake `colab` CLI, with the VM cell run through `tests/fixtures/fake_vm_real_mode_shim.py`, on a part made by the real
@@ -25227,6 +25267,10 @@ def _e2e_fake_real_mode_window(
     VM root and the fake CLI's state dir; the VM's weight cache is its own copy inside the fake VM root
     (`FAKE_COLAB_VM_HF_SEED`). With `exec_env_extra` (variables forwarded to the run cell as if by the launcher) the
     run is expected to fail; the result carries `proc`, and the checks of a successful window are skipped.
+    `extra_exports` (shell `export ...; ` text) is added to the launcher's environment, e.g. `RDLAB_ONLY_JUDGES`.
+    `session_hardware` is the `<Hardware>|<Shape>` the opened session reports in `colab sessions` (default: the
+    `--gpu` asked for, `Standard`); `double_space_rows` renders the rows with the real double-space form; `vm_gpu_name` is what the VM's `nvidia-smi --query-gpu=name` prints (default: the session's card). With
+    `expect_fail` the run is expected to fail and the result carries `proc` (as with `exec_env_extra`).
     """
     name = f"{mode}{tag}"
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"e2e_{name}_env", uv_python_315_found=True)
@@ -25245,13 +25289,19 @@ def _e2e_fake_real_mode_window(
         f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(kept)}'; "
         f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
         f"export FAKE_COLAB_VM_DENY_ROOTS='{_to_wsl_path(tmp_path)}'; "
-    )
+    ) + extra_exports
     if exec_env_extra:
         exports += f"export FAKE_COLAB_EXEC_ENV_EXTRA='{json.dumps(exec_env_extra)}'; "
+    if session_hardware is not None:
+        (env_paths["state_dir"] / "new_session_hardware.txt").write_text(session_hardware + "\n", encoding="utf-8")
+    if double_space_rows:
+        (env_paths["state_dir"] / "sessions_double_space").write_text("1\n", encoding="utf-8")
+    if vm_gpu_name is not None:
+        (env_paths["state_dir"] / "nvidia_smi_gpu_name.txt").write_text(vm_gpu_name + "\n", encoding="utf-8")
     proc = _pm_run_launcher(
         exports, f"--{mode} {extra_args} --out-dir '{_to_wsl_path(out_dir)}' --run-id {run_id}", timeout=300
     )
-    if exec_env_extra:
+    if exec_env_extra or expect_fail:
         return {"proc": proc, "out_dir": out_dir, "env_paths": env_paths}
     where = f"stdout={proc.stdout[-4000:]}\nstderr={proc.stderr[-4000:]}"
     assert proc.returncode == 0, where
