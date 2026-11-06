@@ -58,8 +58,10 @@ Options:
   --counted            Run a counted A100 shard window (--gpu A100, strict determinism; default wall 7200s; --max-rate
                        required)
   --counted-stub       Run a counted CPU stub shard window (CPU, deterministic stub transport)
-                       No rate is assumed: the rate is read live from `colab usage` after the session opens (the
-                       account-wide rate, which includes any other open session) and is the only rate recorded.
+                       No rate is assumed. `colab usage` reports the account-wide rate (every open session), so the
+                       window's rate is read as post-open minus pre-open, accepted when two reads 5 s apart agree within
+                       0.01 and clear the floor (1.00/h on a GPU card); the cap runtime is priced on max(--max-rate,
+                       that rate).
   --shard k/n          Shard index k of n (1-indexed, default 1/1; or set RDLAB_SHARD)
   --shard-manifest F   Pre-built shard_manifest.json path (or set RDLAB_SHARD_MANIFEST)
   --shard-manifest-sha256 SHA  Expected sha256 of shard_manifest.json (or set RDLAB_SHARD_MANIFEST_SHA256)
@@ -400,6 +402,9 @@ fi
 RATE_UNITS_PER_HOUR=""
 RATE_SOURCE=""
 LIVE_RATE_UNITS_PER_HOUR=""
+PRE_ACCOUNT_RATE=""
+POST_ACCOUNT_RATE=""
+PRICING_RATE_UNITS_PER_HOUR=""
 if [[ -n "$MAX_RATE" ]]; then
   RATE_UNITS_PER_HOUR="$MAX_RATE"
   RATE_SOURCE="estimate_from_max_rate"
@@ -530,6 +535,18 @@ ALIVE_PROBE_SLEEP_SECONDS="${RDLAB_ALIVE_PROBE_SLEEP_SECONDS:-20}"
 ALIVE_PROBE_TIMEOUT_SECONDS="${RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS:-60}"
 RESTART_KERNEL_TIMEOUT_SECONDS="${RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS:-60}"
 COST_CAP_POLL_SECONDS="${RDLAB_COST_CAP_POLL_SECONDS:-1}"
+# The window rate (see read_window_rate): `colab usage` reports the ACCOUNT's rate, which includes every other open
+# session, so the window's own rate is post-open minus pre-open, accepted only when two reads RATE_POLL_SLEEP_SECONDS
+# apart agree within RATE_STABLE_TOLERANCE and clear the floor.
+RATE_POLL_MAX_READS="${RDLAB_RATE_POLL_MAX_READS:-12}"
+RATE_POLL_SLEEP_SECONDS="${RDLAB_RATE_POLL_SLEEP_SECONDS:-5}"
+USAGE_TIMEOUT_SECONDS="${RDLAB_USAGE_TIMEOUT_SECONDS:-30}"
+RATE_STABLE_TOLERANCE="0.01"
+# GPU_RATE_FLOOR: the cheapest GPU card measured is the T4 at 1.07/hr (16 reads, Publisher receipts
+# windowC2-12-t4-s1a-20261027), and CPU rates are at most 0.26/hr, so a GPU window's rate below 1.00/hr is not its
+# own rate (a stale read, or a neighbour's). A CPU window only needs a positive rate.
+GPU_RATE_FLOOR="1.00"
+CPU_RATE_FLOOR="0.01"
 # Every `timeout`-wrapped colab call sends SIGTERM at its limit and SIGKILL this many seconds later (`timeout -k`), so a
 # client that ignores SIGTERM cannot outlive its limit. The one grace for every such call.
 COLAB_KILL_GRACE_SECONDS="${RDLAB_COLAB_KILL_GRACE_SECONDS:-15}"
@@ -1129,8 +1146,11 @@ PY
 
   {
     printf 'colab sessions\n'
+    # The account rate before open, then after open until two reads agree (at least two; more while unstable).
+    printf 'colab usage\n'
     printf 'colab new%s -s %s\n' "$DRY_NEW_OPTS" "$SESSION_NAME"
     printf 'colab sessions\n'
+    printf 'colab usage\n'
     printf 'colab usage\n'
     printf 'colab exec -s %s --env RDLAB_STEP=alive -f %s --timeout=%s\n' "$SESSION_NAME" "$VM_SCRIPT" "$ALIVE_PROBE_TIMEOUT_SECONDS"
     printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_GATE_ENV_STR" "$VM_SCRIPT" "$GATE_TIMEOUT_SECONDS"
@@ -1444,6 +1464,9 @@ write_outcome_draft() {
   RDLAB_FAILURE_CLASS="$RUN_FAILURE_CLASS" \
   RDLAB_NO_SESSION_ASSIGNED="$NO_SESSION_ASSIGNED" \
   RDLAB_RATE_SOURCE="$RATE_SOURCE" \
+  RDLAB_PRE_ACCOUNT_RATE="$PRE_ACCOUNT_RATE" \
+  RDLAB_POST_ACCOUNT_RATE="$POST_ACCOUNT_RATE" \
+  RDLAB_PRICING_RATE="$PRICING_RATE_UNITS_PER_HOUR" \
   RDLAB_MAX_RATE="$MAX_RATE" \
   RDLAB_LIVE_USAGE_RATE="$LIVE_RATE_UNITS_PER_HOUR" \
   RDLAB_RATE_READ_AT_UTC="$RATE_READ_AT_UTC" \
@@ -1467,7 +1490,15 @@ rate_source = os.environ.get("RDLAB_RATE_SOURCE", "").strip()
 max_rate_raw = os.environ.get("RDLAB_MAX_RATE", "").strip()
 max_rate = float(max_rate_raw) if max_rate_raw else None
 # The window's rate is recorded only when it was read live (account-wide); an estimate from --max-rate is labelled.
-rate = rate_arg if rate_source == "live_account" else None
+rate = rate_arg if rate_source == "live_window" else None
+
+
+def _env_float(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
 wall_seconds = int(sys.argv[6])
 explicit_cap_raw = sys.argv[7].strip()
 runtime_seconds = int(sys.argv[8])
@@ -1579,8 +1610,12 @@ payload: dict[str, object] = {
     "venue": "colab",
     "hardware": hardware,
     "rate_per_hour": rate,
-    "rate_scope": "account" if rate is not None else None,
-    "rate_source": "live_colab_usage" if rate is not None else (rate_source or None),
+    # The window's own rate: post-open minus pre-open account rate (`colab usage` reports the whole account).
+    "rate_scope": "window" if rate is not None else None,
+    "rate_source": "live_colab_usage_post_minus_pre" if rate is not None else (rate_source or None),
+    "pre_account_rate_per_hour": _env_float("RDLAB_PRE_ACCOUNT_RATE"),
+    "post_account_rate_per_hour": _env_float("RDLAB_POST_ACCOUNT_RATE"),
+    "pricing_rate_per_hour": _env_float("RDLAB_PRICING_RATE"),
     "max_rate": max_rate,
     "wall_seconds": wall_seconds,
     "wall_x_rate": wall_x_rate,
@@ -1687,6 +1722,24 @@ sys.stderr.write(
     f"[outcome] id={run_id} outcome={outcome} cost={'unknown' if cost is None else format(cost, 'g')} cost_basis={cost_basis} "
     f"failure_class={payload.get('failure_class') or 'none'} runtime_s={runtime_seconds}\n"
 )
+PY
+}
+
+# One bounded `colab usage` read: prints the account rate (units/h, 0 allowed) or nothing; logs the output.
+read_account_rate() {
+  local out rc=0
+  out="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$USAGE_TIMEOUT_SECONDS" colab usage </dev/null 2>>"$CLI_LOG")" || rc=$?
+  printf '%s\n' "$out" | scrub_stream >> "$CLI_LOG"
+  if [[ "$rc" -ne 0 ]]; then
+    return 1
+  fi
+  "$PYTHON_BIN" - "$out" <<'PY'
+import re
+import sys
+
+m = re.search(r"Usage\s+rate\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*h(?:r|our)?\b", sys.argv[1], re.IGNORECASE)
+if m:
+    print(f"{float(m.group(1)):.4f}")
 PY
 }
 
@@ -2450,6 +2503,16 @@ if printf '%s\n' "$PRE_SESSIONS" | grep -Fq "[$SESSION_NAME]"; then
   echo "SESSION_NAME_IN_USE: session [$SESSION_NAME] already exists in colab sessions" >&2
   exit 1
 fi
+# The account rate before our session exists (the window rate's baseline). Unreadable: refused before any spend.
+PRE_ACCOUNT_RATE="$(read_account_rate || true)"
+if [[ -z "$PRE_ACCOUNT_RATE" ]]; then
+  flock -u 9 || true
+  RUN_FAILURE_CLASS="LIVE_USAGE_RATE_UNAVAILABLE"
+  RUN_WHY="LIVE_USAGE_RATE_UNAVAILABLE: could not read the account usage rate before opening $SESSION_NAME"
+  echo "$RUN_WHY" >&2
+  exit 2
+fi
+log_msg "USAGE_READ_PRE session=$SESSION_NAME account_rate_uh=$PRE_ACCOUNT_RATE"
 NEW_RC=0
 run_colab new "${COLAB_NEW_FLAGS[@]+"${COLAB_NEW_FLAGS[@]}"}" -s "$SESSION_NAME" </dev/null >/dev/null || NEW_RC=$?
 if [[ "$NEW_RC" -ne 0 ]]; then
@@ -2459,6 +2522,10 @@ if [[ "$NEW_RC" -ne 0 ]]; then
 fi
 S="$SESSION_NAME"
 NEW_SUCCEEDED=1
+# The cost clock starts when the open succeeds: the rate polls, card check and gates all count against the cap.
+OPEN_CLOCK_EPOCH="$(now_epoch_seconds)"
+START_EPOCH="$OPEN_CLOCK_EPOCH"
+log_msg "SESSION_OPEN_CLOCK session=$S epoch=$OPEN_CLOCK_EPOCH"
 
 mkdir -p "$LOCK_DIR"
 printf '%s\n' "$MAIN" > "$LOCK_DIR/$S.lock"
@@ -2527,51 +2594,67 @@ PY
   fi
 fi
 
-OPEN_CLOCK_EPOCH="$(now_epoch_seconds)"
-START_EPOCH="$OPEN_CLOCK_EPOCH"
 RATE_READ_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-USAGE_RC=0
-USAGE_OUT="$(run_colab usage </dev/null)" || USAGE_RC=$?
-LIVE_RATE_UNITS_PER_HOUR=""
-if [[ "$USAGE_RC" -eq 0 ]] && [[ -n "$USAGE_OUT" ]]; then
-  LIVE_RATE_UNITS_PER_HOUR="$("$PYTHON_BIN" - "$USAGE_OUT" <<'PY' || true
-import re
-import sys
-
-text = sys.argv[1]
-m = re.search(r"Usage\s+rate\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*h(?:r|our)?\b", text, re.IGNORECASE)
-if m:
-    val = float(m.group(1))
-    if val > 0.0:
-        print(f"{val:g}" if "." not in m.group(1) else m.group(1))
-PY
-)"
+# The window rate: post-open account rate minus the pre-open one, polled (bounded) until two consecutive reads agree
+# within RATE_STABLE_TOLERANCE and clear the floor. A neighbour's rate, or a stale read from before our session
+# registered, is never taken as ours.
+if [[ "$CARD" == "CPU" ]]; then
+  WINDOW_RATE_FLOOR="$CPU_RATE_FLOOR"
+else
+  WINDOW_RATE_FLOOR="$GPU_RATE_FLOOR"
 fi
+LIVE_RATE_UNITS_PER_HOUR=""
+POST_ACCOUNT_RATE=""
+PREV_WINDOW_RATE=""
+RATE_POLL_ATTEMPT=0
+while (( RATE_POLL_ATTEMPT < RATE_POLL_MAX_READS )); do
+  RATE_POLL_ATTEMPT=$(( RATE_POLL_ATTEMPT + 1 ))
+  POST_READ="$(read_account_rate || true)"
+  if [[ -n "$POST_READ" ]]; then
+    WIN_READ="$("$PYTHON_BIN" -c "import sys; print(f'{max(0.0, float(sys.argv[1]) - float(sys.argv[2])):.4f}')" "$POST_READ" "$PRE_ACCOUNT_RATE")"
+    log_msg "USAGE_READ_POST session=$S attempt=${RATE_POLL_ATTEMPT}/${RATE_POLL_MAX_READS} account_rate_uh=$POST_READ window_rate_uh=$WIN_READ floor=$WINDOW_RATE_FLOOR"
+    if [[ -n "$PREV_WINDOW_RATE" ]] && "$PYTHON_BIN" -c "import sys; a, b, tol, fl = map(float, sys.argv[1:]); sys.exit(0 if abs(a - b) <= tol + 1e-9 and a >= fl and b >= fl else 1)" "$WIN_READ" "$PREV_WINDOW_RATE" "$RATE_STABLE_TOLERANCE" "$WINDOW_RATE_FLOOR"; then
+      LIVE_RATE_UNITS_PER_HOUR="$WIN_READ"
+      POST_ACCOUNT_RATE="$POST_READ"
+      break
+    fi
+    PREV_WINDOW_RATE="$WIN_READ"
+  else
+    log_msg "USAGE_READ_POST session=$S attempt=${RATE_POLL_ATTEMPT}/${RATE_POLL_MAX_READS} unreadable"
+    PREV_WINDOW_RATE=""
+  fi
+  if (( RATE_POLL_ATTEMPT < RATE_POLL_MAX_READS )); then
+    sleep "$RATE_POLL_SLEEP_SECONDS"
+  fi
+done
 if [[ -z "$LIVE_RATE_UNITS_PER_HOUR" ]]; then
   flock -u 9 || true
   RUN_FAILURE_CLASS="LIVE_USAGE_RATE_UNAVAILABLE"
-  RUN_WHY="LIVE_USAGE_RATE_UNAVAILABLE: failed to read positive live usage rate on session $S"
+  RUN_WHY="LIVE_USAGE_RATE_UNAVAILABLE: no stable window rate (post - pre, two reads within ${RATE_STABLE_TOLERANCE}, >= ${WINDOW_RATE_FLOOR}/h) on session $S after ${RATE_POLL_ATTEMPT} reads (last ${PREV_WINDOW_RATE:-none})"
   echo "$RUN_WHY" >&2
   exit 2
 fi
 RATE_UNITS_PER_HOUR="$LIVE_RATE_UNITS_PER_HOUR"
-RATE_SOURCE="live_account"
-log_msg "LIVE_USAGE_RATE_READ session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR rate_scope=account max_rate=${MAX_RATE:-none}"
+RATE_SOURCE="live_window"
+log_msg "LIVE_USAGE_RATE_READ session=$S window_rate_uh=$LIVE_RATE_UNITS_PER_HOUR rate_scope=window pre_account_rate_uh=$PRE_ACCOUNT_RATE post_account_rate_uh=$POST_ACCOUNT_RATE max_rate=${MAX_RATE:-none}"
 if [[ -n "$MAX_RATE" ]] && "$PYTHON_BIN" -c "import sys; sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)" "$LIVE_RATE_UNITS_PER_HOUR" "$MAX_RATE"; then
   # Refused right after the read: the EXIT trap stops the session now, at the cost of the open alone.
   flock -u 9 || true
   RUN_FAILURE_CLASS="RATE_ABOVE_MAX"
-  RUN_WHY="RATE_ABOVE_MAX: the live account-wide usage rate ${LIVE_RATE_UNITS_PER_HOUR}/h on session $S is above --max-rate ${MAX_RATE}/h"
+  RUN_WHY="RATE_ABOVE_MAX: the window's live usage rate ${LIVE_RATE_UNITS_PER_HOUR}/h on session $S (account ${POST_ACCOUNT_RATE}/h minus ${PRE_ACCOUNT_RATE}/h before open) is above --max-rate ${MAX_RATE}/h"
   echo "$RUN_WHY" >&2
   exit 2
 fi
-WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
+# The cap runtime is priced on max(--max-rate, the window rate), never on a read rate alone: an under-read can only
+# shorten the window, never lengthen it.
+PRICING_RATE_UNITS_PER_HOUR="$("$PYTHON_BIN" -c "import sys; vals = [float(v) for v in sys.argv[1:] if v]; print(f'{max(vals):.4f}')" "$LIVE_RATE_UNITS_PER_HOUR" "$MAX_RATE")"
+WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$PRICING_RATE_UNITS_PER_HOUR")"
 if [[ -n "$EXPLICIT_CAP" ]]; then
   CAP_UNITS="$EXPLICIT_CAP"
 else
   CAP_UNITS="$WALL_X_RATE"
 fi
-COST_CAP_MAX_RUNTIME_SECONDS="$("$PYTHON_BIN" - "$CAP_UNITS" "$LIVE_RATE_UNITS_PER_HOUR" <<'PY'
+COST_CAP_MAX_RUNTIME_SECONDS="$("$PYTHON_BIN" - "$CAP_UNITS" "$PRICING_RATE_UNITS_PER_HOUR" <<'PY'
 import math
 import sys
 
@@ -2581,7 +2664,7 @@ s = max(1, int(math.ceil((cap * 3600.0) / rate - 1e-12)))
 print(s)
 PY
 )"
-log_msg "LIVE_USAGE_RATE session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR rate_read_at=$RATE_READ_AT_UTC cap_units=$CAP_UNITS cap_max_runtime_s=$COST_CAP_MAX_RUNTIME_SECONDS"
+log_msg "LIVE_USAGE_RATE session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR pricing_rate_uh=$PRICING_RATE_UNITS_PER_HOUR rate_read_at=$RATE_READ_AT_UTC cap_units=$CAP_UNITS cap_max_runtime_s=$COST_CAP_MAX_RUNTIME_SECONDS"
 
 ALIVE_OK=0
 ALIVE_ATTEMPT=0

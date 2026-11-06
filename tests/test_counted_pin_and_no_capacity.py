@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 import shutil
 import subprocess
 import sys
@@ -219,7 +221,7 @@ def test_no_session_assigned_books_zero_cost_and_no_capacity(tmp_path: Path) -> 
     assert "Service Unavailable" in cli_log
     assert "cost=0 cost_basis=no_session_assigned failure_class=no_capacity" in proc.stderr
     subcmds = [json.loads(ln)["subcmd"] for ln in env_paths["calls_log"].read_text(encoding="utf-8").splitlines()]
-    assert subcmds == ["sessions", "new", "sessions"], subcmds
+    assert subcmds == ["sessions", "usage", "new", "sessions"], subcmds
     assert not env_paths["stopped_file"].exists()
 
 
@@ -263,23 +265,23 @@ def test_live_rate_above_max_rate_refuses_and_stops_the_session(tmp_path: Path) 
         tmp_path, "abovemax", "export FAKE_COLAB_USAGE_RATE=8.88; export RDLAB_MAX_RATE=8.0; "
     )
     assert proc.returncode == 2, proc.stdout + proc.stderr
-    assert "RATE_ABOVE_MAX" in proc.stderr and "8.88/h" in proc.stderr
+    assert "RATE_ABOVE_MAX" in proc.stderr and "8.8800/h" in proc.stderr
     subcmds = [json.loads(ln)["subcmd"] for ln in env_paths["calls_log"].read_text(encoding="utf-8").splitlines()]
-    assert subcmds[:3] == ["sessions", "new", "sessions"] and subcmds[3] == "usage", subcmds
+    assert subcmds[:4] == ["sessions", "usage", "new", "sessions"] and subcmds[4] == "usage", subcmds
     assert "exec" not in subcmds and "upload" not in subcmds and "stop" in subcmds
     stopped = env_paths["stopped_file"].read_text(encoding="utf-8").splitlines()
     assert len(stopped) == 1
     draft = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
     assert draft["failure_class"] == "RATE_ABOVE_MAX"
-    assert draft["live_rate"] == 8.88 and draft["rate_per_hour"] == 8.88 and draft["rate_scope"] == "account"
+    assert draft["live_rate"] == 8.88 and draft["rate_per_hour"] == 8.88 and draft["rate_scope"] == "window"
     assert draft["max_rate"] == 8.0 and draft["cost_basis"] == "rate_x_runtime"
     cli_log = (out_dir / "colab-cli.log").read_text(encoding="utf-8")
-    assert "LIVE_USAGE_RATE_READ" in cli_log and "rate_scope=account" in cli_log
+    assert "LIVE_USAGE_RATE_READ" in cli_log and "rate_scope=window" in cli_log
 
     ok, ok_env, ok_out = _stub_window(tmp_path, "belowmax", "export FAKE_COLAB_USAGE_RATE=8.88; export RDLAB_MAX_RATE=9.5; ")
     assert ok.returncode == 0, ok.stdout + ok.stderr
     ok_draft = json.loads((ok_out / "outcome.draft.json").read_text(encoding="utf-8"))
-    assert ok_draft["rate_per_hour"] == 8.88 and ok_draft["max_rate"] == 9.5 and ok_draft["rate_scope"] == "account"
+    assert ok_draft["rate_per_hour"] == 8.88 and ok_draft["max_rate"] == 9.5 and ok_draft["rate_scope"] == "window"
 
 
 def test_paid_modes_require_max_rate_before_any_colab_call(tmp_path: Path) -> None:
@@ -408,3 +410,104 @@ def test_vm_main_refuses_the_burned_pilot_for_counted_before_venv_sync(
     names = [c["call"] for c in calls]
     for later in ("sync_judge_venvs", "run_device_check", "run_gpu_gate", "download_and_verify_all_judge_weights"):
         assert later not in names, names
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The window rate (post - pre, stable, floored) and pricing on max(--max-rate, window rate)
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def _cli_log(out_dir: Path) -> str:
+    return (out_dir / "colab-cli.log").read_text(encoding="utf-8")
+
+
+def _cap_runtime(out_dir: Path) -> int:
+    m = re.search(r"LIVE_USAGE_RATE session=\S+ rate_uh=\S+ pricing_rate_uh=(\S+) .* cap_max_runtime_s=(\d+)", _cli_log(out_dir))
+    assert m, _cli_log(out_dir)[-2000:]
+    return int(m.group(2))
+
+
+def test_neighbour_at_026_with_our_914_against_max_8_refuses(tmp_path: Path) -> None:
+    """A parallel CPU neighbour at 0.26/h is open before ours; our session takes the account to 9.40/h. The window
+    rate is 9.40 - 0.26 = 9.14 (stable over two reads), above `--max-rate 8`: `RATE_ABOVE_MAX`, session stopped.
+    Fails at ca31d36b: the single read after open took the account's stale 0.26 as the window's rate and passed."""
+    proc, env_paths, out_dir = _stub_window(
+        tmp_path, "nb026", "export FAKE_COLAB_USAGE_RATE_SEQUENCE=0.26,0.26,9.40,9.40; export RDLAB_MAX_RATE=8; "
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "RATE_ABOVE_MAX" in proc.stderr and "9.1400/h" in proc.stderr
+    draft = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert draft["failure_class"] == "RATE_ABOVE_MAX" and draft["rate_per_hour"] == 9.14
+    assert draft["rate_scope"] == "window" and draft["pre_account_rate_per_hour"] == 0.26
+    assert draft["post_account_rate_per_hour"] == 9.40
+    assert len(env_paths["stopped_file"].read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_neighbour_at_673_with_late_registration_is_priced_at_the_max(tmp_path: Path) -> None:
+    """A neighbour at 6.73/h; our session registers late (the first post-open reads still say 6.73, a window rate of
+    0). The window rate is accepted only once stable above the floor (15.86 - 6.73 = 9.13), and the cap runtime is
+    priced at max(--max-rate 9.5, 9.13) = 9.5, never at a lower read: cap 0.5 gives ceil(0.5 * 3600 / 9.5) s.
+    Fails at ca31d36b: the read of 6.73 priced the runtime at 6.73, longer than the max allows."""
+    proc, _env, out_dir = _stub_window(
+        tmp_path,
+        "nb673",
+        "export FAKE_COLAB_USAGE_RATE_SEQUENCE=6.73,6.73,6.73,15.86,15.86; export RDLAB_MAX_RATE=9.5; "
+        "export RDLAB_CAP_UNITS=0.5; ",
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _cap_runtime(out_dir) == math.ceil(0.5 * 3600 / 9.5)
+    log = _cli_log(out_dir)
+    assert "window_rate_uh=9.1300" in log and "pricing_rate_uh=9.5000" in log
+    draft = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert draft["rate_per_hour"] == 9.13 and draft["pricing_rate_per_hour"] == 9.5
+
+
+def test_stable_under_read_window_rate_215_is_priced_at_max_95(tmp_path: Path) -> None:
+    """A stable window rate of 2.15/h (an under-read: above the floor, two reads agree) with `--max-rate 9.5` is
+    accepted as the recorded rate, but the cap runtime is priced at 9.5. Fails at ca31d36b: priced at 2.15."""
+    proc, _env, out_dir = _stub_window(
+        tmp_path,
+        "ur215",
+        "export FAKE_COLAB_USAGE_RATE_SEQUENCE=0.00,2.15,2.15; export RDLAB_MAX_RATE=9.5; export RDLAB_CAP_UNITS=0.5; ",
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _cap_runtime(out_dir) == math.ceil(0.5 * 3600 / 9.5)
+
+
+def test_window_rate_needs_two_agreeing_reads_and_the_gpu_floor(tmp_path: Path) -> None:
+    """Stability: 2.15 then 2.40 do not agree, so the rate is only accepted at the next agreeing pair (2.40, 2.40);
+    reads that never agree within 0.01 refuse `LIVE_USAGE_RATE_UNAVAILABLE` after the bounded polls. Clock: the cost
+    clock (`SESSION_OPEN_CLOCK`) starts when the open succeeds, before the first post-open usage read.
+    Fails at ca31d36b: the first read was taken as is (2.15), and the clock started after it."""
+    proc, _env, out_dir = _stub_window(
+        tmp_path, "stab", "export FAKE_COLAB_USAGE_RATE_SEQUENCE=0.00,2.15,2.40,2.40; export RDLAB_MAX_RATE=9.5; "
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    log = _cli_log(out_dir)
+    assert "LIVE_USAGE_RATE_READ session=" in log and "window_rate_uh=2.4000 rate_scope=window" in log
+    assert log.index("SESSION_OPEN_CLOCK") < log.index("USAGE_READ_POST")
+
+    bad, _e2, bad_out = _stub_window(
+        tmp_path,
+        "unstable",
+        "export FAKE_COLAB_USAGE_RATE_SEQUENCE=0.00,1.0,2.0,3.0,4.0,5.0; export RDLAB_RATE_POLL_MAX_READS=5; ",
+    )
+    assert bad.returncode == 2 and "LIVE_USAGE_RATE_UNAVAILABLE" in bad.stderr, bad.stderr
+
+
+def test_gpu_window_below_the_floor_refuses_before_any_upload(tmp_path: Path) -> None:
+    """A real `--time-one` (A100) whose window rate is a stable 0.26/h (a CPU-sized read, below GPU_RATE_FLOOR 1.00)
+    refuses `LIVE_USAGE_RATE_UNAVAILABLE` right after the polls; nothing is uploaded or run, and the session is
+    stopped. Fails at ca31d36b: 0.26 was accepted as the A100's rate."""
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = tcl._make_builder_part(tmp_path / "build")
+    items = tcl._project_part_items(part, tmp_path / "inputs" / "t1.jsonl")
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env")
+    exports = tcl._pm_real_mode_exports(
+        env_paths, open_lock=tmp_path / "f.lock", receipts_dir=receipts_dir, hf_home=hf_home, items_file=items, part_dir=part
+    ) + "export FAKE_COLAB_USAGE_RATE_SEQUENCE=0.00,0.26,0.26,0.26; export RDLAB_RATE_POLL_MAX_READS=3; "
+    proc = tcl._pm_run_launcher(exports, f"--time-one --out-dir '{tcl._to_wsl_path(tmp_path / 'out')}' --run-id floor1")
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "LIVE_USAGE_RATE_UNAVAILABLE" in proc.stderr and ">= 1.00/h" in proc.stderr
+    subcmds = [json.loads(ln)["subcmd"] for ln in env_paths["calls_log"].read_text(encoding="utf-8").splitlines()]
+    assert "upload" not in subcmds and "exec" not in subcmds and "stop" in subcmds

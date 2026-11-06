@@ -2903,12 +2903,32 @@ def main(argv: list[str] | None = None) -> int:
         if raw_override is not None:
             print(raw_override)
             return 0
-        rate_str = os.environ.get("FAKE_COLAB_USAGE_RATE", "").strip()
-        if not rate_str:
-            has_a100 = any(str(s.get("gpu", "")).upper() == "A100" for s in sessions)
-            rate_str = "5.30" if has_a100 else "0.08"
+        # The account rate, as the real `colab usage` reports it: the sum over every open session (0.00 with none).
+        # A session's own rate is its `rate` field, else FAKE_COLAB_USAGE_RATE, else a per-card default.
+        # FAKE_COLAB_USAGE_RATE_SEQUENCE ("r1,r2,...") instead answers the n-th usage call with the n-th value (the
+        # last repeats), to stand in for stale reads, late registration and neighbours.
+        seq_raw = os.environ.get("FAKE_COLAB_USAGE_RATE_SEQUENCE", "").strip()
+        if seq_raw:
+            seq = [v.strip() for v in seq_raw.split(",") if v.strip()]
+            with _state_lock(state_dir, "usage_calls"):
+                n_file = state_dir / "usage_calls.txt"
+                n = int(n_file.read_text(encoding="utf-8").strip() or "0") if n_file.is_file() else 0
+                n_file.write_text(f"{n + 1}\n", encoding="utf-8")
+            rate_str = seq[min(n, len(seq) - 1)]
+        else:
+            per_card = {"A100": 5.30, "H100": 13.08, "L4": 2.0, "T4": 1.07, "CPU": 0.08}
+            static = os.environ.get("FAKE_COLAB_USAGE_RATE", "").strip()
+            total = 0.0
+            for s in sessions:
+                if s.get("rate") is not None:
+                    total += float(s["rate"])
+                elif static:
+                    total += float(static)
+                else:
+                    total += per_card.get(str(s.get("gpu", "CPU")).upper(), 1.0)
+            rate_str = f"{total:.2f}"
         print(
-            f"Compute units balance: 100.0 | Usage rate: {rate_str}/h | Active assignments: 1"
+            f"Compute units balance: 100.0 | Usage rate: {rate_str}/h | Active assignments: {len(sessions)}"
         )
         return 0
 

@@ -298,6 +298,7 @@ def _base_launcher_exports(
         f"export RDLAB_ITEMS_FILE='{_to_wsl_path(items_file)}'; "
         # The paid modes require --max-rate (no default); the fake CLI reports 5.30/h for an A100 session.
         "export RDLAB_MAX_RATE=9.5; "
+        "export RDLAB_RATE_POLL_SLEEP_SECONDS=0; "
         f"export RDLAB_JUDGE_LOCK_SHA256='{judge_lock_sha}'; "
         f"export RDLAB_D3_LOCK_SHA256='{d3_lock_sha}'; "
         f"export RDLAB_COLAB_IS_FAKE=1; "
@@ -6042,6 +6043,9 @@ def test_progress_log_fetched_and_scrubbed_on_every_exit_path(
         hf_home=hf_home,
         extra_env={
             "RDLAB_WALL_SECONDS": "3",
+            # A generous cap so the wall cuts first: the cost clock now starts at open, so a cap priced on the wall
+            # alone would stop the window at the same moment.
+            "RDLAB_CAP_UNITS": "5",
             "FAKE_COLAB_EXEC_SLEEP": "10",
             "FAKE_COLAB_PROGRESS_PLANT_LEAK": leak_str,
             "RDLAB_FETCH_MARGIN_SECONDS": "1",
@@ -14302,7 +14306,13 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS": "rig-only: bound on `colab restart-kernel` before an alive-probe retry",
     "RDLAB_COLAB_KILL_GRACE_SECONDS": "rig-only: the one SIGKILL grace (`timeout -k`) of every timeout-wrapped colab call",
     "RDLAB_NO_SESSION_ASSIGNED": "rig-only: write_outcome_draft's flag for a colab new refused at assign (cost 0)",
-    "RDLAB_RATE_SOURCE": "rig-only: write_outcome_draft's rate source (live_account or estimate_from_max_rate)",
+    "RDLAB_RATE_SOURCE": "rig-only: write_outcome_draft's rate source (live_window or estimate_from_max_rate)",
+    "RDLAB_PRE_ACCOUNT_RATE": "rig-only: write_outcome_draft's account usage rate read before open",
+    "RDLAB_POST_ACCOUNT_RATE": "rig-only: write_outcome_draft's account usage rate at the accepted post-open read",
+    "RDLAB_PRICING_RATE": "rig-only: write_outcome_draft's cap pricing rate, max(--max-rate, window rate)",
+    "RDLAB_RATE_POLL_MAX_READS": "rig-only: bound on post-open colab usage reads for a stable window rate",
+    "RDLAB_RATE_POLL_SLEEP_SECONDS": "rig-only: seconds between post-open colab usage reads (default 5)",
+    "RDLAB_USAGE_TIMEOUT_SECONDS": "rig-only: timeout -k bound on each colab usage call",
     "RDLAB_CAP_UNITS": "rig-only: compute-unit cap enforced by the rig cost-cap monitor",
     "RDLAB_COLAB_IS_FAKE": "rig-only: marks fake CLI runs for `outcome.draft.json` on the rig",
     "RDLAB_COST_CAP_POLL_SECONDS": "rig-only: polling interval for the rig cost-cap background loop",
@@ -25639,7 +25649,7 @@ def test_e2e_time_one_summary_carries_the_launch_limits_and_the_rigs_projection_
     # Not forwarded: null, never a default.
     assert t1["max_rate"] == 9.5
     draft = json.loads((res["out_dir"] / "outcome.draft.json").read_text(encoding="utf-8"))
-    assert draft["rate_per_hour"] == 5.3 and draft["rate_scope"] == "account" and draft["max_rate"] == 9.5
+    assert draft["rate_per_hour"] == 5.3 and draft["rate_scope"] == "window" and draft["max_rate"] == 9.5
     assert vm_judges.forwarded_window_limits({}) == {
         "rig_wall_seconds": None,
         "vm_wall_seconds": None,
