@@ -7429,6 +7429,7 @@ def _run_judges_pipeline_body(
         "wall_seconds": window_limits["rig_wall_seconds"],
         "vm_wall_seconds": window_limits["vm_wall_seconds"],
         "cap_units": window_limits["cap_units"],
+        "max_rate": window_limits["max_rate"],
         "window_limits_source": window_limits["source"],
         "items_per_judge": len(shard_item_ids),
         "orders": ["AB", "BA"],
@@ -8143,7 +8144,8 @@ def is_counted_or_time_one_mode(
 
 def forwarded_window_limits(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
     """The window's limits as the launcher forwarded them with `--env`: `RDLAB_RIG_WALL_SECONDS` (the rig's wall),
-    `RDLAB_WALL_SECONDS` (the VM's wall) and `RDLAB_WINDOW_CAP_UNITS` (the cap in units). A value that was not
+    `RDLAB_WALL_SECONDS` (the VM's wall), `RDLAB_WINDOW_CAP_UNITS` (the cap in units) and `RDLAB_MAX_RATE`
+    (`--max-rate`). The live account-wide rate is recorded on the rig (`outcome.draft.json`). A value that was not
     forwarded, or is not a positive number, is `None`: the summary never writes a default as if it were the launch's."""
     env = os.environ if environ is None else environ
 
@@ -8163,6 +8165,7 @@ def forwarded_window_limits(environ: Mapping[str, str] | None = None) -> dict[st
         "rig_wall_seconds": _pos_int("RDLAB_RIG_WALL_SECONDS"),
         "vm_wall_seconds": _pos_int("RDLAB_WALL_SECONDS"),
         "cap_units": _pos_float("RDLAB_WINDOW_CAP_UNITS"),
+        "max_rate": _pos_float("RDLAB_MAX_RATE"),
         "source": "forwarded_by_launcher",
     }
 

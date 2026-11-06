@@ -206,7 +206,8 @@ def test_no_session_assigned_books_zero_cost_and_no_capacity(tmp_path: Path) -> 
     proc, env_paths, out_dir = _stub_window(tmp_path, "nocap", "export FAKE_COLAB_NEW_ASSIGN_ERROR='Service Unavailable'; ")
     assert proc.returncode == 1, proc.stdout + proc.stderr
     draft = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
-    assert draft["runtime_seconds"] > 0 and draft["rate_per_hour"] > 0
+    assert draft["runtime_seconds"] > 0 and draft["max_rate"] > 0
+    assert draft["rate_per_hour"] is None  # never read: no session
     assert draft["cost"] == 0
     assert draft["cost_basis"] == "no_session_assigned"
     assert draft["session_assigned"] is False
@@ -224,22 +225,93 @@ def test_no_session_assigned_books_zero_cost_and_no_capacity(tmp_path: Path) -> 
 
 def test_session_assigned_then_client_failed_still_books_rate_x_runtime(tmp_path: Path) -> None:
     """`colab new` exits 1 after the machine was assigned (the session is listed in `colab sessions` afterwards): the
-    launcher adopts the session, stops it, and the outcome draft books rate x runtime (`cost_basis: rate_x_runtime`,
-    `session_assigned: true`, `failure_class: SESSION_OPEN_FAILED_AFTER_ASSIGN`). A failed `colab new` without the
-    assign refusal is never booked no_capacity.
+    launcher adopts the session, stops it, and the outcome draft books rate x runtime: the live rate was never read,
+    so the rate is the window's `--max-rate`, labelled (`cost_basis: max_rate_x_runtime_estimate`, `rate_per_hour:
+    null`), with `session_assigned: true`, `failure_class: SESSION_OPEN_FAILED_AFTER_ASSIGN`. A failed `colab new`
+    without the assign refusal is never booked no_capacity.
     Fails at 65f253ed: the failed `colab new` left the assigned session running (no stop)."""
     proc, env_paths, out_dir = _stub_window(tmp_path, "assigned", "export FAKE_COLAB_NEW_FAIL_AFTER_ASSIGN=1; ")
     assert proc.returncode == 1, proc.stdout + proc.stderr
     draft = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
-    assert draft["cost_basis"] == "rate_x_runtime" and draft["session_assigned"] is True
+    assert draft["cost_basis"] == "max_rate_x_runtime_estimate" and draft["session_assigned"] is True
     assert draft["failure_class"] == "SESSION_OPEN_FAILED_AFTER_ASSIGN"
+    assert draft["rate_per_hour"] is None and draft["max_rate"] == 9.5
     assert draft["cost"] > 0
-    assert draft["cost"] == round(draft["runtime_seconds"] / 3600.0 * draft["rate_per_hour"], 4)
+    assert draft["cost"] == round(draft["runtime_seconds"] / 3600.0 * draft["max_rate"], 4)
     stopped = [json.loads(ln)["session_id"] for ln in env_paths["stopped_file"].read_text(encoding="utf-8").splitlines()]
     assert len(stopped) == 1, stopped
-    assert "cost_basis=rate_x_runtime" in proc.stderr
+    assert "cost_basis=max_rate_x_runtime_estimate" in proc.stderr
 
     proc2, _env2, out2 = _stub_window(tmp_path, "otherfail", "export FAKE_COLAB_FAIL_NEW=1; ")
     assert proc2.returncode == 1
     draft2 = json.loads((out2 / "outcome.draft.json").read_text(encoding="utf-8"))
-    assert draft2["cost_basis"] == "rate_x_runtime" and draft2.get("failure_class") != "no_capacity"
+    assert draft2["cost_basis"] == "max_rate_x_runtime_estimate" and draft2.get("failure_class") != "no_capacity"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# --max-rate: the live account-wide rate is checked right after it is read; no rate is a constant
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def test_live_rate_above_max_rate_refuses_and_stops_the_session(tmp_path: Path) -> None:
+    """The fake `colab usage` reports 8.88/h (the A100 High-RAM rate, 2026-11-06). With `--max-rate 8.0` the window
+    refuses `RATE_ABOVE_MAX` right after the read (no alive probe, gate, upload or exec), stops the session, and the
+    outcome draft records the live rate as the account-wide rate (`rate_scope: account`) and books it x runtime. With
+    `--max-rate 9.5` the same window goes on.
+    Fails at a0f7d7af: there was no --max-rate; any live rate was accepted."""
+    proc, env_paths, out_dir = _stub_window(
+        tmp_path, "abovemax", "export FAKE_COLAB_USAGE_RATE=8.88; export RDLAB_MAX_RATE=8.0; "
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "RATE_ABOVE_MAX" in proc.stderr and "8.88/h" in proc.stderr
+    subcmds = [json.loads(ln)["subcmd"] for ln in env_paths["calls_log"].read_text(encoding="utf-8").splitlines()]
+    assert subcmds[:3] == ["sessions", "new", "sessions"] and subcmds[3] == "usage", subcmds
+    assert "exec" not in subcmds and "upload" not in subcmds and "stop" in subcmds
+    stopped = env_paths["stopped_file"].read_text(encoding="utf-8").splitlines()
+    assert len(stopped) == 1
+    draft = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert draft["failure_class"] == "RATE_ABOVE_MAX"
+    assert draft["live_rate"] == 8.88 and draft["rate_per_hour"] == 8.88 and draft["rate_scope"] == "account"
+    assert draft["max_rate"] == 8.0 and draft["cost_basis"] == "rate_x_runtime"
+    cli_log = (out_dir / "colab-cli.log").read_text(encoding="utf-8")
+    assert "LIVE_USAGE_RATE_READ" in cli_log and "rate_scope=account" in cli_log
+
+    ok, ok_env, ok_out = _stub_window(tmp_path, "belowmax", "export FAKE_COLAB_USAGE_RATE=8.88; export RDLAB_MAX_RATE=9.5; ")
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    ok_draft = json.loads((ok_out / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert ok_draft["rate_per_hour"] == 8.88 and ok_draft["max_rate"] == 9.5 and ok_draft["rate_scope"] == "account"
+
+
+def test_paid_modes_require_max_rate_before_any_colab_call(tmp_path: Path) -> None:
+    """`--time-one`, `--lock-check` and `--counted` without `--max-rate` (and no `RDLAB_MAX_RATE`) refuse
+    `MAX_RATE_REQUIRED` before any colab call, `--dry` and live; a non-positive value refuses `BAD_MAX_RATE`. The
+    launcher holds no rate constant: `--help` names no rate, and a `--dry` projection with `--max-rate` is labelled an
+    estimate. Fails at a0f7d7af: the launcher assumed 5.30/h for every A100 window."""
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    items = tcl._make_synthetic_public_items(tmp_path / "items", count=2)
+    for mode in ("time-one", "lock-check", "counted"):
+        for dry in (True, False):
+            env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{mode}_{int(dry)}")
+            exports = tcl._base_launcher_exports(
+                env_paths, open_lock=tmp_path / f"{mode}.lock", receipts_dir=receipts_dir, hf_home=hf_home, items_file=items
+            ) + "unset RDLAB_MAX_RATE; "
+            out = tcl._to_wsl_path(tmp_path / f"out_{mode}_{int(dry)}")
+            proc = tcl._pm_run_launcher(exports, f"--{mode} {'--dry ' if dry else ''}--out-dir '{out}' --run-id mr-{mode}")
+            assert proc.returncode == 2, (mode, dry, proc.stdout, proc.stderr)
+            assert "MAX_RATE_REQUIRED" in proc.stderr
+            assert not env_paths["calls_log"].exists()
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env_bad")
+    exports = tcl._base_launcher_exports(
+        env_paths, open_lock=tmp_path / "bad.lock", receipts_dir=receipts_dir, hf_home=hf_home, items_file=items
+    )
+    bad = tcl._pm_run_launcher(exports, f"--time-one --max-rate 0 --dry --out-dir '{tcl._to_wsl_path(tmp_path / 'ob')}'")
+    assert bad.returncode == 2 and "BAD_MAX_RATE" in bad.stderr
+    help_proc = subprocess.run(
+        ["bash", str(tcl._to_wsl_path(tcl.LAUNCH_JUDGES_SH)), "--help"], capture_output=True, text=True, check=False
+    )
+    assert "5.30" not in help_proc.stdout and "0.08/h" not in help_proc.stdout and "--max-rate" in help_proc.stdout
+    text = tcl.LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
+    assert 'RATE_UNITS_PER_HOUR="5.30"' not in text and 'RATE_UNITS_PER_HOUR="0.08"' not in text
+    dry = tcl._pm_run_launcher(exports, f"--stub --max-rate 0.2 --dry --out-dir '{tcl._to_wsl_path(tmp_path / 'od')}'")
+    assert dry.returncode == 0, dry.stderr
+    assert "[rate] max_rate=0.2/h (from --max-rate) estimate:" in dry.stderr

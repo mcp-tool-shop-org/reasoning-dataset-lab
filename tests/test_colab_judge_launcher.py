@@ -296,6 +296,8 @@ def _base_launcher_exports(
         f"export RDLAB_RECEIPTS_DIR='{_to_wsl_path(receipts_dir)}'; "
         f"export HF_HOME='{_to_wsl_path(hf_home)}'; "
         f"export RDLAB_ITEMS_FILE='{_to_wsl_path(items_file)}'; "
+        # The paid modes require --max-rate (no default); the fake CLI reports 5.30/h for an A100 session.
+        "export RDLAB_MAX_RATE=9.5; "
         f"export RDLAB_JUDGE_LOCK_SHA256='{judge_lock_sha}'; "
         f"export RDLAB_D3_LOCK_SHA256='{d3_lock_sha}'; "
         f"export RDLAB_COLAB_IS_FAKE=1; "
@@ -471,7 +473,12 @@ def test_dry_mode_matches_live_mode_command_list_against_fake(tmp_path: Path) ->
         if ln.strip()
     ]
     live_lines = [" ".join(["colab", c["subcmd"], *c["args"]]) for c in calls]
-    assert dry_lines == live_lines
+    # Without --cap the window's cap is wall x the live rate, known only after the session opens (dry projects it from
+    # --max-rate, an estimate), so its value is not compared.
+    def _cap_norm(lines: list[str]) -> list[str]:
+        return [re.sub(r"RDLAB_WINDOW_CAP_UNITS=\S+", "RDLAB_WINDOW_CAP_UNITS=<cap>", ln) for ln in lines]
+
+    assert _cap_norm(dry_lines) == _cap_norm(live_lines)
 
     # 2. Compare --session-smoke --dry vs --session-smoke live
     env_smoke = fake_colab.setup_fake_colab_environment(tmp_path / "smoke")
@@ -11806,7 +11813,7 @@ def test_dry_listings_forward_judge_order_and_first_load_judge_id_without_real_c
         [
             "bash",
             "-c",
-            f"export PATH='{hermetic_path}'; RDLAB_JUDGE_ORDER='{perm_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --cap 4.0 --dry --run-id dry-jo-01",
+            f"export PATH='{hermetic_path}'; RDLAB_JUDGE_ORDER='{perm_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --cap 4.0 --max-rate 9.5 --dry --run-id dry-jo-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -13431,6 +13438,7 @@ def test_part2_item3_live_rate_from_colab_usage_and_cost_cap_fetch_before_stop(
         f"export RDLAB_FAKE_CLOCK_FILE='{_to_wsl_path(clock_file)}'; "
         "export RDLAB_FAKE_CLOCK_STEP_SECONDS=689; "
         "export FAKE_COLAB_USAGE_RATE='13.08'; "
+        "export RDLAB_MAX_RATE=14; "  # above the fake's 13.08/h, so the window runs to the cost cap
         "export FAKE_COLAB_EXEC_SLEEP='15'; "
         "export FAKE_COLAB_WRITE_RESULT_TAR_BEFORE_SLEEP=1; "
         "export RDLAB_COST_CAP_POLL_SECONDS=1; "
@@ -14294,6 +14302,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS": "rig-only: bound on `colab restart-kernel` before an alive-probe retry",
     "RDLAB_COLAB_KILL_GRACE_SECONDS": "rig-only: the one SIGKILL grace (`timeout -k`) of every timeout-wrapped colab call",
     "RDLAB_NO_SESSION_ASSIGNED": "rig-only: write_outcome_draft's flag for a colab new refused at assign (cost 0)",
+    "RDLAB_RATE_SOURCE": "rig-only: write_outcome_draft's rate source (live_account or estimate_from_max_rate)",
     "RDLAB_CAP_UNITS": "rig-only: compute-unit cap enforced by the rig cost-cap monitor",
     "RDLAB_COLAB_IS_FAKE": "rig-only: marks fake CLI runs for `outcome.draft.json` on the rig",
     "RDLAB_COST_CAP_POLL_SECONDS": "rig-only: polling interval for the rig cost-cap background loop",
@@ -14522,6 +14531,7 @@ def test_fix2_item7_mid_run_cost_cap_stop_without_result_tar_fetches_partial_art
         f"export RDLAB_FAKE_CLOCK_FILE='{_to_wsl_path(clock_file)}'; "
         "export RDLAB_FAKE_CLOCK_STEP_SECONDS=689; "
         "export FAKE_COLAB_USAGE_RATE='13.08'; "
+        "export RDLAB_MAX_RATE=14; "  # above the fake's 13.08/h, so the window runs to the cost cap
         "export FAKE_COLAB_EXEC_SLEEP='15'; "
         "export FAKE_COLAB_WRITE_PARTIAL_RUN_BEFORE_SLEEP=1; "
         "export RDLAB_COST_CAP_POLL_SECONDS=1; "
@@ -21578,7 +21588,8 @@ def test_fix1_item5_cosmetics_manifest_sha256_no_empty_comment_block_and_launch_
     assert "--counted-stub (CPU)" in sh_lines[2]
     assert "4.27" not in sh_src
     assert 'elif [[ "$MODE" == "lock-check" ]]; then' in sh_src
-    assert "--gpu A100 at 5.30/h, wall 7200s" in sh_src
+    assert "--gpu A100; default wall 7200s; --max-rate required" in sh_src
+    assert "5.30/h" not in sh_src
 
 
 def test_fix2_item1_and_3_two_input_lock_check_and_shard_merge_chain(
@@ -25626,8 +25637,15 @@ def test_e2e_time_one_summary_carries_the_launch_limits_and_the_rigs_projection_
     assert bind["projection_checked"] == res["receipt"]["part_identity"]["launcher_binding"]["binding"]["projection_checked"]
     assert t1["part_identity"]["binding"]["checked_by"] == "rig"
     # Not forwarded: null, never a default.
+    assert t1["max_rate"] == 9.5
+    draft = json.loads((res["out_dir"] / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert draft["rate_per_hour"] == 5.3 and draft["rate_scope"] == "account" and draft["max_rate"] == 9.5
     assert vm_judges.forwarded_window_limits({}) == {
-        "rig_wall_seconds": None, "vm_wall_seconds": None, "cap_units": None, "source": "forwarded_by_launcher"
+        "rig_wall_seconds": None,
+        "vm_wall_seconds": None,
+        "cap_units": None,
+        "max_rate": None,
+        "source": "forwarded_by_launcher",
     }
 
 

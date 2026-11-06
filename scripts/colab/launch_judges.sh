@@ -34,6 +34,7 @@ COUNTED_ITEMS_FILE="${RDLAB_COUNTED_ITEMS_FILE:-}"
 COUNTED_MANIFEST_FILE="${RDLAB_COUNTED_MANIFEST:-}"
 RECEIPTS_DIR="${RDLAB_RECEIPTS_DIR:-}"
 EXPLICIT_CAP="${RDLAB_CAP_UNITS:-}"
+MAX_RATE="${RDLAB_MAX_RATE:-}"
 GOLDEN_ANCHOR_MANIFEST=""
 WINDOW_ID=""
 
@@ -44,17 +45,21 @@ EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
-  --probe              Run the read-only CPU VM environment probe (CPU at 0.08/h, wall 300s, cap 0.01)
-  --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
-  --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
-  --lock-check         Run the A100 lock-check window: boot gatekeeper golden recording, 5-judge 50-item (250-row) counted-part anchor pass, 50-item golden anchor & shard manifests, and P0a on 114 burned pilot items (--gpu A100 at 5.30/h, wall 7200s)
-  --lock-check-stub    Run the CPU stub lock-check window (CPU at 0.08/h, deterministic stub transport)
-  --counted            Run a counted A100 shard window (--gpu A100 at 5.30/h, strict determinism)
-  --counted-stub       Run a counted CPU stub shard window (CPU at 0.08/h, deterministic stub transport)
+  --probe              Run the read-only CPU VM environment probe (CPU; default wall 300s, cap 0.01)
+  --stub               Run the CPU stub pipeline (CPU; CPython 3.15 pyyaml sdist build)
+  --time-one           Run the A100 time-one window (--gpu A100; default wall 1500s and cap 2.5 units unless
+                       RDLAB_WALL_SECONDS / --cap; --max-rate required)
+  --lock-check         Run the A100 lock-check window: boot gatekeeper golden recording, 5-judge 50-item (250-row) counted-part anchor pass, 50-item golden anchor & shard manifests, and P0a on 114 burned pilot items (--gpu A100; default wall 7200s; --max-rate required)
+  --lock-check-stub    Run the CPU stub lock-check window (CPU, deterministic stub transport)
+  --counted            Run a counted A100 shard window (--gpu A100, strict determinism; default wall 7200s; --max-rate
+                       required)
+  --counted-stub       Run a counted CPU stub shard window (CPU, deterministic stub transport)
+                       No rate is assumed: the rate is read live from `colab usage` after the session opens (the
+                       account-wide rate, which includes any other open session) and is the only rate recorded.
   --shard k/n          Shard index k of n (1-indexed, default 1/1; or set RDLAB_SHARD)
   --shard-manifest F   Pre-built shard_manifest.json path (or set RDLAB_SHARD_MANIFEST)
   --shard-manifest-sha256 SHA  Expected sha256 of shard_manifest.json (or set RDLAB_SHARD_MANIFEST_SHA256)
@@ -83,6 +88,10 @@ Options:
   --counted-manifest F For --lock-check / --lock-check-stub: counted part manifest JSON (required unless --counted-items is given) to build shard_manifest.json and verify anchor membership and P0a exclusion (or set RDLAB_COUNTED_MANIFEST)
   --receipts-dir DIR   Directory containing <owner>__<repo>.sha256.json receipts (or RDLAB_RECEIPTS_DIR)
   --cap UNITS          Explicit compute-unit cap override (or set RDLAB_CAP_UNITS)
+  --max-rate U         Highest live usage rate (units/h, account-wide) this window accepts (or set RDLAB_MAX_RATE).
+                       Required for --time-one, --lock-check and --counted, no default; a live rate above it refuses
+                       RATE_ABOVE_MAX right after the read and stops the session. Before the session opens, --dry
+                       projects with it, labelled as an estimate.
 
 Environment:
   RDLAB_ONLY_JUDGES    --time-one only: comma-separated subset of the 5 judges to time (no spaces, no duplicates).
@@ -308,6 +317,14 @@ while [[ $# -gt 0 ]]; do
       EXPLICIT_CAP="$2"
       shift 2
       ;;
+    --max-rate)
+      MAX_RATE="${2:-}"
+      shift 2
+      ;;
+    --max-rate=*)
+      MAX_RATE="${1#*=}"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -340,7 +357,6 @@ if [[ "$MODE" == "time-one" ]]; then
   CARD="A100"
   COLAB_NEW_FLAGS=(--gpu A100)
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-1500}"
-  RATE_UNITS_PER_HOUR="5.30"
   if [[ -z "$EXPLICIT_CAP" ]]; then
     EXPLICIT_CAP="2.5"
   fi
@@ -349,19 +365,16 @@ elif [[ "$MODE" == "counted" ]]; then
   CARD="A100"
   COLAB_NEW_FLAGS=(--gpu A100)
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
-  RATE_UNITS_PER_HOUR="5.30"
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
 elif [[ "$MODE" == "lock-check" ]]; then
   CARD="A100"
   COLAB_NEW_FLAGS=(--gpu A100)
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
-  RATE_UNITS_PER_HOUR="5.30"
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
 elif [[ "$MODE" == "probe" ]]; then
   CARD="CPU"
   COLAB_NEW_FLAGS=()
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-300}"
-  RATE_UNITS_PER_HOUR="0.08"
   if [[ -z "$EXPLICIT_CAP" ]]; then
     EXPLICIT_CAP="0.01"
   fi
@@ -370,8 +383,26 @@ else
   CARD="CPU"
   COLAB_NEW_FLAGS=()
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
-  RATE_UNITS_PER_HOUR="0.08"
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-0}"
+fi
+
+# --- The rate: never a constant. The only rate recorded as the window's is the live one read from `colab usage` after
+# the session opens (account-wide: it includes any other open session). Before that, a rate is used only as an
+# estimate taken from the request (--max-rate, the worst case the window accepts), and labelled so.
+if [[ -n "$MAX_RATE" ]] && ! [[ "$MAX_RATE" =~ ^[0-9]+([.][0-9]+)?$ && "$MAX_RATE" =~ [1-9] ]]; then
+  echo "BAD_MAX_RATE: --max-rate must be a positive number of units per hour, got '$MAX_RATE'" >&2
+  exit 2
+fi
+if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" == "time-one" || "$MODE" == "lock-check" || "$MODE" == "counted" ]] && [[ -z "$MAX_RATE" ]]; then
+  echo "MAX_RATE_REQUIRED: --$MODE requires --max-rate <units/h> (the highest live account-wide usage rate this window accepts; no default)" >&2
+  exit 2
+fi
+RATE_UNITS_PER_HOUR=""
+RATE_SOURCE=""
+LIVE_RATE_UNITS_PER_HOUR=""
+if [[ -n "$MAX_RATE" ]]; then
+  RATE_UNITS_PER_HOUR="$MAX_RATE"
+  RATE_SOURCE="estimate_from_max_rate"
 fi
 
 OPEN_LOCK="${RDLAB_OPEN_LOCK:-/tmp/colab-window-open.lock}"
@@ -644,11 +675,17 @@ then
   exit 2
 fi
 
-WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
+WALL_X_RATE=""
+if [[ -n "$RATE_UNITS_PER_HOUR" ]]; then
+  WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
+fi
 if [[ -n "$EXPLICIT_CAP" ]]; then
   CAP_UNITS="$EXPLICIT_CAP"
 else
   CAP_UNITS="$WALL_X_RATE"
+fi
+if [[ "$DRY_FLAG" -eq 1 ]] && [[ -n "$MAX_RATE" ]]; then
+  echo "[rate] max_rate=${MAX_RATE}/h (from --max-rate) estimate: wall_x_max_rate=${WALL_X_RATE} cap=${CAP_UNITS:-none} (a projection, not a recorded rate; the live account-wide rate is read after open and refused above max_rate)" >&2
 fi
 
 scrub_stream() {
@@ -782,6 +819,7 @@ build_exec_env_args() {
     --env "RDLAB_WALL_SECONDS=$VM_WALL_SECONDS"
     --env "RDLAB_RIG_WALL_SECONDS=$WALL_SECONDS"
     --env "RDLAB_WINDOW_CAP_UNITS=$CAP_UNITS"
+    --env "RDLAB_MAX_RATE=$MAX_RATE"
     --env "RDLAB_VRAM_HALT_MIB=$VRAM_HALT_MIB"
     --env "RDLAB_JUDGE_LOCK_SHA256=$j_sha"
     --env "RDLAB_D3_LOCK_SHA256=$d_sha"
@@ -1405,6 +1443,8 @@ write_outcome_draft() {
   RDLAB_UNTIL_STEP="$UNTIL_STEP" \
   RDLAB_FAILURE_CLASS="$RUN_FAILURE_CLASS" \
   RDLAB_NO_SESSION_ASSIGNED="$NO_SESSION_ASSIGNED" \
+  RDLAB_RATE_SOURCE="$RATE_SOURCE" \
+  RDLAB_MAX_RATE="$MAX_RATE" \
   RDLAB_LIVE_USAGE_RATE="$LIVE_RATE_UNITS_PER_HOUR" \
   RDLAB_RATE_READ_AT_UTC="$RATE_READ_AT_UTC" \
   "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "$CARD" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" <<'PY'
@@ -1421,24 +1461,33 @@ SESSION_ROW_SHAPE = "[<SESSION>] <TOKEN> | <TOKEN>: <TOKEN> | <TOKEN>: <TOKEN> |
 out_path = Path(sys.argv[1])
 run_id = sys.argv[2]
 hardware = sys.argv[3]
-cap = float(sys.argv[4])
-rate = float(sys.argv[5])
+cap = float(sys.argv[4]) if sys.argv[4].strip() else None
+rate_arg = float(sys.argv[5]) if sys.argv[5].strip() else None
+rate_source = os.environ.get("RDLAB_RATE_SOURCE", "").strip()
+max_rate_raw = os.environ.get("RDLAB_MAX_RATE", "").strip()
+max_rate = float(max_rate_raw) if max_rate_raw else None
+# The window's rate is recorded only when it was read live (account-wide); an estimate from --max-rate is labelled.
+rate = rate_arg if rate_source == "live_account" else None
 wall_seconds = int(sys.argv[6])
 explicit_cap_raw = sys.argv[7].strip()
 runtime_seconds = int(sys.argv[8])
 outcome = sys.argv[9]
 why = sys.argv[10]
 
-wall_x_rate = round((wall_seconds / 3600.0) * rate, 4)
+wall_x_rate = round((wall_seconds / 3600.0) * rate, 4) if rate is not None else None
 explicit_cap = float(explicit_cap_raw) if explicit_cap_raw else None
-if explicit_cap is not None:
+if explicit_cap is not None and wall_x_rate is not None:
     binding_cap = min(wall_x_rate, explicit_cap)
     cap_binds = "explicit_cap" if explicit_cap <= wall_x_rate else "wall_x_rate"
     cap_source = "explicit_cap"
+elif explicit_cap is not None:
+    binding_cap = explicit_cap
+    cap_binds = "explicit_cap"
+    cap_source = "explicit_cap"
 else:
     binding_cap = wall_x_rate
-    cap_binds = "wall_x_rate"
-    cap_source = "wall_x_rate"
+    cap_binds = "wall_x_rate" if wall_x_rate is not None else None
+    cap_source = "wall_x_rate" if wall_x_rate is not None else None
 
 # A window whose `colab new` was refused at assign never had a machine: it costs nothing, whatever time the launcher
 # spent before and during the refused open (classify_colab_new_failure). Every other window books rate x runtime.
@@ -1446,9 +1495,16 @@ no_session_assigned = os.environ.get("RDLAB_NO_SESSION_ASSIGNED", "").strip() ==
 if no_session_assigned:
     cost = 0.0
     cost_basis = "no_session_assigned"
-else:
+elif rate is not None:
     cost = round((runtime_seconds / 3600.0) * rate, 4)
     cost_basis = "rate_x_runtime"
+elif max_rate is not None:
+    # A session that may have been assigned before the live rate was read: booked at the worst case it accepted.
+    cost = round((runtime_seconds / 3600.0) * max_rate, 4)
+    cost_basis = "max_rate_x_runtime_estimate"
+else:
+    cost = None
+    cost_basis = "rate_not_read"
 target_session = os.environ.get("RDLAB_SMOKE_SESSION_NAME", "")
 
 
@@ -1523,6 +1579,9 @@ payload: dict[str, object] = {
     "venue": "colab",
     "hardware": hardware,
     "rate_per_hour": rate,
+    "rate_scope": "account" if rate is not None else None,
+    "rate_source": "live_colab_usage" if rate is not None else (rate_source or None),
+    "max_rate": max_rate,
     "wall_seconds": wall_seconds,
     "wall_x_rate": wall_x_rate,
     "explicit_cap": explicit_cap,
@@ -1625,7 +1684,7 @@ payload["loop_order"] = loop_env
 out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
 # The run summary on stderr: what the outcome draft books.
 sys.stderr.write(
-    f"[outcome] id={run_id} outcome={outcome} cost={cost:g} cost_basis={cost_basis} "
+    f"[outcome] id={run_id} outcome={outcome} cost={'unknown' if cost is None else format(cost, 'g')} cost_basis={cost_basis} "
     f"failure_class={payload.get('failure_class') or 'none'} runtime_s={runtime_seconds}\n"
 )
 PY
@@ -2496,6 +2555,16 @@ if [[ -z "$LIVE_RATE_UNITS_PER_HOUR" ]]; then
   exit 2
 fi
 RATE_UNITS_PER_HOUR="$LIVE_RATE_UNITS_PER_HOUR"
+RATE_SOURCE="live_account"
+log_msg "LIVE_USAGE_RATE_READ session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR rate_scope=account max_rate=${MAX_RATE:-none}"
+if [[ -n "$MAX_RATE" ]] && "$PYTHON_BIN" -c "import sys; sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)" "$LIVE_RATE_UNITS_PER_HOUR" "$MAX_RATE"; then
+  # Refused right after the read: the EXIT trap stops the session now, at the cost of the open alone.
+  flock -u 9 || true
+  RUN_FAILURE_CLASS="RATE_ABOVE_MAX"
+  RUN_WHY="RATE_ABOVE_MAX: the live account-wide usage rate ${LIVE_RATE_UNITS_PER_HOUR}/h on session $S is above --max-rate ${MAX_RATE}/h"
+  echo "$RUN_WHY" >&2
+  exit 2
+fi
 WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
 if [[ -n "$EXPLICIT_CAP" ]]; then
   CAP_UNITS="$EXPLICIT_CAP"

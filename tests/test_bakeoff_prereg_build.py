@@ -2382,3 +2382,42 @@ def test_logprob_mass_cli_is_keyed_on_the_pinned_pilot_identity(tmp_path: Path, 
     with pytest.raises(RdlabError) as exc_id:
         bakeoff_judge.verify_pinned_pilot_part_dir(wrong_id)
     assert "part_id" in exc_id.value.message
+
+
+def test_pinned_pilot_part_dir_refuses_each_broken_identity_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`verify_pinned_pilot_part_dir` refuses `BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN` for a part.json that is not JSON,
+    a missing checksums.txt, a checksums.txt whose part.json line is not this part.json (malformed lines ignored), and a
+    checksums.txt without the pilot's items.jsonl line."""
+    pilot = _pinned_pilot_part_dir(tmp_path, monkeypatch)
+    assert bakeoff_judge.verify_pinned_pilot_part_dir(pilot)["part_id"] == "bakeoff-d-t10-sealed"
+
+    def _refused(pdir: Path) -> str:
+        with pytest.raises(RdlabError) as exc:
+            bakeoff_judge.verify_pinned_pilot_part_dir(pdir)
+        assert exc.value.code == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+        return exc.value.message
+
+    bad_json = tmp_path / "bad_json"
+    bad_json.mkdir()
+    (bad_json / "part.json").write_text("{not json", encoding="utf-8")
+    assert "as JSON" in _refused(bad_json)
+
+    no_sums = tmp_path / "no_sums"
+    no_sums.mkdir()
+    (no_sums / "part.json").write_bytes((pilot / "part.json").read_bytes())
+    assert "checksums.txt missing" in _refused(no_sums)
+
+    lines = (pilot / "checksums.txt").read_text(encoding="utf-8").splitlines()
+    wrong_line = tmp_path / "wrong_line"
+    wrong_line.mkdir()
+    (wrong_line / "part.json").write_bytes((pilot / "part.json").read_bytes())
+    items_line = next(ln for ln in lines if ln.endswith("items.jsonl"))
+    (wrong_line / "checksums.txt").write_text(f"not a checksum line\n{items_line}\n{'0' * 64}  part.json\n", encoding="utf-8")
+    assert "checksums.txt part.json line" in _refused(wrong_line)
+
+    no_items = tmp_path / "no_items"
+    no_items.mkdir()
+    (no_items / "part.json").write_bytes((pilot / "part.json").read_bytes())
+    pj_line = next(ln for ln in lines if ln.endswith("part.json"))
+    (no_items / "checksums.txt").write_text(pj_line + "\n", encoding="utf-8")
+    assert "items.jsonl SHA-256 missing" in _refused(no_items)
