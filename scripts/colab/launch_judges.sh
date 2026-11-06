@@ -1244,7 +1244,10 @@ COST_CAP_MARKER="$OUT_DIR/.rig_cost_cap_exceeded"
 RATE_REREAD_STATE="$OUT_DIR/.rig_rate_reread_state.json"
 RATE_REREADS_FILE="$OUT_DIR/rate_rereads.jsonl"
 RATE_TRIP_MARKER="$OUT_DIR/.rig_rate_reread_trip"
-rm -f "$RATE_REREAD_STATE" "$RATE_REREADS_FILE" "$RATE_TRIP_MARKER" 2>/dev/null || true
+# The in-flight re-read: the PID of its `timeout ... colab usage` (removed when it is reaped) and its output.
+RATE_REREAD_PID_FILE="$OUT_DIR/.rig_rate_reread.pid"
+RATE_REREAD_OUT="$OUT_DIR/.rig_rate_reread_usage.txt"
+rm -f "$RATE_REREAD_STATE" "$RATE_REREADS_FILE" "$RATE_TRIP_MARKER" "$RATE_REREAD_PID_FILE" "$RATE_REREAD_OUT" 2>/dev/null || true
 RUN_END_DETECTED_MARKER="$OUT_DIR/.rig_run_end_detected"
 EXEC_OUT_TMP="$OUT_DIR/.rig_exec_out.tmp"
 touch "$CLI_LOG"
@@ -1848,12 +1851,51 @@ read_usage_rate_count() {
   printf '%s\n' "$out" | "$PYTHON_BIN" "$RATE_REREADS_PY" parse
 }
 
-# One mid-run re-read (called by the cost-cap monitor): reads `colab usage`, applies it to the re-read state and
-# prints "<decision> <max_runtime_s> <trip class or ->" (rate_rereads.py step). The record goes to RATE_REREADS_FILE.
-rate_reread_once() {
-  local elapsed="$1" out
-  out="$(read_usage_text || true)"
-  printf '%s\n' "$out" | "$PYTHON_BIN" "$RATE_REREADS_PY" step --state "$RATE_REREAD_STATE" --records "$RATE_REREADS_FILE" --elapsed "$elapsed"
+# Kill a process and every descendant, found by parent PID (`pgrep -P`), never by name: TERM, then KILL for any that
+# is still alive (not a zombie) after 2 s.
+kill_pid_tree() {
+  local root="$1" p c alive i
+  local -a pids=() frontier=() next=()
+  [[ "$root" =~ ^[0-9]+$ ]] || return 0
+  frontier=("$root")
+  while (( ${#frontier[@]} > 0 )); do
+    next=()
+    for p in "${frontier[@]}"; do
+      pids+=("$p")
+      while read -r c; do
+        if [[ -n "$c" ]]; then next+=("$c"); fi
+      done < <(pgrep -P "$p" 2>/dev/null || true)
+    done
+    frontier=("${next[@]+"${next[@]}"}")
+  done
+  kill -TERM "${pids[@]}" 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    alive=0
+    for p in "${pids[@]}"; do
+      if kill -0 "$p" 2>/dev/null && [[ "$(ps -o stat= -p "$p" 2>/dev/null | tr -d ' ')" != Z* ]]; then
+        alive=1
+      fi
+    done
+    if (( alive == 0 )); then
+      return 0
+    fi
+    sleep 0.2
+  done
+  kill -KILL "${pids[@]}" 2>/dev/null || true
+}
+
+# The teardown of an in-flight re-read (the cost-cap monitor writes its PID to RATE_REREAD_PID_FILE): kill that PID's
+# tree, but only while the PID is still that `colab usage` call (its command line says so), so a reused PID is never hit.
+kill_inflight_reread() {
+  local pid=""
+  if [[ -f "$RATE_REREAD_PID_FILE" ]]; then
+    pid="$(tr -d '[:space:]' < "$RATE_REREAD_PID_FILE" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'colab usage'; then
+      kill_pid_tree "$pid"
+      log_msg "RATE_REREAD_KILLED pid=$pid"
+    fi
+    rm -f "$RATE_REREAD_PID_FILE" 2>/dev/null || true
+  fi
 }
 
 # `colab new` failed: was a machine ever assigned? A session that was never assigned costs nothing (no_capacity).
@@ -1902,6 +1944,7 @@ stop_all() {
     wait "$COST_CAP_PID" 2>/dev/null || true
     COST_CAP_PID=""
   fi
+  kill_inflight_reread
   if [[ -n "$PERIODIC_FETCH_PID" ]]; then
     pkill -P "$PERIODIC_FETCH_PID" 2>/dev/null || true
     kill "$PERIODIC_FETCH_PID" 2>/dev/null || true
@@ -2802,7 +2845,8 @@ log_msg "LIVE_USAGE_RATE session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR pricing_ra
 # settled count = the count of the stable open read. The cost-cap monitor re-reads from here on.
 rm -f "$RATE_REREAD_STATE" "$RATE_REREADS_FILE" "$RATE_TRIP_MARKER"
 "$PYTHON_BIN" "$RATE_REREADS_PY" init --state "$RATE_REREAD_STATE" --pre "$PRE_ACCOUNT_RATE" --window "$LIVE_RATE_UNITS_PER_HOUR" \
-  --count "$OPEN_ASSIGNMENTS_COUNT" --max-rate "$MAX_RATE" --cap "$CAP_UNITS" --max-runtime "$COST_CAP_MAX_RUNTIME_SECONDS" || {
+  --count "$OPEN_ASSIGNMENTS_COUNT" --max-rate "$MAX_RATE" --cap "$CAP_UNITS" --max-runtime "$COST_CAP_MAX_RUNTIME_SECONDS" \
+  --floor "$WINDOW_RATE_FLOOR" || {
   RUN_WHY="could not initialise the mid-run rate re-read state on session $S"
   exit 1
 }
@@ -2967,8 +3011,9 @@ EXEC_PID="$!"
 
 (
   CAP_SLEEP_PID=""
+  REREAD_PID=""
   REREAD_LAST_EPOCH="$(date +%s)"
-  trap 'if [[ -n "$CAP_SLEEP_PID" ]]; then kill "$CAP_SLEEP_PID" 2>/dev/null || true; fi; exit 0' TERM INT
+  trap 'if [[ -n "$CAP_SLEEP_PID" ]]; then kill "$CAP_SLEEP_PID" 2>/dev/null || true; fi; if [[ -n "$REREAD_PID" ]]; then kill_pid_tree "$REREAD_PID"; rm -f "$RATE_REREAD_PID_FILE"; fi; exit 0' TERM INT
   while kill -0 "$EXEC_PID" 2>/dev/null; do
     sleep "$COST_CAP_POLL_SECONDS" &
     CAP_SLEEP_PID="$!"
@@ -2987,7 +3032,24 @@ EXEC_PID="$!"
       reread_decision=""
       reread_runtime=""
       reread_trip=""
-      read -r reread_decision reread_runtime reread_trip <<< "$(rate_reread_once "$elapsed_s" 2>>"$CLI_LOG" || true)"
+      # The read runs as a tracked background PID (its output to a file), so the trap and the teardown can kill its
+      # whole tree by PID if the run ends while it is in flight; `wait` also lets the trap run at once.
+      : > "$RATE_REREAD_OUT"
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$USAGE_TIMEOUT_SECONDS" colab usage </dev/null >"$RATE_REREAD_OUT" 2>>"$CLI_LOG" &
+      REREAD_PID="$!"
+      printf '%s\n' "$REREAD_PID" > "$RATE_REREAD_PID_FILE"
+      printf '%s RATE_REREAD_START session=%s pid=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$REREAD_PID" >> "$CLI_LOG"
+      reread_rc=0
+      wait "$REREAD_PID" 2>/dev/null || reread_rc=$?
+      REREAD_PID=""
+      rm -f "$RATE_REREAD_PID_FILE"
+      reread_text=""
+      if [[ "$reread_rc" -eq 0 ]]; then
+        reread_text="$(scrub_stream < "$RATE_REREAD_OUT" 2>/dev/null || true)"
+      fi
+      printf '%s\n' "$reread_text" >> "$CLI_LOG"
+      rm -f "$RATE_REREAD_OUT"
+      read -r reread_decision reread_runtime reread_trip <<< "$(printf '%s\n' "$reread_text" | "$PYTHON_BIN" "$RATE_REREADS_PY" step --state "$RATE_REREAD_STATE" --records "$RATE_REREADS_FILE" --elapsed "$elapsed_s" 2>>"$CLI_LOG" || true)"
       if [[ -z "$reread_decision" ]]; then
         printf '%s RATE_REREAD_FAILED session=%s elapsed_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$elapsed_s" >> "$CLI_LOG"
       else
@@ -3056,6 +3118,7 @@ if [[ -n "$COST_CAP_PID" ]]; then
   fi
   COST_CAP_PID=""
 fi
+kill_inflight_reread
 
 if [[ -n "$PERIODIC_FETCH_PID" ]]; then
   pkill -P "$PERIODIC_FETCH_PID" 2>/dev/null || true

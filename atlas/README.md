@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-06 from commit b32034b by Atlas 1.24.0.
+Mapped at 2026-11-06 from commit 2be4955 by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,9 +8,9 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (78 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-06 (7d6f7a1)
+## What changed since 2026-11-06 (b32034b)
 
-Nothing structural changed since 2026-11-06; 2 files added and 6 changed content.
+Nothing structural changed since 2026-11-06; 7 files changed content.
 
 ## What comes in
 
@@ -47,9 +47,9 @@ Only ci itself reads what it writes.
 
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
 - **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 21 of 23 commits, and the tests part imports the scripts part.
-- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 19 of 23 commits, inside the tests part.
-- **scripts/colab/vm_judges.py** and **tests/fixtures/fake_colab.py** changed together in 18 of 22 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 9 of 11 commits, and the tests part imports the src part.
+- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 19 of 24 commits, inside the tests part.
+- **scripts/colab/vm_judges.py** and **tests/fixtures/fake_colab.py** changed together in 18 of 23 commits, and the tests part imports the scripts part.
 
 1 file changed together with its own test, as expected.
 

@@ -159,7 +159,7 @@
           "path": "docs/calibration-2026-10-25.md"
         },
         {
-          "hash": "edb055ea007673811994068435c28f7f6b1ea4a7a80ea14b4d5c3401e1547e0c",
+          "hash": "e6a9de89c89cd13dd10cf9edc7be7bd84680f00fd6a658bf6db989a1c3e01b84",
           "path": "docs/colab-cli-contract.md"
         },
         {
@@ -225,7 +225,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "2788534961bb0d03e31829936e0875bbe7f762bddfd4499beed4ee2da61b8d15",
+          "hash": "c64e9e9ccff72166f1d536dd622290cd5b942a2e6f3dc1205b1f442f858e0079",
           "path": "CHANGELOG.md"
         },
         {
@@ -308,7 +308,7 @@
           "path": "scripts/colab/README.md"
         },
         {
-          "hash": "8d9b71bb071a7a25f0facb69053343f3e859321a6c445e7858392c8ecdc90011",
+          "hash": "e69cd57ac0c1b6e411e4e762845ed390ee755177e5b3c367dc4989a792496a3e",
           "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
         },
         {
@@ -363,7 +363,7 @@
           "path": "scripts/colab/generate_weights_table.py"
         },
         {
-          "hash": "e3ae3c7d7b650ae94868d77a2b2f628386aa07f729faa4e33cd73a7beb9be446",
+          "hash": "7f4dbbabec236d7d6cbf13e349f4335a6147b0f2c17cb685362d181139d3e959",
           "path": "scripts/colab/launch_judges.sh"
         },
         {
@@ -939,10 +939,10 @@
           "failurePaths": [
             {
               "kind": "raise",
-              "line": 273
+              "line": 294
             }
           ],
-          "hash": "5cb0d4ff5e907c78ef2a9e0c6e463e1dfa50c6675a0bc91ad5efc9a4d9708577",
+          "hash": "2702cfeda7c9bafaa9d3457bf2ba829fbab5f9d5190c0dbd2af809110f227941",
           "path": "scripts/colab/rate_rereads.py"
         },
         {
@@ -16151,7 +16151,7 @@
             "set_fake_uv_python_315_state",
             "setup_fake_colab_environment"
           ],
-          "hash": "980c05194058b491e78483da5e7aea586297b446e382a32569a88efe641d59ea",
+          "hash": "4db383d3477651045ac7c1f1a5b68f67adadea27e2cabd818aa6ae9da5177510",
           "path": "tests/fixtures/fake_colab.py"
         },
         {
@@ -17674,12 +17674,14 @@
         },
         {
           "exports": [
+            "test_a_read_in_flight_when_the_run_ends_leaves_no_process",
             "test_a_single_missing_count_is_only_recorded",
             "test_bad_reread_interval_is_refused_before_any_colab_call",
             "test_cli_round_trip",
             "test_count_leading_the_rate_by_one_read_does_not_trip",
             "test_count_leading_the_rate_by_two_reads_falsely_trips_a_known_limit",
             "test_neighbour_closing_mid_run_is_not_an_under_read",
+            "test_neighbour_closing_with_the_rate_leading_the_count_cannot_hide_our_rise",
             "test_neighbour_opening_mid_run_is_rebaselined_and_does_not_trip",
             "test_neighbour_opening_on_our_rise_absorbs_it_a_known_limit",
             "test_open_count_0_throughout_is_live_usage_rate_unavailable",
@@ -17687,10 +17689,11 @@
             "test_our_own_rise_at_an_unchanged_count_trips_rate_above_max",
             "test_parse_usage_reads_the_real_line_format",
             "test_rate_missing_is_a_bad_read_and_a_good_read_resets_the_run",
+            "test_rebaseline_uses_the_highest_stable_rate_and_the_floor_holds_mid_run",
             "test_remaining_runtime_shortens_on_a_rise_and_never_lengthens",
             "test_three_bad_counts_in_a_row_end_the_window"
           ],
-          "hash": "a7efcab659b872e6b31408fc8cd0e51c89f663a9bd24c50e2bc3a4764db7de38",
+          "hash": "71d2cfb8a48135a93b80b63d638577aaaad5a04a5bb9db7cc8b15467b00147fe",
           "importOrder": [
             "tests/test_colab_judge_launcher.py",
             "tests/fixtures/fake_colab.py"
@@ -18509,7 +18512,7 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "b32034b5010cd7b741147588d57a93e548d709b1",
+    "commit": "2be4955578c57fb508f2ca5e5baaac2a60e1e89c",
     "tracked": 174
   },
   "landings": [

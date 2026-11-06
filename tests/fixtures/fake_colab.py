@@ -2927,6 +2927,21 @@ def main(argv: list[str] | None = None) -> int:
                 n = int(n_file.read_text(encoding="utf-8").strip() or "0") if n_file.is_file() else 0
                 n_file.write_text(f"{n + 1}\n", encoding="utf-8")
             p_rate, _, p_count = pairs[min(n, len(pairs) - 1)].partition(":")
+            # FAKE_COLAB_USAGE_SLOW_FROM_CALL / FAKE_COLAB_USAGE_SLOW_SECONDS: from that (1-based) call on, the usage call
+            # hangs this long before it answers, as a slow service would. Each slow call appends "<pid> <ppid> <parent
+            # comm>" to <state>/usage_slow_pids.txt, so a test can check by PID that nothing it started outlives the
+            # launcher.
+            slow_from = int(os.environ.get("FAKE_COLAB_USAGE_SLOW_FROM_CALL", "0") or "0")
+            if slow_from > 0 and n + 1 >= slow_from:
+                ppid = os.getppid()
+                try:
+                    pcomm = Path(f"/proc/{ppid}/comm").read_text(encoding="utf-8").strip()
+                except OSError:
+                    pcomm = "?"
+                with _state_lock(state_dir, "usage_slow_pids"):
+                    with (state_dir / "usage_slow_pids.txt").open("a", encoding="utf-8", newline="\n") as sfh:
+                        sfh.write(f"{os.getpid()} {ppid} {pcomm}\n")
+                time.sleep(float(os.environ.get("FAKE_COLAB_USAGE_SLOW_SECONDS", "30") or "30"))
             print(_usage_text(p_rate.strip(), p_count.strip() or "-"))
             return 0
         seq_raw = os.environ.get("FAKE_COLAB_USAGE_RATE_SEQUENCE", "").strip()

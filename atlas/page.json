@@ -33,8 +33,8 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 2,
-      "changed": 6,
+      "added": 0,
+      "changed": 7,
       "moved": 0,
       "parts": 4,
       "removed": 0
@@ -42,13 +42,13 @@
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-06; 2 files added and 6 changed content.",
+        "sentence": "Nothing structural changed since 2026-11-06; 7 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "7d6f7a128c9d73d8e232328f6f54d63e674d59e5",
-      "generatedAt": "2026-11-06T13:53:15.166Z"
+      "commit": "b32034b5010cd7b741147588d57a93e548d709b1",
+      "generatedAt": "2026-11-06T14:56:55.924Z"
     },
     "unchanged": true
   },
@@ -84,9 +84,24 @@
       "shared": 21
     },
     {
+      "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
+      "b": "tests/test_pilot_b_ollama_adapters.py",
+      "either": 11,
+      "partLabels": [
+        "src",
+        "tests"
+      ],
+      "parts": [
+        "src",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 9
+    },
+    {
       "a": "tests/fixtures/fake_colab.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 23,
+      "either": 24,
       "partLabels": [
         "tests",
         "tests"
@@ -101,7 +116,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/fixtures/fake_colab.py",
-      "either": 22,
+      "either": 23,
       "partLabels": [
         "scripts",
         "tests"
@@ -112,21 +127,6 @@
       ],
       "relation": "b-imports-a",
       "shared": 18
-    },
-    {
-      "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
-      "b": "tests/test_pilot_b_ollama_adapters.py",
-      "either": 11,
-      "partLabels": [
-        "src",
-        "tests"
-      ],
-      "parts": [
-        "src",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 9
     }
   ],
   "changesTogetherNote": [
@@ -135,7 +135,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 8 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "b32034b5010cd7b741147588d57a93e548d709b1",
+  "commit": "2be4955578c57fb508f2ca5e5baaac2a60e1e89c",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (78 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -292,7 +292,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-06T14:56:55.924Z",
+  "generatedAt": "2026-11-06T15:57:39.867Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "7 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 3 more.",

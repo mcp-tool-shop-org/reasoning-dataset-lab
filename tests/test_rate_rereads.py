@@ -217,6 +217,65 @@ def test_remaining_runtime_shortens_on_a_rise_and_never_lengthens(tmp_path: Path
     assert any(r["our_rate"] == 9.0 and r["decision"] == "stable" for r in later), later
     assert all(r["max_runtime_s"] == want for r in later)
     assert doc["max_runtime_s"] == want and doc["highest_stable_rate_per_hour"] == 12.0
+    # The cost is booked at the highest stable rate seen (12.00), not at the open rate (8.88).
+    runtime_s = int(draft["runtime_seconds"])
+    assert runtime_s > 0 and draft["rate_per_hour"] == 8.88
+    assert draft["cost"] == round(runtime_s / 3600.0 * 12.0, 4)
+    assert draft["cost"] != round(runtime_s / 3600.0 * 8.88, 4)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def test_a_read_in_flight_when_the_run_ends_leaves_no_process(tmp_path: Path) -> None:
+    """fix1 item 1. The run cell ends while a mid-run `colab usage` hangs (the fake's slow usage, from the first
+    mid-run read). After the launcher returns, neither that `colab usage` nor the `timeout` wrapping it may be alive:
+    checked by the PIDs the fake recorded (its own and its parent's), never by name.
+    Fails at b23b0441: `pkill -P` reached only the command-substitution subshell, and the `timeout ... colab usage`
+    below it lived on until its own timeout."""
+    proc, env_paths, out_dir = _window(
+        tmp_path,
+        "inflight",
+        _OPEN_ALONE + ",8.88:1",
+        extra="export FAKE_COLAB_USAGE_SLOW_FROM_CALL=4; export FAKE_COLAB_USAGE_SLOW_SECONDS=25; ",
+        exec_sleep=3,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    rows = (env_paths["state_dir"] / "usage_slow_pids.txt").read_text(encoding="utf-8").split("\n")
+    rows = [r.split() for r in rows if r.strip()]
+    assert rows, "the slow read never started"
+    for pid, ppid, pcomm in rows:
+        assert pcomm == "timeout", rows
+        assert not _alive(int(pid)), f"colab usage pid {pid} outlived the launcher"
+        assert not _alive(int(ppid)), f"timeout pid {ppid} outlived the launcher"
+
+
+def test_neighbour_closing_with_the_rate_leading_the_count_cannot_hide_our_rise(tmp_path: Path) -> None:
+    """fix1 item 2 (the reviewer's sequence). A neighbour (8.88) closes and the account rate drops two reads before the
+    count does: at the unchanged count 2 our own rate reads a stable 0.00. That is below the floor, so it is a bad read
+    and never our "stable" rate; the re-baseline at count 1 uses the highest stable rate (8.88), so the baseline is 0
+    and our later rise to 12.00 reads as 12.00 and trips `RATE_ABOVE_MAX` (max 9.5).
+    Fails at b23b0441: the stable 0.00 was accepted, the baseline became 8.88 and 12.00 read as 3.12, no trip."""
+    proc, env_paths, out_dir = _window(
+        tmp_path,
+        "leadclose",
+        "8.88:1,17.76:2,17.76:2,17.76:2,8.88:2,8.88:2,8.88:1,8.88:1,12.00:1",
+        exec_sleep=40,
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "RATE_ABOVE_MAX" in proc.stderr, proc.stderr
+    doc = _rereads(out_dir)
+    below = [r for r in doc["reads"] if r.get("problem") == "rate_below_floor"]
+    assert len(below) == 2 and all(r["decision"] == "bad_read_recorded" for r in below), doc["reads"]
+    rb = next(r for r in doc["reads"] if r["decision"] == "rebaselined")
+    assert rb["neighbour_baseline"] == 0.0 and rb["count"] == 1
+    assert doc["trip"] == "RATE_ABOVE_MAX" and doc["reads"][-1]["our_rate"] == 12.0
+    assert _stops(env_paths) == 1
 
 
 def test_open_counts_0_then_1_proceed(tmp_path: Path) -> None:
@@ -293,6 +352,21 @@ def test_neighbour_opening_on_our_rise_absorbs_it_a_known_limit() -> None:
     for r, c in [(20.76, 2), (20.76, 2), (20.76, 2)]:  # ours 8.88 -> 12.00 and a neighbour's 8.76 at once
         rate_rereads.step(st, r, c)
     assert st["neighbour_baseline"] == pytest.approx(11.88) and st["trip"] is None
+
+
+def test_rebaseline_uses_the_highest_stable_rate_and_the_floor_holds_mid_run() -> None:
+    """fix1 item 2. (b) After a stable rise to 12.00 and a stable fall to 9.00, a neighbour opening re-baselines on
+    the highest stable rate: baseline = 17.76 - 12.00, not 17.76 - 9.00. (a) A stable own rate below the floor at the
+    settled count is a bad read, three of them end the window.
+    Fails at b23b0441: the baseline was account - last stable rate, and no floor applied mid-run."""
+    st = _state(max_rate=None, floor=1.0)
+    for r, c in [(12.0, 1), (12.0, 1), (9.0, 1), (9.0, 1), (17.76, 2), (17.76, 2)]:
+        rate_rereads.step(st, r, c)
+    assert st["neighbour_baseline"] == pytest.approx(5.76) and st["settled_count"] == 2
+    low = _state(floor=1.0)
+    decisions = [rate_rereads.step(low, 0.5, 1)["decision"] for _ in range(3)]
+    assert decisions == ["bad_read_recorded", "bad_read_recorded", "ASSIGNMENTS_UNREADABLE"]
+    assert low["highest_stable_rate"] == 8.88 and low["our_last_stable_rate"] == 8.88
 
 
 def test_rate_missing_is_a_bad_read_and_a_good_read_resets_the_run() -> None:

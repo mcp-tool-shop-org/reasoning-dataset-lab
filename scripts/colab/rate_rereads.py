@@ -6,12 +6,14 @@ own rate is the account rate minus a neighbour baseline, which starts as the pre
 `init` once, after the window rate is read stable at open, and `step` once per re-read (at most every 60 s):
 
 - A read whose assignment count differs from the last settled count is never judged. When two consecutive reads at
-  the new count agree within 0.01, the neighbour baseline becomes account - our last stable rate (`rebaselined`).
+  the new count agree within 0.01, the neighbour baseline becomes account - the HIGHEST stable rate of ours seen
+  (`rebaselined`): the conservative direction, our apparent rate can only come out higher.
 - Only a read at the settled count may raise our rate, and only once two such reads in a row agree within 0.01 (a
   stable rate). A stable rise reprices the remaining runtime at max(--max-rate, highest stable rate seen): it can
   shorten, never lengthen. A stable rate above --max-rate trips `RATE_ABOVE_MAX`.
-- A read with no rate, no count or a count of 0 is recorded (`bad_read_recorded`); three in a row trip
-  `ASSIGNMENTS_UNREADABLE`.
+- A read with no rate, no count or a count of 0, or one whose own rate at the settled count is below the window's
+  rate floor (`GPU_RATE_FLOOR` on a GPU card), is a bad read: recorded (`bad_read_recorded`), never accepted. Three in a
+  row trip `ASSIGNMENTS_UNREADABLE`.
 
 Every read is appended to the records file (numbers and decisions only: the usage text itself is never stored).
 `step` prints one line for the shell: `<decision> <max_runtime_s> <trip_class or ->`.
@@ -66,8 +68,10 @@ def init_state(
     max_rate: float | None,
     cap_units: float,
     max_runtime_s: int,
+    floor: float = 0.0,
 ) -> dict[str, Any]:
     return {
+        "floor": float(floor),
         "neighbour_baseline": float(pre_account_rate),
         "pre_account_rate": float(pre_account_rate),
         "our_last_stable_rate": float(window_rate),
@@ -92,13 +96,27 @@ def step(state: dict[str, Any], rate: float | None, count: int | None) -> dict[s
     state["reads"] = int(state.get("reads", 0)) + 1
     rec: dict[str, Any] = {"read": state["reads"], "account_rate": _r(rate), "count": count}
     old_runtime = int(state["max_runtime_s"])
-    if rate is None or count is None or count <= 0:
+    problem: str | None = None
+    if rate is None:
+        problem = "rate_missing"
+    elif count is None:
+        problem = "count_missing"
+    elif count <= 0:
+        problem = "count_zero"
+    elif count == state.get("settled_count") and (
+        rate - float(state["neighbour_baseline"]) < float(state.get("floor") or 0.0) - _EPS
+    ):
+        # Our own rate below the card's floor is not our rate (a neighbour closing while the count lags, or a stale
+        # read): never accepted, so it can never become the "last stable" rate a re-baseline would use.
+        problem = "rate_below_floor"
+    if problem is not None:
         state["bad_reads_in_a_row"] = int(state["bad_reads_in_a_row"]) + 1
         state["pending"] = None
         state["prev_our_rate"] = None
-        problem = "rate_missing" if rate is None else ("count_missing" if count is None else "count_zero")
         rec["problem"] = problem
         rec["our_rate"] = None
+        if problem == "rate_below_floor" and rate is not None:
+            rec["our_rate_below_floor"] = _r(rate - float(state["neighbour_baseline"]))
         if state["bad_reads_in_a_row"] >= BAD_READS_TO_TRIP:
             rec["decision"] = "ASSIGNMENTS_UNREADABLE"
             state["trip"] = {
@@ -120,10 +138,11 @@ def step(state: dict[str, Any], rate: float | None, count: int | None) -> dict[s
                 state["pending"] = {"count": count, "account_rate": rate}
                 rec["decision"] = "count_changed_pending"
             elif abs(rate - float(pend["account_rate"])) <= RATE_STABLE_TOLERANCE + _EPS:
-                state["neighbour_baseline"] = rate - float(state["our_last_stable_rate"])
+                # The highest stable rate of ours seen, not the last one: our apparent rate can only come out higher.
+                state["neighbour_baseline"] = rate - float(state["highest_stable_rate"])
                 state["settled_count"] = count
                 state["pending"] = None
-                state["prev_our_rate"] = float(state["our_last_stable_rate"])
+                state["prev_our_rate"] = float(state["highest_stable_rate"])
                 rec["decision"] = "rebaselined"
             else:
                 pend["account_rate"] = rate
@@ -219,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
     p_init.add_argument("--max-rate", default="")
     p_init.add_argument("--cap", required=True)
     p_init.add_argument("--max-runtime", required=True)
+    p_init.add_argument("--floor", default="0")
     p_step = sub.add_parser("step", help="one re-read; usage text on stdin (empty when the read failed)")
     p_step.add_argument("--state", required=True)
     p_step.add_argument("--records", required=True)
@@ -240,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
             max_rate=_opt_float(args.max_rate),
             cap_units=float(args.cap),
             max_runtime_s=int(args.max_runtime),
+            floor=float(args.floor or 0.0),
         )
         _save(Path(args.state), st)
         return 0
