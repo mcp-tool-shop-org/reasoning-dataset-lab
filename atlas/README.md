@@ -1,16 +1,16 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-06 from commit 7d6f7a1 by Atlas 1.24.0.
+Mapped at 2026-11-06 from commit b32034b by Atlas 1.24.0.
 
 ## What this is
 
 reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item. (written by a person)
 
-9 parts, mostly Python (76 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
+9 parts, mostly Python (78 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-06 (7ad2390)
+## What changed since 2026-11-06 (7d6f7a1)
 
-Nothing structural changed since 2026-11-06; 12 files changed content.
+Nothing structural changed since 2026-11-06; 2 files added and 6 changed content.
 
 ## What comes in
 
@@ -46,10 +46,10 @@ Only ci itself reads what it writes.
 ## What tends to change together
 
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
-- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 25 of 30 commits, and the tests part imports the scripts part.
+- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 21 of 23 commits, and the tests part imports the scripts part.
+- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 19 of 23 commits, inside the tests part.
+- **scripts/colab/vm_judges.py** and **tests/fixtures/fake_colab.py** changed together in 18 of 22 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 9 of 11 commits, and the tests part imports the src part.
-- **src/reasoning_dataset_lab/pilot_b/fact_tables.py** and **tests/test_pilot_b_variety.py** changed together in 5 of 7 commits, and the tests part imports the src part.
-- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 19 of 28 commits, inside the tests part.
 
 1 file changed together with its own test, as expected.
 
@@ -86,9 +86,9 @@ Read those in order to follow one run of rdlab end to end. This path follows rdl
 ## What this map cannot see
 
 - 8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
-- 6 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 2 more.
+- 7 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 3 more.
 - 13 writes and 33 reads use paths built at run time and are not named here.
-- 75 writes and 171 reads go to a path their caller passes, not to this repository.
+- 76 writes and 173 reads go to a path their caller passes, not to this repository.
 - 5 reads go to the directory the command is run in, not to this repository.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
 

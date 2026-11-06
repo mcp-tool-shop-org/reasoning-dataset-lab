@@ -2460,6 +2460,11 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             return 1
 
+        run_delay_s = float(os.environ.get("FAKE_COLAB_EXEC_RUN_DELAY", "0") or "0")
+        if step == "run" and run_delay_s > 0 and sleep_s <= 0:
+            # The run cell takes this long before it runs and finishes as usual (FAKE_COLAB_EXEC_SLEEP instead times
+            # the exec out), so the rig's monitors (cost cap, mid-run rate re-reads) see a live run.
+            time.sleep(run_delay_s)
         try:
             if step == "run" and sleep_s > 0:
                 run_dir_sleep = vm_fs / "rdlab_run"
@@ -2907,6 +2912,23 @@ def main(argv: list[str] | None = None) -> int:
         # A session's own rate is its `rate` field, else FAKE_COLAB_USAGE_RATE, else a per-card default.
         # FAKE_COLAB_USAGE_RATE_SEQUENCE ("r1,r2,...") instead answers the n-th usage call with the n-th value (the
         # last repeats), to stand in for stale reads, late registration and neighbours.
+        # FAKE_COLAB_USAGE_SEQUENCE ("rate:count,rate:count,...") models the account rate AND the "Active assignments"
+        # count per usage call, before, at and after open and during the run (the n-th call answers with the n-th pair,
+        # the last repeats). "-" omits that line (a missing rate or count). FAKE_COLAB_USAGE_FIXTURE names a recorded
+        # sequence in USAGE_SEQUENCE_FIXTURES.
+        pair_raw = os.environ.get("FAKE_COLAB_USAGE_SEQUENCE", "").strip()
+        fixture_name = os.environ.get("FAKE_COLAB_USAGE_FIXTURE", "").strip()
+        if fixture_name:
+            pair_raw = USAGE_SEQUENCE_FIXTURES[fixture_name]
+        if pair_raw:
+            pairs = [v.strip() for v in pair_raw.split(",") if v.strip()]
+            with _state_lock(state_dir, "usage_calls"):
+                n_file = state_dir / "usage_calls.txt"
+                n = int(n_file.read_text(encoding="utf-8").strip() or "0") if n_file.is_file() else 0
+                n_file.write_text(f"{n + 1}\n", encoding="utf-8")
+            p_rate, _, p_count = pairs[min(n, len(pairs) - 1)].partition(":")
+            print(_usage_text(p_rate.strip(), p_count.strip() or "-"))
+            return 0
         seq_raw = os.environ.get("FAKE_COLAB_USAGE_RATE_SEQUENCE", "").strip()
         if seq_raw:
             seq = [v.strip() for v in seq_raw.split(",") if v.strip()]
@@ -2927,12 +2949,30 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     total += per_card.get(str(s.get("gpu", "CPU")).upper(), 1.0)
             rate_str = f"{total:.2f}"
-        print(
-            f"Compute units balance: 100.0 | Usage rate: {rate_str}/h | Active assignments: {len(sessions)}"
-        )
+        print(_usage_text(rate_str, str(len(sessions))))
         return 0
 
     return 2
+
+
+# Recorded `colab usage` sequences ("rate:count" per call, the last repeats) for FAKE_COLAB_USAGE_FIXTURE.
+USAGE_SEQUENCE_FIXTURES: dict[str, str] = {
+    # windowC2-12-t4-s1a-20261027 (Publisher receipts): the service reported `Usage rate: 0.00/hr` with
+    # `Active assignments: 0` for three reads (the pre-open read and the first two post-open reads) until the new T4
+    # session registered, then the card's rate (1.07/hr) with a count of 1.
+    "t4_open_0001": "0.00:0,0.00:0,0.00:0,1.07:1",
+}
+
+
+def _usage_text(rate_str: str, count_str: str) -> str:
+    """`colab usage` output in the real CLI's line format (google-colab-cli 0.7.4, as in the rnd-data rig logs):
+    `Current balance: <float> compute units`, `Usage rate: <float>/hr`, `Active assignments: <int>`; "-" omits a line."""
+    lines = ["Current balance: 100.00 compute units"]
+    if rate_str != "-":
+        lines.append(f"Usage rate: {rate_str}/hr")
+    if count_str != "-":
+        lines.append(f"Active assignments: {count_str}")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

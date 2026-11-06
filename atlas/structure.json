@@ -159,7 +159,7 @@
           "path": "docs/calibration-2026-10-25.md"
         },
         {
-          "hash": "5ce4f58c7e78f2bd651e5f9bcfdddfbe4e871df7c8cdb99cab9d9099b050ba8d",
+          "hash": "edb055ea007673811994068435c28f7f6b1ea4a7a80ea14b4d5c3401e1547e0c",
           "path": "docs/colab-cli-contract.md"
         },
         {
@@ -225,7 +225,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "3b936faca6f76d4746c4d21b2d15be0b141597a2efb323ea64aefd7dfc55f8a3",
+          "hash": "2788534961bb0d03e31829936e0875bbe7f762bddfd4499beed4ee2da61b8d15",
           "path": "CHANGELOG.md"
         },
         {
@@ -308,7 +308,7 @@
           "path": "scripts/colab/README.md"
         },
         {
-          "hash": "e38d7c92f064dd0557e6c6d611581e2eaf4445b590975965fe1ada812fd323a5",
+          "hash": "8d9b71bb071a7a25f0facb69053343f3e859321a6c445e7858392c8ecdc90011",
           "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
         },
         {
@@ -363,7 +363,7 @@
           "path": "scripts/colab/generate_weights_table.py"
         },
         {
-          "hash": "a19e558694cfe23877382df51e8c30b114691b8736d8086f193b95cd7773fb17",
+          "hash": "e3ae3c7d7b650ae94868d77a2b2f628386aa07f729faa4e33cd73a7beb9be446",
           "path": "scripts/colab/launch_judges.sh"
         },
         {
@@ -925,6 +925,25 @@
           ],
           "hash": "302dc4e535be295727faa8763f5c741a9695e2f5acf23677ec474ebe31829b62",
           "path": "scripts/colab/promote_goldens.py"
+        },
+        {
+          "exports": [
+            "init_state",
+            "main",
+            "parse_usage",
+            "pricing_rate",
+            "runtime_for",
+            "step",
+            "summary"
+          ],
+          "failurePaths": [
+            {
+              "kind": "raise",
+              "line": 273
+            }
+          ],
+          "hash": "5cb0d4ff5e907c78ef2a9e0c6e463e1dfa50c6675a0bc91ad5efc9a4d9708577",
+          "path": "scripts/colab/rate_rereads.py"
         },
         {
           "hash": "df36a5ff08bb9f36650af618a17455dbaab810ab52d9b5025370a2bfb597947d",
@@ -3070,11 +3089,11 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 73,
+          "reads": 75,
           "where": [
             "caller"
           ],
-          "writes": 44
+          "writes": 45
         },
         {
           "reads": 4,
@@ -3084,13 +3103,13 @@
           "writes": 0
         }
       ],
-      "outsideReads": 77,
-      "outsideWrites": 44,
+      "outsideReads": 79,
+      "outsideWrites": 45,
       "role": "code",
       "testRunners": [
         "pytest"
       ],
-      "testedBy": 4,
+      "testedBy": 5,
       "unresolvedNamed": [
         {
           "path": "scripts/colab/vm_judges.py",
@@ -16058,7 +16077,7 @@
       "testRunners": [
         "pytest"
       ],
-      "testedBy": 37,
+      "testedBy": 38,
       "unresolvedSites": 0
     },
     {
@@ -16132,7 +16151,7 @@
             "set_fake_uv_python_315_state",
             "setup_fake_colab_environment"
           ],
-          "hash": "8e3ec8aef3cc3055e0623c219e71b0a64af36bb4176d6cd5b9a71d340c68b0da",
+          "hash": "980c05194058b491e78483da5e7aea586297b446e382a32569a88efe641d59ea",
           "path": "tests/fixtures/fake_colab.py"
         },
         {
@@ -16863,7 +16882,7 @@
             "test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local",
             "test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log"
           ],
-          "hash": "fb437d124b00c130908253002b6f828c7412ee394294811639b50e1c69d4326a",
+          "hash": "27228f32d5ac7e238a523b20fef6c697f7e9bdb292952df7ff7ad75fe919853c",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -17655,6 +17674,36 @@
         },
         {
           "exports": [
+            "test_a_single_missing_count_is_only_recorded",
+            "test_bad_reread_interval_is_refused_before_any_colab_call",
+            "test_cli_round_trip",
+            "test_count_leading_the_rate_by_one_read_does_not_trip",
+            "test_count_leading_the_rate_by_two_reads_falsely_trips_a_known_limit",
+            "test_neighbour_closing_mid_run_is_not_an_under_read",
+            "test_neighbour_opening_mid_run_is_rebaselined_and_does_not_trip",
+            "test_neighbour_opening_on_our_rise_absorbs_it_a_known_limit",
+            "test_open_count_0_throughout_is_live_usage_rate_unavailable",
+            "test_open_counts_0_then_1_proceed",
+            "test_our_own_rise_at_an_unchanged_count_trips_rate_above_max",
+            "test_parse_usage_reads_the_real_line_format",
+            "test_rate_missing_is_a_bad_read_and_a_good_read_resets_the_run",
+            "test_remaining_runtime_shortens_on_a_rise_and_never_lengthens",
+            "test_three_bad_counts_in_a_row_end_the_window"
+          ],
+          "hash": "a7efcab659b872e6b31408fc8cd0e51c89f663a9bd24c50e2bc3a4764db7de38",
+          "importOrder": [
+            "tests/test_colab_judge_launcher.py",
+            "tests/fixtures/fake_colab.py"
+          ],
+          "importsFiles": [
+            "tests/fixtures/fake_colab.py",
+            "tests/test_colab_judge_launcher.py"
+          ],
+          "path": "tests/test_rate_rereads.py",
+          "testFramework": "pytest"
+        },
+        {
+          "exports": [
             "test_a_catalogue_without_the_floor_cells_is_refused_not_guessed",
             "test_a_role_set_without_target_shortcut_fails_loudly",
             "test_a_slot_whose_question_does_not_match_its_shortcut_is_refused",
@@ -17748,7 +17797,7 @@
           "why": "unplaced"
         }
       ],
-      "unresolvedSites": 4
+      "unresolvedSites": 5
     }
   ],
   "doors": [
@@ -17936,7 +17985,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 45
+          "files": 46
         },
         {
           "boundary": "scripts",
@@ -18008,7 +18057,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 45,
+          "files": 46,
           "job": "test",
           "runner": "pytest",
           "step": "Run pytest with coverage (floor 90%)"
@@ -18016,7 +18065,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 45,
+          "files": 46,
           "job": "test-py313",
           "runner": "pytest",
           "step": "Run pytest (no coverage on this leg)"
@@ -18024,7 +18073,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 45,
+          "files": 46,
           "job": "test-py314",
           "runner": "pytest",
           "step": "Run pytest (no coverage on this leg)"
@@ -18460,8 +18509,8 @@
   ],
   "engine": "1.24.0",
   "generatedFrom": {
-    "commit": "7d6f7a128c9d73d8e232328f6f54d63e674d59e5",
-    "tracked": 172
+    "commit": "b32034b5010cd7b741147588d57a93e548d709b1",
+    "tracked": 174
   },
   "landings": [
     {
@@ -19232,6 +19281,6 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 55,
+  "testFiles": 56,
   "unassigned": []
 }
