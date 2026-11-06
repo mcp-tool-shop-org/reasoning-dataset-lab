@@ -70,6 +70,38 @@ def _write_noisy_python(path: Path, *, lines: int = 100, raise_exc: bool = True,
 # ---------------------------------------------------------------------------------------------------------------------
 
 
+def test_scrub_log_text_redacts_github_and_proxy_tokens() -> None:
+    """The gatekeeper copies up to 8 KB of its subprocess tail into status.json and the receipt: GitHub tokens
+    (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`, `GITHUB_TOKEN=` / `GH_TOKEN=`) and the colab proxy token
+    are scrubbed there and in the subprocess tail, as HF tokens are. Fails at 5bb17f78 for the GitHub forms."""
+    secrets = {
+        "ghp": "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
+        "gho": "gho_" + "Z" * 36,
+        "ghu": "ghu_" + "y" * 36,
+        "ghs": "ghs_" + "0123456789" * 4,
+        "ghr": "ghr_" + "q" * 40,
+        "pat": "github_pat_" + "11ABCDEFG0123456789_" + "a" * 59,
+    }
+    text = " | ".join(f"{k} token {v} end" for k, v in secrets.items())
+    text += " GITHUB_TOKEN=plainsecret1 GH_TOKEN=plainsecret2 colab-runtime-proxy-token=proxysecret3&x=1"
+    out = vm_judges.scrub_log_text(text)
+    for v in secrets.values():
+        assert v not in out
+    for frag in ("plainsecret1", "plainsecret2", "proxysecret3"):
+        assert frag not in out
+    assert "ghp_[REDACTED]" in out and "github_pat_[REDACTED]" in out and "GITHUB_TOKEN=[REDACTED]" in out
+    assert vm_judges.scrub_log_text(out) == out  # idempotent
+    # Words that only look alike are kept.
+    for keep in ("ghs_short", "the ghp_ prefix", "my_ghp_" + "x" * 30):
+        assert vm_judges.scrub_log_text(keep) == keep
+    err = vm_judges.BootGatekeeperSubprocessError(
+        judge_id=GK, venv_python="/x/python", returncode=1, stdout="", stderr=text, duration_seconds=1.0
+    )
+    rec = err.to_failure_record()
+    for v in [*secrets.values(), "plainsecret1", "proxysecret3"]:
+        assert v not in rec["stderr_tail"] and v not in err.failure_tail and v not in str(err)
+
+
 def test_failure_output_tail_keeps_the_last_40_lines_and_the_exception_line(tmp_path: Path) -> None:
     """`run_vm_subprocess` on a child that prints 100 lines and raises: the error keeps the last 40 lines (scrubbed),
     and its exception line; the helpers fall back to stdout when stderr is blank."""
@@ -255,9 +287,24 @@ def test_main_gatekeeper_subprocess_failure_reaches_status_receipt_and_vm_log(
         "gatekeeper": "recorded, not compared",
         "card_type": "A100",
         "verified": True,
+        "receipts_preflight": {
+            "status": "ok",
+            "judges": [
+                {
+                    "judge_id": jid,
+                    "receipt": f"{vm_judges.BAKEOFF_JUDGE_SPECS[jid].repo_id.replace('/', '__')}.sha256.json",
+                    "repo": vm_judges.BAKEOFF_JUDGE_SPECS[jid].repo_id,
+                    "revision": vm_judges.BAKEOFF_JUDGE_SPECS[jid].revision,
+                }
+                for jid in ("mu-judge", GK)
+            ],
+        },
     }
 
-    assert f"VM_BOOT_GATEKEEPER_JUDGE judge_id={GK} timed=false download_verify=mu-judge,{GK}" in vm_log
+    assert (
+        f"VM_BOOT_GATEKEEPER_JUDGE judge_id={GK} timed=false download_verify=mu-judge,{GK} receipts_preflight=ok"
+        in vm_log
+    )
     assert f"VM_BOOT_GATEKEEPER_START mode=time-one dryrun=False judge_id={GK}" in vm_log
     assert "VM_BOOT_GATEKEEPER_END status=refused failure_class=BOOT_GATEKEEPER_SUBPROCESS_FAILED" in vm_log
     assert "VM_RUN_REFUSED step=boot_gatekeeper failure_class=BOOT_GATEKEEPER_SUBPROCESS_FAILED" in vm_log
@@ -298,6 +345,12 @@ def test_main_time_one_records_the_gatekeeper_with_unfilled_goldens(
     rep = receipt["boot_gatekeeper"]
     assert rep["record_mode"] is True and rep["gatekeeper"] == "recorded, not compared"
     assert rep["hash_source"] == "real_transport" and rep["status"] == "ok"
+    # The subprocess's timing record reaches the receipt (fails at 5bb17f78): every phase key, the measured elapsed
+    # seconds and the 300 s timeout. The stand-in python reports no phases, so they are None here.
+    timings = rep["subprocess_timings"]
+    assert list(timings["phase_seconds"]) == list(vm_judges.BOOT_GATEKEEPER_PHASES)
+    assert timings["subprocess_elapsed_seconds"] > 0 and timings["timeout_seconds"] == 300
+    assert status["boot_gatekeeper"]["subprocess_timings"] == timings
     filled = json.loads((tmp_path / "run" / "boot_gatekeeper_goldens.filled.json").read_text(encoding="utf-8"))
     assert filled["judge_id"] == GK and filled["provenance"]["mode"] == "time-one"
     assert filled["card_types"]["A100"]["status"] == "filled"
@@ -378,6 +431,99 @@ def test_main_refuses_before_venv_sync_when_the_gatekeeper_receipt_is_missing(
     for later in ("sync_judge_venvs", "run_device_check", "run_gpu_gate", "download_and_verify_all_judge_weights"):
         assert later not in names, names
     assert "failure_output_tail" not in receipt
+
+
+def _receipt_name(judge_id: str) -> str:
+    return f"{vm_judges.BAKEOFF_JUDGE_SPECS[judge_id].repo_id.replace('/', '__')}.sha256.json"
+
+
+def _break_receipt(receipts_dir: Path, judge_id: str, how: str) -> None:
+    path = receipts_dir / _receipt_name(judge_id)
+    if how == "missing":
+        path.unlink()
+    elif how == "not_json":
+        path.write_text("{not json", encoding="utf-8")
+    elif how == "no_files":
+        path.write_text(json.dumps({"repo": vm_judges.BAKEOFF_JUDGE_SPECS[judge_id].repo_id}), encoding="utf-8")
+    elif how == "wrong_revision":
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        doc["revision"] = "0" * 40
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    else:  # pragma: no cover
+        raise AssertionError(how)
+
+
+RECEIPT_BREAKS = (
+    ("missing", "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND"),
+    ("not_json", "BAKEOFF_JUDGE_RECEIPT_INVALID"),
+    ("no_files", "BAKEOFF_JUDGE_RECEIPT_INVALID"),
+    ("wrong_revision", "BAKEOFF_JUDGE_RECEIPT_MISMATCH"),
+)
+
+
+def test_preflight_judge_receipts_runs_the_static_receipt_checks_for_every_judge(tmp_path: Path) -> None:
+    """`preflight_judge_receipts` runs the same static checks as the post-download verify (present, valid JSON with a
+    `files` mapping, repo and revision equal to the pin) for every judge in the set, with the same codes, and the
+    post-download verify still raises them through the shared `check_judge_receipt_static`."""
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    ok = vm_judges.preflight_judge_receipts(["mu-judge", GK], receipts_dir=receipts_dir)
+    assert [r["judge_id"] for r in ok] == ["mu-judge", GK]
+    assert ok[0]["receipt"] == _receipt_name("mu-judge")
+    with pytest.raises(vm_judges.RefusalError) as e_unknown:
+        vm_judges.preflight_judge_receipts(["not-a-judge"], receipts_dir=receipts_dir)
+    assert e_unknown.value.failure_class == "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND"
+    for how, code in RECEIPT_BREAKS:
+        broken = tmp_path / f"rec_{how}"
+        import shutil
+
+        shutil.copytree(receipts_dir, broken)
+        _break_receipt(broken, "mu-judge", how)
+        with pytest.raises(vm_judges.RefusalError) as e_pre:
+            vm_judges.preflight_judge_receipts([GK, "mu-judge"], receipts_dir=broken)
+        assert e_pre.value.failure_class == code, how
+        assert "mu-judge" in str(e_pre.value) or _receipt_name("mu-judge") in str(e_pre.value)
+        with pytest.raises(vm_judges.RefusalError) as e_post:
+            vm_judges.verify_snapshot_against_receipt(
+                vm_judges.BAKEOFF_JUDGE_SPECS["mu-judge"], receipts_dir=broken, hf_home=hf_home
+            )
+        assert e_post.value.failure_class == code, how
+        # The plan (launcher and VM main) refuses the same way for a timed judge, not only the gatekeeper's.
+        with pytest.raises(vm_judges.RefusalError) as e_plan:
+            vm_judges.plan_boot_gatekeeper_judge(
+                mode="time-one", judge_order=("mu-judge",), repo_root=REPO_ROOT, receipts_dir=broken
+            )
+        assert e_plan.value.failure_class == code, how
+    plan = vm_judges.plan_boot_gatekeeper_judge(
+        mode="time-one", judge_order=("mu-judge",), repo_root=REPO_ROOT, receipts_dir=receipts_dir
+    )
+    assert plan is not None and plan["receipts_preflight"]["status"] == "ok"
+    assert [r["judge_id"] for r in plan["receipts_preflight"]["judges"]] == ["mu-judge", GK]
+    no_dir = vm_judges.plan_boot_gatekeeper_judge(mode="time-one", judge_order=("mu-judge",), repo_root=REPO_ROOT)
+    assert no_dir is not None and no_dir["receipts_preflight"] == {"status": "not_run"}
+
+
+def test_main_refuses_before_venv_sync_when_a_timed_judge_receipt_is_bad(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """VM `main`, real time-one with `RDLAB_ONLY_JUDGES=mu-judge`: mu-judge's receipt missing, not JSON, without
+    `files`, or for another revision is refused at `preflight_boot_gatekeeper_judge` with the verify's own code,
+    before venv sync, the device/GPU gate and the weight download.
+    Fails at 5bb17f78: only the gatekeeper judge's receipt was checked (for presence), so the refusal came from the
+    weight step's verify, after the paid download."""
+    for how, code in RECEIPT_BREAKS:
+        sub = tmp_path / how
+        sub.mkdir()
+        receipts_dir, _ = tcl._make_synthetic_judge_snapshots_and_receipts(sub / "rec")
+        _break_receipt(receipts_dir, "mu-judge", how)
+        calls: list[dict[str, Any]] = []
+        argv = _time_one_main_env(sub, monkeypatch, receipts_dir=receipts_dir, calls=calls)
+        assert vm_judges.main(argv) == 2
+        status, _, _ = _read_run(sub)
+        assert status["failure_class"] == code, (how, status)
+        assert status["step"] == "preflight_boot_gatekeeper_judge", how
+        names = [c["call"] for c in calls]
+        for later in ("sync_judge_venvs", "run_device_check", "run_gpu_gate", "download_and_verify_all_judge_weights"):
+            assert later not in names, (how, names)
 
 
 def test_main_venv_sync_subprocess_failure_tail_reaches_all_three(
@@ -632,6 +778,10 @@ def test_launcher_dry_lists_the_gatekeeper_judge_and_refuses_before_colab(tmp_pa
     assert "--env RDLAB_CARD_TYPE=<card-of-opened-session> " in run_lines[0]
     assert GK not in run_lines[0]
     assert not env_paths["calls_log"].exists()
+    assert (
+        f"[receipts] preflight=ok judges=mu-judge,{GK} (present, valid JSON with files, repo and revision equal to "
+        "the pin)"
+    ) in proc.stdout
 
     goldens_doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
     bad_goldens = tmp_path / "bad_goldens.json"
@@ -668,6 +818,32 @@ def test_launcher_dry_lists_the_gatekeeper_judge_and_refuses_before_colab(tmp_pa
         assert proc_rec.returncode == 2, proc_rec.stdout + proc_rec.stderr
         assert "BOOT_GATEKEEPER_RECEIPT_MISSING" in proc_rec.stderr
         assert "colab new" not in proc_rec.stdout and not env_rec["calls_log"].exists()
+
+
+def test_launcher_dry_refuses_a_bad_timed_judge_receipt_before_any_colab_call(tmp_path: Path) -> None:
+    """The reproducer: a receipts directory copied without mu-judge's receipt (or with it broken) and
+    `RDLAB_ONLY_JUDGES=mu-judge`: `--time-one --dry` and the live path both refuse with the VM verify's code before
+    any `colab` call.
+    Fails at 5bb17f78: `--dry` exited 0 and the VM refused BAKEOFF_JUDGE_RECEIPT_NOT_FOUND only after the download."""
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    import shutil
+
+    for how, code in RECEIPT_BREAKS:
+        broken = tmp_path / f"rec_{how}"
+        shutil.copytree(receipts_dir, broken)
+        _break_receipt(broken, "mu-judge", how)
+        for dry in ((True, False) if how == "missing" else (True,)):
+            proc, env_paths = _launcher_time_one(
+                tmp_path,
+                f"rb_{how}_{int(dry)}",
+                receipts_dir=broken,
+                hf_home=hf_home,
+                extra_exports="export RDLAB_ONLY_JUDGES=mu-judge; ",
+                dry=dry,
+            )
+            assert proc.returncode == 2, (how, proc.stdout + proc.stderr)
+            assert code in proc.stderr, (how, proc.stderr)
+            assert "colab new" not in proc.stdout and not env_paths["calls_log"].exists()
 
 
 def test_launcher_help_documents_only_judges_and_the_gatekeeper_judge() -> None:
@@ -772,6 +948,7 @@ def test_local_boot_gatekeeper_refuses_cpu_and_bad_arguments(tmp_path: Path, mon
     def _refused(argv: list[str]) -> dict[str, Any]:
         assert local_boot_gatekeeper.main(argv) == 2
         doc = json.loads(out.read_text(encoding="utf-8"))
+        out.unlink()  # an existing --out is refused without --overwrite
         assert doc["status"] == "refused" and doc["rc"] == 2
         return doc
 
@@ -838,14 +1015,130 @@ def test_local_boot_gatekeeper_compares_with_the_goldens(tmp_path: Path, monkeyp
         extra = ["--python", str(py)] + (["--goldens", str(goldens)] if goldens else [])
         assert local_boot_gatekeeper.main(_local_args(tmp_path, receipts_dir, hf_home, *extra)) == want_rc
         rec = json.loads(out.read_text(encoding="utf-8"))
+        out.unlink()  # an existing --out is refused without --overwrite
         assert rec["status"] == want_status and rec["judge_id"] == GK and rec["card_type"] == "A100"
         assert [p["output_token_ids_sha256"] for p in rec["prompts"]] == list(hashes.values())
+        # The stand-in reports no phases: every phase key is still present (None) with the measured elapsed time.
+        assert set(rec["subprocess_timings"]["phase_seconds"]) == set(vm_judges.BOOT_GATEKEEPER_PHASES)
+        assert rec["subprocess_timings"]["subprocess_elapsed_seconds"] > 0
 
     failing = _write_noisy_python(tmp_path / "failpy")
     assert local_boot_gatekeeper.main(_local_args(tmp_path, receipts_dir, hf_home, "--python", str(failing))) == 2
     rec = json.loads(out.read_text(encoding="utf-8"))
     assert rec["failure_class"] == "BOOT_GATEKEEPER_SUBPROCESS_FAILED"
     assert rec["exception_line"] == f"ValueError: {EXC_MSG}"
+
+
+def test_local_boot_gatekeeper_refuses_an_out_inside_the_repo_or_an_existing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--out scripts/colab/boot_gatekeeper_goldens.json` (or any path inside the repository) is refused before anything
+    runs and the goldens stay byte-identical; an existing `--out` outside the repo is refused unless `--overwrite`.
+    Fails at 5bb17f78: the receipt was written unguarded, overwriting the repo goldens with a refusal receipt."""
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    goldens = SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json"
+    before = goldens.read_bytes()
+    base = ["--hf-home", str(hf_home), "--receipts-dir", str(receipts_dir), "--card-type", "A100", "--device", "cpu"]
+    for target in (goldens, REPO_ROOT / "scripts" / "colab" / "new_receipt.json", REPO_ROOT / "x" / ".." / "r.json"):
+        assert local_boot_gatekeeper.main([*base, "--out", str(target)]) == 2
+        assert goldens.read_bytes() == before
+        assert target == goldens or not target.exists()
+    with pytest.raises(vm_judges.RefusalError) as e_in:
+        local_boot_gatekeeper.check_out_path(goldens, overwrite=True)
+    assert e_in.value.failure_class == local_boot_gatekeeper.LOCAL_GATEKEEPER_OUT_REFUSED
+    with pytest.raises(vm_judges.RefusalError):
+        local_boot_gatekeeper.check_out_path(REPO_ROOT)
+
+    existing = tmp_path / "existing.json"
+    existing.write_text("keep me\n", encoding="utf-8")
+    assert local_boot_gatekeeper.main([*base, "--out", str(existing)]) == 2
+    assert existing.read_text(encoding="utf-8") == "keep me\n"
+    assert local_boot_gatekeeper.main([*base, "--out", str(existing), "--overwrite"]) == 2  # the CPU refusal, written
+    assert json.loads(existing.read_text(encoding="utf-8"))["failure_class"] == (
+        local_boot_gatekeeper.LOCAL_GATEKEEPER_CPU_REFUSED
+    )
+    a_dir = tmp_path / "a_dir"
+    a_dir.mkdir()
+    with pytest.raises(vm_judges.RefusalError):
+        local_boot_gatekeeper.check_out_path(a_dir, overwrite=True)
+    assert local_boot_gatekeeper.check_out_path(tmp_path / "fresh.json") == (tmp_path / "fresh.json").resolve()
+
+
+def test_gatekeeper_subprocess_records_every_phase_and_the_elapsed_seconds(tmp_path: Path) -> None:
+    """The REAL `_BOOT_GATEKEEPER_SUBPROCESS_SCRIPT`, run through `run_boot_gatekeeper_subprocess` with stand-in
+    `torch` and `bakeoff_judge` modules first on the path, reports the seconds of torch import, verify_ready, model
+    load, generation 1, generation 2 and its total, prints one phase line per phase to stderr, and the parent adds
+    the measured elapsed seconds and the timeout; `local_boot_gatekeeper.format_timings` prints them.
+    Fails at 5bb17f78: the script reported hashes only."""
+    fake_root = tmp_path / "fake_pkgs"
+    pkg = fake_root / "reasoning_dataset_lab" / "pilot_b"
+    pkg.mkdir(parents=True)
+    (fake_root / "reasoning_dataset_lab" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (fake_root / "torch.py").write_text("import time\ntime.sleep(0.01)\n", encoding="utf-8")
+    (pkg / "bakeoff_judge.py").write_text(
+        "\n".join(
+            [
+                "import time",
+                "from types import SimpleNamespace",
+                "D3_MINI_JUDGE_ID = 'd3-mini'",
+                "class JudgeInputItem:",
+                "    def __init__(self, **kw): self.__dict__.update(kw)",
+                "def resolve_judge_spec(jid): return SimpleNamespace(judge_id=jid)",
+                "class _Adapter:",
+                "    def assemble_prompt(self, item, order, pass_mode): return item.item_id",
+                "def build_judge_adapter(spec): return _Adapter()",
+                "def compute_response_output_token_ids_sha256(*a, **k): return 'c' * 64",
+                "class TransformersJudgeTransport:",
+                "    def __init__(self, **kw): pass",
+                "    def verify_ready(self, spec, allow_remote_code_reviewed=None): time.sleep(0.01)",
+                "    def _ensure_loaded(self, spec): time.sleep(0.01)",
+                "    def generate(self, spec, prompt, seed): return SimpleNamespace(output_token_ids_sha256=prompt[:1] * 64)",
+                "D3MiniTransport = TransformersJudgeTransport",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    venv_py = tmp_path / "venvpy"
+    venv_py.write_text(
+        f"#!/bin/sh\nPYTHONPATH='{tcl._to_wsl_path(fake_root)}' exec '{tcl._to_wsl_path(Path(sys.executable))}' \"$@\"\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    venv_py.chmod(0o755)
+    timings: dict[str, Any] = {}
+    hashes = vm_judges.run_boot_gatekeeper_subprocess(
+        venv_py=venv_py,
+        judge_id=GK,
+        prompts=vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS,
+        seed=1,
+        mode="time-one",
+        repo_root=REPO_ROOT,
+        receipts_dir=tmp_path,
+        hf_home=tmp_path,
+        child_hf_home=tmp_path,
+        device="cpu",
+        timings_out=timings,
+    )
+    assert len(hashes) == 2
+    phases = timings["phase_seconds"]
+    assert list(phases) == list(vm_judges.BOOT_GATEKEEPER_PHASES)
+    assert all(isinstance(v, float) and v >= 0 for v in phases.values()), phases
+    assert phases["torch_import"] >= 0.009 and phases["verify_ready"] >= 0.009 and phases["model_load"] >= 0.009
+    assert phases["total"] >= phases["verify_ready"] + phases["model_load"]
+    assert timings["subprocess_elapsed_seconds"] >= phases["total"]
+    assert timings["timeout_seconds"] == vm_judges.BOOT_GATEKEEPER_SUBPROCESS_TIMEOUT_SECONDS == 300
+    line = local_boot_gatekeeper.format_timings(timings)
+    for name in vm_judges.BOOT_GATEKEEPER_PHASES:
+        assert f" {name}=" in line
+    assert "subprocess_elapsed=" in line and "timeout=300" in line
+    partial = vm_judges.boot_gatekeeper_timings(
+        {"phase_seconds": {"torch_import": 1, "extra": 2.5, "bad": "x"}}, elapsed_seconds=3, timeout_seconds=300
+    )
+    assert partial["phase_seconds"]["torch_import"] == 1.0 and partial["phase_seconds"]["model_load"] is None
+    assert partial["phase_seconds"]["extra"] == 2.5 and "bad" not in partial["phase_seconds"]
+    assert "model_load=-" in local_boot_gatekeeper.format_timings(partial)
 
 
 def test_local_boot_gatekeeper_cli_refuses_cpu_as_a_script(tmp_path: Path) -> None:
@@ -1059,8 +1352,35 @@ def test_e2e_launcher_forwards_the_opened_card_type_not_the_request(tmp_path: Pa
     assert receipt["card_type_check"]["card_type"] == "A100-80"
     assert receipt["card_type_check"]["gpu_name"] == "NVIDIA A100-SXM4-80GB"
     assert receipt["gatekeeper_card_type"] == "A100-80"
+    # The success receipt records the card it ran on, not a hard-coded "A100" (fails at 5bb17f78).
+    assert receipt["hardware"] == "A100-80"
+    assert receipt["gpu_name"] == "NVIDIA A100-SXM4-80GB"
+    assert receipt["hardware_source"] == "RDLAB_CARD_TYPE cross-checked with nvidia-smi"
     cli_log = (res["out_dir"] / "colab-cli.log").read_text(encoding="utf-8")
     assert "CARD_TYPE session=rdlab-e2e-time-one-01 card_type=A100-80 hardware=A100/High-RAM" in cli_log
+
+
+def test_receipt_hardware_fields_per_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub, dryrun and non-GPU modes record CPU; a real GPU mode records the checked card and GPU name; a real run
+    with no card check (`--until`) records the forwarded card as unchecked with nvidia-smi's name, or
+    CARD_TYPE_UNKNOWN when nothing was forwarded."""
+    check = {"card_type": "L4", "gpu_name": "NVIDIA L4", "source": "x"}
+    for mode, dry in (("stub", False), ("time-one", True), ("counted-stub", False), ("probe", False)):
+        assert vm_judges.receipt_hardware_fields(mode, dryrun=dry, card_type_check=check)["hardware"] == "CPU"
+    for mode in ("time-one", "counted", "lock-check"):
+        got = vm_judges.receipt_hardware_fields(mode, card_type_check=check)
+        assert got == {
+            "hardware": "L4",
+            "hardware_source": "RDLAB_CARD_TYPE cross-checked with nvidia-smi",
+            "gpu_name": "NVIDIA L4",
+        }
+    monkeypatch.setattr(vm_judges, "read_vm_gpu_name", lambda: ("NVIDIA A100-SXM4-40GB", "nvidia-smi"))
+    monkeypatch.setenv("RDLAB_CARD_TYPE", "A100")
+    unchecked = vm_judges.receipt_hardware_fields("time-one")
+    assert unchecked["hardware"] == "A100" and unchecked["gpu_name"] == "NVIDIA A100-SXM4-40GB"
+    assert "not cross-checked" in unchecked["hardware_source"]
+    monkeypatch.delenv("RDLAB_CARD_TYPE")
+    assert vm_judges.receipt_hardware_fields("counted")["hardware"] == vm_judges.CARD_TYPE_UNKNOWN
 
 
 def test_e2e_unknown_session_card_refuses_right_after_open(tmp_path: Path) -> None:
@@ -1141,3 +1461,90 @@ def test_e2e_tpu_or_cpu_session_in_a_gpu_window_refuses_card_type_unknown(tmp_pa
             if ln.strip()
         ]
         assert "exec" not in subcmds and "upload" not in subcmds and "stop" in subcmds, subcmds
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The free rung on the REAL staged inputs (opt-in; skipped when the inputs are not on this machine, as in CI)
+# ---------------------------------------------------------------------------------------------------------------------
+
+REAL_RUNG_ITEMS_ENV = "RDLAB_REAL_RUNG_ITEMS"
+REAL_RUNG_PART_DIR_ENV = "RDLAB_REAL_RUNG_PART_DIR"
+# The projected public pilot items the paid time-one windows stage (hash only; the test never reads their text).
+REAL_RUNG_ITEMS_SHA256 = "9bdeb527cfb0a55a770bacd9b45e63ac5f5aedff0df0335bbcd7e26a1d4b97d8"
+
+
+def _sha256_path(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def test_real_inputs_rung_time_one_mu_judge_gets_through_item_loading_and_scheduling(tmp_path: Path) -> None:
+    """Opt-in free rung: the fake real-mode time-one window (real launcher, live path, fake `colab`, isolated fake VM,
+    stub transport on CPU) with `RDLAB_ONLY_JUDGES=mu-judge`, run on the REAL staged inputs: the projected pilot items
+    (`RDLAB_REAL_RUNG_ITEMS`, pinned by SHA-256) and the real part directory (`RDLAB_REAL_RUNG_PART_DIR`, whose
+    part.json and checksums.txt the launcher binds). The judge child must get through `load_judge_items` and the
+    scheduling checks (SINGLE_MATERIAL / ADJACENCY, PROMPT_LEAK, FORBIDDEN_INPUT_FIELD, ITEMS_NOT_FOUND, ...) and write
+    rows; the e2e tests otherwise exercise those checks on synthetic items only. The test hashes the items file and
+    reads only rows, receipts and status; it never opens the items' text.
+
+        RDLAB_REAL_RUNG_ITEMS=<projected items.jsonl> RDLAB_REAL_RUNG_PART_DIR=<part_bakeoff_sealed> \\
+            pytest tests/test_boot_gatekeeper_judge.py -k real_inputs_rung -s
+    """
+    raw_items = os.environ.get(REAL_RUNG_ITEMS_ENV, "").strip()
+    raw_part = os.environ.get(REAL_RUNG_PART_DIR_ENV, "").strip()
+    if not raw_items or not raw_part:
+        pytest.skip(f"opt-in: set {REAL_RUNG_ITEMS_ENV} and {REAL_RUNG_PART_DIR_ENV} to the real staged inputs")
+    items, part = Path(raw_items), Path(raw_part)
+    if not items.is_file() or not (part / "part.json").is_file() or not (part / "checksums.txt").is_file():
+        pytest.skip("the real staged inputs are not on this machine")
+    assert _sha256_path(items) == REAL_RUNG_ITEMS_SHA256, "not the pinned projected pilot items"
+
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    res = tcl._e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_exports="export RDLAB_ONLY_JUDGES=mu-judge; ",
+        tag="_real_inputs",
+        expect_fail=True,  # the helper's own success checks read the items' text; this test checks without it
+    )
+    proc, out_dir, env_paths = res["proc"], res["out_dir"], res["env_paths"]
+    where = f"stdout={proc.stdout[-3000:]}\nstderr={proc.stderr[-3000:]}"
+    status_file = out_dir / "status.json"
+    status = json.loads(status_file.read_text(encoding="utf-8")) if status_file.is_file() else {}
+    shim_file = env_paths["state_dir"] / "real_mode_shim_calls.jsonl"
+    shim_rows = (
+        [json.loads(ln) for ln in shim_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        if shim_file.is_file()
+        else []
+    )
+    judge_rows = [r for r in shim_rows if r["call"] == "judge_child"]
+    rows_file = out_dir / "rows" / "mu-judge.jsonl"
+    n_rows = rows_file.read_bytes().count(b"\n") if rows_file.is_file() else 0
+    receipt_file = out_dir / "vm_receipt.json"
+    receipt = json.loads(receipt_file.read_text(encoding="utf-8")) if receipt_file.is_file() else {}
+    ident = receipt.get("part_identity") or {}
+    print(
+        f"REAL_INPUTS_RUNG rc={proc.returncode} status={status.get('status')} "
+        f"failure_class={status.get('failure_class')} step={status.get('step')} "
+        f"judge_children={[r.get('returncode') for r in judge_rows]} mu_judge_rows={n_rows} "
+        f"only_judges={receipt.get('only_judges')} part_id={ident.get('part_id')} "
+        f"is_pilot_40b={ident.get('is_pilot_40b')} items_sha256={REAL_RUNG_ITEMS_SHA256[:12]}"
+    )
+    assert proc.returncode == 0, where
+    assert status.get("status") == "ok" and status.get("rc") == 0, status
+    assert judge_rows and all(r["returncode"] == 0 for r in judge_rows), shim_rows
+    assert {r["window_mode"] for r in judge_rows} == {"time-one"}
+    assert n_rows > 0
+    assert receipt["only_judges"] == ["mu-judge"]
+    assert ident.get("part_json_sha256") == _sha256_path(part / "part.json")
+    assert receipt["boot_gatekeeper_judge"]["receipts_preflight"]["status"] == "ok"
+

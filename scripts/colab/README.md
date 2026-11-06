@@ -123,6 +123,8 @@ python scripts/colab/local_boot_gatekeeper.py --hf-home /path/to/hf_home --recei
 
 Exit codes: `0` every prompt matches, or the card type has no golden (`status: no_golden`); `1` a mismatch; `2` refused or the gatekeeper subprocess failed.
 
+`--out` must lie outside the git repository and must not exist unless `--overwrite` is given (`LOCAL_GATEKEEPER_OUT_REFUSED`, before anything runs), so a run can never overwrite `boot_gatekeeper_goldens.json`. The receipt's `subprocess_timings` and the printed `timings` line give the seconds of each phase (`torch_import`, `verify_ready` (re-hashing the weights), `model_load`, `generation_1`, `generation_2`, `total`), the subprocess's measured elapsed seconds and its timeout (`BOOT_GATEKEEPER_SUBPROCESS_TIMEOUT_SECONDS`, 300 s, the VM's). The VM's gatekeeper records the same `subprocess_timings` in its report in `vm_receipt.json` and `status.json`.
+
 **Acceptance list (`--time-one`):**
 - Enforces the single-wall timeout hierarchy derived from `WALL_SECONDS=1500`: `VM_WALL_SECONDS=1200 < EXEC_TIMEOUT_SECONDS=1260 < WATCHDOG_SLEEP_SECONDS=1320 < RIG_TIMEOUT=1505`.
 - Records cap `2.5` units (`rate=5.30/h`, `wall_x_rate=2.2083`) and records which bound (`wall_x_rate` vs `explicit_cap`) binds in `outcome.draft.json`.

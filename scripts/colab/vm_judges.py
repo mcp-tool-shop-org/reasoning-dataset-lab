@@ -562,6 +562,10 @@ HF_TOKEN_RE = re.compile(
 HF_ENV_RE = re.compile(
     r"\b(HF_TOKEN(?:_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)=(?!\[REDACTED\])[^\s\"';]+"
 )
+# GitHub tokens: classic/OAuth/user-to-server/server-to-server/refresh (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`) and
+# fine-grained personal access tokens (`github_pat_`), plus `GITHUB_TOKEN=` / `GH_TOKEN=` assignments.
+GITHUB_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])(gh[pousr]_|github_pat_)(?!\[REDACTED\])[A-Za-z0-9_]{16,}")
+GITHUB_ENV_RE = re.compile(r"\b((?:GITHUB|GH)_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_PAT)=(?!\[REDACTED\])[^\s\"';]+")
 WORD_TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
@@ -659,7 +663,7 @@ def sha256_file(path: Path) -> str:
 
 
 def scrub_log_text(text: str) -> str:
-    """Scrub proxy tokens, Bearer/OAuth tokens, JWTs, and HF tokens from log text."""
+    """Scrub proxy tokens, Bearer/OAuth tokens, JWTs, HF tokens and GitHub tokens from log text."""
     out = PROXY_TOKEN_RE.sub(r"\1[REDACTED]", text)
     out = BEARER_TOKEN_RE.sub(r"\1[REDACTED]", out)
     out = OAUTH_YA29_RE.sub("[REDACTED_OAUTH_TOKEN]", out)
@@ -668,6 +672,8 @@ def scrub_log_text(text: str) -> str:
     out = JWT_RE.sub("[REDACTED_JWT]", out)
     out = HF_TOKEN_RE.sub("hf_[REDACTED]", out)
     out = HF_ENV_RE.sub(r"\1=[REDACTED]", out)
+    out = GITHUB_TOKEN_RE.sub(r"\1[REDACTED]", out)
+    out = GITHUB_ENV_RE.sub(r"\1=[REDACTED]", out)
     return out
 
 
@@ -2756,8 +2762,22 @@ def verify_snapshot_against_receipt(
 
     Checks every file's `st_size` against receipt `bytes` first (`WEIGHT_SIZE_MISMATCH`) before calling `hashlib.sha256`.
     """
+    _, receipt_doc = check_judge_receipt_static(spec, receipts_dir=receipts_dir)
+
+    snapshot_dir = _resolve_snapshot_dir_for_spec(spec, hf_home=hf_home)
+    return _verify_snapshot_files_against_receipt(spec, snapshot_dir, receipt_doc)
+
+
+def check_judge_receipt_static(spec: JudgeSpec, *, receipts_dir: Path) -> tuple[Path, Mapping[str, Any]]:
+    """The receipt checks that need no weights: `<receipts_dir>/<owner>__<repo>.sha256.json` is present
+    (`BAKEOFF_JUDGE_RECEIPT_NOT_FOUND`), is a JSON object with a `files` mapping (`BAKEOFF_JUDGE_RECEIPT_INVALID`), and
+    its `repo` and `revision` equal the pinned spec (`BAKEOFF_JUDGE_RECEIPT_MISMATCH`).
+
+    `verify_snapshot_against_receipt` runs these first, after the weight download; `preflight_judge_receipts` runs the
+    same checks before any spend (launcher and VM `main`) for every judge that will be downloaded and verified.
+    """
     owner, repo = spec.repo_id.split("/", 1)
-    receipt_path = receipts_dir.resolve() / f"{owner}__{repo}.sha256.json"
+    receipt_path = Path(receipts_dir).resolve() / f"{owner}__{repo}.sha256.json"
     if not receipt_path.is_file():
         raise RefusalError(
             "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND",
@@ -2784,8 +2804,32 @@ def verify_snapshot_against_receipt(
             "BAKEOFF_JUDGE_RECEIPT_MISMATCH",
             f"Receipt '{receipt_path}' ({rec_repo} @ {rec_rev}) does not match pinned JudgeSpec ({spec.repo_id} @ {spec.revision}).",
         )
+    return receipt_path, receipt_doc
 
-    snapshot_dir = _resolve_snapshot_dir_for_spec(spec, hf_home=hf_home)
+
+def preflight_judge_receipts(judge_ids: Sequence[str], *, receipts_dir: Path) -> list[dict[str, Any]]:
+    """Run `check_judge_receipt_static` for every judge in `judge_ids` (the download/verify set) before any spend.
+
+    Refuses with the first failing judge's `BAKEOFF_JUDGE_RECEIPT_NOT_FOUND` / `_INVALID` / `_MISMATCH`, the codes the
+    VM's post-download verify would raise; otherwise returns one `{judge_id, receipt, repo, revision}` record per judge.
+    """
+    out: list[dict[str, Any]] = []
+    for jid in judge_ids:
+        spec = BAKEOFF_JUDGE_SPECS.get(str(jid))
+        if spec is None:
+            raise RefusalError(
+                "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND",
+                f"Judge {jid!r} is not a pinned judge (allowed: {sorted(BAKEOFF_JUDGE_SPECS)}); it has no receipt.",
+            )
+        receipt_path, _ = check_judge_receipt_static(spec, receipts_dir=receipts_dir)
+        out.append({"judge_id": str(jid), "receipt": receipt_path.name, "repo": spec.repo_id, "revision": spec.revision})
+    return out
+
+
+def _verify_snapshot_files_against_receipt(
+    spec: JudgeSpec, snapshot_dir: Path, receipt_doc: Mapping[str, Any]
+) -> tuple[Path, str]:
+    """Hash every file of `snapshot_dir` against a receipt `check_judge_receipt_static` accepted (sizes first)."""
     expected_files: Mapping[str, Any] = receipt_doc["files"]
     expected_rels = set(expected_files.keys())
 
@@ -10244,7 +10288,9 @@ def _hash_token_ids_list(token_ids: Sequence[int]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-BOOT_GATEKEEPER_SUBPROCESS_TIMEOUT_SECONDS = 120
+# Covers torch import, verify_ready re-hashing the ~8 GB judge, the model load (a similar 4B judge loaded in 33-41 s
+# on an A100) and two generations; the measured phases are recorded (`boot_gatekeeper_timings`).
+BOOT_GATEKEEPER_SUBPROCESS_TIMEOUT_SECONDS = 300
 BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED = "BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED"
 # Modes whose boot gatekeeper loads its judge through the real transport (when not dryrun and with no --until).
 BOOT_GATEKEEPER_REAL_MODES: tuple[str, ...] = ("time-one", "counted", "lock-check")
@@ -10416,7 +10462,17 @@ def plan_boot_gatekeeper_judge(
     timed = [str(j) for j in judge_order]
     download_ids = timed + ([gk_id] if gk_id not in timed else [])
     preflight_boot_gatekeeper_judge(gk_id, download_ids, receipts_dir=receipts_dir)
+    # Every judge in the download/verify set: the static receipt checks the VM would otherwise run only after the
+    # weight download (present, valid JSON with `files`, repo and revision equal to the pin).
+    receipts_checked = (
+        preflight_judge_receipts(download_ids, receipts_dir=Path(receipts_dir))
+        if receipts_dir is not None and Path(receipts_dir).is_dir()
+        else None
+    )
     return {
+        "receipts_preflight": (
+            {"status": "ok", "judges": receipts_checked} if receipts_checked is not None else {"status": "not_run"}
+        ),
         "judge_id": gk_id,
         "role": "boot_gatekeeper",
         "timed": gk_id in timed,
@@ -10434,9 +10490,34 @@ def plan_boot_gatekeeper_judge(
     }
 
 
+# The boot gatekeeper's phases, timed in the child (`phase_seconds` in its JSON line, and one stderr line per phase as
+# it ends so a timeout or crash still shows how far it got): torch import, verify_ready (re-hashes every weight file
+# against its receipt), model load, one generation per synthetic prompt, and the child's own total.
+BOOT_GATEKEEPER_PHASES: tuple[str, ...] = (
+    "torch_import",
+    "verify_ready",
+    "model_load",
+    "generation_1",
+    "generation_2",
+    "total",
+)
+
 _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
+    "import time\n"
+    "_t_start = time.monotonic()\n"
     "import hashlib, json, sys\n"
     "from pathlib import Path\n"
+    "phase_seconds = {}\n"
+    "def _phase(name, t0):\n"
+    "    phase_seconds[name] = round(time.monotonic() - t0, 6)\n"
+    "    sys.stderr.write(f'BOOT_GATEKEEPER_PHASE {name} seconds={phase_seconds[name]:.6f}\\n')\n"
+    "    sys.stderr.flush()\n"
+    "_t = time.monotonic()\n"
+    "try:\n"
+    "    import torch\n"
+    "except ImportError:\n"
+    "    torch = None  # the transport refuses its own way when it needs torch; the phase is still timed\n"
+    "_phase('torch_import', _t)\n"
     "from reasoning_dataset_lab.pilot_b.bakeoff_judge import (\n"
     "    JudgeInputItem, TransformersJudgeTransport, D3MiniTransport, D3_MINI_JUDGE_ID,\n"
     "    build_judge_adapter, resolve_judge_spec, compute_response_output_token_ids_sha256\n"
@@ -10453,9 +10534,15 @@ _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
     "    transport = D3MiniTransport(receipts_dir=receipts_dir, hf_home=hf_home, device=device, window_mode=window_mode)\n"
     "else:\n"
     "    transport = TransformersJudgeTransport(receipts_dir=receipts_dir, hf_home=hf_home, device=device, window_mode=window_mode)\n"
+    "_t = time.monotonic()\n"
     "transport.verify_ready(spec, allow_remote_code_reviewed=cfg.get('allow_remote_code_reviewed'))\n"
+    "_phase('verify_ready', _t)\n"
+    "_t = time.monotonic()\n"
+    "transport._ensure_loaded(spec)\n"
+    "_phase('model_load', _t)\n"
     "out_hashes = {}\n"
-    "for sp in cfg['prompts']:\n"
+    "for _idx, sp in enumerate(cfg['prompts']):\n"
+    "    _t = time.monotonic()\n"
     "    pid = str(sp['prompt_id'])\n"
     "    item = JudgeInputItem(item_id=pid, material=str(sp['material']), claim=str(sp['claim']))\n"
     "    ord_mode = 'BA' if str(sp.get('order', 'AB')) == 'BA' else 'AB'\n"
@@ -10465,8 +10552,31 @@ _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
     "        spec.judge_id, resp.tokens, system_one_result=resp.system_one_result\n"
     "    )\n"
     "    out_hashes[pid] = sha\n"
-    "print(json.dumps({'status': 'ok', 'hashes': out_hashes}, sort_keys=True))\n"
+    "    _phase(f'generation_{_idx + 1}', _t)\n"
+    "_phase('total', _t_start)\n"
+    "print(json.dumps({'status': 'ok', 'hashes': out_hashes, 'phase_seconds': phase_seconds}, sort_keys=True))\n"
 )
+
+
+def boot_gatekeeper_timings(
+    parsed: Mapping[str, Any] | None, *, elapsed_seconds: float, timeout_seconds: float
+) -> dict[str, Any]:
+    """The gatekeeper's timing record: the child's `phase_seconds` (every `BOOT_GATEKEEPER_PHASES` key present, None
+    when the child did not report it) plus the parent's measured wall time of the subprocess and its timeout."""
+    raw = parsed.get("phase_seconds") if isinstance(parsed, Mapping) else None
+    raw_map: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    phases: dict[str, float | None] = {}
+    for name in BOOT_GATEKEEPER_PHASES:
+        val = raw_map.get(name)
+        phases[name] = round(float(val), 6) if isinstance(val, (int, float)) and not isinstance(val, bool) else None
+    for name, val in raw_map.items():
+        if str(name) not in phases and isinstance(val, (int, float)) and not isinstance(val, bool):
+            phases[str(name)] = round(float(val), 6)
+    return {
+        "phase_seconds": phases,
+        "subprocess_elapsed_seconds": round(float(elapsed_seconds), 6),
+        "timeout_seconds": float(timeout_seconds),
+    }
 
 
 BOOT_GATEKEEPER_RECORDED_NOT_COMPARED = "recorded, not compared"
@@ -10591,6 +10701,33 @@ def verify_vm_card_type(
     return {"card_type": forwarded, "gpu_name": gpu_name, "source": "colab sessions Hardware + nvidia-smi"}
 
 
+def receipt_hardware_fields(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    card_type_check: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The success receipt's `hardware` fields. A real time-one / counted / lock-check run records the card it ran on:
+    the forwarded `RDLAB_CARD_TYPE` that `verify_vm_card_type` cross-checked with `nvidia-smi`, and the `nvidia-smi`
+    GPU name. With no check (a `--until` run) the forwarded card type is recorded as unchecked. Stub, dryrun and
+    other modes record `CPU`, as before."""
+    norm_mode = str(mode or "").strip().lower()
+    if norm_mode not in BOOT_GATEKEEPER_REAL_MODES or not is_real_mode(norm_mode, dryrun=dryrun):
+        return {"hardware": "CPU", "hardware_source": "stub_or_synthetic", "gpu_name": None}
+    if card_type_check is not None:
+        return {
+            "hardware": str(card_type_check["card_type"]),
+            "hardware_source": "RDLAB_CARD_TYPE cross-checked with nvidia-smi",
+            "gpu_name": card_type_check.get("gpu_name"),
+        }
+    gpu_name, _detail = read_vm_gpu_name()
+    return {
+        "hardware": os.environ.get("RDLAB_CARD_TYPE", "").strip() or CARD_TYPE_UNKNOWN,
+        "hardware_source": "RDLAB_CARD_TYPE, not cross-checked (no card check in this run)",
+        "gpu_name": gpu_name,
+    }
+
+
 def boot_gatekeeper_record_mode(mode: str | None) -> bool:
     """True when the boot gatekeeper records its hashes instead of comparing them: `time-one` (real or dryrun) and
     `lock-check` / `lock-check-stub`. A time-one window writes `boot_gatekeeper_goldens.filled.json` and reports
@@ -10686,8 +10823,12 @@ def run_boot_gatekeeper_subprocess(
     child_hf_home: Path,
     device: str,
     timeout_seconds: float = BOOT_GATEKEEPER_SUBPROCESS_TIMEOUT_SECONDS,
+    timings_out: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Run `_BOOT_GATEKEEPER_SUBPROCESS_SCRIPT` in `venv_py` (real transport, offline) and return its per-prompt output hashes.
+
+    `timings_out`, when given, is filled with `boot_gatekeeper_timings` (the child's per-phase seconds, the measured
+    elapsed seconds of the subprocess and its timeout).
 
     The VM's boot gatekeeper and `scripts/colab/local_boot_gatekeeper.py` both run the gatekeeper through here. A
     failure raises `BootGatekeeperSubprocessError` carrying the last `FAILURE_TAIL_LINES` lines of the output.
@@ -10760,6 +10901,10 @@ def run_boot_gatekeeper_subprocess(
             "BOOT_GATEKEEPER_SUBPROCESS_FAILED",
             "Boot gatekeeper subprocess output missing 'hashes' mapping",
         )
+    if timings_out is not None:
+        timings_out.update(
+            boot_gatekeeper_timings(parsed, elapsed_seconds=gk_seconds, timeout_seconds=timeout_seconds)
+        )
     return {str(k): str(v) for k, v in parsed["hashes"].items()}
 
 
@@ -10775,6 +10920,7 @@ def _run_real_boot_gatekeeper_prompts(
     hf_home: Path | None = None,
     device: str = "cpu",
     transport: Any | None = None,
+    timings_out: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Load the smallest judge (`nemotron-3-nano-4b`) through the real transport and run the 2 fixed synthetic prompts."""
     _ensure_repo_imports(repo_root)
@@ -10864,6 +11010,7 @@ def _run_real_boot_gatekeeper_prompts(
             hf_home=hf_home,
             child_hf_home=hf_home if hf_home is not None else (eff_work / "hf_home"),
             device=device,
+            timings_out=timings_out,
         )
 
     if receipt_file is None or not receipt_file.is_file():
@@ -11124,6 +11271,7 @@ def run_boot_gatekeeper(
 
     is_stub_or_dryrun = not is_real_mode(mode, dryrun=dryrun)
     use_synthetic_fake = bool(is_stub_or_dryrun and transport is None)
+    gk_timings: dict[str, Any] = {}
     if use_synthetic_fake:
         hash_source = "synthetic_fake_stub_dryrun"
         synthetic_fake_hash = True
@@ -11175,6 +11323,7 @@ def run_boot_gatekeeper(
             hf_home=hf_home,
             device=device,
             transport=transport,
+            timings_out=gk_timings,
         )
         if is_stub_or_dryrun:
             actual_by_prompt = {
@@ -11300,6 +11449,8 @@ def run_boot_gatekeeper(
             "actual_output_token_ids_sha256": actual_by_prompt,
             "expected_output_token_ids_sha256": dict(actual_by_prompt),
         }
+        if gk_timings:
+            record_doc["subprocess_timings"] = dict(gk_timings)
         if is_time_one_record:
             record_doc["gatekeeper"] = BOOT_GATEKEEPER_RECORDED_NOT_COMPARED
             record_doc["recorded_output_token_ids_sha256"] = dict(actual_by_prompt)
@@ -11335,6 +11486,7 @@ def run_boot_gatekeeper(
             "judge_id": judge_id,
             "hash_source": hash_source,
             "synthetic_fake_hash": synthetic_fake_hash,
+            **({"subprocess_timings": dict(gk_timings)} if gk_timings else {}),
             "actual_output_token_ids_sha256": actual_by_prompt,
             "expected_output_token_ids_sha256": expected_by_prompt,
             "mismatches": mismatched_prompts,
@@ -11360,6 +11512,7 @@ def run_boot_gatekeeper(
                 "judge_id": judge_id,
                 "hash_source": hash_source,
                 "synthetic_fake_hash": synthetic_fake_hash,
+                **({"subprocess_timings": dict(gk_timings)} if gk_timings else {}),
                 "missing_prompts": missing_prompts or list(actual_by_prompt.keys()),
                 "actual_output_token_ids_sha256": actual_by_prompt,
             }
@@ -11379,6 +11532,7 @@ def run_boot_gatekeeper(
             "judge_id": judge_id,
             "hash_source": hash_source,
             "synthetic_fake_hash": synthetic_fake_hash,
+            **({"subprocess_timings": dict(gk_timings)} if gk_timings else {}),
             "missing_prompts": missing_prompts or list(actual_by_prompt.keys()),
             "actual_output_token_ids_sha256": actual_by_prompt,
             "expected_output_token_ids_sha256": expected_by_prompt,
@@ -11397,6 +11551,7 @@ def run_boot_gatekeeper(
         "judge_id": judge_id,
         "hash_source": hash_source,
         "synthetic_fake_hash": synthetic_fake_hash,
+        **({"subprocess_timings": dict(gk_timings)} if gk_timings else {}),
         "actual_output_token_ids_sha256": actual_by_prompt,
         "expected_output_token_ids_sha256": expected_by_prompt,
     }
@@ -12337,6 +12492,7 @@ def main(argv: list[str] | None = None) -> int:
                 f" judge_id={boot_gatekeeper_judge_plan['judge_id']}"
                 f" timed={str(boot_gatekeeper_judge_plan['timed']).lower()}"
                 f" download_verify={','.join(boot_gatekeeper_judge_plan['download_verify_judge_ids'])}"
+                f" receipts_preflight={boot_gatekeeper_judge_plan['receipts_preflight']['status']}"
             )
 
         current_step = "verify_lock_digests"
@@ -12796,11 +12952,7 @@ def main(argv: list[str] | None = None) -> int:
         receipt_doc: dict[str, Any] = {
             "status": "ok",
             "mode": args.mode,
-            "hardware": (
-                "A100"
-                if args.mode in ("time-one", "counted", "lock-check")
-                else "CPU"
-            ),
+            **receipt_hardware_fields(args.mode, dryrun=dryrun, card_type_check=card_type_check),
             "shard_spec": (
                 shard_info_report["shard_spec"]
                 if shard_info_report is not None

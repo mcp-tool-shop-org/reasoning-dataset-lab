@@ -84,7 +84,10 @@ Environment:
                        recorded as boot_gatekeeper_judge; it is not timed, and only_judges stays as given. --dry
                        prints the set as a [judges] line. A window whose gatekeeper judge could not be downloaded
                        and verified is refused before the session opens (BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED, or
-                       BOOT_GATEKEEPER_RECEIPT_MISSING when the receipts directory lacks its receipt).
+                       BOOT_GATEKEEPER_RECEIPT_MISSING when the receipts directory lacks its receipt). Every judge in
+                       the download/verify set has its receipt checked then too (present, valid JSON with a files
+                       mapping, repo and revision equal to the pin: BAKEOFF_JUDGE_RECEIPT_NOT_FOUND / _INVALID /
+                       _MISMATCH); --dry prints the result as a [receipts] line.
 EOF
 }
 
@@ -573,6 +576,14 @@ try:
             f"download_verify={','.join(gk_plan['download_verify_judge_ids'])} "
             f"gatekeeper=\"{gk_plan['gatekeeper']}\" card_type=<read from colab sessions after open>"
         )
+        rp = gk_plan.get("receipts_preflight") or {}
+        if rp.get("status") == "ok":
+            print(
+                f"[receipts] preflight=ok judges={','.join(r['judge_id'] for r in rp['judges'])} "
+                "(present, valid JSON with files, repo and revision equal to the pin)"
+            )
+        else:
+            print("[receipts] preflight=not_run (no receipts directory; a live run refuses RECEIPTS_DIR_MISSING)")
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
     raise SystemExit(2)
@@ -598,7 +609,9 @@ scrub_stream() {
     -e 's/\bhf_(home|cache|low|match)\b/__RDLAB_HF_SAFE_\1__/g' \
     -e 's/\bhf_[A-Za-z0-9]+\b/hf_[REDACTED]/g' \
     -e 's/__RDLAB_HF_SAFE_(home|cache|low|match)__/hf_\1/g' \
-    -e 's/(HF_TOKEN(_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)=[^ "'"'"';]+/\1=[REDACTED]/g'
+    -e 's/(HF_TOKEN(_[A-Za-z0-9_]+)?|HUGGING_FACE_HUB_TOKEN)=[^ "'"'"';]+/\1=[REDACTED]/g' \
+    -e 's/(^|[^A-Za-z0-9_])(gh[pousr]_|github_pat_)[A-Za-z0-9_]{16,}/\1\2[REDACTED]/g' \
+    -e 's/((GITHUB|GH)_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_PAT)=[^ "'"'"';]+/\1=[REDACTED]/g'
 }
 
 STAGE_DIR="$OUT_DIR/stage"
