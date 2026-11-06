@@ -2195,7 +2195,7 @@ PY
   if [[ -z "$OPENED_CARD_TYPE" ]]; then
     flock -u 9 || true
     RUN_FAILURE_CLASS="CARD_TYPE_UNKNOWN"
-    RUN_WHY="CARD_TYPE_UNKNOWN: cannot read the card type of session $S from colab sessions (Hardware: '${OPENED_HARDWARE}')"
+    RUN_WHY="CARD_TYPE_UNKNOWN: cannot read the card type of session $S from colab sessions (Hardware/Shape: '${OPENED_HARDWARE}')"
     echo "$RUN_WHY" >&2
     exit 2
   fi

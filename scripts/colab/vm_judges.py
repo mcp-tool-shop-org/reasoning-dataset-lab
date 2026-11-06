@@ -10478,59 +10478,61 @@ CARD_TYPE_UNKNOWN = "CARD_TYPE_UNKNOWN"
 CARD_TYPE_MISMATCH = "CARD_TYPE_MISMATCH"
 
 
-def card_type_from_session_hardware(hardware: str | None) -> str | None:
-    """Map a `colab sessions` `Hardware:` token to a card type (the keys of `boot_gatekeeper_goldens.json`'s
-    `card_types`: `A100`, `L4`; also `A100-80`, `T4`, `H100`, `G4`), or None when it is not a known GPU card.
+# The card types, from the real `colab sessions` rows seen in the studio's run logs (2026-11-06, ~2,000 lines):
+#   `Hardware: A100 | Shape: Standard | Variant: GPU`  -> A100 (40 GB)
+#   `Hardware: A100 | Shape: High-RAM | Variant: GPU`  -> A100-80 (`--gpu A100 --high-mem`, the 80 GB card)
+#   `Hardware: G4 | Shape: Standard`, `Hardware: L4 | Shape: Standard`, `Hardware: T4 | Shape: Standard`
+# Anything else (CPU, TPUs `V5E1` / `V6E1`, an unseen shape or card) is not a card type: CARD_TYPE_UNKNOWN.
+# These names are the keys of `boot_gatekeeper_goldens.json`'s `card_types` (compare and record use them as is).
+SESSION_CARD_TYPES: dict[tuple[str, str], str] = {
+    ("A100", "STANDARD"): "A100",
+    ("A100", "HIGH-RAM"): "A100-80",
+    ("G4", "STANDARD"): "G4",
+    ("L4", "STANDARD"): "L4",
+    ("T4", "STANDARD"): "T4",
+}
+# nvidia-smi --query-gpu=name -> card type, for the VM's cross-check (first match wins).
+GPU_NAME_CARD_TYPES: tuple[tuple[str, str], ...] = (
+    (r"A100\b.*\b80GB\b|A100-SXM4-80GB", "A100-80"),
+    (r"A100\b.*\b40GB\b|A100-SXM4-40GB", "A100"),
+    (r"RTX PRO 6000", "G4"),
+    (r"(?<![A-Z0-9])L4(?![0-9A-Z])", "L4"),
+    (r"(?<![A-Z0-9])T4(?![0-9A-Z])", "T4"),
+)
 
-    The real CLI's GPU tokens are not captured yet (only `Hardware: CPU` is, from a CPU window): this accepts the
-    `--gpu` names (`A100`, `L4`, `T4`, `H100`, `G4`) with optional `NVIDIA` / memory suffixes; anything else is unknown
-    and the launcher refuses `CARD_TYPE_UNKNOWN` right after the session opens.
-    """
-    if not hardware:
-        return None
-    norm = re.sub(r"[^A-Z0-9]", "", str(hardware).upper())
-    for prefix in ("NVIDIA", "TESLA"):
-        if norm.startswith(prefix):
-            norm = norm[len(prefix):]
-    if re.fullmatch(r"A100(?:40|40GB)?", norm):
-        return "A100"
-    if re.fullmatch(r"A100(?:80|80GB)", norm):
-        return "A100-80"
-    if re.fullmatch(r"H100(?:80|80GB)?", norm):
-        return "H100"
-    if norm in ("L4", "T4", "G4"):
-        return norm
-    return None
+
+def card_type_from_session_fields(hardware: str | None, shape: str | None) -> str | None:
+    """The card type for a session's `Hardware:` and `Shape:` values (`SESSION_CARD_TYPES`, case and extra spaces
+    ignored), or None for anything not in the table."""
+    hw = " ".join(str(hardware or "").split()).upper()
+    sh = " ".join(str(shape or "").split()).upper()
+    return SESSION_CARD_TYPES.get((hw, sh))
 
 
 def card_type_from_sessions_output(text: str | None, session: str) -> tuple[str | None, str | None]:
-    """`(card_type, hardware_token)` for `session`'s row in `colab sessions` output (`[<session>] <id> | Hardware: X |
-    Shape: ... | Variant: ...`); `(None, token or None)` when the row or its `Hardware:` field is missing or unknown."""
+    """`(card_type, "Hardware/Shape")` for `session`'s row in `colab sessions` output
+    (`[<session>] <id> | Hardware: X | Shape: Y | Variant: Z`, extra spaces tolerated); `(None, what was seen)` when the
+    row, a field, or the pair is missing or not in `SESSION_CARD_TYPES`."""
     for line in str(text or "").splitlines():
         if not line.strip().startswith(f"[{session}]"):
             continue
+        fields: dict[str, str] = {}
         for field in line.split("|")[1:]:
             key, sep, val = field.partition(":")
-            if sep and key.strip().lower() == "hardware":
-                token = val.strip()
-                return card_type_from_session_hardware(token), token or None
-        return None, None
+            if sep:
+                fields[" ".join(key.split()).lower()] = " ".join(val.split())
+        hw, sh = fields.get("hardware"), fields.get("shape")
+        seen = f"{hw}/{sh}" if hw or sh else None
+        return card_type_from_session_fields(hw, sh), seen
     return None, None
 
 
 def card_type_from_gpu_name(name: str | None) -> str | None:
-    """Map an `nvidia-smi --query-gpu=name` value (e.g. `NVIDIA A100-SXM4-40GB`) to a card type, or None."""
-    up = str(name or "").upper()
-    if "A100" in up:
-        return "A100-80" if "80GB" in up.replace(" ", "") else "A100"
-    if "H100" in up:
-        return "H100"
-    if re.search(r"(?<![A-Z0-9])L4(?![0-9])", up):
-        return "L4"
-    if re.search(r"(?<![A-Z0-9])T4(?![0-9])", up):
-        return "T4"
-    if "RTX PRO 6000" in up:
-        return "G4"
+    """Map an `nvidia-smi --query-gpu=name` value to a card type (`GPU_NAME_CARD_TYPES`), or None."""
+    up = " ".join(str(name or "").split()).upper()
+    for pattern, card in GPU_NAME_CARD_TYPES:
+        if re.search(pattern, up):
+            return card
     return None
 
 

@@ -92,5 +92,48 @@
       ],
       "usage": "Usage: colab status [OPTIONS]"
     }
-  }
+  },
+  "session_row_examples": [
+    {
+      "row": "[S] m-1 | Hardware: A100 | Shape: Standard | Variant: GPU",
+      "card_type": "A100"
+    },
+    {
+      "row": "[S] m-1 | Hardware: A100 | Shape: High-RAM | Variant: GPU",
+      "card_type": "A100-80"
+    },
+    {
+      "row": "[S] m-1 | Hardware:  A100  | Shape: Standard | Variant: GPU",
+      "card_type": "A100"
+    },
+    {
+      "row": "[S] m-1 | Hardware: G4 | Shape: Standard | Variant: GPU",
+      "card_type": "G4"
+    },
+    {
+      "row": "[S] m-1 | Hardware: L4 | Shape: Standard | Variant: GPU",
+      "card_type": "L4"
+    },
+    {
+      "row": "[S] m-1 | Hardware: T4 | Shape: Standard | Variant: GPU",
+      "card_type": "T4"
+    },
+    {
+      "row": "[S] m-1 | Hardware: CPU | Shape: Standard | Variant: DEFAULT",
+      "card_type": null
+    },
+    {
+      "row": "[S] m-1 | Hardware: CPU | Shape: High-RAM | Variant: DEFAULT",
+      "card_type": null
+    },
+    {
+      "row": "[S] m-1 | Hardware: V5E1 | Shape: Standard | Variant: TPU",
+      "card_type": null
+    },
+    {
+      "row": "[S] m-1 | Hardware: V6E1 | Shape: Standard | Variant: TPU",
+      "card_type": null
+    }
+  ],
+  "session_row_examples_source": "Real `colab sessions` rows (session ids replaced by S / m-1), from the studio's run logs, 2026-11-06: A100 Standard 1,498 lines, A100 High-RAM 122, plus G4, L4, T4, CPU and TPU rows; some rows carry double spaces."
 }

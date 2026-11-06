@@ -36,7 +36,10 @@ SESSION_ROW_SHAPE = (
 )
 EMPTY_SESSIONS_LINE = "[colab] No active sessions found on server."
 DEFAULT_SESSION_ROW_TEMPLATE = (
-    "[{sid}] m-s-fake-{sid} | Hardware: {gpu} | Shape: Standard | Variant: DEFAULT"
+    "[{sid}] m-s-fake-{sid} | Hardware: {gpu} | Shape: {shape} | Variant: {variant}"
+)
+DOUBLE_SPACE_SESSION_ROW_TEMPLATE = (
+    "[{sid}] m-s-fake-{sid} | Hardware:  {gpu}  | Shape: {shape} | Variant: {variant}"
 )
 
 GLOBAL_VALUE_FLAGS: frozenset[str] = frozenset(
@@ -1699,13 +1702,12 @@ def _check_stdin_is_devnull() -> bool:
 
 
 # `nvidia-smi --query-gpu=name` per session hardware, as the real driver names these cards.
-FAKE_GPU_NAMES: dict[str, str] = {
-    "A100": "NVIDIA A100-SXM4-40GB",
-    "A100-80": "NVIDIA A100-SXM4-80GB",
-    "L4": "NVIDIA L4",
-    "T4": "Tesla T4",
-    "H100": "NVIDIA H100 80GB HBM3",
-    "G4": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+FAKE_GPU_NAMES: dict[tuple[str, str], str] = {
+    ("A100", "Standard"): "NVIDIA A100-SXM4-40GB",
+    ("A100", "High-RAM"): "NVIDIA A100-SXM4-80GB",
+    ("L4", "Standard"): "NVIDIA L4",
+    ("T4", "Standard"): "Tesla T4",
+    ("G4", "Standard"): "NVIDIA RTX PRO 6000 Blackwell Server Edition",
 }
 
 
@@ -1722,8 +1724,8 @@ def run_fake_nvidia_smi_name() -> int:
         sessions = json.loads((state_dir / "sessions.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         sessions = []
-    gpu = str(sessions[-1].get("gpu", "CPU")) if sessions else "CPU"
-    name = FAKE_GPU_NAMES.get(gpu)
+    last = sessions[-1] if sessions else {}
+    name = FAKE_GPU_NAMES.get((str(last.get("gpu", "CPU")), str(last.get("shape", "Standard"))))
     if name is None:
         sys.stderr.write("NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver.\n")
         return 9
@@ -1932,7 +1934,11 @@ def main(argv: list[str] | None = None) -> int:
         if prefix_line is not None:
             print(prefix_line)
         row_tpl = os.environ.get(
-            "FAKE_COLAB_SESSIONS_TEMPLATE", DEFAULT_SESSION_ROW_TEMPLATE
+            "FAKE_COLAB_SESSIONS_TEMPLATE",
+            # Real rows sometimes carry double spaces (`Hardware:  A100  |`); a test can ask for that form.
+            DOUBLE_SPACE_SESSION_ROW_TEMPLATE
+            if (state_dir / "sessions_double_space").is_file()
+            else DEFAULT_SESSION_ROW_TEMPLATE,
         )
         enforce_shape = os.environ.get("FAKE_COLAB_ALLOW_NONCONTRACT_ROW_SHAPE") != "1"
         next_sessions: list[dict[str, Any]] = []
@@ -1940,9 +1946,11 @@ def main(argv: list[str] | None = None) -> int:
         for s in sessions:
             sid = s.get("session_id", "unknown")
             gpu = s.get("gpu", "CPU")
-            rendered = row_tpl.format(sid=sid, gpu=gpu)
+            shape = s.get("shape", "Standard")
+            variant = "DEFAULT" if str(gpu).upper() == "CPU" else "GPU"
+            rendered = row_tpl.format(sid=sid, gpu=gpu, shape=shape, variant=variant)
             if enforce_shape and sid != "?":
-                masked = mask_session_line_shape(rendered, target_session=sid)
+                masked = mask_session_line_shape(" ".join(rendered.split()), target_session=sid)
                 if masked != SESSION_ROW_SHAPE:
                     sys.stderr.write(
                         f"Fake session row violated contract shape: got {masked!r}, expected {SESSION_ROW_SHAPE!r}\n"
@@ -1978,12 +1986,15 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"Session [{sid}] already exists\n")
             return 1
         gpu = _get_opt("--gpu") or "CPU"
-        # The service may give a different card than requested (e.g. an A100 80 GB for `--gpu A100`): a test writes
-        # the hardware the new session reports into `<state_dir>/new_session_hardware.txt`.
+        shape = "High-RAM" if "--high-mem" in args else "Standard"
+        # The service may give a different machine than requested (e.g. a High-RAM A100, the 80 GB card, for
+        # `--gpu A100`): a test writes `<Hardware>|<Shape>` into `<state_dir>/new_session_hardware.txt`.
         hw_override = state_dir / "new_session_hardware.txt"
         if hw_override.is_file() and hw_override.read_text(encoding="utf-8").strip():
-            gpu = hw_override.read_text(encoding="utf-8").strip()
-        sessions.append({"session_id": sid, "gpu": gpu})
+            ov_hw, _, ov_shape = hw_override.read_text(encoding="utf-8").strip().partition("|")
+            gpu = ov_hw.strip()
+            shape = ov_shape.strip() or "Standard"
+        sessions.append({"session_id": sid, "gpu": gpu, "shape": shape})
         sessions_file.write_text(json.dumps(sessions), encoding="utf-8", newline="\n")
         print(f"Created session [{sid}] ({gpu})")
         return 0

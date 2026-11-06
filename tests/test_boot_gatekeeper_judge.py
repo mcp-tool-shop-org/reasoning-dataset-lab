@@ -930,21 +930,34 @@ def test_launcher_counted_without_goldens_refuses_before_the_session_opens(tmp_p
 
 
 def test_card_type_mappings() -> None:
-    f = vm_judges.card_type_from_session_hardware
-    assert [f(t) for t in ("A100", "a100", "NVIDIA_A100", "A100-40GB", "A100_80GB", "A100-80", "L4", "T4", "H100", "G4")] == [
-        "A100", "A100", "A100", "A100", "A100-80", "A100-80", "L4", "T4", "H100", "G4"
-    ]
-    assert [f(t) for t in ("CPU", "v5e1", "", None, "Mystery9000")] == [None] * 5
-    out = "[other] x | Hardware: L4 | Shape: Standard | Variant: DEFAULT\n[s1] m-1 | Hardware: A100 | Shape: Standard | Variant: DEFAULT"
-    assert vm_judges.card_type_from_sessions_output(out, "s1") == ("A100", "A100")
-    assert vm_judges.card_type_from_sessions_output("[s1] m-1 | Hardware: CPU | Shape: Standard", "s1") == (None, "CPU")
-    assert vm_judges.card_type_from_sessions_output("[s1] m-1 | Shape: Standard", "s1") == (None, None)
-    assert vm_judges.card_type_from_sessions_output(out, "missing") == (None, None)
+    """The explicit tables: every real `colab sessions` row shape in the contract fixture (Hardware AND Shape; double
+    spaces tolerated) maps to its card type, everything else to None; nvidia-smi names map to the same names, which
+    are the goldens' `card_types` keys.
+    Fails at 266fac49: the parser read only `Hardware:`, so `A100 | Shape: High-RAM` (the 80 GB card) became `A100`."""
+    contract = json.loads((REPO_ROOT / "tests" / "fixtures" / "colab-cli-contract.json").read_text(encoding="utf-8"))
+    examples = contract["session_row_examples"]
+    assert any("  " in ex["row"] for ex in examples)
+    for ex in examples:
+        card, seen = vm_judges.card_type_from_sessions_output(ex["row"], "S")
+        assert card == ex["card_type"], ex
+        assert seen is not None
+    f = vm_judges.card_type_from_session_fields
+    assert f("A100", "High-RAM") == "A100-80" and f(" a100 ", " standard ") == "A100"
+    assert [f(h, sh) for h, sh in (("H100", "Standard"), ("T4", "High-RAM"), ("CPU", "Standard"), ("V5E1", "Standard"),
+                                   ("A100", None), (None, "Standard"))] == [None] * 6
+    assert vm_judges.card_type_from_sessions_output("[S] m-1 | Shape: Standard", "S") == (None, "None/Standard")
+    assert vm_judges.card_type_from_sessions_output("[S] m-1 | Variant: GPU", "S") == (None, None)
+    assert vm_judges.card_type_from_sessions_output(examples[0]["row"], "missing") == (None, None)
     g = vm_judges.card_type_from_gpu_name
     assert [g(n) for n in (
         "NVIDIA A100-SXM4-40GB", "NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe", "NVIDIA L4", "Tesla T4",
-        "NVIDIA H100 80GB HBM3", "NVIDIA RTX PRO 6000 Blackwell Server Edition", "NVIDIA L40S", None,
-    )] == ["A100", "A100-80", "A100-80", "L4", "T4", "H100", "G4", None, None]
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition", "NVIDIA H100 80GB HBM3", "NVIDIA L40S", None,
+    )] == ["A100", "A100-80", "A100-80", "L4", "T4", "G4", None, None, None]
+    # Session and VM tables use one set of names, and the goldens' card_types keys are among them.
+    names = set(vm_judges.SESSION_CARD_TYPES.values())
+    assert names == {card for _, card in vm_judges.GPU_NAME_CARD_TYPES}
+    goldens = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    assert set(goldens["card_types"]) <= names
 
 
 def test_main_refuses_unknown_or_mismatched_card_before_venv_sync(
@@ -1005,10 +1018,12 @@ def _exec_card_env(env_paths: dict[str, Path]) -> list[str]:
 
 
 def test_e2e_launcher_forwards_the_opened_card_type_not_the_request(tmp_path: Path) -> None:
-    """`--time-one` asks for `--gpu A100`; the session the service opens reports `Hardware: A100-80` (an 80 GB card).
-    The launcher forwards `RDLAB_CARD_TYPE=A100-80` read from `colab sessions`, the VM's nvidia-smi agrees, and the
-    receipt and the recorded gatekeeper carry `A100-80`.
-    Fails at ffa9f61f: the launcher forwarded no card type and the VM assumed `A100`."""
+    """`--time-one` asks for `--gpu A100`; the session the service opens reports `Hardware:  A100  | Shape: High-RAM`
+    (the real double-space form; High-RAM is the 80 GB card). The launcher forwards `RDLAB_CARD_TYPE=A100-80` read from
+    `colab sessions`, the VM's nvidia-smi (`A100-SXM4-80GB`) agrees, and the receipt and the recorded gatekeeper carry
+    `A100-80`.
+    Fails at ffa9f61f (no card type forwarded) and at 266fac49 (Hardware only: forwarded `A100`, so the VM refused
+    CARD_TYPE_MISMATCH on the 80 GB card)."""
     receipts_dir, hf_home, part, items = tcl._e2e_time_one_inputs(tmp_path)
     res = tcl._e2e_fake_real_mode_window(
         tmp_path,
@@ -1017,7 +1032,8 @@ def test_e2e_launcher_forwards_the_opened_card_type_not_the_request(tmp_path: Pa
         part_dir=part,
         receipts_dir=receipts_dir,
         hf_home=hf_home,
-        session_hardware="A100-80",
+        session_hardware="A100|High-RAM",
+        double_space_rows=True,
     )
     assert _exec_card_env(res["env_paths"]) == ["RDLAB_CARD_TYPE=A100-80"]
     new_rows = [
@@ -1031,7 +1047,7 @@ def test_e2e_launcher_forwards_the_opened_card_type_not_the_request(tmp_path: Pa
     assert receipt["card_type_check"]["gpu_name"] == "NVIDIA A100-SXM4-80GB"
     assert receipt["gatekeeper_card_type"] == "A100-80"
     cli_log = (res["out_dir"] / "colab-cli.log").read_text(encoding="utf-8")
-    assert "CARD_TYPE session=rdlab-e2e-time-one-01 card_type=A100-80 hardware=A100-80" in cli_log
+    assert "CARD_TYPE session=rdlab-e2e-time-one-01 card_type=A100-80 hardware=A100/High-RAM" in cli_log
 
 
 def test_e2e_unknown_session_card_refuses_right_after_open(tmp_path: Path) -> None:
@@ -1086,3 +1102,29 @@ def test_e2e_vm_card_mismatch_refuses_before_venv_sync(tmp_path: Path) -> None:
         json.loads(ln)["call"] for ln in shim_calls.read_text(encoding="utf-8").splitlines() if ln.strip()
     ] if shim_calls.is_file() else []
     assert "sync_judge_venvs" not in names and "download_and_verify_all_judge_weights" not in names, names
+
+
+def test_e2e_tpu_or_cpu_session_in_a_gpu_window_refuses_card_type_unknown(tmp_path: Path) -> None:
+    """A session that comes up as a TPU (`Hardware: V5E1`) or a CPU is not a card type: `CARD_TYPE_UNKNOWN` right after
+    open, with no exec or upload."""
+    receipts_dir, hf_home, part, items = tcl._e2e_time_one_inputs(tmp_path)
+    for tag, hw in (("_tpu", "V5E1|Standard"), ("_cpu", "CPU|High-RAM")):
+        res = tcl._e2e_fake_real_mode_window(
+            tmp_path,
+            mode="time-one",
+            items_file=items,
+            part_dir=part,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            session_hardware=hw,
+            expect_fail=True,
+            tag=tag,
+        )
+        proc = res["proc"]
+        assert proc.returncode == 2 and "CARD_TYPE_UNKNOWN" in proc.stderr, proc.stdout + proc.stderr
+        subcmds = [
+            json.loads(ln).get("subcmd")
+            for ln in res["env_paths"]["calls_log"].read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ]
+        assert "exec" not in subcmds and "upload" not in subcmds and "stop" in subcmds, subcmds

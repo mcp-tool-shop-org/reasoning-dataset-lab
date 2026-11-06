@@ -25255,6 +25255,7 @@ def _e2e_fake_real_mode_window(
     session_hardware: str | None = None,
     vm_gpu_name: str | None = None,
     expect_fail: bool = False,
+    double_space_rows: bool = False,
 ) -> dict[str, Any]:
     """Drive the REAL `launch_judges.sh` live path (not `--dry`) in a real mode (no stub mode, no VM_DRYRUN) against the
     fake `colab` CLI, with the VM cell run through `tests/fixtures/fake_vm_real_mode_shim.py`, on a part made by the real
@@ -25266,8 +25267,8 @@ def _e2e_fake_real_mode_window(
     (`FAKE_COLAB_VM_HF_SEED`). With `exec_env_extra` (variables forwarded to the run cell as if by the launcher) the
     run is expected to fail; the result carries `proc`, and the checks of a successful window are skipped.
     `extra_exports` (shell `export ...; ` text) is added to the launcher's environment, e.g. `RDLAB_ONLY_JUDGES`.
-    `session_hardware` is the `Hardware:` the opened session reports in `colab sessions` (default: the `--gpu` asked
-    for); `vm_gpu_name` is what the VM's `nvidia-smi --query-gpu=name` prints (default: the session's card). With
+    `session_hardware` is the `<Hardware>|<Shape>` the opened session reports in `colab sessions` (default: the
+    `--gpu` asked for, `Standard`); `double_space_rows` renders the rows with the real double-space form; `vm_gpu_name` is what the VM's `nvidia-smi --query-gpu=name` prints (default: the session's card). With
     `expect_fail` the run is expected to fail and the result carries `proc` (as with `exec_env_extra`).
     """
     name = f"{mode}{tag}"
@@ -25292,6 +25293,8 @@ def _e2e_fake_real_mode_window(
         exports += f"export FAKE_COLAB_EXEC_ENV_EXTRA='{json.dumps(exec_env_extra)}'; "
     if session_hardware is not None:
         (env_paths["state_dir"] / "new_session_hardware.txt").write_text(session_hardware + "\n", encoding="utf-8")
+    if double_space_rows:
+        (env_paths["state_dir"] / "sessions_double_space").write_text("1\n", encoding="utf-8")
     if vm_gpu_name is not None:
         (env_paths["state_dir"] / "nvidia_smi_gpu_name.txt").write_text(vm_gpu_name + "\n", encoding="utf-8")
     proc = _pm_run_launcher(
