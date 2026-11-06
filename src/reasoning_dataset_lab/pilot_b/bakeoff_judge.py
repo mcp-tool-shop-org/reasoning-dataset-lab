@@ -5773,7 +5773,9 @@ def close_bakeoff_outputs(
 P0A_REPORT_FILENAME = "p0a_report.json"
 WINDOW_MANIFEST_FILENAME = "window.json"
 CANARY_ANCHOR_SELECTION_RULE = "min_verdict_token_margin_asc_exclude_stratified_25_tiebreak_item_id"
-PILOT_BURNED_PART_ID = "part-pilot-40b"
+# The burned pilot part is named by content (its pinned part.json and items.jsonl SHA-256, defined once in
+# scripts/colab/vm_judges.py), never by a label; refusal messages describe it with this text.
+PILOT_BURNED_PART_DESC = "the burned pilot part (named by its pinned part.json and items.jsonl SHA-256)"
 PILOT_BURNED_ITEM_COUNT = 114
 PILOT_BURNED_CALL_COUNT = 228
 P0A_PROFILER_CALL_COUNT = 10
@@ -6228,13 +6230,19 @@ def verify_lock_check_two_inputs(
     p0a_items_or_path: Sequence[JudgeInputItem] | Path | str,
     counted_items_or_manifest: Iterable[str] | Mapping[str, Any] | Path | str | None = None,
     expected_anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
+    pilot_identity: Mapping[str, Any] | None = None,
+    require_pilot_identity: bool = True,
 ) -> dict[str, Any]:
     """Validate `--lock-check`'s inputs (`--anchor-items`, `--p0a-items`, and required `--counted-items` / `--counted-manifest`):
     1. `counted_items_or_manifest` is required; missing, unreadable, or yielding zero IDs -> `LOCK_CHECK_COUNTED_SOURCE_MISSING`.
     2. Counted ID set equal to or a subset of the anchor ID set -> `LOCK_CHECK_COUNTED_SOURCE_INVALID`.
-    3. `--anchor-items` must be `expected_anchor_count` (50) items from the counted part (never from burned pilot `pilot-40b`,
+    3. `--anchor-items` must be `expected_anchor_count` (50) items from the counted part (never from the burned pilot,
        and every anchor item ID must belong to `counted_items_or_manifest`) -> `LOCK_CHECK_ANCHOR_ITEMS_INVALID`.
-    4. `--p0a-items` must be the 114 burned pilot items (`pilot-40b`, 228 calls) -> `P0A_COUNTED_PART_FORBIDDEN`.
+    4. `--p0a-items` must be the 114 burned pilot items (228 calls), bound to the burned pilot part by
+       `pilot_identity` (`vm_judges.verify_p0a_pilot_part`: the part's pinned SHA-256 and the row-by-row binding of
+       exactly this P0a file) -> `P0A_PILOT_IDENTITY_MISSING` / `P0A_PILOT_IDENTITY_MISMATCH` /
+       `P0A_COUNTED_PART_FORBIDDEN`. A stub or dryrun window passes `require_pilot_identity=False`: the identity is then
+       checked when given and not required.
     5. No item ID may appear in both `--anchor-items` and `--p0a-items` -> `LOCK_CHECK_INPUT_OVERLAP`.
     6. No item ID in `--p0a-items` may appear in the counted part's manifest or item ID list -> `P0A_COUNTED_ITEM`.
     """
@@ -6291,7 +6299,7 @@ def verify_lock_check_two_inputs(
         ):
             raise refused_error(
                 "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
-                f"--anchor-items must be 50 anchor items from the counted part, not burned pilot '{PILOT_BURNED_PART_ID}'.",
+                f"--anchor-items must be 50 anchor items from the counted part, not burned pilot {PILOT_BURNED_PART_DESC}.",
                 "Pass 50 anchor items from the counted part to --anchor-items and the 114 burned pilot items to --p0a-items.",
             )
         anchor_jsonl = resolve_items_jsonl_path(anchor_path)
@@ -6364,22 +6372,17 @@ def verify_lock_check_two_inputs(
             "Pass the full counted part's items.jsonl or manifest to --counted-items / --counted-manifest.",
         )
 
-    # Check 4: Keep fix 1's 114/228 burned-pilot check on the P0a input
+    # Check 4: the P0a input is the burned pilot part (pinned identity, bound to this file), 114 items / 228 calls
     p0a_schedule = build_schedule(p0a_items, seed=DEFAULT_SCHEDULE_SEED, items_sha256=p0a_sha256)
-    if p0a_path is not None:
-        _verify_burned_pilot_for_p0a(
-            p0a_path,
-            p0a_items,
-            p0a_schedule,
-            counted_item_ids=(counted_id_set | anchor_id_set),
-        )
-    elif len(p0a_items) != PILOT_BURNED_ITEM_COUNT or len(p0a_schedule.entries) != PILOT_BURNED_CALL_COUNT:
-        raise refused_error(
-            "P0A_COUNTED_PART_FORBIDDEN",
-            f"P0a requires the burned pilot ('{PILOT_BURNED_PART_ID}') with {PILOT_BURNED_ITEM_COUNT} items and "
-            f"{PILOT_BURNED_CALL_COUNT} calls, got {len(p0a_items)} items and {len(p0a_schedule.entries)} calls.",
-            f"Run P0a only on the 114-item ({PILOT_BURNED_CALL_COUNT}-call) burned pilot part '{PILOT_BURNED_PART_ID}'.",
-        )
+    _verify_burned_pilot_for_p0a(
+        p0a_path,
+        p0a_items,
+        p0a_schedule,
+        counted_item_ids=(counted_id_set | anchor_id_set),
+        pilot_identity=pilot_identity,
+        require_pilot_identity=require_pilot_identity,
+        p0a_items_sha256=p0a_sha256 or None,
+    )
 
     return {
         "anchor_item_count": len(anchor_ids),
@@ -6392,16 +6395,61 @@ def verify_lock_check_two_inputs(
     }
 
 
+def _check_p0a_pilot_identity(
+    pilot_identity: Mapping[str, Any] | None,
+    *,
+    item_count: int,
+    items_sha256: str | None,
+) -> str:
+    """Require `pilot_identity` (from `vm_judges.verify_p0a_pilot_part`, which reads the part's `part.json` and
+    `checksums.txt` and compares them with the pinned pilot SHA-256 defined once in `scripts/colab/vm_judges.py`) to name
+    the burned pilot and to be bound to exactly this P0a input (row count and, when known, the file's SHA-256).
+    No label stands in for it. Returns the part's real `part_id`."""
+    if not isinstance(pilot_identity, Mapping):
+        raise refused_error(
+            "P0A_PILOT_IDENTITY_MISSING",
+            "P0a needs the burned pilot part's identity (its part.json and checksums.txt, checked against the pinned "
+            "SHA-256); none was given.",
+            "Pass --p0a-part-dir <the burned pilot part directory> to the launcher; nothing labels a part as the pilot.",
+        )
+    binding = pilot_identity.get("binding")
+    problems: list[str] = []
+    if pilot_identity.get("is_pilot_40b") is not True or pilot_identity.get("pin") != "burned_pilot":
+        problems.append("pinned identity")
+    if not isinstance(binding, Mapping):
+        problems.append("binding")
+    else:
+        if binding.get("rule") != "whole_part_in_order":
+            problems.append("binding rule")
+        if binding.get("uploaded_items") != int(item_count):
+            problems.append("item count")
+        if items_sha256 and binding.get("uploaded_items_sha256") != items_sha256:
+            problems.append("items SHA-256")
+    if problems:
+        raise refused_error(
+            "P0A_PILOT_IDENTITY_MISMATCH",
+            f"The P0a input is not bound to {PILOT_BURNED_PART_DESC}; mismatch: {', '.join(problems)}.",
+            "Pass the burned pilot's projected items with --p0a-items and its part directory with --p0a-part-dir.",
+        )
+    return str(pilot_identity.get("part_id") or "")
+
+
 def _verify_burned_pilot_for_p0a(
-    part_dir: Path,
+    part_dir: Path | None,
     items: Sequence[JudgeInputItem],
     schedule: JudgeSchedule,
     *,
     counted_item_ids: Iterable[str] | None = None,
     counted_manifest_path: Path | str | None = None,
     anchor_item_ids: Iterable[str] | None = None,
-) -> str:
-    """Verify `part_dir` and `items` belong to the burned pilot (`pilot-40b`), have no overlap with anchor or counted items, and have exact counts 114 items / 228 calls."""
+    pilot_identity: Mapping[str, Any] | None = None,
+    require_pilot_identity: bool = True,
+    p0a_items_sha256: str | None = None,
+) -> str | None:
+    """Verify the P0a items belong to the burned pilot part, by `pilot_identity` (`_check_p0a_pilot_identity`; never a
+    `part_id` label in a manifest or row), have no overlap with anchor or counted items, and have exact counts 114 items /
+    228 calls. Returns the pilot part's real `part_id`, or `None` when no identity was given and none is required (a stub
+    or dryrun window)."""
     p0a_id_set = {it.item_id for it in items}
     if anchor_item_ids is not None:
         anchor_set = {str(x).strip() for x in anchor_item_ids if str(x).strip()}
@@ -6427,74 +6475,28 @@ def _verify_burned_pilot_for_p0a(
                 "Run P0a only on the 114 burned pilot items, never on any counted-part item ID.",
             )
 
-    resolved = Path(part_dir).resolve()
-    base_dir = resolved.parent if resolved.is_file() else resolved
-    part_name = base_dir.name.strip().lower()
-    if any(part_name.startswith(prefix) for prefix in ("part01", "part02", "part03", "part04", "part05")):
-        raise refused_error(
-            "P0A_COUNTED_PART_FORBIDDEN",
-            f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), never on counted part '{base_dir.name}'.",
-            f"Pass the burned pilot part directory ('{PILOT_BURNED_PART_ID}') to --lock-check.",
-        )
-
-    is_shared_items_dir = (
-        (resolved.is_file() and resolved.name == "p0a_items.jsonl")
-        or (base_dir / "anchor_items.jsonl").exists()
-        or (base_dir / "p0a_items.jsonl").exists()
-        or part_name == "rdlab_items"
-    )
-    manifest_part_id = _resolve_part_id_from_dir(
-        part_dir,
-        only_p0a_manifest=is_shared_items_dir,
-        allow_synthesized=False,
-    )
-    if manifest_part_id is not None and manifest_part_id.strip().lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
-        raise refused_error(
-            "P0A_COUNTED_PART_FORBIDDEN",
-            f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), got manifest part_id={manifest_part_id!r}.",
-            f"Pass the burned pilot part ('{PILOT_BURNED_PART_ID}') to --lock-check.",
-        )
-
-    items_path = resolve_items_jsonl_path(part_dir)
-    raw_nonempty_lines = [ln for ln in items_path.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    row_part_ids: list[str] = []
-    for raw_ln in raw_nonempty_lines:
-        obj = json.loads(raw_ln)
-        if isinstance(obj, Mapping) and obj.get("part_id") is not None:
-            pid = str(obj["part_id"]).strip()
-            if pid:
-                row_part_ids.append(pid)
-                if pid.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
-                    raise refused_error(
-                        "P0A_COUNTED_PART_FORBIDDEN",
-                        f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), got item part_id={pid!r}.",
-                        f"Pass the burned pilot part ('{PILOT_BURNED_PART_ID}') to --lock-check.",
-                    )
-
-    has_valid_manifest_proof = (
-        manifest_part_id is not None and manifest_part_id.strip().lower() in ALLOWED_LOGPROB_MASS_PART_IDS
-    )
-    has_valid_all_rows_proof = (
-        bool(raw_nonempty_lines)
-        and len(row_part_ids) == len(raw_nonempty_lines)
-        and all(pid.lower() in ALLOWED_LOGPROB_MASS_PART_IDS for pid in row_part_ids)
-    )
-    if not (has_valid_manifest_proof or has_valid_all_rows_proof):
-        raise refused_error(
-            "P0A_COUNTED_PART_FORBIDDEN",
-            f"P0a requires a real burned pilot proof (manifest.json with part_id='{PILOT_BURNED_PART_ID}' or every row's part_id='{PILOT_BURNED_PART_ID}'), got manifest_part_id={manifest_part_id!r} and {len(row_part_ids)}/{len(raw_nonempty_lines)} tagged rows.",
-            f"Provide the burned pilot's real manifest.json with part_id='{PILOT_BURNED_PART_ID}' or tag every row with part_id='{PILOT_BURNED_PART_ID}'.",
-        )
+    if part_dir is not None:
+        resolved = Path(part_dir).resolve()
+        base_dir = resolved.parent if resolved.is_file() else resolved
+        part_name = base_dir.name.strip().lower()
+        if any(part_name.startswith(prefix) for prefix in ("part01", "part02", "part03", "part04", "part05")):
+            raise refused_error(
+                "P0A_COUNTED_PART_FORBIDDEN",
+                f"P0a runs only on {PILOT_BURNED_PART_DESC}, never on counted part '{base_dir.name}'.",
+                "Pass the burned pilot part's projected items to --p0a-items and its directory to --p0a-part-dir.",
+            )
 
     if len(items) != PILOT_BURNED_ITEM_COUNT or len(schedule.entries) != PILOT_BURNED_CALL_COUNT:
         raise refused_error(
             "P0A_COUNTED_PART_FORBIDDEN",
-            f"P0a requires the burned pilot ('{PILOT_BURNED_PART_ID}') with {PILOT_BURNED_ITEM_COUNT} items and "
+            f"P0a requires {PILOT_BURNED_PART_DESC} with {PILOT_BURNED_ITEM_COUNT} items and "
             f"{PILOT_BURNED_CALL_COUNT} calls, got {len(items)} items and {len(schedule.entries)} calls.",
-            f"Run P0a only on the 114-item ({PILOT_BURNED_CALL_COUNT}-call) burned pilot part '{PILOT_BURNED_PART_ID}'.",
+            f"Run P0a only on the {PILOT_BURNED_ITEM_COUNT}-item ({PILOT_BURNED_CALL_COUNT}-call) burned pilot part.",
         )
 
-    return manifest_part_id or (row_part_ids[0] if row_part_ids else PILOT_BURNED_PART_ID)
+    if pilot_identity is None and not require_pilot_identity:
+        return None
+    return _check_p0a_pilot_identity(pilot_identity, item_count=len(items), items_sha256=p0a_items_sha256)
 
 
 def _extract_row_logprob_value(row: Mapping[str, Any]) -> float:
@@ -6886,8 +6888,11 @@ def run_lock_check_p0a(
     window_mode: str | None = None,
     allow_remote_code_reviewed: str | None = None,
     repo_root: Path | None = None,
+    pilot_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run P0a inside the lock-check window and write `p0a_report.json` into `output_dir`:
+    """Run P0a inside the lock-check window and write `p0a_report.json` into `output_dir`.
+    `pilot_identity` (from `vm_judges.verify_p0a_pilot_part`) names the burned pilot part by its pinned hashes and binds
+    these items to it; without it P0a refuses `P0A_PILOT_IDENTITY_MISSING`.
       (a) second full baseline pass over the burned pilot calls in the same session, compared bitwise with `baseline_rows`;
       (b) 10-call phase profiler per judge (`tokenise`, `prefill`, `decode`, `post_processing`);
       (c) reversed re-run of the 20 lowest-margin items, reporting order independence and comparison against baseline.
@@ -6927,8 +6932,8 @@ def run_lock_check_p0a(
     if any(part_name.startswith(prefix) for prefix in ("part01", "part02", "part03", "part04", "part05")):
         raise refused_error(
             "P0A_COUNTED_PART_FORBIDDEN",
-            f"P0a runs only on the burned pilot part ('{PILOT_BURNED_PART_ID}'), never on counted part '{Path(part_dir).name}'.",
-            f"Pass the burned pilot part directory ('{PILOT_BURNED_PART_ID}') to --lock-check.",
+            f"P0a runs only on the burned pilot part ({PILOT_BURNED_PART_DESC}), never on counted part '{Path(part_dir).name}'.",
+            f"Pass the burned pilot part directory ({PILOT_BURNED_PART_DESC}) to --lock-check.",
         )
 
     resolved_anchor_ids: list[str] | None = None
@@ -6965,6 +6970,9 @@ def run_lock_check_p0a(
         counted_item_ids=counted_item_ids,
         counted_manifest_path=counted_manifest_path,
         anchor_item_ids=resolved_anchor_ids,
+        pilot_identity=pilot_identity,
+        require_pilot_identity=in_real_mode,
+        p0a_items_sha256=items_sha256 if limit_items is None else None,
     )
 
     target_jids = judge_ids if judge_ids is not None else sorted(BAKEOFF_JUDGE_SPECS.keys())

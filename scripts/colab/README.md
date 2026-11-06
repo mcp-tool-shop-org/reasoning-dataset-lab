@@ -107,7 +107,17 @@ RDLAB_PART_DIR=/path/to/part-pilot-40b/part_bakeoff_sealed \
 bash scripts/colab/launch_judges.sh --time-one --run-id t1-01 --out-dir /tmp/rdlab-colab-runs/t1-01 < /dev/null
 ```
 
-`RDLAB_ITEMS_FILE` is the `{id, material, claim}` projection of the part's items (the allow-list above refuses a part's own rows); `RDLAB_PART_DIR` (`--part-dir`) is the sealed part it came from. Before any `colab` call the launcher checks the part's `part.json` against its schema and `checksums.txt`, the part's `items.jsonl` against `checksums.txt`, and every uploaded row against the part row with the same id; it then uploads `part.json` and `checksums.txt` beside `items.jsonl`. A time-one window may upload any subset of the part; a counted window must upload the whole part in order. See `REAL_SERVICE_ASSUMPTIONS.md`, "The part a window runs on".
+`RDLAB_ITEMS_FILE` is the `{id, material, claim}` projection of the part's items (the allow-list above refuses a part's own rows), written by `rdlab bakeoff-project --part-dir <part> --out <file>` outside the part; `RDLAB_PART_DIR` (`--part-dir`) is the sealed part it came from and is required for a real `--time-one` or `--counted` (`PART_MANIFEST_MISSING` without it). Before any `colab` call the launcher checks the part's `part.json` against its schema and `checksums.txt`, every file `checksums.txt` lists, and every uploaded row against the part row with the same id; it then uploads `part.json`, `checksums.txt` and its own binding record (`launcher_part_binding.json`) beside `items.jsonl`. A time-one window may upload any subset of the part; a counted window must upload the whole part in order. The receipts show the launcher's row-by-row check (`part_identity.launcher_binding`, `checked_by: "launcher"`) beside the VM's re-check (`checked_by: "vm"`, `projection_checked: false`); `outcome.draft.json` carries the launcher's record too. A pinned part (the burned pilot, the anchored counted part) must match its pinned hashes (`PART_PIN_MISMATCH`), and a real window needs a frozen part (`PART_NOT_FROZEN`); `frozen_mac` itself is keyed by the sealed store and not verified here. See `REAL_SERVICE_ASSUMPTIONS.md`, "The part a window runs on".
+
+A counted projection is made the same way, on the rig, into an inputs directory (never into the part or a `sealed_store/`):
+
+```bash
+uv run rdlab bakeoff-project \
+  --part-dir /path/to/part-anchored-counted-430/part_bakeoff_sealed \
+  --out /path/to/colab-runs/inputs/counted430-items-projected.jsonl
+```
+
+A lock-check window (`--lock-check`) names the burned pilot part for its P0a input with `--p0a-part-dir` (`RDLAB_P0A_PART_DIR`, required in real mode): the launcher checks it is the pilot by its pinned `part.json` / `items.jsonl` SHA-256 (never a `part_id` label), binds `--p0a-items` to it row by row, and uploads its `part.json` and `checksums.txt` as `p0a_part.json` / `p0a_checksums.txt`. The repo bundle is built from the git-tracked files at a clean HEAD (`REPO_TREE_DIRTY` otherwise).
 
 **Acceptance list (`--time-one`):**
 - Enforces the single-wall timeout hierarchy derived from `WALL_SECONDS=1500`: `VM_WALL_SECONDS=1200 < EXEC_TIMEOUT_SECONDS=1260 < WATCHDOG_SLEEP_SECONDS=1320 < RIG_TIMEOUT=1505`.
@@ -125,7 +135,7 @@ bash scripts/colab/launch_judges.sh --time-one --run-id t1-01 --out-dir /tmp/rdl
   - `peak_vram_mib` (sampled every 5 s)
   - `dtype`
   - `canary_drift`
-- Records `pilot_mass_check` with `"kind": "harness_readout"` and `"is_result": false`: `check_bakeoff_logprob_mass` runs when the part is the burned pilot, named by its `part.json` and `items.jsonl` SHA-256 (its `part_id` is `bakeoff-d-t10-sealed`); any other part records `not_applicable`. Receipts before this change label that part `pilot-40b`.
+- Records `pilot_mass_check` with `"kind": "harness_readout"` and `"is_result": false`: `check_bakeoff_logprob_mass` runs when the part is the burned pilot, named by its `part.json` and `items.jsonl` SHA-256 (its `part_id` is `bakeoff-d-t10-sealed`); any other part records `not_applicable`, and so does a lock-check window (its rows are the counted part's anchors). Receipts written before #70 label the pilot `pilot-40b`, a label the VM made up; nothing writes it now.
 
 ### 5. Dry Mode (`--dry`) and Resume (`--resume`)
 

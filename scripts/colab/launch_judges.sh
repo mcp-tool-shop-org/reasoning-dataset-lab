@@ -29,6 +29,7 @@ ITEMS_FILE="${RDLAB_ITEMS_FILE:-}"
 PART_DIR="${RDLAB_PART_DIR:-}"
 ANCHOR_ITEMS_FILE="${RDLAB_ANCHOR_ITEMS_FILE:-}"
 P0A_ITEMS_FILE="${RDLAB_P0A_ITEMS_FILE:-}"
+P0A_PART_DIR="${RDLAB_P0A_PART_DIR:-}"
 COUNTED_ITEMS_FILE="${RDLAB_COUNTED_ITEMS_FILE:-}"
 COUNTED_MANIFEST_FILE="${RDLAB_COUNTED_MANIFEST:-}"
 RECEIPTS_DIR="${RDLAB_RECEIPTS_DIR:-}"
@@ -43,7 +44,7 @@ EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
@@ -68,10 +69,16 @@ Options:
   --run-id ID          Run identifier (session name is rdlab-<ID>)
   --out-dir DIR        Rig output directory (default: /tmp/rdlab-colab-runs/<ID>)
   --items-file FILE    Public item JSONL file to upload for non-lock-check modes (or set RDLAB_ITEMS_FILE)
-  --part-dir DIR       The sealed part directory the items come from (part.json, checksums.txt, items.jsonl), for
-                       --time-one / --counted; default: the items file's directory (or set RDLAB_PART_DIR)
+  --part-dir DIR       The sealed part directory the items come from (part.json, checksums.txt, items.jsonl).
+                       Required for --time-one and --counted (the items file is a projection kept outside the part,
+                       made by `rdlab bakeoff-project`); other modes default to the items file's directory
+                       (or set RDLAB_PART_DIR)
   --anchor-items FILE  For --lock-check / --lock-check-stub: the 50 anchor items from the counted part (25 stratified + 25 canaries) for the 5-judge anchor pass, golden_anchor_manifest.json, and boot_gatekeeper_goldens.filled.json (or set RDLAB_ANCHOR_ITEMS_FILE)
-  --p0a-items FILE     For --lock-check / --lock-check-stub: the 114 burned pilot items (pilot-40b) for P0a only (or set RDLAB_P0A_ITEMS_FILE)
+  --p0a-items FILE     For --lock-check / --lock-check-stub: the 114 burned pilot items for P0a only, the projection of
+                       the pilot part (or set RDLAB_P0A_ITEMS_FILE)
+  --p0a-part-dir DIR   For --lock-check / --lock-check-stub (required): the burned pilot's sealed part directory
+                       (part.json, checksums.txt, items.jsonl); the pilot is named by its pinned SHA-256, never by a
+                       label (or set RDLAB_P0A_PART_DIR)
   --counted-items FILE For --lock-check / --lock-check-stub: counted part items JSONL (required unless --counted-manifest is given) to build shard_manifest.json and verify anchor membership and P0a exclusion (or set RDLAB_COUNTED_ITEMS_FILE)
   --counted-manifest F For --lock-check / --lock-check-stub: counted part manifest JSON (required unless --counted-items is given) to build shard_manifest.json and verify anchor membership and P0a exclusion (or set RDLAB_COUNTED_MANIFEST)
   --receipts-dir DIR   Directory containing <owner>__<repo>.sha256.json receipts (or RDLAB_RECEIPTS_DIR)
@@ -255,6 +262,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --p0a-items=*)
       P0A_ITEMS_FILE="${1#*=}"
+      shift
+      ;;
+    --p0a-part-dir)
+      P0A_PART_DIR="${2:-}"
+      shift 2
+      ;;
+    --p0a-part-dir=*)
+      P0A_PART_DIR="${1#*=}"
       shift
       ;;
     --counted-items)
@@ -560,17 +575,40 @@ RECEIPTS_TAR="$STAGE_DIR/receipts_bundle.tar.gz"
 STAGED_ITEMS_FILE="$STAGE_DIR/items.jsonl"
 STAGED_ANCHOR_ITEMS_FILE="$STAGE_DIR/anchor_items.jsonl"
 STAGED_P0A_ITEMS_FILE="$STAGE_DIR/p0a_items.jsonl"
-STAGED_P0A_MANIFEST_FILE="$STAGE_DIR/p0a_manifest.json"
 STAGED_PART_JSON_FILE="$STAGE_DIR/part.json"
 STAGED_PART_CHECKSUMS_FILE="$STAGE_DIR/checksums.txt"
+STAGED_P0A_PART_JSON_FILE="$STAGE_DIR/p0a_part.json"
+STAGED_P0A_CHECKSUMS_FILE="$STAGE_DIR/p0a_checksums.txt"
+STAGED_BINDING_FILE="$STAGE_DIR/launcher_part_binding.json"
+RIG_BINDING_FILE="$OUT_DIR/launcher_part_binding.json"
 RESUME_TAR="$STAGE_DIR/resume_state.tar.gz"
 
-# The part the items come from: its own part.json and checksums.txt in --part-dir (default: the items file's directory),
+# The part the items come from: its own part.json and checksums.txt in --part-dir (required for --time-one and
+# --counted, whose items file is a projection kept outside the part; other modes default to the items file's directory),
 # checked by the VM's rules (vm_judges.preflight_part_manifest) before any colab call, with the repo's part schema and,
 # because the launcher has the part, the projection check: the part's items.jsonl must hash to its checksums.txt line and
 # every uploaded row must equal the part row with the same id (id, material, claim). Absent: refused
 # PART_MANIFEST_MISSING in every window that needs one (real time-one, counted and other non-lock-check real modes).
 # Never creates or rewrites a file. Used by --dry and the live path alike.
+# Real --time-one and --counted windows name their part with --part-dir; a real --lock-check window names the burned
+# pilot part with --p0a-part-dir (a stub or dryrun window checks it when given). Absent: refused PART_MANIFEST_MISSING
+# before any colab call (--dry and live), as the part check itself refuses in real modes.
+require_part_dir_for_mode() {
+  if [[ "$MODE" == "time-one" || "$MODE" == "counted" ]] && [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$PART_DIR" ]]; then
+    RUN_WHY="--$MODE requires --part-dir"
+    echo "PART_MANIFEST_MISSING: --$MODE requires --part-dir <the sealed part directory: part.json, checksums.txt, items.jsonl>; the items file is a projection kept outside the part (rdlab bakeoff-project), so its directory is never the part" >&2
+    exit 2
+  fi
+}
+
+require_p0a_part_dir_for_mode() {
+  if [[ "$MODE" == "lock-check" ]] && [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$P0A_PART_DIR" ]]; then
+    RUN_WHY="--$MODE requires --p0a-part-dir"
+    echo "PART_MANIFEST_MISSING: --$MODE requires --p0a-part-dir <the burned pilot's sealed part directory: part.json, checksums.txt, items.jsonl>; the pilot is named by its pinned SHA-256, never by a label" >&2
+    exit 2
+  fi
+}
+
 effective_part_dir() {
   if [[ -n "$PART_DIR" ]]; then
     printf '%s\n' "$PART_DIR"
@@ -611,7 +649,8 @@ if identity is not None:
     sys.stderr.write(
         f"[part] part_id={identity['part_id']} items_count={identity['items_count']} "
         f"part_json_sha256={identity['part_json_sha256']} uploaded_items={b['uploaded_items']} rule={b['rule']} "
-        f"projection_checked={b['projection_checked']} pilot_40b={identity['is_pilot_40b']}\n"
+        f"projection_checked={b['projection_checked']} checked_by={b['checked_by']} pin={identity['pin']} "
+        f"pilot_40b={identity['is_pilot_40b']}\n"
     )
 PY
 }
@@ -815,7 +854,10 @@ PY
       exit 2
     fi
     DRY_COUNTED_SOURCE="${COUNTED_MANIFEST_FILE:-$COUNTED_ITEMS_FILE}"
-    "$PYTHON_BIN" - "$REPO_ROOT" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$DRY_COUNTED_SOURCE" "$SESSION_SMOKE_FLAG" <<'PY'
+    if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]]; then
+      require_p0a_part_dir_for_mode
+    fi
+    "$PYTHON_BIN" - "$REPO_ROOT" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$DRY_COUNTED_SOURCE" "$SESSION_SMOKE_FLAG" "$MODE" "${VM_DRYRUN:-0}" "$P0A_PART_DIR" <<'PY'
 import sys
 from pathlib import Path
 
@@ -824,20 +866,48 @@ anchor_f = Path(sys.argv[2])
 p0a_f = Path(sys.argv[3])
 counted_src = Path(sys.argv[4]) if sys.argv[4].strip() else None
 is_smoke = sys.argv[5] == "1"
+mode = sys.argv[6]
+vm_dryrun = sys.argv[7] == "1"
+p0a_part_dir = Path(sys.argv[8]) if sys.argv[8].strip() else None
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
-from reasoning_dataset_lab.pilot_b import bakeoff_judge
+import vm_judges
+from reasoning_dataset_lab.pilot_b import bakeoff_judge, schema_check
 
 if not is_smoke or (anchor_f.is_file() and p0a_f.is_file()):
     try:
+        pilot_identity = (
+            vm_judges.verify_p0a_pilot_part(
+                p0a_f,
+                mode=mode,
+                dryrun=vm_dryrun,
+                part_dir=p0a_part_dir,
+                schema_errors=lambda doc: schema_check.validate(doc, "part"),
+            )
+            if p0a_part_dir is not None
+            else None
+        )
         bakeoff_judge.verify_lock_check_two_inputs(
             anchor_items_or_path=anchor_f,
             p0a_items_or_path=p0a_f,
             counted_items_or_manifest=counted_src,
+            pilot_identity=pilot_identity,
+            require_pilot_identity=vm_judges.p0a_pilot_identity_required(mode, dryrun=vm_dryrun),
         )
+    except vm_judges.RefusalError as exc:
+        sys.stderr.write(f"{exc}\n")
+        raise SystemExit(2)
     except bakeoff_judge.RdlabError as exc:
         sys.stderr.write(f"[{exc.code}] {exc.message}\n")
         raise SystemExit(2)
+    if pilot_identity is None:
+        raise SystemExit(0)
+    b = pilot_identity["binding"]
+    sys.stderr.write(
+        f"[p0a-part] part_id={pilot_identity['part_id']} items_count={pilot_identity['items_count']} "
+        f"part_json_sha256={pilot_identity['part_json_sha256']} uploaded_items={b['uploaded_items']} rule={b['rule']} "
+        f"projection_checked={b['projection_checked']} checked_by={b['checked_by']} pin={pilot_identity['pin']}\n"
+    )
 PY
     if [[ -n "$DRY_COUNTED_SOURCE" ]]; then
       "$PYTHON_BIN" - "$REPO_ROOT" "$DRY_COUNTED_SOURCE" "$SESSION_SMOKE_FLAG" <<'PY'
@@ -885,6 +955,7 @@ except vm_judges.RefusalError as exc:
     raise SystemExit(2)
 PY
     if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]]; then
+      require_part_dir_for_mode
       check_part_manifest_beside_items "$ITEMS_FILE"
     fi
   fi
@@ -932,14 +1003,17 @@ PY
     if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
       printf 'colab upload -s %s %s /content/rdlab_items/anchor_items.jsonl\n' "$SESSION_NAME" "$STAGED_ANCHOR_ITEMS_FILE"
       printf 'colab upload -s %s %s /content/rdlab_items/p0a_items.jsonl\n' "$SESSION_NAME" "$STAGED_P0A_ITEMS_FILE"
-      if [[ -n "$P0A_ITEMS_FILE" ]] && [[ -f "$(dirname "$P0A_ITEMS_FILE")/manifest.json" ]]; then
-        printf 'colab upload -s %s %s /content/rdlab_items/p0a_manifest.json\n' "$SESSION_NAME" "$STAGED_P0A_MANIFEST_FILE"
+      if [[ -n "$P0A_PART_DIR" ]] && [[ -f "$P0A_PART_DIR/part.json" ]]; then
+        printf 'colab upload -s %s %s /content/rdlab_items/p0a_part.json\n' "$SESSION_NAME" "$STAGED_P0A_PART_JSON_FILE"
+        printf 'colab upload -s %s %s /content/rdlab_items/p0a_checksums.txt\n' "$SESSION_NAME" "$STAGED_P0A_CHECKSUMS_FILE"
+        printf 'colab upload -s %s %s /content/rdlab_items/launcher_part_binding.json\n' "$SESSION_NAME" "$STAGED_BINDING_FILE"
       fi
     else
       printf 'colab upload -s %s %s /content/rdlab_items/items.jsonl\n' "$SESSION_NAME" "$STAGED_ITEMS_FILE"
       if [[ -n "$ITEMS_FILE" ]] && [[ -f "$(effective_part_dir "$ITEMS_FILE")/part.json" ]]; then
         printf 'colab upload -s %s %s /content/rdlab_items/part.json\n' "$SESSION_NAME" "$STAGED_PART_JSON_FILE"
         printf 'colab upload -s %s %s /content/rdlab_items/checksums.txt\n' "$SESSION_NAME" "$STAGED_PART_CHECKSUMS_FILE"
+        printf 'colab upload -s %s %s /content/rdlab_items/launcher_part_binding.json\n' "$SESSION_NAME" "$STAGED_BINDING_FILE"
       fi
     fi
     if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
@@ -1380,6 +1454,14 @@ for jid in sorted(done_ids):
     if jid not in completed_judges:
         completed_judges.append(jid)
 payload["judges_completed"] = completed_judges
+# The launcher's own part binding (what it checked row by row, against which hashes), labelled checked_by "launcher";
+# the VM's re-check is in vm_receipt.json's part_identity (checked_by "vm").
+binding_file = out_path.parent / "launcher_part_binding.json"
+if binding_file.is_file():
+    try:
+        payload["launcher_part_binding"] = json.loads(binding_file.read_text(encoding="utf-8"))
+    except Exception:
+        payload["launcher_part_binding"] = {"error": "launcher_part_binding.json could not be read"}
 until_step_val = os.environ.get("RDLAB_UNTIL_STEP", "").strip()
 if until_step_val:
     payload["until"] = until_step_val
@@ -1792,7 +1874,8 @@ PY
       exit 2
     fi
   fi
-  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" <<'PY'
+  require_p0a_part_dir_for_mode
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$MODE" "${VM_DRYRUN:-0}" "$P0A_PART_DIR" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1801,19 +1884,39 @@ anchor_f = Path(sys.argv[2])
 p0a_f = Path(sys.argv[3])
 counted_f = Path(sys.argv[4]) if sys.argv[4].strip() else None
 counted_mf = Path(sys.argv[5]) if sys.argv[5].strip() else None
+mode = sys.argv[6]
+vm_dryrun = sys.argv[7] == "1"
+p0a_part_dir = Path(sys.argv[8]) if sys.argv[8].strip() else None
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
-from reasoning_dataset_lab.pilot_b import bakeoff_judge
+import vm_judges
+from reasoning_dataset_lab.pilot_b import bakeoff_judge, schema_check
 
 try:
     eff_counted_src = counted_mf if counted_mf is not None else counted_f
+    pilot_identity = (
+        vm_judges.verify_p0a_pilot_part(
+            p0a_f,
+            mode=mode,
+            dryrun=vm_dryrun,
+            part_dir=p0a_part_dir,
+            schema_errors=lambda doc: schema_check.validate(doc, "part"),
+        )
+        if p0a_part_dir is not None
+        else None
+    )
     bakeoff_judge.verify_lock_check_two_inputs(
         anchor_items_or_path=anchor_f,
         p0a_items_or_path=p0a_f,
         counted_items_or_manifest=eff_counted_src,
+        pilot_identity=pilot_identity,
+        require_pilot_identity=vm_judges.p0a_pilot_identity_required(mode, dryrun=vm_dryrun),
     )
     if eff_counted_src is not None:
         bakeoff_judge._resolve_items_from_manifest_source(eff_counted_src)
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
 except bakeoff_judge.RdlabError as exc:
     sys.stderr.write(f"[{exc.code}] {exc.message}\n")
     raise SystemExit(2)
@@ -1860,6 +1963,7 @@ PY
     RUN_WHY="items file refused by field allow-list guard: $ITEMS_FILE"
     exit 2
   fi
+  require_part_dir_for_mode
   if ! check_part_manifest_beside_items "$ITEMS_FILE"; then
     RUN_WHY="part files refused before session open: $(effective_part_dir "$ITEMS_FILE")/part.json"
     exit 2
@@ -1910,8 +2014,10 @@ fi
 
 mkdir -p "$STAGE_DIR"
 # Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
-rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_P0A_MANIFEST_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" <<'PY'
+rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" <<'PY'
+import datetime
+import json
 import shutil
 import sys
 import tarfile
@@ -1931,12 +2037,15 @@ raw_p0a_src = sys.argv[11].strip() if len(sys.argv) > 11 else ""
 raw_p0a_dst = sys.argv[12].strip() if len(sys.argv) > 12 else ""
 raw_counted_items = sys.argv[13].strip() if len(sys.argv) > 13 else ""
 raw_counted_manifest = sys.argv[14].strip() if len(sys.argv) > 14 else ""
-raw_p0a_manifest_dst = sys.argv[15].strip() if len(sys.argv) > 15 else ""
+raw_binding_dst = sys.argv[15].strip() if len(sys.argv) > 15 else ""
 stage_mode = sys.argv[16].strip() if len(sys.argv) > 16 else ""
 stage_vm_dryrun = (sys.argv[17].strip() == "1") if len(sys.argv) > 17 else False
 raw_part_json_dst = sys.argv[18].strip() if len(sys.argv) > 18 else ""
 raw_part_checksums_dst = sys.argv[19].strip() if len(sys.argv) > 19 else ""
 raw_part_dir = sys.argv[20].strip() if len(sys.argv) > 20 else ""
+raw_p0a_part_dir = sys.argv[21].strip() if len(sys.argv) > 21 else ""
+raw_p0a_part_json_dst = sys.argv[22].strip() if len(sys.argv) > 22 else ""
+raw_p0a_checksums_dst = sys.argv[23].strip() if len(sys.argv) > 23 else ""
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -1947,6 +2056,14 @@ vm_judges.check_upload_path_allowed(items_src)
 vm_judges.verify_items_allowlist(items_src)
 _ = vm_judges.collect_claim_ngram_sha256s(items_src)
 shutil.copyfile(items_src, items_dst)
+binding_record: dict = {
+    "schema_version": "1.0",
+    "checked_by": "launcher",
+    "checked_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "mode": stage_mode,
+    "window_part": None,
+    "p0a_part": None,
+}
 if stage_mode not in ("lock-check", "lock-check-stub") and raw_part_json_dst and raw_part_checksums_dst:
     # The part's own part.json and checksums.txt go to the VM beside items.jsonl, checked by the same rules as
     # check_part_manifest_beside_items first; they are copied as given, never created or rewritten.
@@ -1964,6 +2081,7 @@ if stage_mode not in ("lock-check", "lock-check-stub") and raw_part_json_dst and
     if identity is not None:
         shutil.copyfile(part_src_dir / vm_judges.PART_JSON_FILENAME, Path(raw_part_json_dst))
         shutil.copyfile(part_src_dir / vm_judges.PART_CHECKSUMS_FILENAME, Path(raw_part_checksums_dst))
+        binding_record["window_part"] = vm_judges.launcher_binding_entry(identity)
 if raw_anchor_src and raw_anchor_dst:
     anchor_src = Path(raw_anchor_src)
     vm_judges.check_upload_path_allowed(anchor_src)
@@ -1976,10 +2094,26 @@ if raw_p0a_src and raw_p0a_dst:
     vm_judges.verify_items_allowlist(p0a_src)
     _ = vm_judges.collect_claim_ngram_sha256s(p0a_src)
     shutil.copyfile(p0a_src, Path(raw_p0a_dst))
-    p0a_mf_src = p0a_src.parent / "manifest.json"
-    if p0a_mf_src.is_file() and raw_p0a_manifest_dst:
-        vm_judges.check_upload_path_allowed(p0a_mf_src)
-        shutil.copyfile(p0a_mf_src, Path(raw_p0a_manifest_dst))
+    # The burned pilot's own part.json and checksums.txt go up as p0a_part.json / p0a_checksums.txt, after the same
+    # check as before the session (pinned identity, every file in checksums.txt, the projection row by row); a P0a
+    # manifest.json is never read or staged.
+    if raw_p0a_part_dir and raw_p0a_part_json_dst and raw_p0a_checksums_dst:
+        from reasoning_dataset_lab.pilot_b import schema_check as _p0a_schema
+
+        p0a_part_dir = Path(raw_p0a_part_dir)
+        p0a_identity = vm_judges.verify_p0a_pilot_part(
+            p0a_src,
+            mode=stage_mode,
+            dryrun=stage_vm_dryrun,
+            part_dir=p0a_part_dir,
+            schema_errors=lambda doc: _p0a_schema.validate(doc, "part"),
+        )
+        shutil.copyfile(p0a_part_dir / vm_judges.PART_JSON_FILENAME, Path(raw_p0a_part_json_dst))
+        shutil.copyfile(p0a_part_dir / vm_judges.PART_CHECKSUMS_FILENAME, Path(raw_p0a_checksums_dst))
+        if p0a_identity is not None:
+            binding_record["p0a_part"] = vm_judges.launcher_binding_entry(p0a_identity)
+if raw_binding_dst and (binding_record["window_part"] is not None or binding_record["p0a_part"] is not None):
+    Path(raw_binding_dst).write_text(json.dumps(binding_record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 shutil.copyfile(repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py", device_py_dst)
 
 with tarfile.open(receipts_tar, "w:gz") as tf:
@@ -1991,29 +2125,15 @@ with tarfile.open(receipts_tar, "w:gz") as tf:
             raise SystemExit(f"RECEIPT_MISSING: missing {rname} in {receipts_dir}")
         tf.add(rpath, arcname=rname, recursive=False)
 
-include_paths = [
-    "pyproject.toml",
-    "uv.lock",
-    "README.md",
-    "src",
-    "scripts/colab",
-]
-raw_shard_manifest = (os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip() if "os" in dir() else ""
+# The repo bundle is the git-tracked files under these paths at a clean HEAD (`git ls-files`), never the working tree:
+# a modified or untracked file there refuses REPO_TREE_DIRTY, so nothing untracked under src/ or scripts/colab is
+# ever uploaded.
 import os as _os
+tracked_files = vm_judges.tracked_repo_bundle_files(repo_root)
 raw_shard_manifest = (_os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip()
 with tarfile.open(repo_tar, "w:gz") as tf:
-    for rel in include_paths:
-        target = repo_root / rel
-        if not target.exists():
-            continue
-        if target.is_file():
-            tf.add(target, arcname=rel, recursive=False)
-        else:
-            for child in sorted(target.rglob("*")):
-                if "__pycache__" in child.parts or child.suffix in (".pyc", ".pyo"):
-                    continue
-                if child.is_file():
-                    tf.add(child, arcname=child.relative_to(repo_root).as_posix(), recursive=False)
+    for rel in tracked_files:
+        tf.add(repo_root / rel, arcname=rel, recursive=False)
     if raw_shard_manifest:
         sm_path = Path(raw_shard_manifest)
         if not sm_path.is_file():
@@ -2051,6 +2171,28 @@ PY
 then
   RUN_WHY="staging of items, receipts, or repo bundle failed on rig"
   exit 2
+fi
+if [[ -f "$STAGED_BINDING_FILE" ]]; then
+  # The rig keeps the launcher's binding record (the stage dir is removed after upload); the outcome draft carries it.
+  cp "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
+  BINDING_SUMMARY="$("$PYTHON_BIN" - "$RIG_BINDING_FILE" <<'PY'
+import json
+import sys
+
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+parts = []
+for key, ent in sorted(doc.items()):
+    if isinstance(ent, dict):
+        b = ent["binding"]
+        parts.append(
+            f"{key}:part_id={ent['part_id']},part_json_sha256={ent['part_json_sha256']},"
+            f"uploaded_items={b['uploaded_items']},rule={b['rule']},projection_checked={b['projection_checked']},"
+            f"pin={ent['pin']}"
+        )
+print(" ".join(parts))
+PY
+)" || BINDING_SUMMARY="unreadable"
+  log_msg "PART_BINDING_LAUNCHER record=$RIG_BINDING_FILE $BINDING_SUMMARY"
 fi
 
 if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
@@ -2252,9 +2394,13 @@ if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
     RUN_WHY="colab upload failed for /content/rdlab_items/p0a_items.jsonl on session $S"
     exit 1
   }
-  if [[ -f "$STAGED_P0A_MANIFEST_FILE" ]]; then
-    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_MANIFEST_FILE" "/content/rdlab_items/p0a_manifest.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-      RUN_WHY="colab upload failed for /content/rdlab_items/p0a_manifest.json on session $S"
+  if [[ -f "$STAGED_P0A_PART_JSON_FILE" ]]; then
+    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_PART_JSON_FILE" "/content/rdlab_items/p0a_part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+      RUN_WHY="colab upload failed for /content/rdlab_items/p0a_part.json on session $S"
+      exit 1
+    }
+    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_CHECKSUMS_FILE" "/content/rdlab_items/p0a_checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+      RUN_WHY="colab upload failed for /content/rdlab_items/p0a_checksums.txt on session $S"
       exit 1
     }
   fi
@@ -2273,6 +2419,12 @@ else
       exit 1
     }
   fi
+fi
+if [[ -f "$STAGED_BINDING_FILE" ]]; then
+  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_BINDING_FILE" "/content/rdlab_items/launcher_part_binding.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    RUN_WHY="colab upload failed for /content/rdlab_items/launcher_part_binding.json on session $S"
+    exit 1
+  }
 fi
 if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
   timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {

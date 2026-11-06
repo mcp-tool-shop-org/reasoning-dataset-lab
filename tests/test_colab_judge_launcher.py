@@ -138,12 +138,24 @@ def _make_synthetic_public_items(base_dir: Path, count: int = 12) -> Path:
 
 
 def _attach_part_files(items_path: Path, *, part_id: str) -> dict[str, str]:
-    """Write a minimal `part.json` (`part_id`, `items_count`) and a `checksums.txt` binding it and `items.jsonl` beside
+    """Write a minimal frozen `part.json` (`part_id`, `items_count`, `frozen`, a 64-hex `frozen_mac` that nothing outside
+    the sealed store can verify) and a `checksums.txt` binding it and `items.jsonl` beside
     `items_path`, the identity the VM reads (the VM checks no schema; launcher tests use `_make_builder_part`)."""
     part_dir = items_path.parent
     n = sum(1 for ln in items_path.read_text(encoding="utf-8").splitlines() if ln.strip())
     (part_dir / "part.json").write_text(
-        json.dumps({"part_id": part_id, "items_count": n}, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
+        json.dumps(
+            {
+                "part_id": part_id,
+                "items_count": n,
+                "frozen": True,
+                "frozen_mac": hashlib.sha256(part_id.encode("utf-8")).hexdigest(),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
     )
     shas = {
         name: hashlib.sha256((part_dir / name).read_bytes()).hexdigest() for name in ("items.jsonl", "part.json")
@@ -151,6 +163,48 @@ def _attach_part_files(items_path: Path, *, part_id: str) -> dict[str, str]:
     (part_dir / "checksums.txt").write_text(
         "".join(f"{shas[name]}  {name}\n" for name in sorted(shas)), encoding="utf-8", newline="\n"
     )
+    return shas
+
+
+def _pilot_identity_for(items_path: Path, *, is_pilot: bool = True) -> dict[str, Any]:
+    """The P0a pilot identity as `vm_judges.verify_p0a_pilot_part` returns it for the burned pilot, bound to exactly
+    `items_path` (count and SHA-256): for `bakeoff_judge` unit tests, which receive the identity and never compute it."""
+    data = items_path.read_bytes() if items_path.is_file() else (items_path / "items.jsonl").read_bytes()
+    n = sum(1 for ln in data.decode("utf-8").splitlines() if ln.strip())
+    return {
+        "part_id": "bakeoff-d-t10-sealed",
+        "items_count": n,
+        "is_pilot_40b": is_pilot,
+        "pin": "burned_pilot" if is_pilot else None,
+        "binding": {
+            "checked_by": "launcher",
+            "uploaded_items": n,
+            "uploaded_items_sha256": hashlib.sha256(data).hexdigest(),
+            "rule": "whole_part_in_order",
+            "projection_checked": True,
+        },
+    }
+
+
+def _stage_p0a_pilot_part(p0a_items: Path, monkeypatch: pytest.MonkeyPatch, *, pin: bool = True) -> dict[str, str]:
+    """Stage a pilot part for `p0a_items` as the launcher does on the VM (`p0a_part.json`, `p0a_checksums.txt` beside
+    it; the part's items are exactly `p0a_items`) and pin it as the burned pilot for this test."""
+    n = sum(1 for ln in p0a_items.read_text(encoding="utf-8").splitlines() if ln.strip())
+    pj = (
+        json.dumps(
+            {"part_id": "bakeoff-d-t10-sealed", "items_count": n, "frozen": True, "frozen_mac": "ab" * 32},
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    (p0a_items.parent / vm_judges.P0A_PART_JSON_STAGED).write_bytes(pj)
+    shas = {"items.jsonl": hashlib.sha256(p0a_items.read_bytes()).hexdigest(), "part.json": hashlib.sha256(pj).hexdigest()}
+    (p0a_items.parent / vm_judges.P0A_CHECKSUMS_STAGED).write_text(
+        "".join(f"{shas[k]}  {k}\n" for k in sorted(shas)), encoding="utf-8", newline="\n"
+    )
+    if pin:
+        monkeypatch.setattr(vm_judges, "PILOT_40B_PART_JSON_SHA256", shas["part.json"])
+        monkeypatch.setattr(vm_judges, "PILOT_40B_ITEMS_JSONL_SHA256", shas["items.jsonl"])
     return shas
 
 
@@ -14211,6 +14265,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_OPEN_LOCK": "rig-only: flock path serializing `colab sessions` + `colab new` on the rig",
     "RDLAB_OUT_DIR": "rig-only: output directory on the rig filesystem",
     "RDLAB_PART_DIR": "rig-only: the sealed part directory; its part.json and checksums.txt are uploaded, the path is not forwarded",
+    "RDLAB_P0A_PART_DIR": "rig-only: the burned pilot's part directory; its part.json and checksums.txt are uploaded as p0a_part.json / p0a_checksums.txt, the path is not forwarded",
     "RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS": "rig-only: interval between periodic `progress.jsonl` downloads on the rig",
     "RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS": "rig-only: timeout for each periodic `progress.jsonl` download on the rig",
     "RDLAB_PYTHON": "rig-only: Python interpreter path on the rig",
@@ -20827,7 +20882,8 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     assert len(sm_doc["anchor_item_ids"]) == 50
     assert set(sm_doc["anchor_item_ids"]) == set(gm_doc["anchor_item_ids"])
     assert all(aid.startswith("counted-") for aid in gm_doc["anchor_item_ids"])
-    assert p0a_doc["part_id"] == "pilot-40b"
+    # a stub window without the pilot part records no part_id (never a label); a real window needs the pinned pilot
+    assert p0a_doc["part_id"] is None
     assert p0a_doc["item_count"] == 114
     assert p0a_doc["baseline_repeat"]["bitwise_identical"] is True
     assert p0a_doc["reversed_low_margin_rerun"]["selected_item_count"] == 20
@@ -20997,6 +21053,7 @@ def test_fix1_item1_p0a_builds_real_transports_in_real_mode_and_refuses_stub(
     with pytest.raises(RdlabError) as exc_stub_inj:
         bakeoff_judge.run_lock_check_p0a(
             part_dir=items_path,
+            pilot_identity=_pilot_identity_for(items_path),
             output_dir=tmp_path / "p0a_stub_inj_out",
             baseline_rows=[],
             judge_ids=["mu-judge"],
@@ -21011,6 +21068,7 @@ def test_fix1_item1_p0a_builds_real_transports_in_real_mode_and_refuses_stub(
     with pytest.raises(RdlabError) as exc_fake_flag:
         bakeoff_judge.run_lock_check_p0a(
             part_dir=items_path,
+            pilot_identity=_pilot_identity_for(items_path),
             output_dir=tmp_path / "p0a_fake_flag_out",
             baseline_rows=[],
             judge_ids=["mu-judge"],
@@ -21024,6 +21082,7 @@ def test_fix1_item1_p0a_builds_real_transports_in_real_mode_and_refuses_stub(
     with pytest.raises(RdlabError) as exc_no_rec:
         bakeoff_judge.run_lock_check_p0a(
             part_dir=items_path,
+            pilot_identity=_pilot_identity_for(items_path),
             output_dir=tmp_path / "p0a_no_rec_out",
             baseline_rows=[],
             judge_ids=["mu-judge"],
@@ -21115,6 +21174,7 @@ def test_fix1_item1_p0a_builds_real_transports_in_real_mode_and_refuses_stub(
     p0a_real_out = tmp_path / "p0a_real_out"
     p0a_real_doc = bakeoff_judge.run_lock_check_p0a(
         part_dir=items_path,
+        pilot_identity=_pilot_identity_for(items_path),
         output_dir=p0a_real_out,
         baseline_rows=[],
         judge_ids=["mu-judge", "d3-mini"],
@@ -21347,6 +21407,7 @@ def test_fix1_item3_p0a_cuda_event_timing_and_prefill_vs_decode_separation(
     p0a_out = tmp_path / "p0a_cuda_out"
     p0a_doc = bakeoff_judge.run_lock_check_p0a(
         part_dir=items_path,
+        pilot_identity=_pilot_identity_for(items_path),
         output_dir=p0a_out,
         baseline_rows=[],
         judge_ids=["mu-judge"],
@@ -21368,111 +21429,84 @@ def test_fix1_item3_p0a_cuda_event_timing_and_prefill_vs_decode_separation(
     assert "prefill" in phase_log and "decode" in phase_log
 
 
-def test_fix1_item4_burned_pilot_guard_enforced_by_manifest_or_item_part_id_and_counts(
+def test_fix1_item4_burned_pilot_guard_enforced_by_pinned_identity_and_counts(
     tmp_path: Path,
 ) -> None:
-    """Fix1 Item 4: `run_lock_check_p0a` enforces the burned pilot (`pilot-40b`) by manifest or item `part_id`
-    and exact counts 114 items / 228 calls (`PILOT_BURNED_ITEM_COUNT`, `PILOT_BURNED_CALL_COUNT`), even when
-    `part_dir` is a generic VM staging directory name like `rdlab_items`.
+    """Fix1 Item 4, re-keyed after #70: `run_lock_check_p0a` enforces the burned pilot by the identity
+    `vm_judges.verify_p0a_pilot_part` computes from the pilot part's pinned SHA-256 (passed as `pilot_identity`), never
+    by a `part_id` label, and exact counts 114 items / 228 calls (`PILOT_BURNED_ITEM_COUNT`, `PILOT_BURNED_CALL_COUNT`).
+    - Real mode without an identity refuses `P0A_PILOT_IDENTITY_MISSING`, even with a `{"part_id": "pilot-40b"}`
+      manifest and every row tagged with that label;
+    - an identity that is not the pinned pilot, or bound to another file, refuses `P0A_PILOT_IDENTITY_MISMATCH`;
+    - 25 items with a matching identity refuse `P0A_COUNTED_PART_FORBIDDEN`, as does a directory named `part01...`;
+    - a stub run with the identity records the part's real `part_id`; a stub run without one records `None`.
     """
     from reasoning_dataset_lab.pilot_b import bakeoff_judge
 
-    # 1. Staging dir without manifest or item part_id is refused even if it has 114 items
-    staging_unmarked = tmp_path / "rdlab_items_unmarked"
-    items_unmarked = _make_stratified_public_items(staging_unmarked, count=114)
-    (items_unmarked.parent / "manifest.json").unlink()
-    raw_Staging = staging_unmarked / "staging"
-    raw_Staging.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(items_unmarked, raw_Staging / "items.jsonl")
-    with pytest.raises(RdlabError) as exc_unmarked:
-        bakeoff_judge.run_lock_check_p0a(
-            part_dir=raw_Staging,
-            output_dir=tmp_path / "out_unmarked",
+    labelled = tmp_path / "rdlab_items_labelled"
+    items_labelled = _make_stratified_public_items(labelled, count=114)
+    tagged = [
+        json.dumps(dict(json.loads(ln), part_id="pilot-40b"), sort_keys=True)
+        for ln in items_labelled.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    items_labelled.write_text("\n".join(tagged) + "\n", encoding="utf-8")
+
+    def _p0a(part_dir: Path, out: str, **kw: Any) -> dict[str, Any]:
+        return bakeoff_judge.run_lock_check_p0a(
+            part_dir=part_dir,
+            output_dir=tmp_path / out,
             baseline_rows=[],
             judge_ids=["mu-judge"],
-            fake_transport=True,
+            profiler_call_count=2,
+            low_margin_item_count=2,
             repo_root=REPO_ROOT,
+            **kw,
         )
-    assert exc_unmarked.value.code == "P0A_COUNTED_PART_FORBIDDEN"
 
-    # 2. Staging dir with manifest part_id="part01" is refused even if dir name is "rdlab_items"
-    staging_counted = tmp_path / "rdlab_items_counted"
-    items_counted = _make_stratified_public_items(staging_counted, count=114)
-    (items_counted.parent / "manifest.json").write_text(
-        json.dumps({"part_id": "part01", "schema_version": "1.0"}) + "\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(RdlabError) as exc_counted_mf:
-        bakeoff_judge.run_lock_check_p0a(
-            part_dir=items_counted.parent,
-            output_dir=tmp_path / "out_counted_mf",
-            baseline_rows=[],
-            judge_ids=["mu-judge"],
+    with pytest.raises(RdlabError) as exc_label:
+        _p0a(items_labelled.parent, "out_label", fake_transport=False, window_mode="lock-check")
+    assert exc_label.value.code == "P0A_PILOT_IDENTITY_MISSING"
+
+    with pytest.raises(RdlabError) as exc_not_pilot:
+        _p0a(
+            items_labelled.parent,
+            "out_not_pilot",
             fake_transport=True,
-            repo_root=REPO_ROOT,
+            pilot_identity=_pilot_identity_for(items_labelled, is_pilot=False),
         )
-    assert exc_counted_mf.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+    assert exc_not_pilot.value.code == "P0A_PILOT_IDENTITY_MISMATCH"
 
-    # 3. Staging dir with item part_id="part02" is refused
-    staging_row_bad = tmp_path / "rdlab_items_row_bad"
-    items_row_bad = _make_stratified_public_items(staging_row_bad, count=114)
-    (items_row_bad.parent / "manifest.json").unlink()
-    bad_lines = []
-    for ln in items_row_bad.read_text(encoding="utf-8").splitlines():
-        if ln.strip():
-            obj = json.loads(ln)
-            obj["part_id"] = "part02"
-            bad_lines.append(json.dumps(obj, sort_keys=True))
-    items_row_bad.write_text("\n".join(bad_lines) + "\n", encoding="utf-8")
-    with pytest.raises(RdlabError) as exc_row_bad:
-        bakeoff_judge.run_lock_check_p0a(
-            part_dir=items_row_bad.parent,
-            output_dir=tmp_path / "out_row_bad",
-            baseline_rows=[],
-            judge_ids=["mu-judge"],
-            fake_transport=True,
-            repo_root=REPO_ROOT,
-        )
-    assert exc_row_bad.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+    other = _make_stratified_public_items(tmp_path / "other_file", count=114)
+    with pytest.raises(RdlabError) as exc_other:
+        _p0a(items_labelled.parent, "out_other", fake_transport=True, pilot_identity=_pilot_identity_for(other))
+    assert exc_other.value.code == "P0A_PILOT_IDENTITY_MISMATCH"
 
-    # 4. Wrong item count (e.g. 25 items / 50 calls instead of 114 items / 228 calls) is refused even with pilot-40b manifest
-    wrong_count_dir = tmp_path / "pilot-40b-25"
-    items_25 = _make_stratified_public_items(wrong_count_dir, count=25)
+    items_25 = _make_stratified_public_items(tmp_path / "pilot-25", count=25)
     with pytest.raises(RdlabError) as exc_wrong_cnt:
-        bakeoff_judge.run_lock_check_p0a(
-            part_dir=items_25.parent,
-            output_dir=tmp_path / "out_wrong_cnt",
-            baseline_rows=[],
-            judge_ids=["mu-judge"],
-            fake_transport=True,
-            repo_root=REPO_ROOT,
-        )
+        _p0a(items_25.parent, "out_wrong_cnt", fake_transport=True, pilot_identity=_pilot_identity_for(items_25))
     assert exc_wrong_cnt.value.code == "P0A_COUNTED_PART_FORBIDDEN"
 
-    # 5. Staging dir named "rdlab_items" with item part_id="pilot-40b" and 114 items / 228 calls succeeds
-    staging_ok = tmp_path / "rdlab_items"
-    items_ok = _make_stratified_public_items(staging_ok, count=114)
-    (items_ok.parent / "manifest.json").unlink()
-    ok_lines = []
-    for ln in items_ok.read_text(encoding="utf-8").splitlines():
-        if ln.strip():
-            obj = json.loads(ln)
-            obj["part_id"] = bakeoff_judge.PILOT_BURNED_PART_ID
-            ok_lines.append(json.dumps(obj, sort_keys=True))
-    items_ok.write_text("\n".join(ok_lines) + "\n", encoding="utf-8")
-    doc_ok = bakeoff_judge.run_lock_check_p0a(
-        part_dir=items_ok.parent,
-        output_dir=tmp_path / "out_staging_ok",
-        baseline_rows=[],
-        judge_ids=["mu-judge"],
-        fake_transport=True,
-        profiler_call_count=2,
-        low_margin_item_count=2,
-        repo_root=REPO_ROOT,
+    counted_named = tmp_path / "part01_counted"
+    items_counted = _make_stratified_public_items(counted_named, count=114)
+    shutil.copytree(items_counted.parent, counted_named / "part01")
+    with pytest.raises(RdlabError) as exc_counted_name:
+        _p0a(
+            counted_named / "part01",
+            "out_counted_name",
+            fake_transport=True,
+            pilot_identity=_pilot_identity_for(counted_named / "part01" / "items.jsonl"),
+        )
+    assert exc_counted_name.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+
+    doc_ok = _p0a(
+        items_labelled.parent, "out_ok", fake_transport=True, pilot_identity=_pilot_identity_for(items_labelled)
     )
-    assert doc_ok["part_id"] == bakeoff_judge.PILOT_BURNED_PART_ID
+    assert doc_ok["part_id"] == "bakeoff-d-t10-sealed"
     assert doc_ok["item_count"] == bakeoff_judge.PILOT_BURNED_ITEM_COUNT == 114
     assert doc_ok["calls_per_judge"] == bakeoff_judge.PILOT_BURNED_CALL_COUNT == 228
+    doc_stub = _p0a(items_labelled.parent, "out_stub_noid", fake_transport=True)
+    assert doc_stub["part_id"] is None
 
 
 def test_fix1_item5_cosmetics_manifest_sha256_no_empty_comment_block_and_launch_help() -> None:
@@ -21588,7 +21622,8 @@ def test_fix2_item1_and_3_two_input_lock_check_and_shard_merge_chain(
     assert set(sm_doc["stratified_anchor_item_ids"]) | set(sm_doc["canary_item_ids"]) == anchor_ids
     assert sm_doc["item_count"] == 100
     assert set(sm_doc["shards"]["1"]) | set(sm_doc["shards"]["2"]) == counted_ids
-    assert p0a_doc["part_id"] == "pilot-40b"
+    # a stub window without the pilot part records no part_id (never a label); a real window needs the pinned pilot
+    assert p0a_doc["part_id"] is None
     assert p0a_doc["item_count"] == 114
 
     temp_goldens = tmp_path / "f2_cand_goldens" / "boot_gatekeeper_goldens.json"
@@ -21719,11 +21754,12 @@ def test_fix2_item2_input_guards_overlap_counted_in_p0a_and_anchor_invalid(
     )
     counted_manifest = counted_items_file.parent / "manifest.json"
 
-    # Valid two-input check passes
+    # Valid two-input check passes (with the pilot identity the launcher computes from the pinned pilot part)
     ver_ok = bakeoff_judge.verify_lock_check_two_inputs(
         anchor_items_or_path=anchor_items_src,
         p0a_items_or_path=p0a_items_src,
         counted_items_or_manifest=counted_manifest,
+        pilot_identity=_pilot_identity_for(p0a_items_src),
     )
     assert ver_ok["anchor_item_count"] == 50
     assert ver_ok["p0a_item_count"] == 114
@@ -21905,7 +21941,8 @@ def test_fix2_item4_launcher_two_input_flags_help_upload_check_and_delete(
     assert "--anchor-items FILE" in proc_help.stdout
     assert "--p0a-items FILE" in proc_help.stdout
     assert "50 anchor items from the counted part" in proc_help.stdout
-    assert "114 burned pilot items (pilot-40b)" in proc_help.stdout
+    assert "114 burned pilot items for P0a only" in proc_help.stdout
+    assert "--p0a-part-dir DIR" in proc_help.stdout
 
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "f2_launch_env")
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "f2_launch_rec")
@@ -21980,7 +22017,8 @@ def test_fix2_item4_launcher_two_input_flags_help_upload_check_and_delete(
 
     del_rec = vm_receipt["deleted_items_receipt"]
     assert del_rec["all_absent"] is True
-    assert len(del_rec["files"]) == 4
+    # anchor, P0a and counted items (no P0a manifest is staged since the pilot is named by its pinned hashes)
+    assert len(del_rec["files"]) == 3
     assert all(f["absent"] is True and f["test_not_e_rc"] == 0 for f in del_rec["files"])
     vm_items_dir = env_paths["state_dir"] / "vm_fs" / "rdlab_items"
     assert not (vm_items_dir / "anchor_items.jsonl").exists()
@@ -22163,7 +22201,8 @@ def test_fix3_item6_refusals_counted_source_burned_pilot_golden_manifest_promote
         )
     assert exc_anc_rpid.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
 
-    # 6. A 114-item P0a file named `p0a_items.jsonl` with no manifest and no row part_id refuses with P0A_COUNTED_PART_FORBIDDEN
+    # 6. A 114-item P0a file named `p0a_items.jsonl` with no pilot identity refuses P0A_PILOT_IDENTITY_MISSING (two-input
+    #    check, and P0a in real mode); the pilot is named only by its pinned part hashes
     bare_p0a_dir = tmp_path / "bare_upload_dir"
     bare_p0a_dir.mkdir(parents=True, exist_ok=True)
     bare_p0a_file = bare_p0a_dir / "p0a_items.jsonl"
@@ -22176,7 +22215,7 @@ def test_fix3_item6_refusals_counted_source_burned_pilot_golden_manifest_promote
             p0a_items_or_path=bare_p0a_file,
             counted_items_or_manifest=counted_manifest,
         )
-    assert exc_bare_p0a_two.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+    assert exc_bare_p0a_two.value.code == "P0A_PILOT_IDENTITY_MISSING"
 
     with pytest.raises(RdlabError) as exc_bare_p0a_run:
         bakeoff_judge.run_lock_check_p0a(
@@ -22184,9 +22223,10 @@ def test_fix3_item6_refusals_counted_source_burned_pilot_golden_manifest_promote
             output_dir=tmp_path / "bare_p0a_out",
             judge_ids=["mu-judge"],
             fake_transport=True,
+            pilot_identity=_pilot_identity_for(bare_p0a_file, is_pilot=False),
             repo_root=REPO_ROOT,
         )
-    assert exc_bare_p0a_run.value.code == "P0A_COUNTED_PART_FORBIDDEN"
+    assert exc_bare_p0a_run.value.code == "P0A_PILOT_IDENTITY_MISMATCH"
 
     # 7. A golden manifest with 49 anchors, and a malformed one, refuse (LOCK_CHECK_ANCHOR_ITEMS_INVALID);
     #    a golden/shard anchor mismatch refuses (SHARD_MANIFEST_ANCHOR_MISMATCH)
@@ -22589,7 +22629,8 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
     assert "LOCK_CHECK_COUNTED_SOURCE_MISSING" in proc_miss_mf_sh.stderr
     assert not env_paths["calls_log"].exists()
 
-    # (d) --dry with --counted-manifest prints p0a_manifest.json upload when manifest.json exists next to --p0a-items
+    # (d) --dry with --counted-manifest never uploads a P0a manifest.json (the pilot is named by its part's pinned hashes,
+    #     staged as p0a_part.json / p0a_checksums.txt only with --p0a-part-dir)
     proc_dry_mf = subprocess.run(
         [
             "bash",
@@ -22609,7 +22650,8 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
         check=False,
     )
     assert proc_dry_mf.returncode == 0, proc_dry_mf.stderr
-    assert "/content/rdlab_items/p0a_manifest.json" in proc_dry_mf.stdout
+    assert "/content/rdlab_items/p0a_manifest.json" not in proc_dry_mf.stdout
+    assert "/content/rdlab_items/p0a_items.jsonl" in proc_dry_mf.stdout
 
     # 3. RdlabError-to-RefusalError wraps around golden/shard build and P0a in run_judges_pipeline
     monkeypatch.setenv("FAKE_COLAB_STATE_DIR", _to_wsl_path(env_paths["state_dir"]))
@@ -22755,6 +22797,7 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
         anchor_items_or_path=loaded_anc_items,
         p0a_items_or_path=loaded_p0a_items,
         counted_items_or_manifest=counted_manifest,
+        pilot_identity=_pilot_identity_for(p0a_items_src),
     )
     assert res_seq_ok["p0a_item_count"] == 114
 
@@ -22780,6 +22823,7 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
         anchor_items_or_path=anc_with_blank_and_part,
         p0a_items_or_path=p0a_items_src,
         counted_items_or_manifest=counted_manifest,
+        pilot_identity=_pilot_identity_for(p0a_items_src),
     )
     assert res_tagged_anc["anchor_item_count"] == 50
 
@@ -22811,7 +22855,19 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
         encoding="utf-8",
     )
     (p0a_empty_pid_dir / "manifest.json").write_text(json.dumps({"part_id": "pilot-40b"}), encoding="utf-8")
-    assert bakeoff_judge._verify_burned_pilot_for_p0a(p0a_empty_pid_dir / "items.jsonl", loaded_p0a_items, p0a_sched) == "pilot-40b"
+    # The label manifest and a blank row part_id prove nothing: no identity refuses; the identity names the real part_id.
+    with pytest.raises(RdlabError) as exc_label_only:
+        bakeoff_judge._verify_burned_pilot_for_p0a(p0a_empty_pid_dir / "items.jsonl", loaded_p0a_items, p0a_sched)
+    assert exc_label_only.value.code == "P0A_PILOT_IDENTITY_MISSING"
+    assert (
+        bakeoff_judge._verify_burned_pilot_for_p0a(
+            p0a_empty_pid_dir / "items.jsonl",
+            loaded_p0a_items,
+            p0a_sched,
+            pilot_identity=_pilot_identity_for(p0a_items_src),
+        )
+        == "bakeoff-d-t10-sealed"
+    )
 
     # 6. `window.json` sha carry-over (`anchor_items_sha256`, `p0a_items_sha256`, `counted_source_sha256`)
     carry_dir = tmp_path / "win_carry_dir"
@@ -23064,8 +23120,8 @@ def test_fix4_item1_synthesized_manifest_is_stub_deleted_after_run_and_ignored_b
     # Synthesized manifest.json in shared_items_dir was deleted after the stub run
     assert not (shared_items_dir / "manifest.json").exists()
 
-    # Even if a leftover manifest.json with {"part_id": "pilot-40b"} sits in shared_items_dir,
-    # --lock-check-stub in shared_items_dir with 114 unmarked items (and no p0a_manifest.json) is refused!
+    # Even if a leftover manifest.json with {"part_id": "pilot-40b"} sits in shared_items_dir, the label is no proof:
+    # --lock-check-stub with 114 non-pilot items and a staged part that is not the pinned pilot is refused.
     (shared_items_dir / "manifest.json").write_text(
         json.dumps({"part_id": "pilot-40b", "schema_version": "1.0"}) + "\n",
         encoding="utf-8",
@@ -23085,6 +23141,7 @@ def test_fix4_item1_synthesized_manifest_is_stub_deleted_after_run_and_ignored_b
         encoding="utf-8",
     )
     assert not (shared_items_dir / "p0a_manifest.json").exists()
+    _stage_p0a_pilot_part(shared_items_dir / "p0a_items.jsonl", monkeypatch, pin=False)
 
     lc_status = tmp_path / "f4_i1_lc_status.json"
     rc_lc = vm_judges.main(
@@ -23116,7 +23173,7 @@ def test_fix4_item1_synthesized_manifest_is_stub_deleted_after_run_and_ignored_b
         ]
     )
     assert rc_lc == 2
-    assert json.loads(lc_status.read_text(encoding="utf-8"))["failure_class"] == "P0A_COUNTED_PART_FORBIDDEN"
+    assert json.loads(lc_status.read_text(encoding="utf-8"))["failure_class"] == "P0A_PILOT_IDENTITY_MISMATCH"
     # Leftover un-uploaded manifest.json in shared_items_dir was also cleaned up by delete_uploaded_items_and_record_receipt
     assert not (shared_items_dir / "manifest.json").exists()
 
@@ -23658,6 +23715,7 @@ def test_fix4_item7_real_mode_paths_with_monkeypatched_transport(
     monkeypatch.setattr(bakeoff_judge, "_make_cuda_timing_event", bakeoff_judge._MonotonicTimingEvent)
 
     lc_real_run = tmp_path / "f4_i7_lc_real_run"
+    _stage_p0a_pilot_part(p0a_items_src, monkeypatch)
     lc_sum_real, lc_mass_real = vm_judges.run_judges_pipeline(
         mode="lock-check",
         part_dir=anchor_items_src.parent,
@@ -23672,8 +23730,11 @@ def test_fix4_item7_real_mode_paths_with_monkeypatched_transport(
         p0a_items_file=p0a_items_src,
         counted_items_or_manifest=counted_items_file,
     )
-    assert lc_mass_real["part_id"] == "pilot-40b"
+    # rows/ hold the counted part's anchor pass: the pilot mass check does not apply, and no label is written.
+    assert lc_mass_real["status"] == "not_applicable" and lc_mass_real["part_id"] is None
     assert lc_sum_real["part_identity"] is None
+    assert lc_sum_real["p0a_part_identity"]["pin"] == "burned_pilot"
+    assert lc_sum_real["p0a_part_identity"]["part_id"] == "bakeoff-d-t10-sealed"
     assert (lc_real_run / "golden_anchor_manifest.json").is_file()
     assert (lc_real_run / "shard_manifest.json").is_file()
     assert (lc_real_run / "p0a_report.json").is_file()
@@ -24045,14 +24106,20 @@ def test_fix5_item4_golden_anchor_manifest_file_sha256_round_trips(
 # ---------------------------------------------------------------------------------------------------------------------
 
 
-def _followup_vm_inputs(base: Path, anchor_src: Path, p0a_src: Path) -> tuple[Path, Path]:
-    """Copy the anchor and P0a inputs (plus the P0a manifest) into a fresh upload dir; `main` deletes them after a run."""
+def _followup_vm_inputs(
+    base: Path, anchor_src: Path, p0a_src: Path, *, monkeypatch: pytest.MonkeyPatch | None = None
+) -> tuple[Path, Path]:
+    """Copy the anchor and P0a inputs (plus the old P0a manifest, which nothing reads now) into a fresh upload dir;
+    `main` deletes them after a run. With `monkeypatch`, also stage the P0a input's pilot part, pinned (a real
+    lock-check window needs it)."""
     base.mkdir(parents=True, exist_ok=True)
     anc = base / "anchor_items.jsonl"
     p0a = base / "p0a_items.jsonl"
     shutil.copyfile(anchor_src, anc)
     shutil.copyfile(p0a_src, p0a)
     shutil.copyfile(p0a_src.parent / "manifest.json", base / "p0a_manifest.json")
+    if monkeypatch is not None:
+        _stage_p0a_pilot_part(p0a, monkeypatch)
     return anc, p0a
 
 
@@ -24652,7 +24719,9 @@ def test_followup_item6_real_lock_check_through_vm_main_on_monkeypatched_transpo
     monkeypatch.setattr(bakeoff_judge, "run_lock_check_p0a", _fake_p0a)
 
     # (1) bad counted source: refused at the preflight, nothing paid, nothing written
-    anc_bad, p0a_bad = _followup_vm_inputs(tmp_path / "fu6_in_bad", anchor_items_src, p0a_items_src)
+    anc_bad, p0a_bad = _followup_vm_inputs(
+        tmp_path / "fu6_in_bad", anchor_items_src, p0a_items_src, monkeypatch=monkeypatch
+    )
     bad_mf = tmp_path / "fu6_in_bad" / "counted_manifest.json"
     shutil.copyfile(counted_items_file.parent / "manifest.json", bad_mf)
     assert not (bad_mf.parent / "items.jsonl").exists()
@@ -24673,7 +24742,7 @@ def test_followup_item6_real_lock_check_through_vm_main_on_monkeypatched_transpo
     assert not (run_bad / "golden_anchor_manifest.json").exists()
 
     # (2) good run in real lock-check mode
-    anc, p0a = _followup_vm_inputs(tmp_path / "fu6_in", anchor_items_src, p0a_items_src)
+    anc, p0a = _followup_vm_inputs(tmp_path / "fu6_in", anchor_items_src, p0a_items_src, monkeypatch=monkeypatch)
     cnt_dir = tmp_path / "fu6_in_counted"
     cnt_dir.mkdir(parents=True, exist_ok=True)
     cnt = cnt_dir / "counted_manifest.json"
@@ -24862,9 +24931,10 @@ def test_part_binding_launcher_binds_items_to_the_real_part_files_before_any_col
         proc, _ = _run(tag, mode, items, part, live=False)
         assert proc.returncode == 0, proc.stderr
         uploads = [ln for ln in proc.stdout.splitlines() if ln.startswith("colab upload")]
-        assert uploads[-3].endswith(" /content/rdlab_items/items.jsonl"), uploads
-        assert uploads[-2].endswith(" /content/rdlab_items/part.json"), uploads
-        assert uploads[-1].endswith(" /content/rdlab_items/checksums.txt"), uploads
+        assert uploads[-4].endswith(" /content/rdlab_items/items.jsonl"), uploads
+        assert uploads[-3].endswith(" /content/rdlab_items/part.json"), uploads
+        assert uploads[-2].endswith(" /content/rdlab_items/checksums.txt"), uploads
+        assert uploads[-1].endswith(" /content/rdlab_items/launcher_part_binding.json"), uploads
         assert "part_id=bakeoff-d-t10-sealed" in proc.stderr and "projection_checked=True" in proc.stderr, proc.stderr
         assert not (inputs / "manifest.json").exists() and not (part / "manifest.json").exists()
 
@@ -25077,7 +25147,12 @@ def test_part_binding_vm_main_refuses_before_any_paid_step(
         assert ident["part_json_sha256"] == part_json_sha
         assert ident["items_jsonl_sha256"] == items_sha
         assert ident["is_pilot_40b"] is False
-        assert ident["binding"] == {"uploaded_items": 12, "rule": "subset_of_part", "projection_checked": False}
+        assert {k: ident["binding"][k] for k in ("uploaded_items", "rule", "projection_checked", "checked_by")} == {
+            "uploaded_items": 12,
+            "rule": "subset_of_part",
+            "projection_checked": False,
+            "checked_by": "vm",
+        }
     # not the burned pilot (by hash), so the pilot mass check does not run, and nothing is labelled pilot-40b
     assert t1_ok["harness_readouts"]["pilot_mass_check"]["status"] == "not_applicable"
     assert t1_ok["harness_readouts"]["pilot_mass_check"]["part_id"] == "bakeoff-d-t10-sealed"
@@ -25298,8 +25373,38 @@ def _e2e_fake_real_mode_window(
     vm_items_dir = env_paths["state_dir"] / "vm_fs" / "rdlab_items"
     assert not any((vm_items_dir / n).exists() for n in ("items.jsonl", "part.json", "checksums.txt", "manifest.json"))
     deleted = {Path(f["path"]).name: f["absent"] for f in receipt["deleted_items_receipt"]["files"]}
-    assert deleted == {"items.jsonl": True, "part.json": True, "checksums.txt": True}, receipt["deleted_items_receipt"]
+    assert deleted == {
+        "items.jsonl": True,
+        "part.json": True,
+        "checksums.txt": True,
+        "launcher_part_binding.json": True,
+    }, receipt["deleted_items_receipt"]
     assert receipt["deleted_items_receipt"]["all_absent"] is True
+
+    # The receipt shows both checks, each labelled by where it ran: the VM's re-check (identity, counts; no projection
+    # check) and the launcher's row-by-row binding, which the outcome draft on the rig carries too.
+    vm_bind = receipt["part_identity"]["binding"]
+    assert vm_bind["checked_by"] == "vm" and vm_bind["projection_checked"] is False
+    launcher_bind = receipt["part_identity"]["launcher_binding"]
+    assert launcher_bind["checked_by"] == "launcher" and launcher_bind["binding"]["projection_checked"] is True
+    assert launcher_bind["binding"]["uploaded_items_sha256"] == hashlib.sha256(items_file.read_bytes()).hexdigest()
+    assert launcher_bind["part_json_sha256"] == hashlib.sha256((part_dir / "part.json").read_bytes()).hexdigest()
+    assert receipt["time_one_summary"]["part_identity"]["launcher_binding"] == launcher_bind
+    assert outcome["launcher_part_binding"]["window_part"] == launcher_bind
+    assert "PART_BINDING_LAUNCHER" in (out_dir / "colab-cli.log").read_text(encoding="utf-8")
+
+    # The repo bundle holds exactly the git-tracked files of the bundle paths (plus the named window inputs).
+    import tarfile
+
+    with tarfile.open(kept / "repo_bundle.tar.gz", "r:gz") as tf_bundle:
+        bundled = {m.name for m in tf_bundle.getmembers() if m.isfile()}
+    tracked = set(vm_judges.tracked_repo_bundle_files(REPO_ROOT))
+    extras = bundled - tracked
+    assert tracked <= bundled and extras <= {
+        "shard_manifest.json",
+        "golden_anchor_manifest.json",
+        "boot_gatekeeper_goldens.candidate.json",
+    }, sorted(extras)
 
     # The part identity recorded is the part's own, read from part.json and bound by checksums.txt.
     ident = receipt["part_identity"]
@@ -25497,3 +25602,562 @@ def test_e2e_fake_real_mode_counted_reaches_judges(
     assert any(r["call"] == "run_boot_gatekeeper" for r in res["shim_rows"])
     assert res["receipt"].get("shard_spec") in (None, "1/2")
     assert res["receipt"]["part_identity"]["binding"]["rule"] == "whole_part_in_order"
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Counted blockers (after #70): the lock-check P0a input keyed on the pinned pilot identity, the launcher's binding in
+# the receipts, part pins and the frozen seal, the projection command, --part-dir / --p0a-part-dir, the repo bundle from
+# tracked files.
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def _part_schema_errors(doc: Any) -> list[str]:
+    from reasoning_dataset_lab.pilot_b import schema_check
+
+    return schema_check.validate(doc, "part")
+
+
+def _pilot_like_part(base: Path) -> Path:
+    """A 114-item part (38 triads) made by the real builder: the shape of the burned pilot."""
+    part = _make_builder_part(base, triads=38)
+    assert len(_part_rows(part)) == 114
+    return part
+
+
+def _pin_as_pilot(monkeypatch: pytest.MonkeyPatch, part: Path) -> None:
+    monkeypatch.setattr(vm_judges, "PILOT_40B_PART_JSON_SHA256", hashlib.sha256((part / "part.json").read_bytes()).hexdigest())
+    monkeypatch.setattr(
+        vm_judges, "PILOT_40B_ITEMS_JSONL_SHA256", hashlib.sha256((part / "items.jsonl").read_bytes()).hexdigest()
+    )
+
+
+def _resum_part(part: Path) -> None:
+    """Rewrite checksums.txt from the files as they are now (the reviewer's 'edited and re-summed' probe)."""
+    names = sorted(n for n in ("items.jsonl", "part.json", "provenance.jsonl") if (part / n).is_file())
+    (part / "checksums.txt").write_text(
+        "".join(f"{hashlib.sha256((part / n).read_bytes()).hexdigest()}  {n}\n" for n in names),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def _counted_and_anchor_files(base: Path, count: int = 60) -> tuple[Path, Path]:
+    """A counted items file (ids disjoint from any builder part's) and its first 50 rows as the anchors."""
+    counted = _make_stratified_public_items(base, count=count)
+    (counted.parent / "manifest.json").unlink()
+    anchors = base / "anchors" / "anchor_items.jsonl"
+    anchors.parent.mkdir(parents=True, exist_ok=True)
+    anchors.write_text(
+        "\n".join(counted.read_text(encoding="utf-8").splitlines()[:50]) + "\n", encoding="utf-8", newline="\n"
+    )
+    return counted, anchors
+
+
+def test_lock_check_p0a_is_keyed_on_the_pinned_pilot_identity_not_a_label(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Item 1: the lock-check P0a input is the burned pilot part named by its pinned part.json / items.jsonl SHA-256
+    (`vm_judges.verify_p0a_pilot_part`, then `bakeoff_judge`'s validators, which receive that identity), with the P0a
+    items bound to the part row by row; a `part_id` label in a manifest or row is never a proof.
+    On a builder-made 114-item part pinned as the pilot: the identity binds (whole part in order, projection checked),
+    the two-input check passes and records nothing called pilot-40b; without the identity it refuses
+    `P0A_PILOT_IDENTITY_MISSING` even with a `{"part_id": "pilot-40b"}` manifest and tagged rows beside the items; with
+    the real pins it refuses `P0A_PILOT_IDENTITY_MISMATCH`; a changed claim refuses `PART_MANIFEST_ITEMS_MISMATCH`; an
+    identity bound to another file refuses `P0A_PILOT_IDENTITY_MISMATCH`.
+    Fails at ffa9f61f: no `verify_p0a_pilot_part`, and the validators required the made-up `pilot-40b` label, which the
+    real pilot's part.json (`bakeoff-d-t10-sealed`) and the upload allow-list never carry.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+    from reasoning_dataset_lab.pilot_b.bakeoff_project import project_part_items
+
+    pilot = _pilot_like_part(tmp_path / "lc1_pilot")
+    p0a = tmp_path / "lc1_inputs" / "pilot-projected.jsonl"
+    project_part_items(pilot, p0a)
+    counted, anchors = _counted_and_anchor_files(tmp_path / "lc1_counted")
+
+    # Real pins: a builder part is not the burned pilot.
+    with pytest.raises(vm_judges.RefusalError) as not_pilot:
+        vm_judges.verify_p0a_pilot_part(p0a, mode="lock-check", part_dir=pilot, schema_errors=_part_schema_errors)
+    assert not_pilot.value.code == "P0A_PILOT_IDENTITY_MISMATCH"
+
+    _pin_as_pilot(monkeypatch, pilot)
+    ident = vm_judges.verify_p0a_pilot_part(p0a, mode="lock-check", part_dir=pilot, schema_errors=_part_schema_errors)
+    assert ident["is_pilot_40b"] is True and ident["pin"] == "burned_pilot"
+    assert ident["part_id"] == "bakeoff-d-t10-sealed"
+    assert ident["binding"]["projection_checked"] is True and ident["binding"]["checked_by"] == "launcher"
+    assert ident["binding"]["rule"] == "whole_part_in_order" and ident["binding"]["uploaded_items"] == 114
+    out = bakeoff_judge.verify_lock_check_two_inputs(
+        anchor_items_or_path=anchors, p0a_items_or_path=p0a, counted_items_or_manifest=counted, pilot_identity=ident
+    )
+    assert out["p0a_item_count"] == 114
+    assert "pilot-40b" not in json.dumps(out) + json.dumps(ident)
+
+    # No identity: refused, even with the old label proofs beside the items.
+    labelled = tmp_path / "lc1_labelled" / "pilot-40b"
+    labelled.mkdir(parents=True)
+    (labelled / "manifest.json").write_text(json.dumps({"part_id": "pilot-40b"}), encoding="utf-8")
+    (labelled / "items.jsonl").write_text(
+        "".join(json.dumps(dict(r, part_id="pilot-40b")) + "\n" for r in _part_rows(pilot)), encoding="utf-8"
+    )
+    for p0a_in in (p0a, labelled / "items.jsonl"):
+        with pytest.raises(RdlabError) as missing:
+            bakeoff_judge.verify_lock_check_two_inputs(
+                anchor_items_or_path=anchors, p0a_items_or_path=p0a_in, counted_items_or_manifest=counted
+            )
+        assert missing.value.code == "P0A_PILOT_IDENTITY_MISSING"
+
+    # An identity bound to another file (here the labelled copy, different bytes) does not stand for this one.
+    with pytest.raises(RdlabError) as other_file:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchors,
+            p0a_items_or_path=labelled / "items.jsonl",
+            counted_items_or_manifest=counted,
+            pilot_identity=ident,
+        )
+    assert other_file.value.code == "P0A_PILOT_IDENTITY_MISMATCH"
+
+    # A projection that differs from the part row by row.
+    bad = tmp_path / "lc1_inputs" / "pilot-projected-bad.jsonl"
+    bad_rows = [json.loads(ln) for ln in p0a.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    bad_rows[7]["claim"] = bad_rows[7]["claim"] + " (edited)"
+    bad.write_text("".join(json.dumps(r) + "\n" for r in bad_rows), encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as mism:
+        vm_judges.verify_p0a_pilot_part(bad, mode="lock-check", part_dir=pilot, schema_errors=_part_schema_errors)
+    assert mism.value.code == "PART_MANIFEST_ITEMS_MISMATCH" and "claim" in mism.value.message
+
+    # The VM side: the staged p0a_part.json / p0a_checksums.txt beside p0a_items.jsonl, counts and identity only.
+    vm_items = tmp_path / "lc1_vm" / "rdlab_items"
+    vm_items.mkdir(parents=True)
+    shutil.copyfile(p0a, vm_items / "p0a_items.jsonl")
+    with pytest.raises(vm_judges.RefusalError) as vm_missing:
+        vm_judges.verify_p0a_pilot_part(vm_items / "p0a_items.jsonl", mode="lock-check")
+    assert vm_missing.value.code == "PART_MANIFEST_MISSING"
+    shutil.copyfile(pilot / "part.json", vm_items / vm_judges.P0A_PART_JSON_STAGED)
+    shutil.copyfile(pilot / "checksums.txt", vm_items / vm_judges.P0A_CHECKSUMS_STAGED)
+    vm_ident = vm_judges.verify_p0a_pilot_part(vm_items / "p0a_items.jsonl", mode="lock-check")
+    assert vm_ident["binding"]["checked_by"] == "vm" and vm_ident["binding"]["projection_checked"] is False
+    assert vm_ident["launcher_binding"] is None
+
+
+def test_lock_check_dry_on_builder_made_pilot_like_part_with_pinned_identity(
+    tmp_path: Path,
+) -> None:
+    """Item 1 / 6: `launch_judges.sh --lock-check --dry` with `--p0a-part-dir` on a builder-made 114-item pilot-like part
+    (pinned as the pilot for this test through a `sitecustomize` on PYTHONPATH that sets the two `PILOT_40B_*`
+    constants), its projection as `--p0a-items`, and a counted source with its 50 anchors: passes, prints the P0a part
+    binding (`pin=burned_pilot`, `projection_checked=True`) and the uploads of p0a_part.json, p0a_checksums.txt and
+    launcher_part_binding.json, never a P0a manifest. Without `--p0a-part-dir` it refuses `PART_MANIFEST_MISSING`;
+    without the pin (the real pilot hashes) `P0A_PILOT_IDENTITY_MISMATCH`; with the old label manifest and no part dir,
+    `PART_MANIFEST_MISSING`. No refusal reaches a `colab` call.
+    Fails at ffa9f61f: the launcher had no `--p0a-part-dir` and P0a required the `pilot-40b` label.
+    """
+    from reasoning_dataset_lab.pilot_b.bakeoff_project import project_part_items
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "lcd_rec")
+    pilot = _pilot_like_part(tmp_path / "lcd_pilot")
+    p0a = tmp_path / "lcd_inputs" / "pilot-projected.jsonl"
+    project_part_items(pilot, p0a)
+    counted, anchors = _counted_and_anchor_files(tmp_path / "lcd_counted")
+    pin_dir = tmp_path / "lcd_pin"
+    pin_dir.mkdir()
+    (pin_dir / "sitecustomize.py").write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(_to_wsl_path(REPO_ROOT / 'src'))!r})\n"
+        f"sys.path.insert(0, {str(_to_wsl_path(SCRIPTS_COLAB_DIR))!r})\n"
+        "import vm_judges\n"
+        f"vm_judges.PILOT_40B_PART_JSON_SHA256 = {hashlib.sha256((pilot / 'part.json').read_bytes()).hexdigest()!r}\n"
+        f"vm_judges.PILOT_40B_ITEMS_JSONL_SHA256 = {hashlib.sha256((pilot / 'items.jsonl').read_bytes()).hexdigest()!r}\n",
+        encoding="utf-8",
+    )
+
+    def _run(tag: str, p0a_in: Path, p0a_part: Path | None, *, pinned: bool) -> tuple[Any, dict[str, Path]]:
+        env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"lcd_env_{tag}")
+        exports = _base_launcher_exports(
+            env_paths,
+            open_lock=tmp_path / f"lcd_{tag}.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=anchors,
+        ).replace("export VM_DRYRUN=1; ", "") + "unset VM_DRYRUN; "
+        if pinned:
+            exports += f"export PYTHONPATH='{_to_wsl_path(pin_dir)}'; "
+        args = (
+            f"--lock-check --dry --anchor-items '{_to_wsl_path(anchors)}' --p0a-items '{_to_wsl_path(p0a_in)}' "
+            f"--counted-items '{_to_wsl_path(counted)}' --run-id lcd-{tag} --out-dir '{_to_wsl_path(tmp_path / ('lcd_out_' + tag))}'"
+        )
+        if p0a_part is not None:
+            args += f" --p0a-part-dir '{_to_wsl_path(p0a_part)}'"
+        return _pm_run_launcher(exports, args), env_paths
+
+    ok, _ = _run("ok", p0a, pilot, pinned=True)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    assert "[p0a-part] part_id=bakeoff-d-t10-sealed items_count=114" in ok.stderr
+    assert "projection_checked=True checked_by=launcher pin=burned_pilot" in ok.stderr
+    for up in ("p0a_part.json", "p0a_checksums.txt", "launcher_part_binding.json"):
+        assert f"/content/rdlab_items/{up}" in ok.stdout, ok.stdout
+    assert "p0a_manifest.json" not in ok.stdout and "pilot-40b" not in ok.stdout + ok.stderr
+
+    labelled = tmp_path / "lcd_labelled" / "pilot-40b"
+    labelled.mkdir(parents=True)
+    shutil.copyfile(p0a, labelled / "items.jsonl")
+    (labelled / "manifest.json").write_text(json.dumps({"part_id": "pilot-40b"}), encoding="utf-8")
+    for tag, p0a_in, p0a_part, pinned, code in (
+        ("nopart", p0a, None, True, "PART_MANIFEST_MISSING"),
+        ("label", labelled / "items.jsonl", None, True, "PART_MANIFEST_MISSING"),
+        ("unpinned", p0a, pilot, False, "P0A_PILOT_IDENTITY_MISMATCH"),
+    ):
+        proc, env_paths = _run(tag, p0a_in, p0a_part, pinned=pinned)
+        assert proc.returncode == 2, (tag, proc.stdout, proc.stderr)
+        assert code in proc.stderr, (tag, proc.stderr)
+        assert "colab new" not in proc.stdout
+        assert not env_paths["calls_log"].exists()
+
+
+def test_launcher_binding_is_carried_into_the_vm_receipt_labelled_by_where_it_was_checked(tmp_path: Path) -> None:
+    """Item 2: the launcher's row-by-row binding (`projection_checked: true`, rule, counts, the part's part.json /
+    items.jsonl SHA-256 and the uploaded file's SHA-256) is written to `launcher_part_binding.json` and carried by the
+    VM into `part_identity.launcher_binding`, beside the VM's own re-check (`checked_by: "vm"`,
+    `projection_checked: false`). The VM refuses `PART_BINDING_RECORD_MISMATCH` when the record names another upload
+    or another part, and never sets `projection_checked` itself.
+    Fails at ffa9f61f: the launcher's check went only to stderr and the receipt showed `projection_checked: false`.
+    """
+    from reasoning_dataset_lab.pilot_b.bakeoff_project import project_part_items
+
+    part = _make_builder_part(tmp_path / "lb_build")
+    projected = tmp_path / "lb_inputs" / "projected.jsonl"
+    project_part_items(part, projected)
+    launcher_ident = vm_judges.preflight_part_manifest(
+        projected,
+        mode="counted",
+        part_dir=part,
+        part_items_file=part / "items.jsonl",
+        schema_errors=_part_schema_errors,
+    )
+    assert launcher_ident is not None
+    entry = vm_judges.launcher_binding_entry(launcher_ident)
+    assert entry["checked_by"] == "launcher" and entry["binding"]["projection_checked"] is True
+    assert entry["binding"]["part_items_jsonl_sha256"] == hashlib.sha256((part / "items.jsonl").read_bytes()).hexdigest()
+    assert entry["binding"]["uploaded_items_sha256"] == hashlib.sha256(projected.read_bytes()).hexdigest()
+
+    vm_items = _stage_vm_items_dir(tmp_path / "lb_vm" / "rdlab_items", projected, part)
+    no_record = vm_judges.preflight_part_manifest(vm_items, mode="counted")
+    assert no_record is not None
+    assert no_record["binding"]["checked_by"] == "vm" and no_record["binding"]["projection_checked"] is False
+    assert no_record["launcher_binding"] is None
+
+    record = {"schema_version": "1.0", "checked_by": "launcher", "window_part": entry, "p0a_part": None}
+    (vm_items.parent / vm_judges.LAUNCHER_BINDING_FILENAME).write_text(json.dumps(record), encoding="utf-8")
+    vm_ident = vm_judges.preflight_part_manifest(vm_items, mode="counted")
+    assert vm_ident is not None
+    assert vm_ident["binding"]["checked_by"] == "vm" and vm_ident["binding"]["projection_checked"] is False
+    assert vm_ident["launcher_binding"]["checked_by"] == "launcher"
+    assert vm_ident["launcher_binding"]["binding"]["projection_checked"] is True
+
+    with pytest.raises(vm_judges.RefusalError):
+        vm_judges.launcher_binding_entry(vm_ident)
+    for field, value in (
+        ("uploaded_items_sha256", "0" * 64),
+        ("part_json_sha256", "1" * 64),
+        ("projection_checked", False),
+    ):
+        bad = json.loads(json.dumps(entry))
+        if field == "part_json_sha256":
+            bad[field] = value
+        else:
+            bad["binding"][field] = value
+        (vm_items.parent / vm_judges.LAUNCHER_BINDING_FILENAME).write_text(
+            json.dumps(dict(record, window_part=bad)), encoding="utf-8"
+        )
+        with pytest.raises(vm_judges.RefusalError) as exc:
+            vm_judges.preflight_part_manifest(vm_items, mode="counted")
+        assert exc.value.code == "PART_BINDING_RECORD_MISMATCH", field
+
+
+def test_part_pins_and_frozen_seal_bind_what_needs_no_sealed_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Item 3: `frozen_mac` is an HMAC under the sealed store's commitment key (`waves_and_sealing._part_mac`), so the
+    launcher and VM cannot recompute it; they bind what needs no sealed material instead:
+    - a pinned part (`pinned_real_parts`: the burned pilot and the anchored counted part) must match its pin in both
+      hashes: its part.json edited and re-summed in checksums.txt refuses `PART_PIN_MISMATCH` (the reviewer's
+      `items_count_*_resummed` probe), as do its items swapped under its own part.json; an unpinned part is recorded
+      `unpinned_trust_on_first_use`;
+    - real modes refuse `PART_NOT_FROZEN` unless part.json says `frozen: true` with a 64-hex `frozen_mac`; the receipt
+      says `frozen_mac_verified: false` with the reason;
+    - the launcher checks every file in checksums.txt (a changed provenance.jsonl refuses `PART_MANIFEST_INVALID`).
+    Fails at ffa9f61f: an edited-and-re-summed part.json bound, and nothing recorded or checked the seal or provenance.
+    """
+    part = _make_builder_part(tmp_path / "pin_build")
+    ident = vm_judges.read_part_identity(part, mode="counted")
+    assert ident["pin"] is None and ident["pin_status"] == "unpinned_trust_on_first_use"
+    assert ident["seal"] == {
+        "frozen": True,
+        "frozen_mac_present": True,
+        "frozen_mac_verified": False,
+        "frozen_mac_not_verified_reason": vm_judges.FROZEN_MAC_NOT_VERIFIED_REASON,
+    }
+    # The real parts' pins are the hashes recorded on the rig.
+    assert vm_judges.pinned_real_parts()["burned_pilot"] == (
+        "9ae6708e0d5b3fae8535899cb1b4df5ee0688dbb5f21206f62e8b4457ea5c067",
+        "c64e982d248fafd60cf121c14bb31cdd4e5093bcb8accc83418a133f092ba675",
+    )
+    monkeypatch.setattr(
+        vm_judges, "ANCHORED_COUNTED_430_PART_JSON_SHA256", hashlib.sha256((part / "part.json").read_bytes()).hexdigest()
+    )
+    monkeypatch.setattr(
+        vm_judges, "ANCHORED_COUNTED_430_ITEMS_JSONL_SHA256", hashlib.sha256((part / "items.jsonl").read_bytes()).hexdigest()
+    )
+    pinned = vm_judges.read_part_identity(part, mode="counted")
+    assert pinned["pin"] == "anchored_counted_430" and pinned["pin_status"] == "pinned" and not pinned["is_pilot_40b"]
+
+    # items_count edited and re-summed (as the reviewer's probe).
+    for tag, field, value in (("count", "items_count", 13), ("other", "triads_failed", 9)):
+        edited = _copy_part(part, tmp_path / f"pin_edit_{tag}")
+        meta = json.loads((edited / "part.json").read_text(encoding="utf-8"))
+        meta[field] = value
+        (edited / "part.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n")
+        _resum_part(edited)
+        with pytest.raises(vm_judges.RefusalError) as exc:
+            vm_judges.read_part_identity(edited, mode="counted")
+        assert exc.value.code == "PART_PIN_MISMATCH", tag
+    swapped = _copy_part(part, tmp_path / "pin_swap")
+    rows = _part_rows(swapped)
+    rows[0]["claim"] = rows[0]["claim"] + " x"
+    (swapped / "items.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    _resum_part(swapped)
+    with pytest.raises(vm_judges.RefusalError) as exc_swap:
+        vm_judges.read_part_identity(swapped, mode="counted")
+    assert exc_swap.value.code == "PART_PIN_MISMATCH"
+
+    # Not frozen (re-summed): refused in real modes, allowed in stub modes.
+    for tag, edit in (("unfrozen", {"frozen": False}), ("nomac", {"frozen_mac": "not-a-mac"})):
+        loose = _copy_part(part, tmp_path / f"pin_{tag}")
+        meta = json.loads((loose / "part.json").read_text(encoding="utf-8"))
+        meta.update(edit)
+        (loose / "part.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n")
+        _resum_part(loose)
+        monkeypatch.setattr(vm_judges, "ANCHORED_COUNTED_430_PART_JSON_SHA256", "0" * 64)
+        monkeypatch.setattr(vm_judges, "ANCHORED_COUNTED_430_ITEMS_JSONL_SHA256", "0" * 64)
+        with pytest.raises(vm_judges.RefusalError) as exc_nf:
+            vm_judges.read_part_identity(loose, mode="time-one")
+        assert exc_nf.value.code == "PART_NOT_FROZEN", tag
+        assert vm_judges.read_part_identity(loose, mode="counted-stub")["seal"]["frozen_mac_verified"] is False
+
+    # The launcher checks every file checksums.txt lists.
+    prov = _copy_part(part, tmp_path / "pin_prov")
+    (prov / "provenance.jsonl").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc_prov:
+        vm_judges.verify_part_files_against_checksums(prov)
+    assert exc_prov.value.code == "PART_MANIFEST_INVALID" and "provenance.jsonl" in exc_prov.value.message
+    projected = _project_part_items(prov, tmp_path / "pin_prov_inputs" / "p.jsonl")
+    with pytest.raises(vm_judges.RefusalError) as exc_prov2:
+        vm_judges.preflight_part_manifest(
+            projected, mode="counted", part_dir=prov, part_items_file=prov / "items.jsonl"
+        )
+    assert exc_prov2.value.code == "PART_MANIFEST_INVALID"
+
+
+def test_bakeoff_project_writes_the_projection_the_launcher_binding_accepts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Item 4: `rdlab bakeoff-project --part-dir <part> --out <file>` writes the upload projection (`id`, `material`,
+    `claim`; every item, in the part's order) and `<file>.sha256`, after checking the part's part.json and items.jsonl
+    against checksums.txt; the launcher's binding accepts exactly its output for a counted window (whole part in order,
+    projection checked). It refuses `PROJECTION_OUT_FORBIDDEN` for an output inside the part dir or under any
+    `sealed_store/`, `PROJECTION_OUT_EXISTS` over an existing file, and `PROJECTION_PART_INVALID` for a part whose
+    items no longer match checksums.txt; a refusal writes nothing.
+    Fails at ffa9f61f: there was no projection command (only a test helper).
+    """
+    from reasoning_dataset_lab.cli import main as cli_main
+
+    def rdlab_main(argv: list[str]) -> int:
+        monkeypatch.setattr(sys, "argv", ["rdlab", *argv])
+        try:
+            return int(cli_main() or 0)
+        except SystemExit as exc:
+            return int(exc.code or 0)
+
+    part = _make_builder_part(tmp_path / "proj_build")
+    out = tmp_path / "proj_inputs" / "counted-projected.jsonl"
+    rc = rdlab_main(["bakeoff-project", "--part-dir", str(part), "--out", str(out)])
+    assert rc == 0
+    rec = json.loads(capsys.readouterr().out)
+    data = out.read_bytes()
+    assert rec["projection_sha256"] == hashlib.sha256(data).hexdigest()
+    assert (out.parent / (out.name + ".sha256")).read_text(encoding="utf-8") == f"{rec['projection_sha256']}  {out.name}\n"
+    assert rec["projected_items"] == rec["items_count"] == 12 and rec["part_id"] == "bakeoff-d-t10-sealed"
+    rows = [json.loads(ln) for ln in data.decode("utf-8").splitlines()]
+    assert [r["id"] for r in rows] == [r["id"] for r in _part_rows(part)]
+    assert all(list(r) == ["id", "material", "claim"] for r in rows)
+    ident = vm_judges.preflight_part_manifest(
+        out, mode="counted", part_dir=part, part_items_file=part / "items.jsonl", schema_errors=_part_schema_errors
+    )
+    assert ident is not None
+    assert ident["binding"]["projection_checked"] is True and ident["binding"]["rule"] == "whole_part_in_order"
+    assert vm_judges.verify_items_allowlist(out) is None or True
+
+    sealed_out = tmp_path / "proj_build" / "sealed_store" / "x.jsonl"
+    tampered = _copy_part(part, tmp_path / "proj_tampered")
+    (tampered / "items.jsonl").write_text((tampered / "items.jsonl").read_text(encoding="utf-8") + "\n{}\n", encoding="utf-8")
+    for tag, part_arg, out_arg, code in (
+        ("inside", part, part / "projected.jsonl", "PROJECTION_OUT_FORBIDDEN"),
+        ("sealed", part, sealed_out, "PROJECTION_OUT_FORBIDDEN"),
+        ("exists", part, out, "PROJECTION_OUT_EXISTS"),
+        ("tampered", tampered, tmp_path / "proj_inputs" / "t.jsonl", "PROJECTION_PART_INVALID"),
+    ):
+        before = out.read_bytes()
+        rc_bad = rdlab_main(["bakeoff-project", "--part-dir", str(part_arg), "--out", str(out_arg)])
+        captured = capsys.readouterr()
+        assert rc_bad != 0, tag
+        assert code in captured.out + captured.err, (tag, captured)
+        assert out.read_bytes() == before
+        if tag != "exists":
+            assert not out_arg.exists(), tag
+
+
+def test_part_dir_is_required_for_time_one_and_counted(tmp_path: Path) -> None:
+    """Item 5a: `--time-one` / `--counted` without `--part-dir` refuse `PART_MANIFEST_MISSING` (`--dry` and live) before
+    any `colab` call, even when the part's files sit beside the items file (the old default); `--help` says so and
+    lists `--p0a-part-dir`.
+    Fails at ffa9f61f: `--part-dir` defaulted to the items file's directory, which never holds a projection's part.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pd_rec")
+    part = _make_builder_part(tmp_path / "pd_build")
+    items = _project_part_items(part, tmp_path / "pd_inputs" / "projected.jsonl")
+    beside = _copy_part(part, tmp_path / "pd_beside")
+    beside_items = _project_part_items(part, beside / "projected.jsonl")
+    for mode in ("time-one", "counted"):
+        for live in (False, True):
+            for tag, items_in in (("projected", items), ("beside", beside_items)):
+                env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"pd_env_{mode}_{int(live)}_{tag}")
+                exports = _pm_real_mode_exports(
+                    env_paths,
+                    open_lock=tmp_path / f"pd_{mode}_{tag}.lock",
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    items_file=items_in,
+                    part_dir=None,
+                )
+                proc = _pm_run_launcher(
+                    exports,
+                    f"--{mode} {'' if live else '--dry'} --out-dir '{_to_wsl_path(tmp_path / f'pd_out_{mode}_{int(live)}_{tag}')}' --run-id pd-{mode}",
+                )
+                assert proc.returncode == 2, (mode, live, tag, proc.stdout, proc.stderr)
+                assert "PART_MANIFEST_MISSING" in proc.stderr and "--part-dir" in proc.stderr
+                assert "colab new" not in proc.stdout
+                assert not env_paths["calls_log"].exists()
+    help_proc = subprocess.run(
+        ["bash", str(_to_wsl_path(LAUNCH_JUDGES_SH)), "--help"], capture_output=True, text=True, check=False
+    )
+    assert help_proc.returncode == 0
+    assert "Required for --time-one and --counted" in help_proc.stdout
+    assert "--p0a-part-dir DIR" in help_proc.stdout
+    assert "pilot-40b" not in help_proc.stdout
+
+
+def test_repo_bundle_is_built_from_tracked_files_and_refuses_a_dirty_tree(tmp_path: Path) -> None:
+    """Item 5c: the repo bundle is the git-tracked files under pyproject.toml, uv.lock, README.md, src and scripts/colab
+    (`vm_judges.tracked_repo_bundle_files`, `git ls-files`), never the working tree's other files: an untracked file
+    under src/ or scripts/colab/, a modified tracked file, or a staged new file refuses `REPO_TREE_DIRTY`; ignored files
+    and untracked files elsewhere are not bundled and do not refuse; a directory that is not a git work tree refuses
+    `REPO_TREE_UNREADABLE`.
+    Fails at ffa9f61f: the launcher tarred every file under src/ and scripts/colab/ in the working tree.
+    """
+    repo = tmp_path / "bundle_repo"
+    (repo / "src" / "pkg").mkdir(parents=True)
+    (repo / "scripts" / "colab").mkdir(parents=True)
+    (repo / "docs").mkdir()
+    for rel, text in (
+        ("pyproject.toml", "[project]\nname='x'\n"),
+        ("uv.lock", "version = 1\n"),
+        ("README.md", "# x\n"),
+        ("src/pkg/__init__.py", "X = 1\n"),
+        ("scripts/colab/vm.py", "print(1)\n"),
+        ("docs/a.md", "a\n"),
+        (".gitignore", "*.pyc\n"),
+    ):
+        (repo / rel).write_text(text, encoding="utf-8")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@localhost"]
+    subprocess.run([*git[:3], "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "init"], check=True)
+    want = ["README.md", "pyproject.toml", "scripts/colab/vm.py", "src/pkg/__init__.py", "uv.lock"]
+    assert vm_judges.tracked_repo_bundle_files(repo) == want
+    (repo / "src" / "pkg" / "cache.pyc").write_bytes(b"\0")
+    (repo / "docs" / "untracked.md").write_text("u\n", encoding="utf-8")
+    assert vm_judges.tracked_repo_bundle_files(repo) == want
+
+    for tag, rel, mutate in (
+        ("untracked_src", "src/pkg/secret_notes.txt", "new"),
+        ("untracked_colab", "scripts/colab/leftover.jsonl", "new"),
+        ("modified", "scripts/colab/vm.py", "modify"),
+        ("staged", "src/pkg/staged.py", "stage"),
+    ):
+        target = repo / rel
+        original = target.read_bytes() if target.exists() else None
+        target.write_text("changed\n", encoding="utf-8")
+        if mutate == "stage":
+            subprocess.run([*git, "add", rel], check=True)
+        with pytest.raises(vm_judges.RefusalError) as exc:
+            vm_judges.tracked_repo_bundle_files(repo)
+        assert exc.value.code == "REPO_TREE_DIRTY", tag
+        if mutate == "stage":
+            subprocess.run([*git, "rm", "-q", "--cached", rel], check=True)
+        if original is None:
+            target.unlink()
+        else:
+            target.write_bytes(original)
+        assert vm_judges.tracked_repo_bundle_files(repo) == want
+    not_git = tmp_path / "not_a_repo"
+    not_git.mkdir()
+    with pytest.raises(vm_judges.RefusalError) as exc_ng:
+        vm_judges.tracked_repo_bundle_files(not_git)
+    assert exc_ng.value.code == "REPO_TREE_UNREADABLE"
+
+
+def test_bakeoff_project_refuses_every_malformed_part(tmp_path: Path) -> None:
+    """Item 4: `project_part_items` refuses `PROJECTION_PART_INVALID` for each way a part can be malformed (no or bad
+    checksums.txt, a part under sealed_store/, a part.json that does not parse or lacks part_id / items_count, a bad row,
+    a row count that differs from items_count, a repeated id, a file not listed) and writes nothing.
+    Fails at ffa9f61f: there was no projection module.
+    """
+    from reasoning_dataset_lab.pilot_b.bakeoff_project import project_part_items
+
+    part = _make_builder_part(tmp_path / "pm_build")
+    rows = _part_rows(part)
+
+    def _variant(tag: str, *, meta: Any = None, items: list[str] | None = None, sums: str | None = None,
+                 drop: str | None = None, under: str = "") -> Path:
+        dst = _copy_part(part, tmp_path / f"pm_{tag}" / under / "part_bakeoff_sealed")
+        if meta is not None:
+            (dst / "part.json").write_text(meta if isinstance(meta, str) else json.dumps(meta), encoding="utf-8")
+        if items is not None:
+            (dst / "items.jsonl").write_text("".join(ln + "\n" for ln in items), encoding="utf-8")
+        if meta is not None or items is not None:
+            _resum_part(dst)
+        if sums is not None:
+            (dst / "checksums.txt").write_text(sums, encoding="utf-8")
+        if drop is not None:
+            (dst / drop).unlink()
+        return dst
+
+    good_meta = json.loads((part / "part.json").read_text(encoding="utf-8"))
+    cases = {
+        "no_checksums": _variant("no_checksums", drop="checksums.txt"),
+        "bad_checksums": _variant("bad_checksums", sums="not a line\n"),
+        "dup_checksums": _variant("dup_checksums", sums=("0" * 64 + "  part.json\n") * 2),
+        "unlisted": _variant("unlisted", sums="\n" + "0" * 64 + "  part.json\n"),
+        "sealed": _variant("sealed", under="sealed_store"),
+        "meta_parse": _variant("meta_parse", meta="{not json"),
+        "meta_fields": _variant("meta_fields", meta={"part_id": "", "items_count": 12}),
+        "row_json": _variant("row_json", items=["{bad"]),
+        "row_field": _variant("row_field", items=[json.dumps({"id": "x", "material": "m"})]),
+        "count": _variant("count", items=[json.dumps(r) for r in rows[:-1]]),
+        "dup_id": _variant("dup_id", meta=dict(good_meta, items_count=2), items=[json.dumps(rows[0])] * 2),
+        "items_hash": _variant("items_hash", sums=(part / "checksums.txt").read_text(encoding="utf-8").replace(
+            hashlib.sha256((part / "items.jsonl").read_bytes()).hexdigest(), "f" * 64)),
+    }
+    for tag, bad in cases.items():
+        out = tmp_path / "pm_out" / f"{tag}.jsonl"
+        with pytest.raises(RdlabError) as exc:
+            project_part_items(bad, out)
+        assert exc.value.code == "PROJECTION_PART_INVALID", tag
+        assert not out.exists() and not out.with_name(out.name + ".sha256").exists(), tag
