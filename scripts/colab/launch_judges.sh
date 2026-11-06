@@ -30,6 +30,8 @@ PART_DIR="${RDLAB_PART_DIR:-}"
 ANCHOR_ITEMS_FILE="${RDLAB_ANCHOR_ITEMS_FILE:-}"
 P0A_ITEMS_FILE="${RDLAB_P0A_ITEMS_FILE:-}"
 P0A_PART_DIR="${RDLAB_P0A_PART_DIR:-}"
+LOCK_CHECK_PHASE="${RDLAB_LOCK_CHECK_PHASE:-}"
+LOCK_CHECK_PHASE_FLAG=0
 COUNTED_ITEMS_FILE="${RDLAB_COUNTED_ITEMS_FILE:-}"
 COUNTED_MANIFEST_FILE="${RDLAB_COUNTED_MANIFEST:-}"
 RECEIPTS_DIR="${RDLAB_RECEIPTS_DIR:-}"
@@ -45,7 +47,7 @@ EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
@@ -55,6 +57,12 @@ Options:
                        RDLAB_WALL_SECONDS / --cap; --max-rate required)
   --lock-check         Run the A100 lock-check window: boot gatekeeper golden recording, 5-judge 50-item (250-row) counted-part anchor pass, 50-item golden anchor & shard manifests, and P0a on 114 burned pilot items (--gpu A100; default wall 7200s; --max-rate required)
   --lock-check-stub    Run the CPU stub lock-check window (CPU, deterministic stub transport)
+  --lock-check-phase P Required with --lock-check / --lock-check-stub, no default (or set RDLAB_LOCK_CHECK_PHASE):
+                       anchors = boot gatekeeper goldens record + the 5-judge x 50-anchor pass, no P0a (default
+                       wall 3600s; goldens promotion takes this window); p0a = P0a only, one judge at a time in its
+                       own venv and child process (default wall 5400s); all = both in one window (default wall
+                       7200s). Every phase takes the same three inputs (--anchor-items, --p0a-items, a counted
+                       source); p0a needs neither promoted goldens nor the anchors window's outputs.
   --counted            Run a counted A100 shard window (--gpu A100, strict determinism; default wall 7200s; --max-rate
                        required)
   --counted-stub       Run a counted CPU stub shard window (CPU, deterministic stub transport)
@@ -80,7 +88,7 @@ Options:
                        Required for --time-one and --counted (the items file is a projection kept outside the part,
                        made by `rdlab bakeoff-project`); other modes default to the items file's directory
                        (or set RDLAB_PART_DIR)
-  --anchor-items FILE  For --lock-check / --lock-check-stub: the 50 anchor items from the counted part (25 stratified + 25 canaries) for the 5-judge anchor pass, golden_anchor_manifest.json, and boot_gatekeeper_goldens.filled.json (or set RDLAB_ANCHOR_ITEMS_FILE)
+  --anchor-items FILE  For --lock-check / --lock-check-stub: the 50 anchor items from the counted part (label-blind LC-1 rule, rdlab bakeoff-lockcheck-anchors; the 25 lowest-margin are recorded as low-margin anchors) for the 5-judge anchor pass, golden_anchor_manifest.json, and boot_gatekeeper_goldens.filled.json (or set RDLAB_ANCHOR_ITEMS_FILE)
   --p0a-items FILE     For --lock-check / --lock-check-stub: the 114 burned pilot items for P0a only, the projection of
                        the pilot part (or set RDLAB_P0A_ITEMS_FILE)
   --p0a-part-dir DIR   For --lock-check / --lock-check-stub (required): the burned pilot's sealed part directory
@@ -153,6 +161,16 @@ while [[ $# -gt 0 ]]; do
     --lock-check-stub)
       MODE="lock-check-stub"
       SESSION_SMOKE_FLAG=0
+      shift
+      ;;
+    --lock-check-phase)
+      LOCK_CHECK_PHASE="${2:-}"
+      LOCK_CHECK_PHASE_FLAG=1
+      shift 2
+      ;;
+    --lock-check-phase=*)
+      LOCK_CHECK_PHASE="${1#*=}"
+      LOCK_CHECK_PHASE_FLAG=1
       shift
       ;;
     --golden-anchor-manifest)
@@ -375,7 +393,14 @@ elif [[ "$MODE" == "counted" ]]; then
 elif [[ "$MODE" == "lock-check" ]]; then
   CARD="A100"
   COLAB_NEW_FLAGS=(--gpu A100)
-  WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
+  # Default wall per phase, from the A100 timings of 2026-11-03 (flow-judge ~5.9 s/call dominates): anchors ~500 calls
+  # plus five loads; p0a ~1,000 calls plus ten loads (two stages per judge); all = both.
+  case "$LOCK_CHECK_PHASE" in
+    anchors) LOCK_CHECK_PHASE_WALL_DEFAULT=3600 ;;
+    p0a) LOCK_CHECK_PHASE_WALL_DEFAULT=5400 ;;
+    *) LOCK_CHECK_PHASE_WALL_DEFAULT=7200 ;;
+  esac
+  WALL_SECONDS="${RDLAB_WALL_SECONDS:-$LOCK_CHECK_PHASE_WALL_DEFAULT}"
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
 elif [[ "$MODE" == "probe" ]]; then
   CARD="CPU"
@@ -403,6 +428,30 @@ if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" == "time-one" || "$MODE" == "
   echo "MAX_RATE_REQUIRED: --$MODE requires --max-rate <units/h> (the highest window rate, units/h, this window accepts; no default)" >&2
   exit 2
 fi
+
+# --- The lock-check phase: required in both lock-check modes (no default), refused in every other mode ---
+if [[ "$MODE" == "lock-check" || "$MODE" == "lock-check-stub" ]]; then
+  case "$LOCK_CHECK_PHASE" in
+    anchors|p0a|all)
+      ;;
+    "")
+      echo "LOCK_CHECK_PHASE_REQUIRED: --$MODE requires --lock-check-phase anchors|p0a|all (no default): anchors = goldens record and the 5-judge x 50-anchor pass; p0a = P0a only; all = both in one window" >&2
+      exit 2
+      ;;
+    *)
+      echo "LOCK_CHECK_PHASE_INVALID: unknown --lock-check-phase '$LOCK_CHECK_PHASE' (allowed: anchors, p0a, all)" >&2
+      exit 2
+      ;;
+  esac
+elif [[ "$LOCK_CHECK_PHASE_FLAG" -eq 1 ]]; then
+  echo "LOCK_CHECK_PHASE_INVALID: --lock-check-phase is only for --lock-check / --lock-check-stub (mode=$MODE)" >&2
+  exit 2
+else
+  # Only a lock-check mode reads RDLAB_LOCK_CHECK_PHASE from the environment.
+  LOCK_CHECK_PHASE=""
+  unset RDLAB_LOCK_CHECK_PHASE
+fi
+
 RATE_UNITS_PER_HOUR=""
 RATE_SOURCE=""
 LIVE_RATE_UNITS_PER_HOUR=""
@@ -714,6 +763,14 @@ if [[ -n "$EXPLICIT_CAP" ]]; then
 else
   CAP_UNITS="$WALL_X_RATE"
 fi
+if [[ "$DRY_FLAG" -eq 1 ]] && [[ "$MODE" == "lock-check" || "$MODE" == "lock-check-stub" ]]; then
+  case "$LOCK_CHECK_PHASE" in
+    anchors) LOCK_CHECK_PHASE_RUNS="boot gatekeeper goldens record + 5-judge x 50-anchor pass (no P0a)" ;;
+    p0a) LOCK_CHECK_PHASE_RUNS="P0a only, one judge at a time in its own venv child (no anchor pass)" ;;
+    *) LOCK_CHECK_PHASE_RUNS="goldens record + 5-judge x 50-anchor pass + P0a in per-judge children" ;;
+  esac
+  echo "[lock-check] phase=${LOCK_CHECK_PHASE} runs=\"${LOCK_CHECK_PHASE_RUNS}\" wall_s=${WALL_SECONDS} cap=${CAP_UNITS:-none}" >&2
+fi
 if [[ "$DRY_FLAG" -eq 1 ]] && [[ -n "$MAX_RATE" ]]; then
   echo "[rate] max_rate=${MAX_RATE}/h (from --max-rate) estimate: wall_x_max_rate=${WALL_X_RATE} cap=${CAP_UNITS:-none} window_rate=<measured after open: post - pre, two reads within ${RATE_STABLE_TOLERANCE}, >= floor> (a projection, not a recorded rate; the window rate is refused above max_rate and the cap is priced on max(max_rate, window rate))" >&2
 fi
@@ -963,6 +1020,7 @@ build_exec_env_args() {
     EXEC_ENV_ARGS+=(
       --env "RDLAB_ANCHOR_ITEMS_FILE=/content/rdlab_items/anchor_items.jsonl"
       --env "RDLAB_P0A_ITEMS_FILE=/content/rdlab_items/p0a_items.jsonl"
+      --env "RDLAB_LOCK_CHECK_PHASE=$LOCK_CHECK_PHASE"
     )
     if [[ -n "$COUNTED_ITEMS_FILE" ]]; then
       EXEC_ENV_ARGS+=(--env "RDLAB_COUNTED_ITEMS_FILE=/content/rdlab/counted_items.jsonl")
@@ -1520,6 +1578,7 @@ write_outcome_draft() {
   RDLAB_PRE_ACCOUNT_RATE="$PRE_ACCOUNT_RATE" \
   RDLAB_POST_ACCOUNT_RATE="$POST_ACCOUNT_RATE" \
   RDLAB_PRICING_RATE="$PRICING_RATE_UNITS_PER_HOUR" \
+  RDLAB_OUTCOME_LOCK_CHECK_PHASE="$LOCK_CHECK_PHASE" \
   RDLAB_MAX_RATE="$MAX_RATE" \
   RDLAB_LIVE_USAGE_RATE="$LIVE_RATE_UNITS_PER_HOUR" \
   RDLAB_RATE_READ_AT_UTC="$RATE_READ_AT_UTC" \
@@ -1705,6 +1764,7 @@ payload: dict[str, object] = {
         else _env_float("RDLAB_PRICING_RATE")
     ),
     "rate_rereads": rate_rereads_doc,
+    "lock_check_phase": os.environ.get("RDLAB_OUTCOME_LOCK_CHECK_PHASE") or None,
     "max_rate": max_rate,
     "wall_seconds": wall_seconds,
     "wall_x_rate": wall_x_rate,

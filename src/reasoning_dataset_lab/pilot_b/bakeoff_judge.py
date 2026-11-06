@@ -2270,7 +2270,8 @@ def select_lock_check_canary_anchors(
     excluded_item_ids: Iterable[str] = (),
     canary_count: int = DEFAULT_CANARY_ANCHOR_ITEMS_COUNT,
 ) -> tuple[list[str], str]:
-    """Select `canary_count` (25) canary anchor items from lock-check window telemetry.
+    """Select `canary_count` (25) low-margin anchors from lock-check window telemetry (the anchor half once named
+    "canary"; "canary" now names only the determinism items, and the JSON fields keep their old names).
 
     Rule: From the lock-check window's telemetry, take each item's minimum verdict-token top-1/top-2 logit margin
     (`verdict_token_margin`, falling back to `min_top2_logit_margin` when absent) across all judges and both orders.
@@ -2371,6 +2372,9 @@ def normalize_anchor_verdict_code(row: Mapping[str, Any]) -> str:
     verdict = str(row.get("raw_verdict") or "").strip().lower()
     return ANCHOR_VERDICT_CODE_BY_LABEL.get(verdict, "unparseable")
 
+
+# The same rule under the anchor half's current name (the 25 lowest-margin of the 50 LC-1 anchors).
+select_lock_check_low_margin_anchors = select_lock_check_canary_anchors
 
 def build_golden_anchor_manifest(
     lock_check_dir_or_rows: Path | str | Sequence[Mapping[str, Any]],
@@ -2512,7 +2516,7 @@ def build_shard_manifest(
     golden_anchor_manifest_file_sha256: str | None = None,
     golden_anchor_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Build a pre-registered shard manifest with deterministic stratified interleave over `schedule` and 50 anchors (25 stratified + 25 lock-check canaries)."""
+    """Build a pre-registered shard manifest with deterministic stratified interleave over `schedule` and 50 anchors (25 stratified + 25 low-margin anchors)."""
     if num_shards < 1:
         raise refused_error(
             "SHARD_SPEC_MISSING_N",
@@ -6381,7 +6385,7 @@ def verify_lock_check_two_inputs(
         raise refused_error(
             "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
             f"--anchor-items must contain {expected_anchor_count} unique items from the counted part, got {len(anchor_items)} item(s) ({len(anchor_id_set)} unique).",
-            f"Pass {expected_anchor_count} anchor items (25 stratified + 25 canaries) from the counted part to --anchor-items.",
+            f"Pass {expected_anchor_count} LC-1 anchor items from the counted part (`rdlab bakeoff-lockcheck-anchors`) to --anchor-items.",
         )
     not_in_counted = sorted(anchor_id_set - counted_id_set)
     if not_in_counted:
@@ -6786,20 +6790,82 @@ def select_p0a_lowest_margin_items(
     return ranked[:target_n]
 
 
-def run_p0a_reversed_low_margin_rerun(
+def _p0a_call_row(
+    spec: JudgeSpec,
+    adapter: JudgeAdapter,
+    transport: JudgeTransport,
+    item: JudgeInputItem,
+    ord_mode: OrderMode,
     *,
-    judges: Sequence[JudgeSpec],
-    adapters: Mapping[str, JudgeAdapter],
-    transports: Mapping[str, JudgeTransport],
+    seed: int,
+    pass_mode: PassMode,
+) -> dict[str, Any]:
+    """One P0a call: the row P0a records (counts, codes and hashes only; no item text, prompt or completion)."""
+    jid = spec.judge_id
+    polarity_map = POLARITY_MAP_BY_JUDGE.get(jid, {"inverted": "false"})
+    prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode=pass_mode)
+    resp = transport.generate(spec, prompt, seed=seed)
+    parsed = adapter.parse_response(resp, pass_mode=pass_mode)
+    probs = extract_verdict_probabilities(jid, resp, pass_mode=pass_mode, polarity_map=polarity_map)
+    out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
+        jid,
+        resp.tokens,
+        system_one_result=resp.system_one_result,
+    )
+    top1_lp = round(float(resp.verdict_top_logprobs[0].logprob), 6) if resp.verdict_top_logprobs else 0.0
+    return {
+        "judge_id": jid,
+        "item_id": item.item_id,
+        "order": ord_mode,
+        "state": parsed.state,
+        "raw_verdict": parsed.raw_verdict,
+        "output_token_ids_sha256": out_sha,
+        "top1_logprob": top1_lp,
+        "p_yes": probs.get("p_yes"),
+        "verdict_token_margin": resp.verdict_token_margin,
+    }
+
+
+def p0a_reversed_item_ids(
+    items_by_id: Mapping[str, Any],
+    selected_item_ids: Sequence[str],
+) -> tuple[list[str], list[str]]:
+    """The selected low-margin ids that exist in `items_by_id`, and the same list reversed (the re-run's order)."""
+    selected_list = [str(iid) for iid in selected_item_ids if str(iid) in items_by_id]
+    return selected_list, list(reversed(selected_list))
+
+
+def run_p0a_reversed_rerun_rows(
+    spec: JudgeSpec,
+    adapter: JudgeAdapter,
+    transport: JudgeTransport,
+    *,
     items_by_id: Mapping[str, JudgeInputItem],
     selected_item_ids: Sequence[str],
-    baseline_rows: Sequence[Mapping[str, Any]],
     seed: int = DEFAULT_SCHEDULE_SEED,
     pass_mode: PassMode = "binary",
+) -> list[dict[str, Any]]:
+    """One judge's part of the reversed low-margin re-run: the selected items in reversed order, `BA` then `AB` each."""
+    _, reversed_items = p0a_reversed_item_ids(items_by_id, selected_item_ids)
+    rows: list[dict[str, Any]] = []
+    for iid in reversed_items:
+        for ord_mode in ("BA", "AB"):
+            rows.append(
+                _p0a_call_row(spec, adapter, transport, items_by_id[iid], ord_mode, seed=seed, pass_mode=pass_mode)
+            )
+    return rows
+
+
+def summarize_p0a_reversed_rerun(
+    *,
+    judge_ids: Sequence[str],
+    rerun_rows_by_judge: Mapping[str, Sequence[Mapping[str, Any]]],
+    items_by_id: Mapping[str, Any],
+    selected_item_ids: Sequence[str],
+    baseline_rows: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Re-run the `selected_item_ids` (20 lowest-margin items) in reversed item and order sequence (`BA` then `AB`),
-    reporting order independence and comparison against `baseline_rows`.
-    """
+    """The reversed re-run's report section from its rows (judges in `judge_ids` order), the same dict whether the rows
+    came from one process or from one child process per judge."""
     baseline_by_key: dict[tuple[str, str, str], Mapping[str, Any]] = {}
     for r in baseline_rows:
         jid = str(r.get("judge_id") or "").strip()
@@ -6808,54 +6874,35 @@ def run_p0a_reversed_low_margin_rerun(
         if jid and iid and ord_s:
             baseline_by_key[(jid, iid, ord_s)] = r
 
-    selected_list = [str(iid) for iid in selected_item_ids if str(iid) in items_by_id]
-    reversed_items = list(reversed(selected_list))
-    rerun_rows: list[dict[str, Any]] = []
+    selected_list, reversed_items = p0a_reversed_item_ids(items_by_id, selected_item_ids)
+    rerun_rows: list[Mapping[str, Any]] = []
     filtered_baseline_rows: list[Mapping[str, Any]] = []
-
     ab_ba_agreement_count = 0
     ab_ba_flip_count = 0
     total_pairs = 0
     by_judge_order: dict[str, dict[str, Any]] = {}
-
-    for spec in judges:
-        jid = spec.judge_id
-        adapter = adapters[jid]
-        transport = transports[jid]
-        polarity_map = POLARITY_MAP_BY_JUDGE.get(jid, {"inverted": "false"})
+    for jid in judge_ids:
+        j_rows = list(rerun_rows_by_judge.get(jid, ()))
+        expected_keys = [(iid, o) for iid in reversed_items for o in ("BA", "AB")]
+        got_keys = [(str(r.get("item_id") or ""), str(r.get("order") or "")) for r in j_rows]
+        if got_keys != expected_keys or any(str(r.get("judge_id") or "") != jid for r in j_rows):
+            raise refused_error(
+                "P0A_CHILD_OUTPUT_INVALID",
+                f"P0a re-run rows for judge '{jid}' do not cover the selected items in reversed order "
+                f"({len(j_rows)} row(s), expected {len(expected_keys)}).",
+                "Re-run the P0a re-run stage for this judge; never edit its output.",
+            )
         j_agree = 0
         j_flip = 0
-        for iid in reversed_items:
-            item = items_by_id[iid]
+        for pair_idx, iid in enumerate(reversed_items):
             verdict_by_order: dict[str, str] = {}
-            for ord_mode in ("BA", "AB"):
-                prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode=pass_mode)
-                resp = transport.generate(spec, prompt, seed=seed)
-                parsed = adapter.parse_response(resp, pass_mode=pass_mode)
-                probs = extract_verdict_probabilities(jid, resp, pass_mode=pass_mode, polarity_map=polarity_map)
-                out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
-                    jid,
-                    resp.tokens,
-                    system_one_result=resp.system_one_result,
-                )
-                top1_lp = round(float(resp.verdict_top_logprobs[0].logprob), 6) if resp.verdict_top_logprobs else 0.0
-                row_rec: dict[str, Any] = {
-                    "judge_id": jid,
-                    "item_id": iid,
-                    "order": ord_mode,
-                    "state": parsed.state,
-                    "raw_verdict": parsed.raw_verdict,
-                    "output_token_ids_sha256": out_sha,
-                    "top1_logprob": top1_lp,
-                    "p_yes": probs.get("p_yes"),
-                    "verdict_token_margin": resp.verdict_token_margin,
-                }
+            for row_rec in j_rows[2 * pair_idx : 2 * pair_idx + 2]:
+                ord_mode = str(row_rec["order"])
                 verdict_by_order[ord_mode] = normalize_anchor_verdict_code(row_rec)
                 rerun_rows.append(row_rec)
                 base_r = baseline_by_key.get((jid, iid, ord_mode))
                 if base_r is not None:
                     filtered_baseline_rows.append(base_r)
-
             total_pairs += 1
             agreed = int(verdict_by_order.get("AB") == verdict_by_order.get("BA"))
             flipped = 1 - agreed
@@ -6887,42 +6934,81 @@ def run_p0a_reversed_low_margin_rerun(
     }
 
 
-def run_lock_check_p0a(
+def run_p0a_reversed_low_margin_rerun(
+    *,
+    judges: Sequence[JudgeSpec],
+    adapters: Mapping[str, JudgeAdapter],
+    transports: Mapping[str, JudgeTransport],
+    items_by_id: Mapping[str, JudgeInputItem],
+    selected_item_ids: Sequence[str],
+    baseline_rows: Sequence[Mapping[str, Any]],
+    seed: int = DEFAULT_SCHEDULE_SEED,
+    pass_mode: PassMode = "binary",
+) -> dict[str, Any]:
+    """Re-run the `selected_item_ids` (20 lowest-margin items) in reversed item and order sequence (`BA` then `AB`),
+    reporting order independence and comparison against `baseline_rows`.
+    """
+    rows_by_judge = {
+        spec.judge_id: run_p0a_reversed_rerun_rows(
+            spec,
+            adapters[spec.judge_id],
+            transports[spec.judge_id],
+            items_by_id=items_by_id,
+            selected_item_ids=selected_item_ids,
+            seed=seed,
+            pass_mode=pass_mode,
+        )
+        for spec in judges
+    }
+    return summarize_p0a_reversed_rerun(
+        judge_ids=[spec.judge_id for spec in judges],
+        rerun_rows_by_judge=rows_by_judge,
+        items_by_id=items_by_id,
+        selected_item_ids=selected_item_ids,
+        baseline_rows=baseline_rows,
+    )
+
+
+@dataclass
+class LockCheckP0aContext:
+    """What every P0a stage shares, prepared and checked once per process (the parent, and each judge's child)."""
+
+    resolved_out: Path
+    items: tuple[JudgeInputItem, ...]
+    items_sha256: str
+    items_by_id: dict[str, JudgeInputItem]
+    schedule: JudgeSchedule
+    verified_part_id: str
+    active_judges: list[JudgeSpec]
+    adapters: dict[str, JudgeAdapter]
+    in_real_mode: bool
+    window_mode: str | None
+    dtype: str
+    device: str
+    fake_transport: bool
+
+
+def prepare_lock_check_p0a(
     *,
     part_dir: Path,
     output_dir: Path,
-    baseline_rows: Sequence[Mapping[str, Any]] | None = None,
     anchor_items: Sequence[JudgeInputItem] | Path | str | None = None,
     counted_item_ids: Iterable[str] | None = None,
     counted_manifest_path: Path | str | None = None,
     judges: Sequence[JudgeSpec] | None = None,
     judge_ids: Sequence[str] | None = None,
-    transports_by_judge: Mapping[str, JudgeTransport] | None = None,
     fake_transport: bool = False,
-    receipts_dir: Path | None = None,
-    hf_home: Path | None = None,
     device: str = "cpu",
     dtype: str = DEFAULT_TORCH_DTYPE,
     seed: int = DEFAULT_SCHEDULE_SEED,
     schedule_seed: int | None = None,
     limit_items: int | None = None,
-    pass_mode: PassMode = "binary",
-    profiler_call_count: int = P0A_PROFILER_CALL_COUNT,
-    low_margin_item_count: int = P0A_LOW_MARGIN_RERUN_ITEM_COUNT,
-    event_factory: Any = None,
-    timing_backend: str | None = None,
     window_mode: str | None = None,
-    allow_remote_code_reviewed: str | None = None,
     repo_root: Path | None = None,
     pilot_identity: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Run P0a inside the lock-check window and write `p0a_report.json` into `output_dir`.
-    `pilot_identity` (from `vm_judges.verify_p0a_pilot_part`) names the burned pilot part by its pinned hashes and binds
-    these items to it; without it P0a refuses `P0A_PILOT_IDENTITY_MISSING`.
-      (a) second full baseline pass over the burned pilot calls in the same session, compared bitwise with `baseline_rows`;
-      (b) 10-call phase profiler per judge (`tokenise`, `prefill`, `decode`, `post_processing`);
-      (c) reversed re-run of the 20 lowest-margin items, reporting order independence and comparison against baseline.
-    """
+) -> LockCheckP0aContext:
+    """Every P0a check that needs no model: device, output dir, real mode vs stub transport, the counted-part refusal,
+    the schedule and the burned pilot's identity. Loads no transport."""
     try:
         device = normalize_judge_device(device)
     except DeviceRefusalError as exc:
@@ -7008,99 +7094,242 @@ def run_lock_check_p0a(
         else [BAKEOFF_JUDGE_SPECS[jid] for jid in target_jids if jid in BAKEOFF_JUDGE_SPECS]
     )
     adapters: dict[str, JudgeAdapter] = {spec.judge_id: build_judge_adapter(spec) for spec in active_judges}
-    resolved_transports: dict[str, JudgeTransport] = {}
-    for spec in active_judges:
-        if transports_by_judge is not None and spec.judge_id in transports_by_judge:
-            tr = transports_by_judge[spec.judge_id]
-            if (in_real_mode or not fake_transport) and _is_stub_or_fake_transport(tr):
-                raise refused_error(
-                    "P0A_STUB_TRANSPORT_REFUSED",
-                    f"Real mode refuses stub/fake transport {type(tr).__name__} for judge '{spec.judge_id}' in run_lock_check_p0a.",
-                    "Pass a real transport (TransformersJudgeTransport / D3MiniTransport) or run in stub mode.",
-                )
-            resolved_transports[spec.judge_id] = tr
-        elif fake_transport:
-            resolved_transports[spec.judge_id] = DeterministicFakeJudgeTransport(torch_dtype=effective_dtype)
-        else:
-            eff_rc = (
-                allow_remote_code_reviewed
-                if allow_remote_code_reviewed is not None
-                else (D3_MINI_REVIEWED_REVISION if spec.judge_id == D3_MINI_JUDGE_ID else None)
-            )
-            check_remote_code_gate(spec, allow_remote_code_reviewed=eff_rc)
-            if receipts_dir is None:
-                raise refused_error(
-                    "BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED",
-                    f"Real-model loading for '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}) in P0a requires "
-                    "--receipts-dir containing the pinned <owner>__<repo>.sha256.json receipt.",
-                    "Pass receipts_dir (and hf_home or set HF_HOME), or use fake_transport=True in stub mode.",
-                )
-            if spec.judge_id == D3_MINI_JUDGE_ID:
-                tr_real: JudgeTransport = D3MiniTransport(
-                    receipts_dir=receipts_dir,
-                    hf_home=hf_home,
-                    device=device,
-                    torch_dtype=effective_dtype,
-                    window_mode=eff_window_mode,
-                )
-            else:
-                tr_real = TransformersJudgeTransport(
-                    receipts_dir=receipts_dir,
-                    hf_home=hf_home,
-                    device=device,
-                    torch_dtype=effective_dtype,
-                    window_mode=eff_window_mode,
-                )
-            tr_real.verify_ready(spec, allow_remote_code_reviewed=eff_rc)
-            resolved_transports[spec.judge_id] = tr_real
+    return LockCheckP0aContext(
+        resolved_out=resolved_out,
+        items=items,
+        items_sha256=items_sha256,
+        items_by_id=items_by_id,
+        schedule=schedule,
+        verified_part_id=verified_part_id,
+        active_judges=active_judges,
+        adapters=adapters,
+        in_real_mode=in_real_mode,
+        window_mode=eff_window_mode,
+        dtype=effective_dtype,
+        device=device,
+        fake_transport=bool(fake_transport),
+    )
 
-    if event_factory is not None:
-        eff_event_factory = event_factory
-        eff_timing_backend = timing_backend or "cuda_event"
-    elif in_real_mode and not fake_transport:
-        eff_event_factory = _make_cuda_timing_event
-        eff_timing_backend = timing_backend or "cuda_event"
+
+def resolve_p0a_transport(
+    ctx: LockCheckP0aContext,
+    spec: JudgeSpec,
+    *,
+    transports_by_judge: Mapping[str, JudgeTransport] | None = None,
+    receipts_dir: Path | None = None,
+    hf_home: Path | None = None,
+    allow_remote_code_reviewed: str | None = None,
+) -> JudgeTransport:
+    """The transport one judge's P0a calls run on: a given one (refused when fake in real mode), the stub, or the real
+    model (`TransformersJudgeTransport` / `D3MiniTransport`), loaded and checked here."""
+    if transports_by_judge is not None and spec.judge_id in transports_by_judge:
+        tr = transports_by_judge[spec.judge_id]
+        if (ctx.in_real_mode or not ctx.fake_transport) and _is_stub_or_fake_transport(tr):
+            raise refused_error(
+                "P0A_STUB_TRANSPORT_REFUSED",
+                f"Real mode refuses stub/fake transport {type(tr).__name__} for judge '{spec.judge_id}' in run_lock_check_p0a.",
+                "Pass a real transport (TransformersJudgeTransport / D3MiniTransport) or run in stub mode.",
+            )
+        return tr
+    if ctx.fake_transport:
+        return DeterministicFakeJudgeTransport(torch_dtype=ctx.dtype)
+    eff_rc = (
+        allow_remote_code_reviewed
+        if allow_remote_code_reviewed is not None
+        else (D3_MINI_REVIEWED_REVISION if spec.judge_id == D3_MINI_JUDGE_ID else None)
+    )
+    check_remote_code_gate(spec, allow_remote_code_reviewed=eff_rc)
+    if receipts_dir is None:
+        raise refused_error(
+            "BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED",
+            f"Real-model loading for '{spec.judge_id}' ({spec.repo_id} @ {spec.revision[:8]}) in P0a requires "
+            "--receipts-dir containing the pinned <owner>__<repo>.sha256.json receipt.",
+            "Pass receipts_dir (and hf_home or set HF_HOME), or use fake_transport=True in stub mode.",
+        )
+    if spec.judge_id == D3_MINI_JUDGE_ID:
+        tr_real: JudgeTransport = D3MiniTransport(
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            device=ctx.device,
+            torch_dtype=ctx.dtype,
+            window_mode=ctx.window_mode,
+        )
     else:
-        eff_event_factory = _MonotonicTimingEvent
-        eff_timing_backend = timing_backend or "cpu_monotonic"
+        tr_real = TransformersJudgeTransport(
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            device=ctx.device,
+            torch_dtype=ctx.dtype,
+            window_mode=ctx.window_mode,
+        )
+    tr_real.verify_ready(spec, allow_remote_code_reviewed=eff_rc)
+    return tr_real
+
+
+def resolve_p0a_timing(
+    ctx: LockCheckP0aContext,
+    *,
+    event_factory: Any = None,
+    timing_backend: str | None = None,
+) -> tuple[Any, str]:
+    """The profiler's timing events and backend label: CUDA events for real models in real mode, else monotonic."""
+    if event_factory is not None:
+        return event_factory, (timing_backend or "cuda_event")
+    if ctx.in_real_mode and not ctx.fake_transport:
+        return _make_cuda_timing_event, (timing_backend or "cuda_event")
+    return _MonotonicTimingEvent, (timing_backend or "cpu_monotonic")
+
+
+def run_p0a_schedule_pass_rows(
+    ctx: LockCheckP0aContext,
+    spec: JudgeSpec,
+    transport: JudgeTransport,
+    *,
+    pass_mode: PassMode = "binary",
+) -> list[dict[str, Any]]:
+    """One judge's full pass over the P0a schedule."""
+    adapter = ctx.adapters[spec.judge_id]
+    return [
+        _p0a_call_row(
+            spec,
+            adapter,
+            transport,
+            ctx.items_by_id[entry.item_id],
+            entry.order,
+            seed=ctx.schedule.seed,
+            pass_mode=pass_mode,
+        )
+        for entry in ctx.schedule.entries
+    ]
+
+
+def assemble_p0a_report(
+    ctx: LockCheckP0aContext,
+    *,
+    pass1_rows: Sequence[Mapping[str, Any]],
+    pass2_rows: Sequence[Mapping[str, Any]],
+    profiler_by_judge: Mapping[str, Mapping[str, Any]],
+    reversed_low_margin: Mapping[str, Any],
+    timing_backend: str,
+    profiler_call_count: int = P0A_PROFILER_CALL_COUNT,
+) -> dict[str, Any]:
+    """Write `p0a_report.json` from the stages' results (one format, whichever process ran each judge)."""
+    baseline_repeat = compare_p0a_baseline_passes(pass1_rows, pass2_rows)
+    report_doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "part_id": ctx.verified_part_id,
+        "item_count": len(ctx.items),
+        "calls_per_judge": len(ctx.schedule.entries),
+        "judge_count": len(ctx.active_judges),
+        "schedule_seed": ctx.schedule.seed,
+        "schedule_sha256": ctx.schedule.schedule_sha256,
+        "items_sha256": ctx.items_sha256,
+        "timing_backend": timing_backend,
+        "baseline_repeat": baseline_repeat,
+        "phase_profiler": {
+            "calls_per_judge": int(profiler_call_count),
+            "timing_backend": timing_backend,
+            "phases": list(P0A_PHASE_NAMES),
+            "by_judge": dict(sorted((k, dict(v)) for k, v in profiler_by_judge.items())),
+        },
+        "reversed_low_margin_rerun": dict(reversed_low_margin),
+    }
+    body_bytes = json.dumps(report_doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    report_doc["p0a_report_sha256"] = hashlib.sha256(body_bytes).hexdigest()
+
+    report_path = ctx.resolved_out / P0A_REPORT_FILENAME
+    report_path.write_text(
+        json.dumps(report_doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return report_doc
+
+
+def run_lock_check_p0a(
+    *,
+    part_dir: Path,
+    output_dir: Path,
+    baseline_rows: Sequence[Mapping[str, Any]] | None = None,
+    anchor_items: Sequence[JudgeInputItem] | Path | str | None = None,
+    counted_item_ids: Iterable[str] | None = None,
+    counted_manifest_path: Path | str | None = None,
+    judges: Sequence[JudgeSpec] | None = None,
+    judge_ids: Sequence[str] | None = None,
+    transports_by_judge: Mapping[str, JudgeTransport] | None = None,
+    fake_transport: bool = False,
+    receipts_dir: Path | None = None,
+    hf_home: Path | None = None,
+    device: str = "cpu",
+    dtype: str = DEFAULT_TORCH_DTYPE,
+    seed: int = DEFAULT_SCHEDULE_SEED,
+    schedule_seed: int | None = None,
+    limit_items: int | None = None,
+    pass_mode: PassMode = "binary",
+    profiler_call_count: int = P0A_PROFILER_CALL_COUNT,
+    low_margin_item_count: int = P0A_LOW_MARGIN_RERUN_ITEM_COUNT,
+    event_factory: Any = None,
+    timing_backend: str | None = None,
+    window_mode: str | None = None,
+    allow_remote_code_reviewed: str | None = None,
+    repo_root: Path | None = None,
+    pilot_identity: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run P0a in this process and write `p0a_report.json` into `output_dir`.
+
+    In-process P0a holds every judge's transport at once, so it is for stub transports and tests. A lock-check window
+    runs P0a one judge at a time, each in its own venv and child process (`vm_judges.run_lock_check_p0a_in_children`,
+    which drives the child stages `run_p0a_child_stage` and assembles the same report with `assemble_p0a_report`).
+    `pilot_identity` (from `vm_judges.verify_p0a_pilot_part`) names the burned pilot part by its pinned hashes and binds
+    these items to it; without it P0a refuses `P0A_PILOT_IDENTITY_MISSING`.
+      (a) second full baseline pass over the burned pilot calls in the same session, compared bitwise with `baseline_rows`;
+      (b) 10-call phase profiler per judge (`tokenise`, `prefill`, `decode`, `post_processing`);
+      (c) reversed re-run of the 20 lowest-margin items, reporting order independence and comparison against baseline.
+    """
+    ctx = prepare_lock_check_p0a(
+        part_dir=part_dir,
+        output_dir=output_dir,
+        anchor_items=anchor_items,
+        counted_item_ids=counted_item_ids,
+        counted_manifest_path=counted_manifest_path,
+        judges=judges,
+        judge_ids=judge_ids,
+        fake_transport=fake_transport,
+        device=device,
+        dtype=dtype,
+        seed=seed,
+        schedule_seed=schedule_seed,
+        limit_items=limit_items,
+        window_mode=window_mode,
+        repo_root=repo_root,
+        pilot_identity=pilot_identity,
+    )
+    resolved_transports: dict[str, JudgeTransport] = {
+        spec.judge_id: resolve_p0a_transport(
+            ctx,
+            spec,
+            transports_by_judge=transports_by_judge,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            allow_remote_code_reviewed=allow_remote_code_reviewed,
+        )
+        for spec in ctx.active_judges
+    }
+    eff_event_factory, eff_timing_backend = resolve_p0a_timing(
+        ctx, event_factory=event_factory, timing_backend=timing_backend
+    )
 
     def _execute_p0a_schedule_pass() -> list[dict[str, Any]]:
         rows_out: list[dict[str, Any]] = []
-        for spec in active_judges:
-            jid = spec.judge_id
-            adapter = adapters[jid]
-            transport = resolved_transports[jid]
-            polarity_map = POLARITY_MAP_BY_JUDGE.get(jid, {"inverted": "false"})
-            for entry in schedule.entries:
-                it = items_by_id[entry.item_id]
-                prompt = adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
-                resp = transport.generate(spec, prompt, seed=schedule.seed)
-                parsed = adapter.parse_response(resp, pass_mode=pass_mode)
-                probs = extract_verdict_probabilities(jid, resp, pass_mode=pass_mode, polarity_map=polarity_map)
-                out_sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(
-                    jid,
-                    resp.tokens,
-                    system_one_result=resp.system_one_result,
-                )
-                top1_lp = round(float(resp.verdict_top_logprobs[0].logprob), 6) if resp.verdict_top_logprobs else 0.0
-                rows_out.append(
-                    {
-                        "judge_id": jid,
-                        "item_id": it.item_id,
-                        "order": entry.order,
-                        "state": parsed.state,
-                        "raw_verdict": parsed.raw_verdict,
-                        "output_token_ids_sha256": out_sha,
-                        "top1_logprob": top1_lp,
-                        "p_yes": probs.get("p_yes"),
-                        "verdict_token_margin": resp.verdict_token_margin,
-                    }
-                )
+        for spec in ctx.active_judges:
+            rows_out.extend(
+                run_p0a_schedule_pass_rows(ctx, spec, resolved_transports[spec.judge_id], pass_mode=pass_mode)
+            )
         return rows_out
 
     matching_baseline_rows = [
         r for r in (baseline_rows or ())
-        if str(r.get("item_id") or "").strip() in items_by_id
+        if str(r.get("item_id") or "").strip() in ctx.items_by_id
     ]
     eff_pass1_rows: Sequence[Mapping[str, Any]] = (
         matching_baseline_rows if matching_baseline_rows else _execute_p0a_schedule_pass()
@@ -7109,18 +7338,16 @@ def run_lock_check_p0a(
     # (a) Second full baseline pass over the schedule in the same session
     pass2_rows = _execute_p0a_schedule_pass()
 
-    baseline_repeat = compare_p0a_baseline_passes(eff_pass1_rows, pass2_rows)
-
     # (b) 10-call phase profiler per judge
     profiler_by_judge: dict[str, dict[str, Any]] = {}
-    for spec in active_judges:
+    for spec in ctx.active_judges:
         jid = spec.judge_id
         profiler_by_judge[jid] = run_p0a_phase_profiler(
             spec,
-            adapters[jid],
+            ctx.adapters[jid],
             resolved_transports[jid],
-            items,
-            seed=schedule.seed,
+            ctx.items,
+            seed=ctx.schedule.seed,
             call_count=profiler_call_count,
             pass_mode=pass_mode,
             event_factory=eff_event_factory,
@@ -7130,49 +7357,191 @@ def run_lock_check_p0a(
     # (c) Reversed re-run of the 20 lowest-margin items
     selected_low_margin_ids = select_p0a_lowest_margin_items(
         eff_pass1_rows,
-        valid_item_ids=[it.item_id for it in items],
+        valid_item_ids=[it.item_id for it in ctx.items],
         count=low_margin_item_count,
     )
     reversed_low_margin = run_p0a_reversed_low_margin_rerun(
-        judges=active_judges,
-        adapters=adapters,
+        judges=ctx.active_judges,
+        adapters=ctx.adapters,
         transports=resolved_transports,
-        items_by_id=items_by_id,
+        items_by_id=ctx.items_by_id,
         selected_item_ids=selected_low_margin_ids,
         baseline_rows=eff_pass1_rows,
-        seed=schedule.seed,
+        seed=ctx.schedule.seed,
         pass_mode=pass_mode,
     )
-
-    report_doc: dict[str, Any] = {
-        "schema_version": "1.0",
-        "part_id": verified_part_id,
-        "item_count": len(items),
-        "calls_per_judge": len(schedule.entries),
-        "judge_count": len(active_judges),
-        "schedule_seed": schedule.seed,
-        "schedule_sha256": schedule.schedule_sha256,
-        "items_sha256": items_sha256,
-        "timing_backend": eff_timing_backend,
-        "baseline_repeat": baseline_repeat,
-        "phase_profiler": {
-            "calls_per_judge": int(profiler_call_count),
-            "timing_backend": eff_timing_backend,
-            "phases": list(P0A_PHASE_NAMES),
-            "by_judge": dict(sorted(profiler_by_judge.items())),
-        },
-        "reversed_low_margin_rerun": reversed_low_margin,
-    }
-    body_bytes = json.dumps(report_doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    report_doc["p0a_report_sha256"] = hashlib.sha256(body_bytes).hexdigest()
-
-    report_path = resolved_out / P0A_REPORT_FILENAME
-    report_path.write_text(
-        json.dumps(report_doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-        newline="\n",
+    return assemble_p0a_report(
+        ctx,
+        pass1_rows=eff_pass1_rows,
+        pass2_rows=pass2_rows,
+        profiler_by_judge=profiler_by_judge,
+        reversed_low_margin=reversed_low_margin,
+        timing_backend=eff_timing_backend,
+        profiler_call_count=profiler_call_count,
     )
-    return report_doc
+
+
+P0A_CHILD_STAGES: tuple[str, ...] = ("passes", "rerun")
+P0A_CHILD_SCHEMA_VERSION = "1.0"
+
+
+def _write_json_atomic(path: Path, doc: Mapping[str, Any]) -> str:
+    """Write `doc` as JSON to `path` through a temp file; returns the file's SHA-256."""
+    data = (json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+    return hashlib.sha256(data).hexdigest()
+
+
+def read_p0a_pilot_identity_file(path: Path | None) -> dict[str, Any] | None:
+    """The pilot identity the parent wrote for the P0a children (`None` when no file was given)."""
+    if path is None:
+        return None
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise refused_error(
+            "P0A_PILOT_IDENTITY_MISSING",
+            f"The P0a child could not read the pilot identity file {path}: {type(exc).__name__}.",
+            "The parent writes it before starting the P0a children; re-run the window.",
+        ) from exc
+    if doc is None:
+        return None
+    if not isinstance(doc, dict):
+        raise refused_error(
+            "P0A_PILOT_IDENTITY_MISSING",
+            f"The P0a pilot identity file {path} does not hold a JSON object.",
+            "The parent writes it before starting the P0a children; re-run the window.",
+        )
+    return doc
+
+
+def run_p0a_child_stage(
+    *,
+    stage: str,
+    judge: str,
+    part_dir: Path,
+    output_dir: Path,
+    out_file: Path,
+    anchor_items: Path | None,
+    counted_source: Path | None,
+    pilot_identity_file: Path | None,
+    selected_items_file: Path | None = None,
+    fake_transport: bool = False,
+    receipts_dir: Path | None = None,
+    hf_home: Path | None = None,
+    device: str = "cpu",
+    dtype: str = DEFAULT_TORCH_DTYPE,
+    schedule_seed: int = DEFAULT_SCHEDULE_SEED,
+    limit_items: int | None = None,
+    pass_mode: PassMode = "binary",
+    window_mode: str | None = None,
+    allow_remote_code_reviewed: str | None = None,
+    repo_root: Path | None = None,
+    profiler_call_count: int = P0A_PROFILER_CALL_COUNT,
+) -> dict[str, Any]:
+    """One judge's P0a stage, run in that judge's venv as a child process; only this judge's model is loaded.
+
+    `passes`: both full passes over the P0a schedule and the 10-call profiler. `rerun`: the reversed re-run of the
+    low-margin items the parent selected across all judges' first passes (`selected_items_file`, a JSON list).
+    Writes `out_file` (rows hold ids, codes, log-probs and hashes only) and returns its document."""
+    if stage not in P0A_CHILD_STAGES:
+        raise usage_error(
+            "P0A_CHILD_STAGE_INVALID",
+            f"Unknown P0a child stage {stage!r} (allowed: {', '.join(P0A_CHILD_STAGES)}).",
+            "The parent passes --p0a-stage passes or --p0a-stage rerun.",
+        )
+    if judge not in BAKEOFF_JUDGE_SPECS:
+        raise usage_error(
+            "BAKEOFF_JUDGE_UNKNOWN",
+            f"Unknown judge {judge!r} for a P0a child.",
+            f"Use one of: {', '.join(sorted(BAKEOFF_JUDGE_SPECS))}.",
+        )
+    ctx = prepare_lock_check_p0a(
+        part_dir=part_dir,
+        output_dir=output_dir,
+        anchor_items=anchor_items,
+        counted_item_ids=counted_source,
+        judge_ids=[judge],
+        fake_transport=fake_transport,
+        device=device,
+        dtype=dtype,
+        schedule_seed=schedule_seed,
+        limit_items=limit_items,
+        window_mode=window_mode,
+        repo_root=repo_root,
+        pilot_identity=read_p0a_pilot_identity_file(pilot_identity_file),
+    )
+    spec = BAKEOFF_JUDGE_SPECS[judge]
+    selected_ids: list[str] = []
+    if stage == "rerun":
+        try:
+            raw_sel = json.loads(Path(selected_items_file).read_text(encoding="utf-8")) if selected_items_file else None
+        except (OSError, ValueError):
+            raw_sel = None
+        if not isinstance(raw_sel, list) or not all(isinstance(x, str) for x in raw_sel):
+            raise refused_error(
+                "P0A_CHILD_OUTPUT_INVALID",
+                f"The P0a re-run stage for '{judge}' needs --p0a-selected-items naming a JSON list of item ids.",
+                "The parent writes the selection from every judge's first pass before the re-run stage.",
+            )
+        selected_ids = list(raw_sel)
+    t_load0 = time.monotonic()
+    transport = resolve_p0a_transport(
+        ctx,
+        spec,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        allow_remote_code_reviewed=allow_remote_code_reviewed,
+    )
+    load_s = round(time.monotonic() - t_load0, 6)
+    doc: dict[str, Any] = {
+        "schema_version": P0A_CHILD_SCHEMA_VERSION,
+        "kind": f"p0a_child_{stage}",
+        "stage": stage,
+        "judge_id": judge,
+        "pid": os.getpid(),
+        "part_id": ctx.verified_part_id,
+        "item_count": len(ctx.items),
+        "items_sha256": ctx.items_sha256,
+        "schedule_seed": ctx.schedule.seed,
+        "schedule_sha256": ctx.schedule.schedule_sha256,
+        "transport_class": type(transport).__name__,
+        "load_seconds": load_s,
+    }
+    t_calls0 = time.monotonic()
+    if stage == "passes":
+        ev_factory, backend = resolve_p0a_timing(ctx)
+        doc["pass1_rows"] = run_p0a_schedule_pass_rows(ctx, spec, transport, pass_mode=pass_mode)
+        doc["pass2_rows"] = run_p0a_schedule_pass_rows(ctx, spec, transport, pass_mode=pass_mode)
+        doc["profiler"] = run_p0a_phase_profiler(
+            spec,
+            ctx.adapters[judge],
+            transport,
+            ctx.items,
+            seed=ctx.schedule.seed,
+            call_count=profiler_call_count,
+            pass_mode=pass_mode,
+            event_factory=ev_factory,
+            timing_backend=backend,
+        )
+        doc["timing_backend"] = backend
+    else:
+        doc["selected_item_ids"] = selected_ids
+        doc["rerun_rows"] = run_p0a_reversed_rerun_rows(
+            spec,
+            ctx.adapters[judge],
+            transport,
+            items_by_id=ctx.items_by_id,
+            selected_item_ids=selected_ids,
+            seed=ctx.schedule.seed,
+            pass_mode=pass_mode,
+        )
+    doc["calls_seconds"] = round(time.monotonic() - t_calls0, 6)
+    _write_json_atomic(Path(out_file), doc)
+    return doc
 
 
 def build_window_manifest(
@@ -7484,6 +7853,34 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Enforce 3-item-pair overlap verification on resume.",
     )
+    parser.add_argument(
+        "--p0a-stage",
+        choices=P0A_CHILD_STAGES,
+        default=None,
+        help="Run one stage of lock-check P0a for --judge only (its own venv and process): 'passes' or 'rerun'.",
+    )
+    parser.add_argument("--p0a-out", type=Path, default=None, help="P0a child stage: output JSON file.")
+    parser.add_argument(
+        "--p0a-anchor-items", type=Path, default=None, help="P0a child stage: the window's 50 anchor items."
+    )
+    parser.add_argument(
+        "--p0a-counted-source",
+        type=Path,
+        default=None,
+        help="P0a child stage: the counted part's items or manifest (the P0a exclusion check).",
+    )
+    parser.add_argument(
+        "--p0a-pilot-identity",
+        type=Path,
+        default=None,
+        help="P0a child stage: JSON file with the burned pilot identity the parent verified.",
+    )
+    parser.add_argument(
+        "--p0a-selected-items",
+        type=Path,
+        default=None,
+        help="P0a 'rerun' stage: JSON list of the low-margin item ids the parent selected.",
+    )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
@@ -7501,6 +7898,40 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
             if args.active_item_ids
             else None
         )
+        if args.p0a_stage is not None:
+            if args.p0a_out is None:
+                raise usage_error(
+                    "P0A_CHILD_STAGE_INVALID",
+                    "--p0a-stage needs --p0a-out naming the stage's output file.",
+                    "The parent passes --p0a-out for every P0a child.",
+                )
+            # Run the stage from the importable module (not this `-m` copy of it), so the stage's code is the one
+            # module object every other import of bakeoff_judge sees.
+            from reasoning_dataset_lab.pilot_b import bakeoff_judge as _bakeoff_judge_module
+
+            _bakeoff_judge_module.run_p0a_child_stage(
+                stage=args.p0a_stage,
+                judge=args.judge,
+                part_dir=args.part_dir,
+                output_dir=args.output_dir,
+                out_file=args.p0a_out,
+                anchor_items=args.p0a_anchor_items,
+                counted_source=args.p0a_counted_source,
+                pilot_identity_file=args.p0a_pilot_identity,
+                selected_items_file=args.p0a_selected_items,
+                fake_transport=bool(args.fake_transport),
+                receipts_dir=args.receipts_dir,
+                hf_home=args.hf_home,
+                device=normalized_device,
+                dtype=args.dtype,
+                schedule_seed=args.schedule_seed,
+                limit_items=args.limit_items,
+                pass_mode=args.pass_mode,
+                window_mode=args.window_mode,
+                allow_remote_code_reviewed=args.allow_remote_code_reviewed,
+                repo_root=args.repo_root,
+            )
+            return 0
         run_bakeoff_judge(
             part_dir=args.part_dir,
             output_dir=args.output_dir,

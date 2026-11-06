@@ -202,6 +202,11 @@ MERGE_CONFIG_FILENAME = "merge_config.json"
 GOLDEN_ANCHOR_MANIFEST_FILENAME = "golden_anchor_manifest.json"
 BOOT_GATEKEEPER_FILLED_FILENAME = "boot_gatekeeper_goldens.filled.json"
 P0A_REPORT_FILENAME = "p0a_report.json"
+# P0a run in per-judge children: each child's output (ids, verdict codes, log-probs, hashes; no item text) in
+# `p0a_children/<judge>.<stage>.json` under the run dir, and their telemetry in `p0a_children.json`, so a window that
+# stops on a failed child still brings back every finished child's work.
+P0A_CHILDREN_FILENAME = "p0a_children.json"
+P0A_CHILDREN_DIRNAME = "p0a_children"
 WINDOW_MANIFEST_FILENAME = "window.json"
 CANARY_ANCHOR_SELECTION_RULE = "min_verdict_token_margin_asc_exclude_stratified_25_tiebreak_item_id"
 PINNED_ATTN_IMPLEMENTATION = "sdpa"
@@ -583,6 +588,7 @@ TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
         GOLDEN_ANCHOR_MANIFEST_FILENAME,
         BOOT_GATEKEEPER_FILLED_FILENAME,
         P0A_REPORT_FILENAME,
+        P0A_CHILDREN_FILENAME,
         WINDOW_MANIFEST_FILENAME,
     }
 )
@@ -592,6 +598,7 @@ TAR_ALLOWED_DIRS: frozenset[str] = frozenset(
         ANCHOR_ROWS_DIRNAME,
         JUDGE_DONE_DIRNAME,
         CHILD_PROGRESS_DIRNAME,
+        P0A_CHILDREN_DIRNAME,
         "logs",
     }
 )
@@ -4508,6 +4515,8 @@ def is_allowed_tar_member(rel_posix_path: str) -> bool:
         return True
     if len(parts) == 2 and parts[0] == CHILD_PROGRESS_DIRNAME and parts[1].endswith(".jsonl"):
         return True
+    if len(parts) == 2 and parts[0] == P0A_CHILDREN_DIRNAME and parts[1].endswith((".passes.json", ".rerun.json")):
+        return True
     if len(parts) == 2 and parts[0] == "logs" and parts[1].endswith(".log"):
         return True
     return False
@@ -5654,6 +5663,47 @@ FULL_PART_WINDOW_MODES: frozenset[str] = frozenset({"counted", "counted-stub", "
 # The burned pilot part (its sealed part directory on the rig), identified by content, never by a label: the SHA-256
 # of its `part.json` (which carries its seal, `frozen_mac`) and of its `items.jsonl`, as its `checksums.txt` records
 # them. Its `part_id` is `bakeoff-d-t10-sealed`, which every writer-built part shares, so the id alone cannot name it.
+# A lock-check window runs in one of three phases, named with --lock-check-phase (no default):
+# - `anchors`: the boot gatekeeper's goldens record and the five judges' pass over the 50 anchor items (with the golden
+#   anchor manifest and the rebuilt shard manifest); no P0a. Goldens promotion consumes this phase's outputs.
+# - `p0a`: P0a only, on the burned pilot items, one judge at a time in its own venv and child process. It needs the
+#   same three inputs as the anchors phase (the 50 anchors, for the P0a exclusion check, the 114 pilot items and the
+#   counted source); it needs neither promoted goldens nor the anchors phase's outputs.
+# - `all`: both, in one window (the behaviour before the split). Safe since P0a runs in children: one judge's model is
+#   resident at a time.
+LOCK_CHECK_PHASES: tuple[str, ...] = ("anchors", "p0a", "all")
+LOCK_CHECK_PHASE_ENV_VAR = "RDLAB_LOCK_CHECK_PHASE"
+
+
+def resolve_lock_check_phase(mode: str | None, raw_phase: str | None) -> str | None:
+    """The lock-check phase for `mode`: required (one of `LOCK_CHECK_PHASES`) in lock-check modes, refused elsewhere.
+
+    Refuses `LOCK_CHECK_PHASE_REQUIRED` when a lock-check mode names no phase, and `LOCK_CHECK_PHASE_INVALID` for an
+    unknown phase or a phase given to any other mode. Returns `None` outside lock-check modes."""
+    norm_mode = str(mode or "").strip().lower()
+    phase = str(raw_phase or "").strip().lower()
+    is_lc = norm_mode in ("lock-check", "lock_check", "lock-check-stub", "lock_check_stub")
+    if not is_lc:
+        if phase:
+            raise RefusalError(
+                "LOCK_CHECK_PHASE_INVALID",
+                f"--lock-check-phase is only for --lock-check / --lock-check-stub (mode={norm_mode or 'unset'}).",
+            )
+        return None
+    if not phase:
+        raise RefusalError(
+            "LOCK_CHECK_PHASE_REQUIRED",
+            "--lock-check requires --lock-check-phase anchors|p0a|all (no default): anchors = goldens record and the "
+            "5-judge x 50-anchor pass; p0a = P0a only; all = both in one window.",
+        )
+    if phase not in LOCK_CHECK_PHASES:
+        raise RefusalError(
+            "LOCK_CHECK_PHASE_INVALID",
+            f"Unknown --lock-check-phase {phase!r} (allowed: {', '.join(LOCK_CHECK_PHASES)}).",
+        )
+    return phase
+
+
 # These two constants are the one definition of the pilot's identity: the time-one mass check, the lock-check P0a
 # input (`verify_p0a_pilot_part`, whose result `bakeoff_judge`'s P0a validators receive) and the pin table below.
 PILOT_40B_PART_ID = "bakeoff-d-t10-sealed"
@@ -6397,6 +6447,487 @@ def preflight_counted_source(
         raise RefusalError(exc.code, exc.message) from exc
 
 
+def _run_p0a_judge_child(
+    *,
+    judge_id: str,
+    spec: Any,
+    stage: str,
+    child_cmd_base: Sequence[str],
+    venv_python: Path,
+    venv_name: str,
+    lock_file: str,
+    lock_sha256: str,
+    out_file: Path,
+    hf_home: Path,
+    repo_root: Path,
+    child_progress_file: Path,
+    child_timeout_seconds: float,
+    dryrun: bool,
+    progress_path: Path | None,
+    cgroup_root: Path | None,
+    proc_cgroup_path: Path | None,
+    proc_meminfo_path: Path | None,
+) -> dict[str, Any]:
+    """Run one P0a stage for one judge in its venv's child process, the way the judge pass runs a judge
+    (`build_judge_child_env`, `_run_child_with_group_timeout`, the VRAM sampler, the cgroup OOM read, the same failure
+    classes), and return its telemetry. The child's model is unloaded when the child exits."""
+    child_cmd = list(child_cmd_base)
+    child_env = build_judge_child_env(hf_home, repo_root, progress_file=child_progress_file)
+    eff_child_timeout = compute_child_timeout_seconds(child_timeout_seconds)
+    cg_before = read_cgroup_memory_events(cgroup_root=cgroup_root, proc_cgroup_path=proc_cgroup_path)
+    sampler = VramSampler(interval_s=float(VRAM_SAMPLE_INTERVAL_SECONDS), dryrun=dryrun)
+    sampler.start()
+    try:
+        child_res = _run_child_with_group_timeout(child_cmd, env=child_env, timeout_seconds=eff_child_timeout)
+    finally:
+        sampler_peak = sampler.stop()
+    wall_elapsed = float(child_res["elapsed_seconds"])
+    raw_rc = int(child_res["returncode"])
+    cg_after = read_cgroup_memory_events(cgroup_root=cgroup_root, proc_cgroup_path=proc_cgroup_path)
+    oom_before = cg_before.get("oom_kill")
+    oom_after = cg_after.get("oom_kill")
+    oom_kill_delta: int | None = None
+    if oom_before is not None and oom_after is not None:
+        oom_kill_delta = max(0, int(oom_after) - int(oom_before))
+    mem_avail_bytes = read_vm_memory_snapshot(proc_meminfo_path=proc_meminfo_path).get("mem_available_bytes")
+    stdout_tail = _scrub_and_tail(child_res["stdout"] or "")
+    stderr_tail = _scrub_and_tail(child_res["stderr"] or "")
+    if _ACTIVE_VM_LOG_PATH is not None:
+        try:
+            _ACTIVE_VM_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with _ACTIVE_VM_LOG_PATH.open("a", encoding="utf-8", newline="\n") as lfh:
+                lfh.write(
+                    f"VM_SUBPROCESS cmd={json.dumps(scrub_log_text(' '.join(child_cmd)))} rc={raw_rc} "
+                    f"duration_s={wall_elapsed:.6f}\n"
+                )
+                if stderr_tail:
+                    lfh.write(f"VM_SUBPROCESS_STDERR_TAIL: {json.dumps(stderr_tail)}\n")
+        except OSError:
+            pass
+    state_dir_env = os.environ.get("FAKE_COLAB_STATE_DIR", "").strip()
+    if state_dir_env:
+        try:
+            st_dir = Path(state_dir_env)
+            st_dir.mkdir(parents=True, exist_ok=True)
+            with (st_dir / "child_lifecycle.jsonl").open("a", encoding="utf-8", newline="\n") as lcfh:
+                lcfh.write(
+                    json.dumps(
+                        {
+                            "event": "p0a_child",
+                            "stage": stage,
+                            "judge_id": judge_id,
+                            "venv": venv_name,
+                            "returncode": raw_rc,
+                            "timed_out": bool(child_res["timed_out"]),
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+        except OSError:
+            pass
+
+    failure_class: str | None = None
+    sig_num: int | None = None
+    exit_code = raw_rc
+    if child_res["timed_out"]:
+        failure_class = "JUDGE_CHILD_TIMEOUT"
+        sig_num = 9 if raw_rc in (-9, 137) else (-raw_rc if raw_rc < 0 else (raw_rc - 128 if raw_rc > 128 else None))
+        exit_code = 128 + sig_num if sig_num is not None else raw_rc
+    elif raw_rc != 0:
+        if raw_rc < 0:
+            sig_num = -raw_rc
+            exit_code = 128 + sig_num
+        elif raw_rc > 128:
+            sig_num = raw_rc - 128
+        is_oom = sig_num == 9 or raw_rc in (-9, 137) or (oom_kill_delta is not None and oom_kill_delta > 0)
+        failure_class = "JUDGE_CHILD_OOM" if is_oom else "JUDGE_CHILD_FAILED"
+    elif not out_file.is_file():
+        failure_class = "JUDGE_CHILD_FAILED"
+        stderr_tail = (
+            f"{stderr_tail}\nP0a {stage} child for {judge_id} exited 0 but wrote no {out_file.name}"
+        ).strip()
+    if failure_class is not None:
+        append_progress_line(
+            progress_path,
+            {
+                "kind": "judge_failed",
+                "phase": "p0a",
+                "p0a_stage": stage,
+                "judge": judge_id,
+                "judge_id": judge_id,
+                "venv": venv_name,
+                "venv_python": venv_python.as_posix(),
+                "lock_sha256": lock_sha256,
+                "exit_code": exit_code,
+                "returncode": raw_rc,
+                "signal": sig_num,
+                "oom_kill": oom_after,
+                "oom": cg_after.get("oom"),
+                "oom_kill_delta": oom_kill_delta,
+                "mem_available_bytes": mem_avail_bytes,
+                "stderr_tail": stderr_tail,
+                "failure_class": failure_class,
+                "elapsed_seconds": round(wall_elapsed, 6),
+                "timed_out": bool(child_res["timed_out"]),
+            },
+            proc_meminfo_path=proc_meminfo_path,
+            cgroup_root=cgroup_root,
+            proc_cgroup_path=proc_cgroup_path,
+        )
+        raise JudgeChildProcessError(
+            judge_id=judge_id,
+            venv=venv_name,
+            venv_python=venv_python.as_posix(),
+            lock_sha256=lock_sha256,
+            cmd=child_cmd,
+            returncode=raw_rc,
+            exit_code=exit_code,
+            signal_num=sig_num,
+            oom=cg_after.get("oom"),
+            oom_kill=oom_after,
+            oom_kill_delta=oom_kill_delta,
+            mem_available_bytes=mem_avail_bytes,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            failure_class=failure_class,
+            duration_seconds=wall_elapsed,
+            completed_judges={},
+            timeout_seconds=eff_child_timeout,
+        )
+    out_bytes = out_file.read_bytes()
+    telemetry = {
+        "judge_id": judge_id,
+        "stage": stage,
+        "repo_id": spec.repo_id,
+        "revision": spec.revision,
+        "venv": venv_name,
+        "venv_python": venv_python.as_posix(),
+        "lock_file": lock_file,
+        "lock_sha256": lock_sha256,
+        "returncode": raw_rc,
+        "elapsed_seconds": round(wall_elapsed, 6),
+        "timeout_seconds": eff_child_timeout,
+        "peak_vram_mib": sampler_peak,
+        "vram_sample_interval_seconds": VRAM_SAMPLE_INTERVAL_SECONDS,
+        "oom_kill_delta": oom_kill_delta,
+        "out_file": f"{P0A_CHILDREN_DIRNAME}/{out_file.name}",
+        "out_sha256": hashlib.sha256(out_bytes).hexdigest(),
+    }
+    append_progress_line(
+        progress_path,
+        {"kind": "p0a_child_done", **{k: telemetry[k] for k in ("judge_id", "stage", "venv", "lock_sha256", "elapsed_seconds", "peak_vram_mib", "out_sha256")}},
+        proc_meminfo_path=proc_meminfo_path,
+        cgroup_root=cgroup_root,
+        proc_cgroup_path=proc_cgroup_path,
+    )
+    return telemetry
+
+
+def _read_p0a_child_doc(
+    out_file: Path,
+    *,
+    judge_id: str,
+    stage: str,
+    ctx: Any,
+) -> dict[str, Any]:
+    """A P0a child's output, checked against what the parent prepared (judge, stage, pilot part, items, schedule)."""
+    try:
+        doc = json.loads(out_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RefusalError(
+            "P0A_CHILD_OUTPUT_INVALID",
+            f"P0a {stage} child for {judge_id} wrote an unreadable {out_file.name}: {type(exc).__name__}.",
+        ) from exc
+    expected = {
+        "judge_id": judge_id,
+        "stage": stage,
+        "part_id": ctx.verified_part_id,
+        "items_sha256": ctx.items_sha256,
+        "schedule_sha256": ctx.schedule.schedule_sha256,
+    }
+    bad = sorted(k for k, v in expected.items() if not isinstance(doc, Mapping) or doc.get(k) != v)
+    if bad:
+        raise RefusalError(
+            "P0A_CHILD_OUTPUT_INVALID",
+            f"P0a {stage} child for {judge_id} wrote {out_file.name} that does not match this window ({', '.join(bad)}).",
+        )
+    n_calls = len(ctx.schedule.entries)
+    if stage == "passes" and not (
+        isinstance(doc.get("pass1_rows"), list)
+        and isinstance(doc.get("pass2_rows"), list)
+        and len(doc["pass1_rows"]) == n_calls
+        and len(doc["pass2_rows"]) == n_calls
+        and isinstance(doc.get("profiler"), Mapping)
+        and all(str(r.get("judge_id") or "") == judge_id for r in [*doc["pass1_rows"], *doc["pass2_rows"]])
+    ):
+        raise RefusalError(
+            "P0A_CHILD_OUTPUT_INVALID",
+            f"P0a passes child for {judge_id} did not return both passes ({n_calls} calls each) and the profiler.",
+        )
+    if stage == "rerun" and not isinstance(doc.get("rerun_rows"), list):
+        raise RefusalError(
+            "P0A_CHILD_OUTPUT_INVALID",
+            f"P0a rerun child for {judge_id} returned no re-run rows.",
+        )
+    return dict(doc)
+
+
+def run_lock_check_p0a_in_children(
+    *,
+    bakeoff_judge_mod: Any,
+    p0a_part_dir: Path,
+    run_dir: Path,
+    anchor_part_dir: Path,
+    counted_source: Path,
+    receipts_dir: Path,
+    hf_home: Path,
+    mode: str,
+    dryrun: bool,
+    real_load_on_cpu: bool,
+    limit_items: int | None,
+    selected_specs: Sequence[tuple[str, Any]],
+    work_dir: Path,
+    repo_root: Path,
+    pilot_identity: Mapping[str, Any] | None,
+    child_timeout_seconds: float,
+    vram_halt_mib: int,
+    progress_path: Path | None = None,
+    cgroup_root: Path | None = None,
+    proc_cgroup_path: Path | None = None,
+    proc_meminfo_path: Path | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Run lock-check P0a one judge at a time, each judge in its own venv and child process (as the judge pass does),
+    and write `p0a_report.json` (same format as in-process `run_lock_check_p0a`) and `p0a_children.json`.
+
+    The parent schedules and collects; it loads no model. Two stages per judge, because the reversed re-run's 20
+    items are the lowest-margin items across every judge's first pass:
+      1. `passes` (judge by judge): both full passes over the P0a schedule and the 10-call profiler;
+      2. the parent selects the low-margin items from all first passes;
+      3. `rerun` (judge by judge): the reversed re-run of those items.
+    Each child exits before the next starts, so one judge's model is resident at a time, and each judge runs on its
+    own venv's stack (d3-mini on `venv-d3`, transformers 5.17.0; the others on `venv-judge`, 5.19.0).
+    Returns the report and the SHA-256 of `p0a_children.json`."""
+    bj = bakeoff_judge_mod
+    real_mode_active = is_real_mode(mode, dryrun=dryrun)
+    device_str = resolve_judge_device(mode=mode, dryrun=dryrun, real_load_on_cpu=real_load_on_cpu)
+    judge_ids = [jid for jid, _ in selected_specs]
+    # Every check that needs no model, once, before any child starts.
+    ctx = bj.prepare_lock_check_p0a(
+        part_dir=p0a_part_dir,
+        output_dir=run_dir,
+        anchor_items=anchor_part_dir,
+        counted_item_ids=counted_source,
+        judge_ids=judge_ids,
+        fake_transport=not real_mode_active,
+        device=device_str,
+        dtype=DEFAULT_TORCH_DTYPE,
+        schedule_seed=DEFAULT_SCHEDULE_SEED,
+        limit_items=limit_items,
+        window_mode=mode,
+        repo_root=repo_root,
+        pilot_identity=pilot_identity,
+    )
+    # The children's outputs (rows: ids, verdict codes, log-probs, hashes) go under the run dir, so they come back with
+    # the result tar even when a later child fails; `p0a_children.json` records each one's SHA-256.
+    children_dir = run_dir / P0A_CHILDREN_DIRNAME
+    children_dir.mkdir(parents=True, exist_ok=True)
+    child_progress_dir = run_dir / CHILD_PROGRESS_DIRNAME
+    child_progress_dir.mkdir(parents=True, exist_ok=True)
+    identity_file = p0a_part_dir / "p0a_pilot_identity.json"
+    identity_file.write_text(json.dumps(pilot_identity, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+    selected_file = p0a_part_dir / "p0a_selected_items.json"
+
+    def _child_cmd(judge_id: str, spec: Any, stage: str, out_file: Path, progress_file: Path) -> tuple[list[str], Path, str, str, str]:
+        is_d3 = judge_id == D3_MINI_JUDGE_ID
+        venv_name = "venv-d3" if is_d3 else "venv-judge"
+        venv_python = work_dir / venv_name / "bin" / "python"
+        if not venv_python.exists() and dryrun:
+            _ensure_dryrun_venv_python_wrapper(venv_python)
+        if not venv_python.exists():
+            raise RefusalError(
+                "VENV_PYTHON_MISSING",
+                f"Expected judge venv interpreter not found for {judge_id!r}: {venv_python}",
+            )
+        cmd: list[str] = [
+            str(venv_python),
+            "-m",
+            JUDGE_RUNNER_MODULE,
+            "--judge",
+            judge_id,
+            "--items",
+            str(p0a_part_dir),
+            "--output-dir",
+            str(run_dir),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--hf-home",
+            str(hf_home),
+            "--device",
+            device_str,
+            "--dtype",
+            DEFAULT_TORCH_DTYPE,
+            "--schedule-seed",
+            str(DEFAULT_SCHEDULE_SEED),
+            "--vram-halt-mib",
+            str(vram_halt_mib),
+        ]
+        if limit_items is not None:
+            cmd.extend(["--limit-items", str(limit_items)])
+        cmd.extend(["--repo-root", str(repo_root), "--progress-file", str(progress_file)])
+        allow_remote_sha = resolve_remote_code_arg_for_judge(spec)
+        if allow_remote_sha is not None:
+            cmd.extend(["--allow-remote-code-reviewed", allow_remote_sha])
+        if not real_mode_active:
+            cmd.append("--stub")
+        if mode:
+            cmd.extend(["--window-mode", str(mode)])
+        cmd.extend(
+            [
+                "--p0a-stage",
+                stage,
+                "--p0a-out",
+                str(out_file),
+                "--p0a-anchor-items",
+                str(anchor_part_dir),
+                "--p0a-counted-source",
+                str(counted_source),
+                "--p0a-pilot-identity",
+                str(identity_file),
+            ]
+        )
+        if stage == "rerun":
+            cmd.extend(["--p0a-selected-items", str(selected_file)])
+        lock_file = "d3.lock.txt" if is_d3 else "judge.lock.txt"
+        lock_sha256 = EXPECTED_D3_LOCK_SHA256 if is_d3 else EXPECTED_JUDGE_LOCK_SHA256
+        return cmd, venv_python, venv_name, lock_file, lock_sha256
+
+    telemetry_rows: list[dict[str, Any]] = []
+    docs: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def _children_doc(*, status: str, report_sha256: str | None, selected: Sequence[str] | None, failure: Mapping[str, Any] | None) -> dict[str, Any]:
+        return {
+            "schema_version": "1.0",
+            "kind": "p0a_children",
+            "is_result": False,
+            "status": status,
+            "failure": dict(failure) if failure is not None else None,
+            "p0a_report_sha256": report_sha256,
+            "judge_order": judge_ids,
+            "stages": ["passes", "rerun"],
+            "children": telemetry_rows,
+            "pids_by_child": {f"{r['judge_id']}.{r['stage']}": docs[(r["judge_id"], r["stage"])].get("pid") for r in telemetry_rows},
+            "transport_class_by_child": {
+                f"{r['judge_id']}.{r['stage']}": docs[(r["judge_id"], r["stage"])].get("transport_class")
+                for r in telemetry_rows
+            },
+            "selected_low_margin_item_ids_sha256": (
+                hashlib.sha256(json.dumps(list(selected)).encode("utf-8")).hexdigest() if selected is not None else None
+            ),
+        }
+
+    def _write_children_doc(doc: Mapping[str, Any]) -> str:
+        children_bytes = (json.dumps(doc, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        (run_dir / P0A_CHILDREN_FILENAME).write_bytes(children_bytes)
+        return hashlib.sha256(children_bytes).hexdigest()
+
+    stage_selection: dict[str, Sequence[str] | None] = {"selected": None}
+
+    def _run_stage(stage: str) -> None:
+        for judge_id, spec in selected_specs:
+            out_file = children_dir / f"{judge_id}.{stage}.json"
+            if out_file.exists():
+                out_file.unlink()
+            progress_file = child_progress_dir / f"p0a-{stage}-{judge_id}.jsonl"
+            cmd, venv_python, venv_name, lock_file, lock_sha256 = _child_cmd(
+                judge_id, spec, stage, out_file, progress_file
+            )
+            try:
+                child_telemetry = _run_p0a_judge_child(
+                    judge_id=judge_id,
+                    spec=spec,
+                    stage=stage,
+                    child_cmd_base=cmd,
+                    venv_python=venv_python,
+                    venv_name=venv_name,
+                    lock_file=lock_file,
+                    lock_sha256=lock_sha256,
+                    out_file=out_file,
+                    hf_home=hf_home,
+                    repo_root=repo_root,
+                    child_progress_file=progress_file,
+                    child_timeout_seconds=child_timeout_seconds,
+                    dryrun=dryrun,
+                    progress_path=progress_path,
+                    cgroup_root=cgroup_root,
+                    proc_cgroup_path=proc_cgroup_path,
+                    proc_meminfo_path=proc_meminfo_path,
+                )
+                docs[(judge_id, stage)] = _read_p0a_child_doc(out_file, judge_id=judge_id, stage=stage, ctx=ctx)
+            except (JudgeChildProcessError, RefusalError) as exc:
+                # Keep every finished child's work: its output stays under the run dir, and a partial
+                # `p0a_children.json` names the failed child and lists each finished one with its output's SHA-256.
+                fc = str(getattr(exc, "failure_class", None) or getattr(exc, "code", "VM_REFUSAL"))
+                _write_children_doc(
+                    _children_doc(
+                        status="failed",
+                        report_sha256=None,
+                        selected=stage_selection["selected"],
+                        failure={"judge_id": judge_id, "stage": stage, "failure_class": fc},
+                    )
+                )
+                if isinstance(exc, JudgeChildProcessError):
+                    exc.completed_judges = {
+                        f"{r['judge_id']}.{r['stage']}": dict(r) for r in telemetry_rows
+                    }
+                raise
+            telemetry_rows.append(child_telemetry)
+
+    _run_stage("passes")
+    pass1_rows = [r for jid in judge_ids for r in docs[(jid, "passes")]["pass1_rows"]]
+    pass2_rows = [r for jid in judge_ids for r in docs[(jid, "passes")]["pass2_rows"]]
+    backends = {str(docs[(jid, "passes")].get("timing_backend") or "") for jid in judge_ids}
+    if len(backends) != 1:
+        raise RefusalError(
+            "P0A_CHILD_OUTPUT_INVALID",
+            f"P0a children used different profiler timing backends ({sorted(backends)}).",
+        )
+    timing_backend = backends.pop()
+    selected_ids = bj.select_p0a_lowest_margin_items(
+        pass1_rows,
+        valid_item_ids=[it.item_id for it in ctx.items],
+        count=bj.P0A_LOW_MARGIN_RERUN_ITEM_COUNT,
+    )
+    selected_file.write_text(json.dumps(list(selected_ids)) + "\n", encoding="utf-8", newline="\n")
+    stage_selection["selected"] = list(selected_ids)
+    _run_stage("rerun")
+    for jid in judge_ids:
+        if docs[(jid, "rerun")].get("selected_item_ids") != list(selected_ids):
+            raise RefusalError(
+                "P0A_CHILD_OUTPUT_INVALID",
+                f"P0a rerun child for {jid} re-ran a different item selection than the parent's.",
+            )
+    reversed_low_margin = bj.summarize_p0a_reversed_rerun(
+        judge_ids=judge_ids,
+        rerun_rows_by_judge={jid: docs[(jid, "rerun")]["rerun_rows"] for jid in judge_ids},
+        items_by_id=ctx.items_by_id,
+        selected_item_ids=selected_ids,
+        baseline_rows=pass1_rows,
+    )
+    report = bj.assemble_p0a_report(
+        ctx,
+        pass1_rows=pass1_rows,
+        pass2_rows=pass2_rows,
+        profiler_by_judge={jid: docs[(jid, "passes")]["profiler"] for jid in judge_ids},
+        reversed_low_margin=reversed_low_margin,
+        timing_backend=timing_backend,
+    )
+    children_sha = _write_children_doc(
+        _children_doc(status="complete", report_sha256=report["p0a_report_sha256"], selected=selected_ids, failure=None)
+    )
+    return report, children_sha
+
+
 def run_judges_pipeline(
     *,
     mode: str,
@@ -6430,6 +6961,7 @@ def run_judges_pipeline(
     subblock_items: int | None = None,
     session_fingerprint_sha256: str | None = None,
     replacement_session: bool = False,
+    lock_check_phase: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run all 5 judges (or `only_judge_ids`) as separate child subprocesses in their synced venvs and compute readouts."""
     anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
@@ -6467,6 +6999,7 @@ def run_judges_pipeline(
             subblock_items=subblock_items,
             session_fingerprint_sha256=session_fingerprint_sha256,
             replacement_session=replacement_session,
+            lock_check_phase=lock_check_phase,
         )
         return t1_summary, mass_readout
     finally:
@@ -6507,6 +7040,7 @@ def _run_judges_pipeline_body(
     subblock_items: int | None = None,
     session_fingerprint_sha256: str | None = None,
     replacement_session: bool = False,
+    lock_check_phase: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _ensure_repo_imports(repo_root)
     eff_repo_dir = (repo_root or resolve_repo_dir()).resolve()
@@ -6536,6 +7070,14 @@ def _run_judges_pipeline_body(
         "lock-check-stub",
         "lock_check_stub",
     )
+    eff_lock_check_phase = resolve_lock_check_phase(
+        norm_mode,
+        lock_check_phase
+        if lock_check_phase is not None
+        else (os.environ.get(LOCK_CHECK_PHASE_ENV_VAR) if is_lock_check_window else None),
+    )
+    run_anchor_phase = not is_lock_check_window or eff_lock_check_phase in ("anchors", "all")
+    run_p0a_phase = is_lock_check_window and eff_lock_check_phase in ("p0a", "all")
     eff_anchor_file: Path | None = None
     eff_p0a_file: Path | None = None
     p0a_pilot_identity: dict[str, Any] | None = None
@@ -6703,6 +7245,9 @@ def _run_judges_pipeline_body(
         pipeline_passes.append((True, -1, []))
     for sb_idx, active_chunk in enumerate(subblock_chunks):
         pipeline_passes.append((False, sb_idx, active_chunk))
+    if not run_anchor_phase:
+        # A `p0a` lock-check phase runs no judge pass over the anchors (that is the `anchors` phase's window).
+        pipeline_passes = []
 
     for is_anchor_prefix_pass, subblock_idx, active_chunk in pipeline_passes:
       for judge_id, spec in selected_specs:
@@ -7322,7 +7867,8 @@ def _run_judges_pipeline_body(
 
     golden_anchor_manifest_file_sha256: str | None = None
     p0a_report_sha256: str | None = None
-    if norm_mode in ("lock-check", "lock_check", "lock-check-stub", "lock_check_stub"):
+    p0a_children_sha256: str | None = None
+    if is_lock_check_window and run_anchor_phase:
         import importlib
 
         bakeoff_judge = importlib.import_module(
@@ -7390,7 +7936,17 @@ def _run_judges_pipeline_body(
                 newline="\n",
             )
 
-        real_mode_active = is_real_mode(mode, dryrun=dryrun)
+    if run_p0a_phase:
+        import importlib
+
+        bakeoff_judge = importlib.import_module(
+            "reasoning_dataset_lab.pilot_b.bakeoff_judge"
+        )
+        if eff_counted_source is None or not eff_counted_source.exists():
+            raise RefusalError(
+                "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+                "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
+            )
         eff_p0a_part_dir = eff_p0a_file if eff_p0a_file is not None else part_dir
         p0a_src_jsonl = (
             eff_p0a_part_dir / "items.jsonl"
@@ -7402,31 +7958,28 @@ def _run_judges_pipeline_body(
         if (p0a_stage_dir / "items.jsonl").resolve() != p0a_src_jsonl.resolve():
             shutil.copyfile(p0a_src_jsonl, p0a_stage_dir / "items.jsonl")
         try:
-            p0a_doc = bakeoff_judge.run_lock_check_p0a(
-                part_dir=p0a_stage_dir,
-                output_dir=run_dir,
-                baseline_rows=None,
-                anchor_items=part_dir,
-                counted_item_ids=eff_counted_source,
+            p0a_doc, p0a_children_sha256 = run_lock_check_p0a_in_children(
+                bakeoff_judge_mod=bakeoff_judge,
+                p0a_part_dir=p0a_stage_dir,
+                run_dir=run_dir,
+                anchor_part_dir=part_dir,
+                counted_source=eff_counted_source,
                 receipts_dir=receipts_dir,
                 hf_home=hf_home,
-                device=resolve_judge_device(
-                    mode=mode, dryrun=dryrun, real_load_on_cpu=real_load_on_cpu
-                ),
-                dtype=DEFAULT_TORCH_DTYPE,
-                schedule_seed=DEFAULT_SCHEDULE_SEED,
+                mode=mode,
+                dryrun=dryrun,
+                real_load_on_cpu=real_load_on_cpu,
                 limit_items=limit_items,
-                fake_transport=not real_mode_active,
-                window_mode=mode,
-                event_factory=(
-                    bakeoff_judge._make_cuda_timing_event
-                    if real_mode_active
-                    else None
-                ),
-                timing_backend="cuda_event" if real_mode_active else "cpu_monotonic",
+                selected_specs=selected_specs,
+                work_dir=eff_work_dir,
                 repo_root=eff_repo_dir,
-                judge_ids=[jid for jid, _ in selected_specs],
                 pilot_identity=p0a_pilot_identity,
+                child_timeout_seconds=configured_child_timeout,
+                vram_halt_mib=vram_halt_mib,
+                progress_path=progress_path,
+                cgroup_root=cgroup_root,
+                proc_cgroup_path=proc_cgroup_path,
+                proc_meminfo_path=proc_meminfo_path,
             )
         except bakeoff_judge.RdlabError as exc:
             raise RefusalError(exc.code, exc.message) from exc
@@ -7493,6 +8046,8 @@ def _run_judges_pipeline_body(
         "anchor_item_ids": shard_info["anchor_item_ids"],
         "golden_anchor_manifest_file_sha256": golden_anchor_manifest_file_sha256,
         "p0a_report_sha256": p0a_report_sha256,
+        "p0a_children_sha256": p0a_children_sha256,
+        "lock_check_phase": eff_lock_check_phase,
         "p0a_part_identity": p0a_pilot_identity,
         "vram_sample_interval_seconds": VRAM_SAMPLE_INTERVAL_SECONDS,
         "judges": per_judge_metrics,
@@ -7661,6 +8216,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Run the 114-item lock-check window mode on deterministic CPU stub transport.",
     )
     parser.add_argument(
+        "--lock-check-phase",
+        dest="lock_check_phase",
+        choices=LOCK_CHECK_PHASES,
+        default=None,
+        help=(
+            "Lock-check phase (required with --lock-check / --lock-check-stub, no default; or RDLAB_LOCK_CHECK_PHASE, "
+            "read only in lock-check modes): anchors, p0a or all."
+        ),
+    )
+    parser.add_argument(
         "--counted-stub",
         dest="mode",
         action="store_const",
@@ -7708,7 +8273,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="anchor_items_file",
         type=Path,
         default=env_path("RDLAB_ANCHOR_ITEMS_FILE", None),
-        help="50 anchor items from the counted part (25 stratified + 25 canaries) for --lock-check.",
+        help="50 anchor items from the counted part (label-blind LC-1 rule, rdlab bakeoff-lockcheck-anchors) for --lock-check.",
     )
     parser.add_argument(
         "--p0a-items",
@@ -11635,6 +12200,7 @@ def run_boot_gatekeeper(
     run_dir: Path,
     repo_root: Path,
     mode: str,
+    lock_check_phase: str | None = None,
     card_type: str | None = None,
     goldens_path: Path | None = None,
     seed: int = DEFAULT_SCHEDULE_SEED,
@@ -11923,6 +12489,7 @@ def run_boot_gatekeeper(
                 "session_env_sha256": session_env_sha256,
                 "session_fingerprint_sha256": session_fp_sha256,
                 "mode": mode,
+                **({"lock_check_phase": lock_check_phase} if lock_check_phase is not None else {}),
                 "card_type": eff_card_type,
                 "hash_source": hash_source,
                 "stub_transport": bool(synthetic_fake_hash),
@@ -12651,6 +13218,7 @@ def main(argv: list[str] | None = None) -> int:
         return run_probe(args)
 
     is_lock_check_main = args.mode in ("lock-check", "lock-check-stub")
+    main_lock_check_phase: str | None = None
     anchor_items_arg = getattr(args, "anchor_items_file", None)
     p0a_items_arg = getattr(args, "p0a_items_file", None)
     raw_counted_items_arg = getattr(args, "counted_items_file", None)
@@ -12758,6 +13326,13 @@ def main(argv: list[str] | None = None) -> int:
     subblock_items_val: int = DEFAULT_SUBBLOCK_ITEMS
     uploaded_item_files: list[Path] = []
     try:
+        # The lock-check phase first: a lock-check window with no phase (or a phase on another mode) refuses before
+        # anything else is checked or written.
+        current_step = "validate_lock_check_phase"
+        raw_main_phase = getattr(args, "lock_check_phase", None)
+        if raw_main_phase is None and is_lock_check_main:
+            raw_main_phase = os.environ.get(LOCK_CHECK_PHASE_ENV_VAR)
+        main_lock_check_phase = resolve_lock_check_phase(args.mode, raw_main_phase)
         current_step = "validate_until_option"
         until_step = validate_until_option(args.mode, getattr(args, "until", None))
         stopped_after: str | None = None
@@ -13273,6 +13848,7 @@ def main(argv: list[str] | None = None) -> int:
                             device=resolve_judge_device(mode=args.mode, dryrun=dryrun),
                             session_env_report=session_env_report,
                             window_id=getattr(args, "window_id", None),
+                            lock_check_phase=main_lock_check_phase,
                         )
                     except (RefusalError, RdlabError) as gk_err:
                         gk_fc = getattr(gk_err, "failure_class", getattr(gk_err, "code", "VM_REFUSAL"))
@@ -13338,6 +13914,7 @@ def main(argv: list[str] | None = None) -> int:
                         # RDLAB_COUNTED_MANIFEST and refuse "both given" after the weights were downloaded.
                         counted_items_or_manifest=raw_counted_items_arg,
                         counted_manifest_file=raw_counted_manifest_arg,
+                        lock_check_phase=main_lock_check_phase,
                         loop_order=loop_order_val,
                         subblock_items=subblock_items_val,
                         session_fingerprint_sha256=str(
@@ -13479,6 +14056,7 @@ def main(argv: list[str] | None = None) -> int:
         receipt_doc: dict[str, Any] = {
             "status": "ok",
             "mode": args.mode,
+            "lock_check_phase": main_lock_check_phase,
             **receipt_hardware_fields(args.mode, dryrun=dryrun, card_type_check=card_type_check),
             "shard_spec": (
                 shard_info_report["shard_spec"]
@@ -13843,6 +14421,7 @@ def main(argv: list[str] | None = None) -> int:
             "detail": scrub_log_text(str(detail)),
             "reason": f"{failure_class}: {scrub_log_text(str(detail))}",
             "mode": args.mode,
+            "lock_check_phase": main_lock_check_phase,
             "judge_venvs": fail_judge_venvs_map,
             "judge_order": list(judge_order),
             "judge_order_source": judge_order_source,
