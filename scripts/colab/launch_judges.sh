@@ -743,8 +743,11 @@ except vm_judges.RefusalError as exc:
 PY
       fi
     done
-    if [[ -n "$COUNTED_MANIFEST_FILE" ]]; then
-      "$PYTHON_BIN" - "$REPO_ROOT" "$COUNTED_MANIFEST_FILE" "$SESSION_SMOKE_FLAG" <<'PY'
+    # The counted-source resolver runs for whichever counted source is given (--counted-manifest or
+    # --counted-items), as the live path and VM main do, so --dry never passes a source the live run refuses.
+    DRY_COUNTED_SOURCE="${COUNTED_MANIFEST_FILE:-$COUNTED_ITEMS_FILE}"
+    if [[ -n "$DRY_COUNTED_SOURCE" ]]; then
+      "$PYTHON_BIN" - "$REPO_ROOT" "$DRY_COUNTED_SOURCE" "$SESSION_SMOKE_FLAG" <<'PY'
 import sys
 from pathlib import Path
 

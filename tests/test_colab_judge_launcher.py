@@ -23805,8 +23805,9 @@ def test_fix5_item3_manifest_only_counted_source_refuses_up_front_before_judge_o
       (b) `launch_judges.sh` live mode (before any `colab` call);
       (c) `vm_judges.main` and `vm_judges.run_judges_pipeline` before any judge/transport call (asserting the mocked
           transport / child judge runner has zero calls).
-    - Also verifies that when a sibling `items.jsonl` IS present next to `--counted-manifest`, `launch_judges.sh` stages
-      both into `repo.tar.gz` and the lock-check run succeeds.
+    The positive case (a sibling `items.jsonl` next to `--counted-manifest` is staged into the repo bundle, then deleted
+    on the VM and listed in the receipt) is checked by
+    `test_followup_item3_sibling_counted_items_staged_in_bundle_and_deleted_on_vm`, not here.
     """
     counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
         tmp_path / "f5_i3_base", counted_count=100
@@ -24036,16 +24037,744 @@ def test_fix5_item4_golden_anchor_manifest_file_sha256_round_trips(
     assert merge_shards._load_golden_anchor_rows(gm_path, expected_sha256=sm_doc["golden_anchor_manifest_file_sha256"])[1]
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Lock-check follow-up (after #66): counted-source preflight in every mode, refuse-before-write ordering, the sibling
+# counted items.jsonl, cleanup errors when the pipeline body raises, old shard manifests, and a real lock-check
+# through VM `main` on a monkeypatched transport.
+# ---------------------------------------------------------------------------------------------------------------------
 
 
+def _followup_vm_inputs(base: Path, anchor_src: Path, p0a_src: Path) -> tuple[Path, Path]:
+    """Copy the anchor and P0a inputs (plus the P0a manifest) into a fresh upload dir; `main` deletes them after a run."""
+    base.mkdir(parents=True, exist_ok=True)
+    anc = base / "anchor_items.jsonl"
+    p0a = base / "p0a_items.jsonl"
+    shutil.copyfile(anchor_src, anc)
+    shutil.copyfile(p0a_src, p0a)
+    shutil.copyfile(p0a_src.parent / "manifest.json", base / "p0a_manifest.json")
+    return anc, p0a
 
 
+def _followup_main_args(
+    tmp_path: Path,
+    tag: str,
+    *,
+    mode_args: list[str],
+    receipts_dir: Path,
+    hf_home: Path,
+    extra: list[str],
+) -> tuple[list[str], Path, Path]:
+    run_dir = tmp_path / f"{tag}_run"
+    status = tmp_path / f"{tag}_status.json"
+    argv = [
+        "--step",
+        "run",
+        *mode_args,
+        "--repo-dir",
+        str(REPO_ROOT),
+        "--receipts-dir",
+        str(receipts_dir),
+        *extra,
+        "--run-dir",
+        str(run_dir),
+        "--work-dir",
+        str(tmp_path / f"{tag}_work"),
+        "--hf-home",
+        str(hf_home),
+        "--result-tar",
+        str(tmp_path / f"{tag}.tar.gz"),
+        "--status-file",
+        str(status),
+    ]
+    return argv, run_dir, status
 
 
+def test_followup_item1_counted_source_preflight_runs_in_every_mode_before_any_write_or_paid_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Follow-up item 1:
+    - VM `main` runs the counted-source preflight whenever a counted source is given, not only in lock-check: a
+      manifest-only source in `--mode stub` refuses `COUNTED_ITEMS_REQUIRED`, and an unparsable counted manifest refuses
+      `LOCK_CHECK_COUNTED_SOURCE_INVALID`, both before the shard manifest is built and before venv sync (fails at
+      9251a233, where `--mode stub` ignored the counted source and ran to the end).
+    - `launch_judges.sh --dry` resolves a `--counted-items` source the same way the live path does: a counted items file
+      whose sibling `manifest.json` declares the wrong `item_count` refuses in `--dry` (at 9251a233 only
+      `--counted-manifest` was resolved in `--dry`).
+    """
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "fu1_base", counted_count=100
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "fu1_rec")
+
+    mf_only_dir = tmp_path / "fu1_mf_only"
+    mf_only_dir.mkdir(parents=True, exist_ok=True)
+    mf_only = mf_only_dir / "counted_manifest.json"
+    shutil.copyfile(counted_items_file.parent / "manifest.json", mf_only)
+    bad_json_dir = tmp_path / "fu1_bad_json"
+    bad_json_dir.mkdir(parents=True, exist_ok=True)
+    bad_json = bad_json_dir / "counted_manifest.json"
+    bad_json.write_text("{not json", encoding="utf-8")
+
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+    monkeypatch.delenv("RDLAB_COUNTED_ITEMS_FILE", raising=False)
+    monkeypatch.delenv("RDLAB_COUNTED_MANIFEST", raising=False)
+
+    paid_or_write_calls: list[str] = []
+    orig_ensure_shard = vm_judges.ensure_shard_manifest_for_run
+
+    def _spy_ensure_shard(*args: Any, **kwargs: Any) -> Any:
+        paid_or_write_calls.append("ensure_shard_manifest_for_run")
+        return orig_ensure_shard(*args, **kwargs)
+
+    def _spy_sync(*args: Any, **kwargs: Any) -> Any:
+        paid_or_write_calls.append("sync_judge_venvs")
+        raise AssertionError("venv sync must not run when the counted source is refused")
+
+    monkeypatch.setattr(vm_judges, "ensure_shard_manifest_for_run", _spy_ensure_shard)
+    monkeypatch.setattr(vm_judges, "sync_judge_venvs", _spy_sync)
+
+    for tag, src, exp_code in (
+        ("fu1_mfonly", mf_only, "COUNTED_ITEMS_REQUIRED"),
+        ("fu1_badjson", bad_json, "LOCK_CHECK_COUNTED_SOURCE_INVALID"),
+    ):
+        items_dir = tmp_path / f"{tag}_items"
+        items_dir.mkdir(parents=True, exist_ok=True)
+        items = items_dir / "items.jsonl"
+        shutil.copyfile(counted_items_file, items)
+        argv, run_dir, status = _followup_main_args(
+            tmp_path,
+            tag,
+            mode_args=["--mode", "stub", "--dryrun"],
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            extra=["--items-file", str(items), "--counted-manifest", str(src)],
+        )
+        rc = vm_judges.main(argv)
+        status_doc = json.loads(status.read_text(encoding="utf-8"))
+        assert rc == 2, status_doc
+        assert status_doc["failure_class"] == exp_code
+        assert status_doc["step"] == "verify_counted_source"
+        assert paid_or_write_calls == []
+        assert not (run_dir / "shard_manifest.json").exists()
+
+    # launch_judges.sh --dry: a --counted-items source is resolved, not only --counted-manifest
+    bad_cnt_dir = tmp_path / "fu1_bad_count"
+    bad_cnt_dir.mkdir(parents=True, exist_ok=True)
+    bad_cnt_items = bad_cnt_dir / "items.jsonl"
+    shutil.copyfile(counted_items_file, bad_cnt_items)
+    (bad_cnt_dir / "manifest.json").write_text(
+        json.dumps({"part_id": "part01", "schema_version": "1.0", "item_count": 99}) + "\n",
+        encoding="utf-8",
+    )
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "fu1_sh_env")
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "open_fu1.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=counted_items_file,
+    )
+    proc_dry = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check-stub --dry "
+                f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
+                f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
+                f"--counted-items '{_to_wsl_path(bad_cnt_items)}' "
+                f"--out-dir '{_to_wsl_path(tmp_path / 'fu1_sh_out')}' --run-id fu1-dry"
+            ),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert proc_dry.returncode == 2, proc_dry.stdout + proc_dry.stderr
+    assert "LOCK_CHECK_COUNTED_SOURCE_INVALID" in proc_dry.stderr
+    assert "colab new" not in proc_dry.stdout
+    assert not env_paths["calls_log"].exists()
 
 
+def test_followup_item2_pipeline_refuses_before_writing_into_the_run_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Follow-up item 2: in `_run_judges_pipeline_body` every refusal that needs no judge output fires before the first
+    file is written into the run dir (each case fails at 9251a233, where `shard_manifest.json` was already written):
+    - a missing part manifest in real mode (`PART_MANIFEST_MISSING`);
+    - a missing judge venv interpreter in real mode (`VENV_PYTHON_MISSING`);
+    - a built shard manifest whose SHA-256 does not match the expected one (`SHARD_MANIFEST_SHA256_MISMATCH`), checked in
+      memory by `ensure_shard_manifest_for_run` before it writes.
+    """
+    counted_items_file, _, _ = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "fu2_base", counted_count=100
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "fu2_rec")
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    for var in ("RDLAB_SHARD", "RDLAB_SHARD_MANIFEST", "RDLAB_SHARD_MANIFEST_SHA256", "RDLAB_LIMIT_ITEMS"):
+        monkeypatch.delenv(var, raising=False)
+
+    def _no_child(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("no judge child may run")
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _no_child)
+
+    # (a) no part manifest in real counted mode
+    no_mf_dir = tmp_path / "fu2_no_mf"
+    no_mf_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(counted_items_file, no_mf_dir / "items.jsonl")
+    run_a = tmp_path / "fu2_run_a"
+    with pytest.raises(vm_judges.RefusalError) as exc_a:
+        vm_judges.run_judges_pipeline(
+            mode="counted",
+            part_dir=no_mf_dir,
+            run_dir=run_a,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            dryrun=False,
+            repo_root=REPO_ROOT,
+            work_dir=tmp_path / "fu2_work_a",
+        )
+    assert exc_a.value.failure_class == "PART_MANIFEST_MISSING"
+    assert not (run_a / "shard_manifest.json").exists()
+    assert not (no_mf_dir / "manifest.json").exists()
+
+    # (b) a valid part manifest but no judge venvs in real counted mode
+    with_mf_dir = tmp_path / "fu2_with_mf"
+    with_mf_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(counted_items_file, with_mf_dir / "items.jsonl")
+    (with_mf_dir / "manifest.json").write_text(
+        json.dumps({"part_id": "part01", "schema_version": "1.0"}) + "\n", encoding="utf-8"
+    )
+    run_b = tmp_path / "fu2_run_b"
+    with pytest.raises(vm_judges.RefusalError) as exc_b:
+        vm_judges.run_judges_pipeline(
+            mode="counted",
+            part_dir=with_mf_dir,
+            run_dir=run_b,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            dryrun=False,
+            repo_root=REPO_ROOT,
+            work_dir=tmp_path / "fu2_work_b",
+        )
+    assert exc_b.value.failure_class == "VENV_PYTHON_MISSING"
+    assert not (run_b / "shard_manifest.json").exists()
+
+    # (c) a built shard manifest refused for its SHA-256 is never written
+    run_c = tmp_path / "fu2_run_c"
+    with pytest.raises(vm_judges.RefusalError) as exc_c:
+        vm_judges.ensure_shard_manifest_for_run(
+            items_file=with_mf_dir,
+            run_dir=run_c,
+            raw_shard_spec="1/1",
+            expected_manifest_sha256="0" * 64,
+            limit_items=None,
+        )
+    assert exc_c.value.failure_class == "SHARD_MANIFEST_SHA256_MISMATCH"
+    assert not (run_c / "shard_manifest.json").exists()
+    assert not (run_c / "shard_manifest.json.sha256").exists()
+    # the same call without the bad SHA-256 still builds and writes it
+    ok_info = vm_judges.ensure_shard_manifest_for_run(
+        items_file=with_mf_dir, run_dir=run_c, raw_shard_spec="1/1", limit_items=None
+    )
+    assert (run_c / "shard_manifest.json").is_file()
+    assert ok_info["shard_manifest_sha256"] == hashlib.sha256((run_c / "shard_manifest.json").read_bytes()).hexdigest()
 
 
+def test_followup_item3_sibling_counted_items_staged_in_bundle_and_deleted_on_vm(
+    tmp_path: Path,
+) -> None:
+    """Follow-up item 3: `--counted-manifest` with a sibling `items.jsonl`:
+    (a) the launcher stages both into `repo_bundle.tar.gz` byte-identical, after the allow-list checks; a sibling that
+        fails the item field allow-list is refused at staging, before `colab new`;
+    (b) the VM deletes both after the run and lists both in `vm_receipt.json`'s `deleted_items_receipt`.
+    This covers launcher/VM code that was already on 9251a233 with no test, so it passes there too; only the fake
+    CLI's `FAKE_COLAB_KEEP_UPLOADS_DIR` hook is new.
+    """
+    import tarfile
+
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "fu3_base", counted_count=100
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "fu3_rec")
+    src_dir = tmp_path / "fu3_counted_src"
+    src_dir.mkdir(parents=True, exist_ok=True)
+    cnt_mf = src_dir / "counted_manifest.json"
+    cnt_items = src_dir / "items.jsonl"
+    shutil.copyfile(counted_items_file.parent / "manifest.json", cnt_mf)
+    shutil.copyfile(counted_items_file, cnt_items)
+
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "fu3_env")
+    keep_dir = tmp_path / "fu3_kept_uploads"
+    exports = _base_launcher_exports(
+        env_paths,
+        open_lock=tmp_path / "open_fu3.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=counted_items_file,
+    ) + f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(keep_dir)}'; "
+    out_dir = tmp_path / "fu3_out"
+    proc = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check-stub "
+                f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
+                f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
+                f"--counted-manifest '{_to_wsl_path(cnt_mf)}' "
+                f"--window-id win-fu3-01 --run-id fu3-01 --out-dir '{_to_wsl_path(out_dir)}'"
+            ),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        f"stdout={proc.stdout[-2000:]}\nstderr={proc.stderr[-2000:]}\n"
+        f"status={(out_dir / 'status.json').read_text(encoding='utf-8') if (out_dir / 'status.json').is_file() else 'missing'}"
+    )
+
+    # (a) the staged bundle holds both files, byte-identical to the sources
+    kept_bundle = keep_dir / "repo_bundle.tar.gz"
+    assert kept_bundle.is_file()
+    with tarfile.open(kept_bundle, "r:gz") as tf:
+        names = set(tf.getnames())
+        assert "counted_manifest.json" in names
+        assert "items.jsonl" in names
+        staged_mf = tf.extractfile("counted_manifest.json")
+        staged_items = tf.extractfile("items.jsonl")
+        assert staged_mf is not None and staged_items is not None
+        assert staged_mf.read() == cnt_mf.read_bytes()
+        staged_items_bytes = staged_items.read()
+    assert staged_items_bytes == cnt_items.read_bytes()
+    staged_copy = tmp_path / "fu3_staged_items.jsonl"
+    staged_copy.write_bytes(staged_items_bytes)
+    assert vm_judges.verify_items_allowlist(staged_copy) == 100
+
+    # (b) the VM deleted both and listed both in the receipt
+    vm_receipt = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    del_rec = vm_receipt["deleted_items_receipt"]
+    assert del_rec["all_absent"] is True
+    deleted_paths = [f["path"] for f in del_rec["files"]]
+    assert any(p.endswith("/rdlab/counted_manifest.json") for p in deleted_paths), deleted_paths
+    assert any(p.endswith("/rdlab/items.jsonl") for p in deleted_paths), deleted_paths
+    assert all(f["absent"] is True for f in del_rec["files"])
+    assert vm_receipt["counted_source_sha256"] == hashlib.sha256(cnt_mf.read_bytes()).hexdigest()
+    vm_fs_dirs = [d for d in env_paths["state_dir"].iterdir() if d.is_dir() and d.name.startswith("vm_fs")]
+    assert vm_fs_dirs
+    for vm_fs in vm_fs_dirs:
+        assert not (vm_fs / "rdlab" / "counted_manifest.json").exists()
+        assert not (vm_fs / "rdlab" / "items.jsonl").exists()
+
+    # (a, refusal) a sibling items.jsonl with a field outside the allow-list is refused at staging, before `colab new`
+    bad_dir = tmp_path / "fu3_bad_src"
+    bad_dir.mkdir(parents=True, exist_ok=True)
+    bad_mf = bad_dir / "counted_manifest.json"
+    shutil.copyfile(counted_items_file.parent / "manifest.json", bad_mf)
+    bad_rows = []
+    for ln in counted_items_file.read_text(encoding="utf-8").splitlines():
+        if ln.strip():
+            row = json.loads(ln)
+            row["note"] = "not on the allow-list"
+            bad_rows.append(json.dumps(row, sort_keys=True))
+    (bad_dir / "items.jsonl").write_text("\n".join(bad_rows) + "\n", encoding="utf-8")
+    env_bad = fake_colab.setup_fake_colab_environment(tmp_path / "fu3_env_bad")
+    exports_bad = _base_launcher_exports(
+        env_bad,
+        open_lock=tmp_path / "open_fu3_bad.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=counted_items_file,
+    )
+    proc_bad = subprocess.run(
+        [
+            "bash",
+            "-c",
+            (
+                f"{exports_bad} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check-stub "
+                f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
+                f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
+                f"--counted-manifest '{_to_wsl_path(bad_mf)}' "
+                f"--window-id win-fu3-02 --run-id fu3-02 --out-dir '{_to_wsl_path(tmp_path / 'fu3_out_bad')}'"
+            ),
+        ],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert proc_bad.returncode == 2, proc_bad.stdout[-1500:] + proc_bad.stderr[-1500:]
+    assert "ITEMS_FIELD_NOT_ALLOWED" in proc_bad.stderr, proc_bad.stderr[-1500:]
+    assert "'note'" in proc_bad.stderr
+    bad_calls = [
+        json.loads(ln)
+        for ln in (env_bad["calls_log"].read_text(encoding="utf-8").splitlines() if env_bad["calls_log"].exists() else [])
+        if ln.strip()
+    ]
+    assert all(c.get("subcmd") not in ("new", "upload", "exec") for c in bad_calls), bad_calls
 
 
+def test_followup_item4_cleanup_errors_recorded_when_body_raises_and_listed_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Follow-up item 4 (each part fails at 9251a233):
+    - when `_run_judges_pipeline_body` raises and unlinking the synthesized `manifest.json` fails in
+      `run_judges_pipeline`'s `finally`, the error is carried on the propagating exception (its class and detail are
+      unchanged) and `main` lists it in `vm_receipt.json`;
+    - when both cleanup paths fail on the same file, the receipt lists that path once (it was listed twice).
+    """
+    counted_items_file, _, _ = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "fu4_base", counted_count=100
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "fu4_rec")
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
 
+    orig_unlink = Path.unlink
+
+    def _failing_mf_unlink(self_path: Path, *args: Any, **kwargs: Any) -> None:
+        if self_path.name == "manifest.json":
+            raise OSError("simulated EPERM on manifest.json")
+        orig_unlink(self_path, *args, **kwargs)
+
+    orig_ensure_shard = vm_judges.ensure_shard_manifest_for_run
+
+    def _body_refuses(*args: Any, **kwargs: Any) -> Any:
+        # `main` builds its shard manifest from the items file; the pipeline body passes the part dir, after it has
+        # synthesized the stub part manifest. Refuse only there, so the body raises with a manifest left to clean up.
+        if Path(kwargs["items_file"]).is_dir():
+            raise vm_judges.RefusalError("FU4_BODY_REFUSED", "simulated pipeline body refusal")
+        return orig_ensure_shard(*args, **kwargs)
+
+    # (1) direct pipeline call: the body raises, the cleanup error rides on the exception
+    part_dir = tmp_path / "fu4_part"
+    part_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(counted_items_file, part_dir / "items.jsonl")
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "unlink", _failing_mf_unlink)
+        mp.setattr(vm_judges, "ensure_shard_manifest_for_run", _body_refuses)
+        with pytest.raises(vm_judges.RefusalError) as exc_pipe:
+            vm_judges.run_judges_pipeline(
+                mode="stub",
+                part_dir=part_dir,
+                run_dir=tmp_path / "fu4_pipe_run",
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                dryrun=True,
+                repo_root=REPO_ROOT,
+                work_dir=tmp_path / "fu4_pipe_work",
+            )
+    assert exc_pipe.value.failure_class == "FU4_BODY_REFUSED"
+    assert "simulated pipeline body refusal" in exc_pipe.value.detail
+    assert getattr(exc_pipe.value, "manifest_cleanup_errors", None) == [
+        {"path": str(part_dir / "manifest.json").replace("\\", "/"), "error": "simulated EPERM on manifest.json"}
+    ]
+    orig_unlink(part_dir / "manifest.json")
+
+    # (2) through main, refused run: the error lands in vm_receipt.json, once
+    items_dir = tmp_path / "fu4_main_items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items = items_dir / "items.jsonl"
+    shutil.copyfile(counted_items_file, items)
+    argv, run_dir, status = _followup_main_args(
+        tmp_path,
+        "fu4_main_ref",
+        mode_args=["--mode", "stub", "--dryrun"],
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra=["--items-file", str(items)],
+    )
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "unlink", _failing_mf_unlink)
+        mp.setattr(vm_judges, "ensure_shard_manifest_for_run", _body_refuses)
+        rc = vm_judges.main(argv)
+    assert rc == 2
+    assert json.loads(status.read_text(encoding="utf-8"))["failure_class"] == "FU4_BODY_REFUSED"
+    rec = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    errs = rec["deleted_items_receipt"]["manifest_cleanup_errors"]
+    assert [e["path"] for e in errs] == [str(items_dir / "manifest.json").replace("\\", "/")]
+    orig_unlink(items_dir / "manifest.json")
+
+    # (3) through main, successful run: both cleanup paths fail on the same file, listed once
+    items_dir_ok = tmp_path / "fu4_main_items_ok"
+    items_dir_ok.mkdir(parents=True, exist_ok=True)
+    items_ok = items_dir_ok / "items.jsonl"
+    shutil.copyfile(counted_items_file, items_ok)
+    argv_ok, run_dir_ok, status_ok = _followup_main_args(
+        tmp_path,
+        "fu4_main_ok",
+        mode_args=["--mode", "stub", "--dryrun"],
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra=["--items-file", str(items_ok)],
+    )
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "unlink", _failing_mf_unlink)
+        rc_ok = vm_judges.main(argv_ok)
+    assert rc_ok == 0, status_ok.read_text(encoding="utf-8")
+    rec_ok = json.loads((run_dir_ok / "vm_receipt.json").read_text(encoding="utf-8"))
+    errs_ok = rec_ok["deleted_items_receipt"]["manifest_cleanup_errors"]
+    assert len(errs_ok) == 1
+    assert errs_ok[0]["path"] == str(items_dir_ok / "manifest.json").replace("\\", "/")
+    assert "simulated EPERM" in errs_ok[0]["error"]
+
+    # the merge helper keeps the first entry per path and skips non-mappings
+    merged = vm_judges.merge_manifest_cleanup_errors(
+        [{"path": "/a", "error": "first"}],
+        [{"path": "/a", "error": "second"}, {"path": "/b", "error": "x"}, "junk"],  # type: ignore[list-item]
+    )
+    assert merged == [{"path": "/a", "error": "first"}, {"path": "/b", "error": "x"}]
+
+
+def test_followup_item5_old_shard_manifest_field_refuses_with_its_own_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Follow-up item 5 (fails at 9251a233, where the judge refused `SHARD_MANIFEST_GOLDEN_SHA_MISMATCH "(missing)"`
+    and the merge accepted the old field):
+    - `run_bakeoff_judge` on a counted shard refuses a `shard_manifest.json` that has only the old field
+      `golden_anchor_manifest_sha256` with `SHARD_MANIFEST_GOLDEN_SHA_MISSING`, saying it predates the file-sha field;
+    - a manifest with neither field refuses with the same code;
+    - `merge_shards` refuses a counted merge of a manifest with only the old field with the same code.
+    """
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+    import merge_shards
+
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "fu5_base", counted_count=100
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "fu5_rec")
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+
+    anc, p0a = _followup_vm_inputs(tmp_path / "fu5_in", anchor_items_src, p0a_items_src)
+    cnt = tmp_path / "fu5_in" / "counted_items.jsonl"
+    shutil.copyfile(counted_items_file, cnt)
+    argv, lc_run, lc_status = _followup_main_args(
+        tmp_path,
+        "fu5_lc",
+        mode_args=["--lock-check-stub", "--dryrun"],
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra=["--anchor-items", str(anc), "--p0a-items", str(p0a), "--counted-items", str(cnt)],
+    )
+    assert vm_judges.main(argv) == 0, lc_status.read_text(encoding="utf-8")
+    gm_path = lc_run / "golden_anchor_manifest.json"
+    sm_doc = json.loads((lc_run / "shard_manifest.json").read_text(encoding="utf-8"))
+    file_sha = sm_doc["golden_anchor_manifest_file_sha256"]
+    assert file_sha == hashlib.sha256(gm_path.read_bytes()).hexdigest()
+
+    def _variant(tag: str, *, old: bool) -> tuple[Path, str]:
+        doc = dict(sm_doc)
+        doc.pop("golden_anchor_manifest_file_sha256")
+        if old:
+            doc["golden_anchor_manifest_sha256"] = file_sha
+        doc["manifest_sha256"] = bakeoff_judge._compute_shard_manifest_body_sha256(doc)
+        path = tmp_path / f"fu5_{tag}" / "shard_manifest.json"
+        sha = bakeoff_judge.write_shard_manifest(doc, path)
+        return path, sha
+
+    for tag, old, needle in (
+        ("old_only", True, "predates"),
+        ("neither", False, "has no golden_anchor_manifest_file_sha256"),
+    ):
+        sm_path, sm_sha = _variant(tag, old=old)
+        with pytest.raises(RdlabError) as exc:
+            bakeoff_judge.run_bakeoff_judge(
+                part_dir=counted_items_file,
+                output_dir=tmp_path / f"fu5_out_{tag}",
+                judge="mu-judge",
+                fake_transport=True,
+                window_mode="counted-stub",
+                shard_spec="1/2",
+                shard_manifest_path=sm_path,
+                shard_manifest_sha256=sm_sha,
+                golden_anchor_manifest_path=gm_path,
+                repo_root=REPO_ROOT,
+            )
+        assert exc.value.code == "SHARD_MANIFEST_GOLDEN_SHA_MISSING"
+        assert needle in exc.value.message
+
+    # merge_shards: a counted merge of an old-only manifest refuses on the manifest, before reading any shard rows
+    old_sm_path, _ = _variant("merge_old", old=True)
+    shutil.copyfile(gm_path, old_sm_path.parent / "golden_anchor_manifest.json")
+    shard_dirs = []
+    for k in (1, 2):
+        sdir = tmp_path / "fu5_merge" / f"shard_{k}"
+        sdir.mkdir(parents=True, exist_ok=True)
+        (sdir / "session_env.json").write_text(
+            json.dumps({"mode": "counted-stub", "dryrun": True}) + "\n", encoding="utf-8"
+        )
+        shard_dirs.append(sdir)
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_merge:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=old_sm_path,
+            output_dir=tmp_path / "fu5_merge" / "out",
+        )
+    assert exc_merge.value.failure_class == "SHARD_MANIFEST_GOLDEN_SHA_MISSING"
+
+
+def test_followup_item6_real_lock_check_through_vm_main_on_monkeypatched_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Follow-up item 6: `vm_judges.main` in real `lock-check` mode (no `--dryrun`, no `VM_DRYRUN`). Every step that would
+    touch a GPU, the network or a venv runs its dryrun behaviour, and the judge child runner and the P0a transport are
+    the fake transport:
+    - a bad counted source (a manifest with no sibling `items.jsonl`) refuses `COUNTED_ITEMS_REQUIRED` at the
+      counted-source preflight, before any transport/venv/device call and before `shard_manifest.json` exists;
+    - a good run with `--counted-manifest` (and its sibling `items.jsonl`, as the launcher stages them) writes
+      `golden_anchor_manifest.json`, `shard_manifest.json` and `p0a_report.json`, with the golden file's SHA-256 bound
+      as `golden_anchor_manifest_file_sha256` in the shard manifest, the summary and the receipt.
+    Fails at 9251a233: there `main` handed the manifest path to the pipeline as an items source, the body saw it next
+    to `RDLAB_COUNTED_MANIFEST`/`--counted-manifest` and refused `LOCK_CHECK_COUNTED_SOURCE_INVALID` ("both given")
+    after the venv, device and weight steps had run.
+    """
+    counted_items_file, anchor_items_src, p0a_items_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "fu6_base", counted_count=100
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "fu6_rec")
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    for var in ("RDLAB_COUNTED_ITEMS_FILE", "RDLAB_COUNTED_MANIFEST", "RDLAB_ANCHOR_ITEMS_FILE", "RDLAB_P0A_ITEMS_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    for var in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(var):
+            monkeypatch.delenv(var, raising=False)
+
+    transport_calls: list[str] = []
+
+    def _as_dryrun(name: str) -> Any:
+        orig = getattr(vm_judges, name)
+
+        def _wrapped(*args: Any, **kwargs: Any) -> Any:
+            transport_calls.append(name)
+            kwargs["dryrun"] = True
+            if "device" in kwargs:
+                kwargs["device"] = "cpu"
+            return orig(*args, **kwargs)
+
+        return _wrapped
+
+    for name in (
+        "sync_judge_venvs",
+        "run_device_check",
+        "run_gpu_gate",
+        "download_and_verify_all_judge_weights",
+        "run_boot_gatekeeper",
+        "collect_and_write_session_env",
+    ):
+        monkeypatch.setattr(vm_judges, name, _as_dryrun(name))
+
+    orig_child = vm_judges._run_child_with_group_timeout
+
+    def _fake_child(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+        if vm_judges.JUDGE_RUNNER_MODULE not in cmd:
+            transport_calls.append("other_child")
+            return orig_child(cmd, *args, **kwargs)
+        transport_calls.append("judge_child")
+        new_cmd = list(cmd)
+        if "--device" in new_cmd:
+            new_cmd[new_cmd.index("--device") + 1] = "cpu"
+        if "--window-mode" in new_cmd:
+            new_cmd[new_cmd.index("--window-mode") + 1] = "lock-check-stub"
+        if "--stub" not in new_cmd:
+            new_cmd.append("--stub")
+        return orig_child(new_cmd, *args, **kwargs)
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _fake_child)
+
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    orig_p0a = bakeoff_judge.run_lock_check_p0a
+
+    def _fake_p0a(**kwargs: Any) -> Any:
+        transport_calls.append("p0a")
+        kwargs.update(
+            fake_transport=True,
+            event_factory=None,
+            timing_backend="cpu_monotonic",
+            device="cpu",
+            window_mode="lock-check-stub",
+        )
+        return orig_p0a(**kwargs)
+
+    monkeypatch.setattr(bakeoff_judge, "run_lock_check_p0a", _fake_p0a)
+
+    # (1) bad counted source: refused at the preflight, nothing paid, nothing written
+    anc_bad, p0a_bad = _followup_vm_inputs(tmp_path / "fu6_in_bad", anchor_items_src, p0a_items_src)
+    bad_mf = tmp_path / "fu6_in_bad" / "counted_manifest.json"
+    shutil.copyfile(counted_items_file.parent / "manifest.json", bad_mf)
+    assert not (bad_mf.parent / "items.jsonl").exists()
+    argv_bad, run_bad, status_bad = _followup_main_args(
+        tmp_path,
+        "fu6_bad",
+        mode_args=["--lock-check"],
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra=["--anchor-items", str(anc_bad), "--p0a-items", str(p0a_bad), "--counted-manifest", str(bad_mf)],
+    )
+    rc_bad = vm_judges.main(argv_bad)
+    st_bad = json.loads(status_bad.read_text(encoding="utf-8"))
+    assert rc_bad == 2, st_bad
+    assert st_bad["failure_class"] == "COUNTED_ITEMS_REQUIRED", st_bad
+    assert transport_calls == []
+    assert not (run_bad / "shard_manifest.json").exists()
+    assert not (run_bad / "golden_anchor_manifest.json").exists()
+
+    # (2) good run in real lock-check mode
+    anc, p0a = _followup_vm_inputs(tmp_path / "fu6_in", anchor_items_src, p0a_items_src)
+    cnt_dir = tmp_path / "fu6_in_counted"
+    cnt_dir.mkdir(parents=True, exist_ok=True)
+    cnt = cnt_dir / "counted_manifest.json"
+    cnt_items = cnt_dir / "items.jsonl"
+    shutil.copyfile(counted_items_file.parent / "manifest.json", cnt)
+    shutil.copyfile(counted_items_file, cnt_items)
+    monkeypatch.setenv("RDLAB_COUNTED_MANIFEST", str(cnt))
+    argv, run_dir, status = _followup_main_args(
+        tmp_path,
+        "fu6_ok",
+        mode_args=["--lock-check", "--window-id", "win-fu6-01"],
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra=["--anchor-items", str(anc), "--p0a-items", str(p0a), "--counted-manifest", str(cnt)],
+    )
+    work_dir = tmp_path / "fu6_ok_work"
+    for venv_name in ("venv-judge", "venv-d3"):
+        vm_judges._ensure_dryrun_venv_python_wrapper(work_dir / venv_name / "bin" / "python")
+    rc = vm_judges.main(argv)
+    assert rc == 0, status.read_text(encoding="utf-8")
+    assert "judge_child" in transport_calls and "p0a" in transport_calls
+    assert transport_calls.index("sync_judge_venvs") < transport_calls.index("judge_child")
+
+    gm_path = run_dir / "golden_anchor_manifest.json"
+    sm_path = run_dir / "shard_manifest.json"
+    assert gm_path.is_file() and sm_path.is_file() and (run_dir / "p0a_report.json").is_file()
+    gm_file_sha = hashlib.sha256(gm_path.read_bytes()).hexdigest()
+    sm_doc = json.loads(sm_path.read_text(encoding="utf-8"))
+    t1_doc = json.loads((run_dir / "time_one_summary.json").read_text(encoding="utf-8"))
+    rec_doc = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert sm_doc["golden_anchor_manifest_file_sha256"] == gm_file_sha
+    assert t1_doc["golden_anchor_manifest_file_sha256"] == gm_file_sha
+    assert rec_doc["golden_anchor_manifest_file_sha256"] == gm_file_sha
+    assert t1_doc["mode"] == "lock-check"
+    assert len(sm_doc["anchor_item_ids"]) == 50
+    assert rec_doc["deleted_items_receipt"]["all_absent"] is True
+    assert not anc.exists() and not p0a.exists() and not cnt.exists() and not cnt_items.exists()
+    assert rec_doc["counted_source_sha256"] == hashlib.sha256((counted_items_file.parent / "manifest.json").read_bytes()).hexdigest()

@@ -2002,6 +2002,11 @@ def main(argv: list[str] | None = None) -> int:
                 encoding="utf-8",
                 newline="\n",
             )
+        keep_uploads_dir = os.environ.get("FAKE_COLAB_KEEP_UPLOADS_DIR", "").strip()
+        if keep_uploads_dir:
+            # Test-only: keep a copy of each uploaded file so a test can inspect exactly what was staged.
+            Path(keep_uploads_dir).mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, Path(keep_uploads_dir) / Path(dst).name)
         record_file_access(state_dir, "upload", src, detail=f"to:{dst}")
         print(f"Uploaded {src} -> {dst}")
         return 0

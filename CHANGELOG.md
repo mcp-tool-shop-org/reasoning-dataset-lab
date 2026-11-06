@@ -6,6 +6,24 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Added
+
+- **Lock-check window for the judge bake-off** (#66). `scripts/colab/launch_judges.sh --lock-check` (A100) and `--lock-check-stub` (CPU) take two separate inputs, `--anchor-items` (the 50 anchor items from the counted part) and `--p0a-items` (the 114 burned pilot items), plus one counted source, `--counted-items` or `--counted-manifest`. The window records the boot gatekeeper goldens (`boot_gatekeeper_goldens.filled.json`), runs the five judges over the anchors, writes `golden_anchor_manifest.json` and a `shard_manifest.json` built from the full counted part, runs P0a (`p0a_report.json`), and records the input hashes in `window.json` and `vm_receipt.json`. Both input sets are checked before a session opens and deleted on the VM after the run.
+- `scripts/colab/promote_goldens.py` checks a window's filled boot gatekeeper goldens and writes a candidate `boot_gatekeeper_goldens.json` outside every git work tree, for review.
+- New refusals from #66: `PART_MANIFEST_MISSING` (real mode never synthesizes a part manifest), `PART_MANIFEST_INVALID` (a part manifest that does not parse, is not an object or has no `part_id`), `PART_MANIFEST_SYNTHESIZED` (a leftover stub manifest in real mode), `COUNTED_ITEMS_REQUIRED` (a counted manifest with no real `items.jsonl`), `LOCK_CHECK_COUNTED_SOURCE_INVALID` (both counted sources given, or a counted source that does not match its manifest) and `SHARD_MANIFEST_GOLDEN_SHA_MISMATCH` (the golden file does not match the SHA-256 recorded in the shard manifest).
+
+### Changed
+
+- The shard manifest and the receipts record the golden anchor manifest's file SHA-256 as `golden_anchor_manifest_file_sha256` (#66). The golden file's own `golden_anchor_manifest_sha256` is its body hash and keeps its name.
+
+### Fixed
+
+- A lock-check run given `--counted-manifest` (the launcher passes it as `RDLAB_COUNTED_MANIFEST`) no longer refuses `LOCK_CHECK_COUNTED_SOURCE_INVALID` after the venv, device and weight steps: VM `main` handed the manifest to the pipeline as an items source.
+- VM `main` checks the counted source whenever one is given, in every mode, before the shard manifest is written and before venv sync, weight download or any device step. A counted manifest that is not valid JSON refuses `LOCK_CHECK_COUNTED_SOURCE_INVALID` instead of raising a raw error. `launch_judges.sh --dry` now resolves a `--counted-items` source as the live path does, not only `--counted-manifest`.
+- The judge pipeline refuses a missing or invalid part manifest and a missing judge venv before it writes `shard_manifest.json` into the run directory, and a built shard manifest whose SHA-256 does not match the expected one is refused before it is written.
+- A failure to delete the leftover part manifest is recorded in the receipt when the pipeline itself refused, not only when it finished, without changing the refusal. When both cleanup steps fail on the same file, the receipt lists it once.
+- A shard manifest without `golden_anchor_manifest_file_sha256` (one that has only the old field name predates it) refuses `SHARD_MANIFEST_GOLDEN_SHA_MISSING` with a message to rebuild it, in the judge and in a counted shard merge. A counted merge also checks that field against the golden file's SHA-256.
+
 ## [0.5.0] - 2026-11-05
 
 **The judge bake-off: build a sealed test part, run five local judges on it, score them without anyone seeing the keys first, and run the judges on Colab.** Tests: 1,162 passing, 2 skipped.

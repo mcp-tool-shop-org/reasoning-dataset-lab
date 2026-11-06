@@ -2446,8 +2446,14 @@ def _resolve_items_from_manifest_source(
                 _validate_manifest_item_count(sib_doc, len(loaded_items), source_label=str(sibling_mf))
             return loaded_items, loaded_sha
 
-        raw_bytes = p.read_bytes()
-        parsed = json.loads(raw_bytes.decode("utf-8"))
+        try:
+            parsed = json.loads(p.read_bytes().decode("utf-8"))
+        except (OSError, ValueError) as exc:
+            raise refused_error(
+                "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+                f"Counted manifest '{p}' could not be read as JSON: {exc}.",
+                "Pass a valid counted manifest.json (next to its real items.jsonl) or --counted-items <items.jsonl>.",
+            ) from exc
         manifest_doc = parsed if isinstance(parsed, Mapping) else {"item_ids": parsed}
         sibling_items = p.parent / "items.jsonl"
         if sibling_items.is_file():
@@ -4934,7 +4940,22 @@ def run_bakeoff_judge(
                 )
             expected_golden_sha = str(manifest_doc.get("golden_anchor_manifest_file_sha256") or "").strip().lower()
             actual_golden_file_sha = hashlib.sha256(resolved_golden_path.read_bytes()).hexdigest().lower()
-            if not expected_golden_sha or actual_golden_file_sha != expected_golden_sha:
+            if not expected_golden_sha:
+                if str(manifest_doc.get("golden_anchor_manifest_sha256") or "").strip():
+                    raise refused_error(
+                        "SHARD_MANIFEST_GOLDEN_SHA_MISSING",
+                        "shard_manifest.json has only the old field golden_anchor_manifest_sha256 and no "
+                        "golden_anchor_manifest_file_sha256: it predates the golden file SHA-256 field, so the golden "
+                        "anchor manifest it was built against cannot be bound to a file.",
+                        "Rebuild shard_manifest.json from the lock-check window (the current build writes golden_anchor_manifest_file_sha256).",
+                    )
+                raise refused_error(
+                    "SHARD_MANIFEST_GOLDEN_SHA_MISSING",
+                    "shard_manifest.json has no golden_anchor_manifest_file_sha256, so the golden anchor manifest it was "
+                    "built against cannot be bound to a file.",
+                    "Rebuild shard_manifest.json from the lock-check window (the current build writes golden_anchor_manifest_file_sha256).",
+                )
+            if actual_golden_file_sha != expected_golden_sha:
                 raise refused_error(
                     "SHARD_MANIFEST_GOLDEN_SHA_MISMATCH",
                     f"Counted shard golden anchor manifest file SHA-256 ({actual_golden_file_sha}) does not match "
