@@ -2151,6 +2151,23 @@ def main(argv: list[str] | None = None) -> int:
                 mapped_v = str(vm_fs)
             exec_env[k] = mapped_v
 
+        if os.environ.get("FAKE_COLAB_REAL_MODE_SHIM", "").strip():
+            # Real-mode shim (test-only): the VM has its own weight cache inside the fake VM root, standing in for the
+            # weights a real VM downloads. It is seeded from FAKE_COLAB_VM_HF_SEED (the test's synthetic snapshots) by
+            # this CLI process, never read by the cell from the launcher's local HF_HOME, whose forwarded value is
+            # replaced here.
+            vm_hf_home = vm_fs / "hf_home"
+            hf_seed = os.environ.get("FAKE_COLAB_VM_HF_SEED", "").strip()
+            if hf_seed and not vm_hf_home.exists() and Path(hf_seed).is_dir():
+                shutil.copytree(hf_seed, vm_hf_home)
+            vm_hf_home.mkdir(parents=True, exist_ok=True)
+            exec_env["HF_HOME"] = str(vm_hf_home)
+            extra_raw = os.environ.get("FAKE_COLAB_EXEC_ENV_EXTRA", "").strip()
+            if extra_raw and exec_env.get("RDLAB_STEP", "run") == "run":
+                # As if the launcher had forwarded these with --env (used to prove host paths are unreadable).
+                for ek, ev in json.loads(extra_raw).items():
+                    exec_env[str(ek)] = str(ev)
+
         (vm_fs / ".cache").mkdir(parents=True, exist_ok=True)
         sleep_s = float(os.environ.get("FAKE_COLAB_EXEC_SLEEP", "0"))
         step = exec_env.get("RDLAB_STEP", "run")
@@ -2465,13 +2482,18 @@ def main(argv: list[str] | None = None) -> int:
                 "}\n"
                 "if _REAL_MODE_SHIM and os.environ.get('RDLAB_STEP') == 'run':\n"
                 "    # Real-mode cell (FAKE_COLAB_REAL_MODE_SHIM, test-only): the VM process sees no test hook, as on a\n"
-                "    # real Colab VM; the shim replaces only the GPU/network/venv steps and the judge child runner.\n"
+                "    # real Colab VM; the shim replaces only the GPU/network/venv steps and the judge child runner, and\n"
+                "    # its host-path guard makes the test's temp root and the repo checkout unreadable from this cell.\n"
+                "    _deny_roots = [r for r in os.environ.get('FAKE_COLAB_VM_DENY_ROOTS', '').split(os.pathsep) if r.strip()]\n"
+                "    _deny_roots.append(str(pathlib.Path(_REAL_MODE_SHIM).resolve().parents[2]))\n"
                 "    for _hook in [k for k in os.environ if k.startswith('FAKE_COLAB_') or k in ('RDLAB_VM_CONTENT_DIR', 'RDLAB_CGROUP_DIR', 'RDLAB_CGROUP_MEMORY_EVENTS_PATH', 'RDLAB_PROC_MEMINFO_PATH')]:\n"
                 "        os.environ.pop(_hook, None)\n"
                 "    ns['__name__'] = 'rdlab_vm_cell'\n"
                 "    exec(compile(src, '<cell>', 'exec'), ns)\n"
                 "    import runpy\n"
-                "    runpy.run_path(_REAL_MODE_SHIM)['install'](ns, state_dir=_SHIM_STATE_DIR, vm_root=_RDLAB_VM_ROOT)\n"
+                "    _shim = runpy.run_path(_REAL_MODE_SHIM)\n"
+                "    _shim['install'](ns, state_dir=_SHIM_STATE_DIR, vm_root=_RDLAB_VM_ROOT)\n"
+                "    _shim['install_host_path_guard'](deny_roots=_deny_roots, allow_roots=[_RDLAB_VM_ROOT, _SHIM_STATE_DIR, sys.prefix, sys.base_prefix, sys.exec_prefix], state_dir=_SHIM_STATE_DIR)\n"
                 "    ns['run_kernel_or_cli_entry']()\n"
                 "else:\n"
                 "    exec(compile(src, '<cell>', 'exec'), ns)\n"

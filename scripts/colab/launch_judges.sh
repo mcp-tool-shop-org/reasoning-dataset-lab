@@ -26,6 +26,7 @@ fi
 OUT_DIR="${RDLAB_OUT_DIR:-}"
 RUN_ID="${RDLAB_RUN_ID:-judges-$(date -u +%Y%m%dT%H%M%SZ)}"
 ITEMS_FILE="${RDLAB_ITEMS_FILE:-}"
+PART_DIR="${RDLAB_PART_DIR:-}"
 ANCHOR_ITEMS_FILE="${RDLAB_ANCHOR_ITEMS_FILE:-}"
 P0A_ITEMS_FILE="${RDLAB_P0A_ITEMS_FILE:-}"
 COUNTED_ITEMS_FILE="${RDLAB_COUNTED_ITEMS_FILE:-}"
@@ -42,7 +43,7 @@ EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--anchor-items FILE] [--p0a-items FILE] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
@@ -67,6 +68,8 @@ Options:
   --run-id ID          Run identifier (session name is rdlab-<ID>)
   --out-dir DIR        Rig output directory (default: /tmp/rdlab-colab-runs/<ID>)
   --items-file FILE    Public item JSONL file to upload for non-lock-check modes (or set RDLAB_ITEMS_FILE)
+  --part-dir DIR       The sealed part directory the items come from (part.json, checksums.txt, items.jsonl), for
+                       --time-one / --counted; default: the items file's directory (or set RDLAB_PART_DIR)
   --anchor-items FILE  For --lock-check / --lock-check-stub: the 50 anchor items from the counted part (25 stratified + 25 canaries) for the 5-judge anchor pass, golden_anchor_manifest.json, and boot_gatekeeper_goldens.filled.json (or set RDLAB_ANCHOR_ITEMS_FILE)
   --p0a-items FILE     For --lock-check / --lock-check-stub: the 114 burned pilot items (pilot-40b) for P0a only (or set RDLAB_P0A_ITEMS_FILE)
   --counted-items FILE For --lock-check / --lock-check-stub: counted part items JSONL (required unless --counted-manifest is given) to build shard_manifest.json and verify anchor membership and P0a exclusion (or set RDLAB_COUNTED_ITEMS_FILE)
@@ -228,6 +231,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --items-file=*)
       ITEMS_FILE="${1#*=}"
+      shift
+      ;;
+    --part-dir)
+      PART_DIR="${2:-}"
+      shift 2
+      ;;
+    --part-dir=*)
+      PART_DIR="${1#*=}"
       shift
       ;;
     --anchor-items)
@@ -550,15 +561,26 @@ STAGED_ITEMS_FILE="$STAGE_DIR/items.jsonl"
 STAGED_ANCHOR_ITEMS_FILE="$STAGE_DIR/anchor_items.jsonl"
 STAGED_P0A_ITEMS_FILE="$STAGE_DIR/p0a_items.jsonl"
 STAGED_P0A_MANIFEST_FILE="$STAGE_DIR/p0a_manifest.json"
-STAGED_PART_MANIFEST_FILE="$STAGE_DIR/manifest.json"
+STAGED_PART_JSON_FILE="$STAGE_DIR/part.json"
+STAGED_PART_CHECKSUMS_FILE="$STAGE_DIR/checksums.txt"
 RESUME_TAR="$STAGE_DIR/resume_state.tar.gz"
 
-# The part's own manifest.json beside the items file: checked by the VM's rules (vm_judges.preflight_part_manifest)
-# before any colab call. Present: the upload key/sealed guard plus parse/dict/part_id/not-synthesized. Absent: refused
+# The part the items come from: its own part.json and checksums.txt in --part-dir (default: the items file's directory),
+# checked by the VM's rules (vm_judges.preflight_part_manifest) before any colab call, with the repo's part schema and,
+# because the launcher has the part, the projection check: the part's items.jsonl must hash to its checksums.txt line and
+# every uploaded row must equal the part row with the same id (id, material, claim). Absent: refused
 # PART_MANIFEST_MISSING in every window that needs one (real time-one, counted and other non-lock-check real modes).
-# Never creates one. Used by --dry and the live path alike.
+# Never creates or rewrites a file. Used by --dry and the live path alike.
+effective_part_dir() {
+  if [[ -n "$PART_DIR" ]]; then
+    printf '%s\n' "$PART_DIR"
+  else
+    dirname "$1"
+  fi
+}
+
 check_part_manifest_beside_items() {
-  "$PYTHON_BIN" - "$REPO_ROOT" "$1" "$MODE" "${VM_DRYRUN:-0}" <<'PY'
+  "$PYTHON_BIN" - "$REPO_ROOT" "$1" "$MODE" "${VM_DRYRUN:-0}" "$(effective_part_dir "$1")" <<'PY'
 import sys
 from pathlib import Path
 
@@ -566,18 +588,31 @@ repo_root = Path(sys.argv[1])
 items_file = Path(sys.argv[2])
 mode = sys.argv[3]
 vm_dryrun = sys.argv[4] == "1"
+part_dir = Path(sys.argv[5])
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
+from reasoning_dataset_lab.pilot_b import schema_check
 
 try:
-    part_mf = items_file.parent / vm_judges.PART_MANIFEST_FILENAME
-    if part_mf.is_file():
-        vm_judges.check_upload_path_allowed(part_mf)
-    vm_judges.preflight_part_manifest(items_file, mode=mode, dryrun=vm_dryrun)
+    identity = vm_judges.preflight_part_manifest(
+        items_file,
+        mode=mode,
+        dryrun=vm_dryrun,
+        part_dir=part_dir,
+        part_items_file=part_dir / "items.jsonl",
+        schema_errors=lambda doc: schema_check.validate(doc, "part"),
+    )
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
     raise SystemExit(2)
+if identity is not None:
+    b = identity["binding"]
+    sys.stderr.write(
+        f"[part] part_id={identity['part_id']} items_count={identity['items_count']} "
+        f"part_json_sha256={identity['part_json_sha256']} uploaded_items={b['uploaded_items']} rule={b['rule']} "
+        f"projection_checked={b['projection_checked']} pilot_40b={identity['is_pilot_40b']}\n"
+    )
 PY
 }
 
@@ -902,8 +937,9 @@ PY
       fi
     else
       printf 'colab upload -s %s %s /content/rdlab_items/items.jsonl\n' "$SESSION_NAME" "$STAGED_ITEMS_FILE"
-      if [[ -n "$ITEMS_FILE" ]] && [[ -f "$(dirname "$ITEMS_FILE")/manifest.json" ]]; then
-        printf 'colab upload -s %s %s /content/rdlab_items/manifest.json\n' "$SESSION_NAME" "$STAGED_PART_MANIFEST_FILE"
+      if [[ -n "$ITEMS_FILE" ]] && [[ -f "$(effective_part_dir "$ITEMS_FILE")/part.json" ]]; then
+        printf 'colab upload -s %s %s /content/rdlab_items/part.json\n' "$SESSION_NAME" "$STAGED_PART_JSON_FILE"
+        printf 'colab upload -s %s %s /content/rdlab_items/checksums.txt\n' "$SESSION_NAME" "$STAGED_PART_CHECKSUMS_FILE"
       fi
     fi
     if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
@@ -1825,7 +1861,7 @@ PY
     exit 2
   fi
   if ! check_part_manifest_beside_items "$ITEMS_FILE"; then
-    RUN_WHY="part manifest beside the items file refused before session open: $(dirname "$ITEMS_FILE")/manifest.json"
+    RUN_WHY="part files refused before session open: $(effective_part_dir "$ITEMS_FILE")/part.json"
     exit 2
   fi
 fi
@@ -1873,9 +1909,9 @@ then
 fi
 
 mkdir -p "$STAGE_DIR"
-# A part manifest left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
-rm -f "$STAGED_PART_MANIFEST_FILE"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_P0A_MANIFEST_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_MANIFEST_FILE" <<'PY'
+# Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
+rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE"
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_P0A_MANIFEST_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" <<'PY'
 import shutil
 import sys
 import tarfile
@@ -1898,7 +1934,9 @@ raw_counted_manifest = sys.argv[14].strip() if len(sys.argv) > 14 else ""
 raw_p0a_manifest_dst = sys.argv[15].strip() if len(sys.argv) > 15 else ""
 stage_mode = sys.argv[16].strip() if len(sys.argv) > 16 else ""
 stage_vm_dryrun = (sys.argv[17].strip() == "1") if len(sys.argv) > 17 else False
-raw_part_manifest_dst = sys.argv[18].strip() if len(sys.argv) > 18 else ""
+raw_part_json_dst = sys.argv[18].strip() if len(sys.argv) > 18 else ""
+raw_part_checksums_dst = sys.argv[19].strip() if len(sys.argv) > 19 else ""
+raw_part_dir = sys.argv[20].strip() if len(sys.argv) > 20 else ""
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -1909,15 +1947,23 @@ vm_judges.check_upload_path_allowed(items_src)
 vm_judges.verify_items_allowlist(items_src)
 _ = vm_judges.collect_claim_ngram_sha256s(items_src)
 shutil.copyfile(items_src, items_dst)
-if stage_mode not in ("lock-check", "lock-check-stub") and raw_part_manifest_dst:
-    # The part's own manifest.json goes to the VM beside items.jsonl, checked by the VM's own rules first; it is
-    # copied as given, never created or rewritten.
-    part_mf_src = items_src.parent / vm_judges.PART_MANIFEST_FILENAME
-    if part_mf_src.is_file():
-        vm_judges.check_upload_path_allowed(part_mf_src)
-    vm_judges.preflight_part_manifest(items_src, mode=stage_mode, dryrun=stage_vm_dryrun)
-    if part_mf_src.is_file():
-        shutil.copyfile(part_mf_src, Path(raw_part_manifest_dst))
+if stage_mode not in ("lock-check", "lock-check-stub") and raw_part_json_dst and raw_part_checksums_dst:
+    # The part's own part.json and checksums.txt go to the VM beside items.jsonl, checked by the same rules as
+    # check_part_manifest_beside_items first; they are copied as given, never created or rewritten.
+    from reasoning_dataset_lab.pilot_b import schema_check
+
+    part_src_dir = Path(raw_part_dir) if raw_part_dir else items_src.parent
+    identity = vm_judges.preflight_part_manifest(
+        items_src,
+        mode=stage_mode,
+        dryrun=stage_vm_dryrun,
+        part_dir=part_src_dir,
+        part_items_file=part_src_dir / "items.jsonl",
+        schema_errors=lambda doc: schema_check.validate(doc, "part"),
+    )
+    if identity is not None:
+        shutil.copyfile(part_src_dir / vm_judges.PART_JSON_FILENAME, Path(raw_part_json_dst))
+        shutil.copyfile(part_src_dir / vm_judges.PART_CHECKSUMS_FILENAME, Path(raw_part_checksums_dst))
 if raw_anchor_src and raw_anchor_dst:
     anchor_src = Path(raw_anchor_src)
     vm_judges.check_upload_path_allowed(anchor_src)
@@ -2217,9 +2263,13 @@ else
     RUN_WHY="colab upload failed for /content/rdlab_items/items.jsonl on session $S"
     exit 1
   }
-  if [[ -f "$STAGED_PART_MANIFEST_FILE" ]]; then
-    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_MANIFEST_FILE" "/content/rdlab_items/manifest.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-      RUN_WHY="colab upload failed for /content/rdlab_items/manifest.json on session $S"
+  if [[ -f "$STAGED_PART_JSON_FILE" ]]; then
+    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_JSON_FILE" "/content/rdlab_items/part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+      RUN_WHY="colab upload failed for /content/rdlab_items/part.json on session $S"
+      exit 1
+    }
+    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_CHECKSUMS_FILE" "/content/rdlab_items/checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+      RUN_WHY="colab upload failed for /content/rdlab_items/checksums.txt on session $S"
       exit 1
     }
   fi
