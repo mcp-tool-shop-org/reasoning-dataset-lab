@@ -21,5 +21,5 @@ asked only to put the item into words.
 
 ## Status
 
-Alpha, at 0.5.0, which adds the judge bake-off and its Colab launcher. Interfaces and data shapes can change without notice. Nothing `rdlab` writes is
+Alpha, at 0.6.0, which readies the judge bake-off's paid windows: part binding, pre-spend checks, the window-rate contract and a two-window lock-check. Interfaces and data shapes can change without notice. Nothing `rdlab` writes is
 training data until a person has checked it.
