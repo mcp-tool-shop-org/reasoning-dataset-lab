@@ -33,38 +33,53 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 2,
-      "changed": 20,
+      "added": 1,
+      "changed": 10,
       "moved": 0,
-      "parts": 5,
+      "parts": 4,
       "removed": 0
     },
     "items": [
       {
         "kind": "landing",
-        "sentence": "scripts/colab/ is now also read by scripts/colab/promote_goldens.py.",
+        "sentence": "README.md is now also read by scripts/colab/vm_judges.py and tests/test_colab_judge_launcher.py.",
         "subjects": [
-          "scripts/colab/",
-          "scripts/colab/promote_goldens.py"
+          "README.md",
+          "scripts/colab/vm_judges.py",
+          "tests/test_colab_judge_launcher.py"
         ]
       },
       {
         "kind": "landing",
-        "sentence": "scripts/colab/boot_gatekeeper_goldens.json is now read by scripts/colab/promote_goldens.py.",
+        "sentence": "pyproject.toml is now also read by scripts/colab/vm_judges.py and tests/test_colab_judge_launcher.py.",
         "subjects": [
-          "scripts/colab/boot_gatekeeper_goldens.json",
-          "scripts/colab/promote_goldens.py"
+          "pyproject.toml",
+          "scripts/colab/vm_judges.py",
+          "tests/test_colab_judge_launcher.py"
         ]
       },
       {
+        "kind": "landing",
+        "sentence": "scripts/colab/ is now also read by scripts/colab/vm_judges.py.",
+        "subjects": [
+          "scripts/colab/",
+          "scripts/colab/vm_judges.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "And 1 more new writer or reader of a place.",
+        "subjects": []
+      },
+      {
         "kind": "counts",
-        "sentence": "2 files added and 20 changed content, across 5 parts.",
+        "sentence": "1 file added and 10 changed content, across 4 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "5e03ddc3d191aa24355013b43e8f6cf6c26c47eb",
-      "generatedAt": "2026-11-05T09:12:54.225Z"
+      "commit": "ef8f46be83a6a84213ac6967f46a96199dc4d252",
+      "generatedAt": "2026-11-06T01:15:50.432Z"
     },
     "unchanged": false
   },
@@ -87,7 +102,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 19,
+      "either": 21,
       "partLabels": [
         "scripts",
         "tests"
@@ -97,22 +112,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 18
-    },
-    {
-      "a": "scripts/colab/vm_judges.py",
-      "b": "tests/fixtures/fake_colab.py",
-      "either": 18,
-      "partLabels": [
-        "scripts",
-        "tests"
-      ],
-      "parts": [
-        "scripts",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 15
+      "shared": 20
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
@@ -130,9 +130,24 @@
       "shared": 9
     },
     {
+      "a": "scripts/colab/vm_judges.py",
+      "b": "tests/fixtures/fake_colab.py",
+      "either": 20,
+      "partLabels": [
+        "scripts",
+        "tests"
+      ],
+      "parts": [
+        "scripts",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 16
+    },
+    {
       "a": "tests/fixtures/fake_colab.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 19,
+      "either": 21,
       "partLabels": [
         "tests",
         "tests"
@@ -142,7 +157,7 @@
         "tests"
       ],
       "relation": "inside",
-      "shared": 15
+      "shared": 16
     }
   ],
   "changesTogetherNote": [
@@ -151,9 +166,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 8 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "ef8f46be83a6a84213ac6967f46a96199dc4d252",
-  "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (70 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "commit": "95fdf48e3e751f43ea10006f67b9e12246a8b29c",
+  "defaultBranch": "fix/counted-blockers",
+  "derived": "9 parts, mostly Python (71 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -180,7 +195,7 @@
         {
           "boundary": "src",
           "depth": 1,
-          "files": 25
+          "files": 26
         }
       ],
       "runs": [
@@ -244,7 +259,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 25
+          "files": 26
         }
       ],
       "runs": [],
@@ -275,7 +290,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 21
+          "files": 22
         }
       ],
       "runs": [
@@ -308,12 +323,12 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-06T01:15:50.432Z",
+  "generatedAt": "2026-11-06T04:03:32.143Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "3 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
-    "13 writes and 37 reads use paths built at run time and are not named here.",
-    "76 writes and 156 reads go to a path their caller passes, not to this repository.",
+    "13 writes and 36 reads use paths built at run time and are not named here.",
+    "73 writes and 161 reads go to a path their caller passes, not to this repository.",
     "5 reads go to the directory the command is run in, not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
