@@ -50,6 +50,7 @@ from reasoning_dataset_lab.pilot_b.variety import (
 from reasoning_dataset_lab.pilot_b.shortcut_probe import (
     evaluate_bakeoff_probe_files,
 )
+from reasoning_dataset_lab.pilot_b.bakeoff_project import project_part_items
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     DEFAULT_SCHEDULE_SEED,
     DEFAULT_TORCH_DTYPE,
@@ -439,6 +440,32 @@ def _build_parser() -> _StructuredArgumentParser:
         help="Output path for the JSON shortcut probe report.",
     )
 
+    # rdlab bakeoff-project --part-dir <dir> --out <file>
+    bproj_parser = subparsers.add_parser(
+        "bakeoff-project",
+        help=(
+            "Write the Colab upload projection ({id, material, claim}, every item, in the part's order) of a sealed "
+            "part, with its SHA-256, to a file outside the part."
+        ),
+    )
+    bproj_parser.add_argument(
+        "--part-dir",
+        dest="part_dir",
+        type=Path,
+        required=True,
+        help="The sealed part directory (part_bakeoff_sealed: part.json, checksums.txt, items.jsonl).",
+    )
+    bproj_parser.add_argument(
+        "--out",
+        dest="out_path",
+        type=Path,
+        required=True,
+        help=(
+            "Projection file to write (never inside the part directory or under a sealed_store/, never over an "
+            "existing file); <out>.sha256 is written beside it."
+        ),
+    )
+
     # rdlab bakeoff-judge --output-dir <dir> [--part-dir <dir> --judge <id>] [--outputs-closed]
     bj_parser = subparsers.add_parser(
         "bakeoff-judge",
@@ -704,14 +731,14 @@ def _build_parser() -> _StructuredArgumentParser:
         dest="part_id",
         type=str,
         default=None,
-        help="Part identifier (must be in the burned pilot-40b allow-set).",
+        help="Optional part_id; when given it must be the burned pilot's (bakeoff-d-t10-sealed). The pilot is named by --part-dir.",
     )
     blm_parser.add_argument(
         "--part-dir",
         dest="part_dir",
         type=Path,
         default=None,
-        help="Optional part directory to resolve part_id from manifest.json.",
+        help="Required: the burned pilot's sealed part directory (part.json and checksums.txt, checked against the pinned SHA-256).",
     )
 
     return parser
@@ -1263,6 +1290,10 @@ def run_cli(argv: Sequence[str] | None = None) -> int:
             )
             print(json.dumps(probe_rep, indent=2))
             return EXIT_CLEAN if probe_rep.get("passed") else EXIT_REFUSED
+
+        if args.command == "bakeoff-project":
+            print(json.dumps(project_part_items(args.part_dir, args.out_path), indent=2))
+            return EXIT_CLEAN
 
         if args.command == "bakeoff-judge":
             if args.judge is not None and args.part_dir is not None:

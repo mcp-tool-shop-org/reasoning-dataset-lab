@@ -31,6 +31,21 @@ from reasoning_dataset_lab.pilot_b.bakeoff_judge_score import (
 )
 
 
+def _pinned_pilot_part_dir(base: Path, monkeypatch: pytest.MonkeyPatch, *, part_id: str = "bakeoff-d-t10-sealed") -> Path:
+    """A stand-in for the burned pilot's sealed part directory: `part.json` and `checksums.txt` only (no items), with
+    `bakeoff_judge.PILOT_40B_*` pinned to its hashes for this test."""
+    pdir = base / "pilot_part_bakeoff_sealed"
+    pdir.mkdir(parents=True, exist_ok=True)
+    part_json = (json.dumps({"part_id": part_id, "items_count": 3, "frozen": True}, sort_keys=True) + "\n").encode()
+    (pdir / "part.json").write_bytes(part_json)
+    pj_sha = hashlib.sha256(part_json).hexdigest()
+    items_sha = hashlib.sha256(b"synthetic pilot items, never written\n").hexdigest()
+    (pdir / "checksums.txt").write_text(f"{items_sha}  items.jsonl\n{pj_sha}  part.json\n", encoding="utf-8")
+    monkeypatch.setattr(bakeoff_judge, "PILOT_40B_PART_JSON_SHA256", pj_sha)
+    monkeypatch.setattr(bakeoff_judge, "PILOT_40B_ITEMS_JSONL_SHA256", items_sha)
+    return pdir
+
+
 def _build_synthetic_part(tmp_path: Path, n_triads: int = 6) -> tuple[Path, Path]:
     """Build a synthetic anchored two-hop part (items.jsonl + keys.sealed.jsonl) without opening any real sealed file."""
     n_triads = max(4, n_triads)
@@ -436,17 +451,15 @@ def test_item10_incremental_writes_and_resume_skips_completed_calls(tmp_path: Pa
 # ---------------------------------------------------------------------------------------------------------------------
 # Card 1 Item 11: Log-prob mass check subcommand (summed yes/no variant mass >= 0.99; Flow-Judge not_applicable)
 # ---------------------------------------------------------------------------------------------------------------------
-def test_item11_logprob_mass_check_subcommand_and_flow_judge_na(tmp_path: Path) -> None:
+def test_item11_logprob_mass_check_subcommand_and_flow_judge_na(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert hasattr(bakeoff_judge, "check_bakeoff_logprob_mass"), "Missing check_bakeoff_logprob_mass in bakeoff_judge"
     part_dir, _ = _build_synthetic_part(tmp_path, n_triads=2)
     judge_dir = tmp_path / "judge_out"
     run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="mu-judge", fake_transport=True)
     run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="flow-judge-v0.1", fake_transport=True)
     out_mass = tmp_path / "mass_report.json"
-    rep = bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_id="pilot-40b") if "part_id" in bakeoff_judge.check_bakeoff_logprob_mass.__code__.co_varnames else bakeoff_judge.check_bakeoff_logprob_mass(judge_dir)
-    cli_args = ["bakeoff-logprob-mass", "--judge-dir", str(judge_dir), "--out", str(out_mass)]
-    if "part_id" in bakeoff_judge.check_bakeoff_logprob_mass.__code__.co_varnames:
-        cli_args.extend(["--part-id", "pilot-40b"])
+    pilot_dir = _pinned_pilot_part_dir(tmp_path, monkeypatch)
+    cli_args = ["bakeoff-logprob-mass", "--judge-dir", str(judge_dir), "--out", str(out_mass), "--part-dir", str(pilot_dir)]
     rc = run_cli(cli_args)
     assert rc == 0
     rep = json.loads(out_mass.read_text(encoding="utf-8"))
@@ -853,13 +866,18 @@ def test_change_g_canary_token_id_and_logprob_tolerance_halt_and_measurement_sub
         bakeoff_judge.load_canary_config(list_cfg)
     assert exc_list_cfg.value.code == "BAKEOFF_JUDGE_CANARY_CONFIG_INVALID"
 
-    with pytest.raises(RdlabError) as exc_no_mass_dir:
+    with pytest.raises(RdlabError) as exc_no_part:
         bakeoff_judge.check_bakeoff_logprob_mass(tmp_path / "empty_mass_dir")
-    assert exc_no_mass_dir.value.code == "BAKEOFF_LOGPROB_MASS_NO_ROWS"
-    (tmp_path / "empty_mass_dir" / "rows").mkdir(parents=True, exist_ok=True)
-    with pytest.raises(RdlabError) as exc_empty_mass_rows:
-        bakeoff_judge.check_bakeoff_logprob_mass(tmp_path / "empty_mass_dir")
-    assert exc_empty_mass_rows.value.code == "BAKEOFF_LOGPROB_MASS_NO_ROWS"
+    assert exc_no_part.value.code == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+    with pytest.MonkeyPatch.context() as mp:
+        pilot_dir = _pinned_pilot_part_dir(tmp_path / "mass_pilot", mp)
+        with pytest.raises(RdlabError) as exc_no_mass_dir:
+            bakeoff_judge.check_bakeoff_logprob_mass(tmp_path / "empty_mass_dir", part_dir=pilot_dir)
+        assert exc_no_mass_dir.value.code == "BAKEOFF_LOGPROB_MASS_NO_ROWS"
+        (tmp_path / "empty_mass_dir" / "rows").mkdir(parents=True, exist_ok=True)
+        with pytest.raises(RdlabError) as exc_empty_mass_rows:
+            bakeoff_judge.check_bakeoff_logprob_mass(tmp_path / "empty_mass_dir", part_dir=pilot_dir)
+        assert exc_empty_mass_rows.value.code == "BAKEOFF_LOGPROB_MASS_NO_ROWS"
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1188,15 +1206,17 @@ def test_fix1_item5_counted_report_removes_dev_fitted_and_threshold_rows(
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Fix 1 Item 7: bakeoff-logprob-mass guard refuses to run on a part that isn't the burned pilot-40b allow-set
+# Fix 1 Item 7: bakeoff-logprob-mass guard refuses to run on any part that isn't the burned pilot, named by its pinned
+# identity (part_id bakeoff-d-t10-sealed, part.json and items.jsonl SHA-256); no label names it.
 # ---------------------------------------------------------------------------------------------------------------------
-def test_fix1_item7_logprob_mass_guard_refuses_non_pilot_40b_part(tmp_path: Path) -> None:
+def test_fix1_item7_logprob_mass_guard_refuses_non_pilot_40b_part(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     part_dir, _ = _build_synthetic_part(tmp_path, n_triads=2)
     judge_dir = tmp_path / "judge_out"
     run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="mu-judge", fake_transport=True)
+    pilot_dir = _pinned_pilot_part_dir(tmp_path, monkeypatch)
 
     with pytest.raises(RdlabError) as exc_counted:
-        bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_id="bakeoff-d-t10-anchored-sealed")
+        bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_id="bakeoff-d-t10-anchored-sealed", part_dir=pilot_dir)
     assert exc_counted.value.code == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
 
     with pytest.raises(RdlabError) as exc_unlisted:
@@ -1205,19 +1225,15 @@ def test_fix1_item7_logprob_mass_guard_refuses_non_pilot_40b_part(tmp_path: Path
 
     rc_bad = run_cli(["bakeoff-logprob-mass", "--judge-dir", str(judge_dir), "--part-id", "bakeoff-d-t10-anchored-sealed"])
     assert rc_bad == 1
-    rc_ok_no_out = run_cli(["bakeoff-logprob-mass", "--judge-dir", str(judge_dir), "--part-id", "pilot-40b"])
+    rc_ok_no_out = run_cli(["bakeoff-logprob-mass", "--judge-dir", str(judge_dir), "--part-dir", str(pilot_dir)])
     assert rc_ok_no_out == 0
 
-    rep_ok = bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_id="pilot-40b")
-    assert rep_ok["part_id"] == "pilot-40b"
+    rep_ok = bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_id="bakeoff-d-t10-sealed", part_dir=pilot_dir)
+    assert rep_ok["part_id"] == "bakeoff-d-t10-sealed"
+    assert rep_ok["part_json_sha256"] == bakeoff_judge.PILOT_40B_PART_JSON_SHA256
     assert rep_ok["judges"]["mu-judge"]["passed"] is True
 
-    # Also exercise part_dir resolution and below-threshold warning path
-    pilot_part_dir = tmp_path / "pilot-40b"
-    pilot_part_dir.mkdir(parents=True, exist_ok=True)
-    (pilot_part_dir / "manifest.json").write_text(json.dumps({"part_id": "pilot-40b"}), encoding="utf-8")
-    rep_from_dir = bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_dir=pilot_part_dir, threshold=0.999999)
-    assert rep_from_dir["part_id"] == "pilot-40b"
+    rep_from_dir = bakeoff_judge.check_bakeoff_logprob_mass(judge_dir, part_dir=pilot_dir, threshold=0.999999)
     assert rep_from_dir["judges"]["mu-judge"]["status"] in ("PASS", "WARN")
 
     # Exercise configure_torch_determinism_with_reason exception fallback and domain/Monte Carlo helpers
@@ -2321,3 +2337,87 @@ def test_winner_strict_followup_item2_mixed_part_raises_and_pure_parts_resolve(
 
 
 
+
+
+def test_logprob_mass_cli_is_keyed_on_the_pinned_pilot_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`rdlab bakeoff-logprob-mass` names the burned pilot by its pinned identity only (`PILOT_40B_*`: part_id
+    bakeoff-d-t10-sealed, part.json and items.jsonl SHA-256, read from `--part-dir`'s part.json and checksums.txt).
+    The made-up `pilot-40b` label is refused, as is a part with the pilot's part_id but other hashes, or an items.jsonl
+    that does not hash to its line. Fails at 65f253ed: `--part-id pilot-40b` alone ran the check, and
+    `--part-id bakeoff-d-t10-sealed` was refused."""
+    part_dir, _ = _build_synthetic_part(tmp_path, n_triads=2)
+    judge_dir = tmp_path / "judge_out"
+    run_bakeoff_judge(part_dir=part_dir, output_dir=judge_dir, judge="mu-judge", fake_transport=True)
+    pilot_dir = _pinned_pilot_part_dir(tmp_path, monkeypatch)
+    base = ["bakeoff-logprob-mass", "--judge-dir", str(judge_dir)]
+    assert run_cli([*base, "--part-id", "pilot-40b"]) == 1
+    assert run_cli([*base, "--part-id", "pilot-40b", "--part-dir", str(pilot_dir)]) == 1
+    assert run_cli([*base, "--part-id", "bakeoff-d-t10-sealed"]) == 1
+    out = tmp_path / "mass.json"
+    assert run_cli([*base, "--part-id", "bakeoff-d-t10-sealed", "--part-dir", str(pilot_dir), "--out", str(out)]) == 0
+    doc = json.loads(out.read_text(encoding="utf-8"))
+    assert doc["part_id"] == "bakeoff-d-t10-sealed"
+    assert doc["part_json_sha256"] == bakeoff_judge.PILOT_40B_PART_JSON_SHA256
+    assert doc["items_jsonl_sha256"] == bakeoff_judge.PILOT_40B_ITEMS_JSONL_SHA256
+    # Same part_id, other part.json bytes: not the pilot.
+    other = tmp_path / "other"
+    other.mkdir()
+    other_json = b'{"items_count": 3, "part_id": "bakeoff-d-t10-sealed", "frozen": true, "x": 1}\n'
+    (other / "part.json").write_bytes(other_json)
+    (other / "checksums.txt").write_text(
+        f"{bakeoff_judge.PILOT_40B_ITEMS_JSONL_SHA256}  items.jsonl\n{hashlib.sha256(other_json).hexdigest()}  part.json\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RdlabError) as exc_other:
+        bakeoff_judge.verify_pinned_pilot_part_dir(other)
+    assert exc_other.value.code == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+    # An items.jsonl beside the pinned part.json that does not hash to its checksums.txt line.
+    (pilot_dir / "items.jsonl").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc_items:
+        bakeoff_judge.verify_pinned_pilot_part_dir(pilot_dir)
+    assert "items.jsonl does not hash" in exc_items.value.message
+    (pilot_dir / "items.jsonl").unlink()
+    # Another part_id with the pinned hashes cannot happen in practice; the id is checked too.
+    wrong_id = _pinned_pilot_part_dir(tmp_path / "wrong_id", monkeypatch, part_id="bakeoff-d-t10-anchored-sealed")
+    with pytest.raises(RdlabError) as exc_id:
+        bakeoff_judge.verify_pinned_pilot_part_dir(wrong_id)
+    assert "part_id" in exc_id.value.message
+
+
+def test_pinned_pilot_part_dir_refuses_each_broken_identity_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`verify_pinned_pilot_part_dir` refuses `BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN` for a part.json that is not JSON,
+    a missing checksums.txt, a checksums.txt whose part.json line is not this part.json (malformed lines ignored), and a
+    checksums.txt without the pilot's items.jsonl line."""
+    pilot = _pinned_pilot_part_dir(tmp_path, monkeypatch)
+    assert bakeoff_judge.verify_pinned_pilot_part_dir(pilot)["part_id"] == "bakeoff-d-t10-sealed"
+
+    def _refused(pdir: Path) -> str:
+        with pytest.raises(RdlabError) as exc:
+            bakeoff_judge.verify_pinned_pilot_part_dir(pdir)
+        assert exc.value.code == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+        return exc.value.message
+
+    bad_json = tmp_path / "bad_json"
+    bad_json.mkdir()
+    (bad_json / "part.json").write_text("{not json", encoding="utf-8")
+    assert "as JSON" in _refused(bad_json)
+
+    no_sums = tmp_path / "no_sums"
+    no_sums.mkdir()
+    (no_sums / "part.json").write_bytes((pilot / "part.json").read_bytes())
+    assert "checksums.txt missing" in _refused(no_sums)
+
+    lines = (pilot / "checksums.txt").read_text(encoding="utf-8").splitlines()
+    wrong_line = tmp_path / "wrong_line"
+    wrong_line.mkdir()
+    (wrong_line / "part.json").write_bytes((pilot / "part.json").read_bytes())
+    items_line = next(ln for ln in lines if ln.endswith("items.jsonl"))
+    (wrong_line / "checksums.txt").write_text(f"not a checksum line\n{items_line}\n{'0' * 64}  part.json\n", encoding="utf-8")
+    assert "checksums.txt part.json line" in _refused(wrong_line)
+
+    no_items = tmp_path / "no_items"
+    no_items.mkdir()
+    (no_items / "part.json").write_bytes((pilot / "part.json").read_bytes())
+    pj_line = next(ln for ln in lines if ln.endswith("part.json"))
+    (no_items / "checksums.txt").write_text(pj_line + "\n", encoding="utf-8")
+    assert "items.jsonl SHA-256 missing" in _refused(no_items)

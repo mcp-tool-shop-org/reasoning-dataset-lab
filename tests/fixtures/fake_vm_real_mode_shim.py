@@ -119,6 +119,23 @@ def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
     """Patch the executed `vm_judges` namespace `ns` in place (see the module docstring)."""
     root = Path(vm_root)
 
+    # Test-only part pins (`<state_dir>/test_part_pins.json`, written by a test that drives a counted window on a
+    # builder part): added to `pinned_real_parts`, as `tests/fixtures/test_part_pins/sitecustomize.py` does for the
+    # launcher's own Python, since this cell executes `vm_judges` without importing it.
+    pins_file = Path(state_dir) / "test_part_pins.json"
+    if pins_file.is_file():
+        extra = {str(k): (str(v[0]), str(v[1])) for k, v in json.loads(pins_file.read_text(encoding="utf-8")).items()}
+        orig_pins = ns["pinned_real_parts"]
+
+        def _pinned_real_parts() -> dict[str, tuple[str, str]]:
+            pins = dict(orig_pins())
+            pins.update(extra)
+            return pins
+
+        ns["pinned_real_parts"] = _pinned_real_parts
+        orig_counted = ns["counted_part_pin_names"]
+        ns["counted_part_pin_names"] = lambda: frozenset(orig_counted()) | frozenset(extra)
+
     def _resolve_content_dir(content_dir: Path | None = None) -> Path:
         return Path(content_dir) if content_dir is not None else root
 

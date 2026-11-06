@@ -29,10 +29,12 @@ ITEMS_FILE="${RDLAB_ITEMS_FILE:-}"
 PART_DIR="${RDLAB_PART_DIR:-}"
 ANCHOR_ITEMS_FILE="${RDLAB_ANCHOR_ITEMS_FILE:-}"
 P0A_ITEMS_FILE="${RDLAB_P0A_ITEMS_FILE:-}"
+P0A_PART_DIR="${RDLAB_P0A_PART_DIR:-}"
 COUNTED_ITEMS_FILE="${RDLAB_COUNTED_ITEMS_FILE:-}"
 COUNTED_MANIFEST_FILE="${RDLAB_COUNTED_MANIFEST:-}"
 RECEIPTS_DIR="${RDLAB_RECEIPTS_DIR:-}"
 EXPLICIT_CAP="${RDLAB_CAP_UNITS:-}"
+MAX_RATE="${RDLAB_MAX_RATE:-}"
 GOLDEN_ANCHOR_MANIFEST=""
 WINDOW_ID=""
 
@@ -43,17 +45,23 @@ EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
-  --probe              Run the read-only CPU VM environment probe (CPU at 0.08/h, wall 300s, cap 0.01)
-  --stub               Run the CPU stub pipeline (CPU at 0.08/h, CPython 3.15 pyyaml sdist build)
-  --time-one           Run the A100 time-one window (--gpu A100 at 5.30/h, wall 1500s, cap 2.5)
-  --lock-check         Run the A100 lock-check window: boot gatekeeper golden recording, 5-judge 50-item (250-row) counted-part anchor pass, 50-item golden anchor & shard manifests, and P0a on 114 burned pilot items (--gpu A100 at 5.30/h, wall 7200s)
-  --lock-check-stub    Run the CPU stub lock-check window (CPU at 0.08/h, deterministic stub transport)
-  --counted            Run a counted A100 shard window (--gpu A100 at 5.30/h, strict determinism)
-  --counted-stub       Run a counted CPU stub shard window (CPU at 0.08/h, deterministic stub transport)
+  --probe              Run the read-only CPU VM environment probe (CPU; default wall 300s, cap 0.01)
+  --stub               Run the CPU stub pipeline (CPU; CPython 3.15 pyyaml sdist build)
+  --time-one           Run the A100 time-one window (--gpu A100; default wall 1500s and cap 2.5 units unless
+                       RDLAB_WALL_SECONDS / --cap; --max-rate required)
+  --lock-check         Run the A100 lock-check window: boot gatekeeper golden recording, 5-judge 50-item (250-row) counted-part anchor pass, 50-item golden anchor & shard manifests, and P0a on 114 burned pilot items (--gpu A100; default wall 7200s; --max-rate required)
+  --lock-check-stub    Run the CPU stub lock-check window (CPU, deterministic stub transport)
+  --counted            Run a counted A100 shard window (--gpu A100, strict determinism; default wall 7200s; --max-rate
+                       required)
+  --counted-stub       Run a counted CPU stub shard window (CPU, deterministic stub transport)
+                       No rate is assumed. `colab usage` reports the account rate (every open session), so the
+                       window's rate is read as post-open minus pre-open, accepted when two reads 5 s apart agree within
+                       0.01 and clear the floor (1.00/h on a GPU card); the cap runtime is priced on max(--max-rate,
+                       that rate).
   --shard k/n          Shard index k of n (1-indexed, default 1/1; or set RDLAB_SHARD)
   --shard-manifest F   Pre-built shard_manifest.json path (or set RDLAB_SHARD_MANIFEST)
   --shard-manifest-sha256 SHA  Expected sha256 of shard_manifest.json (or set RDLAB_SHARD_MANIFEST_SHA256)
@@ -68,14 +76,24 @@ Options:
   --run-id ID          Run identifier (session name is rdlab-<ID>)
   --out-dir DIR        Rig output directory (default: /tmp/rdlab-colab-runs/<ID>)
   --items-file FILE    Public item JSONL file to upload for non-lock-check modes (or set RDLAB_ITEMS_FILE)
-  --part-dir DIR       The sealed part directory the items come from (part.json, checksums.txt, items.jsonl), for
-                       --time-one / --counted; default: the items file's directory (or set RDLAB_PART_DIR)
+  --part-dir DIR       The sealed part directory the items come from (part.json, checksums.txt, items.jsonl).
+                       Required for --time-one and --counted (the items file is a projection kept outside the part,
+                       made by `rdlab bakeoff-project`); other modes default to the items file's directory
+                       (or set RDLAB_PART_DIR)
   --anchor-items FILE  For --lock-check / --lock-check-stub: the 50 anchor items from the counted part (25 stratified + 25 canaries) for the 5-judge anchor pass, golden_anchor_manifest.json, and boot_gatekeeper_goldens.filled.json (or set RDLAB_ANCHOR_ITEMS_FILE)
-  --p0a-items FILE     For --lock-check / --lock-check-stub: the 114 burned pilot items (pilot-40b) for P0a only (or set RDLAB_P0A_ITEMS_FILE)
+  --p0a-items FILE     For --lock-check / --lock-check-stub: the 114 burned pilot items for P0a only, the projection of
+                       the pilot part (or set RDLAB_P0A_ITEMS_FILE)
+  --p0a-part-dir DIR   For --lock-check / --lock-check-stub (required): the burned pilot's sealed part directory
+                       (part.json, checksums.txt, items.jsonl); the pilot is named by its pinned SHA-256, never by a
+                       label (or set RDLAB_P0A_PART_DIR)
   --counted-items FILE For --lock-check / --lock-check-stub: counted part items JSONL (required unless --counted-manifest is given) to build shard_manifest.json and verify anchor membership and P0a exclusion (or set RDLAB_COUNTED_ITEMS_FILE)
   --counted-manifest F For --lock-check / --lock-check-stub: counted part manifest JSON (required unless --counted-items is given) to build shard_manifest.json and verify anchor membership and P0a exclusion (or set RDLAB_COUNTED_MANIFEST)
   --receipts-dir DIR   Directory containing <owner>__<repo>.sha256.json receipts (or RDLAB_RECEIPTS_DIR)
   --cap UNITS          Explicit compute-unit cap override (or set RDLAB_CAP_UNITS)
+  --max-rate U         Highest window rate (units/h) this window accepts (or set RDLAB_MAX_RATE).
+                       Required for --time-one, --lock-check and --counted, no default; a live rate above it refuses
+                       RATE_ABOVE_MAX right after the read and stops the session. Before the session opens, --dry
+                       projects with it, labelled as an estimate.
 
 Environment:
   RDLAB_ONLY_JUDGES    --time-one only: comma-separated subset of the 5 judges to time (no spaces, no duplicates).
@@ -269,6 +287,14 @@ while [[ $# -gt 0 ]]; do
       P0A_ITEMS_FILE="${1#*=}"
       shift
       ;;
+    --p0a-part-dir)
+      P0A_PART_DIR="${2:-}"
+      shift 2
+      ;;
+    --p0a-part-dir=*)
+      P0A_PART_DIR="${1#*=}"
+      shift
+      ;;
     --counted-items)
       COUNTED_ITEMS_FILE="${2:-}"
       shift 2
@@ -292,6 +318,14 @@ while [[ $# -gt 0 ]]; do
     --cap)
       EXPLICIT_CAP="$2"
       shift 2
+      ;;
+    --max-rate)
+      MAX_RATE="${2:-}"
+      shift 2
+      ;;
+    --max-rate=*)
+      MAX_RATE="${1#*=}"
+      shift
       ;;
     -h|--help)
       usage
@@ -325,7 +359,6 @@ if [[ "$MODE" == "time-one" ]]; then
   CARD="A100"
   COLAB_NEW_FLAGS=(--gpu A100)
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-1500}"
-  RATE_UNITS_PER_HOUR="5.30"
   if [[ -z "$EXPLICIT_CAP" ]]; then
     EXPLICIT_CAP="2.5"
   fi
@@ -334,19 +367,16 @@ elif [[ "$MODE" == "counted" ]]; then
   CARD="A100"
   COLAB_NEW_FLAGS=(--gpu A100)
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
-  RATE_UNITS_PER_HOUR="5.30"
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
 elif [[ "$MODE" == "lock-check" ]]; then
   CARD="A100"
   COLAB_NEW_FLAGS=(--gpu A100)
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
-  RATE_UNITS_PER_HOUR="5.30"
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
 elif [[ "$MODE" == "probe" ]]; then
   CARD="CPU"
   COLAB_NEW_FLAGS=()
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-300}"
-  RATE_UNITS_PER_HOUR="0.08"
   if [[ -z "$EXPLICIT_CAP" ]]; then
     EXPLICIT_CAP="0.01"
   fi
@@ -355,8 +385,29 @@ else
   CARD="CPU"
   COLAB_NEW_FLAGS=()
   WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
-  RATE_UNITS_PER_HOUR="0.08"
   VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-0}"
+fi
+
+# --- The rate: never a constant. The only rate recorded as the window's is the live one read from `colab usage` after
+# the session opens: the window rate, post-open minus pre-open account rate. Before that, a rate is used only as an
+# estimate taken from the request (--max-rate, the worst case the window accepts), and labelled so.
+if [[ -n "$MAX_RATE" ]] && ! [[ "$MAX_RATE" =~ ^[0-9]+([.][0-9]+)?$ && "$MAX_RATE" =~ [1-9] ]]; then
+  echo "BAD_MAX_RATE: --max-rate must be a positive number of units per hour, got '$MAX_RATE'" >&2
+  exit 2
+fi
+if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" == "time-one" || "$MODE" == "lock-check" || "$MODE" == "counted" ]] && [[ -z "$MAX_RATE" ]]; then
+  echo "MAX_RATE_REQUIRED: --$MODE requires --max-rate <units/h> (the highest window rate, units/h, this window accepts; no default)" >&2
+  exit 2
+fi
+RATE_UNITS_PER_HOUR=""
+RATE_SOURCE=""
+LIVE_RATE_UNITS_PER_HOUR=""
+PRE_ACCOUNT_RATE=""
+POST_ACCOUNT_RATE=""
+PRICING_RATE_UNITS_PER_HOUR=""
+if [[ -n "$MAX_RATE" ]]; then
+  RATE_UNITS_PER_HOUR="$MAX_RATE"
+  RATE_SOURCE="estimate_from_max_rate"
 fi
 
 OPEN_LOCK="${RDLAB_OPEN_LOCK:-/tmp/colab-window-open.lock}"
@@ -484,6 +535,54 @@ ALIVE_PROBE_SLEEP_SECONDS="${RDLAB_ALIVE_PROBE_SLEEP_SECONDS:-20}"
 ALIVE_PROBE_TIMEOUT_SECONDS="${RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS:-60}"
 RESTART_KERNEL_TIMEOUT_SECONDS="${RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS:-60}"
 COST_CAP_POLL_SECONDS="${RDLAB_COST_CAP_POLL_SECONDS:-1}"
+# The window rate (see read_window_rate): `colab usage` reports the ACCOUNT's rate, which includes every other open
+# session, so the window's own rate is post-open minus pre-open, accepted only when two reads RATE_POLL_SLEEP_SECONDS
+# apart agree within RATE_STABLE_TOLERANCE and clear the floor.
+RATE_POLL_MAX_READS="${RDLAB_RATE_POLL_MAX_READS:-12}"
+RATE_POLL_SLEEP_SECONDS="${RDLAB_RATE_POLL_SLEEP_SECONDS:-5}"
+USAGE_TIMEOUT_SECONDS="${RDLAB_USAGE_TIMEOUT_SECONDS:-30}"
+RATE_STABLE_TOLERANCE="0.01"
+# GPU_RATE_FLOOR: the cheapest GPU card measured is the T4 at 1.07/hr (16 reads, Publisher receipts
+# windowC2-12-t4-s1a-20261027), and CPU rates are at most 0.26/hr, so a GPU window's rate below 1.00/hr is not its
+# own rate (a stale read, or a neighbour's). A CPU window only needs a positive rate.
+GPU_RATE_FLOOR="1.00"
+CPU_RATE_FLOOR="0.01"
+# Every `timeout`-wrapped colab call sends SIGTERM at its limit and SIGKILL this many seconds later (`timeout -k`), so a
+# client that ignores SIGTERM cannot outlive its limit. The one grace for every such call.
+COLAB_KILL_GRACE_SECONDS="${RDLAB_COLAB_KILL_GRACE_SECONDS:-15}"
+if ! [[ "$COLAB_KILL_GRACE_SECONDS" =~ ^[0-9]+$ ]] || (( COLAB_KILL_GRACE_SECONDS < 1 )); then
+  echo "BAD_KILL_GRACE: RDLAB_COLAB_KILL_GRACE_SECONDS must be a positive integer, got '$COLAB_KILL_GRACE_SECONDS'" >&2
+  exit 2
+fi
+
+# Real --time-one and --counted windows name their part with --part-dir; a real --lock-check window names the burned
+# pilot part with --p0a-part-dir (a stub or dryrun window checks it when given). Absent: refused PART_MANIFEST_MISSING
+# before any colab call (--dry and live), and before the judge/gatekeeper preflight below, as the part check itself
+# refuses in real modes.
+require_part_dir_for_mode() {
+  if [[ "$MODE" == "time-one" || "$MODE" == "counted" ]] && [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$PART_DIR" ]]; then
+    RUN_WHY="--$MODE requires --part-dir"
+    echo "PART_MANIFEST_MISSING: --$MODE requires --part-dir <the sealed part directory: part.json, checksums.txt, items.jsonl>; the items file is a projection kept outside the part (rdlab bakeoff-project), so its directory is never the part" >&2
+    exit 2
+  fi
+}
+
+require_p0a_part_dir_for_mode() {
+  if [[ "$MODE" == "lock-check" ]] && [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$P0A_PART_DIR" ]]; then
+    RUN_WHY="--$MODE requires --p0a-part-dir"
+    echo "PART_MANIFEST_MISSING: --$MODE requires --p0a-part-dir <the burned pilot's sealed part directory: part.json, checksums.txt, items.jsonl>; the pilot is named by its pinned SHA-256, never by a label" >&2
+    exit 2
+  fi
+}
+
+if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" != "probe" ]]; then
+  if [[ -n "$ITEMS_FILE" ]]; then
+    require_part_dir_for_mode
+  fi
+  if [[ -n "$ANCHOR_ITEMS_FILE" ]] && [[ -n "$P0A_ITEMS_FILE" ]]; then
+    require_p0a_part_dir_for_mode
+  fi
+fi
 
 if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" <<'PY'
 import os
@@ -593,11 +692,17 @@ then
   exit 2
 fi
 
-WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
+WALL_X_RATE=""
+if [[ -n "$RATE_UNITS_PER_HOUR" ]]; then
+  WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
+fi
 if [[ -n "$EXPLICIT_CAP" ]]; then
   CAP_UNITS="$EXPLICIT_CAP"
 else
   CAP_UNITS="$WALL_X_RATE"
+fi
+if [[ "$DRY_FLAG" -eq 1 ]] && [[ -n "$MAX_RATE" ]]; then
+  echo "[rate] max_rate=${MAX_RATE}/h (from --max-rate) estimate: wall_x_max_rate=${WALL_X_RATE} cap=${CAP_UNITS:-none} window_rate=<measured after open: post - pre, two reads within ${RATE_STABLE_TOLERANCE}, >= floor> (a projection, not a recorded rate; the window rate is refused above max_rate and the cap is priced on max(max_rate, window rate))" >&2
 fi
 
 scrub_stream() {
@@ -622,17 +727,23 @@ RECEIPTS_TAR="$STAGE_DIR/receipts_bundle.tar.gz"
 STAGED_ITEMS_FILE="$STAGE_DIR/items.jsonl"
 STAGED_ANCHOR_ITEMS_FILE="$STAGE_DIR/anchor_items.jsonl"
 STAGED_P0A_ITEMS_FILE="$STAGE_DIR/p0a_items.jsonl"
-STAGED_P0A_MANIFEST_FILE="$STAGE_DIR/p0a_manifest.json"
 STAGED_PART_JSON_FILE="$STAGE_DIR/part.json"
 STAGED_PART_CHECKSUMS_FILE="$STAGE_DIR/checksums.txt"
+STAGED_P0A_PART_JSON_FILE="$STAGE_DIR/p0a_part.json"
+STAGED_P0A_CHECKSUMS_FILE="$STAGE_DIR/p0a_checksums.txt"
+STAGED_BINDING_FILE="$STAGE_DIR/launcher_part_binding.json"
+RIG_BINDING_FILE="$OUT_DIR/launcher_part_binding.json"
 RESUME_TAR="$STAGE_DIR/resume_state.tar.gz"
 
-# The part the items come from: its own part.json and checksums.txt in --part-dir (default: the items file's directory),
+# The part the items come from: its own part.json and checksums.txt in --part-dir (required for --time-one and
+# --counted, whose items file is a projection kept outside the part; other modes default to the items file's directory),
 # checked by the VM's rules (vm_judges.preflight_part_manifest) before any colab call, with the repo's part schema and,
 # because the launcher has the part, the projection check: the part's items.jsonl must hash to its checksums.txt line and
 # every uploaded row must equal the part row with the same id (id, material, claim). Absent: refused
 # PART_MANIFEST_MISSING in every window that needs one (real time-one, counted and other non-lock-check real modes).
 # Never creates or rewrites a file. Used by --dry and the live path alike.
+# (require_part_dir_for_mode / require_p0a_part_dir_for_mode are defined, and first run, before the judge preflight.)
+
 effective_part_dir() {
   if [[ -n "$PART_DIR" ]]; then
     printf '%s\n' "$PART_DIR"
@@ -673,7 +784,8 @@ if identity is not None:
     sys.stderr.write(
         f"[part] part_id={identity['part_id']} items_count={identity['items_count']} "
         f"part_json_sha256={identity['part_json_sha256']} uploaded_items={b['uploaded_items']} rule={b['rule']} "
-        f"projection_checked={b['projection_checked']} pilot_40b={identity['is_pilot_40b']}\n"
+        f"projection_checked={b['projection_checked']} checked_by={b['checked_by']} pin={identity['pin']} "
+        f"pilot_40b={identity['is_pilot_40b']}\n"
     )
 PY
 }
@@ -722,6 +834,9 @@ build_exec_env_args() {
     --env "RDLAB_STEP=run"
     --env "RDLAB_MODE=$MODE"
     --env "RDLAB_WALL_SECONDS=$VM_WALL_SECONDS"
+    --env "RDLAB_RIG_WALL_SECONDS=$WALL_SECONDS"
+    --env "RDLAB_WINDOW_CAP_UNITS=$CAP_UNITS"
+    --env "RDLAB_MAX_RATE=$MAX_RATE"
     --env "RDLAB_VRAM_HALT_MIB=$VRAM_HALT_MIB"
     --env "RDLAB_JUDGE_LOCK_SHA256=$j_sha"
     --env "RDLAB_D3_LOCK_SHA256=$d_sha"
@@ -848,6 +963,34 @@ build_exec_env_args() {
   fi
 }
 
+# The VM's test-hook guard (and the counted RDLAB_LIMIT_ITEMS refusal), run on the variables this launcher forwards with
+# --env, before any colab call: a real window with a forwarded hook is refused before it opens, not after the uploads.
+guard_forwarded_test_hooks() {
+  build_exec_env_args
+  "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "${VM_DRYRUN:-0}" "${RDLAB_SHARD:-1/1}" "${EXEC_ENV_ARGS[@]}" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root, mode, vm_dryrun, shard = Path(sys.argv[1]), sys.argv[2], sys.argv[3] == "1", sys.argv[4]
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+args = sys.argv[5:]
+env = {}
+for flag, kv in zip(args[0::2], args[1::2]):
+    if flag == "--env" and "=" in kv:
+        k, v = kv.split("=", 1)
+        env[k] = v
+try:
+    vm_judges.guard_no_test_hooks_in_counted_mode(mode, dryrun=vm_dryrun, shard_spec=shard, environ=env)
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+}
+
+
 if [[ "$DRY_FLAG" == "1" ]]; then
   if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
     if [[ -n "$COUNTED_ITEMS_FILE" ]] && [[ -n "$COUNTED_MANIFEST_FILE" ]]; then
@@ -889,7 +1032,10 @@ PY
       exit 2
     fi
     DRY_COUNTED_SOURCE="${COUNTED_MANIFEST_FILE:-$COUNTED_ITEMS_FILE}"
-    "$PYTHON_BIN" - "$REPO_ROOT" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$DRY_COUNTED_SOURCE" "$SESSION_SMOKE_FLAG" <<'PY'
+    if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]]; then
+      require_p0a_part_dir_for_mode
+    fi
+    "$PYTHON_BIN" - "$REPO_ROOT" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$DRY_COUNTED_SOURCE" "$SESSION_SMOKE_FLAG" "$MODE" "${VM_DRYRUN:-0}" "$P0A_PART_DIR" <<'PY'
 import sys
 from pathlib import Path
 
@@ -898,20 +1044,48 @@ anchor_f = Path(sys.argv[2])
 p0a_f = Path(sys.argv[3])
 counted_src = Path(sys.argv[4]) if sys.argv[4].strip() else None
 is_smoke = sys.argv[5] == "1"
+mode = sys.argv[6]
+vm_dryrun = sys.argv[7] == "1"
+p0a_part_dir = Path(sys.argv[8]) if sys.argv[8].strip() else None
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
-from reasoning_dataset_lab.pilot_b import bakeoff_judge
+import vm_judges
+from reasoning_dataset_lab.pilot_b import bakeoff_judge, schema_check
 
 if not is_smoke or (anchor_f.is_file() and p0a_f.is_file()):
     try:
+        pilot_identity = (
+            vm_judges.verify_p0a_pilot_part(
+                p0a_f,
+                mode=mode,
+                dryrun=vm_dryrun,
+                part_dir=p0a_part_dir,
+                schema_errors=lambda doc: schema_check.validate(doc, "part"),
+            )
+            if p0a_part_dir is not None
+            else None
+        )
         bakeoff_judge.verify_lock_check_two_inputs(
             anchor_items_or_path=anchor_f,
             p0a_items_or_path=p0a_f,
             counted_items_or_manifest=counted_src,
+            pilot_identity=pilot_identity,
+            require_pilot_identity=vm_judges.p0a_pilot_identity_required(mode, dryrun=vm_dryrun),
         )
+    except vm_judges.RefusalError as exc:
+        sys.stderr.write(f"{exc}\n")
+        raise SystemExit(2)
     except bakeoff_judge.RdlabError as exc:
         sys.stderr.write(f"[{exc.code}] {exc.message}\n")
         raise SystemExit(2)
+    if pilot_identity is None:
+        raise SystemExit(0)
+    b = pilot_identity["binding"]
+    sys.stderr.write(
+        f"[p0a-part] part_id={pilot_identity['part_id']} items_count={pilot_identity['items_count']} "
+        f"part_json_sha256={pilot_identity['part_json_sha256']} uploaded_items={b['uploaded_items']} rule={b['rule']} "
+        f"projection_checked={b['projection_checked']} checked_by={b['checked_by']} pin={pilot_identity['pin']}\n"
+    )
 PY
     if [[ -n "$DRY_COUNTED_SOURCE" ]]; then
       "$PYTHON_BIN" - "$REPO_ROOT" "$DRY_COUNTED_SOURCE" "$SESSION_SMOKE_FLAG" <<'PY'
@@ -959,6 +1133,7 @@ except vm_judges.RefusalError as exc:
     raise SystemExit(2)
 PY
     if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]]; then
+      require_part_dir_for_mode
       check_part_manifest_beside_items "$ITEMS_FILE"
     fi
   fi
@@ -996,11 +1171,17 @@ PY
   fi
   build_exec_env_args
   DRY_ENV_STR="${EXEC_ENV_ARGS[*]}"
+  if ! guard_forwarded_test_hooks; then
+    exit 2
+  fi
 
   {
     printf 'colab sessions\n'
+    # The account rate before open, then after open until two reads agree (at least two; more while unstable).
+    printf 'colab usage\n'
     printf 'colab new%s -s %s\n' "$DRY_NEW_OPTS" "$SESSION_NAME"
     printf 'colab sessions\n'
+    printf 'colab usage\n'
     printf 'colab usage\n'
     printf 'colab exec -s %s --env RDLAB_STEP=alive -f %s --timeout=%s\n' "$SESSION_NAME" "$VM_SCRIPT" "$ALIVE_PROBE_TIMEOUT_SECONDS"
     printf 'colab exec -s %s %s -f %s --timeout=%s\n' "$SESSION_NAME" "$DRY_GATE_ENV_STR" "$VM_SCRIPT" "$GATE_TIMEOUT_SECONDS"
@@ -1010,14 +1191,17 @@ PY
     if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
       printf 'colab upload -s %s %s /content/rdlab_items/anchor_items.jsonl\n' "$SESSION_NAME" "$STAGED_ANCHOR_ITEMS_FILE"
       printf 'colab upload -s %s %s /content/rdlab_items/p0a_items.jsonl\n' "$SESSION_NAME" "$STAGED_P0A_ITEMS_FILE"
-      if [[ -n "$P0A_ITEMS_FILE" ]] && [[ -f "$(dirname "$P0A_ITEMS_FILE")/manifest.json" ]]; then
-        printf 'colab upload -s %s %s /content/rdlab_items/p0a_manifest.json\n' "$SESSION_NAME" "$STAGED_P0A_MANIFEST_FILE"
+      if [[ -n "$P0A_PART_DIR" ]] && [[ -f "$P0A_PART_DIR/part.json" ]]; then
+        printf 'colab upload -s %s %s /content/rdlab_items/p0a_part.json\n' "$SESSION_NAME" "$STAGED_P0A_PART_JSON_FILE"
+        printf 'colab upload -s %s %s /content/rdlab_items/p0a_checksums.txt\n' "$SESSION_NAME" "$STAGED_P0A_CHECKSUMS_FILE"
+        printf 'colab upload -s %s %s /content/rdlab_items/launcher_part_binding.json\n' "$SESSION_NAME" "$STAGED_BINDING_FILE"
       fi
     else
       printf 'colab upload -s %s %s /content/rdlab_items/items.jsonl\n' "$SESSION_NAME" "$STAGED_ITEMS_FILE"
       if [[ -n "$ITEMS_FILE" ]] && [[ -f "$(effective_part_dir "$ITEMS_FILE")/part.json" ]]; then
         printf 'colab upload -s %s %s /content/rdlab_items/part.json\n' "$SESSION_NAME" "$STAGED_PART_JSON_FILE"
         printf 'colab upload -s %s %s /content/rdlab_items/checksums.txt\n' "$SESSION_NAME" "$STAGED_PART_CHECKSUMS_FILE"
+        printf 'colab upload -s %s %s /content/rdlab_items/launcher_part_binding.json\n' "$SESSION_NAME" "$STAGED_BINDING_FILE"
       fi
     fi
     if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
@@ -1071,6 +1255,7 @@ run_colab() {
   out="$(colab "$@" </dev/null 2>"$err_file")" || rc=$?
   err="$(cat "$err_file" 2>/dev/null || true)"
   rm -f "$err_file"
+  RUN_COLAB_LAST_ERR="$err"
   if [[ -n "$err" ]]; then
     printf '%s\n' "$err" | scrub_stream >> "$CLI_LOG"
   fi
@@ -1083,6 +1268,8 @@ run_colab() {
 
 S=""
 NEW_SUCCEEDED=0
+RUN_COLAB_LAST_ERR=""
+NO_SESSION_ASSIGNED=0
 PRE_SESSIONS=""
 MID_SESSIONS=""
 POST_SESSIONS=""
@@ -1159,10 +1346,10 @@ PY
   local jid
   for jid in $done_judges; do
     if [[ ! -f "$OUT_DIR/judge_done/${jid}.json" ]]; then
-      timeout "$dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${jid}.json" "$OUT_DIR/judge_done/${jid}.json" </dev/null >/dev/null 2>&1 || true
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${jid}.json" "$OUT_DIR/judge_done/${jid}.json" </dev/null >/dev/null 2>&1 || true
     fi
     if [[ ! -f "$OUT_DIR/rows/${jid}.jsonl" ]]; then
-      timeout "$dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${jid}.jsonl" "$OUT_DIR/rows/${jid}.jsonl" </dev/null >/dev/null 2>&1 || true
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${jid}.jsonl" "$OUT_DIR/rows/${jid}.jsonl" </dev/null >/dev/null 2>&1 || true
     fi
   done
 }
@@ -1192,16 +1379,16 @@ fetch_results_once() {
     eff_timeout="$fetch_timeout"
   fi
   if [[ "$MODE" == "probe" ]]; then
-    timeout "$eff_timeout" colab download -s "$S" "/content/probe.json" "$OUT_DIR/probe.json" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/probe.json" "$OUT_DIR/probe.json" </dev/null >/dev/null 2>&1 || true
   else
-    timeout "$eff_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
-    timeout "$eff_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
-    timeout "$eff_timeout" colab download -s "$S" "/content/gate_status.json" "$OUT_DIR/gate_status.json" </dev/null >/dev/null 2>&1 || true
-    timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
-    timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/gate_status.json" "$OUT_DIR/gate_status.json" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl" </dev/null >/dev/null 2>&1 || true
     if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
       mkdir -p "$OUT_DIR/logs"
-      timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/logs/vm.log" "$OUT_DIR/logs/vm.log" </dev/null >/dev/null 2>&1 || true
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/rdlab_run/logs/vm.log" "$OUT_DIR/logs/vm.log" </dev/null >/dev/null 2>&1 || true
     fi
     "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" >/dev/null 2>&1 <<'PY' || true
 import shutil
@@ -1273,7 +1460,7 @@ periodic_fetch_progress_once() {
   local tmp_progress="$OUT_DIR/progress.jsonl.tmp.$$.$PROGRESS_FETCH_SEQ"
   local dl_rc=0
   local dl_err=""
-  dl_err="$(timeout "$PROGRESS_FETCH_TIMEOUT_SECONDS" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$tmp_progress" </dev/null 2>&1)" || dl_rc=$?
+  dl_err="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$PROGRESS_FETCH_TIMEOUT_SECONDS" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$tmp_progress" </dev/null 2>&1)" || dl_rc=$?
   if [[ "$dl_rc" -eq 0 ]] && [[ -f "$tmp_progress" ]]; then
     "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'src')); sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.scrub_log_file_in_place(Path(sys.argv[2]))" "$REPO_ROOT" "$tmp_progress" >/dev/null 2>&1 || true
     mv -f "$tmp_progress" "$OUT_DIR/progress.jsonl"
@@ -1306,6 +1493,12 @@ write_outcome_draft() {
   RDLAB_SMOKE_POST_SESSIONS="$POST_SESSIONS" \
   RDLAB_UNTIL_STEP="$UNTIL_STEP" \
   RDLAB_FAILURE_CLASS="$RUN_FAILURE_CLASS" \
+  RDLAB_NO_SESSION_ASSIGNED="$NO_SESSION_ASSIGNED" \
+  RDLAB_RATE_SOURCE="$RATE_SOURCE" \
+  RDLAB_PRE_ACCOUNT_RATE="$PRE_ACCOUNT_RATE" \
+  RDLAB_POST_ACCOUNT_RATE="$POST_ACCOUNT_RATE" \
+  RDLAB_PRICING_RATE="$PRICING_RATE_UNITS_PER_HOUR" \
+  RDLAB_MAX_RATE="$MAX_RATE" \
   RDLAB_LIVE_USAGE_RATE="$LIVE_RATE_UNITS_PER_HOUR" \
   RDLAB_RATE_READ_AT_UTC="$RATE_READ_AT_UTC" \
   "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "$CARD" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" <<'PY'
@@ -1322,26 +1515,58 @@ SESSION_ROW_SHAPE = "[<SESSION>] <TOKEN> | <TOKEN>: <TOKEN> | <TOKEN>: <TOKEN> |
 out_path = Path(sys.argv[1])
 run_id = sys.argv[2]
 hardware = sys.argv[3]
-cap = float(sys.argv[4])
-rate = float(sys.argv[5])
+cap = float(sys.argv[4]) if sys.argv[4].strip() else None
+rate_arg = float(sys.argv[5]) if sys.argv[5].strip() else None
+rate_source = os.environ.get("RDLAB_RATE_SOURCE", "").strip()
+max_rate_raw = os.environ.get("RDLAB_MAX_RATE", "").strip()
+max_rate = float(max_rate_raw) if max_rate_raw else None
+# The window rate is recorded only when it was measured live (post - pre); an estimate from --max-rate is labelled.
+rate = rate_arg if rate_source == "live_window" else None
+
+
+def _env_float(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    try:
+        return float(raw) if raw else None
+    except ValueError:
+        return None
 wall_seconds = int(sys.argv[6])
 explicit_cap_raw = sys.argv[7].strip()
 runtime_seconds = int(sys.argv[8])
 outcome = sys.argv[9]
 why = sys.argv[10]
 
-wall_x_rate = round((wall_seconds / 3600.0) * rate, 4)
+wall_x_rate = round((wall_seconds / 3600.0) * rate, 4) if rate is not None else None
 explicit_cap = float(explicit_cap_raw) if explicit_cap_raw else None
-if explicit_cap is not None:
+if explicit_cap is not None and wall_x_rate is not None:
     binding_cap = min(wall_x_rate, explicit_cap)
     cap_binds = "explicit_cap" if explicit_cap <= wall_x_rate else "wall_x_rate"
     cap_source = "explicit_cap"
+elif explicit_cap is not None:
+    binding_cap = explicit_cap
+    cap_binds = "explicit_cap"
+    cap_source = "explicit_cap"
 else:
     binding_cap = wall_x_rate
-    cap_binds = "wall_x_rate"
-    cap_source = "wall_x_rate"
+    cap_binds = "wall_x_rate" if wall_x_rate is not None else None
+    cap_source = "wall_x_rate" if wall_x_rate is not None else None
 
-cost = round((runtime_seconds / 3600.0) * rate, 4)
+# A window whose `colab new` was refused at assign never had a machine: it costs nothing, whatever time the launcher
+# spent before and during the refused open (classify_colab_new_failure). Every other window books rate x runtime.
+no_session_assigned = os.environ.get("RDLAB_NO_SESSION_ASSIGNED", "").strip() == "1"
+if no_session_assigned:
+    cost = 0.0
+    cost_basis = "no_session_assigned"
+elif rate is not None:
+    cost = round((runtime_seconds / 3600.0) * rate, 4)
+    cost_basis = "rate_x_runtime"
+elif max_rate is not None:
+    # A session that may have been assigned before the live rate was read: booked at the worst case it accepted.
+    cost = round((runtime_seconds / 3600.0) * max_rate, 4)
+    cost_basis = "max_rate_x_runtime_estimate"
+else:
+    cost = None
+    cost_basis = "rate_not_read"
 target_session = os.environ.get("RDLAB_SMOKE_SESSION_NAME", "")
 
 
@@ -1416,6 +1641,13 @@ payload: dict[str, object] = {
     "venue": "colab",
     "hardware": hardware,
     "rate_per_hour": rate,
+    # The window's own rate: post-open minus pre-open account rate (`colab usage` reports the whole account).
+    "rate_scope": "window" if rate is not None else None,
+    "rate_source": "live_colab_usage_post_minus_pre" if rate is not None else (rate_source or None),
+    "pre_account_rate_per_hour": _env_float("RDLAB_PRE_ACCOUNT_RATE"),
+    "post_account_rate_per_hour": _env_float("RDLAB_POST_ACCOUNT_RATE"),
+    "pricing_rate_per_hour": _env_float("RDLAB_PRICING_RATE"),
+    "max_rate": max_rate,
     "wall_seconds": wall_seconds,
     "wall_x_rate": wall_x_rate,
     "explicit_cap": explicit_cap,
@@ -1424,6 +1656,8 @@ payload: dict[str, object] = {
     "cap_binds": cap_binds,
     "cap_source": cap_source,
     "cost": cost,
+    "cost_basis": cost_basis,
+    "session_assigned": not no_session_assigned,
     "runtime": runtime_seconds,
     "runtime_seconds": runtime_seconds,
     "outcome": outcome,
@@ -1458,6 +1692,14 @@ for jid in sorted(done_ids):
     if jid not in completed_judges:
         completed_judges.append(jid)
 payload["judges_completed"] = completed_judges
+# The launcher's own part binding (what it checked row by row, against which hashes), labelled checked_by "launcher";
+# the VM's re-check is in vm_receipt.json's part_identity (checked_by "vm").
+binding_file = out_path.parent / "launcher_part_binding.json"
+if binding_file.is_file():
+    try:
+        payload["launcher_part_binding"] = json.loads(binding_file.read_text(encoding="utf-8"))
+    except Exception:
+        payload["launcher_part_binding"] = {"error": "launcher_part_binding.json could not be read"}
 until_step_val = os.environ.get("RDLAB_UNTIL_STEP", "").strip()
 if until_step_val:
     payload["until"] = until_step_val
@@ -1506,7 +1748,66 @@ payload["shard_item_ids"] = shard_item_ids_val
 payload["anchor_item_ids"] = anchor_item_ids_val
 payload["loop_order"] = loop_env
 out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+# The run summary on stderr: what the outcome draft books.
+sys.stderr.write(
+    f"[outcome] id={run_id} outcome={outcome} cost={'unknown' if cost is None else format(cost, 'g')} cost_basis={cost_basis} "
+    f"failure_class={payload.get('failure_class') or 'none'} runtime_s={runtime_seconds}\n"
+)
 PY
+}
+
+# One bounded `colab usage` read: prints the account rate (units/h, 0 allowed) or nothing; logs the output.
+read_account_rate() {
+  local out rc=0
+  out="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$USAGE_TIMEOUT_SECONDS" colab usage </dev/null 2>>"$CLI_LOG")" || rc=$?
+  printf '%s\n' "$out" | scrub_stream >> "$CLI_LOG"
+  if [[ "$rc" -ne 0 ]]; then
+    return 1
+  fi
+  "$PYTHON_BIN" - "$out" <<'PY'
+import re
+import sys
+
+m = re.search(r"Usage\s+rate\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*h(?:r|our)?\b", sys.argv[1], re.IGNORECASE)
+if m:
+    print(f"{float(m.group(1)):.4f}")
+PY
+}
+
+# `colab new` failed: was a machine ever assigned? A session that was never assigned costs nothing (no_capacity).
+# Read once, after the failure: the session row in `colab sessions` (PRE_SESSIONS before `colab new`, POST_SESSIONS
+# now), new `[?]` orphan rows, the exit code and the client's error text. No session is assigned only when the session
+# is listed neither before nor after, no orphan row appeared, the exit code is non-zero and the error is the service
+# refusing the machine at assign (`POST .../tun/m/assign...: Service Unavailable`, as the real CLI printed it for
+# timeone-mu2, 2026-11-06; the URL is wrapped over lines, so the text is joined first). A session that is listed after
+# the failure was assigned: it is adopted, so the EXIT trap stops it and the outcome books rate x runtime. Anything
+# else keeps the old booking (rate x runtime), the safe side when it is not known that nothing was assigned.
+classify_colab_new_failure() {
+  local new_rc="$1" new_err="$2" listed=0 pre_orphans=0 post_orphans=0 assign_refused=0
+  POST_SESSIONS="$(run_colab sessions </dev/null || true)"
+  if printf '%s\n' "$POST_SESSIONS" | grep -q "^\[$SESSION_NAME\]"; then
+    listed=1
+  fi
+  pre_orphans="$(printf '%s\n' "$PRE_SESSIONS" | grep -Ec '^\[\?\]' || true)"
+  post_orphans="$(printf '%s\n' "$POST_SESSIONS" | grep -Ec '^\[\?\]' || true)"
+  if printf '%s' "$new_err" | tr -d '\r\n' | grep -Eq '/tun/m/assign\?[^ ]*: Service Unavailable'; then
+    assign_refused=1
+  fi
+  if [[ "$listed" -eq 1 ]]; then
+    S="$SESSION_NAME"
+    NEW_SUCCEEDED=1
+    RUN_FAILURE_CLASS="SESSION_OPEN_FAILED_AFTER_ASSIGN"
+    RUN_WHY="colab new failed for $SESSION_NAME (rc=$new_rc) but colab sessions lists [$SESSION_NAME]: a machine was assigned; stopping it"
+    log_msg "COLAB_NEW_FAILED_SESSION_ASSIGNED session=$SESSION_NAME rc=$new_rc"
+  elif [[ "$new_rc" -ne 0 ]] && [[ "$assign_refused" -eq 1 ]] && [[ "$post_orphans" -le "$pre_orphans" ]]; then
+    NO_SESSION_ASSIGNED=1
+    RUN_FAILURE_CLASS="no_capacity"
+    RUN_WHY="no_capacity: colab new for $SESSION_NAME was refused at assign (Service Unavailable, rc=$new_rc); [$SESSION_NAME] listed neither before nor after, no new [?] row; no session was assigned, cost 0"
+    log_msg "NO_CAPACITY session=$SESSION_NAME rc=$new_rc cost=0 cost_basis=no_session_assigned failure_class=no_capacity"
+  else
+    RUN_WHY="colab new failed for $SESSION_NAME (rc=$new_rc)"
+    log_msg "COLAB_NEW_FAILED session=$SESSION_NAME rc=$new_rc listed_after=$listed assign_refused=$assign_refused orphans_before=$pre_orphans orphans_after=$post_orphans"
+  fi
 }
 
 stop_all() {
@@ -1644,9 +1945,11 @@ if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
     echo "SESSION_NAME_IN_USE: session [$SESSION_NAME] already exists in colab sessions" >&2
     exit 1
   fi
-  if ! run_colab new -s "$SESSION_NAME" </dev/null >/dev/null; then
+  NEW_RC=0
+  run_colab new -s "$SESSION_NAME" </dev/null >/dev/null || NEW_RC=$?
+  if [[ "$NEW_RC" -ne 0 ]]; then
+    classify_colab_new_failure "$NEW_RC" "$RUN_COLAB_LAST_ERR"
     flock -u 9 || true
-    RUN_WHY="colab new failed for $SESSION_NAME"
     exit 1
   fi
   S="$SESSION_NAME"
@@ -1689,9 +1992,11 @@ if [[ "$MODE" == "probe" ]]; then
     echo "SESSION_NAME_IN_USE: session [$SESSION_NAME] already exists in colab sessions" >&2
     exit 1
   fi
-  if ! run_colab new -s "$SESSION_NAME" </dev/null >/dev/null; then
+  NEW_RC=0
+  run_colab new -s "$SESSION_NAME" </dev/null >/dev/null || NEW_RC=$?
+  if [[ "$NEW_RC" -ne 0 ]]; then
+    classify_colab_new_failure "$NEW_RC" "$RUN_COLAB_LAST_ERR"
     flock -u 9 || true
-    RUN_WHY="colab new failed for $SESSION_NAME"
     exit 1
   fi
   S="$SESSION_NAME"
@@ -1722,7 +2027,7 @@ if [[ "$MODE" == "probe" ]]; then
 
   build_probe_env_args
   EXEC_RC=0
-  timeout --signal=TERM --kill-after=15 "${RIG_TIMEOUT}s" \
+  timeout --signal=TERM --kill-after="$COLAB_KILL_GRACE_SECONDS" "${RIG_TIMEOUT}s" \
     colab exec -s "$S" "${PROBE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || EXEC_RC=$?
 
   if [[ -f "$DEADLINE_MARKER" ]]; then
@@ -1870,7 +2175,8 @@ PY
       exit 2
     fi
   fi
-  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" <<'PY'
+  require_p0a_part_dir_for_mode
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$MODE" "${VM_DRYRUN:-0}" "$P0A_PART_DIR" <<'PY'
 import sys
 from pathlib import Path
 
@@ -1879,19 +2185,39 @@ anchor_f = Path(sys.argv[2])
 p0a_f = Path(sys.argv[3])
 counted_f = Path(sys.argv[4]) if sys.argv[4].strip() else None
 counted_mf = Path(sys.argv[5]) if sys.argv[5].strip() else None
+mode = sys.argv[6]
+vm_dryrun = sys.argv[7] == "1"
+p0a_part_dir = Path(sys.argv[8]) if sys.argv[8].strip() else None
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
-from reasoning_dataset_lab.pilot_b import bakeoff_judge
+import vm_judges
+from reasoning_dataset_lab.pilot_b import bakeoff_judge, schema_check
 
 try:
     eff_counted_src = counted_mf if counted_mf is not None else counted_f
+    pilot_identity = (
+        vm_judges.verify_p0a_pilot_part(
+            p0a_f,
+            mode=mode,
+            dryrun=vm_dryrun,
+            part_dir=p0a_part_dir,
+            schema_errors=lambda doc: schema_check.validate(doc, "part"),
+        )
+        if p0a_part_dir is not None
+        else None
+    )
     bakeoff_judge.verify_lock_check_two_inputs(
         anchor_items_or_path=anchor_f,
         p0a_items_or_path=p0a_f,
         counted_items_or_manifest=eff_counted_src,
+        pilot_identity=pilot_identity,
+        require_pilot_identity=vm_judges.p0a_pilot_identity_required(mode, dryrun=vm_dryrun),
     )
     if eff_counted_src is not None:
         bakeoff_judge._resolve_items_from_manifest_source(eff_counted_src)
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
 except bakeoff_judge.RdlabError as exc:
     sys.stderr.write(f"[{exc.code}] {exc.message}\n")
     raise SystemExit(2)
@@ -1938,6 +2264,7 @@ PY
     RUN_WHY="items file refused by field allow-list guard: $ITEMS_FILE"
     exit 2
   fi
+  require_part_dir_for_mode
   if ! check_part_manifest_beside_items "$ITEMS_FILE"; then
     RUN_WHY="part files refused before session open: $(effective_part_dir "$ITEMS_FILE")/part.json"
     exit 2
@@ -1988,8 +2315,10 @@ fi
 
 mkdir -p "$STAGE_DIR"
 # Part files left in the stage dir by an earlier, interrupted launch must never be uploaded for this one.
-rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE"
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_P0A_MANIFEST_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" <<'PY'
+rm -f "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$ITEMS_FILE" "$STAGED_ITEMS_FILE" "$RECEIPTS_DIR" "$RECEIPTS_TAR" "$REPO_TAR" "$STAGED_DEVICE_PY" "$GOLDEN_ANCHOR_MANIFEST" "$ANCHOR_ITEMS_FILE" "$STAGED_ANCHOR_ITEMS_FILE" "$P0A_ITEMS_FILE" "$STAGED_P0A_ITEMS_FILE" "$COUNTED_ITEMS_FILE" "$COUNTED_MANIFEST_FILE" "$STAGED_BINDING_FILE" "$MODE" "${VM_DRYRUN:-0}" "$STAGED_PART_JSON_FILE" "$STAGED_PART_CHECKSUMS_FILE" "$(effective_part_dir "$ITEMS_FILE")" "$P0A_PART_DIR" "$STAGED_P0A_PART_JSON_FILE" "$STAGED_P0A_CHECKSUMS_FILE" <<'PY'
+import datetime
+import json
 import shutil
 import sys
 import tarfile
@@ -2009,12 +2338,15 @@ raw_p0a_src = sys.argv[11].strip() if len(sys.argv) > 11 else ""
 raw_p0a_dst = sys.argv[12].strip() if len(sys.argv) > 12 else ""
 raw_counted_items = sys.argv[13].strip() if len(sys.argv) > 13 else ""
 raw_counted_manifest = sys.argv[14].strip() if len(sys.argv) > 14 else ""
-raw_p0a_manifest_dst = sys.argv[15].strip() if len(sys.argv) > 15 else ""
+raw_binding_dst = sys.argv[15].strip() if len(sys.argv) > 15 else ""
 stage_mode = sys.argv[16].strip() if len(sys.argv) > 16 else ""
 stage_vm_dryrun = (sys.argv[17].strip() == "1") if len(sys.argv) > 17 else False
 raw_part_json_dst = sys.argv[18].strip() if len(sys.argv) > 18 else ""
 raw_part_checksums_dst = sys.argv[19].strip() if len(sys.argv) > 19 else ""
 raw_part_dir = sys.argv[20].strip() if len(sys.argv) > 20 else ""
+raw_p0a_part_dir = sys.argv[21].strip() if len(sys.argv) > 21 else ""
+raw_p0a_part_json_dst = sys.argv[22].strip() if len(sys.argv) > 22 else ""
+raw_p0a_checksums_dst = sys.argv[23].strip() if len(sys.argv) > 23 else ""
 
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
@@ -2025,6 +2357,14 @@ vm_judges.check_upload_path_allowed(items_src)
 vm_judges.verify_items_allowlist(items_src)
 _ = vm_judges.collect_claim_ngram_sha256s(items_src)
 shutil.copyfile(items_src, items_dst)
+binding_record: dict = {
+    "schema_version": "1.0",
+    "checked_by": "launcher",
+    "checked_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "mode": stage_mode,
+    "window_part": None,
+    "p0a_part": None,
+}
 if stage_mode not in ("lock-check", "lock-check-stub") and raw_part_json_dst and raw_part_checksums_dst:
     # The part's own part.json and checksums.txt go to the VM beside items.jsonl, checked by the same rules as
     # check_part_manifest_beside_items first; they are copied as given, never created or rewritten.
@@ -2042,6 +2382,7 @@ if stage_mode not in ("lock-check", "lock-check-stub") and raw_part_json_dst and
     if identity is not None:
         shutil.copyfile(part_src_dir / vm_judges.PART_JSON_FILENAME, Path(raw_part_json_dst))
         shutil.copyfile(part_src_dir / vm_judges.PART_CHECKSUMS_FILENAME, Path(raw_part_checksums_dst))
+        binding_record["window_part"] = vm_judges.launcher_binding_entry(identity)
 if raw_anchor_src and raw_anchor_dst:
     anchor_src = Path(raw_anchor_src)
     vm_judges.check_upload_path_allowed(anchor_src)
@@ -2054,10 +2395,26 @@ if raw_p0a_src and raw_p0a_dst:
     vm_judges.verify_items_allowlist(p0a_src)
     _ = vm_judges.collect_claim_ngram_sha256s(p0a_src)
     shutil.copyfile(p0a_src, Path(raw_p0a_dst))
-    p0a_mf_src = p0a_src.parent / "manifest.json"
-    if p0a_mf_src.is_file() and raw_p0a_manifest_dst:
-        vm_judges.check_upload_path_allowed(p0a_mf_src)
-        shutil.copyfile(p0a_mf_src, Path(raw_p0a_manifest_dst))
+    # The burned pilot's own part.json and checksums.txt go up as p0a_part.json / p0a_checksums.txt, after the same
+    # check as before the session (pinned identity, every file in checksums.txt, the projection row by row); a P0a
+    # manifest.json is never read or staged.
+    if raw_p0a_part_dir and raw_p0a_part_json_dst and raw_p0a_checksums_dst:
+        from reasoning_dataset_lab.pilot_b import schema_check as _p0a_schema
+
+        p0a_part_dir = Path(raw_p0a_part_dir)
+        p0a_identity = vm_judges.verify_p0a_pilot_part(
+            p0a_src,
+            mode=stage_mode,
+            dryrun=stage_vm_dryrun,
+            part_dir=p0a_part_dir,
+            schema_errors=lambda doc: _p0a_schema.validate(doc, "part"),
+        )
+        shutil.copyfile(p0a_part_dir / vm_judges.PART_JSON_FILENAME, Path(raw_p0a_part_json_dst))
+        shutil.copyfile(p0a_part_dir / vm_judges.PART_CHECKSUMS_FILENAME, Path(raw_p0a_checksums_dst))
+        if p0a_identity is not None:
+            binding_record["p0a_part"] = vm_judges.launcher_binding_entry(p0a_identity)
+if raw_binding_dst and (binding_record["window_part"] is not None or binding_record["p0a_part"] is not None):
+    Path(raw_binding_dst).write_text(json.dumps(binding_record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 shutil.copyfile(repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py", device_py_dst)
 
 with tarfile.open(receipts_tar, "w:gz") as tf:
@@ -2069,29 +2426,15 @@ with tarfile.open(receipts_tar, "w:gz") as tf:
             raise SystemExit(f"RECEIPT_MISSING: missing {rname} in {receipts_dir}")
         tf.add(rpath, arcname=rname, recursive=False)
 
-include_paths = [
-    "pyproject.toml",
-    "uv.lock",
-    "README.md",
-    "src",
-    "scripts/colab",
-]
-raw_shard_manifest = (os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip() if "os" in dir() else ""
+# The repo bundle is the git-tracked files under these paths at a clean HEAD (`git ls-files`), never the working tree:
+# a modified or untracked file there refuses REPO_TREE_DIRTY, so nothing untracked under src/ or scripts/colab is
+# ever uploaded.
 import os as _os
+tracked_files = vm_judges.tracked_repo_bundle_files(repo_root)
 raw_shard_manifest = (_os.environ.get("RDLAB_SHARD_MANIFEST") or "").strip()
 with tarfile.open(repo_tar, "w:gz") as tf:
-    for rel in include_paths:
-        target = repo_root / rel
-        if not target.exists():
-            continue
-        if target.is_file():
-            tf.add(target, arcname=rel, recursive=False)
-        else:
-            for child in sorted(target.rglob("*")):
-                if "__pycache__" in child.parts or child.suffix in (".pyc", ".pyo"):
-                    continue
-                if child.is_file():
-                    tf.add(child, arcname=child.relative_to(repo_root).as_posix(), recursive=False)
+    for rel in tracked_files:
+        tf.add(repo_root / rel, arcname=rel, recursive=False)
     if raw_shard_manifest:
         sm_path = Path(raw_shard_manifest)
         if not sm_path.is_file():
@@ -2130,6 +2473,28 @@ then
   RUN_WHY="staging of items, receipts, or repo bundle failed on rig"
   exit 2
 fi
+if [[ -f "$STAGED_BINDING_FILE" ]]; then
+  # The rig keeps the launcher's binding record (the stage dir is removed after upload); the outcome draft carries it.
+  cp "$STAGED_BINDING_FILE" "$RIG_BINDING_FILE"
+  BINDING_SUMMARY="$("$PYTHON_BIN" - "$RIG_BINDING_FILE" <<'PY'
+import json
+import sys
+
+doc = json.load(open(sys.argv[1], encoding="utf-8"))
+parts = []
+for key, ent in sorted(doc.items()):
+    if isinstance(ent, dict):
+        b = ent["binding"]
+        parts.append(
+            f"{key}:part_id={ent['part_id']},part_json_sha256={ent['part_json_sha256']},"
+            f"uploaded_items={b['uploaded_items']},rule={b['rule']},projection_checked={b['projection_checked']},"
+            f"pin={ent['pin']}"
+        )
+print(" ".join(parts))
+PY
+)" || BINDING_SUMMARY="unreadable"
+  log_msg "PART_BINDING_LAUNCHER record=$RIG_BINDING_FILE $BINDING_SUMMARY"
+fi
 
 if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
   "$PYTHON_BIN" - "$OUT_DIR" "$RESUME_TAR" <<'PY'
@@ -2153,6 +2518,13 @@ with tarfile.open(tar_path, "w:gz") as tf:
 PY
 fi
 
+# Before any colab call: the VM's test-hook guard on what this launcher forwards.
+if ! guard_forwarded_test_hooks; then
+  RUN_FAILURE_CLASS="TEST_HOOK_IN_COUNTED_MODE"
+  RUN_WHY="refused before any colab call: a forwarded test hook or item limit in a real window"
+  exit 2
+fi
+
 mkdir -p "$(dirname "$OPEN_LOCK")"
 exec 9>"$OPEN_LOCK"
 flock -w 300 9 || {
@@ -2169,13 +2541,29 @@ if printf '%s\n' "$PRE_SESSIONS" | grep -Fq "[$SESSION_NAME]"; then
   echo "SESSION_NAME_IN_USE: session [$SESSION_NAME] already exists in colab sessions" >&2
   exit 1
 fi
-if ! run_colab new "${COLAB_NEW_FLAGS[@]+"${COLAB_NEW_FLAGS[@]}"}" -s "$SESSION_NAME" </dev/null >/dev/null; then
+# The account rate before our session exists (the window rate's baseline). Unreadable: refused before any spend.
+PRE_ACCOUNT_RATE="$(read_account_rate || true)"
+if [[ -z "$PRE_ACCOUNT_RATE" ]]; then
   flock -u 9 || true
-  RUN_WHY="colab new failed for $SESSION_NAME"
+  RUN_FAILURE_CLASS="LIVE_USAGE_RATE_UNAVAILABLE"
+  RUN_WHY="LIVE_USAGE_RATE_UNAVAILABLE: could not read the account usage rate before opening $SESSION_NAME"
+  echo "$RUN_WHY" >&2
+  exit 2
+fi
+log_msg "USAGE_READ_PRE session=$SESSION_NAME account_rate_uh=$PRE_ACCOUNT_RATE"
+NEW_RC=0
+run_colab new "${COLAB_NEW_FLAGS[@]+"${COLAB_NEW_FLAGS[@]}"}" -s "$SESSION_NAME" </dev/null >/dev/null || NEW_RC=$?
+if [[ "$NEW_RC" -ne 0 ]]; then
+  classify_colab_new_failure "$NEW_RC" "$RUN_COLAB_LAST_ERR"
+  flock -u 9 || true
   exit 1
 fi
 S="$SESSION_NAME"
 NEW_SUCCEEDED=1
+# The cost clock starts when the open succeeds: the rate polls, card check and gates all count against the cap.
+OPEN_CLOCK_EPOCH="$(now_epoch_seconds)"
+START_EPOCH="$OPEN_CLOCK_EPOCH"
+log_msg "SESSION_OPEN_CLOCK session=$S epoch=$OPEN_CLOCK_EPOCH"
 
 mkdir -p "$LOCK_DIR"
 printf '%s\n' "$MAIN" > "$LOCK_DIR/$S.lock"
@@ -2244,41 +2632,68 @@ PY
   fi
 fi
 
-OPEN_CLOCK_EPOCH="$(now_epoch_seconds)"
-START_EPOCH="$OPEN_CLOCK_EPOCH"
 RATE_READ_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-USAGE_RC=0
-USAGE_OUT="$(run_colab usage </dev/null)" || USAGE_RC=$?
-LIVE_RATE_UNITS_PER_HOUR=""
-if [[ "$USAGE_RC" -eq 0 ]] && [[ -n "$USAGE_OUT" ]]; then
-  LIVE_RATE_UNITS_PER_HOUR="$("$PYTHON_BIN" - "$USAGE_OUT" <<'PY' || true
-import re
-import sys
-
-text = sys.argv[1]
-m = re.search(r"Usage\s+rate\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*h(?:r|our)?\b", text, re.IGNORECASE)
-if m:
-    val = float(m.group(1))
-    if val > 0.0:
-        print(f"{val:g}" if "." not in m.group(1) else m.group(1))
-PY
-)"
+# The window rate: post-open account rate minus the pre-open one, polled (bounded) until two consecutive reads agree
+# within RATE_STABLE_TOLERANCE and clear the floor. A neighbour's rate, or a stale read from before our session
+# registered, is never taken as ours.
+if [[ "$CARD" == "CPU" ]]; then
+  WINDOW_RATE_FLOOR="$CPU_RATE_FLOOR"
+else
+  WINDOW_RATE_FLOOR="$GPU_RATE_FLOOR"
 fi
+LIVE_RATE_UNITS_PER_HOUR=""
+POST_ACCOUNT_RATE=""
+PREV_WINDOW_RATE=""
+RATE_POLL_ATTEMPT=0
+while (( RATE_POLL_ATTEMPT < RATE_POLL_MAX_READS )); do
+  RATE_POLL_ATTEMPT=$(( RATE_POLL_ATTEMPT + 1 ))
+  POST_READ="$(read_account_rate || true)"
+  if [[ -n "$POST_READ" ]]; then
+    WIN_READ="$("$PYTHON_BIN" -c "import sys; print(f'{max(0.0, float(sys.argv[1]) - float(sys.argv[2])):.4f}')" "$POST_READ" "$PRE_ACCOUNT_RATE")"
+    log_msg "USAGE_READ_POST session=$S attempt=${RATE_POLL_ATTEMPT}/${RATE_POLL_MAX_READS} account_rate_uh=$POST_READ window_rate_uh=$WIN_READ floor=$WINDOW_RATE_FLOOR"
+    if [[ -n "$PREV_WINDOW_RATE" ]] && "$PYTHON_BIN" -c "import sys; a, b, tol, fl = map(float, sys.argv[1:]); sys.exit(0 if abs(a - b) <= tol + 1e-9 and a >= fl and b >= fl else 1)" "$WIN_READ" "$PREV_WINDOW_RATE" "$RATE_STABLE_TOLERANCE" "$WINDOW_RATE_FLOOR"; then
+      LIVE_RATE_UNITS_PER_HOUR="$WIN_READ"
+      POST_ACCOUNT_RATE="$POST_READ"
+      break
+    fi
+    PREV_WINDOW_RATE="$WIN_READ"
+  else
+    log_msg "USAGE_READ_POST session=$S attempt=${RATE_POLL_ATTEMPT}/${RATE_POLL_MAX_READS} unreadable"
+    PREV_WINDOW_RATE=""
+  fi
+  if (( RATE_POLL_ATTEMPT < RATE_POLL_MAX_READS )); then
+    sleep "$RATE_POLL_SLEEP_SECONDS"
+  fi
+done
 if [[ -z "$LIVE_RATE_UNITS_PER_HOUR" ]]; then
   flock -u 9 || true
   RUN_FAILURE_CLASS="LIVE_USAGE_RATE_UNAVAILABLE"
-  RUN_WHY="LIVE_USAGE_RATE_UNAVAILABLE: failed to read positive live usage rate on session $S"
+  RUN_WHY="LIVE_USAGE_RATE_UNAVAILABLE: no stable window rate (post - pre, two reads within ${RATE_STABLE_TOLERANCE}, >= ${WINDOW_RATE_FLOOR}/h) on session $S after ${RATE_POLL_ATTEMPT} reads (last ${PREV_WINDOW_RATE:-none})"
   echo "$RUN_WHY" >&2
   exit 2
 fi
 RATE_UNITS_PER_HOUR="$LIVE_RATE_UNITS_PER_HOUR"
-WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
+RATE_SOURCE="live_window"
+echo "[rate] window_rate=${LIVE_RATE_UNITS_PER_HOUR}/h (measured: post ${POST_ACCOUNT_RATE} - pre ${PRE_ACCOUNT_RATE}) max_rate=${MAX_RATE:-none}/h" >&2
+log_msg "LIVE_USAGE_RATE_READ session=$S window_rate_uh=$LIVE_RATE_UNITS_PER_HOUR rate_scope=window pre_account_rate_uh=$PRE_ACCOUNT_RATE post_account_rate_uh=$POST_ACCOUNT_RATE max_rate=${MAX_RATE:-none}"
+if [[ -n "$MAX_RATE" ]] && "$PYTHON_BIN" -c "import sys; sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)" "$LIVE_RATE_UNITS_PER_HOUR" "$MAX_RATE"; then
+  # Refused right after the read: the EXIT trap stops the session now, at the cost of the open alone.
+  flock -u 9 || true
+  RUN_FAILURE_CLASS="RATE_ABOVE_MAX"
+  RUN_WHY="RATE_ABOVE_MAX: the window's live usage rate ${LIVE_RATE_UNITS_PER_HOUR}/h on session $S (account ${POST_ACCOUNT_RATE}/h minus ${PRE_ACCOUNT_RATE}/h before open) is above --max-rate ${MAX_RATE}/h"
+  echo "$RUN_WHY" >&2
+  exit 2
+fi
+# The cap runtime is priced on max(--max-rate, the window rate), never on a read rate alone: an under-read can only
+# shorten the window, never lengthen it.
+PRICING_RATE_UNITS_PER_HOUR="$("$PYTHON_BIN" -c "import sys; vals = [float(v) for v in sys.argv[1:] if v]; print(f'{max(vals):.4f}')" "$LIVE_RATE_UNITS_PER_HOUR" "$MAX_RATE")"
+WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$PRICING_RATE_UNITS_PER_HOUR")"
 if [[ -n "$EXPLICIT_CAP" ]]; then
   CAP_UNITS="$EXPLICIT_CAP"
 else
   CAP_UNITS="$WALL_X_RATE"
 fi
-COST_CAP_MAX_RUNTIME_SECONDS="$("$PYTHON_BIN" - "$CAP_UNITS" "$LIVE_RATE_UNITS_PER_HOUR" <<'PY'
+COST_CAP_MAX_RUNTIME_SECONDS="$("$PYTHON_BIN" - "$CAP_UNITS" "$PRICING_RATE_UNITS_PER_HOUR" <<'PY'
 import math
 import sys
 
@@ -2288,14 +2703,14 @@ s = max(1, int(math.ceil((cap * 3600.0) / rate - 1e-12)))
 print(s)
 PY
 )"
-log_msg "LIVE_USAGE_RATE session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR rate_read_at=$RATE_READ_AT_UTC cap_units=$CAP_UNITS cap_max_runtime_s=$COST_CAP_MAX_RUNTIME_SECONDS"
+log_msg "LIVE_USAGE_RATE session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR pricing_rate_uh=$PRICING_RATE_UNITS_PER_HOUR rate_read_at=$RATE_READ_AT_UTC cap_units=$CAP_UNITS cap_max_runtime_s=$COST_CAP_MAX_RUNTIME_SECONDS"
 
 ALIVE_OK=0
 ALIVE_ATTEMPT=0
 while (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); do
   ALIVE_ATTEMPT=$(( ALIVE_ATTEMPT + 1 ))
   ALIVE_RC=0
-  ALIVE_OUT="$(timeout "$ALIVE_PROBE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=alive -f "$VM_SCRIPT" --timeout="$ALIVE_PROBE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || ALIVE_RC=$?
+  ALIVE_OUT="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$ALIVE_PROBE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=alive -f "$VM_SCRIPT" --timeout="$ALIVE_PROBE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || ALIVE_RC=$?
   if [[ "$ALIVE_RC" -eq 0 ]] && printf '%s\n' "$ALIVE_OUT" | grep -q '^VM_ALIVE_OK'; then
     ALIVE_OK=1
     log_msg "ALIVE_PROBE_OK session=$S attempt=${ALIVE_ATTEMPT}/${ALIVE_PROBE_MAX_TRIES}"
@@ -2305,10 +2720,18 @@ while (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); do
   if (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); then
     # One kernel per session (docs/colab-cli-contract.md): an attempt that timed out locally may still be running on
     # the VM, and the next exec would queue behind it and time out too. Restart the kernel (ends that cell) first.
+    # A "Connection was lost" failure (the client's handshake gave up) most likely never started the cell, but it may
+    # have: the same bounded restart is cheap insurance before the retry.
+    RESTART_REASON=""
     if [[ "$ALIVE_RC" -eq 124 || "$ALIVE_RC" -eq 137 ]] || printf '%s\n' "$ALIVE_OUT" | grep -qi 'timed out'; then
+      RESTART_REASON="attempt_timed_out_locally_cell_may_still_run"
+    elif printf '%s\n' "$ALIVE_OUT" | grep -Fq 'Connection was lost'; then
+      RESTART_REASON="connection_lost_cell_may_have_started"
+    fi
+    if [[ -n "$RESTART_REASON" ]]; then
       RESTART_RC=0
-      timeout "$RESTART_KERNEL_TIMEOUT_SECONDS" colab restart-kernel -s "$S" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || RESTART_RC=$?
-      log_msg "ALIVE_PROBE_KERNEL_RESTART session=$S after_attempt=${ALIVE_ATTEMPT} rc=$RESTART_RC reason=attempt_timed_out_locally_cell_may_still_run"
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$RESTART_KERNEL_TIMEOUT_SECONDS" colab restart-kernel -s "$S" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || RESTART_RC=$?
+      log_msg "ALIVE_PROBE_KERNEL_RESTART session=$S after_attempt=${ALIVE_ATTEMPT} rc=$RESTART_RC reason=$RESTART_REASON"
     fi
     sleep "$ALIVE_PROBE_SLEEP_SECONDS"
   fi
@@ -2323,7 +2746,7 @@ fi
 
 build_gate_env_args
 GATE_RC=0
-GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
+GATE_OUT="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
 if [[ "$GATE_RC" -ne 0 ]] || ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
   flock -u 9 || true
   if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID'; then
@@ -2371,51 +2794,61 @@ fi
 ) </dev/null >/dev/null 2>&1 9>&- &
 WATCHDOG_PID="$!"
 
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_DEVICE_PY" "/content/device.py" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_DEVICE_PY" "/content/device.py" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
   RUN_WHY="colab upload failed for /content/device.py on session $S"
   exit 1
 }
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
   RUN_WHY="colab upload failed for /content/repo_bundle.tar.gz on session $S"
   exit 1
 }
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
   RUN_WHY="colab upload failed for /content/receipts_bundle.tar.gz on session $S"
   exit 1
 }
 if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ANCHOR_ITEMS_FILE" "/content/rdlab_items/anchor_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ANCHOR_ITEMS_FILE" "/content/rdlab_items/anchor_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
     RUN_WHY="colab upload failed for /content/rdlab_items/anchor_items.jsonl on session $S"
     exit 1
   }
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_ITEMS_FILE" "/content/rdlab_items/p0a_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_ITEMS_FILE" "/content/rdlab_items/p0a_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
     RUN_WHY="colab upload failed for /content/rdlab_items/p0a_items.jsonl on session $S"
     exit 1
   }
-  if [[ -f "$STAGED_P0A_MANIFEST_FILE" ]]; then
-    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_MANIFEST_FILE" "/content/rdlab_items/p0a_manifest.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-      RUN_WHY="colab upload failed for /content/rdlab_items/p0a_manifest.json on session $S"
+  if [[ -f "$STAGED_P0A_PART_JSON_FILE" ]]; then
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_PART_JSON_FILE" "/content/rdlab_items/p0a_part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+      RUN_WHY="colab upload failed for /content/rdlab_items/p0a_part.json on session $S"
+      exit 1
+    }
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_CHECKSUMS_FILE" "/content/rdlab_items/p0a_checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+      RUN_WHY="colab upload failed for /content/rdlab_items/p0a_checksums.txt on session $S"
       exit 1
     }
   fi
 else
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
     RUN_WHY="colab upload failed for /content/rdlab_items/items.jsonl on session $S"
     exit 1
   }
   if [[ -f "$STAGED_PART_JSON_FILE" ]]; then
-    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_JSON_FILE" "/content/rdlab_items/part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_JSON_FILE" "/content/rdlab_items/part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
       RUN_WHY="colab upload failed for /content/rdlab_items/part.json on session $S"
       exit 1
     }
-    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_CHECKSUMS_FILE" "/content/rdlab_items/checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_CHECKSUMS_FILE" "/content/rdlab_items/checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
       RUN_WHY="colab upload failed for /content/rdlab_items/checksums.txt on session $S"
       exit 1
     }
   fi
 fi
+if [[ -f "$STAGED_BINDING_FILE" ]]; then
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_BINDING_FILE" "/content/rdlab_items/launcher_part_binding.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    RUN_WHY="colab upload failed for /content/rdlab_items/launcher_part_binding.json on session $S"
+    exit 1
+  }
+fi
 if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
     RUN_WHY="colab upload failed for /content/resume_state.tar.gz on session $S"
     exit 1
   }
@@ -2425,7 +2858,7 @@ cleanup_stage
 build_exec_env_args
 EXEC_RC=0
 : > "$EXEC_OUT_TMP"
-timeout --signal=TERM --kill-after=15 "${RIG_TIMEOUT}s" \
+timeout --signal=TERM --kill-after="$COLAB_KILL_GRACE_SECONDS" "${RIG_TIMEOUT}s" \
   colab exec -s "$S" "${EXEC_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null >"$EXEC_OUT_TMP" 2>&1 9>&- &
 EXEC_PID="$!"
 

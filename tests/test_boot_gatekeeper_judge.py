@@ -1317,6 +1317,13 @@ def test_e2e_fake_real_mode_time_one_records_gatekeeper_with_unfilled_goldens(tm
     assert sorted(recorded) == sorted(sp["prompt_id"] for sp in vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS)
     assert receipt["time_one_summary"]["gatekeeper"] == "recorded, not compared"
     assert receipt["time_one_summary"]["gatekeeper_recorded_output_token_ids_sha256"] == recorded
+    # Record mode compares nothing: no expected hashes anywhere in the receipt (timeone-mu2b had expected == actual).
+    gk_doc = json.loads((res["out_dir"] / "boot_gatekeeper.json").read_text(encoding="utf-8")) if (
+        res["out_dir"] / "boot_gatekeeper.json"
+    ).is_file() else None
+    for doc in (receipt, receipt["time_one_summary"], *([gk_doc] if gk_doc else [])):
+        assert not doc.get("expected_output_token_ids_sha256"), doc.get("expected_output_token_ids_sha256")
+        assert not doc.get("gatekeeper_expected_output_token_ids_sha256")
     status = json.loads((res["out_dir"] / "status.json").read_text(encoding="utf-8"))
     assert status["gatekeeper"] == "recorded, not compared"
     filled = json.loads((res["out_dir"] / "boot_gatekeeper_goldens.filled.json").read_text(encoding="utf-8"))
@@ -1683,3 +1690,36 @@ def test_real_inputs_rung_time_one_mu_judge_gets_through_item_loading_and_schedu
     assert ident.get("part_json_sha256") == _sha256_path(part / "part.json")
     assert receipt["boot_gatekeeper_judge"]["receipts_preflight"]["status"] == "ok"
 
+
+
+def test_gatekeeper_record_mode_has_no_expected_hashes_and_compare_mode_keeps_them(tmp_path: Path) -> None:
+    """Record mode (time-one) writes `expected_output_token_ids_sha256: null` beside the actual and recorded hashes and
+    `gatekeeper: recorded, not compared`; compare mode (counted, filled goldens) still records the expected hashes it
+    compared against. Fails at a0f7d7af: the record-mode report copied the actual hashes into `expected_...`, which
+    read like a comparison that passed (timeone-mu2b, 2026-11-06)."""
+    (tmp_path / "rec").mkdir(parents=True)
+    rec = vm_judges.run_boot_gatekeeper(
+        run_dir=tmp_path / "rec", repo_root=REPO_ROOT, mode="time-one", card_type="A100", dryrun=True
+    )
+    assert rec["gatekeeper"] == "recorded, not compared"
+    assert rec["expected_output_token_ids_sha256"] is None
+    assert rec["recorded_output_token_ids_sha256"] == rec["actual_output_token_ids_sha256"]
+    on_disk = json.loads((tmp_path / "rec" / "boot_gatekeeper.json").read_text(encoding="utf-8"))
+    assert on_disk["expected_output_token_ids_sha256"] is None
+
+    doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    for sp in doc["synthetic_prompts"]:
+        pid = sp["prompt_id"]
+        doc["card_types"]["A100"]["prompts"][pid] = {
+            "output_token_ids_sha256": vm_judges._compute_synthetic_gatekeeper_output_sha256(pid, judge_id=doc["judge_id"])
+        }
+    filled = tmp_path / "filled.json"
+    filled.write_text(json.dumps(doc), encoding="utf-8")
+    (tmp_path / "cmp").mkdir()
+    cmp_rep = vm_judges.run_boot_gatekeeper(
+        run_dir=tmp_path / "cmp", repo_root=REPO_ROOT, mode="counted", card_type="A100", goldens_path=filled, dryrun=True
+    )
+    assert cmp_rep["status"] == "ok"
+    assert cmp_rep["expected_output_token_ids_sha256"] == {
+        pid: v["output_token_ids_sha256"] for pid, v in doc["card_types"]["A100"]["prompts"].items()
+    }

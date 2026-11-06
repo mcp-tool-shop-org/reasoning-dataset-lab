@@ -58,8 +58,13 @@ def verify_filled_goldens(
     session_env_path: Path | None = None,
     expected_window_id: str | None = None,
     forbid_stub_transport: bool = False,
+    allow_stub_transport: bool = False,
 ) -> tuple[dict[str, Any], str]:
-    """Validate `filled_path` schema, judge_id, prompt_ids, 64-hex hashes, receipt SHA-256, and provenance."""
+    """Validate `filled_path` schema, judge_id, prompt_ids, 64-hex hashes, receipt SHA-256, and provenance.
+
+    Refuses `PROMOTE_GOLDENS_STUB_REFUSED` for goldens recorded on a stub or synthetic transport (`stub_transport`, a
+    card's `synthetic_fake_hash`, or a stub provenance mode) unless `allow_stub_transport` (tests only).
+    `forbid_stub_transport` is accepted and ignored: refusing is the default."""
     if not filled_path.is_file():
         raise PromoteGoldensRefusalError(
             "PROMOTE_GOLDENS_FILE_NOT_FOUND",
@@ -182,11 +187,6 @@ def verify_filled_goldens(
             f"session_env_sha256={prov_env_sha!r}, mode={prov_mode!r}, card_type={prov_card!r}.",
         )
 
-    if forbid_stub_transport and bool(prov.get("stub_transport")):
-        raise PromoteGoldensRefusalError(
-            "PROMOTE_GOLDENS_STUB_REFUSED",
-            f"Filled goldens '{filled_path}' was recorded with stub_transport=True and cannot be promoted with --forbid-stub-transport.",
-        )
 
     adjacent_env = filled_path.parent / "session_env.json"
     eff_session_env_path = session_env_path if session_env_path is not None else (adjacent_env if adjacent_env.is_file() else None)
@@ -208,6 +208,22 @@ def verify_filled_goldens(
                 "PROMOTE_GOLDENS_PROVENANCE_MISMATCH",
                 f"Provenance mismatch against session_env.json '{eff_session_env_path}'.",
             )
+
+    stub_marks = [
+        *(["stub_transport"] if bool(prov.get("stub_transport")) else []),
+        *([f"mode={prov_mode}"] if prov_mode.endswith("stub") else []),
+        *(
+            f"card_types.{ck}.synthetic_fake_hash"
+            for ck, cv in (doc.get("card_types") or {}).items()
+            if isinstance(cv, Mapping) and bool(cv.get("synthetic_fake_hash"))
+        ),
+    ]
+    if stub_marks and not allow_stub_transport:
+        raise PromoteGoldensRefusalError(
+            "PROMOTE_GOLDENS_STUB_REFUSED",
+            f"Filled goldens '{filled_path}' were recorded on a stub or synthetic transport ({', '.join(stub_marks)}); "
+            "they are never promoted for a real window (--allow-stub-transport is for tests only).",
+        )
 
     return doc, file_sha256
 
@@ -259,6 +275,7 @@ def promote_goldens_file(
     session_env_path: Path | None = None,
     expected_window_id: str | None = None,
     forbid_stub_transport: bool = False,
+    allow_stub_transport: bool = False,
 ) -> dict[str, Any]:
     """Validate `filled_path` and write a candidate `boot_gatekeeper_goldens.json` outside every git work tree."""
     resolved_out = (
@@ -303,6 +320,7 @@ def promote_goldens_file(
         session_env_path=Path(session_env_path) if session_env_path is not None else None,
         expected_window_id=expected_window_id,
         forbid_stub_transport=forbid_stub_transport,
+        allow_stub_transport=allow_stub_transport,
     )
 
     candidate_doc: dict[str, Any] = {
@@ -398,7 +416,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--forbid-stub-transport",
         action="store_true",
-        help="Refuse filled goldens recorded with stub_transport=True.",
+        help="Accepted and ignored: stub or synthetic transport goldens are refused by default.",
+    )
+    parser.add_argument(
+        "--allow-stub-transport",
+        action="store_true",
+        help="TESTS ONLY: promote goldens recorded on a stub or synthetic transport (never for a real window).",
     )
     args = parser.parse_args(argv)
     eff_filled = args.filled_opt if args.filled_opt is not None else args.filled_goldens
@@ -413,6 +436,7 @@ def main(argv: list[str] | None = None) -> int:
             session_env_path=args.session_env,
             expected_window_id=args.window_id,
             forbid_stub_transport=bool(args.forbid_stub_transport),
+            allow_stub_transport=bool(args.allow_stub_transport),
         )
     except PromoteGoldensRefusalError as exc:
         sys.stderr.write(f"{exc.failure_class}: {exc.message}\n")

@@ -253,7 +253,6 @@ REQUIRED_VM_DISK_BYTES = (
 
 ALLOWED_ITEM_FIELDS: frozenset[str] = frozenset({"id", "material", "claim"})
 REQUIRED_ITEM_FIELDS_ORDERED: tuple[str, str, str] = ("id", "material", "claim")
-ALLOWED_LOGPROB_MASS_PART_IDS: frozenset[str] = frozenset({"pilot-40b"})
 
 
 # Immutable judge specification (NamedTuple avoids sys.modules lookup on isolated exec)
@@ -2906,26 +2905,24 @@ def check_bakeoff_logprob_mass(
     judge_output_dir: Path,
     *,
     threshold: float = 0.99,
-    part_id: str | None = None,
-    part_dir: Path | None = None,
     verified_pilot_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compute the burned `pilot-40b` yes/no token log-probability mass harness readout from `rows/*.jsonl`.
+    """Compute the burned pilot's yes/no token log-probability mass harness readout from `rows/*.jsonl`.
 
-    `verified_pilot_identity` is a part identity from `read_part_identity` whose hashes are the burned pilot's
-    (`is_pilot_40b`); the readout then records the part's real `part_id` and `part_json_sha256`.
+    The pilot is named by its pinned identity only: `verified_pilot_identity` is a part identity from
+    `read_part_identity` whose `part_id` and `part.json` / `items.jsonl` SHA-256 are the `PILOT_40B_*` pins. There is
+    no label route (a `part_id` alone cannot name the pilot: every writer-built part shares it). Refuses
+    `BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN` otherwise. The readout records the part's real `part_id` and hashes.
     """
-    if verified_pilot_identity is not None and verified_pilot_identity.get("is_pilot_40b") is not True:
+    if not is_pinned_pilot_identity(verified_pilot_identity):
+        got = dict(verified_pilot_identity) if isinstance(verified_pilot_identity, Mapping) else {}
         raise RefusalError(
             "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
-            "bakeoff-logprob-mass runs only on the burned pilot part, identified by its part.json and items.jsonl "
-            f"SHA-256; got part_id={verified_pilot_identity.get('part_id')!r} with other hashes.",
+            "bakeoff-logprob-mass runs only on the burned pilot part, named by its pinned part_id "
+            f"{PILOT_40B_PART_ID!r} and part.json / items.jsonl SHA-256; got part_id={got.get('part_id')!r} "
+            f"part_json_sha256={got.get('part_json_sha256')!r}.",
         )
-    if part_id is not None and str(part_id).strip().lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
-        raise RefusalError(
-            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
-            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={part_id!r}.",
-        )
+    assert verified_pilot_identity is not None
     rows_dir = Path(judge_output_dir) / ROWS_DIRNAME
     if not rows_dir.is_dir():
         raise RefusalError(
@@ -2940,41 +2937,7 @@ def check_bakeoff_logprob_mass(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
             f"No binary judge row files found in '{rows_dir}'.",
         )
-    resolved_part_id = str(part_id).strip() if part_id is not None else None
-    if verified_pilot_identity is not None:
-        resolved_part_id = str(verified_pilot_identity.get("part_id") or "").strip() or None
-    if resolved_part_id is None and part_dir is not None:
-        pdir = Path(part_dir).resolve()
-        search_dirs = [pdir.parent] if pdir.is_file() else [pdir, pdir / "part_bakeoff_sealed"]
-        found_pids: list[str] = []
-        for sdir in search_dirs:
-            for mname in ("manifest.json", "part_manifest.json"):
-                cand = sdir / mname
-                if cand.is_file():
-                    try:
-                        doc = json.loads(cand.read_text(encoding="utf-8"))
-                        if isinstance(doc, Mapping) and doc.get("part_id"):
-                            found_pids.append(str(doc["part_id"]).strip())
-                    except Exception:
-                        pass
-        resolved_part_id = found_pids[0] if found_pids else Path(part_dir).name
-    if resolved_part_id is None:
-        row_part_ids = [
-            str(first_row["part_id"]).strip()
-            for rf in row_files
-            for ln in rf.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-            for first_row in (json.loads(ln),)
-            if isinstance(first_row, Mapping) and first_row.get("part_id")
-        ]
-        resolved_part_id = row_part_ids[0] if row_part_ids else None
-    if verified_pilot_identity is None and (
-        resolved_part_id is None or resolved_part_id.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS
-    ):
-        raise RefusalError(
-            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
-            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={resolved_part_id!r}.",
-        )
+    resolved_part_id = str(verified_pilot_identity.get("part_id") or "").strip()
     judges_report: dict[str, Any] = {}
     for rf in row_files:
         judge_id = rf.stem
@@ -3025,9 +2988,8 @@ def check_bakeoff_logprob_mass(
         "threshold": threshold,
         "judges": judges_report,
     }
-    if verified_pilot_identity is not None:
-        out["part_json_sha256"] = verified_pilot_identity.get("part_json_sha256")
-        out["items_jsonl_sha256"] = verified_pilot_identity.get("items_jsonl_sha256")
+    out["part_json_sha256"] = verified_pilot_identity.get("part_json_sha256")
+    out["items_jsonl_sha256"] = verified_pilot_identity.get("items_jsonl_sha256")
     return out
 
 
@@ -5689,12 +5651,156 @@ LOCK_CHECK_WINDOW_MODES: frozenset[str] = frozenset(
 # Windows whose uploaded items file must be the whole part (every item, in the part's order). Every other window that
 # carries a part (time-one) may upload a subset; the VM cuts its own window (the first `TIME_ONE_ITEMS_LIMIT` rows).
 FULL_PART_WINDOW_MODES: frozenset[str] = frozenset({"counted", "counted-stub", "counted_stub"})
-# The burned pilot part (`part-pilot-40b/part_bakeoff_sealed`), identified by content, never by a label: the SHA-256
+# The burned pilot part (its sealed part directory on the rig), identified by content, never by a label: the SHA-256
 # of its `part.json` (which carries its seal, `frozen_mac`) and of its `items.jsonl`, as its `checksums.txt` records
 # them. Its `part_id` is `bakeoff-d-t10-sealed`, which every writer-built part shares, so the id alone cannot name it.
+# These two constants are the one definition of the pilot's identity: the time-one mass check, the lock-check P0a
+# input (`verify_p0a_pilot_part`, whose result `bakeoff_judge`'s P0a validators receive) and the pin table below.
+PILOT_40B_PART_ID = "bakeoff-d-t10-sealed"
 PILOT_40B_PART_JSON_SHA256 = "9ae6708e0d5b3fae8535899cb1b4df5ee0688dbb5f21206f62e8b4457ea5c067"
 PILOT_40B_ITEMS_JSONL_SHA256 = "c64e982d248fafd60cf121c14bb31cdd4e5093bcb8accc83418a133f092ba675"
+# The SHA-256 of the pilot's 114 item ids, sorted and joined by "\n" (hashed on the rig 2026-11-06): a counted window
+# whose items have exactly this id set is the pilot, however its files were re-serialised (`pilot_item_ids_match`).
+PILOT_40B_ITEM_IDS_SHA256 = "92ffcd5d339ffdddffa534bdc991b1d154c12fe9657ff1bbe6c93d8b1479887c"
+# The anchored counted part (`part-anchored-counted-430/part_bakeoff_sealed`, `part_id`
+# `bakeoff-d-t10-anchored-sealed`, 1290 items): its `part.json` and `items.jsonl` SHA-256 as its `checksums.txt`
+# records them (hashed on the rig 2026-11-06; the item text was not read).
+ANCHORED_COUNTED_430_PART_JSON_SHA256 = "e894d6e55811a7183456c508afe9541f818fa70163e7b58e8d04d6f4d3903db2"
+ANCHORED_COUNTED_430_ITEMS_JSONL_SHA256 = "f2d6d0248364b41fb5513efe51e6105ee20099e867c57576801395aebc9312f4"
 _CHECKSUM_LINE_RE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$")
+_FROZEN_MAC_RE = re.compile(r"^[0-9a-f]{64}$")
+# `frozen_mac` is an HMAC under the commitment key kept in the part's sealed store (`waves_and_sealing._part_mac`), so
+# nothing outside the sealed store can recompute it. Only its presence and shape are checked here; the part's content
+# is bound by `checksums.txt` and, for a pinned part, by the pinned hashes.
+FROZEN_MAC_NOT_VERIFIED_REASON = (
+    "frozen_mac is an HMAC under the sealed store's commitment key; it is not recomputed outside the sealed store"
+)
+# The launcher's own row-by-row binding result, staged beside the uploaded items and carried into the VM's receipts
+# labelled as the launcher's check (the VM has only the projected items and never claims the projection check).
+LAUNCHER_BINDING_FILENAME = "launcher_part_binding.json"
+# The burned pilot part's own part.json and checksums.txt for a lock-check window's P0a input, staged beside
+# `p0a_items.jsonl` under these names.
+P0A_PART_JSON_STAGED = "p0a_part.json"
+P0A_CHECKSUMS_STAGED = "p0a_checksums.txt"
+
+
+def pinned_real_parts() -> dict[str, tuple[str, str]]:
+    """The real parts pinned by content: `{name: (part_json_sha256, items_jsonl_sha256)}`, read at call time, so the
+    pilot entry is always the two `PILOT_40B_*` constants."""
+    return {
+        "burned_pilot": (PILOT_40B_PART_JSON_SHA256, PILOT_40B_ITEMS_JSONL_SHA256),
+        "anchored_counted_430": (ANCHORED_COUNTED_430_PART_JSON_SHA256, ANCHORED_COUNTED_430_ITEMS_JSONL_SHA256),
+    }
+
+
+def is_pinned_pilot_identity(identity: Mapping[str, Any] | None) -> bool:
+    """True when `identity` (from `read_part_identity`) is the burned pilot by its pins: `part_id`
+    `PILOT_40B_PART_ID` and both SHA-256 equal to `PILOT_40B_*` (read at call time)."""
+    if not isinstance(identity, Mapping):
+        return False
+    return (
+        str(identity.get("part_id") or "").strip() == PILOT_40B_PART_ID
+        and identity.get("part_json_sha256") == PILOT_40B_PART_JSON_SHA256
+        and identity.get("items_jsonl_sha256") == PILOT_40B_ITEMS_JSONL_SHA256
+    )
+
+
+# The window modes that refuse a part that is only trusted on first use: a counted window runs only on a part pinned
+# in code (`pinned_real_parts`). Checked by `read_part_identity`, so the launcher refuses before any colab call and VM
+# `main` before venv sync.
+PINNED_PART_REQUIRED_MODES: frozenset[str] = frozenset({"counted"})
+
+
+def item_id_set_sha256(ids: Sequence[str]) -> str:
+    """SHA-256 of an item-id set: the unique ids, sorted, joined by a newline."""
+    return hashlib.sha256("\n".join(sorted({str(i) for i in ids})).encode("utf-8")).hexdigest()
+
+
+def pilot_item_ids_match(ids: Sequence[str]) -> bool:
+    """True when `ids` is exactly the burned pilot's item-id set (`PILOT_40B_ITEM_IDS_SHA256`, read at call time)."""
+    return item_id_set_sha256(ids) == PILOT_40B_ITEM_IDS_SHA256
+
+
+def counted_part_pin_names() -> frozenset[str]:
+    """The pins (names in `pinned_real_parts`) a counted window may run on: the counted parts only, never the burned
+    pilot. Read at call time."""
+    return frozenset({"anchored_counted_430"})
+
+
+def require_pinned_part(identity: Mapping[str, Any], *, mode: str, dryrun: bool = False) -> None:
+    """A real counted window runs only on a part pinned as a counted part (`counted_part_pin_names`).
+
+    Refuses `PART_IS_BURNED_PILOT` when the part is the burned pilot, by its hashes (`PILOT_40B_*`) or its pin name,
+    whatever other pin also matches; `PART_NOT_PINNED` when it has no pin (trust on first use) or a pin that is not a
+    counted part's. Lock-check P0a uses the pilot pin through `verify_p0a_pilot_part`, not here."""
+    norm_mode = str(mode or "").strip().lower()
+    if norm_mode not in PINNED_PART_REQUIRED_MODES or not is_real_mode(mode, dryrun=dryrun):
+        return
+    pin = identity.get("pin")
+    is_pilot = pin == "burned_pilot" or (
+        identity.get("part_json_sha256") == PILOT_40B_PART_JSON_SHA256
+        or identity.get("items_jsonl_sha256") == PILOT_40B_ITEMS_JSONL_SHA256
+    )
+    if is_pilot:
+        raise RefusalError(
+            "PART_IS_BURNED_PILOT",
+            f"A counted window never runs on the burned pilot part (part_id={identity.get('part_id')!r}, part.json "
+            f"SHA-256 {identity.get('part_json_sha256')}); pass the counted part.",
+        )
+    if pin is not None and pin not in counted_part_pin_names():
+        raise RefusalError(
+            "PART_NOT_PINNED",
+            f"A counted window runs only on a part pinned as a counted part ({sorted(counted_part_pin_names())}); "
+            f"part_id={identity.get('part_id')!r} is pinned as {pin!r}.",
+        )
+    if pin is None:
+        raise RefusalError(
+            "PART_NOT_PINNED",
+            f"A counted window runs only on a pinned part; part_id={identity.get('part_id')!r} with part.json SHA-256 "
+            f"{identity.get('part_json_sha256')} and items.jsonl SHA-256 {identity.get('items_jsonl_sha256')} matches "
+            "no pin in scripts/colab/vm_judges.py (pinned_real_parts); it would be trusted on first use. Pin it in "
+            "code by pull request first.",
+        )
+
+
+def match_part_pin(part_json_sha256: str, items_jsonl_sha256: str) -> str | None:
+    """Return the pinned part's name when both hashes equal one pin, `None` when neither hash is pinned (trust on first
+    use); refuse `PART_PIN_MISMATCH` when only one matches (a pinned part's `part.json` edited and re-summed in
+    `checksums.txt`, or its items swapped under its own `part.json`)."""
+    for name, (pin_part, pin_items) in pinned_real_parts().items():
+        part_hit = part_json_sha256 == pin_part
+        items_hit = items_jsonl_sha256 == pin_items
+        if part_hit and items_hit:
+            return name
+        if part_hit or items_hit:
+            which, other = ("part.json", "items.jsonl") if part_hit else ("items.jsonl", "part.json")
+            raise RefusalError(
+                "PART_PIN_MISMATCH",
+                f"The part's {which} SHA-256 is pinned as part {name!r}, but its {other} SHA-256 is not that part's; "
+                "a pinned part's files were changed (and re-summed in checksums.txt).",
+            )
+    return None
+
+
+def verify_part_files_against_checksums(part_dir: Path, checksums_name: str = PART_CHECKSUMS_FILENAME) -> dict[str, str]:
+    """The launcher's whole-part check (it has the part directory; the VM has not): every file `checksums.txt` lists
+    exists in `part_dir` and hashes to its line (`items.jsonl`, `part.json`, `provenance.jsonl`). Refuses
+    `PART_MANIFEST_INVALID` naming the file. Returns `{name: sha256}`."""
+    sums = read_part_checksums(Path(part_dir) / checksums_name)
+    for name, want in sorted(sums.items()):
+        f = Path(part_dir) / name
+        if not f.is_file():
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part file {name} listed in {checksums_name} was not found in {part_dir}",
+            )
+        got = sha256_file(f)
+        if got != want:
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part file {name} in {part_dir} has SHA-256 {got}, but {checksums_name} records {want}",
+            )
+    return sums
 
 
 def read_part_checksums(checksums_file: Path) -> dict[str, str]:
@@ -5736,6 +5842,8 @@ def read_part_identity(
     mode: str,
     dryrun: bool = False,
     schema_errors: Any = None,
+    part_json_name: str = PART_JSON_FILENAME,
+    checksums_name: str = PART_CHECKSUMS_FILENAME,
 ) -> dict[str, Any]:
     """Read and validate a part's `part.json` and `checksums.txt` in `part_dir`; the one rule set shared by the
     launcher, VM `main` and the pipeline body. Never writes anything.
@@ -5745,11 +5853,17 @@ def read_part_identity(
     check; the VM kernel, which imports nothing from the repo, does not), when `checksums.txt` is malformed, or when
     `part.json`'s SHA-256 is not the one `checksums.txt` records. Refuses `PART_MANIFEST_SYNTHESIZED` for a stub part
     (`part_id` "stub" or `synthesized`) in real modes.
+    In real modes refuses `PART_NOT_FROZEN` unless `part.json` says `frozen: true` with a 64-hex `frozen_mac` (its shape
+    only: the MAC is keyed by the sealed store, `FROZEN_MAC_NOT_VERIFIED_REASON`). Refuses `PART_PIN_MISMATCH` when one
+    of its hashes is a pinned part's and the other is not (`match_part_pin`).
     Returns the part identity recorded in the run: `part_id`, `items_count`, `part_json_sha256`, `items_jsonl_sha256`
-    (the part's own items file, from `checksums.txt`) and `is_pilot_40b` (both hashes equal the burned pilot's).
+    (the part's own items file, from `checksums.txt`), `is_pilot_40b` (both hashes are the burned pilot's pin), `pin`
+    (the pinned part's name or `None`), `pin_status` and `seal`.
+    `part_json_name` / `checksums_name` name staged copies kept under other names (a lock-check window's P0a part);
+    `checksums.txt` still lists the file as `part.json`.
     """
-    part_json = Path(part_dir) / PART_JSON_FILENAME
-    checksums = Path(part_dir) / PART_CHECKSUMS_FILENAME
+    part_json = Path(part_dir) / part_json_name
+    checksums = Path(part_dir) / checksums_name
     try:
         raw = part_json.read_bytes()
         loaded = json.loads(raw.decode("utf-8"))
@@ -5803,6 +5917,21 @@ def read_part_identity(
             f"{sums[PART_JSON_FILENAME]} for part.json",
         )
     items_sha = sums["items.jsonl"]
+    frozen = loaded.get("frozen") is True
+    mac = loaded.get("frozen_mac")
+    mac_present = isinstance(mac, str) and _FROZEN_MAC_RE.match(mac) is not None
+    if is_real_mode(mode, dryrun=dryrun) and not (frozen and mac_present):
+        raise RefusalError(
+            "PART_NOT_FROZEN",
+            f"Part metadata at {part_json} is not a frozen part (frozen={loaded.get('frozen')!r}, frozen_mac "
+            f"{'present' if mac_present else 'missing or not 64 hex'}); a real window runs only on a sealed, frozen part.",
+        )
+    pin = match_part_pin(part_json_sha, items_sha)
+    require_pinned_part(
+        {"part_id": raw_pid.strip(), "part_json_sha256": part_json_sha, "items_jsonl_sha256": items_sha, "pin": pin},
+        mode=mode,
+        dryrun=dryrun,
+    )
     return {
         "source": PART_JSON_FILENAME,
         "part_id": raw_pid.strip(),
@@ -5810,7 +5939,15 @@ def read_part_identity(
         "part_json_sha256": part_json_sha,
         "items_jsonl_sha256": items_sha,
         "checksums_sha256": sha256_file(checksums),
-        "is_pilot_40b": part_json_sha == PILOT_40B_PART_JSON_SHA256 and items_sha == PILOT_40B_ITEMS_JSONL_SHA256,
+        "is_pilot_40b": pin == "burned_pilot",
+        "pin": pin,
+        "pin_status": "pinned" if pin is not None else "unpinned_trust_on_first_use",
+        "seal": {
+            "frozen": frozen,
+            "frozen_mac_present": mac_present,
+            "frozen_mac_verified": False,
+            "frozen_mac_not_verified_reason": FROZEN_MAC_NOT_VERIFIED_REASON,
+        },
         "synthesized": was_synth,
     }
 
@@ -5842,6 +5979,7 @@ def bind_items_to_part(
     *,
     mode: str,
     part_items_file: Path | None = None,
+    whole_part: bool | None = None,
 ) -> dict[str, Any]:
     """Bind the uploaded items file to the part identity from `read_part_identity`; refuse
     `PART_MANIFEST_ITEMS_MISMATCH` naming the field that disagrees (never printing item text).
@@ -5853,12 +5991,20 @@ def bind_items_to_part(
     with the same id (`id`, `material` and `claim` equal, compared field by field, so the projection is checked, not
     trusted); a counted window must upload every part item in the part's order, a time-one window any subset.
     The VM receives only the projected file, so it checks the first rule set and the identity, not the projection.
+    `whole_part` overrides the mode's rule (a lock-check window's P0a input is the whole pilot part, in order).
+    The result records `checked_by` ("launcher" with `part_items_file`, else "vm") and the uploaded file's SHA-256.
     """
     norm_mode = str(mode or "").strip().lower()
-    full_part = norm_mode in FULL_PART_WINDOW_MODES
+    full_part = norm_mode in FULL_PART_WINDOW_MODES if whole_part is None else bool(whole_part)
     want_count = int(identity["items_count"])
     rows = _read_item_rows_for_binding(items_file, label=f"Items file {Path(items_file).name}")
     ids = [str(r["id"]) for r in rows]
+    if norm_mode in PINNED_PART_REQUIRED_MODES and is_real_mode(mode) and pilot_item_ids_match(ids):
+        raise RefusalError(
+            "PART_IS_BURNED_PILOT",
+            f"Items file {Path(items_file).name} holds exactly the burned pilot's item ids (whatever its file bytes); "
+            "a counted window never runs on the pilot.",
+        )
     if len(set(ids)) != len(ids):
         raise RefusalError(
             "PART_MANIFEST_ITEMS_MISMATCH",
@@ -5871,11 +6017,19 @@ def bind_items_to_part(
             f"(mode {mode!r} {'needs the whole part' if full_part else 'allows at most the whole part'}); field: items_count",
         )
     binding: dict[str, Any] = {
+        "checked_by": "vm" if part_items_file is None else "launcher",
         "uploaded_items": len(ids),
+        "uploaded_items_sha256": sha256_file(Path(items_file)),
         "rule": "whole_part_in_order" if full_part else "subset_of_part",
-        "projection_checked": False,
+        # Never a default false: the VM, which has only the projection, did not run the projection check (null, with
+        # the reason); the launcher's path below sets true only after the check passes.
+        "projection_checked": None,
     }
     if part_items_file is None:
+        binding["projection_not_checked_reason"] = (
+            "the VM has only the uploaded projection, not the part's items.jsonl; the rig's check is carried in when "
+            "its binding record is uploaded (attach_launcher_binding)"
+        )
         return binding
     part_items = Path(part_items_file)
     if not part_items.is_file():
@@ -5917,6 +6071,7 @@ def bind_items_to_part(
             "the whole part in the part's order); field: id order",
         )
     binding["projection_checked"] = True
+    binding["part_items_jsonl_sha256"] = part_items_sha
     return binding
 
 
@@ -5966,7 +6121,195 @@ def preflight_part_manifest(
     identity["binding"] = bind_items_to_part(
         eff_items_jsonl, identity, mode=mode, part_items_file=part_items_file
     )
+    if part_items_file is not None:
+        verify_part_files_against_checksums(eff_part_dir)
+    if part_items_file is None:
+        attach_launcher_binding(identity, eff_items_jsonl.parent / LAUNCHER_BINDING_FILENAME, key="window_part")
     return identity
+
+
+def launcher_binding_entry(identity: Mapping[str, Any]) -> dict[str, Any]:
+    """The launcher's binding result for one part, as written into `launcher_part_binding.json` (and the outcome draft):
+    what it checked and against which hashes. Only the launcher writes it, after `bind_items_to_part` with the part's own
+    items file returned `projection_checked: true`."""
+    binding = dict(identity["binding"])
+    if binding.get("checked_by") != "launcher" or binding.get("projection_checked") is not True:
+        raise RefusalError(
+            "PART_BINDING_RECORD_MISMATCH",
+            "Only a launcher binding with projection_checked true is written as the launcher's record.",
+        )
+    return {
+        "checked_by": "launcher",
+        "part_id": identity["part_id"],
+        "items_count": identity["items_count"],
+        "part_json_sha256": identity["part_json_sha256"],
+        "items_jsonl_sha256": identity["items_jsonl_sha256"],
+        "checksums_sha256": identity["checksums_sha256"],
+        "pin": identity.get("pin"),
+        "pin_status": identity.get("pin_status"),
+        "checksums_files_checked": True,
+        "binding": binding,
+    }
+
+
+def attach_launcher_binding(identity: dict[str, Any], record_file: Path, *, key: str) -> None:
+    """On the VM: carry the launcher's binding record for `key` into `identity["launcher_binding"]`, after checking it
+    names this part (`part.json` and `items.jsonl` SHA-256) and this uploaded items file (SHA-256 and count); refuse
+    `PART_BINDING_RECORD_MISMATCH` otherwise. A record that matches is also carried into `identity["binding"]`: the
+    rig's result, labelled `checked_by: "rig"` (with `projection_checked: true`), and the VM's own re-check kept beside it
+    as `vm_recheck` (`checked_by: "vm"`). Absent record: `launcher_binding` is `None` and the binding is the VM's own
+    check, `checked_by: "vm"`, `projection_checked: null` (not run on the VM). The VM never claims the check itself and
+    never records a default `false`."""
+    identity["launcher_binding"] = None
+    if not Path(record_file).is_file():
+        return
+    check_upload_path_allowed(record_file)
+    try:
+        doc = json.loads(Path(record_file).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RefusalError(
+            "PART_BINDING_RECORD_MISMATCH",
+            f"The launcher's binding record {Path(record_file).name} could not be read: {exc}",
+        ) from exc
+    entry = doc.get(key) if isinstance(doc, Mapping) else None
+    if entry is None:
+        return
+    vm_binding = identity.get("binding") or {}
+    rec_binding = entry.get("binding") if isinstance(entry, Mapping) else None
+    problems = []
+    if not isinstance(entry, Mapping) or not isinstance(rec_binding, Mapping):
+        problems.append("shape")
+    else:
+        for field in ("part_json_sha256", "items_jsonl_sha256"):
+            if entry.get(field) != identity.get(field):
+                problems.append(field)
+        if rec_binding.get("uploaded_items_sha256") != vm_binding.get("uploaded_items_sha256"):
+            problems.append("uploaded_items_sha256")
+        if rec_binding.get("uploaded_items") != vm_binding.get("uploaded_items"):
+            problems.append("uploaded_items")
+        if entry.get("checked_by") != "launcher" or rec_binding.get("projection_checked") is not True:
+            problems.append("checked_by/projection_checked")
+    if problems:
+        raise RefusalError(
+            "PART_BINDING_RECORD_MISMATCH",
+            f"The launcher's binding record ({key}) does not match what the VM received; field(s): {', '.join(problems)}",
+        )
+    identity["launcher_binding"] = dict(entry)
+    carried = dict(rec_binding)
+    carried["checked_by"] = "rig"
+    carried["vm_recheck"] = dict(vm_binding)
+    identity["binding"] = carried
+
+
+def p0a_pilot_identity_required(mode: str | None, *, dryrun: bool = False) -> bool:
+    """A real lock-check window (`lock-check`, not dryrun) must bring the burned pilot part for its P0a input; a stub or
+    dryrun lock-check window checks it when given and records `null` when not (its P0a report is never a result)."""
+    return is_real_mode(mode, dryrun=dryrun) and str(mode or "").strip().lower() in LOCK_CHECK_WINDOW_MODES
+
+
+def verify_p0a_pilot_part(
+    p0a_items_file: Path,
+    *,
+    mode: str,
+    dryrun: bool = False,
+    part_dir: Path | None = None,
+    schema_errors: Any = None,
+) -> dict[str, Any] | None:
+    """A lock-check window's P0a input must be the burned pilot part, named by content (`PILOT_40B_*` SHA-256), never
+    by a label, with the uploaded P0a items bound to that part row by row (`bind_items_to_part`, whole part in order).
+
+    Launcher (`part_dir` given, the pilot's real part directory): `read_part_identity` with the repo's part schema, every
+    file in its `checksums.txt`, and the projection check against its `items.jsonl`. VM (`part_dir` None): the staged
+    `p0a_part.json` / `p0a_checksums.txt` beside `p0a_items.jsonl` (identity, count and order of ids only; the launcher's
+    projection check is carried from `launcher_part_binding.json`, key `p0a_part`).
+    Refuses `PART_MANIFEST_MISSING` without the part files when `p0a_pilot_identity_required(mode)` (otherwise returns
+    `None`), `P0A_PILOT_IDENTITY_MISMATCH` when the part is not the pinned pilot, and whatever the part checks refuse.
+    Never writes anything. Returns the identity with its binding.
+    """
+    p0a_jsonl = Path(p0a_items_file) / "items.jsonl" if Path(p0a_items_file).is_dir() else Path(p0a_items_file)
+    if part_dir is not None:
+        eff_dir, pj_name, cs_name = Path(part_dir), PART_JSON_FILENAME, PART_CHECKSUMS_FILENAME
+    else:
+        eff_dir, pj_name, cs_name = p0a_jsonl.parent, P0A_PART_JSON_STAGED, P0A_CHECKSUMS_STAGED
+    if not (eff_dir / pj_name).is_file():
+        if not p0a_pilot_identity_required(mode, dryrun=dryrun):
+            return None
+        raise RefusalError(
+            "PART_MANIFEST_MISSING",
+            f"The P0a input has no part metadata ({eff_dir / pj_name}); a lock-check window needs the burned pilot's "
+            "own part.json and checksums.txt (pass --p0a-part-dir <the pilot part directory>), and nothing synthesizes them.",
+        )
+    for name in (pj_name, cs_name):
+        check_upload_path_allowed(eff_dir / name)
+    identity = read_part_identity(
+        eff_dir,
+        mode=mode,
+        dryrun=dryrun,
+        schema_errors=schema_errors,
+        part_json_name=pj_name,
+        checksums_name=cs_name,
+    )
+    if identity.get("is_pilot_40b") is not True:
+        raise RefusalError(
+            "P0A_PILOT_IDENTITY_MISMATCH",
+            f"P0a runs only on the burned pilot part, named by its pinned part.json and items.jsonl SHA-256; the P0a "
+            f"part has part_id={identity['part_id']!r} and part.json SHA-256 {identity['part_json_sha256']}.",
+        )
+    identity["binding"] = bind_items_to_part(
+        p0a_jsonl,
+        identity,
+        mode=mode,
+        part_items_file=(eff_dir / "items.jsonl") if part_dir is not None else None,
+        whole_part=True,
+    )
+    if part_dir is not None:
+        verify_part_files_against_checksums(eff_dir)
+    if part_dir is None:
+        attach_launcher_binding(identity, p0a_jsonl.parent / LAUNCHER_BINDING_FILENAME, key="p0a_part")
+    return identity
+
+
+REPO_BUNDLE_PATHS: tuple[str, ...] = ("pyproject.toml", "uv.lock", "README.md", "src", "scripts/colab")
+
+
+def tracked_repo_bundle_files(repo_root: Path, include_paths: Sequence[str] = REPO_BUNDLE_PATHS) -> list[str]:
+    """The files the launcher puts in `repo_bundle.tar.gz`: the git-tracked files under `include_paths` (`git ls-files`),
+    never the working tree's other files. Refuses `REPO_TREE_DIRTY` when any of those paths has a modified, staged,
+    deleted or untracked (not ignored) file, so the bundle is exactly HEAD's content and nothing untracked under `src/`
+    or `scripts/colab/` can be uploaded; refuses `REPO_TREE_UNREADABLE` when `repo_root` is not a git work tree. Returns
+    repo-relative POSIX paths, sorted."""
+    root = Path(repo_root)
+    paths = [str(x) for x in include_paths]
+
+    def _git(*git_args: str) -> str:
+        try:
+            proc = subprocess.run(
+                ["git", "-C", str(root), *git_args],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RefusalError("REPO_TREE_UNREADABLE", f"git could not be run in {root}: {exc}") from exc
+        if proc.returncode != 0:
+            raise RefusalError(
+                "REPO_TREE_UNREADABLE",
+                f"git {git_args[0]} failed in {root} (rc {proc.returncode}): {proc.stderr.strip()[:300]}",
+            )
+        return proc.stdout
+
+    dirty = [ln for ln in _git("status", "--porcelain", "--untracked-files=all", "--", *paths).splitlines() if ln.strip()]
+    if dirty:
+        raise RefusalError(
+            "REPO_TREE_DIRTY",
+            f"The repo bundle is built from tracked files at HEAD, but {len(dirty)} path(s) under "
+            f"{', '.join(paths)} differ from HEAD or are untracked (first: {dirty[0].strip()!r}); commit or remove them.",
+        )
+    files = sorted({f for f in _git("ls-files", "-z", "--", *paths).split("\0") if f})
+    if not files:
+        raise RefusalError("REPO_TREE_UNREADABLE", f"git ls-files lists no tracked files under {', '.join(paths)} in {root}")
+    return files
 
 
 def _ensure_part_manifest_for_run(
@@ -6018,6 +6361,8 @@ def preflight_counted_source(
     *,
     anchor_items: Path | None = None,
     p0a_items: Path | None = None,
+    pilot_identity: Mapping[str, Any] | None = None,
+    require_pilot_identity: bool = True,
 ) -> None:
     """Refuse a counted source that would not resolve to real items, before any paid step or run-dir write.
 
@@ -6038,6 +6383,8 @@ def preflight_counted_source(
                 anchor_items_or_path=anchor_items,
                 p0a_items_or_path=p0a_items,
                 counted_items_or_manifest=counted_source,
+                pilot_identity=pilot_identity,
+                require_pilot_identity=require_pilot_identity,
             )
         try:
             bakeoff_judge_mod._resolve_items_from_manifest_source(counted_source)
@@ -6191,6 +6538,7 @@ def _run_judges_pipeline_body(
     )
     eff_anchor_file: Path | None = None
     eff_p0a_file: Path | None = None
+    p0a_pilot_identity: dict[str, Any] | None = None
     eff_counted_source: Path | None = _resolve_single_counted_source(
         counted_items_or_manifest,
         counted_manifest_file,
@@ -6212,10 +6560,15 @@ def _run_judges_pipeline_body(
                 "LOCK_CHECK_COUNTED_SOURCE_MISSING",
                 "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
             )
+        # The P0a input is the burned pilot part, named by its pinned hashes (the staged p0a_part.json and
+        # p0a_checksums.txt beside the P0a items), before anything is written.
+        p0a_pilot_identity = verify_p0a_pilot_part(eff_p0a_file, mode=mode, dryrun=dryrun)
         preflight_counted_source(
             eff_counted_source,
             anchor_items=eff_anchor_file,
             p0a_items=eff_p0a_file,
+            pilot_identity=p0a_pilot_identity,
+            require_pilot_identity=p0a_pilot_identity_required(mode, dryrun=dryrun),
         )
         anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
         anchor_stage_dir.mkdir(parents=True, exist_ok=True)
@@ -7048,29 +7401,6 @@ def _run_judges_pipeline_body(
         p0a_stage_dir.mkdir(parents=True, exist_ok=True)
         if (p0a_stage_dir / "items.jsonl").resolve() != p0a_src_jsonl.resolve():
             shutil.copyfile(p0a_src_jsonl, p0a_stage_dir / "items.jsonl")
-        p0a_in_shared_dir = (
-            p0a_src_jsonl.name.lower() == "p0a_items.jsonl"
-            or (p0a_src_jsonl.parent / "anchor_items.jsonl").exists()
-            or p0a_src_jsonl.parent.name.lower() == "rdlab_items"
-        )
-        p0a_mf_candidates = (
-            (p0a_src_jsonl.parent / "p0a_manifest.json",)
-            if p0a_in_shared_dir
-            else (
-                p0a_src_jsonl.parent / "p0a_manifest.json",
-                p0a_src_jsonl.parent / "manifest.json",
-            )
-        )
-        for cand_mf in p0a_mf_candidates:
-            if cand_mf.is_file():
-                try:
-                    cand_mf_doc = json.loads(cand_mf.read_text(encoding="utf-8"))
-                    if isinstance(cand_mf_doc, dict) and cand_mf_doc.get("synthesized"):
-                        continue
-                except Exception:
-                    pass
-                shutil.copyfile(cand_mf, p0a_stage_dir / "manifest.json")
-                break
         try:
             p0a_doc = bakeoff_judge.run_lock_check_p0a(
                 part_dir=p0a_stage_dir,
@@ -7096,6 +7426,7 @@ def _run_judges_pipeline_body(
                 timing_backend="cuda_event" if real_mode_active else "cpu_monotonic",
                 repo_root=eff_repo_dir,
                 judge_ids=[jid for jid, _ in selected_specs],
+                pilot_identity=p0a_pilot_identity,
             )
         except bakeoff_judge.RdlabError as exc:
             raise RefusalError(exc.code, exc.message) from exc
@@ -7107,11 +7438,16 @@ def _run_judges_pipeline_body(
         if raw_pid:
             real_part_id = raw_pid
     if is_lock_check_window:
-        # Unchanged here: a lock-check window carries no part.json for its P0a input; its mass check keeps the
-        # P0a validators' allow-set label (see REAL_SERVICE_ASSUMPTIONS.md, "Part identity").
-        raw_mass_check = check_bakeoff_logprob_mass(
-            run_dir, part_id=(real_part_id or "pilot-40b")
-        )
+        # A lock-check window's rows/ hold the five judges' pass over the counted part's 50 anchors, not the burned
+        # pilot; the pilot mass check does not apply to them (P0a's own report covers the pilot calls).
+        raw_mass_check = {
+            "schema_version": "1.0",
+            "status": "not_applicable",
+            "reason": "lock-check rows are the counted part's anchor pass, not the burned pilot part",
+            "part_id": None,
+            "threshold": 0.99,
+            "judges": {},
+        }
     elif (
         norm_mode in ("time-one", "time_one")
         and isinstance(part_manifest_doc, Mapping)
@@ -7133,11 +7469,16 @@ def _run_judges_pipeline_body(
         "is_result": False,
         **raw_mass_check,
     }
+    window_limits = forwarded_window_limits()
     time_one_summary: dict[str, Any] = {
         "mode": mode,
         "part_identity": part_manifest_doc,
-        "wall_seconds": TIME_ONE_WALL_SECONDS if mode == "time-one" else 7200,
-        "cap_units": TIME_ONE_CAP_UNITS if mode == "time-one" else 0.16,
+        # The launch's own limits as the launcher forwarded them; null when not forwarded, never a default.
+        "wall_seconds": window_limits["rig_wall_seconds"],
+        "vm_wall_seconds": window_limits["vm_wall_seconds"],
+        "cap_units": window_limits["cap_units"],
+        "max_rate": window_limits["max_rate"],
+        "window_limits_source": window_limits["source"],
         "items_per_judge": len(shard_item_ids),
         "orders": ["AB", "BA"],
         "judge_order": eff_judge_order,
@@ -7152,6 +7493,7 @@ def _run_judges_pipeline_body(
         "anchor_item_ids": shard_info["anchor_item_ids"],
         "golden_anchor_manifest_file_sha256": golden_anchor_manifest_file_sha256,
         "p0a_report_sha256": p0a_report_sha256,
+        "p0a_part_identity": p0a_pilot_identity,
         "vram_sample_interval_seconds": VRAM_SAMPLE_INTERVAL_SECONDS,
         "judges": per_judge_metrics,
         "harness_readouts": {
@@ -7374,7 +7716,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         dest="p0a_items_file",
         type=Path,
         default=env_path("RDLAB_P0A_ITEMS_FILE", None),
-        help="114 burned pilot items (pilot-40b) for --lock-check P0a.",
+        help="114 burned pilot items for --lock-check P0a (the pilot part's projection; its part.json and checksums.txt are staged beside it as p0a_part.json and p0a_checksums.txt).",
     )
     parser.add_argument(
         "--counted-items",
@@ -7848,6 +8190,34 @@ def is_counted_or_time_one_mode(
     return bool(eff_shard and eff_shard != "1/1")
 
 
+def forwarded_window_limits(environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The window's limits as the launcher forwarded them with `--env`: `RDLAB_RIG_WALL_SECONDS` (the rig's wall),
+    `RDLAB_WALL_SECONDS` (the VM's wall), `RDLAB_WINDOW_CAP_UNITS` (the cap in units) and `RDLAB_MAX_RATE`
+    (`--max-rate`). The measured window rate is recorded on the rig (`outcome.draft.json`). A value that was not
+    forwarded, or is not a positive number, is `None`: the summary never writes a default as if it were the launch's."""
+    env = os.environ if environ is None else environ
+
+    def _pos_int(name: str) -> int | None:
+        raw = str(env.get(name) or "").strip()
+        return int(raw) if raw.isdigit() and int(raw) > 0 else None
+
+    def _pos_float(name: str) -> float | None:
+        raw = str(env.get(name) or "").strip()
+        try:
+            val = float(raw)
+        except ValueError:
+            return None
+        return val if val > 0 and math.isfinite(val) else None
+
+    return {
+        "rig_wall_seconds": _pos_int("RDLAB_RIG_WALL_SECONDS"),
+        "vm_wall_seconds": _pos_int("RDLAB_WALL_SECONDS"),
+        "cap_units": _pos_float("RDLAB_WINDOW_CAP_UNITS"),
+        "max_rate": _pos_float("RDLAB_MAX_RATE"),
+        "source": "forwarded_by_launcher",
+    }
+
+
 def is_real_mode(
     mode: str | None,
     *,
@@ -7884,6 +8254,12 @@ def guard_no_test_hooks_in_counted_mode(
         raise RefusalError(
             TEST_HOOK_IN_COUNTED_MODE,
             f"Test or override hook environment variable(s) forbidden in real mode ({mode!r}, shard={shard_spec or '1/1'}): {joined}",
+        )
+    # A counted window covers its whole part or its shard manifest's cut, never an item limit.
+    if str(mode or "").strip().lower() == "counted" and str(env_map.get("RDLAB_LIMIT_ITEMS", "") or "").strip():
+        raise RefusalError(
+            "COUNTED_LIMIT_ITEMS_REFUSED",
+            "RDLAB_LIMIT_ITEMS is forbidden in a real counted window (it would cut the shard manifest); unset it.",
         )
 
 
@@ -10840,6 +11216,24 @@ def resolve_boot_gatekeeper_card_type(card_type: str | None = None, *, real: boo
     return STUB_DEFAULT_CARD_TYPE
 
 
+def boot_gatekeeper_goldens_stub_marks(doc: Mapping[str, Any], card_entry: Any = None) -> list[str]:
+    """The marks that say goldens were recorded on a stub or synthetic transport (never valid for a real counted
+    comparison): `promoted_provenance.stub_transport` / `provenance.stub_transport`, a stub provenance mode, and the
+    card's `synthetic_fake_hash`. Empty when none."""
+    marks: list[str] = []
+    for key in ("promoted_provenance", "provenance"):
+        prov = doc.get(key)
+        if isinstance(prov, Mapping):
+            if bool(prov.get("stub_transport")):
+                marks.append(f"{key}.stub_transport")
+            prov_mode = str(prov.get("mode") or "").strip().lower()
+            if prov_mode.endswith("stub") or prov_mode in STUB_OR_DRYRUN_MODES:
+                marks.append(f"{key}.mode={prov_mode}")
+    if isinstance(card_entry, Mapping) and bool(card_entry.get("synthetic_fake_hash")):
+        marks.append("card.synthetic_fake_hash")
+    return marks
+
+
 def preflight_boot_gatekeeper_goldens(
     *,
     mode: str | None,
@@ -10869,6 +11263,18 @@ def preflight_boot_gatekeeper_goldens(
             for ck, cv in (card_types_map.items() if isinstance(card_types_map, Mapping) else [])
             if all(boot_gatekeeper_expected_sha(cv, str(sp["prompt_id"])) for sp in boot_gatekeeper_prompts(doc))
         )
+        stub_cards = sorted(
+            ck
+            for ck in complete
+            if boot_gatekeeper_goldens_stub_marks(doc, card_types_map.get(ck))
+        )
+        if complete and len(stub_cards) == len(complete):
+            raise RefusalError(
+                "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+                f"every card type with filled goldens ({complete}) was recorded on a stub or synthetic transport "
+                f"({boot_gatekeeper_goldens_stub_marks(doc, card_types_map.get(complete[0]))}); a real counted window "
+                "refuses them before any paid step.",
+            )
         if not complete:
             raise RefusalError(
                 "BOOT_GATEKEEPER_GOLDEN_MISSING",
@@ -10888,6 +11294,13 @@ def preflight_boot_gatekeeper_goldens(
             "BOOT_GATEKEEPER_GOLDEN_MISSING",
             f"no golden: Boot gatekeeper golden hashes are missing/unfilled for card_type={eff_card!r} "
             f"(missing={missing}); counted mode refuses before any paid step until lock-check fills them.",
+        )
+    marks = boot_gatekeeper_goldens_stub_marks(doc, card_entry)
+    if marks:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+            f"the goldens for card_type={eff_card!r} were recorded on a stub or synthetic transport ({marks}); a real "
+            "counted window refuses them before any paid step.",
         )
     return {"card_type": eff_card, "goldens_complete": True}
 
@@ -11545,7 +11958,9 @@ def run_boot_gatekeeper(
             "filled_goldens_sha256": filled_file_sha,
             "filled_goldens_body_sha256": filled_body_sha,
             "actual_output_token_ids_sha256": actual_by_prompt,
-            "expected_output_token_ids_sha256": dict(actual_by_prompt),
+            # Record mode compares nothing, so there is no expected value (a copy of the actual hashes read like a
+            # comparison that passed: timeone-mu2b, 2026-11-06).
+            "expected_output_token_ids_sha256": None,
         }
         record_doc.update(boot_gatekeeper_report_fields(gk_timings))
         if is_time_one_record:
@@ -12406,6 +12821,7 @@ def main(argv: list[str] | None = None) -> int:
         anchor_items_sha256: str | None = None
         p0a_items_sha256: str | None = None
         counted_source_sha256: str | None = None
+        main_p0a_pilot_identity: dict[str, Any] | None = None
         counted_items_arg = _resolve_single_counted_source(
             raw_counted_items_arg,
             raw_counted_manifest_arg,
@@ -12434,12 +12850,24 @@ def main(argv: list[str] | None = None) -> int:
             if args.items_file.is_file() and args.items_file not in uploaded_item_files:
                 check_upload_path_allowed(args.items_file)
                 uploaded_item_files.append(args.items_file)
+            # The burned pilot's own part.json / checksums.txt (staged as p0a_part.json / p0a_checksums.txt) and the
+            # launcher's binding record: listed (and deleted after the run) even when refused below.
+            for staged_name in (P0A_PART_JSON_STAGED, P0A_CHECKSUMS_STAGED, LAUNCHER_BINDING_FILENAME):
+                staged_file = eff_p0a_jsonl.parent / staged_name
+                if staged_file.is_file():
+                    check_upload_path_allowed(staged_file)
+                    if staged_file not in uploaded_item_files:
+                        uploaded_item_files.append(staged_file)
 
             current_step = "verify_items_allowlist"
             verify_items_allowlist(eff_anchor_jsonl)
             verify_items_allowlist(eff_p0a_jsonl)
             anchor_items_sha256 = sha256_file(eff_anchor_jsonl)
             p0a_items_sha256 = sha256_file(eff_p0a_jsonl)
+
+            # The P0a input must be the burned pilot part (pinned hashes), before any paid step.
+            current_step = "verify_p0a_pilot_part"
+            main_p0a_pilot_identity = verify_p0a_pilot_part(eff_p0a_jsonl, mode=args.mode, dryrun=dryrun)
         else:
             check_upload_path_allowed(args.items_file)
             uploaded_item_files = [args.items_file]
@@ -12454,7 +12882,7 @@ def main(argv: list[str] | None = None) -> int:
             # part, also checked the projection row by row.
             current_step = "verify_part_manifest"
             staged_part_dir = args.items_file if args.items_file.is_dir() else args.items_file.parent
-            for staged_name in PART_STAGED_FILENAMES:
+            for staged_name in (*PART_STAGED_FILENAMES, LAUNCHER_BINDING_FILENAME):
                 staged_part_file = staged_part_dir / staged_name
                 if staged_part_file.is_file():
                     check_upload_path_allowed(staged_part_file)
@@ -12515,6 +12943,8 @@ def main(argv: list[str] | None = None) -> int:
                 counted_items_arg,
                 anchor_items=anchor_items_arg if is_lock_check_main else None,
                 p0a_items=p0a_items_arg if is_lock_check_main else None,
+                pilot_identity=main_p0a_pilot_identity if is_lock_check_main else None,
+                require_pilot_identity=p0a_pilot_identity_required(args.mode, dryrun=dryrun),
             )
 
         current_step = "ensure_shard_manifest"

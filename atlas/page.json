@@ -33,40 +33,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 2,
-      "changed": 20,
+      "added": 0,
+      "changed": 12,
       "moved": 0,
-      "parts": 5,
+      "parts": 3,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "scripts/colab/ is now also read by scripts/colab/promote_goldens.py.",
-        "subjects": [
-          "scripts/colab/",
-          "scripts/colab/promote_goldens.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "scripts/colab/boot_gatekeeper_goldens.json is now read by scripts/colab/promote_goldens.py.",
-        "subjects": [
-          "scripts/colab/boot_gatekeeper_goldens.json",
-          "scripts/colab/promote_goldens.py"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "2 files added and 20 changed content, across 5 parts.",
+        "sentence": "Nothing structural changed since 2026-11-06; 12 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "5e03ddc3d191aa24355013b43e8f6cf6c26c47eb",
-      "generatedAt": "2026-11-05T09:12:54.225Z"
+      "commit": "7ad2390656260f07e3132a78c1d2f26ad89bc4ef",
+      "generatedAt": "2026-11-06T10:05:06.383Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -87,7 +71,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 19,
+      "either": 30,
       "partLabels": [
         "scripts",
         "tests"
@@ -97,22 +81,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 18
-    },
-    {
-      "a": "scripts/colab/vm_judges.py",
-      "b": "tests/fixtures/fake_colab.py",
-      "either": 18,
-      "partLabels": [
-        "scripts",
-        "tests"
-      ],
-      "parts": [
-        "scripts",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 15
+      "shared": 25
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
@@ -130,9 +99,24 @@
       "shared": 9
     },
     {
+      "a": "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
+      "b": "tests/test_pilot_b_variety.py",
+      "either": 7,
+      "partLabels": [
+        "src",
+        "tests"
+      ],
+      "parts": [
+        "src",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 5
+    },
+    {
       "a": "tests/fixtures/fake_colab.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 19,
+      "either": 28,
       "partLabels": [
         "tests",
         "tests"
@@ -142,7 +126,7 @@
         "tests"
       ],
       "relation": "inside",
-      "shared": 15
+      "shared": 19
     }
   ],
   "changesTogetherNote": [
@@ -151,9 +135,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 8 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "ef8f46be83a6a84213ac6967f46a96199dc4d252",
+  "commit": "7d6f7a128c9d73d8e232328f6f54d63e674d59e5",
   "defaultBranch": "main",
-  "derived": "9 parts, mostly Python (70 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "derived": "9 parts, mostly Python (76 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -170,17 +154,17 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 41
+          "files": 45
         },
         {
           "boundary": "scripts",
           "depth": 1,
-          "files": 4
+          "files": 5
         },
         {
           "boundary": "src",
           "depth": 1,
-          "files": 25
+          "files": 26
         }
       ],
       "runs": [
@@ -244,7 +228,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 25
+          "files": 26
         }
       ],
       "runs": [],
@@ -275,7 +259,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 21
+          "files": 22
         }
       ],
       "runs": [
@@ -308,12 +292,12 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-06T01:15:50.432Z",
+  "generatedAt": "2026-11-06T13:53:15.166Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
-    "3 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
-    "13 writes and 37 reads use paths built at run time and are not named here.",
-    "76 writes and 156 reads go to a path their caller passes, not to this repository.",
+    "6 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 2 more.",
+    "13 writes and 33 reads use paths built at run time and are not named here.",
+    "75 writes and 171 reads go to a path their caller passes, not to this repository.",
     "5 reads go to the directory the command is run in, not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
@@ -331,7 +315,7 @@
   },
   "parts": 9,
   "readers": [],
-  "repo": "reasoning-dataset-lab",
+  "repo": "mcp-tool-shop-org/reasoning-dataset-lab",
   "sequences": [],
   "startDoor": "pyproject.toml#rdlab",
   "startHere": [
@@ -344,10 +328,10 @@
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 51,
+  "testFiles": 55,
   "testedBy": {
-    "scripts": 1,
-    "src": 34
+    "scripts": 4,
+    "src": 37
   },
   "unnamedWrites": 13,
   "unread": [],
