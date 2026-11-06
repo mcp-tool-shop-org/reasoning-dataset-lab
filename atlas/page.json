@@ -33,53 +33,52 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 1,
-      "changed": 10,
+      "added": 6,
+      "changed": 12,
       "moved": 0,
-      "parts": 4,
+      "parts": 5,
       "removed": 0
     },
     "items": [
       {
         "kind": "landing",
-        "sentence": "README.md is now also read by scripts/colab/vm_judges.py and tests/test_colab_judge_launcher.py.",
-        "subjects": [
-          "README.md",
-          "scripts/colab/vm_judges.py",
-          "tests/test_colab_judge_launcher.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "pyproject.toml is now also read by scripts/colab/vm_judges.py and tests/test_colab_judge_launcher.py.",
-        "subjects": [
-          "pyproject.toml",
-          "scripts/colab/vm_judges.py",
-          "tests/test_colab_judge_launcher.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "scripts/colab/ is now also read by scripts/colab/vm_judges.py.",
+        "sentence": "scripts/colab/ is now also read by tests/test_boot_gatekeeper_judge.py.",
         "subjects": [
           "scripts/colab/",
-          "scripts/colab/vm_judges.py"
+          "tests/test_boot_gatekeeper_judge.py"
         ]
       },
       {
         "kind": "landing",
-        "sentence": "And 1 more new writer or reader of a place.",
+        "sentence": "scripts/colab/launch_judges.sh is now read by tests/test_boot_gatekeeper_judge.py.",
+        "subjects": [
+          "scripts/colab/launch_judges.sh",
+          "tests/test_boot_gatekeeper_judge.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "scripts/colab/local_boot_gatekeeper.py is now read by scripts/colab/local_boot_gatekeeper.py and tests/test_boot_gatekeeper_judge.py.",
+        "subjects": [
+          "scripts/colab/local_boot_gatekeeper.py",
+          "scripts/colab/local_boot_gatekeeper.py",
+          "tests/test_boot_gatekeeper_judge.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "And 2 more new writers and readers of places.",
         "subjects": []
       },
       {
         "kind": "counts",
-        "sentence": "1 file added and 10 changed content, across 4 parts.",
+        "sentence": "6 files added and 12 changed content, across 5 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "ef8f46be83a6a84213ac6967f46a96199dc4d252",
-      "generatedAt": "2026-11-06T01:15:50.432Z"
+      "commit": "95fdf48e3e751f43ea10006f67b9e12246a8b29c",
+      "generatedAt": "2026-11-06T04:03:32.143Z"
     },
     "unchanged": false
   },
@@ -102,7 +101,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 21,
+      "either": 26,
       "partLabels": [
         "scripts",
         "tests"
@@ -112,7 +111,22 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 20
+      "shared": 22
+    },
+    {
+      "a": "scripts/colab/vm_judges.py",
+      "b": "tests/fixtures/fake_colab.py",
+      "either": 22,
+      "partLabels": [
+        "scripts",
+        "tests"
+      ],
+      "parts": [
+        "scripts",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 18
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
@@ -130,34 +144,19 @@
       "shared": 9
     },
     {
-      "a": "scripts/colab/vm_judges.py",
-      "b": "tests/fixtures/fake_colab.py",
-      "either": 20,
+      "a": "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
+      "b": "tests/test_pilot_b_variety.py",
+      "either": 7,
       "partLabels": [
-        "scripts",
+        "src",
         "tests"
       ],
       "parts": [
-        "scripts",
+        "src",
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 16
-    },
-    {
-      "a": "tests/fixtures/fake_colab.py",
-      "b": "tests/test_colab_judge_launcher.py",
-      "either": 21,
-      "partLabels": [
-        "tests",
-        "tests"
-      ],
-      "parts": [
-        "tests",
-        "tests"
-      ],
-      "relation": "inside",
-      "shared": 16
+      "shared": 5
     }
   ],
   "changesTogetherNote": [
@@ -166,9 +165,9 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 8 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "95fdf48e3e751f43ea10006f67b9e12246a8b29c",
-  "defaultBranch": "fix/counted-blockers",
-  "derived": "9 parts, mostly Python (71 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
+  "commit": "7ad2390656260f07e3132a78c1d2f26ad89bc4ef",
+  "defaultBranch": "main",
+  "derived": "9 parts, mostly Python (76 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
     {
       "checks": [],
@@ -185,12 +184,12 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 41
+          "files": 45
         },
         {
           "boundary": "scripts",
           "depth": 1,
-          "files": 4
+          "files": 5
         },
         {
           "boundary": "src",
@@ -323,12 +322,12 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-06T04:03:32.143Z",
+  "generatedAt": "2026-11-06T10:05:06.383Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
-    "3 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time.",
-    "13 writes and 36 reads use paths built at run time and are not named here.",
-    "73 writes and 161 reads go to a path their caller passes, not to this repository.",
+    "4 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `vm_judges`, which is no module on its import path and no declared dependency.",
+    "13 writes and 33 reads use paths built at run time and are not named here.",
+    "75 writes and 169 reads go to a path their caller passes, not to this repository.",
     "5 reads go to the directory the command is run in, not to this repository.",
     "Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window."
   ],
@@ -346,7 +345,7 @@
   },
   "parts": 9,
   "readers": [],
-  "repo": "reasoning-dataset-lab",
+  "repo": "mcp-tool-shop-org/reasoning-dataset-lab",
   "sequences": [],
   "startDoor": "pyproject.toml#rdlab",
   "startHere": [
@@ -359,10 +358,10 @@
   "startReason": "This path follows rdlab (a command people run) from its entry, since ci runs only tests.",
   "summary": "reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item.",
   "summaryFrom": "person",
-  "testFiles": 51,
+  "testFiles": 55,
   "testedBy": {
-    "scripts": 1,
-    "src": 34
+    "scripts": 4,
+    "src": 37
   },
   "unnamedWrites": 13,
   "unread": [],
