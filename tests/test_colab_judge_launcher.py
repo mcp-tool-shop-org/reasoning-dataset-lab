@@ -26994,3 +26994,133 @@ def test_launcher_lock_check_phase_required_and_dry_prints_phase_wall_and_price(
     proc = _run("ok_eq", "--lock-check-stub --lock-check-phase=p0a")
     assert proc.returncode == 0, proc.stderr
     assert "[lock-check] phase=p0a " in proc.stderr and "wall_s=7200 " in proc.stderr
+
+
+def test_p0a_child_stage_in_process_passes_rerun_and_refusals(tmp_path: Path) -> None:
+    """The P0a child stage itself (what each judge's child runs), called in this process: `passes` returns both
+    passes and the profiler, `rerun` the reversed re-run of the given selection, and the parent's summary of the
+    re-run rows equals the in-process re-run. Refusals: unknown stage or judge, a rerun with no or a bad selection,
+    an unreadable or non-object pilot identity file, re-run rows out of order, and `--p0a-stage` without `--p0a-out`.
+    Fails at 056bc83a: no child stage existed."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj
+
+    counted_items_file, anchor_src, p0a_src = _make_counted_part_and_50_anchors_and_114_p0a(tmp_path / "pcs", counted_count=100)
+    out_dir = tmp_path / "pcs_out"
+    common: dict[str, Any] = dict(
+        judge="mu-judge",
+        part_dir=p0a_src.parent,
+        output_dir=out_dir,
+        anchor_items=anchor_src,
+        counted_source=counted_items_file,
+        fake_transport=True,
+        window_mode="lock-check-stub",
+        repo_root=REPO_ROOT,
+    )
+    null_identity = tmp_path / "pcs_identity.json"
+    null_identity.write_text("null\n", encoding="utf-8")
+    passes = bj.run_p0a_child_stage(stage="passes", out_file=tmp_path / "pcs_passes.json", pilot_identity_file=null_identity, **common)
+    assert passes["judge_id"] == "mu-judge" and passes["transport_class"] == "DeterministicFakeJudgeTransport"
+    assert len(passes["pass1_rows"]) == len(passes["pass2_rows"]) == 2 * passes["item_count"]
+    assert passes["profiler"]["call_count"] == bj.P0A_PROFILER_CALL_COUNT
+    assert json.loads((tmp_path / "pcs_passes.json").read_text(encoding="utf-8"))["pass1_rows"] == passes["pass1_rows"]
+    sel = bj.select_p0a_lowest_margin_items(passes["pass1_rows"], count=4)
+    sel_file = tmp_path / "pcs_sel.json"
+    sel_file.write_text(json.dumps(sel), encoding="utf-8")
+    rerun = bj.run_p0a_child_stage(
+        stage="rerun", out_file=tmp_path / "pcs_rerun.json", pilot_identity_file=None, selected_items_file=sel_file, **common
+    )
+    assert rerun["selected_item_ids"] == sel and len(rerun["rerun_rows"]) == 2 * len(sel)
+    ctx = bj.prepare_lock_check_p0a(
+        part_dir=p0a_src.parent,
+        output_dir=out_dir,
+        anchor_items=anchor_src,
+        counted_item_ids=counted_items_file,
+        judge_ids=["mu-judge"],
+        fake_transport=True,
+        window_mode="lock-check-stub",
+        repo_root=REPO_ROOT,
+    )
+    summary = bj.summarize_p0a_reversed_rerun(
+        judge_ids=["mu-judge"],
+        rerun_rows_by_judge={"mu-judge": rerun["rerun_rows"]},
+        items_by_id=ctx.items_by_id,
+        selected_item_ids=sel,
+        baseline_rows=passes["pass1_rows"],
+    )
+    in_proc = bj.run_p0a_reversed_low_margin_rerun(
+        judges=[bj.BAKEOFF_JUDGE_SPECS["mu-judge"]],
+        adapters=ctx.adapters,
+        transports={"mu-judge": bj.DeterministicFakeJudgeTransport()},
+        items_by_id=ctx.items_by_id,
+        selected_item_ids=sel,
+        baseline_rows=passes["pass1_rows"],
+    )
+    assert summary == in_proc
+    with pytest.raises(RdlabError) as exc:
+        bj.summarize_p0a_reversed_rerun(
+            judge_ids=["mu-judge"],
+            rerun_rows_by_judge={"mu-judge": list(reversed(rerun["rerun_rows"]))},
+            items_by_id=ctx.items_by_id,
+            selected_item_ids=sel,
+            baseline_rows=passes["pass1_rows"],
+        )
+    assert exc.value.code == "P0A_CHILD_OUTPUT_INVALID"
+
+    bad_sel = tmp_path / "pcs_bad_sel.json"
+    bad_sel.write_text(json.dumps({"ids": sel}), encoding="utf-8")
+    for sel_arg in (None, bad_sel, tmp_path / "pcs_missing_sel.json"):
+        with pytest.raises(RdlabError) as exc:
+            bj.run_p0a_child_stage(
+                stage="rerun", out_file=tmp_path / "pcs_x.json", pilot_identity_file=None, selected_items_file=sel_arg, **common
+            )
+        assert exc.value.code == "P0A_CHILD_OUTPUT_INVALID"
+    with pytest.raises(RdlabError) as exc:
+        bj.run_p0a_child_stage(stage="passes", out_file=tmp_path / "pcs_x.json", pilot_identity_file=None, **{**common, "judge": "no-such-judge"})
+    assert exc.value.code == "BAKEOFF_JUDGE_UNKNOWN"
+    list_identity = tmp_path / "pcs_list_identity.json"
+    list_identity.write_text("[1, 2]\n", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc:
+        bj.read_p0a_pilot_identity_file(list_identity)
+    assert exc.value.code == "P0A_PILOT_IDENTITY_MISSING"
+    assert bj.read_p0a_pilot_identity_file(None) is None
+
+    cli_out = tmp_path / "pcs_cli.json"
+    rc = bj.main_judge_runner(
+        [
+            "--judge", "nemotron-3-nano-4b", "--items", str(p0a_src.parent), "--output-dir", str(out_dir), "--stub",
+            "--device", "cpu", "--window-mode", "lock-check-stub", "--repo-root", str(REPO_ROOT),
+            "--p0a-stage", "passes", "--p0a-out", str(cli_out), "--p0a-anchor-items", str(anchor_src),
+            "--p0a-counted-source", str(counted_items_file),
+        ]
+    )
+    assert rc == 0 and json.loads(cli_out.read_text(encoding="utf-8"))["judge_id"] == "nemotron-3-nano-4b"
+
+
+def test_p0a_transport_resolution_refusals_and_timing(tmp_path: Path) -> None:
+    """`resolve_p0a_transport` refuses a stub transport handed to a real-mode P0a and real loading without receipts;
+    `resolve_p0a_timing` picks CUDA events only for real models in real mode. Fails at 056bc83a: no such helpers."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge as bj
+
+    counted_items_file, anchor_src, p0a_src = _make_counted_part_and_50_anchors_and_114_p0a(tmp_path / "ptr", counted_count=100)
+    ctx = bj.prepare_lock_check_p0a(
+        part_dir=p0a_src.parent,
+        output_dir=tmp_path / "ptr_out",
+        anchor_items=anchor_src,
+        counted_item_ids=counted_items_file,
+        judge_ids=["mu-judge"],
+        fake_transport=False,
+        window_mode="lock-check-stub",
+        repo_root=REPO_ROOT,
+    )
+    spec = bj.BAKEOFF_JUDGE_SPECS["mu-judge"]
+    with pytest.raises(RdlabError) as exc:
+        bj.resolve_p0a_transport(ctx, spec, transports_by_judge={"mu-judge": bj.DeterministicFakeJudgeTransport()})
+    assert exc.value.code == "P0A_STUB_TRANSPORT_REFUSED"
+    with pytest.raises(RdlabError) as exc:
+        bj.resolve_p0a_transport(ctx, spec, receipts_dir=None)
+    assert exc.value.code == "BAKEOFF_JUDGE_RECEIPTS_DIR_REQUIRED"
+    assert bj.resolve_p0a_timing(ctx)[1] == "cpu_monotonic"
+    marker = object()
+    assert bj.resolve_p0a_timing(ctx, event_factory=marker) == (marker, "cuda_event")
+    ctx.in_real_mode = True
+    assert bj.resolve_p0a_timing(ctx)[1] == "cuda_event"

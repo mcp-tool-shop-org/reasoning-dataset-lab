@@ -239,3 +239,48 @@ def test_cli_bakeoff_lockcheck_anchors_prints_counts_not_items(tmp_path: Path, c
 
 def test_package_canary_config_has_thirty_ids() -> None:
     assert len(lca.load_canary_item_ids()) == 30
+
+
+def test_builder_refuses_malformed_parts_rows_and_configs(tmp_path: Path) -> None:
+    """Every malformed-input refusal of the builder: an unreadable canary config, a row with no domain, a repeated
+    id, a part under `sealed_store/`, a `part.json` that does not parse, a row that is not JSON, and a row with no claim
+    (the checksums are rewritten so each defect reaches its own check)."""
+    rows, canary = _rows()
+    with pytest.raises(RdlabError) as exc:
+        lca.load_canary_item_ids(tmp_path / "missing.json")
+    assert exc.value.code == "LC1_ANCHORS_CANARY_CONFIG_INVALID"
+    no_domain = [dict(r) for r in rows]
+    no_domain[3].pop("domain")
+    with pytest.raises(RdlabError) as exc:
+        lca.select_lc1_anchors(no_domain, canary)
+    assert exc.value.code == "LC1_ANCHORS_PART_INVALID"
+    with pytest.raises(RdlabError) as exc:
+        lca.select_lc1_anchors([*rows, dict(rows[0])], canary)
+    assert exc.value.code == "LC1_ANCHORS_PART_INVALID"
+
+    sealed_part, cfg = _write_part(tmp_path / "sealed_store" / "x", rows, canary)
+    with pytest.raises(RdlabError) as exc:
+        lca.build_lc1_anchor_items(sealed_part, tmp_path / "o_sealed" / "a.jsonl", canary_config_path=cfg)
+    assert exc.value.code == "LC1_ANCHORS_PART_INVALID"
+
+    def _rewrite(part: Path, *, items: bytes | None = None, meta: bytes | None = None) -> None:
+        items_b = items if items is not None else (part / "items.jsonl").read_bytes()
+        meta_b = meta if meta is not None else (part / "part.json").read_bytes()
+        (part / "items.jsonl").write_bytes(items_b)
+        (part / "part.json").write_bytes(meta_b)
+        (part / "checksums.txt").write_text(
+            f"{hashlib.sha256(meta_b).hexdigest()}  part.json\n{hashlib.sha256(items_b).hexdigest()}  items.jsonl\n",
+            encoding="utf-8",
+        )
+
+    good_items = ("\n".join(json.dumps(r, sort_keys=True) for r in rows) + "\n").encode("utf-8")
+    for tag, kw in (
+        ("meta", {"meta": b"{not json"}),
+        ("notjson", {"items": good_items + b"{broken\n"}),
+        ("noclaim", {"items": good_items + json.dumps({"id": "z", "material": "m", "domain": "pumps"}).encode() + b"\n"}),
+    ):
+        part, cfg = _write_part(tmp_path / f"bad_{tag}", rows, canary)
+        _rewrite(part, **kw)
+        with pytest.raises(RdlabError) as exc:
+            lca.build_lc1_anchor_items(part, tmp_path / f"o_{tag}" / "a.jsonl", canary_config_path=cfg)
+        assert exc.value.code == "LC1_ANCHORS_PART_INVALID", tag
