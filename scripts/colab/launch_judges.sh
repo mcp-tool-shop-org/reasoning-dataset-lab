@@ -76,6 +76,15 @@ Options:
   --counted-manifest F For --lock-check / --lock-check-stub: counted part manifest JSON (required unless --counted-items is given) to build shard_manifest.json and verify anchor membership and P0a exclusion (or set RDLAB_COUNTED_MANIFEST)
   --receipts-dir DIR   Directory containing <owner>__<repo>.sha256.json receipts (or RDLAB_RECEIPTS_DIR)
   --cap UNITS          Explicit compute-unit cap override (or set RDLAB_CAP_UNITS)
+
+Environment:
+  RDLAB_ONLY_JUDGES    --time-one only: comma-separated subset of the 5 judges to time (no spaces, no duplicates).
+                       The boot gatekeeper's judge (the goldens' judge_id, nemotron-3-nano-4b) is downloaded and
+                       verified as well, once, in every real --time-one / --counted / --lock-check window, and is
+                       recorded as boot_gatekeeper_judge; it is not timed, and only_judges stays as given. --dry
+                       prints the set as a [judges] line. A window whose gatekeeper judge could not be downloaded
+                       and verified is refused before the session opens (BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED, or
+                       BOOT_GATEKEEPER_RECEIPT_MISSING when the receipts directory lacks its receipt).
 EOF
 }
 
@@ -472,7 +481,7 @@ ALIVE_PROBE_SLEEP_SECONDS="${RDLAB_ALIVE_PROBE_SLEEP_SECONDS:-20}"
 ALIVE_PROBE_TIMEOUT_SECONDS="${RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS:-60}"
 COST_CAP_POLL_SECONDS="${RDLAB_COST_CAP_POLL_SECONDS:-1}"
 
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -481,6 +490,7 @@ repo_root = Path(sys.argv[1])
 mode = sys.argv[2]
 until_step = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
 is_smoke = (len(sys.argv) > 4 and sys.argv[4] == "1")
+receipts_arg = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5].strip() else None
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
@@ -524,6 +534,40 @@ try:
         vm_judges.verify_shard_manifest_file(
             Path(raw_manifest_path),
             expected_sha256=os.environ.get("RDLAB_SHARD_MANIFEST_SHA256"),
+        )
+    # The boot gatekeeper's judge (the goldens' judge_id) joins the download/verify set of every real window that
+    # runs the gatekeeper, whatever RDLAB_ONLY_JUDGES says; refused here, before the session opens, when it could not
+    # be downloaded and verified (BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED / BOOT_GATEKEEPER_RECEIPT_MISSING).
+    only_judges_t = vm_judges.validate_only_judges(
+        mode,
+        os.environ.get("RDLAB_ONLY_JUDGES", None),
+        raw_judge_order=os.environ.get("RDLAB_JUDGE_ORDER", None),
+        until=until_step,
+        session_smoke=is_smoke,
+    )
+    judge_order_t = (
+        only_judges_t
+        if only_judges_t is not None
+        else vm_judges.validate_judge_order(
+            mode, os.environ.get("RDLAB_JUDGE_ORDER", None), until=until_step, session_smoke=is_smoke
+        )[0]
+    )
+    raw_goldens = (os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
+    gk_plan = None
+    if not is_smoke:
+        gk_plan = vm_judges.plan_boot_gatekeeper_judge(
+            mode=mode,
+            judge_order=judge_order_t,
+            repo_root=repo_root,
+            dryrun=os.environ.get("VM_DRYRUN") == "1",
+            until=until_step,
+            goldens_path=Path(raw_goldens) if raw_goldens else None,
+            receipts_dir=Path(receipts_arg) if receipts_arg else None,
+        )
+    if gk_plan is not None:
+        print(
+            f"[judges] timed={','.join(gk_plan['timed_judge_ids'])} boot_gatekeeper={gk_plan['judge_id']} "
+            f"download_verify={','.join(gk_plan['download_verify_judge_ids'])}"
         )
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")

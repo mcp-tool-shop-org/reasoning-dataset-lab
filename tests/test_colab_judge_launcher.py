@@ -25217,6 +25217,7 @@ def _e2e_fake_real_mode_window(
     extra_args: str = "",
     exec_env_extra: dict[str, str] | None = None,
     tag: str = "",
+    extra_exports: str = "",
 ) -> dict[str, Any]:
     """Drive the REAL `launch_judges.sh` live path (not `--dry`) in a real mode (no stub mode, no VM_DRYRUN) against the
     fake `colab` CLI, with the VM cell run through `tests/fixtures/fake_vm_real_mode_shim.py`, on a part made by the real
@@ -25227,6 +25228,7 @@ def _e2e_fake_real_mode_window(
     VM root and the fake CLI's state dir; the VM's weight cache is its own copy inside the fake VM root
     (`FAKE_COLAB_VM_HF_SEED`). With `exec_env_extra` (variables forwarded to the run cell as if by the launcher) the
     run is expected to fail; the result carries `proc`, and the checks of a successful window are skipped.
+    `extra_exports` (shell `export ...; ` text) is added to the launcher's environment, e.g. `RDLAB_ONLY_JUDGES`.
     """
     name = f"{mode}{tag}"
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"e2e_{name}_env", uv_python_315_found=True)
@@ -25245,7 +25247,7 @@ def _e2e_fake_real_mode_window(
         f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(kept)}'; "
         f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
         f"export FAKE_COLAB_VM_DENY_ROOTS='{_to_wsl_path(tmp_path)}'; "
-    )
+    ) + extra_exports
     if exec_env_extra:
         exports += f"export FAKE_COLAB_EXEC_ENV_EXTRA='{json.dumps(exec_env_extra)}'; "
     proc = _pm_run_launcher(
