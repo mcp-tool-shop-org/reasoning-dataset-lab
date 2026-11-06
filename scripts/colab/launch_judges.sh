@@ -499,6 +499,42 @@ ALIVE_PROBE_SLEEP_SECONDS="${RDLAB_ALIVE_PROBE_SLEEP_SECONDS:-20}"
 ALIVE_PROBE_TIMEOUT_SECONDS="${RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS:-60}"
 RESTART_KERNEL_TIMEOUT_SECONDS="${RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS:-60}"
 COST_CAP_POLL_SECONDS="${RDLAB_COST_CAP_POLL_SECONDS:-1}"
+# Every `timeout`-wrapped colab call sends SIGTERM at its limit and SIGKILL this many seconds later (`timeout -k`), so a
+# client that ignores SIGTERM cannot outlive its limit. The one grace for every such call.
+COLAB_KILL_GRACE_SECONDS="${RDLAB_COLAB_KILL_GRACE_SECONDS:-15}"
+if ! [[ "$COLAB_KILL_GRACE_SECONDS" =~ ^[0-9]+$ ]] || (( COLAB_KILL_GRACE_SECONDS < 1 )); then
+  echo "BAD_KILL_GRACE: RDLAB_COLAB_KILL_GRACE_SECONDS must be a positive integer, got '$COLAB_KILL_GRACE_SECONDS'" >&2
+  exit 2
+fi
+
+# Real --time-one and --counted windows name their part with --part-dir; a real --lock-check window names the burned
+# pilot part with --p0a-part-dir (a stub or dryrun window checks it when given). Absent: refused PART_MANIFEST_MISSING
+# before any colab call (--dry and live), and before the judge/gatekeeper preflight below, as the part check itself
+# refuses in real modes.
+require_part_dir_for_mode() {
+  if [[ "$MODE" == "time-one" || "$MODE" == "counted" ]] && [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$PART_DIR" ]]; then
+    RUN_WHY="--$MODE requires --part-dir"
+    echo "PART_MANIFEST_MISSING: --$MODE requires --part-dir <the sealed part directory: part.json, checksums.txt, items.jsonl>; the items file is a projection kept outside the part (rdlab bakeoff-project), so its directory is never the part" >&2
+    exit 2
+  fi
+}
+
+require_p0a_part_dir_for_mode() {
+  if [[ "$MODE" == "lock-check" ]] && [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$P0A_PART_DIR" ]]; then
+    RUN_WHY="--$MODE requires --p0a-part-dir"
+    echo "PART_MANIFEST_MISSING: --$MODE requires --p0a-part-dir <the burned pilot's sealed part directory: part.json, checksums.txt, items.jsonl>; the pilot is named by its pinned SHA-256, never by a label" >&2
+    exit 2
+  fi
+}
+
+if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" != "probe" ]]; then
+  if [[ -n "$ITEMS_FILE" ]]; then
+    require_part_dir_for_mode
+  fi
+  if [[ -n "$ANCHOR_ITEMS_FILE" ]] && [[ -n "$P0A_ITEMS_FILE" ]]; then
+    require_p0a_part_dir_for_mode
+  fi
+fi
 
 if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" <<'PY'
 import os
@@ -652,24 +688,7 @@ RESUME_TAR="$STAGE_DIR/resume_state.tar.gz"
 # every uploaded row must equal the part row with the same id (id, material, claim). Absent: refused
 # PART_MANIFEST_MISSING in every window that needs one (real time-one, counted and other non-lock-check real modes).
 # Never creates or rewrites a file. Used by --dry and the live path alike.
-# Real --time-one and --counted windows name their part with --part-dir; a real --lock-check window names the burned
-# pilot part with --p0a-part-dir (a stub or dryrun window checks it when given). Absent: refused PART_MANIFEST_MISSING
-# before any colab call (--dry and live), as the part check itself refuses in real modes.
-require_part_dir_for_mode() {
-  if [[ "$MODE" == "time-one" || "$MODE" == "counted" ]] && [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$PART_DIR" ]]; then
-    RUN_WHY="--$MODE requires --part-dir"
-    echo "PART_MANIFEST_MISSING: --$MODE requires --part-dir <the sealed part directory: part.json, checksums.txt, items.jsonl>; the items file is a projection kept outside the part (rdlab bakeoff-project), so its directory is never the part" >&2
-    exit 2
-  fi
-}
-
-require_p0a_part_dir_for_mode() {
-  if [[ "$MODE" == "lock-check" ]] && [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$P0A_PART_DIR" ]]; then
-    RUN_WHY="--$MODE requires --p0a-part-dir"
-    echo "PART_MANIFEST_MISSING: --$MODE requires --p0a-part-dir <the burned pilot's sealed part directory: part.json, checksums.txt, items.jsonl>; the pilot is named by its pinned SHA-256, never by a label" >&2
-    exit 2
-  fi
-}
+# (require_part_dir_for_mode / require_p0a_part_dir_for_mode are defined, and first run, before the judge preflight.)
 
 effective_part_dir() {
   if [[ -n "$PART_DIR" ]]; then
@@ -1145,6 +1164,7 @@ run_colab() {
   out="$(colab "$@" </dev/null 2>"$err_file")" || rc=$?
   err="$(cat "$err_file" 2>/dev/null || true)"
   rm -f "$err_file"
+  RUN_COLAB_LAST_ERR="$err"
   if [[ -n "$err" ]]; then
     printf '%s\n' "$err" | scrub_stream >> "$CLI_LOG"
   fi
@@ -1157,6 +1177,8 @@ run_colab() {
 
 S=""
 NEW_SUCCEEDED=0
+RUN_COLAB_LAST_ERR=""
+NO_SESSION_ASSIGNED=0
 PRE_SESSIONS=""
 MID_SESSIONS=""
 POST_SESSIONS=""
@@ -1233,10 +1255,10 @@ PY
   local jid
   for jid in $done_judges; do
     if [[ ! -f "$OUT_DIR/judge_done/${jid}.json" ]]; then
-      timeout "$dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${jid}.json" "$OUT_DIR/judge_done/${jid}.json" </dev/null >/dev/null 2>&1 || true
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${jid}.json" "$OUT_DIR/judge_done/${jid}.json" </dev/null >/dev/null 2>&1 || true
     fi
     if [[ ! -f "$OUT_DIR/rows/${jid}.jsonl" ]]; then
-      timeout "$dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${jid}.jsonl" "$OUT_DIR/rows/${jid}.jsonl" </dev/null >/dev/null 2>&1 || true
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${jid}.jsonl" "$OUT_DIR/rows/${jid}.jsonl" </dev/null >/dev/null 2>&1 || true
     fi
   done
 }
@@ -1266,16 +1288,16 @@ fetch_results_once() {
     eff_timeout="$fetch_timeout"
   fi
   if [[ "$MODE" == "probe" ]]; then
-    timeout "$eff_timeout" colab download -s "$S" "/content/probe.json" "$OUT_DIR/probe.json" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/probe.json" "$OUT_DIR/probe.json" </dev/null >/dev/null 2>&1 || true
   else
-    timeout "$eff_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
-    timeout "$eff_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
-    timeout "$eff_timeout" colab download -s "$S" "/content/gate_status.json" "$OUT_DIR/gate_status.json" </dev/null >/dev/null 2>&1 || true
-    timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
-    timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/gate_status.json" "$OUT_DIR/gate_status.json" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl" </dev/null >/dev/null 2>&1 || true
     if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
       mkdir -p "$OUT_DIR/logs"
-      timeout "$eff_timeout" colab download -s "$S" "/content/rdlab_run/logs/vm.log" "$OUT_DIR/logs/vm.log" </dev/null >/dev/null 2>&1 || true
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/rdlab_run/logs/vm.log" "$OUT_DIR/logs/vm.log" </dev/null >/dev/null 2>&1 || true
     fi
     "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" >/dev/null 2>&1 <<'PY' || true
 import shutil
@@ -1347,7 +1369,7 @@ periodic_fetch_progress_once() {
   local tmp_progress="$OUT_DIR/progress.jsonl.tmp.$$.$PROGRESS_FETCH_SEQ"
   local dl_rc=0
   local dl_err=""
-  dl_err="$(timeout "$PROGRESS_FETCH_TIMEOUT_SECONDS" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$tmp_progress" </dev/null 2>&1)" || dl_rc=$?
+  dl_err="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$PROGRESS_FETCH_TIMEOUT_SECONDS" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$tmp_progress" </dev/null 2>&1)" || dl_rc=$?
   if [[ "$dl_rc" -eq 0 ]] && [[ -f "$tmp_progress" ]]; then
     "$PYTHON_BIN" -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'src')); sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges; vm_judges.scrub_log_file_in_place(Path(sys.argv[2]))" "$REPO_ROOT" "$tmp_progress" >/dev/null 2>&1 || true
     mv -f "$tmp_progress" "$OUT_DIR/progress.jsonl"
@@ -1380,6 +1402,7 @@ write_outcome_draft() {
   RDLAB_SMOKE_POST_SESSIONS="$POST_SESSIONS" \
   RDLAB_UNTIL_STEP="$UNTIL_STEP" \
   RDLAB_FAILURE_CLASS="$RUN_FAILURE_CLASS" \
+  RDLAB_NO_SESSION_ASSIGNED="$NO_SESSION_ASSIGNED" \
   RDLAB_LIVE_USAGE_RATE="$LIVE_RATE_UNITS_PER_HOUR" \
   RDLAB_RATE_READ_AT_UTC="$RATE_READ_AT_UTC" \
   "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "$CARD" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" <<'PY'
@@ -1415,7 +1438,15 @@ else:
     cap_binds = "wall_x_rate"
     cap_source = "wall_x_rate"
 
-cost = round((runtime_seconds / 3600.0) * rate, 4)
+# A window whose `colab new` was refused at assign never had a machine: it costs nothing, whatever time the launcher
+# spent before and during the refused open (classify_colab_new_failure). Every other window books rate x runtime.
+no_session_assigned = os.environ.get("RDLAB_NO_SESSION_ASSIGNED", "").strip() == "1"
+if no_session_assigned:
+    cost = 0.0
+    cost_basis = "no_session_assigned"
+else:
+    cost = round((runtime_seconds / 3600.0) * rate, 4)
+    cost_basis = "rate_x_runtime"
 target_session = os.environ.get("RDLAB_SMOKE_SESSION_NAME", "")
 
 
@@ -1498,6 +1529,8 @@ payload: dict[str, object] = {
     "cap_binds": cap_binds,
     "cap_source": cap_source,
     "cost": cost,
+    "cost_basis": cost_basis,
+    "session_assigned": not no_session_assigned,
     "runtime": runtime_seconds,
     "runtime_seconds": runtime_seconds,
     "outcome": outcome,
@@ -1588,7 +1621,48 @@ payload["shard_item_ids"] = shard_item_ids_val
 payload["anchor_item_ids"] = anchor_item_ids_val
 payload["loop_order"] = loop_env
 out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8", newline="\n")
+# The run summary on stderr: what the outcome draft books.
+sys.stderr.write(
+    f"[outcome] id={run_id} outcome={outcome} cost={cost:g} cost_basis={cost_basis} "
+    f"failure_class={payload.get('failure_class') or 'none'} runtime_s={runtime_seconds}\n"
+)
 PY
+}
+
+# `colab new` failed: was a machine ever assigned? A session that was never assigned costs nothing (no_capacity).
+# Read once, after the failure: the session row in `colab sessions` (PRE_SESSIONS before `colab new`, POST_SESSIONS
+# now), new `[?]` orphan rows, the exit code and the client's error text. No session is assigned only when the session
+# is listed neither before nor after, no orphan row appeared, the exit code is non-zero and the error is the service
+# refusing the machine at assign (`POST .../tun/m/assign...: Service Unavailable`, as the real CLI printed it for
+# timeone-mu2, 2026-11-06; the URL is wrapped over lines, so the text is joined first). A session that is listed after
+# the failure was assigned: it is adopted, so the EXIT trap stops it and the outcome books rate x runtime. Anything
+# else keeps the old booking (rate x runtime), the safe side when it is not known that nothing was assigned.
+classify_colab_new_failure() {
+  local new_rc="$1" new_err="$2" listed=0 pre_orphans=0 post_orphans=0 assign_refused=0
+  POST_SESSIONS="$(run_colab sessions </dev/null || true)"
+  if printf '%s\n' "$POST_SESSIONS" | grep -q "^\[$SESSION_NAME\]"; then
+    listed=1
+  fi
+  pre_orphans="$(printf '%s\n' "$PRE_SESSIONS" | grep -Ec '^\[\?\]' || true)"
+  post_orphans="$(printf '%s\n' "$POST_SESSIONS" | grep -Ec '^\[\?\]' || true)"
+  if printf '%s' "$new_err" | tr -d '\r\n' | grep -Eq '/tun/m/assign\?[^ ]*: Service Unavailable'; then
+    assign_refused=1
+  fi
+  if [[ "$listed" -eq 1 ]]; then
+    S="$SESSION_NAME"
+    NEW_SUCCEEDED=1
+    RUN_FAILURE_CLASS="SESSION_OPEN_FAILED_AFTER_ASSIGN"
+    RUN_WHY="colab new failed for $SESSION_NAME (rc=$new_rc) but colab sessions lists [$SESSION_NAME]: a machine was assigned; stopping it"
+    log_msg "COLAB_NEW_FAILED_SESSION_ASSIGNED session=$SESSION_NAME rc=$new_rc"
+  elif [[ "$new_rc" -ne 0 ]] && [[ "$assign_refused" -eq 1 ]] && [[ "$post_orphans" -le "$pre_orphans" ]]; then
+    NO_SESSION_ASSIGNED=1
+    RUN_FAILURE_CLASS="no_capacity"
+    RUN_WHY="no_capacity: colab new for $SESSION_NAME was refused at assign (Service Unavailable, rc=$new_rc); [$SESSION_NAME] listed neither before nor after, no new [?] row; no session was assigned, cost 0"
+    log_msg "NO_CAPACITY session=$SESSION_NAME rc=$new_rc cost=0 cost_basis=no_session_assigned failure_class=no_capacity"
+  else
+    RUN_WHY="colab new failed for $SESSION_NAME (rc=$new_rc)"
+    log_msg "COLAB_NEW_FAILED session=$SESSION_NAME rc=$new_rc listed_after=$listed assign_refused=$assign_refused orphans_before=$pre_orphans orphans_after=$post_orphans"
+  fi
 }
 
 stop_all() {
@@ -1726,9 +1800,11 @@ if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
     echo "SESSION_NAME_IN_USE: session [$SESSION_NAME] already exists in colab sessions" >&2
     exit 1
   fi
-  if ! run_colab new -s "$SESSION_NAME" </dev/null >/dev/null; then
+  NEW_RC=0
+  run_colab new -s "$SESSION_NAME" </dev/null >/dev/null || NEW_RC=$?
+  if [[ "$NEW_RC" -ne 0 ]]; then
+    classify_colab_new_failure "$NEW_RC" "$RUN_COLAB_LAST_ERR"
     flock -u 9 || true
-    RUN_WHY="colab new failed for $SESSION_NAME"
     exit 1
   fi
   S="$SESSION_NAME"
@@ -1771,9 +1847,11 @@ if [[ "$MODE" == "probe" ]]; then
     echo "SESSION_NAME_IN_USE: session [$SESSION_NAME] already exists in colab sessions" >&2
     exit 1
   fi
-  if ! run_colab new -s "$SESSION_NAME" </dev/null >/dev/null; then
+  NEW_RC=0
+  run_colab new -s "$SESSION_NAME" </dev/null >/dev/null || NEW_RC=$?
+  if [[ "$NEW_RC" -ne 0 ]]; then
+    classify_colab_new_failure "$NEW_RC" "$RUN_COLAB_LAST_ERR"
     flock -u 9 || true
-    RUN_WHY="colab new failed for $SESSION_NAME"
     exit 1
   fi
   S="$SESSION_NAME"
@@ -1804,7 +1882,7 @@ if [[ "$MODE" == "probe" ]]; then
 
   build_probe_env_args
   EXEC_RC=0
-  timeout --signal=TERM --kill-after=15 "${RIG_TIMEOUT}s" \
+  timeout --signal=TERM --kill-after="$COLAB_KILL_GRACE_SECONDS" "${RIG_TIMEOUT}s" \
     colab exec -s "$S" "${PROBE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || EXEC_RC=$?
 
   if [[ -f "$DEADLINE_MARKER" ]]; then
@@ -2311,9 +2389,11 @@ if printf '%s\n' "$PRE_SESSIONS" | grep -Fq "[$SESSION_NAME]"; then
   echo "SESSION_NAME_IN_USE: session [$SESSION_NAME] already exists in colab sessions" >&2
   exit 1
 fi
-if ! run_colab new "${COLAB_NEW_FLAGS[@]+"${COLAB_NEW_FLAGS[@]}"}" -s "$SESSION_NAME" </dev/null >/dev/null; then
+NEW_RC=0
+run_colab new "${COLAB_NEW_FLAGS[@]+"${COLAB_NEW_FLAGS[@]}"}" -s "$SESSION_NAME" </dev/null >/dev/null || NEW_RC=$?
+if [[ "$NEW_RC" -ne 0 ]]; then
+  classify_colab_new_failure "$NEW_RC" "$RUN_COLAB_LAST_ERR"
   flock -u 9 || true
-  RUN_WHY="colab new failed for $SESSION_NAME"
   exit 1
 fi
 S="$SESSION_NAME"
@@ -2437,7 +2517,7 @@ ALIVE_ATTEMPT=0
 while (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); do
   ALIVE_ATTEMPT=$(( ALIVE_ATTEMPT + 1 ))
   ALIVE_RC=0
-  ALIVE_OUT="$(timeout "$ALIVE_PROBE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=alive -f "$VM_SCRIPT" --timeout="$ALIVE_PROBE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || ALIVE_RC=$?
+  ALIVE_OUT="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$ALIVE_PROBE_TIMEOUT_SECONDS" colab exec -s "$S" --env RDLAB_STEP=alive -f "$VM_SCRIPT" --timeout="$ALIVE_PROBE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || ALIVE_RC=$?
   if [[ "$ALIVE_RC" -eq 0 ]] && printf '%s\n' "$ALIVE_OUT" | grep -q '^VM_ALIVE_OK'; then
     ALIVE_OK=1
     log_msg "ALIVE_PROBE_OK session=$S attempt=${ALIVE_ATTEMPT}/${ALIVE_PROBE_MAX_TRIES}"
@@ -2447,10 +2527,18 @@ while (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); do
   if (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); then
     # One kernel per session (docs/colab-cli-contract.md): an attempt that timed out locally may still be running on
     # the VM, and the next exec would queue behind it and time out too. Restart the kernel (ends that cell) first.
+    # A "Connection was lost" failure (the client's handshake gave up) most likely never started the cell, but it may
+    # have: the same bounded restart is cheap insurance before the retry.
+    RESTART_REASON=""
     if [[ "$ALIVE_RC" -eq 124 || "$ALIVE_RC" -eq 137 ]] || printf '%s\n' "$ALIVE_OUT" | grep -qi 'timed out'; then
+      RESTART_REASON="attempt_timed_out_locally_cell_may_still_run"
+    elif printf '%s\n' "$ALIVE_OUT" | grep -Fq 'Connection was lost'; then
+      RESTART_REASON="connection_lost_cell_may_have_started"
+    fi
+    if [[ -n "$RESTART_REASON" ]]; then
       RESTART_RC=0
-      timeout "$RESTART_KERNEL_TIMEOUT_SECONDS" colab restart-kernel -s "$S" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || RESTART_RC=$?
-      log_msg "ALIVE_PROBE_KERNEL_RESTART session=$S after_attempt=${ALIVE_ATTEMPT} rc=$RESTART_RC reason=attempt_timed_out_locally_cell_may_still_run"
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$RESTART_KERNEL_TIMEOUT_SECONDS" colab restart-kernel -s "$S" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || RESTART_RC=$?
+      log_msg "ALIVE_PROBE_KERNEL_RESTART session=$S after_attempt=${ALIVE_ATTEMPT} rc=$RESTART_RC reason=$RESTART_REASON"
     fi
     sleep "$ALIVE_PROBE_SLEEP_SECONDS"
   fi
@@ -2465,7 +2553,7 @@ fi
 
 build_gate_env_args
 GATE_RC=0
-GATE_OUT="$(timeout "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
+GATE_OUT="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$GATE_TIMEOUT_SECONDS" colab exec -s "$S" "${GATE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$GATE_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream | tee -a "$CLI_LOG")" || GATE_RC=$?
 if [[ "$GATE_RC" -ne 0 ]] || ! printf '%s\n' "$GATE_OUT" | grep -q '^VM_GATE_OK'; then
   flock -u 9 || true
   if printf '%s\n' "$GATE_OUT" | grep -Eq 'VM_DISK_INSUFFICIENT|VM_PYTHON_UNAVAILABLE|VM_PYTHON_INSTALL_FAILED|PYTHON_ARCHIVE_TOO_LARGE|PYTHON_INSTALL_TIMEOUT|PYTHON_ARCHIVE_SHA256_MISMATCH|PYTHON_BUILD_CHANGED|UV_VERSION_CHANGED|PINNED_UV_DOWNLOAD_FAILED|PINNED_UV_SIZE_MISMATCH|PINNED_UV_SHA256_MISMATCH|PINNED_UV_BAD_MEMBER|PINNED_UV_VERSION_MISMATCH|FORCE_PINNED_UV_INVALID|VM_ITEMS_DIR_UNAVAILABLE|FORBIDDEN_STORAGE_PATH|DEVICE_INDEX_CHECK_FAILED|BAKEOFF_JUDGE_DEVICE_INVALID'; then
@@ -2513,61 +2601,61 @@ fi
 ) </dev/null >/dev/null 2>&1 9>&- &
 WATCHDOG_PID="$!"
 
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_DEVICE_PY" "/content/device.py" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_DEVICE_PY" "/content/device.py" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
   RUN_WHY="colab upload failed for /content/device.py on session $S"
   exit 1
 }
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
   RUN_WHY="colab upload failed for /content/repo_bundle.tar.gz on session $S"
   exit 1
 }
-timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
   RUN_WHY="colab upload failed for /content/receipts_bundle.tar.gz on session $S"
   exit 1
 }
 if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ANCHOR_ITEMS_FILE" "/content/rdlab_items/anchor_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ANCHOR_ITEMS_FILE" "/content/rdlab_items/anchor_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
     RUN_WHY="colab upload failed for /content/rdlab_items/anchor_items.jsonl on session $S"
     exit 1
   }
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_ITEMS_FILE" "/content/rdlab_items/p0a_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_ITEMS_FILE" "/content/rdlab_items/p0a_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
     RUN_WHY="colab upload failed for /content/rdlab_items/p0a_items.jsonl on session $S"
     exit 1
   }
   if [[ -f "$STAGED_P0A_PART_JSON_FILE" ]]; then
-    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_PART_JSON_FILE" "/content/rdlab_items/p0a_part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_PART_JSON_FILE" "/content/rdlab_items/p0a_part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
       RUN_WHY="colab upload failed for /content/rdlab_items/p0a_part.json on session $S"
       exit 1
     }
-    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_CHECKSUMS_FILE" "/content/rdlab_items/p0a_checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_CHECKSUMS_FILE" "/content/rdlab_items/p0a_checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
       RUN_WHY="colab upload failed for /content/rdlab_items/p0a_checksums.txt on session $S"
       exit 1
     }
   fi
 else
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
     RUN_WHY="colab upload failed for /content/rdlab_items/items.jsonl on session $S"
     exit 1
   }
   if [[ -f "$STAGED_PART_JSON_FILE" ]]; then
-    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_JSON_FILE" "/content/rdlab_items/part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_JSON_FILE" "/content/rdlab_items/part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
       RUN_WHY="colab upload failed for /content/rdlab_items/part.json on session $S"
       exit 1
     }
-    timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_CHECKSUMS_FILE" "/content/rdlab_items/checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_CHECKSUMS_FILE" "/content/rdlab_items/checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
       RUN_WHY="colab upload failed for /content/rdlab_items/checksums.txt on session $S"
       exit 1
     }
   fi
 fi
 if [[ -f "$STAGED_BINDING_FILE" ]]; then
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_BINDING_FILE" "/content/rdlab_items/launcher_part_binding.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_BINDING_FILE" "/content/rdlab_items/launcher_part_binding.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
     RUN_WHY="colab upload failed for /content/rdlab_items/launcher_part_binding.json on session $S"
     exit 1
   }
 fi
 if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
-  timeout "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
     RUN_WHY="colab upload failed for /content/resume_state.tar.gz on session $S"
     exit 1
   }
@@ -2577,7 +2665,7 @@ cleanup_stage
 build_exec_env_args
 EXEC_RC=0
 : > "$EXEC_OUT_TMP"
-timeout --signal=TERM --kill-after=15 "${RIG_TIMEOUT}s" \
+timeout --signal=TERM --kill-after="$COLAB_KILL_GRACE_SECONDS" "${RIG_TIMEOUT}s" \
   colab exec -s "$S" "${EXEC_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null >"$EXEC_OUT_TMP" 2>&1 9>&- &
 EXEC_PID="$!"
 

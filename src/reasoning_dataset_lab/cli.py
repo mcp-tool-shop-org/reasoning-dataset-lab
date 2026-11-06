@@ -731,14 +731,14 @@ def _build_parser() -> _StructuredArgumentParser:
         dest="part_id",
         type=str,
         default=None,
-        help="Part identifier (must be in the burned pilot-40b allow-set).",
+        help="Optional part_id; when given it must be the burned pilot's (bakeoff-d-t10-sealed). The pilot is named by --part-dir.",
     )
     blm_parser.add_argument(
         "--part-dir",
         dest="part_dir",
         type=Path,
         default=None,
-        help="Optional part directory to resolve part_id from manifest.json.",
+        help="Required: the burned pilot's sealed part directory (part.json and checksums.txt, checked against the pinned SHA-256).",
     )
 
     return parser

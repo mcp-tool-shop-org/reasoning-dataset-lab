@@ -83,9 +83,13 @@ CUBLAS_WORKSPACE_CONFIG_VALUE = ":4096:8"
 DEFAULT_CANARY_CONFIG_PATH = Path(__file__).resolve().parent / "canary_config.json"
 DEFAULT_CANARY_LOGPROB_TOLERANCE_FLOOR = 1e-5
 CANARY_LOGPROB_TOLERANCE_FLOOR_REASON = "10x the 1e-6 logprob serialization rounding quantum"
-ALLOWED_LOGPROB_MASS_PART_IDS: frozenset[str] = frozenset(
-    {"pilot-40b", "pilot_40b", "part_pilot_40b", "part-pilot-40b"}
-)
+# The burned pilot part, named by content (the same pins as `PILOT_40B_*` in scripts/colab/vm_judges.py, which this
+# package cannot import; tests/test_colab_judge_launcher.py checks the two copies are equal): its `part_id` (shared by
+# every writer-built part, so never enough alone) and the SHA-256 of its `part.json` and `items.jsonl` as its
+# `checksums.txt` records them. `bakeoff-logprob-mass` runs only on this part.
+PILOT_40B_PART_ID = "bakeoff-d-t10-sealed"
+PILOT_40B_PART_JSON_SHA256 = "9ae6708e0d5b3fae8535899cb1b4df5ee0688dbb5f21206f62e8b4457ea5c067"
+PILOT_40B_ITEMS_JSONL_SHA256 = "c64e982d248fafd60cf121c14bb31cdd4e5093bcb8accc83418a133f092ba675"
 SCHEDULE_FILENAME = "schedule.json"
 SHARD_MANIFEST_FILENAME = "shard_manifest.json"
 GOLDEN_ANCHOR_MANIFEST_FILENAME = "golden_anchor_manifest.json"
@@ -4432,6 +4436,64 @@ def _resolve_part_id_from_dir(
     return found_part_ids[0] if found_part_ids else None
 
 
+def verify_pinned_pilot_part_dir(part_dir: Path | str | None) -> dict[str, str]:
+    """Name the burned pilot part by content: `part_dir` must hold a `part.json` whose `part_id` is
+    `PILOT_40B_PART_ID` and whose SHA-256 is `PILOT_40B_PART_JSON_SHA256`, and a `checksums.txt` that records that
+    `part.json` hash and `PILOT_40B_ITEMS_JSONL_SHA256` for `items.jsonl`; an `items.jsonl` in the directory must hash to
+    that line (it is hashed, never parsed). Reads nothing else. Refuses `BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN`.
+    Returns `{part_id, part_json_sha256, items_jsonl_sha256}`."""
+    hint = "Pass --part-dir <the burned pilot's sealed part directory: part.json and checksums.txt>."
+    if part_dir is None:
+        raise refused_error(
+            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
+            "bakeoff-logprob-mass runs only on the burned pilot part, named by its pinned part.json and items.jsonl "
+            "SHA-256; no --part-dir was given, and no label or row part_id stands in for it.",
+            hint,
+        )
+    pdir = Path(part_dir)
+    part_json = pdir / "part.json"
+    checksums = pdir / "checksums.txt"
+    problems: list[str] = []
+    try:
+        raw = part_json.read_bytes()
+        doc = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise refused_error(
+            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN", f"Cannot read {part_json} as JSON: {exc}", hint
+        ) from exc
+    part_json_sha = hashlib.sha256(raw).hexdigest()
+    pid = str(doc.get("part_id") or "").strip() if isinstance(doc, Mapping) else ""
+    sums: dict[str, str] = {}
+    if checksums.is_file():
+        for ln in checksums.read_text(encoding="utf-8").splitlines():
+            m = re.match(r"^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$", ln.strip())
+            if m:
+                sums[m.group(2)] = m.group(1)
+    else:
+        problems.append("checksums.txt missing")
+    if pid != PILOT_40B_PART_ID:
+        problems.append(f"part_id {pid!r}")
+    if part_json_sha != PILOT_40B_PART_JSON_SHA256:
+        problems.append(f"part.json SHA-256 {part_json_sha}")
+    if sums and sums.get("part.json") != part_json_sha:
+        problems.append("checksums.txt part.json line")
+    items_sha = sums.get("items.jsonl", "")
+    if items_sha != PILOT_40B_ITEMS_JSONL_SHA256:
+        problems.append(f"checksums.txt items.jsonl SHA-256 {items_sha or 'missing'}")
+    items_file = pdir / "items.jsonl"
+    if items_file.is_file() and hashlib.sha256(items_file.read_bytes()).hexdigest() != items_sha:
+        problems.append("items.jsonl does not hash to its checksums.txt line")
+    if problems:
+        raise refused_error(
+            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
+            f"{pdir} is not the burned pilot part (pinned part_id {PILOT_40B_PART_ID!r}, part.json "
+            f"{PILOT_40B_PART_JSON_SHA256[:12]}..., items.jsonl {PILOT_40B_ITEMS_JSONL_SHA256[:12]}...); "
+            f"mismatch: {', '.join(problems)}.",
+            hint,
+        )
+    return {"part_id": pid, "part_json_sha256": part_json_sha, "items_jsonl_sha256": items_sha}
+
+
 def check_bakeoff_logprob_mass(
     judge_output_dir: Path,
     *,
@@ -4441,14 +4503,17 @@ def check_bakeoff_logprob_mass(
 ) -> dict[str, Any]:
     """Check whether summed yes+no variant probability mass is >= `threshold` for every binary call (`not_applicable` for Flow-Judge).
 
-    Refuses to run on any part outside `ALLOWED_LOGPROB_MASS_PART_IDS` (`pilot-40b`).
+    Runs only on the burned pilot part, named by its pinned identity (`verify_pinned_pilot_part_dir`): `part_dir` is
+    required, and `part_id`, when given, must be the pilot's `PILOT_40B_PART_ID`. No label names the pilot.
     """
-    if part_id is not None and str(part_id).strip().lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+    if part_id is not None and str(part_id).strip() != PILOT_40B_PART_ID:
         raise refused_error(
             "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
-            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={part_id!r}.",
-            "Run bakeoff-logprob-mass only on the burned pilot-40b part (--part-id pilot-40b).",
+            f"bakeoff-logprob-mass runs only on the burned pilot part (part_id {PILOT_40B_PART_ID!r}, named by its "
+            f"pinned SHA-256), got part_id={part_id!r}.",
+            "Pass --part-dir <the burned pilot's sealed part directory> (and --part-id bakeoff-d-t10-sealed, optional).",
         )
+    pilot_identity = verify_pinned_pilot_part_dir(part_dir)
 
     rows_dir = Path(judge_output_dir) / ROWS_DIRNAME
     if not rows_dir.is_dir():
@@ -4465,25 +4530,7 @@ def check_bakeoff_logprob_mass(
             "Run bakeoff-judge before checking logprob mass.",
         )
 
-    resolved_part_id = str(part_id).strip() if part_id is not None else None
-    if resolved_part_id is None and part_dir is not None:
-        resolved_part_id = _resolve_part_id_from_dir(part_dir) or Path(part_dir).name
-    if resolved_part_id is None:
-        row_part_ids = [
-            str(first_row["part_id"]).strip()
-            for rf in row_files
-            for ln in rf.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-            for first_row in (json.loads(ln),)
-            if isinstance(first_row, Mapping) and first_row.get("part_id")
-        ]
-        resolved_part_id = row_part_ids[0] if row_part_ids else None
-    if resolved_part_id is None or resolved_part_id.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
-        raise refused_error(
-            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
-            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={resolved_part_id!r}.",
-            "Pass --part-id pilot-40b (or run on outputs produced from the burned pilot-40b part).",
-        )
+    resolved_part_id = pilot_identity["part_id"]
 
     judges_report: dict[str, Any] = {}
     for rf in row_files:
@@ -4527,6 +4574,8 @@ def check_bakeoff_logprob_mass(
         "part_id": resolved_part_id,
         "threshold": threshold,
         "judges": judges_report,
+        "part_json_sha256": pilot_identity["part_json_sha256"],
+        "items_jsonl_sha256": pilot_identity["items_jsonl_sha256"],
     }
 
 
@@ -6279,42 +6328,19 @@ def verify_lock_check_two_inputs(
         anchor_path = Path(anchor_items_or_path)
         anchor_items, anchor_sha256 = load_judge_items(anchor_path)
         anchor_dir = anchor_path.resolve().parent if anchor_path.is_file() else anchor_path.resolve()
-        is_shared_anchor_dir = (
-            (anchor_path.resolve().is_file() and anchor_path.resolve().name == "anchor_items.jsonl")
-            or (anchor_dir / "anchor_items.jsonl").exists()
-            or (anchor_dir / "p0a_items.jsonl").exists()
-            or anchor_dir.name.strip().lower() == "rdlab_items"
-        )
-        anchor_manifest_part_id = (
-            None
-            if is_shared_anchor_dir
-            else _resolve_part_id_from_dir(
-                anchor_path,
-                include_p0a_manifest=False,
-                allow_synthesized=False,
-            )
-        )
-        if anchor_dir.name.strip().lower() in ALLOWED_LOGPROB_MASS_PART_IDS or (
-            anchor_manifest_part_id is not None and anchor_manifest_part_id.strip().lower() in ALLOWED_LOGPROB_MASS_PART_IDS
+        # Anchors taken from the burned pilot part are refused by content (the pilot's pinned part.json SHA-256 beside
+        # them), never by a directory, manifest or row label; the ID checks below refuse anchors outside the counted
+        # part and any overlap with the P0a items.
+        anchor_part_json = anchor_dir / "part.json"
+        if (
+            anchor_part_json.is_file()
+            and hashlib.sha256(anchor_part_json.read_bytes()).hexdigest() == PILOT_40B_PART_JSON_SHA256
         ):
             raise refused_error(
                 "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
                 f"--anchor-items must be 50 anchor items from the counted part, not burned pilot {PILOT_BURNED_PART_DESC}.",
                 "Pass 50 anchor items from the counted part to --anchor-items and the 114 burned pilot items to --p0a-items.",
             )
-        anchor_jsonl = resolve_items_jsonl_path(anchor_path)
-        for raw_ln in anchor_jsonl.read_text(encoding="utf-8").splitlines():
-            if not raw_ln.strip():
-                continue
-            obj = json.loads(raw_ln)
-            if isinstance(obj, Mapping) and obj.get("part_id") is not None:
-                rpid = str(obj["part_id"]).strip().lower()
-                if rpid in ALLOWED_LOGPROB_MASS_PART_IDS:
-                    raise refused_error(
-                        "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
-                        f"--anchor-items contains burned pilot part_id={obj['part_id']!r}; anchors must come from the counted part.",
-                        "Pass 50 anchor items from the counted part to --anchor-items.",
-                    )
     else:
         anchor_items = tuple(anchor_items_or_path)
         anchor_sha256 = ""

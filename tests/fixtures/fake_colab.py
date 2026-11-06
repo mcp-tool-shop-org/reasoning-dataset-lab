@@ -11,6 +11,7 @@ Enforces the recorded Colab CLI contract against `colab_help.txt` and
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import json
@@ -1783,6 +1784,48 @@ def _kernel_cell_preamble(lock_path: Path, pid_path: Path, hang_seconds: float) 
     )
 
 
+@contextlib.contextmanager
+def _state_lock(state_dir: Path, name: str) -> Any:
+    """An exclusive lock on one piece of the fake's state (`<state_dir>/state_<name>.lock`).
+
+    `exec` releases the sessions lock before it runs the cell, so two execs on one session run side by side; each
+    read-then-rewrite of a session's state files (`session_env_<sid>.json`, `session_cells_<sid>.json`) and of the alive
+    attempt log is done under this lock, so neither write loses the other's update."""
+    import fcntl
+
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
+    with (state_dir / f"state_{safe}.lock").open("a+", encoding="utf-8") as fh:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _state_rmw_pause() -> None:
+    """Test hook: `FAKE_COLAB_STATE_RMW_DELAY` seconds between a state file's read and its rewrite, so a test can open
+    the window two concurrent execs would race in."""
+    delay = float(os.environ.get("FAKE_COLAB_STATE_RMW_DELAY", "0") or "0")
+    if delay > 0:
+        time.sleep(delay)
+
+
+def _append_session_cell(state_dir: Path, sid: str, cell: dict[str, Any]) -> None:
+    """Append one cell record to `session_cells_<sid>.json`: read, append and rewrite under the session's state lock."""
+    cells_file = state_dir / f"session_cells_{sid}.json"
+    with _state_lock(state_dir, f"session_{sid}"):
+        cells: list[dict[str, Any]] = []
+        if cells_file.is_file():
+            try:
+                loaded = json.loads(cells_file.read_text(encoding="utf-8"))
+                cells = loaded if isinstance(loaded, list) else []
+            except Exception:
+                cells = []
+        _state_rmw_pause()
+        cells.append(cell)
+        cells_file.write_text(json.dumps(cells, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
 def _append_history(state_dir: Path, sid: str, code: str, stdout: str, stderr: str) -> None:
     """`~/.config/colab-cli/history/<session>.jsonl` (colab_cli/commands/execution.py:262-272): code and outputs."""
     hist = state_dir / "history" / f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', sid)}.jsonl"
@@ -2072,6 +2115,20 @@ def main(argv: list[str] | None = None) -> int:
         if any(s.get("session_id") == sid for s in sessions):
             sys.stderr.write(f"Session [{sid}] already exists\n")
             return 1
+        assign_error = os.environ.get("FAKE_COLAB_NEW_ASSIGN_ERROR", "").strip()
+        if assign_error:
+            # The service refuses the machine at assign: no session exists. Text as the real CLI printed it for
+            # timeone-mu2 (2026-11-06, colab-cli.log): a ColabRequestError on POST .../tun/m/assign, wrapped at 80
+            # columns, exit 1, with the "Creating session" line on stdout.
+            accel = _get_opt("--gpu") or "CPU"
+            variant = "DEFAULT" if accel.upper() == "CPU" else "GPU"
+            print(f"[colab] Creating session '{sid}'...")
+            sys.stderr.write(
+                "ColabRequestError: Failed to issue request POST \n"
+                "https://colab.research.google.com/tun/m/assign?nbh=bd567f29_c462_4501_a761_98f31\n"
+                f"efe238e........&variant={variant}&accelerator={accel}: {assign_error}\n"
+            )
+            return 1
         gpu = _get_opt("--gpu") or "CPU"
         shape = "High-RAM" if "--high-mem" in args else "Standard"
         # The service may give a different machine than requested (e.g. a High-RAM A100, the 80 GB card, for
@@ -2083,6 +2140,11 @@ def main(argv: list[str] | None = None) -> int:
             shape = ov_shape.strip() or "Standard"
         sessions.append({"session_id": sid, "gpu": gpu, "shape": shape})
         sessions_file.write_text(json.dumps(sessions), encoding="utf-8", newline="\n")
+        if os.environ.get("FAKE_COLAB_NEW_FAIL_AFTER_ASSIGN") == "1":
+            # The machine was assigned (the session exists and bills) but the client then failed: exit 1.
+            print(f"[colab] Creating session '{sid}'...")
+            sys.stderr.write("ColabRequestError: Failed to issue request POST \nhttps://colab.research.google.com/tun/m/kernel: Bad Gateway\n")
+            return 1
         print(f"Created session [{sid}] ({gpu})")
         return 0
 
@@ -2243,16 +2305,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"Invalid --timeout={timeout_raw}\n")
             return 2
 
-        session_env_file = state_dir / f"session_env_{sid}.json"
-        persisted_env: dict[str, str] = {}
-        if session_env_file.is_file():
-            try:
-                persisted_env = json.loads(
-                    session_env_file.read_text(encoding="utf-8")
-                )
-            except Exception:
-                persisted_env = {}
-
+        new_env: dict[str, str] = {}
         for kv in parsed_opts.get("--env", []):
             if "=" not in kv:
                 sys.stderr.write(f"Invalid --env value (expected KEY=VALUE): {kv}\n")
@@ -2261,13 +2314,27 @@ def main(argv: list[str] | None = None) -> int:
             if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
                 sys.stderr.write(f"Invalid --env variable name: {k}\n")
                 return 2
-            persisted_env[k] = v
+            new_env[k] = v
 
-        session_env_file.write_text(
-            json.dumps(persisted_env, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
+        # Read, update and rewrite the session's persisted env under the session's state lock (two execs on one
+        # session run side by side once the sessions lock is released).
+        session_env_file = state_dir / f"session_env_{sid}.json"
+        persisted_env: dict[str, str] = {}
+        with _state_lock(state_dir, f"session_{sid}"):
+            if session_env_file.is_file():
+                try:
+                    persisted_env = json.loads(
+                        session_env_file.read_text(encoding="utf-8")
+                    )
+                except Exception:
+                    persisted_env = {}
+            _state_rmw_pause()
+            persisted_env.update(new_env)
+            session_env_file.write_text(
+                json.dumps(persisted_env, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
 
         exec_env = {
             k: v
@@ -2317,32 +2384,42 @@ def main(argv: list[str] | None = None) -> int:
         step = exec_env.get("RDLAB_STEP", "run")
         if step == "alive":
             alive_log = state_dir / "alive_attempts.jsonl"
-            attempt_idx = 1
-            if alive_log.is_file():
-                attempt_idx = (
-                    len(
-                        [
-                            ln
-                            for ln in alive_log.read_text(encoding="utf-8").splitlines()
-                            if ln.strip()
-                        ]
-                    )
-                    + 1
-                )
             fail_count = int(os.environ.get("FAKE_COLAB_ALIVE_FAIL_COUNT", "0") or "0")
-            failed_this_try = attempt_idx <= fail_count
-            with alive_log.open("a", encoding="utf-8", newline="\n") as afh:
-                afh.write(
-                    json.dumps(
-                        {
-                            "session_id": sid,
-                            "attempt": attempt_idx,
-                            "failed": failed_this_try,
-                            "ts": time.time(),
-                        }
+            # Count and append under one lock, so two alive execs never take the same attempt number.
+            with _state_lock(state_dir, "alive_attempts"):
+                attempt_idx = 1
+                if alive_log.is_file():
+                    attempt_idx = (
+                        len(
+                            [
+                                ln
+                                for ln in alive_log.read_text(encoding="utf-8").splitlines()
+                                if ln.strip()
+                            ]
+                        )
+                        + 1
                     )
-                    + "\n"
-                )
+                _state_rmw_pause()
+                failed_this_try = attempt_idx <= fail_count
+                with alive_log.open("a", encoding="utf-8", newline="\n") as afh:
+                    afh.write(
+                        json.dumps(
+                            {
+                                "session_id": sid,
+                                "attempt": attempt_idx,
+                                "failed": failed_this_try,
+                                "ts": time.time(),
+                            }
+                        )
+                        + "\n"
+                    )
+            if attempt_idx == 1 and os.environ.get("FAKE_COLAB_ALIVE_CLIENT_IGNORES_SIGTERM_FIRST") == "1":
+                # A local client that ignores SIGTERM and hangs (no cell runs): only SIGKILL ends it.
+                import signal as _signal
+
+                _signal.signal(_signal.SIGTERM, _signal.SIG_IGN)
+                time.sleep(600)
+                return 1
             if failed_this_try:
                 sys.stderr.write("Connection was lost\n")
                 return 1
@@ -2369,18 +2446,15 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(
                 "Traceback (most recent call last): cell crashed before writing status.json\n"
             )
-            prior_cells.append(
+            _append_session_cell(
+                state_dir,
+                sid,
                 {
                     "step": step,
                     "py_file": str(py_path),
                     "env": dict(persisted_env),
                     "rc": 1,
-                }
-            )
-            session_cells_file.write_text(
-                json.dumps(prior_cells, indent=2) + "\n",
-                encoding="utf-8",
-                newline="\n",
+                },
             )
             if os.environ.get("FAKE_COLAB_FORCE_EXEC_RC_ZERO", "1") == "1":
                 return 0
@@ -2645,19 +2719,16 @@ def main(argv: list[str] | None = None) -> int:
                 "raise SystemExit(int(rc) if isinstance(rc, int) else 0)\n"
             )
             if step == "run" and os.environ.get("FAKE_COLAB_LOST_STREAM") == "1":
-                prior_cells.append(
+                _append_session_cell(
+                    state_dir,
+                    sid,
                     {
                         "step": step,
                         "py_file": str(py_path),
                         "env": dict(persisted_env),
                         "rc": 0,
                         "lost_stream": True,
-                    }
-                )
-                session_cells_file.write_text(
-                    json.dumps(prior_cells, indent=2) + "\n",
-                    encoding="utf-8",
-                    newline="\n",
+                    },
                 )
                 print('{"kind":"stream_started","step":"run"}', flush=True)
                 subprocess.Popen(
@@ -2719,18 +2790,15 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"Execution timed out after {timeout_s}s\n")
             return 124
 
-        prior_cells.append(
+        _append_session_cell(
+            state_dir,
+            sid,
             {
                 "step": step,
                 "py_file": str(py_path),
                 "env": dict(persisted_env),
                 "rc": int(proc.returncode),
-            }
-        )
-        session_cells_file.write_text(
-            json.dumps(prior_cells, indent=2) + "\n",
-            encoding="utf-8",
-            newline="\n",
+            },
         )
 
         status_env = exec_env.get("RDLAB_STATUS_FILE")

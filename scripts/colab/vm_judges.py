@@ -253,7 +253,6 @@ REQUIRED_VM_DISK_BYTES = (
 
 ALLOWED_ITEM_FIELDS: frozenset[str] = frozenset({"id", "material", "claim"})
 REQUIRED_ITEM_FIELDS_ORDERED: tuple[str, str, str] = ("id", "material", "claim")
-ALLOWED_LOGPROB_MASS_PART_IDS: frozenset[str] = frozenset({"pilot-40b"})
 
 
 # Immutable judge specification (NamedTuple avoids sys.modules lookup on isolated exec)
@@ -2906,26 +2905,24 @@ def check_bakeoff_logprob_mass(
     judge_output_dir: Path,
     *,
     threshold: float = 0.99,
-    part_id: str | None = None,
-    part_dir: Path | None = None,
     verified_pilot_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compute the burned `pilot-40b` yes/no token log-probability mass harness readout from `rows/*.jsonl`.
+    """Compute the burned pilot's yes/no token log-probability mass harness readout from `rows/*.jsonl`.
 
-    `verified_pilot_identity` is a part identity from `read_part_identity` whose hashes are the burned pilot's
-    (`is_pilot_40b`); the readout then records the part's real `part_id` and `part_json_sha256`.
+    The pilot is named by its pinned identity only: `verified_pilot_identity` is a part identity from
+    `read_part_identity` whose `part_id` and `part.json` / `items.jsonl` SHA-256 are the `PILOT_40B_*` pins. There is
+    no label route (a `part_id` alone cannot name the pilot: every writer-built part shares it). Refuses
+    `BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN` otherwise. The readout records the part's real `part_id` and hashes.
     """
-    if verified_pilot_identity is not None and verified_pilot_identity.get("is_pilot_40b") is not True:
+    if not is_pinned_pilot_identity(verified_pilot_identity):
+        got = dict(verified_pilot_identity) if isinstance(verified_pilot_identity, Mapping) else {}
         raise RefusalError(
             "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
-            "bakeoff-logprob-mass runs only on the burned pilot part, identified by its part.json and items.jsonl "
-            f"SHA-256; got part_id={verified_pilot_identity.get('part_id')!r} with other hashes.",
+            "bakeoff-logprob-mass runs only on the burned pilot part, named by its pinned part_id "
+            f"{PILOT_40B_PART_ID!r} and part.json / items.jsonl SHA-256; got part_id={got.get('part_id')!r} "
+            f"part_json_sha256={got.get('part_json_sha256')!r}.",
         )
-    if part_id is not None and str(part_id).strip().lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
-        raise RefusalError(
-            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
-            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={part_id!r}.",
-        )
+    assert verified_pilot_identity is not None
     rows_dir = Path(judge_output_dir) / ROWS_DIRNAME
     if not rows_dir.is_dir():
         raise RefusalError(
@@ -2940,41 +2937,7 @@ def check_bakeoff_logprob_mass(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
             f"No binary judge row files found in '{rows_dir}'.",
         )
-    resolved_part_id = str(part_id).strip() if part_id is not None else None
-    if verified_pilot_identity is not None:
-        resolved_part_id = str(verified_pilot_identity.get("part_id") or "").strip() or None
-    if resolved_part_id is None and part_dir is not None:
-        pdir = Path(part_dir).resolve()
-        search_dirs = [pdir.parent] if pdir.is_file() else [pdir, pdir / "part_bakeoff_sealed"]
-        found_pids: list[str] = []
-        for sdir in search_dirs:
-            for mname in ("manifest.json", "part_manifest.json"):
-                cand = sdir / mname
-                if cand.is_file():
-                    try:
-                        doc = json.loads(cand.read_text(encoding="utf-8"))
-                        if isinstance(doc, Mapping) and doc.get("part_id"):
-                            found_pids.append(str(doc["part_id"]).strip())
-                    except Exception:
-                        pass
-        resolved_part_id = found_pids[0] if found_pids else Path(part_dir).name
-    if resolved_part_id is None:
-        row_part_ids = [
-            str(first_row["part_id"]).strip()
-            for rf in row_files
-            for ln in rf.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-            for first_row in (json.loads(ln),)
-            if isinstance(first_row, Mapping) and first_row.get("part_id")
-        ]
-        resolved_part_id = row_part_ids[0] if row_part_ids else None
-    if verified_pilot_identity is None and (
-        resolved_part_id is None or resolved_part_id.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS
-    ):
-        raise RefusalError(
-            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
-            f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={resolved_part_id!r}.",
-        )
+    resolved_part_id = str(verified_pilot_identity.get("part_id") or "").strip()
     judges_report: dict[str, Any] = {}
     for rf in row_files:
         judge_id = rf.stem
@@ -3025,9 +2988,8 @@ def check_bakeoff_logprob_mass(
         "threshold": threshold,
         "judges": judges_report,
     }
-    if verified_pilot_identity is not None:
-        out["part_json_sha256"] = verified_pilot_identity.get("part_json_sha256")
-        out["items_jsonl_sha256"] = verified_pilot_identity.get("items_jsonl_sha256")
+    out["part_json_sha256"] = verified_pilot_identity.get("part_json_sha256")
+    out["items_jsonl_sha256"] = verified_pilot_identity.get("items_jsonl_sha256")
     return out
 
 
@@ -5689,11 +5651,12 @@ LOCK_CHECK_WINDOW_MODES: frozenset[str] = frozenset(
 # Windows whose uploaded items file must be the whole part (every item, in the part's order). Every other window that
 # carries a part (time-one) may upload a subset; the VM cuts its own window (the first `TIME_ONE_ITEMS_LIMIT` rows).
 FULL_PART_WINDOW_MODES: frozenset[str] = frozenset({"counted", "counted-stub", "counted_stub"})
-# The burned pilot part (`part-pilot-40b/part_bakeoff_sealed`), identified by content, never by a label: the SHA-256
+# The burned pilot part (its sealed part directory on the rig), identified by content, never by a label: the SHA-256
 # of its `part.json` (which carries its seal, `frozen_mac`) and of its `items.jsonl`, as its `checksums.txt` records
 # them. Its `part_id` is `bakeoff-d-t10-sealed`, which every writer-built part shares, so the id alone cannot name it.
 # These two constants are the one definition of the pilot's identity: the time-one mass check, the lock-check P0a
 # input (`verify_p0a_pilot_part`, whose result `bakeoff_judge`'s P0a validators receive) and the pin table below.
+PILOT_40B_PART_ID = "bakeoff-d-t10-sealed"
 PILOT_40B_PART_JSON_SHA256 = "9ae6708e0d5b3fae8535899cb1b4df5ee0688dbb5f21206f62e8b4457ea5c067"
 PILOT_40B_ITEMS_JSONL_SHA256 = "c64e982d248fafd60cf121c14bb31cdd4e5093bcb8accc83418a133f092ba675"
 # The anchored counted part (`part-anchored-counted-430/part_bakeoff_sealed`, `part_id`
@@ -5725,6 +5688,37 @@ def pinned_real_parts() -> dict[str, tuple[str, str]]:
         "burned_pilot": (PILOT_40B_PART_JSON_SHA256, PILOT_40B_ITEMS_JSONL_SHA256),
         "anchored_counted_430": (ANCHORED_COUNTED_430_PART_JSON_SHA256, ANCHORED_COUNTED_430_ITEMS_JSONL_SHA256),
     }
+
+
+def is_pinned_pilot_identity(identity: Mapping[str, Any] | None) -> bool:
+    """True when `identity` (from `read_part_identity`) is the burned pilot by its pins: `part_id`
+    `PILOT_40B_PART_ID` and both SHA-256 equal to `PILOT_40B_*` (read at call time)."""
+    if not isinstance(identity, Mapping):
+        return False
+    return (
+        str(identity.get("part_id") or "").strip() == PILOT_40B_PART_ID
+        and identity.get("part_json_sha256") == PILOT_40B_PART_JSON_SHA256
+        and identity.get("items_jsonl_sha256") == PILOT_40B_ITEMS_JSONL_SHA256
+    )
+
+
+# The window modes that refuse a part that is only trusted on first use: a counted window runs only on a part pinned
+# in code (`pinned_real_parts`). Checked by `read_part_identity`, so the launcher refuses before any colab call and VM
+# `main` before venv sync.
+PINNED_PART_REQUIRED_MODES: frozenset[str] = frozenset({"counted"})
+
+
+def require_pinned_part(identity: Mapping[str, Any], *, mode: str, dryrun: bool = False) -> None:
+    """Refuse `PART_NOT_PINNED` when a real counted window's part has no pin (`pin` is `None`, trust on first use)."""
+    norm_mode = str(mode or "").strip().lower()
+    if norm_mode in PINNED_PART_REQUIRED_MODES and is_real_mode(mode, dryrun=dryrun) and identity.get("pin") is None:
+        raise RefusalError(
+            "PART_NOT_PINNED",
+            f"A counted window runs only on a pinned part; part_id={identity.get('part_id')!r} with part.json SHA-256 "
+            f"{identity.get('part_json_sha256')} and items.jsonl SHA-256 {identity.get('items_jsonl_sha256')} matches "
+            "no pin in scripts/colab/vm_judges.py (pinned_real_parts); it would be trusted on first use. Pin it in "
+            "code by pull request first.",
+        )
 
 
 def match_part_pin(part_json_sha256: str, items_jsonl_sha256: str) -> str | None:
@@ -5891,6 +5885,11 @@ def read_part_identity(
             f"{'present' if mac_present else 'missing or not 64 hex'}); a real window runs only on a sealed, frozen part.",
         )
     pin = match_part_pin(part_json_sha, items_sha)
+    require_pinned_part(
+        {"part_id": raw_pid.strip(), "part_json_sha256": part_json_sha, "items_jsonl_sha256": items_sha, "pin": pin},
+        mode=mode,
+        dryrun=dryrun,
+    )
     return {
         "source": PART_JSON_FILENAME,
         "part_id": raw_pid.strip(),

@@ -8121,12 +8121,33 @@ def test_fix6b_drift_other_four_copied_functions_matrix(
     )
 
     # --- D. `check_bakeoff_logprob_mass` matrix ---
-    # 1. Forbidden part_id
+    # The burned pilot, named on both sides by its pinned identity (part_id, part.json and items.jsonl SHA-256): the VM
+    # copy gets the identity `read_part_identity` built, the rig copy reads the part directory itself.
+    pilot_dir = tmp_path / "mass_pilot_part"
+    pilot_dir.mkdir(parents=True, exist_ok=True)
+    pilot_json = b'{"items_count": 3, "part_id": "bakeoff-d-t10-sealed"}\n'
+    (pilot_dir / "part.json").write_bytes(pilot_json)
+    pilot_pj_sha = hashlib.sha256(pilot_json).hexdigest()
+    pilot_items_sha = hashlib.sha256(b"synthetic pilot items\n").hexdigest()
+    (pilot_dir / "checksums.txt").write_text(
+        f"{pilot_items_sha}  items.jsonl\n{pilot_pj_sha}  part.json\n", encoding="utf-8"
+    )
+    for mod in (vm_judges, bj_mod):
+        monkeypatch.setattr(mod, "PILOT_40B_PART_JSON_SHA256", pilot_pj_sha)
+        monkeypatch.setattr(mod, "PILOT_40B_ITEMS_JSONL_SHA256", pilot_items_sha)
+    pilot_ident = {
+        "part_id": "bakeoff-d-t10-sealed",
+        "part_json_sha256": pilot_pj_sha,
+        "items_jsonl_sha256": pilot_items_sha,
+        "is_pilot_40b": True,
+        "pin": "burned_pilot",
+    }
+    # 1. Not the pinned pilot: no identity (VM) / a part_id that is not the pilot's (rig)
     out_mass = tmp_path / "mass_out"
     with pytest.raises(vm_judges.RefusalError) as exc_p_part:
-        vm_judges.check_bakeoff_logprob_mass(out_mass, part_id="forbidden-part")
+        vm_judges.check_bakeoff_logprob_mass(out_mass)
     with pytest.raises(RdlabError) as exc_l_part:
-        bj_mod.check_bakeoff_logprob_mass(out_mass, part_id="forbidden-part")
+        bj_mod.check_bakeoff_logprob_mass(out_mass, part_id="forbidden-part", part_dir=pilot_dir)
     assert (
         exc_p_part.value.failure_class
         == exc_l_part.value.code
@@ -8135,9 +8156,9 @@ def test_fix6b_drift_other_four_copied_functions_matrix(
 
     # 2. Missing rows/ directory
     with pytest.raises(vm_judges.RefusalError) as exc_p_norows:
-        vm_judges.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+        vm_judges.check_bakeoff_logprob_mass(out_mass, verified_pilot_identity=pilot_ident)
     with pytest.raises(RdlabError) as exc_l_norows:
-        bj_mod.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+        bj_mod.check_bakeoff_logprob_mass(out_mass, part_dir=pilot_dir)
     assert (
         exc_p_norows.value.failure_class
         == exc_l_norows.value.code
@@ -8148,9 +8169,9 @@ def test_fix6b_drift_other_four_copied_functions_matrix(
     rows_dir = out_mass / "rows"
     rows_dir.mkdir(parents=True, exist_ok=True)
     with pytest.raises(vm_judges.RefusalError) as exc_p_empty:
-        vm_judges.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+        vm_judges.check_bakeoff_logprob_mass(out_mass, verified_pilot_identity=pilot_ident)
     with pytest.raises(RdlabError) as exc_l_empty:
-        bj_mod.check_bakeoff_logprob_mass(out_mass, part_id="pilot-40b")
+        bj_mod.check_bakeoff_logprob_mass(out_mass, part_dir=pilot_dir)
     assert (
         exc_p_empty.value.failure_class
         == exc_l_empty.value.code
@@ -8159,13 +8180,13 @@ def test_fix6b_drift_other_four_copied_functions_matrix(
 
     # 4. Pass + not_applicable + WARN outcomes
     (rows_dir / "flow-judge-v0.1.jsonl").write_text(
-        json.dumps({"part_id": "pilot-40b", "state": "parsed", "score": 4}) + "\n",
+        json.dumps({"part_id": "bakeoff-d-t10-sealed", "state": "parsed", "score": 4}) + "\n",
         encoding="utf-8",
     )
     (rows_dir / "mu-judge.jsonl").write_text(
         json.dumps(
             {
-                "part_id": "pilot-40b",
+                "part_id": "bakeoff-d-t10-sealed",
                 "state": "parsed",
                 "top_20_logprobs": [
                     {"token": "yes", "logprob": -0.002},
@@ -8179,7 +8200,7 @@ def test_fix6b_drift_other_four_copied_functions_matrix(
     (rows_dir / "d3-mini.jsonl").write_text(
         json.dumps(
             {
-                "part_id": "pilot-40b",
+                "part_id": "bakeoff-d-t10-sealed",
                 "state": "parsed",
                 "top_20_logprobs": [
                     {"token": "yes", "logprob": -0.7},
@@ -8190,9 +8211,10 @@ def test_fix6b_drift_other_four_copied_functions_matrix(
         + "\n",
         encoding="utf-8",
     )
-    p_report = vm_judges.check_bakeoff_logprob_mass(out_mass, part_id=None)
-    l_report = bj_mod.check_bakeoff_logprob_mass(out_mass, part_id=None)
+    p_report = vm_judges.check_bakeoff_logprob_mass(out_mass, verified_pilot_identity=pilot_ident)
+    l_report = bj_mod.check_bakeoff_logprob_mass(out_mass, part_dir=pilot_dir)
     assert p_report == l_report
+    assert p_report["part_id"] == "bakeoff-d-t10-sealed" and p_report["part_json_sha256"] == pilot_pj_sha
     assert p_report["judges"]["flow-judge-v0.1"]["status"] == "not_applicable"
     assert p_report["judges"]["mu-judge"]["status"] == "PASS"
     assert p_report["judges"]["d3-mini"]["status"] == "WARN"
@@ -21871,8 +21893,10 @@ def test_fix2_item2_input_guards_overlap_counted_in_p0a_and_anchor_invalid(
         )
     assert exc_anc_25.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
 
-    # (b) Anchor items from pilot-40b (by directory name or manifest)
-    anchor_pilot = tmp_path / "pilot-40b" / "anchor_items.jsonl"
+    # (b) Anchor items taken from the burned pilot are refused: they overlap the P0a items (LOCK_CHECK_INPUT_OVERLAP),
+    # and anchors beside the pilot's own part.json (named by its pinned SHA-256, never by a directory or row label)
+    # refuse LOCK_CHECK_ANCHOR_ITEMS_INVALID.
+    anchor_pilot = tmp_path / "pilot_anchor_dir" / "anchor_items.jsonl"
     anchor_pilot.parent.mkdir(parents=True, exist_ok=True)
     anchor_pilot.write_text(
         "\n".join(p0a_items_src.read_text(encoding="utf-8").splitlines()[:50]) + "\n",
@@ -21884,7 +21908,19 @@ def test_fix2_item2_input_guards_overlap_counted_in_p0a_and_anchor_invalid(
             p0a_items_or_path=p0a_items_src,
             counted_items_or_manifest=counted_manifest,
         )
-    assert exc_anc_pilot.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+    assert exc_anc_pilot.value.code == "LOCK_CHECK_INPUT_OVERLAP"
+    pilot_part_json = anchor_pilot.parent / "part.json"
+    pilot_part_json.write_text('{"part_id": "bakeoff-d-t10-sealed"}\n', encoding="utf-8")
+    monkeypatch.setattr(
+        bakeoff_judge, "PILOT_40B_PART_JSON_SHA256", hashlib.sha256(pilot_part_json.read_bytes()).hexdigest()
+    )
+    with pytest.raises(RdlabError) as exc_anc_pilot_hash:
+        bakeoff_judge.verify_lock_check_two_inputs(
+            anchor_items_or_path=anchor_pilot,
+            p0a_items_or_path=p0a_items_src,
+            counted_items_or_manifest=counted_manifest,
+        )
+    assert exc_anc_pilot_hash.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
 
     # (c) Anchor item ID not present in counted part's manifest/ID list
     anchor_foreign = tmp_path / "anchor_foreign" / "anchor_items.jsonl"
@@ -22209,19 +22245,8 @@ def test_fix3_item6_refusals_counted_source_burned_pilot_golden_manifest_promote
         )
     assert exc_non_cnt_anc.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
 
-    # Also test row-level part_id="pilot-40b" in anchor_items
-    anc_row_pilot = tmp_path / "anc_row_pilot" / "anchor_items.jsonl"
-    anc_row_pilot.parent.mkdir(parents=True, exist_ok=True)
-    anc_rows_pilot = [json.loads(ln) for ln in anchor_items_src.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    anc_rows_pilot[0]["part_id"] = "pilot-40b"
-    anc_row_pilot.write_text("\n".join(json.dumps(r, sort_keys=True) for r in anc_rows_pilot) + "\n", encoding="utf-8")
-    with pytest.raises(RdlabError) as exc_anc_rpid:
-        bakeoff_judge.verify_lock_check_two_inputs(
-            anchor_items_or_path=anc_row_pilot,
-            p0a_items_or_path=p0a_items_src,
-            counted_items_or_manifest=counted_items_file,
-        )
-    assert exc_anc_rpid.value.code == "LOCK_CHECK_ANCHOR_ITEMS_INVALID"
+    # A row-level part_id label is not read as a proof either way (the pilot is named by its pinned hashes): anchors
+    # whose rows carry the old made-up pilot label are judged on their IDs like any others.
 
     # 6. A 114-item P0a file named `p0a_items.jsonl` with no pilot identity refuses P0A_PILOT_IDENTITY_MISSING (two-input
     #    check, and P0a in real mode); the pilot is named only by its pinned part hashes
@@ -23688,7 +23713,7 @@ def test_fix4_item7_real_mode_paths_with_monkeypatched_transport(
     pilot_shas = _attach_part_files(p0a_items_src, part_id="bakeoff-d-t10-sealed")
     monkeypatch.setattr(vm_judges, "PILOT_40B_PART_JSON_SHA256", pilot_shas["part.json"])
     monkeypatch.setattr(vm_judges, "PILOT_40B_ITEMS_JSONL_SHA256", pilot_shas["items.jsonl"])
-    _attach_part_files(counted_items_file, part_id="part01")
+    _pin_counted_part(monkeypatch, _attach_part_files(counted_items_file, part_id="part01"))
 
     t1_sum_real, t1_mass_real = vm_judges.run_judges_pipeline(
         mode="time-one",
@@ -24339,7 +24364,7 @@ def test_followup_item2_pipeline_refuses_before_writing_into_the_run_dir(
     with_mf_dir = tmp_path / "fu2_with_mf"
     with_mf_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(counted_items_file, with_mf_dir / "items.jsonl")
-    _attach_part_files(with_mf_dir / "items.jsonl", part_id="part01")
+    _pin_counted_part(monkeypatch, _attach_part_files(with_mf_dir / "items.jsonl", part_id="part01"))
     run_b = tmp_path / "fu2_run_b"
     with pytest.raises(vm_judges.RefusalError) as exc_b:
         vm_judges.run_judges_pipeline(
@@ -24896,8 +24921,10 @@ def _pm_real_mode_exports(
     hf_home: Path,
     items_file: Path,
     part_dir: Path | None = None,
+    pin_parts: tuple[Path, ...] = (),
 ) -> str:
-    """Launcher exports for a real-mode window (no VM_DRYRUN) against the fake CLI."""
+    """Launcher exports for a real-mode window (no VM_DRYRUN) against the fake CLI. `pin_parts`: builder parts to pin
+    for this window (`_test_part_pin_exports`), so a counted window accepts them."""
     return (
         _base_launcher_exports(
             env_paths,
@@ -24908,6 +24935,48 @@ def _pm_real_mode_exports(
         ).replace("export VM_DRYRUN=1; ", "")
         + "unset VM_DRYRUN; "
         + (f"export RDLAB_PART_DIR='{_to_wsl_path(part_dir)}'; " if part_dir is not None else "unset RDLAB_PART_DIR; ")
+        + (_test_part_pin_exports(env_paths, *pin_parts) if pin_parts else "")
+    )
+
+
+TEST_PART_PINS_DIR = REPO_ROOT / "tests" / "fixtures" / "test_part_pins"
+
+
+def _part_pin_hashes(part: Path) -> dict[str, str]:
+    """What a pin of `part` holds: its part.json's SHA-256 and the items.jsonl SHA-256 its checksums.txt records (as
+    `read_part_identity` reads them; a tampered items file is then refused by its own check, not by the pin)."""
+    items_sha = ""
+    for ln in (part / "checksums.txt").read_text(encoding="utf-8").splitlines():
+        sha, _, name = ln.strip().partition("  ")
+        if name == "items.jsonl":
+            items_sha = sha
+    return {"part.json": hashlib.sha256((part / "part.json").read_bytes()).hexdigest(), "items.jsonl": items_sha}
+
+
+def _pin_counted_part(monkeypatch: pytest.MonkeyPatch, shas: dict[str, str] | Path) -> None:
+    """Pin a synthetic part as the anchored counted part for an in-process test (a counted window refuses an unpinned
+    part, `PART_NOT_PINNED`). `shas`: `{"part.json": ..., "items.jsonl": ...}` or the part directory."""
+    if isinstance(shas, Path):
+        shas = _part_pin_hashes(shas)
+    monkeypatch.setattr(vm_judges, "ANCHORED_COUNTED_430_PART_JSON_SHA256", shas["part.json"])
+    monkeypatch.setattr(vm_judges, "ANCHORED_COUNTED_430_ITEMS_JSONL_SHA256", shas["items.jsonl"])
+
+
+def _test_part_pin_exports(env_paths: dict[str, Path], *parts: Path) -> str:
+    """Pin builder parts for one launcher run (test-only). A counted window refuses a part with no pin in code
+    (`PART_NOT_PINNED`); a builder part's hashes change with every build, so the test pins them here: the pins go to
+    `<state_dir>/test_part_pins.json`, which the fake VM's real-mode shim reads, and `sitecustomize` in
+    `tests/fixtures/test_part_pins` (first on PYTHONPATH) adds them for the launcher's own Python."""
+    pins = {
+        f"test_part_{i}": [_part_pin_hashes(part)["part.json"], _part_pin_hashes(part)["items.jsonl"]]
+        for i, part in enumerate(parts)
+    }
+    pins_file = env_paths["state_dir"] / "test_part_pins.json"
+    pins_file.parent.mkdir(parents=True, exist_ok=True)
+    pins_file.write_text(json.dumps(pins), encoding="utf-8")
+    return (
+        f"export PYTHONPATH='{_to_wsl_path(TEST_PART_PINS_DIR)}'${{PYTHONPATH:+:$PYTHONPATH}}; "
+        f"export FAKE_COLAB_TEST_PART_PINS_FILE='{_to_wsl_path(pins_file)}'; "
     )
 
 
@@ -24949,6 +25018,7 @@ def test_part_binding_launcher_binds_items_to_the_real_part_files_before_any_col
             hf_home=hf_home,
             items_file=items,
             part_dir=part_dir,
+            pin_parts=(part_dir,) if (part_dir is not None and mode == "counted" and (part_dir / "checksums.txt").is_file()) else (),
         ) + f"export RDLAB_BOOT_GATEKEEPER_GOLDENS='{_to_wsl_path(pb1_goldens)}'; "
         out_dir = tmp_path / f"pb1_out_{tag}_{int(live)}"
         proc = _pm_run_launcher(
@@ -25028,6 +25098,7 @@ def test_part_binding_vm_main_refuses_before_any_paid_step(
     """
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pb2_rec")
     part = _make_builder_part(tmp_path / "pb2_build")
+    _pin_counted_part(monkeypatch, part)  # a counted window runs only on a pinned part
     rows = _part_rows(part)
     proj = tmp_path / "pb2_proj"
     full = _project_part_items(part, proj / "full.jsonl")
@@ -25242,8 +25313,15 @@ def test_part_binding_real_layout_passes_the_upload_and_log_guards_and_pilot_is_
     with pytest.raises(vm_judges.RefusalError) as exc_not_pilot:
         vm_judges.check_bakeoff_logprob_mass(run_dir, verified_pilot_identity=ident)
     assert exc_not_pilot.value.failure_class == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+    # A flag alone is not the pilot: the identity's part_id and hashes must be the pins.
     pilot_ident = dict(ident, is_pilot_40b=True)
-    out = vm_judges.check_bakeoff_logprob_mass(run_dir, verified_pilot_identity=pilot_ident)
+    with pytest.raises(vm_judges.RefusalError) as exc_flag_only:
+        vm_judges.check_bakeoff_logprob_mass(run_dir, verified_pilot_identity=pilot_ident)
+    assert exc_flag_only.value.failure_class == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+    with pytest.MonkeyPatch.context() as mp:
+        for k, v in pinned.items():
+            mp.setattr(vm_judges, k, v)
+        out = vm_judges.check_bakeoff_logprob_mass(run_dir, verified_pilot_identity=pilot_ident)
     assert out["part_id"] == "bakeoff-d-t10-sealed"
     assert out["part_json_sha256"] == ident["part_json_sha256"]
     assert out["items_jsonl_sha256"] == ident["items_jsonl_sha256"]
@@ -25359,6 +25437,8 @@ def _e2e_fake_real_mode_window(
         hf_home=hf_home,
         items_file=items_file,
         part_dir=part_dir,
+        # A counted window runs only on a pinned part: pin the test's builder part for this run.
+        pin_parts=(part_dir,) if (part_dir is not None and mode == "counted") else (),
     ) + (
         f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(REAL_MODE_SHIM_PY)}'; "
         f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(kept)}'; "
@@ -25863,7 +25943,9 @@ def test_lock_check_dry_on_builder_made_pilot_like_part_with_pinned_identity(
         assert not env_paths["calls_log"].exists()
 
 
-def test_launcher_binding_is_carried_into_the_vm_receipt_labelled_by_where_it_was_checked(tmp_path: Path) -> None:
+def test_launcher_binding_is_carried_into_the_vm_receipt_labelled_by_where_it_was_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Item 2: the launcher's row-by-row binding (`projection_checked: true`, rule, counts, the part's part.json /
     items.jsonl SHA-256 and the uploaded file's SHA-256) is written to `launcher_part_binding.json` and carried by the
     VM into `part_identity.launcher_binding`, beside the VM's own re-check (`checked_by: "vm"`,
@@ -25874,6 +25956,7 @@ def test_launcher_binding_is_carried_into_the_vm_receipt_labelled_by_where_it_wa
     from reasoning_dataset_lab.pilot_b.bakeoff_project import project_part_items
 
     part = _make_builder_part(tmp_path / "lb_build")
+    _pin_counted_part(monkeypatch, part)  # a counted window runs only on a pinned part
     projected = tmp_path / "lb_inputs" / "projected.jsonl"
     project_part_items(part, projected)
     launcher_ident = vm_judges.preflight_part_manifest(
@@ -25936,8 +26019,12 @@ def test_part_pins_and_frozen_seal_bind_what_needs_no_sealed_key(tmp_path: Path,
     Fails at ffa9f61f: an edited-and-re-summed part.json bound, and nothing recorded or checked the seal or provenance.
     """
     part = _make_builder_part(tmp_path / "pin_build")
-    ident = vm_judges.read_part_identity(part, mode="counted")
+    ident = vm_judges.read_part_identity(part, mode="time-one")
     assert ident["pin"] is None and ident["pin_status"] == "unpinned_trust_on_first_use"
+    # A counted window never trusts a part on first use.
+    with pytest.raises(vm_judges.RefusalError) as exc_tofu:
+        vm_judges.read_part_identity(part, mode="counted")
+    assert exc_tofu.value.code == "PART_NOT_PINNED"
     assert ident["seal"] == {
         "frozen": True,
         "frozen_mac_present": True,
@@ -25998,6 +26085,7 @@ def test_part_pins_and_frozen_seal_bind_what_needs_no_sealed_key(tmp_path: Path,
         vm_judges.verify_part_files_against_checksums(prov)
     assert exc_prov.value.code == "PART_MANIFEST_INVALID" and "provenance.jsonl" in exc_prov.value.message
     projected = _project_part_items(prov, tmp_path / "pin_prov_inputs" / "p.jsonl")
+    _pin_counted_part(monkeypatch, part)  # pinned, so the refusal is the provenance file, not the pin
     with pytest.raises(vm_judges.RefusalError) as exc_prov2:
         vm_judges.preflight_part_manifest(
             projected, mode="counted", part_dir=prov, part_items_file=prov / "items.jsonl"
@@ -26026,6 +26114,7 @@ def test_bakeoff_project_writes_the_projection_the_launcher_binding_accepts(
             return int(exc.code or 0)
 
     part = _make_builder_part(tmp_path / "proj_build")
+    _pin_counted_part(monkeypatch, part)  # a counted window runs only on a pinned part
     out = tmp_path / "proj_inputs" / "counted-projected.jsonl"
     rc = rdlab_main(["bakeoff-project", "--part-dir", str(part), "--out", str(out)])
     assert rc == 0
