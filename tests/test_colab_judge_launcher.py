@@ -19847,20 +19847,11 @@ def test_lock_check_item1_mode_exists_is_real_and_refuses_hooks(
     # Verify launch_judges.sh --lock-check --dry and --lock-check-stub --dry
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "lc_dry_env")
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
-    items_path = _make_stratified_public_items(tmp_path / "lc_items", count=4)
-    anchor_items_path = _make_stratified_public_items(tmp_path / "lc_anchor", count=50)
-    (anchor_items_path.parent / "manifest.json").write_text(
-        json.dumps({"part_id": "part01", "schema_version": "1.0"}, indent=2) + "\n",
-        encoding="utf-8",
+    # Inputs the lock-check two-input check accepts: `--dry` now runs that check as the live path does, so the
+    # anchors must come from the counted part and the P0a items must not overlap it.
+    items_path, anchor_items_path, p0a_items_path = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "lc_inputs", counted_count=100
     )
-    anchor_rows = []
-    for ln in anchor_items_path.read_text(encoding="utf-8").splitlines():
-        if ln.strip():
-            obj = json.loads(ln)
-            obj["id"] = f"counted-{obj['id']}"
-            anchor_rows.append(json.dumps(obj, sort_keys=True))
-    anchor_items_path.write_text("\n".join(anchor_rows) + "\n", encoding="utf-8")
-    p0a_items_path = _make_stratified_public_items(tmp_path / "lc_p0a", count=114)
     exports = _base_launcher_exports(
         env_paths,
         open_lock=tmp_path / "open.lock",
