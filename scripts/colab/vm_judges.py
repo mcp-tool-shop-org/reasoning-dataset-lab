@@ -4005,6 +4005,23 @@ def check_upload_path_allowed(path: str | Path) -> None:
         )
 
 
+def merge_manifest_cleanup_errors(
+    dest: list[dict[str, str]],
+    new_entries: Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, str]]:
+    """Append cleanup-error entries to `dest` in place, keeping one entry per path (the first one recorded)."""
+    seen_paths = {str(e.get("path")) for e in dest if isinstance(e, Mapping)}
+    for entry in new_entries or ():
+        if not isinstance(entry, Mapping):
+            continue
+        entry_path = str(entry.get("path"))
+        if entry_path in seen_paths:
+            continue
+        seen_paths.add(entry_path)
+        dest.append({"path": entry_path, "error": str(entry.get("error", ""))})
+    return dest
+
+
 def delete_uploaded_items_and_record_receipt(
     uploaded_paths: Sequence[Path],
 ) -> dict[str, Any]:
@@ -5591,6 +5608,43 @@ def _resolve_single_counted_source(
     return eff_items if eff_items is not None else eff_mf
 
 
+def preflight_counted_source(
+    counted_source: Path,
+    *,
+    anchor_items: Path | None = None,
+    p0a_items: Path | None = None,
+) -> None:
+    """Refuse a counted source that would not resolve to real items, before any paid step or run-dir write.
+
+    With `anchor_items` and `p0a_items` given (lock-check), the two-input check runs first. The resolver is the same
+    one the shard build uses, so anything it would refuse after the judges ran is refused here instead.
+    """
+    if not Path(counted_source).exists():
+        raise RefusalError(
+            "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+            f"Counted source does not exist: {counted_source}",
+        )
+    import importlib
+
+    bakeoff_judge_mod = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
+    try:
+        if anchor_items is not None and p0a_items is not None:
+            bakeoff_judge_mod.verify_lock_check_two_inputs(
+                anchor_items_or_path=anchor_items,
+                p0a_items_or_path=p0a_items,
+                counted_items_or_manifest=counted_source,
+            )
+        try:
+            bakeoff_judge_mod._resolve_items_from_manifest_source(counted_source)
+        except (OSError, ValueError) as exc:
+            raise RefusalError(
+                "LOCK_CHECK_COUNTED_SOURCE_INVALID",
+                f"Counted source {counted_source} could not be read as counted items or a counted manifest: {exc}",
+            ) from exc
+    except bakeoff_judge_mod.RdlabError as exc:
+        raise RefusalError(exc.code, exc.message) from exc
+
+
 def run_judges_pipeline(
     *,
     mode: str,
@@ -5632,6 +5686,7 @@ def run_judges_pipeline(
     orig_part_manifest = orig_part_dir / "manifest.json"
     preexisting_part_manifest = orig_part_manifest.is_file()
     t1_summary: dict[str, Any] | None = None
+    body_exc: BaseException | None = None
     try:
         t1_summary, mass_readout = _run_judges_pipeline_body(
             mode=mode,
@@ -5667,6 +5722,9 @@ def run_judges_pipeline(
             replacement_session=replacement_session,
         )
         return t1_summary, mass_readout
+    except BaseException as exc:
+        body_exc = exc
+        raise
     finally:
         shutil.rmtree(p0a_stage_dir, ignore_errors=True)
         shutil.rmtree(anchor_stage_dir, ignore_errors=True)
@@ -5674,13 +5732,24 @@ def run_judges_pipeline(
             try:
                 orig_part_manifest.unlink()
             except OSError as exc:
-                if t1_summary is not None:
-                    err_entry = {
-                        "path": str(orig_part_manifest).replace("\\", "/"),
-                        "error": str(exc),
-                    }
-                    t1_summary.setdefault("manifest_cleanup_errors", []).append(
-                        err_entry
+                err_entry = {
+                    "path": str(orig_part_manifest).replace("\\", "/"),
+                    "error": str(exc),
+                }
+                if body_exc is not None:
+                    # The body raised: carry the cleanup error on that exception (it still propagates unchanged),
+                    # so `main` lists it in the refusal receipt instead of dropping it.
+                    try:
+                        merge_manifest_cleanup_errors(
+                            body_exc.__dict__.setdefault("manifest_cleanup_errors", []),
+                            [err_entry],
+                        )
+                    except (AttributeError, TypeError):
+                        pass
+                elif t1_summary is not None:
+                    merge_manifest_cleanup_errors(
+                        t1_summary.setdefault("manifest_cleanup_errors", []),
+                        [err_entry],
                     )
                     summary_file = run_dir / "time_one_summary.json"
                     if summary_file.parent.is_dir():
@@ -5770,19 +5839,17 @@ def _run_judges_pipeline_body(
                 "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
                 "--lock-check requires both --anchor-items (50 anchor items from the counted part) and --p0a-items (114 burned pilot items).",
             )
-        import importlib
-
         _ensure_repo_imports(eff_repo_dir)
-        bakeoff_judge_pre = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
-        try:
-            bakeoff_judge_pre.verify_lock_check_two_inputs(
-                anchor_items_or_path=eff_anchor_file,
-                p0a_items_or_path=eff_p0a_file,
-                counted_items_or_manifest=eff_counted_source,
+        if eff_counted_source is None:
+            raise RefusalError(
+                "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+                "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
             )
-            bakeoff_judge_pre._resolve_items_from_manifest_source(eff_counted_source)
-        except bakeoff_judge_pre.RdlabError as exc:
-            raise RefusalError(exc.code, exc.message) from exc
+        preflight_counted_source(
+            eff_counted_source,
+            anchor_items=eff_anchor_file,
+            p0a_items=eff_p0a_file,
+        )
         anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
         anchor_stage_dir.mkdir(parents=True, exist_ok=True)
         src_anchor_jsonl = eff_anchor_file / "items.jsonl" if eff_anchor_file.is_dir() else eff_anchor_file
@@ -5822,6 +5889,33 @@ def _run_judges_pipeline_body(
             limit_items = 2 * parsed_shard_n
     else:
         limit_items = 2
+
+    # Every refusal that needs no judge output fires here, before the first file is written into the run dir
+    # (shard_manifest.json): the part manifest, then the judge venv interpreters.
+    part_manifest_doc: dict[str, Any] | None = None
+    part_manifest_synthesized: bool = False
+    if not is_lock_check_window:
+        part_manifest_doc, part_manifest_synthesized = _ensure_part_manifest_for_run(
+            part_dir if part_dir.is_dir() else part_dir.parent,
+            mode=mode,
+            dryrun=dryrun,
+        )
+    selected_specs = _select_judge_specs(
+        only_judge_ids if only_judge_ids is not None else judge_order
+    )
+    if not dryrun:
+        for pre_judge_id, _ in selected_specs:
+            pre_venv_python = (
+                eff_work_dir
+                / ("venv-d3" if pre_judge_id == D3_MINI_JUDGE_ID else "venv-judge")
+                / "bin"
+                / "python"
+            )
+            if not pre_venv_python.exists():
+                raise RefusalError(
+                    "VENV_PYTHON_MISSING",
+                    f"Expected judge venv interpreter not found for {pre_judge_id!r}: {pre_venv_python}",
+                )
 
     shard_info = ensure_shard_manifest_for_run(
         items_file=part_dir,
@@ -5863,15 +5957,6 @@ def _run_judges_pipeline_body(
             else resolve_judge_child_timeout_seconds()
         )
     )
-    part_manifest_doc: dict[str, Any] | None = None
-    part_manifest_synthesized: bool = False
-    if not is_lock_check_window:
-        part_manifest_doc, part_manifest_synthesized = _ensure_part_manifest_for_run(
-            part_dir if part_dir.is_dir() else part_dir.parent,
-            mode=mode,
-            dryrun=dryrun,
-        )
-
     judge_done_dir = run_dir / JUDGE_DONE_DIRNAME
     judge_done_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / ROWS_DIRNAME).mkdir(parents=True, exist_ok=True)
@@ -5879,9 +5964,6 @@ def _run_judges_pipeline_body(
     child_progress_dir.mkdir(parents=True, exist_ok=True)
     merged_child_progress_path = run_dir / CHILD_PROGRESS_FILENAME
 
-    selected_specs = _select_judge_specs(
-        only_judge_ids if only_judge_ids is not None else judge_order
-    )
     eff_judge_order = (
         list(judge_order)
         if judge_order is not None
@@ -6526,6 +6608,11 @@ def _run_judges_pipeline_body(
         bakeoff_judge = importlib.import_module(
             "reasoning_dataset_lab.pilot_b.bakeoff_judge"
         )
+        if eff_counted_source is None or not eff_counted_source.exists():
+            raise RefusalError(
+                "LOCK_CHECK_COUNTED_SOURCE_MISSING",
+                "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
+            )
         try:
             golden_doc = bakeoff_judge.build_golden_anchor_manifest(
                 run_dir,
@@ -6537,11 +6624,6 @@ def _run_judges_pipeline_body(
                 golden_doc, run_dir / GOLDEN_ANCHOR_MANIFEST_FILENAME
             )
             golden_anchor_manifest_file_sha256 = str(golden_file_sha)
-            if eff_counted_source is None or not eff_counted_source.exists():
-                raise RefusalError(
-                    "LOCK_CHECK_COUNTED_SOURCE_MISSING",
-                    "--lock-check requires --counted-items or --counted-manifest specifying the counted part's items or manifest.",
-                )
             rebuilt_shard_doc = bakeoff_judge.build_shard_manifest(
                 eff_counted_source,
                 num_shards=(parsed_shard_n if parsed_shard_n > 1 else 2),
@@ -8439,7 +8521,22 @@ def verify_shard_manifest_file(
             "SHARD_MANIFEST_NOT_FOUND",
             f"Shard manifest not found at {manifest_path}",
         )
-    raw_bytes = manifest_path.read_bytes()
+    return _verify_shard_manifest_bytes(
+        manifest_path.read_bytes(),
+        manifest_path=manifest_path,
+        expected_sha256=expected_sha256,
+        expected_num_shards=expected_num_shards,
+    )
+
+
+def _verify_shard_manifest_bytes(
+    raw_bytes: bytes,
+    *,
+    manifest_path: Path,
+    expected_sha256: str | None = None,
+    expected_num_shards: int | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Verify shard manifest bytes (from disk, or built in memory before any write) against the expected SHA-256 and n."""
     file_sha256 = hashlib.sha256(raw_bytes).hexdigest()
     try:
         doc = json.loads(raw_bytes.decode("utf-8"))
@@ -8905,17 +9002,21 @@ def build_shard_manifest_stdlib(
     return doc
 
 
+def _serialize_shard_manifest_stdlib(manifest_doc: Mapping[str, Any]) -> bytes:
+    """Return the exact bytes `write_shard_manifest_stdlib` writes for `manifest_doc`."""
+    return (
+        json.dumps(dict(manifest_doc), indent=2, sort_keys=True, ensure_ascii=False)
+        + "\n"
+    ).encode("utf-8")
+
+
 def write_shard_manifest_stdlib(
     manifest_doc: Mapping[str, Any], manifest_path: Path
 ) -> str:
     """Write `manifest_doc` and `<manifest_path>.sha256`, returning the file SHA-256."""
     ensure_not_drive_path(manifest_path)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    serialized = (
-        json.dumps(dict(manifest_doc), indent=2, sort_keys=True, ensure_ascii=False)
-        + "\n"
-    )
-    raw_bytes = serialized.encode("utf-8")
+    raw_bytes = _serialize_shard_manifest_stdlib(manifest_doc)
     file_sha256 = hashlib.sha256(raw_bytes).hexdigest()
     manifest_path.write_bytes(raw_bytes)
     sha_sidecar = manifest_path.with_suffix(manifest_path.suffix + ".sha256")
@@ -8981,16 +9082,22 @@ def ensure_shard_manifest_for_run(
             schedule_seed=schedule_seed,
             limit_items=limit_items,
         )
+        # Verify the built bytes in memory first, so a SHA-256 or n mismatch refuses before anything is written.
+        manifest_doc, file_sha256 = _verify_shard_manifest_bytes(
+            _serialize_shard_manifest_stdlib(built_doc),
+            manifest_path=target_in_run_dir,
+            expected_sha256=eff_expected_sha,
+            expected_num_shards=shard_n,
+        )
         write_shard_manifest_stdlib(built_doc, target_in_run_dir)
-        existing_manifest = target_in_run_dir
-
-    manifest_doc, file_sha256 = verify_shard_manifest_file(
-        existing_manifest,
-        expected_sha256=eff_expected_sha,
-        expected_num_shards=shard_n,
-    )
-    if existing_manifest.resolve() != target_in_run_dir.resolve():
-        write_shard_manifest_stdlib(manifest_doc, target_in_run_dir)
+    else:
+        manifest_doc, file_sha256 = verify_shard_manifest_file(
+            existing_manifest,
+            expected_sha256=eff_expected_sha,
+            expected_num_shards=shard_n,
+        )
+        if existing_manifest.resolve() != target_in_run_dir.resolve():
+            write_shard_manifest_stdlib(manifest_doc, target_in_run_dir)
 
     shard_items = [
         str(iid) for iid in manifest_doc.get("shards", {}).get(str(shard_k), [])
@@ -11332,20 +11439,15 @@ def main(argv: list[str] | None = None) -> int:
             if eff_counted_file.is_file():
                 counted_source_sha256 = sha256_file(eff_counted_file)
 
-        if is_lock_check_main and anchor_items_arg is not None and p0a_items_arg is not None:
-            current_step = "verify_lock_check_two_inputs"
-            import importlib
-
-            bakeoff_judge_mod = importlib.import_module("reasoning_dataset_lab.pilot_b.bakeoff_judge")
-            try:
-                bakeoff_judge_mod.verify_lock_check_two_inputs(
-                    anchor_items_or_path=anchor_items_arg,
-                    p0a_items_or_path=p0a_items_arg,
-                    counted_items_or_manifest=counted_items_arg,
-                )
-                bakeoff_judge_mod._resolve_items_from_manifest_source(counted_items_arg)
-            except bakeoff_judge_mod.RdlabError as exc:
-                raise RefusalError(exc.code, exc.message) from exc
+        if counted_items_arg is not None:
+            # The counted-source preflight runs whenever a counted source is given (any mode), before the shard
+            # manifest is written and before venv sync, weight download or any device/GPU step.
+            current_step = "verify_counted_source"
+            preflight_counted_source(
+                counted_items_arg,
+                anchor_items=anchor_items_arg if is_lock_check_main else None,
+                p0a_items=p0a_items_arg if is_lock_check_main else None,
+            )
 
         current_step = "ensure_shard_manifest"
         _, parsed_main_shard_n = parse_shard_spec(raw_shard_arg)
@@ -11648,7 +11750,11 @@ def main(argv: list[str] | None = None) -> int:
                         ),
                         anchor_items_file=anchor_items_arg,
                         p0a_items_file=p0a_items_arg,
-                        counted_items_or_manifest=counted_items_arg,
+                        # Pass the two counted-source arguments as given. Passing the manifest path as
+                        # `counted_items_or_manifest` made the body see it as an items source next to
+                        # RDLAB_COUNTED_MANIFEST and refuse "both given" after the weights were downloaded.
+                        counted_items_or_manifest=raw_counted_items_arg,
+                        counted_manifest_file=raw_counted_manifest_arg,
                         loop_order=loop_order_val,
                         subblock_items=subblock_items_val,
                         session_fingerprint_sha256=str(
@@ -11685,8 +11791,9 @@ def main(argv: list[str] | None = None) -> int:
             and isinstance(time_one_summary.get("manifest_cleanup_errors"), list)
             and time_one_summary["manifest_cleanup_errors"]
         ):
-            deleted_items_receipt.setdefault("manifest_cleanup_errors", []).extend(
-                time_one_summary["manifest_cleanup_errors"]
+            merge_manifest_cleanup_errors(
+                deleted_items_receipt.setdefault("manifest_cleanup_errors", []),
+                time_one_summary["manifest_cleanup_errors"],
             )
 
         current_step = "session_env_end"
@@ -12105,6 +12212,14 @@ def main(argv: list[str] | None = None) -> int:
                 )
             except Exception:
                 pass
+        err_cleanup_errors = getattr(err, "manifest_cleanup_errors", None)
+        if isinstance(err_cleanup_errors, list) and err_cleanup_errors:
+            if deleted_items_receipt is None:
+                deleted_items_receipt = {}
+            merge_manifest_cleanup_errors(
+                deleted_items_receipt.setdefault("manifest_cleanup_errors", []),
+                err_cleanup_errors,
+            )
         for lf in logs_dir.glob("*.log"):
             scrub_log_file_in_place(lf)
         fail_judge_venvs_map = _build_judge_venvs_map(args.work_dir)
@@ -12274,6 +12389,14 @@ def main(argv: list[str] | None = None) -> int:
                     pass
         for lf in logs_dir.glob("*.log"):
             scrub_log_file_in_place(lf)
+        unexpected_cleanup_errors = getattr(exc, "manifest_cleanup_errors", None)
+        unexpected_extra: dict[str, Any] | None = None
+        if isinstance(unexpected_cleanup_errors, list) and unexpected_cleanup_errors:
+            unexpected_extra = {
+                "manifest_cleanup_errors": merge_manifest_cleanup_errors(
+                    [], unexpected_cleanup_errors
+                )
+            }
         write_vm_status_file(
             args.status_file,
             step=current_step,
@@ -12281,6 +12404,7 @@ def main(argv: list[str] | None = None) -> int:
             reason=f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {scrub_log_text(str(exc))}",
             status="refused",
             failure_class="UNEXPECTED_ERROR",
+            extra=unexpected_extra,
         )
         try:
             append_progress_line(

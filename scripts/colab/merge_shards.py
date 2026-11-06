@@ -1132,6 +1132,25 @@ def merge_shards(
                 "GOLDEN_ANCHOR_MANIFEST_MISSING",
                 "golden_anchor_manifest.json is required for counted shard merge",
             )
+        raw_file_field = manifest_doc.get("golden_anchor_manifest_file_sha256")
+        has_file_field = isinstance(raw_file_field, str) and bool(raw_file_field.strip())
+        if any_counted and not has_file_field and manifest_golden_sha is not None:
+            # A counted merge never falls back to the old field name: the judge (bakeoff_judge.run_bakeoff_judge)
+            # refuses such a manifest on a counted shard, so the merge refuses it too.
+            raise MergeRefusalError(
+                "SHARD_MANIFEST_GOLDEN_SHA_MISSING",
+                "shard_manifest.json has only the old field golden_anchor_manifest_sha256 and no "
+                "golden_anchor_manifest_file_sha256: it predates the golden file SHA-256 field; rebuild it from the lock-check window",
+            )
+        if any_counted and has_file_field:
+            # Same binding the judge enforces: the recorded value must be the golden file's own SHA-256.
+            golden_file_sha = hashlib.sha256(eff_golden_path.read_bytes()).hexdigest()
+            if str(raw_file_field).strip().lower() != golden_file_sha:
+                raise MergeRefusalError(
+                    "GOLDEN_ANCHOR_MANIFEST_SHA256_MISMATCH",
+                    f"golden_anchor_manifest.json file sha256 {golden_file_sha!r} does not match "
+                    f"shard_manifest.json golden_anchor_manifest_file_sha256 {str(raw_file_field).strip().lower()!r}",
+                )
         golden_anchor_rows, golden_anchor_sha256 = _load_golden_anchor_rows(
             eff_golden_path,
             expected_sha256=manifest_golden_sha,
