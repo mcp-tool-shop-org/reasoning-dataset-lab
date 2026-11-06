@@ -482,6 +482,7 @@ fi
 ALIVE_PROBE_MAX_TRIES="${RDLAB_ALIVE_PROBE_MAX_TRIES:-3}"
 ALIVE_PROBE_SLEEP_SECONDS="${RDLAB_ALIVE_PROBE_SLEEP_SECONDS:-20}"
 ALIVE_PROBE_TIMEOUT_SECONDS="${RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS:-60}"
+RESTART_KERNEL_TIMEOUT_SECONDS="${RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS:-60}"
 COST_CAP_POLL_SECONDS="${RDLAB_COST_CAP_POLL_SECONDS:-1}"
 
 if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" <<'PY'
@@ -2302,6 +2303,13 @@ while (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); do
   fi
   log_msg "ALIVE_PROBE_RETRY session=$S attempt=${ALIVE_ATTEMPT}/${ALIVE_PROBE_MAX_TRIES} rc=$ALIVE_RC"
   if (( ALIVE_ATTEMPT < ALIVE_PROBE_MAX_TRIES )); then
+    # One kernel per session (docs/colab-cli-contract.md): an attempt that timed out locally may still be running on
+    # the VM, and the next exec would queue behind it and time out too. Restart the kernel (ends that cell) first.
+    if [[ "$ALIVE_RC" -eq 124 || "$ALIVE_RC" -eq 137 ]] || printf '%s\n' "$ALIVE_OUT" | grep -qi 'timed out'; then
+      RESTART_RC=0
+      timeout "$RESTART_KERNEL_TIMEOUT_SECONDS" colab restart-kernel -s "$S" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || RESTART_RC=$?
+      log_msg "ALIVE_PROBE_KERNEL_RESTART session=$S after_attempt=${ALIVE_ATTEMPT} rc=$RESTART_RC reason=attempt_timed_out_locally_cell_may_still_run"
+    fi
     sleep "$ALIVE_PROBE_SLEEP_SECONDS"
   fi
 done

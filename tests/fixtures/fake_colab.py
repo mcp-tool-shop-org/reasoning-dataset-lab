@@ -56,6 +56,13 @@ VALUE_OPTS_BY_CMD: dict[str, frozenset[str]] = {
     "sessions": frozenset(),
     "usage": frozenset(),
     "status": frozenset({"-s", "--session"}),
+    "restart-kernel": frozenset({"-s", "--session"}),
+}
+# `colab restart-kernel` (google-colab-cli 0.7.4, colab_cli/commands/session.py:220-223, registered at :354) takes only
+# -s/--session. It is not in the captured help fixture, so the fake adds it from that source, not from a capture.
+RESTART_KERNEL_CONTRACT: dict[str, Any] = {
+    "options": ["--help", "--session", "-h", "-s"],
+    "usage": "Usage: colab restart-kernel [OPTIONS]",
 }
 
 
@@ -1733,6 +1740,62 @@ def run_fake_nvidia_smi_name() -> int:
     return 0
 
 
+def _kernel_paths(state_dir: Path, sid: str) -> tuple[Path, Path]:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", sid)
+    return state_dir / f"kernel_{safe}.lock", state_dir / f"kernel_{safe}.pid"
+
+
+def _fake_kernel_restart(state_dir: Path, sid: str) -> int | None:
+    """Kill the process group of the cell running on `sid`'s kernel, if any; return its pid."""
+    import signal
+
+    _, pid_path = _kernel_paths(state_dir, sid)
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except Exception:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            return None
+    for _ in range(100):  # the lock is released when the process is gone
+        try:
+            os.kill(pid, 0)
+        except Exception:
+            break
+        time.sleep(0.05)
+    return pid
+
+
+def _kernel_cell_preamble(lock_path: Path, pid_path: Path, hang_seconds: float) -> str:
+    """Code a fake cell runs first: wait for the session's kernel (one cell at a time, as Jupyter runs a kernel's
+    cells; colab_cli/commands/execution.py:198-210 reuses the stored kernel_id for every exec), then mark itself as
+    the running cell. The lock is held by the cell process, so it outlives a killed or timed-out local `colab exec`."""
+    return (
+        "import fcntl as _kfcntl, os as _kos, time as _ktime\n"
+        f"_kfh = open({str(lock_path)!r}, 'a')\n"
+        "_kfcntl.flock(_kfh.fileno(), _kfcntl.LOCK_EX)\n"
+        f"open({str(pid_path)!r}, 'w').write(str(_kos.getpid()))\n"
+        + (f"_ktime.sleep({float(hang_seconds)!r})\n" if hang_seconds > 0 else "")
+    )
+
+
+def _append_history(state_dir: Path, sid: str, code: str, stdout: str, stderr: str) -> None:
+    """`~/.config/colab-cli/history/<session>.jsonl` (colab_cli/commands/execution.py:262-272): code and outputs."""
+    hist = state_dir / "history" / f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', sid)}.jsonl"
+    hist.parent.mkdir(parents=True, exist_ok=True)
+    outputs = [
+        {"output_type": "stream", "name": name, "text": text}
+        for name, text in (("stdout", stdout), ("stderr", stderr))
+        if text
+    ]
+    with hist.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps({"event": "execution", "code": code, "outputs": outputs}) + "\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
     if raw_args[:1] == ["--fake-uv"]:
@@ -1744,7 +1807,8 @@ def main(argv: list[str] | None = None) -> int:
 
     os.environ["RDLAB_COLAB_IS_FAKE"] = "1"
     contract = load_and_verify_contract()
-    commands_contract: dict[str, Any] = contract["commands"]
+    commands_contract: dict[str, Any] = dict(contract["commands"])
+    commands_contract.setdefault("restart-kernel", RESTART_KERNEL_CONTRACT)
     global_options: set[str] = set(contract.get("global_options", []))
 
     state_dir_raw = os.environ.get("FAKE_COLAB_STATE_DIR")
@@ -1916,6 +1980,29 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     sessions: list[dict[str, str]] = json.loads(sessions_file.read_text(encoding="utf-8"))
+    if subcmd in ("exec", "upload", "download", "restart-kernel"):
+        try:
+            import fcntl as _fcntl_rel
+
+            _fcntl_rel.flock(sessions_lock_fh.fileno(), _fcntl_rel.LOCK_UN)
+        except Exception:
+            pass
+
+    if subcmd == "restart-kernel":
+        # Ends the running cell, as the real restart does (the kernel process is replaced): the cell's process group is
+        # killed and the session's kernel lock is free for the next exec.
+        if positionals:
+            sys.stderr.write(f"Got unexpected extra arguments ({' '.join(positionals)})\n")
+            return 2
+        rk_sid = _get_opt("-s", "--session")
+        if not rk_sid or not any(s.get("session_id") == rk_sid for s in sessions):
+            sys.stderr.write(f"Session {rk_sid} not found\n")
+            return 1
+        killed = _fake_kernel_restart(state_dir, rk_sid)
+        with (state_dir / "kernel_restarts.jsonl").open("a", encoding="utf-8", newline="\n") as rfh:
+            rfh.write(json.dumps({"session_id": rk_sid, "killed_cell_pid": killed, "ts": time.time()}) + "\n")
+        print("[colab] Kernel restarted.")
+        return 0
 
     if subcmd == "sessions":
         if positionals:
@@ -2585,14 +2672,49 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(timeout_s)
                 sys.stderr.write(f"Execution timed out after {timeout_s}s (lost stream)\n")
                 return 1
-            proc = subprocess.run(
-                [sys.executable, "-c", kernel_code],
-                stdin=subprocess.DEVNULL,
-                env=exec_env,
-                cwd=str(vm_fs),
-                timeout=timeout_s,
-                check=False,
+            k_lock, k_pid = _kernel_paths(state_dir, sid)
+            hang_s = 0.0
+            if step == "alive":
+                hang_first = float(os.environ.get("FAKE_COLAB_ALIVE_HANG_FIRST_SECONDS", "0") or "0")
+                if hang_first > 0 and attempt_idx == 1:
+                    hang_s = hang_first
+            hang_s = max(hang_s, float(os.environ.get(f"FAKE_COLAB_CELL_HANG_{step.upper()}", "0") or "0"))
+            cell_code = _kernel_cell_preamble(k_lock, k_pid, hang_s) + kernel_code
+            history_code = (
+                "import os\n"
+                + "".join(f"os.environ[{k!r}] = {v!r}\n" for k, v in persisted_env.items())
+                + py_path.read_text(encoding="utf-8", errors="replace")
             )
+            cell_dir = state_dir / "cells"
+            cell_dir.mkdir(parents=True, exist_ok=True)
+            cell_tag = f"{re.sub(r'[^A-Za-z0-9_.-]+', '_', sid)}_{time.time_ns()}"
+            out_path, err_path = cell_dir / f"{cell_tag}.out", cell_dir / f"{cell_tag}.err"
+            with out_path.open("w", encoding="utf-8") as out_fh, err_path.open("w", encoding="utf-8") as err_fh:
+                cell_proc = subprocess.Popen(
+                    [sys.executable, "-c", cell_code],
+                    stdin=subprocess.DEVNULL,
+                    stdout=out_fh,
+                    stderr=err_fh,
+                    env=exec_env,
+                    cwd=str(vm_fs),
+                    start_new_session=True,
+                )
+            try:
+                cell_rc = cell_proc.wait(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                # The local client gives up; the cell keeps running on the kernel (and keeps the next exec waiting).
+                _append_history(state_dir, sid, history_code, out_path.read_text(encoding="utf-8", errors="replace"),
+                                err_path.read_text(encoding="utf-8", errors="replace"))
+                sys.stderr.write(f"Execution timed out after {timeout_s}s\n")
+                return 124
+            cell_out = out_path.read_text(encoding="utf-8", errors="replace")
+            cell_err = err_path.read_text(encoding="utf-8", errors="replace")
+            sys.stdout.write(cell_out)
+            sys.stdout.flush()
+            sys.stderr.write(cell_err)
+            sys.stderr.flush()
+            _append_history(state_dir, sid, history_code, cell_out, cell_err)
+            proc = subprocess.CompletedProcess([sys.executable, "-c", "<cell>"], cell_rc)
         except subprocess.TimeoutExpired:
             sys.stderr.write(f"Execution timed out after {timeout_s}s\n")
             return 124

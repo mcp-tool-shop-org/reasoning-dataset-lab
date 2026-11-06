@@ -14215,6 +14215,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_ALIVE_PROBE_MAX_TRIES": "rig-only: max retries for `launch_judges.sh` pre-gate alive probe loop",
     "RDLAB_ALIVE_PROBE_SLEEP_SECONDS": "rig-only: sleep seconds between pre-gate alive probe retries on the rig",
     "RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS": "rig-only: per-try timeout on the rig for `colab exec` alive probe",
+    "RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS": "rig-only: bound on `colab restart-kernel` before an alive-probe retry",
     "RDLAB_CAP_UNITS": "rig-only: compute-unit cap enforced by the rig cost-cap monitor",
     "RDLAB_COLAB_IS_FAKE": "rig-only: marks fake CLI runs for `outcome.draft.json` on the rig",
     "RDLAB_COST_CAP_POLL_SECONDS": "rig-only: polling interval for the rig cost-cap background loop",
