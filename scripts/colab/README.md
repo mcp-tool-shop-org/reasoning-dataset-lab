@@ -102,9 +102,12 @@ Runs all five bake-off judges in one A100 session over 10 burned pilot items in 
 RDLAB_JUDGE_LOCK_SHA256=608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10 \
 RDLAB_D3_LOCK_SHA256=08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2 \
 RDLAB_RECEIPTS_DIR=/path/to/receipts \
-RDLAB_ITEMS_FILE=/path/to/part_pilot_40b/items.jsonl \
+RDLAB_ITEMS_FILE=/path/to/inputs/pilot40b-items-projected.jsonl \
+RDLAB_PART_DIR=/path/to/part-pilot-40b/part_bakeoff_sealed \
 bash scripts/colab/launch_judges.sh --time-one --run-id t1-01 --out-dir /tmp/rdlab-colab-runs/t1-01 < /dev/null
 ```
+
+`RDLAB_ITEMS_FILE` is the `{id, material, claim}` projection of the part's items (the allow-list above refuses a part's own rows); `RDLAB_PART_DIR` (`--part-dir`) is the sealed part it came from. Before any `colab` call the launcher checks the part's `part.json` against its schema and `checksums.txt`, the part's `items.jsonl` against `checksums.txt`, and every uploaded row against the part row with the same id; it then uploads `part.json` and `checksums.txt` beside `items.jsonl`. A time-one window may upload any subset of the part; a counted window must upload the whole part in order. See `REAL_SERVICE_ASSUMPTIONS.md`, "The part a window runs on".
 
 **Acceptance list (`--time-one`):**
 - Enforces the single-wall timeout hierarchy derived from `WALL_SECONDS=1500`: `VM_WALL_SECONDS=1200 < EXEC_TIMEOUT_SECONDS=1260 < WATCHDOG_SLEEP_SECONDS=1320 < RIG_TIMEOUT=1505`.
@@ -122,7 +125,7 @@ bash scripts/colab/launch_judges.sh --time-one --run-id t1-01 --out-dir /tmp/rdl
   - `peak_vram_mib` (sampled every 5 s)
   - `dtype`
   - `canary_drift`
-- Records `pilot_mass_check` (`check_bakeoff_logprob_mass` on `pilot-40b`) with `"kind": "harness_readout"` and `"is_result": false`.
+- Records `pilot_mass_check` with `"kind": "harness_readout"` and `"is_result": false`: `check_bakeoff_logprob_mass` runs when the part is the burned pilot, named by its `part.json` and `items.jsonl` SHA-256 (its `part_id` is `bakeoff-d-t10-sealed`); any other part records `not_applicable`. Receipts before this change label that part `pilot-40b`.
 
 ### 5. Dry Mode (`--dry`) and Resume (`--resume`)
 

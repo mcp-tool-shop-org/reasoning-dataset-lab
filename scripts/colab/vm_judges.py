@@ -2782,8 +2782,19 @@ def check_bakeoff_logprob_mass(
     threshold: float = 0.99,
     part_id: str | None = None,
     part_dir: Path | None = None,
+    verified_pilot_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Compute the burned `pilot-40b` yes/no token log-probability mass harness readout from `rows/*.jsonl`."""
+    """Compute the burned `pilot-40b` yes/no token log-probability mass harness readout from `rows/*.jsonl`.
+
+    `verified_pilot_identity` is a part identity from `read_part_identity` whose hashes are the burned pilot's
+    (`is_pilot_40b`); the readout then records the part's real `part_id` and `part_json_sha256`.
+    """
+    if verified_pilot_identity is not None and verified_pilot_identity.get("is_pilot_40b") is not True:
+        raise RefusalError(
+            "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
+            "bakeoff-logprob-mass runs only on the burned pilot part, identified by its part.json and items.jsonl "
+            f"SHA-256; got part_id={verified_pilot_identity.get('part_id')!r} with other hashes.",
+        )
     if part_id is not None and str(part_id).strip().lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
         raise RefusalError(
             "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
@@ -2804,6 +2815,8 @@ def check_bakeoff_logprob_mass(
             f"No binary judge row files found in '{rows_dir}'.",
         )
     resolved_part_id = str(part_id).strip() if part_id is not None else None
+    if verified_pilot_identity is not None:
+        resolved_part_id = str(verified_pilot_identity.get("part_id") or "").strip() or None
     if resolved_part_id is None and part_dir is not None:
         pdir = Path(part_dir).resolve()
         search_dirs = [pdir.parent] if pdir.is_file() else [pdir, pdir / "part_bakeoff_sealed"]
@@ -2829,7 +2842,9 @@ def check_bakeoff_logprob_mass(
             if isinstance(first_row, Mapping) and first_row.get("part_id")
         ]
         resolved_part_id = row_part_ids[0] if row_part_ids else None
-    if resolved_part_id is None or resolved_part_id.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS:
+    if verified_pilot_identity is None and (
+        resolved_part_id is None or resolved_part_id.lower() not in ALLOWED_LOGPROB_MASS_PART_IDS
+    ):
         raise RefusalError(
             "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN",
             f"bakeoff-logprob-mass is restricted to the burned pilot-40b allow-set, got part_id={resolved_part_id!r}.",
@@ -2878,12 +2893,16 @@ def check_bakeoff_logprob_mass(
             "mean_yes_no_mass": round(mean_mass, 6),
             "threshold": threshold,
         }
-    return {
+    out: dict[str, Any] = {
         "schema_version": "1.0",
         "part_id": resolved_part_id,
         "threshold": threshold,
         "judges": judges_report,
     }
+    if verified_pilot_identity is not None:
+        out["part_json_sha256"] = verified_pilot_identity.get("part_json_sha256")
+        out["items_jsonl_sha256"] = verified_pilot_identity.get("items_jsonl_sha256")
+    return out
 
 
 def _read_cgroup_raw_str(path: Path) -> str | None:
@@ -5530,56 +5549,255 @@ def run_gpu_gate(
     return ok_report
 
 
-PART_MANIFEST_FILENAME = "manifest.json"
+# The part's own files. A sealed part built by this repo (`rdlab bakeoff-part`, `waves_and_sealing._PART_FILES`) holds
+# exactly `checksums.txt`, `items.jsonl`, `part.json` and `provenance.jsonl`; no builder writes a part `manifest.json`.
+# The "part manifest" of a window is therefore the part's own `part.json` (its `part_id` and `items_count`) bound by
+# `checksums.txt` (the SHA-256 of `part.json` and of the part's `items.jsonl`). The launcher stages both, byte-identical,
+# beside the uploaded (projected) `items.jsonl`; nothing ever writes either of them.
+PART_JSON_FILENAME = "part.json"
+PART_CHECKSUMS_FILENAME = "checksums.txt"
+PART_STAGED_FILENAMES: tuple[str, str] = (PART_JSON_FILENAME, PART_CHECKSUMS_FILENAME)
 LOCK_CHECK_WINDOW_MODES: frozenset[str] = frozenset(
     {"lock-check", "lock_check", "lock-check-stub", "lock_check_stub"}
 )
+# Windows whose uploaded items file must be the whole part (every item, in the part's order). Every other window that
+# carries a part (time-one) may upload a subset; the VM cuts its own window (the first `TIME_ONE_ITEMS_LIMIT` rows).
+FULL_PART_WINDOW_MODES: frozenset[str] = frozenset({"counted", "counted-stub", "counted_stub"})
+# The burned pilot part (`part-pilot-40b/part_bakeoff_sealed`), identified by content, never by a label: the SHA-256
+# of its `part.json` (which carries its seal, `frozen_mac`) and of its `items.jsonl`, as its `checksums.txt` records
+# them. Its `part_id` is `bakeoff-d-t10-sealed`, which every writer-built part shares, so the id alone cannot name it.
+PILOT_40B_PART_JSON_SHA256 = "9ae6708e0d5b3fae8535899cb1b4df5ee0688dbb5f21206f62e8b4457ea5c067"
+PILOT_40B_ITEMS_JSONL_SHA256 = "c64e982d248fafd60cf121c14bb31cdd4e5093bcb8accc83418a133f092ba675"
+_CHECKSUM_LINE_RE = re.compile(r"^([0-9a-f]{64})  ([A-Za-z0-9._-]+)$")
 
 
-def validate_part_manifest_file(
-    part_manifest: Path,
+def read_part_checksums(checksums_file: Path) -> dict[str, str]:
+    """Parse a part's `checksums.txt` (`<sha256>  <name>` per line) into `{name: sha256}`.
+
+    Refuses `PART_MANIFEST_INVALID` on a malformed line, a repeated name, or when `items.jsonl` or `part.json` is not
+    listed.
+    """
+    try:
+        text = Path(checksums_file).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RefusalError(
+            "PART_MANIFEST_INVALID",
+            f"Part checksums at {checksums_file} could not be read: {exc}",
+        ) from exc
+    out: dict[str, str] = {}
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        m = _CHECKSUM_LINE_RE.match(line)
+        if m is None or m.group(2) in out:
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part checksums at {checksums_file} line {lineno} is not a unique '<sha256>  <name>' line",
+            )
+        out[m.group(2)] = m.group(1)
+    for needed in ("items.jsonl", PART_JSON_FILENAME):
+        if needed not in out:
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part checksums at {checksums_file} do not list {needed}",
+            )
+    return out
+
+
+def read_part_identity(
+    part_dir: Path,
     *,
     mode: str,
     dryrun: bool = False,
-) -> tuple[dict[str, Any], bool]:
-    """Read and validate an existing part `manifest.json`; the one rule set shared by the launcher, VM `main` and the
-    pipeline body.
+    schema_errors: Any = None,
+) -> dict[str, Any]:
+    """Read and validate a part's `part.json` and `checksums.txt` in `part_dir`; the one rule set shared by the
+    launcher, VM `main` and the pipeline body. Never writes anything.
 
-    Refuses `PART_MANIFEST_INVALID` (unparsable, not a JSON object, or no non-empty string `part_id`) in every mode, and
-    `PART_MANIFEST_SYNTHESIZED` (a stub/synthesized manifest) in real modes. Never writes anything.
-    Returns `(manifest_doc, synthesized_flag)`.
+    Refuses `PART_MANIFEST_INVALID` when `part.json` does not parse, is not an object, has no non-empty string
+    `part_id` or no positive integer `items_count`, fails `schema_errors` (the launcher passes the repo's part schema
+    check; the VM kernel, which imports nothing from the repo, does not), when `checksums.txt` is malformed, or when
+    `part.json`'s SHA-256 is not the one `checksums.txt` records. Refuses `PART_MANIFEST_SYNTHESIZED` for a stub part
+    (`part_id` "stub" or `synthesized`) in real modes.
+    Returns the part identity recorded in the run: `part_id`, `items_count`, `part_json_sha256`, `items_jsonl_sha256`
+    (the part's own items file, from `checksums.txt`) and `is_pilot_40b` (both hashes equal the burned pilot's).
     """
+    part_json = Path(part_dir) / PART_JSON_FILENAME
+    checksums = Path(part_dir) / PART_CHECKSUMS_FILENAME
     try:
-        loaded = json.loads(part_manifest.read_text(encoding="utf-8"))
+        raw = part_json.read_bytes()
+        loaded = json.loads(raw.decode("utf-8"))
     except Exception as exc:
         raise RefusalError(
             "PART_MANIFEST_INVALID",
-            f"Part manifest at {part_manifest} failed to parse as JSON (parse error): {exc}",
+            f"Part metadata at {part_json} failed to parse as JSON (parse error): {exc}",
         ) from exc
     if not isinstance(loaded, dict):
         raise RefusalError(
             "PART_MANIFEST_INVALID",
-            f"Part manifest at {part_manifest} root is not a JSON object (not a dict): got {type(loaded).__name__}",
+            f"Part metadata at {part_json} root is not a JSON object (not a dict): got {type(loaded).__name__}",
         )
     raw_pid = loaded.get("part_id")
     if not isinstance(raw_pid, str) or not raw_pid.strip():
         raise RefusalError(
             "PART_MANIFEST_INVALID",
-            f"Part manifest at {part_manifest} has no non-empty string part_id (no part_id)",
+            f"Part metadata at {part_json} has no non-empty string part_id (no part_id)",
+        )
+    raw_count = loaded.get("items_count")
+    if isinstance(raw_count, bool) or not isinstance(raw_count, int) or raw_count < 1:
+        raise RefusalError(
+            "PART_MANIFEST_INVALID",
+            f"Part metadata at {part_json} has no positive integer items_count (got {type(raw_count).__name__})",
         )
     was_synth = bool(loaded.get("synthesized")) or raw_pid.strip().lower() == "stub"
     if is_real_mode(mode, dryrun=dryrun) and was_synth:
         raise RefusalError(
             "PART_MANIFEST_SYNTHESIZED",
-            f"Part manifest at {part_manifest} is a synthesized stub manifest (part_id={raw_pid!r}, synthesized={bool(loaded.get('synthesized'))}) and is forbidden in real mode {mode!r}.",
+            f"Part metadata at {part_json} is a synthesized stub (part_id={raw_pid!r}) and is forbidden in real mode {mode!r}.",
         )
-    return loaded, bool(loaded.get("synthesized"))
+    if schema_errors is not None:
+        errors = list(schema_errors(loaded))
+        if errors:
+            raise RefusalError(
+                "PART_MANIFEST_INVALID",
+                f"Part metadata at {part_json} does not match the part schema: {errors[0]}"
+                + (f" (and {len(errors) - 1} more)" if len(errors) > 1 else ""),
+            )
+    if not checksums.is_file():
+        raise RefusalError(
+            "PART_MANIFEST_INVALID",
+            f"Part checksums not found at {checksums}; part.json is only bound to its items through checksums.txt",
+        )
+    sums = read_part_checksums(checksums)
+    part_json_sha = hashlib.sha256(raw).hexdigest()
+    if sums[PART_JSON_FILENAME] != part_json_sha:
+        raise RefusalError(
+            "PART_MANIFEST_INVALID",
+            f"Part metadata at {part_json} has SHA-256 {part_json_sha}, but {checksums.name} records "
+            f"{sums[PART_JSON_FILENAME]} for part.json",
+        )
+    items_sha = sums["items.jsonl"]
+    return {
+        "source": PART_JSON_FILENAME,
+        "part_id": raw_pid.strip(),
+        "items_count": int(raw_count),
+        "part_json_sha256": part_json_sha,
+        "items_jsonl_sha256": items_sha,
+        "checksums_sha256": sha256_file(checksums),
+        "is_pilot_40b": part_json_sha == PILOT_40B_PART_JSON_SHA256 and items_sha == PILOT_40B_ITEMS_JSONL_SHA256,
+        "synthesized": was_synth,
+    }
+
+
+def _read_item_rows_for_binding(items_file: Path, *, label: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for lineno, raw_line in enumerate(Path(items_file).read_text(encoding="utf-8").splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        try:
+            obj = json.loads(raw_line)
+        except json.JSONDecodeError as exc:
+            raise RefusalError(
+                "PART_MANIFEST_ITEMS_MISMATCH",
+                f"{label} line {lineno} is not a JSON row ({exc.msg})",
+            ) from exc
+        if not isinstance(obj, dict) or not isinstance(obj.get("id"), str) or not obj["id"].strip():
+            raise RefusalError(
+                "PART_MANIFEST_ITEMS_MISMATCH",
+                f"{label} line {lineno} has no string id",
+            )
+        rows.append(obj)
+    return rows
+
+
+def bind_items_to_part(
+    items_file: Path,
+    identity: Mapping[str, Any],
+    *,
+    mode: str,
+    part_items_file: Path | None = None,
+) -> dict[str, Any]:
+    """Bind the uploaded items file to the part identity from `read_part_identity`; refuse
+    `PART_MANIFEST_ITEMS_MISMATCH` naming the field that disagrees (never printing item text).
+
+    Always (launcher and VM): the uploaded ids are unique; a counted window (`FULL_PART_WINDOW_MODES`) uploads exactly
+    `items_count` rows, any other window at most `items_count`.
+    With `part_items_file` (the launcher, which has the part directory): the part's `items.jsonl` must hash to the
+    SHA-256 in `checksums.txt` and hold `items_count` rows; every uploaded row must be the projection of the part row
+    with the same id (`id`, `material` and `claim` equal, compared field by field, so the projection is checked, not
+    trusted); a counted window must upload every part item in the part's order, a time-one window any subset.
+    The VM receives only the projected file, so it checks the first rule set and the identity, not the projection.
+    """
+    norm_mode = str(mode or "").strip().lower()
+    full_part = norm_mode in FULL_PART_WINDOW_MODES
+    want_count = int(identity["items_count"])
+    rows = _read_item_rows_for_binding(items_file, label=f"Items file {Path(items_file).name}")
+    ids = [str(r["id"]) for r in rows]
+    if len(set(ids)) != len(ids):
+        raise RefusalError(
+            "PART_MANIFEST_ITEMS_MISMATCH",
+            f"Items file {Path(items_file).name} repeats {len(ids) - len(set(ids))} item id(s); field: id",
+        )
+    if (full_part and len(ids) != want_count) or len(ids) > want_count:
+        raise RefusalError(
+            "PART_MANIFEST_ITEMS_MISMATCH",
+            f"Items file {Path(items_file).name} has {len(ids)} item(s) but part.json items_count is {want_count} "
+            f"(mode {mode!r} {'needs the whole part' if full_part else 'allows at most the whole part'}); field: items_count",
+        )
+    binding: dict[str, Any] = {
+        "uploaded_items": len(ids),
+        "rule": "whole_part_in_order" if full_part else "subset_of_part",
+        "projection_checked": False,
+    }
+    if part_items_file is None:
+        return binding
+    part_items = Path(part_items_file)
+    if not part_items.is_file():
+        raise RefusalError(
+            "PART_MANIFEST_ITEMS_MISMATCH",
+            f"The part's own items.jsonl was not found at {part_items}; field: items.jsonl",
+        )
+    part_items_sha = sha256_file(part_items)
+    if part_items_sha != identity["items_jsonl_sha256"]:
+        raise RefusalError(
+            "PART_MANIFEST_ITEMS_MISMATCH",
+            f"The part's items.jsonl at {part_items} has SHA-256 {part_items_sha}, but checksums.txt records "
+            f"{identity['items_jsonl_sha256']}; field: items.jsonl sha256",
+        )
+    part_rows = _read_item_rows_for_binding(part_items, label=f"Part items {part_items}")
+    if len(part_rows) != want_count:
+        raise RefusalError(
+            "PART_MANIFEST_ITEMS_MISMATCH",
+            f"The part's items.jsonl holds {len(part_rows)} item(s) but part.json items_count is {want_count}; field: items_count",
+        )
+    by_id = {str(r["id"]): r for r in part_rows}
+    not_members = [i for i in ids if i not in by_id]
+    if not_members:
+        raise RefusalError(
+            "PART_MANIFEST_ITEMS_MISMATCH",
+            f"{len(not_members)} of {len(ids)} uploaded item id(s) are not items of part {identity['part_id']!r}; field: id",
+        )
+    for fname in ("material", "claim"):
+        differing = sum(1 for r in rows if r.get(fname) != by_id[str(r["id"])].get(fname))
+        if differing:
+            raise RefusalError(
+                "PART_MANIFEST_ITEMS_MISMATCH",
+                f"{differing} uploaded item(s) differ from the part's item with the same id; field: {fname}",
+            )
+    if full_part and ids != [str(r["id"]) for r in part_rows]:
+        raise RefusalError(
+            "PART_MANIFEST_ITEMS_MISMATCH",
+            f"Items file {Path(items_file).name} holds the part's items in a different order (mode {mode!r} needs "
+            "the whole part in the part's order); field: id order",
+        )
+    binding["projection_checked"] = True
+    return binding
 
 
 def part_manifest_required(mode: str | None, *, dryrun: bool = False) -> bool:
-    """Return True when a window must bring its part's own `manifest.json`: every real mode except the lock-check
-    windows (`time-one`, `counted` and any other non-stub mode). Lock-check windows read the anchor, P0a and counted
-    sources instead, each of which carries or resolves its own manifest, so they never need the items file's.
+    """Return True when a window must bring its part's own `part.json` and `checksums.txt`: every real mode except the
+    lock-check windows (`time-one`, `counted` and any other non-stub mode). Lock-check windows read the anchor, P0a and
+    counted sources instead, each of which carries or resolves its own manifest, so they never need the items file's.
     """
     if not is_real_mode(mode, dryrun=dryrun):
         return False
@@ -5591,27 +5809,38 @@ def preflight_part_manifest(
     *,
     mode: str,
     dryrun: bool = False,
-) -> Path | None:
-    """Check the part manifest beside `items_file` before any paid step; never creates one.
+    part_dir: Path | None = None,
+    part_items_file: Path | None = None,
+    schema_errors: Any = None,
+) -> dict[str, Any] | None:
+    """Check the part's `part.json` + `checksums.txt` and bind the items file to them, before any paid step.
 
-    - Present: refused by the same rules as `validate_part_manifest_file` (invalid in any mode, synthesized in real mode).
-    - Absent: refused `PART_MANIFEST_MISSING` when `part_manifest_required(mode)`; otherwise `None` (stub and dryrun
-      windows may let the pipeline body synthesize a labelled stub manifest later).
-    Returns the manifest path when it exists, so the caller can list it with the uploaded item files.
+    `part_dir` defaults to the items file's directory (on the VM, where the launcher staged both files beside
+    `items.jsonl`). The launcher passes the real part directory, its `items.jsonl` as `part_items_file` and the repo's
+    part schema check as `schema_errors`; VM `main` passes neither, so it checks identity and counts only.
+    - Present: the upload path guard, `read_part_identity`, then `bind_items_to_part`.
+    - Absent (no `part.json`): refused `PART_MANIFEST_MISSING` when `part_manifest_required(mode)`; otherwise `None`.
+    Returns the part identity with its `binding`, or `None`. Never creates or rewrites a file.
     """
     eff_items = Path(items_file)
-    part_dir = eff_items if eff_items.is_dir() else eff_items.parent
-    part_manifest = part_dir / PART_MANIFEST_FILENAME
-    if part_manifest.is_file():
-        validate_part_manifest_file(part_manifest, mode=mode, dryrun=dryrun)
-        return part_manifest
-    if part_manifest_required(mode, dryrun=dryrun):
-        raise RefusalError(
-            "PART_MANIFEST_MISSING",
-            f"Part manifest not found at {part_manifest} in real mode {mode!r}; the launcher must stage the part's own "
-            "manifest.json beside items.jsonl, and real mode never synthesizes one.",
-        )
-    return None
+    eff_items_jsonl = eff_items / "items.jsonl" if eff_items.is_dir() else eff_items
+    eff_part_dir = Path(part_dir) if part_dir is not None else eff_items_jsonl.parent
+    part_json = eff_part_dir / PART_JSON_FILENAME
+    if not part_json.is_file():
+        if part_manifest_required(mode, dryrun=dryrun):
+            raise RefusalError(
+                "PART_MANIFEST_MISSING",
+                f"Part metadata not found at {part_json} in real mode {mode!r}; a real window needs the part's own "
+                "part.json and checksums.txt (pass --part-dir <the part directory>), and nothing ever synthesizes them.",
+            )
+        return None
+    for name in PART_STAGED_FILENAMES:
+        check_upload_path_allowed(eff_part_dir / name)
+    identity = read_part_identity(eff_part_dir, mode=mode, dryrun=dryrun, schema_errors=schema_errors)
+    identity["binding"] = bind_items_to_part(
+        eff_items_jsonl, identity, mode=mode, part_items_file=part_items_file
+    )
+    return identity
 
 
 def _ensure_part_manifest_for_run(
@@ -5620,34 +5849,23 @@ def _ensure_part_manifest_for_run(
     mode: str,
     dryrun: bool = False,
 ) -> tuple[dict[str, Any], bool]:
-    """Ensure `part_dir / manifest.json` exists or refuse with `PART_MANIFEST_MISSING` in real modes.
+    """Read the staged part identity beside the items (`part_dir` is the items directory or the items file) or refuse
+    with `PART_MANIFEST_MISSING` in real modes; the pipeline body's second line behind VM `main`'s
+    `verify_part_manifest` preflight.
 
-    Only stub or dryrun modes may synthesize a part manifest, and any synthesized manifest is
-    labelled `"part_id": "stub"`, `"synthesized": True` (never `"pilot-40b"`).
-    VM `main` runs `preflight_part_manifest` before any paid step; this is the second line, in the pipeline body.
-    Returns `(manifest_doc, was_synthesized)`.
+    Stub and dryrun windows without a part get an in-memory stub identity (`"part_id": "stub"`, `"synthesized": True`);
+    nothing is written. Returns `(identity, was_synthesized)`.
     """
-    part_manifest = part_dir / PART_MANIFEST_FILENAME
-    real_mode_active = is_real_mode(mode, dryrun=dryrun)
-    if part_manifest.is_file():
-        return validate_part_manifest_file(part_manifest, mode=mode, dryrun=dryrun)
-    if real_mode_active:
+    items_jsonl = Path(part_dir) / "items.jsonl" if Path(part_dir).is_dir() else Path(part_dir)
+    identity = preflight_part_manifest(items_jsonl, mode=mode, dryrun=dryrun, part_dir=items_jsonl.parent)
+    if identity is not None:
+        return identity, False
+    if is_real_mode(mode, dryrun=dryrun):
         raise RefusalError(
             "PART_MANIFEST_MISSING",
-            f"Part manifest not found at {part_manifest} in real mode {mode!r}; real mode never synthesizes a part manifest.",
+            f"Part metadata not found in {part_dir} in real mode {mode!r}; real mode never synthesizes a part identity.",
         )
-    stub_doc: dict[str, Any] = {
-        "part_id": "stub",
-        "schema_version": "1.0",
-        "synthesized": True,
-    }
-    part_dir.mkdir(parents=True, exist_ok=True)
-    part_manifest.write_text(
-        json.dumps(stub_doc, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    return stub_doc, True
+    return {"part_id": "stub", "schema_version": "1.0", "synthesized": True}, True
 
 
 def _resolve_single_counted_source(
@@ -5743,11 +5961,6 @@ def run_judges_pipeline(
     """Run all 5 judges (or `only_judge_ids`) as separate child subprocesses in their synced venvs and compute readouts."""
     anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
     p0a_stage_dir = run_dir.parent / f".{run_dir.name}_p0a_part"
-    orig_part_dir = part_dir if part_dir.is_dir() else part_dir.parent
-    orig_part_manifest = orig_part_dir / "manifest.json"
-    preexisting_part_manifest = orig_part_manifest.is_file()
-    t1_summary: dict[str, Any] | None = None
-    body_exc: BaseException | None = None
     try:
         t1_summary, mass_readout = _run_judges_pipeline_body(
             mode=mode,
@@ -5783,42 +5996,9 @@ def run_judges_pipeline(
             replacement_session=replacement_session,
         )
         return t1_summary, mass_readout
-    except BaseException as exc:
-        body_exc = exc
-        raise
     finally:
         shutil.rmtree(p0a_stage_dir, ignore_errors=True)
         shutil.rmtree(anchor_stage_dir, ignore_errors=True)
-        if not preexisting_part_manifest and orig_part_manifest.is_file():
-            try:
-                orig_part_manifest.unlink()
-            except OSError as exc:
-                err_entry = {
-                    "path": str(orig_part_manifest).replace("\\", "/"),
-                    "error": str(exc),
-                }
-                if body_exc is not None:
-                    # The body raised: carry the cleanup error on that exception (it still propagates unchanged),
-                    # so `main` lists it in the refusal receipt instead of dropping it.
-                    try:
-                        merge_manifest_cleanup_errors(
-                            body_exc.__dict__.setdefault("manifest_cleanup_errors", []),
-                            [err_entry],
-                        )
-                    except (AttributeError, TypeError):
-                        pass
-                elif t1_summary is not None:
-                    merge_manifest_cleanup_errors(
-                        t1_summary.setdefault("manifest_cleanup_errors", []),
-                        [err_entry],
-                    )
-                    summary_file = run_dir / "time_one_summary.json"
-                    if summary_file.parent.is_dir():
-                        summary_file.write_text(
-                            json.dumps(t1_summary, indent=2) + "\n",
-                            encoding="utf-8",
-                            newline="\n",
-                        )
 
 
 def _run_judges_pipeline_body(
@@ -5957,7 +6137,7 @@ def _run_judges_pipeline_body(
     part_manifest_synthesized: bool = False
     if not is_lock_check_window:
         part_manifest_doc, part_manifest_synthesized = _ensure_part_manifest_for_run(
-            part_dir if part_dir.is_dir() else part_dir.parent,
+            part_dir,
             mode=mode,
             dryrun=dryrun,
         )
@@ -6801,13 +6981,19 @@ def _run_judges_pipeline_body(
         if raw_pid:
             real_part_id = raw_pid
     if is_lock_check_window:
+        # Unchanged here: a lock-check window carries no part.json for its P0a input; its mass check keeps the
+        # P0a validators' allow-set label (see REAL_SERVICE_ASSUMPTIONS.md, "Part identity").
         raw_mass_check = check_bakeoff_logprob_mass(
             run_dir, part_id=(real_part_id or "pilot-40b")
         )
-    elif norm_mode in ("time-one", "time_one") and real_part_id in (None, "pilot-40b"):
-        raw_mass_check = check_bakeoff_logprob_mass(
-            run_dir, part_id=(real_part_id or "pilot-40b")
-        )
+    elif (
+        norm_mode in ("time-one", "time_one")
+        and isinstance(part_manifest_doc, Mapping)
+        and not part_manifest_synthesized
+        and part_manifest_doc.get("is_pilot_40b") is True
+    ):
+        # The pilot mass check runs on the burned pilot part, identified by its part.json and items.jsonl hashes.
+        raw_mass_check = check_bakeoff_logprob_mass(run_dir, verified_pilot_identity=part_manifest_doc)
     else:
         raw_mass_check = {
             "schema_version": "1.0",
@@ -6823,7 +7009,7 @@ def _run_judges_pipeline_body(
     }
     time_one_summary: dict[str, Any] = {
         "mode": mode,
-        "part_manifest": part_manifest_doc,
+        "part_identity": part_manifest_doc,
         "wall_seconds": TIME_ONE_WALL_SECONDS if mode == "time-one" else 7200,
         "cap_units": TIME_ONE_CAP_UNITS if mode == "time-one" else 0.16,
         "items_per_judge": len(shard_item_ids),
@@ -11455,17 +11641,19 @@ def main(argv: list[str] | None = None) -> int:
             current_step = "verify_items_allowlist"
             verify_items_allowlist(args.items_file)
 
-            # The part manifest preflight: before the shard manifest, venv sync, the device/GPU gate and any weight
-            # download. The launcher stages the part's own manifest.json beside items.jsonl; it is listed (and deleted
-            # after the run) with the other uploaded item files even when it is refused here.
+            # The part preflight: before the shard manifest, venv sync, the device/GPU gate and any weight download.
+            # The launcher stages the part's own part.json and checksums.txt beside items.jsonl; they are listed (and
+            # deleted after the run) with the other uploaded item files even when they are refused here. The VM has
+            # only the projected items file, so it checks the identity and the counts; the launcher, which has the
+            # part, also checked the projection row by row.
             current_step = "verify_part_manifest"
-            staged_part_manifest = (
-                args.items_file if args.items_file.is_dir() else args.items_file.parent
-            ) / PART_MANIFEST_FILENAME
-            if staged_part_manifest.is_file():
-                check_upload_path_allowed(staged_part_manifest)
-                if staged_part_manifest not in uploaded_item_files:
-                    uploaded_item_files.append(staged_part_manifest)
+            staged_part_dir = args.items_file if args.items_file.is_dir() else args.items_file.parent
+            for staged_name in PART_STAGED_FILENAMES:
+                staged_part_file = staged_part_dir / staged_name
+                if staged_part_file.is_file():
+                    check_upload_path_allowed(staged_part_file)
+                    if staged_part_file not in uploaded_item_files:
+                        uploaded_item_files.append(staged_part_file)
             preflight_part_manifest(args.items_file, mode=args.mode, dryrun=dryrun)
 
         cgroup_chain_at_start = read_cgroup_limit_chain()
@@ -12055,8 +12243,8 @@ def main(argv: list[str] | None = None) -> int:
                 else {}
             ),
             "time_one_summary": time_one_summary,
-            "part_manifest": (
-                time_one_summary.get("part_manifest")
+            "part_identity": (
+                time_one_summary.get("part_identity")
                 if time_one_summary is not None
                 else None
             ),

@@ -137,6 +137,23 @@ def _make_synthetic_public_items(base_dir: Path, count: int = 12) -> Path:
     return items_path
 
 
+def _attach_part_files(items_path: Path, *, part_id: str) -> dict[str, str]:
+    """Write a minimal `part.json` (`part_id`, `items_count`) and a `checksums.txt` binding it and `items.jsonl` beside
+    `items_path`, the identity the VM reads (the VM checks no schema; launcher tests use `_make_builder_part`)."""
+    part_dir = items_path.parent
+    n = sum(1 for ln in items_path.read_text(encoding="utf-8").splitlines() if ln.strip())
+    (part_dir / "part.json").write_text(
+        json.dumps({"part_id": part_id, "items_count": n}, sort_keys=True) + "\n", encoding="utf-8", newline="\n"
+    )
+    shas = {
+        name: hashlib.sha256((part_dir / name).read_bytes()).hexdigest() for name in ("items.jsonl", "part.json")
+    }
+    (part_dir / "checksums.txt").write_text(
+        "".join(f"{shas[name]}  {name}\n" for name in sorted(shas)), encoding="utf-8", newline="\n"
+    )
+    return shas
+
+
 def _hermetic_path_for(env_paths: dict[str, Path]) -> str:
     return fake_colab.build_hermetic_path(env_paths)
 
@@ -1260,11 +1277,13 @@ def test_fake_colab_contract_and_time_one_mode_summary_and_mass_readout(
         expected_venv = "venv-d3" if jid == "d3-mini" else "venv-judge"
         assert jmetrics["venv"] == expected_venv
 
+    # A dryrun time-one window with no part.json has no part identity, so it makes no pilot claim: the pilot mass
+    # check runs only on the burned pilot part, named by its part.json and items.jsonl SHA-256 (never a label).
     mass_readout = receipt["pilot_mass_check"]
     assert mass_readout["kind"] == "harness_readout"
     assert mass_readout["is_result"] is False
-    assert mass_readout["part_id"] == "pilot-40b"
-    assert set(mass_readout["judges"].keys()) == set(BAKEOFF_JUDGE_SPECS.keys())
+    assert mass_readout["status"] == "not_applicable"
+    assert mass_readout["part_id"] == "stub"
 
 
 def _write_single_item_file(path: Path, row: Any) -> Path:
@@ -12430,6 +12449,7 @@ def test_non_stub_child_argv_uses_cuda_0_and_runner_normalizes_cuda_for_d3_trans
         tmp_path / "dev_norm_data"
     )
     items_file = _make_synthetic_public_items(tmp_path / "dev_norm_data", count=2)
+    _attach_part_files(items_file, part_id="part-synthetic")
     run_dir = tmp_path / "run_non_stub"
     work_dir = tmp_path / "work_non_stub"
     vm_judges._ensure_dryrun_venv_python_wrapper(work_dir / "venv-judge" / "bin" / "python")
@@ -12588,6 +12608,7 @@ def test_fake_d3_runtime_rejects_indexless_cuda_and_passes_with_normalized_devic
         tmp_path / "d3_idx_data"
     )
     items_file = _make_synthetic_public_items(tmp_path / "d3_idx_data", count=2)
+    _attach_part_files(items_file, part_id="part-synthetic")
 
     monkeypatch.delenv("FAKE_COLAB_STATE_DIR", raising=False)
     for name in bj_mod.OFFLINE_ENV_VARS:
@@ -12784,6 +12805,7 @@ def test_no_code_path_builds_child_argv_with_bare_cuda_across_all_modes(
         tmp_path / "modes_data"
     )
     items_file = _make_synthetic_public_items(tmp_path / "modes_data", count=2)
+    _attach_part_files(items_file, part_id="part-synthetic")
 
     work_t1 = tmp_path / "work_t1_direct"
     vm_judges._ensure_dryrun_venv_python_wrapper(work_t1 / "venv-judge" / "bin" / "python")
@@ -12804,6 +12826,9 @@ def test_no_code_path_builds_child_argv_with_bare_cuda_across_all_modes(
         progress_path=tmp_path / "run_t1_direct" / "progress.jsonl",
         only_judge_ids=("d3-mini",),
     )
+    # the launcher runs below are stub/dryrun windows on these synthetic items: no part files beside them
+    for part_file in ("part.json", "checksums.txt"):
+        (items_file.parent / part_file).unlink()
     direct_rows = [
         json.loads(ln)
         for ln in subproc_direct.read_text(encoding="utf-8").splitlines()
@@ -14185,6 +14210,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_LIVE_USAGE_RATE": "rig-only: internal env var passed to `write_outcome_draft` on the rig",
     "RDLAB_OPEN_LOCK": "rig-only: flock path serializing `colab sessions` + `colab new` on the rig",
     "RDLAB_OUT_DIR": "rig-only: output directory on the rig filesystem",
+    "RDLAB_PART_DIR": "rig-only: the sealed part directory; its part.json and checksums.txt are uploaded, the path is not forwarded",
     "RDLAB_PROGRESS_FETCH_INTERVAL_SECONDS": "rig-only: interval between periodic `progress.jsonl` downloads on the rig",
     "RDLAB_PROGRESS_FETCH_TIMEOUT_SECONDS": "rig-only: timeout for each periodic `progress.jsonl` download on the rig",
     "RDLAB_PYTHON": "rig-only: Python interpreter path on the rig",
@@ -22974,19 +23000,20 @@ def test_fix4_item1_synthesized_manifest_is_stub_deleted_after_run_and_ignored_b
     assert was_synth is True
     assert mf_doc["part_id"] == "stub"
     assert mf_doc["synthesized"] is True
-    assert (synth_dir / "manifest.json").is_file()
-    # Calling again on existing synthesized manifest returns was_synth=True
+    # The stub identity lives in memory only: nothing is written into the items directory.
+    assert list(synth_dir.iterdir()) == []
     mf_doc_again, was_synth_again = vm_judges._ensure_part_manifest_for_run(synth_dir, mode="stub", dryrun=True)
     assert was_synth_again is True
     assert mf_doc_again["part_id"] == "stub"
-    # _resolve_part_id_from_dir ignores synthesized manifest unless allow_synthesized=True
+    # _resolve_part_id_from_dir (bakeoff_judge, lock-check side) ignores a synthesized manifest unless allowed
+    (synth_dir / "manifest.json").write_text(json.dumps(mf_doc) + "\n", encoding="utf-8")
     assert bakeoff_judge._resolve_part_id_from_dir(synth_dir, allow_synthesized=False) is None
     assert bakeoff_judge._resolve_part_id_from_dir(synth_dir, allow_synthesized=True) == "stub"
 
-    # Non-dict or malformed manifest.json in _ensure_part_manifest_for_run refuses with PART_MANIFEST_INVALID
+    # Non-dict or malformed part.json in _ensure_part_manifest_for_run refuses with PART_MANIFEST_INVALID
     mal_mf_dir = tmp_path / "mal_mf_dir"
     mal_mf_dir.mkdir(parents=True, exist_ok=True)
-    (mal_mf_dir / "manifest.json").write_text("[1, 2]", encoding="utf-8")
+    (mal_mf_dir / "part.json").write_text("[1, 2]", encoding="utf-8")
     with pytest.raises(vm_judges.RefusalError) as exc_mal_mf:
         vm_judges._ensure_part_manifest_for_run(mal_mf_dir, mode="stub", dryrun=True)
     assert exc_mal_mf.value.failure_class == "PART_MANIFEST_INVALID"
@@ -23032,8 +23059,8 @@ def test_fix4_item1_synthesized_manifest_is_stub_deleted_after_run_and_ignored_b
     )
     assert rc_stub == 0, stub_status.read_text(encoding="utf-8")
     stub_receipt = json.loads((stub_run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
-    assert stub_receipt["part_manifest"]["part_id"] == "stub"
-    assert stub_receipt["part_manifest"]["synthesized"] is True
+    assert stub_receipt["part_identity"]["part_id"] == "stub"
+    assert stub_receipt["part_identity"]["synthesized"] is True
     # Synthesized manifest.json in shared_items_dir was deleted after the stub run
     assert not (shared_items_dir / "manifest.json").exists()
 
@@ -23131,6 +23158,7 @@ def test_fix4_item2_counted_stub_logprob_mass_does_not_use_pilot_40b(
         tmp_path / "f4_i2_base", counted_count=100
     )
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "f4_i2_rec")
+    _attach_part_files(counted_items_file, part_id="part01")
     counted_items_loaded, _ = bakeoff_judge.load_judge_items(counted_items_file)
     sm_base_doc = bakeoff_judge.build_shard_manifest(
         counted_items_file,
@@ -23157,9 +23185,9 @@ def test_fix4_item2_counted_stub_logprob_mass_does_not_use_pilot_40b(
     mass_calls: list[str | None] = []
     orig_mass_fn = vm_judges.check_bakeoff_logprob_mass
 
-    def _spy_mass(judge_output_dir: Path, *, threshold: float = 0.99, part_id: str | None = None, part_dir: Path | None = None) -> dict[str, Any]:
-        mass_calls.append(part_id)
-        return orig_mass_fn(judge_output_dir, threshold=threshold, part_id=part_id, part_dir=part_dir)
+    def _spy_mass(judge_output_dir: Path, **kwargs: Any) -> dict[str, Any]:
+        mass_calls.append(kwargs.get("part_id"))
+        return orig_mass_fn(judge_output_dir, **kwargs)
 
     monkeypatch.setattr(vm_judges, "check_bakeoff_logprob_mass", _spy_mass)
     t1_summary, mass_readout = vm_judges.run_judges_pipeline(
@@ -23180,7 +23208,7 @@ def test_fix4_item2_counted_stub_logprob_mass_does_not_use_pilot_40b(
     assert "pilot-40b" not in mass_calls
     assert mass_readout["status"] == "not_applicable"
     assert mass_readout["part_id"] == "part01"
-    assert t1_summary["part_manifest"]["part_id"] == "part01"
+    assert t1_summary["part_identity"]["part_id"] == "part01"
 
 
 def test_fix4_item3_counted_manifest_without_items_refuses_and_with_items_matches_schedule_sha(
@@ -23577,6 +23605,12 @@ def test_fix4_item7_real_mode_paths_with_monkeypatched_transport(
 
     monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _fake_child_runner)
 
+    # The burned pilot is named by its part.json and items.jsonl SHA-256: pin this test part's hashes as the pilot's.
+    pilot_shas = _attach_part_files(p0a_items_src, part_id="bakeoff-d-t10-sealed")
+    monkeypatch.setattr(vm_judges, "PILOT_40B_PART_JSON_SHA256", pilot_shas["part.json"])
+    monkeypatch.setattr(vm_judges, "PILOT_40B_ITEMS_JSONL_SHA256", pilot_shas["items.jsonl"])
+    _attach_part_files(counted_items_file, part_id="part01")
+
     t1_sum_real, t1_mass_real = vm_judges.run_judges_pipeline(
         mode="time-one",
         part_dir=p0a_items_src.parent,
@@ -23588,8 +23622,10 @@ def test_fix4_item7_real_mode_paths_with_monkeypatched_transport(
         work_dir=work_dir,
         only_judge_ids=["mu-judge"],
     )
-    assert t1_mass_real["part_id"] == "pilot-40b"
-    assert t1_sum_real["part_manifest"]["part_id"] == "pilot-40b"
+    assert t1_mass_real["part_id"] == "bakeoff-d-t10-sealed"
+    assert t1_mass_real["part_json_sha256"] == pilot_shas["part.json"]
+    assert t1_sum_real["part_identity"]["part_id"] == "bakeoff-d-t10-sealed"
+    assert t1_sum_real["part_identity"]["is_pilot_40b"] is True
 
     cnt_sum_real, cnt_mass_real = vm_judges.run_judges_pipeline(
         mode="counted",
@@ -23604,7 +23640,7 @@ def test_fix4_item7_real_mode_paths_with_monkeypatched_transport(
     )
     assert cnt_mass_real["status"] == "not_applicable"
     assert cnt_mass_real["part_id"] == "part01"
-    assert cnt_sum_real["part_manifest"]["part_id"] == "part01"
+    assert cnt_sum_real["part_identity"]["part_id"] == "part01"
 
     # 3. Real-mode lock-check golden/shard build and P0a wraps with dryrun=False and monkeypatched transport
     from reasoning_dataset_lab.pilot_b import bakeoff_judge
@@ -23637,7 +23673,7 @@ def test_fix4_item7_real_mode_paths_with_monkeypatched_transport(
         counted_items_or_manifest=counted_items_file,
     )
     assert lc_mass_real["part_id"] == "pilot-40b"
-    assert lc_sum_real["part_manifest"] is None
+    assert lc_sum_real["part_identity"] is None
     assert (lc_real_run / "golden_anchor_manifest.json").is_file()
     assert (lc_real_run / "shard_manifest.json").is_file()
     assert (lc_real_run / "p0a_report.json").is_file()
@@ -23664,7 +23700,7 @@ def test_fix5_item1_malformed_and_nondict_manifest_refuse_in_real_and_stub_modes
     for label, raw_content, expected_reason in cases:
         part_d = tmp_path / f"f5_i1_{label}"
         part_d.mkdir(parents=True, exist_ok=True)
-        mf_path = part_d / "manifest.json"
+        mf_path = part_d / "part.json"
         mf_path.write_text(raw_content, encoding="utf-8")
         for mode_str, is_dry in (("counted", False), ("time-one", False), ("stub", True), ("counted-stub", True)):
             with pytest.raises(vm_judges.RefusalError) as exc_info:
@@ -23683,18 +23719,19 @@ def test_fix5_item2_synthesized_manifest_refuses_in_real_mode(
     """
     synth_dir = tmp_path / "f5_i2_synth_dir"
     synth_dir.mkdir(parents=True, exist_ok=True)
-    # First synthesize via stub/dryrun mode
+    # A stub part.json (as a stub window's identity would read) left beside the items
     stub_doc, was_synth = vm_judges._ensure_part_manifest_for_run(synth_dir, mode="stub", dryrun=True)
     assert was_synth is True
     assert stub_doc["synthesized"] is True
-    assert (synth_dir / "manifest.json").is_file()
+    (synth_dir / "items.jsonl").write_text(json.dumps({"id": "a", "material": "m", "claim": "c"}) + "\n", encoding="utf-8")
+    _attach_part_files(synth_dir / "items.jsonl", part_id="stub")
 
     # Now verify real mode refuses the leftover synthesized manifest with PART_MANIFEST_SYNTHESIZED
     for real_mode in ("counted", "time-one"):
         with pytest.raises(vm_judges.RefusalError) as exc_synth:
             vm_judges._ensure_part_manifest_for_run(synth_dir, mode=real_mode, dryrun=False)
         assert exc_synth.value.failure_class == "PART_MANIFEST_SYNTHESIZED"
-        assert str(synth_dir / "manifest.json") in exc_synth.value.detail
+        assert str(synth_dir / "part.json") in exc_synth.value.detail
 
 
 def test_fix5_item2_cleanup_unlink_failure_recorded_in_receipt(
@@ -23736,53 +23773,26 @@ def test_fix5_item2_cleanup_unlink_failure_recorded_in_receipt(
     assert "simulated permission denied" in del_receipt["manifest_cleanup_errors"][0]["error"]
     orig_unlink(leftover_mf)
 
-    # 2. End-to-end vm_judges.main (--mode stub --dryrun) where synthesized manifest.json unlink fails in
-    #    run_judges_pipeline finally AND delete_uploaded_items_and_record_receipt -> lands in vm_receipt.json
+    # 2. A stub run writes no part file at all (the stub identity is in memory), so there is nothing to clean up.
     main_items_dir = tmp_path / "f5_i2_main_items"
     main_items_dir.mkdir(parents=True, exist_ok=True)
     main_items = main_items_dir / "items.jsonl"
     shutil.copyfile(counted_items_file, main_items)
-
     monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
     monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
     monkeypatch.setenv("VM_DRYRUN", "1")
-
-    main_run_dir = tmp_path / "f5_i2_main_run"
-    main_status = tmp_path / "f5_i2_main_status.json"
-    with monkeypatch.context() as mp_main:
-        mp_main.setattr(Path, "unlink", _failing_mf_unlink)
-        rc_main = vm_judges.main(
-            [
-                "--step",
-                "run",
-                "--mode",
-                "stub",
-                "--dryrun",
-                "--repo-dir",
-                str(REPO_ROOT),
-                "--receipts-dir",
-                str(receipts_dir),
-                "--items-file",
-                str(main_items),
-                "--run-dir",
-                str(main_run_dir),
-                "--work-dir",
-                str(tmp_path / "f5_i2_main_work"),
-                "--hf-home",
-                str(hf_home),
-                "--result-tar",
-                str(tmp_path / "f5_i2_main.tar.gz"),
-                "--status-file",
-                str(main_status),
-            ]
-        )
-    assert rc_main == 0, main_status.read_text(encoding="utf-8")
+    argv_main, main_run_dir, main_status = _followup_main_args(
+        tmp_path,
+        "f5_i2_main",
+        mode_args=["--mode", "stub", "--dryrun"],
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra=["--items-file", str(main_items)],
+    )
+    assert vm_judges.main(argv_main) == 0, main_status.read_text(encoding="utf-8")
     vm_rec = json.loads((main_run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
-    t1_sum = json.loads((main_run_dir / "time_one_summary.json").read_text(encoding="utf-8"))
-    assert len(t1_sum.get("manifest_cleanup_errors") or []) >= 1
-    assert "simulated permission denied" in t1_sum["manifest_cleanup_errors"][0]["error"]
-    assert len(vm_rec["deleted_items_receipt"].get("manifest_cleanup_errors") or []) >= 1
-    assert "simulated permission denied" in vm_rec["deleted_items_receipt"]["manifest_cleanup_errors"][0]["error"]
+    assert "manifest_cleanup_errors" not in vm_rec["deleted_items_receipt"]
+    assert list(main_items_dir.iterdir()) == []
 
 
 def test_fix5_item3_manifest_only_counted_source_refuses_up_front_before_judge_or_colab_calls(
@@ -24234,15 +24244,13 @@ def test_followup_item2_pipeline_refuses_before_writing_into_the_run_dir(
         )
     assert exc_a.value.failure_class == "PART_MANIFEST_MISSING"
     assert not (run_a / "shard_manifest.json").exists()
-    assert not (no_mf_dir / "manifest.json").exists()
+    assert sorted(p.name for p in no_mf_dir.iterdir()) == ["items.jsonl"]
 
     # (b) a valid part manifest but no judge venvs in real counted mode
     with_mf_dir = tmp_path / "fu2_with_mf"
     with_mf_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(counted_items_file, with_mf_dir / "items.jsonl")
-    (with_mf_dir / "manifest.json").write_text(
-        json.dumps({"part_id": "part01", "schema_version": "1.0"}) + "\n", encoding="utf-8"
-    )
+    _attach_part_files(with_mf_dir / "items.jsonl", part_id="part01")
     run_b = tmp_path / "fu2_run_b"
     with pytest.raises(vm_judges.RefusalError) as exc_b:
         vm_judges.run_judges_pipeline(
@@ -24418,15 +24426,13 @@ def test_followup_item3_sibling_counted_items_staged_in_bundle_and_deleted_on_vm
     assert all(c.get("subcmd") not in ("new", "upload", "exec") for c in bad_calls), bad_calls
 
 
-def test_followup_item4_cleanup_errors_recorded_when_body_raises_and_listed_once(
+def test_followup_item4_pipeline_writes_no_part_file_and_cleanup_errors_merge_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Follow-up item 4 (each part fails at 9251a233):
-    - when `_run_judges_pipeline_body` raises and unlinking the synthesized `manifest.json` fails in
-      `run_judges_pipeline`'s `finally`, the error is carried on the propagating exception (its class and detail are
-      unchanged) and `main` lists it in `vm_receipt.json`;
-    - when both cleanup paths fail on the same file, the receipt lists that path once (it was listed twice).
+    """Follow-up item 4, after the part identity moved to part.json + checksums.txt: a stub pipeline whose body
+    refuses leaves the items directory exactly as it was (no synthesized part file, no cleanup error on the
+    exception), and the receipt merge helper keeps one entry per path.
     """
     counted_items_file, _, _ = _make_counted_part_and_50_anchors_and_114_p0a(
         tmp_path / "fu4_base", counted_count=100
@@ -24436,28 +24442,13 @@ def test_followup_item4_cleanup_errors_recorded_when_body_raises_and_listed_once
     monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
     monkeypatch.setenv("VM_DRYRUN", "1")
 
-    orig_unlink = Path.unlink
-
-    def _failing_mf_unlink(self_path: Path, *args: Any, **kwargs: Any) -> None:
-        if self_path.name == "manifest.json":
-            raise OSError("simulated EPERM on manifest.json")
-        orig_unlink(self_path, *args, **kwargs)
-
-    orig_ensure_shard = vm_judges.ensure_shard_manifest_for_run
-
     def _body_refuses(*args: Any, **kwargs: Any) -> Any:
-        # `main` builds its shard manifest from the items file; the pipeline body passes the part dir, after it has
-        # synthesized the stub part manifest. Refuse only there, so the body raises with a manifest left to clean up.
-        if Path(kwargs["items_file"]).is_dir():
-            raise vm_judges.RefusalError("FU4_BODY_REFUSED", "simulated pipeline body refusal")
-        return orig_ensure_shard(*args, **kwargs)
+        raise vm_judges.RefusalError("FU4_BODY_REFUSED", "simulated pipeline body refusal")
 
-    # (1) direct pipeline call: the body raises, the cleanup error rides on the exception
     part_dir = tmp_path / "fu4_part"
     part_dir.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(counted_items_file, part_dir / "items.jsonl")
     with monkeypatch.context() as mp:
-        mp.setattr(Path, "unlink", _failing_mf_unlink)
         mp.setattr(vm_judges, "ensure_shard_manifest_for_run", _body_refuses)
         with pytest.raises(vm_judges.RefusalError) as exc_pipe:
             vm_judges.run_judges_pipeline(
@@ -24471,58 +24462,8 @@ def test_followup_item4_cleanup_errors_recorded_when_body_raises_and_listed_once
                 work_dir=tmp_path / "fu4_pipe_work",
             )
     assert exc_pipe.value.failure_class == "FU4_BODY_REFUSED"
-    assert "simulated pipeline body refusal" in exc_pipe.value.detail
-    assert getattr(exc_pipe.value, "manifest_cleanup_errors", None) == [
-        {"path": str(part_dir / "manifest.json").replace("\\", "/"), "error": "simulated EPERM on manifest.json"}
-    ]
-    orig_unlink(part_dir / "manifest.json")
-
-    # (2) through main, refused run: the error lands in vm_receipt.json, once
-    items_dir = tmp_path / "fu4_main_items"
-    items_dir.mkdir(parents=True, exist_ok=True)
-    items = items_dir / "items.jsonl"
-    shutil.copyfile(counted_items_file, items)
-    argv, run_dir, status = _followup_main_args(
-        tmp_path,
-        "fu4_main_ref",
-        mode_args=["--mode", "stub", "--dryrun"],
-        receipts_dir=receipts_dir,
-        hf_home=hf_home,
-        extra=["--items-file", str(items)],
-    )
-    with monkeypatch.context() as mp:
-        mp.setattr(Path, "unlink", _failing_mf_unlink)
-        mp.setattr(vm_judges, "ensure_shard_manifest_for_run", _body_refuses)
-        rc = vm_judges.main(argv)
-    assert rc == 2
-    assert json.loads(status.read_text(encoding="utf-8"))["failure_class"] == "FU4_BODY_REFUSED"
-    rec = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
-    errs = rec["deleted_items_receipt"]["manifest_cleanup_errors"]
-    assert [e["path"] for e in errs] == [str(items_dir / "manifest.json").replace("\\", "/")]
-    orig_unlink(items_dir / "manifest.json")
-
-    # (3) through main, successful run: both cleanup paths fail on the same file, listed once
-    items_dir_ok = tmp_path / "fu4_main_items_ok"
-    items_dir_ok.mkdir(parents=True, exist_ok=True)
-    items_ok = items_dir_ok / "items.jsonl"
-    shutil.copyfile(counted_items_file, items_ok)
-    argv_ok, run_dir_ok, status_ok = _followup_main_args(
-        tmp_path,
-        "fu4_main_ok",
-        mode_args=["--mode", "stub", "--dryrun"],
-        receipts_dir=receipts_dir,
-        hf_home=hf_home,
-        extra=["--items-file", str(items_ok)],
-    )
-    with monkeypatch.context() as mp:
-        mp.setattr(Path, "unlink", _failing_mf_unlink)
-        rc_ok = vm_judges.main(argv_ok)
-    assert rc_ok == 0, status_ok.read_text(encoding="utf-8")
-    rec_ok = json.loads((run_dir_ok / "vm_receipt.json").read_text(encoding="utf-8"))
-    errs_ok = rec_ok["deleted_items_receipt"]["manifest_cleanup_errors"]
-    assert len(errs_ok) == 1
-    assert errs_ok[0]["path"] == str(items_dir_ok / "manifest.json").replace("\\", "/")
-    assert "simulated EPERM" in errs_ok[0]["error"]
+    assert getattr(exc_pipe.value, "manifest_cleanup_errors", None) is None
+    assert sorted(p.name for p in part_dir.iterdir()) == ["items.jsonl"]
 
     # the merge helper keeps the first entry per path and skips non-mappings
     merged = vm_judges.merge_manifest_cleanup_errors(
@@ -24781,22 +24722,64 @@ def test_followup_item6_real_lock_check_through_vm_main_on_monkeypatched_transpo
 
 REAL_MODE_SHIM_PY = REPO_ROOT / "tests" / "fixtures" / "fake_vm_real_mode_shim.py"
 
-_PM_BAD_MANIFESTS: tuple[tuple[str, str | dict[str, Any] | None, str], ...] = (
-    ("missing", None, "PART_MANIFEST_MISSING"),
-    ("invalid", "{not json\n", "PART_MANIFEST_INVALID"),
-    ("no_part_id", {"schema_version": "1.0"}, "PART_MANIFEST_INVALID"),
-    ("synthesized", {"part_id": "stub", "schema_version": "1.0", "synthesized": True}, "PART_MANIFEST_SYNTHESIZED"),
-)
+PART_FILE_NAMES = ["checksums.txt", "items.jsonl", "part.json", "provenance.jsonl"]
 
 
-def _pm_items_dir(base: Path, items_src: Path, manifest: str | dict[str, Any] | None) -> Path:
-    """Copy `items_src` to `base/items.jsonl` and write `base/manifest.json` from `manifest` (None: no manifest)."""
+def _make_builder_part(base: Path, *, triads: int = 4, shuffle_low: int = 101) -> Path:
+    """Build a sealed part with the REAL part builder (`run_bakeoff_part_build`, stub mode, mock writer) and return its
+    `part_bakeoff_sealed` directory. Its files are exactly what the builder writes: checksums.txt, items.jsonl, part.json,
+    provenance.jsonl (no manifest.json), validated against the repo's part schema."""
+    from reasoning_dataset_lab.pilot_b import schema_check
+    from reasoning_dataset_lab.pilot_b.bakeoff_part import run_bakeoff_part_build
+
+    res = run_bakeoff_part_build(
+        output_dir=base,
+        triad_count=triads,
+        stub_mode=True,
+        mock_writer=True,
+        shuffle_seed=(1 << 127) | shuffle_low,
+        grant_id="test-grant-part-binding",
+        repo_root=REPO_ROOT,
+    )
+    part = Path(res["part_dir"])
+    assert part.name == "part_bakeoff_sealed"
+    assert sorted(p.name for p in part.iterdir()) == PART_FILE_NAMES
+    assert schema_check.validate(json.loads((part / "part.json").read_text(encoding="utf-8")), "part") == []
+    return part
+
+
+def _project_part_items(part: Path, dst: Path, *, rows: list[dict[str, Any]] | None = None) -> Path:
+    """Write the `{id, material, claim}` projection of `part`'s items (or of `rows`) to `dst`, the upload shape."""
+    src_rows = rows if rows is not None else [
+        json.loads(ln) for ln in (part / "items.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()
+    ]
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(
+        "\n".join(json.dumps({"id": r["id"], "material": r["material"], "claim": r["claim"]}) for r in src_rows) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return dst
+
+
+def _part_rows(part: Path) -> list[dict[str, Any]]:
+    return [json.loads(ln) for ln in (part / "items.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+
+def _copy_part(part: Path, dst: Path) -> Path:
+    shutil.copytree(part, dst)
+    return dst
+
+
+def _stage_vm_items_dir(base: Path, projected: Path, part: Path | None, *, part_files: bool = True) -> Path:
+    """The VM's /content/rdlab_items as the launcher stages it: the projected items.jsonl plus the part's own part.json
+    and checksums.txt, byte-identical."""
     base.mkdir(parents=True, exist_ok=True)
     items = base / "items.jsonl"
-    shutil.copyfile(items_src, items)
-    if manifest is not None:
-        text = manifest if isinstance(manifest, str) else json.dumps(manifest, indent=2) + "\n"
-        (base / "manifest.json").write_text(text, encoding="utf-8", newline="\n")
+    shutil.copyfile(projected, items)
+    if part is not None and part_files:
+        for name in ("part.json", "checksums.txt"):
+            shutil.copyfile(part / name, base / name)
     return items
 
 
@@ -24818,6 +24801,7 @@ def _pm_real_mode_exports(
     receipts_dir: Path,
     hf_home: Path,
     items_file: Path,
+    part_dir: Path | None = None,
 ) -> str:
     """Launcher exports for a real-mode window (no VM_DRYRUN) against the fake CLI."""
     return (
@@ -24829,126 +24813,135 @@ def _pm_real_mode_exports(
             items_file=items_file,
         ).replace("export VM_DRYRUN=1; ", "")
         + "unset VM_DRYRUN; "
+        + (f"export RDLAB_PART_DIR='{_to_wsl_path(part_dir)}'; " if part_dir is not None else "unset RDLAB_PART_DIR; ")
     )
 
 
-def test_part_manifest_item1_launcher_stages_the_part_manifest_and_refuses_before_any_colab_call(
-    tmp_path: Path,
-) -> None:
-    """Part manifest item 1a (launcher), `--dry` and live with the fake CLI:
-    - real `--time-one` / `--counted` with no part `manifest.json` beside the items file refuses `PART_MANIFEST_MISSING`;
-      an unparsable one or one with no `part_id` refuses `PART_MANIFEST_INVALID`; a synthesized stub one refuses
-      `PART_MANIFEST_SYNTHESIZED`. Each refuses before any `colab` call (no CLI call log at all), in `--dry` and live;
-    - a good manifest is listed for upload in `--dry` (`/content/rdlab_items/manifest.json`), and a live window uploads it
-      byte-identical beside `items.jsonl`; the VM deletes it after the run and lists it in `deleted_items_receipt`;
-    - a stub window with no manifest is not refused (the VM may synthesize a labelled stub one).
-    Fails at 5aae6c47/aac95973: the launcher never checked or staged the part manifest, so `--dry` exited 0 and the live
-    path opened a session for a window the VM could only refuse after its paid steps.
+def test_part_binding_launcher_binds_items_to_the_real_part_files_before_any_colab_call(tmp_path: Path) -> None:
+    """Part binding (launcher), on a part made by the real builder (`part_bakeoff_sealed`: checksums.txt, items.jsonl,
+    part.json, provenance.jsonl; no manifest.json) and a projected `{id, material, claim}` items file kept elsewhere, as
+    real windows run. `--dry` and live, real `--time-one` / `--counted`:
+    - a good projection passes: time-one with a subset, counted with the whole part in order; `--dry` lists the uploads
+      of the part's own part.json and checksums.txt beside items.jsonl and resolves the part's real part_id;
+    - each disagreement refuses before any `colab` call (no CLI call log) with `PART_MANIFEST_ITEMS_MISMATCH` naming
+      the field: a counted window short of the part (items_count), out of order (id order), an id that is not the
+      part's (id), a row whose claim differs from the part's (claim: the projection is checked, not trusted), the
+      part's items.jsonl not matching checksums.txt (items.jsonl sha256), and another part's files beside these items
+      (material);
+    - a part.json edited after the build refuses `PART_MANIFEST_INVALID` (its SHA-256 is not the one checksums.txt
+      records), and no part.json refuses `PART_MANIFEST_MISSING`.
+    Fails at bf1bf843: the launcher read only a `manifest.json` beside the items file (which no builder writes), so a
+    real part refused PART_MANIFEST_MISSING and a hand-written manifest of another part was accepted unbound.
     """
-    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pm1_rec")
-    items_src = _make_synthetic_public_items(tmp_path / "pm1_src")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pb1_rec")
+    part = _make_builder_part(tmp_path / "pb1_build")
+    rows = _part_rows(part)
+    assert len(rows) == 12
+    inputs = tmp_path / "pb1_inputs"
 
-    for mode in ("time-one", "counted"):
-        for tag, manifest, code in _PM_BAD_MANIFESTS:
-            items = _pm_items_dir(tmp_path / f"pm1_{mode}_{tag}", items_src, manifest)
-            for live in (False, True):
-                env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"pm1_env_{mode}_{tag}_{int(live)}")
-                exports = _pm_real_mode_exports(
-                    env_paths,
-                    open_lock=tmp_path / f"pm1_{mode}_{tag}.lock",
-                    receipts_dir=receipts_dir,
-                    hf_home=hf_home,
-                    items_file=items,
-                )
-                out_dir = tmp_path / f"pm1_out_{mode}_{tag}_{int(live)}"
-                proc = _pm_run_launcher(
-                    exports,
-                    f"--{mode} {'' if live else '--dry '}--out-dir '{_to_wsl_path(out_dir)}' --run-id pm1-{mode}-{tag}",
-                )
-                where = f"mode={mode} case={tag} live={live}\nstdout={proc.stdout}\nstderr={proc.stderr}"
-                assert proc.returncode == 2, where
-                assert code in proc.stderr, where
-                assert "colab new" not in proc.stdout, where
-                assert not env_paths["calls_log"].exists(), where
-                if manifest is None:
-                    assert not (items.parent / "manifest.json").exists(), "the launcher must never create one"
-
-    # --dry with a good manifest lists its upload beside items.jsonl
-    good_manifest = {"part_id": "part01", "schema_version": "1.0"}
-    good_items = _pm_items_dir(tmp_path / "pm1_good", items_src, good_manifest)
-    env_dry = fake_colab.setup_fake_colab_environment(tmp_path / "pm1_env_dry_good")
-    proc_dry = _pm_run_launcher(
-        _pm_real_mode_exports(
-            env_dry,
-            open_lock=tmp_path / "pm1_dry_good.lock",
+    def _run(tag: str, mode: str, items: Path, part_dir: Path | None, *, live: bool) -> tuple[Any, dict[str, Path]]:
+        env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"pb1_env_{tag}_{int(live)}")
+        exports = _pm_real_mode_exports(
+            env_paths,
+            open_lock=tmp_path / f"pb1_{tag}.lock",
             receipts_dir=receipts_dir,
             hf_home=hf_home,
-            items_file=good_items,
-        ),
-        f"--time-one --dry --out-dir '{_to_wsl_path(tmp_path / 'pm1_out_dry_good')}' --run-id pm1-dry-good",
+            items_file=items,
+            part_dir=part_dir,
+        )
+        out_dir = tmp_path / f"pb1_out_{tag}_{int(live)}"
+        proc = _pm_run_launcher(
+            exports, f"--{mode} {'' if live else '--dry '}--out-dir '{_to_wsl_path(out_dir)}' --run-id pb1-{tag}"
+        )
+        return proc, env_paths
+
+    # Good: time-one subset and counted whole part, --dry
+    sub = _project_part_items(part, inputs / "subset.jsonl", rows=rows[:5])
+    full = _project_part_items(part, inputs / "full.jsonl")
+    for tag, mode, items in (("good_t1", "time-one", sub), ("good_counted", "counted", full)):
+        proc, _ = _run(tag, mode, items, part, live=False)
+        assert proc.returncode == 0, proc.stderr
+        uploads = [ln for ln in proc.stdout.splitlines() if ln.startswith("colab upload")]
+        assert uploads[-3].endswith(" /content/rdlab_items/items.jsonl"), uploads
+        assert uploads[-2].endswith(" /content/rdlab_items/part.json"), uploads
+        assert uploads[-1].endswith(" /content/rdlab_items/checksums.txt"), uploads
+        assert "part_id=bakeoff-d-t10-sealed" in proc.stderr and "projection_checked=True" in proc.stderr, proc.stderr
+        assert not (inputs / "manifest.json").exists() and not (part / "manifest.json").exists()
+
+    # Refusals
+    tampered_claim = [dict(r) for r in rows[:4]]
+    tampered_claim[2]["claim"] = tampered_claim[2]["claim"] + " (edited)"
+    foreign_id = [dict(r) for r in rows[:4]]
+    foreign_id[1]["id"] = "zzz-not-in-this-part"
+    bad_items_part = _copy_part(part, tmp_path / "pb1_bad_items_part" / "part_bakeoff_sealed")
+    with (bad_items_part / "items.jsonl").open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n")
+    bad_meta_part = _copy_part(part, tmp_path / "pb1_bad_meta_part" / "part_bakeoff_sealed")
+    meta = json.loads((bad_meta_part / "part.json").read_text(encoding="utf-8"))
+    meta["items_count"] = 999
+    (bad_meta_part / "part.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="\n")
+    other_part = _make_builder_part(tmp_path / "pb1_other_build", shuffle_low=303)
+    no_part = tmp_path / "pb1_no_part"
+    no_part.mkdir()
+    cases = (
+        ("short", "counted", _project_part_items(part, inputs / "short.jsonl", rows=rows[:11]), part,
+         "PART_MANIFEST_ITEMS_MISMATCH", "field: items_count"),
+        ("order", "counted", _project_part_items(part, inputs / "order.jsonl", rows=list(reversed(rows))), part,
+         "PART_MANIFEST_ITEMS_MISMATCH", "field: id order"),
+        ("foreign_id", "time-one", _project_part_items(part, inputs / "foreign.jsonl", rows=foreign_id), part,
+         "PART_MANIFEST_ITEMS_MISMATCH", "field: id"),
+        ("claim", "time-one", _project_part_items(part, inputs / "claim.jsonl", rows=tampered_claim), part,
+         "PART_MANIFEST_ITEMS_MISMATCH", "field: claim"),
+        ("items_sha", "time-one", sub, bad_items_part, "PART_MANIFEST_ITEMS_MISMATCH", "field: items.jsonl sha256"),
+        ("other_part", "time-one", sub, other_part, "PART_MANIFEST_ITEMS_MISMATCH", "field: material"),
+        ("meta_edited", "counted", full, bad_meta_part, "PART_MANIFEST_INVALID", "checksums.txt records"),
+        ("missing", "time-one", sub, no_part, "PART_MANIFEST_MISSING", "part.json"),
     )
-    assert proc_dry.returncode == 0, proc_dry.stderr
-    upload_lines = [ln for ln in proc_dry.stdout.splitlines() if ln.startswith("colab upload")]
-    assert upload_lines[-1].endswith(" /content/rdlab_items/manifest.json"), upload_lines
-    assert upload_lines[-2].endswith(" /content/rdlab_items/items.jsonl"), upload_lines
-
-    # a stub window with no manifest is not refused in --dry
-    no_mf_items = _pm_items_dir(tmp_path / "pm1_stub_no_mf", items_src, None)
-    proc_stub_dry = _pm_run_launcher(
-        _pm_real_mode_exports(
-            env_dry,
-            open_lock=tmp_path / "pm1_stub.lock",
-            receipts_dir=receipts_dir,
-            hf_home=hf_home,
-            items_file=no_mf_items,
-        ),
-        f"--stub --dry --out-dir '{_to_wsl_path(tmp_path / 'pm1_out_stub_dry')}' --run-id pm1-stub-dry",
-    )
-    assert proc_stub_dry.returncode == 0, proc_stub_dry.stderr
-    assert "/content/rdlab_items/manifest.json" not in proc_stub_dry.stdout
-    assert not (no_mf_items.parent / "manifest.json").exists()
-
-    # live (stub window, VM dryrun): the manifest is uploaded byte-identical, then deleted on the VM and listed
-    env_live = fake_colab.setup_fake_colab_environment(tmp_path / "pm1_env_live_good")
-    kept = tmp_path / "pm1_kept_uploads"
-    out_live = tmp_path / "pm1_out_live_good"
-    exports_live = _base_launcher_exports(
-        env_live,
-        open_lock=tmp_path / "pm1_live_good.lock",
-        receipts_dir=receipts_dir,
-        hf_home=hf_home,
-        items_file=good_items,
-    ) + f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(kept)}'; "
-    proc_live = _pm_run_launcher(
-        exports_live, f"--stub --out-dir '{_to_wsl_path(out_live)}' --run-id pm1-live-good", timeout=180
-    )
-    assert proc_live.returncode == 0, proc_live.stdout + proc_live.stderr
-    assert (kept / "manifest.json").read_bytes() == (good_items.parent / "manifest.json").read_bytes()
-    vm_items_dir = env_live["state_dir"] / "vm_fs" / "rdlab_items"
-    assert not (vm_items_dir / "manifest.json").exists()
-    assert not (vm_items_dir / "items.jsonl").exists()
-    receipt = json.loads((out_live / "vm_receipt.json").read_text(encoding="utf-8"))
-    deleted = {Path(f["path"]).name: f for f in receipt["deleted_items_receipt"]["files"]}
-    assert deleted["manifest.json"]["absent"] is True
-    assert deleted["items.jsonl"]["absent"] is True
-    assert receipt["deleted_items_receipt"]["all_absent"] is True
+    for tag, mode, items, part_dir, code, field in cases:
+        for live in (False, True) if tag in ("short", "claim", "missing") else (False,):
+            proc, env_paths = _run(tag, mode, items, part_dir, live=live)
+            where = f"case={tag} live={live}\nstdout={proc.stdout}\nstderr={proc.stderr}"
+            assert proc.returncode == 2, where
+            assert code in proc.stderr and field in proc.stderr, where
+            assert "colab new" not in proc.stdout, where
+            assert not env_paths["calls_log"].exists(), where
+            # never prints item text
+            assert all(r["claim"] not in proc.stderr and r["material"] not in proc.stderr for r in rows), where
+    assert not (no_part / "part.json").exists(), "the launcher must never create part files"
 
 
-def test_part_manifest_item1_vm_main_preflight_refuses_before_any_paid_step(
+def test_part_binding_vm_main_refuses_before_any_paid_step(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Part manifest item 1b (VM `main`), real `time-one` and `counted` (no `--dryrun`, no `VM_DRYRUN`):
-    - a missing, invalid or synthesized part manifest refuses at step `verify_part_manifest` with its own code, before the
-      shard manifest, venv sync, the device check, the GPU gate, the weight download, the boot gatekeeper or any child;
-      the uploaded items file (and the refused manifest, when there was one) is deleted and listed in the receipt;
-    - a good manifest passes the preflight, the run reaches the judge children, and the staged manifest is deleted after
-      the run and listed in `deleted_items_receipt` like the other uploaded item files.
-    Fails at 5aae6c47/aac95973: there the part manifest was only checked in the pipeline body, after venv sync, the
-    device/GPU gate and the weight download.
+    """Part binding (VM `main`), real `time-one` and `counted` (no `--dryrun`, no `VM_DRYRUN`), with the staged
+    directory the launcher makes (projected items.jsonl + the part's part.json and checksums.txt):
+    - no part.json, a part.json that is not the one checksums.txt records, a stub part, a counted upload short of
+      `items_count`, a time-one upload longer than the part and repeated ids each refuse at step `verify_part_manifest`
+      before the shard manifest, venv sync, the device check, the GPU gate, the weight download, the boot gatekeeper or
+      any child; the uploaded files are deleted and listed in the receipt;
+    - a good staging passes, reaches the judge children, records the part's real identity (part_id, part.json and
+      items.jsonl SHA-256) in `time_one_summary.json` and the receipt, and deletes and lists all three staged files.
+    Fails at bf1bf843: VM `main` looked only for `manifest.json` and checked no count, id or hash.
     """
-    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pm2_rec")
-    items_src = _make_synthetic_public_items(tmp_path / "pm2_src")
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pb2_rec")
+    part = _make_builder_part(tmp_path / "pb2_build")
+    rows = _part_rows(part)
+    proj = tmp_path / "pb2_proj"
+    full = _project_part_items(part, proj / "full.jsonl")
+    short = _project_part_items(part, proj / "short.jsonl", rows=rows[:11])
+    dup = _project_part_items(part, proj / "dup.jsonl", rows=[rows[0], rows[1], rows[1]])
+    long_rows = rows + [dict(rows[0], id="extra-row")]
+    too_long = _project_part_items(part, proj / "long.jsonl", rows=long_rows)
+    edited_meta = _copy_part(part, tmp_path / "pb2_edited" / "part_bakeoff_sealed")
+    em = json.loads((edited_meta / "part.json").read_text(encoding="utf-8"))
+    em["items_count"] = 11
+    (edited_meta / "part.json").write_text(json.dumps(em) + "\n", encoding="utf-8", newline="\n")
+    stub_meta = _copy_part(part, tmp_path / "pb2_stub" / "part_bakeoff_sealed")
+    sm = json.loads((stub_meta / "part.json").read_text(encoding="utf-8"))
+    sm["part_id"] = "stub"
+    (stub_meta / "part.json").write_text(json.dumps(sm) + "\n", encoding="utf-8", newline="\n")
+
     monkeypatch.delenv("VM_DRYRUN", raising=False)
     monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
     monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
@@ -24981,48 +24974,47 @@ def test_part_manifest_item1_vm_main_preflight_refuses_before_any_paid_step(
     def _forbidden(name: str) -> Any:
         def _spy(*args: Any, **kwargs: Any) -> Any:
             paid_calls.append(name)
-            raise AssertionError(f"{name} ran before the part manifest refusal")
+            raise AssertionError(f"{name} ran before the part refusal")
 
         return _spy
 
     for name in paid_step_names:
         monkeypatch.setattr(vm_judges, name, _forbidden(name))
 
-    for mode in ("time-one", "counted"):
-        for tag, manifest, code in _PM_BAD_MANIFESTS:
-            items = _pm_items_dir(tmp_path / f"pm2_in_{mode}_{tag}", items_src, manifest)
-            argv, run_dir, status = _followup_main_args(
-                tmp_path,
-                f"pm2_{mode}_{tag}",
-                mode_args=["--mode", mode],
-                receipts_dir=receipts_dir,
-                hf_home=hf_home,
-                extra=["--items-file", str(items)],
-            )
-            rc = vm_judges.main(argv)
-            st = json.loads(status.read_text(encoding="utf-8"))
-            assert rc == 2, st
-            assert st["failure_class"] == code, st
-            assert st["step"] == "verify_part_manifest", st
-            assert paid_calls == []
-            assert not (run_dir / "shard_manifest.json").exists()
-            receipt = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
-            listed = {Path(f["path"]).name: f["absent"] for f in receipt["deleted_items_receipt"]["files"]}
-            assert listed.get("items.jsonl") is True, receipt["deleted_items_receipt"]
-            if manifest is not None:
-                assert listed.get("manifest.json") is True, receipt["deleted_items_receipt"]
-            assert not items.exists() and not (items.parent / "manifest.json").exists()
+    cases = (
+        ("missing", "time-one", full, None, "PART_MANIFEST_MISSING"),
+        ("edited_meta", "counted", full, edited_meta, "PART_MANIFEST_INVALID"),
+        ("stub_part", "time-one", full, stub_meta, "PART_MANIFEST_SYNTHESIZED"),
+        ("short", "counted", short, part, "PART_MANIFEST_ITEMS_MISMATCH"),
+        ("too_long", "time-one", too_long, part, "PART_MANIFEST_ITEMS_MISMATCH"),
+        ("dup", "time-one", dup, part, "PART_MANIFEST_ITEMS_MISMATCH"),
+    )
+    for tag, mode, projected, part_src, code in cases:
+        items = _stage_vm_items_dir(tmp_path / f"pb2_in_{tag}", projected, part_src)
+        argv, run_dir, status = _followup_main_args(
+            tmp_path,
+            f"pb2_{tag}",
+            mode_args=["--mode", mode],
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            extra=["--items-file", str(items)],
+        )
+        rc = vm_judges.main(argv)
+        st = json.loads(status.read_text(encoding="utf-8"))
+        assert rc == 2, (tag, st)
+        assert st["failure_class"] == code, (tag, st)
+        assert st["step"] == "verify_part_manifest", (tag, st)
+        assert paid_calls == [], tag
+        assert not (run_dir / "shard_manifest.json").exists()
+        receipt = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+        listed = {Path(f["path"]).name: f["absent"] for f in receipt["deleted_items_receipt"]["files"]}
+        expect = {"items.jsonl": True} if part_src is None else {"items.jsonl": True, "part.json": True, "checksums.txt": True}
+        assert listed == expect, (tag, receipt["deleted_items_receipt"])
+        assert not any(items.parent.iterdir()), tag
 
-    # A good manifest: the preflight passes and the run reaches the judge children; the manifest is deleted and listed.
+    # A good staging reaches the judge children and records the part's real identity.
     monkeypatch.setattr(vm_judges, "ensure_shard_manifest_for_run", originals["ensure_shard_manifest_for_run"])
     calls: list[str] = []
-    orig_ensure = vm_judges.preflight_part_manifest
-
-    def _spy_preflight(*args: Any, **kwargs: Any) -> Any:
-        calls.append("preflight_part_manifest")
-        return orig_ensure(*args, **kwargs)
-
-    monkeypatch.setattr(vm_judges, "preflight_part_manifest", _spy_preflight)
 
     def _as_dryrun(name: str) -> Any:
         orig = originals[name]
@@ -25058,41 +25050,94 @@ def test_part_manifest_item1_vm_main_preflight_refuses_before_any_paid_step(
         return orig_child(new_cmd, *args, **kwargs)
 
     monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _fake_child)
-
-    good = _pm_items_dir(tmp_path / "pm2_in_good", items_src, {"part_id": "part01", "schema_version": "1.0"})
+    good = _stage_vm_items_dir(tmp_path / "pb2_in_good", full, part)
     argv_ok, run_ok, status_ok = _followup_main_args(
         tmp_path,
-        "pm2_good",
+        "pb2_good",
         mode_args=["--mode", "time-one"],
         receipts_dir=receipts_dir,
         hf_home=hf_home,
         extra=["--items-file", str(good)],
     )
-    work_ok = tmp_path / "pm2_good_work"
+    work_ok = tmp_path / "pb2_good_work"
     for venv_name in ("venv-judge", "venv-d3"):
         vm_judges._ensure_dryrun_venv_python_wrapper(work_ok / venv_name / "bin" / "python")
     rc_ok = vm_judges.main(argv_ok)
     assert rc_ok == 0, status_ok.read_text(encoding="utf-8")
-    assert calls[0] == "preflight_part_manifest", calls
     assert "judge_child" in calls
-    assert calls.index("sync_judge_venvs") < calls.index("download_and_verify_all_judge_weights") < calls.index(
-        "judge_child"
-    )
     rec_ok = json.loads((run_ok / "vm_receipt.json").read_text(encoding="utf-8"))
     listed_ok = {Path(f["path"]).name: f["absent"] for f in rec_ok["deleted_items_receipt"]["files"]}
-    assert listed_ok == {"items.jsonl": True, "manifest.json": True}, rec_ok["deleted_items_receipt"]
-    assert rec_ok["deleted_items_receipt"]["all_absent"] is True
-    assert not good.exists() and not (good.parent / "manifest.json").exists()
+    assert listed_ok == {"items.jsonl": True, "part.json": True, "checksums.txt": True}, rec_ok["deleted_items_receipt"]
+    part_json_sha = hashlib.sha256((part / "part.json").read_bytes()).hexdigest()
+    items_sha = hashlib.sha256((part / "items.jsonl").read_bytes()).hexdigest()
     t1_ok = json.loads((run_ok / "time_one_summary.json").read_text(encoding="utf-8"))
-    assert t1_ok["part_manifest"]["part_id"] == "part01"
+    for ident in (t1_ok["part_identity"], rec_ok["part_identity"]):
+        assert ident["part_id"] == "bakeoff-d-t10-sealed"
+        assert ident["items_count"] == 12
+        assert ident["part_json_sha256"] == part_json_sha
+        assert ident["items_jsonl_sha256"] == items_sha
+        assert ident["is_pilot_40b"] is False
+        assert ident["binding"] == {"uploaded_items": 12, "rule": "subset_of_part", "projection_checked": False}
+    # not the burned pilot (by hash), so the pilot mass check does not run, and nothing is labelled pilot-40b
+    assert t1_ok["harness_readouts"]["pilot_mass_check"]["status"] == "not_applicable"
+    assert t1_ok["harness_readouts"]["pilot_mass_check"]["part_id"] == "bakeoff-d-t10-sealed"
+    assert "pilot-40b" not in json.dumps(t1_ok["part_identity"])
 
-    # The shared rules: a lock-check window never requires the items file's part manifest (see the module note).
+    # The shared rules: a lock-check window never requires the items file's part files.
     assert vm_judges.part_manifest_required("time-one") is True
     assert vm_judges.part_manifest_required("counted") is True
     assert vm_judges.part_manifest_required("lock-check") is False
     assert vm_judges.part_manifest_required("counted-stub") is False
     assert vm_judges.part_manifest_required("counted", dryrun=True) is False
-    assert vm_judges.preflight_part_manifest(tmp_path / "pm2_nowhere" / "items.jsonl", mode="stub") is None
+    assert vm_judges.preflight_part_manifest(tmp_path / "pb2_nowhere" / "items.jsonl", mode="stub") is None
+
+
+def test_part_binding_real_layout_passes_the_upload_and_log_guards_and_pilot_is_named_by_hash(tmp_path: Path) -> None:
+    """The real part layout is not refused by the key/sealed guards: the directory is named `part_bakeoff_sealed`
+    and part.json carries `keys_sealed_sha256` and `map_sha256` (hashes, public by design). The upload path guard
+    passes part.json and checksums.txt there (and still refuses anything under `sealed_store/`), and the rig log guard
+    passes a file holding part.json's text. The burned pilot is named by its part.json and items.jsonl SHA-256, never
+    by a label: a part with other hashes is not the pilot, the same part with the pinned hashes is, and the mass check
+    refuses an identity that is not the pilot's and records the real part_id and hashes for one that is.
+    """
+    part = _make_builder_part(tmp_path / "pg_build")
+    for name in ("part.json", "checksums.txt", "items.jsonl"):
+        vm_judges.check_upload_path_allowed(part / name)
+    with pytest.raises(vm_judges.RefusalError) as exc_sealed:
+        vm_judges.check_upload_path_allowed(part.parent / "sealed_store" / "part.json")
+    assert exc_sealed.value.failure_class == "FORBIDDEN_KEY_OR_SEALED_UPLOAD"
+    meta_text = (part / "part.json").read_text(encoding="utf-8")
+    assert "keys_sealed_sha256" in meta_text and "map_sha256" in meta_text
+    log_copy = tmp_path / "pg_log.txt"
+    log_copy.write_text(meta_text, encoding="utf-8")
+    vm_judges.verify_rig_logs_and_outputs_clean([log_copy], claim_ngram_sha256s=[])
+    assert vm_judges.is_allowed_tar_member("rows/x.jsonl")
+
+    ident = vm_judges.read_part_identity(part, mode="time-one")
+    assert ident["part_id"] == "bakeoff-d-t10-sealed" and ident["is_pilot_40b"] is False
+    pinned = {
+        "PILOT_40B_PART_JSON_SHA256": ident["part_json_sha256"],
+        "PILOT_40B_ITEMS_JSONL_SHA256": ident["items_jsonl_sha256"],
+    }
+    with pytest.MonkeyPatch.context() as mp:
+        for k, v in pinned.items():
+            mp.setattr(vm_judges, k, v)
+        assert vm_judges.read_part_identity(part, mode="time-one")["is_pilot_40b"] is True
+
+    run_dir = tmp_path / "pg_mass"
+    (run_dir / "rows").mkdir(parents=True)
+    (run_dir / "rows" / "flow-judge-v0.1.jsonl").write_text(
+        json.dumps({"item_id": "x", "judge_id": "flow-judge-v0.1"}) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(vm_judges.RefusalError) as exc_not_pilot:
+        vm_judges.check_bakeoff_logprob_mass(run_dir, verified_pilot_identity=ident)
+    assert exc_not_pilot.value.failure_class == "BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN"
+    pilot_ident = dict(ident, is_pilot_40b=True)
+    out = vm_judges.check_bakeoff_logprob_mass(run_dir, verified_pilot_identity=pilot_ident)
+    assert out["part_id"] == "bakeoff-d-t10-sealed"
+    assert out["part_json_sha256"] == ident["part_json_sha256"]
+    assert out["items_jsonl_sha256"] == ident["items_jsonl_sha256"]
+    assert out["judges"]["flow-judge-v0.1"]["status"] == "not_applicable"
 
 
 def test_part_manifest_item2_dry_runs_the_lock_check_two_input_check_like_live(tmp_path: Path) -> None:
@@ -25166,31 +25211,48 @@ def _e2e_fake_real_mode_window(
     *,
     mode: str,
     items_file: Path,
+    part_dir: Path,
     receipts_dir: Path,
     hf_home: Path,
     extra_args: str = "",
+    exec_env_extra: dict[str, str] | None = None,
+    tag: str = "",
 ) -> dict[str, Any]:
     """Drive the REAL `launch_judges.sh` live path (not `--dry`) in a real mode (no stub mode, no VM_DRYRUN) against the
-    fake `colab` CLI, with the VM cell run through `tests/fixtures/fake_vm_real_mode_shim.py`, and check that the window
-    reached the judge step and closed cleanly. Returns what a caller may check further.
+    fake `colab` CLI, with the VM cell run through `tests/fixtures/fake_vm_real_mode_shim.py`, on a part made by the real
+    builder and a projected items file kept outside the part (as real windows run).
+
+    The VM cell is isolated from the host: the shim's host-path guard makes `tmp_path` (every test input, the
+    launcher's stage and out dirs, the local HF_HOME) and the repo checkout unreadable from the cell, except the fake
+    VM root and the fake CLI's state dir; the VM's weight cache is its own copy inside the fake VM root
+    (`FAKE_COLAB_VM_HF_SEED`). With `exec_env_extra` (variables forwarded to the run cell as if by the launcher) the
+    run is expected to fail; the result carries `proc`, and the checks of a successful window are skipped.
     """
-    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"e2e_{mode}_env", uv_python_315_found=True)
-    kept = tmp_path / f"e2e_{mode}_kept_uploads"
-    out_dir = tmp_path / f"e2e_{mode}_out"
+    name = f"{mode}{tag}"
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"e2e_{name}_env", uv_python_315_found=True)
+    kept = tmp_path / f"e2e_{name}_kept_uploads"
+    out_dir = tmp_path / f"e2e_{name}_out"
     run_id = f"e2e-{mode}-01"
     exports = _pm_real_mode_exports(
         env_paths,
-        open_lock=tmp_path / f"e2e_{mode}.lock",
+        open_lock=tmp_path / f"e2e_{name}.lock",
         receipts_dir=receipts_dir,
         hf_home=hf_home,
         items_file=items_file,
+        part_dir=part_dir,
     ) + (
         f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(REAL_MODE_SHIM_PY)}'; "
         f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(kept)}'; "
+        f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
+        f"export FAKE_COLAB_VM_DENY_ROOTS='{_to_wsl_path(tmp_path)}'; "
     )
+    if exec_env_extra:
+        exports += f"export FAKE_COLAB_EXEC_ENV_EXTRA='{json.dumps(exec_env_extra)}'; "
     proc = _pm_run_launcher(
         exports, f"--{mode} {extra_args} --out-dir '{_to_wsl_path(out_dir)}' --run-id {run_id}", timeout=300
     )
+    if exec_env_extra:
+        return {"proc": proc, "out_dir": out_dir, "env_paths": env_paths}
     where = f"stdout={proc.stdout[-4000:]}\nstderr={proc.stderr[-4000:]}"
     assert proc.returncode == 0, where
 
@@ -25225,16 +25287,30 @@ def _e2e_fake_real_mode_window(
         for ln in rows_file.read_text(encoding="utf-8").splitlines()
         if ln.strip()
     }
-    assert judged_ids & item_ids, sorted(judged_ids)[:5]
+    assert judged_ids and judged_ids <= item_ids, sorted(judged_ids)[:5]
 
-    # Uploads: the part manifest went up byte-identical beside items.jsonl; both are gone from the VM and listed.
-    assert (kept / "manifest.json").read_bytes() == (items_file.parent / "manifest.json").read_bytes()
+    # Uploads: the part's own part.json and checksums.txt went up byte-identical beside the projected items.jsonl;
+    # all three are gone from the VM and listed. No manifest.json exists anywhere.
+    for name_up in ("part.json", "checksums.txt"):
+        assert (kept / name_up).read_bytes() == (part_dir / name_up).read_bytes()
     assert (kept / "items.jsonl").read_bytes() == items_file.read_bytes()
+    assert not (kept / "manifest.json").exists()
     vm_items_dir = env_paths["state_dir"] / "vm_fs" / "rdlab_items"
-    assert not (vm_items_dir / "items.jsonl").exists() and not (vm_items_dir / "manifest.json").exists()
+    assert not any((vm_items_dir / n).exists() for n in ("items.jsonl", "part.json", "checksums.txt", "manifest.json"))
     deleted = {Path(f["path"]).name: f["absent"] for f in receipt["deleted_items_receipt"]["files"]}
-    assert deleted.get("items.jsonl") is True and deleted.get("manifest.json") is True, receipt["deleted_items_receipt"]
+    assert deleted == {"items.jsonl": True, "part.json": True, "checksums.txt": True}, receipt["deleted_items_receipt"]
     assert receipt["deleted_items_receipt"]["all_absent"] is True
+
+    # The part identity recorded is the part's own, read from part.json and bound by checksums.txt.
+    ident = receipt["part_identity"]
+    assert ident["part_id"] == json.loads((part_dir / "part.json").read_text(encoding="utf-8"))["part_id"]
+    assert ident["part_json_sha256"] == hashlib.sha256((part_dir / "part.json").read_bytes()).hexdigest()
+    assert ident["items_jsonl_sha256"] == hashlib.sha256((part_dir / "items.jsonl").read_bytes()).hexdigest()
+
+    # The VM used its own weight cache inside the fake VM root, never the launcher's local HF_HOME.
+    hf_calls = env_paths["state_dir"] / "hf_calls.jsonl"
+    if hf_calls.is_file():
+        assert _to_wsl_path(hf_home) not in hf_calls.read_text(encoding="utf-8")
 
     # The session was stopped and is no longer listed.
     session_name = f"rdlab-{run_id}"
@@ -25249,39 +25325,93 @@ def _e2e_fake_real_mode_window(
     return {"out_dir": out_dir, "receipt": receipt, "shim_rows": shim_rows, "env_paths": env_paths}
 
 
+def _e2e_time_one_inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "e2e_t1_rec")
+    part = _make_builder_part(tmp_path / "e2e_t1_build")
+    items = _project_part_items(part, tmp_path / "e2e_t1_inputs" / "part-items-projected.jsonl")
+    return receipts_dir, hf_home, part, items
+
+
 def test_e2e_fake_real_mode_time_one_reaches_judges(tmp_path: Path) -> None:
     """The free gate before any paid time-one window: the real launcher, live path, real `--time-one` (no stub mode, no
-    VM_DRYRUN) against the fake `colab` CLI runs launch -> staging -> upload -> VM `main` (every preflight) -> venv sync /
-    device / GPU gate / weights (their dryrun behaviour) -> the judge step (judge children on CPU, stub transport), and
-    closes with its receipts, the session stopped, and the uploaded items and part manifest deleted and listed.
-    Fails at aac95973: the launcher never staged the part manifest, and the VM refused `PART_MANIFEST_MISSING` after
-    venv sync, the GPU gate and the weight download.
+    VM_DRYRUN) against the fake `colab` CLI, on a part made by the real builder (`part_bakeoff_sealed`) and its
+    projected items kept elsewhere, with `--part-dir`, runs launch -> part binding -> staging -> upload -> VM `main`
+    (every preflight) -> venv sync / device / GPU gate / weights (their dryrun behaviour) -> the judge step (judge
+    children on CPU, stub transport), in a VM cell that cannot read host paths, and closes with its receipts, the
+    session stopped, and the uploaded items, part.json and checksums.txt deleted and listed.
+    Fails at bf1bf843: the launcher had no `--part-dir` and read only a `manifest.json`, which the builder never writes.
     """
-    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "e2e_t1_rec")
-    items_src = _make_synthetic_public_items(tmp_path / "e2e_t1_src")
-    items = _pm_items_dir(tmp_path / "e2e_t1_part", items_src, {"part_id": "part01", "schema_version": "1.0"})
+    receipts_dir, hf_home, part, items = _e2e_time_one_inputs(tmp_path)
     res = _e2e_fake_real_mode_window(
-        tmp_path, mode="time-one", items_file=items, receipts_dir=receipts_dir, hf_home=hf_home
+        tmp_path, mode="time-one", items_file=items, part_dir=part, receipts_dir=receipts_dir, hf_home=hf_home
     )
     assert any(r["call"] == "run_gpu_gate" for r in res["shim_rows"])
+    t1 = res["receipt"]["time_one_summary"]
+    assert t1["harness_readouts"]["pilot_mass_check"]["status"] == "not_applicable"
+
+
+def test_e2e_fake_vm_cell_cannot_read_a_forwarded_host_path(tmp_path: Path) -> None:
+    """The fake VM cell is isolated from the host: when the run cell is handed a local absolute path instead of an
+    uploaded one (the reviewer's mutation of #69: the launcher forwarding a local path), the window fails, and the
+    failure names the host path, and the guard records the denial. Two required inputs are tried: the boot gatekeeper
+    goldens (the refusal carries `FAKE_VM_HOST_PATH_DENIED`), and HF_HOME pointing at the launcher's local synthetic
+    snapshots (the weight check lists the snapshot, so it reports the files missing).
+    Fails at bf1bf843: the fake VM cell shared the host filesystem, so both runs passed.
+    """
+    receipts_dir, hf_home, part, items = _e2e_time_one_inputs(tmp_path)
+    host_goldens = tmp_path / "host_only" / "boot_gatekeeper_goldens.json"
+    host_goldens.parent.mkdir(parents=True)
+    shutil.copyfile(SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json", host_goldens)
+    for tag, extra, host_path in (
+        ("_goldens", {"RDLAB_BOOT_GATEKEEPER_GOLDENS": _to_wsl_path(host_goldens)}, host_goldens),
+        ("_hfhome", {"HF_HOME": _to_wsl_path(hf_home)}, hf_home),
+    ):
+        res = _e2e_fake_real_mode_window(
+            tmp_path,
+            mode="time-one",
+            items_file=items,
+            part_dir=part,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            exec_env_extra=extra,
+            tag=tag,
+        )
+        proc = res["proc"]
+        status_file = res["out_dir"] / "status.json"
+        status_text = status_file.read_text(encoding="utf-8") if status_file.is_file() else ""
+        seen = proc.stdout + proc.stderr + status_text
+        where = f"case={tag}\nstdout={proc.stdout[-3000:]}\nstderr={proc.stderr[-3000:]}\nstatus={status_text}"
+        assert proc.returncode != 0, where
+        assert _to_wsl_path(host_path) in seen, where
+        denials_file = res["env_paths"]["state_dir"] / "host_path_denials.jsonl"
+        denials = [json.loads(ln) for ln in denials_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert denials and all(d["path"].startswith(_to_wsl_path(host_path)) for d in denials), denials
+        if tag == "_goldens":
+            assert "FAKE_VM_HOST_PATH_DENIED" in seen, where
 
 
 def test_e2e_fake_real_mode_counted_reaches_judges(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The free gate before any paid counted window: as the time-one gate, for real `--counted` shard 1/2 with the shard
+    """The free gate before any paid counted window: as the time-one gate, for real `--counted` shard 1/2 on a counted
+    part made by the real builder (34 triads, 102 items; the upload is its whole projection in order), with the shard
     manifest, golden anchor manifest and boot-gatekeeper goldens that a lock-check window produces (made here by an
-    in-process `lock-check-stub` run and `promote_goldens.py` into a temp copy).
-    Fails at aac95973: the launcher never staged the part manifest, and the VM refused `PART_MANIFEST_MISSING` after
-    venv sync, the GPU gate and the weight download.
+    in-process `lock-check-stub` run over the same projection and `promote_goldens.py` into a temp copy).
+    Fails at bf1bf843: the launcher had no `--part-dir` and read only a `manifest.json`, which the builder never writes.
     """
     import promote_goldens
 
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "e2e_c_rec")
-    counted_items_file, anchor_src, p0a_src = _make_counted_part_and_50_anchors_and_114_p0a(
-        tmp_path / "e2e_c_base", counted_count=100
-    )
+    part = _make_builder_part(tmp_path / "e2e_c_build", triads=34)
+    counted_projection = _project_part_items(part, tmp_path / "e2e_c_inputs" / "counted-projected.jsonl")
+    p0a_src = _make_stratified_public_items(tmp_path / "e2e_c_pilot" / "pilot-40b", count=114)
+    p0a_lines = [
+        json.dumps(dict(json.loads(ln), id=f"pilot-{json.loads(ln)['id']}"), sort_keys=True)
+        for ln in p0a_src.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    p0a_src.write_text("\n".join(p0a_lines) + "\n", encoding="utf-8", newline="\n")
 
     # The lock-check window's outputs (stub, in process), as a counted window receives them.
     lc_in = tmp_path / "e2e_c_lc_in"
@@ -25289,10 +25419,14 @@ def test_e2e_fake_real_mode_counted_reaches_judges(
     lc_anchor = lc_in / "anchor_items.jsonl"
     lc_p0a = lc_in / "p0a_items.jsonl"
     lc_counted = lc_in / "counted_items.jsonl"
-    shutil.copyfile(anchor_src, lc_anchor)
+    lc_anchor.write_text(
+        "\n".join(counted_projection.read_text(encoding="utf-8").splitlines()[:50]) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     shutil.copyfile(p0a_src, lc_p0a)
     shutil.copyfile(p0a_src.parent / "manifest.json", lc_in / "p0a_manifest.json")
-    shutil.copyfile(counted_items_file, lc_counted)
+    shutil.copyfile(counted_projection, lc_counted)
     monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
     monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
     monkeypatch.setenv("VM_DRYRUN", "1")
@@ -25347,15 +25481,11 @@ def test_e2e_fake_real_mode_counted_reaches_judges(
     )
     assert rc_prom == 0
 
-    part = tmp_path / "e2e_c_part"
-    part.mkdir(parents=True, exist_ok=True)
-    items = part / "items.jsonl"
-    shutil.copyfile(counted_items_file, items)
-    shutil.copyfile(counted_items_file.parent / "manifest.json", part / "manifest.json")
     res = _e2e_fake_real_mode_window(
         tmp_path,
         mode="counted",
-        items_file=items,
+        items_file=counted_projection,
+        part_dir=part,
         receipts_dir=receipts_dir,
         hf_home=hf_home,
         extra_args=(
@@ -25366,3 +25496,4 @@ def test_e2e_fake_real_mode_counted_reaches_judges(
     )
     assert any(r["call"] == "run_boot_gatekeeper" for r in res["shim_rows"])
     assert res["receipt"].get("shard_spec") in (None, "1/2")
+    assert res["receipt"]["part_identity"]["binding"]["rule"] == "whole_part_in_order"
