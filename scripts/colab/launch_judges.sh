@@ -963,6 +963,34 @@ build_exec_env_args() {
   fi
 }
 
+# The VM's test-hook guard (and the counted RDLAB_LIMIT_ITEMS refusal), run on the variables this launcher forwards with
+# --env, before any colab call: a real window with a forwarded hook is refused before it opens, not after the uploads.
+guard_forwarded_test_hooks() {
+  build_exec_env_args
+  "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "${VM_DRYRUN:-0}" "${RDLAB_SHARD:-1/1}" "${EXEC_ENV_ARGS[@]}" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root, mode, vm_dryrun, shard = Path(sys.argv[1]), sys.argv[2], sys.argv[3] == "1", sys.argv[4]
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+args = sys.argv[5:]
+env = {}
+for flag, kv in zip(args[0::2], args[1::2]):
+    if flag == "--env" and "=" in kv:
+        k, v = kv.split("=", 1)
+        env[k] = v
+try:
+    vm_judges.guard_no_test_hooks_in_counted_mode(mode, dryrun=vm_dryrun, shard_spec=shard, environ=env)
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+}
+
+
 if [[ "$DRY_FLAG" == "1" ]]; then
   if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
     if [[ -n "$COUNTED_ITEMS_FILE" ]] && [[ -n "$COUNTED_MANIFEST_FILE" ]]; then
@@ -1143,6 +1171,9 @@ PY
   fi
   build_exec_env_args
   DRY_ENV_STR="${EXEC_ENV_ARGS[*]}"
+  if ! guard_forwarded_test_hooks; then
+    exit 2
+  fi
 
   {
     printf 'colab sessions\n'
@@ -2485,6 +2516,13 @@ with tarfile.open(tar_path, "w:gz") as tf:
                 if rf.is_file():
                     tf.add(rf, arcname=f"{sub_dir_name}/{rf.name}", recursive=False)
 PY
+fi
+
+# Before any colab call: the VM's test-hook guard on what this launcher forwards.
+if ! guard_forwarded_test_hooks; then
+  RUN_FAILURE_CLASS="TEST_HOOK_IN_COUNTED_MODE"
+  RUN_WHY="refused before any colab call: a forwarded test hook or item limit in a real window"
+  exit 2
 fi
 
 mkdir -p "$(dirname "$OPEN_LOCK")"

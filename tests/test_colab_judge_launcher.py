@@ -20458,6 +20458,7 @@ def test_lock_check_item3_promote_goldens_cli_validation_and_refusals(
             str(senv_path),
             "--repo-root",
             str(REPO_ROOT),
+            "--allow-stub-transport",  # a stub lock-check's goldens: tests only
         ]
     )
     assert rc_ok == 0
@@ -20544,6 +20545,11 @@ def test_lock_check_item3_promote_goldens_cli_validation_and_refusals(
         promote_goldens.verify_filled_goldens(filled_path, forbid_stub_transport=True)
     assert exc_sf.value.code == "PROMOTE_GOLDENS_STUB_REFUSED"
     assert promote_goldens.main(["--filled", str(filled_path)]) == 2
+    # The default refuses it too (stub transport is refused unless --allow-stub-transport, tests only).
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_default_stub:
+        promote_goldens.verify_filled_goldens(filled_path)
+    assert exc_default_stub.value.failure_class == "PROMOTE_GOLDENS_STUB_REFUSED"
+    assert promote_goldens.verify_filled_goldens(filled_path, allow_stub_transport=True)[0]["judge_id"]
 
 
 def test_lock_check_item4_p0a_bitwise_profiler_and_reversed_low_margin_rerun(
@@ -20968,6 +20974,7 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
             str(lc_run_dir / "session_env.json"),
             "--repo-root",
             str(REPO_ROOT),
+            "--allow-stub-transport",  # a stub lock-check's goldens: tests only
         ]
     )
     assert rc_prom == 0
@@ -21705,6 +21712,7 @@ def test_fix2_item1_and_3_two_input_lock_check_and_shard_merge_chain(
                 str(lc_run_dir / "receipt.json"),
                 "--session-env",
                 str(lc_run_dir / "session_env.json"),
+                "--allow-stub-transport",  # a stub lock-check's goldens: tests only
                 "--repo-root",
                 str(REPO_ROOT),
             ]
@@ -25786,9 +25794,23 @@ def test_e2e_fake_real_mode_counted_reaches_judges(
             str(lc_run / "session_env.json"),
             "--repo-root",
             str(REPO_ROOT),
+            "--allow-stub-transport",
         ]
     )
     assert rc_prom == 0
+    # The lock-check here ran on the stub transport, so its goldens carry the stub marks, which a real counted window
+    # refuses before any paid step (BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED). Make them real-shaped: the same hashes
+    # (the shim's gatekeeper computes the same dryrun hashes and compares), without the marks a real lock-check never
+    # writes.
+    gdoc = json.loads(goldens.read_text(encoding="utf-8"))
+    assert vm_judges.boot_gatekeeper_goldens_stub_marks(gdoc, gdoc["card_types"]["A100"])  # the stub marks were there
+    gdoc["promoted_provenance"]["stub_transport"] = False
+    gdoc["promoted_provenance"]["mode"] = "lock-check"
+    for cv in gdoc["card_types"].values():
+        if isinstance(cv, dict):
+            cv.pop("synthetic_fake_hash", None)
+    goldens.write_text(json.dumps(gdoc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    assert not vm_judges.boot_gatekeeper_goldens_stub_marks(gdoc, gdoc["card_types"]["A100"])
 
     res = _e2e_fake_real_mode_window(
         tmp_path,

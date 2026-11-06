@@ -513,3 +513,196 @@ def test_gpu_window_below_the_floor_refuses_before_any_upload(tmp_path: Path) ->
     assert "LIVE_USAGE_RATE_UNAVAILABLE" in proc.stderr and ">= 1.00/h" in proc.stderr
     subcmds = [json.loads(ln)["subcmd"] for ln in env_paths["calls_log"].read_text(encoding="utf-8").splitlines()]
     assert "upload" not in subcmds and "exec" not in subcmds and "stop" in subcmds
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# FIX2: stub goldens, forwarded test hooks, counted item limit, the pilot by item ids, promote_goldens default
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def _stub_marked_goldens(path: Path, how: str) -> Path:
+    doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    doc["card_types"]["A100"]["prompts"] = {
+        sp["prompt_id"]: {"output_token_ids_sha256": "d" * 64} for sp in doc["synthetic_prompts"]
+    }
+    if how == "synthetic":
+        doc["card_types"]["A100"]["synthetic_fake_hash"] = True
+    else:
+        doc["promoted_provenance"] = {"stub_transport": True}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+def test_stub_marked_goldens_refuse_in_the_free_preflight(tmp_path: Path) -> None:
+    """Goldens whose card carries `synthetic_fake_hash: true`, or whose `promoted_provenance.stub_transport` is true,
+    refuse `BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED` in `preflight_boot_gatekeeper_goldens` for a real counted window,
+    before open (card unknown) and for the opened card; real-shaped goldens pass.
+    Fails at 0ae47038: the preflight returned complete and the refusal came only inside run_boot_gatekeeper."""
+    for how in ("synthetic", "provenance"):
+        g = _stub_marked_goldens(tmp_path / how / "g.json", how)
+        for card in (None, "A100"):
+            with pytest.raises(vm_judges.RefusalError) as exc:
+                vm_judges.preflight_boot_gatekeeper_goldens(
+                    mode="counted", repo_root=REPO_ROOT, goldens_path=g, card_type=card
+                )
+            assert exc.value.failure_class == "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED", (how, card)
+    ok = _filled_goldens(tmp_path / "real" / "g.json")
+    assert vm_judges.preflight_boot_gatekeeper_goldens(
+        mode="counted", repo_root=REPO_ROOT, goldens_path=ok, card_type="A100"
+    ) == {"card_type": "A100", "goldens_complete": True}
+
+
+def test_launcher_refuses_stub_goldens_for_counted_with_no_colab_call(tmp_path: Path) -> None:
+    """Real `--counted` (`--dry` and live) with stub-marked goldens and a pinned part refuses
+    `BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED` before any colab call: nothing is opened, uploaded or run.
+    Fails at 0ae47038: the launcher passed the goldens, opened the session, uploaded and ran to the gatekeeper."""
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = tcl._make_builder_part(tmp_path / "build")
+    items = tcl._project_part_items(part, tmp_path / "inputs" / "c.jsonl")
+    for how in ("synthetic", "provenance"):
+        g = _stub_marked_goldens(tmp_path / f"g_{how}" / "g.json", how)
+        for dry in (True, False):
+            env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{how}_{int(dry)}")
+            exports = tcl._pm_real_mode_exports(
+                env_paths,
+                open_lock=tmp_path / f"{how}{int(dry)}.lock",
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                items_file=items,
+                part_dir=part,
+                pin_parts=(part,),
+            ) + f"export RDLAB_BOOT_GATEKEEPER_GOLDENS='{tcl._to_wsl_path(g)}'; "
+            out = tcl._to_wsl_path(tmp_path / f"out_{how}_{int(dry)}")
+            proc = tcl._pm_run_launcher(exports, f"--counted {'--dry ' if dry else ''}--out-dir '{out}' --run-id sg{int(dry)}")
+            assert proc.returncode == 2, proc.stdout + proc.stderr
+            assert "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED" in proc.stderr
+            assert not env_paths["calls_log"].exists()
+
+
+def test_vm_main_refuses_stub_goldens_before_venv_sync(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """In-process VM `main`, real counted, with stub-marked goldens for the opened card: refuses
+    `BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED` at `preflight_boot_gatekeeper_judge`, before venv sync and any weight
+    download. Fails at 0ae47038: the run went through venv sync and the weight step first."""
+    receipts_dir, _ = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    calls: list[dict[str, Any]] = []
+    argv = tbg._time_one_main_env(tmp_path, monkeypatch, receipts_dir=receipts_dir, calls=calls, mode="counted")
+    g = _stub_marked_goldens(tmp_path / "g" / "g.json", "synthetic")
+    assert vm_judges.main(argv + ["--boot-gatekeeper-goldens", str(g)]) == 2
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["failure_class"] == "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED", status
+    names = [c["call"] for c in calls]
+    assert "sync_judge_venvs" not in names and "download_and_verify_all_judge_weights" not in names, names
+
+
+def test_forwarded_test_hook_or_item_limit_refuses_counted_before_open(tmp_path: Path) -> None:
+    """A real `--counted` with a forwarded test hook (`RDLAB_DETERMINISM_WARN_ONLY=1`) refuses
+    `TEST_HOOK_IN_COUNTED_MODE`, and with `RDLAB_LIMIT_ITEMS=2` refuses `COUNTED_LIMIT_ITEMS_REFUSED`, both before any
+    colab call (`--dry` and live). The VM guard refuses the item limit in counted too.
+    Fails at 0ae47038: the session opened and the uploads ran; the refusal came in VM main."""
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = tcl._make_builder_part(tmp_path / "build")
+    items = tcl._project_part_items(part, tmp_path / "inputs" / "c.jsonl")
+    goldens = _filled_goldens(tmp_path / "goldens" / "filled.json")
+    for tag, hook, code in (
+        ("warn", "RDLAB_DETERMINISM_WARN_ONLY=1", "TEST_HOOK_IN_COUNTED_MODE"),
+        ("limit", "RDLAB_LIMIT_ITEMS=2", "COUNTED_LIMIT_ITEMS_REFUSED"),
+    ):
+        for dry in (True, False):
+            env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{tag}_{int(dry)}")
+            exports = tcl._pm_real_mode_exports(
+                env_paths,
+                open_lock=tmp_path / f"{tag}{int(dry)}.lock",
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                items_file=items,
+                part_dir=part,
+                pin_parts=(part,),
+            ) + f"export RDLAB_BOOT_GATEKEEPER_GOLDENS='{tcl._to_wsl_path(goldens)}'; export {hook}; "
+            out = tcl._to_wsl_path(tmp_path / f"out_{tag}_{int(dry)}")
+            proc = tcl._pm_run_launcher(exports, f"--counted {'--dry ' if dry else ''}--out-dir '{out}' --run-id th{int(dry)}")
+            assert proc.returncode == 2, (tag, dry, proc.stdout, proc.stderr)
+            assert code in proc.stderr, (tag, dry, proc.stderr)
+            assert not env_paths["calls_log"].exists()
+    with pytest.raises(vm_judges.RefusalError) as exc:
+        vm_judges.guard_no_test_hooks_in_counted_mode("counted", environ={"RDLAB_LIMIT_ITEMS": "2"})
+    assert exc.value.failure_class == "COUNTED_LIMIT_ITEMS_REFUSED"
+    vm_judges.guard_no_test_hooks_in_counted_mode("time-one", environ={"RDLAB_LIMIT_ITEMS": "2"})
+
+
+def test_counted_refuses_a_re_serialised_pilot_by_its_item_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A byte-re-serialised copy of the pilot (other part.json and items.jsonl bytes, the same item ids), even pinned
+    as a counted part, refuses `PART_IS_BURNED_PILOT` in counted by its item-id set (`PILOT_40B_ITEM_IDS_SHA256`); a
+    time-one window on it is not refused. Fails at 0ae47038: only the file hashes named the pilot."""
+    part = tcl._make_builder_part(tmp_path / "build")
+    ids = [json.loads(ln)["id"] for ln in (part / "items.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
+    monkeypatch.setattr(vm_judges, "PILOT_40B_ITEM_IDS_SHA256", vm_judges.item_id_set_sha256(ids))
+    resaved = tcl._copy_part(part, tmp_path / "resaved")
+    rows = [json.loads(ln) for ln in (resaved / "items.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
+    (resaved / "items.jsonl").write_text("".join(json.dumps(r, indent=None, separators=(", ", ": ")) + "\n" for r in rows), encoding="utf-8")
+    tcl._resum_part(resaved)
+    assert _part_hashes(resaved) != _part_hashes(part)
+    _pin_as_counted(monkeypatch, resaved)
+    items = tcl._project_part_items(resaved, tmp_path / "inputs" / "c.jsonl")
+    with pytest.raises(vm_judges.RefusalError) as exc:
+        vm_judges.preflight_part_manifest(
+            items, mode="counted", part_dir=resaved, part_items_file=resaved / "items.jsonl",
+            schema_errors=lambda doc: schema_check.validate(doc, "part"),
+        )
+    assert exc.value.failure_class == "PART_IS_BURNED_PILOT"
+    # The real pilot's id-set hash is the pinned constant (hashed on the rig).
+    assert len(vm_judges.PILOT_40B_ITEM_IDS_SHA256) == 64
+
+
+def test_promote_goldens_refuses_stub_by_default_and_allow_flag_accepts(tmp_path: Path) -> None:
+    """`promote_goldens.py` refuses goldens recorded on a stub transport by default (`PROMOTE_GOLDENS_STUB_REFUSED`);
+    `--allow-stub-transport` (tests only, said so in --help) accepts them; `--forbid-stub-transport` is a no-op alias.
+    Fails at 0ae47038: the default promoted stub goldens."""
+    import promote_goldens
+
+    filled = _stub_filled_goldens_from_lock_check_stub(tmp_path)
+    out = tmp_path / "cand" / "g.json"
+    assert promote_goldens.main(["--filled", str(filled), "--output", str(out)]) == 2
+    assert not out.exists()
+    assert promote_goldens.main(["--filled", str(filled), "--output", str(out), "--forbid-stub-transport"]) == 2
+    assert promote_goldens.main(["--filled", str(filled), "--output", str(out), "--allow-stub-transport"]) == 0
+    assert out.is_file()
+    helptext = subprocess.run(
+        [sys.executable, str(SCRIPTS_COLAB_DIR / "promote_goldens.py"), "--help"], capture_output=True, text=True, check=False
+    ).stdout
+    assert "--allow-stub-transport" in helptext and "TESTS ONLY" in helptext
+
+
+def _stub_filled_goldens_from_lock_check_stub(tmp_path: Path) -> Path:
+    """A filled goldens file as a stub lock-check writes it (stub_transport true, synthetic_fake_hash on the card)."""
+    doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    card = {
+        "status": "filled",
+        "synthetic_fake_hash": True,
+        "prompts": {sp["prompt_id"]: {"output_token_ids_sha256": "e" * 64} for sp in doc["synthetic_prompts"]},
+    }
+    card["expected_output_token_ids_sha256"] = {k: v["output_token_ids_sha256"] for k, v in card["prompts"].items()}
+    filled = {
+        "schema_version": doc["schema_version"],
+        "judge_id": doc["judge_id"],
+        "synthetic_prompts": [
+            {**sp, "prompt_sha256": "f" * 64, "input_token_ids_sha256": "c" * 64} for sp in doc["synthetic_prompts"]
+        ],
+        "card_types": {"A100": card},
+        "provenance": {
+            "window_id": "w-stub",
+            "session_env_sha256": "a" * 64,
+            "session_fingerprint_sha256": "b" * 64,
+            "mode": "lock-check-stub",
+            "card_type": "A100",
+            "hash_source": "synthetic",
+            "stub_transport": True,
+        },
+    }
+    import promote_goldens
+
+    filled["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(filled)
+    path = tmp_path / "filled" / "boot_gatekeeper_goldens.filled.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(filled, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path

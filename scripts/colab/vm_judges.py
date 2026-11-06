@@ -5659,6 +5659,9 @@ FULL_PART_WINDOW_MODES: frozenset[str] = frozenset({"counted", "counted-stub", "
 PILOT_40B_PART_ID = "bakeoff-d-t10-sealed"
 PILOT_40B_PART_JSON_SHA256 = "9ae6708e0d5b3fae8535899cb1b4df5ee0688dbb5f21206f62e8b4457ea5c067"
 PILOT_40B_ITEMS_JSONL_SHA256 = "c64e982d248fafd60cf121c14bb31cdd4e5093bcb8accc83418a133f092ba675"
+# The SHA-256 of the pilot's 114 item ids, sorted and joined by "\n" (hashed on the rig 2026-11-06): a counted window
+# whose items have exactly this id set is the pilot, however its files were re-serialised (`pilot_item_ids_match`).
+PILOT_40B_ITEM_IDS_SHA256 = "92ffcd5d339ffdddffa534bdc991b1d154c12fe9657ff1bbe6c93d8b1479887c"
 # The anchored counted part (`part-anchored-counted-430/part_bakeoff_sealed`, `part_id`
 # `bakeoff-d-t10-anchored-sealed`, 1290 items): its `part.json` and `items.jsonl` SHA-256 as its `checksums.txt`
 # records them (hashed on the rig 2026-11-06; the item text was not read).
@@ -5706,6 +5709,16 @@ def is_pinned_pilot_identity(identity: Mapping[str, Any] | None) -> bool:
 # in code (`pinned_real_parts`). Checked by `read_part_identity`, so the launcher refuses before any colab call and VM
 # `main` before venv sync.
 PINNED_PART_REQUIRED_MODES: frozenset[str] = frozenset({"counted"})
+
+
+def item_id_set_sha256(ids: Sequence[str]) -> str:
+    """SHA-256 of an item-id set: the unique ids, sorted, joined by a newline."""
+    return hashlib.sha256("\n".join(sorted({str(i) for i in ids})).encode("utf-8")).hexdigest()
+
+
+def pilot_item_ids_match(ids: Sequence[str]) -> bool:
+    """True when `ids` is exactly the burned pilot's item-id set (`PILOT_40B_ITEM_IDS_SHA256`, read at call time)."""
+    return item_id_set_sha256(ids) == PILOT_40B_ITEM_IDS_SHA256
 
 
 def counted_part_pin_names() -> frozenset[str]:
@@ -5986,6 +5999,12 @@ def bind_items_to_part(
     want_count = int(identity["items_count"])
     rows = _read_item_rows_for_binding(items_file, label=f"Items file {Path(items_file).name}")
     ids = [str(r["id"]) for r in rows]
+    if norm_mode in PINNED_PART_REQUIRED_MODES and is_real_mode(mode) and pilot_item_ids_match(ids):
+        raise RefusalError(
+            "PART_IS_BURNED_PILOT",
+            f"Items file {Path(items_file).name} holds exactly the burned pilot's item ids (whatever its file bytes); "
+            "a counted window never runs on the pilot.",
+        )
     if len(set(ids)) != len(ids):
         raise RefusalError(
             "PART_MANIFEST_ITEMS_MISMATCH",
@@ -8235,6 +8254,12 @@ def guard_no_test_hooks_in_counted_mode(
         raise RefusalError(
             TEST_HOOK_IN_COUNTED_MODE,
             f"Test or override hook environment variable(s) forbidden in real mode ({mode!r}, shard={shard_spec or '1/1'}): {joined}",
+        )
+    # A counted window covers its whole part or its shard manifest's cut, never an item limit.
+    if str(mode or "").strip().lower() == "counted" and str(env_map.get("RDLAB_LIMIT_ITEMS", "") or "").strip():
+        raise RefusalError(
+            "COUNTED_LIMIT_ITEMS_REFUSED",
+            "RDLAB_LIMIT_ITEMS is forbidden in a real counted window (it would cut the shard manifest); unset it.",
         )
 
 
@@ -11191,6 +11216,24 @@ def resolve_boot_gatekeeper_card_type(card_type: str | None = None, *, real: boo
     return STUB_DEFAULT_CARD_TYPE
 
 
+def boot_gatekeeper_goldens_stub_marks(doc: Mapping[str, Any], card_entry: Any = None) -> list[str]:
+    """The marks that say goldens were recorded on a stub or synthetic transport (never valid for a real counted
+    comparison): `promoted_provenance.stub_transport` / `provenance.stub_transport`, a stub provenance mode, and the
+    card's `synthetic_fake_hash`. Empty when none."""
+    marks: list[str] = []
+    for key in ("promoted_provenance", "provenance"):
+        prov = doc.get(key)
+        if isinstance(prov, Mapping):
+            if bool(prov.get("stub_transport")):
+                marks.append(f"{key}.stub_transport")
+            prov_mode = str(prov.get("mode") or "").strip().lower()
+            if prov_mode.endswith("stub") or prov_mode in STUB_OR_DRYRUN_MODES:
+                marks.append(f"{key}.mode={prov_mode}")
+    if isinstance(card_entry, Mapping) and bool(card_entry.get("synthetic_fake_hash")):
+        marks.append("card.synthetic_fake_hash")
+    return marks
+
+
 def preflight_boot_gatekeeper_goldens(
     *,
     mode: str | None,
@@ -11220,6 +11263,18 @@ def preflight_boot_gatekeeper_goldens(
             for ck, cv in (card_types_map.items() if isinstance(card_types_map, Mapping) else [])
             if all(boot_gatekeeper_expected_sha(cv, str(sp["prompt_id"])) for sp in boot_gatekeeper_prompts(doc))
         )
+        stub_cards = sorted(
+            ck
+            for ck in complete
+            if boot_gatekeeper_goldens_stub_marks(doc, card_types_map.get(ck))
+        )
+        if complete and len(stub_cards) == len(complete):
+            raise RefusalError(
+                "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+                f"every card type with filled goldens ({complete}) was recorded on a stub or synthetic transport "
+                f"({boot_gatekeeper_goldens_stub_marks(doc, card_types_map.get(complete[0]))}); a real counted window "
+                "refuses them before any paid step.",
+            )
         if not complete:
             raise RefusalError(
                 "BOOT_GATEKEEPER_GOLDEN_MISSING",
@@ -11239,6 +11294,13 @@ def preflight_boot_gatekeeper_goldens(
             "BOOT_GATEKEEPER_GOLDEN_MISSING",
             f"no golden: Boot gatekeeper golden hashes are missing/unfilled for card_type={eff_card!r} "
             f"(missing={missing}); counted mode refuses before any paid step until lock-check fills them.",
+        )
+    marks = boot_gatekeeper_goldens_stub_marks(doc, card_entry)
+    if marks:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+            f"the goldens for card_type={eff_card!r} were recorded on a stub or synthetic transport ({marks}); a real "
+            "counted window refuses them before any paid step.",
         )
     return {"card_type": eff_card, "goldens_complete": True}
 
