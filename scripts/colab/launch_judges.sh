@@ -563,14 +563,15 @@ try:
             until=until_step,
             goldens_path=Path(raw_goldens) if raw_goldens else None,
             receipts_dir=Path(receipts_arg) if receipts_arg else None,
-            # The VM is not given RDLAB_CARD_TYPE, so its gatekeeper uses the default card type; check that one.
-            card_type=vm_judges.DEFAULT_BOOT_GATEKEEPER_CARD_TYPE,
+            # The card is not known before the session opens (it is read from `colab sessions` after `colab new`):
+            # here a counted window is refused only when no card has goldens; the opened card is checked after open.
+            card_type=None,
         )
     if gk_plan is not None:
         print(
             f"[judges] timed={','.join(gk_plan['timed_judge_ids'])} boot_gatekeeper={gk_plan['judge_id']} "
             f"download_verify={','.join(gk_plan['download_verify_judge_ids'])} "
-            f"gatekeeper=\"{gk_plan['gatekeeper']}\" card_type={gk_plan['card_type']}"
+            f"gatekeeper=\"{gk_plan['gatekeeper']}\" card_type=<read from colab sessions after open>"
         )
 except vm_judges.RefusalError as exc:
     sys.stderr.write(f"{exc}\n")
@@ -689,6 +690,15 @@ build_probe_env_args() {
   )
 }
 
+# A real time-one / counted / lock-check window (no VM_DRYRUN, no --until): the VM needs the card type of the session
+# actually opened, read from `colab sessions` after `colab new` (never from --gpu), and checks it against nvidia-smi.
+OPENED_CARD_TYPE=""
+
+needs_opened_card_type() {
+  [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$UNTIL_STEP" ]] && [[ "$SESSION_SMOKE_FLAG" != "1" ]] \
+    && [[ "$MODE" == "time-one" || "$MODE" == "counted" || "$MODE" == "lock-check" ]]
+}
+
 build_exec_env_args() {
   local j_sha="${RDLAB_JUDGE_LOCK_SHA256:-$EXPECTED_JUDGE_LOCK_SHA256}"
   local d_sha="${RDLAB_D3_LOCK_SHA256:-$EXPECTED_D3_LOCK_SHA256}"
@@ -730,6 +740,9 @@ build_exec_env_args() {
   fi
   if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=/content/resume_state.tar.gz")
+  fi
+  if [[ -n "${OPENED_CARD_TYPE:-}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_CARD_TYPE=$OPENED_CARD_TYPE")
   fi
   if [[ "${VM_DRYRUN:-0}" == "1" ]]; then
     EXEC_ENV_ARGS+=(--env "VM_DRYRUN=1")
@@ -963,6 +976,10 @@ PY
   fi
   build_gate_env_args
   DRY_GATE_ENV_STR="${GATE_ENV_ARGS[*]}"
+  if needs_opened_card_type; then
+    # Nothing is opened in --dry: the live run forwards the card type read from `colab sessions` after `colab new`.
+    OPENED_CARD_TYPE="<card-of-opened-session>"
+  fi
   build_exec_env_args
   DRY_ENV_STR="${EXEC_ENV_ARGS[*]}"
 
@@ -2156,6 +2173,61 @@ if ! printf '%s\n' "$MID_SESSIONS" | grep -q "^\[$S\]"; then
   flock -u 9 || true
   RUN_WHY="colab sessions did not list [$S] after colab new"
   exit 1
+fi
+
+# The card type of the session actually opened: its `Hardware:` field in `colab sessions` (not the --gpu request).
+# Unknown -> CARD_TYPE_UNKNOWN before the alive probe, the gate, any upload or exec (the trap stops the session).
+OPENED_CARD_TYPE=""
+if needs_opened_card_type; then
+  CARD_READ="$("$PYTHON_BIN" - "$REPO_ROOT" "$S" "$MID_SESSIONS" <<'PY' || true
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "colab"))
+import vm_judges
+
+card, token = vm_judges.card_type_from_sessions_output(sys.argv[3], sys.argv[2])
+print(f"{card or ''}\t{token or ''}")
+PY
+)"
+  OPENED_CARD_TYPE="${CARD_READ%%$'\t'*}"
+  OPENED_HARDWARE="${CARD_READ#*$'\t'}"
+  if [[ -z "$OPENED_CARD_TYPE" ]]; then
+    flock -u 9 || true
+    RUN_FAILURE_CLASS="CARD_TYPE_UNKNOWN"
+    RUN_WHY="CARD_TYPE_UNKNOWN: cannot read the card type of session $S from colab sessions (Hardware: '${OPENED_HARDWARE}')"
+    echo "$RUN_WHY" >&2
+    exit 2
+  fi
+  log_msg "CARD_TYPE session=$S card_type=$OPENED_CARD_TYPE hardware=$OPENED_HARDWARE requested=${COLAB_NEW_FLAGS[*]:-none}"
+  if [[ "$MODE" == "counted" ]]; then
+    GOLD_ERR="$("$PYTHON_BIN" - "$REPO_ROOT" "$OPENED_CARD_TYPE" <<'PY' 2>&1 >/dev/null
+import os
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+raw = (os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
+try:
+    vm_judges.preflight_boot_gatekeeper_goldens(
+        mode="counted", repo_root=repo_root, goldens_path=Path(raw) if raw else None, card_type=sys.argv[2]
+    )
+except vm_judges.RefusalError as exc:
+    sys.stderr.write(f"{exc}\n")
+    raise SystemExit(2)
+PY
+)" || {
+      flock -u 9 || true
+      RUN_FAILURE_CLASS="BOOT_GATEKEEPER_GOLDEN_MISSING"
+      RUN_WHY="BOOT_GATEKEEPER_GOLDEN_MISSING on session $S (card $OPENED_CARD_TYPE): $GOLD_ERR"
+      echo "$RUN_WHY" >&2
+      exit 2
+    }
+  fi
 fi
 
 OPEN_CLOCK_EPOCH="$(now_epoch_seconds)"

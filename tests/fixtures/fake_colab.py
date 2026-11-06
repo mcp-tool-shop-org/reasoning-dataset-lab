@@ -36,7 +36,7 @@ SESSION_ROW_SHAPE = (
 )
 EMPTY_SESSIONS_LINE = "[colab] No active sessions found on server."
 DEFAULT_SESSION_ROW_TEMPLATE = (
-    "[{sid}] m-s-fake-{sid} | hw: {gpu} | status: READY | age: 1m"
+    "[{sid}] m-s-fake-{sid} | Hardware: {gpu} | Shape: Standard | Variant: DEFAULT"
 )
 
 GLOBAL_VALUE_FLAGS: frozenset[str] = frozenset(
@@ -448,6 +448,7 @@ def setup_fake_colab_environment(
     fake_nvidia_smi_sh = fake_bin / "nvidia-smi"
     fake_nvidia_smi_sh.write_text(
         "#!/usr/bin/env bash\n"
+        f"export FAKE_COLAB_STATE_DIR=\"${{FAKE_COLAB_STATE_DIR:-{_to_posix(state_dir)}}}\"\n"
         'mode="${FAKE_COLAB_NVIDIA_SMI_MODE:-ok}"\n'
         'if [[ "$mode" == "fail" ]]; then\n'
         '  echo "NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver." >&2\n'
@@ -458,6 +459,9 @@ def setup_fake_colab_environment(
         '  echo "N/A"\n'
         '  exit 0\n'
         'fi\n'
+        'for a in "$@"; do if [[ "$a" == "--query-gpu=name" ]]; then\n'
+        f"  exec python3 '{fake_colab_py_posix}' --fake-nvidia-smi-name\n"
+        'fi; done\n'
         'if [[ "$*" == *"--query-gpu=memory.used"* ]]; then\n'
         '  echo "${FAKE_COLAB_NVIDIA_SMI_MIB:-1024}"\n'
         '  exit 0\n'
@@ -741,11 +745,13 @@ def run_fake_uv(argv: list[str]) -> int:
     uv_state = _load_fake_uv_state(state_dir)
 
     invoked_as = os.environ.get("FAKE_COLAB_UV_INVOKED_AS", "uv")
+    # The pinned-uv dir is /tmp/uv-pinned, or a per-test dir (FAKE_COLAB_PINNED_UV_DIR) so test workers never share it.
+    pinned_prefix = os.environ.get("FAKE_COLAB_PINNED_UV_DIR", "").strip() or "/tmp/uv-pinned"
     uv_source = os.environ.get("FAKE_COLAB_UV_SOURCE") or (
-        "pinned-wheel" if "/tmp/uv-pinned" in invoked_as else "image"
+        "pinned-wheel" if pinned_prefix in invoked_as else "image"
     )
     if (
-        invoked_as.startswith("/tmp/uv-pinned")
+        invoked_as.startswith(pinned_prefix)
         and state_dir_raw
         and not (state_dir / ".pinned_uv_installed").is_file()
         and not (state_dir / ".pinned_uv_downloading").is_file()
@@ -1692,12 +1698,47 @@ def _check_stdin_is_devnull() -> bool:
             return False
 
 
+# `nvidia-smi --query-gpu=name` per session hardware, as the real driver names these cards.
+FAKE_GPU_NAMES: dict[str, str] = {
+    "A100": "NVIDIA A100-SXM4-40GB",
+    "A100-80": "NVIDIA A100-SXM4-80GB",
+    "L4": "NVIDIA L4",
+    "T4": "Tesla T4",
+    "H100": "NVIDIA H100 80GB HBM3",
+    "G4": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+}
+
+
+def run_fake_nvidia_smi_name() -> int:
+    """Fake `nvidia-smi --query-gpu=name --format=csv,noheader`: the name of the card the most recently created session
+    holds (`sessions.json`), or `<state_dir>/nvidia_smi_gpu_name.txt` when a test writes one (a VM whose card differs
+    from what the session reported). A CPU session has no driver: exit 9 like the real binary."""
+    state_dir = Path(os.environ.get("FAKE_COLAB_STATE_DIR") or "/tmp/rdlab-fake-colab-state")
+    override = state_dir / "nvidia_smi_gpu_name.txt"
+    if override.is_file():
+        print(override.read_text(encoding="utf-8").strip())
+        return 0
+    try:
+        sessions = json.loads((state_dir / "sessions.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        sessions = []
+    gpu = str(sessions[-1].get("gpu", "CPU")) if sessions else "CPU"
+    name = FAKE_GPU_NAMES.get(gpu)
+    if name is None:
+        sys.stderr.write("NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver.\n")
+        return 9
+    print(name)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
     if raw_args[:1] == ["--fake-uv"]:
         return run_fake_uv(raw_args[1:])
     if raw_args[:1] == ["--fake-curl"]:
         return run_fake_curl(raw_args[1:])
+    if raw_args[:1] == ["--fake-nvidia-smi-name"]:
+        return run_fake_nvidia_smi_name()
 
     os.environ["RDLAB_COLAB_IS_FAKE"] = "1"
     contract = load_and_verify_contract()
@@ -1937,6 +1978,11 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"Session [{sid}] already exists\n")
             return 1
         gpu = _get_opt("--gpu") or "CPU"
+        # The service may give a different card than requested (e.g. an A100 80 GB for `--gpu A100`): a test writes
+        # the hardware the new session reports into `<state_dir>/new_session_hardware.txt`.
+        hw_override = state_dir / "new_session_hardware.txt"
+        if hw_override.is_file() and hw_override.read_text(encoding="utf-8").strip():
+            gpu = hw_override.read_text(encoding="utf-8").strip()
         sessions.append({"session_id": sid, "gpu": gpu})
         sessions_file.write_text(json.dumps(sessions), encoding="utf-8", newline="\n")
         print(f"Created session [{sid}] ({gpu})")

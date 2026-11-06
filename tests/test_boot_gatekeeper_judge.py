@@ -105,6 +105,8 @@ def _time_one_main_env(
     calls: list[dict[str, Any]],
     verify_ids: tuple[str, ...] | None = None,
     mode: str = "time-one",
+    card_type_env: str | None = "A100",
+    vm_gpu_name: str | None = "NVIDIA A100-SXM4-40GB",
 ) -> list[str]:
     """In-process VM `main` in a real mode (`time-one` with `--only-judges mu-judge` by default; `counted` runs all five):
     every step before the weight step is
@@ -114,8 +116,14 @@ def _time_one_main_env(
     monkeypatch.setattr(
         vm_judges, "resolve_content_dir", lambda cd=None: Path(cd) if cd is not None else content_dir
     )
-    for var in ("VM_DRYRUN", "RDLAB_ONLY_JUDGES", "RDLAB_JUDGE_ORDER", "RDLAB_BOOT_GATEKEEPER_GOLDENS"):
+    for var in ("VM_DRYRUN", "RDLAB_ONLY_JUDGES", "RDLAB_JUDGE_ORDER", "RDLAB_BOOT_GATEKEEPER_GOLDENS", "RDLAB_CARD_TYPE"):
         monkeypatch.delenv(var, raising=False)
+    # The card: what the launcher forwards (the opened session's card) and what nvidia-smi on the VM reports.
+    if card_type_env is not None:
+        monkeypatch.setenv("RDLAB_CARD_TYPE", card_type_env)
+    monkeypatch.setattr(
+        vm_judges, "read_vm_gpu_name", lambda: (vm_gpu_name, "test nvidia-smi") if vm_gpu_name else (None, "absent")
+    )
     items = tcl._make_synthetic_public_items(tmp_path / "items", count=4)
 
     def _record(name: str, result: Any) -> Any:
@@ -414,7 +422,7 @@ def test_plan_boot_gatekeeper_judge_per_mode(tmp_path: Path, monkeypatch: pytest
     assert p is not None and p["download_verify_judge_ids"] == ["mu-judge", GK] and p["added_for_gatekeeper"]
     p2 = vm_judges.plan_boot_gatekeeper_judge(mode="time-one", judge_order=(GK, "mu-judge"), repo_root=REPO_ROOT)
     assert p2 is not None and p2["download_verify_judge_ids"] == [GK, "mu-judge"] and p2["timed"]
-    assert p["gatekeeper"] == "recorded, not compared" and p["card_type"] == "A100"
+    assert p["gatekeeper"] == "recorded, not compared" and p["card_type"] is None  # no card before open
     filled_doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
     filled_doc["card_types"]["A100"]["prompts"] = {
         sp["prompt_id"]: {"output_token_ids_sha256": "b" * 64} for sp in vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS
@@ -430,7 +438,11 @@ def test_plan_boot_gatekeeper_judge_per_mode(tmp_path: Path, monkeypatch: pytest
     pc = vm_judges.plan_boot_gatekeeper_judge(
         mode="counted", judge_order=five, repo_root=REPO_ROOT, goldens_path=filled_goldens
     )
-    assert pc is not None and pc["gatekeeper"] == "compared with goldens" and pc["card_type"] == "A100"
+    assert pc is not None and pc["gatekeeper"] == "compared with goldens" and pc["card_type"] is None
+    pa = vm_judges.plan_boot_gatekeeper_judge(
+        mode="counted", judge_order=five, repo_root=REPO_ROOT, goldens_path=filled_goldens, card_type="A100"
+    )
+    assert pa is not None and pa["card_type"] == "A100"
     # Counted: the repo's unfilled goldens, or a card with no entry, refuse before any paid step.
     for gp, card in ((None, None), (filled_goldens, "L4"), (filled_goldens, "H100")):
         with pytest.raises(vm_judges.RefusalError) as e_gold:
@@ -443,7 +455,10 @@ def test_plan_boot_gatekeeper_judge_per_mode(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setenv("RDLAB_CARD_TYPE", "L4")
     assert vm_judges.resolve_boot_gatekeeper_card_type() == "L4"
     monkeypatch.delenv("RDLAB_CARD_TYPE")
-    assert vm_judges.resolve_boot_gatekeeper_card_type() == "A100"
+    assert vm_judges.resolve_boot_gatekeeper_card_type() == "A100"  # stub/dryrun: the labelled stub default
+    with pytest.raises(vm_judges.RefusalError) as e_card:
+        vm_judges.resolve_boot_gatekeeper_card_type(real=True)
+    assert e_card.value.failure_class == vm_judges.CARD_TYPE_UNKNOWN
     assert vm_judges.boot_gatekeeper_record_mode("time-one") and not vm_judges.boot_gatekeeper_record_mode("counted")
     for kwargs in (
         {"mode": "stub"},
@@ -551,6 +566,7 @@ def test_reproduce_timeone_mu_verify_ready_on_cpu(tmp_path: Path) -> None:
             run_dir=tmp_path / "run",
             repo_root=REPO_ROOT,
             mode="time-one",
+            card_type="A100",
             dryrun=False,
             work_dir=work,
             receipts_dir=receipts_dir,
@@ -609,10 +625,11 @@ def test_launcher_dry_lists_the_gatekeeper_judge_and_refuses_before_colab(tmp_pa
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (
         f'[judges] timed=mu-judge boot_gatekeeper={GK} download_verify=mu-judge,{GK} '
-        'gatekeeper="recorded, not compared" card_type=A100'
+        'gatekeeper="recorded, not compared" card_type=<read from colab sessions after open>'
     ) in proc.stdout
     run_lines = [ln for ln in proc.stdout.splitlines() if "RDLAB_STEP=run" in ln]
     assert len(run_lines) == 1 and "--env RDLAB_ONLY_JUDGES=mu-judge " in run_lines[0]
+    assert "--env RDLAB_CARD_TYPE=<card-of-opened-session> " in run_lines[0]
     assert GK not in run_lines[0]
     assert not env_paths["calls_log"].exists()
 
@@ -903,5 +920,169 @@ def test_launcher_counted_without_goldens_refuses_before_the_session_opens(tmp_p
             f"--run-id c{int(dry)}",
         )
         assert proc.returncode == 2, proc.stdout + proc.stderr
-        assert "BOOT_GATEKEEPER_GOLDEN_MISSING" in proc.stderr and "card_type='A100'" in proc.stderr
+        assert "BOOT_GATEKEEPER_GOLDEN_MISSING" in proc.stderr and "no card type has filled" in proc.stderr
         assert "colab new" not in proc.stdout and not env_paths["calls_log"].exists()
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The card type (Publisher decision, 2026-11-06): read from the opened session, checked on the VM, never defaulted
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def test_card_type_mappings() -> None:
+    f = vm_judges.card_type_from_session_hardware
+    assert [f(t) for t in ("A100", "a100", "NVIDIA_A100", "A100-40GB", "A100_80GB", "A100-80", "L4", "T4", "H100", "G4")] == [
+        "A100", "A100", "A100", "A100", "A100-80", "A100-80", "L4", "T4", "H100", "G4"
+    ]
+    assert [f(t) for t in ("CPU", "v5e1", "", None, "Mystery9000")] == [None] * 5
+    out = "[other] x | Hardware: L4 | Shape: Standard | Variant: DEFAULT\n[s1] m-1 | Hardware: A100 | Shape: Standard | Variant: DEFAULT"
+    assert vm_judges.card_type_from_sessions_output(out, "s1") == ("A100", "A100")
+    assert vm_judges.card_type_from_sessions_output("[s1] m-1 | Hardware: CPU | Shape: Standard", "s1") == (None, "CPU")
+    assert vm_judges.card_type_from_sessions_output("[s1] m-1 | Shape: Standard", "s1") == (None, None)
+    assert vm_judges.card_type_from_sessions_output(out, "missing") == (None, None)
+    g = vm_judges.card_type_from_gpu_name
+    assert [g(n) for n in (
+        "NVIDIA A100-SXM4-40GB", "NVIDIA A100-SXM4-80GB", "NVIDIA A100 80GB PCIe", "NVIDIA L4", "Tesla T4",
+        "NVIDIA H100 80GB HBM3", "NVIDIA RTX PRO 6000 Blackwell Server Edition", "NVIDIA L40S", None,
+    )] == ["A100", "A100-80", "A100-80", "L4", "T4", "H100", "G4", None, None]
+
+
+def test_main_refuses_unknown_or_mismatched_card_before_venv_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """VM `main`, real time-one: no forwarded card type, an unreadable GPU name, or a GPU that is not the forwarded card
+    is refused at `verify_card_type` (after unpack, before venv sync, the gates and any weight download).
+    Fails at ffa9f61f: there was no card check; the run went on to venv sync."""
+    receipts_dir, _ = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    cases = (
+        ("no_env", None, "NVIDIA A100-SXM4-40GB", vm_judges.CARD_TYPE_UNKNOWN),
+        ("no_gpu", "A100", None, vm_judges.CARD_TYPE_UNKNOWN),
+        ("odd_gpu", "A100", "NVIDIA L40S", vm_judges.CARD_TYPE_UNKNOWN),
+        ("mismatch", "A100", "NVIDIA A100-SXM4-80GB", vm_judges.CARD_TYPE_MISMATCH),
+    )
+    for tag, env_card, gpu, want in cases:
+        base = tmp_path / tag
+        base.mkdir()
+        calls: list[dict[str, Any]] = []
+        argv = _time_one_main_env(
+            base, monkeypatch, receipts_dir=receipts_dir, calls=calls, card_type_env=env_card, vm_gpu_name=gpu
+        )
+        assert vm_judges.main(argv) == 2, tag
+        status, receipt, vm_log = _read_run(base)
+        assert status["failure_class"] == want, (tag, status)
+        assert status["step"] == "verify_card_type", (tag, status["step"])
+        names = [c["call"] for c in calls]
+        for later in ("sync_judge_venvs", "run_device_check", "run_gpu_gate", "download_and_verify_all_judge_weights"):
+            assert later not in names, (tag, names)
+    status_ok, receipt_ok, _ = None, None, None
+    base = tmp_path / "ok"
+    base.mkdir()
+    calls = []
+    argv = _time_one_main_env(base, monkeypatch, receipts_dir=receipts_dir, calls=calls)
+    _write_noisy_python(base / "work" / "venv-judge" / "bin" / "python")
+    assert vm_judges.main(argv) == 2
+    status_ok, receipt_ok, vm_log_ok = _read_run(base)
+    assert receipt_ok["card_type_check"] == {
+        "card_type": "A100",
+        "gpu_name": "NVIDIA A100-SXM4-40GB",
+        "source": "colab sessions Hardware + nvidia-smi",
+    }
+    assert 'VM_CARD_TYPE card_type=A100 gpu_name="NVIDIA A100-SXM4-40GB"' in vm_log_ok
+
+
+def _exec_card_env(env_paths: dict[str, Path]) -> list[str]:
+    rows = [
+        json.loads(ln)
+        for ln in env_paths["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    found = []
+    for row in rows:
+        args = [str(a) for a in row.get("args", [])]
+        if row.get("subcmd") == "exec" and "RDLAB_STEP=run" in args:
+            found += [a for a in args if a.startswith("RDLAB_CARD_TYPE=")]
+    return found
+
+
+def test_e2e_launcher_forwards_the_opened_card_type_not_the_request(tmp_path: Path) -> None:
+    """`--time-one` asks for `--gpu A100`; the session the service opens reports `Hardware: A100-80` (an 80 GB card).
+    The launcher forwards `RDLAB_CARD_TYPE=A100-80` read from `colab sessions`, the VM's nvidia-smi agrees, and the
+    receipt and the recorded gatekeeper carry `A100-80`.
+    Fails at ffa9f61f: the launcher forwarded no card type and the VM assumed `A100`."""
+    receipts_dir, hf_home, part, items = tcl._e2e_time_one_inputs(tmp_path)
+    res = tcl._e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        session_hardware="A100-80",
+    )
+    assert _exec_card_env(res["env_paths"]) == ["RDLAB_CARD_TYPE=A100-80"]
+    new_rows = [
+        json.loads(ln)
+        for ln in res["env_paths"]["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip() and json.loads(ln).get("subcmd") == "new"
+    ]
+    assert new_rows and "A100" in [str(a) for a in new_rows[0]["args"]]  # the request was plain A100
+    receipt = res["receipt"]
+    assert receipt["card_type_check"]["card_type"] == "A100-80"
+    assert receipt["card_type_check"]["gpu_name"] == "NVIDIA A100-SXM4-80GB"
+    assert receipt["gatekeeper_card_type"] == "A100-80"
+    cli_log = (res["out_dir"] / "colab-cli.log").read_text(encoding="utf-8")
+    assert "CARD_TYPE session=rdlab-e2e-time-one-01 card_type=A100-80 hardware=A100-80" in cli_log
+
+
+def test_e2e_unknown_session_card_refuses_right_after_open(tmp_path: Path) -> None:
+    """A session whose `Hardware:` is not a known GPU card is refused `CARD_TYPE_UNKNOWN` right after `colab new`:
+    no alive probe, gate, upload or run exec, and the session is stopped.
+    Fails at ffa9f61f: the launcher never read the card and went on to upload and run."""
+    receipts_dir, hf_home, part, items = tcl._e2e_time_one_inputs(tmp_path)
+    res = tcl._e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        session_hardware="Mystery9000",
+        expect_fail=True,
+    )
+    proc = res["proc"]
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "CARD_TYPE_UNKNOWN" in proc.stderr and "Mystery9000" in proc.stderr
+    subcmds = [
+        json.loads(ln).get("subcmd")
+        for ln in res["env_paths"]["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert "new" in subcmds and "stop" in subcmds
+    assert "exec" not in subcmds and "upload" not in subcmds, subcmds
+    outcome = json.loads((res["out_dir"] / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert "CARD_TYPE_UNKNOWN" in json.dumps(outcome)
+
+
+def test_e2e_vm_card_mismatch_refuses_before_venv_sync(tmp_path: Path) -> None:
+    """The session reports `A100` but the VM's nvidia-smi reports an L4: VM `main` refuses `CARD_TYPE_MISMATCH` at
+    `verify_card_type`, before venv sync and any weight step (the shim saw neither).
+    Fails at ffa9f61f: no check; the window ran on."""
+    receipts_dir, hf_home, part, items = tcl._e2e_time_one_inputs(tmp_path)
+    res = tcl._e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        vm_gpu_name="NVIDIA L4",
+        expect_fail=True,
+    )
+    assert res["proc"].returncode != 0
+    status = json.loads((res["out_dir"] / "status.json").read_text(encoding="utf-8"))
+    assert status["failure_class"] == vm_judges.CARD_TYPE_MISMATCH and status["step"] == "verify_card_type", status
+    shim_calls = res["env_paths"]["state_dir"] / "real_mode_shim_calls.jsonl"
+    names = [
+        json.loads(ln)["call"] for ln in shim_calls.read_text(encoding="utf-8").splitlines() if ln.strip()
+    ] if shim_calls.is_file() else []
+    assert "sync_judge_venvs" not in names and "download_and_verify_all_judge_weights" not in names, names

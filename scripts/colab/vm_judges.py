@@ -475,6 +475,15 @@ PINNED_UV_WHEEL_EXTRACT_MEMBERS: dict[str, str] = {
     PINNED_UV_WHEEL_UVX_MEMBER: "uvx",
 }
 DEFAULT_PINNED_UV_DIR = Path("/tmp/uv-pinned")
+# Test hook (FAKE_COLAB_ prefix: refused in every real mode by `guard_no_test_hooks_in_counted_mode`): a per-test
+# pinned-uv directory, so parallel test workers never share /tmp/uv-pinned. A real launch never sets it.
+PINNED_UV_DIR_TEST_HOOK = "FAKE_COLAB_PINNED_UV_DIR"
+
+
+def resolve_pinned_uv_dir() -> Path:
+    """`/tmp/uv-pinned` on a real VM; the test hook's directory when `FAKE_COLAB_PINNED_UV_DIR` is set (tests only)."""
+    raw = os.environ.get(PINNED_UV_DIR_TEST_HOOK, "").strip()
+    return Path(raw) if raw else DEFAULT_PINNED_UV_DIR
 _STDLIB_URLOPEN = urllib.request.urlopen
 PINNED_PYTHON_VERSION = "3.15.1"
 PINNED_PYTHON_BUILD = "20261021"
@@ -1761,10 +1770,10 @@ def resolve_vm_python_temp_dir(content_dir: Path | None = None) -> Path:
 def _prepend_pinned_uv_to_path(
     env: dict[str, str],
     *,
-    pinned_uv_dir: Path = DEFAULT_PINNED_UV_DIR,
+    pinned_uv_dir: Path | None = None,
 ) -> None:
     """Prepend `/tmp/uv-pinned` to `env['PATH']` without touching `os.environ`."""
-    pinned_str = str(pinned_uv_dir)
+    pinned_str = str(pinned_uv_dir if pinned_uv_dir is not None else resolve_pinned_uv_dir())
     existing_path = env.get("PATH", "")
     parts = [p for p in existing_path.split(os.pathsep) if p and p != pinned_str]
     env["PATH"] = os.pathsep.join([pinned_str, *parts]) if parts else pinned_str
@@ -1774,7 +1783,7 @@ def build_vm_uv_env(
     base_env: Mapping[str, str] | None = None,
     *,
     content_dir: Path | None = None,
-    pinned_uv_dir: Path = DEFAULT_PINNED_UV_DIR,
+    pinned_uv_dir: Path | None = None,
 ) -> dict[str, str]:
     """Return the exact environment used by both `run_gate` and `sync_judge_venvs` when invoking `uv`."""
     env = dict(os.environ if base_env is None else base_env)
@@ -3630,8 +3639,8 @@ def download_all_judge_weights(
                                 ),
                                 "path": child_env.get("PATH"),
                                 "uv_bin": (
-                                    str(DEFAULT_PINNED_UV_DIR / "uv")
-                                    if (DEFAULT_PINNED_UV_DIR / "uv").is_file()
+                                    str(resolve_pinned_uv_dir() / "uv")
+                                    if (resolve_pinned_uv_dir() / "uv").is_file()
                                     else (shutil.which("uv") or "absent")
                                 ),
                                 "hf_token_keys": sorted(
@@ -6517,8 +6526,8 @@ def _run_judges_pipeline_body(
                                 "hf_hub_offline": child_env.get("HF_HUB_OFFLINE"),
                                 "path": child_env.get("PATH"),
                                 "uv_bin": (
-                                    str(DEFAULT_PINNED_UV_DIR / "uv")
-                                    if (DEFAULT_PINNED_UV_DIR / "uv").is_file()
+                                    str(resolve_pinned_uv_dir() / "uv")
+                                    if (resolve_pinned_uv_dir() / "uv").is_file()
                                     else (shutil.which("uv") or "absent")
                                 ),
                                 "hf_token_keys": sorted(
@@ -7971,7 +7980,7 @@ def install_pinned_uv_wheel(
 ) -> dict[str, Any]:
     """Download, verify (`size == 17,211,825`, `sha256` before unpack), safely unpack (`uv` + `uvx`), and verify `/tmp/uv-pinned/uv --version == uv 0.13.5`."""
     target_dir = (
-        Path(pinned_uv_dir) if pinned_uv_dir is not None else DEFAULT_PINNED_UV_DIR
+        Path(pinned_uv_dir) if pinned_uv_dir is not None else resolve_pinned_uv_dir()
     )
     url = wheel_url if wheel_url is not None else PINNED_UV_WHEEL_URL
     scrubbed_url = scrub_log_text(url)
@@ -7987,7 +7996,7 @@ def install_pinned_uv_wheel(
     )
     exp_sha = resolve_expected_uv_wheel_sha256(expected_sha256)
 
-    if target_dir != DEFAULT_PINNED_UV_DIR:
+    if target_dir not in (DEFAULT_PINNED_UV_DIR, resolve_pinned_uv_dir()):
         shutil.rmtree(target_dir, ignore_errors=True)
 
     t_dl0 = time.monotonic()
@@ -8146,7 +8155,7 @@ def ensure_vm_uv(
 ) -> dict[str, Any]:
     """Ensure `uv 0.13.5` is available on the VM: use image `uv` when it is `0.13.5` (unless `RDLAB_FORCE_PINNED_UV=1`), otherwise install the pinned wheel into `/tmp/uv-pinned`."""
     target_dir = (
-        Path(pinned_uv_dir) if pinned_uv_dir is not None else DEFAULT_PINNED_UV_DIR
+        Path(pinned_uv_dir) if pinned_uv_dir is not None else resolve_pinned_uv_dir()
     )
     mode_env = os.environ.get("RDLAB_MODE", "stub").strip() or "stub"
     force_pinned = validate_force_pinned_uv(
@@ -10417,7 +10426,11 @@ def plan_boot_gatekeeper_judge(
         "gatekeeper": (
             BOOT_GATEKEEPER_RECORDED_NOT_COMPARED if boot_gatekeeper_record_mode(mode) else "compared with goldens"
         ),
-        "card_type": goldens_check["card_type"] if goldens_check else resolve_boot_gatekeeper_card_type(card_type),
+        "card_type": (
+            goldens_check["card_type"]
+            if goldens_check
+            else (card_type or os.environ.get("RDLAB_CARD_TYPE", "").strip() or None)
+        ),
     }
 
 
@@ -10457,8 +10470,119 @@ _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
 
 
 BOOT_GATEKEEPER_RECORDED_NOT_COMPARED = "recorded, not compared"
-# The launcher never forwards RDLAB_CARD_TYPE to the VM, so the gatekeeper's card type there is this default.
-DEFAULT_BOOT_GATEKEEPER_CARD_TYPE = "A100"
+# Stub and dryrun only: a labelled default card type (`card_type_source: "stub_default"`). A real mode never defaults:
+# the launcher forwards the card type of the session it actually opened (`RDLAB_CARD_TYPE`, read from the session's
+# `Hardware:` field in `colab sessions`), and VM `main` checks it against `nvidia-smi` before venv sync.
+STUB_DEFAULT_CARD_TYPE = "A100"
+CARD_TYPE_UNKNOWN = "CARD_TYPE_UNKNOWN"
+CARD_TYPE_MISMATCH = "CARD_TYPE_MISMATCH"
+
+
+def card_type_from_session_hardware(hardware: str | None) -> str | None:
+    """Map a `colab sessions` `Hardware:` token to a card type (the keys of `boot_gatekeeper_goldens.json`'s
+    `card_types`: `A100`, `L4`; also `A100-80`, `T4`, `H100`, `G4`), or None when it is not a known GPU card.
+
+    The real CLI's GPU tokens are not captured yet (only `Hardware: CPU` is, from a CPU window): this accepts the
+    `--gpu` names (`A100`, `L4`, `T4`, `H100`, `G4`) with optional `NVIDIA` / memory suffixes; anything else is unknown
+    and the launcher refuses `CARD_TYPE_UNKNOWN` right after the session opens.
+    """
+    if not hardware:
+        return None
+    norm = re.sub(r"[^A-Z0-9]", "", str(hardware).upper())
+    for prefix in ("NVIDIA", "TESLA"):
+        if norm.startswith(prefix):
+            norm = norm[len(prefix):]
+    if re.fullmatch(r"A100(?:40|40GB)?", norm):
+        return "A100"
+    if re.fullmatch(r"A100(?:80|80GB)", norm):
+        return "A100-80"
+    if re.fullmatch(r"H100(?:80|80GB)?", norm):
+        return "H100"
+    if norm in ("L4", "T4", "G4"):
+        return norm
+    return None
+
+
+def card_type_from_sessions_output(text: str | None, session: str) -> tuple[str | None, str | None]:
+    """`(card_type, hardware_token)` for `session`'s row in `colab sessions` output (`[<session>] <id> | Hardware: X |
+    Shape: ... | Variant: ...`); `(None, token or None)` when the row or its `Hardware:` field is missing or unknown."""
+    for line in str(text or "").splitlines():
+        if not line.strip().startswith(f"[{session}]"):
+            continue
+        for field in line.split("|")[1:]:
+            key, sep, val = field.partition(":")
+            if sep and key.strip().lower() == "hardware":
+                token = val.strip()
+                return card_type_from_session_hardware(token), token or None
+        return None, None
+    return None, None
+
+
+def card_type_from_gpu_name(name: str | None) -> str | None:
+    """Map an `nvidia-smi --query-gpu=name` value (e.g. `NVIDIA A100-SXM4-40GB`) to a card type, or None."""
+    up = str(name or "").upper()
+    if "A100" in up:
+        return "A100-80" if "80GB" in up.replace(" ", "") else "A100"
+    if "H100" in up:
+        return "H100"
+    if re.search(r"(?<![A-Z0-9])L4(?![0-9])", up):
+        return "L4"
+    if re.search(r"(?<![A-Z0-9])T4(?![0-9])", up):
+        return "T4"
+    if "RTX PRO 6000" in up:
+        return "G4"
+    return None
+
+
+def read_vm_gpu_name() -> tuple[str | None, str]:
+    """`(gpu_name, detail)` from `nvidia-smi --query-gpu=name --format=csv,noheader` (the driver's own binary, on the
+    base image before any venv); `(None, why)` when it is absent or fails."""
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return None, "nvidia-smi not found"
+    res = run_vm_subprocess(
+        [smi, "--query-gpu=name", "--format=csv,noheader"],
+        timeout=30,
+        check=False,
+        failure_class=CARD_TYPE_UNKNOWN,
+    )
+    first = (res.stdout or "").strip().splitlines()
+    if res.returncode != 0 or not first or not first[0].strip():
+        return None, f"nvidia-smi rc={res.returncode}: {(res.stderr_tail or res.stdout_tail or '').strip()[-200:]}"
+    return first[0].strip(), "nvidia-smi"
+
+
+def verify_vm_card_type(
+    mode: str | None,
+    *,
+    dryrun: bool = False,
+    until: str | None = None,
+) -> dict[str, Any] | None:
+    """Real time-one / counted / lock-check: the forwarded `RDLAB_CARD_TYPE` (the opened session's card) must equal
+    the card `nvidia-smi` reports. Refuses `CARD_TYPE_UNKNOWN` (not forwarded, or the GPU name unreadable/unknown) or
+    `CARD_TYPE_MISMATCH`. Runs in VM `main` before venv sync. None in stub / dryrun / `--until` runs."""
+    if not runs_real_boot_gatekeeper(mode, dryrun=dryrun, until=until):
+        return None
+    forwarded = os.environ.get("RDLAB_CARD_TYPE", "").strip()
+    if not forwarded:
+        raise RefusalError(
+            CARD_TYPE_UNKNOWN,
+            "RDLAB_CARD_TYPE was not forwarded: a real window needs the card type of the session the launcher opened",
+        )
+    gpu_name, detail = read_vm_gpu_name()
+    measured = card_type_from_gpu_name(gpu_name)
+    if measured is None:
+        raise RefusalError(
+            CARD_TYPE_UNKNOWN,
+            f"cannot read this VM's card type: GPU name {gpu_name!r} ({detail}); forwarded card type {forwarded!r}",
+        )
+    if measured != forwarded:
+        raise RefusalError(
+            CARD_TYPE_MISMATCH,
+            f"forwarded card type {forwarded!r} (from the opened session) != this VM's card {measured!r} "
+            f"(nvidia-smi: {gpu_name!r})",
+        )
+    return {"card_type": forwarded, "gpu_name": gpu_name, "source": "colab sessions Hardware + nvidia-smi"}
 
 
 def boot_gatekeeper_record_mode(mode: str | None) -> bool:
@@ -10475,11 +10599,20 @@ def boot_gatekeeper_record_mode(mode: str | None) -> bool:
     )
 
 
-def resolve_boot_gatekeeper_card_type(card_type: str | None = None) -> str:
-    """The gatekeeper's card type: `card_type`, else `RDLAB_CARD_TYPE`, else `DEFAULT_BOOT_GATEKEEPER_CARD_TYPE`."""
+def resolve_boot_gatekeeper_card_type(card_type: str | None = None, *, real: bool = False) -> str:
+    """The gatekeeper's card type: `card_type`, else `RDLAB_CARD_TYPE`. In a real mode there is no default
+    (`CARD_TYPE_UNKNOWN`); stub and dryrun fall back to the labelled `STUB_DEFAULT_CARD_TYPE`."""
     if card_type is not None and str(card_type).strip():
         return str(card_type).strip()
-    return os.environ.get("RDLAB_CARD_TYPE", "").strip() or DEFAULT_BOOT_GATEKEEPER_CARD_TYPE
+    env_val = os.environ.get("RDLAB_CARD_TYPE", "").strip()
+    if env_val:
+        return env_val
+    if real:
+        raise RefusalError(
+            CARD_TYPE_UNKNOWN,
+            "no card type in a real mode: RDLAB_CARD_TYPE (the opened session's card) is required; there is no default",
+        )
+    return STUB_DEFAULT_CARD_TYPE
 
 
 def preflight_boot_gatekeeper_goldens(
@@ -10503,8 +10636,22 @@ def preflight_boot_gatekeeper_goldens(
     eff_path = resolve_boot_gatekeeper_goldens_path(repo_root, goldens_path)
     resolve_boot_gatekeeper_judge_id(repo_root, eff_path)  # refuses a missing or malformed goldens file
     doc = json.loads(eff_path.read_text(encoding="utf-8"))
-    eff_card = resolve_boot_gatekeeper_card_type(card_type)
     card_types_map = doc.get("card_types")
+    if card_type is None and not os.environ.get("RDLAB_CARD_TYPE", "").strip():
+        # Before the session opens the card is not known yet: refuse only when no card type has complete goldens.
+        complete = sorted(
+            str(ck)
+            for ck, cv in (card_types_map.items() if isinstance(card_types_map, Mapping) else [])
+            if all(boot_gatekeeper_expected_sha(cv, str(sp["prompt_id"])) for sp in boot_gatekeeper_prompts(doc))
+        )
+        if not complete:
+            raise RefusalError(
+                "BOOT_GATEKEEPER_GOLDEN_MISSING",
+                "no golden: no card type has filled boot gatekeeper goldens; counted mode refuses before any paid step "
+                "until lock-check fills them.",
+            )
+        return {"card_type": None, "cards_with_goldens": complete}
+    eff_card = resolve_boot_gatekeeper_card_type(card_type, real=True)
     card_entry = card_types_map.get(eff_card) if isinstance(card_types_map, Mapping) else None
     missing = [
         str(sp["prompt_id"])
@@ -10878,7 +11025,12 @@ def run_boot_gatekeeper(
             else (repo_root / "scripts" / "colab" / "boot_gatekeeper_goldens.json")
         )
     )
-    eff_card_type = resolve_boot_gatekeeper_card_type(card_type)
+    eff_card_type = resolve_boot_gatekeeper_card_type(card_type, real=is_real_mode(mode, dryrun=dryrun))
+    card_type_source = (
+        "argument"
+        if card_type is not None and str(card_type).strip()
+        else ("RDLAB_CARD_TYPE" if os.environ.get("RDLAB_CARD_TYPE", "").strip() else "stub_default")
+    )
 
     if not eff_goldens_path.is_file():
         raise RefusalError(
@@ -11130,6 +11282,7 @@ def run_boot_gatekeeper(
             "status": "ok",
             "record_mode": True,
             "card_type": eff_card_type,
+            "card_type_source": card_type_source,
             "judge_id": judge_id,
             "hash_source": hash_source,
             "synthetic_fake_hash": synthetic_fake_hash,
@@ -11234,6 +11387,7 @@ def run_boot_gatekeeper(
     ok_doc = {
         "status": "ok",
         "card_type": eff_card_type,
+        "card_type_source": card_type_source,
         "judge_id": judge_id,
         "hash_source": hash_source,
         "synthetic_fake_hash": synthetic_fake_hash,
@@ -11926,6 +12080,7 @@ def main(argv: list[str] | None = None) -> int:
     boot_gatekeeper_report: dict[str, Any] | None = None
     boot_gatekeeper_judge_plan: dict[str, Any] | None = None
     gatekeeper_record_fields: dict[str, Any] = {}
+    card_type_check: dict[str, Any] | None = None
     loop_order_val: str = DEFAULT_LOOP_ORDER
     subblock_items_val: int = DEFAULT_SUBBLOCK_ITEMS
     uploaded_item_files: list[Path] = []
@@ -12149,6 +12304,16 @@ def main(argv: list[str] | None = None) -> int:
         # Its weights join the download/verify set here, and a run that could not download and verify them is refused
         # before venv sync, the device/GPU gate and any weight download (timeone-mu, 2026-11-06: only mu-judge's
         # weights were on the VM and the gatekeeper's verify_ready failed after the paid setup).
+        # The card: the launcher forwards the opened session's card type (RDLAB_CARD_TYPE); it must equal what
+        # nvidia-smi (the driver's own binary, on the base image) reports, checked here before venv sync. By now the
+        # session is open and has run the alive probe, the gate (python/uv) and the uploads; nothing paid beyond that.
+        current_step = "verify_card_type"
+        card_type_check = verify_vm_card_type(args.mode, dryrun=dryrun, until=until_step)
+        if card_type_check is not None:
+            _append_vm_log_line(
+                f"VM_CARD_TYPE card_type={card_type_check['card_type']} gpu_name={json.dumps(card_type_check['gpu_name'])}"
+            )
+
         current_step = "preflight_boot_gatekeeper_judge"
         boot_gatekeeper_judge_plan = plan_boot_gatekeeper_judge(
             mode=args.mode,
@@ -12158,6 +12323,7 @@ def main(argv: list[str] | None = None) -> int:
             until=until_step,
             goldens_path=getattr(args, "boot_gatekeeper_goldens", None),
             receipts_dir=args.receipts_dir,
+            card_type=card_type_check["card_type"] if card_type_check is not None else None,
         )
         if boot_gatekeeper_judge_plan is not None:
             _append_vm_log_line(
@@ -12734,6 +12900,8 @@ def main(argv: list[str] | None = None) -> int:
             # judge_order, only_judges and the timing outputs above stay as requested.
             receipt_doc["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
         receipt_doc.update(gatekeeper_record_fields)
+        if card_type_check is not None:
+            receipt_doc["card_type_check"] = card_type_check
         if until_step is not None:
             receipt_doc["until"] = until_step
             receipt_doc["until_step"] = until_step
@@ -12864,6 +13032,8 @@ def main(argv: list[str] | None = None) -> int:
         if boot_gatekeeper_judge_plan is not None:
             status_extra["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
         status_extra.update(gatekeeper_record_fields)
+        if card_type_check is not None:
+            status_extra["card_type_check"] = card_type_check
         if until_step is not None:
             status_extra["until"] = until_step
             status_extra["until_step"] = until_step
@@ -13033,6 +13203,9 @@ def main(argv: list[str] | None = None) -> int:
             status_fail_extra["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
         fail_receipt.update(gatekeeper_record_fields)
         status_fail_extra.update(gatekeeper_record_fields)
+        if card_type_check is not None:
+            fail_receipt["card_type_check"] = card_type_check
+            status_fail_extra["card_type_check"] = card_type_check
         if shard_info_report is not None:
             for sk in ("shard_spec", "shard_manifest_sha256", "shard_item_ids", "anchor_item_ids"):
                 fail_receipt[sk] = shard_info_report.get(sk)
