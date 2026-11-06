@@ -96,44 +96,111 @@
   "session_row_examples": [
     {
       "row": "[S] m-1 | Hardware: A100 | Shape: Standard | Variant: GPU",
-      "card_type": "A100"
+      "card_type": "A100",
+      "pairings": [
+        {
+          "file": "Publisher/receipts/colab/windowC2-25-a100-s1a-20261028/c2.log",
+          "session_row_line": 4,
+          "nvidia_smi_line": 73,
+          "nvidia_smi": "NVIDIA A100-SXM4-40GB, 40960 MiB"
+        },
+        {
+          "file": "Publisher/receipts/colab/windowC2-37-a100-s2b-20261028/c2.log",
+          "session_row_line": 4,
+          "nvidia_smi_line": 73,
+          "nvidia_smi": "NVIDIA A100-SXM4-40GB, 40960 MiB"
+        }
+      ]
     },
     {
       "row": "[S] m-1 | Hardware: A100 | Shape: High-RAM | Variant: GPU",
-      "card_type": "A100-80"
+      "card_type": "A100-80",
+      "pairings": [
+        {
+          "file": "Publisher/receipts/colab/windowC2-54-a10080-s2a-20261028/c2.log",
+          "session_row_line": 4,
+          "nvidia_smi_line": 73,
+          "nvidia_smi": "NVIDIA A100-SXM4-80GB, 81920 MiB"
+        },
+        {
+          "file": "Publisher/receipts/colab/windowC2-55-a10080-s3a-20261028/c2.log",
+          "session_row_line": 4,
+          "nvidia_smi_line": 73,
+          "nvidia_smi": "NVIDIA A100-SXM4-80GB, 81920 MiB"
+        }
+      ]
     },
     {
       "row": "[S] m-1 | Hardware:  A100  | Shape: Standard | Variant: GPU",
-      "card_type": "A100"
+      "card_type": "A100",
+      "note": "the double-space form seen in real rows; same pairing as A100 Standard"
     },
     {
       "row": "[S] m-1 | Hardware: G4 | Shape: Standard | Variant: GPU",
-      "card_type": "G4"
+      "card_type": "G4",
+      "pairings": [
+        {
+          "file": "Publisher/receipts/colab/windowC2-48-g4-s1a-20261028/c2.log",
+          "session_row_line": 4,
+          "nvidia_smi_line": 73,
+          "nvidia_smi": "NVIDIA RTX PRO 6000 Blackwell Server Edition, 97887 MiB"
+        }
+      ]
     },
     {
       "row": "[S] m-1 | Hardware: L4 | Shape: Standard | Variant: GPU",
-      "card_type": "L4"
+      "card_type": "L4",
+      "pairings": [
+        {
+          "file": "Publisher/receipts/colab/windowC2-26-l4-s1a-20261028/c2.log",
+          "session_row_line": 4,
+          "nvidia_smi_line": 73,
+          "nvidia_smi": "NVIDIA L4, 23034 MiB"
+        }
+      ]
     },
     {
       "row": "[S] m-1 | Hardware: T4 | Shape: Standard | Variant: GPU",
-      "card_type": "T4"
+      "card_type": "T4",
+      "pairings": [
+        {
+          "file": "Publisher/receipts/colab/windowC2-12-t4-s1a-20261027/c2.log",
+          "session_row_line": 4,
+          "nvidia_smi_line": 73,
+          "nvidia_smi": "Tesla T4, 15360 MiB"
+        }
+      ]
     },
     {
       "row": "[S] m-1 | Hardware: CPU | Shape: Standard | Variant: DEFAULT",
-      "card_type": null
+      "card_type": null,
+      "note": "no same-window pairing in the receipts: CARD_TYPE_UNKNOWN"
     },
     {
       "row": "[S] m-1 | Hardware: CPU | Shape: High-RAM | Variant: DEFAULT",
-      "card_type": null
+      "card_type": null,
+      "note": "no same-window pairing in the receipts: CARD_TYPE_UNKNOWN"
     },
     {
       "row": "[S] m-1 | Hardware: V5E1 | Shape: Standard | Variant: TPU",
-      "card_type": null
+      "card_type": null,
+      "note": "no same-window pairing in the receipts: CARD_TYPE_UNKNOWN"
     },
     {
       "row": "[S] m-1 | Hardware: V6E1 | Shape: Standard | Variant: TPU",
-      "card_type": null
+      "card_type": null,
+      "note": "no same-window pairing in the receipts: CARD_TYPE_UNKNOWN"
+    },
+    {
+      "row": "[S] m-1 | Hardware: T4 | Shape: High-RAM | Variant: GPU",
+      "card_type": null,
+      "note": "no same-window pairing in the receipts: CARD_TYPE_UNKNOWN"
+    },
+    {
+      "row": "[S] m-1 | Hardware: L4 | Shape: High-RAM | Variant: GPU",
+      "card_type": null,
+      "note": "no same-window pairing in the receipts: CARD_TYPE_UNKNOWN"
     }
   ],
-  "session_row_examples_source": "Real `colab sessions` rows (session ids replaced by S / m-1), from the studio's run logs, 2026-11-06: A100 Standard 1,498 lines, A100 High-RAM 122, plus G4, L4, T4, CPU and TPU rows; some rows carry double spaces."
+  "session_row_examples_source": "Real `colab sessions` rows (ids replaced by S / m-1). Each mapped (Hardware, Shape) is pinned to receipts where the SAME window's own session row and its own nvidia-smi line are both recorded (paths relative to the studio root; line numbers 1-based). Shape names the VM's host RAM; the card comes from the paired nvidia-smi line. A (Hardware, Shape) with no such pairing is CARD_TYPE_UNKNOWN. The rdlab time-one receipts (judge-bakeoff colab-runs timeone-mu / timeone-d3) record NVIDIA A100-SXM4-40GB in gate_status.json but no session row."
 }

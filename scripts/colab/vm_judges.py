@@ -10478,12 +10478,16 @@ CARD_TYPE_UNKNOWN = "CARD_TYPE_UNKNOWN"
 CARD_TYPE_MISMATCH = "CARD_TYPE_MISMATCH"
 
 
-# The card types, from the real `colab sessions` rows seen in the studio's run logs (2026-11-06, ~2,000 lines):
-#   `Hardware: A100 | Shape: Standard | Variant: GPU`  -> A100 (40 GB)
-#   `Hardware: A100 | Shape: High-RAM | Variant: GPU`  -> A100-80 (`--gpu A100 --high-mem`, the 80 GB card)
-#   `Hardware: G4 | Shape: Standard`, `Hardware: L4 | Shape: Standard`, `Hardware: T4 | Shape: Standard`
-# Anything else (CPU, TPUs `V5E1` / `V6E1`, an unseen shape or card) is not a card type: CARD_TYPE_UNKNOWN.
-# These names are the keys of `boot_gatekeeper_goldens.json`'s `card_types` (compare and record use them as is).
+# The card types: only (Hardware, Shape) pairs pinned to receipts where the SAME window recorded its own `colab
+# sessions` row and its own nvidia-smi line (`session_row_examples` in tests/fixtures/colab-cli-contract.json cites
+# each file and line). `Shape:` names the VM's host RAM, so the card is what the paired nvidia-smi line says:
+#   A100 / Standard -> A100     (NVIDIA A100-SXM4-40GB, 40960 MiB; windowC2-25, windowC2-37)
+#   A100 / High-RAM -> A100-80  (NVIDIA A100-SXM4-80GB, 81920 MiB; windowC2-54, windowC2-55, `--gpu A100 --high-mem`)
+#   G4 / Standard   -> G4       (NVIDIA RTX PRO 6000 Blackwell Server Edition; windowC2-48)
+#   L4 / Standard   -> L4       (NVIDIA L4; windowC2-26)
+#   T4 / Standard   -> T4       (Tesla T4; windowC2-12)
+# Any other pair (CPU, TPUs, an unpaired shape or card) is CARD_TYPE_UNKNOWN, never a guess; the VM's nvidia-smi
+# cross-check stays the authority. These names are the goldens' `card_types` keys (compare and record use them).
 SESSION_CARD_TYPES: dict[tuple[str, str], str] = {
     ("A100", "STANDARD"): "A100",
     ("A100", "HIGH-RAM"): "A100-80",

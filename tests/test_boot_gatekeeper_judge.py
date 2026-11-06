@@ -937,6 +937,19 @@ def test_card_type_mappings() -> None:
     contract = json.loads((REPO_ROOT / "tests" / "fixtures" / "colab-cli-contract.json").read_text(encoding="utf-8"))
     examples = contract["session_row_examples"]
     assert any("  " in ex["row"] for ex in examples)
+    # Every mapped pair is pinned to same-window receipts whose nvidia-smi line names the same card, and every
+    # table entry has such an example.
+    pinned: set[tuple[str, str]] = set()
+    for ex in examples:
+        for pr in ex.get("pairings", []):
+            assert pr["file"].endswith(".log") and pr["session_row_line"] > 0 and pr["nvidia_smi_line"] > 0
+            assert vm_judges.card_type_from_gpu_name(pr["nvidia_smi"].split(",")[0]) == ex["card_type"], pr
+            fields = dict(
+                (k.strip().upper(), " ".join(v.split()).upper())
+                for k, _, v in (f.partition(":") for f in ex["row"].split("|")[1:])
+            )
+            pinned.add((fields["HARDWARE"], fields["SHAPE"]))
+    assert pinned == set(vm_judges.SESSION_CARD_TYPES), pinned
     for ex in examples:
         card, seen = vm_judges.card_type_from_sessions_output(ex["row"], "S")
         assert card == ex["card_type"], ex
