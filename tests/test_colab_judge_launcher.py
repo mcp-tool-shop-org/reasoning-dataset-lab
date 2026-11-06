@@ -19847,20 +19847,11 @@ def test_lock_check_item1_mode_exists_is_real_and_refuses_hooks(
     # Verify launch_judges.sh --lock-check --dry and --lock-check-stub --dry
     env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "lc_dry_env")
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path)
-    items_path = _make_stratified_public_items(tmp_path / "lc_items", count=4)
-    anchor_items_path = _make_stratified_public_items(tmp_path / "lc_anchor", count=50)
-    (anchor_items_path.parent / "manifest.json").write_text(
-        json.dumps({"part_id": "part01", "schema_version": "1.0"}, indent=2) + "\n",
-        encoding="utf-8",
+    # Inputs the lock-check two-input check accepts: `--dry` now runs that check as the live path does, so the
+    # anchors must come from the counted part and the P0a items must not overlap it.
+    items_path, anchor_items_path, p0a_items_path = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "lc_inputs", counted_count=100
     )
-    anchor_rows = []
-    for ln in anchor_items_path.read_text(encoding="utf-8").splitlines():
-        if ln.strip():
-            obj = json.loads(ln)
-            obj["id"] = f"counted-{obj['id']}"
-            anchor_rows.append(json.dumps(obj, sort_keys=True))
-    anchor_items_path.write_text("\n".join(anchor_rows) + "\n", encoding="utf-8")
-    p0a_items_path = _make_stratified_public_items(tmp_path / "lc_p0a", count=114)
     exports = _base_launcher_exports(
         env_paths,
         open_lock=tmp_path / "open.lock",
@@ -24295,8 +24286,10 @@ def test_followup_item3_sibling_counted_items_staged_in_bundle_and_deleted_on_vm
     (a) the launcher stages both into `repo_bundle.tar.gz` byte-identical, after the allow-list checks; a sibling that
         fails the item field allow-list is refused at staging, before `colab new`;
     (b) the VM deletes both after the run and lists both in `vm_receipt.json`'s `deleted_items_receipt`.
-    This covers launcher/VM code that was already on 9251a233 with no test, so it passes there too; only the fake
-    CLI's `FAKE_COLAB_KEEP_UPLOADS_DIR` hook is new.
+    Fails at 9251a233, even with this fake CLI: the window refuses `LOCK_CHECK_COUNTED_SOURCE_INVALID` ("both given")
+    in the pipeline body, the defect fixed by follow-up item 6, so it exits 2 before the deletion this test checks
+    (checked 2026-11-05 by running this test against 9251a233's `launch_judges.sh`, `vm_judges.py` and `bakeoff_judge.py`).
+    The fake CLI's `FAKE_COLAB_KEEP_UPLOADS_DIR` hook it uses is also new since 9251a233.
     """
     import tarfile
 
@@ -24778,3 +24771,598 @@ def test_followup_item6_real_lock_check_through_vm_main_on_monkeypatched_transpo
     assert rec_doc["deleted_items_receipt"]["all_absent"] is True
     assert not anc.exists() and not p0a.exists() and not cnt.exists() and not cnt_items.exists()
     assert rec_doc["counted_source_sha256"] == hashlib.sha256((counted_items_file.parent / "manifest.json").read_bytes()).hexdigest()
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Part manifest staging (after #68): the launcher stages the part's own manifest.json beside items.jsonl and refuses
+# PART_MANIFEST_MISSING before any colab call; VM `main` checks it before any paid step; `--dry` runs the lock-check
+# two-input check; and the free end-to-end gate before any paid counted/time-one window.
+# ---------------------------------------------------------------------------------------------------------------------
+
+REAL_MODE_SHIM_PY = REPO_ROOT / "tests" / "fixtures" / "fake_vm_real_mode_shim.py"
+
+_PM_BAD_MANIFESTS: tuple[tuple[str, str | dict[str, Any] | None, str], ...] = (
+    ("missing", None, "PART_MANIFEST_MISSING"),
+    ("invalid", "{not json\n", "PART_MANIFEST_INVALID"),
+    ("no_part_id", {"schema_version": "1.0"}, "PART_MANIFEST_INVALID"),
+    ("synthesized", {"part_id": "stub", "schema_version": "1.0", "synthesized": True}, "PART_MANIFEST_SYNTHESIZED"),
+)
+
+
+def _pm_items_dir(base: Path, items_src: Path, manifest: str | dict[str, Any] | None) -> Path:
+    """Copy `items_src` to `base/items.jsonl` and write `base/manifest.json` from `manifest` (None: no manifest)."""
+    base.mkdir(parents=True, exist_ok=True)
+    items = base / "items.jsonl"
+    shutil.copyfile(items_src, items)
+    if manifest is not None:
+        text = manifest if isinstance(manifest, str) else json.dumps(manifest, indent=2) + "\n"
+        (base / "manifest.json").write_text(text, encoding="utf-8", newline="\n")
+    return items
+
+
+def _pm_run_launcher(exports: str, args: str, *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-c", f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' {args}"],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def _pm_real_mode_exports(
+    env_paths: dict[str, Path],
+    *,
+    open_lock: Path,
+    receipts_dir: Path,
+    hf_home: Path,
+    items_file: Path,
+) -> str:
+    """Launcher exports for a real-mode window (no VM_DRYRUN) against the fake CLI."""
+    return (
+        _base_launcher_exports(
+            env_paths,
+            open_lock=open_lock,
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+        ).replace("export VM_DRYRUN=1; ", "")
+        + "unset VM_DRYRUN; "
+    )
+
+
+def test_part_manifest_item1_launcher_stages_the_part_manifest_and_refuses_before_any_colab_call(
+    tmp_path: Path,
+) -> None:
+    """Part manifest item 1a (launcher), `--dry` and live with the fake CLI:
+    - real `--time-one` / `--counted` with no part `manifest.json` beside the items file refuses `PART_MANIFEST_MISSING`;
+      an unparsable one or one with no `part_id` refuses `PART_MANIFEST_INVALID`; a synthesized stub one refuses
+      `PART_MANIFEST_SYNTHESIZED`. Each refuses before any `colab` call (no CLI call log at all), in `--dry` and live;
+    - a good manifest is listed for upload in `--dry` (`/content/rdlab_items/manifest.json`), and a live window uploads it
+      byte-identical beside `items.jsonl`; the VM deletes it after the run and lists it in `deleted_items_receipt`;
+    - a stub window with no manifest is not refused (the VM may synthesize a labelled stub one).
+    Fails at 5aae6c47/aac95973: the launcher never checked or staged the part manifest, so `--dry` exited 0 and the live
+    path opened a session for a window the VM could only refuse after its paid steps.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pm1_rec")
+    items_src = _make_synthetic_public_items(tmp_path / "pm1_src")
+
+    for mode in ("time-one", "counted"):
+        for tag, manifest, code in _PM_BAD_MANIFESTS:
+            items = _pm_items_dir(tmp_path / f"pm1_{mode}_{tag}", items_src, manifest)
+            for live in (False, True):
+                env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"pm1_env_{mode}_{tag}_{int(live)}")
+                exports = _pm_real_mode_exports(
+                    env_paths,
+                    open_lock=tmp_path / f"pm1_{mode}_{tag}.lock",
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    items_file=items,
+                )
+                out_dir = tmp_path / f"pm1_out_{mode}_{tag}_{int(live)}"
+                proc = _pm_run_launcher(
+                    exports,
+                    f"--{mode} {'' if live else '--dry '}--out-dir '{_to_wsl_path(out_dir)}' --run-id pm1-{mode}-{tag}",
+                )
+                where = f"mode={mode} case={tag} live={live}\nstdout={proc.stdout}\nstderr={proc.stderr}"
+                assert proc.returncode == 2, where
+                assert code in proc.stderr, where
+                assert "colab new" not in proc.stdout, where
+                assert not env_paths["calls_log"].exists(), where
+                if manifest is None:
+                    assert not (items.parent / "manifest.json").exists(), "the launcher must never create one"
+
+    # --dry with a good manifest lists its upload beside items.jsonl
+    good_manifest = {"part_id": "part01", "schema_version": "1.0"}
+    good_items = _pm_items_dir(tmp_path / "pm1_good", items_src, good_manifest)
+    env_dry = fake_colab.setup_fake_colab_environment(tmp_path / "pm1_env_dry_good")
+    proc_dry = _pm_run_launcher(
+        _pm_real_mode_exports(
+            env_dry,
+            open_lock=tmp_path / "pm1_dry_good.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=good_items,
+        ),
+        f"--time-one --dry --out-dir '{_to_wsl_path(tmp_path / 'pm1_out_dry_good')}' --run-id pm1-dry-good",
+    )
+    assert proc_dry.returncode == 0, proc_dry.stderr
+    upload_lines = [ln for ln in proc_dry.stdout.splitlines() if ln.startswith("colab upload")]
+    assert upload_lines[-1].endswith(" /content/rdlab_items/manifest.json"), upload_lines
+    assert upload_lines[-2].endswith(" /content/rdlab_items/items.jsonl"), upload_lines
+
+    # a stub window with no manifest is not refused in --dry
+    no_mf_items = _pm_items_dir(tmp_path / "pm1_stub_no_mf", items_src, None)
+    proc_stub_dry = _pm_run_launcher(
+        _pm_real_mode_exports(
+            env_dry,
+            open_lock=tmp_path / "pm1_stub.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=no_mf_items,
+        ),
+        f"--stub --dry --out-dir '{_to_wsl_path(tmp_path / 'pm1_out_stub_dry')}' --run-id pm1-stub-dry",
+    )
+    assert proc_stub_dry.returncode == 0, proc_stub_dry.stderr
+    assert "/content/rdlab_items/manifest.json" not in proc_stub_dry.stdout
+    assert not (no_mf_items.parent / "manifest.json").exists()
+
+    # live (stub window, VM dryrun): the manifest is uploaded byte-identical, then deleted on the VM and listed
+    env_live = fake_colab.setup_fake_colab_environment(tmp_path / "pm1_env_live_good")
+    kept = tmp_path / "pm1_kept_uploads"
+    out_live = tmp_path / "pm1_out_live_good"
+    exports_live = _base_launcher_exports(
+        env_live,
+        open_lock=tmp_path / "pm1_live_good.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=good_items,
+    ) + f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(kept)}'; "
+    proc_live = _pm_run_launcher(
+        exports_live, f"--stub --out-dir '{_to_wsl_path(out_live)}' --run-id pm1-live-good", timeout=180
+    )
+    assert proc_live.returncode == 0, proc_live.stdout + proc_live.stderr
+    assert (kept / "manifest.json").read_bytes() == (good_items.parent / "manifest.json").read_bytes()
+    vm_items_dir = env_live["state_dir"] / "vm_fs" / "rdlab_items"
+    assert not (vm_items_dir / "manifest.json").exists()
+    assert not (vm_items_dir / "items.jsonl").exists()
+    receipt = json.loads((out_live / "vm_receipt.json").read_text(encoding="utf-8"))
+    deleted = {Path(f["path"]).name: f for f in receipt["deleted_items_receipt"]["files"]}
+    assert deleted["manifest.json"]["absent"] is True
+    assert deleted["items.jsonl"]["absent"] is True
+    assert receipt["deleted_items_receipt"]["all_absent"] is True
+
+
+def test_part_manifest_item1_vm_main_preflight_refuses_before_any_paid_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Part manifest item 1b (VM `main`), real `time-one` and `counted` (no `--dryrun`, no `VM_DRYRUN`):
+    - a missing, invalid or synthesized part manifest refuses at step `verify_part_manifest` with its own code, before the
+      shard manifest, venv sync, the device check, the GPU gate, the weight download, the boot gatekeeper or any child;
+      the uploaded items file (and the refused manifest, when there was one) is deleted and listed in the receipt;
+    - a good manifest passes the preflight, the run reaches the judge children, and the staged manifest is deleted after
+      the run and listed in `deleted_items_receipt` like the other uploaded item files.
+    Fails at 5aae6c47/aac95973: there the part manifest was only checked in the pipeline body, after venv sync, the
+    device/GPU gate and the weight download.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pm2_rec")
+    items_src = _make_synthetic_public_items(tmp_path / "pm2_src")
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    for var in (
+        "RDLAB_SHARD",
+        "RDLAB_SHARD_MANIFEST",
+        "RDLAB_SHARD_MANIFEST_SHA256",
+        "RDLAB_LIMIT_ITEMS",
+        "RDLAB_COUNTED_ITEMS_FILE",
+        "RDLAB_COUNTED_MANIFEST",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    for var in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(var):
+            monkeypatch.delenv(var, raising=False)
+
+    paid_calls: list[str] = []
+    paid_step_names = (
+        "ensure_shard_manifest_for_run",
+        "sync_judge_venvs",
+        "run_device_check",
+        "run_gpu_gate",
+        "download_and_verify_all_judge_weights",
+        "run_boot_gatekeeper",
+        "collect_and_write_session_env",
+        "_run_child_with_group_timeout",
+    )
+    originals = {name: getattr(vm_judges, name) for name in paid_step_names}
+
+    def _forbidden(name: str) -> Any:
+        def _spy(*args: Any, **kwargs: Any) -> Any:
+            paid_calls.append(name)
+            raise AssertionError(f"{name} ran before the part manifest refusal")
+
+        return _spy
+
+    for name in paid_step_names:
+        monkeypatch.setattr(vm_judges, name, _forbidden(name))
+
+    for mode in ("time-one", "counted"):
+        for tag, manifest, code in _PM_BAD_MANIFESTS:
+            items = _pm_items_dir(tmp_path / f"pm2_in_{mode}_{tag}", items_src, manifest)
+            argv, run_dir, status = _followup_main_args(
+                tmp_path,
+                f"pm2_{mode}_{tag}",
+                mode_args=["--mode", mode],
+                receipts_dir=receipts_dir,
+                hf_home=hf_home,
+                extra=["--items-file", str(items)],
+            )
+            rc = vm_judges.main(argv)
+            st = json.loads(status.read_text(encoding="utf-8"))
+            assert rc == 2, st
+            assert st["failure_class"] == code, st
+            assert st["step"] == "verify_part_manifest", st
+            assert paid_calls == []
+            assert not (run_dir / "shard_manifest.json").exists()
+            receipt = json.loads((run_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+            listed = {Path(f["path"]).name: f["absent"] for f in receipt["deleted_items_receipt"]["files"]}
+            assert listed.get("items.jsonl") is True, receipt["deleted_items_receipt"]
+            if manifest is not None:
+                assert listed.get("manifest.json") is True, receipt["deleted_items_receipt"]
+            assert not items.exists() and not (items.parent / "manifest.json").exists()
+
+    # A good manifest: the preflight passes and the run reaches the judge children; the manifest is deleted and listed.
+    monkeypatch.setattr(vm_judges, "ensure_shard_manifest_for_run", originals["ensure_shard_manifest_for_run"])
+    calls: list[str] = []
+    orig_ensure = vm_judges.preflight_part_manifest
+
+    def _spy_preflight(*args: Any, **kwargs: Any) -> Any:
+        calls.append("preflight_part_manifest")
+        return orig_ensure(*args, **kwargs)
+
+    monkeypatch.setattr(vm_judges, "preflight_part_manifest", _spy_preflight)
+
+    def _as_dryrun(name: str) -> Any:
+        orig = originals[name]
+
+        def _wrapped(*args: Any, **kwargs: Any) -> Any:
+            calls.append(name)
+            kwargs["dryrun"] = True
+            if "device" in kwargs:
+                kwargs["device"] = "cpu"
+            return orig(*args, **kwargs)
+
+        return _wrapped
+
+    for name in (
+        "sync_judge_venvs",
+        "run_device_check",
+        "run_gpu_gate",
+        "download_and_verify_all_judge_weights",
+        "run_boot_gatekeeper",
+        "collect_and_write_session_env",
+    ):
+        monkeypatch.setattr(vm_judges, name, _as_dryrun(name))
+    orig_child = originals["_run_child_with_group_timeout"]
+
+    def _fake_child(cmd: list[str], *args: Any, **kwargs: Any) -> Any:
+        if vm_judges.JUDGE_RUNNER_MODULE not in cmd:
+            return orig_child(cmd, *args, **kwargs)
+        calls.append("judge_child")
+        new_cmd = list(cmd)
+        new_cmd[new_cmd.index("--device") + 1] = "cpu"
+        new_cmd[new_cmd.index("--window-mode") + 1] = "stub"
+        new_cmd.append("--stub")
+        return orig_child(new_cmd, *args, **kwargs)
+
+    monkeypatch.setattr(vm_judges, "_run_child_with_group_timeout", _fake_child)
+
+    good = _pm_items_dir(tmp_path / "pm2_in_good", items_src, {"part_id": "part01", "schema_version": "1.0"})
+    argv_ok, run_ok, status_ok = _followup_main_args(
+        tmp_path,
+        "pm2_good",
+        mode_args=["--mode", "time-one"],
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra=["--items-file", str(good)],
+    )
+    work_ok = tmp_path / "pm2_good_work"
+    for venv_name in ("venv-judge", "venv-d3"):
+        vm_judges._ensure_dryrun_venv_python_wrapper(work_ok / venv_name / "bin" / "python")
+    rc_ok = vm_judges.main(argv_ok)
+    assert rc_ok == 0, status_ok.read_text(encoding="utf-8")
+    assert calls[0] == "preflight_part_manifest", calls
+    assert "judge_child" in calls
+    assert calls.index("sync_judge_venvs") < calls.index("download_and_verify_all_judge_weights") < calls.index(
+        "judge_child"
+    )
+    rec_ok = json.loads((run_ok / "vm_receipt.json").read_text(encoding="utf-8"))
+    listed_ok = {Path(f["path"]).name: f["absent"] for f in rec_ok["deleted_items_receipt"]["files"]}
+    assert listed_ok == {"items.jsonl": True, "manifest.json": True}, rec_ok["deleted_items_receipt"]
+    assert rec_ok["deleted_items_receipt"]["all_absent"] is True
+    assert not good.exists() and not (good.parent / "manifest.json").exists()
+    t1_ok = json.loads((run_ok / "time_one_summary.json").read_text(encoding="utf-8"))
+    assert t1_ok["part_manifest"]["part_id"] == "part01"
+
+    # The shared rules: a lock-check window never requires the items file's part manifest (see the module note).
+    assert vm_judges.part_manifest_required("time-one") is True
+    assert vm_judges.part_manifest_required("counted") is True
+    assert vm_judges.part_manifest_required("lock-check") is False
+    assert vm_judges.part_manifest_required("counted-stub") is False
+    assert vm_judges.part_manifest_required("counted", dryrun=True) is False
+    assert vm_judges.preflight_part_manifest(tmp_path / "pm2_nowhere" / "items.jsonl", mode="stub") is None
+
+
+def test_part_manifest_item2_dry_runs_the_lock_check_two_input_check_like_live(tmp_path: Path) -> None:
+    """Part manifest item 2: `launch_judges.sh --dry` runs `bakeoff_judge.verify_lock_check_two_inputs` (and requires
+    both `--anchor-items` and `--p0a-items`) exactly as the live path does before the session opens:
+    - 49 anchor items (not 50) refuse `LOCK_CHECK_ANCHOR_ITEMS_INVALID` in `--dry` and live, before any `colab` call;
+    - a missing `--p0a-items` refuses `LOCK_CHECK_ANCHOR_ITEMS_INVALID` in `--dry` too;
+    - good inputs still pass `--dry`.
+    Fails at 5aae6c47/aac95973, where `--dry` checked each file and the counted source but skipped the two-input check,
+    so it exited 0 for inputs the live path refused.
+    """
+    counted_items_file, anchor_src, p0a_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "pm3_base", counted_count=100
+    )
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "pm3_rec")
+    a49_dir = tmp_path / "pm3_a49"
+    a49_dir.mkdir(parents=True, exist_ok=True)
+    a49 = a49_dir / "anchor_items.jsonl"
+    a49.write_text(
+        "\n".join(anchor_src.read_text(encoding="utf-8").splitlines()[:49]) + "\n", encoding="utf-8", newline="\n"
+    )
+
+    def _run(tag: str, args: str, *, dry: bool) -> tuple[subprocess.CompletedProcess[str], dict[str, Path]]:
+        env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"pm3_env_{tag}")
+        exports = _base_launcher_exports(
+            env_paths,
+            open_lock=tmp_path / f"pm3_{tag}.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=counted_items_file,
+        )
+        proc = _pm_run_launcher(
+            exports,
+            f"--lock-check-stub {'--dry ' if dry else ''}{args} "
+            f"--out-dir '{_to_wsl_path(tmp_path / f'pm3_out_{tag}')}' --run-id pm3-{tag}",
+        )
+        return proc, env_paths
+
+    bad_args = (
+        f"--anchor-items '{_to_wsl_path(a49)}' --p0a-items '{_to_wsl_path(p0a_src)}' "
+        f"--counted-items '{_to_wsl_path(counted_items_file)}'"
+    )
+    for dry in (True, False):
+        proc, env_paths = _run(f"a49_{int(dry)}", bad_args, dry=dry)
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        assert "LOCK_CHECK_ANCHOR_ITEMS_INVALID" in proc.stderr, proc.stderr
+        assert "colab new" not in proc.stdout
+        assert not env_paths["calls_log"].exists()
+
+    proc_no_p0a, env_no_p0a = _run(
+        "no_p0a",
+        f"--anchor-items '{_to_wsl_path(anchor_src)}' --counted-items '{_to_wsl_path(counted_items_file)}'",
+        dry=True,
+    )
+    assert proc_no_p0a.returncode == 2, proc_no_p0a.stdout + proc_no_p0a.stderr
+    assert "LOCK_CHECK_ANCHOR_ITEMS_INVALID" in proc_no_p0a.stderr
+    assert not env_no_p0a["calls_log"].exists()
+
+    proc_ok, _ = _run(
+        "ok",
+        f"--anchor-items '{_to_wsl_path(anchor_src)}' --p0a-items '{_to_wsl_path(p0a_src)}' "
+        f"--counted-items '{_to_wsl_path(counted_items_file)}'",
+        dry=True,
+    )
+    assert proc_ok.returncode == 0, proc_ok.stderr
+    assert "colab new" in proc_ok.stdout
+
+
+def _e2e_fake_real_mode_window(
+    tmp_path: Path,
+    *,
+    mode: str,
+    items_file: Path,
+    receipts_dir: Path,
+    hf_home: Path,
+    extra_args: str = "",
+) -> dict[str, Any]:
+    """Drive the REAL `launch_judges.sh` live path (not `--dry`) in a real mode (no stub mode, no VM_DRYRUN) against the
+    fake `colab` CLI, with the VM cell run through `tests/fixtures/fake_vm_real_mode_shim.py`, and check that the window
+    reached the judge step and closed cleanly. Returns what a caller may check further.
+    """
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"e2e_{mode}_env", uv_python_315_found=True)
+    kept = tmp_path / f"e2e_{mode}_kept_uploads"
+    out_dir = tmp_path / f"e2e_{mode}_out"
+    run_id = f"e2e-{mode}-01"
+    exports = _pm_real_mode_exports(
+        env_paths,
+        open_lock=tmp_path / f"e2e_{mode}.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    ) + (
+        f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(REAL_MODE_SHIM_PY)}'; "
+        f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(kept)}'; "
+    )
+    proc = _pm_run_launcher(
+        exports, f"--{mode} {extra_args} --out-dir '{_to_wsl_path(out_dir)}' --run-id {run_id}", timeout=300
+    )
+    where = f"stdout={proc.stdout[-4000:]}\nstderr={proc.stderr[-4000:]}"
+    assert proc.returncode == 0, where
+
+    # The VM ran in the real mode asked for, and every step closed: status, receipt, outcome.
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    assert status_doc["status"] == "ok" and status_doc["rc"] == 0, status_doc
+    receipt = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert receipt["mode"] == mode, receipt.get("mode")
+    outcome = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome["outcome"] not in ("failed", "refused"), outcome
+
+    # The judge step was reached: the shim saw judge children exit 0 after venv sync and the weight download, and
+    # judge rows came back for items of this window.
+    shim_rows = [
+        json.loads(ln)
+        for ln in (env_paths["state_dir"] / "real_mode_shim_calls.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    names = [r["call"] for r in shim_rows]
+    judge_rows = [r for r in shim_rows if r["call"] == "judge_child"]
+    assert judge_rows and all(r["returncode"] == 0 for r in judge_rows), shim_rows
+    assert {r["window_mode"] for r in judge_rows} == {mode}, judge_rows
+    assert names.index("sync_judge_venvs") < names.index("download_and_verify_all_judge_weights") < names.index(
+        "judge_child"
+    ), names
+    item_ids = {
+        json.loads(ln)["id"] for ln in items_file.read_text(encoding="utf-8").splitlines() if ln.strip()
+    }
+    judged_ids = {
+        json.loads(ln).get("item_id")
+        for rows_file in sorted((out_dir / "rows").glob("*.jsonl"))
+        for ln in rows_file.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    }
+    assert judged_ids & item_ids, sorted(judged_ids)[:5]
+
+    # Uploads: the part manifest went up byte-identical beside items.jsonl; both are gone from the VM and listed.
+    assert (kept / "manifest.json").read_bytes() == (items_file.parent / "manifest.json").read_bytes()
+    assert (kept / "items.jsonl").read_bytes() == items_file.read_bytes()
+    vm_items_dir = env_paths["state_dir"] / "vm_fs" / "rdlab_items"
+    assert not (vm_items_dir / "items.jsonl").exists() and not (vm_items_dir / "manifest.json").exists()
+    deleted = {Path(f["path"]).name: f["absent"] for f in receipt["deleted_items_receipt"]["files"]}
+    assert deleted.get("items.jsonl") is True and deleted.get("manifest.json") is True, receipt["deleted_items_receipt"]
+    assert receipt["deleted_items_receipt"]["all_absent"] is True
+
+    # The session was stopped and is no longer listed.
+    session_name = f"rdlab-{run_id}"
+    stopped = [
+        json.loads(ln)["session_id"]
+        for ln in env_paths["stopped_file"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert session_name in stopped
+    live_sessions = json.loads(env_paths["sessions_file"].read_text(encoding="utf-8"))
+    assert session_name not in {s.get("session_id") for s in live_sessions}
+    return {"out_dir": out_dir, "receipt": receipt, "shim_rows": shim_rows, "env_paths": env_paths}
+
+
+def test_e2e_fake_real_mode_time_one_reaches_judges(tmp_path: Path) -> None:
+    """The free gate before any paid time-one window: the real launcher, live path, real `--time-one` (no stub mode, no
+    VM_DRYRUN) against the fake `colab` CLI runs launch -> staging -> upload -> VM `main` (every preflight) -> venv sync /
+    device / GPU gate / weights (their dryrun behaviour) -> the judge step (judge children on CPU, stub transport), and
+    closes with its receipts, the session stopped, and the uploaded items and part manifest deleted and listed.
+    Fails at aac95973: the launcher never staged the part manifest, and the VM refused `PART_MANIFEST_MISSING` after
+    venv sync, the GPU gate and the weight download.
+    """
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "e2e_t1_rec")
+    items_src = _make_synthetic_public_items(tmp_path / "e2e_t1_src")
+    items = _pm_items_dir(tmp_path / "e2e_t1_part", items_src, {"part_id": "part01", "schema_version": "1.0"})
+    res = _e2e_fake_real_mode_window(
+        tmp_path, mode="time-one", items_file=items, receipts_dir=receipts_dir, hf_home=hf_home
+    )
+    assert any(r["call"] == "run_gpu_gate" for r in res["shim_rows"])
+
+
+def test_e2e_fake_real_mode_counted_reaches_judges(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The free gate before any paid counted window: as the time-one gate, for real `--counted` shard 1/2 with the shard
+    manifest, golden anchor manifest and boot-gatekeeper goldens that a lock-check window produces (made here by an
+    in-process `lock-check-stub` run and `promote_goldens.py` into a temp copy).
+    Fails at aac95973: the launcher never staged the part manifest, and the VM refused `PART_MANIFEST_MISSING` after
+    venv sync, the GPU gate and the weight download.
+    """
+    import promote_goldens
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "e2e_c_rec")
+    counted_items_file, anchor_src, p0a_src = _make_counted_part_and_50_anchors_and_114_p0a(
+        tmp_path / "e2e_c_base", counted_count=100
+    )
+
+    # The lock-check window's outputs (stub, in process), as a counted window receives them.
+    lc_in = tmp_path / "e2e_c_lc_in"
+    lc_in.mkdir(parents=True, exist_ok=True)
+    lc_anchor = lc_in / "anchor_items.jsonl"
+    lc_p0a = lc_in / "p0a_items.jsonl"
+    lc_counted = lc_in / "counted_items.jsonl"
+    shutil.copyfile(anchor_src, lc_anchor)
+    shutil.copyfile(p0a_src, lc_p0a)
+    shutil.copyfile(p0a_src.parent / "manifest.json", lc_in / "p0a_manifest.json")
+    shutil.copyfile(counted_items_file, lc_counted)
+    monkeypatch.setenv("RDLAB_JUDGE_LOCK_SHA256", EXPECTED_JUDGE_LOCK_SHA256)
+    monkeypatch.setenv("RDLAB_D3_LOCK_SHA256", EXPECTED_D3_LOCK_SHA256)
+    monkeypatch.setenv("VM_DRYRUN", "1")
+    lc_run = tmp_path / "e2e_c_lc_run"
+    lc_status = tmp_path / "e2e_c_lc_status.json"
+    rc_lc = vm_judges.main(
+        [
+            "--step",
+            "run",
+            "--lock-check-stub",
+            "--window-id",
+            "window-e2e-lc-01",
+            "--repo-dir",
+            str(REPO_ROOT),
+            "--receipts-dir",
+            str(receipts_dir),
+            "--anchor-items",
+            str(lc_anchor),
+            "--p0a-items",
+            str(lc_p0a),
+            "--counted-items",
+            str(lc_counted),
+            "--run-dir",
+            str(lc_run),
+            "--work-dir",
+            str(tmp_path / "e2e_c_lc_work"),
+            "--hf-home",
+            str(hf_home),
+            "--result-tar",
+            str(tmp_path / "e2e_c_lc.tar.gz"),
+            "--status-file",
+            str(lc_status),
+            "--dryrun",
+        ]
+    )
+    assert rc_lc == 0, lc_status.read_text(encoding="utf-8")
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    goldens = tmp_path / "e2e_c_temp_repo" / "boot_gatekeeper_goldens.json"
+    rc_prom = promote_goldens.main(
+        [
+            "--filled",
+            str(lc_run / "boot_gatekeeper_goldens.filled.json"),
+            "--output",
+            str(goldens),
+            "--receipt",
+            str(lc_run / "receipt.json"),
+            "--session-env",
+            str(lc_run / "session_env.json"),
+            "--repo-root",
+            str(REPO_ROOT),
+        ]
+    )
+    assert rc_prom == 0
+
+    part = tmp_path / "e2e_c_part"
+    part.mkdir(parents=True, exist_ok=True)
+    items = part / "items.jsonl"
+    shutil.copyfile(counted_items_file, items)
+    shutil.copyfile(counted_items_file.parent / "manifest.json", part / "manifest.json")
+    res = _e2e_fake_real_mode_window(
+        tmp_path,
+        mode="counted",
+        items_file=items,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_args=(
+            f"--shard 1/2 --shard-manifest '{_to_wsl_path(lc_run / 'shard_manifest.json')}' "
+            f"--golden-anchor-manifest '{_to_wsl_path(lc_run / 'golden_anchor_manifest.json')}' "
+            f"--boot-gatekeeper-goldens '{_to_wsl_path(goldens)}' --window-id window-e2e-counted-01"
+        ),
+    )
+    assert any(r["call"] == "run_boot_gatekeeper" for r in res["shim_rows"])
+    assert res["receipt"].get("shard_spec") in (None, "1/2")
