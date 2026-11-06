@@ -33,6 +33,10 @@ def apply_test_part_pins(module_globals: dict[str, Any], pins_file: str) -> None
         return pins
 
     module_globals["pinned_real_parts"] = pinned_real_parts
+    # The test pins count as counted parts. The burned pilot can never be made acceptable for counted this way:
+    # `require_pinned_part` refuses it by its hashes before it looks at pin names.
+    orig_counted = module_globals["counted_part_pin_names"]
+    module_globals["counted_part_pin_names"] = lambda: frozenset(orig_counted()) | frozenset(extra)
 
 
 class _PinFinder(importlib.abc.MetaPathFinder):

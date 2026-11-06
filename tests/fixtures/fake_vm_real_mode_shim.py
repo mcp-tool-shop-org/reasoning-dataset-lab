@@ -133,6 +133,8 @@ def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
             return pins
 
         ns["pinned_real_parts"] = _pinned_real_parts
+        orig_counted = ns["counted_part_pin_names"]
+        ns["counted_part_pin_names"] = lambda: frozenset(orig_counted()) | frozenset(extra)
 
     def _resolve_content_dir(content_dir: Path | None = None) -> Path:
         return Path(content_dir) if content_dir is not None else root

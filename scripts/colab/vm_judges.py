@@ -5708,10 +5708,39 @@ def is_pinned_pilot_identity(identity: Mapping[str, Any] | None) -> bool:
 PINNED_PART_REQUIRED_MODES: frozenset[str] = frozenset({"counted"})
 
 
+def counted_part_pin_names() -> frozenset[str]:
+    """The pins (names in `pinned_real_parts`) a counted window may run on: the counted parts only, never the burned
+    pilot. Read at call time."""
+    return frozenset({"anchored_counted_430"})
+
+
 def require_pinned_part(identity: Mapping[str, Any], *, mode: str, dryrun: bool = False) -> None:
-    """Refuse `PART_NOT_PINNED` when a real counted window's part has no pin (`pin` is `None`, trust on first use)."""
+    """A real counted window runs only on a part pinned as a counted part (`counted_part_pin_names`).
+
+    Refuses `PART_IS_BURNED_PILOT` when the part is the burned pilot, by its hashes (`PILOT_40B_*`) or its pin name,
+    whatever other pin also matches; `PART_NOT_PINNED` when it has no pin (trust on first use) or a pin that is not a
+    counted part's. Lock-check P0a uses the pilot pin through `verify_p0a_pilot_part`, not here."""
     norm_mode = str(mode or "").strip().lower()
-    if norm_mode in PINNED_PART_REQUIRED_MODES and is_real_mode(mode, dryrun=dryrun) and identity.get("pin") is None:
+    if norm_mode not in PINNED_PART_REQUIRED_MODES or not is_real_mode(mode, dryrun=dryrun):
+        return
+    pin = identity.get("pin")
+    is_pilot = pin == "burned_pilot" or (
+        identity.get("part_json_sha256") == PILOT_40B_PART_JSON_SHA256
+        or identity.get("items_jsonl_sha256") == PILOT_40B_ITEMS_JSONL_SHA256
+    )
+    if is_pilot:
+        raise RefusalError(
+            "PART_IS_BURNED_PILOT",
+            f"A counted window never runs on the burned pilot part (part_id={identity.get('part_id')!r}, part.json "
+            f"SHA-256 {identity.get('part_json_sha256')}); pass the counted part.",
+        )
+    if pin is not None and pin not in counted_part_pin_names():
+        raise RefusalError(
+            "PART_NOT_PINNED",
+            f"A counted window runs only on a part pinned as a counted part ({sorted(counted_part_pin_names())}); "
+            f"part_id={identity.get('part_id')!r} is pinned as {pin!r}.",
+        )
+    if pin is None:
         raise RefusalError(
             "PART_NOT_PINNED",
             f"A counted window runs only on a pinned part; part_id={identity.get('part_id')!r} with part.json SHA-256 "

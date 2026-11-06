@@ -315,3 +315,96 @@ def test_paid_modes_require_max_rate_before_any_colab_call(tmp_path: Path) -> No
     dry = tcl._pm_run_launcher(exports, f"--stub --max-rate 0.2 --dry --out-dir '{tcl._to_wsl_path(tmp_path / 'od')}'")
     assert dry.returncode == 0, dry.stderr
     assert "[rate] max_rate=0.2/h (from --max-rate) estimate:" in dry.stderr
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# A counted window never runs on the burned pilot
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def _pilot_like_part(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tag: str) -> Path:
+    """A builder part pinned (in this process) as the burned pilot."""
+    part = tcl._make_builder_part(tmp_path / f"pilot_{tag}")
+    pj, it = _part_hashes(part)
+    monkeypatch.setattr(vm_judges, "PILOT_40B_PART_JSON_SHA256", pj)
+    monkeypatch.setattr(vm_judges, "PILOT_40B_ITEMS_JSONL_SHA256", it)
+    return part
+
+
+def test_counted_refuses_the_burned_pilot_and_non_counted_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shared rule: a counted window given the pinned pilot refuses `PART_IS_BURNED_PILOT`, even when the same
+    hashes are also pinned under a counted name; a part pinned under any other non-counted name refuses
+    `PART_NOT_PINNED`; time-one still accepts the pilot. Fails at ca31d36b: the pilot pin satisfied the counted check."""
+    part = _pilot_like_part(tmp_path, monkeypatch, "rule")
+    assert vm_judges.read_part_identity(part, mode="time-one")["pin"] == "burned_pilot"
+    with pytest.raises(vm_judges.RefusalError) as exc:
+        vm_judges.read_part_identity(part, mode="counted")
+    assert exc.value.failure_class == "PART_IS_BURNED_PILOT"
+    _pin_as_counted(monkeypatch, part)  # the pilot's hashes also pinned as the counted part: still the pilot
+    with pytest.raises(vm_judges.RefusalError) as exc2:
+        vm_judges.read_part_identity(part, mode="counted")
+    assert exc2.value.failure_class == "PART_IS_BURNED_PILOT"
+    other = tcl._make_builder_part(tmp_path / "other")
+    pj, it = _part_hashes(other)
+    real_pins = vm_judges.pinned_real_parts
+    monkeypatch.setattr(vm_judges, "pinned_real_parts", lambda: {**real_pins(), "some_reference_part": (pj, it)})
+    with pytest.raises(vm_judges.RefusalError) as exc3:
+        vm_judges.read_part_identity(other, mode="counted")
+    assert exc3.value.failure_class == "PART_NOT_PINNED" and "some_reference_part" in str(exc3.value)
+
+
+def test_launcher_refuses_the_burned_pilot_for_counted_before_any_colab_call(tmp_path: Path) -> None:
+    """Real `--counted` (`--dry` and live) on the pinned pilot part refuses `PART_IS_BURNED_PILOT` before any colab call,
+    even when a test fixture pins the same part (the fixture's pins count as counted parts, the pilot never does).
+    Fails at ca31d36b: the launcher accepted the pilot for counted."""
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = tcl._make_builder_part(tmp_path / "build")
+    items = tcl._project_part_items(part, tmp_path / "inputs" / "counted-projected.jsonl")
+    goldens = _filled_goldens(tmp_path / "goldens" / "filled.json")
+    pj, it = _part_hashes(part)
+    for dry in (True, False):
+        env_paths = fake_colab.setup_fake_colab_environment(tmp_path / f"env{int(dry)}")
+        exports = tcl._pm_real_mode_exports(
+            env_paths,
+            open_lock=tmp_path / f"c{int(dry)}.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items,
+            part_dir=part,
+            pin_parts=(part,),
+        )
+        # Pin the part as the burned pilot too, through the same test-only hook.
+        pins_file = env_paths["state_dir"] / "test_part_pins.json"
+        pins_file.write_text(json.dumps({"test_part_0": [pj, it], "burned_pilot": [pj, it]}), encoding="utf-8")
+        exports += f"export RDLAB_BOOT_GATEKEEPER_GOLDENS='{tcl._to_wsl_path(goldens)}'; "
+        out = tcl._to_wsl_path(tmp_path / f"out{int(dry)}")
+        proc = tcl._pm_run_launcher(exports, f"--counted {'--dry ' if dry else ''}--out-dir '{out}' --run-id bp{int(dry)}")
+        assert proc.returncode == 2, proc.stdout + proc.stderr
+        assert "PART_IS_BURNED_PILOT" in proc.stderr, proc.stderr
+        assert not env_paths["calls_log"].exists()
+
+
+def test_vm_main_refuses_the_burned_pilot_for_counted_before_venv_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In-process VM `main`, real counted, on the pinned pilot part (staged as the launcher uploads it): refuses
+    `PART_IS_BURNED_PILOT` at `verify_part_manifest`, before venv sync and any paid step.
+    Fails at ca31d36b: VM main accepted the pilot for counted."""
+    receipts_dir, _ = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    calls: list[dict[str, Any]] = []
+    real_preflight = vm_judges.preflight_part_manifest
+    argv = tbg._time_one_main_env(tmp_path, monkeypatch, receipts_dir=receipts_dir, calls=calls, mode="counted")
+    monkeypatch.setattr(vm_judges, "preflight_part_manifest", real_preflight)
+    part = _pilot_like_part(tmp_path, monkeypatch, "vm")
+    staged = tmp_path / "staged_items"
+    items = tcl._project_part_items(part, staged / "items.jsonl")
+    for name in ("part.json", "checksums.txt"):
+        shutil.copyfile(part / name, staged / name)
+    argv[argv.index("--items-file") + 1] = str(items)
+    assert vm_judges.main(argv) == 2
+    status = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert status["failure_class"] == "PART_IS_BURNED_PILOT", status
+    assert status["step"] == "verify_part_manifest"
+    names = [c["call"] for c in calls]
+    for later in ("sync_judge_venvs", "run_device_check", "run_gpu_gate", "download_and_verify_all_judge_weights"):
+        assert later not in names, names
