@@ -174,6 +174,10 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
                 "output_token_ids_sha256": actual,
                 "golden": golden,
                 "match": None if golden is None else bool(actual is not None and actual.lower() == golden),
+                **(timings.get("generation_by_prompt") or {}).get(
+                    pid,
+                    {"output_token_count": None, "max_new_tokens": None},
+                ),
             }
         )
     if any(p["match"] is None for p in per_prompt):
@@ -192,7 +196,7 @@ def run(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         "device": args.device,
         "seed": args.seed,
         "seconds": seconds,
-        "subprocess_timings": timings,
+        "subprocess_timings": {k: v for k, v in timings.items() if k != "generation_by_prompt"},
         "prompts": per_prompt,
     }
 
@@ -243,7 +247,10 @@ def main(argv: list[str] | None = None) -> int:
     else:
         for p in receipt["prompts"]:
             verdict = "no golden" if p["match"] is None else ("match" if p["match"] else "MISMATCH")
-            print(f"{p['prompt_id']} {p['output_token_ids_sha256']} {verdict}")
+            print(
+                f"{p['prompt_id']} {p['output_token_ids_sha256']} {verdict} "
+                f"tokens={p.get('output_token_count')} max_new_tokens={p.get('max_new_tokens')}"
+            )
         print(f"status={receipt['status']} judge_id={receipt['judge_id']} card_type={receipt['card_type']}")
         print(format_timings(receipt["subprocess_timings"]))
     print(f"receipt={args.out}")

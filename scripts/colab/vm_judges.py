@@ -10309,7 +10309,9 @@ class BootGatekeeperSubprocessError(RefusalError):
         stderr: str,
         duration_seconds: float,
         timed_out: bool = False,
+        subprocess_timings: Mapping[str, Any] | None = None,
     ) -> None:
+        self.subprocess_timings = dict(subprocess_timings) if subprocess_timings is not None else None
         self.judge_id = judge_id
         self.venv_python = scrub_log_text(venv_python)
         self.returncode = int(returncode)
@@ -10339,6 +10341,7 @@ class BootGatekeeperSubprocessError(RefusalError):
             "timed_out": self.timed_out,
             "stdout_tail": self.stdout_tail,
             "stderr_tail": self.stderr_tail,
+            "subprocess_timings": self.subprocess_timings,
         }
 
 
@@ -10491,16 +10494,23 @@ def plan_boot_gatekeeper_judge(
 
 
 # The boot gatekeeper's phases, timed in the child (`phase_seconds` in its JSON line, and one stderr line per phase as
-# it ends so a timeout or crash still shows how far it got): torch import, verify_ready (re-hashes every weight file
-# against its receipt), model load, one generation per synthetic prompt, and the child's own total.
+# it ends, so a timeout or crash still shows how far it got): torch import, verify_ready (re-hashes every weight file
+# against its receipt), model load, one throwaway warm-up forward (output unused, never hashed), one generation per
+# synthetic prompt, and the child's own total.
 BOOT_GATEKEEPER_PHASES: tuple[str, ...] = (
     "torch_import",
     "verify_ready",
     "model_load",
+    "warmup",
     "generation_1",
     "generation_2",
     "total",
 )
+BOOT_GATEKEEPER_PHASE_LINE_RE = re.compile(r"^BOOT_GATEKEEPER_PHASE (\S+) seconds=([0-9]+(?:\.[0-9]+)?)\s*$", re.M)
+BOOT_GATEKEEPER_DEPS_MISSING_EXIT = 3
+BOOT_GATEKEEPER_TOKEN_COUNT_MISMATCH = "BOOT_GATEKEEPER_TOKEN_COUNT_MISMATCH"
+# Judges whose transport forces `max_new_tokens=1, use_cache=False` (TransformersJudgeTransport.generate).
+BOOT_GATEKEEPER_ONE_TOKEN_JUDGES: tuple[str, ...] = ("mu-judge", "nemotron-3-nano-4b")
 
 _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
     "import time\n"
@@ -10515,8 +10525,10 @@ _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
     "_t = time.monotonic()\n"
     "try:\n"
     "    import torch\n"
-    "except ImportError:\n"
-    "    torch = None  # the transport refuses its own way when it needs torch; the phase is still timed\n"
+    "except ImportError as _exc:\n"
+    "    # Refuse now, before verify_ready re-hashes the weights: the judge cannot load without torch.\n"
+    "    sys.stderr.write(f'BAKEOFF_JUDGE_DEPS_MISSING: torch is not importable in {sys.executable}: {_exc}\\n')\n"
+    "    sys.exit(3)\n"
     "_phase('torch_import', _t)\n"
     "from reasoning_dataset_lab.pilot_b.bakeoff_judge import (\n"
     "    JudgeInputItem, TransformersJudgeTransport, D3MiniTransport, D3_MINI_JUDGE_ID,\n"
@@ -10540,22 +10552,41 @@ _BOOT_GATEKEEPER_SUBPROCESS_SCRIPT = (
     "_t = time.monotonic()\n"
     "transport._ensure_loaded(spec)\n"
     "_phase('model_load', _t)\n"
+    "def _assemble(sp):\n"
+    "    item = JudgeInputItem(item_id=str(sp['prompt_id']), material=str(sp['material']), claim=str(sp['claim']))\n"
+    "    ord_mode = 'BA' if str(sp.get('order', 'AB')) == 'BA' else 'AB'\n"
+    "    return adapter.assemble_prompt(item, order=ord_mode, pass_mode='binary')\n"
+    "_t = time.monotonic()\n"
+    "if cfg['prompts']:\n"
+    "    transport.prefill(spec, _assemble(cfg['prompts'][0]), seed=seed)  # warm-up: output unused, never hashed\n"
+    "_phase('warmup', _t)\n"
     "out_hashes = {}\n"
+    "generation = {}\n"
     "for _idx, sp in enumerate(cfg['prompts']):\n"
     "    _t = time.monotonic()\n"
     "    pid = str(sp['prompt_id'])\n"
-    "    item = JudgeInputItem(item_id=pid, material=str(sp['material']), claim=str(sp['claim']))\n"
-    "    ord_mode = 'BA' if str(sp.get('order', 'AB')) == 'BA' else 'AB'\n"
-    "    prompt = adapter.assemble_prompt(item, order=ord_mode, pass_mode='binary')\n"
+    "    prompt = _assemble(sp)\n"
     "    resp = transport.generate(spec, prompt, seed=seed)\n"
     "    sha = resp.output_token_ids_sha256 or compute_response_output_token_ids_sha256(\n"
     "        spec.judge_id, resp.tokens, system_one_result=resp.system_one_result\n"
     "    )\n"
     "    out_hashes[pid] = sha\n"
     "    _phase(f'generation_{_idx + 1}', _t)\n"
+    "    _mnt = int((getattr(prompt, 'structured_payload', None) or {}).get('max_new_tokens', getattr(spec, 'max_new_tokens', 0)) or 0)\n"
+    "    if spec.judge_id in ('mu-judge', 'nemotron-3-nano-4b'):\n"
+    "        _mnt = 1  # the transport forces max_new_tokens=1 for the Nemotron pair\n"
+    "    _cnt = getattr(resp, 'output_token_count', None)\n"
+    "    if not isinstance(_cnt, int) or (_cnt == 0 and getattr(resp, 'tokens', ())):\n"
+    "        _cnt = len(tuple(getattr(resp, 'tokens', ()) or ()))\n"
+    "    generation[pid] = {'output_token_count': int(_cnt), 'max_new_tokens': _mnt}\n"
     "_phase('total', _t_start)\n"
-    "print(json.dumps({'status': 'ok', 'hashes': out_hashes, 'phase_seconds': phase_seconds}, sort_keys=True))\n"
+    "print(json.dumps({'status': 'ok', 'hashes': out_hashes, 'phase_seconds': phase_seconds, 'generation': generation}, sort_keys=True))\n"
 )
+
+
+def parse_boot_gatekeeper_phase_lines(text: str) -> dict[str, float]:
+    """The `BOOT_GATEKEEPER_PHASE <name> seconds=<s>` lines the child writes to stderr as each phase ends."""
+    return {m.group(1): float(m.group(2)) for m in BOOT_GATEKEEPER_PHASE_LINE_RE.finditer(text or "")}
 
 
 def boot_gatekeeper_timings(
@@ -10577,6 +10608,57 @@ def boot_gatekeeper_timings(
         "subprocess_elapsed_seconds": round(float(elapsed_seconds), 6),
         "timeout_seconds": float(timeout_seconds),
     }
+
+
+def boot_gatekeeper_generation(parsed: Mapping[str, Any] | None, prompt_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+    """Per prompt: `output_token_count` (generated tokens, prompt excluded) and the effective `max_new_tokens`. Never
+    any output text. Every prompt id is present; a child that did not report one gets None values."""
+    raw = parsed.get("generation") if isinstance(parsed, Mapping) else None
+    raw_map: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+
+    def _int(v: Any) -> int | None:
+        return int(v) if isinstance(v, int) and not isinstance(v, bool) else None
+
+    out: dict[str, dict[str, Any]] = {}
+    for pid in prompt_ids:
+        ent = raw_map.get(pid)
+        ent = ent if isinstance(ent, Mapping) else {}
+        out[str(pid)] = {
+            "output_token_count": _int(ent.get("output_token_count")),
+            "max_new_tokens": _int(ent.get("max_new_tokens")),
+        }
+    return out
+
+
+def check_boot_gatekeeper_token_counts(judge_id: str, generation: Mapping[str, Mapping[str, Any]]) -> None:
+    """A one-token judge (the transport forces `max_new_tokens=1`) must generate exactly `max_new_tokens` tokens per
+    prompt; anything else is refused `BOOT_GATEKEEPER_TOKEN_COUNT_MISMATCH`. Prompts the child did not report are
+    skipped (only stand-ins omit them)."""
+    if judge_id not in BOOT_GATEKEEPER_ONE_TOKEN_JUDGES:
+        return
+    for pid, ent in generation.items():
+        cnt, mnt = ent.get("output_token_count"), ent.get("max_new_tokens")
+        if cnt is None and mnt is None:
+            continue
+        if mnt != 1 or cnt != mnt:
+            raise RefusalError(
+                BOOT_GATEKEEPER_TOKEN_COUNT_MISMATCH,
+                f"Boot gatekeeper judge {judge_id!r} is a one-token judge, but prompt {pid!r} generated "
+                f"{cnt} token(s) with effective max_new_tokens={mnt}",
+            )
+
+
+def boot_gatekeeper_report_fields(gk_timings: Mapping[str, Any]) -> dict[str, Any]:
+    """The gatekeeper report's subprocess fields: `subprocess_timings` and `subprocess_generation` (empty when the
+    gatekeeper ran no subprocess)."""
+    if not gk_timings:
+        return {}
+    fields: dict[str, Any] = {
+        "subprocess_timings": {k: v for k, v in gk_timings.items() if k != "generation_by_prompt"}
+    }
+    if "generation_by_prompt" in gk_timings:
+        fields["subprocess_generation"] = dict(gk_timings["generation_by_prompt"])
+    return fields
 
 
 BOOT_GATEKEEPER_RECORDED_NOT_COMPARED = "recorded, not compared"
@@ -10879,7 +10961,14 @@ def run_boot_gatekeeper_subprocess(
         gk_err = f"{prior_err}\nsubprocess timed out after {timeout_seconds}s".lstrip("\n")
     gk_seconds = max(0.0, time.monotonic() - t_gk)
     _log_boot_gatekeeper_subprocess(judge_id, venv_py, gk_rc, gk_seconds, gk_out, gk_err)
+    if gk_rc == BOOT_GATEKEEPER_DEPS_MISSING_EXIT and "BAKEOFF_JUDGE_DEPS_MISSING" in gk_err:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_DEPS_MISSING",
+            f"Boot gatekeeper judge {judge_id!r}: {_exception_line(_scrub_and_tail(gk_err)) or _scrub_and_tail(gk_err)}"
+            " (refused before verify_ready and any model load)",
+        )
     if gk_rc != 0 or not gk_out.strip():
+        # The phases the child completed before failing or timing out, from its stderr phase lines.
         raise BootGatekeeperSubprocessError(
             judge_id=judge_id,
             venv_python=str(venv_py),
@@ -10888,6 +10977,11 @@ def run_boot_gatekeeper_subprocess(
             stderr=gk_err,
             duration_seconds=gk_seconds,
             timed_out=gk_rc == 124,
+            subprocess_timings=boot_gatekeeper_timings(
+                {"phase_seconds": parse_boot_gatekeeper_phase_lines(gk_err)},
+                elapsed_seconds=gk_seconds,
+                timeout_seconds=timeout_seconds,
+            ),
         )
     try:
         parsed = json.loads(gk_out.strip().splitlines()[-1])
@@ -10905,6 +10999,10 @@ def run_boot_gatekeeper_subprocess(
         timings_out.update(
             boot_gatekeeper_timings(parsed, elapsed_seconds=gk_seconds, timeout_seconds=timeout_seconds)
         )
+        timings_out["generation_by_prompt"] = boot_gatekeeper_generation(parsed, [str(k) for k in parsed["hashes"]])
+    check_boot_gatekeeper_token_counts(
+        judge_id, boot_gatekeeper_generation(parsed, [str(k) for k in parsed["hashes"]])
+    )
     return {str(k): str(v) for k, v in parsed["hashes"].items()}
 
 
@@ -11449,8 +11547,7 @@ def run_boot_gatekeeper(
             "actual_output_token_ids_sha256": actual_by_prompt,
             "expected_output_token_ids_sha256": dict(actual_by_prompt),
         }
-        if gk_timings:
-            record_doc["subprocess_timings"] = dict(gk_timings)
+        record_doc.update(boot_gatekeeper_report_fields(gk_timings))
         if is_time_one_record:
             record_doc["gatekeeper"] = BOOT_GATEKEEPER_RECORDED_NOT_COMPARED
             record_doc["recorded_output_token_ids_sha256"] = dict(actual_by_prompt)
@@ -11486,7 +11583,7 @@ def run_boot_gatekeeper(
             "judge_id": judge_id,
             "hash_source": hash_source,
             "synthetic_fake_hash": synthetic_fake_hash,
-            **({"subprocess_timings": dict(gk_timings)} if gk_timings else {}),
+            **boot_gatekeeper_report_fields(gk_timings),
             "actual_output_token_ids_sha256": actual_by_prompt,
             "expected_output_token_ids_sha256": expected_by_prompt,
             "mismatches": mismatched_prompts,
@@ -11512,7 +11609,7 @@ def run_boot_gatekeeper(
                 "judge_id": judge_id,
                 "hash_source": hash_source,
                 "synthetic_fake_hash": synthetic_fake_hash,
-                **({"subprocess_timings": dict(gk_timings)} if gk_timings else {}),
+                **boot_gatekeeper_report_fields(gk_timings),
                 "missing_prompts": missing_prompts or list(actual_by_prompt.keys()),
                 "actual_output_token_ids_sha256": actual_by_prompt,
             }
@@ -11532,7 +11629,7 @@ def run_boot_gatekeeper(
             "judge_id": judge_id,
             "hash_source": hash_source,
             "synthetic_fake_hash": synthetic_fake_hash,
-            **({"subprocess_timings": dict(gk_timings)} if gk_timings else {}),
+            **boot_gatekeeper_report_fields(gk_timings),
             "missing_prompts": missing_prompts or list(actual_by_prompt.keys()),
             "actual_output_token_ids_sha256": actual_by_prompt,
             "expected_output_token_ids_sha256": expected_by_prompt,
@@ -11551,7 +11648,7 @@ def run_boot_gatekeeper(
         "judge_id": judge_id,
         "hash_source": hash_source,
         "synthetic_fake_hash": synthetic_fake_hash,
-        **({"subprocess_timings": dict(gk_timings)} if gk_timings else {}),
+        **boot_gatekeeper_report_fields(gk_timings),
         "actual_output_token_ids_sha256": actual_by_prompt,
         "expected_output_token_ids_sha256": expected_by_prompt,
     }

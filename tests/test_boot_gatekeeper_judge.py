@@ -351,6 +351,8 @@ def test_main_time_one_records_the_gatekeeper_with_unfilled_goldens(
     assert list(timings["phase_seconds"]) == list(vm_judges.BOOT_GATEKEEPER_PHASES)
     assert timings["subprocess_elapsed_seconds"] > 0 and timings["timeout_seconds"] == 300
     assert status["boot_gatekeeper"]["subprocess_timings"] == timings
+    assert set(rep["subprocess_generation"]) == set(hashes)
+    assert all(set(g) == {"output_token_count", "max_new_tokens"} for g in rep["subprocess_generation"].values())
     filled = json.loads((tmp_path / "run" / "boot_gatekeeper_goldens.filled.json").read_text(encoding="utf-8"))
     assert filled["judge_id"] == GK and filled["provenance"]["mode"] == "time-one"
     assert filled["card_types"]["A100"]["status"] == "filled"
@@ -706,7 +708,11 @@ def test_reproduce_timeone_mu_verify_ready_on_cpu(tmp_path: Path) -> None:
             shutil.rmtree(hf_home / "hub" / f"models--{owner}--{repo}")
     work = tmp_path / "work"
     (work / "venv-judge" / "bin").mkdir(parents=True)
-    (work / "venv-judge" / "bin" / "python").symlink_to(sys.executable)
+    # A stand-in torch module: the test venv has no torch, and a missing torch is refused before verify_ready.
+    stand_in = tmp_path / "stand_in_torch"
+    stand_in.mkdir()
+    (stand_in / "torch.py").write_text("", encoding="utf-8")
+    _write_wrapper_python(work / "venv-judge" / "bin" / "python", stand_in)
     with pytest.raises(vm_judges.BootGatekeeperSubprocessError) as exc_info:
         vm_judges.run_boot_gatekeeper(
             run_dir=tmp_path / "run",
@@ -1020,6 +1026,7 @@ def test_local_boot_gatekeeper_compares_with_the_goldens(tmp_path: Path, monkeyp
         assert [p["output_token_ids_sha256"] for p in rec["prompts"]] == list(hashes.values())
         # The stand-in reports no phases: every phase key is still present (None) with the measured elapsed time.
         assert set(rec["subprocess_timings"]["phase_seconds"]) == set(vm_judges.BOOT_GATEKEEPER_PHASES)
+        assert all({"output_token_count", "max_new_tokens"} <= set(pp) for pp in rec["prompts"])
         assert rec["subprocess_timings"]["subprocess_elapsed_seconds"] > 0
 
     failing = _write_noisy_python(tmp_path / "failpy")
@@ -1064,51 +1071,72 @@ def test_local_boot_gatekeeper_refuses_an_out_inside_the_repo_or_an_existing_fil
     assert local_boot_gatekeeper.check_out_path(tmp_path / "fresh.json") == (tmp_path / "fresh.json").resolve()
 
 
-def test_gatekeeper_subprocess_records_every_phase_and_the_elapsed_seconds(tmp_path: Path) -> None:
-    """The REAL `_BOOT_GATEKEEPER_SUBPROCESS_SCRIPT`, run through `run_boot_gatekeeper_subprocess` with stand-in
-    `torch` and `bakeoff_judge` modules first on the path, reports the seconds of torch import, verify_ready, model
-    load, generation 1, generation 2 and its total, prints one phase line per phase to stderr, and the parent adds
-    the measured elapsed seconds and the timeout; `local_boot_gatekeeper.format_timings` prints them.
-    Fails at 5bb17f78: the script reported hashes only."""
+def _write_wrapper_python(path: Path, pythonpath_first: Path) -> Path:
+    """An executable standing in for a venv python: this interpreter with `pythonpath_first` first on the path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"#!/bin/sh\nPYTHONPATH='{tcl._to_wsl_path(pythonpath_first)}'" + '"${PYTHONPATH:+:$PYTHONPATH}"'
+        + f" exec '{tcl._to_wsl_path(Path(sys.executable))}' " + '"$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    path.chmod(0o755)
+    return path
+
+
+def _stand_in_gatekeeper_child(tmp_path: Path, *, torch_ok: bool = True, token_count: int = 1, gen_sleep: float = 0.0):
+    """Stand-in `torch` and `bakeoff_judge` modules for the REAL `_BOOT_GATEKEEPER_SUBPROCESS_SCRIPT`. The stand-in
+    transport logs each call (verify_ready, load, prefill, generate) to `calls.txt`; generate returns
+    `token_count` tokens and sleeps `gen_sleep` seconds. Returns (venv python, calls file)."""
     fake_root = tmp_path / "fake_pkgs"
     pkg = fake_root / "reasoning_dataset_lab" / "pilot_b"
     pkg.mkdir(parents=True)
     (fake_root / "reasoning_dataset_lab" / "__init__.py").write_text("", encoding="utf-8")
     (pkg / "__init__.py").write_text("", encoding="utf-8")
-    (fake_root / "torch.py").write_text("import time\ntime.sleep(0.01)\n", encoding="utf-8")
+    (fake_root / "torch.py").write_text(
+        "import time\ntime.sleep(0.01)\n" if torch_ok else "raise ImportError('stand-in: no torch here')\n",
+        encoding="utf-8",
+    )
+    calls = tmp_path / "calls.txt"
     (pkg / "bakeoff_judge.py").write_text(
         "\n".join(
             [
                 "import time",
                 "from types import SimpleNamespace",
+                f"CALLS = {str(calls)!r}",
+                "def _log(name):",
+                "    with open(CALLS, 'a') as fh: fh.write(name + '\\n')",
                 "D3_MINI_JUDGE_ID = 'd3-mini'",
                 "class JudgeInputItem:",
                 "    def __init__(self, **kw): self.__dict__.update(kw)",
-                "def resolve_judge_spec(jid): return SimpleNamespace(judge_id=jid)",
+                "def resolve_judge_spec(jid): return SimpleNamespace(judge_id=jid, max_new_tokens=1)",
                 "class _Adapter:",
                 "    def assemble_prompt(self, item, order, pass_mode): return item.item_id",
                 "def build_judge_adapter(spec): return _Adapter()",
                 "def compute_response_output_token_ids_sha256(*a, **k): return 'c' * 64",
                 "class TransformersJudgeTransport:",
                 "    def __init__(self, **kw): pass",
-                "    def verify_ready(self, spec, allow_remote_code_reviewed=None): time.sleep(0.01)",
-                "    def _ensure_loaded(self, spec): time.sleep(0.01)",
-                "    def generate(self, spec, prompt, seed): return SimpleNamespace(output_token_ids_sha256=prompt[:1] * 64)",
+                "    def verify_ready(self, spec, allow_remote_code_reviewed=None): _log('verify_ready'); time.sleep(0.01)",
+                "    def _ensure_loaded(self, spec): _log('load'); time.sleep(0.01)",
+                "    def prefill(self, spec, prompt, seed=0): _log('prefill ' + prompt); time.sleep(0.01)",
+                "    def generate(self, spec, prompt, seed):",
+                "        _log('generate ' + prompt)",
+                f"        time.sleep({gen_sleep})",
+                f"        toks = tuple('t' for _ in range({token_count}))",
+                "        return SimpleNamespace(",
+                f"            output_token_ids_sha256=prompt[-1] * 64, tokens=toks, output_token_count={token_count}",
+                "        )",
                 "D3MiniTransport = TransformersJudgeTransport",
             ]
         )
         + "\n",
         encoding="utf-8",
     )
-    venv_py = tmp_path / "venvpy"
-    venv_py.write_text(
-        f"#!/bin/sh\nPYTHONPATH='{tcl._to_wsl_path(fake_root)}' exec '{tcl._to_wsl_path(Path(sys.executable))}' \"$@\"\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    venv_py.chmod(0o755)
-    timings: dict[str, Any] = {}
-    hashes = vm_judges.run_boot_gatekeeper_subprocess(
+    return _write_wrapper_python(tmp_path / "venvpy", fake_root), calls
+
+
+def _run_stand_in(venv_py: Path, tmp_path: Path, **kw: Any) -> dict[str, str]:
+    return vm_judges.run_boot_gatekeeper_subprocess(
         venv_py=venv_py,
         judge_id=GK,
         prompts=vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS,
@@ -1119,14 +1147,48 @@ def test_gatekeeper_subprocess_records_every_phase_and_the_elapsed_seconds(tmp_p
         hf_home=tmp_path,
         child_hf_home=tmp_path,
         device="cpu",
-        timings_out=timings,
+        **kw,
     )
-    assert len(hashes) == 2
+
+
+def test_gatekeeper_subprocess_records_every_phase_and_the_elapsed_seconds(tmp_path: Path) -> None:
+    """The REAL `_BOOT_GATEKEEPER_SUBPROCESS_SCRIPT` with stand-in `torch` and `bakeoff_judge` modules first on the
+    path: it reports the seconds of torch import, verify_ready, model load, a labelled warm-up (one throwaway forward on
+    the first prompt before generation 1, output unused), generation 1, generation 2 and its total, one stderr line
+    per phase; the parent adds the measured elapsed seconds and the timeout, and per prompt the generated-token count
+    and the effective max_new_tokens (1 for the Nemotron pair). The hashes are the generations' and nothing else.
+    Fails at 5bb17f78 (hashes only) and at 83ef01c1 (no warm-up, no per-prompt token count)."""
+    venv_py, calls = _stand_in_gatekeeper_child(tmp_path)
+    timings: dict[str, Any] = {}
+    hashes = _run_stand_in(venv_py, tmp_path, timings_out=timings)
+    p1, p2 = (sp["prompt_id"] for sp in vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS)
+    # The warm-up does not reach the hashes: they are exactly the two generations' (the stand-in's '1'*64 / '2'*64).
+    assert hashes == {p1: "1" * 64, p2: "2" * 64}
+    assert calls.read_text(encoding="utf-8").splitlines() == [
+        "verify_ready",
+        "load",
+        f"prefill {p1}",
+        f"generate {p1}",
+        f"generate {p2}",
+    ]
+    gen = timings["generation_by_prompt"]
+    assert gen == {p1: {"output_token_count": 1, "max_new_tokens": 1}, p2: {"output_token_count": 1, "max_new_tokens": 1}}
+    fields = vm_judges.boot_gatekeeper_report_fields(timings)
+    assert fields["subprocess_generation"] == gen and "generation_by_prompt" not in fields["subprocess_timings"]
+    assert vm_judges.boot_gatekeeper_report_fields({}) == {}
+    assert vm_judges.boot_gatekeeper_generation({"generation": {p1: {"output_token_count": True}}}, [p1, p2]) == {
+        p1: {"output_token_count": None, "max_new_tokens": None},
+        p2: {"output_token_count": None, "max_new_tokens": None},
+    }
     phases = timings["phase_seconds"]
     assert list(phases) == list(vm_judges.BOOT_GATEKEEPER_PHASES)
+    assert list(phases) == [
+        "torch_import", "verify_ready", "model_load", "warmup", "generation_1", "generation_2", "total"
+    ]
     assert all(isinstance(v, float) and v >= 0 for v in phases.values()), phases
-    assert phases["torch_import"] >= 0.009 and phases["verify_ready"] >= 0.009 and phases["model_load"] >= 0.009
-    assert phases["total"] >= phases["verify_ready"] + phases["model_load"]
+    for name in ("torch_import", "verify_ready", "model_load", "warmup"):
+        assert phases[name] >= 0.009, (name, phases)
+    assert phases["total"] >= phases["verify_ready"] + phases["model_load"] + phases["warmup"]
     assert timings["subprocess_elapsed_seconds"] >= phases["total"]
     assert timings["timeout_seconds"] == vm_judges.BOOT_GATEKEEPER_SUBPROCESS_TIMEOUT_SECONDS == 300
     line = local_boot_gatekeeper.format_timings(timings)
@@ -1139,6 +1201,79 @@ def test_gatekeeper_subprocess_records_every_phase_and_the_elapsed_seconds(tmp_p
     assert partial["phase_seconds"]["torch_import"] == 1.0 and partial["phase_seconds"]["model_load"] is None
     assert partial["phase_seconds"]["extra"] == 2.5 and "bad" not in partial["phase_seconds"]
     assert "model_load=-" in local_boot_gatekeeper.format_timings(partial)
+    # The goldens are not touched by any of this.
+    head_goldens = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "show", "HEAD:scripts/colab/boot_gatekeeper_goldens.json"],
+        capture_output=True,
+        check=False,
+    )
+    if head_goldens.returncode == 0:
+        assert head_goldens.stdout == (SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_bytes()
+
+
+def test_gatekeeper_one_token_judge_refuses_another_token_count(tmp_path: Path) -> None:
+    """The gatekeeper's judge is a one-token judge (its transport forces max_new_tokens=1): a generation of any other
+    length is refused `BOOT_GATEKEEPER_TOKEN_COUNT_MISMATCH`. Fails at 83ef01c1: nothing checked the count."""
+    venv_py, _ = _stand_in_gatekeeper_child(tmp_path, token_count=2)
+    with pytest.raises(vm_judges.RefusalError) as exc_info:
+        _run_stand_in(venv_py, tmp_path)
+    assert exc_info.value.failure_class == vm_judges.BOOT_GATEKEEPER_TOKEN_COUNT_MISMATCH
+    assert "generated 2 token(s) with effective max_new_tokens=1" in str(exc_info.value)
+    vm_judges.check_boot_gatekeeper_token_counts("flow-judge-v0.1", {"x": {"output_token_count": 7, "max_new_tokens": 32}})
+    vm_judges.check_boot_gatekeeper_token_counts(GK, {"x": {"output_token_count": None, "max_new_tokens": None}})
+    with pytest.raises(vm_judges.RefusalError):
+        vm_judges.check_boot_gatekeeper_token_counts(GK, {"x": {"output_token_count": 1, "max_new_tokens": 2}})
+
+
+def test_gatekeeper_refuses_missing_torch_before_verify_ready(tmp_path: Path) -> None:
+    """A judge venv without torch is refused `BAKEOFF_JUDGE_DEPS_MISSING` at once, before verify_ready re-hashes the
+    weights (the stand-in logs no call at all). Fails at 83ef01c1: the ImportError was swallowed and verify_ready ran."""
+    venv_py, calls = _stand_in_gatekeeper_child(tmp_path, torch_ok=False)
+    with pytest.raises(vm_judges.RefusalError) as exc_info:
+        _run_stand_in(venv_py, tmp_path)
+    assert exc_info.value.failure_class == "BAKEOFF_JUDGE_DEPS_MISSING"
+    assert "torch is not importable" in str(exc_info.value)
+    assert not calls.exists() or calls.read_text(encoding="utf-8") == ""
+
+
+def test_gatekeeper_timeout_keeps_the_completed_phases(tmp_path: Path) -> None:
+    """A gatekeeper subprocess that times out in generation 1 still reports the phases it completed: the failure
+    record's `subprocess_timings` has torch import, verify_ready, model load and warm-up, generation 1 None.
+    Fails at 83ef01c1: a timeout's record had no phases."""
+    venv_py, _ = _stand_in_gatekeeper_child(tmp_path, gen_sleep=30.0)
+    with pytest.raises(vm_judges.BootGatekeeperSubprocessError) as exc_info:
+        _run_stand_in(venv_py, tmp_path, timeout_seconds=3.0)
+    err = exc_info.value
+    assert err.timed_out is True
+    rec = err.to_failure_record()
+    phases = rec["subprocess_timings"]["phase_seconds"]
+    for name in ("torch_import", "verify_ready", "model_load", "warmup"):
+        assert isinstance(phases[name], float), (name, phases)
+    assert phases["generation_1"] is None and phases["total"] is None
+    assert rec["subprocess_timings"]["timeout_seconds"] == 3.0
+    assert vm_judges.parse_boot_gatekeeper_phase_lines("x\nBOOT_GATEKEEPER_PHASE warmup seconds=1.5\nnoise") == {
+        "warmup": 1.5
+    }
+
+
+def test_directly_invoked_scripts_are_executable_in_git() -> None:
+    """The scripts the docs run directly keep mode 100755 in the index (e211b95c dropped launch_judges.sh and
+    vm_judges.py to 100644)."""
+    proc = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "-s", "--", "scripts/colab"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0 or not proc.stdout.strip():
+        pytest.skip("not a git checkout")
+    modes = {ln.split("\t", 1)[1]: ln.split()[0] for ln in proc.stdout.splitlines() if "\t" in ln}
+    for rel in (
+        "scripts/colab/launch_judges.sh",
+        "scripts/colab/vm_judges.py",
+        "scripts/colab/local_boot_gatekeeper.py",
+    ):
+        assert modes.get(rel) == "100755", (rel, modes.get(rel))
 
 
 def test_local_boot_gatekeeper_cli_refuses_cpu_as_a_script(tmp_path: Path) -> None:
