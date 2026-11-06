@@ -101,7 +101,11 @@ Options:
   --max-rate U         Highest window rate (units/h) this window accepts (or set RDLAB_MAX_RATE).
                        Required for --time-one, --lock-check and --counted, no default; a live rate above it refuses
                        RATE_ABOVE_MAX right after the read and stops the session. Before the session opens, --dry
-                       projects with it, labelled as an estimate.
+                       projects with it, labelled as an estimate. While the run cell runs, `colab usage` is re-read
+                       every RDLAB_RATE_REREAD_SECONDS (1-60, default 30): a stable rise of the window's own rate at
+                       an unchanged assignment count shortens the remaining runtime, and above --max-rate stops the
+                       window (RATE_ABOVE_MAX); 3 reads in a row with no count or a count of 0 stop it
+                       (ASSIGNMENTS_UNREADABLE). Every re-read is in rate_rereads.jsonl and outcome.draft.json.
 
 Environment:
   RDLAB_ONLY_JUDGES    --time-one only: comma-separated subset of the 5 judges to time (no spaces, no duplicates).
@@ -591,6 +595,15 @@ RATE_POLL_MAX_READS="${RDLAB_RATE_POLL_MAX_READS:-12}"
 RATE_POLL_SLEEP_SECONDS="${RDLAB_RATE_POLL_SLEEP_SECONDS:-5}"
 USAGE_TIMEOUT_SECONDS="${RDLAB_USAGE_TIMEOUT_SECONDS:-30}"
 RATE_STABLE_TOLERANCE="0.01"
+# Mid-run re-reads (scripts/colab/rate_rereads.py): the cost-cap monitor re-reads `colab usage` at most this many
+# seconds apart while the run cell runs. 60 is the contract's ceiling.
+RATE_REREAD_SECONDS="${RDLAB_RATE_REREAD_SECONDS:-30}"
+if ! [[ "$RATE_REREAD_SECONDS" =~ ^[0-9]+$ ]] || (( 10#$RATE_REREAD_SECONDS < 1 || 10#$RATE_REREAD_SECONDS > 60 )); then
+  echo "BAD_RATE_REREAD_INTERVAL: RDLAB_RATE_REREAD_SECONDS must be an integer from 1 to 60, got '$RATE_REREAD_SECONDS'" >&2
+  exit 2
+fi
+RATE_REREAD_SECONDS=$(( 10#$RATE_REREAD_SECONDS ))
+RATE_REREADS_PY="$REPO_ROOT/scripts/colab/rate_rereads.py"
 # GPU_RATE_FLOOR: the cheapest GPU card measured is the T4 at 1.07/hr (16 reads, Publisher receipts
 # windowC2-12-t4-s1a-20261027), and CPU rates are at most 0.26/hr, so a GPU window's rate below 1.00/hr is not its
 # own rate (a stale read, or a neighbour's). A CPU window only needs a positive rate.
@@ -1284,6 +1297,15 @@ FETCH_CLAIM_DIR="$OUT_DIR/.rig_fetch_claim"
 FETCH_DONE_MARKER="$OUT_DIR/.rig_fetched"
 DEADLINE_MARKER="$OUT_DIR/.rig_deadline_exceeded"
 COST_CAP_MARKER="$OUT_DIR/.rig_cost_cap_exceeded"
+# Mid-run re-reads: the monitor's state, every read's record, and the marker a re-read trip leaves (its first line the
+# failure class, its second the reason, its third the elapsed seconds).
+RATE_REREAD_STATE="$OUT_DIR/.rig_rate_reread_state.json"
+RATE_REREADS_FILE="$OUT_DIR/rate_rereads.jsonl"
+RATE_TRIP_MARKER="$OUT_DIR/.rig_rate_reread_trip"
+# The in-flight re-read: the PID of its `timeout ... colab usage` (removed when it is reaped) and its output.
+RATE_REREAD_PID_FILE="$OUT_DIR/.rig_rate_reread.pid"
+RATE_REREAD_OUT="$OUT_DIR/.rig_rate_reread_usage.txt"
+rm -f "$RATE_REREAD_STATE" "$RATE_REREADS_FILE" "$RATE_TRIP_MARKER" "$RATE_REREAD_PID_FILE" "$RATE_REREAD_OUT" 2>/dev/null || true
 RUN_END_DETECTED_MARKER="$OUT_DIR/.rig_run_end_detected"
 EXEC_OUT_TMP="$OUT_DIR/.rig_exec_out.tmp"
 touch "$CLI_LOG"
@@ -1560,6 +1582,9 @@ write_outcome_draft() {
   RDLAB_MAX_RATE="$MAX_RATE" \
   RDLAB_LIVE_USAGE_RATE="$LIVE_RATE_UNITS_PER_HOUR" \
   RDLAB_RATE_READ_AT_UTC="$RATE_READ_AT_UTC" \
+  RDLAB_RATE_REREAD_STATE_FILE="$RATE_REREAD_STATE" \
+  RDLAB_RATE_REREADS_FILE="$RATE_REREADS_FILE" \
+  RDLAB_RATE_REREAD_INTERVAL="$RATE_REREAD_SECONDS" \
   "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "$CARD" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" <<'PY'
 import datetime
 import json
@@ -1613,11 +1638,39 @@ else:
 # A window whose `colab new` was refused at assign never had a machine: it costs nothing, whatever time the launcher
 # spent before and during the refused open (classify_colab_new_failure). Every other window books rate x runtime.
 no_session_assigned = os.environ.get("RDLAB_NO_SESSION_ASSIGNED", "").strip() == "1"
+# Mid-run re-reads (rate_rereads.py): the state the cost-cap monitor left, and every read's record. A stable rise seen
+# mid-run books the cost at the highest stable window rate seen, never at the lower open rate.
+rate_rereads_doc: dict[str, object] | None = None
+reread_highest: float | None = None
+_reread_state_raw = os.environ.get("RDLAB_RATE_REREAD_STATE_FILE", "").strip()
+if _reread_state_raw and Path(_reread_state_raw).is_file():
+    try:
+        _rst = json.loads(Path(_reread_state_raw).read_text(encoding="utf-8"))
+        _reads: list[object] = []
+        _reads_raw = os.environ.get("RDLAB_RATE_REREADS_FILE", "").strip()
+        if _reads_raw and Path(_reads_raw).is_file():
+            _reads = [json.loads(ln) for ln in Path(_reads_raw).read_text(encoding="utf-8").splitlines() if ln.strip()]
+        _trip = _rst.get("trip") or {}
+        reread_highest = float(_rst["highest_stable_rate"])
+        rate_rereads_doc = {
+            "interval_seconds": int(os.environ.get("RDLAB_RATE_REREAD_INTERVAL", "0") or 0),
+            "open_assignments_count": _rst.get("open_count"),
+            "open_window_rate_per_hour": round(float(_rst["open_window_rate"]), 4),
+            "highest_stable_rate_per_hour": round(reread_highest, 4),
+            "open_max_runtime_s": _rst.get("open_max_runtime_s"),
+            "max_runtime_s": _rst.get("max_runtime_s"),
+            "read_count": len(_reads),
+            "trip": _trip.get("failure_class"),
+            "trip_reason": _trip.get("reason"),
+            "reads": _reads,
+        }
+    except Exception as exc:  # recorded, never fatal to the outcome draft
+        rate_rereads_doc = {"error": f"rate re-read state unreadable: {type(exc).__name__}"}
 if no_session_assigned:
     cost = 0.0
     cost_basis = "no_session_assigned"
 elif rate is not None:
-    cost = round((runtime_seconds / 3600.0) * rate, 4)
+    cost = round((runtime_seconds / 3600.0) * max(rate, reread_highest or 0.0), 4)
     cost_basis = "rate_x_runtime"
 elif max_rate is not None:
     # A session that may have been assigned before the live rate was read: booked at the worst case it accepted.
@@ -1705,7 +1758,12 @@ payload: dict[str, object] = {
     "rate_source": "live_colab_usage_post_minus_pre" if rate is not None else (rate_source or None),
     "pre_account_rate_per_hour": _env_float("RDLAB_PRE_ACCOUNT_RATE"),
     "post_account_rate_per_hour": _env_float("RDLAB_POST_ACCOUNT_RATE"),
-    "pricing_rate_per_hour": _env_float("RDLAB_PRICING_RATE"),
+    "pricing_rate_per_hour": (
+        round(max(_env_float("RDLAB_PRICING_RATE") or 0.0, reread_highest), 4)
+        if reread_highest is not None and _env_float("RDLAB_PRICING_RATE") is not None
+        else _env_float("RDLAB_PRICING_RATE")
+    ),
+    "rate_rereads": rate_rereads_doc,
     "lock_check_phase": os.environ.get("RDLAB_OUTCOME_LOCK_CHECK_PHASE") or None,
     "max_rate": max_rate,
     "wall_seconds": wall_seconds,
@@ -1834,6 +1892,72 @@ if m:
 PY
 }
 
+# One bounded `colab usage` read, as text (scrubbed; empty when the call failed); the output is logged.
+read_usage_text() {
+  local out rc=0
+  out="$(timeout -k "$COLAB_KILL_GRACE_SECONDS" "$USAGE_TIMEOUT_SECONDS" colab usage </dev/null 2>>"$CLI_LOG")" || rc=$?
+  out="$(printf '%s\n' "$out" | scrub_stream)"
+  printf '%s\n' "$out" >> "$CLI_LOG"
+  if [[ "$rc" -ne 0 ]]; then
+    return 1
+  fi
+  printf '%s\n' "$out"
+}
+
+# One bounded `colab usage` read: prints "<account rate> <active assignments>", each '-' when absent.
+read_usage_rate_count() {
+  local out
+  out="$(read_usage_text || true)"
+  printf '%s\n' "$out" | "$PYTHON_BIN" "$RATE_REREADS_PY" parse
+}
+
+# Kill a process and every descendant, found by parent PID (`pgrep -P`), never by name: TERM, then KILL for any that
+# is still alive (not a zombie) after 2 s.
+kill_pid_tree() {
+  local root="$1" p c alive i
+  local -a pids=() frontier=() next=()
+  [[ "$root" =~ ^[0-9]+$ ]] || return 0
+  frontier=("$root")
+  while (( ${#frontier[@]} > 0 )); do
+    next=()
+    for p in "${frontier[@]}"; do
+      pids+=("$p")
+      while read -r c; do
+        if [[ -n "$c" ]]; then next+=("$c"); fi
+      done < <(pgrep -P "$p" 2>/dev/null || true)
+    done
+    frontier=("${next[@]+"${next[@]}"}")
+  done
+  kill -TERM "${pids[@]}" 2>/dev/null || true
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    alive=0
+    for p in "${pids[@]}"; do
+      if kill -0 "$p" 2>/dev/null && [[ "$(ps -o stat= -p "$p" 2>/dev/null | tr -d ' ')" != Z* ]]; then
+        alive=1
+      fi
+    done
+    if (( alive == 0 )); then
+      return 0
+    fi
+    sleep 0.2
+  done
+  kill -KILL "${pids[@]}" 2>/dev/null || true
+}
+
+# The teardown of an in-flight re-read (the cost-cap monitor writes its PID to RATE_REREAD_PID_FILE): kill that PID's
+# tree, but only while the PID is still that `colab usage` call (its command line says so), so a reused PID is never hit.
+kill_inflight_reread() {
+  local pid=""
+  if [[ -f "$RATE_REREAD_PID_FILE" ]]; then
+    pid="$(tr -d '[:space:]' < "$RATE_REREAD_PID_FILE" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'colab usage'; then
+      kill_pid_tree "$pid"
+      log_msg "RATE_REREAD_KILLED pid=$pid"
+    fi
+    rm -f "$RATE_REREAD_PID_FILE" 2>/dev/null || true
+  fi
+}
+
 # `colab new` failed: was a machine ever assigned? A session that was never assigned costs nothing (no_capacity).
 # Read once, after the failure: the session row in `colab sessions` (PRE_SESSIONS before `colab new`, POST_SESSIONS
 # now), new `[?]` orphan rows, the exit code and the client's error text. No session is assigned only when the session
@@ -1880,6 +2004,7 @@ stop_all() {
     wait "$COST_CAP_PID" 2>/dev/null || true
     COST_CAP_PID=""
   fi
+  kill_inflight_reread
   if [[ -n "$PERIODIC_FETCH_PID" ]]; then
     pkill -P "$PERIODIC_FETCH_PID" 2>/dev/null || true
     kill "$PERIODIC_FETCH_PID" 2>/dev/null || true
@@ -2703,23 +2828,35 @@ else
 fi
 LIVE_RATE_UNITS_PER_HOUR=""
 POST_ACCOUNT_RATE=""
+OPEN_ASSIGNMENTS_COUNT=""
 PREV_WINDOW_RATE=""
+PREV_POST_COUNT=""
 RATE_POLL_ATTEMPT=0
 while (( RATE_POLL_ATTEMPT < RATE_POLL_MAX_READS )); do
   RATE_POLL_ATTEMPT=$(( RATE_POLL_ATTEMPT + 1 ))
-  POST_READ="$(read_account_rate || true)"
-  if [[ -n "$POST_READ" ]]; then
+  POST_READ=""
+  POST_COUNT=""
+  read -r POST_READ POST_COUNT <<< "$(read_usage_rate_count || true)"
+  if [[ "$POST_READ" == "-" ]]; then POST_READ=""; fi
+  if [[ "$POST_COUNT" == "-" ]]; then POST_COUNT=""; fi
+  if [[ -n "$POST_READ" ]] && [[ "$POST_COUNT" =~ ^[0-9]+$ ]] && (( POST_COUNT > 0 )); then
     WIN_READ="$("$PYTHON_BIN" -c "import sys; print(f'{max(0.0, float(sys.argv[1]) - float(sys.argv[2])):.4f}')" "$POST_READ" "$PRE_ACCOUNT_RATE")"
-    log_msg "USAGE_READ_POST session=$S attempt=${RATE_POLL_ATTEMPT}/${RATE_POLL_MAX_READS} account_rate_uh=$POST_READ window_rate_uh=$WIN_READ floor=$WINDOW_RATE_FLOOR"
-    if [[ -n "$PREV_WINDOW_RATE" ]] && "$PYTHON_BIN" -c "import sys; a, b, tol, fl = map(float, sys.argv[1:]); sys.exit(0 if abs(a - b) <= tol + 1e-9 and a >= fl and b >= fl else 1)" "$WIN_READ" "$PREV_WINDOW_RATE" "$RATE_STABLE_TOLERANCE" "$WINDOW_RATE_FLOOR"; then
+    log_msg "USAGE_READ_POST session=$S attempt=${RATE_POLL_ATTEMPT}/${RATE_POLL_MAX_READS} account_rate_uh=$POST_READ assignments=$POST_COUNT window_rate_uh=$WIN_READ floor=$WINDOW_RATE_FLOOR"
+    if [[ -n "$PREV_WINDOW_RATE" ]] && [[ "$POST_COUNT" == "$PREV_POST_COUNT" ]] && "$PYTHON_BIN" -c "import sys; a, b, tol, fl = map(float, sys.argv[1:]); sys.exit(0 if abs(a - b) <= tol + 1e-9 and a >= fl and b >= fl else 1)" "$WIN_READ" "$PREV_WINDOW_RATE" "$RATE_STABLE_TOLERANCE" "$WINDOW_RATE_FLOOR"; then
       LIVE_RATE_UNITS_PER_HOUR="$WIN_READ"
       POST_ACCOUNT_RATE="$POST_READ"
+      OPEN_ASSIGNMENTS_COUNT="$POST_COUNT"
       break
     fi
     PREV_WINDOW_RATE="$WIN_READ"
+    PREV_POST_COUNT="$POST_COUNT"
   else
-    log_msg "USAGE_READ_POST session=$S attempt=${RATE_POLL_ATTEMPT}/${RATE_POLL_MAX_READS} unreadable"
+    # Before the window's first stable read, a missing count or a count of 0 means "not yet registered" (the real
+    # service reports `Usage rate: 0.00/hr` with `Active assignments: 0` until a new session registers:
+    # windowC2-12-t4-s1a-20261027). It is not judged; it only uses up the open-poll budget below.
+    log_msg "USAGE_READ_POST session=$S attempt=${RATE_POLL_ATTEMPT}/${RATE_POLL_MAX_READS} not_yet account_rate_uh=${POST_READ:-unreadable} assignments=${POST_COUNT:-missing}"
     PREV_WINDOW_RATE=""
+    PREV_POST_COUNT=""
   fi
   if (( RATE_POLL_ATTEMPT < RATE_POLL_MAX_READS )); then
     sleep "$RATE_POLL_SLEEP_SECONDS"
@@ -2735,7 +2872,7 @@ fi
 RATE_UNITS_PER_HOUR="$LIVE_RATE_UNITS_PER_HOUR"
 RATE_SOURCE="live_window"
 echo "[rate] window_rate=${LIVE_RATE_UNITS_PER_HOUR}/h (measured: post ${POST_ACCOUNT_RATE} - pre ${PRE_ACCOUNT_RATE}) max_rate=${MAX_RATE:-none}/h" >&2
-log_msg "LIVE_USAGE_RATE_READ session=$S window_rate_uh=$LIVE_RATE_UNITS_PER_HOUR rate_scope=window pre_account_rate_uh=$PRE_ACCOUNT_RATE post_account_rate_uh=$POST_ACCOUNT_RATE max_rate=${MAX_RATE:-none}"
+log_msg "LIVE_USAGE_RATE_READ session=$S window_rate_uh=$LIVE_RATE_UNITS_PER_HOUR rate_scope=window pre_account_rate_uh=$PRE_ACCOUNT_RATE post_account_rate_uh=$POST_ACCOUNT_RATE assignments=$OPEN_ASSIGNMENTS_COUNT max_rate=${MAX_RATE:-none}"
 if [[ -n "$MAX_RATE" ]] && "$PYTHON_BIN" -c "import sys; sys.exit(0 if float(sys.argv[1]) > float(sys.argv[2]) else 1)" "$LIVE_RATE_UNITS_PER_HOUR" "$MAX_RATE"; then
   # Refused right after the read: the EXIT trap stops the session now, at the cost of the open alone.
   flock -u 9 || true
@@ -2764,6 +2901,16 @@ print(s)
 PY
 )"
 log_msg "LIVE_USAGE_RATE session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR pricing_rate_uh=$PRICING_RATE_UNITS_PER_HOUR rate_read_at=$RATE_READ_AT_UTC cap_units=$CAP_UNITS cap_max_runtime_s=$COST_CAP_MAX_RUNTIME_SECONDS"
+# The mid-run re-read state: neighbour baseline = the pre-open account rate, our last stable rate = the window rate,
+# settled count = the count of the stable open read. The cost-cap monitor re-reads from here on.
+rm -f "$RATE_REREAD_STATE" "$RATE_REREADS_FILE" "$RATE_TRIP_MARKER"
+"$PYTHON_BIN" "$RATE_REREADS_PY" init --state "$RATE_REREAD_STATE" --pre "$PRE_ACCOUNT_RATE" --window "$LIVE_RATE_UNITS_PER_HOUR" \
+  --count "$OPEN_ASSIGNMENTS_COUNT" --max-rate "$MAX_RATE" --cap "$CAP_UNITS" --max-runtime "$COST_CAP_MAX_RUNTIME_SECONDS" \
+  --floor "$WINDOW_RATE_FLOOR" || {
+  RUN_WHY="could not initialise the mid-run rate re-read state on session $S"
+  exit 1
+}
+log_msg "RATE_REREAD_ARMED session=$S interval_s=$RATE_REREAD_SECONDS neighbour_baseline_uh=$PRE_ACCOUNT_RATE our_rate_uh=$LIVE_RATE_UNITS_PER_HOUR settled_count=$OPEN_ASSIGNMENTS_COUNT"
 
 ALIVE_OK=0
 ALIVE_ATTEMPT=0
@@ -2924,7 +3071,9 @@ EXEC_PID="$!"
 
 (
   CAP_SLEEP_PID=""
-  trap 'if [[ -n "$CAP_SLEEP_PID" ]]; then kill "$CAP_SLEEP_PID" 2>/dev/null || true; fi; exit 0' TERM INT
+  REREAD_PID=""
+  REREAD_LAST_EPOCH="$(date +%s)"
+  trap 'if [[ -n "$CAP_SLEEP_PID" ]]; then kill "$CAP_SLEEP_PID" 2>/dev/null || true; fi; if [[ -n "$REREAD_PID" ]]; then kill_pid_tree "$REREAD_PID"; rm -f "$RATE_REREAD_PID_FILE"; fi; exit 0' TERM INT
   while kill -0 "$EXEC_PID" 2>/dev/null; do
     sleep "$COST_CAP_POLL_SECONDS" &
     CAP_SLEEP_PID="$!"
@@ -2935,6 +3084,51 @@ EXEC_PID="$!"
     fi
     cur_epoch="$(RDLAB_FAKE_CLOCK_ARMED=1 now_epoch_seconds)"
     elapsed_s=$(( cur_epoch - OPEN_CLOCK_EPOCH ))
+    # Mid-run re-read, at most RATE_REREAD_SECONDS apart (wall clock): a stable rise shortens the remaining runtime
+    # (never lengthens it); a trip stops and fetches the window as a cap stop does.
+    reread_now="$(date +%s)"
+    if [[ -f "$RATE_REREAD_STATE" ]] && (( reread_now - REREAD_LAST_EPOCH >= RATE_REREAD_SECONDS )); then
+      REREAD_LAST_EPOCH="$reread_now"
+      reread_decision=""
+      reread_runtime=""
+      reread_trip=""
+      # The read runs as a tracked background PID (its output to a file), so the trap and the teardown can kill its
+      # whole tree by PID if the run ends while it is in flight; `wait` also lets the trap run at once.
+      : > "$RATE_REREAD_OUT"
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$USAGE_TIMEOUT_SECONDS" colab usage </dev/null >"$RATE_REREAD_OUT" 2>>"$CLI_LOG" &
+      REREAD_PID="$!"
+      printf '%s\n' "$REREAD_PID" > "$RATE_REREAD_PID_FILE"
+      printf '%s RATE_REREAD_START session=%s pid=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$REREAD_PID" >> "$CLI_LOG"
+      reread_rc=0
+      wait "$REREAD_PID" 2>/dev/null || reread_rc=$?
+      REREAD_PID=""
+      rm -f "$RATE_REREAD_PID_FILE"
+      reread_text=""
+      if [[ "$reread_rc" -eq 0 ]]; then
+        reread_text="$(scrub_stream < "$RATE_REREAD_OUT" 2>/dev/null || true)"
+      fi
+      printf '%s\n' "$reread_text" >> "$CLI_LOG"
+      rm -f "$RATE_REREAD_OUT"
+      read -r reread_decision reread_runtime reread_trip <<< "$(printf '%s\n' "$reread_text" | "$PYTHON_BIN" "$RATE_REREADS_PY" step --state "$RATE_REREAD_STATE" --records "$RATE_REREADS_FILE" --elapsed "$elapsed_s" 2>>"$CLI_LOG" || true)"
+      if [[ -z "$reread_decision" ]]; then
+        printf '%s RATE_REREAD_FAILED session=%s elapsed_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$elapsed_s" >> "$CLI_LOG"
+      else
+        printf '%s RATE_REREAD session=%s elapsed_s=%s decision=%s max_runtime_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$elapsed_s" "$reread_decision" "$reread_runtime" >> "$CLI_LOG"
+        if [[ "$reread_runtime" =~ ^[0-9]+$ ]] && (( reread_runtime < COST_CAP_MAX_RUNTIME_SECONDS )); then
+          printf '%s RATE_REREAD_RUNTIME_SHORTENED session=%s from_s=%s to_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$COST_CAP_MAX_RUNTIME_SECONDS" "$reread_runtime" >> "$CLI_LOG"
+          COST_CAP_MAX_RUNTIME_SECONDS="$reread_runtime"
+        fi
+        if [[ -n "$reread_trip" ]] && [[ "$reread_trip" != "-" ]]; then
+          trip_reason="$("$PYTHON_BIN" -c "import json, sys; print((json.load(open(sys.argv[1])).get('trip') or {}).get('reason') or sys.argv[2])" "$RATE_REREAD_STATE" "$reread_trip" 2>/dev/null || printf '%s' "$reread_trip")"
+          printf '%s\n%s\n%s\n' "$reread_trip" "$trip_reason" "$elapsed_s" > "$RATE_TRIP_MARKER"
+          printf '%s RATE_REREAD_TRIP session=%s failure_class=%s elapsed_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$reread_trip" "$elapsed_s" >> "$CLI_LOG"
+          fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
+          pkill -TERM -P "$EXEC_PID" 2>/dev/null || true
+          kill -TERM "$EXEC_PID" 2>/dev/null || true
+          break
+        fi
+      fi
+    fi
     if (( COST_CAP_MAX_RUNTIME_SECONDS > 0 && elapsed_s >= COST_CAP_MAX_RUNTIME_SECONDS )); then
       printf '%s\n' "$elapsed_s" > "$COST_CAP_MARKER"
       printf '%s COST_CAP_REACHED session=%s runtime_s=%s rate_uh=%s cap_units=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$elapsed_s" "$LIVE_RATE_UNITS_PER_HOUR" "$CAP_UNITS" >> "$CLI_LOG"
@@ -2975,7 +3169,7 @@ wait "$EXEC_PID" 2>/dev/null || EXEC_RC=$?
 EXEC_PID=""
 
 if [[ -n "$COST_CAP_PID" ]]; then
-  if [[ -f "$COST_CAP_MARKER" ]]; then
+  if [[ -f "$COST_CAP_MARKER" ]] || [[ -f "$RATE_TRIP_MARKER" ]]; then
     wait "$COST_CAP_PID" 2>/dev/null || true
   else
     pkill -P "$COST_CAP_PID" 2>/dev/null || true
@@ -2984,6 +3178,7 @@ if [[ -n "$COST_CAP_PID" ]]; then
   fi
   COST_CAP_PID=""
 fi
+kill_inflight_reread
 
 if [[ -n "$PERIODIC_FETCH_PID" ]]; then
   pkill -P "$PERIODIC_FETCH_PID" 2>/dev/null || true
@@ -3012,6 +3207,50 @@ if [[ -f "$DEADLINE_MARKER" ]]; then
 fi
 
 fetch_results_once
+
+# A mid-run re-read tripped (RATE_ABOVE_MAX or ASSIGNMENTS_UNREADABLE): the monitor fetched and stopped the run as a
+# cap stop does; record it in status.json and end the window with that class.
+if [[ -f "$RATE_TRIP_MARKER" ]]; then
+  TRIP_CLASS="$(sed -n 1p "$RATE_TRIP_MARKER" 2>/dev/null | tr -d '[:space:]')"
+  TRIP_REASON="$(sed -n 2p "$RATE_TRIP_MARKER" 2>/dev/null)"
+  TRIP_ELAPSED_S="$(sed -n 3p "$RATE_TRIP_MARKER" 2>/dev/null | tr -d '[:space:]')"
+  "$PYTHON_BIN" - "$OUT_DIR/status.json" "$TRIP_CLASS" "$TRIP_REASON" "$TRIP_ELAPSED_S" "$RATE_REREAD_STATE" "$CAP_UNITS" <<'PY' || true
+import json
+import sys
+from pathlib import Path
+
+status_path = Path(sys.argv[1])
+doc: dict[str, object] = {}
+if status_path.is_file():
+    try:
+        loaded = json.loads(status_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            doc = loaded
+    except Exception:
+        doc = {}
+state: dict[str, object] = {}
+try:
+    state = json.loads(Path(sys.argv[5]).read_text(encoding="utf-8"))
+except Exception:
+    state = {}
+doc["step"] = "run"
+doc["rc"] = 2
+doc["status"] = "stopped_rate_reread"
+doc["failure_class"] = sys.argv[2] or "RATE_REREAD_TRIP"
+doc["reason"] = sys.argv[3] or doc["failure_class"]
+doc["runtime_seconds"] = int(sys.argv[4]) if sys.argv[4].isdigit() else None
+doc["cap_units"] = float(sys.argv[6]) if sys.argv[6] else None
+doc["cost_cap_reached"] = False
+doc["rate_reread_trip"] = True
+doc["highest_stable_rate_per_hour"] = state.get("highest_stable_rate")
+status_path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
+PY
+  RUN_FAILURE_CLASS="${TRIP_CLASS:-RATE_REREAD_TRIP}"
+  RUN_OUTCOME="stopped_rate_reread"
+  RUN_WHY="${TRIP_REASON:-$RUN_FAILURE_CLASS}"
+  echo "$RUN_WHY" >&2
+  exit 2
+fi
 
 if [[ -f "$COST_CAP_MARKER" ]]; then
   CAP_ELAPSED_S="$(tr -d '[:space:]' < "$COST_CAP_MARKER" 2>/dev/null || true)"
