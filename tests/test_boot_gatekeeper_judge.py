@@ -43,7 +43,7 @@ _lbg_spec.loader.exec_module(local_boot_gatekeeper)
 
 GK = vm_judges.FIRST_LOAD_JUDGE_ID
 EXC_MSG = "gatekeeper-known-boom 42"
-PLANTED_TOKEN = "hf_AbCdEfGhIjKlMnOpQrStUvWxYz012345"
+PLANTED_TOKEN = "hf_PlantedGatekeeperLeak424242"  # under 30 alphanumerics (30+ reads as a real token)
 
 
 def _write_noisy_python(path: Path, *, lines: int = 100, raise_exc: bool = True, stdout_json: str | None = None) -> Path:
