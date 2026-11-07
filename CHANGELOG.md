@@ -6,7 +6,7 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
-## [0.6.0] - 2026-11-06
+## [0.6.0] - 2026-11-07
 
 **The bake-off launcher is ready for its paid windows: it binds each window to its part, checks every boot input before it spends, records the boot gatekeeper, reads the window's own rate and keeps re-reading it, and books nothing when no machine was assigned.**
 
