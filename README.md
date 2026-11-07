@@ -67,7 +67,9 @@ rdlab bakeoff-judge-score --judge-dir <dir>    # only now join the judge's rows 
 
 Winner selection follows the pre-registration exactly, with no lenient fallbacks. `scripts/colab/launch_judges.sh` runs
 the five judges on your own Google Colab account, each in its own hash-locked environment, under a spending cap read from
-the live Colab rate. Splitting a counted run across several cards is built but has not completed a real run yet.
+the window's own live Colab rate. Each paid window is bound to its part's own files and checks every boot input
+before it spends, and the lock-check runs as two windows, each judge in its own environment. Splitting a counted run
+across several cards is built but has not completed a real run yet.
 
 ## The map-first principle
 
@@ -103,7 +105,7 @@ Report a vulnerability privately; see [SECURITY.md](SECURITY.md).
 
 ## Status
 
-Version 0.5.0. It is alpha: interfaces and data shapes can change without notice. 1,162 tests pass (2 skipped); CI holds
+Version 0.6.0. It is alpha: interfaces and data shapes can change without notice. 1,316 tests pass (3 skipped); CI holds
 coverage at 90% or more.
 
 ## License

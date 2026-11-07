@@ -6,6 +6,8 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+## [0.6.0] - 2026-11-07
+
 **The bake-off launcher is ready for its paid windows: it binds each window to its part, checks every boot input before it spends, records the boot gatekeeper, reads the window's own rate and keeps re-reading it, and books nothing when no machine was assigned.**
 
 ### Mid-run rate re-reads
@@ -92,6 +94,10 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 - `launch_judges.sh` and `vm_judges.py` are executable again (100755), with a test on the modes of the scripts that are run directly.
 - The pinned-uv tests no longer share `/tmp/uv-pinned` across workers (`FAKE_COLAB_PINNED_UV_DIR`).
 - `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md` row C12 cites the right lines, and the test-hook table lists the fake CLI's hooks.
+
+### Security
+
+- setuptools 81.0.0 → 84.2.1 in `uv.lock` (it reaches the lock only through torch, in the `judge` extra), clearing GHSA-h35f-9h28-mq5c (moderate) and GHSA-xmj3-9gf7-h52w (low). The package's own dependency ranges are unchanged.
 
 ## [0.5.0] - 2026-11-05
 

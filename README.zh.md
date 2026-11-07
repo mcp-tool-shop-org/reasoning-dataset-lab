@@ -52,7 +52,7 @@ rdlab bakeoff-judge --part-dir <dir> ...       # run one judge without opening t
 rdlab bakeoff-judge-score --judge-dir <dir>    # only now join the judge's rows with the keys
 ```
 
-获奖者选择完全遵循预注册，没有任何宽松的备选方案。`scripts/colab/launch_judges.sh` 在您自己的 Google Colab 帐户上运行这五个评判者，每个评判者都在其自己的哈希锁定的环境中运行，并受到来自实时 Colab 费率读取的支出限制。将一个已计数的运行拆分到多个卡片上已经构建，但尚未完成实际运行。
+获奖者的评选完全按照预注册的流程进行，没有任何宽松的处理方式。`scripts/colab/launch_judges.sh`会在您自己的 Google Colab 账户上运行这五位评委，每位评委都在独立的、通过哈希值锁定的环境中运行，并且受到从当前 Colab 实例的实时费率中读取的支出限制。每个付费实例都与其对应的部分文件相关联，并在每次运行前检查所有输入，并且锁定检查以两个实例的形式运行，每位评委都在自己的环境中运行。虽然已经构建了将一次计算运行分散到多个显卡上的功能，但尚未完成实际运行。
 
 ## “先地图”原则
 
@@ -76,7 +76,7 @@ rdlab bakeoff-judge-score --judge-dir <dir>    # only now join the judge's rows 
 
 ## 状态
 
-版本 0.5.0。这是一个 alpha 版本：接口和数据结构可能会在没有事先通知的情况下发生变化。1,162 个测试通过（2 个跳过）；CI 将覆盖率保持在 90% 或更高。
+版本 0.6.0。这是一个测试版本：接口和数据结构可能会在没有事先通知的情况下发生变化。1316 个测试通过（3 个跳过）；持续集成 (CI) 确保代码覆盖率达到 90% 或更高。
 
 ## 许可证
 

@@ -52,7 +52,10 @@ rdlab bakeoff-judge --part-dir <dir> ...       # run one judge without opening t
 rdlab bakeoff-judge-score --judge-dir <dir>    # only now join the judge's rows with the keys
 ```
 
-La selezione del vincitore segue esattamente la pre-registrazione, senza tolleranze. `scripts/colab/launch_judges.sh` esegue i cinque valutatori sul tuo account Google Colab, ciascuno nel proprio ambiente protetto tramite hash, con un limite di spesa letto dalla tariffa Colab in tempo reale. La suddivisione di un'esecuzione conteggiata su più schede è stata implementata, ma non ha ancora completato un'esecuzione reale.
+La selezione del vincitore segue esattamente le regole stabilite durante la preregistrazione, senza prevedere eccezioni o deroghe. `scripts/colab/launch_judges.sh` esegue
+i cinque giudici sul proprio account Google Colab, ciascuno in un ambiente protetto tramite hash, nel rispetto di un limite di spesa definito in base al
+tasso di utilizzo attuale di Colab, rilevato direttamente dall’ambiente. Ogni ambiente a pagamento è associato ai file specifici e verifica ogni input all’avvio
+prima di procedere, e il controllo di sicurezza viene eseguito in due ambienti separati, con ciascun giudice nel proprio ambiente. La possibilità di suddividere un’esecuzione tra più schede è stata implementata, ma non è ancora stata testata in una situazione reale.
 
 ## Il principio "mappa prima di tutto"
 
@@ -76,7 +79,8 @@ Segnala una vulnerabilità in privato; consulta [SECURITY.md](SECURITY.md).
 
 ## Stato
 
-Versione 0.5.0. È una versione alfa: le interfacce e le strutture dei dati possono cambiare senza preavviso. 1.162 test superati (2 saltati); CI mantiene la copertura al 90% o superiore.
+Versione 0.6.0. Si tratta di una versione alpha: le interfacce e le strutture dei dati possono cambiare senza preavviso. 1.316 test superati (3 saltati); il sistema di integrazione continua mantiene
+la copertura dei test al 90% o superiore.
 
 ## Licenza
 
