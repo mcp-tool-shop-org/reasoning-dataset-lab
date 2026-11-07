@@ -95,6 +95,10 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 - The pinned-uv tests no longer share `/tmp/uv-pinned` across workers (`FAKE_COLAB_PINNED_UV_DIR`).
 - `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md` row C12 cites the right lines, and the test-hook table lists the fake CLI's hooks.
 
+### Security
+
+- setuptools 81.0.0 → 84.2.1 in `uv.lock` (it reaches the lock only through torch, in the `judge` extra), clearing GHSA-h35f-9h28-mq5c (moderate) and GHSA-xmj3-9gf7-h52w (low). The package's own dependency ranges are unchanged.
+
 ## [0.5.0] - 2026-11-05
 
 **The judge bake-off: build a sealed test part, run five local judges on it, score them without anyone seeing the keys first, and run the judges on Colab.** Tests: 1,162 passing, 2 skipped.
