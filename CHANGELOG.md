@@ -6,6 +6,13 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Goldens promotion, low-margin anchor fields, goldens self-hash, and required `--card` / `--shape`
+
+- **`scripts/colab/promote_goldens.py` requires `--receipt` and `--expected-sha256`** (`PROMOTE_GOLDENS_RECEIPT_REQUIRED`, `PROMOTE_GOLDENS_EXPECTED_SHA256_REQUIRED`), cross-checks the receipt's `window_id`, `mode`, `lock_check_phase`, `session_env_sha256`, and `filled_goldens_sha256` against the filled goldens file, and refuses phase-stripped files (`PROMOTE_GOLDENS_PHASE_REFUSED`; only `anchors` and `all` promote).
+- **Low-margin anchor JSON fields renamed from `canary_*` to `low_margin_*`** (`low_margin_anchor_count`, `low_margin_item_ids`, `low_margin_selection_rule`, `low_margin_inputs_sha256`, `low_margin_telemetry_sha256`), with the old `canary_*` names read as aliases. "Canary" stays reserved for the 30 determinism items.
+- **Goldens self-hash (`goldens_body_sha256`) and real-window provenance** checked in preflight (`BOOT_GATEKEEPER_GOLDENS_SHA256_MISMATCH`, `BOOT_GATEKEEPER_PROVENANCE_INVALID`, `BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED`) and written on promotion; stub provenance (`w-stub*`, `*-stub*`, `stub_transport: true`, `synthetic_fake_hash: true`) is refused by default (`PROMOTE_GOLDENS_STUB_REFUSED`).
+- **Required `--card A100|G4|L4|T4` (`RDLAB_CARD`) and `--shape standard|high-mem` (`RDLAB_SHAPE`) per GPU window**, checked before any `colab` call (`CARD_REQUIRED`, `CARD_INVALID`, `SHAPE_REQUIRED`, `SHAPE_INVALID`, `SHAPE_NOT_FOR_CPU`) and verified against the opened session right after `colab new` (`CARD_MISMATCH`, `SHAPE_MISMATCH`), recorded in the receipts (`card_requested`, `shape_requested`, `shape_check`).
+
 ## [0.6.0] - 2026-11-07
 
 **The bake-off launcher is ready for its paid windows: it binds each window to its part, checks every boot input before it spends, records the boot gatekeeper, reads the window's own rate and keeps re-reading it, and books nothing when no machine was assigned.**

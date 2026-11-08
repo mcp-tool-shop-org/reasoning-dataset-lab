@@ -32,6 +32,14 @@ P0A_ITEMS_FILE="${RDLAB_P0A_ITEMS_FILE:-}"
 P0A_PART_DIR="${RDLAB_P0A_PART_DIR:-}"
 LOCK_CHECK_PHASE="${RDLAB_LOCK_CHECK_PHASE:-}"
 LOCK_CHECK_PHASE_FLAG=0
+CARD="${RDLAB_CARD:-}"
+CARD_FLAG=0
+SHAPE="${RDLAB_SHAPE:-}"
+SHAPE_FLAG=0
+EXPECTED_SESSION_SHAPE=""
+OPENED_HW_OBS=""
+OPENED_SHAPE_OBS=""
+OPENED_HARDWARE=""
 COUNTED_ITEMS_FILE="${RDLAB_COUNTED_ITEMS_FILE:-}"
 COUNTED_MANIFEST_FILE="${RDLAB_COUNTED_MANIFEST:-}"
 RECEIPTS_DIR="${RDLAB_RECEIPTS_DIR:-}"
@@ -47,7 +55,7 @@ EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
@@ -66,6 +74,11 @@ Options:
   --counted            Run a counted A100 shard window (--gpu A100, strict determinism; default wall 7200s; --max-rate
                        required)
   --counted-stub       Run a counted CPU stub shard window (CPU, deterministic stub transport)
+  --card CARD          Required for --time-one, --lock-check, --counted (no default): A100, G4, L4, or T4 (or set RDLAB_CARD).
+                       Cross-checked against the opened session Hardware: field right after session creation (refuses CARD_MISMATCH on drift).
+  --shape SHAPE        Required for --time-one, --lock-check, --counted (no default): standard or high-mem (or set RDLAB_SHAPE).
+                       standard passes --gpu <CARD> (expects Shape: Standard); high-mem passes --gpu <CARD> --high-mem
+                       (expects Shape: High-RAM). Refuses SHAPE_MISMATCH on drift and SHAPE_NOT_FOR_CPU on CPU modes.
                        No rate is assumed. `colab usage` reports the account rate (every open session), so the
                        window's rate is read as post-open minus pre-open, accepted when two reads 5 s apart agree within
                        0.01 and clear the floor (1.00/h on a GPU card); the cap runtime is priced on max(--max-rate,
@@ -171,6 +184,26 @@ while [[ $# -gt 0 ]]; do
     --lock-check-phase=*)
       LOCK_CHECK_PHASE="${1#*=}"
       LOCK_CHECK_PHASE_FLAG=1
+      shift
+      ;;
+    --card)
+      CARD="${2:-}"
+      CARD_FLAG=1
+      shift 2
+      ;;
+    --card=*)
+      CARD="${1#*=}"
+      CARD_FLAG=1
+      shift
+      ;;
+    --shape)
+      SHAPE="${2:-}"
+      SHAPE_FLAG=1
+      shift 2
+      ;;
+    --shape=*)
+      SHAPE="${1#*=}"
+      SHAPE_FLAG=1
       shift
       ;;
     --golden-anchor-manifest)
@@ -376,45 +409,82 @@ if [[ "$UNTIL_FLAG_SET" -eq 1 ]] || [[ -n "$UNTIL_STEP" ]]; then
   esac
 fi
 
-# --- Card and rate per mode ---
-if [[ "$MODE" == "time-one" ]]; then
-  CARD="A100"
-  COLAB_NEW_FLAGS=(--gpu A100)
-  WALL_SECONDS="${RDLAB_WALL_SECONDS:-1500}"
-  if [[ -z "$EXPLICIT_CAP" ]]; then
-    EXPLICIT_CAP="2.5"
+# --- Card, shape, and rate per mode ---
+if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" == "time-one" || "$MODE" == "counted" || "$MODE" == "lock-check" ]]; then
+  if [[ -z "$CARD" ]]; then
+    echo "CARD_REQUIRED: --$MODE requires --card A100|G4|L4|T4 (or RDLAB_CARD; no default)" >&2
+    exit 2
   fi
-  VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
-elif [[ "$MODE" == "counted" ]]; then
-  CARD="A100"
-  COLAB_NEW_FLAGS=(--gpu A100)
-  WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
-  VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
-elif [[ "$MODE" == "lock-check" ]]; then
-  CARD="A100"
-  COLAB_NEW_FLAGS=(--gpu A100)
-  # Default wall per phase, from the A100 timings of 2026-11-03 (flow-judge ~5.9 s/call dominates): anchors ~500 calls
-  # plus five loads; p0a ~1,000 calls plus ten loads (two stages per judge); all = both.
-  case "$LOCK_CHECK_PHASE" in
-    anchors) LOCK_CHECK_PHASE_WALL_DEFAULT=3600 ;;
-    p0a) LOCK_CHECK_PHASE_WALL_DEFAULT=5400 ;;
-    *) LOCK_CHECK_PHASE_WALL_DEFAULT=7200 ;;
+  case "$CARD" in
+    A100|G4|L4|T4)
+      ;;
+    *)
+      echo "CARD_INVALID: unknown --card '$CARD' (allowed: A100, G4, L4, T4)" >&2
+      exit 2
+      ;;
   esac
-  WALL_SECONDS="${RDLAB_WALL_SECONDS:-$LOCK_CHECK_PHASE_WALL_DEFAULT}"
-  VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
-elif [[ "$MODE" == "probe" ]]; then
-  CARD="CPU"
-  COLAB_NEW_FLAGS=()
-  WALL_SECONDS="${RDLAB_WALL_SECONDS:-300}"
-  if [[ -z "$EXPLICIT_CAP" ]]; then
-    EXPLICIT_CAP="0.01"
+  if [[ -z "$SHAPE" ]]; then
+    echo "SHAPE_REQUIRED: --$MODE requires --shape standard|high-mem (or RDLAB_SHAPE; no default)" >&2
+    exit 2
   fi
-  VRAM_HALT_MIB="0"
+  case "$SHAPE" in
+    standard)
+      EXPECTED_SESSION_SHAPE="Standard"
+      COLAB_NEW_FLAGS=(--gpu "$CARD")
+      ;;
+    high-mem)
+      EXPECTED_SESSION_SHAPE="High-RAM"
+      COLAB_NEW_FLAGS=(--gpu "$CARD" --high-mem)
+      ;;
+    *)
+      echo "SHAPE_INVALID: unknown --shape '$SHAPE' (allowed: standard, high-mem)" >&2
+      exit 2
+      ;;
+  esac
+  if [[ "$MODE" == "time-one" ]]; then
+    WALL_SECONDS="${RDLAB_WALL_SECONDS:-1500}"
+    if [[ -z "$EXPLICIT_CAP" ]]; then
+      EXPLICIT_CAP="2.5"
+    fi
+    VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
+  elif [[ "$MODE" == "counted" ]]; then
+    WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
+    VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
+  elif [[ "$MODE" == "lock-check" ]]; then
+    # Default wall per phase, from the A100 timings of 2026-11-03 (flow-judge ~5.9 s/call dominates): anchors ~500 calls
+    # plus five loads; p0a ~1,000 calls plus ten loads (two stages per judge); all = both.
+    case "$LOCK_CHECK_PHASE" in
+      anchors) LOCK_CHECK_PHASE_WALL_DEFAULT=3600 ;;
+      p0a) LOCK_CHECK_PHASE_WALL_DEFAULT=5400 ;;
+      *) LOCK_CHECK_PHASE_WALL_DEFAULT=7200 ;;
+    esac
+    WALL_SECONDS="${RDLAB_WALL_SECONDS:-$LOCK_CHECK_PHASE_WALL_DEFAULT}"
+    VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
+  fi
 else
+  if [[ "$SHAPE_FLAG" -eq 1 ]]; then
+    echo "SHAPE_NOT_FOR_CPU: --shape is only for GPU modes (--time-one, --lock-check, --counted), not --$MODE" >&2
+    exit 2
+  fi
+  if [[ "$CARD_FLAG" -eq 1 ]] && [[ "$CARD" != "CPU" ]]; then
+    echo "CARD_INVALID: --$MODE is a CPU mode and does not accept --card '$CARD'" >&2
+    exit 2
+  fi
   CARD="CPU"
+  SHAPE=""
+  EXPECTED_SESSION_SHAPE=""
+  unset RDLAB_CARD RDLAB_SHAPE
   COLAB_NEW_FLAGS=()
-  WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
-  VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-0}"
+  if [[ "$MODE" == "probe" ]]; then
+    WALL_SECONDS="${RDLAB_WALL_SECONDS:-300}"
+    if [[ -z "$EXPLICIT_CAP" ]]; then
+      EXPLICIT_CAP="0.01"
+    fi
+    VRAM_HALT_MIB="0"
+  else
+    WALL_SECONDS="${RDLAB_WALL_SECONDS:-7200}"
+    VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-0}"
+  fi
 fi
 
 # --- The rate: never a constant. The only rate recorded as the window's is the live one read from `colab usage` after
@@ -942,6 +1012,12 @@ build_exec_env_args() {
   fi
   if [[ -n "${OPENED_CARD_TYPE:-}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_CARD_TYPE=$OPENED_CARD_TYPE")
+  fi
+  if needs_opened_card_type; then
+    EXEC_ENV_ARGS+=(
+      --env "RDLAB_CARD=$CARD"
+      --env "RDLAB_SHAPE=$SHAPE"
+    )
   fi
   if [[ "${VM_DRYRUN:-0}" == "1" ]]; then
     EXEC_ENV_ARGS+=(--env "VM_DRYRUN=1")
@@ -1585,7 +1661,7 @@ write_outcome_draft() {
   RDLAB_RATE_REREAD_STATE_FILE="$RATE_REREAD_STATE" \
   RDLAB_RATE_REREADS_FILE="$RATE_REREADS_FILE" \
   RDLAB_RATE_REREAD_INTERVAL="$RATE_REREAD_SECONDS" \
-  "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "$CARD" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" <<'PY'
+  "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "${OPENED_CARD_TYPE:-$CARD}" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" "$CARD" "$SHAPE" "$EXPECTED_SESSION_SHAPE" "$OPENED_SHAPE_OBS" <<'PY'
 import datetime
 import json
 import os
@@ -1619,6 +1695,24 @@ explicit_cap_raw = sys.argv[7].strip()
 runtime_seconds = int(sys.argv[8])
 outcome = sys.argv[9]
 why = sys.argv[10]
+card_requested = sys.argv[11].strip() if len(sys.argv) > 11 and sys.argv[11].strip() else hardware
+shape_requested = sys.argv[12].strip() if len(sys.argv) > 12 and sys.argv[12].strip() else None
+expected_session_shape = sys.argv[13].strip() if len(sys.argv) > 13 and sys.argv[13].strip() else None
+observed_session_shape = sys.argv[14].strip() if len(sys.argv) > 14 and sys.argv[14].strip() else None
+shape_check = (
+    {
+        "requested": shape_requested,
+        "expected": expected_session_shape,
+        "observed": observed_session_shape,
+        "match": (
+            bool(expected_session_shape and observed_session_shape and expected_session_shape.upper() == observed_session_shape.upper())
+            if observed_session_shape is not None
+            else None
+        ),
+    }
+    if shape_requested is not None
+    else None
+)
 
 wall_x_rate = round((wall_seconds / 3600.0) * rate, 4) if rate is not None else None
 explicit_cap = float(explicit_cap_raw) if explicit_cap_raw else None
@@ -1752,6 +1846,9 @@ payload: dict[str, object] = {
     "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
     "venue": "colab",
     "hardware": hardware,
+    "card_requested": card_requested,
+    "shape_requested": shape_requested,
+    "shape_check": shape_check,
     "rate_per_hour": rate,
     # The window's own rate: post-open minus pre-open account rate (`colab usage` reports the whole account).
     "rate_scope": "window" if rate is not None else None,
@@ -2773,12 +2870,49 @@ from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / "scripts" / "colab"))
 import vm_judges
 
-card, token = vm_judges.card_type_from_sessions_output(sys.argv[3], sys.argv[2])
-print(f"{card or ''}\t{token or ''}")
+card, hw, sh, token = vm_judges.session_fields_from_sessions_output(sys.argv[3], sys.argv[2])
+for val in (card, hw, sh, token):
+    print(val or "")
 PY
 )"
-  OPENED_CARD_TYPE="${CARD_READ%%$'\t'*}"
-  OPENED_HARDWARE="${CARD_READ#*$'\t'}"
+  {
+    IFS= read -r OPENED_CARD_TYPE || true
+    IFS= read -r OPENED_HW_OBS || true
+    IFS= read -r OPENED_SHAPE_OBS || true
+    IFS= read -r OPENED_HARDWARE || true
+  } <<< "$CARD_READ"
+  case "${OPENED_HW_OBS^^}" in
+    A100|G4|L4|T4)
+      ;;
+    *)
+      flock -u 9 || true
+      RUN_FAILURE_CLASS="CARD_TYPE_UNKNOWN"
+      RUN_WHY="CARD_TYPE_UNKNOWN: cannot read the card type of session $S from colab sessions (Hardware/Shape: '${OPENED_HARDWARE}')"
+      echo "$RUN_WHY" >&2
+      exit 2
+      ;;
+  esac
+  if [[ -z "$OPENED_SHAPE_OBS" ]]; then
+    flock -u 9 || true
+    RUN_FAILURE_CLASS="CARD_TYPE_UNKNOWN"
+    RUN_WHY="CARD_TYPE_UNKNOWN: cannot read the card type of session $S from colab sessions (Hardware/Shape: '${OPENED_HARDWARE}')"
+    echo "$RUN_WHY" >&2
+    exit 2
+  fi
+  if [[ "${OPENED_HW_OBS^^}" != "${CARD^^}" ]]; then
+    flock -u 9 || true
+    RUN_FAILURE_CLASS="CARD_MISMATCH"
+    RUN_WHY="CARD_MISMATCH: requested --card $CARD on session $S, but colab sessions reported Hardware: $OPENED_HW_OBS (Hardware/Shape: '${OPENED_HARDWARE}')"
+    echo "$RUN_WHY" >&2
+    exit 2
+  fi
+  if [[ "${OPENED_SHAPE_OBS^^}" != "${EXPECTED_SESSION_SHAPE^^}" ]]; then
+    flock -u 9 || true
+    RUN_FAILURE_CLASS="SHAPE_MISMATCH"
+    RUN_WHY="SHAPE_MISMATCH: requested --shape $SHAPE (Shape: $EXPECTED_SESSION_SHAPE) on session $S, but colab sessions reported Shape: $OPENED_SHAPE_OBS (Hardware/Shape: '${OPENED_HARDWARE}')"
+    echo "$RUN_WHY" >&2
+    exit 2
+  fi
   if [[ -z "$OPENED_CARD_TYPE" ]]; then
     flock -u 9 || true
     RUN_FAILURE_CLASS="CARD_TYPE_UNKNOWN"
@@ -2786,7 +2920,7 @@ PY
     echo "$RUN_WHY" >&2
     exit 2
   fi
-  log_msg "CARD_TYPE session=$S card_type=$OPENED_CARD_TYPE hardware=$OPENED_HARDWARE requested=${COLAB_NEW_FLAGS[*]:-none}"
+  log_msg "CARD_TYPE session=$S card_type=$OPENED_CARD_TYPE hardware=$OPENED_HARDWARE card_requested=$CARD shape_requested=$SHAPE shape_expected=$EXPECTED_SESSION_SHAPE shape_observed=$OPENED_SHAPE_OBS requested=${COLAB_NEW_FLAGS[*]:-none}"
   if [[ "$MODE" == "counted" ]]; then
     GOLD_ERR="$("$PYTHON_BIN" - "$REPO_ROOT" "$OPENED_CARD_TYPE" <<'PY' 2>&1 >/dev/null
 import os

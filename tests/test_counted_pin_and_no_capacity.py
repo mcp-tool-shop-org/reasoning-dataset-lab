@@ -43,6 +43,19 @@ def _filled_goldens(path: Path) -> Path:
     doc["card_types"]["A100"]["prompts"] = {
         sp["prompt_id"]: {"output_token_ids_sha256": "d" * 64} for sp in doc["synthetic_prompts"]
     }
+    doc["promoted_provenance"] = {
+        "window_id": "window-lc-real-01",
+        "session_env_sha256": "a" * 64,
+        "session_fingerprint_sha256": "b" * 64,
+        "mode": "lock-check",
+        "lock_check_phase": "anchors",
+        "card_type": "A100",
+        "hash_source": "real_transport",
+        "stub_transport": False,
+        "filled_goldens_sha256": "c" * 64,
+        "filled_goldens_body_sha256": "e" * 64,
+    }
+    doc["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(doc)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc), encoding="utf-8")
     return path
@@ -525,10 +538,23 @@ def _stub_marked_goldens(path: Path, how: str) -> Path:
     doc["card_types"]["A100"]["prompts"] = {
         sp["prompt_id"]: {"output_token_ids_sha256": "d" * 64} for sp in doc["synthetic_prompts"]
     }
+    doc["promoted_provenance"] = {
+        "window_id": "window-lc-real-01",
+        "session_env_sha256": "a" * 64,
+        "session_fingerprint_sha256": "b" * 64,
+        "mode": "lock-check",
+        "lock_check_phase": "anchors",
+        "card_type": "A100",
+        "hash_source": "real_transport",
+        "stub_transport": False,
+        "filled_goldens_sha256": "c" * 64,
+        "filled_goldens_body_sha256": "e" * 64,
+    }
     if how == "synthetic":
         doc["card_types"]["A100"]["synthetic_fake_hash"] = True
     else:
-        doc["promoted_provenance"] = {"stub_transport": True}
+        doc["promoted_provenance"]["stub_transport"] = True
+    doc["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(doc)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(doc), encoding="utf-8")
     return path
@@ -661,11 +687,15 @@ def test_promote_goldens_refuses_stub_by_default_and_allow_flag_accepts(tmp_path
     import promote_goldens
 
     filled = _stub_filled_goldens_from_lock_check_stub(tmp_path)
+    exp_sha = hashlib.sha256(filled.read_bytes()).hexdigest()
+    rec = tmp_path / "filled" / "vm_receipt.json"
+    rec.write_text(json.dumps({"filled_goldens_sha256": exp_sha}) + "\n", encoding="utf-8")
+    req = ["--filled", str(filled), "--receipt", str(rec), "--expected-sha256", exp_sha]
     out = tmp_path / "cand" / "g.json"
-    assert promote_goldens.main(["--filled", str(filled), "--output", str(out)]) == 2
+    assert promote_goldens.main([*req, "--output", str(out)]) == 2
     assert not out.exists()
-    assert promote_goldens.main(["--filled", str(filled), "--output", str(out), "--forbid-stub-transport"]) == 2
-    assert promote_goldens.main(["--filled", str(filled), "--output", str(out), "--allow-stub-transport"]) == 0
+    assert promote_goldens.main([*req, "--output", str(out), "--forbid-stub-transport"]) == 2
+    assert promote_goldens.main([*req, "--output", str(out), "--allow-stub-transport"]) == 0
     assert out.is_file()
     helptext = subprocess.run(
         [sys.executable, str(SCRIPTS_COLAB_DIR / "promote_goldens.py"), "--help"], capture_output=True, text=True, check=False
@@ -694,6 +724,7 @@ def _stub_filled_goldens_from_lock_check_stub(tmp_path: Path) -> Path:
             "session_env_sha256": "a" * 64,
             "session_fingerprint_sha256": "b" * 64,
             "mode": "lock-check-stub",
+            "lock_check_phase": "anchors",
             "card_type": "A100",
             "hash_source": "synthetic",
             "stub_transport": True,
@@ -706,3 +737,453 @@ def _stub_filled_goldens_from_lock_check_stub(tmp_path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(filled, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Card 2026-11-08: promote_goldens required --receipt / --expected-sha256, low_margin_* rename, goldens self-hash &
+# real-window provenance, and required --card / --shape per window.
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def _real_filled_goldens_and_receipt(
+    tmp_path: Path,
+    *,
+    tag: str = "real",
+    lock_check_phase: str | None = "anchors",
+    window_id: str = "win-lc-real-01",
+    session_env_sha256: str = "a" * 64,
+    stub_transport: bool = False,
+    mode: str = "lock-check",
+    hash_source: str = "real_transport",
+) -> tuple[Path, Path, str]:
+    import promote_goldens
+
+    doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    card = {
+        "status": "filled",
+        "prompts": {sp["prompt_id"]: {"output_token_ids_sha256": "e" * 64} for sp in doc["synthetic_prompts"]},
+    }
+    card["expected_output_token_ids_sha256"] = {k: v["output_token_ids_sha256"] for k, v in card["prompts"].items()}
+    prov: dict[str, Any] = {
+        "window_id": window_id,
+        "session_env_sha256": session_env_sha256,
+        "session_fingerprint_sha256": "b" * 64,
+        "mode": mode,
+        "card_type": "A100",
+        "hash_source": hash_source,
+        "stub_transport": stub_transport,
+    }
+    if lock_check_phase is not None:
+        prov["lock_check_phase"] = lock_check_phase
+    filled: dict[str, Any] = {
+        "schema_version": doc["schema_version"],
+        "judge_id": doc["judge_id"],
+        "synthetic_prompts": [
+            {**sp, "prompt_sha256": "f" * 64, "input_token_ids_sha256": "c" * 64} for sp in doc["synthetic_prompts"]
+        ],
+        "card_types": {"A100": card},
+        "provenance": prov,
+    }
+    filled["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(filled)
+    filled_path = tmp_path / tag / "boot_gatekeeper_goldens.filled.json"
+    filled_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_bytes = (json.dumps(filled, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    filled_path.write_bytes(raw_bytes)
+    file_sha = hashlib.sha256(raw_bytes).hexdigest()
+    receipt_doc: dict[str, Any] = {
+        "window_id": window_id,
+        "mode": mode,
+        "lock_check_phase": lock_check_phase,
+        "session_env_sha256": session_env_sha256,
+        "filled_goldens_sha256": file_sha,
+        "boot_gatekeeper": {
+            "filled_goldens_sha256": file_sha,
+            "filled_goldens_body_sha256": filled["filled_goldens_body_sha256"],
+        },
+    }
+    receipt_path = tmp_path / tag / "vm_receipt.json"
+    receipt_path.write_text(json.dumps(receipt_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return filled_path, receipt_path, file_sha
+
+
+def test_a_promote_goldens_requires_receipt_and_expected_sha256(tmp_path: Path) -> None:
+    """Test (a): promotion without `--receipt`, or without `--expected-sha256`, refuses."""
+    import promote_goldens
+
+    filled, receipt, file_sha = _real_filled_goldens_and_receipt(tmp_path, tag="req_a")
+    out = tmp_path / "cand_a" / "boot_gatekeeper_goldens.json"
+
+    # Neither --receipt nor --expected-sha256 given -> refuses
+    assert promote_goldens.main(["--filled", str(filled), "--output", str(out)]) == 2
+    assert not out.exists()
+
+    # --receipt given without --expected-sha256 -> refuses
+    assert promote_goldens.main(["--filled", str(filled), "--output", str(out), "--receipt", str(receipt)]) == 2
+    assert not out.exists()
+
+    # --expected-sha256 given without --receipt -> refuses
+    assert promote_goldens.main(["--filled", str(filled), "--output", str(out), "--expected-sha256", file_sha]) == 2
+    assert not out.exists()
+
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_no_sha:
+        promote_goldens.verify_filled_goldens(filled, receipt_path=receipt)
+    assert exc_no_sha.value.failure_class == "PROMOTE_GOLDENS_EXPECTED_SHA256_REQUIRED"
+
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_no_rec:
+        promote_goldens.verify_filled_goldens(filled, expected_sha256=file_sha)
+    assert exc_no_rec.value.failure_class == "PROMOTE_GOLDENS_RECEIPT_REQUIRED"
+
+    # Both given -> succeeds
+    assert (
+        promote_goldens.main(
+            [
+                "--filled",
+                str(filled),
+                "--output",
+                str(out),
+                "--receipt",
+                str(receipt),
+                "--expected-sha256",
+                file_sha,
+            ]
+        )
+        == 0
+    )
+    assert out.is_file()
+
+
+def test_b_rehashed_or_phase_stripped_goldens_refuses(tmp_path: Path) -> None:
+    """Test (b): a re-hashed or phase-stripped goldens file refuses."""
+    import promote_goldens
+
+    # 1. Phase-stripped and re-hashed p0a goldens file refuses even if given a matching receipt and expected-sha256
+    stripped_filled, stripped_receipt, stripped_sha = _real_filled_goldens_and_receipt(
+        tmp_path, tag="phase_stripped", lock_check_phase=None
+    )
+    out = tmp_path / "cand_b" / "boot_gatekeeper_goldens.json"
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_strip:
+        promote_goldens.verify_filled_goldens(
+            stripped_filled, expected_sha256=stripped_sha, receipt_path=stripped_receipt
+        )
+    assert exc_strip.value.failure_class == "PROMOTE_GOLDENS_PHASE_REFUSED"
+    assert (
+        promote_goldens.main(
+            [
+                "--filled",
+                str(stripped_filled),
+                "--output",
+                str(out),
+                "--receipt",
+                str(stripped_receipt),
+                "--expected-sha256",
+                stripped_sha,
+            ]
+        )
+        == 2
+    )
+    assert not out.exists()
+
+    # 2. A valid anchors goldens file that is mutated and re-hashed refuses against the window receipt
+    valid_filled, valid_receipt, valid_sha = _real_filled_goldens_and_receipt(
+        tmp_path, tag="rehashed_anchors", lock_check_phase="anchors"
+    )
+    rehashed_doc = json.loads(valid_filled.read_text(encoding="utf-8"))
+    first_pid = rehashed_doc["synthetic_prompts"][0]["prompt_id"]
+    rehashed_doc["card_types"]["A100"]["prompts"][first_pid]["output_token_ids_sha256"] = "1" * 64
+    rehashed_doc["card_types"]["A100"]["expected_output_token_ids_sha256"][first_pid] = "1" * 64
+    rehashed_doc["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(rehashed_doc)
+    rehashed_path = tmp_path / "rehashed_anchors" / "rehashed.filled.json"
+    rehashed_bytes = (json.dumps(rehashed_doc, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    rehashed_path.write_bytes(rehashed_bytes)
+    rehashed_sha = hashlib.sha256(rehashed_bytes).hexdigest()
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_rehash:
+        promote_goldens.verify_filled_goldens(
+            rehashed_path, expected_sha256=rehashed_sha, receipt_path=valid_receipt
+        )
+    assert exc_rehash.value.failure_class == "PROMOTE_GOLDENS_SHA_MISMATCH"
+
+    # 3. Goldens self-hash (`goldens_body_sha256`) checked in preflight: tampering or stripping refuses
+    promote_goldens.promote_goldens_file(
+        valid_filled, output_path=out, expected_sha256=valid_sha, receipt_path=valid_receipt
+    )
+    promoted_doc = json.loads(out.read_text(encoding="utf-8"))
+    assert len(promoted_doc.get("goldens_body_sha256", "")) == 64
+    vm_judges.preflight_boot_gatekeeper_goldens(
+        mode="counted", repo_root=REPO_ROOT, goldens_path=out, card_type="A100"
+    )
+    tampered_doc = json.loads(out.read_text(encoding="utf-8"))
+    tampered_doc["card_types"]["A100"]["prompts"][first_pid]["output_token_ids_sha256"] = "9" * 64
+    tampered_path = tmp_path / "cand_b" / "tampered_goldens.json"
+    tampered_path.write_text(json.dumps(tampered_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc_pf:
+        vm_judges.preflight_boot_gatekeeper_goldens(
+            mode="counted", repo_root=REPO_ROOT, goldens_path=tampered_path, card_type="A100"
+        )
+    assert exc_pf.value.failure_class == "BOOT_GATEKEEPER_GOLDENS_SHA256_MISMATCH"
+
+
+def test_c_stub_provenance_refuses_by_default(tmp_path: Path) -> None:
+    """Test (c): stub provenance refuses by default (including stub window_id and missing session_env_sha256)."""
+    import promote_goldens
+
+    out = tmp_path / "cand_c" / "boot_gatekeeper_goldens.json"
+    for bad_wid in ("window-lock-check", "w-stub", "lock-check-stub-01", "window-local", "unknown"):
+        filled, receipt, file_sha = _real_filled_goldens_and_receipt(
+            tmp_path, tag=f"stub_wid_{bad_wid}", window_id=bad_wid, stub_transport=False
+        )
+        with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_stub:
+            promote_goldens.verify_filled_goldens(filled, expected_sha256=file_sha, receipt_path=receipt)
+        assert exc_stub.value.failure_class == "PROMOTE_GOLDENS_STUB_REFUSED"
+        assert (
+            promote_goldens.main(
+                [
+                    "--filled",
+                    str(filled),
+                    "--output",
+                    str(out),
+                    "--receipt",
+                    str(receipt),
+                    "--expected-sha256",
+                    file_sha,
+                ]
+            )
+            == 2
+        )
+        assert not out.exists()
+
+    # Missing or non-hex session_env_sha256 refuses in both promote_goldens and preflight_boot_gatekeeper_goldens
+    filled_no_env, receipt_no_env, sha_no_env = _real_filled_goldens_and_receipt(
+        tmp_path, tag="no_env_sha", session_env_sha256=""
+    )
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_env:
+        promote_goldens.verify_filled_goldens(
+            filled_no_env, expected_sha256=sha_no_env, receipt_path=receipt_no_env
+        )
+    assert exc_env.value.failure_class == "PROMOTE_GOLDENS_PROVENANCE_MISMATCH"
+
+    # Preflight refuses a promoted goldens file whose provenance has a stub window_id or missing session_env_sha256
+    valid_filled, valid_receipt, valid_sha = _real_filled_goldens_and_receipt(tmp_path, tag="valid_c")
+    promote_goldens.promote_goldens_file(
+        valid_filled, output_path=out, expected_sha256=valid_sha, receipt_path=valid_receipt
+    )
+    stub_wid_doc = json.loads(out.read_text(encoding="utf-8"))
+    stub_wid_doc["promoted_provenance"]["window_id"] = "window-lock-check"
+    stub_wid_doc["goldens_body_sha256"] = promote_goldens.compute_goldens_body_sha256(stub_wid_doc)
+    stub_wid_path = tmp_path / "cand_c" / "stub_wid_goldens.json"
+    stub_wid_path.write_text(json.dumps(stub_wid_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc_pf_wid:
+        vm_judges.preflight_boot_gatekeeper_goldens(
+            mode="counted", repo_root=REPO_ROOT, goldens_path=stub_wid_path, card_type="A100"
+        )
+    assert exc_pf_wid.value.failure_class == "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED"
+
+    no_env_doc = json.loads(out.read_text(encoding="utf-8"))
+    no_env_doc["promoted_provenance"]["session_env_sha256"] = ""
+    no_env_doc["goldens_body_sha256"] = promote_goldens.compute_goldens_body_sha256(no_env_doc)
+    no_env_path = tmp_path / "cand_c" / "no_env_goldens.json"
+    no_env_path.write_text(json.dumps(no_env_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as exc_pf_env:
+        vm_judges.preflight_boot_gatekeeper_goldens(
+            mode="counted", repo_root=REPO_ROOT, goldens_path=no_env_path, card_type="A100"
+        )
+    assert exc_pf_env.value.failure_class == "BOOT_GATEKEEPER_PROVENANCE_INVALID"
+
+
+def test_d_canary_fields_read_as_aliases_and_new_files_write_low_margin(tmp_path: Path) -> None:
+    """Test (d): old `canary_*` fields still read as aliases, and new files write `low_margin_*`."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    items_file = tcl._make_synthetic_public_items(tmp_path / "items_d", count=60)
+    sm_base = bakeoff_judge.build_shard_manifest(items_file, num_shards=2)
+    low_margin_25 = list(sm_base["shards"]["2"])[:25]
+    sm = bakeoff_judge.build_shard_manifest(
+        items_file,
+        num_shards=2,
+        low_margin_item_ids=low_margin_25,
+        low_margin_telemetry_sha256="d" * 64,
+    )
+    for new_key in (
+        "low_margin_anchor_count",
+        "low_margin_item_ids",
+        "low_margin_selection_rule",
+        "low_margin_inputs_sha256",
+        "low_margin_telemetry_sha256",
+    ):
+        assert new_key in sm, f"missing {new_key} in build_shard_manifest output"
+    for old_key in (
+        "canary_anchor_count",
+        "canary_item_ids",
+        "canary_selection_rule",
+        "canary_inputs_sha256",
+        "canary_telemetry_sha256",
+    ):
+        assert old_key not in sm, f"unexpected legacy {old_key} in build_shard_manifest output"
+
+    sm_stdlib = vm_judges.build_shard_manifest_stdlib(
+        items_file,
+        num_shards=2,
+        low_margin_item_ids=low_margin_25,
+        low_margin_telemetry_sha256="d" * 64,
+    )
+    assert sm_stdlib == sm
+    sm_alias = bakeoff_judge.build_shard_manifest(
+        items_file,
+        num_shards=2,
+        canary_item_ids=low_margin_25,
+        canary_telemetry_sha256="d" * 64,
+    )
+    assert sm_alias == sm
+
+    new_sm_path = tmp_path / "shard_manifest_new.json"
+    new_sm_path.write_text(json.dumps(sm, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    verified_new, _ = vm_judges.verify_shard_manifest_file(new_sm_path)
+    assert verified_new["low_margin_anchor_count"] == 25
+
+    # Construct a legacy shard_manifest.json with canary_* keys and its own body hash
+    legacy_sm = {
+        k: v
+        for k, v in sm.items()
+        if not k.startswith("low_margin_") and k != "manifest_sha256"
+    }
+    legacy_sm["canary_anchor_count"] = sm["low_margin_anchor_count"]
+    legacy_sm["canary_item_ids"] = sm["low_margin_item_ids"]
+    legacy_sm["canary_selection_rule"] = sm["low_margin_selection_rule"]
+    legacy_sm["canary_inputs_sha256"] = sm["low_margin_inputs_sha256"]
+    legacy_sm["canary_telemetry_sha256"] = sm["low_margin_telemetry_sha256"]
+    legacy_sm["manifest_sha256"] = hashlib.sha256(
+        json.dumps(legacy_sm, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    legacy_sm_path = tmp_path / "shard_manifest_legacy.json"
+    legacy_sm_path.write_text(json.dumps(legacy_sm, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    verified_legacy, _ = vm_judges.verify_shard_manifest_file(legacy_sm_path)
+    assert verified_legacy["canary_anchor_count"] == 25
+
+    # merge_config.json uses low_margin_anchor_count
+    merge_cfg = json.loads((SCRIPTS_COLAB_DIR / "merge_config.json").read_text(encoding="utf-8"))
+    assert merge_cfg.get("low_margin_anchor_count") == 25
+    assert "canary_anchor_count" not in merge_cfg
+
+
+def test_e_missing_card_or_shape_refuses_before_any_colab_call(tmp_path: Path) -> None:
+    """Test (e): a missing `--card` or `--shape` refuses before any colab call."""
+    receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec_e")
+    items = tcl._make_synthetic_public_items(tmp_path / "items_e", count=2)
+    for mode in ("time-one", "lock-check", "counted"):
+        for dry in (True, False):
+            # Neither --card nor --shape given -> refuses CARD_REQUIRED before any colab call
+            env_none = fake_colab.setup_fake_colab_environment(tmp_path / f"env_none_{mode}_{int(dry)}")
+            exports_none = (
+                tcl._base_launcher_exports(
+                    env_none,
+                    open_lock=tmp_path / f"nn_{mode}.lock",
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    items_file=items,
+                )
+                + "unset RDLAB_CARD; unset RDLAB_SHAPE; "
+            )
+            out_nn = tcl._to_wsl_path(tmp_path / f"out_nn_{mode}_{int(dry)}")
+            proc_nn = tcl._pm_run_launcher(
+                exports_none,
+                f"--{mode} {'--dry ' if dry else ''}--out-dir '{out_nn}' --run-id nn-{mode}",
+            )
+            assert proc_nn.returncode == 2, (mode, dry, proc_nn.stdout, proc_nn.stderr)
+            assert "CARD_REQUIRED" in proc_nn.stderr
+            assert not env_none["calls_log"].exists()
+
+            # Missing --card (when --shape standard is given)
+            env_no_card = fake_colab.setup_fake_colab_environment(tmp_path / f"env_nocard_{mode}_{int(dry)}")
+            exports_no_card = (
+                tcl._base_launcher_exports(
+                    env_no_card,
+                    open_lock=tmp_path / f"nc_{mode}.lock",
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    items_file=items,
+                )
+                + "unset RDLAB_CARD; unset RDLAB_SHAPE; "
+            )
+            out_nc = tcl._to_wsl_path(tmp_path / f"out_nc_{mode}_{int(dry)}")
+            proc_nc = tcl._pm_run_launcher(
+                exports_no_card,
+                f"--{mode} --shape standard {'--dry ' if dry else ''}--out-dir '{out_nc}' --run-id nc-{mode}",
+            )
+            assert proc_nc.returncode == 2, (mode, dry, proc_nc.stdout, proc_nc.stderr)
+            assert "CARD_REQUIRED" in proc_nc.stderr
+            assert not env_no_card["calls_log"].exists()
+
+            # Missing --shape (when --card A100 is given)
+            env_no_shape = fake_colab.setup_fake_colab_environment(tmp_path / f"env_noshape_{mode}_{int(dry)}")
+            exports_no_shape = (
+                tcl._base_launcher_exports(
+                    env_no_shape,
+                    open_lock=tmp_path / f"ns_{mode}.lock",
+                    receipts_dir=receipts_dir,
+                    hf_home=hf_home,
+                    items_file=items,
+                )
+                + "unset RDLAB_CARD; unset RDLAB_SHAPE; "
+            )
+            out_ns = tcl._to_wsl_path(tmp_path / f"out_ns_{mode}_{int(dry)}")
+            proc_ns = tcl._pm_run_launcher(
+                exports_no_shape,
+                f"--{mode} --card A100 {'--dry ' if dry else ''}--out-dir '{out_ns}' --run-id ns-{mode}",
+            )
+            assert proc_ns.returncode == 2, (mode, dry, proc_ns.stdout, proc_ns.stderr)
+            assert "SHAPE_REQUIRED" in proc_ns.stderr
+            assert not env_no_shape["calls_log"].exists()
+
+
+def test_f_card_or_shape_drift_refuses(tmp_path: Path) -> None:
+    """Test (f): card or shape drift between requested `--card` / `--shape` and observed session refuses."""
+    receipts_dir, hf_home, part, items = tcl._e2e_time_one_inputs(tmp_path)
+
+    # 1. Card drift: requested A100 / standard, session opens L4|Standard -> refuses CARD_MISMATCH right after open
+    res_card_drift = tcl._e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_exports="export RDLAB_CARD=A100; export RDLAB_SHAPE=standard; ",
+        session_hardware="L4|Standard",
+        expect_fail=True,
+        tag="_card_drift",
+    )
+    proc_cd = res_card_drift["proc"]
+    assert proc_cd.returncode == 2, proc_cd.stdout + proc_cd.stderr
+    assert "CARD_MISMATCH" in proc_cd.stderr
+    subcmds_cd = [
+        json.loads(ln).get("subcmd")
+        for ln in res_card_drift["env_paths"]["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert "exec" not in subcmds_cd and "upload" not in subcmds_cd and "stop" in subcmds_cd
+
+    # 2. Shape drift: requested A100 / standard, session opens A100|High-RAM -> refuses SHAPE_MISMATCH right after open
+    res_shape_drift = tcl._e2e_fake_real_mode_window(
+        tmp_path,
+        mode="time-one",
+        items_file=items,
+        part_dir=part,
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        extra_exports="export RDLAB_CARD=A100; export RDLAB_SHAPE=standard; ",
+        session_hardware="A100|High-RAM",
+        expect_fail=True,
+        tag="_shape_drift",
+    )
+    proc_sd = res_shape_drift["proc"]
+    assert proc_sd.returncode == 2, proc_sd.stdout + proc_sd.stderr
+    assert "SHAPE_MISMATCH" in proc_sd.stderr
+    subcmds_sd = [
+        json.loads(ln).get("subcmd")
+        for ln in res_shape_drift["env_paths"]["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert "exec" not in subcmds_sd and "upload" not in subcmds_sd and "stop" in subcmds_sd
+    outcome_sd = json.loads((res_shape_drift["out_dir"] / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome_sd["card_requested"] == "A100"
+    assert outcome_sd["shape_requested"] == "standard"
+    assert outcome_sd["shape_check"]["match"] is False
