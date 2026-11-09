@@ -216,7 +216,7 @@ def _time_one_main_env(
         mode,
         *(["--only-judges", "mu-judge"] if mode == "time-one" else []),
         "--window-id",
-        f"window-{mode}-test-01",
+        f"window-{mode}-real-01",
         "--repo-dir",
         str(REPO_ROOT),
         "--items-file",

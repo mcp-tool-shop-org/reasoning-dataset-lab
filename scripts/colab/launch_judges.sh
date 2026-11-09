@@ -37,6 +37,8 @@ CARD_FLAG=0
 SHAPE="${RDLAB_SHAPE:-}"
 SHAPE_FLAG=0
 EXPECTED_SESSION_SHAPE=""
+REQUESTED_CARD_TYPE=""
+PYTHON_BIN="${RDLAB_PYTHON:-python3}"
 OPENED_HW_OBS=""
 OPENED_SHAPE_OBS=""
 OPENED_HARDWARE=""
@@ -441,6 +443,24 @@ if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" == "time-one" || "$MODE" == "
       exit 2
       ;;
   esac
+  if ! REQUESTED_CARD_TYPE="$("$PYTHON_BIN" - "$REPO_ROOT" "$CARD" "$SHAPE" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root = Path(sys.argv[1])
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+try:
+    print(vm_judges.resolve_requested_card_type(sys.argv[2], sys.argv[3]))
+except vm_judges.RefusalError as exc:
+    print(f"{exc.failure_class}: {exc.detail}", file=sys.stderr)
+    sys.exit(2)
+PY
+)"; then
+    exit 2
+  fi
   if [[ "$MODE" == "time-one" ]]; then
     WALL_SECONDS="${RDLAB_WALL_SECONDS:-1500}"
     if [[ -z "$EXPLICIT_CAP" ]]; then
@@ -462,17 +482,18 @@ if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" == "time-one" || "$MODE" == "
     VRAM_HALT_MIB="${RDLAB_VRAM_HALT_MIB:-26000}"
   fi
 else
-  if [[ "$SHAPE_FLAG" -eq 1 ]]; then
+  if [[ "$SHAPE_FLAG" -eq 1 ]] || [[ -n "$SHAPE" ]]; then
     echo "SHAPE_NOT_FOR_CPU: --shape is only for GPU modes (--time-one, --lock-check, --counted), not --$MODE" >&2
     exit 2
   fi
-  if [[ "$CARD_FLAG" -eq 1 ]] && [[ "$CARD" != "CPU" ]]; then
+  if { [[ "$CARD_FLAG" -eq 1 ]] || [[ -n "$CARD" ]]; } && [[ "$CARD" != "CPU" ]]; then
     echo "CARD_INVALID: --$MODE is a CPU mode and does not accept --card '$CARD'" >&2
     exit 2
   fi
   CARD="CPU"
   SHAPE=""
   EXPECTED_SESSION_SHAPE=""
+  REQUESTED_CARD_TYPE="CPU"
   unset RDLAB_CARD RDLAB_SHAPE
   COLAB_NEW_FLAGS=()
   if [[ "$MODE" == "probe" ]]; then
@@ -716,7 +737,7 @@ if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" != "probe" ]]; then
   fi
 fi
 
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" "${REQUESTED_CARD_TYPE:-}" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -726,6 +747,7 @@ mode = sys.argv[2]
 until_step = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
 is_smoke = (len(sys.argv) > 4 and sys.argv[4] == "1")
 receipts_arg = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5].strip() else None
+requested_card_type = sys.argv[6].strip() if len(sys.argv) > 6 and sys.argv[6].strip() else None
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
@@ -798,9 +820,13 @@ try:
             until=until_step,
             goldens_path=Path(raw_goldens) if raw_goldens else None,
             receipts_dir=Path(receipts_arg) if receipts_arg else None,
-            # The card is not known before the session opens (it is read from `colab sessions` after `colab new`):
-            # here a counted window is refused only when no card has goldens; the opened card is checked after open.
-            card_type=None,
+            # For counted mode, check that the requested (card, shape) card_type has promoted goldens before `colab new`,
+            # and re-verify the opened card after `colab new`.
+            card_type=(
+                requested_card_type
+                if mode == "counted" and requested_card_type and requested_card_type != "CPU"
+                else None
+            ),
         )
     if gk_plan is not None:
         print(
@@ -1012,6 +1038,9 @@ build_exec_env_args() {
   fi
   if [[ -n "${OPENED_CARD_TYPE:-}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_CARD_TYPE=$OPENED_CARD_TYPE")
+  fi
+  if [[ -n "${OPENED_SHAPE_OBS:-}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_SESSION_SHAPE_OBSERVED=$OPENED_SHAPE_OBS")
   fi
   if needs_opened_card_type; then
     EXEC_ENV_ARGS+=(
@@ -3635,7 +3664,12 @@ except vm_judges.RefusalError as exc:
         out_dir / "session_env.json",
         out_dir / "shard_manifest.json",
         out_dir / "shard_manifest.json.sha256",
+        out_dir / "golden_anchor_manifest.json",
+        out_dir / "golden_anchor_manifest.json.sha256",
         out_dir / "boot_gatekeeper.json",
+        out_dir / "boot_gatekeeper_goldens.filled.json",
+        out_dir / "p0a_report.json",
+        out_dir / "window.json",
         out_dir / "outputs-closed.json",
     ):
         if q.is_file():

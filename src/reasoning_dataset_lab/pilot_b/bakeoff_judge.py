@@ -2264,13 +2264,65 @@ def _compute_shard_manifest_body_sha256(manifest_doc: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+LOW_MARGIN_CANARY_FIELD_PAIRS: tuple[tuple[str, str], ...] = (
+    ("low_margin_item_ids", "canary_item_ids"),
+    ("low_margin_anchor_count", "canary_anchor_count"),
+    ("low_margin_selection_rule", "canary_selection_rule"),
+    ("low_margin_inputs_sha256", "canary_inputs_sha256"),
+    ("low_margin_telemetry_sha256", "canary_telemetry_sha256"),
+    ("reversed_low_margin_rerun", "reversed_canary_rerun"),
+)
+
+
+def _resolve_low_margin_or_canary_field(
+    doc: Mapping[str, Any],
+    low_margin_key: str,
+    canary_key: str,
+    *,
+    default: Any = None,
+    refusal_code: str = "SHARD_MANIFEST_INVALID",
+    doc_label: str = "manifest",
+) -> Any:
+    """Resolve `low_margin_*` vs `canary_*` from `doc`: `low_margin_*` wins when not None; conflicting dual keys refuse."""
+    has_lm = low_margin_key in doc and doc[low_margin_key] is not None
+    has_can = canary_key in doc and doc[canary_key] is not None
+    if has_lm and has_can and doc[low_margin_key] != doc[canary_key]:
+        raise refused_error(
+            refusal_code,
+            f"Conflicting dual keys in {doc_label}: {low_margin_key}={doc[low_margin_key]!r} != {canary_key}={doc[canary_key]!r}.",
+            f"Use canonical {low_margin_key} (or ensure {canary_key} matches {low_margin_key}).",
+        )
+    if has_lm:
+        return doc[low_margin_key]
+    if has_can:
+        return doc[canary_key]
+    return default
+
+
+def _check_low_margin_canary_conflicts(
+    doc: Mapping[str, Any],
+    *,
+    refusal_code: str = "SHARD_MANIFEST_INVALID",
+    doc_label: str = "manifest",
+) -> None:
+    """Refuse when any `(low_margin_*, canary_*)` pair is present in `doc` with conflicting non-None values."""
+    for lm_key, can_key in LOW_MARGIN_CANARY_FIELD_PAIRS:
+        _resolve_low_margin_or_canary_field(
+            doc,
+            lm_key,
+            can_key,
+            refusal_code=refusal_code,
+            doc_label=doc_label,
+        )
+
+
 def select_lock_check_low_margin_anchors(
     items_or_ids: Sequence[JudgeInputItem | str],
     telemetry_path_or_dir: Path | str,
     *,
     excluded_item_ids: Iterable[str] = (),
     low_margin_count: int | None = None,
-    canary_count: int = DEFAULT_LOW_MARGIN_ANCHOR_ITEMS_COUNT,
+    canary_count: int | None = None,
 ) -> tuple[list[str], str]:
     """Select `low_margin_count` (25) low-margin anchors from lock-check window telemetry (the 25 lowest-margin
     of the 50 label-blind LC-1 anchors; "canary" is reserved for the 30 determinism items).
@@ -2333,8 +2385,18 @@ def select_lock_check_low_margin_anchors(
             if prev_min is None or margin_val < prev_min:
                 min_margin_by_item[iid] = margin_val
 
+    if low_margin_count is not None and canary_count is not None and int(low_margin_count) != int(canary_count):
+        raise refused_error(
+            "SHARD_MANIFEST_INVALID",
+            f"Conflicting low_margin_count={low_margin_count!r} and canary_count={canary_count!r}.",
+            "Pass low_margin_count (or ensure canary_count matches low_margin_count).",
+        )
     telemetry_sha256 = hasher.hexdigest() if len(telemetry_files) > 1 else hashlib.sha256(telemetry_files[0].read_bytes()).hexdigest()
-    eff_count = low_margin_count if low_margin_count is not None else canary_count
+    eff_count = (
+        low_margin_count
+        if low_margin_count is not None
+        else (canary_count if canary_count is not None else DEFAULT_LOW_MARGIN_ANCHOR_ITEMS_COUNT)
+    )
     target_n = min(max(0, int(eff_count)), len(candidate_ids))
     ranked = sorted(
         candidate_ids,
@@ -2391,7 +2453,7 @@ def build_golden_anchor_manifest(
     anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
     stratified_anchor_count: int = DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT,
     low_margin_anchor_count: int | None = None,
-    canary_anchor_count: int = DEFAULT_LOW_MARGIN_ANCHOR_ITEMS_COUNT,
+    canary_anchor_count: int | None = None,
     stratified_anchor_item_ids: Sequence[str] | None = None,
     low_margin_item_ids: Sequence[str] | None = None,
     canary_item_ids: Sequence[str] | None = None,
@@ -2405,7 +2467,41 @@ def build_golden_anchor_manifest(
     Records only hashes, normalized verdict codes (`yes`/`no`/`unparseable`), and row states (`parsed`/`unparseable`/`length_stop`).
     Never stores item text, prompts, keys, or raw judge generation text.
     """
-    eff_lm_count = low_margin_anchor_count if low_margin_anchor_count is not None else canary_anchor_count
+    if (
+        low_margin_anchor_count is not None
+        and canary_anchor_count is not None
+        and int(low_margin_anchor_count) != int(canary_anchor_count)
+    ):
+        raise refused_error(
+            "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+            f"Conflicting low_margin_anchor_count={low_margin_anchor_count!r} and canary_anchor_count={canary_anchor_count!r}.",
+            "Pass low_margin_anchor_count (or ensure canary_anchor_count matches).",
+        )
+    if (
+        low_margin_item_ids is not None
+        and canary_item_ids is not None
+        and [str(x) for x in low_margin_item_ids] != [str(x) for x in canary_item_ids]
+    ):
+        raise refused_error(
+            "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+            "Conflicting low_margin_item_ids and canary_item_ids passed to build_golden_anchor_manifest.",
+            "Pass low_margin_item_ids (or ensure canary_item_ids matches).",
+        )
+    if (
+        low_margin_telemetry_sha256 is not None
+        and canary_telemetry_sha256 is not None
+        and str(low_margin_telemetry_sha256) != str(canary_telemetry_sha256)
+    ):
+        raise refused_error(
+            "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+            "Conflicting low_margin_telemetry_sha256 and canary_telemetry_sha256 passed to build_golden_anchor_manifest.",
+            "Pass low_margin_telemetry_sha256 (or ensure canary_telemetry_sha256 matches).",
+        )
+    eff_lm_count = (
+        low_margin_anchor_count
+        if low_margin_anchor_count is not None
+        else (canary_anchor_count if canary_anchor_count is not None else DEFAULT_LOW_MARGIN_ANCHOR_ITEMS_COUNT)
+    )
     eff_lm_ids = low_margin_item_ids if low_margin_item_ids is not None else canary_item_ids
     eff_lm_tel_sha = low_margin_telemetry_sha256 if low_margin_telemetry_sha256 is not None else canary_telemetry_sha256
     return _build_golden_anchor_manifest_impl(
@@ -2519,7 +2615,7 @@ def build_shard_manifest(
     anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
     stratified_anchor_count: int = DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT,
     low_margin_anchor_count: int | None = None,
-    canary_anchor_count: int = DEFAULT_LOW_MARGIN_ANCHOR_ITEMS_COUNT,
+    canary_anchor_count: int | None = None,
     lock_check_telemetry_path: Path | str | None = None,
     low_margin_item_ids: Sequence[str] | None = None,
     canary_item_ids: Sequence[str] | None = None,
@@ -2534,6 +2630,36 @@ def build_shard_manifest(
             "SHARD_SPEC_MISSING_N",
             f"num_shards must be >= 1, got {num_shards}.",
             "Pass a positive shard count.",
+        )
+    if (
+        low_margin_anchor_count is not None
+        and canary_anchor_count is not None
+        and int(low_margin_anchor_count) != int(canary_anchor_count)
+    ):
+        raise refused_error(
+            "SHARD_MANIFEST_INVALID",
+            f"Conflicting low_margin_anchor_count={low_margin_anchor_count!r} and canary_anchor_count={canary_anchor_count!r}.",
+            "Pass low_margin_anchor_count (or ensure canary_anchor_count matches).",
+        )
+    if (
+        low_margin_item_ids is not None
+        and canary_item_ids is not None
+        and [str(x) for x in low_margin_item_ids] != [str(x) for x in canary_item_ids]
+    ):
+        raise refused_error(
+            "SHARD_MANIFEST_INVALID",
+            "Conflicting low_margin_item_ids and canary_item_ids passed to build_shard_manifest.",
+            "Pass low_margin_item_ids (or ensure canary_item_ids matches).",
+        )
+    if (
+        low_margin_telemetry_sha256 is not None
+        and canary_telemetry_sha256 is not None
+        and str(low_margin_telemetry_sha256) != str(canary_telemetry_sha256)
+    ):
+        raise refused_error(
+            "SHARD_MANIFEST_INVALID",
+            "Conflicting low_margin_telemetry_sha256 and canary_telemetry_sha256 passed to build_shard_manifest.",
+            "Pass low_margin_telemetry_sha256 (or ensure canary_telemetry_sha256 matches).",
         )
     if isinstance(items_or_path, (Path, str, Mapping)):
         items, items_sha256 = _resolve_items_from_manifest_source(
@@ -2571,7 +2697,11 @@ def build_shard_manifest(
                 for i in range(target_strat_n)
             ]
 
-    eff_lm_count = low_margin_anchor_count if low_margin_anchor_count is not None else canary_anchor_count
+    eff_lm_count = (
+        low_margin_anchor_count
+        if low_margin_anchor_count is not None
+        else (canary_anchor_count if canary_anchor_count is not None else DEFAULT_LOW_MARGIN_ANCHOR_ITEMS_COUNT)
+    )
     eff_lm_ids = low_margin_item_ids if low_margin_item_ids is not None else canary_item_ids
     eff_lm_tel_sha = low_margin_telemetry_sha256 if low_margin_telemetry_sha256 is not None else canary_telemetry_sha256
     remaining_budget = max(0, int(anchor_count) - len(stratified_anchor_ids))
@@ -4927,7 +5057,18 @@ def run_bakeoff_judge(
         raw_manifest_anchors = [str(iid) for iid in manifest_doc.get("anchor_item_ids", [])]
         anchor_item_ids = [iid for iid in raw_manifest_anchors if iid in items_by_id]
         if str(eff_window_mode or "").strip().lower() in ("counted", "counted-stub", "counted_stub"):
-            manifest_canaries = manifest_doc.get("low_margin_item_ids") or manifest_doc.get("canary_item_ids")
+            _check_low_margin_canary_conflicts(
+                manifest_doc,
+                refusal_code="SHARD_MANIFEST_INVALID",
+                doc_label="shard_manifest.json",
+            )
+            manifest_canaries = _resolve_low_margin_or_canary_field(
+                manifest_doc,
+                "low_margin_item_ids",
+                "canary_item_ids",
+                refusal_code="SHARD_MANIFEST_INVALID",
+                doc_label="shard_manifest.json",
+            )
             if not isinstance(manifest_canaries, list) or not manifest_canaries:
                 raise refused_error(
                     "SHARD_MANIFEST_CANARY_MISSING",
@@ -4991,9 +5132,24 @@ def run_bakeoff_judge(
                     f"Golden anchor manifest '{resolved_golden_path}' root must be a JSON object.",
                     "Regenerate golden_anchor_manifest.json from the lock-check window.",
                 )
-            gm_strat = [str(x) for x in (gm_doc.get("stratified_anchor_item_ids") or [])]
-            gm_can = [str(x) for x in (gm_doc.get("low_margin_item_ids") or gm_doc.get("canary_item_ids") or [])]
-            gm_anchors = [str(x) for x in (gm_doc.get("anchor_item_ids") or [*gm_strat, *gm_can])]
+            _check_low_margin_canary_conflicts(
+                gm_doc,
+                refusal_code="LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                doc_label=str(resolved_golden_path),
+            )
+            raw_gm_strat = gm_doc["stratified_anchor_item_ids"] if gm_doc.get("stratified_anchor_item_ids") is not None else []
+            raw_gm_can = _resolve_low_margin_or_canary_field(
+                gm_doc,
+                "low_margin_item_ids",
+                "canary_item_ids",
+                default=[],
+                refusal_code="LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+                doc_label=str(resolved_golden_path),
+            )
+            gm_strat = [str(x) for x in raw_gm_strat] if isinstance(raw_gm_strat, Sequence) and not isinstance(raw_gm_strat, (str, bytes)) else []
+            gm_can = [str(x) for x in raw_gm_can] if isinstance(raw_gm_can, Sequence) and not isinstance(raw_gm_can, (str, bytes)) else []
+            raw_gm_anchors = gm_doc["anchor_item_ids"] if gm_doc.get("anchor_item_ids") is not None else [*gm_strat, *gm_can]
+            gm_anchors = [str(x) for x in raw_gm_anchors] if isinstance(raw_gm_anchors, Sequence) and not isinstance(raw_gm_anchors, (str, bytes)) else []
             if len(gm_anchors) != DEFAULT_ANCHOR_ITEMS_COUNT or len(set(gm_anchors)) != DEFAULT_ANCHOR_ITEMS_COUNT:
                 raise refused_error(
                     "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
@@ -5854,16 +6010,44 @@ P0A_PHASE_NAMES: tuple[str, ...] = ("tokenise", "prefill", "decode", "post_proce
 
 def _compute_low_margin_inputs_sha256(
     *,
-    low_margin_selection_rule: str = LOW_MARGIN_ANCHOR_SELECTION_RULE,
+    low_margin_selection_rule: str | None = None,
     canary_selection_rule: str | None = None,
     items_sha256: str,
     schedule_sha256: str,
     stratified_anchor_item_ids: Sequence[str],
-    low_margin_telemetry_sha256: str = "",
+    low_margin_telemetry_sha256: str | None = None,
     canary_telemetry_sha256: str | None = None,
 ) -> str:
-    eff_rule = canary_selection_rule if canary_selection_rule is not None else low_margin_selection_rule
-    eff_tel_sha = canary_telemetry_sha256 if canary_telemetry_sha256 is not None else low_margin_telemetry_sha256
+    if (
+        low_margin_selection_rule is not None
+        and canary_selection_rule is not None
+        and str(low_margin_selection_rule) != str(canary_selection_rule)
+    ):
+        raise refused_error(
+            "SHARD_MANIFEST_INVALID",
+            f"Conflicting low_margin_selection_rule={low_margin_selection_rule!r} and canary_selection_rule={canary_selection_rule!r}.",
+            "Pass low_margin_selection_rule (or ensure canary_selection_rule matches).",
+        )
+    if (
+        low_margin_telemetry_sha256 is not None
+        and canary_telemetry_sha256 is not None
+        and str(low_margin_telemetry_sha256) != str(canary_telemetry_sha256)
+    ):
+        raise refused_error(
+            "SHARD_MANIFEST_INVALID",
+            f"Conflicting low_margin_telemetry_sha256={low_margin_telemetry_sha256!r} and canary_telemetry_sha256={canary_telemetry_sha256!r}.",
+            "Pass low_margin_telemetry_sha256 (or ensure canary_telemetry_sha256 matches).",
+        )
+    eff_rule = (
+        low_margin_selection_rule
+        if low_margin_selection_rule is not None
+        else (canary_selection_rule if canary_selection_rule is not None else LOW_MARGIN_ANCHOR_SELECTION_RULE)
+    )
+    eff_tel_sha = (
+        low_margin_telemetry_sha256
+        if low_margin_telemetry_sha256 is not None
+        else (canary_telemetry_sha256 if canary_telemetry_sha256 is not None else "")
+    )
     payload = {
         "low_margin_selection_rule": str(eff_rule),
         "items_sha256": str(items_sha256 or ""),
@@ -6200,9 +6384,24 @@ def _load_golden_anchors_for_shard_manifest(
             f"Lock-check golden_anchor_manifest.json at '{cand_gm}' root must be a JSON object.",
             "Regenerate golden_anchor_manifest.json from the lock-check window.",
         )
-    gm_strat = [str(x) for x in (gm_doc.get("stratified_anchor_item_ids") or [])]
-    gm_can = [str(x) for x in (gm_doc.get("low_margin_item_ids") or gm_doc.get("canary_item_ids") or [])]
-    gm_all = [str(x) for x in (gm_doc.get("anchor_item_ids") or [*gm_strat, *gm_can])]
+    _check_low_margin_canary_conflicts(
+        gm_doc,
+        refusal_code="LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+        doc_label=str(cand_gm),
+    )
+    raw_gm_strat = gm_doc["stratified_anchor_item_ids"] if gm_doc.get("stratified_anchor_item_ids") is not None else []
+    raw_gm_can = _resolve_low_margin_or_canary_field(
+        gm_doc,
+        "low_margin_item_ids",
+        "canary_item_ids",
+        default=[],
+        refusal_code="LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+        doc_label=str(cand_gm),
+    )
+    gm_strat = [str(x) for x in raw_gm_strat] if isinstance(raw_gm_strat, Sequence) and not isinstance(raw_gm_strat, (str, bytes)) else []
+    gm_can = [str(x) for x in raw_gm_can] if isinstance(raw_gm_can, Sequence) and not isinstance(raw_gm_can, (str, bytes)) else []
+    raw_gm_all = gm_doc["anchor_item_ids"] if gm_doc.get("anchor_item_ids") is not None else [*gm_strat, *gm_can]
+    gm_all = [str(x) for x in raw_gm_all] if isinstance(raw_gm_all, Sequence) and not isinstance(raw_gm_all, (str, bytes)) else []
     if len(gm_all) != int(anchor_count) or len(set(gm_all)) != int(anchor_count):
         raise refused_error(
             "LOCK_CHECK_ANCHOR_ITEMS_INVALID",
@@ -6219,7 +6418,15 @@ def _load_golden_anchors_for_shard_manifest(
         )
     strat_ids = gm_strat if len(gm_strat) == int(stratified_anchor_count) else gm_all[: int(stratified_anchor_count)]
     can_ids = gm_can if len(gm_can) == int(canary_anchor_count) else gm_all[len(strat_ids) :]
-    gm_tel_sha = str(gm_doc.get("low_margin_telemetry_sha256") or gm_doc.get("canary_telemetry_sha256") or "") or None
+    raw_gm_tel_sha = _resolve_low_margin_or_canary_field(
+        gm_doc,
+        "low_margin_telemetry_sha256",
+        "canary_telemetry_sha256",
+        default="",
+        refusal_code="LOCK_CHECK_ANCHOR_ITEMS_INVALID",
+        doc_label=str(cand_gm),
+    )
+    gm_tel_sha = str(raw_gm_tel_sha or "") or None
     gm_sha = hashlib.sha256(cand_gm.read_bytes()).hexdigest()
     return strat_ids, can_ids, gm_tel_sha, gm_sha
 
@@ -7267,6 +7474,29 @@ def assemble_p0a_report(
         newline="\n",
     )
     return report_doc
+
+
+def read_p0a_reversed_low_margin_rerun(report_doc: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Read `reversed_low_margin_rerun` (or legacy `reversed_canary_rerun`) from `p0a_report.json` (`low_margin_*` wins; conflicts refuse)."""
+    _check_low_margin_canary_conflicts(
+        report_doc,
+        refusal_code="P0A_REPORT_INVALID",
+        doc_label="p0a_report.json",
+    )
+    sec = _resolve_low_margin_or_canary_field(
+        report_doc,
+        "reversed_low_margin_rerun",
+        "reversed_canary_rerun",
+        refusal_code="P0A_REPORT_INVALID",
+        doc_label="p0a_report.json",
+    )
+    if not isinstance(sec, Mapping):
+        raise refused_error(
+            "P0A_REPORT_INVALID",
+            "p0a_report.json is missing required reversed_low_margin_rerun (or alias reversed_canary_rerun) mapping.",
+            "Regenerate p0a_report.json from the lock-check P0a pass.",
+        )
+    return sec
 
 
 def run_lock_check_p0a(

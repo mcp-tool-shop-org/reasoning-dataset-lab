@@ -303,9 +303,7 @@ def _base_launcher_exports(
         f"export RDLAB_RECEIPTS_DIR='{_to_wsl_path(receipts_dir)}'; "
         f"export HF_HOME='{_to_wsl_path(hf_home)}'; "
         f"export RDLAB_ITEMS_FILE='{_to_wsl_path(items_file)}'; "
-        # The paid modes require --max-rate, --card, and --shape (no default); the fake CLI reports 5.30/h for an A100 session.
-        "export RDLAB_CARD=A100; "
-        "export RDLAB_SHAPE=standard; "
+        # The paid modes require --max-rate (no default); the fake CLI reports 5.30/h for an A100 session.
         "export RDLAB_MAX_RATE=9.5; "
         "export RDLAB_RATE_POLL_SLEEP_SECONDS=0; "
         f"export RDLAB_JUDGE_LOCK_SHA256='{judge_lock_sha}'; "
@@ -1323,7 +1321,7 @@ def test_fake_colab_contract_and_time_one_mode_summary_and_mass_readout(
         [
             "bash",
             "-c",
-            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_t1)}' --run-id t1-run-01",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_t1)}' --run-id t1-run-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -9338,7 +9336,7 @@ def test_timeone_readiness_1_gpu_gate_order_and_empty_download_log_on_failure(
         [
             "bash",
             "-c",
-            f"{exports_ok} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_ok)}' --run-id timeone-gpu-ok-01",
+            f"{exports_ok} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_ok)}' --run-id timeone-gpu-ok-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -9413,7 +9411,7 @@ def test_timeone_readiness_1_gpu_gate_order_and_empty_download_log_on_failure(
         [
             "bash",
             "-c",
-            f"{exports_fail} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_fail)}' --run-id timeone-gpu-fail-01",
+            f"{exports_fail} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_fail)}' --run-id timeone-gpu-fail-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -9503,7 +9501,7 @@ def test_timeone_readiness_2_gpu_gate_all_failure_modes_and_normal_stop_path(
             [
                 "bash",
                 "-c",
-                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_dir)}' --run-id gpu-fail-{mode_name}",
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_dir)}' --run-id gpu-fail-{mode_name}",
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -9808,8 +9806,8 @@ def test_timeone_readiness_5_gate_status_vm_measurement_fields_stub_and_timeone(
     )
     items_file = _make_synthetic_public_items(tmp_path / "data_m5", count=2)
 
-    for mode_flag in ("--stub", "--time-one"):
-        tag = mode_flag.lstrip("-")
+    for mode_flag in ("--stub", "--time-one --card A100 --shape standard"):
+        tag = mode_flag.split()[0].lstrip("-")
         env = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{tag}")
         out_dir = tmp_path / f"out_{tag}"
         exports = _base_launcher_exports(
@@ -11341,7 +11339,7 @@ def test_judge_order_default_and_valid_permutation(
         [
             "bash",
             "-c",
-            f"{exports_perm} RDLAB_JUDGE_ORDER='{perm_d3_last_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_perm)}' --run-id jo-perm-01",
+            f"{exports_perm} RDLAB_JUDGE_ORDER='{perm_d3_last_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_perm)}' --run-id jo-perm-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -11394,7 +11392,7 @@ def test_judge_order_default_and_valid_permutation(
         [
             "bash",
             "-c",
-            f"{exports_def} unset RDLAB_JUDGE_ORDER; bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_def)}' --run-id jo-def-01",
+            f"{exports_def} unset RDLAB_JUDGE_ORDER; bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_def)}' --run-id jo-def-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -11485,7 +11483,7 @@ def test_judge_order_invalid_values_and_wrong_modes_refuse_before_colab_new(
             [
                 "bash",
                 "-c",
-                f"{exports_refuse} RDLAB_JUDGE_ORDER={json.dumps(bad_val)} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(tmp_path / f'out_bad_{idx}')}' --run-id jo-bad-{idx}",
+                f"{exports_refuse} RDLAB_JUDGE_ORDER={json.dumps(bad_val)} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(tmp_path / f'out_bad_{idx}')}' --run-id jo-bad-{idx}",
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -11736,8 +11734,8 @@ def test_first_load_judge_id_refusals_and_note_per_id(
     # 2. Set with `--time-one` or any other mode/stage refuses before `colab new`
     for idx, mode_args in enumerate(
         (
-            "--time-one",
-            "--time-one --dry",
+            "--time-one --card A100 --shape standard",
+            "--time-one --card A100 --shape standard --dry",
             "--stub",
             "--stub --until first_judge",
             "--stub --until weights",
@@ -12404,7 +12402,7 @@ def test_force_pinned_uv_knob_forces_pinned_in_stub_and_refuses_time_one_before_
         [
             "bash",
             "-c",
-            f"{exports_t1} RDLAB_FORCE_PINNED_UV=1 bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_t1)}' --run-id force-t1-01",
+            f"{exports_t1} RDLAB_FORCE_PINNED_UV=1 bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_t1)}' --run-id force-t1-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -12961,7 +12959,7 @@ def test_no_code_path_builds_child_argv_with_bare_cuda_across_all_modes(
         ("stub", "--stub", "cpu"),
         ("first_judge", "--stub --until first_judge", None),
         ("first_load", "--stub --until first_load", "cpu"),
-        ("time_one", "--time-one", "cuda:0"),
+        ("time_one", "--time-one --card A100 --shape standard", "cuda:0"),
         ("counted_default", "", "cpu"),
     ]
     for label, flags, expected_dev in mode_runs:
@@ -13178,7 +13176,7 @@ def test_only_judges_d3_mini_under_time_one_downloads_verifies_and_runs_only_d3_
         [
             "bash",
             "-c",
-            f"{exports_only} RDLAB_ONLY_JUDGES=d3-mini bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_only)}' --run-id only-d3-01",
+            f"{exports_only} RDLAB_ONLY_JUDGES=d3-mini bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_only)}' --run-id only-d3-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -13260,13 +13258,13 @@ def test_only_judges_refused_with_stub_with_judge_order_unknown_id_and_duplicate
         ("RDLAB_ONLY_JUDGES='d3-mini'", "--stub --until first_load"),
         (
             f"RDLAB_ONLY_JUDGES='d3-mini' RDLAB_JUDGE_ORDER='{perm_all}'",
-            "--time-one",
+            "--time-one --card A100 --shape standard",
         ),
-        ("RDLAB_ONLY_JUDGES='unknown-judge'", "--time-one"),
-        ("RDLAB_ONLY_JUDGES='d3-mini,d3-mini'", "--time-one"),
-        ("RDLAB_ONLY_JUDGES=''", "--time-one"),
-        ("RDLAB_ONLY_JUDGES='d3-mini,'", "--time-one"),
-        ("RDLAB_ONLY_JUDGES=' d3-mini'", "--time-one"),
+        ("RDLAB_ONLY_JUDGES='unknown-judge'", "--time-one --card A100 --shape standard"),
+        ("RDLAB_ONLY_JUDGES='d3-mini,d3-mini'", "--time-one --card A100 --shape standard"),
+        ("RDLAB_ONLY_JUDGES=''", "--time-one --card A100 --shape standard"),
+        ("RDLAB_ONLY_JUDGES='d3-mini,'", "--time-one --card A100 --shape standard"),
+        ("RDLAB_ONLY_JUDGES=' d3-mini'", "--time-one --card A100 --shape standard"),
     ]
 
     for idx, (env_prefix, cli_flags) in enumerate(refusal_cases):
@@ -13462,7 +13460,7 @@ def test_part2_item3_live_rate_from_colab_usage_and_cost_cap_fetch_before_stop(
         [
             "bash",
             "-c",
-            f"{exports_c} {extra_c} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --cap 2.5 --out-dir '{_to_wsl_path(out_c)}' --run-id p2-cap-01",
+            f"{exports_c} {extra_c} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --cap 2.5 --out-dir '{_to_wsl_path(out_c)}' --run-id p2-cap-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -14568,7 +14566,7 @@ def test_fix2_item7_mid_run_cost_cap_stop_without_result_tar_fetches_partial_art
         [
             "bash",
             "-c",
-            f"{exports_mid} {extra_mid} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --cap 2.5 --out-dir '{_to_wsl_path(out_mid)}' --run-id fix2-cap-mid-01",
+            f"{exports_mid} {extra_mid} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --cap 2.5 --out-dir '{_to_wsl_path(out_mid)}' --run-id fix2-cap-mid-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -16260,6 +16258,7 @@ def test_fix1_part_b_boot_gatekeeper_real_transport_vs_stub_and_missing_golden(
         "lock_check_phase": "anchors",
         "card_type": "A100",
         "stub_transport": False,
+        "hash_source": "real_transport",
     }
     filled_real["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(filled_real)
     filled_real_path = tmp_path / "real_goldens.json"
@@ -17848,6 +17847,7 @@ def test_fix2_item2_readers_never_apply_hooks_outside_stub_and_dryrun_and_malfor
         "lock_check_phase": "anchors",
         "card_type": "A100",
         "stub_transport": False,
+        "hash_source": "real_transport",
     }
     goldens_doc["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(goldens_doc)
     filled_goldens = tmp_path / "gk_goldens.json"
@@ -20043,7 +20043,7 @@ def test_lock_check_item1_mode_exists_is_real_and_refuses_hooks(
         items_file=items_path,
     )
     for flag, exp_mode, exp_hw in (
-        ("--lock-check", "lock-check", "--gpu A100"),
+        ("--lock-check --card A100 --shape standard", "lock-check", "--gpu A100"),
         ("--lock-check-stub", "lock-check-stub", "CPU"),
         ("--counted-stub", "counted-stub", "CPU"),
     ):
@@ -20456,7 +20456,17 @@ def test_lock_check_item3_promote_goldens_cli_validation_and_refusals(
     run_dir = tmp_path / "promote_run"
     run_dir.mkdir(parents=True, exist_ok=True)
     senv_path = run_dir / "session_env.json"
-    senv_path.write_text(json.dumps({"mode": "lock-check-stub"}) + "\n", encoding="utf-8")
+    senv_path.write_text(
+        json.dumps(
+            {
+                "mode": "lock-check-stub",
+                "window_id": "win-prom-01",
+                "session_fingerprint_sha256": "a" * 64,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     senv_sha = hashlib.sha256(senv_path.read_bytes()).hexdigest()
 
     bg_rep = vm_judges.run_boot_gatekeeper(
@@ -20472,10 +20482,12 @@ def test_lock_check_item3_promote_goldens_cli_validation_and_refusals(
     receipt_path = run_dir / "receipt.json"
     receipt_path.write_text(
         json.dumps(
-            {
-                "filled_goldens_sha256": bg_rep["filled_goldens_sha256"],
-                "boot_gatekeeper": bg_rep,
-            },
+            vm_judges.build_vm_receipt_doc(
+                mode="lock-check-stub",
+                lock_check_phase="anchors",
+                session_env={"session_fingerprint_sha256": "a" * 64},
+                boot_gatekeeper_report=bg_rep,
+            ),
             indent=2,
         )
         + "\n",
@@ -21395,6 +21407,7 @@ def test_fix1_item2_promote_goldens_refuses_any_git_work_tree_and_allows_outside
             "mode": "lock-check",
             "card_type": "A100-SXM4-40GB",
             "stub_transport": False,
+            "hash_source": "real_transport",
         },
     }
     filled_doc["provenance"]["lock_check_phase"] = "anchors"
@@ -21403,7 +21416,28 @@ def test_fix1_item2_promote_goldens_refuses_any_git_work_tree_and_allows_outside
     filled_path.write_text(json.dumps(filled_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     filled_sha = hashlib.sha256(filled_path.read_bytes()).hexdigest()
     rec_path = tmp_path / "vm_receipt.json"
-    rec_path.write_text(json.dumps({"filled_goldens_sha256": filled_sha, "window_id": "window-lc-fix1-02", "mode": "lock-check", "lock_check_phase": "anchors", "session_env_sha256": senv_sha}) + "\n", encoding="utf-8")
+    rec_path.write_text(
+        json.dumps(
+            vm_judges.build_vm_receipt_doc(
+                mode="lock-check",
+                lock_check_phase="anchors",
+                session_env={"session_fingerprint_sha256": "c" * 64},
+                boot_gatekeeper_report={
+                    "status": "ok",
+                    "action": "record",
+                    "window_id": "window-lc-fix1-02",
+                    "session_env_sha256": senv_sha,
+                    "session_fingerprint_sha256": "c" * 64,
+                    "card_type": "A100-SXM4-40GB",
+                    "filled_goldens_sha256": filled_sha,
+                    "filled_goldens_body_sha256": filled_doc["filled_goldens_body_sha256"],
+                },
+            ),
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     # 1. --allow-in-place-repo is rejected by argparse
     with pytest.raises(SystemExit) as exc_arg:
@@ -22719,7 +22753,7 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
                 "-c",
                 (
                     f"{exports} RDLAB_COUNTED_ITEMS_FILE='' RDLAB_COUNTED_MANIFEST='' "
-                    f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check {dry_opt} "
+                    f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --card A100 --shape standard {dry_opt} "
                     f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
                     f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
                     f"--out-dir '{_to_wsl_path(tmp_path / 'sh_no_cnt')}' --run-id sh-no-cnt"
@@ -22741,7 +22775,7 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
             "bash",
             "-c",
             (
-                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check "
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --card A100 --shape standard "
                 f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
                 f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
                 f"--counted-items '{_to_wsl_path(anchor_items_src)}' "
@@ -22764,7 +22798,7 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
             "bash",
             "-c",
             (
-                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check "
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --card A100 --shape standard "
                 f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
                 f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
                 f"--counted-manifest '{_to_wsl_path(tmp_path / 'no_such_mf.json')}' "
@@ -22788,7 +22822,7 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
             "bash",
             "-c",
             (
-                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --dry "
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --card A100 --shape standard --dry "
                 f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
                 f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
                 f"--counted-manifest '{_to_wsl_path(counted_manifest)}' "
@@ -25025,6 +25059,7 @@ def _pm_real_mode_exports(
             items_file=items_file,
         ).replace("export VM_DRYRUN=1; ", "")
         + "unset VM_DRYRUN; "
+        + "export RDLAB_CARD=A100; export RDLAB_SHAPE=standard; "
         + (f"export RDLAB_PART_DIR='{_to_wsl_path(part_dir)}'; " if part_dir is not None else "unset RDLAB_PART_DIR; ")
         + (_test_part_pin_exports(env_paths, *pin_parts) if pin_parts else "")
     )
@@ -26085,7 +26120,7 @@ def test_lock_check_dry_on_builder_made_pilot_like_part_with_pinned_identity(
         if pinned:
             exports += f"export PYTHONPATH='{_to_wsl_path(pin_dir)}'; "
         args = (
-            f"--lock-check --dry --anchor-items '{_to_wsl_path(anchors)}' --p0a-items '{_to_wsl_path(p0a_in)}' "
+            f"--lock-check --card A100 --shape standard --dry --anchor-items '{_to_wsl_path(anchors)}' --p0a-items '{_to_wsl_path(p0a_in)}' "
             f"--counted-items '{_to_wsl_path(counted)}' --run-id lcd-{tag} --out-dir '{_to_wsl_path(tmp_path / ('lcd_out_' + tag))}'"
         )
         if p0a_part is not None:
@@ -27082,9 +27117,9 @@ def test_launcher_lock_check_phase_required_and_dry_prints_phase_wall_and_price(
         return proc
 
     for tag, mp, code in (
-        ("none", "--lock-check --max-rate 9.5", "LOCK_CHECK_PHASE_REQUIRED"),
+        ("none", "--lock-check --card A100 --shape standard --max-rate 9.5", "LOCK_CHECK_PHASE_REQUIRED"),
         ("none_stub", "--lock-check-stub", "LOCK_CHECK_PHASE_REQUIRED"),
-        ("bad", "--lock-check --max-rate 9.5 --lock-check-phase both", "LOCK_CHECK_PHASE_INVALID"),
+        ("bad", "--lock-check --card A100 --shape standard --max-rate 9.5 --lock-check-phase both", "LOCK_CHECK_PHASE_INVALID"),
         ("stubmode", "--stub --lock-check-phase anchors", "LOCK_CHECK_PHASE_INVALID"),
     ):
         proc = _run(tag, mp)
@@ -27093,7 +27128,7 @@ def test_launcher_lock_check_phase_required_and_dry_prints_phase_wall_and_price(
         assert "colab new" not in proc.stdout
 
     for phase, wall in (("anchors", 3600), ("p0a", 5400), ("all", 7200)):
-        proc = _run(f"ok_{phase}", f"--lock-check --max-rate 9.5 --lock-check-phase {phase}")
+        proc = _run(f"ok_{phase}", f"--lock-check --card A100 --shape standard --max-rate 9.5 --lock-check-phase {phase}")
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert f"[lock-check] phase={phase} " in proc.stderr and f"wall_s={wall} " in proc.stderr, proc.stderr
         assert f"wall_x_max_rate={round(wall * 9.5 / 3600.0, 4):g} " in proc.stderr, proc.stderr

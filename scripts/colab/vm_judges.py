@@ -9845,6 +9845,57 @@ def verify_shard_manifest_file(
     )
 
 
+LOW_MARGIN_CANARY_FIELD_PAIRS: tuple[tuple[str, str], ...] = (
+    ("low_margin_item_ids", "canary_item_ids"),
+    ("low_margin_anchor_count", "canary_anchor_count"),
+    ("low_margin_selection_rule", "canary_selection_rule"),
+    ("low_margin_inputs_sha256", "canary_inputs_sha256"),
+    ("low_margin_telemetry_sha256", "canary_telemetry_sha256"),
+    ("reversed_low_margin_rerun", "reversed_canary_rerun"),
+)
+
+
+def resolve_low_margin_or_canary_field(
+    doc: Mapping[str, Any],
+    low_margin_key: str,
+    canary_key: str,
+    *,
+    default: Any = None,
+    refusal_code: str = "SHARD_MANIFEST_INVALID",
+    doc_label: str = "manifest",
+) -> Any:
+    """Resolve `low_margin_*` vs `canary_*` from `doc` (`low_margin_*` wins when not None; conflicting dual keys refuse)."""
+    has_lm = low_margin_key in doc and doc[low_margin_key] is not None
+    has_can = canary_key in doc and doc[canary_key] is not None
+    if has_lm and has_can and doc[low_margin_key] != doc[canary_key]:
+        raise RefusalError(
+            refusal_code,
+            f"Conflicting dual keys in {doc_label}: {low_margin_key}={doc[low_margin_key]!r} != {canary_key}={doc[canary_key]!r}.",
+        )
+    if has_lm:
+        return doc[low_margin_key]
+    if has_can:
+        return doc[canary_key]
+    return default
+
+
+def check_low_margin_canary_conflicts(
+    doc: Mapping[str, Any],
+    *,
+    refusal_code: str = "SHARD_MANIFEST_INVALID",
+    doc_label: str = "manifest",
+) -> None:
+    """Refuse when any `(low_margin_*, canary_*)` pair is present in `doc` with conflicting non-None values."""
+    for lm_key, can_key in LOW_MARGIN_CANARY_FIELD_PAIRS:
+        resolve_low_margin_or_canary_field(
+            doc,
+            lm_key,
+            can_key,
+            refusal_code=refusal_code,
+            doc_label=doc_label,
+        )
+
+
 def _verify_shard_manifest_bytes(
     raw_bytes: bytes,
     *,
@@ -9865,6 +9916,34 @@ def _verify_shard_manifest_bytes(
         raise RefusalError(
             "SHARD_MANIFEST_INVALID",
             f"Shard manifest {manifest_path} is missing required 'shards' mapping.",
+        )
+    check_low_margin_canary_conflicts(
+        doc,
+        refusal_code="SHARD_MANIFEST_INVALID",
+        doc_label=str(manifest_path),
+    )
+    eff_lm_ids = resolve_low_margin_or_canary_field(
+        doc,
+        "low_margin_item_ids",
+        "canary_item_ids",
+        refusal_code="SHARD_MANIFEST_INVALID",
+        doc_label=str(manifest_path),
+    )
+    eff_lm_count = resolve_low_margin_or_canary_field(
+        doc,
+        "low_margin_anchor_count",
+        "canary_anchor_count",
+        refusal_code="SHARD_MANIFEST_INVALID",
+        doc_label=str(manifest_path),
+    )
+    if (
+        isinstance(eff_lm_ids, list)
+        and eff_lm_count is not None
+        and len(eff_lm_ids) != int(eff_lm_count)
+    ):
+        raise RefusalError(
+            "SHARD_MANIFEST_INVALID",
+            f"Shard manifest {manifest_path} low_margin_item_ids length ({len(eff_lm_ids)}) != low_margin_anchor_count ({eff_lm_count}).",
         )
     body_sha256 = _compute_shard_manifest_body_sha256_stdlib(doc)
     recorded_body_sha = str(doc.get("manifest_sha256") or "").strip().lower()
@@ -10127,7 +10206,7 @@ def build_shard_manifest_stdlib(
     anchor_count: int = DEFAULT_ANCHOR_ITEMS_COUNT,
     stratified_anchor_count: int = DEFAULT_STRATIFIED_ANCHOR_ITEMS_COUNT,
     low_margin_anchor_count: int | None = None,
-    canary_anchor_count: int = DEFAULT_LOW_MARGIN_ANCHOR_ITEMS_COUNT,
+    canary_anchor_count: int | None = None,
     low_margin_item_ids: Sequence[str] | None = None,
     canary_item_ids: Sequence[str] | None = None,
     low_margin_telemetry_sha256: str | None = None,
@@ -10140,6 +10219,33 @@ def build_shard_manifest_stdlib(
         raise RefusalError(
             "SHARD_SPEC_MISSING_N",
             f"num_shards must be >= 1, got {num_shards}",
+        )
+    if (
+        low_margin_anchor_count is not None
+        and canary_anchor_count is not None
+        and int(low_margin_anchor_count) != int(canary_anchor_count)
+    ):
+        raise RefusalError(
+            "SHARD_MANIFEST_INVALID",
+            f"Conflicting low_margin_anchor_count={low_margin_anchor_count!r} and canary_anchor_count={canary_anchor_count!r}.",
+        )
+    if (
+        low_margin_item_ids is not None
+        and canary_item_ids is not None
+        and [str(x) for x in low_margin_item_ids] != [str(x) for x in canary_item_ids]
+    ):
+        raise RefusalError(
+            "SHARD_MANIFEST_INVALID",
+            "Conflicting low_margin_item_ids and canary_item_ids passed to build_shard_manifest_stdlib.",
+        )
+    if (
+        low_margin_telemetry_sha256 is not None
+        and canary_telemetry_sha256 is not None
+        and str(low_margin_telemetry_sha256) != str(canary_telemetry_sha256)
+    ):
+        raise RefusalError(
+            "SHARD_MANIFEST_INVALID",
+            "Conflicting low_margin_telemetry_sha256 and canary_telemetry_sha256 passed to build_shard_manifest_stdlib.",
         )
     eff_items_path = (
         items_file / "items.jsonl" if items_file.is_dir() else Path(items_file)
@@ -10244,7 +10350,11 @@ def build_shard_manifest_stdlib(
                     stratified_anchor_ids.append(cand_id)
                     seen_anchor.add(cand_id)
 
-    eff_lm_count = low_margin_anchor_count if low_margin_anchor_count is not None else canary_anchor_count
+    eff_lm_count = (
+        low_margin_anchor_count
+        if low_margin_anchor_count is not None
+        else (canary_anchor_count if canary_anchor_count is not None else DEFAULT_LOW_MARGIN_ANCHOR_ITEMS_COUNT)
+    )
     eff_lm_ids = low_margin_item_ids if low_margin_item_ids is not None else canary_item_ids
     eff_lm_tel_sha = low_margin_telemetry_sha256 if low_margin_telemetry_sha256 is not None else canary_telemetry_sha256
     remaining_budget = max(0, int(anchor_count) - len(stratified_anchor_ids))
@@ -10636,7 +10746,14 @@ def _load_merge_config_for_session_env(repo_dir: Path | None = None) -> dict[str
                         "delta_min": doc.get("delta_min", 0.03),
                         "anchor_count": doc.get("anchor_count", 50),
                         "stratified_anchor_count": doc.get("stratified_anchor_count", 25),
-                        "low_margin_anchor_count": doc.get("low_margin_anchor_count", doc.get("canary_anchor_count", 25)),
+                        "low_margin_anchor_count": resolve_low_margin_or_canary_field(
+                            doc,
+                            "low_margin_anchor_count",
+                            "canary_anchor_count",
+                            default=25,
+                            refusal_code="MERGE_CONFIG_INVALID",
+                            doc_label=str(cand),
+                        ),
                         "k_pool_by_num_shards": doc.get("k_pool_by_num_shards", {"2": 3, "3": 2}),
                         "k_judge": doc.get("k_judge", 1),
                         "k_judge_label": doc.get("k_judge_label", "detection check, not a bias guarantee"),
@@ -10644,6 +10761,8 @@ def _load_merge_config_for_session_env(repo_dir: Path | None = None) -> dict[str
                         "output_token_ids_sha256_diff_cap": doc.get("output_token_ids_sha256_diff_cap", 0),
                         "max_replacement_sessions_per_run": doc.get("max_replacement_sessions_per_run", 1),
                     }
+            except RefusalError:
+                raise
             except Exception:
                 pass
     fallback = {
@@ -11666,6 +11785,21 @@ def card_type_from_session_fields(hardware: str | None, shape: str | None) -> st
     return SESSION_CARD_TYPES.get((hw, sh))
 
 
+def resolve_requested_card_type(card: str | None, shape: str | None) -> str:
+    """Resolve and validate a requested `(card, shape)` pair against `SESSION_CARD_TYPES` before any session opens."""
+    raw_card = str(card or "").strip()
+    raw_shape = str(shape or "").strip()
+    expected_shape = ALLOWED_REQUESTED_SHAPES.get(raw_shape.lower(), raw_shape)
+    resolved = card_type_from_session_fields(raw_card, expected_shape)
+    if resolved is None:
+        supported = ", ".join(sorted(f"{hw}:{sh.title()}" for hw, sh in SESSION_CARD_TYPES))
+        raise RefusalError(
+            "SHAPE_INVALID",
+            f"unsupported (card, shape) pair ({raw_card!r}, {raw_shape!r}): SESSION_CARD_TYPES supports only {supported}",
+        )
+    return resolved
+
+
 def session_fields_from_sessions_output(
     text: str | None, session: str
 ) -> tuple[str | None, str | None, str | None, str | None]:
@@ -11785,11 +11919,13 @@ def build_vm_shape_check(
     *,
     dryrun: bool = False,
     card_type_check: Mapping[str, Any] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Build `card_requested`, `shape_requested`, and `shape_check` fields for VM receipts."""
+    env = environ if environ is not None else os.environ
     norm_mode = str(mode or "").strip().lower()
-    req_card = os.environ.get("RDLAB_CARD", "").strip() or None
-    req_shape = os.environ.get("RDLAB_SHAPE", "").strip().lower() or None
+    req_card = env.get("RDLAB_CARD", "").strip() or None
+    req_shape = env.get("RDLAB_SHAPE", "").strip().lower() or None
     if norm_mode not in BOOT_GATEKEEPER_REAL_MODES or not is_real_mode(norm_mode, dryrun=dryrun):
         return {
             "card_requested": req_card or "CPU",
@@ -11800,13 +11936,15 @@ def build_vm_shape_check(
     obs_card_type = (
         str(card_type_check["card_type"])
         if card_type_check is not None and card_type_check.get("card_type")
-        else (os.environ.get("RDLAB_CARD_TYPE", "").strip() or None)
+        else (env.get("RDLAB_CARD_TYPE", "").strip() or None)
     )
-    obs_shape: str | None = None
-    if obs_card_type == "A100-80":
-        obs_shape = "High-RAM"
-    elif obs_card_type in ("A100", "G4", "L4", "T4"):
-        obs_shape = exp_shape or "Standard"
+    obs_shape_env = env.get("RDLAB_SESSION_SHAPE_OBSERVED", "").strip() or None
+    obs_shape: str | None = obs_shape_env
+    if obs_shape is None:
+        if obs_card_type == "A100-80":
+            obs_shape = "High-RAM"
+        elif obs_card_type in ("A100", "G4", "L4", "T4"):
+            obs_shape = "Standard"
     shape_check = (
         {
             "requested": req_shape,
@@ -11829,13 +11967,15 @@ def receipt_hardware_fields(
     *,
     dryrun: bool = False,
     card_type_check: Mapping[str, Any] | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The success receipt's `hardware` fields. A real time-one / counted / lock-check run records the card it ran on:
     the forwarded `RDLAB_CARD_TYPE` that `verify_vm_card_type` cross-checked with `nvidia-smi`, and the `nvidia-smi`
     GPU name. With no check (a `--until` run) the forwarded card type is recorded as unchecked. Stub, dryrun and
     other modes record `CPU`, as before."""
+    env = environ if environ is not None else os.environ
     norm_mode = str(mode or "").strip().lower()
-    shape_fields = build_vm_shape_check(mode, dryrun=dryrun, card_type_check=card_type_check)
+    shape_fields = build_vm_shape_check(mode, dryrun=dryrun, card_type_check=card_type_check, environ=env)
     if norm_mode not in BOOT_GATEKEEPER_REAL_MODES or not is_real_mode(norm_mode, dryrun=dryrun):
         return {
             "hardware": "CPU",
@@ -11852,7 +11992,7 @@ def receipt_hardware_fields(
         }
     gpu_name, _detail = read_vm_gpu_name()
     return {
-        "hardware": os.environ.get("RDLAB_CARD_TYPE", "").strip() or CARD_TYPE_UNKNOWN,
+        "hardware": env.get("RDLAB_CARD_TYPE", "").strip() or CARD_TYPE_UNKNOWN,
         "hardware_source": "RDLAB_CARD_TYPE, not cross-checked (no card check in this run)",
         "gpu_name": gpu_name,
         **shape_fields,
@@ -11889,6 +12029,25 @@ def resolve_boot_gatekeeper_card_type(card_type: str | None = None, *, real: boo
     return STUB_DEFAULT_CARD_TYPE
 
 
+PROMOTABLE_LOCK_CHECK_PHASES: frozenset[str] = frozenset({"anchors", "all"})
+ALLOWED_LOCK_CHECK_PROVENANCE_MODES: frozenset[str] = frozenset(
+    {"lock-check", "lock_check", "lock-check-stub", "lock_check_stub"}
+)
+STUB_WINDOW_IDS: frozenset[str] = frozenset(
+    {
+        "",
+        "stub",
+        "dryrun",
+        "dry-run",
+        "fake",
+        "synthetic",
+        "test",
+        "local",
+        "window-lock-check",
+        "window-local",
+        "unknown",
+    }
+)
 STUB_WINDOW_ID_TOKENS: tuple[str, ...] = (
     "stub",
     "dryrun",
@@ -11897,21 +12056,18 @@ STUB_WINDOW_ID_TOKENS: tuple[str, ...] = (
     "synthetic",
     "test",
     "local",
+    "unknown",
     "window-lock-check",
+    "window-local",
 )
 
 
 def is_stub_window_id(window_id: str | None) -> bool:
     """Return True when `window_id` is empty or carries a stub/synthetic/local/placeholder token."""
     w = str(window_id or "").strip().lower()
-    if not w:
+    if not w or w in STUB_WINDOW_IDS:
         return True
-    if w in STUB_WINDOW_ID_TOKENS:
-        return True
-    for tok in ("stub", "dryrun", "dry-run", "fake", "synthetic", "window-local", "window-lock-check"):
-        if tok in w:
-            return True
-    return False
+    return any(tok in w for tok in STUB_WINDOW_ID_TOKENS)
 
 
 def compute_goldens_body_sha256(doc: Mapping[str, Any]) -> str:
@@ -11927,18 +12083,23 @@ def compute_goldens_body_sha256(doc: Mapping[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+compute_filled_goldens_body_sha256 = compute_goldens_body_sha256
+
+
 def verify_goldens_self_hash_and_provenance(
-    doc: Mapping[str, Any], *, goldens_path: Path | None = None
+    doc: Mapping[str, Any],
+    *,
+    goldens_path: Path | None = None,
+    card_type: str | None = None,
 ) -> None:
-    """Verify `goldens_body_sha256` and real-window provenance on a promoted goldens doc in real counted mode."""
+    """Verify `goldens_body_sha256` and `promoted_provenance` on a promoted goldens doc in real counted mode."""
     loc = f" in {goldens_path}" if goldens_path is not None else ""
-    recorded_self_sha = str(
-        doc.get("goldens_body_sha256") or doc.get("filled_goldens_body_sha256") or ""
-    ).strip().lower()
+    recorded_self_sha = str(doc.get("goldens_body_sha256") or "").strip().lower()
     if not re.fullmatch(r"[0-9a-f]{64}", recorded_self_sha):
         raise RefusalError(
             "BOOT_GATEKEEPER_GOLDENS_SHA256_MISMATCH",
-            f"Boot gatekeeper goldens{loc} is missing a valid 64-hex goldens_body_sha256 self-hash.",
+            f"Boot gatekeeper goldens{loc} is missing a valid 64-hex goldens_body_sha256 self-hash "
+            "(unpromoted boot_gatekeeper_goldens.filled.json files are refused in counted mode).",
         )
     computed_self_sha = compute_goldens_body_sha256(doc)
     if recorded_self_sha != computed_self_sha:
@@ -11948,35 +12109,72 @@ def verify_goldens_self_hash_and_provenance(
         )
     prov = doc.get("promoted_provenance")
     if not isinstance(prov, Mapping):
-        prov = doc.get("provenance")
-    if not isinstance(prov, Mapping):
         raise RefusalError(
             "BOOT_GATEKEEPER_PROVENANCE_INVALID",
-            f"Boot gatekeeper goldens{loc} is missing promoted_provenance (real-window provenance required).",
+            f"Boot gatekeeper goldens{loc} is missing promoted_provenance (only promoted goldens are accepted in counted mode).",
+        )
+    if bool(prov.get("stub_transport")):
+        raise RefusalError(
+            "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+            f"Boot gatekeeper goldens{loc} promoted_provenance has stub_transport=true.",
+        )
+    prov_mode = str(prov.get("mode") or "").strip().lower()
+    if prov_mode.endswith("stub") or prov_mode in STUB_OR_DRYRUN_MODES:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+            f"Boot gatekeeper goldens{loc} promoted_provenance has stub mode={prov_mode!r}.",
+        )
+    if prov_mode != "lock-check":
+        raise RefusalError(
+            "BOOT_GATEKEEPER_PROVENANCE_INVALID",
+            f"Boot gatekeeper goldens{loc} promoted_provenance.mode must be 'lock-check', got {prov_mode!r}.",
+        )
+    prov_phase = str(prov.get("lock_check_phase") or "").strip().lower()
+    if prov_phase not in PROMOTABLE_LOCK_CHECK_PHASES:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_PROVENANCE_INVALID",
+            f"Boot gatekeeper goldens{loc} promoted_provenance.lock_check_phase must be in {sorted(PROMOTABLE_LOCK_CHECK_PHASES)}, got {prov_phase!r}.",
+        )
+    hash_src = str(prov.get("hash_source") or "").strip()
+    if hash_src != "real_transport":
+        raise RefusalError(
+            "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+            f"Boot gatekeeper goldens{loc} promoted_provenance.hash_source must be 'real_transport', got {hash_src!r}.",
         )
     win_id = str(prov.get("window_id") or "").strip()
     if not win_id:
         raise RefusalError(
             "BOOT_GATEKEEPER_PROVENANCE_INVALID",
-            f"Boot gatekeeper goldens{loc} provenance is missing window_id.",
+            f"Boot gatekeeper goldens{loc} promoted_provenance is missing window_id.",
         )
     if is_stub_window_id(win_id):
         raise RefusalError(
             "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
-            f"Boot gatekeeper goldens{loc} provenance has stub/non-real window_id={win_id!r}.",
+            f"Boot gatekeeper goldens{loc} promoted_provenance has stub/non-real window_id={win_id!r}.",
         )
     env_sha = str(prov.get("session_env_sha256") or "").strip()
     if not re.fullmatch(r"[0-9a-fA-F]{64}", env_sha):
         raise RefusalError(
             "BOOT_GATEKEEPER_PROVENANCE_INVALID",
-            f"Boot gatekeeper goldens{loc} provenance is missing a valid 64-hex session_env_sha256.",
+            f"Boot gatekeeper goldens{loc} promoted_provenance is missing a valid 64-hex session_env_sha256.",
+        )
+    prov_card = str(prov.get("card_type") or "").strip()
+    if not prov_card:
+        raise RefusalError(
+            "BOOT_GATEKEEPER_PROVENANCE_INVALID",
+            f"Boot gatekeeper goldens{loc} promoted_provenance is missing card_type.",
+        )
+    if card_type is not None and str(card_type).strip() and prov_card != str(card_type).strip():
+        raise RefusalError(
+            "BOOT_GATEKEEPER_PROVENANCE_INVALID",
+            f"Boot gatekeeper goldens{loc} promoted_provenance.card_type={prov_card!r} does not match counted card_type={str(card_type).strip()!r}.",
         )
 
 
 def boot_gatekeeper_goldens_stub_marks(doc: Mapping[str, Any], card_entry: Any = None) -> list[str]:
     """The marks that say goldens were recorded on a stub or synthetic transport (never valid for a real counted
     comparison): `promoted_provenance.stub_transport` / `provenance.stub_transport`, a stub provenance mode, a stub
-    `window_id`, a non-real `hash_source`, and the card's `synthetic_fake_hash`. Empty when none."""
+    `window_id`, a missing or non-real `hash_source`, and the card's `synthetic_fake_hash`. Empty when none."""
     marks: list[str] = []
     for key in ("promoted_provenance", "provenance"):
         prov = doc.get(key)
@@ -11987,8 +12185,8 @@ def boot_gatekeeper_goldens_stub_marks(doc: Mapping[str, Any], card_entry: Any =
             if prov_mode.endswith("stub") or prov_mode in STUB_OR_DRYRUN_MODES:
                 marks.append(f"{key}.mode={prov_mode}")
             hash_src = str(prov.get("hash_source") or "").strip()
-            if hash_src and hash_src != "real_transport":
-                marks.append(f"{key}.hash_source={hash_src}")
+            if not hash_src or hash_src != "real_transport":
+                marks.append(f"{key}.hash_source={hash_src or 'missing'}")
             win_id = str(prov.get("window_id") or "").strip()
             if win_id and is_stub_window_id(win_id):
                 marks.append(f"{key}.window_id={win_id}")
@@ -12019,13 +12217,12 @@ def preflight_boot_gatekeeper_goldens(
     resolve_boot_gatekeeper_judge_id(repo_root, eff_path)  # refuses a missing or malformed goldens file
     doc = json.loads(eff_path.read_text(encoding="utf-8"))
     card_types_map = doc.get("card_types")
+    complete = sorted(
+        str(ck)
+        for ck, cv in (card_types_map.items() if isinstance(card_types_map, Mapping) else [])
+        if all(boot_gatekeeper_expected_sha(cv, str(sp["prompt_id"])) for sp in boot_gatekeeper_prompts(doc))
+    )
     if card_type is None and not os.environ.get("RDLAB_CARD_TYPE", "").strip():
-        # Before the session opens the card is not known yet: refuse only when no card type has complete goldens.
-        complete = sorted(
-            str(ck)
-            for ck, cv in (card_types_map.items() if isinstance(card_types_map, Mapping) else [])
-            if all(boot_gatekeeper_expected_sha(cv, str(sp["prompt_id"])) for sp in boot_gatekeeper_prompts(doc))
-        )
         stub_cards = sorted(
             ck
             for ck in complete
@@ -12044,7 +12241,11 @@ def preflight_boot_gatekeeper_goldens(
                 "no golden: no card type has filled boot gatekeeper goldens; counted mode refuses before any paid step "
                 "until lock-check fills them.",
             )
-        verify_goldens_self_hash_and_provenance(doc, goldens_path=eff_path)
+        verify_goldens_self_hash_and_provenance(
+            doc,
+            goldens_path=eff_path,
+            card_type=complete[0] if len(complete) == 1 else None,
+        )
         return {"card_type": None, "cards_with_goldens": complete}
     eff_card = resolve_boot_gatekeeper_card_type(card_type, real=True)
     card_entry = card_types_map.get(eff_card) if isinstance(card_types_map, Mapping) else None
@@ -12054,10 +12255,16 @@ def preflight_boot_gatekeeper_goldens(
         if not boot_gatekeeper_expected_sha(card_entry, str(sp["prompt_id"]))
     ]
     if card_entry is None or missing:
+        if not complete:
+            raise RefusalError(
+                "BOOT_GATEKEEPER_GOLDEN_MISSING",
+                f"no golden: no card type has filled boot gatekeeper goldens (missing for card_type={eff_card!r}, "
+                f"missing={missing}); counted mode refuses before any paid step until lock-check fills them.",
+            )
         raise RefusalError(
             "BOOT_GATEKEEPER_GOLDEN_MISSING",
             f"no golden: Boot gatekeeper golden hashes are missing/unfilled for card_type={eff_card!r} "
-            f"(missing={missing}); counted mode refuses before any paid step until lock-check fills them.",
+            f"(missing={missing}, cards_with_goldens={complete}); counted mode refuses before any paid step until lock-check fills them.",
         )
     marks = boot_gatekeeper_goldens_stub_marks(doc, card_entry)
     if marks:
@@ -12066,7 +12273,7 @@ def preflight_boot_gatekeeper_goldens(
             f"the goldens for card_type={eff_card!r} were recorded on a stub or synthetic transport ({marks}); a real "
             "counted window refuses them before any paid step.",
         )
-    verify_goldens_self_hash_and_provenance(doc, goldens_path=eff_path)
+    verify_goldens_self_hash_and_provenance(doc, goldens_path=eff_path, card_type=eff_card)
     return {"card_type": eff_card, "goldens_complete": True}
 
 
@@ -12539,7 +12746,11 @@ def run_boot_gatekeeper(
             if card_entry is not None and all(
                 boot_gatekeeper_expected_sha(card_entry, str(sp.get("prompt_id") or "")) for sp in synth_prompts
             ):
-                verify_goldens_self_hash_and_provenance(goldens_doc, goldens_path=eff_goldens_path)
+                verify_goldens_self_hash_and_provenance(
+                    goldens_doc,
+                    goldens_path=eff_goldens_path,
+                    card_type=eff_card_type,
+                )
 
     _extract_expected_sha = boot_gatekeeper_expected_sha
 
@@ -12639,8 +12850,15 @@ def run_boot_gatekeeper(
                 )
         eff_window_id = raw_win_id or "window-lock-check"
         session_env_file = run_dir / SESSION_ENV_FILENAME
+        parsed_session_env_doc: Mapping[str, Any] | None = None
         if session_env_file.is_file():
             session_env_sha256 = sha256_file(session_env_file)
+            try:
+                loaded_env = json.loads(session_env_file.read_text(encoding="utf-8"))
+                if isinstance(loaded_env, Mapping):
+                    parsed_session_env_doc = loaded_env
+            except Exception:
+                parsed_session_env_doc = None
         elif isinstance(session_env_report, Mapping) and str(session_env_report.get("session_fingerprint_sha256") or "").strip():
             session_env_sha256 = str(session_env_report.get("session_fingerprint_sha256")).strip()
         elif is_real_mode(mode, dryrun=dryrun):
@@ -12653,10 +12871,26 @@ def run_boot_gatekeeper(
                 f"lock-check-env:{eff_window_id}:{eff_card_type}".encode("utf-8")
             ).hexdigest()
         session_fp_sha256 = (
-            str(session_env_report.get("session_fingerprint_sha256") or "")
+            str(session_env_report.get("session_fingerprint_sha256") or "").strip()
             if isinstance(session_env_report, Mapping)
             else ""
         )
+        if not session_fp_sha256 and isinstance(parsed_session_env_doc, Mapping):
+            session_fp_sha256 = str(parsed_session_env_doc.get("session_fingerprint_sha256") or "").strip()
+        if not session_fp_sha256:
+            if is_real_mode(mode, dryrun=dryrun):
+                raise RefusalError(
+                    "BOOT_GATEKEEPER_PROVENANCE_INVALID",
+                    f"Real record mode ({mode!r}) requires a valid 64-hex session_fingerprint_sha256.",
+                )
+            session_fp_sha256 = hashlib.sha256(
+                f"lock-check-fp:{eff_window_id}:{eff_card_type}".encode("utf-8")
+            ).hexdigest()
+        elif is_real_mode(mode, dryrun=dryrun) and not re.fullmatch(r"[0-9a-fA-F]{64}", session_fp_sha256):
+            raise RefusalError(
+                "BOOT_GATEKEEPER_PROVENANCE_INVALID",
+                f"Real record mode ({mode!r}) requires a valid 64-hex session_fingerprint_sha256, got {session_fp_sha256!r}.",
+            )
 
         enriched_synth_prompts: list[dict[str, Any]] = []
         for sp in synth_prompts:
@@ -12740,6 +12974,7 @@ def run_boot_gatekeeper(
             "synthetic_fake_hash": synthetic_fake_hash,
             "window_id": eff_window_id,
             "session_env_sha256": session_env_sha256,
+            "session_fingerprint_sha256": session_fp_sha256,
             "filled_goldens_path": str(filled_out_path),
             "filled_goldens_sha256": filled_file_sha,
             "filled_goldens_body_sha256": filled_body_sha,
@@ -13408,6 +13643,264 @@ def run_alive() -> int:
     """Execute the pre-gate kernel alive probe (`RDLAB_STEP=alive`)."""
     print("VM_ALIVE_OK", flush=True)
     return 0
+
+
+def finalize_filled_goldens_with_session_env(
+    run_dir: Path,
+    boot_gatekeeper_report: dict[str, Any] | None,
+    *,
+    session_env_report: Mapping[str, Any] | None = None,
+) -> None:
+    """Update `boot_gatekeeper_goldens.filled.json` and `boot_gatekeeper.json` with final `session_env.json` SHA-256."""
+    filled_goldens_file = run_dir / BOOT_GATEKEEPER_FILLED_FILENAME
+    session_env_file = run_dir / SESSION_ENV_FILENAME
+    if (
+        not filled_goldens_file.is_file()
+        or not session_env_file.is_file()
+        or not isinstance(boot_gatekeeper_report, dict)
+    ):
+        return
+    final_env_sha = sha256_file(session_env_file)
+    final_fp_sha = (
+        str(session_env_report.get("session_fingerprint_sha256") or "").strip()
+        if isinstance(session_env_report, Mapping)
+        else ""
+    )
+    if not final_fp_sha:
+        try:
+            env_doc = json.loads(session_env_file.read_text(encoding="utf-8"))
+            if isinstance(env_doc, Mapping):
+                final_fp_sha = str(env_doc.get("session_fingerprint_sha256") or "").strip()
+        except Exception:
+            final_fp_sha = ""
+    fg_doc = json.loads(filled_goldens_file.read_text(encoding="utf-8"))
+    if isinstance(fg_doc, dict) and isinstance(fg_doc.get("provenance"), dict):
+        fg_doc["provenance"]["session_env_sha256"] = final_env_sha
+        if final_fp_sha:
+            fg_doc["provenance"]["session_fingerprint_sha256"] = final_fp_sha
+        fg_doc.pop("filled_goldens_body_sha256", None)
+        fg_doc.pop("goldens_body_sha256", None)
+        fg_body_sha = compute_goldens_body_sha256(fg_doc)
+        fg_doc["filled_goldens_body_sha256"] = fg_body_sha
+        fg_serialized = (
+            json.dumps(fg_doc, indent=2, sort_keys=True, ensure_ascii=False)
+            + "\n"
+        )
+        filled_goldens_file.write_text(
+            fg_serialized, encoding="utf-8", newline="\n"
+        )
+        fg_file_sha = hashlib.sha256(
+            fg_serialized.encode("utf-8")
+        ).hexdigest()
+        boot_gatekeeper_report["session_env_sha256"] = final_env_sha
+        if final_fp_sha:
+            boot_gatekeeper_report["session_fingerprint_sha256"] = final_fp_sha
+        boot_gatekeeper_report["filled_goldens_sha256"] = fg_file_sha
+        boot_gatekeeper_report["filled_goldens_body_sha256"] = fg_body_sha
+        (run_dir / BOOT_GATEKEEPER_FILENAME).write_text(
+            json.dumps(boot_gatekeeper_report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+
+def build_vm_receipt_doc(
+    *,
+    mode: str,
+    lock_check_phase: str | None = None,
+    dryrun: bool = False,
+    card_type_check: Mapping[str, Any] | None = None,
+    shard_info_report: Mapping[str, Any] | None = None,
+    time_one_summary: Mapping[str, Any] | None = None,
+    boot_gatekeeper_report: Mapping[str, Any] | None = None,
+    loop_order_val: str = "judge-outer",
+    subblock_items_val: int | None = None,
+    session_env_report: Mapping[str, Any] | None = None,
+    session_env: Mapping[str, Any] | None = None,
+    venv_info: Mapping[str, Any] | None = None,
+    judge_venvs_map: Mapping[str, Any] | None = None,
+    judge_download_records: Sequence[Mapping[str, Any]] = (),
+    lock_digests: Mapping[str, Any] | None = None,
+    judge_order: Sequence[str] = (),
+    judge_order_source: str = "default",
+    only_judges: Sequence[str] | None = None,
+    device_check_report: Mapping[str, Any] | None = None,
+    gpu_gate_report: Mapping[str, Any] | None = None,
+    verified_snapshots: Mapping[str, Any] | None = None,
+    deleted_items_receipt: Mapping[str, Any] | None = None,
+    pilot_mass_readout: Mapping[str, Any] | None = None,
+    timings_block: Mapping[str, Any] | None = None,
+    cgroup_limit_chain: Mapping[str, Any] | None = None,
+    cgroup_chain_at_start: Mapping[str, Any] | None = None,
+    boot_gatekeeper_judge_plan: Mapping[str, Any] | None = None,
+    gatekeeper_record_fields: Mapping[str, Any] | None = None,
+    until_step: str | None = None,
+    stopped_after: str | None = None,
+    first_load_judge_id: str = FIRST_LOAD_JUDGE_ID,
+    first_load_judge_id_source: str = "default",
+    anchor_items_sha256: str | None = None,
+    p0a_items_sha256: str | None = None,
+    counted_source_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Build the canonical `vm_receipt.json` document (used by `vm_judges.main` and tests)."""
+    if session_env_report is None and session_env is not None:
+        session_env_report = session_env
+    if cgroup_chain_at_start is None and cgroup_limit_chain is not None:
+        cgroup_chain_at_start = cgroup_limit_chain
+    eff_venv_info: Mapping[str, Any] = venv_info or {}
+    py_rep: Mapping[str, Any] = eff_venv_info.get("python_315_report") or {}
+    eff_judge_venvs: Mapping[str, Any] = judge_venvs_map or {}
+    download_stack_versions_by_judge = {
+        str(rec.get("judge_id") or ""): {
+            "venv": (eff_judge_venvs.get(str(rec.get("judge_id") or "")) or {}).get("venv"),
+            "huggingface_hub_version": rec.get("huggingface_hub_version"),
+            "hf_xet_version": rec.get("hf_xet_version"),
+        }
+        for rec in judge_download_records
+        if rec.get("judge_id")
+    }
+    receipt_doc: dict[str, Any] = {
+        "status": "ok",
+        "mode": mode,
+        "lock_check_phase": lock_check_phase,
+        **receipt_hardware_fields(mode, dryrun=dryrun, card_type_check=card_type_check),
+        "shard_spec": (
+            shard_info_report["shard_spec"]
+            if shard_info_report is not None and "shard_spec" in shard_info_report
+            else "1/1"
+        ),
+        "shard_manifest_sha256": (
+            shard_info_report.get("shard_manifest_sha256")
+            if shard_info_report is not None
+            else None
+        ),
+        "golden_anchor_manifest_file_sha256": (
+            time_one_summary.get("golden_anchor_manifest_file_sha256")
+            if time_one_summary is not None
+            else None
+        ),
+        "p0a_report_sha256": (
+            time_one_summary.get("p0a_report_sha256")
+            if time_one_summary is not None
+            else None
+        ),
+        "filled_goldens_sha256": (
+            boot_gatekeeper_report.get("filled_goldens_sha256")
+            if isinstance(boot_gatekeeper_report, Mapping)
+            else None
+        ),
+        "shard_item_ids": (
+            shard_info_report.get("shard_item_ids", [])
+            if shard_info_report is not None
+            else []
+        ),
+        "anchor_item_ids": (
+            shard_info_report.get("anchor_item_ids", [])
+            if shard_info_report is not None
+            else []
+        ),
+        "loop_order": loop_order_val,
+        "subblock_items": subblock_items_val,
+        "session_fingerprint_sha256": (
+            session_env_report.get("session_fingerprint_sha256")
+            if isinstance(session_env_report, Mapping)
+            else None
+        ),
+        "session_env": dict(session_env_report) if isinstance(session_env_report, Mapping) else session_env_report,
+        "fill_uninitialized_memory": (
+            bool(session_env_report.get("fill_uninitialized_memory", False))
+            if isinstance(session_env_report, Mapping)
+            else False
+        ),
+        "boot_gatekeeper": dict(boot_gatekeeper_report) if isinstance(boot_gatekeeper_report, Mapping) else boot_gatekeeper_report,
+        "uv_source": py_rep.get("uv_source"),
+        "uv_path": py_rep.get("uv_path"),
+        "uv_version": eff_venv_info.get("uv_version"),
+        "uv_metadata_version": py_rep.get("uv_metadata_version"),
+        "uv_wheel_download_seconds": py_rep.get("uv_wheel_download_seconds"),
+        "uv_wheel_unpack_seconds": py_rep.get("uv_wheel_unpack_seconds"),
+        "python_315": eff_venv_info.get("python_315"),
+        "interpreter_version": py_rep.get("interpreter_version"),
+        "interpreter_build": py_rep.get("interpreter_build"),
+        "source_url": py_rep.get("source_url"),
+        "archive_sha256_expected": py_rep.get("archive_sha256_expected"),
+        "archive_sha256_actual": py_rep.get("archive_sha256_actual"),
+        "download_bytes": py_rep.get("download_bytes"),
+        "installed_bytes": py_rep.get("installed_bytes"),
+        "install_seconds": py_rep.get("install_seconds"),
+        "route": py_rep.get("route"),
+        "lock_sdists": eff_venv_info.get("lock_sdists"),
+        "python_315_report": dict(py_rep) if isinstance(py_rep, Mapping) else py_rep,
+        "lock_digests": dict(lock_digests) if isinstance(lock_digests, Mapping) else lock_digests,
+        "venvs": dict(eff_venv_info) if isinstance(eff_venv_info, Mapping) else eff_venv_info,
+        "judge_venvs": dict(eff_judge_venvs),
+        "judge_order": list(judge_order),
+        "judge_order_source": judge_order_source,
+        "only_judges": list(only_judges) if only_judges is not None else None,
+        "device_check": device_check_report,
+        "gpu_gate": gpu_gate_report,
+        "download_stack_versions": {
+            "expected": EXPECTED_DOWNLOAD_STACK_VERSIONS,
+            "by_judge": download_stack_versions_by_judge,
+        },
+        "verified_snapshots": verified_snapshots,
+        "deleted_items_receipt": deleted_items_receipt,
+        "judges": (
+            dict(time_one_summary.get("judges", {}))
+            if time_one_summary is not None
+            else {}
+        ),
+        "time_one_summary": time_one_summary,
+        "part_identity": (
+            time_one_summary.get("part_identity")
+            if time_one_summary is not None
+            else None
+        ),
+        "pilot_mass_check": pilot_mass_readout,
+        "harness_readouts": {
+            "pilot_mass_check": pilot_mass_readout,
+        },
+        "timings": dict(timings_block) if isinstance(timings_block, Mapping) else timings_block,
+        "cgroup_limit_chain": (
+            dict(cgroup_chain_at_start)
+            if isinstance(cgroup_chain_at_start, Mapping)
+            else cgroup_chain_at_start
+        ),
+        "dryrun": dryrun,
+    }
+    if boot_gatekeeper_judge_plan is not None:
+        # The gatekeeper's judge, downloaded and verified for the gatekeeper only when it is not a timed judge;
+        # judge_order, only_judges and the timing outputs above stay as requested.
+        receipt_doc["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
+    if gatekeeper_record_fields:
+        receipt_doc.update(gatekeeper_record_fields)
+    if card_type_check is not None:
+        receipt_doc["card_type_check"] = card_type_check
+    if until_step is not None:
+        receipt_doc["until"] = until_step
+        receipt_doc["until_step"] = until_step
+        receipt_doc["stopped_after"] = stopped_after
+        if until_step == "first_judge":
+            receipt_doc["first_judge_id"] = FIRST_JUDGE_ID
+            receipt_doc["first_judge_receipt_bytes"] = FIRST_JUDGE_RECEIPT_BYTES
+        elif until_step == "first_load":
+            fl_receipt_bytes = JUDGE_RECEIPT_BYTES_BY_ID.get(
+                first_load_judge_id, FIRST_LOAD_RECEIPT_BYTES
+            )
+            fl_note = resolve_first_load_note(first_load_judge_id)
+            receipt_doc["first_load_judge_id"] = first_load_judge_id
+            receipt_doc["first_load_judge_id_source"] = first_load_judge_id_source
+            receipt_doc["first_load_receipt_bytes"] = fl_receipt_bytes
+            receipt_doc["first_load_note"] = fl_note
+            receipt_doc["first_judge_id"] = first_load_judge_id
+            receipt_doc["first_judge_receipt_bytes"] = fl_receipt_bytes
+    if anchor_items_sha256 is not None:
+        receipt_doc["anchor_items_sha256"] = anchor_items_sha256
+    if p0a_items_sha256 is not None:
+        receipt_doc["p0a_items_sha256"] = p0a_items_sha256
+    if counted_source_sha256 is not None:
+        receipt_doc["counted_source_sha256"] = counted_source_sha256
+    return receipt_doc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -14198,40 +14691,11 @@ def main(argv: list[str] | None = None) -> int:
             work_dir=args.work_dir,
             repo_dir=args.repo_dir,
         )
-        filled_goldens_file = args.run_dir / BOOT_GATEKEEPER_FILLED_FILENAME
-        session_env_file = args.run_dir / SESSION_ENV_FILENAME
-        if (
-            filled_goldens_file.is_file()
-            and session_env_file.is_file()
-            and isinstance(boot_gatekeeper_report, dict)
-        ):
-            final_env_sha = sha256_file(session_env_file)
-            fg_doc = json.loads(filled_goldens_file.read_text(encoding="utf-8"))
-            if isinstance(fg_doc, dict) and isinstance(fg_doc.get("provenance"), dict):
-                fg_doc["provenance"]["session_env_sha256"] = final_env_sha
-                fg_doc.pop("filled_goldens_body_sha256", None)
-                fg_doc.pop("goldens_body_sha256", None)
-                fg_body_sha = compute_goldens_body_sha256(fg_doc)
-                fg_doc["filled_goldens_body_sha256"] = fg_body_sha
-                fg_doc["goldens_body_sha256"] = fg_body_sha
-                fg_serialized = (
-                    json.dumps(fg_doc, indent=2, sort_keys=True, ensure_ascii=False)
-                    + "\n"
-                )
-                filled_goldens_file.write_text(
-                    fg_serialized, encoding="utf-8", newline="\n"
-                )
-                fg_file_sha = hashlib.sha256(
-                    fg_serialized.encode("utf-8")
-                ).hexdigest()
-                boot_gatekeeper_report["session_env_sha256"] = final_env_sha
-                boot_gatekeeper_report["filled_goldens_sha256"] = fg_file_sha
-                boot_gatekeeper_report["filled_goldens_body_sha256"] = fg_body_sha
-                (args.run_dir / BOOT_GATEKEEPER_FILENAME).write_text(
-                    json.dumps(boot_gatekeeper_report, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8",
-                    newline="\n",
-                )
+        finalize_filled_goldens_with_session_env(
+            args.run_dir,
+            boot_gatekeeper_report if isinstance(boot_gatekeeper_report, dict) else None,
+            session_env_report=session_env_report,
+        )
 
         with vm_log_path.open("a", encoding="utf-8", newline="\n") as log_fh:
             until_sfx = (
@@ -14258,151 +14722,41 @@ def main(argv: list[str] | None = None) -> int:
 
         py_rep = venv_info["python_315_report"]
         judge_venvs_map = _build_judge_venvs_map(args.work_dir)
-        download_stack_versions_by_judge = {
-            str(rec.get("judge_id") or ""): {
-                "venv": judge_venvs_map.get(str(rec.get("judge_id") or ""), {}).get("venv"),
-                "huggingface_hub_version": rec.get("huggingface_hub_version"),
-                "hf_xet_version": rec.get("hf_xet_version"),
-            }
-            for rec in judge_download_records
-            if rec.get("judge_id")
-        }
-        receipt_doc: dict[str, Any] = {
-            "status": "ok",
-            "mode": args.mode,
-            "lock_check_phase": main_lock_check_phase,
-            **receipt_hardware_fields(args.mode, dryrun=dryrun, card_type_check=card_type_check),
-            "shard_spec": (
-                shard_info_report["shard_spec"]
-                if shard_info_report is not None
-                else "1/1"
-            ),
-            "shard_manifest_sha256": (
-                shard_info_report["shard_manifest_sha256"]
-                if shard_info_report is not None
-                else None
-            ),
-            "golden_anchor_manifest_file_sha256": (
-                time_one_summary.get("golden_anchor_manifest_file_sha256")
-                if time_one_summary is not None
-                else None
-            ),
-            "p0a_report_sha256": (
-                time_one_summary.get("p0a_report_sha256")
-                if time_one_summary is not None
-                else None
-            ),
-            "filled_goldens_sha256": (
-                boot_gatekeeper_report.get("filled_goldens_sha256")
-                if isinstance(boot_gatekeeper_report, Mapping)
-                else None
-            ),
-            "shard_item_ids": (
-                shard_info_report["shard_item_ids"]
-                if shard_info_report is not None
-                else []
-            ),
-            "anchor_item_ids": (
-                shard_info_report["anchor_item_ids"]
-                if shard_info_report is not None
-                else []
-            ),
-            "loop_order": loop_order_val,
-            "subblock_items": subblock_items_val,
-            "session_fingerprint_sha256": (
-                session_env_report["session_fingerprint_sha256"]
-                if session_env_report is not None
-                else None
-            ),
-            "session_env": session_env_report,
-            "fill_uninitialized_memory": (
-                session_env_report.get("fill_uninitialized_memory", False)
-                if session_env_report is not None
-                else False
-            ),
-            "boot_gatekeeper": boot_gatekeeper_report,
-            "uv_source": py_rep["uv_source"],
-            "uv_path": py_rep["uv_path"],
-            "uv_version": venv_info["uv_version"],
-            "uv_metadata_version": py_rep["uv_metadata_version"],
-            "uv_wheel_download_seconds": py_rep["uv_wheel_download_seconds"],
-            "uv_wheel_unpack_seconds": py_rep["uv_wheel_unpack_seconds"],
-            "python_315": venv_info["python_315"],
-            "interpreter_version": py_rep["interpreter_version"],
-            "interpreter_build": py_rep["interpreter_build"],
-            "source_url": py_rep["source_url"],
-            "archive_sha256_expected": py_rep["archive_sha256_expected"],
-            "archive_sha256_actual": py_rep["archive_sha256_actual"],
-            "download_bytes": py_rep["download_bytes"],
-            "installed_bytes": py_rep["installed_bytes"],
-            "install_seconds": py_rep["install_seconds"],
-            "route": py_rep["route"],
-            "lock_sdists": venv_info["lock_sdists"],
-            "python_315_report": py_rep,
-            "lock_digests": lock_digests,
-            "venvs": venv_info,
-            "judge_venvs": judge_venvs_map,
-            "judge_order": list(judge_order),
-            "judge_order_source": judge_order_source,
-            "only_judges": list(only_judges) if only_judges is not None else None,
-            "device_check": device_check_report,
-            "gpu_gate": gpu_gate_report,
-            "download_stack_versions": {
-                "expected": EXPECTED_DOWNLOAD_STACK_VERSIONS,
-                "by_judge": download_stack_versions_by_judge,
-            },
-            "verified_snapshots": verified_snapshots,
-            "deleted_items_receipt": deleted_items_receipt,
-            "judges": (
-                dict(time_one_summary.get("judges", {}))
-                if time_one_summary is not None
-                else {}
-            ),
-            "time_one_summary": time_one_summary,
-            "part_identity": (
-                time_one_summary.get("part_identity")
-                if time_one_summary is not None
-                else None
-            ),
-            "pilot_mass_check": pilot_mass_readout,
-            "harness_readouts": {
-                "pilot_mass_check": pilot_mass_readout,
-            },
-            "timings": _build_timings_block(),
-            "cgroup_limit_chain": cgroup_chain_at_start,
-            "dryrun": dryrun,
-        }
-        if boot_gatekeeper_judge_plan is not None:
-            # The gatekeeper's judge, downloaded and verified for the gatekeeper only when it is not a timed judge;
-            # judge_order, only_judges and the timing outputs above stay as requested.
-            receipt_doc["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
-        receipt_doc.update(gatekeeper_record_fields)
-        if card_type_check is not None:
-            receipt_doc["card_type_check"] = card_type_check
-        if until_step is not None:
-            receipt_doc["until"] = until_step
-            receipt_doc["until_step"] = until_step
-            receipt_doc["stopped_after"] = stopped_after
-            if until_step == "first_judge":
-                receipt_doc["first_judge_id"] = FIRST_JUDGE_ID
-                receipt_doc["first_judge_receipt_bytes"] = FIRST_JUDGE_RECEIPT_BYTES
-            elif until_step == "first_load":
-                fl_receipt_bytes = JUDGE_RECEIPT_BYTES_BY_ID.get(
-                    first_load_judge_id, FIRST_LOAD_RECEIPT_BYTES
-                )
-                fl_note = resolve_first_load_note(first_load_judge_id)
-                receipt_doc["first_load_judge_id"] = first_load_judge_id
-                receipt_doc["first_load_judge_id_source"] = first_load_judge_id_source
-                receipt_doc["first_load_receipt_bytes"] = fl_receipt_bytes
-                receipt_doc["first_load_note"] = fl_note
-                receipt_doc["first_judge_id"] = first_load_judge_id
-                receipt_doc["first_judge_receipt_bytes"] = fl_receipt_bytes
-        if anchor_items_sha256 is not None:
-            receipt_doc["anchor_items_sha256"] = anchor_items_sha256
-        if p0a_items_sha256 is not None:
-            receipt_doc["p0a_items_sha256"] = p0a_items_sha256
-        if counted_source_sha256 is not None:
-            receipt_doc["counted_source_sha256"] = counted_source_sha256
+        receipt_doc = build_vm_receipt_doc(
+            mode=args.mode,
+            lock_check_phase=main_lock_check_phase,
+            dryrun=dryrun,
+            card_type_check=card_type_check,
+            shard_info_report=shard_info_report,
+            time_one_summary=time_one_summary,
+            boot_gatekeeper_report=boot_gatekeeper_report,
+            loop_order_val=loop_order_val,
+            subblock_items_val=subblock_items_val,
+            session_env_report=session_env_report,
+            venv_info=venv_info,
+            judge_venvs_map=judge_venvs_map,
+            judge_download_records=judge_download_records,
+            lock_digests=lock_digests,
+            judge_order=list(judge_order),
+            judge_order_source=judge_order_source,
+            only_judges=list(only_judges) if only_judges is not None else None,
+            device_check_report=device_check_report,
+            gpu_gate_report=gpu_gate_report,
+            verified_snapshots=verified_snapshots,
+            deleted_items_receipt=deleted_items_receipt,
+            pilot_mass_readout=pilot_mass_readout,
+            timings_block=_build_timings_block(),
+            cgroup_limit_chain=cgroup_chain_at_start,
+            boot_gatekeeper_judge_plan=boot_gatekeeper_judge_plan,
+            gatekeeper_record_fields=gatekeeper_record_fields,
+            until_step=until_step,
+            stopped_after=stopped_after,
+            first_load_judge_id=first_load_judge_id,
+            first_load_judge_id_source=first_load_judge_id_source,
+            anchor_items_sha256=anchor_items_sha256,
+            p0a_items_sha256=p0a_items_sha256,
+            counted_source_sha256=counted_source_sha256,
+        )
         receipt_serialized = json.dumps(receipt_doc, indent=2) + "\n"
         receipt_path.write_text(
             receipt_serialized,
