@@ -773,7 +773,7 @@ def _stub_filled_goldens_from_lock_check_stub(tmp_path: Path) -> Path:
     }
     import promote_goldens
 
-    filled["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(filled)
+    filled["filled_goldens_body_sha256"] = vm_judges.compute_filled_goldens_body_sha256(filled)
     path = filled_dir / "boot_gatekeeper_goldens.filled.json"
     path.write_text(json.dumps(filled, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
@@ -799,8 +799,6 @@ def _real_filled_goldens_and_receipt(
     hash_source: str | None = "real_transport",
     write_session_env: bool = True,
 ) -> tuple[Path, Path, str]:
-    import promote_goldens
-
     tag_dir = tmp_path / tag
     tag_dir.mkdir(parents=True, exist_ok=True)
     senv_doc = {
@@ -843,7 +841,7 @@ def _real_filled_goldens_and_receipt(
         "card_types": card_types_map,
         "provenance": prov,
     }
-    filled["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(filled)
+    filled["filled_goldens_body_sha256"] = vm_judges.compute_filled_goldens_body_sha256(filled)
     filled_path = tag_dir / "boot_gatekeeper_goldens.filled.json"
     raw_bytes = (json.dumps(filled, indent=2, sort_keys=True) + "\n").encode("utf-8")
     filled_path.write_bytes(raw_bytes)
@@ -1259,8 +1257,9 @@ def test_f_card_or_shape_drift_refuses(tmp_path: Path) -> None:
 def test_ask1_receipt_mandatory_cross_checks_and_real_nesting(tmp_path: Path) -> None:
     """Ask 1: Receipt cross-checks are mandatory and read each field from its real nested location
     (built with `vm_judges.build_vm_receipt_doc`). Any missing, empty, null, or mismatched field refuses."""
-    import os
-    import promote_goldens
+    import importlib
+
+    promote_goldens = importlib.import_module("promote_goldens")
 
     filled_path, receipt_path, file_sha = _real_filled_goldens_and_receipt(tmp_path, tag="ask1_base")
     base_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -1405,7 +1404,9 @@ def test_ask1_positive_real_mode_launcher_lock_check_receipt_promotes(tmp_path: 
     against the fake CLI, verify the produced `vm_receipt.json` has the exact real nesting
     (`window_id` and `session_env_sha256` inside `boot_gatekeeper`, `mode` and `lock_check_phase` at top level),
     and promote `boot_gatekeeper_goldens.filled.json` with `promote_goldens.promote_goldens_file`."""
-    import promote_goldens
+    import importlib
+
+    promote_goldens = importlib.import_module("promote_goldens")
 
     receipts_dir, hf_home = tcl._make_synthetic_judge_snapshots_and_receipts(tmp_path / "lc_pos_rec")
     pilot = tcl._pilot_like_part(tmp_path / "lc_pos_pilot")
@@ -1504,8 +1505,10 @@ def test_ask1_live_shape_real_receipts_refused_on_mode_phase(tmp_path: Path) -> 
     and `timeone-02/vm_receipt.json` starting `d67236a7`), confirms their nested structure matches
     `vm_judges.build_vm_receipt_doc`, and proves both are REFUSED for promotion by the mode/phase check
     (not a JSON parse error or missing-window/env field error)."""
+    import importlib
     import os
-    import promote_goldens
+
+    promote_goldens = importlib.import_module("promote_goldens")
 
     live_dir_raw = (os.environ.get("RDLAB_LIVE_RECEIPTS_DIR") or "").strip()
     if not live_dir_raw:
@@ -1650,7 +1653,9 @@ def test_ask3_main_refusals_preserved_and_stricter(tmp_path: Path) -> None:
     """Ask 3: Every `main` refusal in `promote_goldens.py` is preserved (adjacent `session_env.json` auto-lookup,
     fingerprint and window_id cross-check, expected_window_id, mode in ALLOWED_LOCK_CHECK_PROVENANCE_MODES,
     synthetic_prompts 64-hex hashes, single filled card matching provenance.card_type, git work-tree guard)."""
-    import promote_goldens
+    import importlib
+
+    promote_goldens = importlib.import_module("promote_goldens")
 
     # 1. Adjacent `session_env.json` is automatically discovered when `session_env_path=None`
     filled, receipt, file_sha = _real_filled_goldens_and_receipt(tmp_path, tag="ask3_auto_senv")
@@ -1891,7 +1896,9 @@ def test_ask4_shared_rules_stub_window_id_body_hash_and_hash_source(tmp_path: Pa
     """Ask 4: One shared implementation of `is_stub_window_id`, `compute_goldens_body_sha256`, and
     `compute_filled_goldens_body_sha256` imported by both `vm_judges` and `promote_goldens`.
     Missing `hash_source` refuses in real mode in both."""
-    import promote_goldens
+    import importlib
+
+    promote_goldens = importlib.import_module("promote_goldens")
 
     assert promote_goldens.is_stub_window_id is vm_judges.is_stub_window_id
     assert promote_goldens.compute_goldens_body_sha256 is vm_judges.compute_goldens_body_sha256
@@ -2052,6 +2059,23 @@ def test_ask5_low_margin_precedence_is_not_none_and_conflict_refusal(tmp_path: P
             canary_item_ids=lm_25,
             low_margin_telemetry_sha256="d" * 64,
         )
+    with pytest.raises((RdlabError, ValueError), match="Conflicting"):
+        bakeoff_judge.build_shard_manifest(
+            items_file,
+            num_shards=2,
+            low_margin_anchor_count=25,
+            canary_anchor_count=10,
+            low_margin_item_ids=lm_25,
+            low_margin_telemetry_sha256="d" * 64,
+        )
+    with pytest.raises((RdlabError, ValueError), match="Conflicting"):
+        bakeoff_judge.build_shard_manifest(
+            items_file,
+            num_shards=2,
+            low_margin_item_ids=lm_25,
+            low_margin_telemetry_sha256="d" * 64,
+            canary_telemetry_sha256="e" * 64,
+        )
     with pytest.raises(vm_judges.RefusalError) as exc_std_conf:
         vm_judges.build_shard_manifest_stdlib(
             items_file,
@@ -2061,6 +2085,29 @@ def test_ask5_low_margin_precedence_is_not_none_and_conflict_refusal(tmp_path: P
             low_margin_telemetry_sha256="d" * 64,
         )
     assert exc_std_conf.value.failure_class == "SHARD_MANIFEST_INVALID"
+
+    # Conflicting dual arguments to select_lock_check_low_margin_anchors and build_golden_anchor_manifest refuse:
+    tel_dir = tmp_path / "ask5_tel" / "rows"
+    tel_dir.mkdir(parents=True, exist_ok=True)
+    (tel_dir / "nemotron-3-nano-4b.jsonl").write_text(
+        json.dumps({"item_id": lm_25[0], "verdict_token_margin": 0.125}) + "\n", encoding="utf-8"
+    )
+    with pytest.raises((RdlabError, ValueError), match="Conflicting"):
+        bakeoff_judge.select_lock_check_low_margin_anchors(
+            lm_25, tel_dir.parent, low_margin_count=25, canary_count=10
+        )
+    with pytest.raises((RdlabError, ValueError), match="Conflicting"):
+        bakeoff_judge.build_golden_anchor_manifest(
+            [], low_margin_anchor_count=25, canary_anchor_count=10
+        )
+    with pytest.raises((RdlabError, ValueError), match="Conflicting"):
+        bakeoff_judge.build_golden_anchor_manifest(
+            [], low_margin_item_ids=[], canary_item_ids=lm_25
+        )
+    with pytest.raises((RdlabError, ValueError), match="Conflicting"):
+        bakeoff_judge.build_golden_anchor_manifest(
+            [], low_margin_telemetry_sha256="a" * 64, canary_telemetry_sha256="b" * 64
+        )
 
     # Empty low_margin_item_ids with non-empty canary_item_ids in shard_manifest.json -> refuses conflict
     sm_conflict_empty = dict(sm_valid)
@@ -2116,6 +2163,9 @@ def test_ask5_low_margin_precedence_is_not_none_and_conflict_refusal(tmp_path: P
         bakeoff_judge.read_p0a_reversed_low_margin_rerun(
             {"reversed_low_margin_rerun": {"status": "ok"}, "reversed_canary_rerun": {"status": "failed"}}
         )
+    with pytest.raises(RdlabError) as exc_p0a_missing:
+        bakeoff_judge.read_p0a_reversed_low_margin_rerun({})
+    assert exc_p0a_missing.value.code == "P0A_REPORT_INVALID"
     assert bakeoff_judge.read_p0a_reversed_low_margin_rerun(
         {"reversed_canary_rerun": {"status": "ok", "items": 25}}
     ) == {"status": "ok", "items": 25}

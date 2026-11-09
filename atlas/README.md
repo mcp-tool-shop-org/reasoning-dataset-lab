@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-08 from commit 9d1650e by Atlas 1.24.0.
+Mapped at 2026-11-09 from commit 664d640 by Atlas 1.24.0.
 
 ## What this is
 
@@ -8,9 +8,11 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (80 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-08 (abe687f)
+## What changed since 2026-11-08 (9d1650e)
 
-Nothing structural changed since 2026-11-08; 2 files changed content.
+- scripts/colab/ is now also read by scripts/colab/promote_goldens.py.
+- scripts/colab/boot_gatekeeper_goldens.json is now read by scripts/colab/promote_goldens.py.
+- 8 files changed content, across 3 parts.
 
 ## What comes in
 
@@ -46,10 +48,10 @@ Nothing structural changed since 2026-11-08; 2 files changed content.
 ## What tends to change together
 
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
-- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 23 of 25 commits, and the tests part imports the scripts part.
+- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 24 of 26 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 9 of 11 commits, and the tests part imports the src part.
-- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 19 of 25 commits, inside the tests part.
-- **scripts/colab/vm_judges.py** and **tests/fixtures/fake_colab.py** changed together in 18 of 24 commits, and the tests part imports the scripts part.
+- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 19 of 26 commits, inside the tests part.
+- **scripts/colab/vm_judges.py** and **tests/fixtures/fake_colab.py** changed together in 18 of 25 commits, and the tests part imports the scripts part.
 
 1 file changed together with its own test, as expected.
 
@@ -86,10 +88,10 @@ Read those in order to follow one run of rdlab end to end. This path follows rdl
 ## What this map cannot see
 
 - 8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
-- 11 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 7 more.
+- 16 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 12 more.
 - 13 writes and 33 reads use paths built at run time and are not named here.
-- 80 writes and 177 reads go to a path their caller passes, not to this repository.
-- 13 reads go to the directory the command is run in, not to this repository.
+- 80 writes and 180 reads go to a path their caller passes, not to this repository.
+- 11 reads go to the directory the command is run in, not to this repository.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
 
 Regenerate with `npx --yes @dogfood-lab/atlas map`.
