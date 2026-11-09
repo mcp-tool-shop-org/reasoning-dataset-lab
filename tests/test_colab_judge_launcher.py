@@ -1321,7 +1321,7 @@ def test_fake_colab_contract_and_time_one_mode_summary_and_mass_readout(
         [
             "bash",
             "-c",
-            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_t1)}' --run-id t1-run-01",
+            f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_t1)}' --run-id t1-run-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -9336,7 +9336,7 @@ def test_timeone_readiness_1_gpu_gate_order_and_empty_download_log_on_failure(
         [
             "bash",
             "-c",
-            f"{exports_ok} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_ok)}' --run-id timeone-gpu-ok-01",
+            f"{exports_ok} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_ok)}' --run-id timeone-gpu-ok-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -9411,7 +9411,7 @@ def test_timeone_readiness_1_gpu_gate_order_and_empty_download_log_on_failure(
         [
             "bash",
             "-c",
-            f"{exports_fail} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_fail)}' --run-id timeone-gpu-fail-01",
+            f"{exports_fail} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_fail)}' --run-id timeone-gpu-fail-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -9501,7 +9501,7 @@ def test_timeone_readiness_2_gpu_gate_all_failure_modes_and_normal_stop_path(
             [
                 "bash",
                 "-c",
-                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_dir)}' --run-id gpu-fail-{mode_name}",
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_dir)}' --run-id gpu-fail-{mode_name}",
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -9806,8 +9806,8 @@ def test_timeone_readiness_5_gate_status_vm_measurement_fields_stub_and_timeone(
     )
     items_file = _make_synthetic_public_items(tmp_path / "data_m5", count=2)
 
-    for mode_flag in ("--stub", "--time-one"):
-        tag = mode_flag.lstrip("-")
+    for mode_flag in ("--stub", "--time-one --card A100 --shape standard"):
+        tag = mode_flag.split()[0].lstrip("-")
         env = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{tag}")
         out_dir = tmp_path / f"out_{tag}"
         exports = _base_launcher_exports(
@@ -11339,7 +11339,7 @@ def test_judge_order_default_and_valid_permutation(
         [
             "bash",
             "-c",
-            f"{exports_perm} RDLAB_JUDGE_ORDER='{perm_d3_last_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_perm)}' --run-id jo-perm-01",
+            f"{exports_perm} RDLAB_JUDGE_ORDER='{perm_d3_last_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_perm)}' --run-id jo-perm-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -11392,7 +11392,7 @@ def test_judge_order_default_and_valid_permutation(
         [
             "bash",
             "-c",
-            f"{exports_def} unset RDLAB_JUDGE_ORDER; bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_def)}' --run-id jo-def-01",
+            f"{exports_def} unset RDLAB_JUDGE_ORDER; bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_def)}' --run-id jo-def-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -11483,7 +11483,7 @@ def test_judge_order_invalid_values_and_wrong_modes_refuse_before_colab_new(
             [
                 "bash",
                 "-c",
-                f"{exports_refuse} RDLAB_JUDGE_ORDER={json.dumps(bad_val)} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(tmp_path / f'out_bad_{idx}')}' --run-id jo-bad-{idx}",
+                f"{exports_refuse} RDLAB_JUDGE_ORDER={json.dumps(bad_val)} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(tmp_path / f'out_bad_{idx}')}' --run-id jo-bad-{idx}",
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
@@ -11734,8 +11734,8 @@ def test_first_load_judge_id_refusals_and_note_per_id(
     # 2. Set with `--time-one` or any other mode/stage refuses before `colab new`
     for idx, mode_args in enumerate(
         (
-            "--time-one",
-            "--time-one --dry",
+            "--time-one --card A100 --shape standard",
+            "--time-one --card A100 --shape standard --dry",
             "--stub",
             "--stub --until first_judge",
             "--stub --until weights",
@@ -11824,7 +11824,7 @@ def test_dry_listings_forward_judge_order_and_first_load_judge_id_without_real_c
         [
             "bash",
             "-c",
-            f"export PATH='{hermetic_path}'; RDLAB_JUDGE_ORDER='{perm_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --cap 4.0 --max-rate 9.5 --dry --run-id dry-jo-01",
+            f"export PATH='{hermetic_path}'; RDLAB_JUDGE_ORDER='{perm_str}' bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --cap 4.0 --max-rate 9.5 --dry --run-id dry-jo-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -12402,7 +12402,7 @@ def test_force_pinned_uv_knob_forces_pinned_in_stub_and_refuses_time_one_before_
         [
             "bash",
             "-c",
-            f"{exports_t1} RDLAB_FORCE_PINNED_UV=1 bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_t1)}' --run-id force-t1-01",
+            f"{exports_t1} RDLAB_FORCE_PINNED_UV=1 bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_t1)}' --run-id force-t1-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -12959,7 +12959,7 @@ def test_no_code_path_builds_child_argv_with_bare_cuda_across_all_modes(
         ("stub", "--stub", "cpu"),
         ("first_judge", "--stub --until first_judge", None),
         ("first_load", "--stub --until first_load", "cpu"),
-        ("time_one", "--time-one", "cuda:0"),
+        ("time_one", "--time-one --card A100 --shape standard", "cuda:0"),
         ("counted_default", "", "cpu"),
     ]
     for label, flags, expected_dev in mode_runs:
@@ -13176,7 +13176,7 @@ def test_only_judges_d3_mini_under_time_one_downloads_verifies_and_runs_only_d3_
         [
             "bash",
             "-c",
-            f"{exports_only} RDLAB_ONLY_JUDGES=d3-mini bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --out-dir '{_to_wsl_path(out_only)}' --run-id only-d3-01",
+            f"{exports_only} RDLAB_ONLY_JUDGES=d3-mini bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --out-dir '{_to_wsl_path(out_only)}' --run-id only-d3-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -13258,13 +13258,13 @@ def test_only_judges_refused_with_stub_with_judge_order_unknown_id_and_duplicate
         ("RDLAB_ONLY_JUDGES='d3-mini'", "--stub --until first_load"),
         (
             f"RDLAB_ONLY_JUDGES='d3-mini' RDLAB_JUDGE_ORDER='{perm_all}'",
-            "--time-one",
+            "--time-one --card A100 --shape standard",
         ),
-        ("RDLAB_ONLY_JUDGES='unknown-judge'", "--time-one"),
-        ("RDLAB_ONLY_JUDGES='d3-mini,d3-mini'", "--time-one"),
-        ("RDLAB_ONLY_JUDGES=''", "--time-one"),
-        ("RDLAB_ONLY_JUDGES='d3-mini,'", "--time-one"),
-        ("RDLAB_ONLY_JUDGES=' d3-mini'", "--time-one"),
+        ("RDLAB_ONLY_JUDGES='unknown-judge'", "--time-one --card A100 --shape standard"),
+        ("RDLAB_ONLY_JUDGES='d3-mini,d3-mini'", "--time-one --card A100 --shape standard"),
+        ("RDLAB_ONLY_JUDGES=''", "--time-one --card A100 --shape standard"),
+        ("RDLAB_ONLY_JUDGES='d3-mini,'", "--time-one --card A100 --shape standard"),
+        ("RDLAB_ONLY_JUDGES=' d3-mini'", "--time-one --card A100 --shape standard"),
     ]
 
     for idx, (env_prefix, cli_flags) in enumerate(refusal_cases):
@@ -13460,7 +13460,7 @@ def test_part2_item3_live_rate_from_colab_usage_and_cost_cap_fetch_before_stop(
         [
             "bash",
             "-c",
-            f"{exports_c} {extra_c} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --cap 2.5 --out-dir '{_to_wsl_path(out_c)}' --run-id p2-cap-01",
+            f"{exports_c} {extra_c} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --cap 2.5 --out-dir '{_to_wsl_path(out_c)}' --run-id p2-cap-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -14318,6 +14318,10 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_POST_ACCOUNT_RATE": "rig-only: write_outcome_draft's account usage rate at the accepted post-open read",
     "RDLAB_PRICING_RATE": "rig-only: write_outcome_draft's cap pricing rate, max(--max-rate, window rate)",
     "RDLAB_OUTCOME_LOCK_CHECK_PHASE": "rig-only: write_outcome_draft's copy of the lock-check phase (the VM gets RDLAB_LOCK_CHECK_PHASE)",
+    "RDLAB_OUTCOME_CARD_REQUESTED": "rig-only: write_outcome_draft's copy of the requested GPU card (the VM gets RDLAB_CARD)",
+    "RDLAB_OUTCOME_SHAPE_REQUESTED": "rig-only: write_outcome_draft's copy of the requested VM shape (the VM gets RDLAB_SHAPE)",
+    "RDLAB_OUTCOME_OPENED_HW": "rig-only: write_outcome_draft's copy of the opened session Hardware field from colab sessions",
+    "RDLAB_OUTCOME_OPENED_SHAPE": "rig-only: write_outcome_draft's copy of the opened session Shape field from colab sessions",
     "RDLAB_RATE_POLL_MAX_READS": "rig-only: bound on post-open colab usage reads for a stable window rate",
     "RDLAB_RATE_POLL_SLEEP_SECONDS": "rig-only: seconds between post-open colab usage reads (default 5)",
     "RDLAB_USAGE_TIMEOUT_SECONDS": "rig-only: timeout -k bound on each colab usage call",
@@ -14562,7 +14566,7 @@ def test_fix2_item7_mid_run_cost_cap_stop_without_result_tar_fetches_partial_art
         [
             "bash",
             "-c",
-            f"{exports_mid} {extra_mid} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --cap 2.5 --out-dir '{_to_wsl_path(out_mid)}' --run-id fix2-cap-mid-01",
+            f"{exports_mid} {extra_mid} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --time-one --card A100 --shape standard --cap 2.5 --out-dir '{_to_wsl_path(out_mid)}' --run-id fix2-cap-mid-01",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -16247,6 +16251,16 @@ def test_fix1_part_b_boot_gatekeeper_real_transport_vs_stub_and_missing_golden(
     filled_real["card_types"]["A100"]["prompts"]["boot_gatekeeper_synthetic_2"] = {
         "output_token_ids_sha256": exp_sha_2
     }
+    filled_real["promoted_provenance"] = {
+        "window_id": "window-lc-real-fix1b",
+        "session_env_sha256": "a" * 64,
+        "mode": "lock-check",
+        "lock_check_phase": "anchors",
+        "card_type": "A100",
+        "stub_transport": False,
+        "hash_source": "real_transport",
+    }
+    filled_real["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(filled_real)
     filled_real_path = tmp_path / "real_goldens.json"
     filled_real_path.write_text(json.dumps(filled_real, indent=2), encoding="utf-8")
 
@@ -16695,14 +16709,14 @@ def test_fix1_part_e_anchors_clopper_pearson_golden_quarantine_and_bowker_readou
         lock_check_telemetry_path=telemetry_file,
     )
     assert full_manifest["stratified_anchor_count"] == 25
-    assert full_manifest["canary_anchor_count"] == 25
+    assert full_manifest["low_margin_anchor_count"] == 25
     assert full_manifest["anchor_count"] == 50
     assert len(full_manifest["anchor_item_ids"]) == 50
     assert set(full_manifest["stratified_anchor_item_ids"]).isdisjoint(
-        full_manifest["canary_item_ids"]
+        full_manifest["low_margin_item_ids"]
     )
-    assert full_manifest["canary_item_ids"] == non_strat[:25]
-    assert len(full_manifest["canary_telemetry_sha256"]) == 64
+    assert full_manifest["low_margin_item_ids"] == non_strat[:25]
+    assert len(full_manifest["low_margin_telemetry_sha256"]) == 64
 
     # Counted mode refuses shard_manifest without canary_item_ids (SHARD_MANIFEST_CANARY_MISSING)
     import types
@@ -17163,7 +17177,7 @@ def test_fix1_part_f_100_percent_patch_coverage_on_bakeoff_judge(
         pass_mode="three_way",
     )
     assert m_seq["stratified_anchor_count"] == 1
-    assert m_seq["canary_anchor_count"] == 1
+    assert m_seq["low_margin_anchor_count"] == 1
 
     with pytest.raises(RdlabError) as exc_mf_nf:
         bakeoff_judge.verify_shard_manifest(tmp_path / "missing_manifest.json")
@@ -17378,7 +17392,7 @@ def test_fix1_part_f_100_percent_patch_coverage_on_bakeoff_judge(
         canary_item_ids=["unknown-id", loaded_items[0].item_id],
     )
     assert m_zero_strat["stratified_anchor_count"] == 0
-    assert m_zero_strat["canary_anchor_count"] == 1
+    assert m_zero_strat["low_margin_anchor_count"] == 1
 
     # Counted sharded run succeeding when golden_anchor_manifest.json is present on disk with 50 matching anchors
     items_50_p = _make_stratified_public_items(tmp_path / "cov_items_50", count=50)
@@ -17398,7 +17412,7 @@ def test_fix1_part_f_100_percent_patch_coverage_on_bakeoff_judge(
         "schema_version": "1.0",
         "anchor_item_ids": list(m_with_gold["anchor_item_ids"]),
         "stratified_anchor_item_ids": list(m_with_gold["stratified_anchor_item_ids"]),
-        "canary_item_ids": list(m_with_gold["canary_item_ids"]),
+        "canary_item_ids": list(m_with_gold["low_margin_item_ids"]),
         "canary_selection_telemetry_sha256": "b" * 64,
         "manifest_sha256": "a" * 64,
     }
@@ -17826,6 +17840,16 @@ def test_fix2_item2_readers_never_apply_hooks_outside_stub_and_dryrun_and_malfor
     goldens_doc["card_types"]["A100"]["prompts"]["boot_gatekeeper_synthetic_2"] = {
         "output_token_ids_sha256": exp_sha_2
     }
+    goldens_doc["promoted_provenance"] = {
+        "window_id": "window-lc-real-fix2",
+        "session_env_sha256": "b" * 64,
+        "mode": "lock-check",
+        "lock_check_phase": "anchors",
+        "card_type": "A100",
+        "stub_transport": False,
+        "hash_source": "real_transport",
+    }
+    goldens_doc["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(goldens_doc)
     filled_goldens = tmp_path / "gk_goldens.json"
     filled_goldens.write_text(json.dumps(goldens_doc, indent=2), encoding="utf-8")
 
@@ -18856,6 +18880,8 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
             dryrun=False,
             work_dir=work_with_venv,
             receipts_dir=receipts_dir,
+            window_id="window-time-one-fix4",
+            session_env_report={"session_fingerprint_sha256": "c" * 64},
         )
     assert rep_sub_ok["status"] == "ok"
     assert rep_sub_ok["hash_source"] == "real_transport"
@@ -20017,7 +20043,7 @@ def test_lock_check_item1_mode_exists_is_real_and_refuses_hooks(
         items_file=items_path,
     )
     for flag, exp_mode, exp_hw in (
-        ("--lock-check", "lock-check", "--gpu A100"),
+        ("--lock-check --card A100 --shape standard", "lock-check", "--gpu A100"),
         ("--lock-check-stub", "lock-check-stub", "CPU"),
         ("--counted-stub", "counted-stub", "CPU"),
     ):
@@ -20157,8 +20183,8 @@ def test_lock_check_item2_golden_anchor_manifest_canary_selection_and_hashes(
     )
     stratified_25 = list(initial_sm["stratified_anchor_item_ids"])
     assert len(stratified_25) == 25
-    assert initial_sm["canary_item_ids"] == []
-    assert initial_sm["canary_telemetry_sha256"] is None
+    assert initial_sm["low_margin_item_ids"] == []
+    assert initial_sm["low_margin_telemetry_sha256"] is None
 
     non_stratified = sorted(
         it.item_id for it in items if it.item_id not in set(stratified_25)
@@ -20235,14 +20261,14 @@ def test_lock_check_item2_golden_anchor_manifest_canary_selection_and_hashes(
     assert golden_path.is_file()
     assert len(golden_file_sha) == 64
     assert golden_doc["stratified_anchor_item_ids"] == stratified_25
-    assert golden_doc["canary_item_ids"] == expected_canary_25
+    assert golden_doc["low_margin_item_ids"] == expected_canary_25
     assert golden_doc["anchor_item_count"] == 50
     assert golden_doc["pair_count"] == 250
     assert golden_doc["row_count"] == 500
-    assert golden_doc["canary_selection_rule"] == bakeoff_judge.CANARY_ANCHOR_SELECTION_RULE
-    assert len(golden_doc["canary_inputs_sha256"]) == 64
-    assert golden_doc["canary_telemetry_sha256"] == tel_sha_dir
-    assert golden_from_mem["canary_item_ids"] == expected_canary_25
+    assert golden_doc["low_margin_selection_rule"] == bakeoff_judge.CANARY_ANCHOR_SELECTION_RULE
+    assert len(golden_doc["low_margin_inputs_sha256"]) == 64
+    assert golden_doc["low_margin_telemetry_sha256"] == tel_sha_dir
+    assert golden_from_mem["low_margin_item_ids"] == expected_canary_25
     assert golden_from_mem["row_count"] == 500
 
     full_sm = bakeoff_judge.build_shard_manifest(
@@ -20253,12 +20279,12 @@ def test_lock_check_item2_golden_anchor_manifest_canary_selection_and_hashes(
         golden_anchor_manifest_file_sha256=golden_file_sha,
     )
     assert full_sm["stratified_anchor_item_ids"] == stratified_25
-    assert full_sm["canary_item_ids"] == expected_canary_25
+    assert full_sm["low_margin_item_ids"] == expected_canary_25
     assert len(full_sm["anchor_item_ids"]) == 50
     assert full_sm["anchor_pair_count"] == 250
-    assert full_sm["canary_selection_rule"] == bakeoff_judge.CANARY_ANCHOR_SELECTION_RULE
-    assert len(full_sm["canary_inputs_sha256"]) == 64
-    assert full_sm["canary_telemetry_sha256"] == tel_sha_dir
+    assert full_sm["low_margin_selection_rule"] == bakeoff_judge.CANARY_ANCHOR_SELECTION_RULE
+    assert len(full_sm["low_margin_inputs_sha256"]) == 64
+    assert full_sm["low_margin_telemetry_sha256"] == tel_sha_dir
     assert full_sm["golden_anchor_manifest_file_sha256"] == golden_file_sha
 
     # Verify vm_judges.build_shard_manifest_stdlib records matching canary fields
@@ -20270,7 +20296,7 @@ def test_lock_check_item2_golden_anchor_manifest_canary_selection_and_hashes(
         canary_telemetry_sha256=tel_sha_dir,
         golden_anchor_manifest_file_sha256=golden_file_sha,
     )
-    assert stdlib_sm["canary_item_ids"] == expected_canary_25
+    assert stdlib_sm["low_margin_item_ids"] == expected_canary_25
     assert stdlib_sm["golden_anchor_manifest_file_sha256"] == golden_file_sha
     assert stdlib_sm["anchor_item_count"] == 50
     assert stdlib_sm["anchor_pair_count"] == 250
@@ -20430,13 +20456,24 @@ def test_lock_check_item3_promote_goldens_cli_validation_and_refusals(
     run_dir = tmp_path / "promote_run"
     run_dir.mkdir(parents=True, exist_ok=True)
     senv_path = run_dir / "session_env.json"
-    senv_path.write_text(json.dumps({"mode": "lock-check-stub"}) + "\n", encoding="utf-8")
+    senv_path.write_text(
+        json.dumps(
+            {
+                "mode": "lock-check-stub",
+                "window_id": "win-prom-01",
+                "session_fingerprint_sha256": "a" * 64,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     senv_sha = hashlib.sha256(senv_path.read_bytes()).hexdigest()
 
     bg_rep = vm_judges.run_boot_gatekeeper(
         run_dir=run_dir,
         repo_root=REPO_ROOT,
         mode="lock-check-stub",
+        lock_check_phase="anchors",
         card_type="A100",
         dryrun=True,
         window_id="win-prom-01",
@@ -20445,10 +20482,12 @@ def test_lock_check_item3_promote_goldens_cli_validation_and_refusals(
     receipt_path = run_dir / "receipt.json"
     receipt_path.write_text(
         json.dumps(
-            {
-                "filled_goldens_sha256": bg_rep["filled_goldens_sha256"],
-                "boot_gatekeeper": bg_rep,
-            },
+            vm_judges.build_vm_receipt_doc(
+                mode="lock-check-stub",
+                lock_check_phase="anchors",
+                session_env={"session_fingerprint_sha256": "a" * 64},
+                boot_gatekeeper_report=bg_rep,
+            ),
             indent=2,
         )
         + "\n",
@@ -20542,26 +20581,49 @@ def test_lock_check_item3_promote_goldens_cli_validation_and_refusals(
     other_senv = tmp_path / "other_session_env.json"
     other_senv.write_text(json.dumps({"mode": "tampered"}) + "\n", encoding="utf-8")
     with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_se:
-        promote_goldens.verify_filled_goldens(filled_path, session_env_path=other_senv)
+        promote_goldens.verify_filled_goldens(
+            filled_path,
+            expected_sha256=str(bg_rep["filled_goldens_sha256"]),
+            receipt_path=receipt_path,
+            session_env_path=other_senv,
+        )
     assert exc_se.value.code == "PROMOTE_GOLDENS_PROVENANCE_MISMATCH"
 
     # Refusal 9: Receipt sha256 mismatch
     bad_rec = tmp_path / "bad_receipt.json"
     bad_rec.write_text(json.dumps({"filled_goldens_sha256": "1" * 64}), encoding="utf-8")
     with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_rm:
-        promote_goldens.verify_filled_goldens(filled_path, receipt_path=bad_rec)
+        promote_goldens.verify_filled_goldens(
+            filled_path,
+            expected_sha256=str(bg_rep["filled_goldens_sha256"]),
+            receipt_path=bad_rec,
+        )
     assert exc_rm.value.code == "PROMOTE_GOLDENS_SHA_MISMATCH"
 
     # Refusal 10: --forbid-stub-transport refuses stub-recorded goldens
     with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_sf:
-        promote_goldens.verify_filled_goldens(filled_path, forbid_stub_transport=True)
+        promote_goldens.verify_filled_goldens(
+            filled_path,
+            expected_sha256=str(bg_rep["filled_goldens_sha256"]),
+            receipt_path=receipt_path,
+            forbid_stub_transport=True,
+        )
     assert exc_sf.value.code == "PROMOTE_GOLDENS_STUB_REFUSED"
     assert promote_goldens.main(["--filled", str(filled_path)]) == 2
     # The default refuses it too (stub transport is refused unless --allow-stub-transport, tests only).
     with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_default_stub:
-        promote_goldens.verify_filled_goldens(filled_path)
+        promote_goldens.verify_filled_goldens(
+            filled_path,
+            expected_sha256=str(bg_rep["filled_goldens_sha256"]),
+            receipt_path=receipt_path,
+        )
     assert exc_default_stub.value.failure_class == "PROMOTE_GOLDENS_STUB_REFUSED"
-    assert promote_goldens.verify_filled_goldens(filled_path, allow_stub_transport=True)[0]["judge_id"]
+    assert promote_goldens.verify_filled_goldens(
+        filled_path,
+        expected_sha256=str(bg_rep["filled_goldens_sha256"]),
+        receipt_path=receipt_path,
+        allow_stub_transport=True,
+    )[0]["judge_id"]
 
 
 def test_lock_check_item4_p0a_bitwise_profiler_and_reversed_low_margin_rerun(
@@ -20962,7 +21024,7 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
     assert gm_doc["pair_count"] == 250
     assert gm_doc["row_count"] == 500
     assert len(sm_doc["stratified_anchor_item_ids"]) == 25
-    assert len(sm_doc["canary_item_ids"]) == 25
+    assert len(sm_doc["low_margin_item_ids"]) == 25
     assert len(sm_doc["anchor_item_ids"]) == 50
     assert set(sm_doc["anchor_item_ids"]) == set(gm_doc["anchor_item_ids"])
     assert all(aid.startswith("counted-") for aid in gm_doc["anchor_item_ids"])
@@ -20974,12 +21036,15 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
 
     # Step 2: Promote filled goldens into a TEMP repo copy (never the live repo)
     temp_repo_goldens = tmp_path / "temp_repo" / "scripts" / "colab" / "boot_gatekeeper_goldens.json"
+    lc_filled_sha = hashlib.sha256((lc_run_dir / "boot_gatekeeper_goldens.filled.json").read_bytes()).hexdigest()
     rc_prom = promote_goldens.main(
         [
             "--filled",
             str(lc_run_dir / "boot_gatekeeper_goldens.filled.json"),
             "--output",
             str(temp_repo_goldens),
+            "--expected-sha256",
+            lc_filled_sha,
             "--receipt",
             str(lc_run_dir / "receipt.json"),
             "--session-env",
@@ -21342,11 +21407,37 @@ def test_fix1_item2_promote_goldens_refuses_any_git_work_tree_and_allows_outside
             "mode": "lock-check",
             "card_type": "A100-SXM4-40GB",
             "stub_transport": False,
+            "hash_source": "real_transport",
         },
     }
+    filled_doc["provenance"]["lock_check_phase"] = "anchors"
     filled_doc["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(filled_doc)
     filled_path = tmp_path / "boot_gatekeeper_goldens.filled.json"
     filled_path.write_text(json.dumps(filled_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    filled_sha = hashlib.sha256(filled_path.read_bytes()).hexdigest()
+    rec_path = tmp_path / "vm_receipt.json"
+    rec_path.write_text(
+        json.dumps(
+            vm_judges.build_vm_receipt_doc(
+                mode="lock-check",
+                lock_check_phase="anchors",
+                session_env={"session_fingerprint_sha256": "c" * 64},
+                boot_gatekeeper_report={
+                    "status": "ok",
+                    "action": "record",
+                    "window_id": "window-lc-fix1-02",
+                    "session_env_sha256": senv_sha,
+                    "session_fingerprint_sha256": "c" * 64,
+                    "card_type": "A100-SXM4-40GB",
+                    "filled_goldens_sha256": filled_sha,
+                    "filled_goldens_body_sha256": filled_doc["filled_goldens_body_sha256"],
+                },
+            ),
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     # 1. --allow-in-place-repo is rejected by argparse
     with pytest.raises(SystemExit) as exc_arg:
@@ -21403,6 +21494,8 @@ def test_fix1_item2_promote_goldens_refuses_any_git_work_tree_and_allows_outside
     res = promote_goldens.promote_goldens_file(
         filled_path,
         output_path=outside_out,
+        expected_sha256=filled_sha,
+        receipt_path=rec_path,
         repo_root=REPO_ROOT,
     )
     assert res["status"] == "ok"
@@ -21705,7 +21798,7 @@ def test_fix2_item1_and_3_two_input_lock_check_and_shard_merge_chain(
     assert len(anchor_ids) == 50
     assert anchor_ids.issubset(counted_ids)
     assert set(sm_doc["anchor_item_ids"]) == anchor_ids
-    assert set(sm_doc["stratified_anchor_item_ids"]) | set(sm_doc["canary_item_ids"]) == anchor_ids
+    assert set(sm_doc["stratified_anchor_item_ids"]) | set(sm_doc["low_margin_item_ids"]) == anchor_ids
     assert sm_doc["item_count"] == 100
     assert set(sm_doc["shards"]["1"]) | set(sm_doc["shards"]["2"]) == counted_ids
     # a stub window without the pilot part records no part_id (never a label); a real window needs the pinned pilot
@@ -21713,6 +21806,7 @@ def test_fix2_item1_and_3_two_input_lock_check_and_shard_merge_chain(
     assert p0a_doc["item_count"] == 114
 
     temp_goldens = tmp_path / "f2_cand_goldens" / "boot_gatekeeper_goldens.json"
+    f2_filled_sha = hashlib.sha256((lc_run_dir / "boot_gatekeeper_goldens.filled.json").read_bytes()).hexdigest()
     assert (
         promote_goldens.main(
             [
@@ -21720,6 +21814,8 @@ def test_fix2_item1_and_3_two_input_lock_check_and_shard_merge_chain(
                 str(lc_run_dir / "boot_gatekeeper_goldens.filled.json"),
                 "--output",
                 str(temp_goldens),
+                "--expected-sha256",
+                f2_filled_sha,
                 "--receipt",
                 str(lc_run_dir / "receipt.json"),
                 "--session-env",
@@ -22476,7 +22572,7 @@ def test_fix3_item6_refusals_counted_source_burned_pilot_golden_manifest_promote
             {
                 "schema_version": "1.0",
                 "stratified_anchor_item_ids": valid_sm_doc["stratified_anchor_item_ids"],
-                "canary_item_ids": valid_sm_doc["canary_item_ids"],
+                "canary_item_ids": valid_sm_doc["low_margin_item_ids"],
                 "anchor_item_ids": valid_sm_doc["anchor_item_ids"],
             }
         ),
@@ -22657,7 +22753,7 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
                 "-c",
                 (
                     f"{exports} RDLAB_COUNTED_ITEMS_FILE='' RDLAB_COUNTED_MANIFEST='' "
-                    f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check {dry_opt} "
+                    f"bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --card A100 --shape standard {dry_opt} "
                     f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
                     f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
                     f"--out-dir '{_to_wsl_path(tmp_path / 'sh_no_cnt')}' --run-id sh-no-cnt"
@@ -22679,7 +22775,7 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
             "bash",
             "-c",
             (
-                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check "
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --card A100 --shape standard "
                 f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
                 f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
                 f"--counted-items '{_to_wsl_path(anchor_items_src)}' "
@@ -22702,7 +22798,7 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
             "bash",
             "-c",
             (
-                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check "
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --card A100 --shape standard "
                 f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
                 f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
                 f"--counted-manifest '{_to_wsl_path(tmp_path / 'no_such_mf.json')}' "
@@ -22726,7 +22822,7 @@ def test_fix3_item7_real_mode_paths_pre_session_wraps_extract_ids_non_path_p0a_a
             "bash",
             "-c",
             (
-                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --dry "
+                f"{exports} bash '{_to_wsl_path(LAUNCH_JUDGES_SH)}' --lock-check --card A100 --shape standard --dry "
                 f"--anchor-items '{_to_wsl_path(anchor_items_src)}' "
                 f"--p0a-items '{_to_wsl_path(p0a_items_src)}' "
                 f"--counted-manifest '{_to_wsl_path(counted_manifest)}' "
@@ -23317,7 +23413,7 @@ def test_fix4_item2_counted_stub_logprob_mass_does_not_use_pilot_40b(
         "schema_version": "1.0",
         "anchor_item_ids": sm_base_doc["anchor_item_ids"],
         "stratified_anchor_item_ids": sm_base_doc["stratified_anchor_item_ids"],
-        "canary_item_ids": sm_base_doc["canary_item_ids"],
+        "canary_item_ids": sm_base_doc["low_margin_item_ids"],
         "rows": {},
         "row_count": 0,
     }
@@ -24963,6 +25059,7 @@ def _pm_real_mode_exports(
             items_file=items_file,
         ).replace("export VM_DRYRUN=1; ", "")
         + "unset VM_DRYRUN; "
+        + "export RDLAB_CARD=A100; export RDLAB_SHAPE=standard; "
         + (f"export RDLAB_PART_DIR='{_to_wsl_path(part_dir)}'; " if part_dir is not None else "unset RDLAB_PART_DIR; ")
         + (_test_part_pin_exports(env_paths, *pin_parts) if pin_parts else "")
     )
@@ -25035,6 +25132,17 @@ def test_part_binding_launcher_binds_items_to_the_real_part_files_before_any_col
     pb1_goldens_doc["card_types"]["A100"]["prompts"] = {
         sp["prompt_id"]: {"output_token_ids_sha256": "c" * 64} for sp in pb1_goldens_doc["synthetic_prompts"]
     }
+    pb1_goldens_doc["promoted_provenance"] = {
+        "window_id": "window-lc-real-01",
+        "session_env_sha256": "a" * 64,
+        "session_fingerprint_sha256": "b" * 64,
+        "mode": "lock-check",
+        "lock_check_phase": "anchors",
+        "card_type": "A100",
+        "hash_source": "real_transport",
+        "stub_transport": False,
+    }
+    pb1_goldens_doc["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(pb1_goldens_doc)
     pb1_goldens = tmp_path / "pb1_goldens_filled.json"
     pb1_goldens.write_text(json.dumps(pb1_goldens_doc), encoding="utf-8")
 
@@ -25780,12 +25888,15 @@ def test_e2e_fake_real_mode_counted_reaches_judges(
     assert rc_lc == 0, lc_status.read_text(encoding="utf-8")
     monkeypatch.delenv("VM_DRYRUN", raising=False)
     goldens = tmp_path / "e2e_c_temp_repo" / "boot_gatekeeper_goldens.json"
+    e2e_filled_sha = hashlib.sha256((lc_run / "boot_gatekeeper_goldens.filled.json").read_bytes()).hexdigest()
     rc_prom = promote_goldens.main(
         [
             "--filled",
             str(lc_run / "boot_gatekeeper_goldens.filled.json"),
             "--output",
             str(goldens),
+            "--expected-sha256",
+            e2e_filled_sha,
             "--receipt",
             str(lc_run / "receipt.json"),
             "--session-env",
@@ -25803,10 +25914,13 @@ def test_e2e_fake_real_mode_counted_reaches_judges(
     gdoc = json.loads(goldens.read_text(encoding="utf-8"))
     assert vm_judges.boot_gatekeeper_goldens_stub_marks(gdoc, gdoc["card_types"]["A100"])  # the stub marks were there
     gdoc["promoted_provenance"]["stub_transport"] = False
+    gdoc["promoted_provenance"]["hash_source"] = "real_transport"
     gdoc["promoted_provenance"]["mode"] = "lock-check"
+    gdoc["promoted_provenance"]["window_id"] = "window-e2e-lc-real-01"
     for cv in gdoc["card_types"].values():
         if isinstance(cv, dict):
             cv.pop("synthetic_fake_hash", None)
+    gdoc["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(gdoc)
     goldens.write_text(json.dumps(gdoc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     assert not vm_judges.boot_gatekeeper_goldens_stub_marks(gdoc, gdoc["card_types"]["A100"])
 
@@ -26006,7 +26120,7 @@ def test_lock_check_dry_on_builder_made_pilot_like_part_with_pinned_identity(
         if pinned:
             exports += f"export PYTHONPATH='{_to_wsl_path(pin_dir)}'; "
         args = (
-            f"--lock-check --dry --anchor-items '{_to_wsl_path(anchors)}' --p0a-items '{_to_wsl_path(p0a_in)}' "
+            f"--lock-check --card A100 --shape standard --dry --anchor-items '{_to_wsl_path(anchors)}' --p0a-items '{_to_wsl_path(p0a_in)}' "
             f"--counted-items '{_to_wsl_path(counted)}' --run-id lcd-{tag} --out-dir '{_to_wsl_path(tmp_path / ('lcd_out_' + tag))}'"
         )
         if p0a_part is not None:
@@ -26759,7 +26873,13 @@ def test_lock_check_anchors_phase_runs_no_p0a_and_its_goldens_promote(
     filled = run_dir / "boot_gatekeeper_goldens.filled.json"
     doc = json.loads(filled.read_text(encoding="utf-8"))
     assert doc["provenance"]["mode"] == "lock-check" and doc["provenance"]["lock_check_phase"] == "anchors"
-    verified, _ = promote_goldens.verify_filled_goldens(filled, receipt_path=run_dir / "vm_receipt.json", allow_stub_transport=True)
+    lca_sha = hashlib.sha256(filled.read_bytes()).hexdigest()
+    verified, _ = promote_goldens.verify_filled_goldens(
+        filled,
+        expected_sha256=lca_sha,
+        receipt_path=run_dir / "vm_receipt.json",
+        allow_stub_transport=True,
+    )
     assert verified["provenance"]["lock_check_phase"] == "anchors"
 
     # A p0a window's goldens (same document, phase p0a, digest recomputed) are refused.
@@ -26769,17 +26889,35 @@ def test_lock_check_anchors_phase_runs_no_p0a_and_its_goldens_promote(
     p0a_filled = tmp_path / "lca_p0a" / "boot_gatekeeper_goldens.filled.json"
     p0a_filled.parent.mkdir()
     p0a_filled.write_text(json.dumps(p0a_doc), encoding="utf-8")
+    p0a_sha = hashlib.sha256(p0a_filled.read_bytes()).hexdigest()
+    p0a_rec = tmp_path / "lca_p0a" / "vm_receipt.json"
+    p0a_rec.write_text(json.dumps({**rec, "filled_goldens_sha256": p0a_sha, "lock_check_phase": "p0a"}), encoding="utf-8")
     with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc:
-        promote_goldens.verify_filled_goldens(p0a_filled, allow_stub_transport=True)
+        promote_goldens.verify_filled_goldens(
+            p0a_filled,
+            expected_sha256=p0a_sha,
+            receipt_path=p0a_rec,
+            allow_stub_transport=True,
+        )
     assert exc.value.failure_class == "PROMOTE_GOLDENS_PHASE_REFUSED"
-    # Goldens from before the split carry no phase and still promote.
+    # Phase-stripped goldens carry no phase and are refused with PROMOTE_GOLDENS_PHASE_REFUSED.
     old_doc = json.loads(filled.read_text(encoding="utf-8"))
     old_doc["provenance"].pop("lock_check_phase")
     old_doc["filled_goldens_body_sha256"] = promote_goldens.compute_filled_goldens_body_sha256(old_doc)
     old_filled = tmp_path / "lca_old" / "boot_gatekeeper_goldens.filled.json"
     old_filled.parent.mkdir()
     old_filled.write_text(json.dumps(old_doc), encoding="utf-8")
-    promote_goldens.verify_filled_goldens(old_filled, allow_stub_transport=True)
+    old_sha = hashlib.sha256(old_filled.read_bytes()).hexdigest()
+    old_rec = tmp_path / "lca_old" / "vm_receipt.json"
+    old_rec.write_text(json.dumps({**rec, "filled_goldens_sha256": old_sha}), encoding="utf-8")
+    with pytest.raises(promote_goldens.PromoteGoldensRefusalError) as exc_old:
+        promote_goldens.verify_filled_goldens(
+            old_filled,
+            expected_sha256=old_sha,
+            receipt_path=old_rec,
+            allow_stub_transport=True,
+        )
+    assert exc_old.value.failure_class == "PROMOTE_GOLDENS_PHASE_REFUSED"
 
 
 def test_lock_check_phase_is_required_and_refused_outside_lock_check(
@@ -26979,9 +27117,9 @@ def test_launcher_lock_check_phase_required_and_dry_prints_phase_wall_and_price(
         return proc
 
     for tag, mp, code in (
-        ("none", "--lock-check --max-rate 9.5", "LOCK_CHECK_PHASE_REQUIRED"),
+        ("none", "--lock-check --card A100 --shape standard --max-rate 9.5", "LOCK_CHECK_PHASE_REQUIRED"),
         ("none_stub", "--lock-check-stub", "LOCK_CHECK_PHASE_REQUIRED"),
-        ("bad", "--lock-check --max-rate 9.5 --lock-check-phase both", "LOCK_CHECK_PHASE_INVALID"),
+        ("bad", "--lock-check --card A100 --shape standard --max-rate 9.5 --lock-check-phase both", "LOCK_CHECK_PHASE_INVALID"),
         ("stubmode", "--stub --lock-check-phase anchors", "LOCK_CHECK_PHASE_INVALID"),
     ):
         proc = _run(tag, mp)
@@ -26990,7 +27128,7 @@ def test_launcher_lock_check_phase_required_and_dry_prints_phase_wall_and_price(
         assert "colab new" not in proc.stdout
 
     for phase, wall in (("anchors", 3600), ("p0a", 5400), ("all", 7200)):
-        proc = _run(f"ok_{phase}", f"--lock-check --max-rate 9.5 --lock-check-phase {phase}")
+        proc = _run(f"ok_{phase}", f"--lock-check --card A100 --shape standard --max-rate 9.5 --lock-check-phase {phase}")
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert f"[lock-check] phase={phase} " in proc.stderr and f"wall_s={wall} " in proc.stderr, proc.stderr
         assert f"wall_x_max_rate={round(wall * 9.5 / 3600.0, 4):g} " in proc.stderr, proc.stderr

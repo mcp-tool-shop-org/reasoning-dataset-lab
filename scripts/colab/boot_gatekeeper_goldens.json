@@ -52,5 +52,6 @@
       "prompt_2_output_token_ids_sha256": null,
       "status": "unfilled"
     }
-  }
+  },
+  "goldens_body_sha256": "2a0afe54738f7d93c08c91c63f1854f13a00cc7ecb75540a0ed3c0c127e09ea8"
 }

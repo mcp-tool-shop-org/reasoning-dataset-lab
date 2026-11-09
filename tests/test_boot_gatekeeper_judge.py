@@ -215,6 +215,8 @@ def _time_one_main_env(
         "--mode",
         mode,
         *(["--only-judges", "mu-judge"] if mode == "time-one" else []),
+        "--window-id",
+        f"window-{mode}-real-01",
         "--repo-dir",
         str(REPO_ROOT),
         "--items-file",
@@ -391,6 +393,17 @@ def test_main_counted_without_goldens_refuses_before_venv_sync(
     goldens_doc["card_types"]["A100"]["prompts"] = {
         sp["prompt_id"]: {"output_token_ids_sha256": "a" * 64} for sp in vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS
     }
+    goldens_doc["promoted_provenance"] = {
+        "window_id": "window-lc-real-01",
+        "session_env_sha256": "a" * 64,
+        "session_fingerprint_sha256": "b" * 64,
+        "mode": "lock-check",
+        "lock_check_phase": "anchors",
+        "card_type": "A100",
+        "hash_source": "real_transport",
+        "stub_transport": False,
+    }
+    goldens_doc["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(goldens_doc)
     goldens = tmp_path / "goldens_filled.json"
     goldens.write_text(json.dumps(goldens_doc), encoding="utf-8")
     calls.clear()
@@ -575,6 +588,17 @@ def test_plan_boot_gatekeeper_judge_per_mode(tmp_path: Path, monkeypatch: pytest
     filled_doc["card_types"]["A100"]["prompts"] = {
         sp["prompt_id"]: {"output_token_ids_sha256": "b" * 64} for sp in vm_judges.BOOT_GATEKEEPER_SYNTHETIC_PROMPTS
     }
+    filled_doc["promoted_provenance"] = {
+        "window_id": "window-lc-real-01",
+        "session_env_sha256": "a" * 64,
+        "session_fingerprint_sha256": "b" * 64,
+        "mode": "lock-check",
+        "lock_check_phase": "anchors",
+        "card_type": "A100",
+        "hash_source": "real_transport",
+        "stub_transport": False,
+    }
+    filled_doc["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(filled_doc)
     filled_goldens = tmp_path / "goldens_filled_a100.json"
     filled_goldens.write_text(json.dumps(filled_doc), encoding="utf-8")
     for mode in ("counted", "lock-check"):
@@ -1480,6 +1504,7 @@ def test_e2e_launcher_forwards_the_opened_card_type_not_the_request(tmp_path: Pa
         part_dir=part,
         receipts_dir=receipts_dir,
         hf_home=hf_home,
+        extra_args="--card A100 --shape high-mem",
         session_hardware="A100|High-RAM",
         double_space_rows=True,
     )
@@ -1515,6 +1540,9 @@ def test_receipt_hardware_fields_per_mode(monkeypatch: pytest.MonkeyPatch) -> No
             "hardware": "L4",
             "hardware_source": "RDLAB_CARD_TYPE cross-checked with nvidia-smi",
             "gpu_name": "NVIDIA L4",
+            "card_requested": None,
+            "shape_requested": None,
+            "shape_check": None,
         }
     monkeypatch.setattr(vm_judges, "read_vm_gpu_name", lambda: ("NVIDIA A100-SXM4-40GB", "nvidia-smi"))
     monkeypatch.setenv("RDLAB_CARD_TYPE", "A100")
