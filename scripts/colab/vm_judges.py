@@ -4589,11 +4589,29 @@ def build_allowlisted_result_tar(run_dir: Path, tar_path: Path) -> list[str]:
     return rel_files
 
 
+def _resolve_vm_window_id(
+    window_id: str | None,
+    *,
+    in_real: bool,
+    run_dir: Path,
+    stub_default: str,
+) -> str:
+    """Resolve a VM window identifier without ever falling back to `run_dir.name` or a placeholder in real mode."""
+    if window_id is not None and (in_real or str(window_id).strip()):
+        return str(window_id).strip()
+    if "RDLAB_SESSION_ID" in os.environ and (in_real or os.environ["RDLAB_SESSION_ID"].strip()):
+        return os.environ["RDLAB_SESSION_ID"].strip()
+    if "RDLAB_RUN_ID" in os.environ and (in_real or os.environ["RDLAB_RUN_ID"].strip()):
+        return os.environ["RDLAB_RUN_ID"].strip()
+    return "" if in_real else (run_dir.name or stub_default)
+
+
 def write_window_manifest(
     run_dir: Path,
     *,
     window_id: str | None = None,
     mode: str | None = None,
+    dryrun: bool = False,
     anchor_items_sha256: str | None = None,
     p0a_items_sha256: str | None = None,
     counted_source_sha256: str | None = None,
@@ -4601,20 +4619,16 @@ def write_window_manifest(
     """Build and write `run_dir / window.json` listing `{sha256, bytes}` for every allow-listed artifact in `run_dir`."""
     ensure_not_drive_path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    eff_window_id = (
-        str(window_id).strip()
-        if window_id is not None and str(window_id).strip()
-        else (
-            os.environ.get("RDLAB_SESSION_ID", "").strip()
-            or os.environ.get("RDLAB_RUN_ID", "").strip()
-            or run_dir.name
-            or "window-local"
-        )
-    )
     eff_mode = (
         str(mode).strip()
         if mode is not None and str(mode).strip()
         else (os.environ.get("RDLAB_MODE", "").strip() or "stub")
+    )
+    eff_window_id = _resolve_vm_window_id(
+        window_id,
+        in_real=is_real_mode(eff_mode, dryrun=dryrun),
+        run_dir=run_dir,
+        stub_default="window-local",
     )
     existing_win_path = run_dir / WINDOW_MANIFEST_FILENAME
     prev_anchor_sha: str | None = None
@@ -12722,6 +12736,13 @@ def run_boot_gatekeeper(
         else None
     )
 
+    raw_win_id = _resolve_vm_window_id(
+        window_id,
+        in_real=is_real_mode(mode, dryrun=dryrun),
+        run_dir=run_dir,
+        stub_default="window-lock-check",
+    )
+
     if is_real_mode(mode, dryrun=dryrun):
         if transport is not None and (
             bool(getattr(transport, "is_stub_transport", False))
@@ -12736,7 +12757,13 @@ def run_boot_gatekeeper(
                 "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
                 f"Real mode ({mode!r}) refuses stub/fake transport {type(transport).__name__} in boot gatekeeper.",
             )
-        if not is_record_mode:
+        if is_record_mode:
+            if not raw_win_id or is_stub_window_id(raw_win_id):
+                raise RefusalError(
+                    "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+                    f"Real record mode ({mode!r}) requires a non-stub window_id (got {raw_win_id!r}).",
+                )
+        else:
             marks = boot_gatekeeper_goldens_stub_marks(goldens_doc, card_entry)
             if marks:
                 raise RefusalError(
@@ -12751,6 +12778,12 @@ def run_boot_gatekeeper(
                     goldens_path=eff_goldens_path,
                     card_type=eff_card_type,
                 )
+            if transport is None or raw_win_id:
+                if not raw_win_id or is_stub_window_id(raw_win_id):
+                    raise RefusalError(
+                        "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED",
+                        f"Real mode ({mode!r}) requires a non-stub window_id (got {raw_win_id!r}).",
+                    )
 
     _extract_expected_sha = boot_gatekeeper_expected_sha
 
@@ -12833,15 +12866,6 @@ def run_boot_gatekeeper(
                 else os.environ.get(LOCK_CHECK_PHASE_ENV_VAR, "").strip().lower()
             )
             eff_lock_check_phase = raw_lcp if raw_lcp else None
-        raw_win_id = (
-            str(window_id).strip()
-            if window_id is not None and str(window_id).strip()
-            else (
-                os.environ.get("RDLAB_SESSION_ID", "").strip()
-                or os.environ.get("RDLAB_RUN_ID", "").strip()
-                or ("" if is_real_mode(mode, dryrun=dryrun) else (run_dir.name or "window-lock-check"))
-            )
-        )
         if is_real_mode(mode, dryrun=dryrun):
             if not raw_win_id or is_stub_window_id(raw_win_id):
                 raise RefusalError(
@@ -13084,6 +13108,7 @@ def run_boot_gatekeeper(
         "judge_id": judge_id,
         "hash_source": hash_source,
         "synthetic_fake_hash": synthetic_fake_hash,
+        **({"window_id": raw_win_id} if raw_win_id else {}),
         **boot_gatekeeper_report_fields(gk_timings),
         "actual_output_token_ids_sha256": actual_by_prompt,
         "expected_output_token_ids_sha256": expected_by_prompt,
@@ -14772,6 +14797,7 @@ def main(argv: list[str] | None = None) -> int:
             args.run_dir,
             window_id=getattr(args, "window_id", None),
             mode=args.mode,
+            dryrun=dryrun,
             anchor_items_sha256=anchor_items_sha256,
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,
@@ -14801,6 +14827,7 @@ def main(argv: list[str] | None = None) -> int:
             args.run_dir,
             window_id=getattr(args, "window_id", None),
             mode=args.mode,
+            dryrun=dryrun,
             anchor_items_sha256=anchor_items_sha256,
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,
@@ -14912,6 +14939,7 @@ def main(argv: list[str] | None = None) -> int:
             args.run_dir,
             window_id=getattr(args, "window_id", None),
             mode=args.mode,
+            dryrun=dryrun,
             anchor_items_sha256=anchor_items_sha256,
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,

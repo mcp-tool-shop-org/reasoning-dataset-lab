@@ -25058,7 +25058,7 @@ def _pm_real_mode_exports(
             hf_home=hf_home,
             items_file=items_file,
         ).replace("export VM_DRYRUN=1; ", "")
-        + "unset VM_DRYRUN; "
+        + "unset VM_DRYRUN; unset RDLAB_SESSION_ID; "
         + "export RDLAB_CARD=A100; export RDLAB_SHAPE=standard; "
         + (f"export RDLAB_PART_DIR='{_to_wsl_path(part_dir)}'; " if part_dir is not None else "unset RDLAB_PART_DIR; ")
         + (_test_part_pin_exports(env_paths, *pin_parts) if pin_parts else "")
@@ -25531,14 +25531,100 @@ def test_part_manifest_item2_dry_runs_the_lock_check_two_input_check_like_live(t
     assert "colab new" in proc_ok.stdout
 
 
+def assert_rehearsal_window_id(
+    out_dir: Path,
+    shim_rows: list[dict[str, Any]],
+    env_paths: dict[str, Path],
+    *,
+    mode: str,
+    expected_window_id: str,
+) -> None:
+    """Assert that the fake-CLI rehearsal handed a non-empty, non-stub `window_id` (`expected_window_id`) from the
+    launcher into `colab exec`, `run_boot_gatekeeper`, `vm_receipt.json`, `window.json`, and (for record modes)
+    `boot_gatekeeper_goldens.filled.json`, failing by name (`window_id` and `mode`) if any leg is missing or stub."""
+    if not expected_window_id or vm_judges.is_stub_window_id(expected_window_id):
+        raise AssertionError(
+            f"rehearsal mode={mode!r}: expected non-empty, non-stub window_id, got {expected_window_id!r}"
+        )
+
+    calls_file = env_paths["calls_log"]
+    call_rows = [json.loads(ln) for ln in calls_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    exec_sids: list[str] = []
+    for row in call_rows:
+        args = [str(a) for a in row.get("args", [])]
+        if row.get("subcmd") == "exec" and "RDLAB_STEP=run" in args:
+            exec_sids.extend(a.split("=", 1)[1] for a in args if a.startswith("RDLAB_SESSION_ID="))
+    if not exec_sids or not exec_sids[-1] or vm_judges.is_stub_window_id(exec_sids[-1]) or exec_sids[-1] != expected_window_id:
+        raise AssertionError(
+            f"rehearsal mode={mode!r}: colab exec missing non-empty non-stub window_id (RDLAB_SESSION_ID); "
+            f"got {exec_sids!r}, expected {expected_window_id!r}"
+        )
+
+    gk_outcomes = [r for r in shim_rows if r.get("call") == "boot_gatekeeper_outcome"]
+    if not gk_outcomes:
+        raise AssertionError(f"rehearsal mode={mode!r}: boot_gatekeeper_outcome missing; window_id never reached gatekeeper")
+    shim_wid = str(gk_outcomes[-1].get("window_id") or "").strip()
+    if not shim_wid or vm_judges.is_stub_window_id(shim_wid) or shim_wid != expected_window_id:
+        raise AssertionError(
+            f"rehearsal mode={mode!r}: boot_gatekeeper_outcome missing non-empty non-stub window_id; "
+            f"got {gk_outcomes[-1].get('window_id')!r}, expected {expected_window_id!r}"
+        )
+
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    rcpt_wid = str((receipt_doc.get("boot_gatekeeper") or {}).get("window_id") or "").strip()
+    if not rcpt_wid or vm_judges.is_stub_window_id(rcpt_wid) or rcpt_wid != expected_window_id:
+        raise AssertionError(
+            f"rehearsal mode={mode!r}: vm_receipt.json boot_gatekeeper.window_id invalid; "
+            f"got {rcpt_wid!r}, expected {expected_window_id!r}"
+        )
+
+    gk_file = out_dir / "boot_gatekeeper.json"
+    if gk_file.is_file():
+        gk_wid = str(json.loads(gk_file.read_text(encoding="utf-8")).get("window_id") or "").strip()
+        if not gk_wid or vm_judges.is_stub_window_id(gk_wid) or gk_wid != expected_window_id:
+            raise AssertionError(
+                f"rehearsal mode={mode!r}: boot_gatekeeper.json window_id invalid; "
+                f"got {gk_wid!r}, expected {expected_window_id!r}"
+            )
+
+    win_file = out_dir / "window.json"
+    win_wid = str(json.loads(win_file.read_text(encoding="utf-8")).get("window_id") or "").strip() if win_file.is_file() else ""
+    if not win_wid or vm_judges.is_stub_window_id(win_wid) or win_wid != expected_window_id:
+        raise AssertionError(
+            f"rehearsal mode={mode!r}: window.json window_id invalid; got {win_wid!r}, expected {expected_window_id!r}"
+        )
+
+    if mode in ("lock-check", "time-one"):
+        if gk_outcomes[-1].get("record_mode") is not True:
+            raise AssertionError(
+                f"rehearsal record mode={mode!r}: boot_gatekeeper_outcome.record_mode is not True (window_id={shim_wid!r})"
+            )
+        filled_file = out_dir / "boot_gatekeeper_goldens.filled.json"
+        if not filled_file.is_file():
+            raise AssertionError(
+                f"rehearsal record mode={mode!r}: boot_gatekeeper_goldens.filled.json missing (window_id={shim_wid!r})"
+            )
+        filled_doc = json.loads(filled_file.read_text(encoding="utf-8"))
+        filled_wid = str((filled_doc.get("provenance") or {}).get("window_id") or "").strip()
+        if not filled_wid or vm_judges.is_stub_window_id(filled_wid) or filled_wid != expected_window_id:
+            raise AssertionError(
+                f"rehearsal record mode={mode!r}: boot_gatekeeper_goldens.filled.json provenance.window_id invalid; "
+                f"got {filled_wid!r}, expected {expected_window_id!r}"
+            )
+
+
 def _e2e_fake_real_mode_window(
     tmp_path: Path,
     *,
     mode: str,
     items_file: Path,
-    part_dir: Path,
+    part_dir: Path | None,
     receipts_dir: Path,
     hf_home: Path,
+    p0a_items: Path | None = None,
+    p0a_part_dir: Path | None = None,
+    counted_items: Path | None = None,
+    lock_check_phase: str = "anchors",
     extra_args: str = "",
     exec_env_extra: dict[str, str] | None = None,
     tag: str = "",
@@ -25567,16 +25653,29 @@ def _e2e_fake_real_mode_window(
     kept = tmp_path / f"e2e_{name}_kept_uploads"
     out_dir = tmp_path / f"e2e_{name}_out"
     run_id = f"e2e-{mode}-01"
+    pilot_pin_exports = ""
+    if mode == "lock-check" and p0a_part_dir is not None:
+        p0a_hashes = _part_pin_hashes(p0a_part_dir)
+        pins_file = env_paths["state_dir"] / "test_part_pins.json"
+        pins_file.parent.mkdir(parents=True, exist_ok=True)
+        pins_file.write_text(
+            json.dumps({"burned_pilot": [p0a_hashes["part.json"], p0a_hashes["items.jsonl"]]}),
+            encoding="utf-8",
+        )
+        pilot_pin_exports = (
+            f"export PYTHONPATH='{_to_wsl_path(TEST_PART_PINS_DIR)}'${{PYTHONPATH:+:$PYTHONPATH}}; "
+            f"export FAKE_COLAB_TEST_PART_PINS_FILE='{_to_wsl_path(pins_file)}'; "
+        )
     exports = _pm_real_mode_exports(
         env_paths,
         open_lock=tmp_path / f"e2e_{name}.lock",
         receipts_dir=receipts_dir,
         hf_home=hf_home,
         items_file=items_file,
-        part_dir=part_dir,
+        part_dir=part_dir if mode != "lock-check" else None,
         # A counted window runs only on a pinned part: pin the test's builder part for this run.
         pin_parts=(part_dir,) if (part_dir is not None and mode == "counted") else (),
-    ) + (
+    ) + pilot_pin_exports + (
         f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(REAL_MODE_SHIM_PY)}'; "
         f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(kept)}'; "
         f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
@@ -25590,8 +25689,18 @@ def _e2e_fake_real_mode_window(
         (env_paths["state_dir"] / "sessions_double_space").write_text("1\n", encoding="utf-8")
     if vm_gpu_name is not None:
         (env_paths["state_dir"] / "nvidia_smi_gpu_name.txt").write_text(vm_gpu_name + "\n", encoding="utf-8")
+    mode_cli = f"--{mode}"
+    if mode == "lock-check":
+        assert p0a_items is not None and p0a_part_dir is not None and counted_items is not None
+        mode_cli += (
+            f" --lock-check-phase {lock_check_phase}"
+            f" --anchor-items '{_to_wsl_path(items_file)}'"
+            f" --p0a-items '{_to_wsl_path(p0a_items)}'"
+            f" --p0a-part-dir '{_to_wsl_path(p0a_part_dir)}'"
+            f" --counted-items '{_to_wsl_path(counted_items)}'"
+        )
     proc = _pm_run_launcher(
-        exports, f"--{mode} {extra_args} --out-dir '{_to_wsl_path(out_dir)}' --run-id {run_id}", timeout=300
+        exports, f"{mode_cli} {extra_args} --out-dir '{_to_wsl_path(out_dir)}' --run-id {run_id}", timeout=300
     )
     if exec_env_extra or expect_fail:
         return {"proc": proc, "out_dir": out_dir, "env_paths": env_paths}
@@ -25631,40 +25740,79 @@ def _e2e_fake_real_mode_window(
     }
     assert judged_ids and judged_ids <= item_ids, sorted(judged_ids)[:5]
 
-    # Uploads: the part's own part.json and checksums.txt went up byte-identical beside the projected items.jsonl;
-    # all three are gone from the VM and listed. No manifest.json exists anywhere.
-    for name_up in ("part.json", "checksums.txt"):
-        assert (kept / name_up).read_bytes() == (part_dir / name_up).read_bytes()
-    assert (kept / "items.jsonl").read_bytes() == items_file.read_bytes()
-    assert not (kept / "manifest.json").exists()
-    vm_items_dir = env_paths["state_dir"] / "vm_fs" / "rdlab_items"
-    assert not any((vm_items_dir / n).exists() for n in ("items.jsonl", "part.json", "checksums.txt", "manifest.json"))
-    deleted = {Path(f["path"]).name: f["absent"] for f in receipt["deleted_items_receipt"]["files"]}
-    assert deleted == {
-        "items.jsonl": True,
-        "part.json": True,
-        "checksums.txt": True,
-        "launcher_part_binding.json": True,
-    }, receipt["deleted_items_receipt"]
-    assert receipt["deleted_items_receipt"]["all_absent"] is True
+    session_name = f"rdlab-{run_id}"
+    assert_rehearsal_window_id(out_dir, shim_rows, env_paths, mode=mode, expected_window_id=session_name)
 
-    # The receipt shows both checks, each labelled by where it ran: the VM's re-check (identity, counts; no projection
-    # check) and the launcher's row-by-row binding, which the outcome draft on the rig carries too.
-    # timeone-mu2b (2026-11-06): the receipt's binding said projection_checked false while the rig printed true. The
-    # binding is now the rig's result carried over (checked_by "rig", the launcher's value), the VM's re-check beside it.
-    rcpt_bind = receipt["part_identity"]["binding"]
-    launcher_bind = receipt["part_identity"]["launcher_binding"]
-    assert rcpt_bind["checked_by"] == "rig"
-    assert rcpt_bind["projection_checked"] is True
-    assert rcpt_bind["projection_checked"] == launcher_bind["binding"]["projection_checked"]
-    assert rcpt_bind["vm_recheck"]["checked_by"] == "vm" and rcpt_bind["vm_recheck"]["projection_checked"] is None
-    assert receipt["time_one_summary"]["part_identity"]["binding"] == rcpt_bind
-    assert launcher_bind["checked_by"] == "launcher" and launcher_bind["binding"]["projection_checked"] is True
-    assert launcher_bind["binding"]["uploaded_items_sha256"] == hashlib.sha256(items_file.read_bytes()).hexdigest()
-    assert launcher_bind["part_json_sha256"] == hashlib.sha256((part_dir / "part.json").read_bytes()).hexdigest()
-    assert receipt["time_one_summary"]["part_identity"]["launcher_binding"] == launcher_bind
-    assert outcome["launcher_part_binding"]["window_part"] == launcher_bind
-    assert "PART_BINDING_LAUNCHER" in (out_dir / "colab-cli.log").read_text(encoding="utf-8")
+    if mode == "lock-check":
+        assert p0a_items is not None and p0a_part_dir is not None
+        assert (kept / "p0a_part.json").read_bytes() == (p0a_part_dir / "part.json").read_bytes()
+        assert (kept / "p0a_checksums.txt").read_bytes() == (p0a_part_dir / "checksums.txt").read_bytes()
+        assert (kept / "anchor_items.jsonl").read_bytes() == items_file.read_bytes()
+        assert (kept / "p0a_items.jsonl").read_bytes() == p0a_items.read_bytes()
+        assert not (kept / "manifest.json").exists() and not (kept / "p0a_manifest.json").exists()
+        vm_items_dir = env_paths["state_dir"] / "vm_fs" / "rdlab_items"
+        assert not any(
+            (vm_items_dir / n).exists()
+            for n in ("anchor_items.jsonl", "p0a_items.jsonl", "p0a_part.json", "p0a_checksums.txt", "manifest.json")
+        )
+        deleted = {Path(f["path"]).name: f["absent"] for f in receipt["deleted_items_receipt"]["files"]}
+        assert deleted == {
+            "anchor_items.jsonl": True,
+            "p0a_items.jsonl": True,
+            "p0a_part.json": True,
+            "p0a_checksums.txt": True,
+            "launcher_part_binding.json": True,
+            "counted_items.jsonl": True,
+        }, receipt["deleted_items_receipt"]
+        assert receipt["deleted_items_receipt"]["all_absent"] is True
+        p0a_ident = receipt["time_one_summary"]["p0a_part_identity"]
+        p0a_bind = p0a_ident["binding"]
+        p0a_launcher_bind = p0a_ident["launcher_binding"]
+        assert p0a_bind["checked_by"] == "rig" and p0a_bind["projection_checked"] is True
+        assert p0a_launcher_bind["checked_by"] == "launcher" and p0a_launcher_bind["binding"]["projection_checked"] is True
+        assert outcome["launcher_part_binding"]["p0a_part"] == p0a_launcher_bind
+    else:
+        assert part_dir is not None
+        # Uploads: the part's own part.json and checksums.txt went up byte-identical beside the projected items.jsonl;
+        # all three are gone from the VM and listed. No manifest.json exists anywhere.
+        for name_up in ("part.json", "checksums.txt"):
+            assert (kept / name_up).read_bytes() == (part_dir / name_up).read_bytes()
+        assert (kept / "items.jsonl").read_bytes() == items_file.read_bytes()
+        assert not (kept / "manifest.json").exists()
+        vm_items_dir = env_paths["state_dir"] / "vm_fs" / "rdlab_items"
+        assert not any((vm_items_dir / n).exists() for n in ("items.jsonl", "part.json", "checksums.txt", "manifest.json"))
+        deleted = {Path(f["path"]).name: f["absent"] for f in receipt["deleted_items_receipt"]["files"]}
+        assert deleted == {
+            "items.jsonl": True,
+            "part.json": True,
+            "checksums.txt": True,
+            "launcher_part_binding.json": True,
+        }, receipt["deleted_items_receipt"]
+        assert receipt["deleted_items_receipt"]["all_absent"] is True
+
+        # The receipt shows both checks, each labelled by where it ran: the VM's re-check (identity, counts; no projection
+        # check) and the launcher's row-by-row binding, which the outcome draft on the rig carries too.
+        # timeone-mu2b (2026-11-06): the receipt's binding said projection_checked false while the rig printed true. The
+        # binding is now the rig's result carried over (checked_by "rig", the launcher's value), the VM's re-check beside it.
+        rcpt_bind = receipt["part_identity"]["binding"]
+        launcher_bind = receipt["part_identity"]["launcher_binding"]
+        assert rcpt_bind["checked_by"] == "rig"
+        assert rcpt_bind["projection_checked"] is True
+        assert rcpt_bind["projection_checked"] == launcher_bind["binding"]["projection_checked"]
+        assert rcpt_bind["vm_recheck"]["checked_by"] == "vm" and rcpt_bind["vm_recheck"]["projection_checked"] is None
+        assert receipt["time_one_summary"]["part_identity"]["binding"] == rcpt_bind
+        assert launcher_bind["checked_by"] == "launcher" and launcher_bind["binding"]["projection_checked"] is True
+        assert launcher_bind["binding"]["uploaded_items_sha256"] == hashlib.sha256(items_file.read_bytes()).hexdigest()
+        assert launcher_bind["part_json_sha256"] == hashlib.sha256((part_dir / "part.json").read_bytes()).hexdigest()
+        assert receipt["time_one_summary"]["part_identity"]["launcher_binding"] == launcher_bind
+        assert outcome["launcher_part_binding"]["window_part"] == launcher_bind
+        assert "PART_BINDING_LAUNCHER" in (out_dir / "colab-cli.log").read_text(encoding="utf-8")
+
+        # The part identity recorded is the part's own, read from part.json and bound by checksums.txt.
+        ident = receipt["part_identity"]
+        assert ident["part_id"] == json.loads((part_dir / "part.json").read_text(encoding="utf-8"))["part_id"]
+        assert ident["part_json_sha256"] == hashlib.sha256((part_dir / "part.json").read_bytes()).hexdigest()
+        assert ident["items_jsonl_sha256"] == hashlib.sha256((part_dir / "items.jsonl").read_bytes()).hexdigest()
 
     # The repo bundle holds exactly the git-tracked files of the bundle paths (plus the named window inputs).
     import tarfile
@@ -25677,13 +25825,9 @@ def _e2e_fake_real_mode_window(
         "shard_manifest.json",
         "golden_anchor_manifest.json",
         "boot_gatekeeper_goldens.candidate.json",
+        "counted_items.jsonl",
+        "counted_manifest.json",
     }, sorted(extras)
-
-    # The part identity recorded is the part's own, read from part.json and bound by checksums.txt.
-    ident = receipt["part_identity"]
-    assert ident["part_id"] == json.loads((part_dir / "part.json").read_text(encoding="utf-8"))["part_id"]
-    assert ident["part_json_sha256"] == hashlib.sha256((part_dir / "part.json").read_bytes()).hexdigest()
-    assert ident["items_jsonl_sha256"] == hashlib.sha256((part_dir / "items.jsonl").read_bytes()).hexdigest()
 
     # The VM used its own weight cache inside the fake VM root, never the launcher's local HF_HOME.
     hf_calls = env_paths["state_dir"] / "hf_calls.jsonl"
@@ -25691,7 +25835,6 @@ def _e2e_fake_real_mode_window(
         assert _to_wsl_path(hf_home) not in hf_calls.read_text(encoding="utf-8")
 
     # The session was stopped and is no longer listed.
-    session_name = f"rdlab-{run_id}"
     stopped = [
         json.loads(ln)["session_id"]
         for ln in env_paths["stopped_file"].read_text(encoding="utf-8").splitlines()
@@ -25934,12 +26077,206 @@ def test_e2e_fake_real_mode_counted_reaches_judges(
         extra_args=(
             f"--shard 1/2 --shard-manifest '{_to_wsl_path(lc_run / 'shard_manifest.json')}' "
             f"--golden-anchor-manifest '{_to_wsl_path(lc_run / 'golden_anchor_manifest.json')}' "
-            f"--boot-gatekeeper-goldens '{_to_wsl_path(goldens)}' --window-id window-e2e-counted-01"
+            f"--boot-gatekeeper-goldens '{_to_wsl_path(goldens)}'"
         ),
     )
     assert any(r["call"] == "run_boot_gatekeeper" for r in res["shim_rows"])
     assert res["receipt"].get("shard_spec") in (None, "1/2")
     assert res["receipt"]["part_identity"]["binding"]["rule"] == "whole_part_in_order"
+
+
+def test_e2e_fake_real_mode_lock_check_passes_opened_window_id_to_boot_gatekeeper(tmp_path: Path) -> None:
+    """The free gate before any paid lock-check window (Parts 1-3): a real `--lock-check --lock-check-phase anchors`
+    run through the real `launch_judges.sh` live path on the fake `colab` CLI, with NO `--window-id` flag and no
+    `RDLAB_SESSION_ID` / `RDLAB_RUN_ID` in the caller's environment, hands the opened Colab session id
+    (`rdlab-e2e-lock-check-01`) into `colab exec`, reaches `run_boot_gatekeeper` in real record mode with that
+    non-empty, non-stub `window_id`, records it in `boot_gatekeeper_goldens.filled.json`, `vm_receipt.json` and
+    `window.json`, and keeps `BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED` when an explicitly empty or stub `--window-id` is
+    passed.
+    Fails at 4f5229f94fff0bbeb8407dc1784f2805eb5cfbed (`scripts/colab/vm_judges.py:12846-12850`): `launch_judges.sh`
+    forwarded `RDLAB_SESSION_ID` only when `--window-id` was given, so `run_boot_gatekeeper` refused with
+    `BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED`: "Real record mode ('lock-check') requires a non-stub window_id (got '')".
+    """
+    import promote_goldens
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "e2e_lc_rec")
+    pilot = _pilot_like_part(tmp_path / "e2e_lc_pilot")
+    p0a_items = _project_part_items(pilot, tmp_path / "e2e_lc_inputs" / "p0a_items.jsonl")
+    counted_items, anchor_items = _counted_and_anchor_files(tmp_path / "e2e_lc_counted")
+
+    res = _e2e_fake_real_mode_window(
+        tmp_path,
+        mode="lock-check",
+        items_file=anchor_items,
+        part_dir=None,
+        p0a_items=p0a_items,
+        p0a_part_dir=pilot,
+        counted_items=counted_items,
+        lock_check_phase="anchors",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+    )
+    expected_wid = "rdlab-e2e-lock-check-01"
+    filled_path = res["out_dir"] / "boot_gatekeeper_goldens.filled.json"
+    filled_sha = hashlib.sha256(filled_path.read_bytes()).hexdigest()
+    verified, _ = promote_goldens.verify_filled_goldens(
+        filled_path,
+        expected_sha256=filled_sha,
+        receipt_path=res["out_dir"] / "vm_receipt.json",
+        session_env_path=res["out_dir"] / "session_env.json",
+        allow_stub_transport=True,
+    )
+    assert verified["provenance"]["window_id"] == expected_wid
+
+    # Explicitly empty or stub --window-id must still refuse at the boot gatekeeper with the exact refusal class and
+    # message (never falling back to the opened session id or to run_dir.name).
+    for bad_tag, bad_flag, bad_got in (
+        ("_empty_wid", "--window-id ''", "got ''"),
+        ("_stub_wid", "--window-id window-lock-check", "got 'window-lock-check'"),
+    ):
+        bad_res = _e2e_fake_real_mode_window(
+            tmp_path,
+            mode="lock-check",
+            items_file=anchor_items,
+            part_dir=None,
+            p0a_items=p0a_items,
+            p0a_part_dir=pilot,
+            counted_items=counted_items,
+            lock_check_phase="anchors",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            extra_args=bad_flag,
+            tag=bad_tag,
+            expect_fail=True,
+        )
+        assert bad_res["proc"].returncode != 0, bad_tag
+        st_doc = json.loads((bad_res["out_dir"] / "status.json").read_text(encoding="utf-8"))
+        assert st_doc["failure_class"] == "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED", (bad_tag, st_doc)
+        assert "Real record mode ('lock-check') requires a non-stub window_id" in st_doc["reason"], st_doc
+        assert bad_got in st_doc["reason"], st_doc
+
+    # `--dry` of flagless --lock-check, --time-one and --counted also shows RDLAB_SESSION_ID=rdlab-<run_id> in colab exec.
+    t1_part = _make_builder_part(tmp_path / "e2e_lc_dry_t1_part")
+    t1_items = _project_part_items(t1_part, tmp_path / "e2e_lc_dry_t1_in" / "items.jsonl")
+    dry_env = fake_colab.setup_fake_colab_environment(tmp_path / "e2e_lc_dry_env")
+    p0a_hashes = _part_pin_hashes(pilot)
+    t1_hashes = _part_pin_hashes(t1_part)
+    pins_file = dry_env["state_dir"] / "test_part_pins.json"
+    pins_file.write_text(
+        json.dumps(
+            {
+                "burned_pilot": [p0a_hashes["part.json"], p0a_hashes["items.jsonl"]],
+                "test_counted": [t1_hashes["part.json"], t1_hashes["items.jsonl"]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    dry_goldens_doc = json.loads((SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json").read_text(encoding="utf-8"))
+    dry_goldens_doc["card_types"]["A100"]["prompts"] = {
+        sp["prompt_id"]: {"output_token_ids_sha256": "d" * 64} for sp in dry_goldens_doc["synthetic_prompts"]
+    }
+    dry_goldens_doc["promoted_provenance"] = {
+        "window_id": "rdlab-lc-real-dry-01",
+        "session_env_sha256": "a" * 64,
+        "session_fingerprint_sha256": "b" * 64,
+        "mode": "lock-check",
+        "lock_check_phase": "anchors",
+        "card_type": "A100",
+        "hash_source": "real_transport",
+        "stub_transport": False,
+    }
+    dry_goldens_doc["goldens_body_sha256"] = vm_judges.compute_goldens_body_sha256(dry_goldens_doc)
+    dry_goldens = tmp_path / "e2e_lc_dry_goldens.json"
+    dry_goldens.write_text(json.dumps(dry_goldens_doc), encoding="utf-8")
+    dry_exports = (
+        _pm_real_mode_exports(
+            dry_env,
+            open_lock=tmp_path / "e2e_lc_dry.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=t1_items,
+            part_dir=t1_part,
+        )
+        + f"export PYTHONPATH='{_to_wsl_path(TEST_PART_PINS_DIR)}'${{PYTHONPATH:+:$PYTHONPATH}}; "
+        + f"export FAKE_COLAB_TEST_PART_PINS_FILE='{_to_wsl_path(pins_file)}'; "
+    )
+    for dry_mode, dry_cli in (
+        (
+            "lock-check",
+            f"--lock-check --lock-check-phase anchors --anchor-items '{_to_wsl_path(anchor_items)}' "
+            f"--p0a-items '{_to_wsl_path(p0a_items)}' --p0a-part-dir '{_to_wsl_path(pilot)}' "
+            f"--counted-items '{_to_wsl_path(counted_items)}'",
+        ),
+        ("time-one", "--time-one"),
+        ("counted", f"--counted --boot-gatekeeper-goldens '{_to_wsl_path(dry_goldens)}'"),
+    ):
+        dry_run_id = f"dry-{dry_mode}-01"
+        dry_proc = _pm_run_launcher(
+            dry_exports,
+            f"{dry_cli} --dry --out-dir '{_to_wsl_path(tmp_path / ('dry_out_' + dry_mode))}' --run-id {dry_run_id}",
+        )
+        assert dry_proc.returncode == 0, (dry_mode, dry_proc.stdout, dry_proc.stderr)
+        assert f"RDLAB_SESSION_ID=rdlab-{dry_run_id}" in dry_proc.stdout, (dry_mode, dry_proc.stdout)
+
+
+@pytest.mark.parametrize("mode", ["lock-check", "time-one", "counted"])
+def test_rehearsal_window_id_assertion_fails_by_name_for_every_mode(tmp_path: Path, mode: str) -> None:
+    """Part 3: `assert_rehearsal_window_id` passes when every rehearsal leg carries the opened session's non-empty,
+    non-stub `window_id`, and raises `AssertionError` naming `window_id` and `mode` whenever `colab exec`,
+    `boot_gatekeeper_outcome`, `vm_receipt.json`, `window.json`, or (for record modes)
+    `boot_gatekeeper_goldens.filled.json` has an empty, stub, or fallback (`rdlab_run`) `window_id`."""
+    expected = f"rdlab-rehearsal-{mode}-01"
+    out_dir = tmp_path / f"out_{mode}"
+    out_dir.mkdir(parents=True)
+    calls_log = tmp_path / f"calls_{mode}.jsonl"
+    env_paths = {"calls_log": calls_log}
+    is_rec = mode in ("lock-check", "time-one")
+
+    def _write_fixture(
+        *,
+        exec_sid: str | None = expected,
+        shim_wid: str | None = expected,
+        rcpt_wid: str | None = expected,
+        win_wid: str | None = expected,
+        filled_wid: str | None = expected,
+    ) -> list[dict[str, Any]]:
+        exec_args = ["RDLAB_STEP=run", f"RDLAB_MODE={mode}"]
+        if exec_sid is not None:
+            exec_args.append(f"RDLAB_SESSION_ID={exec_sid}")
+        calls_log.write_text(json.dumps({"subcmd": "exec", "args": exec_args}) + "\n", encoding="utf-8")
+        (out_dir / "vm_receipt.json").write_text(
+            json.dumps({"mode": mode, "boot_gatekeeper": {"window_id": rcpt_wid}}), encoding="utf-8"
+        )
+        (out_dir / "window.json").write_text(json.dumps({"window_id": win_wid, "mode": mode}), encoding="utf-8")
+        if is_rec:
+            (out_dir / "boot_gatekeeper_goldens.filled.json").write_text(
+                json.dumps({"provenance": {"window_id": filled_wid, "mode": mode}}), encoding="utf-8"
+            )
+        return [{"call": "boot_gatekeeper_outcome", "status": "ok", "record_mode": is_rec, "window_id": shim_wid}]
+
+    good_rows = _write_fixture()
+    assert_rehearsal_window_id(out_dir, good_rows, env_paths, mode=mode, expected_window_id=expected)
+
+    mutations: list[dict[str, str | None]] = [
+        {"exec_sid": None},
+        {"exec_sid": ""},
+        {"exec_sid": "window-lock-check"},
+        {"shim_wid": ""},
+        {"shim_wid": "window-local"},
+        {"rcpt_wid": ""},
+        {"rcpt_wid": "rdlab_run"},
+        {"win_wid": ""},
+        {"win_wid": "window-local"},
+    ]
+    if is_rec:
+        mutations.extend([{"filled_wid": ""}, {"filled_wid": "window-lock-check"}, {"filled_wid": "rdlab_run"}])
+
+    for mut in mutations:
+        bad_rows = _write_fixture(**mut)  # type: ignore[arg-type]
+        with pytest.raises(AssertionError) as exc_info:
+            assert_rehearsal_window_id(out_dir, bad_rows, env_paths, mode=mode, expected_window_id=expected)
+        msg = str(exc_info.value)
+        assert "window_id" in msg and mode in msg, (mode, mut, msg)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
