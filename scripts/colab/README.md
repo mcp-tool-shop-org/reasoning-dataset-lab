@@ -4,6 +4,8 @@ Per-window Google Colab launcher (`scripts/colab/launch_judges.sh`) and VM runne
 
 Keys and the scorer never leave the rig. Only public item files (`items.jsonl`), weight SHA-256 receipts (`<owner>__<repo>.sha256.json`), and the judge runner code are uploaded to the Colab VM.
 
+**Residual risk (`SIGKILL`):** No shell trap can catch `SIGKILL` (`kill -9`), so if `launch_judges.sh` itself receives `SIGKILL` after `colab new` assigns a VM and before `colab stop` completes, its `EXIT` trap never runs and it leaves an open Colab session that only the background session watcher (when it survives, recording `stop_path: "watcher"`) or a manual `colab sessions` check (`colab stop -s <session>`) stops.
+
 ### Item Projection Allow-List (`{id, material, claim}`)
 
 The uploaded `items.jsonl` file is a strict projection containing **only** the three fields `{id, material, claim}` on every JSON object row:

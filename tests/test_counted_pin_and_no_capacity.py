@@ -465,16 +465,17 @@ def test_neighbour_at_026_with_our_914_against_max_8_refuses(tmp_path: Path) -> 
 def test_neighbour_at_673_with_late_registration_is_priced_at_the_max(tmp_path: Path) -> None:
     """A neighbour at 6.73/h; our session registers late (the first post-open reads still say 6.73, a window rate of
     0). The window rate is accepted only once stable above the floor (15.86 - 6.73 = 9.13), and the cap runtime is
-    priced at max(--max-rate 9.5, 9.13) = 9.5, never at a lower read: cap 0.5 gives ceil(0.5 * 3600 / 9.5) s.
+    priced at max(--max-rate 9.5, 9.13) = 9.5, never at a lower read: cap 2.0 reserves margin + 345s cleanup at 9.5/h.
     Fails at ca31d36b: the read of 6.73 priced the runtime at 6.73, longer than the max allows."""
     proc, _env, out_dir = _stub_window(
         tmp_path,
         "nb673",
         "export FAKE_COLAB_USAGE_RATE_SEQUENCE=6.73,6.73,6.73,15.86,15.86; export RDLAB_MAX_RATE=9.5; "
-        "export RDLAB_CAP_UNITS=0.5; ",
+        "export RDLAB_CAP_UNITS=2.0; ",
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert _cap_runtime(out_dir) == math.ceil(0.5 * 3600 / 9.5)
+    expected_eff = 2.0 - 0.01 - (345.0 / 3600.0) * 9.5
+    assert _cap_runtime(out_dir) == math.ceil(expected_eff * 3600 / 9.5 - 1e-12)
     log = _cli_log(out_dir)
     assert "window_rate_uh=9.1300" in log and "pricing_rate_uh=9.5000" in log
     draft = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
@@ -487,10 +488,11 @@ def test_stable_under_read_window_rate_215_is_priced_at_max_95(tmp_path: Path) -
     proc, _env, out_dir = _stub_window(
         tmp_path,
         "ur215",
-        "export FAKE_COLAB_USAGE_RATE_SEQUENCE=0.00,2.15,2.15; export RDLAB_MAX_RATE=9.5; export RDLAB_CAP_UNITS=0.5; ",
+        "export FAKE_COLAB_USAGE_RATE_SEQUENCE=0.00,2.15,2.15; export RDLAB_MAX_RATE=9.5; export RDLAB_CAP_UNITS=2.0; ",
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert _cap_runtime(out_dir) == math.ceil(0.5 * 3600 / 9.5)
+    expected_eff = 2.0 - 0.01 - (345.0 / 3600.0) * 9.5
+    assert _cap_runtime(out_dir) == math.ceil(expected_eff * 3600 / 9.5 - 1e-12)
 
 
 def test_window_rate_needs_two_agreeing_reads_and_the_gpu_floor(tmp_path: Path) -> None:
