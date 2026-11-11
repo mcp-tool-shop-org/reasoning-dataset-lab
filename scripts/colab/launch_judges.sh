@@ -226,11 +226,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --window-id)
       WINDOW_ID="${2:-}"
+      WINDOW_ID_FLAG=1
       export RDLAB_SESSION_ID="$WINDOW_ID"
       shift 2
       ;;
     --window-id=*)
       WINDOW_ID="${1#*=}"
+      WINDOW_ID_FLAG=1
       export RDLAB_SESSION_ID="$WINDOW_ID"
       shift
       ;;
@@ -985,6 +987,7 @@ build_probe_env_args() {
 # A real time-one / counted / lock-check window (no VM_DRYRUN, no --until): the VM needs the card type of the session
 # actually opened, read from `colab sessions` after `colab new` (never from --gpu), and checks it against nvidia-smi.
 OPENED_CARD_TYPE=""
+OPENED_SESSION_ID=""
 
 needs_opened_card_type() {
   [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$UNTIL_STEP" ]] && [[ "$SESSION_SMOKE_FLAG" != "1" ]] \
@@ -1134,8 +1137,16 @@ build_exec_env_args() {
       EXEC_ENV_ARGS+=(--env "RDLAB_COUNTED_MANIFEST=/content/rdlab/counted_manifest.json")
     fi
   fi
-  if [[ -n "${RDLAB_SESSION_ID+x}" ]] && [[ -n "${RDLAB_SESSION_ID}" ]]; then
-    EXEC_ENV_ARGS+=(--env "RDLAB_SESSION_ID=$RDLAB_SESSION_ID")
+  local eff_session_id=""
+  if [[ "${WINDOW_ID_FLAG:-0}" -eq 1 ]]; then
+    eff_session_id="$WINDOW_ID"
+  elif [[ -n "${RDLAB_SESSION_ID+x}" ]]; then
+    eff_session_id="$RDLAB_SESSION_ID"
+  else
+    eff_session_id="${OPENED_SESSION_ID:-}"
+  fi
+  if [[ -n "$eff_session_id" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_SESSION_ID=$eff_session_id")
   fi
 }
 
@@ -1345,6 +1356,7 @@ PY
     # Nothing is opened in --dry: the live run forwards the card type read from `colab sessions` after `colab new`.
     OPENED_CARD_TYPE="<card-of-opened-session>"
   fi
+  OPENED_SESSION_ID="$SESSION_NAME"
   build_exec_env_args
   DRY_ENV_STR="${EXEC_ENV_ARGS[*]}"
   if ! guard_forwarded_test_hooks; then
@@ -2890,6 +2902,7 @@ fi
 
 # The card type of the session actually opened: its `Hardware:` field in `colab sessions` (not the --gpu request).
 # Unknown -> CARD_TYPE_UNKNOWN before the alive probe, the gate, any upload or exec (the trap stops the session).
+OPENED_SESSION_ID="$S"
 OPENED_CARD_TYPE=""
 if needs_opened_card_type; then
   CARD_READ="$("$PYTHON_BIN" - "$REPO_ROOT" "$S" "$MID_SESSIONS" <<'PY' || true
