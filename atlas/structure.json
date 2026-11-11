@@ -9,7 +9,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "ca2f1189881b9c3cbfc4f70ed4a20261fd250e4846bfb2447fc19ee97ba98ac0",
+          "hash": "bc52ec7319768a5196fda8d16e7c10a371a2a6a339a6afe84a8499f73fe062f1",
           "path": ".github/workflows/ci.yml"
         },
         {
@@ -296,7 +296,7 @@
       "unresolvedSites": 0
     },
     {
-      "dynamicReads": 12,
+      "dynamicReads": 10,
       "dynamicSpawns": 0,
       "dynamicSpawnsInTests": 0,
       "dynamicWrites": 1,
@@ -3521,7 +3521,7 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 79,
+          "reads": 82,
           "where": [
             "caller"
           ],
@@ -3535,7 +3535,7 @@
           "writes": 0
         }
       ],
-      "outsideReads": 89,
+      "outsideReads": 92,
       "outsideWrites": 48,
       "role": "code",
       "testRunners": [
@@ -3654,7 +3654,7 @@
       "unresolvedSites": 0
     },
     {
-      "dynamicReads": 21,
+      "dynamicReads": 20,
       "dynamicSpawns": 0,
       "dynamicSpawnsInTests": 0,
       "dynamicWrites": 12,
@@ -17532,7 +17532,7 @@
       "origin": "mixed",
       "outsidePlaces": [
         {
-          "reads": 101,
+          "reads": 102,
           "where": [
             "caller"
           ],
@@ -17546,7 +17546,7 @@
           "writes": 0
         }
       ],
-      "outsideReads": 102,
+      "outsideReads": 103,
       "outsideWrites": 32,
       "role": "code",
       "testRunners": [
@@ -20050,9 +20050,9 @@
       "to": "src"
     }
   ],
-  "engine": "1.24.0",
+  "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "664d640429c0857814b317dec6b1c719ca2c55b0",
+    "commit": "4f5229f94fff0bbeb8407dc1784f2805eb5cfbed",
     "tracked": 176
   },
   "landings": [
