@@ -1717,6 +1717,9 @@ def test_real_inputs_rung_time_one_mu_judge_gets_through_item_loading_and_schedu
     assert receipt["only_judges"] == ["mu-judge"]
     assert ident.get("part_json_sha256") == _sha256_path(part / "part.json")
     assert receipt["boot_gatekeeper_judge"]["receipts_preflight"]["status"] == "ok"
+    tcl.assert_rehearsal_window_id(
+        out_dir, shim_rows, env_paths, mode="time-one", expected_window_id="rdlab-e2e-time-one-01"
+    )
 
 
 
