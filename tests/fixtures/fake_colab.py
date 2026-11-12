@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -2022,6 +2023,60 @@ def main(argv: list[str] | None = None) -> int:
         f"hf={hf_prefix}FakeSecretTokenValue1234567890\n"
     )
 
+    with _state_lock(state_dir, f"verb_calls_{subcmd}"):
+        verb_count_file = state_dir / f"verb_calls_{subcmd}.txt"
+        prev_verb_calls = int(verb_count_file.read_text(encoding="utf-8").strip()) if verb_count_file.is_file() else 0
+        verb_call_idx = prev_verb_calls + 1
+        verb_count_file.write_text(f"{verb_call_idx}\n", encoding="utf-8", newline="\n")
+        with (state_dir / "verb_calls.jsonl").open("a", encoding="utf-8", newline="\n") as vfh:
+            vfh.write(
+                json.dumps(
+                    {
+                        "subcmd": subcmd,
+                        "call_index": verb_call_idx,
+                        "pid": os.getpid(),
+                        "args": args,
+                        "ts": time.time(),
+                    }
+                )
+                + "\n"
+            )
+
+    hang_verbs = {v.strip() for v in os.environ.get("FAKE_COLAB_HANG_VERB", "").split(",") if v.strip()}
+    hang_indices_raw = os.environ.get("FAKE_COLAB_HANG_CALL_INDEX", "").strip()
+    hang_indices = {int(x.strip()) for x in hang_indices_raw.split(",") if x.strip()}
+    should_hang = bool(subcmd in hang_verbs and (not hang_indices or verb_call_idx in hang_indices))
+    if subcmd == "stop" and os.environ.get("FAKE_COLAB_STOP_HANG_ONCE") == "1" and verb_call_idx == 1:
+        should_hang = True
+    if should_hang:
+        try:
+            import fcntl as _fcntl_hang
+
+            _fcntl_hang.flock(sessions_lock_fh.fileno(), _fcntl_hang.LOCK_UN)
+        except Exception:
+            pass
+        ignore_sigterm = os.environ.get("FAKE_COLAB_IGNORE_SIGTERM") == "1"
+        hang_seconds = float(os.environ.get("FAKE_COLAB_HANG_SECONDS", "600") or "600")
+        with _state_lock(state_dir, "hung_calls"):
+            with (state_dir / "hung_calls.jsonl").open("a", encoding="utf-8", newline="\n") as hfh:
+                hfh.write(
+                    json.dumps(
+                        {
+                            "subcmd": subcmd,
+                            "call_index": verb_call_idx,
+                            "pid": os.getpid(),
+                            "ignore_sigterm": ignore_sigterm,
+                            "hang_seconds": hang_seconds,
+                            "ts": time.time(),
+                        }
+                    )
+                    + "\n"
+                )
+        if ignore_sigterm:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        time.sleep(hang_seconds)
+        return 124
+
     sessions: list[dict[str, str]] = json.loads(sessions_file.read_text(encoding="utf-8"))
     if subcmd in ("exec", "upload", "download", "restart-kernel"):
         try:
@@ -2562,6 +2617,25 @@ def main(argv: list[str] | None = None) -> int:
                         json.dumps({"step": "run", "rc": 0, "status": "ok", "reason": "partial_before_cap"}) + "\n",
                         encoding="utf-8",
                         newline="\n",
+                    )
+                if os.environ.get("FAKE_COLAB_IGNORE_SIGTERM") == "1":
+                    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                    (state_dir / "exec_run_pid.txt").write_text(
+                        f"{os.getpid()}\n", encoding="utf-8", newline="\n"
+                    )
+                    sigterm_child = subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-c",
+                            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)",
+                        ],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+                    (state_dir / "exec_sigterm_child.pid").write_text(
+                        f"{sigterm_child.pid}\n", encoding="utf-8", newline="\n"
                     )
                 time.sleep(sleep_s)
                 sys.stderr.write(f"Execution timed out after {timeout_s}s\n")

@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Per-window Google Colab launcher for the reasoning-dataset-lab five-judge bake-off.
 # Modes: --session-smoke, --probe (CPU), --stub (CPU), --time-one (A100), --lock-check (A100), --lock-check-stub (CPU), --counted (A100), --counted-stub (CPU), --dry, --resume.
+#
+# Residual risk (SIGKILL): no shell trap can catch SIGKILL (kill -9), so if the launcher itself receives SIGKILL after
+# `colab new` assigns a VM and before `colab stop` completes, its EXIT trap never runs. When the detached background
+# session watcher survives, it sees that the launcher PID is gone and runs a bounded `colab stop` (with one retry,
+# `stop_path: "watcher"`); if SIGKILL kills the whole process group (launcher and watcher together), the remote Colab
+# session stays open and billing until stopped manually after a `colab sessions` check (`colab stop -s <session>`) or
+# server-side assignment expiry.
 
 set -euo pipefail
 
@@ -46,6 +53,10 @@ COUNTED_ITEMS_FILE="${RDLAB_COUNTED_ITEMS_FILE:-}"
 COUNTED_MANIFEST_FILE="${RDLAB_COUNTED_MANIFEST:-}"
 RECEIPTS_DIR="${RDLAB_RECEIPTS_DIR:-}"
 EXPLICIT_CAP="${RDLAB_CAP_UNITS:-}"
+CAP_FLAG_OR_ENV_SET=0
+if [[ -n "$EXPLICIT_CAP" ]]; then
+  CAP_FLAG_OR_ENV_SET=1
+fi
 MAX_RATE="${RDLAB_MAX_RATE:-}"
 GOLDEN_ANCHOR_MANIFEST=""
 WINDOW_ID=""
@@ -54,6 +65,56 @@ EXPECTED_JUDGE_LOCK_SHA256="608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034
 EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
 EXPECTED_DEVICE_PY_SHA256="0755b739628d8f91adb696df4df90dbda78b0cfe5233fe33b54ae7987e55232d"
 EXPECTED_UV_VERSION="0.13.5"
+
+# --- Per-verb colab CLI bounds, escalation graces, and cap cleanup reserve ---
+# Every `timeout`-wrapped colab call sends SIGTERM at its limit and SIGKILL this many seconds later (`timeout -k`), so a
+# client that ignores SIGTERM cannot outlive its limit. The one grace for every such call.
+COLAB_KILL_GRACE_SECONDS="${RDLAB_COLAB_KILL_GRACE_SECONDS:-15}"
+OPEN_LOCK_TIMEOUT_SECONDS="${RDLAB_OPEN_LOCK_TIMEOUT_SECONDS:-300}"
+NEW_TIMEOUT_SECONDS="${RDLAB_NEW_TIMEOUT_SECONDS:-180}"
+SESSIONS_TIMEOUT_SECONDS="${RDLAB_SESSIONS_TIMEOUT_SECONDS:-30}"
+USAGE_TIMEOUT_SECONDS="${RDLAB_USAGE_TIMEOUT_SECONDS:-30}"
+UPLOAD_TIMEOUT_SECONDS="${RDLAB_UPLOAD_TIMEOUT_SECONDS:-600}"
+DOWNLOAD_TIMEOUT_SECONDS="${RDLAB_DOWNLOAD_TIMEOUT_SECONDS:-300}"
+STOP_TIMEOUT_SECONDS="${RDLAB_STOP_TIMEOUT_SECONDS:-60}"
+STOP_ATTEMPTS="${RDLAB_STOP_ATTEMPTS:-2}"
+GATE_TIMEOUT_SECONDS="${RDLAB_GATE_TIMEOUT_SECONDS:-180}"
+ALIVE_PROBE_TIMEOUT_SECONDS="${RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS:-60}"
+RESTART_KERNEL_TIMEOUT_SECONDS="${RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS:-60}"
+EXEC_KILL_GRACE_SECONDS="${RDLAB_EXEC_KILL_GRACE_SECONDS:-5}"
+WATCHER_ESCALATE_SECONDS="${RDLAB_WATCHER_ESCALATE_SECONDS:-15}"
+CAP_MARGIN_UNITS="${RDLAB_CAP_MARGIN_UNITS:-0.01}"
+
+FETCH_STEP_BOUND_SECONDS=0
+STOP_BOUND_SECONDS=0
+CLEANUP_STOP_ATTEMPTED_BY_SECONDS=0
+CLEANUP_BOUND_SECONDS=0
+CLEANUP_RESERVE_UNITS=""
+EFFECTIVE_TRIP_UNITS=""
+RESERVED_CAP_RUNTIME_SECONDS=0
+UNRESERVED_CAP_RUNTIME_SECONDS=0
+CAP_BUDGET_OK=0
+FLOOR_CLEANUP_RESERVE_UNITS=""
+FLOOR_EFFECTIVE_TRIP_UNITS=""
+FLOOR_WALL_CAP=""
+RUN_COLAB_LAST_RC=0
+STOP_PATH="trap"
+CLEANUP_SIGNAL_COUNT=0
+CLEANUP_SKIP_FETCH=0
+EXEC_PID_FILE=""
+STOP_CLAIM_DIR=""
+STOP_PATH_FILE=""
+STOP_COMPLETED_MARKER=""
+STOP_EXHAUSTED_MARKER=""
+CLEANUP_STARTED_MARKER=""
+WATCHDOG_ARMED_MARKER=""
+TRIP_STARTED_FILE=""
+PROBE_EXEC_OUT_TMP=""
+SESS_RC=0
+POST_SESS_RC=0
+LOCK_RC=0
+UPLOAD_RC=0
+REREAD_RESERVED_RT=""
 
 usage() {
   cat <<'EOF'
@@ -374,7 +435,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cap)
       EXPLICIT_CAP="$2"
+      CAP_FLAG_OR_ENV_SET=1
       shift 2
+      ;;
+    --cap=*)
+      EXPLICIT_CAP="${1#*=}"
+      CAP_FLAG_OR_ENV_SET=1
+      shift
       ;;
     --max-rate)
       MAX_RATE="${2:-}"
@@ -558,9 +625,6 @@ OPEN_LOCK="${RDLAB_OPEN_LOCK:-/tmp/colab-window-open.lock}"
 LOCK_DIR="${COLAB_LOCK_DIR:-/tmp/colab-locks}"
 MAIN=$$
 PYTHON_BIN="${RDLAB_PYTHON:-python3}"
-GATE_TIMEOUT_SECONDS="${RDLAB_GATE_TIMEOUT_SECONDS:-180}"
-UPLOAD_TIMEOUT_SECONDS="${RDLAB_UPLOAD_TIMEOUT_SECONDS:-600}"
-DOWNLOAD_TIMEOUT_SECONDS="${RDLAB_DOWNLOAD_TIMEOUT_SECONDS:-300}"
 
 # --- Ordered timeout hierarchy derived in one place from WALL_SECONDS ---
 # Order: VM_WALL_SECONDS < EXEC_TIMEOUT_SECONDS < WATCHDOG_SLEEP_SECONDS < RIG_TIMEOUT
@@ -676,15 +740,12 @@ fi
 
 ALIVE_PROBE_MAX_TRIES="${RDLAB_ALIVE_PROBE_MAX_TRIES:-3}"
 ALIVE_PROBE_SLEEP_SECONDS="${RDLAB_ALIVE_PROBE_SLEEP_SECONDS:-20}"
-ALIVE_PROBE_TIMEOUT_SECONDS="${RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS:-60}"
-RESTART_KERNEL_TIMEOUT_SECONDS="${RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS:-60}"
 COST_CAP_POLL_SECONDS="${RDLAB_COST_CAP_POLL_SECONDS:-1}"
 # The window rate (see read_window_rate): `colab usage` reports the ACCOUNT's rate, which includes every other open
 # session, so the window's own rate is post-open minus pre-open, accepted only when two reads RATE_POLL_SLEEP_SECONDS
 # apart agree within RATE_STABLE_TOLERANCE and clear the floor.
 RATE_POLL_MAX_READS="${RDLAB_RATE_POLL_MAX_READS:-12}"
 RATE_POLL_SLEEP_SECONDS="${RDLAB_RATE_POLL_SLEEP_SECONDS:-5}"
-USAGE_TIMEOUT_SECONDS="${RDLAB_USAGE_TIMEOUT_SECONDS:-30}"
 RATE_STABLE_TOLERANCE="0.01"
 # Mid-run re-reads (scripts/colab/rate_rereads.py): the cost-cap monitor re-reads `colab usage` at most this many
 # seconds apart while the run cell runs. 60 is the contract's ceiling.
@@ -700,13 +761,86 @@ RATE_REREADS_PY="$REPO_ROOT/scripts/colab/rate_rereads.py"
 # own rate (a stale read, or a neighbour's). A CPU window only needs a positive rate.
 GPU_RATE_FLOOR="1.00"
 CPU_RATE_FLOOR="0.01"
-# Every `timeout`-wrapped colab call sends SIGTERM at its limit and SIGKILL this many seconds later (`timeout -k`), so a
-# client that ignores SIGTERM cannot outlive its limit. The one grace for every such call.
-COLAB_KILL_GRACE_SECONDS="${RDLAB_COLAB_KILL_GRACE_SECONDS:-15}"
-if ! [[ "$COLAB_KILL_GRACE_SECONDS" =~ ^[0-9]+$ ]] || (( COLAB_KILL_GRACE_SECONDS < 1 )); then
+if ! [[ "$COLAB_KILL_GRACE_SECONDS" =~ ^[0-9]+$ ]] || (( 10#$COLAB_KILL_GRACE_SECONDS < 1 )); then
   echo "BAD_KILL_GRACE: RDLAB_COLAB_KILL_GRACE_SECONDS must be a positive integer, got '$COLAB_KILL_GRACE_SECONDS'" >&2
   exit 2
 fi
+COLAB_KILL_GRACE_SECONDS=$(( 10#$COLAB_KILL_GRACE_SECONDS ))
+for _bound_pair in \
+  "RDLAB_OPEN_LOCK_TIMEOUT_SECONDS:$OPEN_LOCK_TIMEOUT_SECONDS" \
+  "RDLAB_NEW_TIMEOUT_SECONDS:$NEW_TIMEOUT_SECONDS" \
+  "RDLAB_SESSIONS_TIMEOUT_SECONDS:$SESSIONS_TIMEOUT_SECONDS" \
+  "RDLAB_USAGE_TIMEOUT_SECONDS:$USAGE_TIMEOUT_SECONDS" \
+  "RDLAB_UPLOAD_TIMEOUT_SECONDS:$UPLOAD_TIMEOUT_SECONDS" \
+  "RDLAB_DOWNLOAD_TIMEOUT_SECONDS:$DOWNLOAD_TIMEOUT_SECONDS" \
+  "RDLAB_STOP_TIMEOUT_SECONDS:$STOP_TIMEOUT_SECONDS" \
+  "RDLAB_STOP_ATTEMPTS:$STOP_ATTEMPTS" \
+  "RDLAB_GATE_TIMEOUT_SECONDS:$GATE_TIMEOUT_SECONDS" \
+  "RDLAB_ALIVE_PROBE_TIMEOUT_SECONDS:$ALIVE_PROBE_TIMEOUT_SECONDS" \
+  "RDLAB_RESTART_KERNEL_TIMEOUT_SECONDS:$RESTART_KERNEL_TIMEOUT_SECONDS" \
+  "RDLAB_EXEC_KILL_GRACE_SECONDS:$EXEC_KILL_GRACE_SECONDS" \
+  "RDLAB_WATCHER_ESCALATE_SECONDS:$WATCHER_ESCALATE_SECONDS"; do
+  _bound_name="${_bound_pair%%:*}"
+  _bound_val="${_bound_pair#*:}"
+  if ! [[ "$_bound_val" =~ ^[0-9]+$ ]] || (( 10#$_bound_val < 1 )); then
+    echo "BAD_COLAB_TIMEOUT_CONFIG: $_bound_name must be a positive integer, got '$_bound_val'" >&2
+    exit 2
+  fi
+done
+OPEN_LOCK_TIMEOUT_SECONDS=$(( 10#$OPEN_LOCK_TIMEOUT_SECONDS ))
+NEW_TIMEOUT_SECONDS=$(( 10#$NEW_TIMEOUT_SECONDS ))
+SESSIONS_TIMEOUT_SECONDS=$(( 10#$SESSIONS_TIMEOUT_SECONDS ))
+USAGE_TIMEOUT_SECONDS=$(( 10#$USAGE_TIMEOUT_SECONDS ))
+UPLOAD_TIMEOUT_SECONDS=$(( 10#$UPLOAD_TIMEOUT_SECONDS ))
+DOWNLOAD_TIMEOUT_SECONDS=$(( 10#$DOWNLOAD_TIMEOUT_SECONDS ))
+STOP_TIMEOUT_SECONDS=$(( 10#$STOP_TIMEOUT_SECONDS ))
+STOP_ATTEMPTS=$(( 10#$STOP_ATTEMPTS ))
+GATE_TIMEOUT_SECONDS=$(( 10#$GATE_TIMEOUT_SECONDS ))
+ALIVE_PROBE_TIMEOUT_SECONDS=$(( 10#$ALIVE_PROBE_TIMEOUT_SECONDS ))
+RESTART_KERNEL_TIMEOUT_SECONDS=$(( 10#$RESTART_KERNEL_TIMEOUT_SECONDS ))
+EXEC_KILL_GRACE_SECONDS=$(( 10#$EXEC_KILL_GRACE_SECONDS ))
+WATCHER_ESCALATE_SECONDS=$(( 10#$WATCHER_ESCALATE_SECONDS ))
+if ! [[ "$CAP_MARGIN_UNITS" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo "BAD_CAP_MARGIN: RDLAB_CAP_MARGIN_UNITS must be a non-negative number of compute units, got '$CAP_MARGIN_UNITS'" >&2
+  exit 2
+fi
+
+# From-trip cleanup bound: sum of the bounded steps between a trip (rate, cap, wall, interrupt) and a completed
+# `colab stop` (pre-stop fetch deadline + exec SIGTERM->SIGKILL grace + bounded `colab stop` with one retry).
+compute_cleanup_bounds() {
+  if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
+    FETCH_STEP_BOUND_SECONDS=0
+    CLEANUP_STOP_ATTEMPTED_BY_SECONDS=0
+  else
+    FETCH_STEP_BOUND_SECONDS=$(( WATCHDOG_FETCH_TIMEOUT + COLAB_KILL_GRACE_SECONDS ))
+    CLEANUP_STOP_ATTEMPTED_BY_SECONDS=$(( FETCH_STEP_BOUND_SECONDS + EXEC_KILL_GRACE_SECONDS ))
+  fi
+  STOP_BOUND_SECONDS=$(( STOP_ATTEMPTS * (STOP_TIMEOUT_SECONDS + COLAB_KILL_GRACE_SECONDS) ))
+  CLEANUP_BOUND_SECONDS=$(( CLEANUP_STOP_ATTEMPTED_BY_SECONDS + STOP_BOUND_SECONDS ))
+}
+
+eval_cap_budget() {
+  local cap_arg="$1" rate_arg="$2" margin_arg="${3:-$CAP_MARGIN_UNITS}" bound_arg="${4:-$CLEANUP_BOUND_SECONDS}"
+  "$PYTHON_BIN" - "$cap_arg" "$rate_arg" "$margin_arg" "$bound_arg" <<'PY'
+import math
+import sys
+
+cap = float(sys.argv[1])
+rate = float(sys.argv[2])
+margin = float(sys.argv[3])
+bound_s = float(sys.argv[4])
+reserve = (bound_s / 3600.0) * rate
+eff_trip = cap - margin - reserve
+if round(eff_trip, 12) <= 0.0:
+    print(f"0 {reserve:.6f} {eff_trip:.6f} 0 0")
+else:
+    res_rt = max(1, int(math.ceil((eff_trip * 3600.0) / rate - 1e-12)))
+    unres_rt = max(1, int(math.ceil((cap * 3600.0) / rate - 1e-12)))
+    print(f"1 {reserve:.6f} {eff_trip:.6f} {res_rt} {unres_rt}")
+PY
+}
+
+compute_cleanup_bounds
 
 # Real --time-one and --counted windows name their part with --part-dir; a real --lock-check window names the burned
 # pilot part with --p0a-part-dir (a stub or dryrun window checks it when given). Absent: refused PART_MANIFEST_MISSING
@@ -850,6 +984,10 @@ then
   exit 2
 fi
 
+if [[ -n "$EXPLICIT_CAP" ]] && ! [[ "$EXPLICIT_CAP" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
+  echo "BAD_CAP_UNITS: --cap must be a number of compute units, got '$EXPLICIT_CAP'" >&2
+  exit 2
+fi
 WALL_X_RATE=""
 if [[ -n "$RATE_UNITS_PER_HOUR" ]]; then
   WALL_X_RATE="$("$PYTHON_BIN" -c "import sys; w=float(sys.argv[1]); r=float(sys.argv[2]); print(f'{round(w * r / 3600.0, 4):g}')" "$WALL_SECONDS" "$RATE_UNITS_PER_HOUR")"
@@ -858,6 +996,35 @@ if [[ -n "$EXPLICIT_CAP" ]]; then
   CAP_UNITS="$EXPLICIT_CAP"
 else
   CAP_UNITS="$WALL_X_RATE"
+fi
+if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && { [[ "$MODE" != "probe" ]] || [[ -n "$RATE_UNITS_PER_HOUR" ]] || [[ "$CAP_FLAG_OR_ENV_SET" -eq 1 ]]; }; then
+  if [[ -n "$RATE_UNITS_PER_HOUR" ]]; then
+    read -r CAP_BUDGET_OK CLEANUP_RESERVE_UNITS EFFECTIVE_TRIP_UNITS RESERVED_CAP_RUNTIME_SECONDS UNRESERVED_CAP_RUNTIME_SECONDS <<< "$(eval_cap_budget "$CAP_UNITS" "$RATE_UNITS_PER_HOUR")"
+    if [[ "$DRY_FLAG" -eq 1 ]]; then
+      echo "[cap] cap=${CAP_UNITS} margin=${CAP_MARGIN_UNITS} cleanup_bound_s=${CLEANUP_BOUND_SECONDS} cleanup_reserve=${CLEANUP_RESERVE_UNITS} effective_trip=${EFFECTIVE_TRIP_UNITS} priced_rate=${RATE_UNITS_PER_HOUR}/h" >&2
+    fi
+    if [[ "$CAP_BUDGET_OK" -ne 1 ]]; then
+      echo "CAP_TOO_SMALL_FOR_CLEANUP: cap=${CAP_UNITS} margin=${CAP_MARGIN_UNITS} cleanup_reserve=${CLEANUP_RESERVE_UNITS} (cleanup_bound_s=${CLEANUP_BOUND_SECONDS}s at priced_rate=${RATE_UNITS_PER_HOUR}/h) leaves effective_trip=${EFFECTIVE_TRIP_UNITS} <= 0" >&2
+      exit 2
+    fi
+  elif [[ -n "$EXPLICIT_CAP" ]]; then
+    read -r CAP_BUDGET_OK FLOOR_CLEANUP_RESERVE_UNITS FLOOR_EFFECTIVE_TRIP_UNITS RESERVED_CAP_RUNTIME_SECONDS UNRESERVED_CAP_RUNTIME_SECONDS <<< "$(eval_cap_budget "$EXPLICIT_CAP" "$CPU_RATE_FLOOR")"
+    if [[ "$DRY_FLAG" -eq 1 ]]; then
+      echo "[cap] cap=${EXPLICIT_CAP} margin=${CAP_MARGIN_UNITS} cleanup_bound_s=${CLEANUP_BOUND_SECONDS} cleanup_reserve=${FLOOR_CLEANUP_RESERVE_UNITS} effective_trip=${FLOOR_EFFECTIVE_TRIP_UNITS} priced_rate=${CPU_RATE_FLOOR}/h (cpu_floor; repriced after open)" >&2
+    fi
+    if [[ "$CAP_BUDGET_OK" -ne 1 ]]; then
+      echo "CAP_TOO_SMALL_FOR_CLEANUP: cap=${EXPLICIT_CAP} margin=${CAP_MARGIN_UNITS} cleanup_reserve=${FLOOR_CLEANUP_RESERVE_UNITS} (cleanup_bound_s=${CLEANUP_BOUND_SECONDS}s at cpu_floor=${CPU_RATE_FLOOR}/h) leaves effective_trip=${FLOOR_EFFECTIVE_TRIP_UNITS} <= 0" >&2
+      exit 2
+    fi
+  else
+    if (( WALL_SECONDS <= CLEANUP_BOUND_SECONDS )); then
+      echo "CAP_TOO_SMALL_FOR_CLEANUP: wall_s=${WALL_SECONDS}s <= cleanup_bound_s=${CLEANUP_BOUND_SECONDS}s leaves no positive effective_trip at any rate" >&2
+      exit 2
+    fi
+    if [[ "$DRY_FLAG" -eq 1 ]]; then
+      echo "[cap] cap=wall_x_live_rate margin=${CAP_MARGIN_UNITS} cleanup_bound_s=${CLEANUP_BOUND_SECONDS} cleanup_reserve=(${CLEANUP_BOUND_SECONDS}/3600)*priced_rate effective_trip=cap-${CAP_MARGIN_UNITS}-cleanup_reserve (measured after open)" >&2
+    fi
+  fi
 fi
 if [[ "$DRY_FLAG" -eq 1 ]] && [[ "$MODE" == "lock-check" || "$MODE" == "lock-check-stub" ]]; then
   case "$LOCK_CHECK_PHASE" in
@@ -1402,6 +1569,15 @@ FETCH_CLAIM_DIR="$OUT_DIR/.rig_fetch_claim"
 FETCH_DONE_MARKER="$OUT_DIR/.rig_fetched"
 DEADLINE_MARKER="$OUT_DIR/.rig_deadline_exceeded"
 COST_CAP_MARKER="$OUT_DIR/.rig_cost_cap_exceeded"
+EXEC_PID_FILE="$OUT_DIR/.rig_exec.pid"
+STOP_CLAIM_DIR="$OUT_DIR/.rig_stop_claim"
+STOP_PATH_FILE="$OUT_DIR/.rig_stop_path"
+STOP_COMPLETED_MARKER="$OUT_DIR/.rig_stop_completed"
+STOP_EXHAUSTED_MARKER="$OUT_DIR/.rig_stop_exhausted"
+CLEANUP_STARTED_MARKER="$OUT_DIR/.rig_cleanup_started"
+WATCHDOG_ARMED_MARKER="$OUT_DIR/.rig_watchdog_armed"
+TRIP_STARTED_FILE="$OUT_DIR/.rig_trip_started"
+PROBE_EXEC_OUT_TMP="$OUT_DIR/.rig_probe_exec_out.tmp"
 # Mid-run re-reads: the monitor's state, every read's record, and the marker a re-read trip leaves (its first line the
 # failure class, its second the reason, its third the elapsed seconds).
 RATE_REREAD_STATE="$OUT_DIR/.rig_rate_reread_state.json"
@@ -1410,7 +1586,9 @@ RATE_TRIP_MARKER="$OUT_DIR/.rig_rate_reread_trip"
 # The in-flight re-read: the PID of its `timeout ... colab usage` (removed when it is reaped) and its output.
 RATE_REREAD_PID_FILE="$OUT_DIR/.rig_rate_reread.pid"
 RATE_REREAD_OUT="$OUT_DIR/.rig_rate_reread_usage.txt"
-rm -f "$RATE_REREAD_STATE" "$RATE_REREADS_FILE" "$RATE_TRIP_MARKER" "$RATE_REREAD_PID_FILE" "$RATE_REREAD_OUT" 2>/dev/null || true
+rm -rf "$RATE_REREAD_STATE" "$RATE_REREADS_FILE" "$RATE_TRIP_MARKER" "$RATE_REREAD_PID_FILE" "$RATE_REREAD_OUT" \
+  "$EXEC_PID_FILE" "$STOP_CLAIM_DIR" "$STOP_PATH_FILE" "$STOP_COMPLETED_MARKER" "$STOP_EXHAUSTED_MARKER" \
+  "$CLEANUP_STARTED_MARKER" "$WATCHDOG_ARMED_MARKER" "$TRIP_STARTED_FILE" "$PROBE_EXEC_OUT_TMP" 2>/dev/null || true
 RUN_END_DETECTED_MARKER="$OUT_DIR/.rig_run_end_detected"
 EXEC_OUT_TMP="$OUT_DIR/.rig_exec_out.tmp"
 touch "$CLI_LOG"
@@ -1434,17 +1612,44 @@ log_msg() {
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | scrub_stream | tee -a "$CLI_LOG" >/dev/null
 }
 
+colab_timeout_for_verb() {
+  case "${1:-}" in
+    new) printf '%s\n' "$NEW_TIMEOUT_SECONDS" ;;
+    sessions) printf '%s\n' "$SESSIONS_TIMEOUT_SECONDS" ;;
+    usage) printf '%s\n' "$USAGE_TIMEOUT_SECONDS" ;;
+    upload) printf '%s\n' "$UPLOAD_TIMEOUT_SECONDS" ;;
+    stop) printf '%s\n' "$STOP_TIMEOUT_SECONDS" ;;
+    exec) printf '%s\n' "${EXEC_TIMEOUT_SECONDS:-$GATE_TIMEOUT_SECONDS}" ;;
+    download) printf '%s\n' "$DOWNLOAD_TIMEOUT_SECONDS" ;;
+    restart-kernel) printf '%s\n' "$RESTART_KERNEL_TIMEOUT_SECONDS" ;;
+    *) printf '%s\n' "$SESSIONS_TIMEOUT_SECONDS" ;;
+  esac
+}
+
+colab_rc_is_timeout() {
+  local rc="${1:-0}"
+  [[ "$rc" -eq 124 || "$rc" -eq 137 ]]
+}
+
 run_colab() {
-  local out err_file err rc=0
+  local verb="${1:-}" verb_timeout out err_file err rc=0
+  verb_timeout="$(colab_timeout_for_verb "$verb")"
   err_file="$(mktemp "${OUT_DIR:-/tmp}/.colab_err.XXXXXX" 2>/dev/null || mktemp)"
-  out="$(colab "$@" </dev/null 2>"$err_file")" || rc=$?
+  out="$(
+    trap - TERM INT
+    exec timeout -k "$COLAB_KILL_GRACE_SECONDS" "$verb_timeout" colab "$@" </dev/null
+  )" 2>"$err_file" || rc=$?
   err="$(cat "$err_file" 2>/dev/null || true)"
   rm -f "$err_file"
   RUN_COLAB_LAST_ERR="$err"
+  RUN_COLAB_LAST_RC="$rc"
+  if colab_rc_is_timeout "$rc"; then
+    log_msg "COLAB_CALL_TIMEOUT verb=${verb:-unknown} timeout_s=$verb_timeout kill_grace_s=$COLAB_KILL_GRACE_SECONDS rc=$rc"
+  fi
   if [[ -n "$err" ]]; then
     printf '%s\n' "$err" | scrub_stream >> "$CLI_LOG"
   fi
-  if [[ -n "$out" ]] && [[ "${1:-}" != "sessions" ]]; then
+  if [[ -n "$out" ]] && [[ "$verb" != "sessions" ]]; then
     printf '%s\n' "$out" | scrub_stream >> "$CLI_LOG"
   fi
   printf '%s\n' "$out" | scrub_stream
@@ -1485,17 +1690,38 @@ wait_for_fetch_done() {
   if [[ "$wait_timeout" -le 0 ]]; then
     wait_timeout=175
   fi
-  local deadline=$(( $(date +%s) + wait_timeout ))
+  local deadline=$(( $(date +%s) + wait_timeout + COLAB_KILL_GRACE_SECONDS ))
   while [[ ! -f "$FETCH_DONE_MARKER" ]]; do
-    if [[ "$(date +%s)" -ge "$deadline" ]]; then
+    if [[ "$(date +%s)" -ge "$deadline" ]] || [[ "$CLEANUP_SKIP_FETCH" -eq 1 ]]; then
       break
     fi
     sleep 0.05
   done
 }
 
+remaining_fetch_timeout() {
+  local deadline_epoch="${1:-0}" fallback_timeout="${2:-$DOWNLOAD_TIMEOUT_SECONDS}"
+  if [[ "$CLEANUP_SKIP_FETCH" -eq 1 ]]; then
+    return 1
+  fi
+  if [[ "$deadline_epoch" -le 0 ]]; then
+    printf '%s\n' "$fallback_timeout"
+    return 0
+  fi
+  local now_s rem_s
+  now_s="$(date +%s)"
+  rem_s=$(( deadline_epoch - now_s ))
+  if (( rem_s <= 0 )); then
+    return 1
+  fi
+  if (( rem_s > fallback_timeout )); then
+    rem_s="$fallback_timeout"
+  fi
+  printf '%s\n' "$rem_s"
+}
+
 fetch_completed_judge_checkpoints() {
-  local dl_timeout="${1:-$PROGRESS_FETCH_TIMEOUT_SECONDS}"
+  local dl_timeout="${1:-$PROGRESS_FETCH_TIMEOUT_SECONDS}" deadline_epoch="${2:-0}" rem_dl_timeout=""
   if [[ ! -f "$OUT_DIR/progress.jsonl" ]]; then
     return 0
   fi
@@ -1531,10 +1757,18 @@ PY
   local jid
   for jid in $done_judges; do
     if [[ ! -f "$OUT_DIR/judge_done/${jid}.json" ]]; then
-      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${jid}.json" "$OUT_DIR/judge_done/${jid}.json" </dev/null >/dev/null 2>&1 || true
+      if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
+        timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${jid}.json" "$OUT_DIR/judge_done/${jid}.json" </dev/null >/dev/null 2>&1 || true
+      else
+        break
+      fi
     fi
     if [[ ! -f "$OUT_DIR/rows/${jid}.jsonl" ]]; then
-      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${jid}.jsonl" "$OUT_DIR/rows/${jid}.jsonl" </dev/null >/dev/null 2>&1 || true
+      if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
+        timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${jid}.jsonl" "$OUT_DIR/rows/${jid}.jsonl" </dev/null >/dev/null 2>&1 || true
+      else
+        break
+      fi
     fi
   done
 }
@@ -1545,7 +1779,7 @@ fetch_results_once() {
   if [[ "$wait_timeout" -le 0 ]]; then
     wait_timeout="${WATCHDOG_FETCH_TIMEOUT:-175}"
   fi
-  if [[ "$NEW_SUCCEEDED" -ne 1 ]] || [[ -z "$S" ]] || [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
+  if [[ "$NEW_SUCCEEDED" -ne 1 ]] || [[ -z "$S" ]] || [[ "$SESSION_SMOKE_FLAG" -eq 1 ]] || [[ "$CLEANUP_SKIP_FETCH" -eq 1 ]]; then
     return 0
   fi
   if [[ -f "$FETCH_DONE_MARKER" ]]; then
@@ -1559,21 +1793,36 @@ fetch_results_once() {
   fi
   FETCHED=1
   log_msg "FETCH_START session=$S"
-  local eff_timeout="$DOWNLOAD_TIMEOUT_SECONDS"
+  local eff_timeout="$DOWNLOAD_TIMEOUT_SECONDS" fetch_deadline_epoch=0 rem_dl_timeout=""
   if [[ "$fetch_timeout" -gt 0 ]]; then
     eff_timeout="$fetch_timeout"
   fi
+  fetch_deadline_epoch=$(( $(date +%s) + eff_timeout ))
   if [[ "$MODE" == "probe" ]]; then
-    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/probe.json" "$OUT_DIR/probe.json" </dev/null >/dev/null 2>&1 || true
+    if rem_dl_timeout="$(remaining_fetch_timeout "$fetch_deadline_epoch" "$eff_timeout")"; then
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/probe.json" "$OUT_DIR/probe.json" </dev/null >/dev/null 2>&1 || true
+    fi
   else
-    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
-    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
-    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/gate_status.json" "$OUT_DIR/gate_status.json" </dev/null >/dev/null 2>&1 || true
-    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
-    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl" </dev/null >/dev/null 2>&1 || true
+    if rem_dl_timeout="$(remaining_fetch_timeout "$fetch_deadline_epoch" "$eff_timeout")"; then
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/result.tar.gz" "$OUT_DIR/result.tar.gz" </dev/null >/dev/null 2>&1 || true
+    fi
+    if rem_dl_timeout="$(remaining_fetch_timeout "$fetch_deadline_epoch" "$eff_timeout")"; then
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/status.json" "$OUT_DIR/status.json" </dev/null >/dev/null 2>&1 || true
+    fi
+    if rem_dl_timeout="$(remaining_fetch_timeout "$fetch_deadline_epoch" "$eff_timeout")"; then
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/gate_status.json" "$OUT_DIR/gate_status.json" </dev/null >/dev/null 2>&1 || true
+    fi
+    if rem_dl_timeout="$(remaining_fetch_timeout "$fetch_deadline_epoch" "$eff_timeout")"; then
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/vm_receipt.json" "$OUT_DIR/vm_receipt.json" </dev/null >/dev/null 2>&1 || true
+    fi
+    if rem_dl_timeout="$(remaining_fetch_timeout "$fetch_deadline_epoch" "$eff_timeout")"; then
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/progress.jsonl" "$OUT_DIR/progress.jsonl" </dev/null >/dev/null 2>&1 || true
+    fi
     if [[ ! -f "$OUT_DIR/result.tar.gz" ]]; then
       mkdir -p "$OUT_DIR/logs"
-      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$eff_timeout" colab download -s "$S" "/content/rdlab_run/logs/vm.log" "$OUT_DIR/logs/vm.log" </dev/null >/dev/null 2>&1 || true
+      if rem_dl_timeout="$(remaining_fetch_timeout "$fetch_deadline_epoch" "$eff_timeout")"; then
+        timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/logs/vm.log" "$OUT_DIR/logs/vm.log" </dev/null >/dev/null 2>&1 || true
+      fi
     fi
     "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" >/dev/null 2>&1 <<'PY' || true
 import shutil
@@ -1611,7 +1860,7 @@ if tar_path.is_file():
     except Exception:
         pass
 PY
-    fetch_completed_judge_checkpoints "$eff_timeout"
+    fetch_completed_judge_checkpoints "$eff_timeout" "$fetch_deadline_epoch"
     "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" >/dev/null 2>&1 <<'PY' || true
 import sys
 from pathlib import Path
@@ -1659,7 +1908,16 @@ periodic_fetch_progress_once() {
 }
 
 write_outcome_draft() {
-  local end_epoch runtime_s cap_elapsed=""
+  local end_epoch runtime_s cap_elapsed="" stop_path_rec="$STOP_PATH" sp_from_file=""
+  if [[ -n "$STOP_PATH_FILE" ]] && [[ -f "$STOP_PATH_FILE" ]]; then
+    sp_from_file="$(tr -d '[:space:]' < "$STOP_PATH_FILE" 2>/dev/null || true)"
+    if [[ "$sp_from_file" == "trap" || "$sp_from_file" == "watcher" ]]; then
+      stop_path_rec="$sp_from_file"
+    fi
+  fi
+  if [[ "$stop_path_rec" != "trap" && "$stop_path_rec" != "watcher" ]]; then
+    stop_path_rec="trap"
+  fi
   if [[ -f "$COST_CAP_MARKER" ]]; then
     cap_elapsed="$(tr -d '[:space:]' < "$COST_CAP_MARKER" 2>/dev/null || true)"
   fi
@@ -1690,7 +1948,7 @@ write_outcome_draft() {
   RDLAB_RATE_REREAD_STATE_FILE="$RATE_REREAD_STATE" \
   RDLAB_RATE_REREADS_FILE="$RATE_REREADS_FILE" \
   RDLAB_RATE_REREAD_INTERVAL="$RATE_REREAD_SECONDS" \
-  "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "${OPENED_CARD_TYPE:-$CARD}" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" "$CARD" "$SHAPE" "$EXPECTED_SESSION_SHAPE" "$OPENED_SHAPE_OBS" <<'PY'
+  "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "${OPENED_CARD_TYPE:-$CARD}" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" "$CARD" "$SHAPE" "$EXPECTED_SESSION_SHAPE" "$OPENED_SHAPE_OBS" "$stop_path_rec" "$CAP_MARGIN_UNITS" "$CLEANUP_STOP_ATTEMPTED_BY_SECONDS" "$CLEANUP_BOUND_SECONDS" <<'PY'
 import datetime
 import json
 import os
@@ -1728,6 +1986,10 @@ card_requested = sys.argv[11].strip() if len(sys.argv) > 11 and sys.argv[11].str
 shape_requested = sys.argv[12].strip() if len(sys.argv) > 12 and sys.argv[12].strip() else None
 expected_session_shape = sys.argv[13].strip() if len(sys.argv) > 13 and sys.argv[13].strip() else None
 observed_session_shape = sys.argv[14].strip() if len(sys.argv) > 14 and sys.argv[14].strip() else None
+stop_path_val = sys.argv[15].strip() if len(sys.argv) > 15 and sys.argv[15].strip() in ("trap", "watcher") else "trap"
+margin_val = float(sys.argv[16]) if len(sys.argv) > 16 and sys.argv[16].strip() else 0.01
+cleanup_stop_attempted_by_s = int(sys.argv[17]) if len(sys.argv) > 17 and sys.argv[17].strip() else 0
+cleanup_bound_s = int(sys.argv[18]) if len(sys.argv) > 18 and sys.argv[18].strip() else 0
 shape_check = (
     {
         "requested": shape_requested,
@@ -1870,6 +2132,20 @@ sessions_shape = {
     "post_sessions": post_stage,
 }
 
+eff_pricing_rate = (
+    round(max(_env_float("RDLAB_PRICING_RATE") or 0.0, reread_highest), 4)
+    if reread_highest is not None and _env_float("RDLAB_PRICING_RATE") is not None
+    else _env_float("RDLAB_PRICING_RATE")
+)
+rate_for_reserve = eff_pricing_rate if eff_pricing_rate is not None else max_rate
+if rate_for_reserve is not None and cap is not None:
+    cleanup_reserve_units: float | None = round((cleanup_bound_s / 3600.0) * float(rate_for_reserve), 6)
+    effective_trip_units: float | None = round(float(cap) - margin_val - cleanup_reserve_units, 6)
+else:
+    cleanup_reserve_units = None
+    effective_trip_units = None
+cap_trip_formula = "effective_trip = cap - margin - cleanup_reserve; cleanup_reserve = (cleanup_bound_s / 3600) * priced_rate"
+
 payload: dict[str, object] = {
     "id": run_id,
     "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
@@ -1884,11 +2160,7 @@ payload: dict[str, object] = {
     "rate_source": "live_colab_usage_post_minus_pre" if rate is not None else (rate_source or None),
     "pre_account_rate_per_hour": _env_float("RDLAB_PRE_ACCOUNT_RATE"),
     "post_account_rate_per_hour": _env_float("RDLAB_POST_ACCOUNT_RATE"),
-    "pricing_rate_per_hour": (
-        round(max(_env_float("RDLAB_PRICING_RATE") or 0.0, reread_highest), 4)
-        if reread_highest is not None and _env_float("RDLAB_PRICING_RATE") is not None
-        else _env_float("RDLAB_PRICING_RATE")
-    ),
+    "pricing_rate_per_hour": eff_pricing_rate,
     "rate_rereads": rate_rereads_doc,
     "lock_check_phase": os.environ.get("RDLAB_OUTCOME_LOCK_CHECK_PHASE") or None,
     "max_rate": max_rate,
@@ -1896,12 +2168,19 @@ payload: dict[str, object] = {
     "wall_x_rate": wall_x_rate,
     "explicit_cap": explicit_cap,
     "cap": cap,
+    "margin": margin_val,
+    "cleanup_stop_attempted_by_s": cleanup_stop_attempted_by_s,
+    "cleanup_bound_s": cleanup_bound_s,
+    "cleanup_reserve_units": cleanup_reserve_units,
+    "effective_trip_units": effective_trip_units,
+    "cap_trip_formula": cap_trip_formula,
     "binding_cap": binding_cap,
     "cap_binds": cap_binds,
     "cap_source": cap_source,
     "cost": cost,
     "cost_basis": cost_basis,
     "session_assigned": not no_session_assigned,
+    "stop_path": stop_path_val,
     "runtime": runtime_seconds,
     "runtime_seconds": runtime_seconds,
     "outcome": outcome,
@@ -2084,130 +2363,178 @@ kill_inflight_reread() {
   fi
 }
 
-# `colab new` failed: was a machine ever assigned? A session that was never assigned costs nothing (no_capacity).
-# Read once, after the failure: the session row in `colab sessions` (PRE_SESSIONS before `colab new`, POST_SESSIONS
-# now), new `[?]` orphan rows, the exit code and the client's error text. No session is assigned only when the session
-# is listed neither before nor after, no orphan row appeared, the exit code is non-zero and the error is the service
-# refusing the machine at assign (`POST .../tun/m/assign...: Service Unavailable`, as the real CLI printed it for
-# timeone-mu2, 2026-11-06; the URL is wrapped over lines, so the text is joined first). A session that is listed after
-# the failure was assigned: it is adopted, so the EXIT trap stops it and the outcome books rate x runtime. Anything
-# else keeps the old booking (rate x runtime), the safe side when it is not known that nothing was assigned.
-classify_colab_new_failure() {
-  local new_rc="$1" new_err="$2" listed=0 pre_orphans=0 post_orphans=0 assign_refused=0
-  POST_SESSIONS="$(run_colab sessions </dev/null || true)"
-  if printf '%s\n' "$POST_SESSIONS" | grep -q "^\[$SESSION_NAME\]"; then
-    listed=1
+# Terminate an exec process and every descendant found recursively via `pgrep -P` (never by name):
+# send SIGTERM, wait up to `grace_s`, then escalate to SIGKILL (`kill -KILL`) for any survivor.
+terminate_exec_tree() {
+  local root="${1:-}" grace_s="${2:-$EXEC_KILL_GRACE_SECONDS}" p c alive elapsed_tenths max_tenths
+  local -a pids=() frontier=() next=() survivors=()
+  [[ "$root" =~ ^[0-9]+$ ]] || return 0
+  if ! [[ "$grace_s" =~ ^[0-9]+$ ]] || (( grace_s <= 0 )); then
+    grace_s=5
   fi
-  pre_orphans="$(printf '%s\n' "$PRE_SESSIONS" | grep -Ec '^\[\?\]' || true)"
-  post_orphans="$(printf '%s\n' "$POST_SESSIONS" | grep -Ec '^\[\?\]' || true)"
-  if printf '%s' "$new_err" | tr -d '\r\n' | grep -Eq '/tun/m/assign\?[^ ]*: Service Unavailable'; then
-    assign_refused=1
+  frontier=("$root")
+  while (( ${#frontier[@]} > 0 )); do
+    next=()
+    for p in "${frontier[@]}"; do
+      pids+=("$p")
+      while read -r c; do
+        if [[ -n "$c" ]]; then next+=("$c"); fi
+      done < <(pgrep -P "$p" 2>/dev/null || true)
+    done
+    frontier=("${next[@]+"${next[@]}"}")
+  done
+  if (( ${#pids[@]} == 0 )); then
+    return 0
   fi
-  if [[ "$listed" -eq 1 ]]; then
-    S="$SESSION_NAME"
-    NEW_SUCCEEDED=1
-    RUN_FAILURE_CLASS="SESSION_OPEN_FAILED_AFTER_ASSIGN"
-    RUN_WHY="colab new failed for $SESSION_NAME (rc=$new_rc) but colab sessions lists [$SESSION_NAME]: a machine was assigned; stopping it"
-    log_msg "COLAB_NEW_FAILED_SESSION_ASSIGNED session=$SESSION_NAME rc=$new_rc"
-  elif [[ "$new_rc" -ne 0 ]] && [[ "$assign_refused" -eq 1 ]] && [[ "$post_orphans" -le "$pre_orphans" ]]; then
-    NO_SESSION_ASSIGNED=1
-    RUN_FAILURE_CLASS="no_capacity"
-    RUN_WHY="no_capacity: colab new for $SESSION_NAME was refused at assign (Service Unavailable, rc=$new_rc); [$SESSION_NAME] listed neither before nor after, no new [?] row; no session was assigned, cost 0"
-    log_msg "NO_CAPACITY session=$SESSION_NAME rc=$new_rc cost=0 cost_basis=no_session_assigned failure_class=no_capacity"
-  else
-    RUN_WHY="colab new failed for $SESSION_NAME (rc=$new_rc)"
-    log_msg "COLAB_NEW_FAILED session=$SESSION_NAME rc=$new_rc listed_after=$listed assign_refused=$assign_refused orphans_before=$pre_orphans orphans_after=$post_orphans"
+  kill -TERM "${pids[@]}" 2>/dev/null || true
+  max_tenths=$(( grace_s * 10 ))
+  elapsed_tenths=0
+  while (( elapsed_tenths < max_tenths )); do
+    alive=0
+    for p in "${pids[@]}"; do
+      if kill -0 "$p" 2>/dev/null && [[ "$(ps -o stat= -p "$p" 2>/dev/null | tr -d ' ')" != Z* ]]; then
+        alive=1
+        break
+      fi
+    done
+    if (( alive == 0 )); then
+      return 0
+    fi
+    sleep 0.1
+    elapsed_tenths=$(( elapsed_tenths + 1 ))
+  done
+  frontier=("${pids[@]}")
+  pids=()
+  while (( ${#frontier[@]} > 0 )); do
+    next=()
+    for p in "${frontier[@]}"; do
+      pids+=("$p")
+      while read -r c; do
+        if [[ -n "$c" ]]; then next+=("$c"); fi
+      done < <(pgrep -P "$p" 2>/dev/null || true)
+    done
+    frontier=("${next[@]+"${next[@]}"}")
+  done
+  for p in "${pids[@]}"; do
+    if kill -0 "$p" 2>/dev/null && [[ "$(ps -o stat= -p "$p" 2>/dev/null | tr -d ' ')" != Z* ]]; then
+      survivors+=("$p")
+    fi
+  done
+  if (( ${#survivors[@]} > 0 )); then
+    log_msg "EXEC_KILL_ESCALATED root_pid=$root grace_s=$grace_s pids=${survivors[*]}"
+    kill -KILL "${survivors[@]}" 2>/dev/null || true
   fi
 }
 
-stop_all() {
-  local exit_code=$?
-  set +e
-  cleanup_stage
-  if [[ -n "$COST_CAP_PID" ]]; then
-    pkill -P "$COST_CAP_PID" 2>/dev/null || true
-    kill "$COST_CAP_PID" 2>/dev/null || true
-    wait "$COST_CAP_PID" 2>/dev/null || true
-    COST_CAP_PID=""
-  fi
-  kill_inflight_reread
-  if [[ -n "$PERIODIC_FETCH_PID" ]]; then
-    pkill -P "$PERIODIC_FETCH_PID" 2>/dev/null || true
-    kill "$PERIODIC_FETCH_PID" 2>/dev/null || true
-    wait "$PERIODIC_FETCH_PID" 2>/dev/null || true
-    PERIODIC_FETCH_PID=""
-  fi
-  if [[ -n "$EXEC_PID" ]]; then
-    pkill -P "$EXEC_PID" 2>/dev/null || true
-    kill "$EXEC_PID" 2>/dev/null || true
-    wait "$EXEC_PID" 2>/dev/null || true
-    EXEC_PID=""
-  fi
-  if [[ -n "${EXEC_OUT_TMP:-}" ]] && [[ -f "$EXEC_OUT_TMP" ]]; then
-    scrub_stream < "$EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
-    rm -f "$EXEC_OUT_TMP" 2>/dev/null || true
-  fi
-  if [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]] && [[ "$STOPPED" -eq 0 ]] && [[ ! -f "$OUT_DIR/.rig_stopped" ]]; then
-    fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
-  fi
-  if [[ -n "$WATCHDOG_PID" ]]; then
-    if [[ -f "$DEADLINE_MARKER" ]]; then
-      wait "$WATCHDOG_PID" 2>/dev/null || true
-    else
-      pkill -P "$WATCHDOG_PID" 2>/dev/null || true
-      kill "$WATCHDOG_PID" 2>/dev/null || true
-      wait "$WATCHDOG_PID" 2>/dev/null || true
+# Bounded `colab stop` with one retry (`STOP_ATTEMPTS`, default 2), each attempt bounded by `run_colab stop`
+# (`timeout -k "$COLAB_KILL_GRACE_SECONDS" "$STOP_TIMEOUT_SECONDS"`).
+stop_session_bounded() {
+  local target_session="${1:-$S}" caller_path="${2:-trap}" attempt=1 stop_rc=0 last_timed_out=0
+  while (( attempt <= STOP_ATTEMPTS )); do
+    stop_rc=0
+    log_msg "STOP_ATTEMPT attempt=${attempt}/${STOP_ATTEMPTS} session=${target_session} path=${caller_path}"
+    run_colab stop -s "$target_session" </dev/null >/dev/null || stop_rc=$?
+    if [[ "$stop_rc" -eq 0 ]]; then
+      log_msg "STOP_COMPLETED attempt=${attempt}/${STOP_ATTEMPTS} session=${target_session} path=${caller_path}"
+      rm -f "$LOCK_DIR/$target_session.lock"
+      STOPPED=1
+      touch "$OUT_DIR/.rig_stopped" "$STOP_COMPLETED_MARKER"
+      return 0
     fi
-    WATCHDOG_PID=""
+    if colab_rc_is_timeout "$stop_rc"; then
+      last_timed_out=1
+      log_msg "STOP_TIMEOUT attempt=${attempt}/${STOP_ATTEMPTS} session=${target_session} path=${caller_path} timeout_s=$STOP_TIMEOUT_SECONDS kill_grace_s=$COLAB_KILL_GRACE_SECONDS rc=$stop_rc"
+    else
+      log_msg "STOP_FAILED attempt=${attempt}/${STOP_ATTEMPTS} session=${target_session} path=${caller_path} rc=$stop_rc"
+    fi
+    if (( attempt < STOP_ATTEMPTS )); then
+      log_msg "STOP_RETRY attempt=$(( attempt + 1 ))/${STOP_ATTEMPTS} session=${target_session} path=${caller_path}"
+    fi
+    attempt=$(( attempt + 1 ))
+  done
+  rm -f "$LOCK_DIR/$target_session.lock"
+  STOPPED=1
+  touch "$OUT_DIR/.rig_stopped" "$STOP_EXHAUSTED_MARKER"
+  RUN_OUTCOME="failed"
+  if (( last_timed_out == 1 )); then
+    if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+      RUN_FAILURE_CLASS="COLAB_STOP_TIMEOUT"
+    fi
+    RUN_WHY="COLAB_STOP_TIMEOUT: colab stop timed out after ${STOP_ATTEMPTS} attempts (${STOP_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace each) on session ${target_session}"
+    echo "$RUN_WHY" >&2
+    return 124
   fi
-  if [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]] && [[ "$STOPPED" -eq 0 ]] && [[ ! -f "$OUT_DIR/.rig_stopped" ]]; then
-    log_msg "STOP_SESSION session=$S"
-    run_colab stop -s "$S" </dev/null >/dev/null 2>&1 || true
-    rm -f "$LOCK_DIR/$S.lock"
-    STOPPED=1
-    touch "$OUT_DIR/.rig_stopped"
-    PRE_ORPHAN_COUNT="$(printf '%s\n' "$PRE_SESSIONS" | grep -Ec '^\[\?\]' || true)"
-    STOP_POLL_ATTEMPT=0
-    SESSION_STILL_PRESENT=0
-    ORPHAN_STILL_PRESENT=0
-    while [[ "$STOP_POLL_ATTEMPT" -lt "$STOP_POLL_MAX_READS" ]]; do
-      STOP_POLL_ATTEMPT=$(( STOP_POLL_ATTEMPT + 1 ))
-      POST_SESSIONS="$(run_colab sessions </dev/null || true)"
-      log_msg "SESSIONS_AFTER_STOP session=$S attempt=${STOP_POLL_ATTEMPT}/${STOP_POLL_MAX_READS}"
-      SESSION_STILL_PRESENT=0
-      ORPHAN_STILL_PRESENT=0
-      if printf '%s\n' "$POST_SESSIONS" | grep -q "^\[$S\]"; then
-        SESSION_STILL_PRESENT=1
-      else
-        POST_ORPHAN_COUNT="$(printf '%s\n' "$POST_SESSIONS" | grep -Ec '^\[\?\]' || true)"
-        if [[ "$POST_ORPHAN_COUNT" -gt "$PRE_ORPHAN_COUNT" ]]; then
-          ORPHAN_STILL_PRESENT=1
-        fi
-      fi
-      if [[ "$SESSION_STILL_PRESENT" -eq 0 ]] && [[ "$ORPHAN_STILL_PRESENT" -eq 0 ]]; then
-        break
-      fi
+  if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+    RUN_FAILURE_CLASS="COLAB_STOP_FAILED"
+  fi
+  RUN_WHY="COLAB_STOP_FAILED: colab stop failed after ${STOP_ATTEMPTS} attempts (rc=${stop_rc}) on session ${target_session}"
+  echo "$RUN_WHY" >&2
+  return 1
+}
+
+verify_session_absent_after_stop() {
+  local post_sess_rc=0 post_sess_timed_out=0
+  PRE_ORPHAN_COUNT="$(printf '%s\n' "$PRE_SESSIONS" | grep -Ec '^\[\?\]' || true)"
+  STOP_POLL_ATTEMPT=0
+  SESSION_STILL_PRESENT=0
+  ORPHAN_STILL_PRESENT=0
+  while [[ "$STOP_POLL_ATTEMPT" -lt "$STOP_POLL_MAX_READS" ]]; do
+    STOP_POLL_ATTEMPT=$(( STOP_POLL_ATTEMPT + 1 ))
+    post_sess_rc=0
+    POST_SESSIONS="$(run_colab sessions </dev/null)" || post_sess_rc=$?
+    log_msg "SESSIONS_AFTER_STOP session=$S attempt=${STOP_POLL_ATTEMPT}/${STOP_POLL_MAX_READS} rc=$post_sess_rc"
+    if colab_rc_is_timeout "$post_sess_rc"; then
+      post_sess_timed_out=1
+      SESSION_STILL_PRESENT=1
       if [[ "$STOP_POLL_ATTEMPT" -lt "$STOP_POLL_MAX_READS" ]]; then
         sleep "$STOP_POLL_SLEEP_SECONDS"
       fi
-    done
-    if [[ "$SESSION_STILL_PRESENT" -eq 1 ]] || [[ "$ORPHAN_STILL_PRESENT" -eq 1 ]]; then
-      SEEN_SESSION_IDS="$(printf '%s\n' "$POST_SESSIONS" | sed -nE 's/^\[([^]]+)\][[:space:]].*/[\1]/p' | grep -vx '\[colab\]' | paste -sd, - || true)"
-      if [[ -z "$SEEN_SESSION_IDS" ]]; then
-        SEEN_SESSION_IDS="none"
-      fi
-      RUN_OUTCOME="failed"
-      if [[ "$SESSION_STILL_PRESENT" -eq 1 ]]; then
-        RUN_WHY="session $S still present after colab stop (${STOP_POLL_ATTEMPT} reads; rows_seen=${SEEN_SESSION_IDS})"
-      else
-        RUN_WHY="session $S still present as [?] on server after colab stop (${STOP_POLL_ATTEMPT} reads; rows_seen=${SEEN_SESSION_IDS})"
-      fi
-      exit_code=1
+      continue
     fi
-  elif [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]]; then
-    rm -f "$LOCK_DIR/$S.lock"
+    post_sess_timed_out=0
+    SESSION_STILL_PRESENT=0
+    ORPHAN_STILL_PRESENT=0
+    if printf '%s\n' "$POST_SESSIONS" | grep -q "^\[$S\]"; then
+      SESSION_STILL_PRESENT=1
+    else
+      POST_ORPHAN_COUNT="$(printf '%s\n' "$POST_SESSIONS" | grep -Ec '^\[\?\]' || true)"
+      if [[ "$POST_ORPHAN_COUNT" -gt "$PRE_ORPHAN_COUNT" ]]; then
+        ORPHAN_STILL_PRESENT=1
+      fi
+    fi
+    if [[ "$SESSION_STILL_PRESENT" -eq 0 ]] && [[ "$ORPHAN_STILL_PRESENT" -eq 0 ]]; then
+      return 0
+    fi
+    if [[ "$STOP_POLL_ATTEMPT" -lt "$STOP_POLL_MAX_READS" ]]; then
+      sleep "$STOP_POLL_SLEEP_SECONDS"
+    fi
+  done
+  if (( post_sess_timed_out == 1 )); then
+    RUN_OUTCOME="failed"
+    if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+      RUN_FAILURE_CLASS="COLAB_SESSIONS_TIMEOUT"
+    fi
+    RUN_WHY="COLAB_SESSIONS_TIMEOUT: colab sessions timed out (${SESSIONS_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace) verifying stop of session $S"
+    echo "$RUN_WHY" >&2
+    return 124
   fi
-  rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$RUN_END_DETECTED_MARKER" "$EXEC_OUT_TMP" "$OUT_DIR/.rig_stopped" "$OUT_DIR"/progress.jsonl.tmp.* 2>/dev/null || true
+  if [[ "$SESSION_STILL_PRESENT" -eq 1 ]] || [[ "$ORPHAN_STILL_PRESENT" -eq 1 ]]; then
+    SEEN_SESSION_IDS="$(printf '%s\n' "$POST_SESSIONS" | sed -nE 's/^\[([^]]+)\][[:space:]].*/[\1]/p' | grep -vx '\[colab\]' | paste -sd, - || true)"
+    if [[ -z "$SEEN_SESSION_IDS" ]]; then
+      SEEN_SESSION_IDS="none"
+    fi
+    RUN_OUTCOME="failed"
+    if [[ "$SESSION_STILL_PRESENT" -eq 1 ]]; then
+      RUN_WHY="session $S still present after colab stop (${STOP_POLL_ATTEMPT} reads; rows_seen=${SEEN_SESSION_IDS})"
+    else
+      RUN_WHY="session $S still present as [?] on server after colab stop (${STOP_POLL_ATTEMPT} reads; rows_seen=${SEEN_SESSION_IDS})"
+    fi
+    return 1
+  fi
+  return 0
+}
+
+scrub_rig_logs() {
   "$PYTHON_BIN" - "$REPO_ROOT" "$OUT_DIR" "$CLI_LOG" >/dev/null 2>&1 <<'PY' || true
 import sys
 from pathlib import Path
@@ -2230,23 +2557,482 @@ for p in (
     if p.is_file():
         vm_judges.scrub_log_file_in_place(p)
 PY
+}
+
+cleanup_rig_temp_markers() {
+  rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$RUN_END_DETECTED_MARKER" \
+    "$EXEC_OUT_TMP" "$PROBE_EXEC_OUT_TMP" "$EXEC_PID_FILE" "$STOP_CLAIM_DIR" "$STOP_PATH_FILE" \
+    "$STOP_COMPLETED_MARKER" "$STOP_EXHAUSTED_MARKER" "$CLEANUP_STARTED_MARKER" "$WATCHDOG_ARMED_MARKER" \
+    "$TRIP_STARTED_FILE" "$OUT_DIR/.rig_stopped" "$OUT_DIR"/progress.jsonl.tmp.* 2>/dev/null || true
+}
+
+on_cleanup_signal() {
+  CLEANUP_SIGNAL_COUNT=$(( CLEANUP_SIGNAL_COUNT + 1 ))
+  local action="continue_bounded_cleanup"
+  if (( CLEANUP_SIGNAL_COUNT >= 2 )); then
+    CLEANUP_SKIP_FETCH=1
+    action="skip_remaining_fetch"
+  fi
+  log_msg "CLEANUP_SIGNAL count=$CLEANUP_SIGNAL_COUNT action=$action"
+}
+
+enter_cleanup_trap() {
+  if [[ -n "$CLEANUP_STARTED_MARKER" ]] && [[ ! -f "$CLEANUP_STARTED_MARKER" ]]; then
+    date +%s > "$CLEANUP_STARTED_MARKER" 2>/dev/null || touch "$CLEANUP_STARTED_MARKER" 2>/dev/null || true
+  fi
+  trap - EXIT
+  trap 'on_cleanup_signal' TERM INT
+}
+
+on_interrupt_signal() {
+  if [[ -n "$TRIP_STARTED_FILE" ]] && [[ ! -f "$TRIP_STARTED_FILE" ]]; then
+    date +%s > "$TRIP_STARTED_FILE" 2>/dev/null || true
+  fi
+  RUN_WHY="interrupted by signal"
+  exit 143
+}
+
+watcher_ignore_signal() {
+  :
+}
+
+kill_launcher_children_for_watcher() {
+  local watcher_self_pid="$1"
+  "$PYTHON_BIN" - "$MAIN" "$watcher_self_pid" "$EXEC_KILL_GRACE_SECONDS" >/dev/null 2>&1 <<'PY' || true
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+main_pid = int(sys.argv[1])
+watcher_pid = int(sys.argv[2])
+grace_s = max(1, int(sys.argv[3]))
+self_pid = os.getpid()
+
+
+def scan_descendants() -> list[int]:
+    children: dict[int, list[int]] = {}
+    parent_of: dict[int, int] = {}
+    for stat_p in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            data = stat_p.read_text(encoding="utf-8")
+            pid_s, rest = data.split(" (", 1)
+            ppid_s = rest.rsplit(") ", 1)[1].split()[1]
+            pid_i = int(pid_s)
+            ppid_i = int(ppid_s)
+            parent_of[pid_i] = ppid_i
+            children.setdefault(ppid_i, []).append(pid_i)
+        except Exception:
+            continue
+    protected: set[int] = {main_pid, watcher_pid, self_pid}
+    anc = self_pid
+    while anc > 1 and anc != main_pid:
+        protected.add(anc)
+        nxt = parent_of.get(anc, 0)
+        if nxt <= 0 or nxt in protected:
+            break
+        anc = nxt
+    out: list[int] = []
+    seen: set[int] = set()
+    stack = list(children.get(main_pid, []))
+    while stack:
+        cur = stack.pop()
+        if cur in seen or cur in protected:
+            continue
+        seen.add(cur)
+        out.append(cur)
+        stack.extend(children.get(cur, []))
+    return out
+
+
+targets = scan_descendants()
+for pid in reversed(targets):
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+deadline = time.monotonic() + min(grace_s, 2)
+while time.monotonic() < deadline:
+    alive = False
+    for pid in targets:
+        try:
+            st = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+            if st.rsplit(") ", 1)[1].split()[0] != "Z":
+                alive = True
+                break
+        except OSError:
+            continue
+    if not alive:
+        raise SystemExit(0)
+    time.sleep(0.1)
+for pid in reversed(scan_descendants()):
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+PY
+}
+
+# Independent session watcher: monitors launcher liveness, wall deadline (once armed), and post-trip cleanup progress.
+# If the main trap path has not stopped the session within its bounded cleanup window (or if the launcher disappears),
+# escalates to its own bounded `colab stop` with one retry (`stop_path="watcher"`).
+run_session_watcher() {
+  trap - EXIT
+  trap watcher_ignore_signal TERM INT HUP
+  local self_pid="" armed_at=0 wall_deadline=0 reason="" ep="" wait_tenths=0 max_wait_tenths=0 watcher_stop_rc=0
+  self_pid="$("$PYTHON_BIN" -c 'import os; print(os.getppid())' 2>/dev/null || echo 0)"
+
+  while true; do
+    if [[ -f "$STOP_COMPLETED_MARKER" ]] || [[ -f "$STOP_EXHAUSTED_MARKER" ]]; then
+      exit 0
+    fi
+    if ! kill -0 "$MAIN" 2>/dev/null; then
+      if [[ -f "$STOP_COMPLETED_MARKER" ]] || [[ -f "$STOP_EXHAUSTED_MARKER" ]]; then
+        exit 0
+      fi
+      reason="launcher_gone"
+      break
+    fi
+    if [[ -f "$CLEANUP_STARTED_MARKER" ]] || [[ -f "$TRIP_STARTED_FILE" ]]; then
+      reason="post_trip"
+      break
+    fi
+    if [[ -f "$WATCHDOG_ARMED_MARKER" ]]; then
+      if (( armed_at == 0 )); then
+        armed_at="$(date +%s)"
+        wall_deadline=$(( armed_at + WATCHDOG_SLEEP_SECONDS ))
+      fi
+      if (( $(date +%s) >= wall_deadline )); then
+        touch "$DEADLINE_MARKER"
+        if [[ ! -f "$TRIP_STARTED_FILE" ]]; then
+          date +%s > "$TRIP_STARTED_FILE" 2>/dev/null || true
+        fi
+        log_msg "RIG_DEADLINE_EXCEEDED session=$S wall_s=$WALL_SECONDS fetch_margin_s=$FETCH_MARGIN"
+        ep=""
+        if [[ -f "$EXEC_PID_FILE" ]]; then
+          ep="$(tr -d '[:space:]' < "$EXEC_PID_FILE" 2>/dev/null || true)"
+        fi
+        if [[ "$ep" =~ ^[0-9]+$ ]] && kill -0 "$ep" 2>/dev/null; then
+          terminate_exec_tree "$ep" "$EXEC_KILL_GRACE_SECONDS"
+        else
+          kill -TERM "$MAIN" 2>/dev/null || true
+        fi
+        reason="wall_deadline"
+        break
+      fi
+    fi
+    sleep 0.1
+  done
+
+  if [[ "$reason" == "wall_deadline" ]] || [[ "$reason" == "post_trip" ]]; then
+    if [[ ! -f "$CLEANUP_STARTED_MARKER" ]] && [[ ! -d "$FETCH_CLAIM_DIR" ]]; then
+      max_wait_tenths=$(( WATCHER_ESCALATE_SECONDS * 10 ))
+      wait_tenths=0
+      while (( wait_tenths < max_wait_tenths )); do
+        if [[ -f "$STOP_COMPLETED_MARKER" ]] || [[ -f "$STOP_EXHAUSTED_MARKER" ]]; then
+          exit 0
+        fi
+        if [[ -f "$CLEANUP_STARTED_MARKER" ]] || [[ -d "$FETCH_CLAIM_DIR" ]] || [[ -d "$STOP_CLAIM_DIR" ]]; then
+          break
+        fi
+        if ! kill -0 "$MAIN" 2>/dev/null; then
+          reason="launcher_gone"
+          break
+        fi
+        sleep 0.1
+        wait_tenths=$(( wait_tenths + 1 ))
+      done
+      if [[ ! -f "$CLEANUP_STARTED_MARKER" ]] && [[ ! -d "$FETCH_CLAIM_DIR" ]] && [[ ! -d "$STOP_CLAIM_DIR" ]] && [[ "$reason" != "launcher_gone" ]]; then
+        reason="no_cleanup_after_deadline"
+      fi
+    fi
+
+    if [[ "$reason" == "wall_deadline" ]] || [[ "$reason" == "post_trip" ]]; then
+      max_wait_tenths=$(( (CLEANUP_STOP_ATTEMPTED_BY_SECONDS + 5) * 10 ))
+      wait_tenths=0
+      while (( wait_tenths < max_wait_tenths )); do
+        if [[ -f "$STOP_COMPLETED_MARKER" ]] || [[ -f "$STOP_EXHAUSTED_MARKER" ]]; then
+          exit 0
+        fi
+        if [[ -d "$STOP_CLAIM_DIR" ]]; then
+          break
+        fi
+        if ! kill -0 "$MAIN" 2>/dev/null; then
+          reason="launcher_gone"
+          break
+        fi
+        sleep 0.1
+        wait_tenths=$(( wait_tenths + 1 ))
+      done
+      if [[ -d "$STOP_CLAIM_DIR" ]] && [[ "$reason" != "launcher_gone" ]]; then
+        max_wait_tenths=$(( (STOP_BOUND_SECONDS + 5) * 10 ))
+        wait_tenths=0
+        while (( wait_tenths < max_wait_tenths )); do
+          if [[ -f "$STOP_COMPLETED_MARKER" ]] || [[ -f "$STOP_EXHAUSTED_MARKER" ]]; then
+            exit 0
+          fi
+          if ! kill -0 "$MAIN" 2>/dev/null; then
+            reason="launcher_gone"
+            break
+          fi
+          sleep 0.1
+          wait_tenths=$(( wait_tenths + 1 ))
+        done
+      fi
+      if [[ -f "$STOP_COMPLETED_MARKER" ]] || [[ -f "$STOP_EXHAUSTED_MARKER" ]]; then
+        exit 0
+      fi
+      if [[ "$reason" != "launcher_gone" ]]; then
+        reason="cleanup_overran"
+      fi
+    fi
+  fi
+
+  mkdir "$STOP_CLAIM_DIR" 2>/dev/null || true
+  if [[ -f "$STOP_COMPLETED_MARKER" ]] || [[ -f "$STOP_EXHAUSTED_MARKER" ]]; then
+    exit 0
+  fi
+  STOP_PATH="watcher"
+  printf 'watcher\n' > "$STOP_PATH_FILE"
+  log_msg "WATCHER_ESCALATED session=$S reason=$reason escalate_s=$WATCHER_ESCALATE_SECONDS cleanup_stop_attempted_by_s=$CLEANUP_STOP_ATTEMPTED_BY_SECONDS"
+  log_msg "WATCHDOG_STOP_SESSION session=$S"
+  kill_launcher_children_for_watcher "$self_pid"
+  if [[ "$reason" != "cleanup_overran" ]] && [[ ! -f "$FETCH_DONE_MARKER" ]]; then
+    fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
+  fi
+  stop_session_bounded "$S" "watcher" || watcher_stop_rc=$?
+  if kill -0 "$MAIN" 2>/dev/null && [[ -f "$CLEANUP_STARTED_MARKER" ]] && [[ "$reason" != "cleanup_overran" ]]; then
+    exit 0
+  fi
+  verify_session_absent_after_stop || true
+  RUN_OUTCOME="failed"
+  if [[ -f "$DEADLINE_MARKER" ]] && [[ -z "$RUN_FAILURE_CLASS" ]]; then
+    RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
+  elif [[ "$reason" == "launcher_gone" ]] && [[ -z "$RUN_FAILURE_CLASS" ]] && [[ "$watcher_stop_rc" -eq 0 ]]; then
+    RUN_FAILURE_CLASS="LAUNCHER_TERMINATED"
+    RUN_WHY="launcher terminated before colab stop completed; session $S stopped by watcher"
+  fi
+  scrub_rig_logs
+  if [[ ! -f "$OUTCOME_FILE" ]]; then
+    write_outcome_draft
+  fi
+  cleanup_rig_temp_markers
+  if kill -0 "$MAIN" 2>/dev/null; then
+    kill -KILL "$MAIN" 2>/dev/null || true
+  fi
+  exit 0
+}
+
+start_session_watcher() {
+  if [[ -n "$WATCHDOG_PID" ]] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+    return 0
+  fi
+  (
+    run_session_watcher
+  ) </dev/null >/dev/null 2>&1 9>&- &
+  WATCHDOG_PID="$!"
+}
+
+handle_upload_failure() {
+  local rc="$1" dst="$2"
+  if [[ -f "$DEADLINE_MARKER" ]]; then
+    RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
+    exit 124
+  fi
+  if colab_rc_is_timeout "$rc"; then
+    RUN_FAILURE_CLASS="COLAB_UPLOAD_TIMEOUT"
+    RUN_WHY="COLAB_UPLOAD_TIMEOUT: colab upload timed out (${UPLOAD_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace, rc=$rc) for $dst on session $S"
+    echo "$RUN_WHY" >&2
+    exit "$rc"
+  fi
+  RUN_WHY="colab upload failed for $dst on session $S"
+  exit 1
+}
+
+# `colab new` failed: was a machine ever assigned? A session that was never assigned costs nothing (no_capacity).
+# Read once, after the failure: the session row in `colab sessions` (PRE_SESSIONS before `colab new`, POST_SESSIONS
+# now), new `[?]` orphan rows, the exit code and the client's error text. No session is assigned only when the session
+# is listed neither before nor after, no orphan row appeared, the exit code is non-zero and the error is the service
+# refusing the machine at assign (`POST .../tun/m/assign...: Service Unavailable`, as the real CLI printed it for
+# timeone-mu2, 2026-11-06; the URL is wrapped over lines, so the text is joined first). A session that is listed after
+# the failure was assigned: it is adopted, so the EXIT trap stops it and the outcome books rate x runtime. Anything
+# else keeps the old booking (rate x runtime), the safe side when it is not known that nothing was assigned.
+classify_colab_new_failure() {
+  local new_rc="$1" new_err="$2" listed=0 pre_orphans=0 post_orphans=0 assign_refused=0 post_sess_rc=0
+  POST_SESSIONS="$(run_colab sessions </dev/null)" || post_sess_rc=$?
+  if printf '%s\n' "$POST_SESSIONS" | grep -q "^\[$SESSION_NAME\]"; then
+    listed=1
+  fi
+  pre_orphans="$(printf '%s\n' "$PRE_SESSIONS" | grep -Ec '^\[\?\]' || true)"
+  post_orphans="$(printf '%s\n' "$POST_SESSIONS" | grep -Ec '^\[\?\]' || true)"
+  if printf '%s' "$new_err" | tr -d '\r\n' | grep -Eq '/tun/m/assign\?[^ ]*: Service Unavailable'; then
+    assign_refused=1
+  fi
+  if [[ "$listed" -eq 1 ]]; then
+    S="$SESSION_NAME"
+    NEW_SUCCEEDED=1
+    start_session_watcher
+    if colab_rc_is_timeout "$new_rc"; then
+      RUN_FAILURE_CLASS="COLAB_NEW_TIMEOUT"
+      RUN_WHY="COLAB_NEW_TIMEOUT: colab new timed out (${NEW_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace, rc=$new_rc) for $SESSION_NAME after machine was assigned; stopping it"
+      echo "$RUN_WHY" >&2
+    else
+      RUN_FAILURE_CLASS="SESSION_OPEN_FAILED_AFTER_ASSIGN"
+      RUN_WHY="colab new failed for $SESSION_NAME (rc=$new_rc) but colab sessions lists [$SESSION_NAME]: a machine was assigned; stopping it"
+    fi
+    log_msg "COLAB_NEW_FAILED_SESSION_ASSIGNED session=$SESSION_NAME rc=$new_rc"
+  elif colab_rc_is_timeout "$new_rc"; then
+    RUN_FAILURE_CLASS="COLAB_NEW_TIMEOUT"
+    RUN_WHY="COLAB_NEW_TIMEOUT: colab new timed out (${NEW_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace, rc=$new_rc) for $SESSION_NAME"
+    log_msg "COLAB_NEW_TIMEOUT session=$SESSION_NAME timeout_s=$NEW_TIMEOUT_SECONDS kill_grace_s=$COLAB_KILL_GRACE_SECONDS rc=$new_rc orphans_before=$pre_orphans orphans_after=$post_orphans"
+    echo "$RUN_WHY" >&2
+  elif colab_rc_is_timeout "$post_sess_rc"; then
+    RUN_FAILURE_CLASS="COLAB_SESSIONS_TIMEOUT"
+    RUN_WHY="COLAB_SESSIONS_TIMEOUT: colab sessions timed out (${SESSIONS_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace, rc=$post_sess_rc) after colab new failed for $SESSION_NAME (new_rc=$new_rc)"
+    log_msg "COLAB_SESSIONS_TIMEOUT session=$SESSION_NAME timeout_s=$SESSIONS_TIMEOUT_SECONDS kill_grace_s=$COLAB_KILL_GRACE_SECONDS rc=$post_sess_rc"
+    echo "$RUN_WHY" >&2
+  elif [[ "$new_rc" -ne 0 ]] && [[ "$assign_refused" -eq 1 ]] && [[ "$post_orphans" -le "$pre_orphans" ]]; then
+    NO_SESSION_ASSIGNED=1
+    RUN_FAILURE_CLASS="no_capacity"
+    RUN_WHY="no_capacity: colab new for $SESSION_NAME was refused at assign (Service Unavailable, rc=$new_rc); [$SESSION_NAME] listed neither before nor after, no new [?] row; no session was assigned, cost 0"
+    log_msg "NO_CAPACITY session=$SESSION_NAME rc=$new_rc cost=0 cost_basis=no_session_assigned failure_class=no_capacity"
+  else
+    RUN_WHY="colab new failed for $SESSION_NAME (rc=$new_rc)"
+    log_msg "COLAB_NEW_FAILED session=$SESSION_NAME rc=$new_rc listed_after=$listed assign_refused=$assign_refused orphans_before=$pre_orphans orphans_after=$post_orphans"
+  fi
+}
+
+stop_all() {
+  local exit_code=$? ep_from_file="" stop_rc=0 verify_rc=0 wait_w=0 max_wait_w=0
+  set +e
+  enter_cleanup_trap
+  cleanup_stage
+  if [[ -n "$COST_CAP_PID" ]]; then
+    pkill -P "$COST_CAP_PID" 2>/dev/null || true
+    kill "$COST_CAP_PID" 2>/dev/null || true
+    wait "$COST_CAP_PID" 2>/dev/null || true
+    COST_CAP_PID=""
+  fi
+  kill_inflight_reread
+  if [[ -n "$PERIODIC_FETCH_PID" ]]; then
+    pkill -P "$PERIODIC_FETCH_PID" 2>/dev/null || true
+    kill "$PERIODIC_FETCH_PID" 2>/dev/null || true
+    wait "$PERIODIC_FETCH_PID" 2>/dev/null || true
+    PERIODIC_FETCH_PID=""
+  fi
+  if [[ -n "$EXEC_PID_FILE" ]] && [[ -f "$EXEC_PID_FILE" ]]; then
+    ep_from_file="$(tr -d '[:space:]' < "$EXEC_PID_FILE" 2>/dev/null || true)"
+  fi
+  if [[ -n "$EXEC_PID" ]]; then
+    terminate_exec_tree "$EXEC_PID" "$EXEC_KILL_GRACE_SECONDS"
+    wait "$EXEC_PID" 2>/dev/null || true
+    EXEC_PID=""
+  elif [[ "$ep_from_file" =~ ^[0-9]+$ ]]; then
+    terminate_exec_tree "$ep_from_file" "$EXEC_KILL_GRACE_SECONDS"
+  fi
+  rm -f "$EXEC_PID_FILE" 2>/dev/null || true
+  if [[ -n "${EXEC_OUT_TMP:-}" ]] && [[ -f "$EXEC_OUT_TMP" ]]; then
+    scrub_stream < "$EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
+    rm -f "$EXEC_OUT_TMP" 2>/dev/null || true
+  fi
+  if [[ -n "${PROBE_EXEC_OUT_TMP:-}" ]] && [[ -f "$PROBE_EXEC_OUT_TMP" ]]; then
+    scrub_stream < "$PROBE_EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
+    rm -f "$PROBE_EXEC_OUT_TMP" 2>/dev/null || true
+  fi
+  if [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]] && [[ "$STOPPED" -eq 0 ]] && [[ ! -f "$OUT_DIR/.rig_stopped" ]]; then
+    fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
+  fi
+  if [[ "$NEW_SUCCEEDED" -eq 1 ]] && [[ -n "$S" ]]; then
+    if mkdir "$STOP_CLAIM_DIR" 2>/dev/null; then
+      STOP_PATH="trap"
+      printf 'trap\n' > "$STOP_PATH_FILE"
+      log_msg "STOP_SESSION session=$S path=trap"
+      stop_session_bounded "$S" "trap" || stop_rc=$?
+      if [[ "$stop_rc" -ne 0 ]]; then
+        exit_code="$stop_rc"
+        POST_SESSIONS="$(run_colab sessions </dev/null || true)"
+      else
+        verify_session_absent_after_stop || verify_rc=$?
+        if [[ "$verify_rc" -ne 0 ]]; then
+          exit_code="$verify_rc"
+        fi
+      fi
+    else
+      STOP_PATH="watcher"
+      printf 'watcher\n' > "$STOP_PATH_FILE"
+      max_wait_w=$(( (WATCHDOG_FETCH_TIMEOUT + COLAB_KILL_GRACE_SECONDS + STOP_BOUND_SECONDS + 10) * 10 ))
+      wait_w=0
+      while [[ ! -f "$STOP_COMPLETED_MARKER" ]] && [[ ! -f "$STOP_EXHAUSTED_MARKER" ]] && (( wait_w < max_wait_w )); do
+        if [[ -n "$WATCHDOG_PID" ]] && ! kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+          break
+        fi
+        sleep 0.1
+        wait_w=$(( wait_w + 1 ))
+      done
+      if [[ -f "$STOP_EXHAUSTED_MARKER" ]]; then
+        RUN_OUTCOME="failed"
+        if [[ -z "$RUN_FAILURE_CLASS" ]]; then
+          RUN_FAILURE_CLASS="COLAB_STOP_TIMEOUT"
+        fi
+        RUN_WHY="COLAB_STOP_TIMEOUT: colab stop timed out after ${STOP_ATTEMPTS} attempts (${STOP_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace each) on session $S (watcher)"
+        echo "$RUN_WHY" >&2
+        exit_code=124
+        POST_SESSIONS="$(run_colab sessions </dev/null || true)"
+      else
+        verify_session_absent_after_stop || verify_rc=$?
+        if [[ "$verify_rc" -ne 0 ]]; then
+          exit_code="$verify_rc"
+        fi
+      fi
+      rm -f "$LOCK_DIR/$S.lock"
+    fi
+  fi
+  if [[ -n "$WATCHDOG_PID" ]]; then
+    wait_w=0
+    while kill -0 "$WATCHDOG_PID" 2>/dev/null && (( wait_w < 10 )); do
+      sleep 0.1
+      wait_w=$(( wait_w + 1 ))
+    done
+    if kill -0 "$WATCHDOG_PID" 2>/dev/null; then
+      pkill -KILL -P "$WATCHDOG_PID" 2>/dev/null || true
+      kill -KILL "$WATCHDOG_PID" 2>/dev/null || true
+    fi
+    wait "$WATCHDOG_PID" 2>/dev/null || true
+    WATCHDOG_PID=""
+  fi
+  scrub_rig_logs
   write_outcome_draft
+  cleanup_rig_temp_markers
   exit "$exit_code"
 }
 
 trap stop_all EXIT
-trap 'RUN_WHY="interrupted by signal"; exit 143' TERM INT
+trap 'on_interrupt_signal' TERM INT
 
 if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
   log_msg "SESSION_SMOKE_START id=$RUN_ID session=$SESSION_NAME card=$CARD"
   mkdir -p "$(dirname "$OPEN_LOCK")"
   exec 9>"$OPEN_LOCK"
-  flock -w 300 9 || {
-    RUN_WHY="failed to acquire open lock $OPEN_LOCK"
+  LOCK_RC=0
+  flock -w "$OPEN_LOCK_TIMEOUT_SECONDS" 9 || LOCK_RC=$?
+  if [[ "$LOCK_RC" -ne 0 ]]; then
+    RUN_FAILURE_CLASS="OPEN_LOCK_TIMEOUT"
+    RUN_WHY="OPEN_LOCK_TIMEOUT: failed to acquire open lock $OPEN_LOCK within ${OPEN_LOCK_TIMEOUT_SECONDS}s (rc=$LOCK_RC)"
+    log_msg "OPEN_LOCK_TIMEOUT lock=$OPEN_LOCK timeout_s=$OPEN_LOCK_TIMEOUT_SECONDS rc=$LOCK_RC"
+    echo "$RUN_WHY" >&2
     exit 1
-  }
+  fi
   log_msg "LOCK_ACQUIRED lock=$OPEN_LOCK"
-  PRE_SESSIONS="$(run_colab sessions </dev/null || true)"
+  SESS_RC=0
+  PRE_SESSIONS="$(run_colab sessions </dev/null)" || SESS_RC=$?
+  if colab_rc_is_timeout "$SESS_RC"; then
+    flock -u 9 || true
+    RUN_FAILURE_CLASS="COLAB_SESSIONS_TIMEOUT"
+    RUN_WHY="COLAB_SESSIONS_TIMEOUT: colab sessions timed out (${SESSIONS_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace, rc=$SESS_RC) before opening $SESSION_NAME"
+    echo "$RUN_WHY" >&2
+    exit "$SESS_RC"
+  fi
   # Live session row shape: `[<SESSION>] <TOKEN> | <TOKEN>: <TOKEN> | <TOKEN>: <TOKEN> | <TOKEN>: <TOKEN>`
   # Empty list CLI message: `[colab] No active sessions found on server.` (never a session row).
   if printf '%s\n' "$PRE_SESSIONS" | grep -Fq "[$SESSION_NAME]"; then
@@ -2261,15 +3047,27 @@ if [[ "$SESSION_SMOKE_FLAG" -eq 1 ]]; then
   if [[ "$NEW_RC" -ne 0 ]]; then
     classify_colab_new_failure "$NEW_RC" "$RUN_COLAB_LAST_ERR"
     flock -u 9 || true
+    if colab_rc_is_timeout "$NEW_RC"; then
+      exit "$NEW_RC"
+    fi
     exit 1
   fi
   S="$SESSION_NAME"
   NEW_SUCCEEDED=1
+  start_session_watcher
   mkdir -p "$LOCK_DIR"
   printf '%s\n' "$MAIN" > "$LOCK_DIR/$S.lock"
   log_msg "SESSION_LOCK_WRITTEN lock_file=$LOCK_DIR/$S.lock pid=$MAIN"
-  MID_SESSIONS="$(run_colab sessions </dev/null || true)"
+  SESS_RC=0
+  MID_SESSIONS="$(run_colab sessions </dev/null)" || SESS_RC=$?
   log_msg "SESSION_OPENED session=$S"
+  if colab_rc_is_timeout "$SESS_RC"; then
+    flock -u 9 || true
+    RUN_FAILURE_CLASS="COLAB_SESSIONS_TIMEOUT"
+    RUN_WHY="COLAB_SESSIONS_TIMEOUT: colab sessions timed out (${SESSIONS_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace, rc=$SESS_RC) after opening $S"
+    echo "$RUN_WHY" >&2
+    exit "$SESS_RC"
+  fi
   if ! printf '%s\n' "$MID_SESSIONS" | grep -q "^\[$S\]"; then
     flock -u 9 || true
     RUN_WHY="colab sessions did not list [$S] after colab new"
@@ -2290,12 +3088,25 @@ if [[ "$MODE" == "probe" ]]; then
   log_msg "PROBE_START id=$RUN_ID session=$SESSION_NAME card=$CARD wall_s=$WALL_SECONDS vm_wall_s=$VM_WALL_SECONDS exec_timeout_s=$EXEC_TIMEOUT_SECONDS rig_timeout_s=$RIG_TIMEOUT rate_uh=$RATE_UNITS_PER_HOUR cap_units=$CAP_UNITS"
   mkdir -p "$(dirname "$OPEN_LOCK")"
   exec 9>"$OPEN_LOCK"
-  flock -w 300 9 || {
-    RUN_WHY="failed to acquire open lock $OPEN_LOCK"
+  LOCK_RC=0
+  flock -w "$OPEN_LOCK_TIMEOUT_SECONDS" 9 || LOCK_RC=$?
+  if [[ "$LOCK_RC" -ne 0 ]]; then
+    RUN_FAILURE_CLASS="OPEN_LOCK_TIMEOUT"
+    RUN_WHY="OPEN_LOCK_TIMEOUT: failed to acquire open lock $OPEN_LOCK within ${OPEN_LOCK_TIMEOUT_SECONDS}s (rc=$LOCK_RC)"
+    log_msg "OPEN_LOCK_TIMEOUT lock=$OPEN_LOCK timeout_s=$OPEN_LOCK_TIMEOUT_SECONDS rc=$LOCK_RC"
+    echo "$RUN_WHY" >&2
     exit 1
-  }
+  fi
   log_msg "LOCK_ACQUIRED lock=$OPEN_LOCK"
-  PRE_SESSIONS="$(run_colab sessions </dev/null || true)"
+  SESS_RC=0
+  PRE_SESSIONS="$(run_colab sessions </dev/null)" || SESS_RC=$?
+  if colab_rc_is_timeout "$SESS_RC"; then
+    flock -u 9 || true
+    RUN_FAILURE_CLASS="COLAB_SESSIONS_TIMEOUT"
+    RUN_WHY="COLAB_SESSIONS_TIMEOUT: colab sessions timed out (${SESSIONS_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace, rc=$SESS_RC) before opening $SESSION_NAME"
+    echo "$RUN_WHY" >&2
+    exit "$SESS_RC"
+  fi
   if printf '%s\n' "$PRE_SESSIONS" | grep -Fq "[$SESSION_NAME]"; then
     flock -u 9 || true
     RUN_WHY="session $SESSION_NAME already exists in colab sessions; refusing to reuse name"
@@ -2308,10 +3119,14 @@ if [[ "$MODE" == "probe" ]]; then
   if [[ "$NEW_RC" -ne 0 ]]; then
     classify_colab_new_failure "$NEW_RC" "$RUN_COLAB_LAST_ERR"
     flock -u 9 || true
+    if colab_rc_is_timeout "$NEW_RC"; then
+      exit "$NEW_RC"
+    fi
     exit 1
   fi
   S="$SESSION_NAME"
   NEW_SUCCEEDED=1
+  start_session_watcher
   mkdir -p "$LOCK_DIR"
   printf '%s\n' "$MAIN" > "$LOCK_DIR/$S.lock"
   log_msg "SESSION_LOCK_WRITTEN lock_file=$LOCK_DIR/$S.lock pid=$MAIN"
@@ -2319,38 +3134,28 @@ if [[ "$MODE" == "probe" ]]; then
   log_msg "LOCK_RELEASED session=$S"
 
   rm -rf "$DEADLINE_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MARKER" "$OUT_DIR/.rig_stopped" "$OUT_DIR/probe.json"
-  (
-    SLEEP_PID=""
-    trap 'if [[ -n "$SLEEP_PID" ]]; then kill "$SLEEP_PID" 2>/dev/null || true; fi; exit 0' TERM INT
-    sleep "$WATCHDOG_SLEEP_SECONDS" &
-    SLEEP_PID="$!"
-    wait "$SLEEP_PID" 2>/dev/null || exit 0
-    SLEEP_PID=""
-    touch "$DEADLINE_MARKER"
-    printf '%s RIG_DEADLINE_EXCEEDED session=%s wall_s=%s fetch_margin_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$WALL_SECONDS" "$FETCH_MARGIN" >> "$CLI_LOG"
-    fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
-    printf '%s WATCHDOG_STOP_SESSION session=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" >> "$CLI_LOG"
-    colab stop -s "$S" </dev/null >/dev/null 2>&1 || true
-    rm -f "$LOCK_DIR/$S.lock"
-    touch "$OUT_DIR/.rig_stopped"
-  ) </dev/null >/dev/null 2>&1 9>&- &
-  WATCHDOG_PID="$!"
+  touch "$WATCHDOG_ARMED_MARKER"
 
   build_probe_env_args
   EXEC_RC=0
+  : > "$PROBE_EXEC_OUT_TMP"
   timeout --signal=TERM --kill-after="$COLAB_KILL_GRACE_SECONDS" "${RIG_TIMEOUT}s" \
-    colab exec -s "$S" "${PROBE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || EXEC_RC=$?
+    colab exec -s "$S" "${PROBE_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null >"$PROBE_EXEC_OUT_TMP" 2>&1 9>&- &
+  EXEC_PID="$!"
+  printf '%s\n' "$EXEC_PID" > "$EXEC_PID_FILE"
+  wait "$EXEC_PID" 2>/dev/null || EXEC_RC=$?
+  EXEC_PID=""
+  rm -f "$EXEC_PID_FILE"
+  if [[ -f "$PROBE_EXEC_OUT_TMP" ]]; then
+    scrub_stream < "$PROBE_EXEC_OUT_TMP" >> "$CLI_LOG" 2>/dev/null || true
+    rm -f "$PROBE_EXEC_OUT_TMP" 2>/dev/null || true
+  fi
 
   if [[ -f "$DEADLINE_MARKER" ]]; then
-    if [[ -n "$WATCHDOG_PID" ]]; then
-      wait "$WATCHDOG_PID" 2>/dev/null || true
-      WATCHDOG_PID=""
-    fi
-    rm -f "$DEADLINE_MARKER"
     EXEC_RC=124
   fi
 
-  fetch_results_once
+  fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
 
   if [[ "$EXEC_RC" -eq 124 ]] || [[ "$EXEC_RC" -eq 137 ]]; then
     RUN_WHY="wall-clock timeout exceeded (${WALL_SECONDS}s)"
@@ -2838,13 +3643,26 @@ fi
 
 mkdir -p "$(dirname "$OPEN_LOCK")"
 exec 9>"$OPEN_LOCK"
-flock -w 300 9 || {
-  RUN_WHY="failed to acquire open lock $OPEN_LOCK"
+LOCK_RC=0
+flock -w "$OPEN_LOCK_TIMEOUT_SECONDS" 9 || LOCK_RC=$?
+if [[ "$LOCK_RC" -ne 0 ]]; then
+  RUN_FAILURE_CLASS="OPEN_LOCK_TIMEOUT"
+  RUN_WHY="OPEN_LOCK_TIMEOUT: failed to acquire open lock $OPEN_LOCK within ${OPEN_LOCK_TIMEOUT_SECONDS}s (rc=$LOCK_RC)"
+  log_msg "OPEN_LOCK_TIMEOUT lock=$OPEN_LOCK timeout_s=$OPEN_LOCK_TIMEOUT_SECONDS rc=$LOCK_RC"
+  echo "$RUN_WHY" >&2
   exit 1
-}
+fi
 log_msg "LOCK_ACQUIRED lock=$OPEN_LOCK"
 
-PRE_SESSIONS="$(run_colab sessions </dev/null || true)"
+SESS_RC=0
+PRE_SESSIONS="$(run_colab sessions </dev/null)" || SESS_RC=$?
+if colab_rc_is_timeout "$SESS_RC"; then
+  flock -u 9 || true
+  RUN_FAILURE_CLASS="COLAB_SESSIONS_TIMEOUT"
+  RUN_WHY="COLAB_SESSIONS_TIMEOUT: colab sessions timed out (${SESSIONS_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace, rc=$SESS_RC) before opening $SESSION_NAME"
+  echo "$RUN_WHY" >&2
+  exit "$SESS_RC"
+fi
 if printf '%s\n' "$PRE_SESSIONS" | grep -Fq "[$SESSION_NAME]"; then
   flock -u 9 || true
   RUN_WHY="session $SESSION_NAME already exists in colab sessions; refusing to reuse name"
@@ -2867,10 +3685,14 @@ run_colab new "${COLAB_NEW_FLAGS[@]+"${COLAB_NEW_FLAGS[@]}"}" -s "$SESSION_NAME"
 if [[ "$NEW_RC" -ne 0 ]]; then
   classify_colab_new_failure "$NEW_RC" "$RUN_COLAB_LAST_ERR"
   flock -u 9 || true
+  if colab_rc_is_timeout "$NEW_RC"; then
+    exit "$NEW_RC"
+  fi
   exit 1
 fi
 S="$SESSION_NAME"
 NEW_SUCCEEDED=1
+start_session_watcher
 # The cost clock starts when the open succeeds: the rate polls, card check and gates all count against the cap.
 OPEN_CLOCK_EPOCH="$(now_epoch_seconds)"
 START_EPOCH="$OPEN_CLOCK_EPOCH"
@@ -2880,8 +3702,16 @@ mkdir -p "$LOCK_DIR"
 printf '%s\n' "$MAIN" > "$LOCK_DIR/$S.lock"
 log_msg "SESSION_LOCK_WRITTEN lock_file=$LOCK_DIR/$S.lock pid=$MAIN"
 
-MID_SESSIONS="$(run_colab sessions </dev/null || true)"
+SESS_RC=0
+MID_SESSIONS="$(run_colab sessions </dev/null)" || SESS_RC=$?
 log_msg "SESSION_OPENED session=$S"
+if colab_rc_is_timeout "$SESS_RC"; then
+  flock -u 9 || true
+  RUN_FAILURE_CLASS="COLAB_SESSIONS_TIMEOUT"
+  RUN_WHY="COLAB_SESSIONS_TIMEOUT: colab sessions timed out (${SESSIONS_TIMEOUT_SECONDS}s + ${COLAB_KILL_GRACE_SECONDS}s grace, rc=$SESS_RC) after opening $S"
+  echo "$RUN_WHY" >&2
+  exit "$SESS_RC"
+fi
 if ! printf '%s\n' "$MID_SESSIONS" | grep -q "^\[$S\]"; then
   flock -u 9 || true
   RUN_WHY="colab sessions did not list [$S] after colab new"
@@ -3053,22 +3883,21 @@ if [[ -n "$EXPLICIT_CAP" ]]; then
 else
   CAP_UNITS="$WALL_X_RATE"
 fi
-COST_CAP_MAX_RUNTIME_SECONDS="$("$PYTHON_BIN" - "$CAP_UNITS" "$PRICING_RATE_UNITS_PER_HOUR" <<'PY'
-import math
-import sys
-
-cap = float(sys.argv[1])
-rate = float(sys.argv[2])
-s = max(1, int(math.ceil((cap * 3600.0) / rate - 1e-12)))
-print(s)
-PY
-)"
-log_msg "LIVE_USAGE_RATE session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR pricing_rate_uh=$PRICING_RATE_UNITS_PER_HOUR rate_read_at=$RATE_READ_AT_UTC cap_units=$CAP_UNITS cap_max_runtime_s=$COST_CAP_MAX_RUNTIME_SECONDS"
+read -r CAP_BUDGET_OK CLEANUP_RESERVE_UNITS EFFECTIVE_TRIP_UNITS RESERVED_CAP_RUNTIME_SECONDS UNRESERVED_CAP_RUNTIME_SECONDS <<< "$(eval_cap_budget "$CAP_UNITS" "$PRICING_RATE_UNITS_PER_HOUR")"
+if [[ "$CAP_BUDGET_OK" -ne 1 ]]; then
+  flock -u 9 || true
+  RUN_FAILURE_CLASS="CAP_TOO_SMALL_FOR_CLEANUP"
+  RUN_WHY="CAP_TOO_SMALL_FOR_CLEANUP: cap=${CAP_UNITS} margin=${CAP_MARGIN_UNITS} cleanup_reserve=${CLEANUP_RESERVE_UNITS} (cleanup_bound_s=${CLEANUP_BOUND_SECONDS}s at priced_rate=${PRICING_RATE_UNITS_PER_HOUR}/h) leaves effective_trip=${EFFECTIVE_TRIP_UNITS} <= 0 on session $S"
+  echo "$RUN_WHY" >&2
+  exit 2
+fi
+COST_CAP_MAX_RUNTIME_SECONDS="$RESERVED_CAP_RUNTIME_SECONDS"
+log_msg "LIVE_USAGE_RATE session=$S rate_uh=$LIVE_RATE_UNITS_PER_HOUR pricing_rate_uh=$PRICING_RATE_UNITS_PER_HOUR rate_read_at=$RATE_READ_AT_UTC cap_units=$CAP_UNITS margin_units=$CAP_MARGIN_UNITS cleanup_bound_s=$CLEANUP_BOUND_SECONDS cleanup_reserve_units=$CLEANUP_RESERVE_UNITS effective_trip_units=$EFFECTIVE_TRIP_UNITS cap_max_runtime_s=$COST_CAP_MAX_RUNTIME_SECONDS"
 # The mid-run re-read state: neighbour baseline = the pre-open account rate, our last stable rate = the window rate,
 # settled count = the count of the stable open read. The cost-cap monitor re-reads from here on.
 rm -f "$RATE_REREAD_STATE" "$RATE_REREADS_FILE" "$RATE_TRIP_MARKER"
 "$PYTHON_BIN" "$RATE_REREADS_PY" init --state "$RATE_REREAD_STATE" --pre "$PRE_ACCOUNT_RATE" --window "$LIVE_RATE_UNITS_PER_HOUR" \
-  --count "$OPEN_ASSIGNMENTS_COUNT" --max-rate "$MAX_RATE" --cap "$CAP_UNITS" --max-runtime "$COST_CAP_MAX_RUNTIME_SECONDS" \
+  --count "$OPEN_ASSIGNMENTS_COUNT" --max-rate "$MAX_RATE" --cap "$CAP_UNITS" --max-runtime "$UNRESERVED_CAP_RUNTIME_SECONDS" \
   --floor "$WINDOW_RATE_FLOOR" || {
   RUN_WHY="could not initialise the mid-run rate re-read state on session $S"
   exit 1
@@ -3147,81 +3976,78 @@ rm -rf "$DEADLINE_MARKER" "$COST_CAP_MARKER" "$FETCH_CLAIM_DIR" "$FETCH_DONE_MAR
 if [[ "$EFFECTIVE_RESUME" -ne 1 ]]; then
   rm -f "$OUT_DIR/progress.jsonl"
 fi
-(
-  SLEEP_PID=""
-  trap 'if [[ -n "$SLEEP_PID" ]]; then kill "$SLEEP_PID" 2>/dev/null || true; fi; exit 0' TERM INT
-  sleep "$WATCHDOG_SLEEP_SECONDS" &
-  SLEEP_PID="$!"
-  wait "$SLEEP_PID" 2>/dev/null || exit 0
-  SLEEP_PID=""
-  touch "$DEADLINE_MARKER"
-  printf '%s RIG_DEADLINE_EXCEEDED session=%s wall_s=%s fetch_margin_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$WALL_SECONDS" "$FETCH_MARGIN" >> "$CLI_LOG"
-  fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
-  printf '%s WATCHDOG_STOP_SESSION session=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" >> "$CLI_LOG"
-  colab stop -s "$S" </dev/null >/dev/null 2>&1 || true
-  rm -f "$LOCK_DIR/$S.lock"
-  touch "$OUT_DIR/.rig_stopped"
-) </dev/null >/dev/null 2>&1 9>&- &
-WATCHDOG_PID="$!"
+touch "$WATCHDOG_ARMED_MARKER"
 
-timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_DEVICE_PY" "/content/device.py" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-  RUN_WHY="colab upload failed for /content/device.py on session $S"
-  exit 1
-}
-timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-  RUN_WHY="colab upload failed for /content/repo_bundle.tar.gz on session $S"
-  exit 1
-}
-timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-  RUN_WHY="colab upload failed for /content/receipts_bundle.tar.gz on session $S"
-  exit 1
-}
+UPLOAD_RC=0
+timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_DEVICE_PY" "/content/device.py" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+if [[ "$UPLOAD_RC" -ne 0 ]]; then
+  handle_upload_failure "$UPLOAD_RC" "/content/device.py"
+fi
+UPLOAD_RC=0
+timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$REPO_TAR" "/content/repo_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+if [[ "$UPLOAD_RC" -ne 0 ]]; then
+  handle_upload_failure "$UPLOAD_RC" "/content/repo_bundle.tar.gz"
+fi
+UPLOAD_RC=0
+timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RECEIPTS_TAR" "/content/receipts_bundle.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+if [[ "$UPLOAD_RC" -ne 0 ]]; then
+  handle_upload_failure "$UPLOAD_RC" "/content/receipts_bundle.tar.gz"
+fi
 if [[ "$MODE" == "lock-check" ]] || [[ "$MODE" == "lock-check-stub" ]]; then
-  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ANCHOR_ITEMS_FILE" "/content/rdlab_items/anchor_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-    RUN_WHY="colab upload failed for /content/rdlab_items/anchor_items.jsonl on session $S"
-    exit 1
-  }
-  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_ITEMS_FILE" "/content/rdlab_items/p0a_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-    RUN_WHY="colab upload failed for /content/rdlab_items/p0a_items.jsonl on session $S"
-    exit 1
-  }
+  UPLOAD_RC=0
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ANCHOR_ITEMS_FILE" "/content/rdlab_items/anchor_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+  if [[ "$UPLOAD_RC" -ne 0 ]]; then
+    handle_upload_failure "$UPLOAD_RC" "/content/rdlab_items/anchor_items.jsonl"
+  fi
+  UPLOAD_RC=0
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_ITEMS_FILE" "/content/rdlab_items/p0a_items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+  if [[ "$UPLOAD_RC" -ne 0 ]]; then
+    handle_upload_failure "$UPLOAD_RC" "/content/rdlab_items/p0a_items.jsonl"
+  fi
   if [[ -f "$STAGED_P0A_PART_JSON_FILE" ]]; then
-    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_PART_JSON_FILE" "/content/rdlab_items/p0a_part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-      RUN_WHY="colab upload failed for /content/rdlab_items/p0a_part.json on session $S"
-      exit 1
-    }
-    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_CHECKSUMS_FILE" "/content/rdlab_items/p0a_checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-      RUN_WHY="colab upload failed for /content/rdlab_items/p0a_checksums.txt on session $S"
-      exit 1
-    }
+    UPLOAD_RC=0
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_PART_JSON_FILE" "/content/rdlab_items/p0a_part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+    if [[ "$UPLOAD_RC" -ne 0 ]]; then
+      handle_upload_failure "$UPLOAD_RC" "/content/rdlab_items/p0a_part.json"
+    fi
+    UPLOAD_RC=0
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_P0A_CHECKSUMS_FILE" "/content/rdlab_items/p0a_checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+    if [[ "$UPLOAD_RC" -ne 0 ]]; then
+      handle_upload_failure "$UPLOAD_RC" "/content/rdlab_items/p0a_checksums.txt"
+    fi
   fi
 else
-  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-    RUN_WHY="colab upload failed for /content/rdlab_items/items.jsonl on session $S"
-    exit 1
-  }
+  UPLOAD_RC=0
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_ITEMS_FILE" "/content/rdlab_items/items.jsonl" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+  if [[ "$UPLOAD_RC" -ne 0 ]]; then
+    handle_upload_failure "$UPLOAD_RC" "/content/rdlab_items/items.jsonl"
+  fi
   if [[ -f "$STAGED_PART_JSON_FILE" ]]; then
-    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_JSON_FILE" "/content/rdlab_items/part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-      RUN_WHY="colab upload failed for /content/rdlab_items/part.json on session $S"
-      exit 1
-    }
-    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_CHECKSUMS_FILE" "/content/rdlab_items/checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-      RUN_WHY="colab upload failed for /content/rdlab_items/checksums.txt on session $S"
-      exit 1
-    }
+    UPLOAD_RC=0
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_JSON_FILE" "/content/rdlab_items/part.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+    if [[ "$UPLOAD_RC" -ne 0 ]]; then
+      handle_upload_failure "$UPLOAD_RC" "/content/rdlab_items/part.json"
+    fi
+    UPLOAD_RC=0
+    timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_PART_CHECKSUMS_FILE" "/content/rdlab_items/checksums.txt" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+    if [[ "$UPLOAD_RC" -ne 0 ]]; then
+      handle_upload_failure "$UPLOAD_RC" "/content/rdlab_items/checksums.txt"
+    fi
   fi
 fi
 if [[ -f "$STAGED_BINDING_FILE" ]]; then
-  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_BINDING_FILE" "/content/rdlab_items/launcher_part_binding.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-    RUN_WHY="colab upload failed for /content/rdlab_items/launcher_part_binding.json on session $S"
-    exit 1
-  }
+  UPLOAD_RC=0
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$STAGED_BINDING_FILE" "/content/rdlab_items/launcher_part_binding.json" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+  if [[ "$UPLOAD_RC" -ne 0 ]]; then
+    handle_upload_failure "$UPLOAD_RC" "/content/rdlab_items/launcher_part_binding.json"
+  fi
 fi
 if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$RESUME_TAR" ]]; then
-  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || {
-    RUN_WHY="colab upload failed for /content/resume_state.tar.gz on session $S"
-    exit 1
-  }
+  UPLOAD_RC=0
+  timeout -k "$COLAB_KILL_GRACE_SECONDS" "$UPLOAD_TIMEOUT_SECONDS" colab upload -s "$S" "$RESUME_TAR" "/content/resume_state.tar.gz" </dev/null 2>&1 | scrub_stream >> "$CLI_LOG" || UPLOAD_RC=$?
+  if [[ "$UPLOAD_RC" -ne 0 ]]; then
+    handle_upload_failure "$UPLOAD_RC" "/content/resume_state.tar.gz"
+  fi
 fi
 cleanup_stage
 
@@ -3231,6 +4057,7 @@ EXEC_RC=0
 timeout --signal=TERM --kill-after="$COLAB_KILL_GRACE_SECONDS" "${RIG_TIMEOUT}s" \
   colab exec -s "$S" "${EXEC_ENV_ARGS[@]}" -f "$VM_SCRIPT" --timeout="$EXEC_TIMEOUT_SECONDS" </dev/null >"$EXEC_OUT_TMP" 2>&1 9>&- &
 EXEC_PID="$!"
+printf '%s\n' "$EXEC_PID" > "$EXEC_PID_FILE"
 
 (
   CAP_SLEEP_PID=""
@@ -3277,27 +4104,48 @@ EXEC_PID="$!"
         printf '%s RATE_REREAD_FAILED session=%s elapsed_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$elapsed_s" >> "$CLI_LOG"
       else
         printf '%s RATE_REREAD session=%s elapsed_s=%s decision=%s max_runtime_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$elapsed_s" "$reread_decision" "$reread_runtime" >> "$CLI_LOG"
-        if [[ "$reread_runtime" =~ ^[0-9]+$ ]] && (( reread_runtime < COST_CAP_MAX_RUNTIME_SECONDS )); then
+        if [[ "$reread_decision" == "rise_repriced" ]] || [[ "$reread_decision" == "RATE_ABOVE_MAX" ]]; then
+          new_pricing_rate="$("$PYTHON_BIN" -c "import json, sys; d = json.load(open(sys.argv[1])); print(f'{max(float(d.get(\"max_rate\") or 0.0), float(d.get(\"highest_stable_rate\") or 0.0)):.4f}')" "$RATE_REREAD_STATE" 2>/dev/null || true)"
+          if [[ -n "$new_pricing_rate" ]]; then
+            reread_ok=0
+            reread_res_u=""
+            reread_eff_u=""
+            reread_res_rt=0
+            reread_unres_rt=0
+            read -r reread_ok reread_res_u reread_eff_u reread_res_rt reread_unres_rt <<< "$(eval_cap_budget "$CAP_UNITS" "$new_pricing_rate")"
+            if [[ "$reread_ok" -ne 1 ]]; then
+              reread_res_rt=1
+            fi
+            if [[ "$reread_res_rt" =~ ^[0-9]+$ ]] && (( reread_res_rt < COST_CAP_MAX_RUNTIME_SECONDS )); then
+              printf '%s RATE_REREAD_RUNTIME_SHORTENED session=%s from_s=%s to_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$COST_CAP_MAX_RUNTIME_SECONDS" "$reread_res_rt" >> "$CLI_LOG"
+              COST_CAP_MAX_RUNTIME_SECONDS="$reread_res_rt"
+            fi
+          fi
+        elif [[ "$reread_runtime" =~ ^[0-9]+$ ]] && (( reread_runtime < COST_CAP_MAX_RUNTIME_SECONDS )); then
           printf '%s RATE_REREAD_RUNTIME_SHORTENED session=%s from_s=%s to_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$COST_CAP_MAX_RUNTIME_SECONDS" "$reread_runtime" >> "$CLI_LOG"
           COST_CAP_MAX_RUNTIME_SECONDS="$reread_runtime"
         fi
         if [[ -n "$reread_trip" ]] && [[ "$reread_trip" != "-" ]]; then
+          if [[ ! -f "$TRIP_STARTED_FILE" ]]; then
+            date +%s > "$TRIP_STARTED_FILE" 2>/dev/null || true
+          fi
           trip_reason="$("$PYTHON_BIN" -c "import json, sys; print((json.load(open(sys.argv[1])).get('trip') or {}).get('reason') or sys.argv[2])" "$RATE_REREAD_STATE" "$reread_trip" 2>/dev/null || printf '%s' "$reread_trip")"
           printf '%s\n%s\n%s\n' "$reread_trip" "$trip_reason" "$elapsed_s" > "$RATE_TRIP_MARKER"
           printf '%s RATE_REREAD_TRIP session=%s failure_class=%s elapsed_s=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$reread_trip" "$elapsed_s" >> "$CLI_LOG"
           fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
-          pkill -TERM -P "$EXEC_PID" 2>/dev/null || true
-          kill -TERM "$EXEC_PID" 2>/dev/null || true
+          terminate_exec_tree "$EXEC_PID" "$EXEC_KILL_GRACE_SECONDS"
           break
         fi
       fi
     fi
     if (( COST_CAP_MAX_RUNTIME_SECONDS > 0 && elapsed_s >= COST_CAP_MAX_RUNTIME_SECONDS )); then
+      if [[ ! -f "$TRIP_STARTED_FILE" ]]; then
+        date +%s > "$TRIP_STARTED_FILE" 2>/dev/null || true
+      fi
       printf '%s\n' "$elapsed_s" > "$COST_CAP_MARKER"
       printf '%s COST_CAP_REACHED session=%s runtime_s=%s rate_uh=%s cap_units=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$S" "$elapsed_s" "$LIVE_RATE_UNITS_PER_HOUR" "$CAP_UNITS" >> "$CLI_LOG"
       fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
-      pkill -TERM -P "$EXEC_PID" 2>/dev/null || true
-      kill -TERM "$EXEC_PID" 2>/dev/null || true
+      terminate_exec_tree "$EXEC_PID" "$EXEC_KILL_GRACE_SECONDS"
       break
     fi
   done
@@ -3319,8 +4167,7 @@ COST_CAP_PID="$!"
       if grep -Eq '"kind"[[:space:]]*:[[:space:]]*"run_end"' "$OUT_DIR/progress.jsonl" 2>/dev/null; then
         touch "$RUN_END_DETECTED_MARKER"
         log_msg "PROGRESS_RUN_END_DETECTED session=$S"
-        pkill -TERM -P "$EXEC_PID" 2>/dev/null || true
-        kill -TERM "$EXEC_PID" 2>/dev/null || true
+        terminate_exec_tree "$EXEC_PID" "$EXEC_KILL_GRACE_SECONDS"
         break
       fi
     fi
@@ -3330,6 +4177,7 @@ PERIODIC_FETCH_PID="$!"
 
 wait "$EXEC_PID" 2>/dev/null || EXEC_RC=$?
 EXEC_PID=""
+rm -f "$EXEC_PID_FILE"
 
 if [[ -n "$COST_CAP_PID" ]]; then
   if [[ -f "$COST_CAP_MARKER" ]] || [[ -f "$RATE_TRIP_MARKER" ]]; then
@@ -3361,15 +4209,10 @@ if [[ -f "$RUN_END_DETECTED_MARKER" ]]; then
 fi
 
 if [[ -f "$DEADLINE_MARKER" ]]; then
-  if [[ -n "$WATCHDOG_PID" ]]; then
-    wait "$WATCHDOG_PID" 2>/dev/null || true
-    WATCHDOG_PID=""
-  fi
-  rm -f "$DEADLINE_MARKER"
   EXEC_RC=124
 fi
 
-fetch_results_once
+fetch_results_once "$WATCHDOG_FETCH_TIMEOUT"
 
 # A mid-run re-read tripped (RATE_ABOVE_MAX or ASSIGNMENTS_UNREADABLE): the monitor fetched and stopped the run as a
 # cap stop does; record it in status.json and end the window with that class.
