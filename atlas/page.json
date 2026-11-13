@@ -34,21 +34,21 @@
   "changes": {
     "fileCounts": {
       "added": 0,
-      "changed": 1,
+      "changed": 3,
       "moved": 0,
-      "parts": 1,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-09; 1 file changed content.",
+        "sentence": "Nothing structural changed since 2026-11-11; 3 files changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "664d640429c0857814b317dec6b1c719ca2c55b0",
-      "generatedAt": "2026-11-09T10:08:57.436Z"
+      "commit": "4f5229f94fff0bbeb8407dc1784f2805eb5cfbed",
+      "generatedAt": "2026-11-11T22:31:47.373Z"
     },
     "unchanged": true
   },
@@ -135,7 +135,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 8 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "4f5229f94fff0bbeb8407dc1784f2805eb5cfbed",
+  "commit": "5b44736988233c2ac3f3ea5e5135d48d72dd17cd",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (80 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -292,7 +292,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-11T22:31:47.373Z",
+  "generatedAt": "2026-11-13T01:51:29.561Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "16 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 12 more.",

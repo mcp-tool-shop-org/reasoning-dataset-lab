@@ -28,7 +28,12 @@ _REPO_SRC_DIR = str(Path(__file__).resolve().parents[2] / "src")
 if _REPO_SRC_DIR not in sys.path:
     sys.path.insert(0, _REPO_SRC_DIR)
 
-from reasoning_dataset_lab.pilot_b.bakeoff_judge import normalize_anchor_verdict_code
+from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
+    BAKEOFF_JUDGE_SPECS,
+    _resolve_items_from_manifest_source,
+    build_judge_adapter,
+    normalize_anchor_verdict_code,
+)
 
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
@@ -965,6 +970,7 @@ def merge_shards(
     merge_config_path: Path | None = None,
     golden_anchor_manifest_path: Path | None = None,
     replacement_shard_dirs: Sequence[Path] | dict[str, Path] = (),
+    items_path: Path | None = None,
 ) -> dict[str, Any]:
     """Verify all five cross-shard gates and write sealed-safe merged readout and receipt."""
     if not shard_dirs:
@@ -1000,6 +1006,34 @@ def merge_shards(
         if isinstance(manifest_doc.get("input_token_ids_sha256_by_call"), dict)
         else {}
     )
+    manifest_input_token_sha_source = str(
+        manifest_doc.get("input_token_ids_sha_source") or "canonical_prompt"
+    ).strip()
+    expected_prompt_shas: dict[str, str] = (
+        dict(manifest_doc["prompt_sha256_by_call"])
+        if isinstance(manifest_doc.get("prompt_sha256_by_call"), dict)
+        else {}
+    )
+    if items_path is not None:
+        resolved_items, _ = _resolve_items_from_manifest_source(items_path)
+        items_by_id = {it.item_id: it for it in resolved_items}
+        pass_mode = str(manifest_doc.get("pass_mode") or "binary")
+        adapters = {
+            jid: build_judge_adapter(BAKEOFF_JUDGE_SPECS[jid])
+            for jid in expected_judge_ids
+            if jid in BAKEOFF_JUDGE_SPECS
+        }
+        for it_id, it_obj in items_by_id.items():
+            for jid, adapter in adapters.items():
+                if pass_mode == "three_way" and not adapter.spec.supports_three_way:
+                    continue
+                for ord_k in EXPECTED_ORDERS:
+                    assembled = adapter.assemble_prompt(
+                        it_obj, order=ord_k, pass_mode=pass_mode
+                    )
+                    expected_prompt_shas[f"{it_id}:{ord_k}:{jid}"] = (
+                        assembled.prompt_sha256
+                    )
     if not isinstance(shards_map, dict):
         raise MergeRefusalError(
             "MERGE_BIJECTION_FAILED", "manifest missing 'shards' mapping"
@@ -1454,11 +1488,30 @@ def merge_shards(
                         "MERGE_INPUT_TOKEN_SHA_MISMATCH",
                         f"shard {expected_spec} triple {triple} missing 64-hex input/output token sha256",
                     )
-                expected_call_in_sha = manifest_input_token_shas.get(
-                    f"{item_id}:{order}:{jid}"
-                )
+                call_key = f"{item_id}:{order}:{jid}"
+                expected_call_prompt_sha = expected_prompt_shas.get(call_key)
                 if (
-                    isinstance(expected_call_in_sha, str)
+                    isinstance(expected_call_prompt_sha, str)
+                    and expected_call_prompt_sha.strip()
+                ):
+                    row_prompt_sha = (
+                        str(row.get("prompt_sha256") or "").strip().lower()
+                    )
+                    if row_prompt_sha != expected_call_prompt_sha.strip().lower():
+                        raise MergeRefusalError(
+                            "MERGE_INPUT_TOKEN_SHA_MISMATCH",
+                            f"shard {expected_spec} triple {triple} prompt_sha256={row_prompt_sha!r} "
+                            f"does not match expected {expected_call_prompt_sha!r}",
+                        )
+                row_uses_real_hf_tokens = (
+                    shard_is_real
+                    and str(row.get("model_digest") or "").startswith("sha256:")
+                    and manifest_input_token_sha_source != "hf_tokenizer"
+                )
+                expected_call_in_sha = manifest_input_token_shas.get(call_key)
+                if (
+                    not row_uses_real_hf_tokens
+                    and isinstance(expected_call_in_sha, str)
                     and expected_call_in_sha.strip()
                     and in_sha != expected_call_in_sha.strip().lower()
                 ):
@@ -1558,6 +1611,41 @@ def merge_shards(
             )
 
     # Gate (d): Anchor-subset cross-session & golden agreement
+    if anchor_item_ids:
+        for shard_idx in range(1, num_shards + 1):
+            spec = f"{shard_idx}/{num_shards}"
+            s_anchors = anchor_rows_by_shard.get(spec, {})
+            if golden_anchor_rows is not None:
+                for atriple in expected_anchor_triples:
+                    g_in = str(
+                        (golden_anchor_rows.get(atriple) or {}).get("input_token_ids_sha256")
+                        or ""
+                    ).strip().lower()
+                    s_in = str(
+                        (s_anchors.get(atriple) or {}).get("input_token_ids_sha256") or ""
+                    ).strip().lower()
+                    if HEX64_RE.fullmatch(g_in) and HEX64_RE.fullmatch(s_in) and g_in != s_in:
+                        raise MergeRefusalError(
+                            "MERGE_INPUT_TOKEN_SHA_MISMATCH",
+                            f"shard {spec} anchor {atriple} input_token_ids_sha256={s_in!r} "
+                            f"does not match golden {g_in!r}",
+                        )
+            if shard_idx >= 2:
+                ref_anchors_1 = anchor_rows_by_shard.get(f"1/{num_shards}", {})
+                for atriple in expected_anchor_triples:
+                    r_in = str(
+                        (ref_anchors_1.get(atriple) or {}).get("input_token_ids_sha256")
+                        or ""
+                    ).strip().lower()
+                    s_in = str(
+                        (s_anchors.get(atriple) or {}).get("input_token_ids_sha256") or ""
+                    ).strip().lower()
+                    if HEX64_RE.fullmatch(r_in) and HEX64_RE.fullmatch(s_in) and r_in != s_in:
+                        raise MergeRefusalError(
+                            "MERGE_INPUT_TOKEN_SHA_MISMATCH",
+                            f"shard {spec} anchor {atriple} input_token_ids_sha256={s_in!r} "
+                            f"does not match shard 1/{num_shards} {r_in!r}",
+                        )
     golden_comparisons: dict[str, dict[str, Any]] = {}
     deviant_shards_vs_golden: list[str] = []
     per_shard_output_sha_mismatch_counts: dict[str, int] = {
@@ -1879,6 +1967,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Optional explicit upper bound on anchor flip_rate permitted before refusing",
     )
+    p.add_argument(
+        "--items",
+        default=None,
+        help="Optional path to projected items JSONL or part directory to verify prompt_sha256 per call",
+    )
     return p.parse_args(argv)
 
 
@@ -1897,6 +1990,7 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
             replacement_shard_dirs=[Path(d) for d in args.replacement_shard_dirs],
+            items_path=Path(args.items) if args.items else None,
         )
     except MergeRefusalError as exc:
         sys.stderr.write(f"{exc}\n")

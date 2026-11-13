@@ -3644,14 +3644,31 @@ if (out_dir / "judge_done").is_dir():
     for jf in sorted((out_dir / "judge_done").glob("*.json")):
         if jf.is_file():
             paths_to_check.append(jf)
+generation_output_paths: list[Path] = []
+if (out_dir / "generations.jsonl").is_file():
+    generation_output_paths.append(out_dir / "generations.jsonl")
+for copied_sub in ("rows", "anchor_rows"):
+    copied_dir = out_dir / copied_sub
+    if copied_dir.is_dir():
+        for cf in sorted(copied_dir.glob("*.jsonl")):
+            if cf.is_file():
+                generation_output_paths.append(cf)
 for p in sorted(extract_dir.rglob("*")):
     if p.is_file():
-        paths_to_check.append(p)
+        rel_posix = p.relative_to(extract_dir).as_posix()
+        if vm_judges.is_private_generation_output_relpath(rel_posix):
+            generation_output_paths.append(p)
+        else:
+            paths_to_check.append(p)
 
 try:
     vm_judges.verify_rig_logs_and_outputs_clean(
         paths_to_check,
         claim_ngram_sha256s=claim_hashes,
+    )
+    vm_judges.verify_rig_logs_and_outputs_clean(
+        generation_output_paths,
+        claim_ngram_sha256s=(),
     )
 except vm_judges.RefusalError as exc:
     # Quarantine outputs and keep files out of any receipt that leaves the rig

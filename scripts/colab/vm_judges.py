@@ -4441,6 +4441,19 @@ def collect_claim_ngram_sha256s(
     return hashes
 
 
+def is_private_generation_output_relpath(rel_posix: str) -> bool:
+    # Return True for private judge generation JSONL outputs (generations.jsonl, rows/*.jsonl, anchor_rows/*.jsonl).
+    norm = rel_posix.strip("/")
+    if norm == GENERATIONS_FILENAME:
+        return True
+    parts = norm.split("/")
+    return (
+        len(parts) == 2
+        and parts[0] in (ROWS_DIRNAME, ANCHOR_ROWS_DIRNAME)
+        and parts[1].endswith(".jsonl")
+    )
+
+
 def verify_rig_logs_and_outputs_clean(
     paths: Iterable[Path],
     *,

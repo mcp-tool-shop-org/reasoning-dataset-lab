@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-11 from commit 4f5229f by Atlas 1.26.0.
+Mapped at 2026-11-13 from commit 5b44736 by Atlas 1.26.0.
 
 ## What this is
 
@@ -8,9 +8,9 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (80 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-09 (664d640)
+## What changed since 2026-11-11 (4f5229f)
 
-Nothing structural changed since 2026-11-09; 1 file changed content.
+Nothing structural changed since 2026-11-11; 3 files changed content.
 
 ## What comes in
 
