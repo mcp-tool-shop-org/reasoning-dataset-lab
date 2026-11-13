@@ -27344,3 +27344,165 @@ def test_lock_check_p0a_child_failure_keeps_every_finished_childs_output_in_the_
         assert "peak_vram_mib" in c
     assert not (fetched / "p0a_report.json").exists()
     assert raised and sorted(raised[0].completed_judges) == sorted(f"{j}.{s}" for j, s in finished)
+
+
+def test_log_guard_allows_claim_paraphrase_in_private_generation_rows_only(tmp_path: Path) -> None:
+    # Generative judges (e.g. flow-judge-v0.1) emit <feedback> in raw_generation that quotes item claims.
+    assert vm_judges.is_private_generation_output_relpath("generations.jsonl") is True
+    assert vm_judges.is_private_generation_output_relpath("rows/flow-judge-v0.1.jsonl") is True
+    assert vm_judges.is_private_generation_output_relpath("anchor_rows/flow-judge-v0.1.jsonl") is True
+    assert vm_judges.is_private_generation_output_relpath("rows/manifest.json") is False
+    assert vm_judges.is_private_generation_output_relpath("logs/vm.log") is False
+    assert vm_judges.is_private_generation_output_relpath("p0a_children/flow-judge-v0.1.passes.json") is False
+    assert vm_judges.is_private_generation_output_relpath("vm_receipt.json") is False
+
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "gen_guard_rec")
+    part_dir = _pilot_like_part(tmp_path / "gen_guard_part")
+    items_file = _project_part_items(part_dir, tmp_path / "gen_guard_inputs" / "items.jsonl")
+    first_claim = json.loads(items_file.read_text(encoding="utf-8").splitlines()[0])["claim"]
+    assert len(first_claim.split()) >= 6
+
+    def _write_claim_echo_shim(shim_path: Path, injected_raw_gen: str, *, also_leak_vm_log: bool = False) -> None:
+        lines = [
+            "from __future__ import annotations",
+            "import hashlib, json, runpy",
+            "from pathlib import Path",
+            f"_BASE = runpy.run_path({str(REAL_MODE_SHIM_PY)!r})",
+            "install_host_path_guard = _BASE['install_host_path_guard']",
+            "def install(ns, *, state_dir, vm_root):",
+            "    _BASE['install'](ns, state_dir=state_dir, vm_root=vm_root)",
+            "    orig_child = ns['_run_child_with_group_timeout']",
+            "    def _wrapped(child_cmd, *a, **kw):",
+            "        res = orig_child(child_cmd, *a, **kw)",
+            "        cmd = [str(c) for c in child_cmd]",
+            "        if '--output-dir' in cmd and '--judge' in cmd:",
+            "            run_d = Path(cmd[cmd.index('--output-dir') + 1])",
+            "            jid = cmd[cmd.index('--judge') + 1]",
+            "            for sub in ('rows', 'anchor_rows'):",
+            "                out_p = run_d / sub / f'{jid}.jsonl'",
+            "                if out_p.is_file():",
+            "                    rlines = out_p.read_text(encoding='utf-8').splitlines()",
+            "                    if rlines:",
+            "                        row0 = json.loads(rlines[0])",
+            f"                        row0['raw_generation'] = {injected_raw_gen!r}",
+            "                        rlines[0] = json.dumps(row0, sort_keys=True)",
+            "                        nl = chr(10)",
+            "                        new_bytes = (nl.join(rlines) + nl).encode('utf-8')",
+            "                        out_p.write_bytes(new_bytes)",
+            "                        new_sha = hashlib.sha256(new_bytes).hexdigest()",
+            "                        done_p = run_d / 'judge_done' / f'{jid}.json'",
+            "                        if sub == 'rows' and done_p.is_file():",
+            "                            ddoc = json.loads(done_p.read_text(encoding='utf-8'))",
+            "                            for sk in ('rows_sha256', 'sha256'):",
+            "                                if sk in ddoc:",
+            "                                    ddoc[sk] = new_sha",
+            "                            done_p.write_text(json.dumps(ddoc, sort_keys=True) + nl, encoding='utf-8', newline=nl)",
+        ]
+        if also_leak_vm_log:
+            lines.append(f"        ns['_append_vm_log_line']({first_claim!r})")
+        lines.extend([
+            "        return res",
+            "    ns['_run_child_with_group_timeout'] = _wrapped",
+            "",
+        ])
+        shim_path.write_text("\n".join(lines), encoding="utf-8", newline="\n")
+
+    # Case A: Claim phrase in raw_generation of rows/flow-judge-v0.1.jsonl & generations.jsonl succeeds cleanly.
+    env_ok = fake_colab.setup_fake_colab_environment(tmp_path / "env_claim_gen_ok", uv_python_315_found=True)
+    shim_ok = env_ok["state_dir"] / "claim_echo_ok_shim.py"
+    _write_claim_echo_shim(
+        shim_ok,
+        f"<feedback>Evaluating claim: {first_claim}</feedback><score>4</score>",
+    )
+    out_ok = tmp_path / "out_claim_gen_ok"
+    exports_ok = (
+        _pm_real_mode_exports(
+            env_ok,
+            open_lock=tmp_path / "claim_gen_ok.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+            part_dir=part_dir,
+        )
+        + f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(shim_ok)}'; "
+        + f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(tmp_path / 'kept_ok')}'; "
+        + f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
+        + f"export FAKE_COLAB_VM_DENY_ROOTS='{_to_wsl_path(tmp_path)}'; "
+        + "export RDLAB_ONLY_JUDGES='flow-judge-v0.1'; "
+    )
+    proc_ok = _pm_run_launcher(
+        exports_ok,
+        f"--time-one --out-dir '{_to_wsl_path(out_ok)}' --run-id claim-gen-ok-01",
+        timeout=180,
+    )
+    assert proc_ok.returncode == 0, f"stdout={proc_ok.stdout[-2000:]}\nstderr={proc_ok.stderr[-2000:]}"
+    gen_row0 = json.loads((out_ok / "rows" / "flow-judge-v0.1.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert first_claim in gen_row0["raw_generation"]
+
+    # Case B: Forbidden key-file marker (keys.sealed) inside raw_generation STILL fails closed!
+    env_key = fake_colab.setup_fake_colab_environment(tmp_path / "env_claim_gen_key", uv_python_315_found=True)
+    shim_key = env_key["state_dir"] / "claim_echo_key_shim.py"
+    _write_claim_echo_shim(
+        shim_key,
+        "<feedback>Touched forbidden keys.sealed marker</feedback><score>1</score>",
+    )
+    out_key = tmp_path / "out_claim_gen_key"
+    exports_key = (
+        _pm_real_mode_exports(
+            env_key,
+            open_lock=tmp_path / "claim_gen_key.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+            part_dir=part_dir,
+        )
+        + f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(shim_key)}'; "
+        + f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(tmp_path / 'kept_key')}'; "
+        + f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
+        + f"export FAKE_COLAB_VM_DENY_ROOTS='{_to_wsl_path(tmp_path)}'; "
+        + "export RDLAB_ONLY_JUDGES='flow-judge-v0.1'; "
+    )
+    proc_key = _pm_run_launcher(
+        exports_key,
+        f"--time-one --out-dir '{_to_wsl_path(out_key)}' --run-id claim-gen-key-01",
+        timeout=180,
+    )
+    assert proc_key.returncode != 0
+    rec_key = json.loads((out_key / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert rec_key["failure_class"] == "LOG_GUARD_KEY_FILENAME_LEAK"
+    assert not (out_key / "rows").exists()
+
+    # Case C: Claim phrase leaked into VM log (logs/*.log) STILL fails closed with LOG_GUARD_CLAIM_LEAK!
+    env_log = fake_colab.setup_fake_colab_environment(tmp_path / "env_claim_gen_log", uv_python_315_found=True)
+    shim_log = env_log["state_dir"] / "claim_echo_log_shim.py"
+    _write_claim_echo_shim(
+        shim_log,
+        "<feedback>Clean feedback</feedback><score>4</score>",
+        also_leak_vm_log=True,
+    )
+    out_log = tmp_path / "out_claim_gen_log"
+    exports_log = (
+        _pm_real_mode_exports(
+            env_log,
+            open_lock=tmp_path / "claim_gen_log.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items_file,
+            part_dir=part_dir,
+        )
+        + f"export FAKE_COLAB_REAL_MODE_SHIM='{_to_wsl_path(shim_log)}'; "
+        + f"export FAKE_COLAB_KEEP_UPLOADS_DIR='{_to_wsl_path(tmp_path / 'kept_log')}'; "
+        + f"export FAKE_COLAB_VM_HF_SEED='{_to_wsl_path(hf_home)}'; "
+        + f"export FAKE_COLAB_VM_DENY_ROOTS='{_to_wsl_path(tmp_path)}'; "
+        + "export RDLAB_ONLY_JUDGES='flow-judge-v0.1'; "
+    )
+    proc_log = _pm_run_launcher(
+        exports_log,
+        f"--time-one --out-dir '{_to_wsl_path(out_log)}' --run-id claim-gen-log-01",
+        timeout=180,
+    )
+    assert proc_log.returncode != 0
+    rec_log = json.loads((out_log / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert rec_log["failure_class"] == "LOG_GUARD_CLAIM_LEAK"
+    assert first_claim not in json.dumps(rec_log)
+    assert not (out_log / "rows").exists()
