@@ -1836,7 +1836,7 @@ def test_items_upload_fails_at_6436a3a6_gate_and_passes_after_fix(
     new_cli_log = (out_new / "colab-cli.log").read_text(encoding="utf-8")
     assert "VM_GATE_OK " in new_cli_log
     assert "items_dir=/content/rdlab_items" in new_cli_log
-    assert "required_bytes=69654163200" in new_cli_log
+    assert "required_bytes=93748807764" in new_cli_log
     assert (env_new["state_dir"] / "vm_fs" / "rdlab_items").is_dir()
     new_outcome = json.loads(
         (out_new / "outcome.draft.json").read_text(encoding="utf-8")
@@ -1851,35 +1851,36 @@ def test_gate_disk_preflight_reports_free_space_and_refuses_when_insufficient(
     """Verify disk preflight arithmetic, free-space reporting, and `VM_DISK_INSUFFICIENT` refusal."""
     import shutil as _shutil
 
-    assert vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES == 49_451_597_039
+    # The seven receipts: the five downloaded ones and the D5c judges' metadata receipts (build card v4 follow-up).
+    assert vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES == 70_403_461_877
     assert vm_judges.EXPECTED_WEIGHTS_DOWNLOAD_SECONDS == 797.4
     assert vm_judges.VENV_JUDGE_WHEEL_BYTES == 2_779_391_889
     assert vm_judges.VENV_D3_WHEEL_BYTES == 2_779_228_374
     assert vm_judges.VENVS_ESTIMATED_BYTES == 11_117_240_526
-    assert vm_judges.REQUIRED_VM_DISK_BYTES == 69_654_163_200
+    assert vm_judges.REQUIRED_VM_DISK_BYTES == 93_748_807_764
 
     req_info = vm_judges.compute_required_vm_disk_bytes()
     assert req_info == {
-        "weights_total_bytes": 49_451_597_039,
+        "weights_total_bytes": 70_403_461_877,
         "venvs_estimated_bytes": 11_117_240_526,
-        "subtotal_bytes": 60_568_837_565,
-        "required_bytes": 69_654_163_200,
+        "subtotal_bytes": 81_520_702_403,
+        "required_bytes": 93_748_807_764,
     }
 
     # Direct unit check using monkeypatched shutil.disk_usage at exact boundary
     fake_usage_ok = _shutil._ntuple_diskusage(
-        100_000_000_000, 30_345_836_800, 69_654_163_200
+        120_000_000_000, 26_251_192_236, 93_748_807_764
     )
     monkeypatch.setattr(_shutil, "disk_usage", lambda _p: fake_usage_ok)
     report_ok = vm_judges.check_vm_disk_preflight(
         content_dir=tmp_path, hf_home=tmp_path / "hf_home"
     )
-    assert report_ok["content_free_bytes"] == 69_654_163_200
-    assert report_ok["hf_home_free_bytes"] == 69_654_163_200
-    assert report_ok["required_bytes"] == 69_654_163_200
+    assert report_ok["content_free_bytes"] == 93_748_807_764
+    assert report_ok["hf_home_free_bytes"] == 93_748_807_764
+    assert report_ok["required_bytes"] == 93_748_807_764
 
     fake_usage_low = _shutil._ntuple_diskusage(
-        100_000_000_000, 30_345_836_801, 69_654_163_199
+        120_000_000_000, 26_251_192_237, 93_748_807_763
     )
     monkeypatch.setattr(_shutil, "disk_usage", lambda _p: fake_usage_low)
     with pytest.raises(vm_judges.RefusalError) as exc_low:
@@ -1887,7 +1888,7 @@ def test_gate_disk_preflight_reports_free_space_and_refuses_when_insufficient(
             content_dir=tmp_path, hf_home=tmp_path / "hf_home"
         )
     assert exc_low.value.failure_class == "VM_DISK_INSUFFICIENT"
-    assert "69654163200" in str(exc_low.value)
+    assert "93748807764" in str(exc_low.value)
 
     # End-to-end launcher test with low disk on /content (and FAKE_COLAB_FORCE_EXEC_RC_ZERO=1)
     env_low = fake_colab.setup_fake_colab_environment(
@@ -2811,11 +2812,14 @@ def test_real_service_assumptions_weights_table_matches_receipts(
     assert doc_path.is_file()
 
     rows = generate_weights_table.load_weights_rows_from_receipts(receipts_dir)
-    assert len(rows) == 5
+    assert len(rows) == 7  # the five downloaded receipts and the two D5c metadata receipts
     assert sum(int(r["total_bytes"]) for r in rows) == vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES
-    assert round(sum(float(r["seconds"]) for r in rows), 1) == vm_judges.EXPECTED_WEIGHTS_DOWNLOAD_SECONDS
+    assert round(sum(float(r["seconds"]) for r in rows if r["seconds"] is not None), 1) == vm_judges.EXPECTED_WEIGHTS_DOWNLOAD_SECONDS
+    assert sorted(r["judge_id"] for r in rows if r["seconds"] is None) == ["d3-flash", "nli-deberta-v3-large"]
     for r in rows:
-        spec = BAKEOFF_JUDGE_SPECS[str(r["judge_id"])]
+        from reasoning_dataset_lab.pilot_b.bakeoff_judge import JUDGE_SPECS
+
+        spec = JUDGE_SPECS[str(r["judge_id"])]
         assert r["repo"] == spec.repo_id
         assert r["revision"] == spec.revision
 
@@ -3264,6 +3268,8 @@ def test_real_service_assumptions_doc_table_and_line_citations(
 
     # Verify required constants and arithmetic appear in REAL_SERVICE_ASSUMPTIONS.md
     for required_token in (
+        "70,403,461,877",
+        "65.57 GiB",
         "49,451,597,039",
         "46.06 GiB",
         "797.4",
@@ -3271,7 +3277,7 @@ def test_real_service_assumptions_doc_table_and_line_citations(
         "2,779,391,889",
         "2,779,228,374",
         "11,117,240,526",
-        "69,654,163,200",
+        "93,748,807,764",
         "VM_DISK_INSUFFICIENT",
         "EXPECTED_WEIGHTS_TOTAL_BYTES",
     ):
@@ -29221,6 +29227,12 @@ def test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_va
 
     # 2. Build three_way and three_way_contradicted shards via build_shard_manifest + run_bakeoff_judge
     receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "tw_rec")
+    # The D5c judges (d3-flash runs three_way_contradicted) get synthetic receipts too, so session_env records them.
+    for d5c_spec in bakeoff_judge.D5C_JUDGE_SPECS.values():
+        (receipts_dir / f"{d5c_spec.repo_id.replace('/', '__')}.sha256.json").write_text(
+            json.dumps({"repo": d5c_spec.repo_id, "revision": d5c_spec.revision, "files": {"model.safetensors": {"bytes": 1, "sha256": "0" * 64}}}),
+            encoding="utf-8",
+        )
     items_path = _make_stratified_public_items(tmp_path / "tw_items", count=6)
 
     for pass_mode in ("three_way", "three_way_contradicted"):
@@ -29271,7 +29283,7 @@ def test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_va
                     pass_mode=pass_mode,
                     fake_transport=True,
                     allow_remote_code_reviewed=(
-                        bakeoff_judge.D3_MINI_REVIEWED_REVISION if jid == "d3-mini" else None
+                        bakeoff_judge.JUDGE_SPECS[jid].revision if bakeoff_judge.JUDGE_SPECS[jid].requires_remote_code else None
                     ),
                     shard_spec=spec_str,
                     shard_manifest_path=manifest_path,
@@ -29347,7 +29359,8 @@ def test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_va
             assert exc_3w_drift.value.failure_class == "MERGE_ANCHOR_DRIFT_REFUSED"
             ar2_path.write_text(orig_ar2, encoding="utf-8")
 
-    # 3. Future unregistered pass_mode (e.g. three_way_two_question) works with explicit judge subset
+    # 3. A registered non-legacy pass_mode (three_way_two_question, d3-mini only) works with an explicit judge subset;
+    #    its judge_done is `<jid>.three_way_two_question.json` (the VM's naming). An unregistered mode is refused.
     tw_dir = tmp_path / "mode_three_way"
     future_dir = tmp_path / "mode_future_2q"
     future_dir.mkdir(parents=True, exist_ok=True)
@@ -29358,7 +29371,8 @@ def test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_va
     future_manifest_path = future_dir / "shard_manifest.json"
     bakeoff_judge.write_shard_manifest(base_manifest, future_manifest_path)
 
-    sub_jid = merge_shards._default_judge_ids_for_pass_mode("three_way")[0]
+    sub_jid = "d3-mini"
+    assert merge_shards._default_judge_ids_for_pass_mode("three_way_two_question") == (sub_jid,)
     future_shards: list[Path] = []
     for k_idx in (1, 2):
         src_s = tw_dir / f"shard_{k_idx}"
@@ -29372,6 +29386,10 @@ def test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_va
         shutil.copyfile(
             dst_s / "anchor_rows" / f"{sub_jid}.three_way.jsonl",
             dst_s / "anchor_rows" / f"{sub_jid}.three_way_two_question.jsonl",
+        )
+        shutil.copyfile(
+            dst_s / "judge_done" / f"{sub_jid}.json",
+            dst_s / "judge_done" / f"{sub_jid}.three_way_two_question.json",
         )
         vm_judges.write_outputs_closed(dst_s)
         future_shards.append(dst_s)
@@ -29405,4 +29423,8 @@ def test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_va
             allow_unpinned_stub=True,
         )
     assert exc_bad_pm.value.failure_class == "MERGE_INVALID_PASS_MODE"
+    for unregistered in ("three_way_future", "binary2"):
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_unreg:
+            merge_shards._rows_filename_for_pass(sub_jid, unregistered)
+        assert exc_unreg.value.failure_class == "MERGE_INVALID_PASS_MODE"
 

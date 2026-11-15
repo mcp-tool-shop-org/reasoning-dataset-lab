@@ -72,7 +72,13 @@ from typing import Any
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error
 from reasoning_dataset_lab.pilot_b.anchored_two_hop import ANCHORED_ELIGIBLE_DOMAINS
-from reasoning_dataset_lab.pilot_b.three_way_wording import THREE_WAY_PASS_MODES, rows_filename_is_three_way
+from reasoning_dataset_lab.pilot_b.three_way_wording import (
+    INCONSISTENT_VERDICT,
+    TWO_QUESTION_PASS_MODES,
+    rows_filename_is_three_way,
+    three_way_mode_of_rows_filename,
+    two_question_verdict,
+)
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     BAKEOFF_JUDGE_SPECS,
     GENERATIONS_FILENAME,
@@ -1891,9 +1897,10 @@ def _linear_quantile(sorted_vals: Sequence[float], q: float) -> float:
 
 
 def _three_way_valid_verdict(row: Mapping[str, Any]) -> str | None:
-    """A 3-way call's label when the call parsed to one of the 3 labels, else None (invalid: counted wrong)."""
+    """A 3-way call's label when the call parsed to one of the 3 labels (or, in the two-question arm, to
+    `inconsistent`: a parsed call scored wrong, not an invalid one), else None (invalid: counted wrong)."""
     label = row.get("raw_verdict")
-    if row.get("state", "parsed") != "parsed" or label not in THREE_WAY_LABELS:
+    if row.get("state", "parsed") != "parsed" or label not in (*THREE_WAY_LABELS, INCONSISTENT_VERDICT):
         return None
     return str(label)
 
@@ -1925,7 +1932,8 @@ def _three_way_breakdown(
         strict_correct += int(ok)
         triad_members[rec.triad_id].append(ok)
         key_bin = "supported" if rec.key == "supported" else "not_supported"
-        collapsed = [None if v is None else ("supported" if v == "supported" else "not_supported") for v in (v_ab, v_ba)]
+        # `inconsistent` (two-question arm) collapses to neither side, so it is wrong under the binary rule too.
+        collapsed = [None if v in (None, INCONSISTENT_VERDICT) else ("supported" if v == "supported" else "not_supported") for v in (v_ab, v_ba)]
         collapsed_correct += int(collapsed[0] == key_bin and collapsed[1] == key_bin)
         if v_ab is None or v_ba is None or v_ab != v_ba:
             flips += 1
@@ -1938,6 +1946,9 @@ def _three_way_breakdown(
                 col = "order_flip"
             else:
                 col = f"strict_{v_ab}"
+            if col not in confusion[rec.key]:  # strict_inconsistent: the two-question arm's column, added when seen
+                for c_row in confusion.values():
+                    c_row.setdefault(col, 0)
             confusion[rec.key][col] += 1
     n_items = len(scored)
     complete_triads = [members for members in triad_members.values() if len(members) == 3]
@@ -1974,13 +1985,117 @@ def _three_way_breakdown(
             "rate": (invalid_calls / (2 * n_items)) if n_items else None,
         },
         "strict_outcome_counts": confusion,
-        "strict_outcome_columns": list(THREE_WAY_OUTCOME_COLUMNS),
+        "strict_outcome_columns": list(next(iter(confusion.values()))) if confusion else list(THREE_WAY_OUTCOME_COLUMNS),
         "top2_margin": {
             "calls_with_margin": len(sorted_m),
             "min": sorted_m[0] if sorted_m else None,
             "p10": _linear_quantile(sorted_m, 0.10) if sorted_m else None,
             "median": _linear_quantile(sorted_m, 0.50) if sorted_m else None,
         },
+    }
+
+
+def _row_class_probabilities(row: Mapping[str, Any]) -> dict[str, float] | None:
+    """A parsed row's probabilities over the 3 internal classes (finite, >= 0, positive sum), normalised; else None."""
+    probs = row.get("choice_probabilities")
+    if row.get("state", "parsed") != "parsed" or not isinstance(probs, Mapping) or set(probs) != set(THREE_WAY_LABELS):
+        return None
+    vals = {c: _coerce_finite_float(probs.get(c)) for c in THREE_WAY_LABELS}
+    if any(v is None or v < 0.0 for v in vals.values()):
+        return None
+    total = sum(float(v) for v in vals.values() if v is not None)
+    return {c: float(v) / total for c, v in vals.items() if v is not None} if total > 0.0 else None
+
+
+def _row_two_question_probs(row: Mapping[str, Any]) -> tuple[float, float] | None:
+    """A parsed two-question row's (p_t, p_f), each finite in [0, 1]; else None."""
+    if row.get("state", "parsed") != "parsed":
+        return None
+    p_t, p_f = _coerce_finite_float(row.get("p_t")), _coerce_finite_float(row.get("p_f"))
+    if p_t is None or p_f is None or not (0.0 <= p_t <= 1.0 and 0.0 <= p_f <= 1.0):
+        return None
+    return p_t, p_f
+
+
+def rule_b_verdict(r_ab: Mapping[str, Any], r_ba: Mapping[str, Any], pass_mode: str) -> str | None:
+    """Rule B (the pre-registered secondary rule) for one item: average the two orders' class probabilities and take
+    the argmax (ties go to the earlier class in supported, unsupported, cannot_tell); in the two-question arm, average
+    p_t and p_f over the orders and apply the same mapping (an inconsistent average is `inconsistent`, scored wrong).
+    None when either order has no valid probabilities (an invalid item)."""
+    if pass_mode in TWO_QUESTION_PASS_MODES:
+        ab, ba = _row_two_question_probs(r_ab), _row_two_question_probs(r_ba)
+        if ab is None or ba is None:
+            return None
+        return two_question_verdict((ab[0] + ba[0]) / 2.0, (ab[1] + ba[1]) / 2.0)
+    pa, pb = _row_class_probabilities(r_ab), _row_class_probabilities(r_ba)
+    if pa is None or pb is None:
+        return None
+    mean = {c: (pa[c] + pb[c]) / 2.0 for c in THREE_WAY_LABELS}
+    return max(THREE_WAY_LABELS, key=lambda c: mean[c])
+
+
+def _rule_b_breakdown(
+    scored: Sequence[tuple[SealedKeyRecord, Mapping[str, Any], Mapping[str, Any]]],
+    pass_mode: str,
+) -> dict[str, Any]:
+    """Aggregate-only Rule B results: one verdict per item, its accuracy, per-class recall, the binary-collapsed
+    accuracy, and the invalid and inconsistent item counts."""
+    per_class = {c: {"n": 0, "correct": 0} for c in THREE_WAY_LABELS}
+    correct = collapsed = invalid = inconsistent = 0
+    for rec, r_ab, r_ba in scored:
+        v = rule_b_verdict(r_ab, r_ba, pass_mode)
+        ok = v is not None and v == rec.key
+        correct += int(ok)
+        invalid += int(v is None)
+        inconsistent += int(v == INCONSISTENT_VERDICT)
+        if v is not None and v != INCONSISTENT_VERDICT:
+            collapsed += int((v == "supported") == (rec.key == "supported"))
+        if rec.key in per_class:
+            per_class[rec.key]["n"] += 1
+            per_class[rec.key]["correct"] += int(ok)
+    n = len(scored)
+    return {
+        "items_n": n,
+        "correct": correct,
+        "accuracy": wilson_interval(correct, n),
+        "per_class": {
+            c: {"n": v["n"], "correct": v["correct"], "recall": (v["correct"] / v["n"]) if v["n"] else None}
+            for c, v in per_class.items()
+        },
+        "binary_collapsed": {"correct": collapsed, "accuracy": wilson_interval(collapsed, n)},
+        "invalid_items": {"count": invalid, "rate": (invalid / n) if n else None},
+        "inconsistent_items": {"count": inconsistent, "rate": (inconsistent / n) if n else None},
+    }
+
+
+def _two_question_report(
+    scored: Sequence[tuple[SealedKeyRecord, Mapping[str, Any], Mapping[str, Any]]],
+) -> dict[str, Any]:
+    """Arm 2's own report (aggregates only): the inconsistent count and rate per gold class and order, and the AUROC
+    of the order-mean p_t for gold supported vs not and of the order-mean p_f for gold unsupported vs not."""
+    by_class: dict[str, dict[str, Any]] = {}
+    for c in THREE_WAY_LABELS:
+        members = [(r_ab, r_ba) for rec, r_ab, r_ba in scored if rec.key == c]
+        by_class[c] = {"n": len(members)}
+        for ord_i, ord_name in enumerate(("AB", "BA")):
+            cnt = sum(1 for pair in members if _three_way_valid_verdict(pair[ord_i]) == INCONSISTENT_VERDICT)
+            by_class[c][ord_name] = {"count": cnt, "rate": (cnt / len(members)) if members else None}
+    t_pairs: list[tuple[float, int]] = []
+    f_pairs: list[tuple[float, int]] = []
+    for rec, r_ab, r_ba in scored:
+        ab, ba = _row_two_question_probs(r_ab), _row_two_question_probs(r_ba)
+        if ab is None or ba is None:
+            continue
+        t_pairs.append(((ab[0] + ba[0]) / 2.0, int(rec.key == "supported")))
+        f_pairs.append(((ab[1] + ba[1]) / 2.0, int(rec.key == "unsupported")))
+    calls = 2 * len(scored)
+    total = sum(by_class[c][o]["count"] for c in THREE_WAY_LABELS for o in ("AB", "BA"))
+    return {
+        "items_n": len(scored),
+        "inconsistent_calls": {"count": total, "rate": (total / calls) if calls else None},
+        "inconsistent_by_class_and_order": by_class,
+        "auroc_p_t_supported": {"items_n": len(t_pairs), "auroc": compute_binary_auroc(t_pairs)},
+        "auroc_p_f_unsupported": {"items_n": len(f_pairs), "auroc": compute_binary_auroc(f_pairs)},
     }
 
 
@@ -2400,7 +2515,7 @@ def score_bakeoff_outputs(
         if not tw_rows:
             raise _refuse_zero_scored(twf, judge_id=None, keys_n=len(keys_by_id))
         j_id = str(tw_rows[0]["judge_id"])
-        tw_mode = next(m for m in sorted(THREE_WAY_PASS_MODES) if twf.name.endswith(f".{m}.jsonl"))
+        tw_mode = str(three_way_mode_of_rows_filename(twf.name))
         # The file name names the arm; every row must say the same arm, or the file is refused (fail closed).
         row_modes = sorted({str(r.get("pass_mode")) for r in tw_rows if r.get("pass_mode") != tw_mode})
         if row_modes:
@@ -2441,8 +2556,22 @@ def score_bakeoff_outputs(
             "dev": _three_way_breakdown(tw_scored["dev"]),
             "pooled": _three_way_breakdown([*tw_scored["dev"], *tw_scored["test"]]),
         }
-        # A `three_way` summary keeps its 2e6423fd shape; any other arm names itself with `pass_mode`.
+        # A `three_way` summary keeps its 2e6423fd shape; any other arm names itself with `pass_mode` and adds the
+        # pre-registered secondary rule (Rule B) per split, and the two-question arm its own report.
         arm_field: dict[str, Any] = {} if tw_mode == "three_way" else {"pass_mode": tw_mode}
+        arm_reports: dict[str, Any] = {}  # in the test summary only, like breakdown_by_split
+        if tw_mode != "three_way":
+            arm_reports["rule_b_by_split"] = {
+                "test": _rule_b_breakdown(tw_scored["test"], tw_mode),
+                "dev": _rule_b_breakdown(tw_scored["dev"], tw_mode),
+                "pooled": _rule_b_breakdown([*tw_scored["dev"], *tw_scored["test"]], tw_mode),
+            }
+        if tw_mode in TWO_QUESTION_PASS_MODES:
+            arm_reports["two_question_by_split"] = {
+                "test": _two_question_report(tw_scored["test"]),
+                "dev": _two_question_report(tw_scored["dev"]),
+                "pooled": _two_question_report([*tw_scored["dev"], *tw_scored["test"]]),
+            }
         three_way_summaries.append(
             {
                 "judge_id": j_id,
@@ -2450,6 +2579,7 @@ def score_bakeoff_outputs(
                 "three_way_accuracy": wilson_interval(tw_corr_test, tw_tot_test),
                 # Aggregates only (counts, rates, quantiles), for test, dev and both pooled.
                 "breakdown_by_split": tw_breakdown_by_split,
+                **arm_reports,
             }
         )
         three_way_dev_summaries.append(

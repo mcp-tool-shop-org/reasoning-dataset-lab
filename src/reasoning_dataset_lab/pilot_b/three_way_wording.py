@@ -13,7 +13,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-PassMode = Literal["binary", "three_way", "three_way_contradicted"]
+PassMode = Literal[
+    "binary",
+    "three_way",
+    "three_way_contradicted",
+    "three_way_two_question",
+    "three_way_symmetric",
+    "three_way_nli",
+]
 
 # The internal gold-label classes of a 3-way pass. Rows, keys and the scorer use these names only; what a judge is
 # shown is set per arm by `THREE_WAY_WORDINGS` and mapped back to these classes by the readout.
@@ -96,37 +103,170 @@ THREE_WAY_WORDINGS: dict[str, dict[str, ThreeWayWording]] = {
             ),
         ),
     },
+    # Arm 6, PREREG-d5c-five-arm-window-2026-11-15-arm6-symmetric: d3-mini only, arm 1's instruction, the symmetric keys
+    # shown as plain words. "unsupported", "supported", "contradicted" and "can't tell" appear nowhere in it. If it is ever
+    # run on a mu-style judge it takes the STATE form, which is a new entry here (a new named arm), not this one.
+    "three_way_symmetric": {
+        "the_state": ThreeWayWording(
+            instruction="Judge the claim against the state. Which option holds? Claim: {claim}",
+            question_id="verdict",
+            options=(
+                ThreeWayOption("A", "proved true", "The state proves the claim true.", "supported"),
+                ThreeWayOption("B", "proved false", "The state proves the claim false.", "unsupported"),
+                ThreeWayOption(
+                    "C", "undetermined", "The state does not settle whether the claim is true or false.", "cannot_tell"
+                ),
+            ),
+        ),
+    },
 }
-# The judges a wording entry covers, and which family's. `three_way` also runs flow-judge-v0.1 on its own rubric
-# (unchanged); `three_way_contradicted` has no flow-judge wording, so it refuses flow-judge rather than show it the
-# old rubric's "unsupported".
+
+
+@dataclass(frozen=True)
+class YesNoQuestion:
+    """One yes/no (`noul`) question of a two-question arm: its payload id (plain, with no underscore), the shown
+    instruction (`{claim}` is filled in) and its role, `true` (read as p_t) or `false` (read as p_f)."""
+
+    question_id: str
+    instruction: str
+    role: Literal["true", "false"]
+
+    def render_instruction(self, claim: str) -> str:
+        return self.instruction.replace("{claim}", claim)
+
+
+@dataclass(frozen=True)
+class TwoQuestionWording:
+    """Two `noul` questions sent in one System One request, and the fixed threshold of the (p_t, p_f) mapping."""
+
+    questions: tuple[YesNoQuestion, YesNoQuestion]
+    threshold: float = 0.5
+
+    def question_for(self, role: str) -> YesNoQuestion:
+        return next(q for q in self.questions if q.role == role)
+
+
+# Arm 2, PREREG-d5c-five-arm-window-2026-11-15 "Arm 2": d3-mini, two yes/no questions in one call. The pre-registration
+# calls them q_true and q_false; their payload ids are "q1" and "q2", so that no underscore token reaches the request.
+# No criteria and no class names are shown. The threshold is fixed at 0.5 (the D5b cut-off 0.5349 is not used).
+TWO_QUESTION_WORDINGS: dict[str, dict[str, TwoQuestionWording]] = {
+    "three_way_two_question": {
+        "the_state": TwoQuestionWording(
+            questions=(
+                YesNoQuestion("q1", "Given only the state, must the claim be true? Claim: {claim}", "true"),
+                YesNoQuestion("q2", "Given only the state, must the claim be false? Claim: {claim}", "false"),
+            ),
+        ),
+    },
+}
+# The verdict of the two-question mapping when both answers are yes: scored wrong under every rule, reported as its own
+# count and rate, and not an invalid call (the invalid rate counts failed or malformed calls only).
+INCONSISTENT_VERDICT = "inconsistent"
+
+
+def two_question_verdict(p_t: float, p_f: float, threshold: float = 0.5) -> str:
+    """The pre-registered mapping, per order (and for Rule B on the order means): p_t >= t and p_f < t -> supported;
+    p_f >= t and p_t < t -> unsupported (shown sense: contradicted); both < t -> cannot_tell; both >= t -> inconsistent."""
+    t_yes, f_yes = p_t >= threshold, p_f >= threshold
+    if t_yes and f_yes:
+        return INCONSISTENT_VERDICT
+    if t_yes:
+        return "supported"
+    if f_yes:
+        return "unsupported"
+    return "cannot_tell"
+
+
+# Arm 5, PREREG-d5c-five-arm-window-2026-11-15 "Arm 5": a 3-class NLI encoder. No prompt words and no labels are shown:
+# premise = the material in each order, hypothesis = the claim verbatim. The label order is read from the model's
+# config.json id2label at the pinned revision (never assumed); these are the label names it must carry and the class
+# each maps to.
+NLI_LABEL_TO_INTERNAL: dict[str, dict[str, str]] = {
+    "three_way_nli": {"entailment": "supported", "contradiction": "unsupported", "neutral": "cannot_tell"},
+}
+
+# The family of each judge in the choice wordings: "STATE" (mu-judge, Nemotron) and "the_state" (the d3 family).
 THREE_WAY_WORDING_FAMILY_BY_JUDGE: dict[str, str] = {
     "mu-judge": "STATE",
     "nemotron-3-nano-4b": "STATE",
     "d3-mini": "the_state",
+    "d3-flash": "the_state",
 }
-THREE_WAY_PASS_MODES: frozenset[str] = frozenset(THREE_WAY_WORDINGS)
-WORDED_ONLY_PASS_MODES: frozenset[str] = frozenset({"three_way_contradicted"})
-PASS_MODE_CHOICES: tuple[str, ...] = ("binary", "three_way", "three_way_contradicted")
+# The judges each pass mode has a prompt for: the single list of which judge may run in which mode. `binary` is the
+# five original judges; `three_way` is 2e6423fd's set (flow-judge-v0.1 on its own rubric); every newer arm names its own.
+ORIGINAL_JUDGE_IDS: tuple[str, ...] = (
+    "d3-mini",
+    "flow-judge-v0.1",
+    "granite-guardian-4.1-8b",
+    "mu-judge",
+    "nemotron-3-nano-4b",
+)
+PASS_MODE_JUDGES: dict[str, frozenset[str]] = {
+    "binary": frozenset(ORIGINAL_JUDGE_IDS),
+    "three_way": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "flow-judge-v0.1"}),
+    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash"}),
+    "three_way_two_question": frozenset({"d3-mini"}),
+    "three_way_symmetric": frozenset({"d3-mini"}),
+    "three_way_nli": frozenset({"nli-deberta-v3-large"}),
+}
+# Every pass mode, in the order the CLIs and the launcher list them. The rows file of each (judge, mode) pass is named
+# by `rows_filename_for_pass` from this list; vm_judges keeps a copy (it runs before the package imports), pinned by a
+# test, and the launcher asks vm_judges.
+PASS_MODE_CHOICES: tuple[str, ...] = (
+    "binary",
+    "three_way",
+    "three_way_contradicted",
+    "three_way_two_question",
+    "three_way_symmetric",
+    "three_way_nli",
+)
+THREE_WAY_PASS_MODES: frozenset[str] = frozenset(m for m in PASS_MODE_CHOICES if m != "binary")
+CHOICE_PASS_MODES: frozenset[str] = frozenset(THREE_WAY_WORDINGS)
+TWO_QUESTION_PASS_MODES: frozenset[str] = frozenset(TWO_QUESTION_WORDINGS)
+NLI_PASS_MODES: frozenset[str] = frozenset(NLI_LABEL_TO_INTERNAL)
+# The modes whose judge_done file keeps its old name `judge_done/<judge>.json` (binary and the two arms built before
+# per-judge pass modes). Every newer mode's pass writes `judge_done/<judge>.<mode>.json`, so one judge can run several
+# arms in one window without one pass's checkpoint overwriting another's.
+LEGACY_DONE_NAME_PASS_MODES: frozenset[str] = frozenset({"binary", "three_way", "three_way_contradicted"})
+# The arms with no rubric fallback (every 3-way arm except `three_way`).
+WORDED_ONLY_PASS_MODES: frozenset[str] = frozenset(THREE_WAY_PASS_MODES - {"three_way"})
 
 
 def three_way_wording(pass_mode: str, judge_id: str) -> ThreeWayWording:
-    """The shown words for `judge_id` in the 3-way arm `pass_mode`."""
+    """The shown words for `judge_id` in the 3-way choice arm `pass_mode`."""
     return THREE_WAY_WORDINGS[pass_mode][THREE_WAY_WORDING_FAMILY_BY_JUDGE[judge_id]]
 
 
+def two_question_wording(pass_mode: str, judge_id: str) -> TwoQuestionWording:
+    """The two shown questions for `judge_id` in the two-question arm `pass_mode`."""
+    return TWO_QUESTION_WORDINGS[pass_mode][THREE_WAY_WORDING_FAMILY_BY_JUDGE[judge_id]]
+
+
 def judge_supports_pass_mode(spec: Any, pass_mode: str) -> bool:
-    """True when `spec` has a prompt for `pass_mode`: every judge in binary; a 3-way-capable judge in `three_way`; in
-    `three_way_contradicted`, only a judge with a wording entry (mu-judge, Nemotron, d3-mini)."""
-    if pass_mode == "binary":
-        return True
-    if not spec.supports_three_way:
+    """True when `spec` has a prompt for `pass_mode` (`PASS_MODE_JUDGES`); a 3-way mode also needs
+    `supports_three_way`."""
+    judges = PASS_MODE_JUDGES.get(pass_mode)
+    if judges is None or spec.judge_id not in judges:
         return False
-    if pass_mode in WORDED_ONLY_PASS_MODES:
-        return spec.judge_id in THREE_WAY_WORDING_FAMILY_BY_JUDGE
-    return pass_mode in THREE_WAY_PASS_MODES
+    return pass_mode == "binary" or bool(spec.supports_three_way)
+
+
+def rows_filename_for_pass(judge_id: str, pass_mode: str) -> str:
+    """The rows file a (judge, mode) pass writes under `rows/`: `<judge>.jsonl` for binary, `<judge>.<mode>.jsonl` else."""
+    return f"{judge_id}.jsonl" if pass_mode == "binary" else f"{judge_id}.{pass_mode}.jsonl"
+
+
+def judge_done_filename_for_pass(judge_id: str, pass_mode: str) -> str:
+    """The judge_done file of a (judge, mode) pass: `<judge>.json` for the legacy modes, `<judge>.<mode>.json` else."""
+    return f"{judge_id}.json" if pass_mode in LEGACY_DONE_NAME_PASS_MODES else f"{judge_id}.{pass_mode}.json"
+
+
+def three_way_mode_of_rows_filename(name: str) -> str | None:
+    """The 3-way mode a rows file name ends with, else None. Mode names never end one another (pinned by a test)."""
+    hits = [m for m in THREE_WAY_PASS_MODES if name.endswith(f".{m}.jsonl")]
+    return max(hits, key=len) if hits else None
 
 
 def rows_filename_is_three_way(name: str) -> bool:
     """True for a 3-way pass's rows file name (`<judge>.<three-way mode>.jsonl`)."""
-    return any(name.endswith(f".{m}.jsonl") for m in THREE_WAY_PASS_MODES)
+    return three_way_mode_of_rows_filename(name) is not None

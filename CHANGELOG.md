@@ -6,6 +6,18 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### The D5c judge window: arms 2, 3, 5 and 6, per-judge windows, and a verified partial fetch
+
+- **Arm 2, `three_way_two_question` (d3-mini):** two `noul` questions in one System One request ("Given only the state, must the claim be true? / false?"), no criteria, mapped per order at the fixed 0.5 threshold. Rows carry `p_t`, `p_f`, the verdict and `inconsistent` (both yes: scored wrong, not invalid). The scorer adds `two_question_by_split`: the inconsistent count and rate per class and order, and the AUROC of p_t and p_f.
+- **Arm 3, judge `d3-flash`** at 67e03e1b, in `three_way_contradicted` with arm 1's words. Its eight remote-code files are checked byte-identical to d3-mini's reviewed bd0090dd from the two receipts at every load (`BAKEOFF_JUDGE_REMOTE_CODE_NOT_REVIEWED` otherwise). The gate takes d3-flash's own pin, and rows record the basis in `library_pins.remote_code_review`.
+- **Arm 5, `three_way_nli` with judge `nli-deberta-v3-large`** (MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli at b3546ea6): premise = the ordered material, hypothesis = the claim. No truncation: over 512 tokens is an invalid call. The label order is read from config.json `id2label` and checked against the loaded head.
+- **Arm 6, `three_way_symmetric` (d3-mini):** `proved true` / `proved false` / `undetermined`, with arm 1's instruction.
+- **`--pass-mode per_judge` with `RDLAB_JUDGE_PASS_MODES=judge:mode,...`** runs each judge in its own arm(s) in one window (with `--loop judge_outer`, for example). The newer modes write `judge_done/<judge>.<mode>.json`.
+- **Rule B** (`rule_b_by_split`, order-averaged probabilities) is reported for every arm but `three_way`.
+- **The D5c judges sit in `D5C_JUDGE_SPECS`** (by id: `JUDGE_SPECS`). `BAKEOFF_JUDGE_SPECS` stays the five, and the new judges have no binary prompt.
+- **Receipts for d3-flash and the NLI encoder, built from HF API metadata** (`scripts/colab/build_metadata_receipt.py`): LFS entries take the listing's sha256 oid and size, small files are fetched and hashed, no weight is downloaded; `"source": "hf-api-metadata"`, `seconds` null (accepted only with that source). The VM still sizes and hashes every downloaded file against the receipt before any load. `EXPECTED_WEIGHTS_TOTAL_BYTES` is now the seven receipts' 70,403,461,877 bytes, so the disk preflight requires 93,748,807,764 bytes.
+- **Launcher partial fetch (build card 2026-11-15 v4, items 7 and 9).** The rows and judge_done names come from `vm_judges` for every pass mode, not from a shell literal. A fetched pair is kept only when the rows' sha256 equals the judge_done record's; otherwise both files are deleted and `FETCHED_ROWS_SHA_MISMATCH` / `FETCHED_ROWS_MISSING` / `FETCHED_JUDGE_DONE_INVALID` is logged, and the judge is not in `judges_completed`. A pass already in place is skipped only when it matches. The usage line, the `--pass-mode` help and the `PASS_MODE_INVALID` lists name every mode.
+
 ### Three-way wording arm `three_way_contradicted` (D5c)
 
 - **A new pass mode, `three_way_contradicted`, accepted wherever `three_way` is** (`PassMode`, `PASS_MODES`, the CLI choices, the launcher, the refusals, the rows file `rows/<judge>.three_way_contradicted.jsonl`, the mass readout and the scorer). It differs from `three_way` in the shown words only: the instruction `Judge the claim against STATE. Which option holds? Claim: <claim>` (d3-mini: `the state`) and the plain-word options `supported`, `contradicted` (`STATE proves the claim false.`) and `can't tell`. No part of any judge's prompt in this mode carries the internal label for a contradicted claim or an underscore label.

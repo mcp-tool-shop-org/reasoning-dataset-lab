@@ -118,13 +118,15 @@ def test_arm_wording_table_is_the_preregistered_words() -> None:
         ("B", "contradicted", "The state proves the claim false.", "unsupported"),
         ("C", "can't tell", "The state neither entails nor contradicts the claim.", "cannot_tell"),
     ]
-    # Only the two arms exist; the internal gold labels are their own constant, untouched by the shown words.
-    assert set(three_way_wording.THREE_WAY_WORDINGS) == {"three_way", ARM}
+    # The choice arms are these three (arm 6 is the D5c symmetric arm, pinned in its own tests); the internal gold
+    # labels are their own constant, untouched by the shown words.
+    assert set(three_way_wording.THREE_WAY_WORDINGS) == {"three_way", ARM, "three_way_symmetric"}
     assert three_way_wording.THREE_WAY_INTERNAL_CLASSES == INTERNAL
     assert three_way_wording.THREE_WAY_WORDING_FAMILY_BY_JUDGE == {
         "mu-judge": "STATE",
         "nemotron-3-nano-4b": "STATE",
         "d3-mini": "the_state",
+        "d3-flash": "the_state",  # arm 3: the d3 family's text, the same words as d3-mini's
     }
 
 
@@ -368,8 +370,9 @@ def test_d3_transport_reads_the_answer_under_the_payload_question_id() -> None:
 
 
 def _strip_arm(doc: Any) -> Any:
+    """Drop what only a newer arm's summary has: its name and its Rule B report (pinned in the D5c tests)."""
     if isinstance(doc, dict):
-        return {k: _strip_arm(v) for k, v in doc.items() if k != "pass_mode"}
+        return {k: _strip_arm(v) for k, v in doc.items() if k not in ("pass_mode", "rule_b_by_split")}
     if isinstance(doc, list):
         return [_strip_arm(v) for v in doc]
     return doc
@@ -486,8 +489,9 @@ def test_vm_judges_copies_match_three_way_wording() -> None:
     assert vm_judges.THREE_WAY_PASS_MODES == three_way_wording.THREE_WAY_PASS_MODES
     assert vm_judges.THREE_WAY_CLASS_LABELS == three_way_wording.THREE_WAY_INTERNAL_CLASSES
     assert vm_judges.THREE_WAY_WORDED_JUDGES_BY_MODE == {
-        m: frozenset(three_way_wording.THREE_WAY_WORDING_FAMILY_BY_JUDGE) for m in three_way_wording.WORDED_ONLY_PASS_MODES
+        m: three_way_wording.PASS_MODE_JUDGES[m] for m in three_way_wording.WORDED_ONLY_PASS_MODES
     }
+    assert vm_judges.PASS_MODE_JUDGES == three_way_wording.PASS_MODE_JUDGES
     for name in ("mu-judge.jsonl", "mu-judge.three_way.jsonl", f"mu-judge.{ARM}.jsonl", "mu-judge.three_way_x.jsonl"):
         assert vm_judges.rows_filename_is_three_way(name) == three_way_wording.rows_filename_is_three_way(name), name
     for jid in BAKEOFF_JUDGE_SPECS:
@@ -559,7 +563,7 @@ def test_cli_pass_mode_choices_include_arm(argv: list[str], capsys: pytest.Captu
     assert exc2.value.code == 0
     out = capsys.readouterr().out
     assert "three_way_contradicted" in out and "three_way" in out
-    assert three_way_wording.PASS_MODE_CHOICES == ("binary", "three_way", ARM)
+    assert three_way_wording.PASS_MODE_CHOICES[:3] == ("binary", "three_way", ARM)
 
 
 # --- end to end: launcher refusals and a stub-transport time-one window in the arm ----------------------------------

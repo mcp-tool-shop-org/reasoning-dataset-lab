@@ -191,7 +191,7 @@ ANCHOR_ROWS_DIRNAME = "anchor_rows"
 # `rows/<judge>.three_way.jsonl`; only the stub and time-one windows take one.
 PASS_MODE_ENV_VAR = "RDLAB_PASS_MODE"
 DEFAULT_PASS_MODE = "binary"
-PASS_MODES: tuple[str, ...] = ("binary", "three_way", "three_way_contradicted")  # see THREE_WAY_PASS_MODES
+PASS_MODES: tuple[str, ...] = ("binary", "three_way", "three_way_contradicted", "three_way_two_question", "three_way_symmetric", "three_way_nli")  # noqa: E501  (three_way_wording.PASS_MODE_CHOICES)
 THREE_WAY_PASS_WINDOW_MODES: frozenset[str] = frozenset({"stub", "time-one", "time_one"})
 THREE_WAY_CLASS_LABELS: tuple[str, ...] = ("supported", "unsupported", "cannot_tell")
 THREE_WAY_OPTION_TOKENS: tuple[str, ...] = ("a", "b", "c")
@@ -241,10 +241,10 @@ EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
     },
 }
 
-# Disk preflight constants for the 5 bake-off judges and 2 CPython 3.15 venvs:
-# - Weights total (sum of `total_bytes` across the 5 `<owner>__<repo>.sha256.json` receipts):
-#   7,644,593,918 + 16,770,923,290 + 7,964,584,688 + 7,964,239,519 + 9,107,255,624 = 49,451,597,039 bytes (46.06 GiB)
-# - Rig download time across the 5 receipts: 123.9 + 264.8 + 130.1 + 128.5 + 150.1 = 797.4 s (797 s)
+# Disk preflight constants for the 5 bake-off judges, the 2 D5c judges (metadata receipts) and 2 CPython 3.15 venvs:
+# - Weights total (sum of `total_bytes` across the 7 `<owner>__<repo>.sha256.json` receipts; the D5c two add 20,951,864,838):
+#   49,451,597,039 (the five) + 16,815,718,986 (d3-flash) + 4,136,145,852 (encoder) = 70,403,461,877 bytes (65.57 GiB)
+# - Rig download time across the 5 downloaded receipts: 123.9 + 264.8 + 130.1 + 128.5 + 150.1 = 797.4 s (797 s)
 # - Venvs compressed wheel/sdist sums:
 #   `judge.lock.txt` (54 packages) = 2,779,391,889 bytes (2.59 GiB)
 #   `d3.lock.txt`    (55 packages) = 2,779,228,374 bytes (2.59 GiB)
@@ -252,8 +252,8 @@ EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
 # - Installed size estimate (2.0x compressed wheels covering unpacked site-packages + wheel cache):
 #   2 * 5,558,620,263 = 11,117,240,526 bytes (10.35 GiB)
 # - Required free disk with 15% safety margin:
-#   ceil((49,451,597,039 + 11,117,240,526) * 1.15) = ceil(60,568,837,565 * 1.15) = 69,654,163,200 bytes (64.87 GiB)
-EXPECTED_WEIGHTS_TOTAL_BYTES = 49_451_597_039
+#   ceil((70,403,461,877 + 11,117,240,526) * 1.15) = ceil(81,520,702,403 * 1.15) = 93,748,807,764 bytes (87.31 GiB)
+EXPECTED_WEIGHTS_TOTAL_BYTES = 70_403_461_877  # all 7 receipts (pinned to them by a test)
 EXPECTED_WEIGHTS_DOWNLOAD_SECONDS = 797.4
 VENV_JUDGE_WHEEL_BYTES = 2_779_391_889
 VENV_D3_WHEEL_BYTES = 2_779_228_374
@@ -2834,7 +2834,7 @@ def preflight_judge_receipts(judge_ids: Sequence[str], *, receipts_dir: Path) ->
     """
     out: list[dict[str, Any]] = []
     for jid in judge_ids:
-        spec = BAKEOFF_JUDGE_SPECS.get(str(jid))
+        spec = JUDGE_SPECS.get(str(jid))  # the five and any named D5c judge
         if spec is None:
             raise RefusalError(
                 "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND",
@@ -2942,7 +2942,7 @@ def _three_way_choice_probabilities_valid(probs: Any) -> bool:
     return sum(vals) > 0.0
 
 
-def _three_way_mass_report(rf: Path, judge_id: str, threshold: float, pass_mode: str = "three_way") -> dict[str, Any]:
+def _three_way_choice_mass_report(rf: Path, judge_id: str, threshold: float, pass_mode: str = "three_way") -> dict[str, Any]:
     """The 3-way readout for one rows file: A/B/C option mass (>= threshold) per parsed call for a log-probability
     judge; for d3-mini, valid `choice_probabilities` (finite, >= 0, sum > 0, the 3 labels) and a valid label."""
     spec = BAKEOFF_JUDGE_SPECS.get(judge_id)
@@ -3009,7 +3009,7 @@ def _three_way_mass_report(rf: Path, judge_id: str, threshold: float, pass_mode:
     }
 
 
-def check_bakeoff_logprob_mass(
+def _check_logprob_mass_one_mode(
     judge_output_dir: Path,
     *,
     threshold: float = 0.99,
@@ -3463,11 +3463,11 @@ def validate_download_config(
 def resolve_remote_code_arg_for_judge(spec: JudgeSpec) -> str | None:
     """Return `--allow-remote-code-reviewed` SHA only for `d3-mini` at its reviewed revision."""
     _ensure_repo_imports()
-    if spec.judge_id == D3_MINI_JUDGE_ID:
-        check_d3_mini_remote_code_gate(
-            spec, allow_remote_code_reviewed=D3_MINI_REVIEWED_REVISION
+    if spec.judge_id in D3_REVIEWED_REVISION_BY_JUDGE:  # the d3 family (d3-mini, d3-flash)
+        check_d3_family_remote_code_gate(
+            spec, allow_remote_code_reviewed=D3_REVIEWED_REVISION_BY_JUDGE[spec.judge_id]
         )
-        return D3_MINI_REVIEWED_REVISION
+        return D3_REVIEWED_REVISION_BY_JUDGE[spec.judge_id]
     check_remote_code_gate(spec, allow_remote_code_reviewed=None)
     return None
 
@@ -3480,12 +3480,12 @@ def _select_judge_specs(
         return sorted(BAKEOFF_JUDGE_SPECS.items())
     selected: list[tuple[str, Any]] = []
     for jid in only_judge_ids:
-        if jid not in BAKEOFF_JUDGE_SPECS:
+        if jid not in JUDGE_SPECS:  # a named judge may be a D5c one
             raise RefusalError(
                 "UNKNOWN_JUDGE_ID",
                 f"Unknown judge_id {jid!r} (allowed: {sorted(BAKEOFF_JUDGE_SPECS.keys())})",
             )
-        selected.append((jid, BAKEOFF_JUDGE_SPECS[jid]))
+        selected.append((jid, JUDGE_SPECS[jid]))
     return selected
 
 
@@ -3506,7 +3506,7 @@ def verify_all_judge_snapshots(
     verified: dict[str, str] = {}
     for judge_id, spec in _select_judge_specs(only_judge_ids):
         allow_sha = resolve_remote_code_arg_for_judge(spec)
-        if spec.requires_remote_code and allow_sha != D3_MINI_REVIEWED_REVISION:
+        if spec.requires_remote_code and allow_sha != D3_REVIEWED_REVISION_BY_JUDGE.get(judge_id):
             raise RefusalError(
                 "REMOTE_CODE_FORBIDDEN",
                 f"Remote code is forbidden for {judge_id} ({spec.repo_id})",
@@ -3600,7 +3600,7 @@ def download_all_judge_weights(
     judge_records: list[dict[str, Any]] = []
 
     for judge_id, spec in _select_judge_specs(only_judge_ids):
-        is_d3 = judge_id == D3_MINI_JUDGE_ID
+        is_d3 = judge_id in D3_FAMILY_JUDGE_IDS
         venv_name = "venv-d3" if is_d3 else "venv-judge"
         venv_python = eff_work_dir / venv_name / "bin" / "python"
         lock_file = "d3.lock.txt" if is_d3 else "judge.lock.txt"
@@ -4097,7 +4097,7 @@ def download_all_judge_weights(
 
         if receipts_dir is not None:
             allow_sha = resolve_remote_code_arg_for_judge(spec)
-            if spec.requires_remote_code and allow_sha != D3_MINI_REVIEWED_REVISION:
+            if spec.requires_remote_code and allow_sha != D3_REVIEWED_REVISION_BY_JUDGE.get(judge_id):
                 raise RefusalError(
                     "REMOTE_CODE_FORBIDDEN",
                     f"Remote code is forbidden for {judge_id} ({spec.repo_id})",
@@ -4962,7 +4962,7 @@ def _build_judge_venvs_map(work_dir: Path) -> dict[str, dict[str, str]]:
     """Build per-judge `{venv, venv_python, lock_file, lock_sha256}` metadata map."""
     out: dict[str, dict[str, str]] = {}
     for judge_id in sorted(BAKEOFF_JUDGE_SPECS.keys()):
-        is_d3 = judge_id == D3_MINI_JUDGE_ID
+        is_d3 = judge_id in D3_FAMILY_JUDGE_IDS
         venv_name = "venv-d3" if is_d3 else "venv-judge"
         venv_python = (work_dir / venv_name / "bin" / "python").as_posix()
         lock_file = "d3.lock.txt" if is_d3 else "judge.lock.txt"
@@ -6931,7 +6931,7 @@ def run_lock_check_p0a_in_children(
     selected_file = p0a_part_dir / "p0a_selected_items.json"
 
     def _child_cmd(judge_id: str, spec: Any, stage: str, out_file: Path, progress_file: Path) -> tuple[list[str], Path, str, str, str]:
-        is_d3 = judge_id == D3_MINI_JUDGE_ID
+        is_d3 = judge_id in D3_FAMILY_JUDGE_IDS
         venv_name = "venv-d3" if is_d3 else "venv-judge"
         venv_python = work_dir / venv_name / "bin" / "python"
         if not venv_python.exists() and dryrun:
@@ -7371,7 +7371,7 @@ def _run_judges_pipeline_body(
         for pre_judge_id, _ in selected_specs:
             pre_venv_python = (
                 eff_work_dir
-                / ("venv-d3" if pre_judge_id == D3_MINI_JUDGE_ID else "venv-judge")
+                / ("venv-d3" if pre_judge_id in D3_FAMILY_JUDGE_IDS else "venv-judge")
                 / "bin"
                 / "python"
             )
@@ -7452,8 +7452,8 @@ def _run_judges_pipeline_body(
         pipeline_passes = []
 
     for is_anchor_prefix_pass, subblock_idx, active_chunk in pipeline_passes:
-      for judge_id, spec in selected_specs:
-        is_d3 = judge_id == D3_MINI_JUDGE_ID
+      for judge_id, spec, pass_mode_j, pass_key_j in _judge_passes(selected_specs, eff_pass_mode):
+        is_d3 = judge_id in D3_FAMILY_JUDGE_IDS
         venv_name = "venv-d3" if is_d3 else "venv-judge"
         venv_python = eff_work_dir / venv_name / "bin" / "python"
         lock_file = "d3.lock.txt" if is_d3 else "judge.lock.txt"
@@ -7474,7 +7474,7 @@ def _run_judges_pipeline_body(
             dryrun=dryrun,
             real_load_on_cpu=real_load_on_cpu,
         )
-        child_progress_file = child_progress_dir / f"{judge_id}.jsonl"
+        child_progress_file = child_progress_dir / f"{pass_key_j}.jsonl"
         child_cmd: list[str] = [
             str(venv_python),
             "-m",
@@ -7510,9 +7510,9 @@ def _run_judges_pipeline_body(
         )
         if allow_remote_sha is not None:
             child_cmd.extend(["--allow-remote-code-reviewed", allow_remote_sha])
-        if eff_pass_mode != "binary":
+        if pass_mode_j != "binary":
             # Added only for a 3-way pass, so a binary child's command line is unchanged (the child's default is binary).
-            child_cmd.extend(["--pass-mode", eff_pass_mode])
+            child_cmd.extend(["--pass-mode", pass_mode_j])
         if (dryrun or norm_mode in STUB_OR_DRYRUN_MODES) and not real_load_on_cpu:
             child_cmd.append("--stub")
         eff_golden_manifest = (
@@ -7892,15 +7892,15 @@ def _run_judges_pipeline_body(
             )
 
         if is_anchor_prefix_pass:
-            anchor_row_file = run_dir / "anchor_rows" / f"{judge_id}.jsonl"
+            anchor_row_file = run_dir / "anchor_rows" / rows_filename_for_pass(judge_id, pass_mode_j)
             if not anchor_row_file.is_file():
                 _fail_child_postcheck(
                     f"Judge {judge_id} anchor prefix pass exited 0 but {anchor_row_file} is missing"
                 )
             continue
 
-        row_file = run_dir / ROWS_DIRNAME / rows_filename_for_pass(judge_id, eff_pass_mode)
-        done_file = judge_done_dir / f"{judge_id}.json"
+        row_file = run_dir / ROWS_DIRNAME / rows_filename_for_pass(judge_id, pass_mode_j)
+        done_file = judge_done_dir / judge_done_filename_for_pass(judge_id, pass_mode_j)
         if not row_file.is_file():
             _fail_child_postcheck(f"Judge {judge_id} exited 0 but {row_file} is missing")
         if not done_file.is_file():
@@ -7956,11 +7956,11 @@ def _run_judges_pipeline_body(
             and not isinstance(child_reported_load, bool)
             else round(max(0.0, wall_elapsed - sum_call_s), 6)
         )
-        load_history_by_judge.setdefault(judge_id, []).append(load_time_s)
-        cum_wall_by_judge[judge_id] = round(
-            cum_wall_by_judge.get(judge_id, 0.0) + wall_elapsed, 6
+        load_history_by_judge.setdefault(pass_key_j, []).append(load_time_s)
+        cum_wall_by_judge[pass_key_j] = round(
+            cum_wall_by_judge.get(pass_key_j, 0.0) + wall_elapsed, 6
         )
-        total_load_s = round(sum(load_history_by_judge[judge_id]), 6)
+        total_load_s = round(sum(load_history_by_judge[pass_key_j]), 6)
         per_call_s = (
             round(float(sum_call_s / len(call_durations)), 6)
             if call_durations
@@ -7995,12 +7995,12 @@ def _run_judges_pipeline_body(
         enriched_done_doc = dict(done_doc)
         enriched_done_doc["device"] = device_str
         enriched_done_doc.setdefault("dtype", dtype_str)
-        enriched_done_doc["elapsed_seconds"] = cum_wall_by_judge[judge_id]
+        enriched_done_doc["elapsed_seconds"] = cum_wall_by_judge[pass_key_j]
         enriched_done_doc["load_time_seconds"] = total_load_s
         enriched_done_doc["load_seconds"] = total_load_s
         enriched_done_doc["load_wall_seconds"] = load_time_s
         enriched_done_doc["load_wall_seconds_history"] = list(
-            load_history_by_judge[judge_id]
+            load_history_by_judge[pass_key_j]
         )
         enriched_done_doc["per_call_seconds"] = per_call_s
         enriched_done_doc["per_call_median_seconds"] = median_s
@@ -8016,7 +8016,7 @@ def _run_judges_pipeline_body(
             {
                 "kind": "judge_pass_done",
                 "judge": judge_id,
-                "judge_id": judge_id,
+                "judge_id": judge_id, **_pass_record_fields(judge_id, pass_mode_j, eff_pass_mode),
                 "venv": venv_name,
                 "venv_python": venv_python.as_posix(),
                 "lock_sha256": lock_sha256,
@@ -8027,7 +8027,7 @@ def _run_judges_pipeline_body(
                 "elapsed_seconds": round(wall_elapsed, 6),
                 "load_time_seconds": load_time_s,
                 "load_seconds": load_time_s,
-                "load_wall_seconds_history": list(load_history_by_judge[judge_id]),
+                "load_wall_seconds_history": list(load_history_by_judge[pass_key_j]),
                 "subblock_index": subblock_idx,
                 "subblock_count": len(subblock_chunks),
                 "per_call_seconds": per_call_s,
@@ -8039,8 +8039,8 @@ def _run_judges_pipeline_body(
             proc_cgroup_path=proc_cgroup_path,
         )
 
-        per_judge_metrics[judge_id] = {
-            "judge_id": judge_id,
+        per_judge_metrics[pass_key_j] = {
+            "judge_id": judge_id, **_pass_record_fields(judge_id, pass_mode_j, eff_pass_mode),
             "repo_id": spec.repo_id,
             "revision": spec.revision,
             "venv": venv_name,
@@ -8053,11 +8053,11 @@ def _run_judges_pipeline_body(
             "items_count": int(done_doc.get("items_count", len(shard_item_ids))),
             "orders": ["AB", "BA"],
             "calls_count": int(done_doc.get("calls_count", len(row_objs))),
-            "elapsed_seconds": cum_wall_by_judge[judge_id],
+            "elapsed_seconds": cum_wall_by_judge[pass_key_j],
             "load_time": total_load_s,
             "load_seconds": total_load_s,
             "load_time_seconds": total_load_s,
-            "load_wall_seconds_history": list(load_history_by_judge[judge_id]),
+            "load_wall_seconds_history": list(load_history_by_judge[pass_key_j]),
             "per_call_seconds": per_call_s,
             "per_call_median": median_s,
             "per_call_median_seconds": median_s,
@@ -8129,13 +8129,13 @@ def _run_judges_pipeline_body(
         anchor_rows_dir = run_dir / "anchor_rows"
         anchor_rows_dir.mkdir(parents=True, exist_ok=True)
         for jid, _ in selected_specs:
-            rf = run_dir / ROWS_DIRNAME / f"{jid}.jsonl"
+            rf = run_dir / ROWS_DIRNAME / rows_filename_for_pass(jid, eff_pass_mode)
             j_anchor_lines: list[str] = []
             for ln in (rf.read_text(encoding="utf-8").splitlines() if rf.is_file() else ()):
                 robj = json.loads(ln)
                 if str(robj.get("item_id") or "") in anchor_set:
                     j_anchor_lines.append(json.dumps(robj, sort_keys=True))
-            (anchor_rows_dir / f"{jid}.jsonl").write_text(
+            (anchor_rows_dir / rows_filename_for_pass(jid, eff_pass_mode)).write_text(
                 ("\n".join(j_anchor_lines) + "\n") if j_anchor_lines else "",
                 encoding="utf-8",
                 newline="\n",
@@ -8244,7 +8244,7 @@ def _run_judges_pipeline_body(
         "judge_order": eff_judge_order,
         "judge_order_source": judge_order_source,
         "only_judges": list(only_judges) if only_judges is not None else None,
-        "pass_mode": eff_pass_mode,
+        "pass_mode": eff_pass_mode, **_judge_pass_modes_record(eff_pass_mode),
         "loop_order": eff_loop_order,
         "subblock_items": eff_subblock_items,
         "subblock_count": len(subblock_chunks),
@@ -9909,7 +9909,7 @@ def validate_only_judges(
             "ONLY_JUDGES_INVALID",
             f"RDLAB_ONLY_JUDGES contains empty item(s): {raw_val!r}",
         )
-    unknown = [p for p in parts if p not in BAKEOFF_JUDGE_SPECS]
+    unknown = [p for p in parts if p not in JUDGE_SPECS]  # the five and the D5c judges
     if unknown:
         raise RefusalError(
             "ONLY_JUDGES_INVALID",
@@ -9923,7 +9923,7 @@ def validate_only_judges(
     return tuple(parts)
 
 
-def validate_pass_mode(
+def _validate_single_pass_mode(
     mode: str,
     raw_pass_mode: str | None = None,
     *,
@@ -9959,7 +9959,7 @@ def validate_pass_mode(
     unsupported = [
         str(j)
         for j in (judge_ids or ())
-        if str(j) in BAKEOFF_JUDGE_SPECS and not _judge_has_pass_mode_prompt(str(j), cleaned)
+        if str(j) in JUDGE_SPECS and not _judge_has_pass_mode_prompt(str(j), cleaned)
     ]
     if unsupported:
         raise RefusalError(
@@ -10882,7 +10882,7 @@ def _collect_judge_receipt_digests(
         "added_tokens.json",
     }
     out: dict[str, dict[str, str]] = {}
-    for jid, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+    for jid, spec in _session_env_judge_specs(receipts_dir):  # the five, plus a D5c judge whose receipt is present
         slug = spec.repo_id.replace("/", "__")
         rec_file = receipts_dir / f"{slug}.sha256.json"
         w_entries: list[str] = []
@@ -12790,7 +12790,7 @@ def _run_real_boot_gatekeeper_prompts(
             else None
         )
     )
-    venv_name = "venv-d3" if judge_id == D3_MINI_JUDGE_ID else "venv-judge"
+    venv_name = "venv-d3" if judge_id in D3_FAMILY_JUDGE_IDS else "venv-judge"
     if eff_work is not None:
         venv_py = eff_work / venv_name / "bin" / "python"
         if not venv_py.is_file():
@@ -15558,29 +15558,63 @@ def run_kernel_or_cli_entry(argv: list[str] | None = None) -> int:
 
 
 
-# --- 3-way pass modes (defined here, after every line REAL_SERVICE_ASSUMPTIONS.md cites, so the citations hold) ---
-# three_way_contradicted is the 3-way pass with the plain-word wording (PREREG-d5c-threeway-contradicted-arm-2026-11-15;
-# the words are `reasoning_dataset_lab.pilot_b.three_way_wording.THREE_WAY_WORDINGS`). It writes
-# `rows/<judge>.three_way_contradicted.jsonl`, is scored like three_way, and has a prompt for 3 judges only.
-THREE_WAY_PASS_MODES: frozenset[str] = frozenset({"three_way", "three_way_contradicted"})
-# The judges a 3-way arm without a rubric fallback has a wording for (`three_way_wording.THREE_WAY_WORDING_FAMILY_BY_JUDGE`).
-THREE_WAY_WORDED_JUDGES_BY_MODE: dict[str, frozenset[str]] = {
-    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini"}),
+
+# --- 3-way pass modes and the D5c judge window (defined here, after every line REAL_SERVICE_ASSUMPTIONS.md cites, so
+# the citations hold). vm_judges runs before the package imports on the VM, so it keeps its own copies of the wording
+# table's lists (`reasoning_dataset_lab.pilot_b.three_way_wording`), pinned equal by tests. Build card 2026-11-15 v4;
+# PREREG-d5c-five-arm-window-2026-11-15 and its arm-6 addendum.
+THREE_WAY_PASS_MODES: frozenset[str] = frozenset(m for m in PASS_MODES if m != "binary")
+# The judges each pass mode has a prompt for (three_way_wording.PASS_MODE_JUDGES).
+PASS_MODE_JUDGES: dict[str, frozenset[str]] = {
+    "binary": frozenset({"d3-mini", "flow-judge-v0.1", "granite-guardian-4.1-8b", "mu-judge", "nemotron-3-nano-4b"}),
+    "three_way": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "flow-judge-v0.1"}),
+    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash"}),
+    "three_way_two_question": frozenset({"d3-mini"}),
+    "three_way_symmetric": frozenset({"d3-mini"}),
+    "three_way_nli": frozenset({"nli-deberta-v3-large"}),
 }
+# The arms with no rubric fallback and the judges each has a wording for (every 3-way arm except `three_way`).
+THREE_WAY_WORDED_JUDGES_BY_MODE: dict[str, frozenset[str]] = {
+    m: PASS_MODE_JUDGES[m] for m in THREE_WAY_PASS_MODES if m != "three_way"
+}
+# The modes whose judge_done file keeps `judge_done/<judge>.json` (three_way_wording.LEGACY_DONE_NAME_PASS_MODES).
+LEGACY_DONE_NAME_PASS_MODES: frozenset[str] = frozenset({"binary", "three_way", "three_way_contradicted"})
+TWO_QUESTION_PASS_MODES: frozenset[str] = frozenset({"three_way_two_question"})
+NLI_PASS_MODES: frozenset[str] = frozenset({"three_way_nli"})
+INCONSISTENT_VERDICT = "inconsistent"
+# A window whose judges each run their own pass mode(s): `--pass-mode per_judge` with RDLAB_JUDGE_PASS_MODES, a
+# comma-separated list of `judge:mode` passes, run in that order under the usual loop (e.g. `--loop judge_outer`).
+PER_JUDGE_PASS_MODE = "per_judge"
+JUDGE_PASS_MODES_ENV_VAR = "RDLAB_JUDGE_PASS_MODES"
+
+
+def three_way_mode_of_rows_filename(name: str) -> str | None:
+    """The 3-way mode a rows file name ends with, else None."""
+    hits = [m for m in THREE_WAY_PASS_MODES if name.endswith(f".{m}.jsonl")]
+    return max(hits, key=len) if hits else None
 
 
 def rows_filename_is_three_way(name: str) -> bool:
     """True for a 3-way pass's rows file name (`<judge>.<three-way mode>.jsonl`)."""
-    return any(name.endswith(f".{m}.jsonl") for m in THREE_WAY_PASS_MODES)
+    return three_way_mode_of_rows_filename(name) is not None
+
+
+def judge_done_filename_for_pass(judge_id: str, pass_mode: str = DEFAULT_PASS_MODE) -> str:
+    """The judge_done file a (judge, mode) pass writes: `<judge>.json` for the legacy modes, `<judge>.<mode>.json` else."""
+    return f"{judge_id}.json" if pass_mode in LEGACY_DONE_NAME_PASS_MODES else f"{judge_id}.{pass_mode}.json"
+
+
+def pass_key_for(judge_id: str, pass_mode: str) -> str:
+    """A pass's key in per-pass records: its judge_done file's stem (the judge id for the legacy modes)."""
+    return judge_done_filename_for_pass(judge_id, pass_mode)[: -len(".json")]
 
 
 def _judge_has_pass_mode_prompt(judge_id: str, pass_mode: str) -> bool:
-    """True when `judge_id` has a prompt in the 3-way `pass_mode`: `supports_three_way`, and, in an arm without a rubric
-    fallback (three_way_contradicted), a wording entry (flow-judge-v0.1 has none, so it is refused there)."""
-    if not BAKEOFF_JUDGE_SPECS[judge_id].supports_three_way:
+    """True when `judge_id` has a prompt in the 3-way `pass_mode`: `supports_three_way` and a place in the mode's judge
+    list (three_way_wording.PASS_MODE_JUDGES)."""
+    if not JUDGE_SPECS[judge_id].supports_three_way:
         return False
-    worded = THREE_WAY_WORDED_JUDGES_BY_MODE.get(pass_mode)
-    return worded is None or judge_id in worded
+    return judge_id in PASS_MODE_JUDGES.get(pass_mode, frozenset())
 
 
 def _three_way_rows_of_pass_mode(rf: Path, pass_mode: str) -> list[dict[str, Any]]:
@@ -15594,6 +15628,406 @@ def _three_way_rows_of_pass_mode(rf: Path, pass_mode: str) -> list[dict[str, Any
             f"Rows file '{rf.name}' is read as pass mode '{pass_mode}' but holds rows with pass_mode {bad}.",
         )
     return rows
+
+
+# --- the D5c judges (mirrors of bakeoff_judge's specs) and the d3-family remote-code gate ---------------------------
+D3_FLASH_JUDGE_ID = "d3-flash"
+D3_FLASH_REVISION = "67e03e1bc157961c582ee7c6a35d9b15fada3dec"
+NLI_JUDGE_ID = "nli-deberta-v3-large"
+# d3-mini's gate SHA is the reviewed bd0090dd. d3-flash's is its own pin: its eight remote-code files are byte-identical
+# to d3-mini's reviewed ones (R&D, 2026-11-15), and the d3 transport re-proves that from the receipts at every load.
+D3_REVIEWED_REVISION_BY_JUDGE: dict[str, str] = {
+    D3_MINI_JUDGE_ID: D3_MINI_REVIEWED_REVISION,
+    D3_FLASH_JUDGE_ID: D3_FLASH_REVISION,
+}
+D3_FAMILY_JUDGE_IDS: frozenset[str] = frozenset(D3_REVIEWED_REVISION_BY_JUDGE)
+
+# The D5c judges (mirrors of bakeoff_judge.D5C_JUDGE_SPECS): resolvable by id in JUDGE_SPECS, never in
+# BAKEOFF_JUDGE_SPECS (the five), so every all-judge window and loop is unchanged.
+D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
+    {
+        D3_FLASH_JUDGE_ID: JudgeSpec(
+            judge_id=D3_FLASH_JUDGE_ID,
+            judge_label="vllm-sr/d3-flash",
+            repo_id="vllm-sr/d3-flash",
+            revision=D3_FLASH_REVISION,
+            card_registry_id="d3-flash-card",
+            licence_registry_id="apache-2.0",
+            requires_remote_code=True,
+            remote_code_files=BAKEOFF_JUDGE_SPECS[D3_MINI_JUDGE_ID].remote_code_files,
+            supports_three_way=True,
+            has_probability=True,
+            verdict_position="system_one_readout",
+            max_new_tokens=1,
+            card_snapshot_path="cards/vllm-sr_d3-flash.md",
+            card_snapshot_sha256="9297d4c74e21bbebf1d87aa0264dcd696cc874bd2d915f3b977bbcb36ca8ed0e",
+        ),
+        NLI_JUDGE_ID: JudgeSpec(
+            judge_id=NLI_JUDGE_ID,
+            judge_label="MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli",
+            repo_id="MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli",
+            revision="b3546ea6b0346eb6f8d5d68b13c7dc6d0376b3d7",
+            card_registry_id="deberta-v3-large-mnli-fever-anli-ling-wanli-card",
+            licence_registry_id="mit",
+            requires_remote_code=False,
+            remote_code_files=(),
+            supports_three_way=True,
+            has_probability=True,
+            verdict_position="nli_class_softmax",
+            max_new_tokens=0,
+            card_snapshot_path="cards/MoritzLaurer_DeBERTa-v3-large-mnli-fever-anli-ling-wanli.md",
+            card_snapshot_sha256="216c3ac9ea77beec4e35a347c8b4edc47fbb3465e7c2a00dc923ae7b975cf346",
+        ),
+    }
+)
+JUDGE_SPECS: dict[str, JudgeSpec] = {**BAKEOFF_JUDGE_SPECS, **D5C_JUDGE_SPECS}
+
+
+def check_d3_family_remote_code_gate(
+    spec: JudgeSpec,
+    *,
+    allow_remote_code_reviewed: str | None = None,
+) -> None:
+    """d3-mini's byte-exact gate unchanged (it also refuses any judge outside the d3 family); for d3-flash the same
+    rule against its own pin, and the reviewed file set."""
+    if spec.judge_id not in D3_FAMILY_JUDGE_IDS or spec.judge_id == D3_MINI_JUDGE_ID:
+        check_d3_mini_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+        return
+    pinned = D3_REVIEWED_REVISION_BY_JUDGE[spec.judge_id]
+    if not isinstance(allow_remote_code_reviewed, str) or allow_remote_code_reviewed != pinned:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED",
+            f"{spec.judge_id} requires its exact 40-char pinned SHA '{pinned}'.",
+        )
+    if spec.revision != pinned:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_REMOTE_CODE_REVISION_MISMATCH",
+            f"Pinned revision '{spec.revision}' is not the cleared {spec.judge_id} SHA '{pinned}'.",
+        )
+    if sorted(spec.remote_code_files) != sorted(BAKEOFF_JUDGE_SPECS[D3_MINI_JUDGE_ID].remote_code_files):
+        raise RefusalError(
+            "BAKEOFF_JUDGE_REMOTE_CODE_FILES_MISMATCH",
+            f"{spec.judge_id} lists remote-code files other than the eight reviewed d3 files.",
+        )
+
+
+
+def receipt_tar_specs(raw_only_judges: str | None = None) -> list[JudgeSpec]:
+    """The judges whose receipts the launcher packs for the VM: the five original judges, plus any D5c judge the window
+    names in RDLAB_ONLY_JUDGES (its receipt must then be present, or the pack refuses RECEIPT_MISSING before spend)."""
+    raw = os.environ.get("RDLAB_ONLY_JUDGES") if raw_only_judges is None else raw_only_judges
+    named = [j for j in str(raw or "").split(",") if j in D5C_JUDGE_SPECS]
+    return [JUDGE_SPECS[j] for j in (*DEFAULT_JUDGE_ORDER, *sorted(set(named)))]
+
+
+def _session_env_judge_specs(receipts_dir: Path) -> list[tuple[str, JudgeSpec]]:
+    """The judges a session_env records digests for: the five always (unchanged), plus each D5c judge whose receipt is in
+    `receipts_dir` (packed only when a window names it), so a merge of a D5c pass finds its digests."""
+    extra = [
+        (j, s) for j, s in sorted(D5C_JUDGE_SPECS.items())
+        if (Path(receipts_dir) / f"{s.repo_id.replace('/', '__')}.sha256.json").is_file()
+    ]
+    return [*sorted(BAKEOFF_JUDGE_SPECS.items()), *extra]
+
+# --- per-judge pass modes: one window, each judge in its own arm(s) -------------------------------------------------
+
+
+def parse_judge_pass_modes(raw: str | None = None) -> tuple[tuple[str, str], ...] | None:
+    """Parse RDLAB_JUDGE_PASS_MODES (`judge:mode,judge:mode,...`; `raw` None reads the environment). None when unset
+    or empty. Refuses `JUDGE_PASS_MODES_INVALID` for whitespace, an empty or malformed entry, an unknown judge or mode,
+    a binary entry (a per-judge window is a 3-way window), a judge with no prompt in its mode, a repeated pass, or two
+    passes of one judge that would share a judge_done file."""
+    raw_val = os.environ.get(JUDGE_PASS_MODES_ENV_VAR) if raw is None else str(raw)
+    if raw_val is None or raw_val == "":
+        return None
+    if any(ch.isspace() for ch in raw_val):
+        raise RefusalError("JUDGE_PASS_MODES_INVALID", f"{JUDGE_PASS_MODES_ENV_VAR} must have no whitespace, got {raw_val!r}")
+    plan: list[tuple[str, str]] = []
+    done_names: set[str] = set()
+    for entry in raw_val.split(","):
+        jid, sep, mode = entry.partition(":")
+        if not sep or not jid or not mode:
+            raise RefusalError(
+                "JUDGE_PASS_MODES_INVALID", f"{JUDGE_PASS_MODES_ENV_VAR} entry {entry!r} is not judge:mode (got {raw_val!r})"
+            )
+        if jid not in JUDGE_SPECS:
+            raise RefusalError(
+                "JUDGE_PASS_MODES_INVALID", f"Unknown judge_id {jid!r} in {JUDGE_PASS_MODES_ENV_VAR} (allowed: {sorted(JUDGE_SPECS)})"
+            )
+        if mode not in THREE_WAY_PASS_MODES:
+            raise RefusalError(
+                "JUDGE_PASS_MODES_INVALID",
+                f"Pass mode {mode!r} for {jid} is not a 3-way pass mode (allowed: {', '.join(m for m in PASS_MODES if m != 'binary')})",
+            )
+        if not _judge_has_pass_mode_prompt(jid, mode):
+            raise RefusalError("JUDGE_PASS_MODES_INVALID", f"Judge {jid!r} has no prompt in pass mode {mode!r}")
+        if (jid, mode) in plan:
+            raise RefusalError("JUDGE_PASS_MODES_INVALID", f"Pass {jid}:{mode} is listed twice in {JUDGE_PASS_MODES_ENV_VAR}")
+        done_name = judge_done_filename_for_pass(jid, mode)
+        if done_name in done_names:
+            raise RefusalError(
+                "JUDGE_PASS_MODES_INVALID",
+                f"Pass {jid}:{mode} would share judge_done/{done_name} with another pass of {jid}; run one of them per window",
+            )
+        done_names.add(done_name)
+        plan.append((jid, mode))
+    return tuple(plan)
+
+
+def plan_judge_ids(plan: Sequence[tuple[str, str]]) -> tuple[str, ...]:
+    """The judges of a per-judge plan, each once, in first-appearance order (what RDLAB_ONLY_JUDGES must be)."""
+    out: list[str] = []
+    for jid, _ in plan:
+        if jid not in out:
+            out.append(jid)
+    return tuple(out)
+
+
+def validate_pass_mode(
+    mode: str,
+    raw_pass_mode: str | None = None,
+    *,
+    judge_ids: Sequence[str] | None = None,
+    session_smoke: bool = False,
+) -> str:
+    """Validate `RDLAB_PASS_MODE` / `--pass-mode` and return it: one of `PASS_MODES` (binary when unset), or
+    `per_judge` with RDLAB_JUDGE_PASS_MODES (a per-judge plan; `--pass-mode` may be left unset).
+
+    A single mode is checked by `_validate_single_pass_mode` (PASS_MODE_INVALID, PASS_MODE_NOT_FOR_MODE,
+    BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED), and a binary window refuses a judge with no binary prompt (the D5c judges:
+    BAKEOFF_JUDGE_BINARY_UNSUPPORTED). A per-judge window refuses JUDGE_PASS_MODES_CONFLICT for a single --pass-mode
+    beside a plan, a plan outside --stub / --time-one, or RDLAB_ONLY_JUDGES that is not the plan's judges in order;
+    and JUDGE_PASS_MODES_INVALID for `per_judge` without a plan or a bad plan (`parse_judge_pass_modes`)."""
+    raw_val = os.environ.get(PASS_MODE_ENV_VAR) if raw_pass_mode is None else str(raw_pass_mode)
+    raw_plan = os.environ.get(JUDGE_PASS_MODES_ENV_VAR) or ""
+    if raw_plan or raw_val == PER_JUDGE_PASS_MODE:
+        if raw_val not in (None, "", PER_JUDGE_PASS_MODE):
+            raise RefusalError(
+                "JUDGE_PASS_MODES_CONFLICT",
+                f"{JUDGE_PASS_MODES_ENV_VAR} sets each judge's pass mode; --pass-mode must be unset or "
+                f"{PER_JUDGE_PASS_MODE}, got {raw_val!r}",
+            )
+        if not raw_plan:
+            raise RefusalError(
+                "JUDGE_PASS_MODES_INVALID", f"--pass-mode {PER_JUDGE_PASS_MODE} needs {JUDGE_PASS_MODES_ENV_VAR} (judge:mode,...)"
+            )
+        norm_mode = str(mode or "").strip().lower()
+        if session_smoke or norm_mode not in THREE_WAY_PASS_WINDOW_MODES:
+            raise RefusalError(
+                "PASS_MODE_NOT_FOR_MODE",
+                f"{JUDGE_PASS_MODES_ENV_VAR} is allowed only with --stub and --time-one (got mode={mode!r}, "
+                f"session_smoke={session_smoke!r}); the counted and lock-check windows are binary.",
+            )
+        plan = parse_judge_pass_modes(raw_plan)
+        assert plan is not None
+        want = plan_judge_ids(plan)
+        if judge_ids is not None and tuple(str(j) for j in judge_ids) != want:
+            raise RefusalError(
+                "JUDGE_PASS_MODES_CONFLICT",
+                f"A per-judge window names its judges twice and both must agree: set RDLAB_ONLY_JUDGES={','.join(want)} "
+                f"(the plan's judges in order), got {list(judge_ids)!r}",
+            )
+        return PER_JUDGE_PASS_MODE
+    cleaned = _validate_single_pass_mode(mode, raw_pass_mode, judge_ids=judge_ids, session_smoke=session_smoke)
+    if cleaned == "binary":
+        no_binary = [str(j) for j in (judge_ids or ()) if str(j) in JUDGE_SPECS and str(j) not in PASS_MODE_JUDGES["binary"]]
+        if no_binary:
+            raise RefusalError(
+                "BAKEOFF_JUDGE_BINARY_UNSUPPORTED",
+                f"Judge(s) {no_binary!r} have no binary prompt (D5c three-way judges); run them in their pre-registered "
+                "3-way pass mode.",
+            )
+    return cleaned
+
+
+def _judge_passes(selected_specs: Sequence[tuple[str, Any]], window_pass_mode: str) -> list[tuple[str, Any, str, str]]:
+    """The window's judge passes in run order, as (judge_id, spec, pass_mode, pass_key): one per selected judge in the
+    window's mode (the key is the judge id, as before), or a per-judge window's plan entries in their listed order."""
+    if window_pass_mode != PER_JUDGE_PASS_MODE:
+        return [(jid, spec, window_pass_mode, jid) for jid, spec in selected_specs]
+    plan = parse_judge_pass_modes()
+    if not plan:
+        raise RefusalError("JUDGE_PASS_MODES_INVALID", f"--pass-mode {PER_JUDGE_PASS_MODE} needs {JUDGE_PASS_MODES_ENV_VAR}")
+    specs = dict(selected_specs)
+    missing = [jid for jid, _ in plan if jid not in specs]
+    if missing:
+        raise RefusalError("JUDGE_PASS_MODES_CONFLICT", f"Plan judges {missing!r} are not in the window's judge set")
+    return [(jid, specs[jid], m, pass_key_for(jid, m)) for jid, m in plan]
+
+
+def _pass_record_fields(judge_id: str, pass_mode: str, window_pass_mode: str) -> dict[str, Any]:
+    """The per-pass fields of a per-judge window's progress and metrics records (nothing in a single-mode window, whose
+    records stay as they were): the pass mode, its key, and its rows and judge_done files."""
+    if window_pass_mode != PER_JUDGE_PASS_MODE:
+        return {}
+    return {
+        "pass_mode": pass_mode,
+        "pass_key": pass_key_for(judge_id, pass_mode),
+        "rows_file": f"{ROWS_DIRNAME}/{rows_filename_for_pass(judge_id, pass_mode)}",
+        "done_file": f"{JUDGE_DONE_DIRNAME}/{judge_done_filename_for_pass(judge_id, pass_mode)}",
+    }
+
+
+def _judge_pass_modes_record(window_pass_mode: str) -> dict[str, Any]:
+    """A per-judge window's plan, for its summary (nothing in a single-mode window)."""
+    if window_pass_mode != PER_JUDGE_PASS_MODE:
+        return {}
+    return {"judge_pass_modes": [f"{j}:{m}" for j, m in (parse_judge_pass_modes() or ())]}
+
+
+# --- the option-mass readout for the new arms ------------------------------------------------------------------------
+
+
+def _two_question_row_valid(row: Mapping[str, Any]) -> bool:
+    vals = [row.get("p_t"), row.get("p_f")]
+    ok = all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and 0.0 <= float(v) <= 1.0 for v in vals)
+    return ok and row.get("raw_verdict") in (*THREE_WAY_CLASS_LABELS, INCONSISTENT_VERDICT)
+
+
+def _three_way_mass_report(rf: Path, judge_id: str, threshold: float, pass_mode: str = "three_way") -> dict[str, Any]:
+    """The 3-way readout for one rows file. Arm 2 (two questions): every parsed call carries p_t and p_f in [0, 1] and a
+    mapped label (or `inconsistent`). Arm 5 (NLI) and every d3-family choice arm: valid `choice_probabilities` over the
+    3 classes, as d3-mini's. Log-probability judges: A/B/C option mass (`_three_way_choice_mass_report`)."""
+    if pass_mode not in TWO_QUESTION_PASS_MODES and judge_id not in (D3_FAMILY_JUDGE_IDS | {NLI_JUDGE_ID}):
+        return _three_way_choice_mass_report(rf, judge_id, threshold, pass_mode)
+    if pass_mode not in TWO_QUESTION_PASS_MODES:
+        # d3-flash and the encoder read out like d3-mini: the d3-mini rule over `choice_probabilities`.
+        return _three_way_choice_mass_report(rf, D3_MINI_JUDGE_ID, threshold, pass_mode)
+    lines = _three_way_rows_of_pass_mode(rf, pass_mode)
+    all_calls = [r for r in lines if r.get("run_status") != "failed_to_run"]
+    parsed_rows = [r for r in all_calls if r.get("state") == "parsed"]
+    invalid_calls = len(all_calls) - len(parsed_rows)
+    invalid_rate = (invalid_calls / len(all_calls)) if all_calls else None
+    rate_ok = invalid_rate is not None and invalid_rate <= THREE_WAY_MAX_INVALID_RATE + 1e-12
+    bad = sum(1 for r in parsed_rows if not _two_question_row_valid(r))
+    passed = bool(parsed_rows and bad == 0 and rate_ok)
+    return {
+        "status": "PASS" if passed else "WARN",
+        "passed": passed,
+        "check": "two_question_probabilities",
+        "calls_checked": len(parsed_rows),
+        "invalid_two_question_probabilities_count": bad,
+        "inconsistent_calls_count": sum(1 for r in parsed_rows if r.get("raw_verdict") == INCONSISTENT_VERDICT),
+        "calls_total": len(all_calls),
+        "invalid_calls_count": invalid_calls,
+        "invalid_rate": round(invalid_rate, 6) if invalid_rate is not None else None,
+        "max_invalid_rate": THREE_WAY_MAX_INVALID_RATE,
+        "threshold": threshold,
+    }
+
+
+def check_bakeoff_logprob_mass(
+    judge_output_dir: Path,
+    *,
+    threshold: float = 0.99,
+    verified_pilot_identity: Mapping[str, Any] | None = None,
+    pass_mode: str = DEFAULT_PASS_MODE,
+) -> dict[str, Any]:
+    """The burned pilot's mass readout (`_check_logprob_mass_one_mode`) for one pass mode; for a per-judge window, one
+    readout per mode in its plan, merged with each judge keyed by its pass (`<judge>.<mode>`)."""
+    if pass_mode != PER_JUDGE_PASS_MODE:
+        return _check_logprob_mass_one_mode(
+            judge_output_dir, threshold=threshold, verified_pilot_identity=verified_pilot_identity, pass_mode=pass_mode
+        )
+    plan = parse_judge_pass_modes() or ()
+    merged: dict[str, Any] = {}
+    base: dict[str, Any] = {}
+    for m in sorted({mode for _, mode in plan}):
+        one = _check_logprob_mass_one_mode(
+            judge_output_dir, threshold=threshold, verified_pilot_identity=verified_pilot_identity, pass_mode=m
+        )
+        base = one
+        merged.update({f"{jid}.{m}": rep for jid, rep in one["judges"].items()})
+    return {**base, "pass_mode": PER_JUDGE_PASS_MODE, "judges": merged}
+
+
+# --- the launcher's partial fetch (build card 2026-11-15 v4, items 7 and 9) ------------------------------------------
+FETCH_REFUSAL_CODES: tuple[str, ...] = ("FETCHED_JUDGE_DONE_INVALID", "FETCHED_ROWS_MISSING", "FETCHED_ROWS_SHA_MISMATCH")
+
+
+def launcher_completed_passes(progress_path: Path, window_pass_mode: str) -> list[dict[str, str]]:
+    """Every pass the VM reported finished (`judge_pass_done` in the rig's copy of progress.jsonl), once each in order,
+    with the names of its judge_done and rows files (`judge_done_filename_for_pass`, `rows_filename_for_pass`: the
+    VM's own naming, for every pass mode) and the rows sha256 of the latest record. A line's own `pass_mode` wins; else
+    the window's. A line naming an unknown judge or mode is skipped, so no VM text becomes a rig path."""
+    seen: dict[tuple[str, str], dict[str, str]] = {}
+    p = Path(progress_path)
+    if not p.is_file():
+        return []
+    for raw in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            obj = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(obj, Mapping) or obj.get("kind") != "judge_pass_done":
+            continue
+        jid = str(obj.get("judge_id") or obj.get("judge") or "").strip()
+        mode = str(obj.get("pass_mode") or "").strip() or (window_pass_mode if window_pass_mode != PER_JUDGE_PASS_MODE else "")
+        if jid not in JUDGE_SPECS or mode not in PASS_MODES:
+            continue
+        sha = str(obj.get("sha256") or "").strip().lower()
+        seen[(jid, mode)] = {
+            "judge_id": jid,
+            "pass_mode": mode,
+            "done_file": judge_done_filename_for_pass(jid, mode),
+            "rows_file": rows_filename_for_pass(jid, mode),
+            "sha256": sha if re.fullmatch(r"[0-9a-f]{64}", sha) else "",
+        }
+    return list(seen.values())
+
+
+def print_launcher_completed_passes(progress_path: Path, window_pass_mode: str) -> None:
+    """One tab-separated line per finished pass, for the launcher's fetch loop: judge, mode, done file, rows file, sha."""
+    for rec in launcher_completed_passes(progress_path, window_pass_mode):
+        print("\t".join((rec["judge_id"], rec["pass_mode"], rec["done_file"], rec["rows_file"], rec["sha256"])))
+
+
+def launcher_verify_fetched_pass(
+    out_dir: Path, judge_id: str, pass_mode: str, *, staged: bool, want_sha256: str = ""
+) -> tuple[bool, str]:
+    """Check one pass's fetched rows against its judge_done record (fail closed).
+
+    `staged=True` checks the two hidden downloads (`judge_done/.<done>.part`, `rows/.<rows>.part`): when the judge_done
+    record parses, names this pass's rows file and mode, and its `sha256` equals the rows' sha256, both are moved into
+    place (rows first) and (True, "") is returned; otherwise both are deleted and the named refusal line is returned
+    (FETCHED_JUDGE_DONE_INVALID, FETCHED_ROWS_MISSING, FETCHED_ROWS_SHA_MISMATCH), so the pass is not counted complete.
+    `staged=False` only checks the files already in place (deleting nothing), and also needs `want_sha256` (the VM's
+    latest record) to match when given: the launcher skips a re-fetch only on True."""
+    done_name = judge_done_filename_for_pass(judge_id, pass_mode)
+    rows_name = rows_filename_for_pass(judge_id, pass_mode)
+    done_dst = Path(out_dir) / JUDGE_DONE_DIRNAME / done_name
+    rows_dst = Path(out_dir) / ROWS_DIRNAME / rows_name
+    done_src = done_dst.with_name(f".{done_name}.part") if staged else done_dst
+    rows_src = rows_dst.with_name(f".{rows_name}.part") if staged else rows_dst
+
+    def _refuse(code: str, detail: str) -> tuple[bool, str]:
+        if staged:
+            for f in (done_src, rows_src):
+                f.unlink(missing_ok=True)
+        return False, (
+            f"{code}: judge={judge_id} pass_mode={pass_mode} rows_file={ROWS_DIRNAME}/{rows_name} {detail}; "
+            "not counted as completed, partial files deleted"
+        )
+
+    try:
+        doc = json.loads(done_src.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return _refuse("FETCHED_JUDGE_DONE_INVALID", f"detail=judge_done/{done_name} missing or unreadable")
+    sha = str(doc.get("sha256") or "").strip().lower() if isinstance(doc, Mapping) else ""
+    if not re.fullmatch(r"[0-9a-f]{64}", sha):
+        return _refuse("FETCHED_JUDGE_DONE_INVALID", f"detail=judge_done/{done_name} records no rows sha256")
+    if doc.get("rows_file") not in (None, f"{ROWS_DIRNAME}/{rows_name}") or doc.get("pass_mode") not in (None, pass_mode):
+        return _refuse("FETCHED_JUDGE_DONE_INVALID", f"detail=judge_done/{done_name} names another pass")
+    if not rows_src.is_file():
+        return _refuse("FETCHED_ROWS_MISSING", "detail=rows file not fetched")
+    got = sha256_file(rows_src).lower()
+    if got != sha:
+        return _refuse("FETCHED_ROWS_SHA_MISMATCH", f"expected_sha256={sha[:12]} got_sha256={got[:12]}")
+    if not staged:
+        return (not want_sha256 or want_sha256.lower() == sha), ""
+    os.replace(rows_src, rows_dst)
+    os.replace(done_src, done_dst)
+    return True, ""
 
 
 if __name__ == "__main__":

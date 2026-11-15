@@ -70,7 +70,7 @@ from reasoning_dataset_lab.pilot_b.device import (
 )
 
 OrderMode = Literal["AB", "BA"]
-from reasoning_dataset_lab.pilot_b.three_way_wording import THREE_WAY_PASS_MODES, PassMode, judge_supports_pass_mode, rows_filename_is_three_way, three_way_wording  # noqa: E501
+from reasoning_dataset_lab.pilot_b.three_way_wording import NLI_PASS_MODES, PASS_MODE_CHOICES, THREE_WAY_PASS_MODES, TWO_QUESTION_PASS_MODES, PassMode, judge_done_filename_for_pass, judge_supports_pass_mode, rows_filename_is_three_way, three_way_wording  # noqa: E501
 DoneReason = Literal["stop", "length", "error"]
 RowState = Literal["parsed", "unparseable", "length_stop"]
 
@@ -391,9 +391,9 @@ JUDGE_SPECIFIC_NOTES: dict[str, dict[str, Any]] = {
 def resolve_judge_spec(judge: str) -> JudgeSpec:
     """Resolve a judge id or repo alias to its pinned `JudgeSpec`."""
     key = JUDGE_ALIASES.get(judge.strip().lower(), judge.strip())
-    spec = BAKEOFF_JUDGE_SPECS.get(key)
+    spec = JUDGE_SPECS.get(key)  # the five bake-off judges and the D5c ones
     if spec is None:
-        valid = ", ".join(sorted(BAKEOFF_JUDGE_SPECS))
+        valid = ", ".join(sorted(JUDGE_SPECS))
         raise usage_error(
             "BAKEOFF_JUDGE_UNKNOWN",
             f"Unknown judge '{judge}'.",
@@ -1784,8 +1784,8 @@ class D3MiniAdapter(BaseJudgeAdapter):
         "cannot_tell": "The state neither entails nor contradicts the claim.",
     }
 
-    def __init__(self) -> None:
-        super().__init__(BAKEOFF_JUDGE_SPECS["d3-mini"])
+    def __init__(self, spec: JudgeSpec | None = None) -> None:  # any d3-family spec (d3-mini, d3-flash)
+        super().__init__(spec if spec is not None else BAKEOFF_JUDGE_SPECS["d3-mini"])
 
     def _build_prompt(
         self,
@@ -1803,14 +1803,14 @@ class D3MiniAdapter(BaseJudgeAdapter):
                     "instructions": instructions,
                 }
             }
+        elif pass_mode in TWO_QUESTION_PASS_MODES:  # Arm 2: two noul questions; no criteria and no class names shown.
+            questions = two_question_payload_questions(pass_mode, self.spec.judge_id, item.claim)
         else:  # The choice keys are the arm's shown labels; d3-mini answers with probabilities keyed by them.
             questions = {
                 (wording := three_way_wording(pass_mode, self.spec.judge_id)).question_id: {
                     "type": "choice",
                     "instructions": wording.render_instruction(item.claim),
-                    "criteria": {o.shown_label: o.description for o in wording.options},
-                }
-            }
+                    "criteria": {o.shown_label: o.description for o in wording.options}, }}
         payload = {
             "model": self.spec.repo_id,
             "state": ordered_material,
@@ -1877,8 +1877,8 @@ class D3MiniAdapter(BaseJudgeAdapter):
                 verdict_top_logprobs=top5,
             )
 
-        # 3-way choice readout
-        if isinstance(sys_one, Mapping):
+        if pass_mode in TWO_QUESTION_PASS_MODES: return parse_two_question_readout(pass_mode, self.spec, response, sys_one)  # noqa: E701,E501
+        if isinstance(sys_one, Mapping):  # 3-way choice readout
             answers = sys_one.get("answers", sys_one)
             if isinstance(answers, Mapping):
                 q_ans = answers.get(three_way_wording(pass_mode, self.spec.judge_id).question_id, answers)
@@ -2200,8 +2200,8 @@ class FlowJudgeAdapter(BaseJudgeAdapter):
         )
 
 
-def build_judge_adapter(judge: str | JudgeSpec) -> BaseJudgeAdapter:
-    """Instantiate the dedicated adapter class for `judge` (no adapter class is shared across judges)."""
+def _build_original_judge_adapter(judge: str | JudgeSpec) -> BaseJudgeAdapter:
+    """The adapter of one of the five original judges (`build_judge_adapter`, at the end, adds the D5c judges)."""
     spec = judge if isinstance(judge, JudgeSpec) else resolve_judge_spec(judge)
     if spec.judge_id == "mu-judge":
         return MuJudgeAdapter()
@@ -2735,7 +2735,7 @@ def build_shard_manifest(
 
     anchor_item_ids = [*stratified_anchor_ids, *resolved_canary_ids]
 
-    adapters = {jid: build_judge_adapter(spec) for jid, spec in sorted(BAKEOFF_JUDGE_SPECS.items())}
+    adapters = {jid: build_judge_adapter(spec) for jid, spec in sorted(JUDGE_SPECS.items())}  # filtered by mode below
     input_token_ids_sha256_by_call: dict[str, str] = {}
     prompt_sha256_by_call: dict[str, str] = {}
     for entry in schedule.entries:
@@ -3037,7 +3037,7 @@ class DeterministicFakeJudgeTransport:
         if prompt.item_id in self.force_flip_items and prompt.order == "BA":
             p_yes_target = round(1.0 - p_yes_target, 4)
         is_yes = p_yes_target >= 0.5
-
+        if (d5c := d5c_fake_response(spec, prompt, h_bytes, _make_resp)) is not None: return d5c  # noqa: E701
         if prompt.pass_mode in THREE_WAY_PASS_MODES:
             choices = ("supported", "unsupported", "cannot_tell")
             c_idx = h_bytes[4] % 3
@@ -3053,7 +3053,7 @@ class DeterministicFakeJudgeTransport:
                     TopLogprobEntry(token="none", logprob=math.log(0.01)),
                 )
             )
-            if spec.judge_id == "d3-mini":
+            if spec.judge_id in D3_FAMILY_JUDGE_IDS:
                 tw_words = three_way_wording(prompt.pass_mode, spec.judge_id)  # the arm's question id and shown labels
                 shown = {v: k for k, v in tw_words.shown_to_internal().items()}
                 probs_map = {shown[choices[c_idx]]: 0.78}
@@ -3932,7 +3932,7 @@ class D3MiniTransport:
 
     def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
         check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
-        check_d3_mini_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+        check_d3_family_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
         ensure_offline_env(set_if_unset=False)
         snapshot_dir, verified_digest = verify_snapshot_against_receipt(
             spec,
@@ -3948,7 +3948,7 @@ class D3MiniTransport:
                 f"{sorted(spec.remote_code_files)}.",
                 "Only the eight reviewed d3-mini .py files may be present; re-review before changing the set.",
             )
-        self._snapshot_dir = snapshot_dir
+        self._snapshot_dir = check_d3_remote_code_matches_review(spec, snapshot_dir, receipts_dir=self.receipts_dir)
         self._verified_digest = verified_digest
         self._reviewed_sha = allow_remote_code_reviewed  # raw: the gate above proved it is the exact reviewed SHA
         return verified_digest
@@ -3957,7 +3957,7 @@ class D3MiniTransport:
         if self._model is not None:
             return
         # The gate is re-checked with the SHA that verify_ready saw; without a verify_ready call it sees nothing.
-        check_d3_mini_remote_code_gate(spec, allow_remote_code_reviewed=self._reviewed_sha)
+        check_d3_family_remote_code_gate(spec, allow_remote_code_reviewed=self._reviewed_sha)
         ensure_offline_env(set_if_unset=False)
         assert self._snapshot_dir is not None and self._verified_digest is not None
 
@@ -4053,7 +4053,7 @@ class D3MiniTransport:
         min_margin = compute_min_top2_logit_margin_from_logprobs(entries)
         sdpa_backend = pin_and_read_sdpa_backend()
         library_pins: dict[str, Any] = {
-            "transport": "D3MiniTransport",
+            "transport": "D3MiniTransport", "remote_code_review": d3_remote_code_review_record(spec),
             "python": sys.version.split()[0],
             "torch": getattr(torch, "__version__", "unknown"),
             "transformers": getattr(transformers, "__version__", "unknown"),
@@ -4993,7 +4993,7 @@ def run_bakeoff_judge(
                     "--receipts-dir containing the pinned <owner>__<repo>.sha256.json receipt.",
                     "Pass --receipts-dir <dir> (and --hf-home <dir> or set HF_HOME), or use --fake-transport for CPU validation.",
                 )
-            if spec.judge_id == D3_MINI_JUDGE_ID:
+            if spec.judge_id in D3_FAMILY_JUDGE_IDS:  # d3-mini and d3-flash: the same reviewed remote code
                 transport = D3MiniTransport(
                     receipts_dir=receipts_dir,
                     hf_home=hf_home,
@@ -5002,8 +5002,8 @@ def run_bakeoff_judge(
                     window_mode=eff_window_mode,
                     shard_spec=eff_shard_spec,
                 )
-            else:
-                transport = TransformersJudgeTransport(
+            else:  # the NLI encoder has its own sequence-classification transport
+                transport = (NliSequenceClassificationTransport if spec.judge_id in NLI_JUDGE_IDS else TransformersJudgeTransport)(  # noqa: E501
                     receipts_dir=receipts_dir,
                     hf_home=hf_home,
                     device=device,
@@ -5208,8 +5208,8 @@ def run_bakeoff_judge(
     is_subblock_invocation = active_item_ids is not None and effective_target_item_ids != shard_item_id_set
 
     judge_done_dir = resolved_out / "judge_done"
-    judge_done_path = judge_done_dir / f"{spec.judge_id}.json"
-    judge_done_tmp = judge_done_dir / f".{spec.judge_id}.json.tmp"
+    judge_done_path = judge_done_dir / judge_done_filename_for_pass(spec.judge_id, pass_mode)  # per (judge, mode) pass
+    judge_done_tmp = judge_done_dir / f".{judge_done_path.name}.tmp"
     prev_load_history: list[float] = []
     prev_canary_start_records: list[dict[str, Any]] | None = None
     prev_done_doc: dict[str, Any] = {}
@@ -5738,7 +5738,7 @@ def run_bakeoff_judge(
                 "raw_generation": resp.raw_text,
                 "raw_verdict": readout.raw_verdict,
                 "confidence": round(readout.p_yes, 6) if readout.p_yes is not None else None,
-                "choice_probabilities": readout.choice_probabilities,
+                "choice_probabilities": readout.choice_probabilities, **two_question_row_fields(readout, pass_mode),
                 "top_logprobs": top5_dicts,
                 "top_20_logprobs": top20_dicts,
                 "polarity_map": polarity_map,
@@ -8039,7 +8039,7 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--pass-mode",
-        choices=("binary", "three_way", "three_way_contradicted"),
+        choices=PASS_MODE_CHOICES,
         default="binary",
         help="Judge pass mode.",
     )
@@ -8241,9 +8241,6 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
         return int(exc.exit_code or 2)
 
 
-if __name__ == "__main__":
-    raise SystemExit(main_judge_runner())
-
 
 SHARD_MANIFEST_INPUT_SHA_SOURCE_CANONICAL = "canonical_prompt"
 SHARD_MANIFEST_INPUT_SHA_SOURCE_HF = "hf_tokenizer"
@@ -8267,8 +8264,8 @@ def compute_prompt_sha256_by_call(
         items, _ = _resolve_items_from_manifest_source(items_or_path)
     else:
         items = tuple(items_or_path)
-    eff_judges = sorted(BAKEOFF_JUDGE_SPECS) if judge_ids is None else [j for j in judge_ids if j in BAKEOFF_JUDGE_SPECS]
-    adapters = {jid: build_judge_adapter(BAKEOFF_JUDGE_SPECS[jid]) for jid in eff_judges}
+    eff_judges = sorted(JUDGE_SPECS) if judge_ids is None else [j for j in judge_ids if j in JUDGE_SPECS]
+    adapters = {jid: build_judge_adapter(JUDGE_SPECS[jid]) for jid in eff_judges}
     out: dict[str, str] = {}
     for it in items:
         for jid, adapter in adapters.items():
@@ -8278,3 +8275,549 @@ def compute_prompt_sha256_by_call(
                 prompt = adapter.assemble_prompt(it, order=order, pass_mode=pass_mode)
                 out[f"{it.item_id}:{order}:{jid}"] = prompt.prompt_sha256
     return dict(sorted(out.items()))
+
+
+# --- The D5c judge window, arms 2-6 (build card 2026-11-15 v4; PREREG-d5c-five-arm-window-2026-11-15 and its arm-6
+# addendum). Defined after every line REAL_SERVICE_ASSUMPTIONS.md cites, so the citations hold. Model-facing words live in
+# `three_way_wording`; this block holds the judges, the arm-2 readout, the d3-family remote-code gate and arm 5's encoder.
+from reasoning_dataset_lab.pilot_b.three_way_wording import (  # noqa: E402
+    INCONSISTENT_VERDICT,
+    NLI_LABEL_TO_INTERNAL,
+    THREE_WAY_INTERNAL_CLASSES,
+    two_question_verdict,
+    two_question_wording,
+)
+
+D3_FLASH_JUDGE_ID = "d3-flash"
+D3_FLASH_REVISION = "67e03e1bc157961c582ee7c6a35d9b15fada3dec"
+NLI_JUDGE_ID = "nli-deberta-v3-large"
+NLI_JUDGE_IDS: frozenset[str] = frozenset({NLI_JUDGE_ID})
+# The d3 family: the judges that run d3's eight remote-code files through `D3MiniTransport`, each with the SHA its gate
+# takes. d3-mini's is the reviewed bd0090dd. d3-flash's is its own pin: its eight files are byte-identical to d3-mini's
+# reviewed ones (all 8 compared by R&D, 2026-11-15), and `check_d3_remote_code_matches_review` re-proves that identity
+# at every load from the two receipts, refusing otherwise. Every row records how its gate passed
+# (`library_pins.remote_code_review`).
+D3_REVIEWED_REVISION_BY_JUDGE: dict[str, str] = {
+    D3_MINI_JUDGE_ID: D3_MINI_REVIEWED_REVISION,
+    D3_FLASH_JUDGE_ID: D3_FLASH_REVISION,
+}
+D3_FAMILY_JUDGE_IDS: frozenset[str] = frozenset(D3_REVIEWED_REVISION_BY_JUDGE)
+D3_REVIEWED_CODE_JUDGE_ID = D3_MINI_JUDGE_ID
+# Arm 5's input limit: an input over 512 tokens is an invalid call (never truncated).
+NLI_MAX_INPUT_TOKENS = 512
+
+# The D5c judges: pinned and resolvable by id (`JUDGE_SPECS`), but never in BAKEOFF_JUDGE_SPECS, which stays the
+# bake-off's five, so every all-judge window, receipt and loop is unchanged. They run only when a window names them.
+D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
+    {
+        D3_FLASH_JUDGE_ID: JudgeSpec(
+            judge_id=D3_FLASH_JUDGE_ID,
+            judge_label="vllm-sr/d3-flash",
+            repo_id="vllm-sr/d3-flash",
+            revision=D3_FLASH_REVISION,
+            card_registry_id="d3-flash-card",
+            licence_registry_id="apache-2.0",
+            requires_remote_code=True,
+            remote_code_files=BAKEOFF_JUDGE_SPECS[D3_MINI_JUDGE_ID].remote_code_files,
+            supports_three_way=True,
+            has_probability=True,
+            verdict_position="system_one_readout",
+            max_new_tokens=1,
+            card_snapshot_path="cards/vllm-sr_d3-flash.md",
+            card_snapshot_sha256="9297d4c74e21bbebf1d87aa0264dcd696cc874bd2d915f3b977bbcb36ca8ed0e",
+        ),
+        NLI_JUDGE_ID: JudgeSpec(
+            judge_id=NLI_JUDGE_ID,
+            judge_label="MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli",
+            repo_id="MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli",
+            revision="b3546ea6b0346eb6f8d5d68b13c7dc6d0376b3d7",
+            card_registry_id="deberta-v3-large-mnli-fever-anli-ling-wanli-card",
+            licence_registry_id="mit",
+            requires_remote_code=False,
+            remote_code_files=(),
+            supports_three_way=True,
+            has_probability=True,
+            verdict_position="nli_class_softmax",
+            max_new_tokens=0,
+            card_snapshot_path="cards/MoritzLaurer_DeBERTa-v3-large-mnli-fever-anli-ling-wanli.md",
+            card_snapshot_sha256="216c3ac9ea77beec4e35a347c8b4edc47fbb3465e7c2a00dc923ae7b975cf346",
+        ),
+    }
+)
+# Every pinned judge, by id: the bake-off's five and the D5c ones.
+JUDGE_SPECS: dict[str, JudgeSpec] = {**BAKEOFF_JUDGE_SPECS, **D5C_JUDGE_SPECS}
+JUDGE_ALIASES.update(
+    {
+        "d3-flash": D3_FLASH_JUDGE_ID,
+        "vllm-sr/d3-flash": D3_FLASH_JUDGE_ID,
+        "nli-deberta-v3-large": NLI_JUDGE_ID,
+        "moritzlaurer/deberta-v3-large-mnli-fever-anli-ling-wanli": NLI_JUDGE_ID,
+    }
+)
+MODEL_PARAM_BILLIONS_BY_JUDGE.update({D3_FLASH_JUDGE_ID: 8.39, NLI_JUDGE_ID: 0.435})
+
+
+# --- the d3-family remote-code gate ---------------------------------------------------------------------------------
+
+
+def check_d3_family_remote_code_gate(spec: JudgeSpec, *, allow_remote_code_reviewed: str | None) -> None:
+    """The gate `D3MiniTransport` runs: d3-mini's own gate, unchanged (it also refuses any judge outside the d3
+    family); for d3-flash the same byte-exact rule against its own pin, plus the reviewed file set."""
+    if spec.judge_id not in D3_FAMILY_JUDGE_IDS or spec.judge_id == D3_MINI_JUDGE_ID:
+        check_d3_mini_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+        return
+    pinned = D3_REVIEWED_REVISION_BY_JUDGE[spec.judge_id]
+    if not isinstance(allow_remote_code_reviewed, str) or allow_remote_code_reviewed != pinned:
+        shown = repr(allow_remote_code_reviewed[:16]) if isinstance(allow_remote_code_reviewed, str) else "nothing"
+        raise refused_error(
+            "BAKEOFF_JUDGE_REMOTE_CODE_REFUSED",
+            f"Judge '{spec.judge_id}' ({spec.repo_id}) executes repo Python files ({', '.join(spec.remote_code_files)}); "
+            f"--allow-remote-code-reviewed must be exactly its pinned revision, 40 lowercase hex characters (got {shown}).",
+            f"Pass --allow-remote-code-reviewed {pinned} (the full 40-character SHA).",
+        )
+    if spec.revision != pinned:
+        raise refused_error(
+            "BAKEOFF_JUDGE_REMOTE_CODE_REVISION_MISMATCH",
+            f"Judge '{spec.judge_id}' is pinned to {spec.revision}, but its remote code was cleared at {pinned}.",
+            "Re-run the remote-code comparison for the new revision before changing the pin.",
+        )
+    reviewed_files = BAKEOFF_JUDGE_SPECS[D3_REVIEWED_CODE_JUDGE_ID].remote_code_files
+    if tuple(sorted(spec.remote_code_files)) != tuple(sorted(reviewed_files)):
+        raise refused_error(
+            "BAKEOFF_JUDGE_REMOTE_CODE_FILES_MISMATCH",
+            f"Judge '{spec.judge_id}' lists remote-code files {sorted(spec.remote_code_files)}, not the reviewed set "
+            f"{sorted(reviewed_files)}.",
+            "Only the eight reviewed d3 files may run.",
+        )
+
+
+def _load_receipt_files(receipts_dir: Path, repo_id: str) -> Mapping[str, Any] | None:
+    owner, repo = repo_id.split("/", 1)
+    path = Path(receipts_dir).resolve() / f"{owner}__{repo}.sha256.json"
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    files = doc.get("files") if isinstance(doc, Mapping) else None
+    return files if isinstance(files, Mapping) else None
+
+
+def check_d3_remote_code_matches_review(spec: JudgeSpec, snapshot_dir: Path, *, receipts_dir: Path) -> Path:
+    """Return `snapshot_dir` once its remote code is the reviewed code. d3-mini's is the reviewed revision itself. For
+    d3-flash, every one of the eight files' sha256 and size in its receipt (which `verify_snapshot_against_receipt` has
+    just proved the snapshot matches) must equal d3-mini's reviewed receipt entry; else `BAKEOFF_JUDGE_REMOTE_CODE_NOT_REVIEWED`."""
+    if spec.judge_id == D3_REVIEWED_CODE_JUDGE_ID:
+        return snapshot_dir
+    reviewed_spec = BAKEOFF_JUDGE_SPECS[D3_REVIEWED_CODE_JUDGE_ID]
+    reviewed = _load_receipt_files(receipts_dir, reviewed_spec.repo_id)
+    own = _load_receipt_files(receipts_dir, spec.repo_id)
+    differing: list[str] = []
+    for rel in spec.remote_code_files:
+        a = (own or {}).get(rel)
+        b = (reviewed or {}).get(rel)
+        same = (
+            isinstance(a, Mapping)
+            and isinstance(b, Mapping)
+            and str(a.get("sha256") or "").lower() == str(b.get("sha256") or "").lower() != ""
+            and a.get("bytes") == b.get("bytes")
+        )
+        if not same:
+            differing.append(rel)
+    if reviewed is None or differing:
+        raise refused_error(
+            "BAKEOFF_JUDGE_REMOTE_CODE_NOT_REVIEWED",
+            f"Judge '{spec.judge_id}' runs remote code cleared as byte-identical to {reviewed_spec.repo_id} @ "
+            f"{reviewed_spec.revision[:8]}, but "
+            + ("that reviewed receipt is missing" if reviewed is None else f"{differing} differ from it")
+            + ".",
+            "Put the reviewed d3-mini receipt in --receipts-dir; a differing file needs its own remote-code review.",
+        )
+    return snapshot_dir
+
+
+def d3_remote_code_review_record(spec: JudgeSpec) -> dict[str, str] | None:
+    """How the remote-code gate passed for `spec`, recorded in every row's `library_pins.remote_code_review`."""
+    if spec.judge_id not in D3_FAMILY_JUDGE_IDS:
+        return None
+    if spec.judge_id == D3_REVIEWED_CODE_JUDGE_ID:
+        return {"gate_sha": D3_MINI_REVIEWED_REVISION, "basis": "reviewed revision"}
+    reviewed = BAKEOFF_JUDGE_SPECS[D3_REVIEWED_CODE_JUDGE_ID]
+    return {
+        "gate_sha": D3_REVIEWED_REVISION_BY_JUDGE[spec.judge_id],
+        "basis": f"8 remote-code files byte-identical to {reviewed.repo_id} @ {reviewed.revision} (receipts compared at load)",
+    }
+
+
+# --- arm 2: two noul questions in one request ------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TwoQuestionReadout(ParsedJudgeReadout):
+    """Arm 2's readout of one order: p_t = P(yes) on the "must be true" question, p_f on the "must be false" one."""
+
+    p_t: float | None = None
+    p_f: float | None = None
+
+
+def two_question_payload_questions(pass_mode: str, judge_id: str, claim: str) -> dict[str, Any]:
+    """The `questions` of a two-question request: one `noul` per question, with no criteria and no class names."""
+    wording = two_question_wording(pass_mode, judge_id)
+    return {q.question_id: {"type": "noul", "instructions": q.render_instruction(claim)} for q in wording.questions}
+
+
+def _probability_or_none(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    fv = float(value)
+    return fv if math.isfinite(fv) and 0.0 <= fv <= 1.0 else None
+
+
+def parse_two_question_readout(
+    pass_mode: str, spec: JudgeSpec, response: JudgeTransportResponse, sys_one: Any
+) -> TwoQuestionReadout:
+    """Arm 2's readout: both `noul` answers must be real numbers in [0, 1], else the call is unparseable (invalid). The
+    verdict is the pre-registered mapping at the fixed threshold; both yes is `inconsistent` (parsed, scored wrong)."""
+    wording = two_question_wording(pass_mode, spec.judge_id)
+    answers = sys_one.get("answers", sys_one) if isinstance(sys_one, Mapping) else None
+    by_role: dict[str, float | None] = {}
+    for q in wording.questions:
+        ans = answers.get(q.question_id) if isinstance(answers, Mapping) else None
+        by_role[q.role] = _probability_or_none(ans.get("noul")) if isinstance(ans, Mapping) else None
+    p_t, p_f = by_role.get("true"), by_role.get("false")
+    top5 = response.verdict_top_logprobs[:5]
+    if p_t is None or p_f is None:
+        return TwoQuestionReadout(
+            state="unparseable",
+            done_reason=response.done_reason,
+            raw_verdict=None,
+            p_yes=None,
+            choice_probabilities=None,
+            verdict_top_logprobs=top5,
+            parse_note="missing or invalid noul probability in a two-question System One readout",
+            p_t=p_t,
+            p_f=p_f,
+        )
+    return TwoQuestionReadout(
+        state="parsed",
+        done_reason=response.done_reason,
+        raw_verdict=two_question_verdict(p_t, p_f, wording.threshold),
+        p_yes=p_t,
+        choice_probabilities=None,
+        verdict_top_logprobs=top5,
+        p_t=p_t,
+        p_f=p_f,
+    )
+
+
+def two_question_row_fields(readout: ParsedJudgeReadout, pass_mode: str | None = None) -> dict[str, Any]:
+    """The arm-2 fields of a row (p_t, p_f and the `inconsistent` flag); nothing for any other arm."""
+    if not isinstance(readout, TwoQuestionReadout) and pass_mode not in TWO_QUESTION_PASS_MODES:
+        return {}
+    p_t = getattr(readout, "p_t", None)
+    p_f = getattr(readout, "p_f", None)
+    return {
+        "p_t": round(p_t, 6) if p_t is not None else None,
+        "p_f": round(p_f, 6) if p_f is not None else None,
+        "inconsistent": readout.state == "parsed" and readout.raw_verdict == INCONSISTENT_VERDICT,
+    }
+
+
+# --- arm 5: the 3-class NLI encoder -----------------------------------------------------------------------------------
+
+
+def _nli_label_map(pass_mode: str) -> dict[str, str]:
+    return NLI_LABEL_TO_INTERNAL[pass_mode]
+
+
+class NliEncoderAdapter(BaseJudgeAdapter):
+    """Arm 5: premise = the material in this order, hypothesis = the claim verbatim; no prompt words, no labels shown.
+    The readout maps the model's own label names (from its config.json `id2label`) to the internal classes."""
+
+    def __init__(self, spec: JudgeSpec | None = None) -> None:
+        super().__init__(spec if spec is not None else JUDGE_SPECS[NLI_JUDGE_ID])
+
+    def _build_prompt(
+        self,
+        *,
+        item: JudgeInputItem,
+        ordered_material: str,
+        order: OrderMode,
+        pass_mode: PassMode,
+    ) -> AssembledPrompt:
+        payload = {"premise": ordered_material, "hypothesis": item.claim}
+        rendered = json.dumps(payload, indent=2, ensure_ascii=False)
+        return AssembledPrompt(
+            judge_id=self.spec.judge_id,
+            item_id=item.item_id,
+            order=order,
+            pass_mode=pass_mode,
+            prompt_text=rendered,
+            messages=({"role": "user", "content": rendered},),
+            structured_payload=payload,
+        )
+
+    def _parse_non_length_response(
+        self,
+        response: JudgeTransportResponse,
+        *,
+        pass_mode: PassMode,
+    ) -> ParsedJudgeReadout:
+        top5 = response.verdict_top_logprobs[:5]
+        label_map = _nli_label_map(pass_mode)
+        sys_one = response.system_one_result
+        raw = sys_one.get("probabilities") if isinstance(sys_one, Mapping) else None
+        probs: dict[str, float] = {}
+        if isinstance(raw, Mapping) and set(raw) == set(label_map):
+            vals = {k: raw[k] for k in label_map}
+            if all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and float(v) >= 0.0 for v in vals.values()):
+                total = sum(float(v) for v in vals.values())
+                if math.isfinite(total) and total > 0.0:
+                    probs = {label_map[k]: float(v) / total for k, v in vals.items()}
+        if response.done_reason != "stop" or len(probs) != 3:
+            return ParsedJudgeReadout(
+                state="unparseable",
+                done_reason=response.done_reason,
+                raw_verdict=None,
+                p_yes=None,
+                choice_probabilities=None,
+                verdict_top_logprobs=top5,
+                parse_note="missing or invalid class probabilities in the NLI readout",
+            )
+        verdict = max(THREE_WAY_INTERNAL_CLASSES, key=lambda c: probs[c])
+        ordered = {c: probs[c] for c in THREE_WAY_INTERNAL_CLASSES}
+        return ParsedJudgeReadout(
+            state="parsed",
+            done_reason=response.done_reason,
+            raw_verdict=verdict,
+            p_yes=ordered["supported"],
+            choice_probabilities=ordered,
+            verdict_top_logprobs=top5,
+        )
+
+
+def read_nli_id2label(config_path: Path) -> dict[int, str]:
+    """The label order from the receipt-verified snapshot's config.json `id2label`, lower-cased; refuses
+    `BAKEOFF_JUDGE_NLI_LABELS_UNEXPECTED` unless it names exactly the labels every NLI arm maps."""
+    try:
+        cfg = json.loads(Path(config_path).read_text(encoding="utf-8"))
+        id2label = {int(k): str(v).strip().lower() for k, v in dict(cfg["id2label"]).items()}
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        raise refused_error(
+            "BAKEOFF_JUDGE_NLI_LABELS_UNEXPECTED",
+            f"Cannot read id2label from '{config_path}': {type(exc).__name__}.",
+            "The NLI encoder's label order is read from its config.json; it is never assumed.",
+        ) from exc
+    expected = [set(m) for m in NLI_LABEL_TO_INTERNAL.values()]
+    if sorted(id2label) != list(range(len(id2label))) or any(set(id2label.values()) != e for e in expected):
+        raise refused_error(
+            "BAKEOFF_JUDGE_NLI_LABELS_UNEXPECTED",
+            f"config.json id2label is {id2label}; every NLI arm needs exactly {sorted(expected[0])}.",
+            "Pin a revision whose head is the 3-class entailment / neutral / contradiction head.",
+        )
+    return id2label
+
+
+class NliSequenceClassificationTransport(TransformersJudgeTransport):
+    """Arm 5's transport: a receipt-verified local snapshot loaded with `AutoModelForSequenceClassification`
+    (`trust_remote_code=False`, `local_files_only=True`). It reads the label order from the snapshot's config.json and
+    checks the loaded head agrees, tokenizes (premise, hypothesis) with no truncation, refuses an input over
+    `NLI_MAX_INPUT_TOKENS` as a length stop (an invalid call), and returns the softmax over the model's labels."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._id2label: dict[int, str] | None = None
+        self.max_input_tokens = NLI_MAX_INPUT_TOKENS
+
+    def _ensure_loaded(self, spec: JudgeSpec) -> None:
+        if self._model is not None and self._loaded_spec_id == spec.judge_id:
+            return
+        if self._snapshot_dir is None or self._verified_digest is None:
+            self.verify_ready(spec)
+        assert self._snapshot_dir is not None
+        id2label = read_nli_id2label(self._snapshot_dir / "config.json")
+        try:
+            import torch
+            from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        except ImportError as exc:  # pragma: no cover
+            raise refused_error(
+                "BAKEOFF_JUDGE_DEPS_MISSING",
+                f"Missing torch/transformers dependency for NliSequenceClassificationTransport: {exc}.",
+                "Install the optional 'judge' extra into the judge venv.",
+            ) from exc
+        ensure_sync_weight_loading()
+        tokenizer = AutoTokenizer.from_pretrained(str(self._snapshot_dir), local_files_only=True, trust_remote_code=False)
+        dtype_arg = self.torch_dtype
+        if isinstance(dtype_arg, str) and hasattr(torch, dtype_arg):
+            dtype_arg = getattr(torch, dtype_arg)
+        model = AutoModelForSequenceClassification.from_pretrained(
+            str(self._snapshot_dir), local_files_only=True, trust_remote_code=False, dtype=dtype_arg
+        )
+        model.to(self.device)
+        model.eval()
+        loaded = {int(k): str(v).strip().lower() for k, v in dict(getattr(model.config, "id2label", {}) or {}).items()}
+        if loaded != id2label:
+            raise refused_error(
+                "BAKEOFF_JUDGE_NLI_LABELS_UNEXPECTED",
+                f"The loaded head's id2label {loaded} is not config.json's {id2label}.",
+                "Load the receipt-verified snapshot only.",
+            )
+        self._tokenizer = tokenizer
+        self._model = model
+        self._id2label = id2label
+        self._loaded_spec_id = spec.judge_id
+
+    def _encode(self, prompt: AssembledPrompt) -> Any:
+        payload = prompt.structured_payload or {}
+        premise, hypothesis = payload.get("premise"), payload.get("hypothesis")
+        if not isinstance(premise, str) or not isinstance(hypothesis, str):
+            raise refused_error(
+                "BAKEOFF_JUDGE_NLI_INPUT_INVALID",
+                f"NLI prompt for '{prompt.item_id}' carries no premise/hypothesis pair.",
+                "Assemble the prompt with NliEncoderAdapter.",
+            )
+        return self._tokenizer(premise, hypothesis, truncation=False, return_tensors="pt")
+
+    def count_prompt_tokens(self, spec: JudgeSpec, prompt: AssembledPrompt) -> int:
+        self._ensure_loaded(spec)
+        return int(self._encode(prompt)["input_ids"].shape[1])
+
+    def prefill(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int = 0) -> None:
+        self.generate(spec, prompt, seed=seed)
+
+    def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
+        self._ensure_loaded(spec)
+        assert self._model is not None and self._id2label is not None and self._verified_digest is not None
+        import torch
+        import transformers
+
+        enc = self._encode(prompt)
+        input_ids = [int(t) for t in enc["input_ids"][0].tolist()]
+        in_sha = compute_token_ids_sha256(input_ids)
+        det_status = configure_torch_determinism(window_mode=self.window_mode, shard_spec=self.shard_spec)
+        library_pins: dict[str, Any] = {
+            "transport": "NliSequenceClassificationTransport",
+            "python": sys.version.split()[0],
+            "torch": getattr(torch, "__version__", "unknown"),
+            "transformers": getattr(transformers, "__version__", "unknown"),
+            "dtype": str(self.torch_dtype),
+            "deterministic_algorithms": det_status,
+            "id2label": {str(k): v for k, v in sorted(self._id2label.items())},
+            "max_input_tokens": self.max_input_tokens,
+            "truncation": False,
+        }
+        common = {
+            "model_digest": self._verified_digest,
+            "server_binary": f"transformers/{library_pins['transformers']};torch/{library_pins['torch']};{self.device}",
+            "library_pins": library_pins,
+            "input_token_ids_sha256": in_sha,
+            "input_token_count": len(input_ids),
+        }
+        if len(input_ids) > self.max_input_tokens:
+            sys_one = {"error": "max_length_exceeded", "input_tokens": len(input_ids)}
+            return JudgeTransportResponse(
+                raw_text=json.dumps(sys_one, sort_keys=True),
+                tokens=(),
+                verdict_top_logprobs=(),
+                done_reason="length",
+                seconds=0.0001,
+                system_one_result=sys_one,
+                output_token_ids_sha256=compute_response_output_token_ids_sha256(spec.judge_id, (), system_one_result=sys_one),
+                output_token_count=0,
+                stop_reason="max_new_tokens",
+                **common,
+            )
+        torch.manual_seed(int(seed))
+        t0 = time.monotonic()
+        with torch.inference_mode():
+            out = self._model(**{k: v.to(self.device) for k, v in enc.items()})
+        elapsed = max(0.0001, time.monotonic() - t0)
+        logits = [float(x) for x in out.logits[0].float().tolist()]
+        peak = max(logits)
+        exps = [math.exp(x - peak) for x in logits]
+        total = sum(exps)
+        probs = {self._id2label[i]: exps[i] / total for i in range(len(exps))}
+        floor = 1e-12
+        entries = tuple(
+            sorted(
+                (TopLogprobEntry(token=k, logprob=math.log(max(v, floor))) for k, v in probs.items()),
+                key=lambda e: e.logprob,
+                reverse=True,
+            )
+        )
+        sys_one = {"probabilities": probs}
+        tokens = (entries[0].token,)
+        margin = compute_min_top2_logit_margin_from_logprobs(entries)
+        return JudgeTransportResponse(
+            raw_text=json.dumps(sys_one, sort_keys=True),
+            tokens=tokens,
+            verdict_top_logprobs=entries,
+            done_reason="stop",
+            seconds=elapsed,
+            system_one_result=sys_one,
+            output_token_ids_sha256=compute_response_output_token_ids_sha256(spec.judge_id, tokens, system_one_result=sys_one),
+            output_token_count=len(tokens),
+            stop_reason="eos",
+            min_top2_logit_margin=margin,
+            verdict_token_margin=margin,
+            **common,
+        )
+
+
+# --- the adapter factory and the fake transport, for the original judges and the D5c ones ----------------------------
+
+
+def build_judge_adapter(judge: str | JudgeSpec) -> BaseJudgeAdapter:
+    """Instantiate the dedicated adapter class for `judge`: the d3 family shares the System One adapter, the NLI
+    encoder has its own, and the five original judges keep theirs (`_build_original_judge_adapter`)."""
+    spec = judge if isinstance(judge, JudgeSpec) else resolve_judge_spec(judge)
+    if spec.judge_id in D3_FAMILY_JUDGE_IDS:
+        return D3MiniAdapter(spec)
+    if spec.judge_id in NLI_JUDGE_IDS:
+        return NliEncoderAdapter(spec)
+    return _build_original_judge_adapter(spec)
+
+
+def d5c_fake_response(
+    spec: JudgeSpec,
+    prompt: AssembledPrompt,
+    h_bytes: bytes,
+    make_resp: Callable[..., JudgeTransportResponse],
+) -> JudgeTransportResponse | None:
+    """`DeterministicFakeJudgeTransport`'s answers for arm 2 (two `noul` answers) and arm 5 (NLI label probabilities),
+    deterministic per call; None for every other mode, which answers as before."""
+    if prompt.pass_mode in TWO_QUESTION_PASS_MODES and spec.judge_id in D3_FAMILY_JUDGE_IDS:
+        wording = two_question_wording(prompt.pass_mode, spec.judge_id)
+        p_t = round(0.05 + 0.90 * h_bytes[5] / 255, 4)
+        p_f = round(0.05 + 0.90 * h_bytes[6] / 255, 4)
+        by_role = {"true": p_t, "false": p_f}
+        sys_one = {"answers": {q.question_id: {"noul": by_role[q.role]} for q in wording.questions}}
+        tokens, entries = _d3_answer_entries({"noul": p_t})
+        return make_resp(
+            raw_text=json.dumps(sys_one, sort_keys=True),
+            tokens=tokens,
+            verdict_top_logprobs=_pad_top_logprobs_to_20(entries),
+            done_reason="stop",
+            seconds=0.001,
+            system_one_result=sys_one,
+        )
+    if prompt.pass_mode in NLI_PASS_MODES and spec.judge_id in NLI_JUDGE_IDS:
+        labels = sorted(_nli_label_map(prompt.pass_mode))
+        top = labels[h_bytes[4] % 3]
+        probs = {lbl: (0.8 if lbl == top else 0.1) for lbl in labels}
+        sys_one = {"probabilities": probs}
+        entries = tuple(
+            sorted((TopLogprobEntry(token=k, logprob=math.log(v)) for k, v in probs.items()), key=lambda e: e.logprob, reverse=True)
+        )
+        return make_resp(
+            raw_text=json.dumps(sys_one, sort_keys=True),
+            tokens=(top,),
+            verdict_top_logprobs=entries,
+            done_reason="stop",
+            seconds=0.001,
+            system_one_result=sys_one,
+        )
+    return None
+
+
+if __name__ == "__main__":
+    raise SystemExit(main_judge_runner())

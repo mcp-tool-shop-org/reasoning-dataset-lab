@@ -2542,71 +2542,71 @@ def main(argv: list[str] | None = None) -> int:
                     newline="\n",
                 )
                 if os.environ.get("FAKE_COLAB_WRITE_PARTIAL_RUN_BEFORE_SLEEP") == "1":
-                    partial_prog_rows = [
-                        sleep_prog_row,
-                        {
-                            "kind": "judge_pass_done",
-                            "judge_id": "nemotron-3-nano-4b",
-                            "status": "ok",
-                            "calls_count": 2,
-                            "ts": "2026-11-02T00:00:05Z",
-                        },
-                    ]
+                    # A window that trips its cap or wall after one pass has finished. The finished pass is written as
+                    # the VM writes it: its rows, its judge_done record (with the rows' sha256 and row_count, the
+                    # record the rig verifies fetched rows against) and its judge_pass_done line. Every file name comes
+                    # from vm_judges (rows_filename_for_pass / judge_done_filename_for_pass), the VM's own naming.
+                    #   FAKE_COLAB_PARTIAL_DONE_JUDGE   the finished pass's judge (default nemotron-3-nano-4b);
+                    #   FAKE_COLAB_PARTIAL_DONE_MODE    its pass mode (default the window's; set it in a per_judge window);
+                    #   FAKE_COLAB_PARTIAL_UNFINISHED   "judge:mode" of a pass that has NOT finished: its half-written
+                    #                                   rows and a judge_done-named file are planted on the VM, with
+                    #                                   no judge_pass_done record, so the rig must not fetch them.
+                    _vmj = _fake_vm_judges()
+                    window_mode = exec_env.get("RDLAB_PASS_MODE", "binary").strip() or "binary"
+                    partial_jid = os.environ.get("FAKE_COLAB_PARTIAL_DONE_JUDGE", "").strip() or "nemotron-3-nano-4b"
+                    partial_mode = os.environ.get("FAKE_COLAB_PARTIAL_DONE_MODE", "").strip() or window_mode
+                    rows_sleep = run_dir_sleep / "rows"
+                    rows_sleep.mkdir(parents=True, exist_ok=True)
+                    jdone_sleep = run_dir_sleep / "judge_done"
+                    jdone_sleep.mkdir(parents=True, exist_ok=True)
+                    partial_row_name = _vmj.rows_filename_for_pass(partial_jid, partial_mode)
+                    partial_row_doc: dict[str, Any] = (
+                        {"id": "item-0000", "judge_id": partial_jid, "state": "parsed", "verdict": "yes"}
+                        if partial_mode == "binary"
+                        else {
+                            "id": "item-0000",
+                            "judge_id": partial_jid,
+                            "pass_mode": partial_mode,
+                            "state": "parsed",
+                            "raw_verdict": "supported",
+                        }
+                    )
+                    row_bytes = (json.dumps(partial_row_doc) + "\n").encode("utf-8")
+                    (rows_sleep / partial_row_name).write_bytes(row_bytes)
+                    done_sleep_doc: dict[str, Any] = {
+                        "judge_id": partial_jid,
+                        "status": "ok",
+                        "device": "cuda:0",
+                        "calls_count": 2,
+                        "row_count": 1,
+                        "sha256": hashlib.sha256(row_bytes).hexdigest(),
+                        "rows_file": f"rows/{partial_row_name}",
+                    }
+                    if partial_mode != "binary":
+                        done_sleep_doc["pass_mode"] = partial_mode
+                    (jdone_sleep / _vmj.judge_done_filename_for_pass(partial_jid, partial_mode)).write_text(
+                        json.dumps(done_sleep_doc, indent=2) + "\n", encoding="utf-8", newline="\n"
+                    )
+                    pass_done_row: dict[str, Any] = {
+                        "kind": "judge_pass_done",
+                        "judge_id": partial_jid,
+                        "status": "ok",
+                        "calls_count": 2,
+                        "ts": "2026-11-02T00:00:05Z",
+                    }
+                    if window_mode == "per_judge":
+                        pass_done_row["pass_mode"] = partial_mode
                     (run_dir_sleep / "progress.jsonl").write_text(
-                        "\n".join(json.dumps(r) for r in partial_prog_rows) + "\n",
+                        "\n".join(json.dumps(r) for r in (sleep_prog_row, pass_done_row)) + "\n",
                         encoding="utf-8",
                         newline="\n",
                     )
                     logs_dir_sleep = run_dir_sleep / "logs"
                     logs_dir_sleep.mkdir(parents=True, exist_ok=True)
                     (logs_dir_sleep / "vm.log").write_text(
-                        "2026-11-02T00:00:05Z [vm] completed judge=nemotron-3-nano-4b before cap stop\n",
-                        encoding="utf-8",
-                        newline="\n",
+                        f"2026-11-02T00:00:05Z [vm] completed judge={partial_jid} before cap stop\n", encoding="utf-8"
                     )
-                    jdone_sleep = run_dir_sleep / "judge_done"
-                    jdone_sleep.mkdir(parents=True, exist_ok=True)
-                    partial_pass_mode = exec_env.get("RDLAB_PASS_MODE", "binary").strip() or "binary"
-                    partial_row_name = (
-                        "nemotron-3-nano-4b.three_way.jsonl"
-                        if partial_pass_mode == "three_way"
-                        else "nemotron-3-nano-4b.jsonl"
-                    )
-                    done_sleep_doc: dict[str, Any] = {
-                        "judge_id": "nemotron-3-nano-4b",
-                        "status": "ok",
-                        "device": "cuda:0",
-                        "calls_count": 2,
-                    }
-                    if partial_pass_mode == "three_way":
-                        done_sleep_doc["pass_mode"] = "three_way"
-                        done_sleep_doc["rows_file"] = f"rows/{partial_row_name}"
-                    (jdone_sleep / "nemotron-3-nano-4b.json").write_text(
-                        json.dumps(done_sleep_doc, indent=2) + "\n",
-                        encoding="utf-8",
-                        newline="\n",
-                    )
-                    rows_sleep = run_dir_sleep / "rows"
-                    rows_sleep.mkdir(parents=True, exist_ok=True)
-                    partial_row_doc: dict[str, Any] = {
-                        "id": "item-0000",
-                        "judge_id": "nemotron-3-nano-4b",
-                        "state": "parsed",
-                        "verdict": "yes",
-                    }
-                    if partial_pass_mode == "three_way":
-                        partial_row_doc = {
-                            "id": "item-0000",
-                            "judge_id": "nemotron-3-nano-4b",
-                            "pass_mode": "three_way",
-                            "state": "parsed",
-                            "raw_verdict": "supported",
-                        }
-                    (rows_sleep / partial_row_name).write_text(
-                        json.dumps(partial_row_doc) + "\n",
-                        encoding="utf-8",
-                        newline="\n",
-                    )
+                    _plant_unfinished_pass(_vmj, run_dir_sleep, os.environ.get("FAKE_COLAB_PARTIAL_UNFINISHED", ""))
                 if os.environ.get("FAKE_COLAB_WRITE_RESULT_TAR_BEFORE_SLEEP") == "1":
                     import tarfile as _tarfile
 
@@ -3075,6 +3075,29 @@ def _usage_text(rate_str: str, count_str: str) -> str:
         lines.append(f"Active assignments: {count_str}")
     return "\n".join(lines)
 
+
+def _fake_vm_judges() -> Any:
+    """This repo's vm_judges, so the fake names every rows and judge_done file exactly as the VM does."""
+    colab_dir = Path(__file__).resolve().parents[2] / "scripts" / "colab"
+    if str(colab_dir) not in sys.path:
+        sys.path.insert(0, str(colab_dir))
+    import vm_judges
+
+    return vm_judges
+
+
+def _plant_unfinished_pass(vmj: Any, run_dir: Path, spec: str) -> None:
+    """Plant an unfinished pass (`judge:mode`) on the fake VM: half-written rows and a judge_done-named file, with no
+    judge_pass_done record (the child writes judge_done before the parent records the pass). The rig must fetch
+    neither: its fetch list comes from judge_pass_done records only."""
+    jid, _, mode = spec.strip().partition(":")
+    if not jid or not mode:
+        return
+    half = '{"id": "item-0000", "judge_id": "' + jid + '", "pass_mode": "' + mode + '", "state": "pars'
+    (run_dir / "rows" / vmj.rows_filename_for_pass(jid, mode)).write_text(half, encoding="utf-8")
+    (run_dir / "judge_done" / vmj.judge_done_filename_for_pass(jid, mode)).write_text(
+        json.dumps({"judge_id": jid, "pass_mode": mode, "sha256": "0" * 64, "row_count": 1}) + "\n", encoding="utf-8"
+    )
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -37,9 +37,13 @@ from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     compute_prompt_sha256_by_call,
     normalize_anchor_verdict_code,
 )
+from reasoning_dataset_lab.pilot_b.bakeoff_judge import JUDGE_SPECS
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
+    PASS_MODE_CHOICES,
     THREE_WAY_PASS_MODES,
+    judge_done_filename_for_pass,
     judge_supports_pass_mode,
+    rows_filename_for_pass,
 )
 
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -207,13 +211,14 @@ def _validate_expected_judge_ids(
         jid = _validate_safe_identifier(
             raw_jid, kind="judge_id", refusal_class="MERGE_INVALID_JUDGE_ID"
         )
-        if jid not in BAKEOFF_JUDGE_SPECS:
+        if jid not in JUDGE_SPECS:  # the five bake-off judges and the D5c ones
             raise MergeRefusalError(
                 "MERGE_INVALID_JUDGE_ID",
-                f"unknown judge_id {jid!r}; expected one of {sorted(BAKEOFF_JUDGE_SPECS)}",
+                f"unknown judge_id {jid!r}; expected one of {sorted(JUDGE_SPECS)}",
             )
-        if pass_mode is not None and pass_mode in ("binary", *THREE_WAY_PASS_MODES):
-            if not judge_supports_pass_mode(BAKEOFF_JUDGE_SPECS[jid], pass_mode):
+        if pass_mode is not None:
+            _validate_pass_mode(pass_mode)
+            if not judge_supports_pass_mode(JUDGE_SPECS[jid], pass_mode):
                 raise MergeRefusalError(
                     "MERGE_INVALID_JUDGE_ID",
                     f"judge_id {jid!r} does not support pass_mode={pass_mode!r}",
@@ -229,29 +234,47 @@ def _validate_expected_judge_ids(
     return tuple(cleaned)
 
 
-def _default_judge_ids_for_pass_mode(pass_mode: str) -> tuple[str, ...]:
-    ordered = list(EXPECTED_JUDGE_IDS) + [
-        jid for jid in sorted(BAKEOFF_JUDGE_SPECS) if jid not in EXPECTED_JUDGE_IDS
-    ]
-    known = [jid for jid in ordered if jid in BAKEOFF_JUDGE_SPECS]
-    if pass_mode in ("binary", *THREE_WAY_PASS_MODES):
-        return tuple(
-            jid for jid in known if judge_supports_pass_mode(BAKEOFF_JUDGE_SPECS[jid], pass_mode)
+def _validate_pass_mode(pass_mode: str | None) -> str:
+    """A registered pass mode (`three_way_wording.PASS_MODE_CHOICES`), else MERGE_INVALID_PASS_MODE: an unsafe
+    string, and a safe-looking one that names no mode (the #92 review's B4)."""
+    pm = str(pass_mode or "").strip()
+    if not pm or not PASS_MODE_RE.fullmatch(pm) or pm not in PASS_MODE_CHOICES:
+        raise MergeRefusalError(
+            "MERGE_INVALID_PASS_MODE",
+            f"invalid pass_mode {pass_mode!r} (allowed: {', '.join(PASS_MODE_CHOICES)})",
         )
-    return tuple(known)
+    return pm
+
+
+def _default_judge_ids_for_pass_mode(pass_mode: str) -> tuple[str, ...]:
+    """Every pinned judge with a prompt in `pass_mode`, the bake-off's five first. Refuses MERGE_INVALID_JUDGE_ID when
+    no judge has one, so a mode is never merged with an empty judge set (the #92 review's B4)."""
+    pm = _validate_pass_mode(pass_mode)
+    ordered = list(EXPECTED_JUDGE_IDS) + [jid for jid in sorted(JUDGE_SPECS) if jid not in EXPECTED_JUDGE_IDS]
+    found = tuple(jid for jid in ordered if jid in JUDGE_SPECS and judge_supports_pass_mode(JUDGE_SPECS[jid], pm))
+    if not found:
+        raise MergeRefusalError(
+            "MERGE_INVALID_JUDGE_ID",
+            f"no pinned judge has a prompt in pass_mode={pm!r}; nothing to merge",
+        )
+    return found
 
 
 def _rows_filename_for_pass(judge_id: str, pass_mode: str = "binary") -> str:
+    """`rows/<name>` of a (judge, mode) pass, named by `three_way_wording.rows_filename_for_pass` (the VM's rule)."""
     safe_jid = _validate_safe_identifier(
         judge_id, kind="judge_id", refusal_class="MERGE_INVALID_JUDGE_ID"
     )
-    pm = str(pass_mode or "").strip()
-    if not pm or not PASS_MODE_RE.fullmatch(pm):
-        raise MergeRefusalError(
-            "MERGE_INVALID_PASS_MODE",
-            f"invalid pass_mode {pass_mode!r}",
-        )
-    return f"{safe_jid}.jsonl" if pm == "binary" else f"{safe_jid}.{pm}.jsonl"
+    return rows_filename_for_pass(safe_jid, _validate_pass_mode(pass_mode))
+
+
+def _judge_done_filename_for_pass(judge_id: str, pass_mode: str = "binary") -> str:
+    """`judge_done/<name>` of a (judge, mode) pass, named by `three_way_wording.judge_done_filename_for_pass`, the
+    function the VM and the judge child use (the #92 review's B2)."""
+    safe_jid = _validate_safe_identifier(
+        judge_id, kind="judge_id", refusal_class="MERGE_INVALID_JUDGE_ID"
+    )
+    return judge_done_filename_for_pass(safe_jid, _validate_pass_mode(pass_mode))
 
 
 class MergeRefusalError(RuntimeError):
@@ -1155,7 +1178,7 @@ def merge_shards(
     manifest_pass_mode = (
         "binary" if raw_pass_mode is None else str(raw_pass_mode).strip()
     )
-    if not manifest_pass_mode or not PASS_MODE_RE.fullmatch(manifest_pass_mode):
+    if not manifest_pass_mode or not PASS_MODE_RE.fullmatch(manifest_pass_mode) or manifest_pass_mode not in PASS_MODE_CHOICES:
         raise MergeRefusalError(
             "MERGE_INVALID_PASS_MODE",
             f"invalid manifest pass_mode {raw_pass_mode!r}",
@@ -1717,7 +1740,7 @@ def merge_shards(
         # Gate (e) & row collection across all expected judges
         for jid in expected_judge_ids:
             rows_filename = _rows_filename_for_pass(jid, manifest_pass_mode)
-            jdone_path = sdir / "judge_done" / f"{jid}.json"
+            jdone_path = sdir / "judge_done" / _judge_done_filename_for_pass(jid, manifest_pass_mode)
             rows_path = sdir / "rows" / rows_filename
             jdone_doc = _load_json_dict(
                 jdone_path,

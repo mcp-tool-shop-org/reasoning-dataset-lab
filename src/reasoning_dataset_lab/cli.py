@@ -52,6 +52,7 @@ from reasoning_dataset_lab.pilot_b.shortcut_probe import (
 )
 from reasoning_dataset_lab.pilot_b.bakeoff_project import project_part_items
 from reasoning_dataset_lab.pilot_b.lockcheck_anchors import build_lc1_anchor_items
+from reasoning_dataset_lab.pilot_b.three_way_wording import PASS_MODE_CHOICES
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     DEFAULT_SCHEDULE_SEED,
     DEFAULT_TORCH_DTYPE,
@@ -560,11 +561,12 @@ def _build_parser() -> _StructuredArgumentParser:
     bj_parser.add_argument(
         "--pass-mode",
         dest="pass_mode",
-        choices=["binary", "three_way", "three_way_contradicted"],
+        choices=list(PASS_MODE_CHOICES),
         default="binary",
         help=(
-            "Pass mode: binary (primary), three_way (separate pass for capable judges) or three_way_contradicted "
-            "(the 3-way pass with the plain-word wording, for mu-judge, Nemotron and d3-mini)."
+            "Pass mode: binary (primary), three_way (separate pass for capable judges), three_way_contradicted "
+            "(the plain-word 3-way arm), or a D5c arm: three_way_two_question, three_way_symmetric (d3-mini) or "
+            "three_way_nli (the NLI encoder). Each arm's judges and shown words are in three_way_wording.py."
         ),
     )
     bj_parser.add_argument(

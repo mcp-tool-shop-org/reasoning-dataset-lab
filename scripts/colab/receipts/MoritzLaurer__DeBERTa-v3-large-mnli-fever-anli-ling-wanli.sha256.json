@@ -1,0 +1,57 @@
+{
+ "files": {
+  ".gitattributes": {
+   "bytes": 1227,
+   "sha256": "400b270bc8f5cb44fda65b1a4532ceca0fb452d0637425e861829560cf393ae2"
+  },
+  "README.md": {
+   "bytes": 7580,
+   "sha256": "216c3ac9ea77beec4e35a347c8b4edc47fbb3465e7c2a00dc923ae7b975cf346"
+  },
+  "added_tokens.json": {
+   "bytes": 18,
+   "sha256": "cd0141b19e809eb963a8f8244fad72530233f729e1f6960d281e1fbb3537b2fb"
+  },
+  "config.json": {
+   "bytes": 1056,
+   "sha256": "7f9d420b616691c5b575bab8839719aefbddc656d8e1316519414b097ce43e3d"
+  },
+  "model.safetensors": {
+   "bytes": 870182606,
+   "sha256": "c03cd208bf920b4fbbb182a0535859a566e8acc3477d2b536bf87b769978524b"
+  },
+  "onnx/model.onnx": {
+   "bytes": 1741989393,
+   "sha256": "9f304954c0c3ed1eda620eecd8747f3f79f98e47d7593baf3160b0fef5e3bfbd"
+  },
+  "onnx/model_quantized.onnx": {
+   "bytes": 642587601,
+   "sha256": "2eb57451c9d94a868c3468182177ce75f20ca80cfa41f851af1d7e7e4dc57228"
+  },
+  "pytorch_model.bin": {
+   "bytes": 870262315,
+   "sha256": "37a7caf315cfaa5ec22cc5d9a0e5f463ad2c3706d5601532aa32863a58ebccdd"
+  },
+  "special_tokens_map.json": {
+   "bytes": 156,
+   "sha256": "fcfbeb4e25cd37fb5b8030406394253b245230fd3b552750092bab7d24d827da"
+  },
+  "spm.model": {
+   "bytes": 2464616,
+   "sha256": "c679fbf93643d19aab7ee10c0b99e460bdbc02fedf34b92b05af343b4af586fd"
+  },
+  "tokenizer.json": {
+   "bytes": 8648889,
+   "sha256": "7aa118770f066a74530d161c7d0b994d0629cc0ff3a0df213f184192773f960a"
+  },
+  "tokenizer_config.json": {
+   "bytes": 395,
+   "sha256": "556a192d83e3edb45a09a6207095dd9295c3b2279062e5cc430feac4cb7a0817"
+  }
+ },
+ "repo": "MoritzLaurer/DeBERTa-v3-large-mnli-fever-anli-ling-wanli",
+ "revision": "b3546ea6b0346eb6f8d5d68b13c7dc6d0376b3d7",
+ "seconds": null,
+ "source": "hf-api-metadata",
+ "total_bytes": 4136145852
+}

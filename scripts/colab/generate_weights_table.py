@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate and verify the five-judge weights table in `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`
+"""Generate and verify the judges' weights table in `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`
 directly from the five `<owner>__<repo>.sha256.json` receipts.
 """
 
@@ -20,15 +20,17 @@ BEGIN_MARKER = "<!-- BEGIN_GENERATED_WEIGHTS_TABLE -->"
 END_MARKER = "<!-- END_GENERATED_WEIGHTS_TABLE -->"
 
 GIB_DIVISOR = float(1024**3)
+METADATA_RECEIPT_SOURCE = "hf-api-metadata"
 
 
 def _load_judge_specs() -> dict[str, Any]:
     src_dir = REPO_ROOT / "src"
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
-    from reasoning_dataset_lab.pilot_b.bakeoff_judge import BAKEOFF_JUDGE_SPECS
+    from reasoning_dataset_lab.pilot_b.bakeoff_judge import JUDGE_SPECS
 
-    return dict(BAKEOFF_JUDGE_SPECS)
+    # The five bake-off judges and the D5c judges (whose receipts are built from HF metadata, `seconds` null).
+    return dict(JUDGE_SPECS)
 
 
 def load_and_verify_receipt_rows(
@@ -69,7 +71,14 @@ def load_and_verify_receipt_rows(
             raise ValueError(
                 f"Receipt {fname} files byte sum ({files_sum}) != total_bytes ({total_bytes})"
             )
-        seconds = float(doc["seconds"])
+        if doc.get("source") == METADATA_RECEIPT_SOURCE:
+            # A receipt built from the Hub's metadata (`build_metadata_receipt.py`): nothing was downloaded, so it has
+            # no rig download time. Accepted only with this source; every other receipt needs a number.
+            if doc.get("seconds") not in (None, 0, 0.0):
+                raise ValueError(f"Receipt {fname} is a metadata receipt but records seconds={doc.get('seconds')!r}")
+            seconds = None
+        else:
+            seconds = float(doc["seconds"])
         rows.append(
             {
                 "judge_id": spec.judge_id,
@@ -82,7 +91,7 @@ def load_and_verify_receipt_rows(
             }
         )
         sum_bytes += total_bytes
-        sum_seconds += seconds
+        sum_seconds += seconds or 0.0
 
     return rows, sum_bytes, round(sum_seconds, 1)
 
@@ -98,12 +107,13 @@ def render_weights_table_block(receipts_dir: Path = DEFAULT_RECEIPTS_DIR) -> str
     for r in rows:
         lines.append(
             f"| `{r['judge_id']}` | `{r['repo']}` (`{r['revision']}`) | "
-            f"`{r['total_bytes']:,}` | `{r['gib']:.2f} GiB` | `{r['seconds']:.1f}` |"
+            f"`{r['total_bytes']:,}` | `{r['gib']:.2f} GiB` | "
+            + (f"`{r['seconds']:.1f}` |" if r["seconds"] is not None else "metadata receipt, not downloaded |")
         )
     sum_gib = sum_bytes / GIB_DIVISOR
     rounded_s = int(round(sum_seconds))
     lines.append(
-        f"| **Total (5 judges)** | | **`{sum_bytes:,}`** | **`{sum_gib:.2f} GiB`** | "
+        f"| **Total ({len(rows)} judges)** | | **`{sum_bytes:,}`** | **`{sum_gib:.2f} GiB`** | "
         f"**`{sum_seconds:.1f}` (`{rounded_s}` s)** |"
     )
     lines.append(END_MARKER)
