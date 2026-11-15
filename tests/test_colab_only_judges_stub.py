@@ -288,6 +288,9 @@ def test_three_way_tripped_window_without_result_tar_fetches_three_way_rows(tmp_
         "export FAKE_COLAB_WRITE_PARTIAL_RUN_BEFORE_SLEEP=1; "
         "export RDLAB_COST_CAP_POLL_SECONDS=1; "
         "export RDLAB_ONLY_JUDGES=nemotron-3-nano-4b,d3-mini; "
+        # The #89 review's C5: an unfinished d3-mini pass (half-written rows, a judge_done-named file, no
+        # judge_pass_done record) is planted on the fake VM; it must not be fetched.
+        "export FAKE_COLAB_PARTIAL_UNFINISHED=d3-mini:three_way; "
     )
 
     proc = _run_launcher(
@@ -305,6 +308,16 @@ def test_three_way_tripped_window_without_result_tar_fetches_three_way_rows(tmp_
     assert done_p.is_file()
     assert row_3way_p.is_file()
     assert not (out_dir / "rows" / "nemotron-3-nano-4b.jsonl").exists()
+    assert sorted(p.name for p in (out_dir / "rows").iterdir()) == ["nemotron-3-nano-4b.three_way.jsonl"]
+    assert sorted(p.name for p in (out_dir / "judge_done").iterdir()) == ["nemotron-3-nano-4b.json"]
+    downloads = [
+        ln for ln in env_p["calls_log"].read_text(encoding="utf-8").splitlines() if '"subcmd": "download"' in ln
+    ]
+    assert not any("d3-mini" in ln for ln in downloads)
+    # The fetched rows match the sha256 the judge_done record carries (build card 2026-11-15 v4, item 9).
+    import hashlib
+
+    assert json.loads(done_p.read_text(encoding="utf-8"))["sha256"] == hashlib.sha256(row_3way_p.read_bytes()).hexdigest()
 
     done_doc = json.loads(done_p.read_text(encoding="utf-8"))
     assert done_doc["pass_mode"] == "three_way"
@@ -409,9 +422,9 @@ def test_stub_without_only_judges_binary_behaviour_unchanged(tmp_path: Path) -> 
     assert outcome_doc["only_judges"] is None
     assert outcome_doc["pass_mode"] == "binary"
     assert outcome_doc["judges_completed"] == expected_all
-    assert sorted(p.name for p in (out_dir / "rows").glob("*.jsonl")) == sorted(
-        f"{j}.jsonl" for j in BAKEOFF_JUDGE_SPECS
-    )
+    # The default window is the five original judges; the D5c judges (3-way only) run only when named.
+    assert sorted(p.name for p in (out_dir / "rows").glob("*.jsonl")) == sorted(f"{j}.jsonl" for j in expected_all)
+    assert set(BAKEOFF_JUDGE_SPECS) - set(expected_all) == {"d3-flash", "nli-deberta-v3-large"}
 
 
 def test_validate_only_judges_unit_matrix(monkeypatch: pytest.MonkeyPatch) -> None:
