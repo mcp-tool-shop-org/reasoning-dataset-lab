@@ -206,7 +206,7 @@ def test_stub_until_first_load_three_way_default_without_only_judges(tmp_path: P
     for doc in (status_doc, receipt_doc):
         assert doc["only_judges"] is None
         assert doc["judge_order"] == expected
-        assert doc["first_load_judge_id"] == "nemotron-3-nano-4b"
+        assert doc["first_load_judge_id"] == expected
         assert doc["first_load_judge_ids"] == expected
         assert doc["first_load_judge_id_source"] == "default"
     assert window_doc["pass_mode"] == receipt_doc["pass_mode"] == outcome_doc["pass_mode"] == "three_way"
@@ -447,3 +447,18 @@ def test_validate_only_judges_unit_matrix(monkeypatch: pytest.MonkeyPatch) -> No
         with pytest.raises(vm_judges.RefusalError) as exc:
             vm_judges.validate_only_judges(**kwargs)
         assert exc.value.failure_class == "ONLY_JUDGES_INVALID"
+
+
+def test_first_load_judge_id_is_always_a_list() -> None:
+    """#89 review nit: `first_load_judge_id` is always a `list[str]` regardless of source or cardinality."""
+    for raw, source, expected in (
+        ("nemotron-3-nano-4b", "default", ["nemotron-3-nano-4b"]),
+        ("d3-mini", "env", ["d3-mini"]),
+        (["d3-mini"], "only_judges", ["d3-mini"]),
+        (["d3-mini", "mu-judge"], "only_judges", ["d3-mini", "mu-judge"]),
+    ):
+        fields = vm_judges._first_load_receipt_fields(raw, source)
+        assert isinstance(fields["first_load_judge_id"], list)
+        assert fields["first_load_judge_id"] == expected
+        assert fields["first_load_judge_ids"] == expected
+        assert fields["first_load_judge_id_source"] == source

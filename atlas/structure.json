@@ -414,14 +414,14 @@
               "line": 207
             }
           ],
-          "hash": "a15666a5e966495321ca377e552fa715ebf2d3c9627b2e91dc54379f74c1d3d8",
+          "hash": "7ca25479a28471d98704359559bbf55a1bf183d0cb53b5648073948b863c7674",
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
           ],
           "path": "scripts/colab/generate_weights_table.py"
         },
         {
-          "hash": "f3f99368549706964730299231de3ad51c2ea3bd1918d5ef21bcb4e20f897611",
+          "hash": "98164a6a743cdd3297c15dfe26bed6fce63f20fbb101026db91a628908b68244",
           "path": "scripts/colab/launch_judges.sh"
         },
         {
@@ -930,134 +930,134 @@
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1751
+              "line": 1752
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1757
+              "line": 1758
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1772
+              "line": 1773
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1780
+              "line": 1781
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1790
+              "line": 1791
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1796
+              "line": 1797
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1805
+              "line": 1806
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1813
+              "line": 1814
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1826
+              "line": 1827
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1841
+              "line": 1842
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1852
+              "line": 1853
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1864
+              "line": 1865
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1905
+              "line": 1906
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1918
+              "line": 1919
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1933
+              "line": 1934
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1940
+              "line": 1941
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1946
+              "line": 1947
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1959
+              "line": 1960
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1977
+              "line": 1978
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1983
+              "line": 1984
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 2036
+              "line": 2037
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 2039
+              "line": 2040
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 2058
+              "line": 2059
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 2138
+              "line": 2139
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 2388
+              "line": 2389
             },
             {
               "kind": "raise",
-              "line": 2395
+              "line": 2396
             }
           ],
-          "hash": "455726427934cbc747cc0586c668653434e468c85a5d028847169200132f04a4",
+          "hash": "1fe9c1d32903fc1702367ecd7e72e48647c5a2f9c830bde06382c7efa6dfe7a6",
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
             "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -3100,187 +3100,192 @@
             {
               "in": "validate_first_load_judge_id",
               "kind": "raise",
-              "line": 10040
+              "line": 10037
             },
             {
               "in": "validate_first_load_judge_id",
               "kind": "raise",
-              "line": 10050
+              "line": 10047
             },
             {
               "in": "parse_shard_spec",
               "kind": "raise",
-              "line": 10061
+              "line": 10058
             },
             {
               "in": "parse_shard_spec",
               "kind": "raise",
-              "line": 10067
+              "line": 10064
             },
             {
               "in": "parse_shard_spec",
               "kind": "raise",
-              "line": 10073
+              "line": 10070
             },
             {
               "in": "parse_shard_spec",
               "kind": "raise",
-              "line": 10079
+              "line": 10076
             },
             {
               "in": "parse_shard_spec",
               "kind": "raise",
-              "line": 10084
+              "line": 10081
             },
             {
               "in": "parse_shard_spec",
               "kind": "raise",
-              "line": 10090
+              "line": 10087
             },
             {
               "in": "validate_loop_order",
               "kind": "raise",
-              "line": 10109
+              "line": 10106
             },
             {
               "in": "validate_loop_order",
               "kind": "raise",
-              "line": 10120
+              "line": 10117
             },
             {
               "in": "validate_loop_order",
               "kind": "raise",
-              "line": 10126
+              "line": 10123
             },
             {
               "in": "verify_shard_manifest_file",
               "kind": "raise",
-              "line": 10150
+              "line": 10147
             },
             {
               "in": "resolve_low_margin_or_canary_field",
               "kind": "raise",
-              "line": 10185
+              "line": 10182
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "except",
-              "line": 10224
+              "line": 10221
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10225
+              "line": 10222
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10230
+              "line": 10227
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10258
+              "line": 10255
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10265
+              "line": 10262
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10273
+              "line": 10270
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10281
+              "line": 10278
             },
             {
               "in": "build_shard_manifest_stdlib",
               "kind": "raise",
-              "line": 10533
+              "line": 10530
             },
             {
               "in": "build_shard_manifest_stdlib",
               "kind": "raise",
-              "line": 10542
+              "line": 10539
             },
             {
               "in": "build_shard_manifest_stdlib",
               "kind": "raise",
-              "line": 10551
+              "line": 10548
             },
             {
               "in": "build_shard_manifest_stdlib",
               "kind": "raise",
-              "line": 10560
+              "line": 10557
             },
             {
               "in": "ensure_shard_manifest_for_run",
               "kind": "raise",
-              "line": 10828
+              "line": 10825
             },
             {
               "in": "_collect_judge_receipt_digests",
               "kind": "except",
-              "line": 10914
+              "line": 10911
             },
             {
               "in": "_query_gpu_and_ecc_snapshot",
               "kind": "except",
-              "line": 11007
+              "line": 11004
             },
             {
               "in": "_read_host_cpu_model",
               "kind": "except",
-              "line": 11038
+              "line": 11035
             },
             {
               "in": "_load_merge_config_for_session_env",
               "kind": "except",
-              "line": 11085
+              "line": 11082
             },
             {
               "in": "_load_merge_config_for_session_env",
               "kind": "raise",
-              "line": 11086
+              "line": 11083
             },
             {
               "in": "_load_merge_config_for_session_env",
               "kind": "except",
-              "line": 11087
+              "line": 11084
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11247
+              "line": 11244
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11291
+              "line": 11288
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11302
+              "line": 11299
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11319
+              "line": 11316
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11321
+              "line": 11318
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11336
+              "line": 11333
+            },
+            {
+              "in": "_query_judge_venv_runtime",
+              "kind": "except",
+              "line": 11348
             },
             {
               "in": "_query_judge_venv_runtime",
@@ -3290,562 +3295,562 @@
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11354
+              "line": 11353
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11356
-            },
-            {
-              "in": "_query_judge_venv_runtime",
-              "kind": "except",
-              "line": 11358
+              "line": 11355
             },
             {
               "in": "collect_and_write_session_env",
               "kind": "raise",
-              "line": 11394
+              "line": 11391
             },
             {
               "in": "collect_and_write_session_env",
               "kind": "raise",
-              "line": 11401
+              "line": 11398
             },
             {
               "in": "collect_and_write_session_env",
               "kind": "raise",
-              "line": 11608
+              "line": 11605
             },
             {
               "in": "collect_and_write_session_env",
               "kind": "raise",
-              "line": 11613
+              "line": 11610
             },
             {
               "in": "collect_and_write_session_env",
               "kind": "raise",
-              "line": 11618
+              "line": 11615
             },
             {
               "in": "resolve_boot_gatekeeper_judge_id",
               "kind": "raise",
-              "line": 11767
+              "line": 11764
             },
             {
               "in": "resolve_boot_gatekeeper_judge_id",
               "kind": "except",
-              "line": 11773
+              "line": 11770
             },
             {
               "in": "resolve_boot_gatekeeper_judge_id",
               "kind": "raise",
-              "line": 11774
+              "line": 11771
             },
             {
               "in": "resolve_boot_gatekeeper_judge_id",
               "kind": "raise",
-              "line": 11779
+              "line": 11776
             },
             {
               "in": "preflight_boot_gatekeeper_judge",
               "kind": "raise",
-              "line": 11808
+              "line": 11805
             },
             {
               "in": "preflight_boot_gatekeeper_judge",
               "kind": "raise",
-              "line": 11814
+              "line": 11811
             },
             {
               "in": "preflight_boot_gatekeeper_judge",
               "kind": "raise",
-              "line": 11823
+              "line": 11820
             },
             {
               "in": "check_boot_gatekeeper_token_counts",
               "kind": "raise",
-              "line": 12033
+              "line": 12030
             },
             {
               "in": "resolve_requested_card_type",
               "kind": "raise",
-              "line": 12117
+              "line": 12114
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12191
+              "line": 12188
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12198
+              "line": 12195
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12203
+              "line": 12200
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12212
+              "line": 12209
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12217
+              "line": 12214
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12226
+              "line": 12223
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12230
+              "line": 12227
             },
             {
               "in": "resolve_boot_gatekeeper_card_type",
               "kind": "raise",
-              "line": 12346
+              "line": 12343
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12420
+              "line": 12417
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12427
+              "line": 12424
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12433
+              "line": 12430
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12438
+              "line": 12435
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12444
+              "line": 12441
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12449
+              "line": 12446
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12455
+              "line": 12452
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12461
+              "line": 12458
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12467
+              "line": 12464
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12472
+              "line": 12469
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12478
+              "line": 12475
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12484
+              "line": 12481
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12489
+              "line": 12486
             },
             {
               "in": "preflight_boot_gatekeeper_goldens",
               "kind": "raise",
-              "line": 12553
+              "line": 12550
             },
             {
               "in": "preflight_boot_gatekeeper_goldens",
               "kind": "raise",
-              "line": 12560
+              "line": 12557
             },
             {
               "in": "preflight_boot_gatekeeper_goldens",
               "kind": "raise",
-              "line": 12580
+              "line": 12577
             },
             {
               "in": "preflight_boot_gatekeeper_goldens",
               "kind": "raise",
-              "line": 12585
+              "line": 12582
             },
             {
               "in": "preflight_boot_gatekeeper_goldens",
               "kind": "raise",
-              "line": 12592
+              "line": 12589
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "except",
-              "line": 12663
+              "line": 12660
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "raise",
-              "line": 12671
+              "line": 12668
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "raise",
-              "line": 12678
+              "line": 12675
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "except",
-              "line": 12694
+              "line": 12691
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "raise",
-              "line": 12695
+              "line": 12692
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "raise",
-              "line": 12700
+              "line": 12697
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "raise",
-              "line": 12797
+              "line": 12794
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "raise",
-              "line": 12802
+              "line": 12799
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "raise",
-              "line": 12821
-            },
-            {
-              "in": "_run_real_boot_gatekeeper_prompts",
-              "kind": "except",
-              "line": 12830
-            },
-            {
-              "in": "_run_real_boot_gatekeeper_prompts",
-              "kind": "raise",
-              "line": 12831
-            },
-            {
-              "in": "_run_real_boot_gatekeeper_prompts",
-              "kind": "raise",
-              "line": 12836
+              "line": 12818
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "except",
-              "line": 12845
+              "line": 12827
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "raise",
-              "line": 12846
+              "line": 12828
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "raise",
-              "line": 12851
+              "line": 12833
+            },
+            {
+              "in": "_run_real_boot_gatekeeper_prompts",
+              "kind": "except",
+              "line": 12842
+            },
+            {
+              "in": "_run_real_boot_gatekeeper_prompts",
+              "kind": "raise",
+              "line": 12843
+            },
+            {
+              "in": "_run_real_boot_gatekeeper_prompts",
+              "kind": "raise",
+              "line": 12848
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 12994
+              "line": 12991
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "except",
-              "line": 13000
+              "line": 12997
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13001
+              "line": 12998
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "except",
-              "line": 13016
+              "line": 13013
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13017
+              "line": 13014
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13022
+              "line": 13019
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13033
+              "line": 13030
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13063
+              "line": 13060
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13069
+              "line": 13066
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13076
+              "line": 13073
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13090
+              "line": 13087
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13178
+              "line": 13175
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "except",
-              "line": 13191
+              "line": 13188
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13196
+              "line": 13193
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13213
+              "line": 13210
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13221
+              "line": 13218
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13364
+              "line": 13361
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13388
+              "line": 13385
             },
             {
               "in": "run_gate",
               "kind": "raise",
-              "line": 13471
+              "line": 13468
             },
             {
               "in": "run_gate",
               "kind": "except",
-              "line": 13479
+              "line": 13476
             },
             {
               "in": "run_gate",
               "kind": "raise",
-              "line": 13480
+              "line": 13477
             },
             {
               "in": "run_gate",
               "kind": "except",
-              "line": 13491
+              "line": 13488
             },
             {
               "in": "run_gate",
               "kind": "except",
-              "line": 13498
+              "line": 13495
             },
             {
               "in": "run_gate",
               "kind": "except",
-              "line": 13506
+              "line": 13503
             },
             {
               "in": "run_gate",
               "kind": "except",
-              "line": 13555
+              "line": 13552
             },
             {
               "in": "run_probe",
               "kind": "except",
-              "line": 13766
+              "line": 13763
             },
             {
               "in": "run_probe",
               "kind": "except",
-              "line": 13824
+              "line": 13821
             },
             {
               "in": "finalize_filled_goldens_with_session_env",
               "kind": "except",
-              "line": 14006
+              "line": 14003
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 14242
+              "line": 14239
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 14297
+              "line": 14294
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 14310
+              "line": 14307
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 14462
+              "line": 14459
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 14467
+              "line": 14464
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 14551
+              "line": 14548
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 14878
+              "line": 14875
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 14909
+              "line": 14906
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 14916
+              "line": 14913
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15271
+              "line": 15268
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15307
+              "line": 15304
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15455
+              "line": 15452
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15481
+              "line": 15478
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15486
+              "line": 15483
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15507
+              "line": 15504
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15540
+              "line": 15537
             },
             {
               "in": "run_kernel_or_cli_entry",
               "kind": "raise",
-              "line": 15556
+              "line": 15553
             },
             {
               "in": "_three_way_rows_of_pass_mode",
               "kind": "raise",
-              "line": 15626
+              "line": 15623
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 15715
+              "line": 15712
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 15720
+              "line": 15717
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 15725
+              "line": 15722
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15761
+              "line": 15758
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15767
+              "line": 15764
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15771
+              "line": 15768
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15775
+              "line": 15772
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15780
+              "line": 15777
+            },
+            {
+              "in": "parse_judge_pass_modes",
+              "kind": "raise",
+              "line": 15779
             },
             {
               "in": "parse_judge_pass_modes",
@@ -3853,67 +3858,62 @@
               "line": 15782
             },
             {
-              "in": "parse_judge_pass_modes",
+              "in": "validate_pass_mode",
               "kind": "raise",
-              "line": 15785
+              "line": 15819
             },
             {
               "in": "validate_pass_mode",
               "kind": "raise",
-              "line": 15822
+              "line": 15825
             },
             {
               "in": "validate_pass_mode",
               "kind": "raise",
-              "line": 15828
+              "line": 15830
             },
             {
               "in": "validate_pass_mode",
               "kind": "raise",
-              "line": 15833
+              "line": 15839
             },
             {
               "in": "validate_pass_mode",
               "kind": "raise",
-              "line": 15842
-            },
-            {
-              "in": "validate_pass_mode",
-              "kind": "raise",
-              "line": 15852
+              "line": 15849
             },
             {
               "in": "_planned_judge_passes",
               "kind": "raise",
-              "line": 15878
+              "line": 15875
             },
             {
               "in": "_planned_judge_passes",
               "kind": "raise",
-              "line": 15882
+              "line": 15879
             },
             {
               "in": "launcher_completed_passes",
               "kind": "except",
-              "line": 15992
+              "line": 15989
             },
             {
               "in": "launcher_verify_fetched_pass",
               "kind": "except",
-              "line": 16046
+              "line": 16044
             },
             {
               "in": "ensure_elephant_venv",
               "kind": "except",
-              "line": 16249
+              "line": 16247
             },
             {
               "in": "_apply_elephant_install",
               "kind": "except",
-              "line": 16291
+              "line": 16289
             }
           ],
-          "hash": "b2a265c4bdf9b2c1c747ca1e458e343a7a8bfe2c7b997f63b36fa425e73ea8f5",
+          "hash": "b7e695d22b28151c1d04eb5da2177d70fbbeda6ba53a75e3c938c3d0821aee5c",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -7122,7 +7122,7 @@
               "line": 9168
             }
           ],
-          "hash": "fa6554cbc915f061864fb542f80a2bfe4df90d3d51974590ccb6d09831f81bcf",
+          "hash": "a35bfadbcdfc54f989365d3f5f90897b9a9692b42c47888e2741582f560fd846",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -12037,45 +12037,45 @@
             {
               "in": "_write_sealed_scored_rows",
               "kind": "raise",
-              "line": 2129
+              "line": 2143
             },
             {
               "in": "_assert_public_summary_clean",
               "kind": "raise",
-              "line": 2174
+              "line": 2188
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2332
+              "line": 2346
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2358
+              "line": 2372
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2446
+              "line": 2460
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2537
+              "line": 2551
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2543
+              "line": 2557
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2574
+              "line": 2588
             }
           ],
-          "hash": "1ff9cc22d43a6e116d172747ecaebd6b6555a6ef7378ce08a23e943fa3fa0087",
+          "hash": "fb7073fe7ac8499c657f3f9e73f76cd74b45eb9c9545f6201c1e26849c4a8ac8",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py",
@@ -12431,7 +12431,7 @@
               "calls": [
                 {
                   "branch": "pass_mode in TWO_QUESTION_PASS_MODES",
-                  "line": 2029,
+                  "line": 2038,
                   "name": "two_question_verdict",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -12447,7 +12447,7 @@
               "calls": [
                 {
                   "branch": "pass_mode in TWO_QUESTION_PASS_MODES",
-                  "line": 2029,
+                  "line": 2038,
                   "name": "two_question_verdict",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -12464,19 +12464,19 @@
               "calls": [
                 {
                   "branch": "not rows",
-                  "line": 2129,
+                  "line": 2143,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 2136,
+                  "line": 2150,
                   "name": "write_text",
                   "target": null
                 },
                 {
-                  "line": 2162,
+                  "line": 2176,
                   "name": "open",
                   "target": null
                 }
@@ -12490,7 +12490,7 @@
               "calls": [
                 {
                   "branch": "str(k) in FORBIDDEN_PUBLIC_SUMMARY_KEYS",
-                  "line": 2174,
+                  "line": 2188,
                   "name": "refused_error",
                   "over": "doc.items()",
                   "target": {
@@ -12506,7 +12506,7 @@
             {
               "calls": [
                 {
-                  "line": 2298,
+                  "line": 2312,
                   "name": "check_output_dir_outside_repo",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -12641,14 +12641,14 @@
                   "via": "_resolve_registered_domains_for_part"
                 },
                 {
-                  "line": 2308,
+                  "line": 2322,
                   "name": "load_canary_config",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
                   }
                 },
                 {
-                  "line": 2322,
+                  "line": 2336,
                   "name": "rows_filename_is_three_way",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -12662,7 +12662,7 @@
                 },
                 {
                   "branch": "r.get(\"run_status\") == \"failed_to_run\"",
-                  "line": 2332,
+                  "line": 2346,
                   "name": "refused_error",
                   "over": "raw_rows",
                   "target": {
@@ -12679,7 +12679,7 @@
                   "via": "_refuse_zero_scored"
                 },
                 {
-                  "line": 2361,
+                  "line": 2375,
                   "name": "get",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -19105,6 +19105,7 @@
             "test_d3_flash_gate_takes_its_own_pin_and_refuses_anything_else",
             "test_d3_transport_runs_d3_flash_and_two_questions_with_the_review_recorded",
             "test_every_new_arm_passes_the_whole_prompt_ban",
+            "test_failed_refetch_cleans_up_stale_destination_files_from_interrupted_run",
             "test_fake_colab_partial_block_has_no_mode_literal",
             "test_fetch_helpers_skip_only_a_matching_pair_and_fail_closed",
             "test_item7_tripped_window_keeps_finished_passes_rows_and_only_theirs",
@@ -19134,7 +19135,7 @@
             "test_vm_d3_family_gate_and_remote_code_arg",
             "test_vm_judges_copies_match_the_wording_table_and_the_specs"
           ],
-          "hash": "30d4f70f3f939f3ec3956e9273ce141c4841ba250678da6705af89b4e781a48f",
+          "hash": "dcea54002ad9b3dfa94452dc31e17955c76e367473fce270434be151f0311320",
           "importOrder": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -19412,7 +19413,7 @@
             "test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local",
             "test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log"
           ],
-          "hash": "47b0abab3d78f67eef3ac42300bafe43f882fe6426a8c5052244dcd157c76638",
+          "hash": "6cb9710f6ff12e6061af3548d05bd167478dd453074955604c50a2e019239e80",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -19458,6 +19459,7 @@
         },
         {
           "exports": [
+            "test_first_load_judge_id_is_always_a_list",
             "test_stub_only_judges_refusals_happen_before_colab_new",
             "test_stub_three_way_with_only_judges_end_to_end",
             "test_stub_until_first_load_three_way_default_without_only_judges",
@@ -19467,7 +19469,7 @@
             "test_three_way_tripped_window_without_result_tar_fetches_three_way_rows",
             "test_validate_only_judges_unit_matrix"
           ],
-          "hash": "319362fcf5fd85190a3d1593ed1c766db298d7ec310351daeab9a8e12bfeee43",
+          "hash": "0463d6d91660511ea3bcf925d5b17f1a14515c49ea16b3f00e60d76436b7fb09",
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
             "tests/fixtures/fake_colab.py",
@@ -19500,7 +19502,7 @@
             "test_validate_pass_mode_arm_matches_three_way",
             "test_vm_judges_copies_match_three_way_wording"
           ],
-          "hash": "b8b818850403d92a35553527ef61839b2a10a05cd32dc013e705d90502c57932",
+          "hash": "b094ef294233957e67a4d69d99523de1cde643382f351c8ce06b2a7ccc6af637",
           "importOrder": [
             "src/reasoning_dataset_lab/__init__.py",
             "src/reasoning_dataset_lab/cli.py",
@@ -21209,7 +21211,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "c99d2b3ee1277725fb383d109bc2340deb8e5d53",
+    "commit": "57a36f23fc2587a32e9cea62c6a8326eb1b5b2a1",
     "tracked": 192
   },
   "landings": [

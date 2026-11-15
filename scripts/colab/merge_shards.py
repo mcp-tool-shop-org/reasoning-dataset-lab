@@ -1740,23 +1740,24 @@ def merge_shards(
         # Gate (e) & row collection across all expected judges
         for jid in expected_judge_ids:
             rows_filename = _rows_filename_for_pass(jid, manifest_pass_mode)
-            jdone_path = sdir / "judge_done" / _judge_done_filename_for_pass(jid, manifest_pass_mode)
+            done_filename = _judge_done_filename_for_pass(jid, manifest_pass_mode)
+            jdone_path = sdir / "judge_done" / done_filename
             rows_path = sdir / "rows" / rows_filename
             jdone_doc = _load_json_dict(
                 jdone_path,
                 "MERGE_ROW_DONE_SHA_MISMATCH",
-                f"shard {expected_spec} judge_done/{jid}.json",
+                f"shard {expected_spec} judge_done/{done_filename}",
             )
             if "status" in jdone_doc and jdone_doc.get("status") != "ok":
                 raise MergeRefusalError(
                     "MERGE_ROW_DONE_SHA_MISMATCH",
-                    f"shard {expected_spec} judge_done/{jid}.json status={jdone_doc.get('status')!r}",
+                    f"shard {expected_spec} judge_done/{done_filename} status={jdone_doc.get('status')!r}",
                 )
             done_row_shas = jdone_doc.get("row_sha256s")
             if not isinstance(done_row_shas, list):
                 raise MergeRefusalError(
                     "MERGE_ROW_DONE_SHA_MISMATCH",
-                    f"shard {expected_spec} judge_done/{jid}.json missing row_sha256s list",
+                    f"shard {expected_spec} judge_done/{done_filename} missing row_sha256s list",
                 )
 
             rows = _load_jsonl_rows(
@@ -1779,7 +1780,7 @@ def merge_shards(
             if recomputed_shas != [str(x).strip().lower() for x in done_row_shas]:
                 raise MergeRefusalError(
                     "MERGE_ROW_DONE_SHA_MISMATCH",
-                    f"shard {expected_spec} rows/{rows_filename} row_sha256 list does not match judge_done/{jid}.json",
+                    f"shard {expected_spec} rows/{rows_filename} row_sha256 list does not match judge_done/{done_filename}",
                 )
 
             for row in rows:

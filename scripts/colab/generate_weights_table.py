@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate and verify the judges' weights table in `scripts/colab/REAL_SERVICE_ASSUMPTIONS.md`
-directly from the five `<owner>__<repo>.sha256.json` receipts.
+directly from all `<owner>__<repo>.sha256.json` receipts.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def _load_judge_specs() -> dict[str, Any]:
 def load_and_verify_receipt_rows(
     receipts_dir: Path = DEFAULT_RECEIPTS_DIR,
 ) -> tuple[list[dict[str, Any]], int, float]:
-    """Read the 5 `<owner>__<repo>.sha256.json` receipts, cross-check against `BAKEOFF_JUDGE_SPECS`,
+    """Read all `<owner>__<repo>.sha256.json` receipts, cross-check against `JUDGE_SPECS`,
     and return `(rows, sum_total_bytes, sum_seconds)` ordered by receipt filename.
     """
     specs = _load_judge_specs()
@@ -60,7 +60,7 @@ def load_and_verify_receipt_rows(
         if rec_repo != spec.repo_id or rec_rev != spec.revision:
             raise ValueError(
                 f"Receipt {fname} ({rec_repo} @ {rec_rev}) does not match "
-                f"BAKEOFF_JUDGE_SPECS[{spec.judge_id!r}] ({spec.repo_id} @ {spec.revision})"
+                f"JUDGE_SPECS[{spec.judge_id!r}] ({spec.repo_id} @ {spec.revision})"
             )
         files_map = doc.get("files")
         if not isinstance(files_map, dict) or not files_map:
@@ -97,7 +97,7 @@ def load_and_verify_receipt_rows(
 
 
 def render_weights_table_block(receipts_dir: Path = DEFAULT_RECEIPTS_DIR) -> str:
-    """Render the Markdown weights table block from the five `<owner>__<repo>.sha256.json` receipts."""
+    """Render the Markdown weights table block from all `<owner>__<repo>.sha256.json` receipts."""
     rows, sum_bytes, sum_seconds = load_and_verify_receipt_rows(receipts_dir)
     lines = [
         BEGIN_MARKER,
@@ -165,13 +165,13 @@ def update_doc_weights_table(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Generate or verify the weights table in REAL_SERVICE_ASSUMPTIONS.md from the 5 receipts."
+        description="Generate or verify the weights table in REAL_SERVICE_ASSUMPTIONS.md from all receipts."
     )
     parser.add_argument(
         "--receipts-dir",
         type=Path,
         default=DEFAULT_RECEIPTS_DIR,
-        help="Directory containing the 5 <owner>__<repo>.sha256.json receipts.",
+        help="Directory containing all <owner>__<repo>.sha256.json receipts.",
     )
     parser.add_argument(
         "--doc",

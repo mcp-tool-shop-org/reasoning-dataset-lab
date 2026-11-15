@@ -416,7 +416,7 @@ def _choice_row(probs: tuple[float, float, float], order: str) -> dict[str, Any]
 
 def _tq_row(p_t: float | None, p_f: float | None, order: str, state: str = "parsed") -> dict[str, Any]:
     verdict = three_way_wording.two_question_verdict(p_t, p_f) if state == "parsed" and p_t is not None and p_f is not None else None
-    return {"state": state, "order": order, "raw_verdict": verdict, "p_t": p_t, "p_f": p_f}
+    return {"state": state, "order": order, "pass_mode": TWO_Q, "raw_verdict": verdict, "p_t": p_t, "p_f": p_f}
 
 
 def test_rule_b_matches_the_hand_worked_fixture() -> None:
@@ -473,6 +473,20 @@ def test_two_question_inconsistent_is_wrong_not_invalid_and_is_reported() -> Non
     # A legacy arm's breakdown keeps its columns.
     legacy = bakeoff_judge_score._three_way_breakdown([(_rec("x", "supported"), _choice_row((0.8, 0.1, 0.1), "AB"), _choice_row((0.8, 0.1, 0.1), "BA"))])
     assert legacy["strict_outcome_columns"] == list(bakeoff_judge_score.THREE_WAY_OUTCOME_COLUMNS)
+    # `inconsistent` is accepted as a parsed verdict only in `three_way_two_question`; anywhere else it is invalid.
+    assert bakeoff_judge_score._three_way_valid_verdict({"state": "parsed", "raw_verdict": "inconsistent"}, pass_mode=TWO_Q) == "inconsistent"
+    assert bakeoff_judge_score._three_way_valid_verdict({"state": "parsed", "raw_verdict": "inconsistent", "pass_mode": TWO_Q}) == "inconsistent"
+    for other_mode in ("three_way", CONTRA, SYM, NLI, None):
+        assert bakeoff_judge_score._three_way_valid_verdict(
+            {"state": "parsed", "raw_verdict": "inconsistent"}, pass_mode=other_mode
+        ) is None
+        non_tq = bakeoff_judge_score._three_way_breakdown(
+            [(_rec("y", "supported"), {"state": "parsed", "order": "AB", "raw_verdict": "inconsistent"}, {"state": "parsed", "order": "BA", "raw_verdict": "inconsistent"})],
+            pass_mode=other_mode,
+        )
+        assert non_tq["invalid_calls"]["count"] == 2
+        assert non_tq["strict_outcome_counts"]["supported"]["invalid"] == 1
+        assert "strict_inconsistent" not in non_tq["strict_outcome_columns"]
 
 
 # --- 4. the d3-family remote-code gate ---------------------------------------------------------------------------------
@@ -548,14 +562,16 @@ def test_d3_flash_code_must_match_the_reviewed_receipt(tmp_path: Path) -> None:
 
 
 class _StubD3TwoQuestion:
-    def __init__(self) -> None:
+    def __init__(self, q2_override: dict[str, Any] | None = None) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.q2_override = q2_override
 
     def system_one(self, **kwargs: Any) -> Any:
         self.calls.append(dict(kwargs))
         qs = kwargs["questions"]
         if set(qs) == {"q1", "q2"}:
-            return {"answers": {"q1": {"noul": 0.82}, "q2": {"noul": 0.11}}}
+            q2_val = dict(self.q2_override) if self.q2_override is not None else {"noul": 0.11}
+            return {"answers": {"q1": {"noul": 0.82}, "q2": q2_val}}
         return {"answers": {"verdict": {"choice": "contradicted", "probabilities": {"supported": 0.1, "contradicted": 0.8, "can't tell": 0.1}}}}
 
 
@@ -595,6 +611,16 @@ def test_d3_transport_runs_d3_flash_and_two_questions_with_the_review_recorded(
     assert set(stub.calls[-1]["questions"]) == {"q1", "q2"}
     r2 = build_judge_adapter("d3-mini").parse_response(resp2, pass_mode=TWO_Q)
     assert r2.state == "parsed" and r2.raw_verdict == "supported" and r2.p_f == pytest.approx(0.11)  # type: ignore[attr-defined]
+    # When q2 hits max_length_exceeded or another error while q1 succeeds, done_reason/stop_reason reflect q2.
+    stub.q2_override = {"error": "max_length_exceeded"}
+    resp_len = t2.generate(mini, _prompt("d3-mini", ITEMS[0], "BA", TWO_Q), seed=1)
+    assert resp_len.done_reason == "length" and resp_len.stop_reason == "max_new_tokens"
+    r_len = build_judge_adapter("d3-mini").parse_response(resp_len, pass_mode=TWO_Q)
+    assert r_len.state == "length_stop" and r_len.done_reason == "length"
+    stub.q2_override = {"error": "backend_failure"}
+    resp_err = t2.generate(mini, _prompt("d3-mini", ITEMS[0], "BA", TWO_Q), seed=1)
+    assert resp_err.done_reason == "error" and resp_err.stop_reason == "error"
+    stub.q2_override = None
     # A d3-flash snapshot whose code differs from the reviewed receipt is refused at verify_ready.
     owner, repo = flash.repo_id.split("/", 1)
     snap = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / flash.revision
@@ -1090,6 +1116,7 @@ def _trip_window(
     unfinished: str = "",
     plan: str = "",
     truncate: str = "",
+    out_dir: Path | None = None,
 ) -> tuple[Any, Path, dict[str, Path]]:
     """A --time-one window that trips its cost cap after one pass has finished (#89's setup: fake clock, a run cell
     that sleeps after writing the finished pass, cap 2.5), with an unfinished pass planted on the fake VM."""
@@ -1097,7 +1124,7 @@ def _trip_window(
     _add_d5c_snapshots(receipts_dir, hf_home)
     items_file = _make_synthetic_public_items(tmp_path / f"data_{tag}", count=2)
     env_p = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{tag}")
-    out_dir = tmp_path / f"out_{tag}"
+    out_dir = out_dir or (tmp_path / f"out_{tag}")
     clock = tmp_path / f"clock_{tag}.txt"
     clock.write_text("1000000\n", encoding="utf-8", newline="\n")
     jid, mode = done.split(":")
@@ -1133,12 +1160,13 @@ def _downloads(state_dir: Path) -> list[str]:
 
 
 ITEM7_CASES = [
-    # main's three_way as the control, then the three new 3-way modes. The d3-mini-only arms run in a per_judge window
+    # main's three_way as the control, then the four new 3-way modes. The single-judge arms run in a per_judge window
     # whose other pass (unfinished) is d3-flash's arm 3, or another pass of d3-mini itself.
     ("three_way", "nemotron-3-nano-4b,d3-mini", "--pass-mode three_way", "nemotron-3-nano-4b:three_way", "d3-mini:three_way", ""),
     (CONTRA, "nemotron-3-nano-4b,d3-mini", f"--pass-mode {CONTRA}", f"nemotron-3-nano-4b:{CONTRA}", f"d3-mini:{CONTRA}", ""),
     (TWO_Q, f"d3-mini,{FLASH}", "", f"d3-mini:{TWO_Q}", f"{FLASH}:{CONTRA}", f"d3-mini:{TWO_Q},{FLASH}:{CONTRA}"),
     (SYM, "d3-mini", "", f"d3-mini:{SYM}", f"d3-mini:{TWO_Q}", f"d3-mini:{SYM},d3-mini:{TWO_Q}"),
+    (NLI, f"{ENCODER},{FLASH}", "", f"{ENCODER}:{NLI}", f"{FLASH}:{CONTRA}", f"{ENCODER}:{NLI},{FLASH}:{CONTRA}"),
 ]
 
 
@@ -1175,7 +1203,11 @@ def test_item7_tripped_window_keeps_finished_passes_rows_and_only_theirs(
     ("tag", "only", "pass_args", "done", "plan"),
     [
         ("binary", "nemotron-3-nano-4b,d3-mini", "", "nemotron-3-nano-4b:binary", ""),
+        ("three_way", "nemotron-3-nano-4b,d3-mini", "--pass-mode three_way", "nemotron-3-nano-4b:three_way", ""),
+        (CONTRA, "nemotron-3-nano-4b,d3-mini", f"--pass-mode {CONTRA}", f"nemotron-3-nano-4b:{CONTRA}", ""),
         (TWO_Q, f"d3-mini,{FLASH}", "", f"d3-mini:{TWO_Q}", f"d3-mini:{TWO_Q},{FLASH}:{CONTRA}"),
+        (SYM, "d3-mini", "", f"d3-mini:{SYM}", f"d3-mini:{SYM},d3-mini:{TWO_Q}"),
+        (NLI, f"{ENCODER},{FLASH}", "", f"{ENCODER}:{NLI}", f"{ENCODER}:{NLI},{FLASH}:{CONTRA}"),
     ],
 )
 def test_item9_truncated_rows_download_is_refused_not_counted_and_not_kept(
@@ -1273,6 +1305,53 @@ def test_fetch_helpers_skip_only_a_matching_pair_and_fail_closed(tmp_path: Path)
     rows_p.write_bytes(body[:4])
     ok, _ = vm_judges.launcher_verify_fetched_pass(out, "d3-mini", TWO_Q, staged=False)
     assert ok is False and rows_p.exists()  # nothing in place is deleted by the check; the re-fetch replaces it
+    # Follow-up 2: when a staged re-fetch fails verification, both the .part files and stale destination files go.
+    stage(body[:2], good_doc)
+    ok_staged, msg_staged = vm_judges.launcher_verify_fetched_pass(out, "d3-mini", TWO_Q, staged=True)
+    assert ok_staged is False and msg_staged.startswith(f"FETCHED_ROWS_SHA_MISMATCH: judge=d3-mini pass_mode={TWO_Q}")
+    assert not rows_part.exists() and not done_part.exists() and not rows_p.exists() and not done_p.exists()
+
+
+def test_failed_refetch_cleans_up_stale_destination_files_from_interrupted_run(tmp_path: Path) -> None:
+    """Follow-up 2: if out_dir already held a stale destination pair from an interrupted run and re-fetching the
+    pass from the VM fails verification, neither stale file survives to be counted in judges_completed."""
+    jid, mode = "d3-mini", TWO_Q
+    rows_name = vm_judges.rows_filename_for_pass(jid, mode)
+    done_name = vm_judges.judge_done_filename_for_pass(jid, mode)
+    out_dir = tmp_path / "out_stale_refetch"
+    (out_dir / "rows").mkdir(parents=True)
+    (out_dir / "judge_done").mkdir(parents=True)
+    stale_rows = b'{"item_id": "stale", "row": 1}\n'
+    stale_sha = hashlib.sha256(stale_rows).hexdigest()
+    (out_dir / "rows" / rows_name).write_bytes(stale_rows[:4])
+    (out_dir / "judge_done" / done_name).write_text(
+        json.dumps({"judge_id": jid, "pass_mode": mode, "rows_file": f"rows/{rows_name}", "sha256": stale_sha}),
+        encoding="utf-8",
+    )
+    proc, _, _ = _trip_window(
+        tmp_path,
+        "stale-refetch",
+        only_judges=f"d3-mini,{FLASH}",
+        pass_args="",
+        done=f"{jid}:{mode}",
+        plan=f"{jid}:{mode},{FLASH}:{CONTRA}",
+        truncate=rows_name,
+        out_dir=out_dir,
+    )
+    assert proc.returncode == 2, proc.stderr
+    logged = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in (out_dir / "colab-cli.log",) if p.is_file())
+    refusals = [ln.split(" ", 1)[1] for ln in logged.splitlines() if " FETCHED_" in ln] + [
+        ln for ln in proc.stderr.splitlines() if ln.startswith("FETCHED_")
+    ]
+    assert any(ln.startswith(f"FETCHED_ROWS_SHA_MISMATCH: judge={jid} pass_mode={mode} rows_file=rows/{rows_name}") for ln in refusals), (
+        refusals,
+        proc.stderr,
+        logged,
+    )
+    assert list((out_dir / "rows").iterdir()) == []
+    assert list((out_dir / "judge_done").iterdir()) == []
+    outcome = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome["judges_completed"] == []
 
 
 # --- 10. receipts built from HF metadata, and the hash check before any load (Window A follow-up) -------------------

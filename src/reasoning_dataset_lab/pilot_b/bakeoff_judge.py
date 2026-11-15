@@ -4026,19 +4026,19 @@ class D3MiniTransport:
         elapsed = max(0.0001, time.monotonic() - t0)
 
         answers = result.get("answers", {}) if isinstance(result, Mapping) else {}
-        answer = answers.get(next(iter(questions), "supported")) if isinstance(answers, Mapping) else None
+        q_keys = tuple(questions) or ("supported",)
+        q_answers = [answers.get(k) if isinstance(answers, Mapping) else None for k in q_keys]
         done_reason: DoneReason = "stop"
         tokens: tuple[str, ...] = ()
         entries: tuple[TopLogprobEntry, ...] = ()
-        if isinstance(answer, Mapping):
-            if answer.get("error") == "max_length_exceeded":
-                done_reason = "length"
-            elif "error" in answer:
-                done_reason = "error"
-            else:
-                tokens, entries = _d3_answer_entries(answer)
-        else:
+        if any(isinstance(a, Mapping) and a.get("error") == "max_length_exceeded" for a in q_answers):
+            done_reason = "length"
+        elif any(not isinstance(a, Mapping) or "error" in a for a in q_answers):
             done_reason = "error"
+        else:
+            first_ans = q_answers[0]
+            assert isinstance(first_ans, Mapping)
+            tokens, entries = _d3_answer_entries(first_ans)
 
         sys_one = dict(result) if isinstance(result, Mapping) else {"raw": str(result)}
         in_tok_ids = encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)

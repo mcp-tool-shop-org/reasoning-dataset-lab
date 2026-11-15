@@ -359,15 +359,22 @@ def test_arm_d3_readout_maps_shown_keys_to_internal_classes() -> None:
 
 
 def test_d3_transport_reads_the_answer_under_the_payload_question_id() -> None:
-    """D3MiniTransport reads the answer under the question id it sent: "verdict" in the arm, "supported" in three_way."""
+    """D3MiniTransport reads the answers under the question ids it sent: "verdict" in the arm, "supported" in three_way, ("q1", "q2") in two-question."""
     import inspect
 
     src = inspect.getsource(bakeoff_judge.D3MiniTransport.generate)
-    assert 'answers.get(next(iter(questions), "supported"))' in src
-    for mode, qid in ((ARM, "verdict"), ("three_way", "supported"), ("binary", "supported")):
+    assert 'q_keys = tuple(questions) or ("supported",)' in src
+    assert "answers.get(k)" in src
+    assert 'answers.get("supported")' not in src
+    for mode, qids in (
+        (ARM, ("verdict",)),
+        ("three_way", ("supported",)),
+        ("binary", ("supported",)),
+        ("three_way_two_question", ("q1", "q2")),
+    ):
         payload = _prompt("d3-mini", ITEMS[0], "AB", mode).structured_payload or {}
         _state, questions = bakeoff_judge.check_d3_text_only_inputs(payload)
-        assert next(iter(questions)) == qid
+        assert tuple(questions) == qids
 
 
 def _strip_arm(doc: Any) -> Any:

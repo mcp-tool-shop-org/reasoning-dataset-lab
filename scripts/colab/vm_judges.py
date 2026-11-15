@@ -9987,22 +9987,19 @@ def _first_load_receipt_fields(
     *,
     include_first_judge_alias: bool = True,
 ) -> dict[str, Any]:
-    """Build receipt/status fields for `--until first_load`, recording full `ONLY_JUDGES` when present."""
+    """Build receipt/status fields for `--until first_load`; `first_load_judge_id` is always a `list[str]`."""
     fl_ids = (
         [first_load_judge_id]
         if isinstance(first_load_judge_id, str)
         else list(first_load_judge_id)
     )
     primary_id = fl_ids[0] if fl_ids else FIRST_LOAD_JUDGE_ID
-    fl_id_value: str | list[str] = (
-        list(fl_ids) if first_load_judge_id_source == "only_judges" else primary_id
-    )
     fl_receipt_bytes = sum(
         JUDGE_RECEIPT_BYTES_BY_ID.get(jid, FIRST_LOAD_RECEIPT_BYTES)
         for jid in fl_ids
     )
     fields: dict[str, Any] = {
-        "first_load_judge_id": fl_id_value,
+        "first_load_judge_id": list(fl_ids),
         "first_load_judge_ids": list(fl_ids),
         "first_load_judge_id_source": first_load_judge_id_source,
         "first_load_receipt_bytes": fl_receipt_bytes,
@@ -16021,10 +16018,11 @@ def launcher_verify_fetched_pass(
 
     `staged=True` checks the two hidden downloads (`judge_done/.<done>.part`, `rows/.<rows>.part`): when the judge_done
     record parses, names this pass's rows file and mode, and its `sha256` equals the rows' sha256, both are moved into
-    place (rows first) and (True, "") is returned; otherwise both are deleted and the named refusal line is returned
-    (FETCHED_JUDGE_DONE_INVALID, FETCHED_ROWS_MISSING, FETCHED_ROWS_SHA_MISMATCH), so the pass is not counted complete.
-    `staged=False` only checks the files already in place (deleting nothing), and also needs `want_sha256` (the VM's
-    latest record) to match when given: the launcher skips a re-fetch only on True."""
+    place (rows first) and (True, "") is returned; otherwise the staged files and any stale in-place destination files
+    are deleted and the named refusal line is returned (FETCHED_JUDGE_DONE_INVALID, FETCHED_ROWS_MISSING,
+    FETCHED_ROWS_SHA_MISMATCH), so the pass is not counted complete. `staged=False` only checks the files already in
+    place (deleting nothing), and also needs `want_sha256` (the VM's latest record) to match when given: the launcher
+    skips a re-fetch only on True."""
     done_name = judge_done_filename_for_pass(judge_id, pass_mode)
     rows_name = rows_filename_for_pass(judge_id, pass_mode)
     done_dst = Path(out_dir) / JUDGE_DONE_DIRNAME / done_name
@@ -16034,7 +16032,7 @@ def launcher_verify_fetched_pass(
 
     def _refuse(code: str, detail: str) -> tuple[bool, str]:
         if staged:
-            for f in (done_src, rows_src):
+            for f in (done_src, rows_src, done_dst, rows_dst):
                 f.unlink(missing_ok=True)
         return False, (
             f"{code}: judge={judge_id} pass_mode={pass_mode} rows_file={ROWS_DIRNAME}/{rows_name} {detail}; "
