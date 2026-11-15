@@ -16068,6 +16068,137 @@ def test_real_gpu_merge_checks_prompt_sha_in_place_of_stand_in_input_sha(
     assert x_exc.value.failure_class == "MERGE_INPUT_TOKEN_SHA_MISMATCH"
     ap1.write_text(orig_ap1, encoding="utf-8")
 
+    # 6. An edited anchor call: forged input sha on the anchor item's main row plus the same call's
+    #    anchor rows changed in every shard (golden untouched). Each variant refuses.
+    a_item = sorted(anchor_ids)[0]
+    a_order = "AB"
+    forged = "d" * 64
+
+    def _forge_main(rows: list[dict[str, Any]]) -> None:
+        for r in rows:
+            if r["item_id"] == a_item and r["order"] == a_order:
+                r["input_token_ids_sha256"] = forged
+
+    main_dir = _shard_with(lambda r: r["item_id"] == a_item)
+    for variant, a_patch in (
+        ("other_prompt", {"input_token_ids_sha256": forged, "prompt_sha256": "c" * 64}),
+        ("blank_prompt", {"input_token_ids_sha256": forged, "prompt_sha256": ""}),
+        ("blank_input", {"input_token_ids_sha256": ""}),
+    ):
+        orig_main = _rewrite_shard_rows(main_dir, jid, _forge_main)
+        orig_anchor: dict[Path, str] = {}
+        for sdir in shard_dirs:
+            ap = sdir / "anchor_rows" / f"{jid}.jsonl"
+            orig_anchor[ap] = ap.read_text("utf-8")
+            arows = [json.loads(ln) for ln in orig_anchor[ap].splitlines() if ln.strip()]
+            for ar in arows:
+                if ar["item_id"] == a_item and ar["order"] == a_order:
+                    ar.update(a_patch)
+            ap.write_text("\n".join(json.dumps(r) for r in arows) + "\n", encoding="utf-8")
+        with pytest.raises(merge_shards.MergeRefusalError) as f1_exc:
+            _merge(f"edited_anchor_{variant}")
+        assert f1_exc.value.failure_class in (
+            "MERGE_PROMPT_SHA_MISMATCH",
+            "MERGE_REAL_INPUT_SHA_UNVERIFIABLE",
+            "MERGE_INPUT_TOKEN_SHA_MISMATCH",
+        ), (variant, f1_exc.value.failure_class)
+        for ap, txt in orig_anchor.items():
+            ap.write_text(txt, encoding="utf-8")
+        _restore_shard_rows(main_dir, jid, orig_main)
+    # Forging the main row and the anchor rows consistently (correct prompt) still loses to the golden.
+    orig_main = _rewrite_shard_rows(main_dir, jid, _forge_main)
+    orig_anchor = {}
+    for sdir in shard_dirs:
+        ap = sdir / "anchor_rows" / f"{jid}.jsonl"
+        orig_anchor[ap] = ap.read_text("utf-8")
+        arows = [json.loads(ln) for ln in orig_anchor[ap].splitlines() if ln.strip()]
+        for ar in arows:
+            if ar["item_id"] == a_item and ar["order"] == a_order:
+                ar["input_token_ids_sha256"] = forged
+        ap.write_text("\n".join(json.dumps(r) for r in arows) + "\n", encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as fc_exc:
+        _merge("edited_anchor_consistent")
+    assert fc_exc.value.failure_class == "MERGE_INPUT_TOKEN_SHA_MISMATCH"
+    for ap, txt in orig_anchor.items():
+        ap.write_text(txt, encoding="utf-8")
+    _restore_shard_rows(main_dir, jid, orig_main)
+
+    # 7. Copying ANOTHER judge's input sha for the same item and order refuses: their prompts differ.
+    n_item = next(
+        json.loads(ln)["item_id"]
+        for ln in (n_dir / "rows" / "granite-guardian-4.1-8b.jsonl").read_text("utf-8").splitlines()
+        if ln.strip() and json.loads(ln)["item_id"] not in anchor_ids
+    )
+    assert (
+        manifest_doc["prompt_sha256_by_call"][f"{n_item}:AB:granite-guardian-4.1-8b"]
+        != manifest_doc["prompt_sha256_by_call"][f"{n_item}:AB:flow-judge-v0.1"]
+    )
+    donor_sha = next(
+        json.loads(ln)["input_token_ids_sha256"]
+        for ln in (n_dir / "rows" / "granite-guardian-4.1-8b.jsonl").read_text("utf-8").splitlines()
+        if ln.strip() and json.loads(ln)["item_id"] == n_item and json.loads(ln)["order"] == "AB"
+    )
+
+    def _copy_cross_judge(rows: list[dict[str, Any]]) -> None:
+        for r in rows:
+            if r["item_id"] == n_item and r["order"] == "AB":
+                r["input_token_ids_sha256"] = donor_sha
+
+    orig = _rewrite_shard_rows(n_dir, "flow-judge-v0.1", _copy_cross_judge)
+    with pytest.raises(merge_shards.MergeRefusalError) as cj_exc:
+        _merge("cross_judge_copy")
+    assert cj_exc.value.failure_class == "MERGE_INPUT_TOKEN_SHA_MISMATCH"
+    _restore_shard_rows(n_dir, "flow-judge-v0.1", orig)
+    # mu-judge and nemotron-3-nano-4b assemble the identical prompt for a call, and their snapshots
+    # share tokenizer.json and chat_template.jinja, so an identical input sha between the two can be
+    # honest; the merge documents this pair as the one cross-judge case it does not refuse.
+    assert (
+        manifest_doc["prompt_sha256_by_call"][f"{n_item}:AB:mu-judge"]
+        == manifest_doc["prompt_sha256_by_call"][f"{n_item}:AB:nemotron-3-nano-4b"]
+    )
+
+    # 8. Manifest integrity: an edited reference manifest, an edited or missing shard copy, and a
+    #    wrong pinned sha all refuse.
+    orig_ref = manifest_path.read_text("utf-8")
+    edited = json.loads(orig_ref)
+    edited["anchor_item_ids"] = list(reversed(edited["anchor_item_ids"]))
+    manifest_path.write_text(json.dumps(edited, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as em_exc:
+        _merge("edited_ref_manifest")
+    assert em_exc.value.failure_class == "MERGE_MANIFEST_SHA_MISMATCH"
+    edited["manifest_sha256"] = merge_shards._canonical_json_sha256(
+        {k: v for k, v in edited.items() if k != "manifest_sha256"}
+    )
+    manifest_path.write_text(json.dumps(edited, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as rs_exc:
+        _merge("resealed_ref_manifest")
+    assert rs_exc.value.failure_class == "MERGE_MANIFEST_SHA_MISMATCH"
+    manifest_path.write_text(orig_ref, encoding="utf-8")
+    copy1 = shard_dirs[1] / "shard_manifest.json"
+    orig_copy1 = copy1.read_text("utf-8")
+    copy1.unlink()
+    with pytest.raises(merge_shards.MergeRefusalError) as mc_exc:
+        _merge("missing_shard_copy")
+    assert mc_exc.value.failure_class == "MERGE_MANIFEST_SHA_MISMATCH"
+    copy1.write_text(orig_copy1, encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as pin_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / "merged_wrong_pin",
+            golden_anchor_manifest_path=golden_path,
+            expected_manifest_sha256="9" * 64,
+        )
+    assert pin_exc.value.failure_class == "MERGE_MANIFEST_SHA_MISMATCH"
+    pinned = merge_shards.merge_shards(
+        shard_dirs=shard_dirs,
+        manifest_path=manifest_path,
+        output_dir=tmp_path / "merged_right_pin",
+        golden_anchor_manifest_path=golden_path,
+        expected_manifest_sha256=manifest_doc["manifest_sha256"],
+    )
+    assert all(v == "ok" for v in pinned["gates"].values())
+
     # The restored shards merge green again.
     assert all(v == "ok" for v in _merge("restored")["gates"].values())
 
