@@ -468,3 +468,115 @@ def test_elephant_transport_reuses_its_engine_and_raises_other_errors(tmp_path: 
     with pytest.raises(RdlabError) as exc:
         bakeoff_judge.elephant_install_record(bad)
     assert exc.value.code == "ELEPHANT_RUNTIME_UNVERIFIED"
+
+
+# --- the strings qev and the model template add, pinned (PREREG-d5c-five-arm-window-2026-11-15-arm4-model-strings) --
+
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
+ONEJEV_PROMPT_BLOB = "8eaadd36b29c0026d27578d761ac934ba35e8b6e"  # qev/prompt.py at OneJev 81ce62f1
+SERVED_PROMPT_BLOB = "de49ccad45049238ba8a2ff42ccdde69061ea239"  # after serve.patch (its `index 8eaadd3..de49cca` line)
+PREREG_SYSTEM = (
+    "Apply the question to the state. Choose exactly one of the listed options. "
+    "Respond with only its uppercase letter, with no explanation or reasoning."
+)
+
+
+def _git_blob_sha(data: bytes) -> str:
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def _load_qev_prompt(name: str) -> Any:
+    """Load a pinned copy of qev/prompt.py as `qev.prompt`, with a stand-in `qev.schema` (the real one needs pydantic;
+    prompt.py only uses its three question classes for isinstance checks)."""
+    import importlib.util
+
+    schema = types.ModuleType("qev.schema")
+
+    class _Q:
+        def __init__(self, **kw: Any) -> None:
+            self.__dict__.update(kw)
+
+    schema.NoulQuestion = type("NoulQuestion", (_Q,), {})  # type: ignore[attr-defined]
+    schema.ChoiceQuestion = type("ChoiceQuestion", (_Q,), {})  # type: ignore[attr-defined]
+    schema.ScoreQuestion = type("ScoreQuestion", (_Q,), {})  # type: ignore[attr-defined]
+    schema.Question = object  # type: ignore[attr-defined]
+    pkg = types.ModuleType("qev")
+    pkg.__path__ = []  # type: ignore[attr-defined]
+    saved = {k: sys.modules.get(k) for k in ("qev", "qev.schema", "qev.prompt")}
+    sys.modules.update({"qev": pkg, "qev.schema": schema})
+    try:
+        spec = importlib.util.spec_from_loader("qev.prompt", loader=None)
+        assert spec is not None
+        mod = importlib.util.module_from_spec(spec)
+        mod.__package__ = "qev"
+        sys.modules["qev.prompt"] = mod
+        exec(compile((FIXTURES / "onejev_81ce62f1" / name).read_text(encoding="utf-8"), name, "exec"), mod.__dict__)
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+    return mod, schema
+
+
+def test_qev_wrapper_strings_are_the_preregistered_ones() -> None:
+    """Every string qev adds around arm 4's words, rendered by the pinned qev source (OneJev 81ce62f1 after
+    elephant-1's serve.patch) for the real arm-4 payload, equals PREREG-d5c-five-arm-window-2026-11-15-arm4-model-
+    strings. A changed OneJev (another commit or patch) changes a fixture blob and fails here."""
+    raw = (FIXTURES / "onejev_81ce62f1" / "qev_prompt.py.txt").read_bytes()
+    served = (FIXTURES / "onejev_81ce62f1" / "qev_prompt.served.py.txt").read_bytes()
+    assert _git_blob_sha(raw) == ONEJEV_PROMPT_BLOB and _git_blob_sha(served) == SERVED_PROMPT_BLOB
+    for name in ("qev_prompt.py.txt", "qev_prompt.served.py.txt"):
+        mod, schema = _load_qev_prompt(name)
+        assert mod.SYSTEM_PROMPT == PREREG_SYSTEM and mod.DEFAULT_STYLE.system == PREREG_SYSTEM
+        assert (mod.DEFAULT_STYLE.question_header, mod.DEFAULT_STYLE.answer_line) == ("Question:", "Answer with one letter: {letters}.")
+        payload = _prompt(ELEPHANT, ITEMS[0], "AB", CONTRA).structured_payload
+        assert payload is not None
+        q = payload["questions"]["verdict"]
+        rendered = mod.render_question("verdict", schema.ChoiceQuestion(type="choice", instructions=q["instructions"], criteria=q["criteria"]))
+        messages = mod.build_messages(payload["state"], rendered.suffix)
+        assert messages == [
+            {"role": "system", "content": PREREG_SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    f"<state>\n{payload['state']}\n</state>\n\n"
+                    f"Question: Judge the claim against the state. Which option holds? Claim: {ITEMS[0].claim}\n\n"
+                    "Options:\n"
+                    "A. supported: The claim is entailed by the state.\n"
+                    "B. contradicted: The state proves the claim false.\n"
+                    "C. can't tell: The state neither entails nor contradicts the claim.\n\n"
+                    "Answer with one letter: A, B, C."
+                ),
+            },
+        ]
+        assert rendered.labels == ["supported", "contradicted", "can't tell"]  # no abstain option for 3 options
+        assert "know" not in rendered.suffix.lower()
+
+
+def test_elephant_chat_template_is_the_pinned_one_and_opens_an_empty_think_block() -> None:
+    """The template is byte-identical to the receipt-pinned chat_template.jinja; rendered (when jinja2 is present) it
+    wraps the turns as pre-registered and opens the assistant turn with an empty thinking block."""
+    tpl = (FIXTURES / "elephant1_b3f8a934" / "chat_template.jinja").read_bytes()
+    rdir = Path(__file__).resolve().parents[1] / "scripts" / "colab" / "receipts"
+    receipt = json.loads((rdir / "baselabs__elephant-1.sha256.json").read_text(encoding="utf-8"))["files"]["chat_template.jinja"]
+    assert hashlib.sha256(tpl).hexdigest() == receipt["sha256"] and len(tpl) == receipt["bytes"]
+    text = tpl.decode("utf-8").splitlines()
+    assert "{{- '<|im_start|>system\\n' + content + '<|im_end|>\\n' }}" in text[63]
+    assert "{{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}" in text[87]
+    assert "{{- '<|im_start|>assistant\\n' }}" in text[147]
+    assert "enable_thinking is false" in text[148] and "{{- '<think>\\n\\n</think>\\n\\n' }}" in text[149]
+    jinja2 = pytest.importorskip("jinja2")
+    env = jinja2.Environment()
+    env.globals["raise_exception"] = lambda m: (_ for _ in ()).throw(ValueError(m))
+    out = env.from_string(tpl.decode("utf-8")).render(
+        messages=[{"role": "system", "content": PREREG_SYSTEM}, {"role": "user", "content": "<state>\nS\n</state>\n\nQ"}],
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    assert out == (
+        f"<|im_start|>system\n{PREREG_SYSTEM}<|im_end|>\n"
+        "<|im_start|>user\n<state>\nS\n</state>\n\nQ<|im_end|>\n"
+        "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+    )

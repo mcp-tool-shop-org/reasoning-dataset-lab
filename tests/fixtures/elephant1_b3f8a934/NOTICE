@@ -1,0 +1,4 @@
+Copied verbatim for a pinning test (tests/test_colab_d5c_elephant.py); not imported by rdlab.
+
+- chat_template.jinja: baselabs/elephant-1 at b3f8a93462fb1051a9de031e94a7ff380e254072; its sha256 is the one in scripts/colab/receipts/baselabs__elephant-1.sha256.json.
+- Licence: MIT, declared in the elephant-1 model card (no LICENSE file in the repo); credit Base Labs at Baseten. The template derives from Qwen3.5's chat template.

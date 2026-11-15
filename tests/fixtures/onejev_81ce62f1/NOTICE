@@ -1,0 +1,5 @@
+Copied verbatim for a pinning test (tests/test_colab_d5c_elephant.py); not imported by rdlab.
+
+- qev_prompt.py.txt: qev/prompt.py of OmniJev/OneJev at 81ce62f1597c91e46767d4d02d6ac2e18534fe94 (git blob 8eaadd36b29c0026d27578d761ac934ba35e8b6e).
+- qev_prompt.served.py.txt: the same file after elephant-1's serve.patch (baselabs/elephant-1 at b3f8a93462fb1051a9de031e94a7ff380e254072), git blob de49ccad45049238ba8a2ff42ccdde69061ea239, the index line in serve.patch.
+- LICENSE: OneJev's Apache License 2.0 at the same commit. Copyright of the copied file stays with its authors.

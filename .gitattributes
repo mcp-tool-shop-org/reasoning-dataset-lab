@@ -1,1 +1,4 @@
 * text=auto eol=lf
+# Byte-pinned third-party fixtures (blob and sha256 checked by tests): never convert line endings.
+tests/fixtures/onejev_81ce62f1/** -text
+tests/fixtures/elephant1_b3f8a934/** -text

@@ -36,21 +36,45 @@
       "added": 0,
       "changed": 2,
       "moved": 0,
-      "parts": 1,
+      "parts": 2,
       "removed": 0
     },
     "items": [
       {
+        "kind": "landing",
+        "sentence": "tests/fixtures/elephant1_b3f8a934/chat_template.jinja is now read by tests/test_colab_d5c_elephant.py.",
+        "subjects": [
+          "tests/fixtures/elephant1_b3f8a934/chat_template.jinja",
+          "tests/test_colab_d5c_elephant.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "tests/fixtures/onejev_81ce62f1/qev_prompt.py.txt is now read by tests/test_colab_d5c_elephant.py.",
+        "subjects": [
+          "tests/fixtures/onejev_81ce62f1/qev_prompt.py.txt",
+          "tests/test_colab_d5c_elephant.py"
+        ]
+      },
+      {
+        "kind": "landing",
+        "sentence": "tests/fixtures/onejev_81ce62f1/qev_prompt.served.py.txt is now read by tests/test_colab_d5c_elephant.py.",
+        "subjects": [
+          "tests/fixtures/onejev_81ce62f1/qev_prompt.served.py.txt",
+          "tests/test_colab_d5c_elephant.py"
+        ]
+      },
+      {
         "kind": "counts",
-        "sentence": "Nothing structural changed since 2026-11-15; 2 files changed content.",
+        "sentence": "2 files changed content, across 2 parts.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "2b511723a24bee075651e6b7c490a910fbf5cedf",
-      "generatedAt": "2026-11-15T16:16:30.408Z"
+      "commit": "24ecbadcd47f4669ede7b27f56381dd24754c7a5",
+      "generatedAt": "2026-11-15T17:23:22.856Z"
     },
-    "unchanged": true
+    "unchanged": false
   },
   "changesTogether": [
     {
@@ -86,7 +110,7 @@
     {
       "a": "scripts/colab/vm_judges.py",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 41,
+      "either": 42,
       "partLabels": [
         "scripts",
         "tests"
@@ -96,7 +120,7 @@
         "tests"
       ],
       "relation": "b-imports-a",
-      "shared": 31
+      "shared": 32
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
@@ -114,19 +138,19 @@
       "shared": 5
     },
     {
-      "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
-      "b": "tests/test_pilot_b_part_b.py",
-      "either": 9,
+      "a": "tests/fixtures/fake_colab.py",
+      "b": "tests/test_colab_judge_launcher.py",
+      "either": 39,
       "partLabels": [
-        "src",
+        "tests",
         "tests"
       ],
       "parts": [
-        "src",
+        "tests",
         "tests"
       ],
-      "relation": "b-imports-a",
-      "shared": 5
+      "relation": "inside",
+      "shared": 22
     }
   ],
   "changesTogetherNote": [
@@ -135,7 +159,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 10 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "24ecbadcd47f4669ede7b27f56381dd24754c7a5",
+  "commit": "245c9ca0ac437bf3cacef5d8590295aed1c2073f",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (87 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -292,7 +316,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-15T17:23:22.856Z",
+  "generatedAt": "2026-11-15T17:28:26.117Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "16 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 12 more.",
