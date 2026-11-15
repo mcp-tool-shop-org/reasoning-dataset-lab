@@ -268,12 +268,12 @@
       },
       {
         "commits": 32,
-        "lines": 2350,
+        "lines": 2352,
         "path": "atlas/page.json"
       },
       {
         "commits": 32,
-        "lines": 5859,
+        "lines": 5857,
         "path": "atlas/statistics.json"
       },
       {
@@ -998,7 +998,7 @@
       },
       {
         "commits": 3,
-        "lines": 1622,
+        "lines": 1629,
         "path": "tests/test_colab_d5c_six_arm.py"
       },
       {
@@ -1152,9 +1152,9 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-11-15T21:24:45.800Z",
+  "generatedAt": "2026-11-15T21:51:18.733Z",
   "generatedFrom": {
-    "commit": "17c533f3fae980efe9e60afc7208fd93738e7409"
+    "commit": "57a36f23fc2587a32e9cea62c6a8326eb1b5b2a1"
   },
   "pairs": [
     {
@@ -1364,7 +1364,7 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-11-15T16:17:11-05:00",
+    "headDate": "2026-11-15T16:28:48-05:00",
     "inScopeFiles": 197,
     "pinnedStart": null,
     "priorFloor": "fallen",
@@ -1373,7 +1373,7 @@
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-19T21:17:11.000Z",
+    "since": "2026-05-19T21:28:48.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
