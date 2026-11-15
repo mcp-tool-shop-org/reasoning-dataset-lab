@@ -9837,16 +9837,17 @@ def validate_judge_order(
     return tuple(parts), "env"
 
 
-# RDLAB_ONLY_JUDGES is a time-one verification knob; the counted run is all five judges and does not accept it.
+# RDLAB_ONLY_JUDGES selects a subset of judges in --time-one or --stub (including --until first_load); counted runs use all five judges and do not accept it.
 def validate_only_judges(
     mode: str,
     raw_only: str | None = None,
     *,
     raw_judge_order: str | None = None,
+    raw_first_load_judge_id: str | None = None,
     until: str | None = None,
     session_smoke: bool = False,
 ) -> tuple[str, ...] | None:
-    """Validate `RDLAB_ONLY_JUDGES`: allowed only with `--time-one` (not `--stub`, `--until`, `--session-smoke`, or `RDLAB_JUDGE_ORDER`) and must be a non-empty comma-separated subset of `BAKEOFF_JUDGE_SPECS` keys with no duplicates or whitespace."""
+    """Validate `RDLAB_ONLY_JUDGES`: allowed only with `--time-one` (no `--until`) or `--stub` (no `--until` or `--until first_load`), not `--session-smoke`, `RDLAB_JUDGE_ORDER`, or `RDLAB_FIRST_LOAD_JUDGE_ID`, and must be a non-empty comma-separated subset of `BAKEOFF_JUDGE_SPECS` keys with no duplicates or whitespace."""
     if raw_only is None:
         if "RDLAB_ONLY_JUDGES" in os.environ:
             raw_val: str | None = os.environ["RDLAB_ONLY_JUDGES"]
@@ -9858,11 +9859,18 @@ def validate_only_judges(
     if raw_val is None:
         return None
 
-    has_until = until is not None and str(until).strip() != ""
-    if mode != "time-one" or has_until or session_smoke:
+    cleaned_until = str(until).strip() if until is not None else ""
+    allowed_mode_until = (
+        not session_smoke
+        and (
+            (mode == "time-one" and cleaned_until == "")
+            or (mode == "stub" and cleaned_until in ("", "first_load"))
+        )
+    )
+    if not allowed_mode_until:
         raise RefusalError(
             "ONLY_JUDGES_INVALID",
-            f"RDLAB_ONLY_JUDGES is allowed only with --time-one (got mode={mode!r}, until={until!r}, session_smoke={session_smoke!r})",
+            f"RDLAB_ONLY_JUDGES is allowed only with --time-one or --stub (with no --until or --until first_load); got mode={mode!r}, until={until!r}, session_smoke={session_smoke!r}",
         )
 
     has_judge_order = (
@@ -9873,6 +9881,16 @@ def validate_only_judges(
         raise RefusalError(
             "ONLY_JUDGES_INVALID",
             "RDLAB_ONLY_JUDGES cannot be combined with RDLAB_JUDGE_ORDER",
+        )
+
+    has_first_load_judge_id = (
+        raw_first_load_judge_id is not None
+        or "RDLAB_FIRST_LOAD_JUDGE_ID" in os.environ
+    )
+    if has_first_load_judge_id:
+        raise RefusalError(
+            "ONLY_JUDGES_INVALID",
+            "RDLAB_ONLY_JUDGES cannot be combined with RDLAB_FIRST_LOAD_JUDGE_ID",
         )
 
     if (
@@ -9947,7 +9965,7 @@ def validate_pass_mode(
         raise RefusalError(
             "BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED",
             f"--pass-mode three_way: judge(s) {unsupported!r} have no 3-way prompt (supports_three_way=False); "
-            "name the window's judges with RDLAB_ONLY_JUDGES (--time-one) and leave them out.",
+            "name the window's judges with RDLAB_ONLY_JUDGES (--time-one or --stub) and leave them out.",
         )
     return cleaned
 
@@ -14351,6 +14369,7 @@ def main(argv: list[str] | None = None) -> int:
             args.mode,
             getattr(args, "only_judges", None),
             raw_judge_order=getattr(args, "judge_order", None),
+            raw_first_load_judge_id=getattr(args, "first_load_judge_id", None),
             until=until_step,
         )
 
@@ -14365,13 +14384,6 @@ def main(argv: list[str] | None = None) -> int:
                 until=until_step,
             )
 
-        current_step = "validate_pass_mode"
-        main_pass_mode = validate_pass_mode(
-            args.mode,
-            getattr(args, "pass_mode", None),
-            judge_ids=judge_order,
-        )
-
         current_step = "validate_first_load_judge_id"
         first_load_judge_id, first_load_judge_id_source = validate_first_load_judge_id(
             args.mode,
@@ -14379,7 +14391,18 @@ def main(argv: list[str] | None = None) -> int:
             getattr(args, "first_load_judge_id", None),
         )
         if until_step == "first_load":
-            judge_order = (first_load_judge_id,)
+            if only_judges is not None:
+                first_load_judge_id = only_judges[0]
+                first_load_judge_id_source = "only_judges"
+            else:
+                judge_order = (first_load_judge_id,)
+
+        current_step = "validate_pass_mode"
+        main_pass_mode = validate_pass_mode(
+            args.mode,
+            getattr(args, "pass_mode", None),
+            judge_ids=judge_order,
+        )
 
         current_step = "validate_download_config"
         dl_max_workers, dl_xet_range_gets = validate_download_config(
@@ -14737,7 +14760,7 @@ def main(argv: list[str] | None = None) -> int:
                         judge_records_out=judge_download_records,
                         step_timings=step_timings,
                         step_order=step_order,
-                        only_judge_ids=(first_load_judge_id,),
+                        only_judge_ids=judge_order,
                         max_workers=dl_max_workers,
                         hf_xet_num_concurrent_range_gets=dl_xet_range_gets,
                     )
@@ -14757,7 +14780,7 @@ def main(argv: list[str] | None = None) -> int:
                         repo_root=args.repo_dir,
                         work_dir=args.work_dir,
                         progress_path=progress_path,
-                        only_judge_ids=(first_load_judge_id,),
+                        only_judge_ids=judge_order,
                         judge_order=judge_order,
                         judge_order_source=judge_order_source,
                         only_judges=only_judges,
