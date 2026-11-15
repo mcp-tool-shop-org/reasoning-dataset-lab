@@ -26136,8 +26136,10 @@ def test_e2e_fake_real_mode_lock_check_passes_opened_window_id_to_boot_gatekeepe
     )
     assert verified["provenance"]["window_id"] == expected_wid
 
-    # Explicitly empty or stub --window-id must still refuse at the boot gatekeeper with the exact refusal class and
-    # message (never falling back to the opened session id or to run_dir.name).
+    # Explicitly empty or stub --window-id must still refuse, never falling back to the opened session id or to
+    # run_dir.name. Since the PR #79 review it is refused on the rig with WINDOW_ID_STUB_REFUSED before `colab new`
+    # (it used to open the window and refuse at the boot gatekeeper); the gatekeeper's own refusal is tested directly in
+    # test_boot_gatekeeper_counted_refuses_empty_or_stub_window_id_before_any_model_load.
     for bad_tag, bad_flag, bad_got in (
         ("_empty_wid", "--window-id ''", "got ''"),
         ("_stub_wid", "--window-id window-lock-check", "got 'window-lock-check'"),
@@ -26157,11 +26159,16 @@ def test_e2e_fake_real_mode_lock_check_passes_opened_window_id_to_boot_gatekeepe
             tag=bad_tag,
             expect_fail=True,
         )
-        assert bad_res["proc"].returncode != 0, bad_tag
-        st_doc = json.loads((bad_res["out_dir"] / "status.json").read_text(encoding="utf-8"))
-        assert st_doc["failure_class"] == "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED", (bad_tag, st_doc)
-        assert "Real record mode ('lock-check') requires a non-stub window_id" in st_doc["reason"], st_doc
-        assert bad_got in st_doc["reason"], st_doc
+        bad_proc = bad_res["proc"]
+        assert bad_proc.returncode == 2, (bad_tag, bad_proc.stdout + bad_proc.stderr)
+        assert "WINDOW_ID_STUB_REFUSED" in bad_proc.stderr, (bad_tag, bad_proc.stderr)
+        assert "real mode ('lock-check')" in bad_proc.stderr and bad_got in bad_proc.stderr, bad_proc.stderr
+        bad_calls_log = bad_res["env_paths"]["calls_log"]
+        assert not bad_calls_log.exists() or not any(
+            json.loads(ln)["subcmd"] == "new"
+            for ln in bad_calls_log.read_text(encoding="utf-8").splitlines()
+            if ln.strip()
+        ), bad_tag
 
     # `--dry` of flagless --lock-check, --time-one and --counted also shows RDLAB_SESSION_ID=rdlab-<run_id> in colab exec.
     t1_part = _make_builder_part(tmp_path / "e2e_lc_dry_t1_part")
@@ -27939,3 +27946,168 @@ def test_rig_fetched_outputs_guard_scopes_the_claim_exemption_to_private_generat
             leak_exc.value.detail,
         )
         assert claim not in leak_exc.value.detail
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# PR #79 review: an empty or stub window id is refused on the rig before `colab new`, and on the VM in counted mode
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def _window_id_launcher_cli(tmp_path: Path, mode: str) -> str:
+    """Mode flags for a real window; the refusal comes before any input is read, so the lock-check paths need not
+    exist."""
+    if mode != "lock-check":
+        return f"--{mode}"
+    missing = _to_wsl_path(tmp_path / "not_read")
+    return (
+        f"--lock-check --lock-check-phase anchors --anchor-items '{missing}/a.jsonl' --p0a-items '{missing}/p.jsonl' "
+        f"--p0a-part-dir '{missing}/p0a' --counted-items '{missing}/c.jsonl'"
+    )
+
+
+@pytest.mark.parametrize("mode", ["time-one", "counted", "lock-check"])
+@pytest.mark.parametrize(
+    ("case", "extra_exports", "extra_args", "source"),
+    [
+        ("flag_empty", "", "--window-id ''", "--window-id"),
+        ("flag_stub", "", "--window-id stub", "--window-id"),
+        ("flag_token", "", "--window-id=rdlab-test-window-01", "--window-id"),
+        ("env_empty", "export RDLAB_SESSION_ID=''; ", "", "RDLAB_SESSION_ID"),
+        ("env_stub", "export RDLAB_SESSION_ID=window-local; ", "", "RDLAB_SESSION_ID"),
+        ("env_blank", "export RDLAB_SESSION_ID='  '; ", "", "RDLAB_SESSION_ID"),
+    ],
+)
+@pytest.mark.parametrize("dry", [False, True], ids=["live", "dry"])
+def test_launcher_refuses_empty_or_stub_window_id_before_colab_new(
+    tmp_path: Path, mode: str, case: str, extra_exports: str, extra_args: str, source: str, dry: bool
+) -> None:
+    """A real window (time-one, counted, lock-check) given an explicit empty or stub `--window-id`, or run from a shell
+    holding an empty or stub `RDLAB_SESSION_ID`, is refused with `WINDOW_ID_STUB_REFUSED` before `colab new`: the fake
+    CLI is never called, so nothing is opened, uploaded or downloaded. `--dry` reports the same refusal. "Stub" is
+    `vm_judges.is_stub_window_id`, the rule the VM's boot gatekeeper applies.
+    Fails at 64e7e76: the window opened and the VM refused only after open, upload, venv sync and weight download."""
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    items = _make_synthetic_public_items(tmp_path / "items", count=4)
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env", uv_python_315_found=True)
+    exports = (
+        _pm_real_mode_exports(
+            env_paths, open_lock=tmp_path / "w.lock", receipts_dir=receipts_dir, hf_home=hf_home, items_file=items
+        )
+        + extra_exports
+    )
+    proc = _pm_run_launcher(
+        exports,
+        f"{_window_id_launcher_cli(tmp_path, mode)} {'--dry ' if dry else ''}{extra_args} "
+        f"--out-dir '{_to_wsl_path(tmp_path / 'out')}' --run-id wid-{case}",
+    )
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert "WINDOW_ID_STUB_REFUSED" in proc.stderr, proc.stderr
+    assert f"from {source}" in proc.stderr, proc.stderr
+    assert "colab new" not in proc.stdout
+    assert not env_paths["calls_log"].exists() or not any(
+        json.loads(ln)["subcmd"] == "new"
+        for ln in env_paths["calls_log"].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    )
+    assert not env_paths["sentinel_called"].exists()
+
+
+@pytest.mark.parametrize(
+    ("case", "mode_cli", "extra_exports", "extra_args"),
+    [
+        # The rule only binds real windows: stub modes and VM_DRYRUN keep their stub ids.
+        ("stub_mode_stub_flag", "--stub", "unset RDLAB_CARD RDLAB_SHAPE; ", "--window-id stub"),
+        ("stub_mode_stub_env", "--stub", "unset RDLAB_CARD RDLAB_SHAPE; export RDLAB_SESSION_ID=window-local; ", ""),
+        ("vm_dryrun_time_one", "--time-one", "export VM_DRYRUN=1; ", "--window-id stub"),
+        # A real window with a real id, or with none (the opened session's name is forwarded), passes the check.
+        ("time_one_real_flag", "--time-one", "", "--window-id rdlab-wid-real-01"),
+        ("time_one_real_env", "--time-one", "export RDLAB_SESSION_ID=rdlab-wid-real-02; ", ""),
+        ("time_one_no_id", "--time-one", "", ""),
+        # An explicit real --window-id replaces an ambient stub RDLAB_SESSION_ID (the flag is what is forwarded).
+        ("flag_over_stub_env", "--time-one", "export RDLAB_SESSION_ID=stub; ", "--window-id rdlab-wid-real-03"),
+    ],
+)
+def test_launcher_window_id_check_spares_stub_modes_and_real_ids(
+    tmp_path: Path, case: str, mode_cli: str, extra_exports: str, extra_args: str
+) -> None:
+    """The pre-open window id check refuses nothing outside real windows, and nothing with a real id: `--dry` gets past
+    it to the command listing."""
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    part = _make_builder_part(tmp_path / "build")
+    items = _project_part_items(part, tmp_path / "inputs" / "part-items-projected.jsonl")
+    env_paths = fake_colab.setup_fake_colab_environment(tmp_path / "env", uv_python_315_found=True)
+    exports = (
+        _pm_real_mode_exports(
+            env_paths,
+            open_lock=tmp_path / "w.lock",
+            receipts_dir=receipts_dir,
+            hf_home=hf_home,
+            items_file=items,
+            part_dir=part,
+        )
+        + extra_exports
+    )
+    proc = _pm_run_launcher(
+        exports, f"{mode_cli} --dry {extra_args} --out-dir '{_to_wsl_path(tmp_path / 'out')}' --run-id wid-{case}"
+    )
+    assert "WINDOW_ID_STUB_REFUSED" not in proc.stderr, proc.stderr
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "colab new" in proc.stdout
+
+
+@pytest.mark.parametrize(
+    ("mode", "message"),
+    [
+        ("counted", "Real mode ('counted') requires a non-stub window_id"),
+        ("time-one", "Real record mode ('time-one') requires a non-stub window_id"),
+        ("lock-check", "Real record mode ('lock-check') requires a non-stub window_id"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("window_id", "ambient"),
+    [("", None), ("stub", None), ("window-local", None), ("rdlab-test-window", None), (None, ""), (None, "window-local")],
+    ids=["explicit_empty", "explicit_stub", "explicit_window_local", "explicit_test_token", "env_empty", "env_stub"],
+)
+def test_boot_gatekeeper_counted_refuses_empty_or_stub_window_id_before_any_model_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    message: str,
+    window_id: str | None,
+    ambient: str | None,
+) -> None:
+    """Real counted mode (no transport) refuses an empty or stub window id, given directly or through
+    `RDLAB_SESSION_ID`, with `BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED` ("Real mode ('counted') requires a non-stub
+    window_id"), before any model is loaded; the record modes (time-one, lock-check) refuse the same way. In each: neither the gatekeeper subprocess nor the in-process prompt runner is
+    called, and no gatekeeper report is written."""
+    monkeypatch.delenv("RDLAB_SESSION_ID", raising=False)
+    monkeypatch.delenv("RDLAB_RUN_ID", raising=False)
+    if ambient is not None:
+        monkeypatch.setenv("RDLAB_SESSION_ID", ambient)
+    loads: list[str] = []
+
+    def _no_load(name: str) -> Any:
+        def _f(*_a: Any, **_k: Any) -> Any:
+            loads.append(name)
+            raise AssertionError(f"{name} called: a model load was reached")
+
+        return _f
+
+    monkeypatch.setattr(vm_judges, "run_boot_gatekeeper_subprocess", _no_load("run_boot_gatekeeper_subprocess"))
+    monkeypatch.setattr(vm_judges, "_run_real_boot_gatekeeper_prompts", _no_load("_run_real_boot_gatekeeper_prompts"))
+    run_dir = tmp_path / "gk_counted"
+    kwargs: dict[str, Any] = {} if window_id is None else {"window_id": window_id}
+    with pytest.raises(vm_judges.RefusalError) as exc:
+        vm_judges.run_boot_gatekeeper(
+            run_dir=run_dir,
+            repo_root=REPO_ROOT,
+            mode=mode,
+            card_type="A100",
+            goldens_path=SCRIPTS_COLAB_DIR / "boot_gatekeeper_goldens.json",
+            dryrun=False,
+            **kwargs,
+        )
+    assert exc.value.failure_class == "BOOT_GATEKEEPER_STUB_TRANSPORT_REFUSED"
+    assert message in str(exc.value), str(exc.value)
+    assert loads == []
+    assert not (run_dir / "boot_gatekeeper.json").exists()
