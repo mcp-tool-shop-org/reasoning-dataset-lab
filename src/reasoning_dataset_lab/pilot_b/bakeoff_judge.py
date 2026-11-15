@@ -2729,6 +2729,7 @@ def build_shard_manifest(
 
     adapters = {jid: build_judge_adapter(spec) for jid, spec in sorted(BAKEOFF_JUDGE_SPECS.items())}
     input_token_ids_sha256_by_call: dict[str, str] = {}
+    prompt_sha256_by_call: dict[str, str] = {}
     for entry in schedule.entries:
         it = items_by_id[entry.item_id]
         for jid, adapter in adapters.items():
@@ -2739,6 +2740,7 @@ def build_shard_manifest(
             input_token_ids_sha256_by_call[call_key] = compute_prompt_input_token_ids_sha256(
                 jid, prompt.prompt_text
             )
+            prompt_sha256_by_call[call_key] = prompt.prompt_sha256
 
     doc: dict[str, Any] = {
         "schema_version": "1.0",
@@ -2761,6 +2763,10 @@ def build_shard_manifest(
         "anchor_count": len(anchor_item_ids),
         "anchor_item_ids": anchor_item_ids,
         "input_token_ids_sha256_by_call": dict(sorted(input_token_ids_sha256_by_call.items())),
+        # The input shas above are the rig's tokenizer-free stand-in; a real GPU tokenizer gives
+        # other values, so merge_shards checks real rows against prompt_sha256_by_call instead.
+        "input_token_ids_sha_source": SHARD_MANIFEST_INPUT_SHA_SOURCE_CANONICAL,
+        "prompt_sha256_by_call": dict(sorted(prompt_sha256_by_call.items())),
         **_build_shard_manifest_extra_fields(schedule, stratified_anchor_ids, resolved_telemetry_sha, anchor_item_ids),
     }
     doc["manifest_sha256"] = _compute_shard_manifest_body_sha256(doc)
@@ -8220,3 +8226,38 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main_judge_runner())
+
+
+SHARD_MANIFEST_INPUT_SHA_SOURCE_CANONICAL = "canonical_prompt"
+SHARD_MANIFEST_INPUT_SHA_SOURCE_HF = "hf_tokenizer"
+SHARD_MANIFEST_INPUT_SHA_SOURCES: frozenset[str] = frozenset(
+    {SHARD_MANIFEST_INPUT_SHA_SOURCE_CANONICAL, SHARD_MANIFEST_INPUT_SHA_SOURCE_HF}
+)
+
+
+def compute_prompt_sha256_by_call(
+    items_or_path: Sequence[JudgeInputItem] | Path | str,
+    *,
+    pass_mode: PassMode = "binary",
+    judge_ids: Sequence[str] | None = None,
+    orders: Sequence[str] = ("AB", "BA"),
+) -> dict[str, str]:
+    """Return `{item_id:order:judge_id: prompt_sha256}` for every call over `items_or_path`.
+
+    Tokenizer-free, so the rig can compute it for shards that ran on a real GPU tokenizer.
+    """
+    if isinstance(items_or_path, (Path, str)):
+        items, _ = _resolve_items_from_manifest_source(items_or_path)
+    else:
+        items = tuple(items_or_path)
+    eff_judges = sorted(BAKEOFF_JUDGE_SPECS) if judge_ids is None else [j for j in judge_ids if j in BAKEOFF_JUDGE_SPECS]
+    adapters = {jid: build_judge_adapter(BAKEOFF_JUDGE_SPECS[jid]) for jid in eff_judges}
+    out: dict[str, str] = {}
+    for it in items:
+        for jid, adapter in adapters.items():
+            if pass_mode == "three_way" and not adapter.spec.supports_three_way:
+                continue
+            for order in orders:
+                prompt = adapter.assemble_prompt(it, order=order, pass_mode=pass_mode)
+                out[f"{it.item_id}:{order}:{jid}"] = prompt.prompt_sha256
+    return dict(sorted(out.items()))

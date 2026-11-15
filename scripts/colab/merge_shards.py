@@ -4,7 +4,8 @@
 Enforces five refusal gates before producing sealed-safe `merged_readout.json`
 and `merge_receipt.json` (counts, IDs, and hashes only; zero item text, keys,
 or judge generation strings):
-  (a) MERGE_BIJECTION_FAILED / MERGE_INPUT_TOKEN_SHA_MISMATCH
+  (a) MERGE_BIJECTION_FAILED / MERGE_INPUT_TOKEN_SHA_MISMATCH /
+      MERGE_PROMPT_SHA_MISMATCH / MERGE_REAL_INPUT_SHA_UNVERIFIABLE
   (b) MERGE_COLOCATION_FAILED
   (c) MERGE_SESSION_ENV_MISMATCH / MERGE_ECC_UNCORRECTED_NONZERO
   (d) MERGE_ANCHOR_DRIFT_REFUSED / MERGE_ANCHOR_DOUBLE_ORDER_PIPELINE_BUG /
@@ -28,7 +29,13 @@ _REPO_SRC_DIR = str(Path(__file__).resolve().parents[2] / "src")
 if _REPO_SRC_DIR not in sys.path:
     sys.path.insert(0, _REPO_SRC_DIR)
 
-from reasoning_dataset_lab.pilot_b.bakeoff_judge import normalize_anchor_verdict_code
+from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
+    SHARD_MANIFEST_INPUT_SHA_SOURCE_CANONICAL,
+    SHARD_MANIFEST_INPUT_SHA_SOURCE_HF,
+    SHARD_MANIFEST_INPUT_SHA_SOURCES,
+    compute_prompt_sha256_by_call,
+    normalize_anchor_verdict_code,
+)
 
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
@@ -188,6 +195,19 @@ def _canonical_json_sha256(obj: Any) -> str:
         obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _verified_manifest_body_sha256(doc: Mapping[str, Any], label: str) -> str:
+    """Recompute a shard manifest's body sha256 (every key but `manifest_sha256`, as both builders
+    hash it) and refuse when the declared `manifest_sha256` is missing or does not match."""
+    computed = _canonical_json_sha256({k: v for k, v in doc.items() if k != "manifest_sha256"})
+    declared = str(doc.get("manifest_sha256") or "").strip().lower()
+    if declared != computed:
+        raise MergeRefusalError(
+            "MERGE_MANIFEST_SHA_MISMATCH",
+            f"{label} declares manifest_sha256={declared!r} but its body hashes to {computed!r}",
+        )
+    return computed
 
 
 def _compute_row_sha256(row: dict[str, Any]) -> str:
@@ -965,8 +985,18 @@ def merge_shards(
     merge_config_path: Path | None = None,
     golden_anchor_manifest_path: Path | None = None,
     replacement_shard_dirs: Sequence[Path] | dict[str, Path] = (),
+    items_path: Path | None = None,
+    expected_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Verify all five cross-shard gates and write sealed-safe merged readout and receipt."""
+    """Verify all five cross-shard gates and write sealed-safe merged readout and receipt.
+
+    Real-GPU rows carry the model tokenizer's `input_token_ids_sha256`, which differs from the
+    manifest's tokenizer-free stand-in. For those rows the stand-in comparison is replaced by a
+    mandatory per-call `prompt_sha256` check (from the manifest's `prompt_sha256_by_call`, or
+    recomputed from `items_path`) plus a cross-row consistency check on the input shas; when
+    no expected prompt sha exists for a real row the merge refuses with
+    MERGE_REAL_INPUT_SHA_UNVERIFIABLE.
+    """
     if not shard_dirs:
         raise MergeRefusalError(
             "MERGE_BIJECTION_FAILED", "at least one shard directory is required"
@@ -981,10 +1011,15 @@ def merge_shards(
     manifest_doc = _load_json_dict(
         manifest_path, "MERGE_BIJECTION_FAILED", "shard_manifest.json"
     )
-    manifest_file_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    manifest_sha256 = str(
-        manifest_doc.get("manifest_sha256") or _canonical_json_sha256(manifest_doc)
-    )
+    manifest_sha256 = _verified_manifest_body_sha256(manifest_doc, "reference shard_manifest.json")
+    if expected_manifest_sha256 is not None and (
+        manifest_sha256 != str(expected_manifest_sha256).strip().lower()
+    ):
+        raise MergeRefusalError(
+            "MERGE_MANIFEST_SHA_MISMATCH",
+            f"reference shard_manifest.json body sha256 {manifest_sha256!r} does not match the pinned "
+            f"--expected-manifest-sha256 {str(expected_manifest_sha256).strip().lower()!r}",
+        )
     num_shards = int(manifest_doc.get("num_shards") or 0)
     if num_shards < 1 or len(shard_dirs) != num_shards:
         raise MergeRefusalError(
@@ -1000,6 +1035,89 @@ def merge_shards(
         if isinstance(manifest_doc.get("input_token_ids_sha256_by_call"), dict)
         else {}
     )
+    manifest_input_sha_source = str(
+        manifest_doc.get("input_token_ids_sha_source")
+        or SHARD_MANIFEST_INPUT_SHA_SOURCE_CANONICAL
+    ).strip()
+    if manifest_input_sha_source not in SHARD_MANIFEST_INPUT_SHA_SOURCES:
+        raise MergeRefusalError(
+            "MERGE_REAL_INPUT_SHA_UNVERIFIABLE",
+            f"manifest input_token_ids_sha_source={manifest_input_sha_source!r} is not one of "
+            f"{sorted(SHARD_MANIFEST_INPUT_SHA_SOURCES)}",
+        )
+    raw_prompt_map = manifest_doc.get("prompt_sha256_by_call")
+    expected_prompt_shas: dict[str, str] = {}
+    if isinstance(raw_prompt_map, dict):
+        for c_key, c_sha in raw_prompt_map.items():
+            c_norm = str(c_sha or "").strip().lower()
+            if not HEX64_RE.fullmatch(c_norm):
+                raise MergeRefusalError(
+                    "MERGE_PROMPT_SHA_MISMATCH",
+                    f"manifest prompt_sha256_by_call[{c_key!r}] is not a 64-hex sha256",
+                )
+            expected_prompt_shas[str(c_key)] = c_norm
+    if items_path is not None:
+        recomputed_prompt_shas = compute_prompt_sha256_by_call(
+            items_path,
+            pass_mode=str(manifest_doc.get("pass_mode") or "binary"),  # type: ignore[arg-type]
+            judge_ids=expected_judge_ids,
+        )
+        for c_key, c_sha in recomputed_prompt_shas.items():
+            prior = expected_prompt_shas.get(c_key)
+            if prior is not None and prior != c_sha:
+                raise MergeRefusalError(
+                    "MERGE_PROMPT_SHA_MISMATCH",
+                    f"--items prompt_sha256 for {c_key} disagrees with manifest prompt_sha256_by_call",
+                )
+            expected_prompt_shas[c_key] = c_sha
+    # Real rows: (judge_id, prompt_sha256) -> input sha, and input sha -> prompt_sha256 across ALL judges.
+    # Per judge, the tokenizer is a function of the prompt. Across judges an input sha may repeat only
+    # for the same prompt text: mu-judge and nemotron-3-nano-4b assemble identical prompts and their
+    # pinned snapshots ship the same tokenizer.json and chat_template.jinja (tokenizer_config.json
+    # differs), so an identical sha between those two can be honest and is not refused.
+    real_in_sha_by_prompt: dict[tuple[str, str], tuple[str, str]] = {}
+    real_prompt_by_in_sha: dict[str, tuple[str, str]] = {}
+
+    def _bind_real_input_sha(jid_b: str, prompt_b: str, in_b: str, where: str) -> None:
+        prev_in = real_in_sha_by_prompt.setdefault((jid_b, prompt_b), (in_b, where))
+        if prev_in[0] != in_b:
+            raise MergeRefusalError(
+                "MERGE_INPUT_TOKEN_SHA_MISMATCH",
+                f"{where} judge={jid_b} input_token_ids_sha256={in_b!r} differs from {prev_in[1]} "
+                f"({prev_in[0]!r}) for the same prompt_sha256",
+            )
+        prev_prompt = real_prompt_by_in_sha.setdefault(in_b, (prompt_b, f"{where} judge={jid_b}"))
+        if prev_prompt[0] != prompt_b:
+            raise MergeRefusalError(
+                "MERGE_INPUT_TOKEN_SHA_MISMATCH",
+                f"{where} judge={jid_b} input_token_ids_sha256={in_b!r} is also recorded by {prev_prompt[1]} "
+                "for a different prompt_sha256",
+            )
+
+    def _check_real_anchor_row(a_row: Mapping[str, Any], a_triple: tuple[str, str, str], where: str) -> None:
+        # Real anchor rows are checked like main rows: both shas present and 64-hex, the prompt
+        # matches the expected call prompt, and the input sha is bound to that prompt.
+        a_item, a_jid, a_order = a_triple
+        a_prompt = str(a_row.get("prompt_sha256") or "").strip().lower()
+        a_in = str(a_row.get("input_token_ids_sha256") or "").strip().lower()
+        if not HEX64_RE.fullmatch(a_prompt) or not HEX64_RE.fullmatch(a_in):
+            raise MergeRefusalError(
+                "MERGE_REAL_INPUT_SHA_UNVERIFIABLE",
+                f"{where} {a_triple} needs 64-hex prompt_sha256 and input_token_ids_sha256 in real mode",
+            )
+        a_expected = expected_prompt_shas.get(f"{a_item}:{a_order}:{a_jid}")
+        if a_expected is None:
+            raise MergeRefusalError(
+                "MERGE_REAL_INPUT_SHA_UNVERIFIABLE",
+                f"{where} {a_triple} has no expected prompt_sha256 in the manifest or --items",
+            )
+        if a_prompt != a_expected:
+            raise MergeRefusalError(
+                "MERGE_PROMPT_SHA_MISMATCH",
+                f"{where} {a_triple} prompt_sha256={a_prompt!r} does not match expected {a_expected!r}",
+            )
+        _bind_real_input_sha(a_jid, a_prompt, a_in, f"{where} {a_triple}")
+
     if not isinstance(shards_map, dict):
         raise MergeRefusalError(
             "MERGE_BIJECTION_FAILED", "manifest missing 'shards' mapping"
@@ -1102,16 +1220,54 @@ def merge_shards(
 
     guard_no_test_hooks_in_counted_mode(any_real=any_real)
 
+    raw_golden_file_field = manifest_doc.get("golden_anchor_manifest_file_sha256")
+    golden_file_binding = (
+        str(raw_golden_file_field).strip().lower()
+        if isinstance(raw_golden_file_field, str) and HEX64_RE.fullmatch(str(raw_golden_file_field).strip().lower())
+        else None
+    )
     eff_golden_path = golden_anchor_manifest_path
     if eff_golden_path is None:
         cand_golden = manifest_path.parent / "golden_anchor_manifest.json"
         if cand_golden.is_file():
             eff_golden_path = cand_golden
-        else:
+        elif golden_file_binding is not None:
+            # A shard directory is written by the window being checked, so a golden found there is
+            # taken only when the manifest binds its exact file sha256; an unbound one is never used.
             for sdir in (*shard_dirs, *replacement_by_spec.values()):
                 if (sdir / "golden_anchor_manifest.json").is_file():
                     eff_golden_path = sdir / "golden_anchor_manifest.json"
                     break
+    if any_real and anchor_item_ids:
+        # Real anchor rows are only trustworthy against a golden the pre-registered manifest binds.
+        any_golden_present = eff_golden_path is not None or any(
+            (sdir / "golden_anchor_manifest.json").is_file()
+            for sdir in (*shard_dirs, *replacement_by_spec.values())
+        )
+        if golden_file_binding is None and not any_golden_present:
+            raise MergeRefusalError(
+                "GOLDEN_ANCHOR_MANIFEST_MISSING",
+                "real-mode shards with anchors need a golden_anchor_manifest.json bound by the shard "
+                "manifest's golden_anchor_manifest_file_sha256; there is no golden and no binding",
+            )
+        if golden_file_binding is None:
+            raise MergeRefusalError(
+                "MERGE_GOLDEN_ANCHOR_UNBOUND",
+                "real-mode shards with anchors need a golden_anchor_manifest.json bound by the shard "
+                "manifest's golden_anchor_manifest_file_sha256, and this manifest has none",
+            )
+        if eff_golden_path is None or not eff_golden_path.is_file():
+            raise MergeRefusalError(
+                "GOLDEN_ANCHOR_MANIFEST_MISSING",
+                "real-mode shards with anchors need the golden_anchor_manifest.json that the shard manifest binds",
+            )
+        bound_golden_sha = hashlib.sha256(eff_golden_path.read_bytes()).hexdigest()
+        if bound_golden_sha != golden_file_binding:
+            raise MergeRefusalError(
+                "GOLDEN_ANCHOR_MANIFEST_SHA256_MISMATCH",
+                f"golden_anchor_manifest.json file sha256 {bound_golden_sha!r} does not match "
+                f"shard_manifest.json golden_anchor_manifest_file_sha256 {golden_file_binding!r}",
+            )
 
     raw_manifest_golden_sha = (
         manifest_doc.get("golden_anchor_manifest_file_sha256")
@@ -1287,27 +1443,25 @@ def merge_shards(
             )
 
         shard_manifest_file = sdir / "shard_manifest.json"
-        if shard_manifest_file.is_file():
-            shard_m_doc = _load_json_dict(
-                shard_manifest_file,
-                "MERGE_BIJECTION_FAILED",
-                f"shard {expected_spec} shard_manifest.json",
+        if not shard_manifest_file.is_file():
+            raise MergeRefusalError(
+                "MERGE_MANIFEST_SHA_MISMATCH",
+                f"shard {expected_spec} has no shard_manifest.json to compare with the reference manifest",
             )
-            shard_m_body_sha = str(
-                shard_m_doc.get("manifest_sha256")
-                or _canonical_json_sha256(shard_m_doc)
+        shard_m_doc = _load_json_dict(
+            shard_manifest_file,
+            "MERGE_BIJECTION_FAILED",
+            f"shard {expected_spec} shard_manifest.json",
+        )
+        shard_m_body_sha = _verified_manifest_body_sha256(
+            shard_m_doc, f"shard {expected_spec} shard_manifest.json"
+        )
+        if shard_m_body_sha != manifest_sha256:
+            raise MergeRefusalError(
+                "MERGE_MANIFEST_SHA_MISMATCH",
+                f"shard {expected_spec} shard_manifest.json body sha256 {shard_m_body_sha!r} does not match "
+                f"the reference manifest {manifest_sha256!r}",
             )
-            shard_m_file_sha = hashlib.sha256(
-                shard_manifest_file.read_bytes()
-            ).hexdigest()
-            if (
-                shard_m_body_sha != manifest_sha256
-                and shard_m_file_sha != manifest_file_sha256
-            ):
-                raise MergeRefusalError(
-                    "MERGE_BIJECTION_FAILED",
-                    f"shard {expected_spec} shard_manifest.json sha256 does not match reference manifest",
-                )
 
         session_env = _load_json_dict(
             sdir / "session_env.json",
@@ -1454,11 +1608,46 @@ def merge_shards(
                         "MERGE_INPUT_TOKEN_SHA_MISMATCH",
                         f"shard {expected_spec} triple {triple} missing 64-hex input/output token sha256",
                     )
-                expected_call_in_sha = manifest_input_token_shas.get(
-                    f"{item_id}:{order}:{jid}"
+                call_key = f"{item_id}:{order}:{jid}"
+                row_prompt_sha = str(row.get("prompt_sha256") or "").strip().lower()
+                expected_call_prompt_sha = expected_prompt_shas.get(call_key)
+                if expected_call_prompt_sha is not None and row_prompt_sha != expected_call_prompt_sha:
+                    raise MergeRefusalError(
+                        "MERGE_PROMPT_SHA_MISMATCH",
+                        f"shard {expected_spec} triple {triple} prompt_sha256={row_prompt_sha!r} "
+                        f"does not match expected {expected_call_prompt_sha!r}",
+                    )
+                # Real rows hold the GPU tokenizer's input sha, so the stand-in comparison is
+                # skipped for them only when the prompt check above ran in its place.
+                stand_in_check_applies = (
+                    not (shard_is_real or any_real)
+                    or manifest_input_sha_source == SHARD_MANIFEST_INPUT_SHA_SOURCE_HF
                 )
+                if not stand_in_check_applies:
+                    if expected_call_prompt_sha is None:
+                        raise MergeRefusalError(
+                            "MERGE_REAL_INPUT_SHA_UNVERIFIABLE",
+                            f"shard {expected_spec} triple {triple} is a real-mode row and neither the manifest's "
+                            "prompt_sha256_by_call nor --items gives an expected prompt_sha256 for it, so its "
+                            "input_token_ids_sha256 cannot be checked",
+                        )
+                    _bind_real_input_sha(
+                        jid, row_prompt_sha, in_sha, f"shard {expected_spec} row {triple}"
+                    )
+                expected_call_in_sha = manifest_input_token_shas.get(call_key)
                 if (
-                    isinstance(expected_call_in_sha, str)
+                    (shard_is_real or any_real)
+                    and stand_in_check_applies
+                    and not (isinstance(expected_call_in_sha, str) and expected_call_in_sha.strip())
+                ):
+                    raise MergeRefusalError(
+                        "MERGE_REAL_INPUT_SHA_UNVERIFIABLE",
+                        f"shard {expected_spec} triple {triple} is a real-mode row and the hf_tokenizer manifest "
+                        "records no input_token_ids_sha256 for it",
+                    )
+                if (
+                    stand_in_check_applies
+                    and isinstance(expected_call_in_sha, str)
                     and expected_call_in_sha.strip()
                     and in_sha != expected_call_in_sha.strip().lower()
                 ):
@@ -1500,6 +1689,9 @@ def merge_shards(
             anchor_item_ids=anchor_item_ids,
             expected_judge_ids=expected_judge_ids,
         )
+        if shard_is_real or any_real:
+            for a_triple, a_row in sorted(anchor_rows_by_shard[expected_spec].items()):
+                _check_real_anchor_row(a_row, a_triple, f"shard {expected_spec} anchor")
 
     # Gate (a): Complete bijection onto all_item_ids × expected_judge_ids × {AB, BA}
     expected_triples = {
@@ -1556,6 +1748,44 @@ def merge_shards(
                 "MERGE_COLOCATION_FAILED",
                 f"item={item_id} in shard {only_spec} has {len(fps)} distinct session_fingerprint_sha256 values without verified_recovery",
             )
+
+    # Real anchor calls are the only calls made twice (golden session and every shard), so their
+    # tokenizer input shas must agree exactly with the golden and with shard 1.
+    if any_real and anchor_item_ids:
+        ref_spec_1 = f"1/{num_shards}"
+        if golden_anchor_rows is not None:
+            for g_triple in expected_anchor_triples:
+                g_row = golden_anchor_rows.get(g_triple)
+                if g_row is None:
+                    raise MergeRefusalError(
+                        "MERGE_REAL_INPUT_SHA_UNVERIFIABLE",
+                        f"golden anchor manifest has no row for {g_triple}",
+                    )
+                _check_real_anchor_row(g_row, g_triple, "golden anchor")
+        for shard_idx in range(1, num_shards + 1):
+            spec = f"{shard_idx}/{num_shards}"
+            s_anchors = anchor_rows_by_shard.get(spec, {})
+            refs: list[tuple[str, dict[tuple[str, str, str], dict[str, Any]]]] = []
+            if golden_anchor_rows is not None:
+                refs.append(("golden", golden_anchor_rows))
+            if shard_idx >= 2:
+                refs.append((f"shard {ref_spec_1}", anchor_rows_by_shard.get(ref_spec_1, {})))
+            for ref_label, ref_rows in refs:
+                for atriple in expected_anchor_triples:
+                    r_in = str((ref_rows.get(atriple) or {}).get("input_token_ids_sha256") or "").strip().lower()
+                    s_in = str((s_anchors.get(atriple) or {}).get("input_token_ids_sha256") or "").strip().lower()
+                    if not HEX64_RE.fullmatch(r_in) or not HEX64_RE.fullmatch(s_in):
+                        raise MergeRefusalError(
+                            "MERGE_REAL_INPUT_SHA_UNVERIFIABLE",
+                            f"shard {spec} anchor {atriple} cannot be compared with {ref_label}: "
+                            "a 64-hex input_token_ids_sha256 is missing",
+                        )
+                    if r_in != s_in:
+                        raise MergeRefusalError(
+                            "MERGE_INPUT_TOKEN_SHA_MISMATCH",
+                            f"shard {spec} anchor {atriple} input_token_ids_sha256={s_in!r} "
+                            f"does not match {ref_label} {r_in!r}",
+                        )
 
     # Gate (d): Anchor-subset cross-session & golden agreement
     golden_comparisons: dict[str, dict[str, Any]] = {}
@@ -1879,6 +2109,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Optional explicit upper bound on anchor flip_rate permitted before refusing",
     )
+    p.add_argument(
+        "--items",
+        default=None,
+        help=(
+            "Optional projected items JSONL or part directory; recomputes every call's prompt_sha256 "
+            "(needed for real-GPU shards when the manifest has no prompt_sha256_by_call)"
+        ),
+    )
+    p.add_argument(
+        "--expected-manifest-sha256",
+        default=None,
+        help="Optional pinned body sha256 (manifest_sha256) of the reference shard_manifest.json; refuses on mismatch",
+    )
     return p.parse_args(argv)
 
 
@@ -1897,6 +2140,8 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             ),
             replacement_shard_dirs=[Path(d) for d in args.replacement_shard_dirs],
+            items_path=Path(args.items) if args.items else None,
+            expected_manifest_sha256=args.expected_manifest_sha256,
         )
     except MergeRefusalError as exc:
         sys.stderr.write(f"{exc}\n")

@@ -10426,6 +10426,7 @@ def build_shard_manifest_stdlib(
     anchor_item_ids = [*stratified_anchor_ids, *resolved_canary_ids]
 
     input_token_ids_sha256_by_call: dict[str, str] = {}
+    prompt_sha256_by_call: dict[str, str] = {}
     for entry in entries:
         it = items_by_id[str(entry["item_id"])]
         ord_s = str(entry["order"])
@@ -10437,6 +10438,9 @@ def build_shard_manifest_stdlib(
             input_token_ids_sha256_by_call[call_key] = (
                 _stdlib_compute_prompt_input_token_ids_sha256(jid, prompt_text)
             )
+            prompt_sha256_by_call[call_key] = hashlib.sha256(
+                prompt_text.encode("utf-8")
+            ).hexdigest()
 
     eff_low_margin_inputs_sha = hashlib.sha256(
         json.dumps(
@@ -10483,6 +10487,9 @@ def build_shard_manifest_stdlib(
         "input_token_ids_sha256_by_call": dict(
             sorted(input_token_ids_sha256_by_call.items())
         ),
+        # Stand-in input shas; merge_shards checks real-GPU rows against prompt_sha256_by_call.
+        "input_token_ids_sha_source": "canonical_prompt",
+        "prompt_sha256_by_call": dict(sorted(prompt_sha256_by_call.items())),
     }
     doc["manifest_sha256"] = _compute_shard_manifest_body_sha256_stdlib(doc)
     return doc
