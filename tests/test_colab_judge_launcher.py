@@ -14318,6 +14318,7 @@ RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
     "RDLAB_POST_ACCOUNT_RATE": "rig-only: write_outcome_draft's account usage rate at the accepted post-open read",
     "RDLAB_PRICING_RATE": "rig-only: write_outcome_draft's cap pricing rate, max(--max-rate, window rate)",
     "RDLAB_OUTCOME_LOCK_CHECK_PHASE": "rig-only: write_outcome_draft's copy of the lock-check phase (the VM gets RDLAB_LOCK_CHECK_PHASE)",
+    "RDLAB_OUTCOME_PASS_MODE": "rig-only: write_outcome_draft's copy of the pass mode (the VM gets RDLAB_PASS_MODE)",
     "RDLAB_OUTCOME_CARD_REQUESTED": "rig-only: write_outcome_draft's copy of the requested GPU card (the VM gets RDLAB_CARD)",
     "RDLAB_OUTCOME_SHAPE_REQUESTED": "rig-only: write_outcome_draft's copy of the requested VM shape (the VM gets RDLAB_SHAPE)",
     "RDLAB_OUTCOME_OPENED_HW": "rig-only: write_outcome_draft's copy of the opened session Hardware field from colab sessions",
