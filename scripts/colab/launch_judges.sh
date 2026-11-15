@@ -813,9 +813,8 @@ fi
 if [[ -z "$PASS_MODE" ]]; then
   PASS_MODE="binary"
 fi
-export RDLAB_PASS_MODE="$PASS_MODE"
 
-if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" "${REQUESTED_CARD_TYPE:-}" <<'PY'
+if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" "${REQUESTED_CARD_TYPE:-}" "$PASS_MODE" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -826,6 +825,7 @@ until_step = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else None
 is_smoke = (len(sys.argv) > 4 and sys.argv[4] == "1")
 receipts_arg = sys.argv[5] if len(sys.argv) > 5 and sys.argv[5].strip() else None
 requested_card_type = sys.argv[6].strip() if len(sys.argv) > 6 and sys.argv[6].strip() else None
+pass_mode_arg = sys.argv[7] if len(sys.argv) > 7 else "binary"
 sys.path.insert(0, str(repo_root / "src"))
 sys.path.insert(0, str(repo_root / "scripts" / "colab"))
 import vm_judges
@@ -892,7 +892,7 @@ try:
     # (BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED), before any download.
     vm_judges.validate_pass_mode(
         mode,
-        os.environ.get("RDLAB_PASS_MODE", None),
+        pass_mode_arg,
         judge_ids=judge_order_t,
         session_smoke=is_smoke,
     )
@@ -1785,6 +1785,7 @@ write_outcome_draft() {
   RDLAB_POST_ACCOUNT_RATE="$POST_ACCOUNT_RATE" \
   RDLAB_PRICING_RATE="$PRICING_RATE_UNITS_PER_HOUR" \
   RDLAB_OUTCOME_LOCK_CHECK_PHASE="$LOCK_CHECK_PHASE" \
+  RDLAB_OUTCOME_PASS_MODE="${PASS_MODE:-binary}" \
   RDLAB_MAX_RATE="$MAX_RATE" \
   RDLAB_LIVE_USAGE_RATE="$LIVE_RATE_UNITS_PER_HOUR" \
   RDLAB_RATE_READ_AT_UTC="$RATE_READ_AT_UTC" \
@@ -2015,7 +2016,7 @@ only_judges_list: list[str] | None = (
     [p for p in raw_only_judges.split(",") if p] if raw_only_judges else None
 )
 payload["only_judges"] = only_judges_list
-payload["pass_mode"] = os.environ.get("RDLAB_PASS_MODE", "").strip() or "binary"
+payload["pass_mode"] = os.environ.get("RDLAB_OUTCOME_PASS_MODE", "").strip() or "binary"
 jdone_dir = out_path.parent / "judge_done"
 done_ids: set[str] = set()
 if jdone_dir.is_dir():

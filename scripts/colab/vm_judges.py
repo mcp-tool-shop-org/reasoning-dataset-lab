@@ -4782,6 +4782,7 @@ def write_window_manifest(
     prev_anchor_sha: str | None = None
     prev_p0a_sha: str | None = None
     prev_counted_sha: str | None = None
+    prev_pass_mode: str | None = None
     if existing_win_path.is_file():
         try:
             prev_win_doc = json.loads(existing_win_path.read_text(encoding="utf-8"))
@@ -4789,6 +4790,7 @@ def write_window_manifest(
                 prev_anchor_sha = str(prev_win_doc.get("anchor_items_sha256") or "").strip() or None
                 prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
                 prev_counted_sha = str(prev_win_doc.get("counted_source_sha256") or "").strip() or None
+                prev_pass_mode = str(prev_win_doc.get("pass_mode") or "").strip() or None
         except Exception:
             pass
     eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
@@ -4819,8 +4821,10 @@ def write_window_manifest(
         doc["p0a_items_sha256"] = eff_p0a_sha
     if eff_counted_sha is not None:
         doc["counted_source_sha256"] = eff_counted_sha
-    if pass_mode is not None:
-        doc["pass_mode"] = str(pass_mode)
+    # Kept from an earlier window.json when not given, as the item hashes are, so a rebuild hashes the same body.
+    eff_pass_mode = (str(pass_mode).strip() if pass_mode is not None else None) or prev_pass_mode
+    if eff_pass_mode is not None:
+        doc["pass_mode"] = eff_pass_mode
     body_bytes = json.dumps(
         doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
