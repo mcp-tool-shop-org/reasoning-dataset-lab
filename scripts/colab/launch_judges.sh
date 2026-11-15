@@ -120,7 +120,7 @@ REREAD_RESERVED_RT=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way|three_way_contradicted|three_way_two_question|three_way_symmetric|three_way_nli|per_judge]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
@@ -185,14 +185,14 @@ Options:
                        window (RATE_ABOVE_MAX); 3 reads in a row with no count or a count of 0 stop it
                        (ASSIGNMENTS_UNREADABLE). Every re-read is in rate_rereads.jsonl and outcome.draft.json.
 
-  --pass-mode M        binary (default) or three_way (or set RDLAB_PASS_MODE). three_way runs every judge in the
-                       window on the 3-way prompt (supported / unsupported / cannot_tell) and writes
-                       rows/<judge>.three_way.jsonl; it is allowed only with --stub and --time-one, and refused before
-                       `colab new` for a judge without a 3-way prompt (BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED:
-                       granite-guardian-4.1-8b), so a three_way window names its judges with RDLAB_ONLY_JUDGES (except
-                       `--stub --until first_load --pass-mode three_way` with no RDLAB_ONLY_JUDGES, which defaults to
-                       nemotron-3-nano-4b). Any other value refuses PASS_MODE_INVALID. Recorded as pass_mode in
-                       window.json, vm_receipt.json and outcome.draft.json.
+  --pass-mode M        binary (default), three_way, three_way_contradicted, three_way_two_question, three_way_symmetric,
+                       three_way_nli or per_judge (or set RDLAB_PASS_MODE). A 3-way mode runs every judge on that arm's
+                       prompt and writes rows/<judge>.<mode>.jsonl; per_judge (the default when RDLAB_JUDGE_PASS_MODES
+                       is set) runs each judge in its own modes, RDLAB_JUDGE_PASS_MODES=judge:mode,... in that order, with
+                       RDLAB_ONLY_JUDGES = the plan's judges in order. 3-way modes are allowed only with --stub and
+                       --time-one, and a judge with no prompt in its mode is refused before `colab new`
+                       (BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED). Any other value refuses PASS_MODE_INVALID. Recorded as
+                       pass_mode in window.json, vm_receipt.json and outcome.draft.json (per_judge adds judge_pass_modes).
 
 Environment:
   RDLAB_ONLY_JUDGES    --time-one or --stub (with no --until or --until first_load): comma-separated subset of the 5
@@ -311,7 +311,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --pass-mode)
       if [[ $# -lt 2 ]] || [[ -z "${2:-}" ]]; then
-        echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way)" >&2
+        echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way, three_way_contradicted, three_way_two_question, three_way_symmetric, three_way_nli, per_judge)" >&2
         exit 2
       fi
       PASS_MODE="$2"
@@ -945,13 +945,13 @@ if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" != "probe" ]]; then
   fi
 fi
 
-# --- The pass mode: binary (default) or three_way; checked with the judge set in the preflight below ---
+# --- The pass mode (vm_judges.PASS_MODES, or per_judge with RDLAB_JUDGE_PASS_MODES); checked in the preflight below ---
 if [[ "$PASS_MODE_FLAG" -eq 1 ]] && [[ -z "$PASS_MODE" ]]; then
-  echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way)" >&2
+  echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way, three_way_contradicted, three_way_two_question, three_way_symmetric, three_way_nli, per_judge)" >&2
   exit 2
 fi
 if [[ -z "$PASS_MODE" ]]; then
-  PASS_MODE="binary"
+  if [[ -n "${RDLAB_JUDGE_PASS_MODES:-}" ]]; then PASS_MODE="per_judge"; else PASS_MODE="binary"; fi
 fi
 
 if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" "${REQUESTED_CARD_TYPE:-}" "$PASS_MODE" <<'PY'
@@ -1285,7 +1285,7 @@ build_exec_env_args() {
   fi
   # Forwarded only for a 3-way window, so a binary window's exec line is unchanged (the VM's default is binary).
   if [[ "${PASS_MODE:-binary}" != "binary" ]]; then
-    EXEC_ENV_ARGS+=(--env "RDLAB_PASS_MODE=$PASS_MODE")
+    EXEC_ENV_ARGS+=(--env "RDLAB_PASS_MODE=$PASS_MODE"); if [[ "$PASS_MODE" == "per_judge" ]]; then EXEC_ENV_ARGS+=(--env "RDLAB_JUDGE_PASS_MODES=${RDLAB_JUDGE_PASS_MODES:-}"); fi
   fi
   if [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID+x}" ]] && [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_FIRST_LOAD_JUDGE_ID=$RDLAB_FIRST_LOAD_JUDGE_ID")
@@ -1831,60 +1831,60 @@ remaining_fetch_timeout() {
 }
 
 fetch_completed_judge_checkpoints() {
+  # Partial fetch of the passes the VM finished, for a window that stops before result.tar.gz (cap, wall or deadline):
+  # each finished pass's judge_done record and rows file are downloaded, and kept only as a verified pair.
+  #   - Names: from vm_judges for every pass mode (binary, each 3-way arm, and each pass of a per_judge window).
+  #   - Skip: a pass already in place is skipped only when its rows' sha256 equals its judge_done sha256 (and the
+  #     VM's latest judge_pass_done record); a same-named file that does not match is fetched again.
+  #   - Keep: a downloaded pair is moved into place only when the rows' sha256 equals the judge_done record's.
+  #   - Refuse: otherwise both downloads are deleted and one named line is logged and printed to stderr
+  #     (FETCHED_JUDGE_DONE_INVALID, FETCHED_ROWS_MISSING or FETCHED_ROWS_SHA_MISMATCH), so the judge is not counted
+  #     in judges_completed (which lists the judge_done files in place).
+  #   - Deadline: when the fetch deadline runs out between the two downloads, nothing of that pass is kept.
+  # A pass that has not finished is never fetched: the list comes only from judge_pass_done records.
   local dl_timeout="${1:-$PROGRESS_FETCH_TIMEOUT_SECONDS}" deadline_epoch="${2:-0}" rem_dl_timeout=""
   if [[ ! -f "$OUT_DIR/progress.jsonl" ]]; then
     return 0
   fi
-  local done_judges=""
-  done_judges="$("$PYTHON_BIN" - "$OUT_DIR/progress.jsonl" 2>/dev/null <<'PY' || true
-import json
-import sys
-from pathlib import Path
-
-p = Path(sys.argv[1])
-seen: list[str] = []
-if p.is_file():
-    for raw in p.read_text(encoding="utf-8", errors="replace").splitlines():
-        raw = raw.strip()
-        if not raw:
-            continue
-        try:
-            obj = json.loads(raw)
-        except Exception:
-            continue
-        if obj.get("kind") == "judge_pass_done":
-            jid = str(obj.get("judge_id") or obj.get("judge") or "").strip()
-            if jid and jid not in seen:
-                seen.append(jid)
-for j in seen:
-    print(j)
-PY
-)"
-  if [[ -z "$done_judges" ]]; then
+  # One line per finished (judge, pass mode) pass in progress.jsonl's judge_pass_done records: judge, mode, judge_done
+  # file, rows file, rows sha256. vm_judges names both files (judge_done_filename_for_pass / rows_filename_for_pass, the
+  # VM's own naming), so the rig and the VM cannot drift for any pass mode (build card 2026-11-15 v4, item 7); a line
+  # naming an unknown judge or mode is dropped there, so no VM text becomes a rig path.
+  local vmj="import sys; from pathlib import Path; sys.path.insert(0, str(Path(sys.argv[1]) / 'src')); sys.path.insert(0, str(Path(sys.argv[1]) / 'scripts' / 'colab')); import vm_judges as v"
+  local done_passes=""
+  done_passes="$("$PYTHON_BIN" -c "$vmj; v.print_launcher_completed_passes(Path(sys.argv[2]), sys.argv[3])" "$REPO_ROOT" "$OUT_DIR/progress.jsonl" "${PASS_MODE:-binary}" </dev/null 2>/dev/null || true)"
+  if [[ -z "$done_passes" ]]; then
     return 0
   fi
   mkdir -p "$OUT_DIR/rows" "$OUT_DIR/judge_done"
-  local jid row_file
-  for jid in $done_judges; do
-    if [[ ! -f "$OUT_DIR/judge_done/${jid}.json" ]]; then
-      if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
-        timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${jid}.json" "$OUT_DIR/judge_done/${jid}.json" </dev/null >/dev/null 2>&1 || true
-      else
-        break
-      fi
+  local jid pmode done_file row_file want_sha refusal
+  while IFS=$'\t' read -r jid pmode done_file row_file want_sha; do
+    [[ -n "$jid" ]] || continue
+    # Item 9: a pass is skipped only when its rows in place match its judge_done sha256 (and the VM's latest record);
+    # a file of that name that does not match is fetched again, never kept.
+    if "$PYTHON_BIN" -c "$vmj; sys.exit(0 if v.launcher_verify_fetched_pass(Path(sys.argv[2]), sys.argv[3], sys.argv[4], staged=False, want_sha256=sys.argv[5])[0] else 1)" "$REPO_ROOT" "$OUT_DIR" "$jid" "$pmode" "${want_sha:-}" </dev/null >/dev/null 2>&1; then
+      continue
     fi
-    row_file="${jid}.jsonl"
-    if [[ "${PASS_MODE:-binary}" == "three_way" ]]; then
-      row_file="${jid}.three_way.jsonl"
+    # Both files land as hidden .part downloads; only a pair whose rows match the judge_done sha256 is moved into
+    # place, so a judge is never counted completed (judge_done present) with missing or truncated rows.
+    if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${done_file}" "$OUT_DIR/judge_done/.${done_file}.part" </dev/null >/dev/null 2>&1 || true
+    else
+      break
     fi
-    if [[ ! -f "$OUT_DIR/rows/${row_file}" ]]; then
-      if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
-        timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${row_file}" "$OUT_DIR/rows/${row_file}" </dev/null >/dev/null 2>&1 || true
-      else
-        break
-      fi
+    if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
+      timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${row_file}" "$OUT_DIR/rows/.${row_file}.part" </dev/null >/dev/null 2>&1 || true
     fi
-  done
+    # Fail closed: on a missing judge_done, a missing rows file or a sha256 mismatch both downloads are deleted and the
+    # named refusal (FETCHED_JUDGE_DONE_INVALID / FETCHED_ROWS_MISSING / FETCHED_ROWS_SHA_MISMATCH) is logged.
+    refusal=""
+    if ! refusal="$("$PYTHON_BIN" -c "$vmj; ok, msg = v.launcher_verify_fetched_pass(Path(sys.argv[2]), sys.argv[3], sys.argv[4], staged=True); print(msg); sys.exit(0 if ok else 1)" "$REPO_ROOT" "$OUT_DIR" "$jid" "$pmode" </dev/null 2>/dev/null)"; then
+      refusal="${refusal:-FETCHED_JUDGE_DONE_INVALID: judge=${jid} pass_mode=${pmode} detail=verify step failed; not counted as completed}"
+      log_msg "$refusal"
+      printf '%s\n' "$refusal" >&2
+    fi
+    rm -f "$OUT_DIR/judge_done/.${done_file}.part" "$OUT_DIR/rows/.${row_file}.part"
+  done <<<"$done_passes"
 }
 
 fetch_results_once() {
@@ -2308,7 +2308,7 @@ only_judges_list: list[str] | None = (
     [p for p in raw_only_judges.split(",") if p] if raw_only_judges else None
 )
 payload["only_judges"] = only_judges_list
-payload["pass_mode"] = os.environ.get("RDLAB_OUTCOME_PASS_MODE", "").strip() or "binary"
+payload["pass_mode"] = os.environ.get("RDLAB_OUTCOME_PASS_MODE", "").strip() or "binary"; payload.update({"judge_pass_modes": [p for p in os.environ.get("RDLAB_JUDGE_PASS_MODES", "").split(",") if p]} if payload["pass_mode"] == "per_judge" else {})  # noqa: E501
 jdone_dir = out_path.parent / "judge_done"
 done_ids: set[str] = set()
 if jdone_dir.is_dir():
