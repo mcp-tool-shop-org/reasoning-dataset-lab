@@ -14319,6 +14319,7 @@ def test_fix2_item1_uploaded_device_py_sha256_verified_on_vm_under_fake_colab(
 # (consumed by `launch_judges.sh` on the rig and never read on the VM) or VM-internal
 # (set inside `vm_judges.py` for child processes or injected only in unit tests).
 RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
+    "RDLAB_ELEPHANT_INSTALL_RECORD": "VM-internal: set by vm_judges.ensure_elephant_venv for the elephant-1 judge child (path of elephant_install.json)",
     # Rig-only launcher configuration and state variables in `launch_judges.sh`:
     "RDLAB_ALIVE_PROBE_MAX_TRIES": "rig-only: max retries for `launch_judges.sh` pre-gate alive probe loop",
     "RDLAB_ALIVE_PROBE_SLEEP_SECONDS": "rig-only: sleep seconds between pre-gate alive probe retries on the rig",
