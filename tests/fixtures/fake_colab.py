@@ -2566,32 +2566,44 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     jdone_sleep = run_dir_sleep / "judge_done"
                     jdone_sleep.mkdir(parents=True, exist_ok=True)
+                    partial_pass_mode = exec_env.get("RDLAB_PASS_MODE", "binary").strip() or "binary"
+                    partial_row_name = (
+                        "nemotron-3-nano-4b.three_way.jsonl"
+                        if partial_pass_mode == "three_way"
+                        else "nemotron-3-nano-4b.jsonl"
+                    )
+                    done_sleep_doc: dict[str, Any] = {
+                        "judge_id": "nemotron-3-nano-4b",
+                        "status": "ok",
+                        "device": "cuda:0",
+                        "calls_count": 2,
+                    }
+                    if partial_pass_mode == "three_way":
+                        done_sleep_doc["pass_mode"] = "three_way"
+                        done_sleep_doc["rows_file"] = f"rows/{partial_row_name}"
                     (jdone_sleep / "nemotron-3-nano-4b.json").write_text(
-                        json.dumps(
-                            {
-                                "judge_id": "nemotron-3-nano-4b",
-                                "status": "ok",
-                                "device": "cuda:0",
-                                "calls_count": 2,
-                            },
-                            indent=2,
-                        )
-                        + "\n",
+                        json.dumps(done_sleep_doc, indent=2) + "\n",
                         encoding="utf-8",
                         newline="\n",
                     )
                     rows_sleep = run_dir_sleep / "rows"
                     rows_sleep.mkdir(parents=True, exist_ok=True)
-                    (rows_sleep / "nemotron-3-nano-4b.jsonl").write_text(
-                        json.dumps(
-                            {
-                                "id": "item-0000",
-                                "judge_id": "nemotron-3-nano-4b",
-                                "state": "parsed",
-                                "verdict": "yes",
-                            }
-                        )
-                        + "\n",
+                    partial_row_doc: dict[str, Any] = {
+                        "id": "item-0000",
+                        "judge_id": "nemotron-3-nano-4b",
+                        "state": "parsed",
+                        "verdict": "yes",
+                    }
+                    if partial_pass_mode == "three_way":
+                        partial_row_doc = {
+                            "id": "item-0000",
+                            "judge_id": "nemotron-3-nano-4b",
+                            "pass_mode": "three_way",
+                            "state": "parsed",
+                            "raw_verdict": "supported",
+                        }
+                    (rows_sleep / partial_row_name).write_text(
+                        json.dumps(partial_row_doc) + "\n",
                         encoding="utf-8",
                         newline="\n",
                     )

@@ -189,9 +189,10 @@ Options:
                        window on the 3-way prompt (supported / unsupported / cannot_tell) and writes
                        rows/<judge>.three_way.jsonl; it is allowed only with --stub and --time-one, and refused before
                        `colab new` for a judge without a 3-way prompt (BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED:
-                       granite-guardian-4.1-8b), so a three_way window names its judges with RDLAB_ONLY_JUDGES. Any
-                       other value refuses PASS_MODE_INVALID. Recorded as pass_mode in window.json, vm_receipt.json
-                       and outcome.draft.json.
+                       granite-guardian-4.1-8b), so a three_way window names its judges with RDLAB_ONLY_JUDGES (except
+                       `--stub --until first_load --pass-mode three_way` with no RDLAB_ONLY_JUDGES, which defaults to
+                       nemotron-3-nano-4b). Any other value refuses PASS_MODE_INVALID. Recorded as pass_mode in
+                       window.json, vm_receipt.json and outcome.draft.json.
 
 Environment:
   RDLAB_ONLY_JUDGES    --time-one or --stub (with no --until or --until first_load): comma-separated subset of the 5
@@ -1863,7 +1864,7 @@ PY
     return 0
   fi
   mkdir -p "$OUT_DIR/rows" "$OUT_DIR/judge_done"
-  local jid
+  local jid row_file
   for jid in $done_judges; do
     if [[ ! -f "$OUT_DIR/judge_done/${jid}.json" ]]; then
       if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
@@ -1872,9 +1873,13 @@ PY
         break
       fi
     fi
-    if [[ ! -f "$OUT_DIR/rows/${jid}.jsonl" ]]; then
+    row_file="${jid}.jsonl"
+    if [[ "${PASS_MODE:-binary}" == "three_way" ]]; then
+      row_file="${jid}.three_way.jsonl"
+    fi
+    if [[ ! -f "$OUT_DIR/rows/${row_file}" ]]; then
       if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
-        timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${jid}.jsonl" "$OUT_DIR/rows/${jid}.jsonl" </dev/null >/dev/null 2>&1 || true
+        timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${row_file}" "$OUT_DIR/rows/${row_file}" </dev/null >/dev/null 2>&1 || true
       else
         break
       fi
