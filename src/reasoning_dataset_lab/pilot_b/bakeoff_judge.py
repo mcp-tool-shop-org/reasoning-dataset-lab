@@ -1884,14 +1884,19 @@ class D3MiniAdapter(BaseJudgeAdapter):
                 q_ans = answers.get("supported", answers)
                 if isinstance(q_ans, Mapping) and isinstance(q_ans.get("probabilities"), Mapping):
                     raw_probs = q_ans["probabilities"]
-                    probs = {
-                        k: float(raw_probs.get(k, 0.0))
-                        for k in ("supported", "unsupported", "cannot_tell")
-                    }
-                    total = sum(probs.values())
-                    if total > 0.0:
+                    three_labels = ("supported", "unsupported", "cannot_tell")
+                    try:
+                        probs = {k: float(raw_probs.get(k, 0.0)) for k in three_labels}
+                    except (TypeError, ValueError):
+                        probs = {}
+                    raw_choice = q_ans.get("choice")
+                    # Guard: every probability finite and >= 0, and a given choice one of the 3 labels; else unparseable.
+                    probs_ok = len(probs) == 3 and all(math.isfinite(v) and v >= 0.0 for v in probs.values())
+                    choice_ok = raw_choice is None or raw_choice == "" or raw_choice in three_labels
+                    total = sum(probs.values()) if probs_ok else 0.0
+                    if probs_ok and choice_ok and total > 0.0:
                         probs = {k: v / total for k, v in probs.items()}
-                        choice = str(q_ans.get("choice") or max(probs.items(), key=lambda kv: kv[1])[0])
+                        choice = str(raw_choice or max(probs.items(), key=lambda kv: kv[1])[0])
                         return ParsedJudgeReadout(
                             state="parsed",
                             done_reason=response.done_reason,
@@ -5870,7 +5875,9 @@ def run_bakeoff_judge(
             "row_count": calls_so_far,
             "sha256": rows_sha256,
             "row_sha256s": all_row_sha256s,
-            "rows_file": f"{ROWS_DIRNAME}/{spec.judge_id}.jsonl",
+            # The file this pass wrote: `rows/<judge>.jsonl` (binary) or `rows/<judge>.three_way.jsonl` (3-way).
+            "rows_file": f"{ROWS_DIRNAME}/{row_path.name}",
+            "pass_mode": pass_mode,
             "bytes": len(row_bytes),
             "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
             "calls_count": calls_so_far,

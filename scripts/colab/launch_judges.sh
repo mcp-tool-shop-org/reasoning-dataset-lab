@@ -49,6 +49,8 @@ EXPLICIT_CAP="${RDLAB_CAP_UNITS:-}"
 MAX_RATE="${RDLAB_MAX_RATE:-}"
 GOLDEN_ANCHOR_MANIFEST=""
 WINDOW_ID=""
+PASS_MODE="${RDLAB_PASS_MODE:-}"
+PASS_MODE_FLAG=0
 
 EXPECTED_JUDGE_LOCK_SHA256="608f56ab8eae6852718438366ff0ce74ef6aafb66db75faef034ae0bb5bdcf10"
 EXPECTED_D3_LOCK_SHA256="08801f9ac5e3cfb14ce819b051aeef388bea3e564e7b99bddc10d91537ab78e2"
@@ -57,7 +59,7 @@ EXPECTED_UV_VERSION="0.13.5"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
@@ -121,6 +123,14 @@ Options:
                        an unchanged assignment count shortens the remaining runtime, and above --max-rate stops the
                        window (RATE_ABOVE_MAX); 3 reads in a row with no count or a count of 0 stop it
                        (ASSIGNMENTS_UNREADABLE). Every re-read is in rate_rereads.jsonl and outcome.draft.json.
+
+  --pass-mode M        binary (default) or three_way (or set RDLAB_PASS_MODE). three_way runs every judge in the
+                       window on the 3-way prompt (supported / unsupported / cannot_tell) and writes
+                       rows/<judge>.three_way.jsonl; it is allowed only with --stub and --time-one, and refused before
+                       `colab new` for a judge without a 3-way prompt (BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED:
+                       granite-guardian-4.1-8b), so a three_way window names its judges with RDLAB_ONLY_JUDGES. Any
+                       other value refuses PASS_MODE_INVALID. Recorded as pass_mode in window.json, vm_receipt.json
+                       and outcome.draft.json.
 
 Environment:
   RDLAB_ONLY_JUDGES    --time-one only: comma-separated subset of the 5 judges to time (no spaces, no duplicates).
@@ -234,6 +244,16 @@ while [[ $# -gt 0 ]]; do
       WINDOW_ID="${1#*=}"
       WINDOW_ID_FLAG=1
       export RDLAB_SESSION_ID="$WINDOW_ID"
+      shift
+      ;;
+    --pass-mode)
+      PASS_MODE="${2:-}"
+      PASS_MODE_FLAG=1
+      shift 2
+      ;;
+    --pass-mode=*)
+      PASS_MODE="${1#*=}"
+      PASS_MODE_FLAG=1
       shift
       ;;
     --shard)
@@ -785,6 +805,16 @@ if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" != "probe" ]]; then
   fi
 fi
 
+# --- The pass mode: binary (default) or three_way; checked with the judge set in the preflight below ---
+if [[ "$PASS_MODE_FLAG" -eq 1 ]] && [[ -z "$PASS_MODE" ]]; then
+  echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way)" >&2
+  exit 2
+fi
+if [[ -z "$PASS_MODE" ]]; then
+  PASS_MODE="binary"
+fi
+export RDLAB_PASS_MODE="$PASS_MODE"
+
 if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$UNTIL_STEP" "$SESSION_SMOKE_FLAG" "$RECEIPTS_DIR" "${REQUESTED_CARD_TYPE:-}" <<'PY'
 import os
 import sys
@@ -856,6 +886,15 @@ try:
         else vm_judges.validate_judge_order(
             mode, os.environ.get("RDLAB_JUDGE_ORDER", None), until=until_step, session_smoke=is_smoke
         )[0]
+    )
+    # The pass mode (binary | three_way), refused before the session opens: an unknown value (PASS_MODE_INVALID), a
+    # mode that takes no 3-way pass (PASS_MODE_NOT_FOR_MODE) or a judge without a 3-way prompt in the window's set
+    # (BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED), before any download.
+    vm_judges.validate_pass_mode(
+        mode,
+        os.environ.get("RDLAB_PASS_MODE", None),
+        judge_ids=judge_order_t,
+        session_smoke=is_smoke,
     )
     raw_goldens = (os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
     gk_plan = None
@@ -1075,6 +1114,10 @@ build_exec_env_args() {
   fi
   if [[ -n "${RDLAB_ONLY_JUDGES+x}" ]] && [[ -n "${RDLAB_ONLY_JUDGES}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_ONLY_JUDGES=$RDLAB_ONLY_JUDGES")
+  fi
+  # Forwarded only for a 3-way window, so a binary window's exec line is unchanged (the VM's default is binary).
+  if [[ "${PASS_MODE:-binary}" != "binary" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_PASS_MODE=$PASS_MODE")
   fi
   if [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID+x}" ]] && [[ -n "${RDLAB_FIRST_LOAD_JUDGE_ID}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_FIRST_LOAD_JUDGE_ID=$RDLAB_FIRST_LOAD_JUDGE_ID")
@@ -1972,6 +2015,7 @@ only_judges_list: list[str] | None = (
     [p for p in raw_only_judges.split(",") if p] if raw_only_judges else None
 )
 payload["only_judges"] = only_judges_list
+payload["pass_mode"] = os.environ.get("RDLAB_PASS_MODE", "").strip() or "binary"
 jdone_dir = out_path.parent / "judge_done"
 done_ids: set[str] = set()
 if jdone_dir.is_dir():

@@ -1864,6 +1864,118 @@ def _three_way_sealed_rows(judge_id: str, rec: SealedKeyRecord, order_map: Mappi
     return out
 
 
+THREE_WAY_LABELS: tuple[str, ...] = ("supported", "unsupported", "cannot_tell")
+THREE_WAY_OUTCOME_COLUMNS: tuple[str, ...] = (
+    "strict_supported",
+    "strict_unsupported",
+    "strict_cannot_tell",
+    "order_flip",
+    "invalid",
+)
+
+
+def _linear_quantile(sorted_vals: Sequence[float], q: float) -> float:
+    """Linear-interpolated quantile `q` in [0, 1] of an ascending, non-empty sequence."""
+    pos = (len(sorted_vals) - 1) * q
+    lo = int(math.floor(pos))
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    return float(sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo))
+
+
+def _three_way_valid_verdict(row: Mapping[str, Any]) -> str | None:
+    """A 3-way call's label when the call parsed to one of the 3 labels, else None (invalid: counted wrong)."""
+    label = row.get("raw_verdict")
+    if row.get("state", "parsed") != "parsed" or label not in THREE_WAY_LABELS:
+        return None
+    return str(label)
+
+
+def _three_way_breakdown(
+    scored: Sequence[tuple[SealedKeyRecord, Mapping[str, Any], Mapping[str, Any]]],
+) -> dict[str, Any]:
+    """Aggregate-only 3-way breakdown over `(key record, AB row, BA row)` items: per-class strict counts, the
+    binary-collapsed strict accuracy, the all-3-of-triad rate, the order-flip and invalid rates, the 3 x 5 strict
+    outcome counts (true class x strict label / order_flip / invalid) and the top-2 margin quantiles. Counts and rates
+    only: no item id, triad id, key, claim or text."""
+    per_class = {c: {"n": 0, "strict_correct": 0} for c in THREE_WAY_LABELS}
+    confusion = {c: {col: 0 for col in THREE_WAY_OUTCOME_COLUMNS} for c in THREE_WAY_LABELS}
+    strict_correct = 0
+    collapsed_correct = 0
+    flips = 0
+    invalid_calls = 0
+    triad_members: dict[str, list[bool]] = defaultdict(list)
+    margins: list[float] = []
+    for rec, r_ab, r_ba in scored:
+        v_ab = _three_way_valid_verdict(r_ab)
+        v_ba = _three_way_valid_verdict(r_ba)
+        invalid_calls += int(v_ab is None) + int(v_ba is None)
+        for r in (r_ab, r_ba):
+            m = _coerce_finite_float(r.get("min_top2_logit_margin"))
+            if m is not None:
+                margins.append(m)
+        ok = v_ab is not None and v_ab == rec.key and v_ba == rec.key
+        strict_correct += int(ok)
+        triad_members[rec.triad_id].append(ok)
+        key_bin = "supported" if rec.key == "supported" else "not_supported"
+        collapsed = [None if v is None else ("supported" if v == "supported" else "not_supported") for v in (v_ab, v_ba)]
+        collapsed_correct += int(collapsed[0] == key_bin and collapsed[1] == key_bin)
+        if v_ab is None or v_ba is None or v_ab != v_ba:
+            flips += 1
+        if rec.key in per_class:
+            per_class[rec.key]["n"] += 1
+            per_class[rec.key]["strict_correct"] += int(ok)
+            if v_ab is None or v_ba is None:
+                col = "invalid"
+            elif v_ab != v_ba:
+                col = "order_flip"
+            else:
+                col = f"strict_{v_ab}"
+            confusion[rec.key][col] += 1
+    n_items = len(scored)
+    complete_triads = [members for members in triad_members.values() if len(members) == 3]
+    all3 = sum(1 for members in complete_triads if all(members))
+    sorted_m = sorted(margins)
+    return {
+        "items_n": n_items,
+        "calls_n": 2 * n_items,
+        "strict_correct": strict_correct,
+        "strict_accuracy": wilson_interval(strict_correct, n_items),
+        "per_class_strict": {
+            c: {
+                "n": v["n"],
+                "strict_correct": v["strict_correct"],
+                "recall": (v["strict_correct"] / v["n"]) if v["n"] else None,
+            }
+            for c, v in per_class.items()
+        },
+        "binary_collapsed_strict": {
+            "correct": collapsed_correct,
+            "accuracy": wilson_interval(collapsed_correct, n_items),
+        },
+        "all_3_of_triad_strict": {
+            "triads_n": len(complete_triads),
+            "triads_all_strict": all3,
+            "rate": (all3 / len(complete_triads)) if complete_triads else None,
+        },
+        "order_flip": {
+            "count": flips,
+            "rate": (flips / n_items) if n_items else None,
+        },
+        "invalid_calls": {
+            "count": invalid_calls,
+            "rate": (invalid_calls / (2 * n_items)) if n_items else None,
+        },
+        "strict_outcome_counts": confusion,
+        "strict_outcome_columns": list(THREE_WAY_OUTCOME_COLUMNS),
+        "top2_margin": {
+            "calls_with_margin": len(sorted_m),
+            "min": sorted_m[0] if sorted_m else None,
+            "p10": _linear_quantile(sorted_m, 0.10) if sorted_m else None,
+            "median": _linear_quantile(sorted_m, 0.50) if sorted_m else None,
+        },
+    }
+
+
 def _write_sealed_scored_rows(
     sealed_jsonl_path: Path,
     sealed_csv_path: Path,
@@ -2288,6 +2400,7 @@ def score_bakeoff_outputs(
         tw_tot_test = 0
         tw_corr_dev = 0
         tw_tot_dev = 0
+        tw_scored: dict[str, list[tuple[SealedKeyRecord, Mapping[str, Any], Mapping[str, Any]]]] = {"dev": [], "test": []}
         for iid, omap in by_item_ord.items():
             rec = keys_by_id.get(iid)
             if rec is None or "AB" not in omap or "BA" not in omap:
@@ -2297,6 +2410,7 @@ def score_bakeoff_outputs(
             is_both_ok = int(v_ab == rec.key and v_ba == rec.key)
             if rec.split in ("dev", "test"):
                 all_sealed_rows.extend(_three_way_sealed_rows(j_id, rec, omap))
+                tw_scored[rec.split].append((rec, omap["AB"], omap["BA"]))
             if rec.split == "dev":
                 tw_tot_dev += 1
                 tw_corr_dev += is_both_ok
@@ -2305,16 +2419,24 @@ def score_bakeoff_outputs(
                 tw_corr_test += is_both_ok
         if tw_tot_dev + tw_tot_test == 0:
             raise _refuse_zero_scored(twf, judge_id=j_id, keys_n=len(keys_by_id))
+        tw_breakdown_by_split = {
+            "test": _three_way_breakdown(tw_scored["test"]),
+            "dev": _three_way_breakdown(tw_scored["dev"]),
+            "pooled": _three_way_breakdown([*tw_scored["dev"], *tw_scored["test"]]),
+        }
         three_way_summaries.append(
             {
                 "judge_id": j_id,
                 "three_way_accuracy": wilson_interval(tw_corr_test, tw_tot_test),
+                # Aggregates only (counts, rates, quantiles), for test, dev and both pooled.
+                "breakdown_by_split": tw_breakdown_by_split,
             }
         )
         three_way_dev_summaries.append(
             {
                 "judge_id": j_id,
                 "three_way_accuracy": wilson_interval(tw_corr_dev, tw_tot_dev),
+                "breakdown": tw_breakdown_by_split["dev"],
             }
         )
 
