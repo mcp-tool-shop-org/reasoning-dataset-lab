@@ -5003,7 +5003,7 @@ def run_bakeoff_judge(
                     shard_spec=eff_shard_spec,
                 )
             else:  # the NLI encoder has its own sequence-classification transport
-                transport = (NliSequenceClassificationTransport if spec.judge_id in NLI_JUDGE_IDS else TransformersJudgeTransport)(  # noqa: E501
+                transport = real_transport_class_for(spec)(  # NLI encoder, elephant-1 (qev), or transformers
                     receipts_dir=receipts_dir,
                     hf_home=hf_home,
                     device=device,
@@ -8292,6 +8292,7 @@ D3_FLASH_JUDGE_ID = "d3-flash"
 D3_FLASH_REVISION = "67e03e1bc157961c582ee7c6a35d9b15fada3dec"
 NLI_JUDGE_ID = "nli-deberta-v3-large"
 NLI_JUDGE_IDS: frozenset[str] = frozenset({NLI_JUDGE_ID})
+ELEPHANT_JUDGE_ID = "elephant-1"
 # The d3 family: the judges that run d3's eight remote-code files through `D3MiniTransport`, each with the SHA its gate
 # takes. d3-mini's is the reviewed bd0090dd. d3-flash's is its own pin: its eight files are byte-identical to d3-mini's
 # reviewed ones (all 8 compared by R&D, 2026-11-15), and `check_d3_remote_code_matches_review` re-proves that identity
@@ -8341,6 +8342,22 @@ D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
             max_new_tokens=0,
             card_snapshot_path="cards/MoritzLaurer_DeBERTa-v3-large-mnli-fever-anli-ling-wanli.md",
             card_snapshot_sha256="216c3ac9ea77beec4e35a347c8b4edc47fbb3465e7c2a00dc923ae7b975cf346",
+        ),
+        ELEPHANT_JUDGE_ID: JudgeSpec(
+            judge_id=ELEPHANT_JUDGE_ID,
+            judge_label="baselabs/elephant-1",
+            repo_id="baselabs/elephant-1",
+            revision="b3f8a93462fb1051a9de031e94a7ff380e254072",
+            card_registry_id="elephant-1-card",
+            licence_registry_id="mit",
+            requires_remote_code=False,
+            remote_code_files=(),
+            supports_three_way=True,
+            has_probability=True,
+            verdict_position="system_one_readout",
+            max_new_tokens=1,
+            card_snapshot_path="cards/baselabs_elephant-1.md",
+            card_snapshot_sha256="0c1f7c170191d0906218c3b34ad7a11ae4bc49a04d210eb12e5bb7a5461648f7",
         ),
     }
 )
@@ -8510,7 +8527,11 @@ def parse_two_question_readout(
 
 
 def two_question_row_fields(readout: ParsedJudgeReadout, pass_mode: str | None = None) -> dict[str, Any]:
-    """The arm-2 fields of a row (p_t, p_f and the `inconsistent` flag); nothing for any other arm."""
+    """The arm's extra row fields: arm 2's p_t, p_f and `inconsistent`; arm 4's `outside_mass` (the probability elephant-1
+    put outside the three named options, reported, never mapped to a class); nothing for any other arm."""
+    if type(readout).__name__ == "ElephantChoiceReadout":
+        om = getattr(readout, "outside_mass", None)
+        return {"outside_mass": round(om, 6) if om is not None else None}
     if not isinstance(readout, TwoQuestionReadout) and pass_mode not in TWO_QUESTION_PASS_MODES:
         return {}
     p_t = getattr(readout, "p_t", None)
@@ -8774,6 +8795,8 @@ def build_judge_adapter(judge: str | JudgeSpec) -> BaseJudgeAdapter:
         return D3MiniAdapter(spec)
     if spec.judge_id in NLI_JUDGE_IDS:
         return NliEncoderAdapter(spec)
+    if spec.judge_id == ELEPHANT_JUDGE_ID:
+        return ElephantAdapter(spec)
     return _build_original_judge_adapter(spec)
 
 
@@ -8816,7 +8839,243 @@ def d5c_fake_response(
             seconds=0.001,
             system_one_result=sys_one,
         )
-    return None
+    return elephant_fake_response(spec, prompt, h_bytes, make_resp)  # arm 4, else None
+
+
+# --- arm 4: elephant-1 through qev (OneJev @81ce62f + the snapshot's serve.patch) ------------------------------------
+# PREREG-d5c-five-arm-window-2026-11-15 "Arm 4": arm 1's d3-style words as one `choice` question in a
+# `SystemOneRequest`. qev renders its own system turn, header and answer line around them (the model's native protocol,
+# accepted as d3's is). qev's choice probabilities are the softmax over the three option letters only
+# (qev/engine.py `_readout` + qev/answers.py `make_choice`), i.e. already renormalised over the named options; the
+# probability the model put anywhere else in the vocabulary is `1 - allowed_token_mass` (qev's debug diagnostics), the
+# "outside mass", reported per row and never mapped to a class.
+ONEJEV_COMMIT = "81ce62f1597c91e46767d4d02d6ac2e18534fe94"
+DECISION_INDEX_COMMIT = "f5a6e4fd85fed05e77878dfc4966d0568bfb45ec"
+# Telemetry off for the install and for every elephant-1 run (Director's ruling via R&D, 2026-11-15). qev itself reads
+# no environment variable (static read of qev/engine.py, prompt.py, answers.py, calibrate.py, schema.py at 81ce62f).
+ELEPHANT_TELEMETRY_ENV: dict[str, str] = {
+    "WANDB_MODE": "disabled",
+    "WANDB_DISABLED": "true",
+    "OTEL_SDK_DISABLED": "true",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "DO_NOT_TRACK": "1",
+}
+ELEPHANT_INSTALL_RECORD_ENV_VAR = "RDLAB_ELEPHANT_INSTALL_RECORD"
+
+
+@dataclass(frozen=True)
+class ElephantChoiceReadout(ParsedJudgeReadout):
+    """Arm 4's readout of one order: the three named options' probabilities (renormalised) and the outside mass."""
+
+    outside_mass: float | None = None
+
+
+class ElephantAdapter(D3MiniAdapter):
+    """Arm 4: the same System One payload and choice readout as the d3 family (arm 1's words, the d3-style text), plus
+    the outside mass the transport reports."""
+
+    def _parse_non_length_response(
+        self,
+        response: JudgeTransportResponse,
+        *,
+        pass_mode: PassMode,
+    ) -> ParsedJudgeReadout:
+        base = super()._parse_non_length_response(response, pass_mode=pass_mode)
+        sys_one = response.system_one_result if isinstance(response.system_one_result, Mapping) else {}
+        qid = three_way_wording(pass_mode, self.spec.judge_id).question_id
+        raw = (sys_one.get("outside_mass") or {}).get(qid) if isinstance(sys_one.get("outside_mass"), Mapping) else None
+        om = _probability_or_none(raw)
+        return ElephantChoiceReadout(
+            state=base.state if om is not None or base.state != "parsed" else "unparseable",
+            done_reason=base.done_reason,
+            raw_verdict=base.raw_verdict if om is not None else None,
+            p_yes=base.p_yes if om is not None else None,
+            choice_probabilities=base.choice_probabilities if om is not None else None,
+            verdict_top_logprobs=base.verdict_top_logprobs,
+            parse_note=base.parse_note if om is not None else (base.parse_note or "missing outside mass in the qev readout"),
+            outside_mass=om,
+        )
+
+
+def elephant_install_record(path: str | Path | None = None) -> dict[str, Any]:
+    """The VM's install record for venv-elephant (`elephant_install.json`, path in RDLAB_ELEPHANT_INSTALL_RECORD), or
+    refuse ELEPHANT_RUNTIME_UNVERIFIED: it must say the install finished with OneJev at the pinned commit and the
+    snapshot's serve.patch applied, so the transport only runs the reviewed runtime."""
+    raw = path if path is not None else os.environ.get(ELEPHANT_INSTALL_RECORD_ENV_VAR)
+    try:
+        doc = json.loads(Path(str(raw)).read_text(encoding="utf-8")) if raw else None
+    except (OSError, json.JSONDecodeError):
+        doc = None
+    if (
+        not isinstance(doc, Mapping)
+        or doc.get("status") != "ok"
+        or doc.get("onejev_commit") != ONEJEV_COMMIT
+        or doc.get("decision_index_commit") != DECISION_INDEX_COMMIT
+        or not doc.get("serve_patch_applied")
+    ):
+        raise refused_error(
+            "ELEPHANT_RUNTIME_UNVERIFIED",
+            f"No install record proving OneJev @ {ONEJEV_COMMIT[:8]} with serve.patch applied ({raw!r}).",
+            "Run elephant-1 only in a window whose VM built venv-elephant (vm_judges.ensure_elephant_venv).",
+        )
+    return dict(doc)
+
+
+class ElephantDecisionTransport:
+    """Arm 4's transport, run in venv-elephant: `qev.engine.DecisionEngine` over the receipt-verified local snapshot
+    (qev loads with `local_files_only=True, trust_remote_code=False` for a local path), one `SystemOneRequest` per call,
+    `decide(..., debug=True)` for the allowed-token mass. Telemetry and the Hub are off before qev is imported; a request
+    over qev's length limit is a length stop (invalid), never truncated."""
+
+    def __init__(
+        self,
+        *,
+        receipts_dir: Path,
+        hf_home: Path | None = None,
+        device: str = "cpu",
+        torch_dtype: str = DEFAULT_TORCH_DTYPE,
+        window_mode: str | None = None,
+        shard_spec: str | None = None,
+        **_ignored: Any,
+    ) -> None:
+        for k, v in ELEPHANT_TELEMETRY_ENV.items():
+            os.environ[k] = v
+        ensure_offline_env(set_if_unset=True)
+        ensure_sync_weight_loading()
+        disable_bytecode_writing()
+        self.receipts_dir = Path(receipts_dir)
+        self.hf_home = Path(hf_home) if hf_home is not None else None
+        self.device = str(device)
+        self.torch_dtype = str(torch_dtype)
+        self.window_mode = window_mode
+        self.shard_spec = shard_spec
+        self._snapshot_dir: Path | None = None
+        self._verified_digest: str | None = None
+        self._install: dict[str, Any] | None = None
+        self._engine: Any = None
+
+    def verify_ready(self, spec: JudgeSpec, *, allow_remote_code_reviewed: str | None = None) -> str:
+        check_remote_code_gate(spec, allow_remote_code_reviewed=allow_remote_code_reviewed)
+        ensure_offline_env(set_if_unset=False)
+        # Every file (the 18.8 GB weights included) is sized and hashed against the receipt before anything loads.
+        snapshot_dir, digest = verify_snapshot_against_receipt(spec, receipts_dir=self.receipts_dir, hf_home=self.hf_home)
+        self._install = elephant_install_record()
+        self._snapshot_dir, self._verified_digest = snapshot_dir, digest
+        return digest
+
+    def _ensure_loaded(self, spec: JudgeSpec) -> None:
+        if self._engine is not None:
+            return
+        if self._snapshot_dir is None:
+            raise refused_error(
+                "ELEPHANT_RUNTIME_UNVERIFIED",
+                "elephant-1 was not verified (verify_ready) before load.",
+                "Call verify_ready first.",
+            )
+        from qev.engine import DecisionEngine
+
+        self._engine = DecisionEngine(str(self._snapshot_dir), device=self.device, dtype=self.torch_dtype)
+
+    def generate(self, spec: JudgeSpec, prompt: AssembledPrompt, *, seed: int) -> JudgeTransportResponse:
+        self._ensure_loaded(spec)
+        assert self._engine is not None and self._verified_digest is not None
+        state, questions = check_d3_text_only_inputs(prompt.structured_payload or {})
+        from qev.schema import SystemOneRequest
+
+        import torch
+
+        configure_torch_determinism(window_mode=self.window_mode, shard_spec=self.shard_spec)
+        torch.manual_seed(int(seed))
+        t0 = time.monotonic()
+        done: DoneReason = "stop"
+        sys_one: dict[str, Any]
+        try:
+            resp, meta = self._engine.decide(SystemOneRequest(state=state, questions=questions), debug=True)
+            answers = {k: a.model_dump() for k, a in resp.answers.items()}
+            diag = meta.get("diagnostics", {}) if isinstance(meta, Mapping) else {}
+            mass = {k: float(v.get("allowed_token_mass")) for k, v in diag.items() if isinstance(v, Mapping)}
+            sys_one = {
+                "answers": answers,
+                "allowed_token_mass": mass,
+                "outside_mass": {k: max(0.0, 1.0 - m) for k, m in mass.items()},
+                "prompt_version": meta.get("prompt_version"),
+                "fork_mode": meta.get("fork_mode"),
+            }
+        except ValueError as exc:
+            if "limit is" not in str(exc):
+                raise
+            done, sys_one = "length", {"error": "max_length_exceeded"}
+        elapsed = max(0.0001, time.monotonic() - t0)
+        answer = (sys_one.get("answers") or {}).get(next(iter(questions), ""), {})
+        tokens, entries = _d3_answer_entries(answer) if isinstance(answer, Mapping) and answer else ((), ())
+        install = self._install or {}
+        library_pins = {
+            "transport": "ElephantDecisionTransport",
+            "runtime": f"OneJev qev @{ONEJEV_COMMIT} + serve.patch",
+            "serve_patch_sha256": install.get("serve_patch_sha256"),
+            "decision_index_commit": DECISION_INDEX_COMMIT,
+            "telemetry_env": dict(ELEPHANT_TELEMETRY_ENV),
+            "torch": getattr(torch, "__version__", "unknown"),
+            "dtype": self.torch_dtype,
+            "install_seconds": install.get("install_seconds"),
+            "causal_conv1d_build_seconds": install.get("causal_conv1d_build_seconds"),
+        }
+        in_ids = encode_canonical_prompt_token_ids(spec.judge_id, prompt.prompt_text)
+        return JudgeTransportResponse(
+            raw_text=json.dumps(sys_one, sort_keys=True, default=str),
+            tokens=tokens,
+            verdict_top_logprobs=entries,
+            done_reason=done,
+            seconds=elapsed,
+            model_digest=self._verified_digest,
+            server_binary=f"qev@{ONEJEV_COMMIT[:8]};torch/{library_pins['torch']};{self.device}",
+            library_pins=library_pins,
+            system_one_result=sys_one,
+            input_token_ids_sha256=compute_token_ids_sha256(in_ids),
+            output_token_ids_sha256=compute_response_output_token_ids_sha256(spec.judge_id, tokens, system_one_result=sys_one),
+            input_token_count=len(in_ids),
+            output_token_count=len(tokens),
+            stop_reason="max_new_tokens" if done == "length" else "eos",
+            min_top2_logit_margin=compute_min_top2_logit_margin_from_logprobs(entries),
+            verdict_token_margin=compute_min_top2_logit_margin_from_logprobs(entries),
+        )
+
+
+def real_transport_class_for(spec: JudgeSpec) -> Any:
+    """The real (non-d3) transport class for a judge: the NLI encoder's, elephant-1's (qev), else transformers'."""
+    if spec.judge_id in NLI_JUDGE_IDS:
+        return NliSequenceClassificationTransport
+    if spec.judge_id == ELEPHANT_JUDGE_ID:
+        return ElephantDecisionTransport
+    return TransformersJudgeTransport
+
+
+def elephant_fake_response(
+    spec: JudgeSpec, prompt: AssembledPrompt, h_bytes: bytes, make_resp: Callable[..., JudgeTransportResponse]
+) -> JudgeTransportResponse | None:
+    """`DeterministicFakeJudgeTransport`'s elephant-1 answer: qev's shape, choice probabilities over the shown keys and
+    an outside mass, deterministic per call."""
+    if spec.judge_id != ELEPHANT_JUDGE_ID or prompt.pass_mode not in THREE_WAY_PASS_MODES:
+        return None
+    words = three_way_wording(prompt.pass_mode, spec.judge_id)
+    keys = [o.shown_label for o in words.options]
+    top = keys[h_bytes[4] % 3]
+    probs = {k: (0.7 if k == top else 0.15) for k in keys}
+    outside = round(0.01 + 0.2 * h_bytes[7] / 255, 4)
+    sys_one = {
+        "answers": {words.question_id: {"type": "choice", "choice": top, "probabilities": probs, "confidence": 0.55}},
+        "allowed_token_mass": {words.question_id: round(1.0 - outside, 4)},
+        "outside_mass": {words.question_id: outside},
+    }
+    tokens, entries = _d3_answer_entries(sys_one["answers"][words.question_id])
+    return make_resp(
+        raw_text=json.dumps(sys_one, sort_keys=True),
+        tokens=tokens,
+        verdict_top_logprobs=_pad_top_logprobs_to_20(entries),
+        done_reason="stop",
+        seconds=0.001,
+        system_one_result=sys_one,
+    )
 
 
 if __name__ == "__main__":

@@ -6,6 +6,17 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### The D5c judge window, arm 4: elephant-1 through qev
+
+- **Judge `elephant-1`** (baselabs/elephant-1 at b3f8a934), in `three_way_contradicted` with arm 1's d3-style words. It runs through `ElephantDecisionTransport`: `qev.engine.DecisionEngine` from OneJev at 81ce62f1 plus the snapshot's `serve.patch`, over the receipt-verified local snapshot.
+- **Outside mass:** qev's choice probabilities are the softmax over the three option letters, which is already renormalised over the three named options. The probability outside them (`1 - allowed_token_mass`) is written as `outside_mass` on every row and reported per class and order (`outside_mass_by_split`); it is never mapped to a class.
+- **`venv-elephant`**, built on the VM only (`ensure_elephant_venv`):
+  - synced from the judge lock, then setup.sh's pins inside that venv;
+  - no apt (`ELEPHANT_GIT_MISSING`), clones checked at their pinned commits (`ELEPHANT_SOURCE_PIN_MISMATCH`), telemetry off;
+  - install and causal-conv1d build times recorded;
+  - on any failure, elephant-1 is `failed_to_run` and the other judges go on.
+- **The elephant-1 metadata receipt:** `EXPECTED_WEIGHTS_TOTAL_BYTES` is 89,245,312,730 across eight receipts.
+
 ### The D5c judge window: arms 2, 3, 5 and 6, per-judge windows, and a verified partial fetch
 
 - **Arm 2, `three_way_two_question` (d3-mini):** two `noul` questions in one System One request ("Given only the state, must the claim be true? / false?"), no criteria, mapped per order at the fixed 0.5 threshold. Rows carry `p_t`, `p_f`, the verdict and `inconsistent` (both yes: scored wrong, not invalid). The scorer adds `two_question_by_split`: the inconsistent count and rate per class and order, and the AUROC of p_t and p_f.
