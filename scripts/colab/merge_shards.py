@@ -30,14 +30,21 @@ if _REPO_SRC_DIR not in sys.path:
     sys.path.insert(0, _REPO_SRC_DIR)
 
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
+    BAKEOFF_JUDGE_SPECS,
     SHARD_MANIFEST_INPUT_SHA_SOURCE_CANONICAL,
     SHARD_MANIFEST_INPUT_SHA_SOURCE_HF,
     SHARD_MANIFEST_INPUT_SHA_SOURCES,
     compute_prompt_sha256_by_call,
     normalize_anchor_verdict_code,
 )
+from reasoning_dataset_lab.pilot_b.three_way_wording import (
+    THREE_WAY_PASS_MODES,
+    judge_supports_pass_mode,
+)
 
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+PASS_MODE_RE = re.compile(r"^[a-z0-9_]+$")
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
 TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
 STUB_OR_DRYRUN_MODES: frozenset[str] = frozenset(
@@ -179,6 +186,72 @@ EXPECTED_ORDERS: tuple[str, ...] = ("AB", "BA")
 VERDICT_CATEGORIES: tuple[str, ...] = ("yes", "no", "unparseable")
 K_JUDGE_LABEL = "detection check, not a bias guarantee"
 DEFAULT_MERGE_CONFIG_PATH = Path(__file__).resolve().parent / "merge_config.json"
+
+
+def _validate_safe_identifier(value: str, *, kind: str, refusal_class: str) -> str:
+    norm = str(value or "").strip()
+    if not norm or ".." in norm or not SAFE_IDENTIFIER_RE.fullmatch(norm):
+        raise MergeRefusalError(
+            refusal_class,
+            f"invalid {kind} identifier {value!r}",
+        )
+    return norm
+
+
+def _validate_expected_judge_ids(
+    judge_ids: Sequence[str], *, pass_mode: str | None = None
+) -> tuple[str, ...]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw_jid in judge_ids:
+        jid = _validate_safe_identifier(
+            raw_jid, kind="judge_id", refusal_class="MERGE_INVALID_JUDGE_ID"
+        )
+        if jid not in BAKEOFF_JUDGE_SPECS:
+            raise MergeRefusalError(
+                "MERGE_INVALID_JUDGE_ID",
+                f"unknown judge_id {jid!r}; expected one of {sorted(BAKEOFF_JUDGE_SPECS)}",
+            )
+        if pass_mode is not None and pass_mode in ("binary", *THREE_WAY_PASS_MODES):
+            if not judge_supports_pass_mode(BAKEOFF_JUDGE_SPECS[jid], pass_mode):
+                raise MergeRefusalError(
+                    "MERGE_INVALID_JUDGE_ID",
+                    f"judge_id {jid!r} does not support pass_mode={pass_mode!r}",
+                )
+        if jid not in seen:
+            seen.add(jid)
+            cleaned.append(jid)
+    if not cleaned:
+        raise MergeRefusalError(
+            "MERGE_INVALID_JUDGE_ID",
+            "expected_judge_ids must contain at least one valid judge_id",
+        )
+    return tuple(cleaned)
+
+
+def _default_judge_ids_for_pass_mode(pass_mode: str) -> tuple[str, ...]:
+    ordered = list(EXPECTED_JUDGE_IDS) + [
+        jid for jid in sorted(BAKEOFF_JUDGE_SPECS) if jid not in EXPECTED_JUDGE_IDS
+    ]
+    known = [jid for jid in ordered if jid in BAKEOFF_JUDGE_SPECS]
+    if pass_mode in ("binary", *THREE_WAY_PASS_MODES):
+        return tuple(
+            jid for jid in known if judge_supports_pass_mode(BAKEOFF_JUDGE_SPECS[jid], pass_mode)
+        )
+    return tuple(known)
+
+
+def _rows_filename_for_pass(judge_id: str, pass_mode: str = "binary") -> str:
+    safe_jid = _validate_safe_identifier(
+        judge_id, kind="judge_id", refusal_class="MERGE_INVALID_JUDGE_ID"
+    )
+    pm = str(pass_mode or "").strip()
+    if not pm or not PASS_MODE_RE.fullmatch(pm):
+        raise MergeRefusalError(
+            "MERGE_INVALID_PASS_MODE",
+            f"invalid pass_mode {pass_mode!r}",
+        )
+    return f"{safe_jid}.jsonl" if pm == "binary" else f"{safe_jid}.{pm}.jsonl"
 
 
 class MergeRefusalError(RuntimeError):
@@ -951,21 +1024,23 @@ def _load_shard_anchor_rows(
     expected_spec: str,
     anchor_item_ids: list[str],
     expected_judge_ids: tuple[str, ...],
+    pass_mode: str = "binary",
 ) -> dict[tuple[str, str, str], dict[str, Any]]:
     shard_anchors: dict[tuple[str, str, str], dict[str, Any]] = {}
     anchor_dir = sdir / "anchor_rows"
     if anchor_item_ids:
         for jid in expected_judge_ids:
-            ar_path = anchor_dir / f"{jid}.jsonl"
+            ar_fname = _rows_filename_for_pass(jid, pass_mode)
+            ar_path = anchor_dir / ar_fname
             if not ar_path.is_file():
                 raise MergeRefusalError(
                     "MERGE_ANCHOR_DRIFT_REFUSED",
-                    f"shard {expected_spec} missing anchor_rows/{jid}.jsonl",
+                    f"shard {expected_spec} missing anchor_rows/{ar_fname}",
                 )
             ar_rows = _load_jsonl_rows(
                 ar_path,
                 "MERGE_ANCHOR_DRIFT_REFUSED",
-                f"shard {expected_spec} anchor_rows/{jid}.jsonl",
+                f"shard {expected_spec} anchor_rows/{ar_fname}",
             )
             for arow in ar_rows:
                 a_item = str(arow.get("item_id") or "").strip()
@@ -1012,12 +1087,13 @@ def merge_shards(
     manifest_path: Path,
     output_dir: Path,
     accepted_anchor_drift_bound: float | None = None,
-    expected_judge_ids: tuple[str, ...] = EXPECTED_JUDGE_IDS,
+    expected_judge_ids: Sequence[str] | None = None,
     merge_config_path: Path | None = None,
     golden_anchor_manifest_path: Path | None = None,
     replacement_shard_dirs: Sequence[Path] | dict[str, Path] = (),
     items_path: Path | None = None,
     expected_manifest_sha256: str | None = None,
+    allow_unpinned_stub: bool = False,
 ) -> dict[str, Any]:
     """Verify all five cross-shard gates and write sealed-safe merged readout and receipt.
 
@@ -1049,13 +1125,24 @@ def merge_shards(
         if isinstance(replacement_shard_dirs, Mapping)
         else tuple(Path(p) for p in replacement_shard_dirs)
     )
+    rig_real_mode = not bool(allow_unpinned_stub)
+    if rig_real_mode:
+        guard_no_test_hooks_in_counted_mode(any_real=True)
     _refuse_manifest_inside_shard_dir(manifest_path, (*shard_dirs, *raw_replacement_dirs))
+    has_manifest_pin = bool(
+        expected_manifest_sha256 is not None and str(expected_manifest_sha256).strip()
+    )
+    if rig_real_mode and not has_manifest_pin:
+        raise MergeRefusalError(
+            "MERGE_MANIFEST_PIN_REQUIRED",
+            "real-mode merge requires --expected-manifest-sha256 (<64-hex> pre-registered rig manifest body sha256)",
+        )
 
     manifest_doc = _load_json_dict(
         manifest_path, "MERGE_BIJECTION_FAILED", "shard_manifest.json"
     )
     manifest_sha256 = _verified_manifest_body_sha256(manifest_doc, "reference shard_manifest.json")
-    if expected_manifest_sha256 is not None and str(expected_manifest_sha256).strip() and (
+    if has_manifest_pin and (
         manifest_sha256 != str(expected_manifest_sha256).strip().lower()
     ):
         raise MergeRefusalError(
@@ -1064,6 +1151,22 @@ def merge_shards(
             f"--expected-manifest-sha256 {str(expected_manifest_sha256).strip().lower()!r}",
         )
     num_shards = int(manifest_doc.get("num_shards") or 0)
+    raw_pass_mode = manifest_doc.get("pass_mode")
+    manifest_pass_mode = (
+        "binary" if raw_pass_mode is None else str(raw_pass_mode).strip()
+    )
+    if not manifest_pass_mode or not PASS_MODE_RE.fullmatch(manifest_pass_mode):
+        raise MergeRefusalError(
+            "MERGE_INVALID_PASS_MODE",
+            f"invalid manifest pass_mode {raw_pass_mode!r}",
+        )
+    if expected_judge_ids is None:
+        resolved_judge_ids = _default_judge_ids_for_pass_mode(manifest_pass_mode)
+    else:
+        resolved_judge_ids = _validate_expected_judge_ids(
+            expected_judge_ids, pass_mode=manifest_pass_mode
+        )
+    expected_judge_ids = resolved_judge_ids
     if num_shards < 1 or len(shard_dirs) != num_shards:
         raise MergeRefusalError(
             "MERGE_BIJECTION_FAILED",
@@ -1102,8 +1205,8 @@ def merge_shards(
     if items_path is not None:
         recomputed_prompt_shas = compute_prompt_sha256_by_call(
             items_path,
-            pass_mode=str(manifest_doc.get("pass_mode") or "binary"),  # type: ignore[arg-type]
-            judge_ids=expected_judge_ids,
+            pass_mode=manifest_pass_mode,  # type: ignore[arg-type]
+            judge_ids=resolved_judge_ids,
         )
         for c_key, c_sha in recomputed_prompt_shas.items():
             prior = expected_prompt_shas.get(c_key)
@@ -1238,7 +1341,7 @@ def merge_shards(
 
     # Check if any shard (including replacement shards) is in counted or real mode and resolve golden anchor manifest
     any_counted = False
-    any_real = False
+    shard_any_real = False
     for sdir in (*shard_dirs, *replacement_by_spec.values()):
         senv_file = sdir / "session_env.json"
         if senv_file.is_file():
@@ -1253,19 +1356,23 @@ def merge_shards(
                     ) or s_mode in ("counted-stub", "counted_stub"):
                         any_counted = True
                     if is_real_mode(s_mode, dryrun=s_dryrun):
-                        any_real = True
+                        shard_any_real = True
                 else:
-                    any_real = True
+                    shard_any_real = True
             except Exception:
-                any_real = True
+                shard_any_real = True
         else:
-            any_real = True
+            shard_any_real = True
 
+    any_real = bool(rig_real_mode)
+    if not rig_real_mode and shard_any_real:
+        raise MergeRefusalError(
+            "MERGE_SESSION_ENV_MISMATCH",
+            "stub merge (--allow-unpinned-stub) refused because one or more shard session_env.json "
+            "files indicate real mode or are missing/invalid",
+        )
     guard_no_test_hooks_in_counted_mode(any_real=any_real)
-    _refuse_manifest_inside_shard_dir(manifest_path, (*shard_dirs, *replacement_by_spec.values()))
-    if any_real and (
-        expected_manifest_sha256 is None or not str(expected_manifest_sha256).strip()
-    ):
+    if any_real and not has_manifest_pin:
         raise MergeRefusalError(
             "MERGE_MANIFEST_PIN_REQUIRED",
             "real-mode merge requires --expected-manifest-sha256 (<64-hex> pre-registered rig manifest body sha256)",
@@ -1376,6 +1483,7 @@ def merge_shards(
                 expected_spec=spec,
                 anchor_item_ids=anchor_item_ids,
                 expected_judge_ids=expected_judge_ids,
+                pass_mode=manifest_pass_mode,
             )
 
         failed_specs: list[tuple[str, str, str]] = []
@@ -1453,6 +1561,7 @@ def merge_shards(
     per_shard_env_digests: dict[str, str] = {}
     per_shard_session_fingerprints: dict[str, str] = {}
     per_shard_verified_recovery: dict[str, bool] = {}
+    per_shard_modes: dict[str, str] = {}
 
     # Gate (a), (b), (e) accumulators
     seen_triples: dict[tuple[str, str, str], str] = {}
@@ -1521,10 +1630,24 @@ def merge_shards(
         )
         _check_ecc_zero(session_env, f"shard {expected_spec}")
 
+        shard_mode = str(session_env.get("mode") or "")
+        per_shard_modes[expected_spec] = shard_mode
         shard_is_real = is_real_mode(
-            str(session_env.get("mode") or ""),
+            shard_mode,
             dryrun=bool(session_env.get("dryrun", False)),
         )
+        if rig_real_mode and not shard_is_real:
+            raise MergeRefusalError(
+                "MERGE_SESSION_ENV_MISMATCH",
+                f"shard {expected_spec} session_env.json mode {shard_mode!r} "
+                f"(dryrun={bool(session_env.get('dryrun', False))!r}) is not real mode while rig merge mode is real",
+            )
+        if not rig_real_mode and shard_is_real:
+            raise MergeRefusalError(
+                "MERGE_SESSION_ENV_MISMATCH",
+                f"shard {expected_spec} session_env.json mode {shard_mode!r} "
+                f"(dryrun={bool(session_env.get('dryrun', False))!r}) is real mode while rig merge mode is stub (--allow-unpinned-stub)",
+            )
         gk_path = sdir / "boot_gatekeeper.json"
         gk_doc: dict[str, Any] | None = None
         if gk_path.is_file():
@@ -1593,8 +1716,9 @@ def merge_shards(
 
         # Gate (e) & row collection across all expected judges
         for jid in expected_judge_ids:
+            rows_filename = _rows_filename_for_pass(jid, manifest_pass_mode)
             jdone_path = sdir / "judge_done" / f"{jid}.json"
-            rows_path = sdir / "rows" / f"{jid}.jsonl"
+            rows_path = sdir / "rows" / rows_filename
             jdone_doc = _load_json_dict(
                 jdone_path,
                 "MERGE_ROW_DONE_SHA_MISMATCH",
@@ -1615,7 +1739,7 @@ def merge_shards(
             rows = _load_jsonl_rows(
                 rows_path,
                 "MERGE_ROW_DONE_SHA_MISMATCH",
-                f"shard {expected_spec} rows/{jid}.jsonl",
+                f"shard {expected_spec} rows/{rows_filename}",
             )
             recomputed_shas: list[str] = []
             for r_idx, row in enumerate(rows):
@@ -1624,7 +1748,7 @@ def merge_shards(
                 if not HEX64_RE.fullmatch(recorded_sha) or recorded_sha != computed_sha:
                     raise MergeRefusalError(
                         "MERGE_ROW_DONE_SHA_MISMATCH",
-                        f"shard {expected_spec} rows/{jid}.jsonl row {r_idx} row_sha256 mismatch "
+                        f"shard {expected_spec} rows/{rows_filename} row {r_idx} row_sha256 mismatch "
                         f"(recorded={recorded_sha!r}, computed={computed_sha!r})",
                     )
                 recomputed_shas.append(computed_sha)
@@ -1632,7 +1756,7 @@ def merge_shards(
             if recomputed_shas != [str(x).strip().lower() for x in done_row_shas]:
                 raise MergeRefusalError(
                     "MERGE_ROW_DONE_SHA_MISMATCH",
-                    f"shard {expected_spec} rows/{jid}.jsonl row_sha256 list does not match judge_done/{jid}.json",
+                    f"shard {expected_spec} rows/{rows_filename} row_sha256 list does not match judge_done/{jid}.json",
                 )
 
             for row in rows:
@@ -1739,6 +1863,7 @@ def merge_shards(
             expected_spec=expected_spec,
             anchor_item_ids=anchor_item_ids,
             expected_judge_ids=expected_judge_ids,
+            pass_mode=manifest_pass_mode,
         )
         if shard_is_real or any_real:
             for a_triple, a_row in sorted(anchor_rows_by_shard[expected_spec].items()):
@@ -2015,6 +2140,13 @@ def merge_shards(
         "schema_version": "1.0",
         "status": "ok",
         "num_shards": num_shards,
+        "pass_mode": manifest_pass_mode,
+        "merge_mode": "real" if rig_real_mode else "stub",
+        "real_mode": bool(rig_real_mode),
+        "allow_unpinned_stub": bool(allow_unpinned_stub),
+        "manifest_pin_enforced": bool(rig_real_mode or has_manifest_pin),
+        "per_shard_modes": dict(per_shard_modes),
+        "expected_judge_ids": list(expected_judge_ids),
         "total_items": len(all_item_ids),
         "total_judges": len(expected_judge_ids),
         "total_rows": len(seen_triples),
@@ -2058,6 +2190,13 @@ def merge_shards(
         "schema_version": "1.0",
         "status": "ok",
         "num_shards": num_shards,
+        "pass_mode": manifest_pass_mode,
+        "merge_mode": "real" if rig_real_mode else "stub",
+        "real_mode": bool(rig_real_mode),
+        "allow_unpinned_stub": bool(allow_unpinned_stub),
+        "manifest_pin_enforced": bool(rig_real_mode or has_manifest_pin),
+        "per_shard_modes": dict(per_shard_modes),
+        "expected_judge_ids": list(expected_judge_ids),
         "shard_manifest_sha256": manifest_sha256,
         "golden_anchor_manifest_sha256": golden_anchor_sha256,
         "merge_config": merge_cfg,
@@ -2176,17 +2315,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "required in real mode and refuses on omission or mismatch"
         ),
     )
+    p.add_argument(
+        "--allow-unpinned-stub",
+        action="store_true",
+        help=(
+            "Explicitly opt into stub merge mode when no shard is real; "
+            "without this flag merge defaults to real mode and requires --expected-manifest-sha256"
+        ),
+    )
+    p.add_argument(
+        "--only-judges",
+        nargs="+",
+        default=None,
+        help=(
+            "Restrict merge validation and output to these judge_id values "
+            "(accepts space- or comma-separated IDs)"
+        ),
+    )
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    only_judges: list[str] | None = None
+    if args.only_judges is not None:
+        only_judges = [
+            tok.strip()
+            for raw in args.only_judges
+            for tok in str(raw).split(",")
+        ]
     try:
         merge_shards(
             shard_dirs=[Path(d) for d in args.shard_dirs],
             manifest_path=Path(args.manifest),
             output_dir=Path(args.output_dir),
             accepted_anchor_drift_bound=args.accepted_anchor_drift_bound,
+            expected_judge_ids=only_judges,
             merge_config_path=Path(args.merge_config) if args.merge_config else None,
             golden_anchor_manifest_path=(
                 Path(args.golden_anchor_manifest)
@@ -2196,6 +2360,7 @@ def main(argv: list[str] | None = None) -> int:
             replacement_shard_dirs=[Path(d) for d in args.replacement_shard_dirs],
             items_path=Path(args.items) if args.items else None,
             expected_manifest_sha256=args.expected_manifest_sha256,
+            allow_unpinned_stub=bool(args.allow_unpinned_stub),
         )
     except MergeRefusalError as exc:
         sys.stderr.write(f"{exc}\n")
