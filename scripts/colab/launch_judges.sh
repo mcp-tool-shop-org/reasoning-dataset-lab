@@ -226,11 +226,13 @@ while [[ $# -gt 0 ]]; do
       ;;
     --window-id)
       WINDOW_ID="${2:-}"
+      WINDOW_ID_FLAG=1
       export RDLAB_SESSION_ID="$WINDOW_ID"
       shift 2
       ;;
     --window-id=*)
       WINDOW_ID="${1#*=}"
+      WINDOW_ID_FLAG=1
       export RDLAB_SESSION_ID="$WINDOW_ID"
       shift
       ;;
@@ -728,6 +730,52 @@ require_p0a_part_dir_for_mode() {
   fi
 }
 
+# A real time-one / counted / lock-check window forwards its window id to the VM as RDLAB_SESSION_ID, and the VM's boot
+# gatekeeper refuses an empty or stub id only after open, upload, venv sync and weight download. Refuse an explicit
+# --window-id, or an ambient RDLAB_SESSION_ID, that is empty or stub here, before `colab new` (--dry and live alike).
+# "Stub" is vm_judges.is_stub_window_id, the same rule the VM applies.
+require_real_window_id() {
+  if [[ "${VM_DRYRUN:-0}" == "1" ]] || [[ "$SESSION_SMOKE_FLAG" == "1" ]]; then
+    return 0
+  fi
+  if [[ "$MODE" != "time-one" && "$MODE" != "counted" && "$MODE" != "lock-check" ]]; then
+    return 0
+  fi
+  local src="" val=""
+  if [[ "${WINDOW_ID_FLAG:-0}" -eq 1 ]]; then
+    src="--window-id"
+    val="$WINDOW_ID"
+  elif [[ -n "${RDLAB_SESSION_ID+x}" ]]; then
+    src="RDLAB_SESSION_ID"
+    val="$RDLAB_SESSION_ID"
+  else
+    return 0
+  fi
+  if ! "$PYTHON_BIN" - "$REPO_ROOT" "$MODE" "$src" "$val" <<'PY'
+import sys
+from pathlib import Path
+
+repo_root, mode, src, val = Path(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+sys.path.insert(0, str(repo_root / "src"))
+sys.path.insert(0, str(repo_root / "scripts" / "colab"))
+import vm_judges
+
+if vm_judges.is_stub_window_id(val):
+    sys.stderr.write(
+        f"WINDOW_ID_STUB_REFUSED: real mode ({mode!r}) refuses an empty or stub window id from {src} "
+        f"(got {val.strip()!r}); omit {src} to use the session this launcher opens, or pass the opened "
+        "Colab session's name\n"
+    )
+    raise SystemExit(2)
+PY
+  then
+    RUN_WHY="WINDOW_ID_STUB_REFUSED: empty or stub window id from $src"
+    exit 2
+  fi
+}
+
+require_real_window_id
+
 if [[ "$SESSION_SMOKE_FLAG" -ne 1 ]] && [[ "$MODE" != "probe" ]]; then
   if [[ -n "$ITEMS_FILE" ]]; then
     require_part_dir_for_mode
@@ -985,6 +1033,7 @@ build_probe_env_args() {
 # A real time-one / counted / lock-check window (no VM_DRYRUN, no --until): the VM needs the card type of the session
 # actually opened, read from `colab sessions` after `colab new` (never from --gpu), and checks it against nvidia-smi.
 OPENED_CARD_TYPE=""
+OPENED_SESSION_ID=""
 
 needs_opened_card_type() {
   [[ "${VM_DRYRUN:-0}" != "1" ]] && [[ -z "$UNTIL_STEP" ]] && [[ "$SESSION_SMOKE_FLAG" != "1" ]] \
@@ -1134,8 +1183,16 @@ build_exec_env_args() {
       EXEC_ENV_ARGS+=(--env "RDLAB_COUNTED_MANIFEST=/content/rdlab/counted_manifest.json")
     fi
   fi
-  if [[ -n "${RDLAB_SESSION_ID+x}" ]] && [[ -n "${RDLAB_SESSION_ID}" ]]; then
-    EXEC_ENV_ARGS+=(--env "RDLAB_SESSION_ID=$RDLAB_SESSION_ID")
+  local eff_session_id=""
+  if [[ "${WINDOW_ID_FLAG:-0}" -eq 1 ]]; then
+    eff_session_id="$WINDOW_ID"
+  elif [[ -n "${RDLAB_SESSION_ID+x}" ]]; then
+    eff_session_id="$RDLAB_SESSION_ID"
+  else
+    eff_session_id="${OPENED_SESSION_ID:-}"
+  fi
+  if [[ -n "$eff_session_id" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_SESSION_ID=$eff_session_id")
   fi
 }
 
@@ -1345,6 +1402,7 @@ PY
     # Nothing is opened in --dry: the live run forwards the card type read from `colab sessions` after `colab new`.
     OPENED_CARD_TYPE="<card-of-opened-session>"
   fi
+  OPENED_SESSION_ID="$SESSION_NAME"
   build_exec_env_args
   DRY_ENV_STR="${EXEC_ENV_ARGS[*]}"
   if ! guard_forwarded_test_hooks; then
@@ -2890,6 +2948,7 @@ fi
 
 # The card type of the session actually opened: its `Hardware:` field in `colab sessions` (not the --gpu request).
 # Unknown -> CARD_TYPE_UNKNOWN before the alive probe, the gate, any upload or exec (the trap stops the session).
+OPENED_SESSION_ID="$S"
 OPENED_CARD_TYPE=""
 if needs_opened_card_type; then
   CARD_READ="$("$PYTHON_BIN" - "$REPO_ROOT" "$S" "$MID_SESSIONS" <<'PY' || true

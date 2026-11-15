@@ -4,10 +4,12 @@ The fake CLI loads this file when `FAKE_COLAB_REAL_MODE_SHIM` names it and the c
 every test-hook variable from the VM process environment first (so the VM's real-mode guards see what a real Colab VM
 would), executes `vm_judges.py` without running it, calls `install` below, then runs the cell entrypoint.
 
-`install` replaces these steps: venv sync, the device check, the GPU gate, the weight download, the boot gatekeeper and
-the session-env probe run their own dryrun behaviour, and the judge child runner runs each judge child on CPU **with
-`--stub` and a stub window mode** (`stub` for time-one, `counted-stub` for counted), so `is_real_mode` is false inside
-the child. The fake CLI's kernel patches also stay active in the cell: `shutil.disk_usage`, `shutil.which('uv')`,
+`install` replaces these steps: venv sync, the device check, the GPU gate, the weight download and the session-env
+probe run their own dryrun behaviour; the boot gatekeeper runs in real mode (`dryrun=False`, so real-mode `window_id`
+and provenance checks execute) with synthetic CPU prompt hashes and stub marks stamped on its recorded outputs; and the
+judge child runner runs each judge child on CPU **with `--stub` and a stub window mode** (`stub` for time-one,
+`counted-stub` for counted, `lock-check-stub` for lock-check), so `is_real_mode` is false inside the child. The fake
+CLI's kernel patches also stay active in the cell: `shutil.disk_usage`, `shutil.which('uv')`,
 `subprocess.run` and a fake `huggingface_hub`. Every other step of VM `main` (argument validation, the test-hook guard,
 upload allow-lists, the part and counted-source preflights, the shard manifest, lock and device.py digests, the pipeline
 body, deletion of uploaded items, receipts, the result tar) runs in the real mode the launcher asked for.
@@ -36,6 +38,7 @@ step was reached and in what order the steps ran.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -151,23 +154,70 @@ def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
             if name == "download_and_verify_all_judge_weights":
                 only_ids = kwargs.get("only_judge_ids")
                 row["only_judge_ids"] = list(only_ids) if only_ids is not None else None
-            _record(state_dir, row)
-            kwargs["dryrun"] = True
-            if "device" in kwargs:
-                kwargs["device"] = "cpu"
             if name == "run_boot_gatekeeper":
+                row["window_id"] = kwargs.get("window_id")
+                row["env_session_id"] = os.environ.get("RDLAB_SESSION_ID", "")
+                _record(state_dir, row)
+                if "device" in kwargs:
+                    kwargs["device"] = "cpu"
                 _require_gatekeeper_judge_verified(ns, kwargs, verified_judges, state_dir)
-                # The goldens rule per mode is the real function's (record in time-one, refuse "no golden" or a
-                # mismatch in counted); only the hashes are the dryrun's synthetic ones.
+                # Keep `dryrun` as VM `main` passed it (`False` in real modes) so `is_real_mode` stays true inside
+                # `run_boot_gatekeeper` and exercises real-mode `window_id` and provenance checks; replace only the
+                # GPU prompt subprocess with the deterministic synthetic hash helper and re-stamp stub marks afterwards.
+                orig_prompts = ns["_run_real_boot_gatekeeper_prompts"]
+
+                def _shim_boot_gatekeeper_prompts(**kw: Any) -> dict[str, str]:
+                    synth = ns["_compute_synthetic_gatekeeper_output_sha256"]
+                    jid = str(kw["judge_id"])
+                    sd = int(kw["seed"])
+                    return {
+                        str(sp.get("prompt_id") or ""): synth(str(sp.get("prompt_id") or ""), seed=sd, judge_id=jid)
+                        for sp in kw["prompts"]
+                        if sp.get("prompt_id")
+                    }
+
+                ns["_run_real_boot_gatekeeper_prompts"] = _shim_boot_gatekeeper_prompts
                 try:
                     result = orig(*args, **kwargs)
                 except Exception as exc:
                     _record(
                         state_dir,
-                        {"call": "boot_gatekeeper_outcome", "failure_class": getattr(exc, "failure_class", None)},
+                        {
+                            "call": "boot_gatekeeper_outcome",
+                            "failure_class": getattr(exc, "failure_class", None),
+                            "detail": getattr(exc, "detail", str(exc)),
+                        },
                     )
                     raise
+                finally:
+                    ns["_run_real_boot_gatekeeper_prompts"] = orig_prompts
                 rep = result if isinstance(result, dict) else {}
+                if rep and not kwargs.get("dryrun"):
+                    rep["hash_source"] = "synthetic_fake_stub_dryrun"
+                    rep["synthetic_fake_hash"] = True
+                    run_dir = Path(kwargs["run_dir"]) if "run_dir" in kwargs else Path(args[0])
+                    filled_str = rep.get("filled_goldens_path")
+                    if isinstance(filled_str, str) and filled_str:
+                        filled_path = Path(filled_str)
+                        if filled_path.is_file():
+                            fg_doc = json.loads(filled_path.read_text(encoding="utf-8"))
+                            ct = str(rep.get("card_type") or "")
+                            if isinstance(fg_doc.get("card_types"), dict) and isinstance(
+                                fg_doc["card_types"].get(ct), dict
+                            ):
+                                fg_doc["card_types"][ct]["synthetic_fake_hash"] = True
+                            if isinstance(fg_doc.get("provenance"), dict):
+                                fg_doc["provenance"]["hash_source"] = "synthetic_fake_stub_dryrun"
+                                fg_doc["provenance"]["stub_transport"] = True
+                            fg_doc.pop("filled_goldens_body_sha256", None)
+                            fg_body_sha = ns["compute_goldens_body_sha256"](fg_doc)
+                            fg_doc["filled_goldens_body_sha256"] = fg_body_sha
+                            fg_serialized = json.dumps(fg_doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+                            filled_path.write_text(fg_serialized, encoding="utf-8", newline="\n")
+                            rep["filled_goldens_body_sha256"] = fg_body_sha
+                            rep["filled_goldens_sha256"] = hashlib.sha256(fg_serialized.encode("utf-8")).hexdigest()
+                    gk_path = run_dir / ns["BOOT_GATEKEEPER_FILENAME"]
+                    gk_path.write_text(json.dumps(rep, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
                 _record(
                     state_dir,
                     {
@@ -176,9 +226,14 @@ def install(ns: dict[str, Any], *, state_dir: str, vm_root: str) -> None:
                         "record_mode": rep.get("record_mode"),
                         "gatekeeper": rep.get("gatekeeper"),
                         "card_type": rep.get("card_type"),
+                        "window_id": rep.get("window_id"),
                     },
                 )
                 return result
+            _record(state_dir, row)
+            kwargs["dryrun"] = True
+            if "device" in kwargs:
+                kwargs["device"] = "cpu"
             result = orig(*args, **kwargs)
             if name == "sync_judge_venvs":
                 work_dir = Path(args[0])

@@ -1458,7 +1458,8 @@ def test_ask1_positive_real_mode_launcher_lock_check_receipt_promotes(tmp_path: 
     assert "window_id" not in rec_doc
     assert "session_env_sha256" not in rec_doc
     assert isinstance(rec_doc.get("boot_gatekeeper"), dict)
-    assert rec_doc["boot_gatekeeper"]["window_id"] == "rdlab_run"
+    assert rec_doc["boot_gatekeeper"]["window_id"] == "rdlab-lc-real-pos-01"
+    assert not vm_judges.is_stub_window_id(rec_doc["boot_gatekeeper"]["window_id"])
     assert len(rec_doc["boot_gatekeeper"]["session_env_sha256"]) == 64
     assert rec_doc["boot_gatekeeper"]["card_type"] == "A100"
 
