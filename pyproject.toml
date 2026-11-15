@@ -35,6 +35,7 @@ Issues = "https://github.com/mcp-tool-shop-org/reasoning-dataset-lab/issues"
 [project.optional-dependencies]
 dev = [
     "coverage==7.16.2",
+    "jinja2==3.1.6",  # renders elephant-1's pinned chat template in tests
     "pytest==9.0.3",
     "pytest-cov==7.0.0",
     "pytest-timeout==2.4.0",
@@ -62,6 +63,7 @@ rdlab = "reasoning_dataset_lab.cli:main"
 [dependency-groups]
 dev = [
     "coverage==7.16.2",
+    "jinja2==3.1.6",  # renders elephant-1's pinned chat template in tests
     "pytest==9.0.3",
     "pytest-cov==7.0.0",
     "pytest-timeout==2.4.0",

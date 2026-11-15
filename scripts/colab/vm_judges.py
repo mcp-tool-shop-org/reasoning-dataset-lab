@@ -241,8 +241,8 @@ EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
     },
 }
 
-# Disk preflight constants for the 5 bake-off judges, the 2 D5c judges (metadata receipts) and 2 CPython 3.15 venvs:
-# - Weights total (sum of `total_bytes` across the 7 `<owner>__<repo>.sha256.json` receipts; the D5c two add 20,951,864,838):
+# Disk preflight constants for the 5 bake-off judges, 2 D5c judges (metadata receipts) and 2 CPython 3.15 venvs:
+# - Weights total (sum of `total_bytes` across the 7 receipts other than elephant-1's; elephant-1 adds its own per window):
 #   49,451,597,039 (the five) + 16,815,718,986 (d3-flash) + 4,136,145,852 (encoder) = 70,403,461,877 bytes (65.57 GiB)
 # - Rig download time across the 5 downloaded receipts: 123.9 + 264.8 + 130.1 + 128.5 + 150.1 = 797.4 s (797 s)
 # - Venvs compressed wheel/sdist sums:
@@ -253,7 +253,7 @@ EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
 #   2 * 5,558,620,263 = 11,117,240,526 bytes (10.35 GiB)
 # - Required free disk with 15% safety margin:
 #   ceil((70,403,461,877 + 11,117,240,526) * 1.15) = ceil(81,520,702,403 * 1.15) = 93,748,807,764 bytes (87.31 GiB)
-EXPECTED_WEIGHTS_TOTAL_BYTES = 70_403_461_877  # all 7 receipts (pinned to them by a test)
+EXPECTED_WEIGHTS_TOTAL_BYTES = 70_403_461_877  # 7 receipts; elephant-1's and venv-elephant: compute_required_vm_disk_bytes
 EXPECTED_WEIGHTS_DOWNLOAD_SECONDS = 797.4
 VENV_JUDGE_WHEEL_BYTES = 2_779_391_889
 VENV_D3_WHEEL_BYTES = 2_779_228_374
@@ -591,7 +591,7 @@ TAR_ALLOWED_EXACT_FILES: frozenset[str] = frozenset(
         GENERATIONS_FILENAME,
         "time_one_summary.json",
         "vm_receipt.json",
-        "receipt.json",
+        "receipt.json", "elephant_install.json",  # venv-elephant install record (arm 4)
         PROGRESS_FILENAME,
         CHILD_PROGRESS_FILENAME,
         SESSION_ENV_FILENAME,
@@ -7452,9 +7452,9 @@ def _run_judges_pipeline_body(
         pipeline_passes = []
 
     for is_anchor_prefix_pass, subblock_idx, active_chunk in pipeline_passes:
-      for judge_id, spec, pass_mode_j, pass_key_j in _judge_passes(selected_specs, eff_pass_mode):
+      for judge_id, spec, pass_mode_j, pass_key_j in _judge_passes(selected_specs, eff_pass_mode, elephant={"work_dir": eff_work_dir, "repo_dir": eff_repo_dir, "run_dir": run_dir, "hf_home": hf_home, "progress_path": progress_path, "metrics": per_judge_metrics, "real": not dryrun and norm_mode not in STUB_OR_DRYRUN_MODES and not real_load_on_cpu}):  # noqa: E501
         is_d3 = judge_id in D3_FAMILY_JUDGE_IDS
-        venv_name = "venv-d3" if is_d3 else "venv-judge"
+        venv_name = "venv-d3" if is_d3 else (elephant_venv_name() if judge_id == ELEPHANT_JUDGE_ID else "venv-judge")
         venv_python = eff_work_dir / venv_name / "bin" / "python"
         lock_file = "d3.lock.txt" if is_d3 else "judge.lock.txt"
         lock_sha256 = (
@@ -8651,15 +8651,15 @@ def _query_free_disk_bytes(path: Path) -> int:
 
 def compute_required_vm_disk_bytes() -> dict[str, int]:
     """Compute required free bytes from `EXPECTED_WEIGHTS_TOTAL_BYTES` (matched to receipts), venvs estimate, and 15% margin."""
-    weights_bytes = EXPECTED_WEIGHTS_TOTAL_BYTES
-    subtotal = weights_bytes + VENVS_ESTIMATED_BYTES
+    weights_bytes = EXPECTED_WEIGHTS_TOTAL_BYTES + elephant_window_extra_bytes()["weights_bytes"]
+    subtotal = weights_bytes + VENVS_ESTIMATED_BYTES + elephant_window_extra_bytes()["venv_bytes"]
     required = (
         subtotal * DISK_PREFLIGHT_MARGIN_NUMERATOR
         + (DISK_PREFLIGHT_MARGIN_DENOMINATOR - 1)
     ) // DISK_PREFLIGHT_MARGIN_DENOMINATOR
     return {
         "weights_total_bytes": weights_bytes,
-        "venvs_estimated_bytes": VENVS_ESTIMATED_BYTES,
+        "venvs_estimated_bytes": VENVS_ESTIMATED_BYTES + elephant_window_extra_bytes()["venv_bytes"],
         "subtotal_bytes": subtotal,
         "required_bytes": required,
     }
@@ -15568,7 +15568,7 @@ THREE_WAY_PASS_MODES: frozenset[str] = frozenset(m for m in PASS_MODES if m != "
 PASS_MODE_JUDGES: dict[str, frozenset[str]] = {
     "binary": frozenset({"d3-mini", "flow-judge-v0.1", "granite-guardian-4.1-8b", "mu-judge", "nemotron-3-nano-4b"}),
     "three_way": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "flow-judge-v0.1"}),
-    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash"}),
+    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini", "d3-flash", "elephant-1"}),
     "three_way_two_question": frozenset({"d3-mini"}),
     "three_way_symmetric": frozenset({"d3-mini"}),
     "three_way_nli": frozenset({"nli-deberta-v3-large"}),
@@ -15634,6 +15634,7 @@ def _three_way_rows_of_pass_mode(rf: Path, pass_mode: str) -> list[dict[str, Any
 D3_FLASH_JUDGE_ID = "d3-flash"
 D3_FLASH_REVISION = "67e03e1bc157961c582ee7c6a35d9b15fada3dec"
 NLI_JUDGE_ID = "nli-deberta-v3-large"
+ELEPHANT_JUDGE_ID = "elephant-1"
 # d3-mini's gate SHA is the reviewed bd0090dd. d3-flash's is its own pin: its eight remote-code files are byte-identical
 # to d3-mini's reviewed ones (R&D, 2026-11-15), and the d3 transport re-proves that from the receipts at every load.
 D3_REVIEWED_REVISION_BY_JUDGE: dict[str, str] = {
@@ -15677,6 +15678,22 @@ D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
             max_new_tokens=0,
             card_snapshot_path="cards/MoritzLaurer_DeBERTa-v3-large-mnli-fever-anli-ling-wanli.md",
             card_snapshot_sha256="216c3ac9ea77beec4e35a347c8b4edc47fbb3465e7c2a00dc923ae7b975cf346",
+        ),
+        ELEPHANT_JUDGE_ID: JudgeSpec(
+            judge_id=ELEPHANT_JUDGE_ID,
+            judge_label="baselabs/elephant-1",
+            repo_id="baselabs/elephant-1",
+            revision="b3f8a93462fb1051a9de031e94a7ff380e254072",
+            card_registry_id="elephant-1-card",
+            licence_registry_id="mit",
+            requires_remote_code=False,
+            remote_code_files=(),
+            supports_three_way=True,
+            has_probability=True,
+            verdict_position="system_one_readout",
+            max_new_tokens=1,
+            card_snapshot_path="cards/baselabs_elephant-1.md",
+            card_snapshot_sha256="0c1f7c170191d0906218c3b34ad7a11ae4bc49a04d210eb12e5bb7a5461648f7",
         ),
     }
 )
@@ -15840,9 +15857,20 @@ def validate_pass_mode(
     return cleaned
 
 
-def _judge_passes(selected_specs: Sequence[tuple[str, Any]], window_pass_mode: str) -> list[tuple[str, Any, str, str]]:
+def _judge_passes(
+    selected_specs: Sequence[tuple[str, Any]], window_pass_mode: str, *, elephant: Mapping[str, Any] | None = None
+) -> list[tuple[str, Any, str, str]]:
     """The window's judge passes in run order, as (judge_id, spec, pass_mode, pass_key): one per selected judge in the
-    window's mode (the key is the judge id, as before), or a per-judge window's plan entries in their listed order."""
+    window's mode (the key is the judge id, as before), or a per-judge window's plan entries in their listed order.
+    With elephant-1 among them and the run context in `elephant`, venv-elephant is built first
+    (`ensure_elephant_venv`); if that fails, elephant-1's passes become `failed_to_run` and the other passes run."""
+    passes = _planned_judge_passes(selected_specs, window_pass_mode)
+    if elephant is None or not any(jid == ELEPHANT_JUDGE_ID for jid, *_ in passes):
+        return passes
+    return _apply_elephant_install(passes, elephant)
+
+
+def _planned_judge_passes(selected_specs: Sequence[tuple[str, Any]], window_pass_mode: str) -> list[tuple[str, Any, str, str]]:
     if window_pass_mode != PER_JUDGE_PASS_MODE:
         return [(jid, spec, window_pass_mode, jid) for jid, spec in selected_specs]
     plan = parse_judge_pass_modes()
@@ -15869,10 +15897,14 @@ def _pass_record_fields(judge_id: str, pass_mode: str, window_pass_mode: str) ->
 
 
 def _judge_pass_modes_record(window_pass_mode: str) -> dict[str, Any]:
-    """A per-judge window's plan, for its summary (nothing in a single-mode window)."""
-    if window_pass_mode != PER_JUDGE_PASS_MODE:
-        return {}
-    return {"judge_pass_modes": [f"{j}:{m}" for j, m in (parse_judge_pass_modes() or ())]}
+    """A per-judge window's plan, and the venv-elephant install record when one ran, for the run's summary (nothing in
+    a single-mode window without elephant-1)."""
+    out: dict[str, Any] = {}
+    if window_pass_mode == PER_JUDGE_PASS_MODE:
+        out["judge_pass_modes"] = [f"{j}:{m}" for j, m in (parse_judge_pass_modes() or ())]
+    if _LAST_ELEPHANT_INSTALL is not None:
+        out["elephant_install"] = dict(_LAST_ELEPHANT_INSTALL)
+    return out
 
 
 # --- the option-mass readout for the new arms ------------------------------------------------------------------------
@@ -15888,7 +15920,7 @@ def _three_way_mass_report(rf: Path, judge_id: str, threshold: float, pass_mode:
     """The 3-way readout for one rows file. Arm 2 (two questions): every parsed call carries p_t and p_f in [0, 1] and a
     mapped label (or `inconsistent`). Arm 5 (NLI) and every d3-family choice arm: valid `choice_probabilities` over the
     3 classes, as d3-mini's. Log-probability judges: A/B/C option mass (`_three_way_choice_mass_report`)."""
-    if pass_mode not in TWO_QUESTION_PASS_MODES and judge_id not in (D3_FAMILY_JUDGE_IDS | {NLI_JUDGE_ID}):
+    if pass_mode not in TWO_QUESTION_PASS_MODES and judge_id not in (D3_FAMILY_JUDGE_IDS | {NLI_JUDGE_ID, ELEPHANT_JUDGE_ID}):
         return _three_way_choice_mass_report(rf, judge_id, threshold, pass_mode)
     if pass_mode not in TWO_QUESTION_PASS_MODES:
         # d3-flash and the encoder read out like d3-mini: the d3-mini rule over `choice_probabilities`.
@@ -16028,6 +16060,274 @@ def launcher_verify_fetched_pass(
     os.replace(rows_src, rows_dst)
     os.replace(done_src, done_dst)
     return True, ""
+
+
+# --- arm 4: venv-elephant, built on the VM only (never on the rig), before elephant-1's first pass ----------------
+# setup.sh (elephant-1's, pinned in its receipt) installs OneJev @81ce62f + serve.patch and the decision-index kit into
+# the active interpreter and may apt-install git. Here, by R&D's ruling of 2026-11-15:
+# - a third, throwaway venv, `venv-elephant`, synced from the judge lock first (the same hashed torch 2.14.1+cu132
+#   stack and rdlab's own dependencies, so the judge child runs in it), then setup.sh's pins inside that venv only;
+# - no apt: a missing git is refused (ELEPHANT_GIT_MISSING);
+# - telemetry off for every install command and for the runs (`ELEPHANT_TELEMETRY_ENV`);
+# - the clones must sit at the pinned commits after checkout (ELEPHANT_SOURCE_PIN_MISMATCH), serve.patch comes from the
+#   receipt-verified elephant-1 snapshot, and `qev.engine` / `qev.readout` must import afterwards;
+# - the install time and causal-conv1d's build time are recorded (`elephant_install.json`, the run summary and every
+#   elephant-1 row's library_pins); any failure makes elephant-1 `failed_to_run` and the other judges go on.
+# One deviation from setup.sh, recorded in the install record: `-e ./OneJev` without the `[train]` extra. That extra
+# adds torchvision (no cu132 build is in our lock, and setup.sh pins it to the image's), peft, pyyaml and pyarrow, none
+# of which the serving path (`qev.engine`, `qev.readout`, `qev.prompt`, `qev.answers`, `qev.schema`) imports.
+ELEPHANT_VENV_NAME = "venv-elephant"
+ELEPHANT_ONEJEV_URL = "https://github.com/OmniJev/OneJev.git"
+ELEPHANT_ONEJEV_COMMIT = "81ce62f1597c91e46767d4d02d6ac2e18534fe94"
+ELEPHANT_DECISION_INDEX_URL = "https://github.com/apolinario/decision-index.git"
+ELEPHANT_DECISION_INDEX_COMMIT = "f5a6e4fd85fed05e77878dfc4966d0568bfb45ec"
+ELEPHANT_TELEMETRY_ENV: dict[str, str] = {
+    "WANDB_MODE": "disabled",
+    "WANDB_DISABLED": "true",
+    "OTEL_SDK_DISABLED": "true",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "DO_NOT_TRACK": "1",
+}
+ELEPHANT_INSTALL_ENV: dict[str, str] = {**ELEPHANT_TELEMETRY_ENV, "GIT_TERMINAL_PROMPT": "0", "PIP_NO_INPUT": "1"}
+ELEPHANT_INSTALL_RECORD_FILENAME = "elephant_install.json"
+ELEPHANT_INSTALL_RECORD_ENV_VAR = "RDLAB_ELEPHANT_INSTALL_RECORD"
+ELEPHANT_SETUP_EXTRA_PACKAGES: tuple[str, ...] = ("huggingface_hub", "hf_xet", "brotli", "flash-linear-attention", "httpx")
+# Hosts the install reaches (none at run time, which is offline): the two pinned GitHub clones; PyPI
+# (pypi.org, files.pythonhosted.org) and the PyTorch cu132 index for the pinned wheels; and causal-conv1d's build, which
+# may try a prebuilt wheel from its GitHub releases (github.com) before compiling.
+ELEPHANT_INSTALL_HOSTS: tuple[str, ...] = (
+    "github.com",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "download.pytorch.org",
+)
+_LAST_ELEPHANT_INSTALL: dict[str, Any] | None = None
+
+
+def elephant_install_commands(work_dir: Path, repo_dir: Path, snapshot_dir: Path) -> list[tuple[str, list[str]]]:
+    """The install steps in order, as (name, argv). Nothing here runs apt or setup.sh."""
+    venv = Path(work_dir) / ELEPHANT_VENV_NAME
+    py = str(venv / "bin" / "python")
+    src = Path(work_dir) / "elephant-src"
+    onejev, kit = src / "OneJev", src / "decision-index"
+    judge_lock = Path(repo_dir) / "scripts" / "colab" / "locks" / "judge.lock.txt"
+    pins = Path(work_dir) / "elephant-torch-pin.txt"
+    constraints = Path(snapshot_dir) / "constraints.txt"
+    base = build_vm_venv_commands(work_dir, repo_dir, python_interpreter=str(Path(work_dir) / "venv-judge" / "bin" / "python"))
+    sync_flags = base["venv_judge"]["sync_cmd"][5:-1]
+    cons = ["-c", str(constraints), "-c", str(pins)]
+    return [
+        ("venv", ["uv", "venv", "--python", str(Path(work_dir) / "venv-judge" / "bin" / "python"), str(venv)]),
+        ("sync_judge_lock", ["uv", "pip", "sync", "--python", py, *sync_flags, str(judge_lock)]),
+        ("clone_onejev", ["git", "clone", "-q", ELEPHANT_ONEJEV_URL, str(onejev)]),
+        ("checkout_onejev", ["git", "-C", str(onejev), "checkout", "-q", "-f", ELEPHANT_ONEJEV_COMMIT]),
+        ("clean_onejev", ["git", "-C", str(onejev), "clean", "-fdq"]),
+        ("apply_serve_patch", ["git", "-C", str(onejev), "apply", str(Path(snapshot_dir) / "serve.patch")]),
+        ("clone_decision_index", ["git", "clone", "-q", ELEPHANT_DECISION_INDEX_URL, str(kit)]),
+        ("checkout_decision_index", ["git", "-C", str(kit), "checkout", "-q", "-f", ELEPHANT_DECISION_INDEX_COMMIT]),
+        ("torch_pin", [py, "-c", f"import torch; open({str(pins)!r}, 'w').write('torch==' + torch.__version__ + '\\n')"]),
+        ("install_onejev", ["uv", "pip", "install", "--python", py, *cons, "-e", str(onejev), *ELEPHANT_SETUP_EXTRA_PACKAGES]),
+        ("build_causal_conv1d", ["uv", "pip", "install", "--python", py, "--no-build-isolation", *cons, "causal-conv1d"]),
+        ("install_decision_index", ["uv", "pip", "install", "--python", py, "--no-deps", "-e", str(kit)]),
+        ("import_check", [py, "-c", "import qev.engine, qev.readout, qev.schema"]),
+    ]
+
+
+# venv-elephant's size, for the disk gate of a window that selects elephant-1: it is synced from the judge lock
+# (the same wheels as venv-judge, unpacked: VENV_JUDGE_WHEEL_BYTES x VENV_UNPACK_MULTIPLIER), plus 1 GiB for setup.sh's
+# extra packages, the two clones and the causal-conv1d build. Estimate, not measured; measure it on the first install.
+VENV_ELEPHANT_ESTIMATED_BYTES = VENV_JUDGE_WHEEL_BYTES * VENV_UNPACK_MULTIPLIER + 1024**3
+ELEPHANT_WEIGHTS_BYTES = 18_841_850_853  # total_bytes of scripts/colab/receipts/baselabs__elephant-1.sha256.json
+# Upper bound of one install step: the window wall left minus the child margin, at least 60 s, at most the wall left.
+ELEPHANT_STEP_TIMEOUT_FLOOR_SECONDS = 60.0
+
+
+def elephant_window_extra_bytes(raw_only_judges: str | None = None) -> dict[str, int]:
+    """The disk the window adds for elephant-1: its weights and venv-elephant, only when RDLAB_ONLY_JUDGES (or
+    RDLAB_JUDGE_PASS_MODES) names elephant-1; nothing otherwise, so every other window keeps its pre-#93 figure."""
+    raw = os.environ.get("RDLAB_ONLY_JUDGES", "") if raw_only_judges is None else raw_only_judges
+    plan = os.environ.get(JUDGE_PASS_MODES_ENV_VAR, "") if raw_only_judges is None else ""
+    named = ELEPHANT_JUDGE_ID in str(raw).split(",") or any(e.split(":")[0] == ELEPHANT_JUDGE_ID for e in plan.split(",") if e)
+    return {"weights_bytes": ELEPHANT_WEIGHTS_BYTES if named else 0, "venv_bytes": VENV_ELEPHANT_ESTIMATED_BYTES if named else 0}
+
+
+def elephant_step_timeout_seconds() -> float:
+    """The timeout of one install step: the window's remaining wall minus the child margin, at least 60 s, and never
+    more than the remaining wall itself."""
+    remaining = resolve_remaining_wall_seconds()
+    return min(remaining, max(ELEPHANT_STEP_TIMEOUT_FLOOR_SECONDS, remaining - resolve_child_wall_margin_seconds()))
+
+
+def elephant_venv_name() -> str:
+    """The venv elephant-1's child runs in: venv-elephant once this window built it, else the judge venv (stub and
+    dryrun windows, whose child runs the stub transport and needs no qev)."""
+    ok = _LAST_ELEPHANT_INSTALL is not None and _LAST_ELEPHANT_INSTALL.get("status") == "ok"
+    return ELEPHANT_VENV_NAME if ok else "venv-judge"
+
+
+def _git_head(path: Path, runner: Callable[..., Any]) -> str:
+    res = runner(
+        ["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, env=_elephant_env(),
+        stdin=subprocess.DEVNULL, timeout=elephant_step_timeout_seconds(),
+    )
+    return str(getattr(res, "stdout", "") or "").strip()
+
+
+def _elephant_env() -> dict[str, str]:
+    return {**os.environ, **ELEPHANT_INSTALL_ENV}
+
+
+def ensure_elephant_venv(
+    *,
+    work_dir: Path,
+    repo_dir: Path,
+    run_dir: Path,
+    snapshot_dir: Path,
+    real: bool,
+    runner: Callable[..., Any] = subprocess.run,
+    which: Callable[[str], str | None] = shutil.which,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Build venv-elephant and return the install record (also written to `<run_dir>/elephant_install.json`, its path
+    exported in RDLAB_ELEPHANT_INSTALL_RECORD for the judge child). Stub and dryrun windows skip the install (the child
+    runs the stub transport in the judge venv's interpreter); a real window runs `elephant_install_commands`. Never
+    raises for an install failure: the record says `failed` with its failure_class and step."""
+    global _LAST_ELEPHANT_INSTALL
+    rec: dict[str, Any] = {
+        "venv": ELEPHANT_VENV_NAME,
+        "onejev_commit": ELEPHANT_ONEJEV_COMMIT,
+        "decision_index_commit": ELEPHANT_DECISION_INDEX_COMMIT,
+        "telemetry_env": dict(ELEPHANT_TELEMETRY_ENV),
+        "install_hosts": list(ELEPHANT_INSTALL_HOSTS),
+        "deviation_from_setup_sh": "-e ./OneJev without the [train] extra (torchvision, peft, pyyaml, pyarrow: not on the serving path)",
+        "apt": "never run",
+        "steps": [],
+        "serve_patch_applied": False,
+        "run_dir": str(Path(run_dir)),
+    }
+    serve_patch = Path(snapshot_dir) / "serve.patch"
+    rec["serve_patch_sha256"] = sha256_file(serve_patch) if serve_patch.is_file() else None
+
+    def finish(status: str, failure_class: str | None = None, detail: str | None = None) -> dict[str, Any]:
+        global _LAST_ELEPHANT_INSTALL
+        rec["status"] = status
+        if failure_class:
+            rec["failure_class"], rec["detail"] = failure_class, detail
+        Path(run_dir).mkdir(parents=True, exist_ok=True)
+        out = Path(run_dir) / ELEPHANT_INSTALL_RECORD_FILENAME
+        out.write_text(json.dumps(rec, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
+        os.environ[ELEPHANT_INSTALL_RECORD_ENV_VAR] = str(out)
+        for k, v in ELEPHANT_TELEMETRY_ENV.items():
+            os.environ[k] = v  # inherited by the judge child (build_judge_child_env copies the environment)
+        _LAST_ELEPHANT_INSTALL = dict(rec)
+        return rec
+
+    if not real:
+        rec["install_seconds"] = 0.0
+        rec["causal_conv1d_build_seconds"] = None
+        return finish("skipped_not_real_mode")
+    # The cheap refusals come before any venv, sync or clone step.
+    if which("git") is None:
+        return finish("failed", "ELEPHANT_GIT_MISSING", "git is not on PATH; the VM image must provide it (apt is never run)")
+    missing = [n for n in ("serve.patch", "constraints.txt") if not (Path(snapshot_dir) / n).is_file()]
+    if missing:
+        return finish("failed", "ELEPHANT_SNAPSHOT_INCOMPLETE", f"the verified elephant-1 snapshot lacks {missing} ({snapshot_dir})")
+    # A resumed run in an existing work_dir starts from a clean directory: the install never reuses an earlier
+    # window's venv-elephant or clones (a reused clone would need its own HEAD and cleanliness proof).
+    for stale in (Path(work_dir) / ELEPHANT_VENV_NAME, Path(work_dir) / "elephant-src", Path(work_dir) / "elephant-torch-pin.txt"):
+        if stale.is_dir():
+            shutil.rmtree(stale)
+        elif stale.exists():
+            stale.unlink()
+    rec["clean_start"] = True
+    t_start = clock()
+    for name, argv in elephant_install_commands(work_dir, repo_dir, snapshot_dir):
+        t0 = clock()
+        step_timeout = elephant_step_timeout_seconds()
+        try:
+            res = runner(argv, capture_output=True, text=True, env=_elephant_env(), stdin=subprocess.DEVNULL, timeout=step_timeout)
+        except subprocess.TimeoutExpired:
+            rec["steps"].append({"step": name, "rc": None, "seconds": round(clock() - t0, 3), "timeout_seconds": step_timeout})
+            rec["install_seconds"] = round(clock() - t_start, 3)
+            return finish("failed", "ELEPHANT_INSTALL_TIMEOUT", f"step {name} exceeded {step_timeout:.0f} s (bounded by the window wall)")
+        rc = int(getattr(res, "returncode", 1))
+        step = {"step": name, "rc": rc, "seconds": round(clock() - t0, 3)}
+        rec["steps"].append(step)
+        if name == "build_causal_conv1d":
+            rec["causal_conv1d_build_seconds"] = step["seconds"]
+        if rc != 0:
+            rec["install_seconds"] = round(clock() - t_start, 3)
+            tail = scrub_log_text(str(getattr(res, "stderr", "") or ""))[-2000:]
+            return finish("failed", "ELEPHANT_INSTALL_FAILED", f"step {name} rc={rc}: {tail}")
+        if name == "apply_serve_patch":
+            rec["serve_patch_applied"] = True
+        if name in ("checkout_onejev", "checkout_decision_index"):
+            path = argv[2]
+            want = ELEPHANT_ONEJEV_COMMIT if name == "checkout_onejev" else ELEPHANT_DECISION_INDEX_COMMIT
+            head = _git_head(Path(path), runner)
+            if head != want:
+                rec["install_seconds"] = round(clock() - t_start, 3)
+                rec["serve_patch_applied"] = False
+                return finish("failed", "ELEPHANT_SOURCE_PIN_MISMATCH", f"{path} is at {head!r}, not {want}")
+    rec["install_seconds"] = round(clock() - t_start, 3)
+    return finish("ok")
+
+
+def _apply_elephant_install(passes: list[tuple[str, Any, str, str]], ctx: Mapping[str, Any]) -> list[tuple[str, Any, str, str]]:
+    """Build venv-elephant for the window's elephant-1 passes; on failure, record each of them as `failed_to_run`
+    (a `judge_failed` progress line and a metrics entry naming the failure) and return the other passes only."""
+    # Once per window: the run loop calls this for every pipeline pass (each subblock). An install already made for
+    # this run_dir is reused when ok and never retried when failed, so a later subblock neither re-syncs venv-elephant
+    # (which would wipe qev and causal-conv1d) nor re-clones into an existing directory.
+    prior = _LAST_ELEPHANT_INSTALL
+    if prior is not None and prior.get("run_dir") == str(Path(ctx["run_dir"])):
+        rec = dict(prior)
+        if rec["status"] != "failed":
+            return passes
+        return [p for p in passes if p[0] != ELEPHANT_JUDGE_ID]
+    spec = JUDGE_SPECS[ELEPHANT_JUDGE_ID]
+    try:
+        snapshot_dir = _resolve_snapshot_dir_for_spec(spec, hf_home=Path(ctx["hf_home"]))
+    except RefusalError:
+        snapshot_dir = Path(ctx["hf_home"]) / "missing-elephant-1-snapshot"
+    rec = ensure_elephant_venv(
+        work_dir=Path(ctx["work_dir"]),
+        repo_dir=Path(ctx["repo_dir"]),
+        run_dir=Path(ctx["run_dir"]),
+        snapshot_dir=snapshot_dir,
+        real=bool(ctx.get("real")),
+        **{k: ctx[k] for k in ("runner", "which", "clock") if k in ctx},
+    )
+    if rec["status"] != "failed":
+        return passes
+    kept: list[tuple[str, Any, str, str]] = []
+    for jid, s, mode, key in passes:
+        if jid != ELEPHANT_JUDGE_ID:
+            kept.append((jid, s, mode, key))
+            continue
+        metrics = ctx.get("metrics")
+        if isinstance(metrics, dict):
+            metrics[key] = {
+                "judge_id": jid,
+                "pass_mode": mode,
+                "run_status": "failed_to_run",
+                "failure_class": rec.get("failure_class"),
+                "elephant_install": dict(rec),
+            }
+        if ctx.get("progress_path") is not None:
+            append_progress_line(
+                Path(ctx["progress_path"]),
+                {
+                    "kind": "judge_failed",
+                    "judge": jid,
+                    "judge_id": jid,
+                    "pass_mode": mode,
+                    "run_status": "failed_to_run",
+                    "failure_class": rec.get("failure_class"),
+                    "detail": rec.get("detail"),
+                },
+            )
+    return kept
 
 
 if __name__ == "__main__":

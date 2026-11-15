@@ -888,6 +888,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "coverage" },
+    { name = "jinja2" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
@@ -903,6 +904,7 @@ judge = [
 [package.dev-dependencies]
 dev = [
     { name = "coverage" },
+    { name = "jinja2" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
@@ -914,6 +916,7 @@ requires-dist = [
     { name = "accelerate", marker = "extra == 'judge'", specifier = "==1.15.0" },
     { name = "aspire-si-gates", specifier = "==1.7.6" },
     { name = "coverage", marker = "extra == 'dev'", specifier = "==7.16.2" },
+    { name = "jinja2", marker = "extra == 'dev'", specifier = "==3.1.6" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = "==7.0.0" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = "==2.4.0" },
@@ -929,6 +932,7 @@ provides-extras = ["dev", "judge"]
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", specifier = "==7.16.2" },
+    { name = "jinja2", specifier = "==3.1.6" },
     { name = "pytest", specifier = "==9.0.3" },
     { name = "pytest-cov", specifier = "==7.0.0" },
     { name = "pytest-timeout", specifier = "==2.4.0" },

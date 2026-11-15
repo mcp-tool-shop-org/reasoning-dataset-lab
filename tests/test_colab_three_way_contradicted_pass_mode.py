@@ -127,6 +127,7 @@ def test_arm_wording_table_is_the_preregistered_words() -> None:
         "nemotron-3-nano-4b": "STATE",
         "d3-mini": "the_state",
         "d3-flash": "the_state",  # arm 3: the d3 family's text, the same words as d3-mini's
+        "elephant-1": "the_state",  # arm 4: the same d3-style words, sent through qev
     }
 
 

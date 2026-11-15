@@ -2099,6 +2099,27 @@ def _two_question_report(
     }
 
 
+def _outside_mass_report(
+    scored: Sequence[tuple[SealedKeyRecord, Mapping[str, Any], Mapping[str, Any]]],
+) -> dict[str, Any]:
+    """Arm 4 (elephant-1): the probability put outside the three named options, per gold class and order (mean, max,
+    calls), from rows that carry it. Reported only; the verdict is the argmax over the three renormalised options."""
+    out: dict[str, Any] = {}
+    for c in THREE_WAY_LABELS:
+        out[c] = {}
+        for ord_i, ord_name in enumerate(("AB", "BA")):
+            vals = [
+                v for rec, *rows in scored if rec.key == c
+                for v in [_coerce_finite_float(rows[ord_i].get("outside_mass"))] if v is not None
+            ]
+            out[c][ord_name] = {
+                "calls_n": len(vals),
+                "mean": (sum(vals) / len(vals)) if vals else None,
+                "max": max(vals) if vals else None,
+            }
+    return out
+
+
 def _write_sealed_scored_rows(
     sealed_jsonl_path: Path,
     sealed_csv_path: Path,
@@ -2565,6 +2586,12 @@ def score_bakeoff_outputs(
                 "test": _rule_b_breakdown(tw_scored["test"], tw_mode),
                 "dev": _rule_b_breakdown(tw_scored["dev"], tw_mode),
                 "pooled": _rule_b_breakdown([*tw_scored["dev"], *tw_scored["test"]], tw_mode),
+            }
+        if any("outside_mass" in r for r in tw_rows):
+            arm_reports["outside_mass_by_split"] = {
+                "test": _outside_mass_report(tw_scored["test"]),
+                "dev": _outside_mass_report(tw_scored["dev"]),
+                "pooled": _outside_mass_report([*tw_scored["dev"], *tw_scored["test"]]),
             }
         if tw_mode in TWO_QUESTION_PASS_MODES:
             arm_reports["two_question_by_split"] = {

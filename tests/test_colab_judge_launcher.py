@@ -1836,7 +1836,7 @@ def test_items_upload_fails_at_6436a3a6_gate_and_passes_after_fix(
     new_cli_log = (out_new / "colab-cli.log").read_text(encoding="utf-8")
     assert "VM_GATE_OK " in new_cli_log
     assert "items_dir=/content/rdlab_items" in new_cli_log
-    assert "required_bytes=93748807764" in new_cli_log
+    assert "required_bytes=93748807764" in new_cli_log  # no elephant-1 in the window: the pre-#93 figure
     assert (env_new["state_dir"] / "vm_fs" / "rdlab_items").is_dir()
     new_outcome = json.loads(
         (out_new / "outcome.draft.json").read_text(encoding="utf-8")
@@ -1851,7 +1851,8 @@ def test_gate_disk_preflight_reports_free_space_and_refuses_when_insufficient(
     """Verify disk preflight arithmetic, free-space reporting, and `VM_DISK_INSUFFICIENT` refusal."""
     import shutil as _shutil
 
-    # The seven receipts: the five downloaded ones and the D5c judges' metadata receipts (build card v4 follow-up).
+    # The seven receipts: the five downloaded ones and the D5c judges' metadata receipts (build card v4 follow-up);
+    # elephant-1's weights and venv-elephant are added only to a window that selects it (#93 fix 1).
     assert vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES == 70_403_461_877
     assert vm_judges.EXPECTED_WEIGHTS_DOWNLOAD_SECONDS == 797.4
     assert vm_judges.VENV_JUDGE_WHEEL_BYTES == 2_779_391_889
@@ -2812,10 +2813,10 @@ def test_real_service_assumptions_weights_table_matches_receipts(
     assert doc_path.is_file()
 
     rows = generate_weights_table.load_weights_rows_from_receipts(receipts_dir)
-    assert len(rows) == 7  # the five downloaded receipts and the two D5c metadata receipts
-    assert sum(int(r["total_bytes"]) for r in rows) == vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES
+    assert len(rows) == 8  # the five downloaded receipts and the three D5c metadata receipts
+    assert sum(int(r["total_bytes"]) for r in rows) == vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES + vm_judges.ELEPHANT_WEIGHTS_BYTES
     assert round(sum(float(r["seconds"]) for r in rows if r["seconds"] is not None), 1) == vm_judges.EXPECTED_WEIGHTS_DOWNLOAD_SECONDS
-    assert sorted(r["judge_id"] for r in rows if r["seconds"] is None) == ["d3-flash", "nli-deberta-v3-large"]
+    assert sorted(r["judge_id"] for r in rows if r["seconds"] is None) == ["d3-flash", "elephant-1", "nli-deberta-v3-large"]
     for r in rows:
         from reasoning_dataset_lab.pilot_b.bakeoff_judge import JUDGE_SPECS
 
@@ -3268,8 +3269,8 @@ def test_real_service_assumptions_doc_table_and_line_citations(
 
     # Verify required constants and arithmetic appear in REAL_SERVICE_ASSUMPTIONS.md
     for required_token in (
-        "70,403,461,877",
-        "65.57 GiB",
+        "89,245,312,730",
+        "83.12 GiB",
         "49,451,597,039",
         "46.06 GiB",
         "797.4",
@@ -3278,6 +3279,7 @@ def test_real_service_assumptions_doc_table_and_line_citations(
         "2,779,228,374",
         "11,117,240,526",
         "93,748,807,764",
+        "123,044,340,687",
         "VM_DISK_INSUFFICIENT",
         "EXPECTED_WEIGHTS_TOTAL_BYTES",
     ):
@@ -14319,6 +14321,7 @@ def test_fix2_item1_uploaded_device_py_sha256_verified_on_vm_under_fake_colab(
 # (consumed by `launch_judges.sh` on the rig and never read on the VM) or VM-internal
 # (set inside `vm_judges.py` for child processes or injected only in unit tests).
 RIG_ONLY_AND_VM_INTERNAL_RDLAB_ENV_ALLOWLIST: dict[str, str] = {
+    "RDLAB_ELEPHANT_INSTALL_RECORD": "VM-internal: set by vm_judges.ensure_elephant_venv for the elephant-1 judge child (path of elephant_install.json)",
     # Rig-only launcher configuration and state variables in `launch_judges.sh`:
     "RDLAB_ALIVE_PROBE_MAX_TRIES": "rig-only: max retries for `launch_judges.sh` pre-gate alive probe loop",
     "RDLAB_ALIVE_PROBE_SLEEP_SECONDS": "rig-only: sleep seconds between pre-gate alive probe retries on the rig",

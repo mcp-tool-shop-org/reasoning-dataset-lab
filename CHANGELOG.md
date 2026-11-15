@@ -6,6 +6,23 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### The D5c judge window, arm 4: elephant-1 through qev
+
+- **Judge `elephant-1`** (baselabs/elephant-1 at b3f8a934), in `three_way_contradicted` with arm 1's d3-style words. It runs through `ElephantDecisionTransport`: `qev.engine.DecisionEngine` from OneJev at 81ce62f1 plus the snapshot's `serve.patch`, over the receipt-verified local snapshot.
+- **Outside mass:** qev's choice probabilities are the softmax over the three option letters, which is already renormalised over the three named options. The probability outside them (`1 - allowed_token_mass`) is written as `outside_mass` on every row and reported per class and order (`outside_mass_by_split`); it is never mapped to a class.
+- **`venv-elephant`**, built on the VM only (`ensure_elephant_venv`):
+  - synced from the judge lock, then setup.sh's pins inside that venv;
+  - no apt (`ELEPHANT_GIT_MISSING`), clones checked at their pinned commits (`ELEPHANT_SOURCE_PIN_MISMATCH`), telemetry off;
+  - install and causal-conv1d build times recorded;
+  - on any failure, elephant-1 is `failed_to_run` and the other judges go on.
+- **The elephant-1 metadata receipt and the disk gate per window:** `EXPECTED_WEIGHTS_TOTAL_BYTES` stays the seven other receipts' 70,403,461,877 bytes, so a window without elephant-1 (Window A) still requires 93,748,807,764 bytes. A window that names elephant-1 adds its 18,841,850,853 weight bytes and venv-elephant's estimated 6,632,525,602 bytes and requires 123,044,340,687.
+- **#93 fix 1 (Carbon's review of ff3f6d7):**
+  - venv-elephant is built at most once per window: later subblocks reuse an ok install and never retry a failed one; a resumed run starts from a clean venv-elephant and clone directory (`clean_start`).
+  - git, serve.patch and constraints.txt are checked before any install step (`ELEPHANT_SNAPSHOT_INCOMPLETE`); every install call has a timeout bounded by the window wall (`ELEPHANT_INSTALL_TIMEOUT`).
+  - The outside mass fails closed: a missing, non-finite, negative or > 1 + 1e-6 allowed-token mass makes the row unparseable with a named reason; only slack in (1, 1 + 1e-6] clamps to 0.
+  - The readout fails closed: exactly the three shown keys, finite values in [0, 1], summing to 1 within 1e-4.
+  - The fixture blob ids are tied to `ONEJEV_COMMIT` and the receipt's serve.patch sha256, and the install record's serve.patch must be the receipt's. jinja2 is a dev dependency, so the chat-template render (both orders) runs in CI. The fixture NOTICEs carry the MIT and Qwen (Apache-2.0) attribution.
+
 ### The D5c judge window: arms 2, 3, 5 and 6, per-judge windows, and a verified partial fetch
 
 - **Arm 2, `three_way_two_question` (d3-mini):** two `noul` questions in one System One request ("Given only the state, must the claim be true? / false?"), no criteria, mapped per order at the fixed 0.5 threshold. Rows carry `p_t`, `p_f`, the verdict and `inconsistent` (both yes: scored wrong, not invalid). The scorer adds `two_question_by_split`: the inconsistent count and rate per class and order, and the AUROC of p_t and p_f.

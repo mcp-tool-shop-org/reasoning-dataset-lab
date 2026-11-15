@@ -1381,7 +1381,7 @@ def test_committed_d5c_receipts_match_the_pins_and_pass_the_preflight() -> None:
     d3-flash's eight remote-code entries equal to d3-mini's reviewed receipt, and the receipts preflight passes."""
     rdir = Path(__file__).resolve().parents[1] / "scripts" / "colab" / "receipts"
     mini = json.loads((rdir / "vllm-sr__d3-mini.sha256.json").read_text(encoding="utf-8"))["files"]
-    for jid in (FLASH, ENCODER):
+    for jid in (FLASH, ENCODER, "elephant-1"):
         spec = JUDGE_SPECS[jid]
         owner, repo = spec.repo_id.split("/", 1)
         doc = json.loads((rdir / f"{owner}__{repo}.sha256.json").read_text(encoding="utf-8"))
