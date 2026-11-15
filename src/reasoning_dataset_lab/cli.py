@@ -560,9 +560,12 @@ def _build_parser() -> _StructuredArgumentParser:
     bj_parser.add_argument(
         "--pass-mode",
         dest="pass_mode",
-        choices=["binary", "three_way"],
+        choices=["binary", "three_way", "three_way_contradicted"],
         default="binary",
-        help="Pass mode: binary (primary) or three_way (separate pass for capable judges).",
+        help=(
+            "Pass mode: binary (primary), three_way (separate pass for capable judges) or three_way_contradicted "
+            "(the 3-way pass with the plain-word wording, for mu-judge, Nemotron and d3-mini)."
+        ),
     )
     bj_parser.add_argument(
         "--limit",

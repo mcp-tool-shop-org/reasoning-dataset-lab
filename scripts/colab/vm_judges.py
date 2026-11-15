@@ -188,10 +188,17 @@ ROWS_DIRNAME = "rows"
 ANCHOR_ROWS_DIRNAME = "anchor_rows"
 # The pass mode a window runs its judges in (RDLAB_PASS_MODE / --pass-mode): binary (the default, the counted run's)
 # or three_way (supported / unsupported / cannot_tell, the D5a diagnostic). A 3-way pass writes
-# `rows/<judge>.three_way.jsonl`; only the stub and time-one windows take one.
+# `rows/<judge>.three_way.jsonl`; only the stub and time-one windows take one. three_way_contradicted is the same
+# 3-way pass with the plain-word wording (PREREG-d5c-threeway-contradicted-arm-2026-11-15): it writes
+# `rows/<judge>.three_way_contradicted.jsonl` and has a prompt for mu-judge, Nemotron and d3-mini only.
 PASS_MODE_ENV_VAR = "RDLAB_PASS_MODE"
 DEFAULT_PASS_MODE = "binary"
-PASS_MODES: tuple[str, ...] = ("binary", "three_way")
+PASS_MODES: tuple[str, ...] = ("binary", "three_way", "three_way_contradicted")
+THREE_WAY_PASS_MODES: frozenset[str] = frozenset({"three_way", "three_way_contradicted"})
+# The judges a 3-way arm without a rubric fallback has a wording for (`bakeoff_judge.THREE_WAY_WORDING_FAMILY_BY_JUDGE`).
+THREE_WAY_WORDED_JUDGES_BY_MODE: dict[str, frozenset[str]] = {
+    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini"}),
+}
 THREE_WAY_PASS_WINDOW_MODES: frozenset[str] = frozenset({"stub", "time-one", "time_one"})
 THREE_WAY_CLASS_LABELS: tuple[str, ...] = ("supported", "unsupported", "cannot_tell")
 THREE_WAY_OPTION_TOKENS: tuple[str, ...] = ("a", "b", "c")
@@ -2926,6 +2933,11 @@ def rows_filename_for_pass(judge_id: str, pass_mode: str = DEFAULT_PASS_MODE) ->
     return f"{judge_id}.jsonl" if pass_mode == "binary" else f"{judge_id}.{pass_mode}.jsonl"
 
 
+def rows_filename_is_three_way(name: str) -> bool:
+    """True for a 3-way pass's rows file name (`<judge>.<three-way mode>.jsonl`)."""
+    return any(name.endswith(f".{m}.jsonl") for m in THREE_WAY_PASS_MODES)
+
+
 def _three_way_choice_probabilities_valid(probs: Any) -> bool:
     """True when a d3-mini 3-way row's `choice_probabilities` is a mapping over exactly the 3 class labels whose values
     are finite numbers >= 0 summing to more than 0."""
@@ -3023,8 +3035,9 @@ def check_bakeoff_logprob_mass(
     no label route (a `part_id` alone cannot name the pilot: every writer-built part shares it). Refuses
     `BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN` otherwise. The readout records the part's real `part_id` and hashes.
 
-    `pass_mode="three_way"` reads `rows/*.three_way.jsonl` instead: A/B/C option mass for the log-probability judges
-    and valid `choice_probabilities` for d3-mini (see `_three_way_mass_report`). Any other `pass_mode` refuses
+    `pass_mode="three_way"` reads `rows/*.three_way.jsonl` instead (and `three_way_contradicted` reads
+    `rows/*.three_way_contradicted.jsonl`): A/B/C option mass for the log-probability judges and valid
+    `choice_probabilities` for d3-mini (see `_three_way_mass_report`). Any other `pass_mode` refuses
     `PASS_MODE_INVALID`.
     """
     if pass_mode not in PASS_MODES:
@@ -3047,8 +3060,9 @@ def check_bakeoff_logprob_mass(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
             f"Rows directory '{rows_dir}' not found.",
         )
-    if pass_mode == "three_way":
-        tw_files = sorted(rows_dir.glob("*.three_way.jsonl"))
+    if pass_mode in THREE_WAY_PASS_MODES:
+        tw_suffix = f".{pass_mode}.jsonl"
+        tw_files = sorted(rows_dir.glob(f"*{tw_suffix}"))
         if not tw_files:
             raise RefusalError(
                 "BAKEOFF_LOGPROB_MASS_NO_ROWS",
@@ -3056,20 +3070,18 @@ def check_bakeoff_logprob_mass(
             )
         tw_judges: dict[str, Any] = {}
         for rf in tw_files:
-            tw_jid = rf.name[: -len(".three_way.jsonl")]
+            tw_jid = rf.name[: -len(tw_suffix)]
             tw_judges[tw_jid] = _three_way_mass_report(rf, tw_jid, threshold)
         return {
             "schema_version": "1.0",
             "part_id": str(verified_pilot_identity.get("part_id") or "").strip(),
-            "pass_mode": "three_way",
+            "pass_mode": pass_mode,
             "threshold": threshold,
             "judges": tw_judges,
             "part_json_sha256": verified_pilot_identity.get("part_json_sha256"),
             "items_jsonl_sha256": verified_pilot_identity.get("items_jsonl_sha256"),
         }
-    row_files = sorted(
-        p for p in rows_dir.glob("*.jsonl") if not p.name.endswith(".three_way.jsonl")
-    )
+    row_files = sorted(p for p in rows_dir.glob("*.jsonl") if not rows_filename_is_three_way(p.name))
     if not row_files:
         raise RefusalError(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
@@ -9930,10 +9942,12 @@ def validate_pass_mode(
     judge_ids: Sequence[str] | None = None,
     session_smoke: bool = False,
 ) -> str:
-    """Validate `RDLAB_PASS_MODE` / `--pass-mode` and return it: `binary` (the default, when unset or empty) or
-    `three_way`. Refuses `PASS_MODE_INVALID` for any other value, `PASS_MODE_NOT_FOR_MODE` for a 3-way pass outside
-    the stub and time-one windows (or in a session smoke), and `BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED` when any judge in
-    `judge_ids` has `supports_three_way=False` (granite-guardian-4.1-8b), so it is refused before any download."""
+    """Validate `RDLAB_PASS_MODE` / `--pass-mode` and return it: `binary` (the default, when unset or empty),
+    `three_way` or `three_way_contradicted`. Refuses `PASS_MODE_INVALID` for any other value, `PASS_MODE_NOT_FOR_MODE`
+    for a 3-way pass outside the stub and time-one windows (or in a session smoke), and
+    `BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED` when any judge in `judge_ids` has `supports_three_way=False`
+    (granite-guardian-4.1-8b) or, for `three_way_contradicted`, has no wording in that arm (flow-judge-v0.1), so it is
+    refused before any download."""
     if raw_pass_mode is None:
         raw_val = os.environ.get(PASS_MODE_ENV_VAR)
     else:
@@ -9953,18 +9967,20 @@ def validate_pass_mode(
     if session_smoke or norm_mode not in THREE_WAY_PASS_WINDOW_MODES:
         raise RefusalError(
             "PASS_MODE_NOT_FOR_MODE",
-            f"--pass-mode three_way is allowed only with --stub and --time-one (got mode={mode!r}, "
+            f"--pass-mode {cleaned} is allowed only with --stub and --time-one (got mode={mode!r}, "
             f"session_smoke={session_smoke!r}); the counted and lock-check windows are binary.",
         )
+    worded = THREE_WAY_WORDED_JUDGES_BY_MODE.get(cleaned)
     unsupported = [
         str(j)
         for j in (judge_ids or ())
-        if str(j) in BAKEOFF_JUDGE_SPECS and not BAKEOFF_JUDGE_SPECS[str(j)].supports_three_way
+        if str(j) in BAKEOFF_JUDGE_SPECS
+        and (not BAKEOFF_JUDGE_SPECS[str(j)].supports_three_way or (worded is not None and str(j) not in worded))
     ]
     if unsupported:
         raise RefusalError(
             "BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED",
-            f"--pass-mode three_way: judge(s) {unsupported!r} have no 3-way prompt (supports_three_way=False); "
+            f"--pass-mode {cleaned}: judge(s) {unsupported!r} have no prompt in this 3-way pass; "
             "name the window's judges with RDLAB_ONLY_JUDGES (--time-one or --stub) and leave them out.",
         )
     return cleaned
