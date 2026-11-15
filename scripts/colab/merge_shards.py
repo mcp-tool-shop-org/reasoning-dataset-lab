@@ -1220,16 +1220,54 @@ def merge_shards(
 
     guard_no_test_hooks_in_counted_mode(any_real=any_real)
 
+    raw_golden_file_field = manifest_doc.get("golden_anchor_manifest_file_sha256")
+    golden_file_binding = (
+        str(raw_golden_file_field).strip().lower()
+        if isinstance(raw_golden_file_field, str) and HEX64_RE.fullmatch(str(raw_golden_file_field).strip().lower())
+        else None
+    )
     eff_golden_path = golden_anchor_manifest_path
     if eff_golden_path is None:
         cand_golden = manifest_path.parent / "golden_anchor_manifest.json"
         if cand_golden.is_file():
             eff_golden_path = cand_golden
-        else:
+        elif golden_file_binding is not None:
+            # A shard directory is written by the window being checked, so a golden found there is
+            # taken only when the manifest binds its exact file sha256; an unbound one is never used.
             for sdir in (*shard_dirs, *replacement_by_spec.values()):
                 if (sdir / "golden_anchor_manifest.json").is_file():
                     eff_golden_path = sdir / "golden_anchor_manifest.json"
                     break
+    if any_real and anchor_item_ids:
+        # Real anchor rows are only trustworthy against a golden the pre-registered manifest binds.
+        any_golden_present = eff_golden_path is not None or any(
+            (sdir / "golden_anchor_manifest.json").is_file()
+            for sdir in (*shard_dirs, *replacement_by_spec.values())
+        )
+        if golden_file_binding is None and not any_golden_present:
+            raise MergeRefusalError(
+                "GOLDEN_ANCHOR_MANIFEST_MISSING",
+                "real-mode shards with anchors need a golden_anchor_manifest.json bound by the shard "
+                "manifest's golden_anchor_manifest_file_sha256; there is no golden and no binding",
+            )
+        if golden_file_binding is None:
+            raise MergeRefusalError(
+                "MERGE_GOLDEN_ANCHOR_UNBOUND",
+                "real-mode shards with anchors need a golden_anchor_manifest.json bound by the shard "
+                "manifest's golden_anchor_manifest_file_sha256, and this manifest has none",
+            )
+        if eff_golden_path is None or not eff_golden_path.is_file():
+            raise MergeRefusalError(
+                "GOLDEN_ANCHOR_MANIFEST_MISSING",
+                "real-mode shards with anchors need the golden_anchor_manifest.json that the shard manifest binds",
+            )
+        bound_golden_sha = hashlib.sha256(eff_golden_path.read_bytes()).hexdigest()
+        if bound_golden_sha != golden_file_binding:
+            raise MergeRefusalError(
+                "GOLDEN_ANCHOR_MANIFEST_SHA256_MISMATCH",
+                f"golden_anchor_manifest.json file sha256 {bound_golden_sha!r} does not match "
+                f"shard_manifest.json golden_anchor_manifest_file_sha256 {golden_file_binding!r}",
+            )
 
     raw_manifest_golden_sha = (
         manifest_doc.get("golden_anchor_manifest_file_sha256")
