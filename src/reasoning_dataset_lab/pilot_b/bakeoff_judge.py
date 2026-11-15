@@ -70,7 +70,7 @@ from reasoning_dataset_lab.pilot_b.device import (
 )
 
 OrderMode = Literal["AB", "BA"]
-PassMode = Literal["binary", "three_way"]
+from reasoning_dataset_lab.pilot_b.three_way_wording import THREE_WAY_PASS_MODES, PassMode, judge_supports_pass_mode, rows_filename_is_three_way, three_way_wording  # noqa: E501
 DoneReason = Literal["stop", "length", "error"]
 RowState = Literal["parsed", "unparseable", "length_stop"]
 
@@ -1497,10 +1497,10 @@ class BaseJudgeAdapter:
         order: OrderMode,
         pass_mode: PassMode = "binary",
     ) -> AssembledPrompt:
-        if pass_mode == "three_way" and not self.spec.supports_three_way:
+        if not judge_supports_pass_mode(self.spec, pass_mode):
             raise refused_error(
                 "BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED",
-                f"Judge '{self.spec.judge_id}' does not support a 3-way pass.",
+                f"Judge '{self.spec.judge_id}' does not support the {pass_mode} pass.",
                 "Run only the binary pass for this judge.",
             )
         ordered_material = swap_material_facts_order(item.material, order)
@@ -1569,15 +1569,15 @@ class MuJudgeAdapter(BaseJudgeAdapter):
         order: OrderMode,
         pass_mode: PassMode,
     ) -> AssembledPrompt:
-        instructions = f"Is the following claim supported by STATE? Claim: {item.claim}"
         if pass_mode == "binary":
+            instructions = f"Is the following claim supported by STATE? Claim: {item.claim}"
             question_block = f"QUESTION (yes or no): {instructions}\nAnswer yes or no."
         else:
-            opt_lines = [
-                f"A. supported: {self.THREE_WAY_CRITERIA['supported']}",
-                f"B. unsupported: {self.THREE_WAY_CRITERIA['unsupported']}",
-                f"C. cannot_tell: {self.THREE_WAY_CRITERIA['cannot_tell']}",
-            ]
+            # The shown words are the arm's entry in `three_way_wording.THREE_WAY_WORDINGS`.
+            wording = three_way_wording(pass_mode, self.spec.judge_id)
+            instructions = wording.render_instruction(item.claim)
+            opt_lines = [f"{o.letter}. {o.shown_label}: {o.description}" for o in wording.options]
+            # The readout maps each letter back to its internal class (`letter_to_internal`).
             question_block = (
                 f"QUESTION (choice): {instructions}\n"
                 "Options:\n"
@@ -1634,7 +1634,7 @@ class MuJudgeAdapter(BaseJudgeAdapter):
 
         probs, best_cls = compute_three_way_choice_probs(
             response.verdict_top_logprobs,
-            label_map={"a": "supported", "b": "unsupported", "c": "cannot_tell"},
+            label_map=three_way_wording(pass_mode, self.spec.judge_id).letter_to_internal(),
         )
         if probs is None or best_cls is None:
             return ParsedJudgeReadout(
@@ -1683,15 +1683,15 @@ class NemotronNanoBaseAdapter(BaseJudgeAdapter):
         order: OrderMode,
         pass_mode: PassMode,
     ) -> AssembledPrompt:
-        instructions = f"Is the following claim supported by STATE? Claim: {item.claim}"
         if pass_mode == "binary":
+            instructions = f"Is the following claim supported by STATE? Claim: {item.claim}"
             question_block = f"QUESTION (yes or no): {instructions}\nAnswer yes or no."
         else:
-            opt_lines = [
-                f"A. supported: {self.THREE_WAY_CRITERIA['supported']}",
-                f"B. unsupported: {self.THREE_WAY_CRITERIA['unsupported']}",
-                f"C. cannot_tell: {self.THREE_WAY_CRITERIA['cannot_tell']}",
-            ]
+            # The shown words are the arm's entry in `three_way_wording.THREE_WAY_WORDINGS`.
+            wording = three_way_wording(pass_mode, self.spec.judge_id)
+            instructions = wording.render_instruction(item.claim)
+            opt_lines = [f"{o.letter}. {o.shown_label}: {o.description}" for o in wording.options]
+            # The readout maps each letter back to its internal class (`letter_to_internal`).
             question_block = (
                 f"QUESTION (choice): {instructions}\n"
                 "Options:\n"
@@ -1753,7 +1753,7 @@ class NemotronNanoBaseAdapter(BaseJudgeAdapter):
 
         probs, best_cls = compute_three_way_choice_probs(
             response.verdict_top_logprobs,
-            label_map={"a": "supported", "b": "unsupported", "c": "cannot_tell"},
+            label_map=three_way_wording(pass_mode, self.spec.judge_id).letter_to_internal(),
         )
         if probs is None or best_cls is None:
             return ParsedJudgeReadout(
@@ -1795,20 +1795,20 @@ class D3MiniAdapter(BaseJudgeAdapter):
         order: OrderMode,
         pass_mode: PassMode,
     ) -> AssembledPrompt:
-        instructions = f"Is the following claim supported by the state? Claim: {item.claim}"
         if pass_mode == "binary":
+            instructions = f"Is the following claim supported by the state? Claim: {item.claim}"
             questions: dict[str, Any] = {
                 "supported": {
                     "type": "noul",
                     "instructions": instructions,
                 }
             }
-        else:
+        else:  # The choice keys are the arm's shown labels; d3-mini answers with probabilities keyed by them.
             questions = {
-                "supported": {
+                (wording := three_way_wording(pass_mode, self.spec.judge_id)).question_id: {
                     "type": "choice",
-                    "instructions": instructions,
-                    "criteria": dict(self.THREE_WAY_CRITERIA),
+                    "instructions": wording.render_instruction(item.claim),
+                    "criteria": {o.shown_label: o.description for o in wording.options},
                 }
             }
         payload = {
@@ -1881,10 +1881,10 @@ class D3MiniAdapter(BaseJudgeAdapter):
         if isinstance(sys_one, Mapping):
             answers = sys_one.get("answers", sys_one)
             if isinstance(answers, Mapping):
-                q_ans = answers.get("supported", answers)
+                q_ans = answers.get(three_way_wording(pass_mode, self.spec.judge_id).question_id, answers)
                 if isinstance(q_ans, Mapping) and isinstance(q_ans.get("probabilities"), Mapping):
                     raw_probs = q_ans["probabilities"]
-                    three_labels = ("supported", "unsupported", "cannot_tell")
+                    three_labels = tuple(shown_map := three_way_wording(pass_mode, self.spec.judge_id).shown_to_internal())
                     probs = {}
                     # Guard (the rule `vm_judges._three_way_choice_probabilities_valid` checks on the rows): all 3 label
                     # keys present, each a real number (not a bool), finite and >= 0, with a finite total > 0, and a
@@ -1898,8 +1898,8 @@ class D3MiniAdapter(BaseJudgeAdapter):
                     choice_ok = raw_choice is None or raw_choice == "" or raw_choice in three_labels
                     total = sum(probs.values()) if probs_ok else 0.0
                     if probs_ok and choice_ok and math.isfinite(total) and total > 0.0:
-                        probs = {k: v / total for k, v in probs.items()}
-                        choice = str(raw_choice or max(probs.items(), key=lambda kv: kv[1])[0])
+                        probs = {shown_map[k]: v / total for k, v in probs.items()}
+                        choice = shown_map[raw_choice] if raw_choice else max(probs.items(), key=lambda kv: kv[1])[0]
                         return ParsedJudgeReadout(
                             state="parsed",
                             done_reason=response.done_reason,
@@ -2741,7 +2741,7 @@ def build_shard_manifest(
     for entry in schedule.entries:
         it = items_by_id[entry.item_id]
         for jid, adapter in adapters.items():
-            if pass_mode == "three_way" and not adapter.spec.supports_three_way:
+            if not judge_supports_pass_mode(adapter.spec, pass_mode):
                 continue
             prompt = adapter.assemble_prompt(it, order=entry.order, pass_mode=pass_mode)
             call_key = f"{entry.item_id}:{entry.order}:{jid}"
@@ -3038,7 +3038,7 @@ class DeterministicFakeJudgeTransport:
             p_yes_target = round(1.0 - p_yes_target, 4)
         is_yes = p_yes_target >= 0.5
 
-        if prompt.pass_mode == "three_way":
+        if prompt.pass_mode in THREE_WAY_PASS_MODES:
             choices = ("supported", "unsupported", "cannot_tell")
             c_idx = h_bytes[4] % 3
             chosen_cls = choices[c_idx]
@@ -3054,12 +3054,12 @@ class DeterministicFakeJudgeTransport:
                 )
             )
             if spec.judge_id == "d3-mini":
-                probs_map = {
-                    choices[c_idx]: 0.78,
-                    choices[(c_idx + 1) % 3]: 0.14,
-                    choices[(c_idx + 2) % 3]: 0.08,
-                }
-                sys_one = {"answers": {"supported": {"choice": chosen_cls, "probabilities": probs_map}}}
+                tw_words = three_way_wording(prompt.pass_mode, spec.judge_id)  # the arm's question id and shown labels
+                shown = {v: k for k, v in tw_words.shown_to_internal().items()}
+                probs_map = {shown[choices[c_idx]]: 0.78}
+                probs_map[shown[choices[(c_idx + 1) % 3]]] = 0.14
+                probs_map[shown[choices[(c_idx + 2) % 3]]] = 0.08
+                sys_one = {"answers": {tw_words.question_id: {"choice": shown[chosen_cls], "probabilities": probs_map}}}
                 return _make_resp(
                     raw_text=json.dumps(sys_one, sort_keys=True),
                     tokens=(chosen_cls,),
@@ -4026,7 +4026,7 @@ class D3MiniTransport:
         elapsed = max(0.0001, time.monotonic() - t0)
 
         answers = result.get("answers", {}) if isinstance(result, Mapping) else {}
-        answer = answers.get("supported") if isinstance(answers, Mapping) else None
+        answer = answers.get(next(iter(questions), "supported")) if isinstance(answers, Mapping) else None
         done_reason: DoneReason = "stop"
         tokens: tuple[str, ...] = ()
         entries: tuple[TopLogprobEntry, ...] = ()
@@ -4685,7 +4685,7 @@ def check_bakeoff_logprob_mass(
             f"Rows directory '{rows_dir}' not found.",
             "Pass the bakeoff-judge output directory containing rows/*.jsonl.",
         )
-    row_files = sorted(p for p in rows_dir.glob("*.jsonl") if not p.name.endswith(".three_way.jsonl"))
+    row_files = sorted(p for p in rows_dir.glob("*.jsonl") if not rows_filename_is_three_way(p.name))
     if not row_files:
         raise refused_error(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
@@ -8039,7 +8039,7 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--pass-mode",
-        choices=("binary", "three_way"),
+        choices=("binary", "three_way", "three_way_contradicted"),
         default="binary",
         help="Judge pass mode.",
     )
@@ -8272,7 +8272,7 @@ def compute_prompt_sha256_by_call(
     out: dict[str, str] = {}
     for it in items:
         for jid, adapter in adapters.items():
-            if pass_mode == "three_way" and not adapter.spec.supports_three_way:
+            if not judge_supports_pass_mode(adapter.spec, pass_mode):
                 continue
             for order in orders:
                 prompt = adapter.assemble_prompt(it, order=order, pass_mode=pass_mode)

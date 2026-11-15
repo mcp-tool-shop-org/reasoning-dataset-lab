@@ -225,7 +225,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "aefbe57530b20f388fad05df211f621118c89fad1a043d2aeeac19d5b8ad1fdc",
+          "hash": "cdd0eea47805e9ddc5c024a2d1f08f3d148125b8dcac0f4e7676bf11d03e5abe",
           "path": "CHANGELOG.md"
         },
         {
@@ -304,7 +304,7 @@
       "externals": 0,
       "files": [
         {
-          "hash": "bf90abde693f1975519612e0962b82385839fe330219df980853c42b56c06c8f",
+          "hash": "5b45176f943f5b550ac03bb48d2f33bc1f04021b1a1d141f4006c573ab6cd3dc",
           "path": "scripts/colab/README.md"
         },
         {
@@ -1369,6 +1369,7 @@
             "resolve_requested_card_type",
             "resolve_vm_python_temp_dir",
             "rows_filename_for_pass",
+            "rows_filename_is_three_way",
             "run_alive",
             "run_boot_gatekeeper",
             "run_boot_gatekeeper_subprocess",
@@ -3659,9 +3660,14 @@
               "in": "run_kernel_or_cli_entry",
               "kind": "raise",
               "line": 15556
+            },
+            {
+              "in": "_three_way_rows_of_pass_mode",
+              "kind": "raise",
+              "line": 15592
             }
           ],
-          "hash": "cad03f39ecb1c20d5b7e116334a609893a62c773a852b20b37048e6bace870ab",
+          "hash": "0195f0a7ce6e66805762454943e29b0dbe1cc579a9e25c138c81a5c7e91c14b7",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -3685,7 +3691,7 @@
       "origin": "authored",
       "outsidePlaces": [
         {
-          "reads": 86,
+          "reads": 87,
           "where": [
             "caller"
           ],
@@ -3699,13 +3705,13 @@
           "writes": 0
         }
       ],
-      "outsideReads": 96,
+      "outsideReads": 97,
       "outsideWrites": 48,
       "role": "code",
       "testRunners": [
         "pytest"
       ],
-      "testedBy": 7,
+      "testedBy": 8,
       "unresolvedNamed": [
         {
           "path": "scripts/colab/vm_judges.py",
@@ -3850,45 +3856,45 @@
             {
               "in": "_run_certify_values",
               "kind": "raise",
-              "line": 991
+              "line": 994
             },
             {
               "in": "_run_certify_values",
               "kind": "raise",
-              "line": 1000
+              "line": 1003
             },
             {
               "in": "run_cli",
               "kind": "raise",
-              "line": 1211
+              "line": 1214
             },
             {
               "in": "run_cli",
               "kind": "raise",
-              "line": 1222
+              "line": 1225
             },
             {
               "in": "run_cli",
               "kind": "raise",
-              "line": 1377
+              "line": 1380
             },
             {
               "in": "run_cli",
               "kind": "raise",
-              "line": 1430
+              "line": 1433
             },
             {
               "in": "run_cli",
               "kind": "except",
-              "line": 1435
+              "line": 1438
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 1441
+              "line": 1444
             }
           ],
-          "hash": "58360f7d8a5f2affdb679b6e8bab3852f5e7e6622b78ac0a39171f7b56047a30",
+          "hash": "6152af20eee271926cd4acd1d1d97d0036f4c1e1cb5f9be068cdd1d739a5ca33",
           "importsFiles": [
             "src/reasoning_dataset_lab/__init__.py",
             "src/reasoning_dataset_lab/config.py",
@@ -3936,7 +3942,7 @@
                   }
                 },
                 {
-                  "line": 612,
+                  "line": 615,
                   "name": "DEFAULT_VRAM_HALT_MIB",
                   "passed": true,
                   "target": {
@@ -3944,7 +3950,7 @@
                   }
                 },
                 {
-                  "line": 703,
+                  "line": 706,
                   "name": "DEFAULT_SESOI",
                   "passed": true,
                   "target": {
@@ -3960,7 +3966,7 @@
             {
               "calls": [
                 {
-                  "line": 797,
+                  "line": 800,
                   "name": "PILOT_B_OPERATIONS",
                   "passed": true,
                   "target": {
@@ -3968,7 +3974,7 @@
                   }
                 },
                 {
-                  "line": 804,
+                  "line": 807,
                   "name": "DEFAULT_CALIBRATION_TABLES",
                   "passed": true,
                   "target": {
@@ -3976,7 +3982,7 @@
                   }
                 },
                 {
-                  "line": 811,
+                  "line": 814,
                   "name": "DEFAULT_CALIBRATION_NUM_PREDICT",
                   "passed": true,
                   "target": {
@@ -3984,7 +3990,7 @@
                   }
                 },
                 {
-                  "line": 818,
+                  "line": 821,
                   "name": "DEFAULT_CALIBRATION_NUM_CTX",
                   "passed": true,
                   "target": {
@@ -4001,7 +4007,7 @@
               "calls": [
                 {
                   "branch": "not path.is_absolute()",
-                  "line": 991,
+                  "line": 994,
                   "name": "usage_error",
                   "over": "(\"--manifest-out\", args.manifest_out), (\"--review-queue-out…",
                   "target": {
@@ -4009,7 +4015,7 @@
                   }
                 },
                 {
-                  "line": 998,
+                  "line": 1001,
                   "name": "value_sets",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/fact_tables.py"
@@ -4017,63 +4023,63 @@
                 },
                 {
                   "branch": "not sets",
-                  "line": 1000,
+                  "line": 1003,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 1006,
+                  "line": 1009,
                   "name": "parse_reader_think_overrides",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
                   }
                 },
                 {
-                  "line": 1008,
+                  "line": 1011,
                   "name": "check_parent_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
                   }
                 },
                 {
-                  "line": 1015,
+                  "line": 1018,
                   "name": "reader_pins",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
                   }
                 },
                 {
-                  "line": 1014,
+                  "line": 1017,
                   "name": "validate_models_against_licence_registry",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
                   }
                 },
                 {
-                  "line": 1028,
+                  "line": 1031,
                   "name": "build_ollama_readers",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
                   }
                 },
                 {
-                  "line": 1034,
+                  "line": 1037,
                   "name": "first_entities",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
                   }
                 },
                 {
-                  "line": 1037,
+                  "line": 1040,
                   "name": "CertificationOptions",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
                   }
                 },
                 {
-                  "line": 1032,
+                  "line": 1035,
                   "name": "run_certification",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4088,14 +4094,14 @@
             {
               "calls": [
                 {
-                  "line": 1081,
+                  "line": 1084,
                   "name": "load_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
                   }
                 },
                 {
-                  "line": 1082,
+                  "line": 1085,
                   "name": "verify_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4110,21 +4116,21 @@
             {
               "calls": [
                 {
-                  "line": 1128,
+                  "line": 1131,
                   "name": "load_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
                   }
                 },
                 {
-                  "line": 1130,
+                  "line": 1133,
                   "name": "compare_arms",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
                   }
                 },
                 {
-                  "line": 1137,
+                  "line": 1140,
                   "name": "format_arm_comparison_report",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4166,7 +4172,7 @@
                   "via": "_build_parser"
                 },
                 {
-                  "line": 612,
+                  "line": 615,
                   "name": "DEFAULT_VRAM_HALT_MIB",
                   "passed": true,
                   "target": {
@@ -4175,7 +4181,7 @@
                   "via": "_build_parser"
                 },
                 {
-                  "line": 703,
+                  "line": 706,
                   "name": "DEFAULT_SESOI",
                   "passed": true,
                   "target": {
@@ -4185,7 +4191,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 991,
+                  "line": 994,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4194,7 +4200,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 998,
+                  "line": 1001,
                   "name": "value_sets",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/fact_tables.py"
@@ -4203,7 +4209,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1000,
+                  "line": 1003,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4212,7 +4218,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1006,
+                  "line": 1009,
                   "name": "parse_reader_think_overrides",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4221,7 +4227,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1008,
+                  "line": 1011,
                   "name": "check_parent_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4230,7 +4236,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1015,
+                  "line": 1018,
                   "name": "reader_pins",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4239,7 +4245,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1014,
+                  "line": 1017,
                   "name": "validate_models_against_licence_registry",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -4248,7 +4254,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1028,
+                  "line": 1031,
                   "name": "build_ollama_readers",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4257,7 +4263,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1034,
+                  "line": 1037,
                   "name": "first_entities",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4266,7 +4272,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1037,
+                  "line": 1040,
                   "name": "CertificationOptions",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4275,7 +4281,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1032,
+                  "line": 1035,
                   "name": "run_certification",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4284,7 +4290,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1081,
+                  "line": 1084,
                   "name": "load_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4293,7 +4299,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1082,
+                  "line": 1085,
                   "name": "verify_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4302,7 +4308,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1128,
+                  "line": 1131,
                   "name": "load_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4311,7 +4317,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1130,
+                  "line": 1133,
                   "name": "compare_arms",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4320,7 +4326,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1137,
+                  "line": 1140,
                   "name": "format_arm_comparison_report",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4329,7 +4335,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 797,
+                  "line": 800,
                   "name": "PILOT_B_OPERATIONS",
                   "passed": true,
                   "target": {
@@ -4339,7 +4345,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 804,
+                  "line": 807,
                   "name": "DEFAULT_CALIBRATION_TABLES",
                   "passed": true,
                   "target": {
@@ -4349,7 +4355,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 811,
+                  "line": 814,
                   "name": "DEFAULT_CALIBRATION_NUM_PREDICT",
                   "passed": true,
                   "target": {
@@ -4394,7 +4400,7 @@
                   "via": "_build_parser"
                 },
                 {
-                  "line": 612,
+                  "line": 615,
                   "name": "DEFAULT_VRAM_HALT_MIB",
                   "passed": true,
                   "target": {
@@ -4403,7 +4409,7 @@
                   "via": "_build_parser"
                 },
                 {
-                  "line": 703,
+                  "line": 706,
                   "name": "DEFAULT_SESOI",
                   "passed": true,
                   "target": {
@@ -4413,7 +4419,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 991,
+                  "line": 994,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4422,7 +4428,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 998,
+                  "line": 1001,
                   "name": "value_sets",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/fact_tables.py"
@@ -4431,7 +4437,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1000,
+                  "line": 1003,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -4440,7 +4446,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1006,
+                  "line": 1009,
                   "name": "parse_reader_think_overrides",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4449,7 +4455,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1008,
+                  "line": 1011,
                   "name": "check_parent_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4458,7 +4464,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1015,
+                  "line": 1018,
                   "name": "reader_pins",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4563,7 +4569,7 @@
                       }
                     }
                   ],
-                  "line": 1014,
+                  "line": 1017,
                   "name": "validate_models_against_licence_registry",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/models_and_build.py"
@@ -4572,7 +4578,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1028,
+                  "line": 1031,
                   "name": "build_ollama_readers",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4581,7 +4587,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1034,
+                  "line": 1037,
                   "name": "first_entities",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4590,7 +4596,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1037,
+                  "line": 1040,
                   "name": "CertificationOptions",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4599,7 +4605,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1032,
+                  "line": 1035,
                   "name": "run_certification",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4608,7 +4614,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1081,
+                  "line": 1084,
                   "name": "load_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4617,7 +4623,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1082,
+                  "line": 1085,
                   "name": "verify_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4626,7 +4632,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1128,
+                  "line": 1131,
                   "name": "load_manifest",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4635,7 +4641,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1130,
+                  "line": 1133,
                   "name": "compare_arms",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4644,7 +4650,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 1137,
+                  "line": 1140,
                   "name": "format_arm_comparison_report",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -4653,7 +4659,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 797,
+                  "line": 800,
                   "name": "PILOT_B_OPERATIONS",
                   "passed": true,
                   "target": {
@@ -4663,7 +4669,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 804,
+                  "line": 807,
                   "name": "DEFAULT_CALIBRATION_TABLES",
                   "passed": true,
                   "target": {
@@ -4673,7 +4679,7 @@
                 },
                 {
                   "branch": "len(raw_argv) >= 2 and raw_argv[0] == \"pilot-b\" and raw_arg…",
-                  "line": 811,
+                  "line": 814,
                   "name": "DEFAULT_CALIBRATION_NUM_PREDICT",
                   "passed": true,
                   "target": {
@@ -6760,11 +6766,12 @@
               "line": 8245
             }
           ],
-          "hash": "8d5b66a378e068686d7459bc6116903020f793ec2b6ab6e2acc50bf259667e14",
+          "hash": "f2cc14c4f98177ffbf4ea07bfe0e90bee36c5e75e62ec05cc4d748afc927c3d8",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
-            "src/reasoning_dataset_lab/pilot_b/device.py"
+            "src/reasoning_dataset_lab/pilot_b/device.py",
+            "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
           ],
           "path": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
           "sequences": [
@@ -8975,6 +8982,13 @@
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 4688,
+                  "name": "rows_filename_is_three_way",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
                   }
                 },
                 {
@@ -11260,6 +11274,13 @@
                     "file": "src/reasoning_dataset_lab/errors.py"
                   },
                   "via": "build_judge_adapter"
+                },
+                {
+                  "line": 8275,
+                  "name": "judge_supports_pass_mode",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
+                  }
                 }
               ],
               "exported": true,
@@ -11298,219 +11319,225 @@
             {
               "in": "verify_outputs_closed",
               "kind": "raise",
-              "line": 210
+              "line": 211
             },
             {
               "in": "verify_outputs_closed",
               "kind": "except",
-              "line": 218
-            },
-            {
-              "in": "verify_outputs_closed",
-              "kind": "raise",
               "line": 219
             },
             {
               "in": "verify_outputs_closed",
               "kind": "raise",
-              "line": 227
+              "line": 220
             },
             {
               "in": "verify_outputs_closed",
               "kind": "raise",
-              "line": 242
+              "line": 228
             },
             {
               "in": "verify_outputs_closed",
               "kind": "raise",
-              "line": 257
+              "line": 243
             },
             {
               "in": "verify_outputs_closed",
               "kind": "raise",
-              "line": 266
+              "line": 258
             },
             {
               "in": "verify_outputs_closed",
               "kind": "raise",
-              "line": 276
+              "line": 267
+            },
+            {
+              "in": "verify_outputs_closed",
+              "kind": "raise",
+              "line": 277
             },
             {
               "in": "load_sealed_keys",
               "kind": "raise",
-              "line": 296
+              "line": 297
             },
             {
               "in": "load_sealed_keys",
               "kind": "raise",
-              "line": 322
+              "line": 323
             },
             {
               "in": "_coerce_finite_float",
               "kind": "except",
-              "line": 917
+              "line": 918
             },
             {
               "in": "_resolve_registered_domains_for_part",
               "kind": "raise",
-              "line": 941
+              "line": 942
             },
             {
               "in": "_resolve_registered_domains_for_part",
               "kind": "raise",
-              "line": 950
+              "line": 951
             },
             {
               "in": "select_bakeoff_winner",
               "kind": "raise",
-              "line": 1006
+              "line": 1007
             },
             {
               "in": "_require_judge_id",
               "kind": "raise",
-              "line": 1047
+              "line": 1048
             },
             {
               "in": "_require_params_b",
               "kind": "raise",
-              "line": 1056
+              "line": 1057
             },
             {
               "in": "_extract_point",
               "kind": "raise",
-              "line": 1067
+              "line": 1068
             },
             {
               "in": "_extract_lcb",
               "kind": "raise",
-              "line": 1077
+              "line": 1078
             },
             {
               "in": "_per_class_precisions",
               "kind": "raise",
-              "line": 1134
+              "line": 1135
             },
             {
               "in": "_per_class_precisions",
               "kind": "raise",
-              "line": 1146
+              "line": 1147
             },
             {
               "in": "_per_class_precisions",
               "kind": "raise",
-              "line": 1157
+              "line": 1158
             },
             {
               "in": "_domain_coverage_counts",
               "kind": "raise",
-              "line": 1167
+              "line": 1168
             },
             {
               "in": "_domain_coverage_counts",
               "kind": "raise",
-              "line": 1176
+              "line": 1177
             },
             {
               "in": "_domain_coverage_counts",
               "kind": "raise",
-              "line": 1193
+              "line": 1194
             },
             {
               "in": "_sec_med",
               "kind": "raise",
-              "line": 1204
+              "line": 1205
             },
             {
               "in": "select_bakeoff_winner",
               "kind": "raise",
-              "line": 1377
+              "line": 1378
             },
             {
               "in": "select_bakeoff_winner",
               "kind": "raise",
-              "line": 1384
+              "line": 1385
             },
             {
               "in": "select_bakeoff_winner",
               "kind": "raise",
-              "line": 1391
+              "line": 1392
             },
             {
               "in": "select_bakeoff_winner",
               "kind": "raise",
-              "line": 1399
+              "line": 1400
             },
             {
               "in": "_evaluate_judge_at_rule",
               "kind": "raise",
-              "line": 1539
+              "line": 1540
             },
             {
               "in": "check_sealed_out_targets_free",
               "kind": "raise",
-              "line": 1810
+              "line": 1811
             },
             {
               "in": "_write_sealed_scored_rows",
               "kind": "raise",
-              "line": 1986
+              "line": 1993
             },
             {
               "in": "_assert_public_summary_clean",
               "kind": "raise",
-              "line": 2031
+              "line": 2038
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2190
+              "line": 2196
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2216
+              "line": 2222
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2304
+              "line": 2310
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2395
+              "line": 2401
             },
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2423
+              "line": 2407
+            },
+            {
+              "in": "score_bakeoff_outputs",
+              "kind": "raise",
+              "line": 2438
             }
           ],
-          "hash": "a5c0b8915e0e7a772381c15d54604bba804750e7061bc87313c86eb7874059e7",
+          "hash": "5110fe49a6a2f60d0f454ffc060bb3caea0f902ed830311bbe3c6f985798e4c1",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py",
-            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
+            "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
           ],
           "path": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
           "sequences": [
             {
               "calls": [
                 {
-                  "line": 207,
+                  "line": 208,
                   "name": "resolve",
                   "target": null
                 },
                 {
                   "branch": "not closed_path.is_file()",
-                  "line": 210,
+                  "line": 211,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 219,
+                  "line": 220,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11518,7 +11545,7 @@
                 },
                 {
                   "branch": "not isinstance(files_map, Mapping) or not files_map",
-                  "line": 227,
+                  "line": 228,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11526,7 +11553,7 @@
                 },
                 {
                   "branch": "recomputed_manifest_sha != recorded_manifest_sha",
-                  "line": 242,
+                  "line": 243,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11534,7 +11561,7 @@
                 },
                 {
                   "branch": "listed_rels != expected_rels",
-                  "line": 257,
+                  "line": 258,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11542,7 +11569,7 @@
                 },
                 {
                   "branch": "not target.is_file()",
-                  "line": 266,
+                  "line": 267,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11550,7 +11577,7 @@
                 },
                 {
                   "branch": "actual_sha != expected_sha or len(raw_bytes) != expected_by…",
-                  "line": 276,
+                  "line": 277,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11565,13 +11592,13 @@
             {
               "calls": [
                 {
-                  "line": 288,
+                  "line": 289,
                   "name": "resolve",
                   "target": null
                 },
                 {
                   "branch": "not resolved.is_file()",
-                  "line": 296,
+                  "line": 297,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11579,7 +11606,7 @@
                 },
                 {
                   "branch": "not records",
-                  "line": 322,
+                  "line": 323,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11595,14 +11622,14 @@
               "calls": [
                 {
                   "branch": "has_any_anchored and not is_anchored_counted",
-                  "line": 941,
+                  "line": 942,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 948,
+                  "line": 949,
                   "name": "ANCHORED_ELIGIBLE_DOMAINS",
                   "passed": true,
                   "target": {
@@ -11611,7 +11638,7 @@
                 },
                 {
                   "branch": "domains_in_keys != expected_domains",
-                  "line": 950,
+                  "line": 951,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11627,7 +11654,7 @@
               "calls": [
                 {
                   "branch": "registered_domains is _MISSING_REGISTERED_DOMAINS or not is…",
-                  "line": 1006,
+                  "line": 1007,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11635,7 +11662,7 @@
                 },
                 {
                   "branch": "not isinstance(raw_jid, str) or not raw_jid.strip()",
-                  "line": 1047,
+                  "line": 1048,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11644,7 +11671,7 @@
                 },
                 {
                   "branch": "jid not in MODEL_PARAM_BILLIONS_BY_JUDGE",
-                  "line": 1058,
+                  "line": 1059,
                   "name": "MODEL_PARAM_BILLIONS_BY_JUDGE",
                   "passed": true,
                   "target": {
@@ -11654,7 +11681,7 @@
                 },
                 {
                   "branch": "jid not in MODEL_PARAM_BILLIONS_BY_JUDGE",
-                  "line": 1056,
+                  "line": 1057,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11663,7 +11690,7 @@
                 },
                 {
                   "branch": "num is None",
-                  "line": 1067,
+                  "line": 1068,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11672,7 +11699,7 @@
                 },
                 {
                   "branch": "bad_cls",
-                  "line": 1134,
+                  "line": 1135,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11681,7 +11708,7 @@
                 },
                 {
                   "branch": "bad_fp",
-                  "line": 1146,
+                  "line": 1147,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11689,7 +11716,7 @@
                   "via": "_per_class_precisions"
                 },
                 {
-                  "line": 1157,
+                  "line": 1158,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11698,7 +11725,7 @@
                 },
                 {
                   "branch": "not isinstance(dom_obj, Mapping)",
-                  "line": 1167,
+                  "line": 1168,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11707,7 +11734,7 @@
                 },
                 {
                   "branch": "missing_keys or extra_keys or len(dom_obj) != len(expected_…",
-                  "line": 1176,
+                  "line": 1177,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11716,7 +11743,7 @@
                 },
                 {
                   "branch": "non_numeric_keys",
-                  "line": 1193,
+                  "line": 1194,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11725,7 +11752,7 @@
                 },
                 {
                   "branch": "num is None",
-                  "line": 1204,
+                  "line": 1205,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11734,7 +11761,7 @@
                 },
                 {
                   "branch": "pair is None",
-                  "line": 1377,
+                  "line": 1378,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11742,7 +11769,7 @@
                 },
                 {
                   "branch": "h_sf is None",
-                  "line": 1384,
+                  "line": 1385,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11750,7 +11777,7 @@
                 },
                 {
                   "branch": "h_tost is None",
-                  "line": 1391,
+                  "line": 1392,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11758,7 +11785,7 @@
                 },
                 {
                   "branch": "raw_eq_st is not None and str(raw_eq_st) != expected_eq_st",
-                  "line": 1399,
+                  "line": 1400,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11774,14 +11801,14 @@
               "calls": [
                 {
                   "branch": "sec_val is None",
-                  "line": 1539,
+                  "line": 1540,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 1731,
+                  "line": 1732,
                   "name": "get",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -11797,7 +11824,7 @@
               "calls": [
                 {
                   "branch": "existing",
-                  "line": 1810,
+                  "line": 1811,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11812,7 +11839,7 @@
             {
               "calls": [
                 {
-                  "line": 1818,
+                  "line": 1819,
                   "name": "read_text",
                   "target": null
                 }
@@ -11825,7 +11852,7 @@
             {
               "calls": [
                 {
-                  "line": 1823,
+                  "line": 1824,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11841,19 +11868,19 @@
               "calls": [
                 {
                   "branch": "not rows",
-                  "line": 1986,
+                  "line": 1993,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 1993,
+                  "line": 2000,
                   "name": "write_text",
                   "target": null
                 },
                 {
-                  "line": 2019,
+                  "line": 2026,
                   "name": "open",
                   "target": null
                 }
@@ -11867,7 +11894,7 @@
               "calls": [
                 {
                   "branch": "str(k) in FORBIDDEN_PUBLIC_SUMMARY_KEYS",
-                  "line": 2031,
+                  "line": 2038,
                   "name": "refused_error",
                   "over": "doc.items()",
                   "target": {
@@ -11883,21 +11910,21 @@
             {
               "calls": [
                 {
-                  "line": 2155,
+                  "line": 2162,
                   "name": "check_output_dir_outside_repo",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
                   }
                 },
                 {
-                  "line": 207,
+                  "line": 208,
                   "name": "resolve",
                   "target": null,
                   "via": "verify_outputs_closed"
                 },
                 {
                   "branch": "not closed_path.is_file()",
-                  "line": 210,
+                  "line": 211,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11905,7 +11932,7 @@
                   "via": "verify_outputs_closed"
                 },
                 {
-                  "line": 219,
+                  "line": 220,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11914,7 +11941,7 @@
                 },
                 {
                   "branch": "not isinstance(files_map, Mapping) or not files_map",
-                  "line": 227,
+                  "line": 228,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11923,7 +11950,7 @@
                 },
                 {
                   "branch": "recomputed_manifest_sha != recorded_manifest_sha",
-                  "line": 242,
+                  "line": 243,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11932,7 +11959,7 @@
                 },
                 {
                   "branch": "listed_rels != expected_rels",
-                  "line": 257,
+                  "line": 258,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11941,7 +11968,7 @@
                 },
                 {
                   "branch": "not target.is_file()",
-                  "line": 266,
+                  "line": 267,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11950,7 +11977,7 @@
                 },
                 {
                   "branch": "actual_sha != expected_sha or len(raw_bytes) != expected_by…",
-                  "line": 276,
+                  "line": 277,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11959,7 +11986,7 @@
                 },
                 {
                   "branch": "existing",
-                  "line": 1810,
+                  "line": 1811,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11967,14 +11994,14 @@
                   "via": "check_sealed_out_targets_free"
                 },
                 {
-                  "line": 288,
+                  "line": 289,
                   "name": "resolve",
                   "target": null,
                   "via": "load_sealed_keys"
                 },
                 {
                   "branch": "not resolved.is_file()",
-                  "line": 296,
+                  "line": 297,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11983,7 +12010,7 @@
                 },
                 {
                   "branch": "not records",
-                  "line": 322,
+                  "line": 323,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11992,7 +12019,7 @@
                 },
                 {
                   "branch": "has_any_anchored and not is_anchored_counted",
-                  "line": 941,
+                  "line": 942,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12000,7 +12027,7 @@
                   "via": "_resolve_registered_domains_for_part"
                 },
                 {
-                  "line": 948,
+                  "line": 949,
                   "name": "ANCHORED_ELIGIBLE_DOMAINS",
                   "passed": true,
                   "target": {
@@ -12010,7 +12037,7 @@
                 },
                 {
                   "branch": "domains_in_keys != expected_domains",
-                  "line": 950,
+                  "line": 951,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12018,21 +12045,28 @@
                   "via": "_resolve_registered_domains_for_part"
                 },
                 {
-                  "line": 2165,
+                  "line": 2172,
                   "name": "load_canary_config",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
                   }
                 },
                 {
-                  "line": 1818,
+                  "line": 2186,
+                  "name": "rows_filename_is_three_way",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
+                  }
+                },
+                {
+                  "line": 1819,
                   "name": "read_text",
                   "target": null,
                   "via": "_load_rows_file"
                 },
                 {
                   "branch": "r.get(\"run_status\") == \"failed_to_run\"",
-                  "line": 2190,
+                  "line": 2196,
                   "name": "refused_error",
                   "over": "raw_rows",
                   "target": {
@@ -12041,7 +12075,7 @@
                 },
                 {
                   "branch": "not raw_rows",
-                  "line": 1823,
+                  "line": 1824,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12049,7 +12083,7 @@
                   "via": "_refuse_zero_scored"
                 },
                 {
-                  "line": 2219,
+                  "line": 2225,
                   "name": "get",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -12057,7 +12091,7 @@
                 },
                 {
                   "branch": "sec_val is None",
-                  "line": 1539,
+                  "line": 1540,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -12065,21 +12099,12 @@
                   "via": "_evaluate_judge_at_rule"
                 },
                 {
-                  "line": 1731,
+                  "line": 1732,
                   "name": "get",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
                   },
                   "via": "_evaluate_judge_at_rule"
-                },
-                {
-                  "branch": "registered_domains is _MISSING_REGISTERED_DOMAINS or not is…",
-                  "line": 1006,
-                  "name": "refused_error",
-                  "target": {
-                    "file": "src/reasoning_dataset_lab/errors.py"
-                  },
-                  "via": "select_bakeoff_winner"
                 }
               ],
               "exported": true,
@@ -16814,6 +16839,15 @@
         },
         {
           "exports": [
+            "judge_supports_pass_mode",
+            "rows_filename_is_three_way",
+            "three_way_wording"
+          ],
+          "hash": "e0054fbb756122709b2bdefa41b7c1fab229a23356404b4cacc7a848d9cc86ef",
+          "path": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
+        },
+        {
+          "exports": [
             "append_to_review_queue",
             "build_blind_read_prompt",
             "check_min_pass_rate_per_class",
@@ -17792,7 +17826,7 @@
       "testRunners": [
         "pytest"
       ],
-      "testedBy": 41,
+      "testedBy": 42,
       "unresolvedSites": 0
     },
     {
@@ -18689,6 +18723,56 @@
         },
         {
           "exports": [
+            "test_adapters_refuse_arm_for_judges_without_a_wording",
+            "test_arm_d3_readout_maps_shown_keys_to_internal_classes",
+            "test_arm_letter_readout_maps_b_to_unsupported",
+            "test_arm_prompt_shows_new_instruction_and_plain_labels_d3_mini",
+            "test_arm_prompt_shows_new_instruction_and_plain_labels_state_family",
+            "test_arm_prompts_carry_no_unsupported_and_no_underscore_label",
+            "test_arm_scorer_gives_three_way_numbers_on_the_same_choices",
+            "test_arm_window_end_to_end_rows_mass_check_and_score",
+            "test_arm_wording_table_is_the_preregistered_words",
+            "test_ban_check_bites_on_a_bad_option_b",
+            "test_ban_check_sees_the_old_arm_and_its_own_strip_lists",
+            "test_cli_pass_mode_choices_include_arm",
+            "test_d3_transport_reads_the_answer_under_the_payload_question_id",
+            "test_every_wording_maps_onto_the_internal_classes_in_order",
+            "test_judge_supports_pass_mode_is_false_for_an_unknown_mode",
+            "test_launcher_refuses_arm_before_colab_new",
+            "test_mass_readout_refuses_rows_whose_pass_mode_is_not_the_arm",
+            "test_scorer_refuses_rows_whose_pass_mode_is_not_the_file_arm",
+            "test_three_way_prompts_match_2e6423fd_byte_for_byte",
+            "test_validate_pass_mode_arm_matches_three_way",
+            "test_vm_judges_copies_match_three_way_wording"
+          ],
+          "hash": "6bd6b48a410e1619d8f1421dfe148640339e234163446a0705a5dfb9dcc3f3dc",
+          "importOrder": [
+            "src/reasoning_dataset_lab/__init__.py",
+            "src/reasoning_dataset_lab/cli.py",
+            "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
+            "src/reasoning_dataset_lab/pilot_b/three_way_wording.py",
+            "tests/test_colab_judge_launcher.py",
+            "tests/test_colab_three_way_pass_mode.py",
+            "tests/test_bakeoff_judge_score_splits.py"
+          ],
+          "importsFiles": [
+            "src/reasoning_dataset_lab/__init__.py",
+            "src/reasoning_dataset_lab/cli.py",
+            "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
+            "src/reasoning_dataset_lab/pilot_b/three_way_wording.py",
+            "tests/test_bakeoff_judge_score_splits.py",
+            "tests/test_colab_judge_launcher.py",
+            "tests/test_colab_three_way_pass_mode.py"
+          ],
+          "path": "tests/test_colab_three_way_contradicted_pass_mode.py",
+          "testFramework": "pytest"
+        },
+        {
+          "exports": [
             "test_binary_default_window_is_unchanged",
             "test_choice_probabilities_validity",
             "test_d3_mini_three_way_guard_review_cases",
@@ -18705,7 +18789,7 @@
             "test_validate_pass_mode_default_values_and_refusals",
             "test_validate_pass_mode_refuses_padded_values"
           ],
-          "hash": "a904a5fd5620182716994129acf9cecd09de9a48ab381af45d0f7830eaf91e04",
+          "hash": "6904f715b929b032a75dad7b271e89381c09c25db095f380a80463ce555342bb",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
@@ -19834,7 +19918,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 49
+          "files": 50
         },
         {
           "boundary": "scripts",
@@ -19852,7 +19936,7 @@
             "file": "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py",
             "from": "tests/anchored_fixtures.py"
           },
-          "files": 27
+          "files": 28
         }
       ],
       "readers": [
@@ -19912,7 +19996,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 49,
+          "files": 50,
           "job": "test",
           "runner": "pytest",
           "step": "Run pytest with coverage (floor 90%)"
@@ -19920,7 +20004,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 49,
+          "files": 50,
           "job": "test-py313",
           "runner": "pytest",
           "step": "Run pytest (no coverage on this leg)"
@@ -19928,7 +20012,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 49,
+          "files": 50,
           "job": "test-py314",
           "runner": "pytest",
           "step": "Run pytest (no coverage on this leg)"
@@ -20242,7 +20326,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 27
+          "files": 28
         }
       ],
       "readers": [],
@@ -20308,7 +20392,7 @@
         {
           "boundary": "src",
           "depth": 0,
-          "files": 23
+          "files": 24
         }
       ],
       "readers": [
@@ -20370,8 +20454,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "cfb21edcdcb421bfd9c071e585199971a9605f26",
-    "tracked": 178
+    "commit": "ba0219f4943339ad261df15ceab1d1b8148e48dd",
+    "tracked": 180
   },
   "landings": [
     {
@@ -21152,6 +21236,6 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 59,
+  "testFiles": 60,
   "unassigned": []
 }

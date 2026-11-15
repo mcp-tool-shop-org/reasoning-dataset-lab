@@ -191,7 +191,7 @@ ANCHOR_ROWS_DIRNAME = "anchor_rows"
 # `rows/<judge>.three_way.jsonl`; only the stub and time-one windows take one.
 PASS_MODE_ENV_VAR = "RDLAB_PASS_MODE"
 DEFAULT_PASS_MODE = "binary"
-PASS_MODES: tuple[str, ...] = ("binary", "three_way")
+PASS_MODES: tuple[str, ...] = ("binary", "three_way", "three_way_contradicted")  # see THREE_WAY_PASS_MODES
 THREE_WAY_PASS_WINDOW_MODES: frozenset[str] = frozenset({"stub", "time-one", "time_one"})
 THREE_WAY_CLASS_LABELS: tuple[str, ...] = ("supported", "unsupported", "cannot_tell")
 THREE_WAY_OPTION_TOKENS: tuple[str, ...] = ("a", "b", "c")
@@ -2942,7 +2942,7 @@ def _three_way_choice_probabilities_valid(probs: Any) -> bool:
     return sum(vals) > 0.0
 
 
-def _three_way_mass_report(rf: Path, judge_id: str, threshold: float) -> dict[str, Any]:
+def _three_way_mass_report(rf: Path, judge_id: str, threshold: float, pass_mode: str = "three_way") -> dict[str, Any]:
     """The 3-way readout for one rows file: A/B/C option mass (>= threshold) per parsed call for a log-probability
     judge; for d3-mini, valid `choice_probabilities` (finite, >= 0, sum > 0, the 3 labels) and a valid label."""
     spec = BAKEOFF_JUDGE_SPECS.get(judge_id)
@@ -2953,7 +2953,7 @@ def _three_way_mass_report(rf: Path, judge_id: str, threshold: float) -> dict[st
             "reason": "Judge does not expose an option log-probability distribution (Flow-Judge rubric text score).",
             "threshold": threshold,
         }
-    lines = [json.loads(ln) for ln in rf.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    lines = _three_way_rows_of_pass_mode(rf, pass_mode)  # refuses a row whose pass_mode is not the file's arm
     all_calls = [r for r in lines if r.get("run_status") != "failed_to_run"]
     parsed_rows = [r for r in all_calls if r.get("state") == "parsed"]
     # Calls the parse rejected (unparseable, length_stop) are counted, never dropped: the design's invalid-rate rule
@@ -3023,7 +3023,7 @@ def check_bakeoff_logprob_mass(
     no label route (a `part_id` alone cannot name the pilot: every writer-built part shares it). Refuses
     `BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN` otherwise. The readout records the part's real `part_id` and hashes.
 
-    `pass_mode="three_way"` reads `rows/*.three_way.jsonl` instead: A/B/C option mass for the log-probability judges
+    `pass_mode="three_way"` reads `rows/*.three_way.jsonl` (and `three_way_contradicted` its own rows): A/B/C mass
     and valid `choice_probabilities` for d3-mini (see `_three_way_mass_report`). Any other `pass_mode` refuses
     `PASS_MODE_INVALID`.
     """
@@ -3047,8 +3047,8 @@ def check_bakeoff_logprob_mass(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
             f"Rows directory '{rows_dir}' not found.",
         )
-    if pass_mode == "three_way":
-        tw_files = sorted(rows_dir.glob("*.three_way.jsonl"))
+    if pass_mode in THREE_WAY_PASS_MODES:
+        tw_files = sorted(rows_dir.glob(f"*.{pass_mode}.jsonl"))
         if not tw_files:
             raise RefusalError(
                 "BAKEOFF_LOGPROB_MASS_NO_ROWS",
@@ -3056,19 +3056,19 @@ def check_bakeoff_logprob_mass(
             )
         tw_judges: dict[str, Any] = {}
         for rf in tw_files:
-            tw_jid = rf.name[: -len(".three_way.jsonl")]
-            tw_judges[tw_jid] = _three_way_mass_report(rf, tw_jid, threshold)
+            tw_jid = rf.name[: -len(f".{pass_mode}.jsonl")]
+            tw_judges[tw_jid] = _three_way_mass_report(rf, tw_jid, threshold, pass_mode)
         return {
             "schema_version": "1.0",
             "part_id": str(verified_pilot_identity.get("part_id") or "").strip(),
-            "pass_mode": "three_way",
+            "pass_mode": pass_mode,
             "threshold": threshold,
             "judges": tw_judges,
             "part_json_sha256": verified_pilot_identity.get("part_json_sha256"),
             "items_jsonl_sha256": verified_pilot_identity.get("items_jsonl_sha256"),
         }
     row_files = sorted(
-        p for p in rows_dir.glob("*.jsonl") if not p.name.endswith(".three_way.jsonl")
+        p for p in rows_dir.glob("*.jsonl") if not rows_filename_is_three_way(p.name)
     )
     if not row_files:
         raise RefusalError(
@@ -9930,10 +9930,10 @@ def validate_pass_mode(
     judge_ids: Sequence[str] | None = None,
     session_smoke: bool = False,
 ) -> str:
-    """Validate `RDLAB_PASS_MODE` / `--pass-mode` and return it: `binary` (the default, when unset or empty) or
-    `three_way`. Refuses `PASS_MODE_INVALID` for any other value, `PASS_MODE_NOT_FOR_MODE` for a 3-way pass outside
-    the stub and time-one windows (or in a session smoke), and `BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED` when any judge in
-    `judge_ids` has `supports_three_way=False` (granite-guardian-4.1-8b), so it is refused before any download."""
+    """Validate `RDLAB_PASS_MODE` / `--pass-mode` and return it: `binary` (the default, when unset or empty),
+    `three_way` or `three_way_contradicted`. Refuses `PASS_MODE_INVALID` for any other value, `PASS_MODE_NOT_FOR_MODE`
+    for a 3-way pass outside the stub and time-one windows (or in a session smoke), and the judge refusal
+    `BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED` for a judge with no prompt in that pass (`_judge_has_pass_mode_prompt`)."""
     if raw_pass_mode is None:
         raw_val = os.environ.get(PASS_MODE_ENV_VAR)
     else:
@@ -9953,18 +9953,18 @@ def validate_pass_mode(
     if session_smoke or norm_mode not in THREE_WAY_PASS_WINDOW_MODES:
         raise RefusalError(
             "PASS_MODE_NOT_FOR_MODE",
-            f"--pass-mode three_way is allowed only with --stub and --time-one (got mode={mode!r}, "
+            f"--pass-mode {cleaned} is allowed only with --stub and --time-one (got mode={mode!r}, "
             f"session_smoke={session_smoke!r}); the counted and lock-check windows are binary.",
         )
     unsupported = [
         str(j)
         for j in (judge_ids or ())
-        if str(j) in BAKEOFF_JUDGE_SPECS and not BAKEOFF_JUDGE_SPECS[str(j)].supports_three_way
+        if str(j) in BAKEOFF_JUDGE_SPECS and not _judge_has_pass_mode_prompt(str(j), cleaned)
     ]
     if unsupported:
         raise RefusalError(
             "BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED",
-            f"--pass-mode three_way: judge(s) {unsupported!r} have no 3-way prompt (supports_three_way=False); "
+            f"--pass-mode {cleaned}: judge(s) {unsupported!r} have no prompt in this 3-way pass; "
             "name the window's judges with RDLAB_ONLY_JUDGES (--time-one or --stub) and leave them out.",
         )
     return cleaned
@@ -15555,6 +15555,45 @@ def run_kernel_or_cli_entry(argv: list[str] | None = None) -> int:
     if not is_kernel_env(argv):
         raise SystemExit(rc)
     return rc
+
+
+
+# --- 3-way pass modes (defined here, after every line REAL_SERVICE_ASSUMPTIONS.md cites, so the citations hold) ---
+# three_way_contradicted is the 3-way pass with the plain-word wording (PREREG-d5c-threeway-contradicted-arm-2026-11-15;
+# the words are `reasoning_dataset_lab.pilot_b.three_way_wording.THREE_WAY_WORDINGS`). It writes
+# `rows/<judge>.three_way_contradicted.jsonl`, is scored like three_way, and has a prompt for 3 judges only.
+THREE_WAY_PASS_MODES: frozenset[str] = frozenset({"three_way", "three_way_contradicted"})
+# The judges a 3-way arm without a rubric fallback has a wording for (`three_way_wording.THREE_WAY_WORDING_FAMILY_BY_JUDGE`).
+THREE_WAY_WORDED_JUDGES_BY_MODE: dict[str, frozenset[str]] = {
+    "three_way_contradicted": frozenset({"mu-judge", "nemotron-3-nano-4b", "d3-mini"}),
+}
+
+
+def rows_filename_is_three_way(name: str) -> bool:
+    """True for a 3-way pass's rows file name (`<judge>.<three-way mode>.jsonl`)."""
+    return any(name.endswith(f".{m}.jsonl") for m in THREE_WAY_PASS_MODES)
+
+
+def _judge_has_pass_mode_prompt(judge_id: str, pass_mode: str) -> bool:
+    """True when `judge_id` has a prompt in the 3-way `pass_mode`: `supports_three_way`, and, in an arm without a rubric
+    fallback (three_way_contradicted), a wording entry (flow-judge-v0.1 has none, so it is refused there)."""
+    if not BAKEOFF_JUDGE_SPECS[judge_id].supports_three_way:
+        return False
+    worded = THREE_WAY_WORDED_JUDGES_BY_MODE.get(pass_mode)
+    return worded is None or judge_id in worded
+
+
+def _three_way_rows_of_pass_mode(rf: Path, pass_mode: str) -> list[dict[str, Any]]:
+    """The rows of a 3-way rows file, refusing `THREE_WAY_ROWS_PASS_MODE_MISMATCH` (fail closed) when any row's
+    `pass_mode` is not the arm the readout was asked for (the file name's arm)."""
+    rows = [json.loads(ln) for ln in rf.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    bad = sorted({str(r.get("pass_mode")) for r in rows if r.get("pass_mode") != pass_mode})
+    if bad:
+        raise RefusalError(
+            "THREE_WAY_ROWS_PASS_MODE_MISMATCH",
+            f"Rows file '{rf.name}' is read as pass mode '{pass_mode}' but holds rows with pass_mode {bad}.",
+        )
+    return rows
 
 
 if __name__ == "__main__":

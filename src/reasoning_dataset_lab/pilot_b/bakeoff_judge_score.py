@@ -72,6 +72,7 @@ from typing import Any
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error
 from reasoning_dataset_lab.pilot_b.anchored_two_hop import ANCHORED_ELIGIBLE_DOMAINS
+from reasoning_dataset_lab.pilot_b.three_way_wording import THREE_WAY_PASS_MODES, rows_filename_is_three_way
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     BAKEOFF_JUDGE_SPECS,
     GENERATIONS_FILENAME,
@@ -1828,9 +1829,15 @@ def _refuse_zero_scored(rows_file: Path, *, judge_id: str | None, keys_n: int) -
     )
 
 
-def _three_way_sealed_rows(judge_id: str, rec: SealedKeyRecord, order_map: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """One sealed row per order for a 3-way item. `pass_mode == "three_way"` tells it from a binary row, which has no
-    `pass_mode`; `key` and `verdict` are the three-class values and `three_way_label` repeats the judge's label."""
+def _three_way_sealed_rows(
+    judge_id: str,
+    rec: SealedKeyRecord,
+    order_map: Mapping[str, Mapping[str, Any]],
+    pass_mode: str = "three_way",
+) -> list[dict[str, Any]]:
+    """One sealed row per order for a 3-way item. `pass_mode` (`three_way` or `three_way_contradicted`) tells it from a
+    binary row, which has no `pass_mode`; `key` and `verdict` are the internal three-class values (the readout maps an
+    arm's shown labels back to them) and `three_way_label` repeats the judge's label."""
     out: list[dict[str, Any]] = []
     for ord_name in ("AB", "BA"):
         r = order_map[ord_name]
@@ -1858,7 +1865,7 @@ def _three_way_sealed_rows(judge_id: str, rec: SealedKeyRecord, order_map: Mappi
                 "triad_id": rec.triad_id,
                 "threshold_rule": None,
                 "done_reason": r.get("done_reason"),
-                "pass_mode": "three_way",
+                "pass_mode": pass_mode,
                 "three_way_label": label,
             }
         )
@@ -2176,10 +2183,9 @@ def score_bakeoff_outputs(
     first_order_by_item = {str(k): str(v) for k, v in schedule_doc.get("first_order_by_item", {}).items()}
 
     rows_dir = resolved_judge_dir / ROWS_DIRNAME
-    binary_row_files = sorted(
-        p for p in rows_dir.glob("*.jsonl") if not p.name.endswith(".three_way.jsonl")
-    )
-    three_way_row_files = sorted(rows_dir.glob("*.three_way.jsonl"))
+    binary_row_files = sorted(p for p in rows_dir.glob("*.jsonl") if not rows_filename_is_three_way(p.name))
+    # Every 3-way arm's rows (`*.three_way.jsonl`, `*.three_way_contradicted.jsonl`), scored by the same rules.
+    three_way_row_files = sorted(p for p in rows_dir.glob("*.jsonl") if rows_filename_is_three_way(p.name))
 
     # Refuse to score any judge that halted with run_status == "failed_to_run" (Card 1 Item 3)
     rows_by_file: dict[Path, list[dict[str, Any]]] = {p: _load_rows_file(p) for p in (*binary_row_files, *three_way_row_files)}
@@ -2394,6 +2400,15 @@ def score_bakeoff_outputs(
         if not tw_rows:
             raise _refuse_zero_scored(twf, judge_id=None, keys_n=len(keys_by_id))
         j_id = str(tw_rows[0]["judge_id"])
+        tw_mode = next(m for m in sorted(THREE_WAY_PASS_MODES) if twf.name.endswith(f".{m}.jsonl"))
+        # The file name names the arm; every row must say the same arm, or the file is refused (fail closed).
+        row_modes = sorted({str(r.get("pass_mode")) for r in tw_rows if r.get("pass_mode") != tw_mode})
+        if row_modes:
+            raise refused_error(
+                "BAKEOFF_SCORE_PASS_MODE_MISMATCH",
+                f"Rows file '{twf.name}' names pass mode '{tw_mode}' but holds rows with pass_mode {row_modes}.",
+                "Score each 3-way pass from the rows file its judge child wrote; never rename a rows file to another arm.",
+            )
         by_item_ord: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         for r in tw_rows:
             by_item_ord[str(r["item_id"])][str(r["order"])] = r
@@ -2411,7 +2426,7 @@ def score_bakeoff_outputs(
             v_ba = _three_way_valid_verdict(omap["BA"])
             is_both_ok = int(v_ab is not None and v_ab == rec.key and v_ba == rec.key)
             if rec.split in ("dev", "test"):
-                all_sealed_rows.extend(_three_way_sealed_rows(j_id, rec, omap))
+                all_sealed_rows.extend(_three_way_sealed_rows(j_id, rec, omap, tw_mode))
                 tw_scored[rec.split].append((rec, omap["AB"], omap["BA"]))
             if rec.split == "dev":
                 tw_tot_dev += 1
@@ -2426,9 +2441,12 @@ def score_bakeoff_outputs(
             "dev": _three_way_breakdown(tw_scored["dev"]),
             "pooled": _three_way_breakdown([*tw_scored["dev"], *tw_scored["test"]]),
         }
+        # A `three_way` summary keeps its 2e6423fd shape; any other arm names itself with `pass_mode`.
+        arm_field: dict[str, Any] = {} if tw_mode == "three_way" else {"pass_mode": tw_mode}
         three_way_summaries.append(
             {
                 "judge_id": j_id,
+                **arm_field,
                 "three_way_accuracy": wilson_interval(tw_corr_test, tw_tot_test),
                 # Aggregates only (counts, rates, quantiles), for test, dev and both pooled.
                 "breakdown_by_split": tw_breakdown_by_split,
@@ -2437,6 +2455,7 @@ def score_bakeoff_outputs(
         three_way_dev_summaries.append(
             {
                 "judge_id": j_id,
+                **arm_field,
                 "three_way_accuracy": wilson_interval(tw_corr_dev, tw_tot_dev),
                 "breakdown": tw_breakdown_by_split["dev"],
             }
