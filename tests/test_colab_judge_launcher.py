@@ -1836,7 +1836,7 @@ def test_items_upload_fails_at_6436a3a6_gate_and_passes_after_fix(
     new_cli_log = (out_new / "colab-cli.log").read_text(encoding="utf-8")
     assert "VM_GATE_OK " in new_cli_log
     assert "items_dir=/content/rdlab_items" in new_cli_log
-    assert "required_bytes=69654163200" in new_cli_log
+    assert "required_bytes=93748807764" in new_cli_log
     assert (env_new["state_dir"] / "vm_fs" / "rdlab_items").is_dir()
     new_outcome = json.loads(
         (out_new / "outcome.draft.json").read_text(encoding="utf-8")
