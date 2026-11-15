@@ -8241,9 +8241,6 @@ def main_judge_runner(argv: Sequence[str] | None = None) -> int:
         return int(exc.exit_code or 2)
 
 
-if __name__ == "__main__":
-    raise SystemExit(main_judge_runner())
-
 
 SHARD_MANIFEST_INPUT_SHA_SOURCE_CANONICAL = "canonical_prompt"
 SHARD_MANIFEST_INPUT_SHA_SOURCE_HF = "hf_tokenizer"
@@ -8816,3 +8813,7 @@ def d5c_fake_response(
             system_one_result=sys_one,
         )
     return None
+
+
+if __name__ == "__main__":
+    raise SystemExit(main_judge_runner())
