@@ -20,10 +20,9 @@ if str(Path(__file__).resolve().parents[1]) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from reasoning_dataset_lab import cli  # noqa: E402
-from reasoning_dataset_lab.pilot_b import bakeoff_judge, bakeoff_judge_score  # noqa: E402
+from reasoning_dataset_lab.pilot_b import bakeoff_judge, bakeoff_judge_score, three_way_wording  # noqa: E402
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (  # noqa: E402
     BAKEOFF_JUDGE_SPECS,
-    THREE_WAY_WORDINGS,
     JudgeInputItem,
     JudgeTransportResponse,
     TopLogprobEntry,
@@ -103,7 +102,7 @@ def _all_prompt_text(prompt: bakeoff_judge.AssembledPrompt) -> list[str]:
 
 
 def test_arm_wording_table_is_the_preregistered_words() -> None:
-    arm = THREE_WAY_WORDINGS[ARM]
+    arm = three_way_wording.THREE_WAY_WORDINGS[ARM]
     assert set(arm) == {"STATE", "the_state"}
     state, the_state = arm["STATE"], arm["the_state"]
     assert state.instruction == "Judge the claim against STATE. Which option holds? Claim: {claim}"
@@ -119,9 +118,9 @@ def test_arm_wording_table_is_the_preregistered_words() -> None:
         ("C", "can't tell", "The state neither entails nor contradicts the claim.", "cannot_tell"),
     ]
     # Only the two arms exist; the internal gold labels are their own constant, untouched by the shown words.
-    assert set(THREE_WAY_WORDINGS) == {"three_way", ARM}
-    assert bakeoff_judge.THREE_WAY_INTERNAL_CLASSES == INTERNAL
-    assert bakeoff_judge.THREE_WAY_WORDING_FAMILY_BY_JUDGE == {
+    assert set(three_way_wording.THREE_WAY_WORDINGS) == {"three_way", ARM}
+    assert three_way_wording.THREE_WAY_INTERNAL_CLASSES == INTERNAL
+    assert three_way_wording.THREE_WAY_WORDING_FAMILY_BY_JUDGE == {
         "mu-judge": "STATE",
         "nemotron-3-nano-4b": "STATE",
         "d3-mini": "the_state",
@@ -134,7 +133,7 @@ def test_arm_wording_table_is_the_preregistered_words() -> None:
 @pytest.mark.parametrize("judge_id", ARM_JUDGES)
 def test_arm_prompts_carry_no_unsupported_and_no_underscore_label(judge_id: str) -> None:
     label_re = re.compile(r"[a-z]+_[a-z]+")
-    for o in bakeoff_judge.three_way_wording(ARM, judge_id).options:
+    for o in three_way_wording.three_way_wording(ARM, judge_id).options:
         assert not label_re.search(o.shown_label), o.shown_label
     for item in ITEMS:
         for order in ORDERS:
@@ -381,7 +380,7 @@ def test_cli_pass_mode_choices_include_arm(argv: list[str], capsys: pytest.Captu
     assert exc2.value.code == 0
     out = capsys.readouterr().out
     assert "three_way_contradicted" in out and "three_way" in out
-    assert bakeoff_judge.PASS_MODE_CHOICES == ("binary", "three_way", ARM)
+    assert three_way_wording.PASS_MODE_CHOICES == ("binary", "three_way", ARM)
 
 
 # --- end to end: launcher refusals and a stub-transport time-one window in the arm ----------------------------------

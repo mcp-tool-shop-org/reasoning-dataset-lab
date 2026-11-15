@@ -257,8 +257,8 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 27,
-        "lines": 623,
+        "commits": 28,
+        "lines": 633,
         "path": "atlas/README.md"
       },
       {
@@ -267,18 +267,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 27,
-        "lines": 2088,
+        "commits": 28,
+        "lines": 2116,
         "path": "atlas/page.json"
       },
       {
-        "commits": 27,
-        "lines": 4826,
+        "commits": 28,
+        "lines": 4960,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 27,
-        "lines": 51393,
+        "commits": 28,
+        "lines": 51453,
         "path": "atlas/structure.json"
       },
       {
@@ -452,8 +452,8 @@
         "path": "scripts/colab/generate_weights_table.py"
       },
       {
-        "commits": 30,
-        "lines": 5970,
+        "commits": 31,
+        "lines": 5983,
         "path": "scripts/colab/launch_judges.sh"
       },
       {
@@ -1087,51 +1087,51 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-11-15T12:16:13.290Z",
+  "generatedAt": "2026-11-15T12:37:31.168Z",
   "generatedFrom": {
-    "commit": "5f879d62f331e5367a3b04f6090e551c5d9da357"
+    "commit": "6bafcfdb456ef8e9083a0a107b1bf7357154920e"
   },
   "pairs": [
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 26,
-      "shared": 26,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 26,
-      "shared": 26,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 26,
-      "shared": 26,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 26,
-      "shared": 26,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 26,
-      "shared": 26,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 26,
-      "shared": 26,
+      "either": 27,
+      "shared": 27,
       "strength": 1
     },
     {
@@ -1149,18 +1149,11 @@
       "strength": 0.916667
     },
     {
-      "a": "scripts/colab/README.md",
-      "b": "scripts/colab/launch_judges.sh",
-      "either": 30,
-      "shared": 15,
-      "strength": 0.5
-    },
-    {
       "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
       "b": "scripts/colab/launch_judges.sh",
-      "either": 31,
+      "either": 32,
       "shared": 25,
-      "strength": 0.806452
+      "strength": 0.78125
     },
     {
       "a": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md",
@@ -1186,23 +1179,23 @@
     {
       "a": "scripts/colab/launch_judges.sh",
       "b": "scripts/colab/vm_judges.py",
-      "either": 31,
+      "either": 32,
       "shared": 28,
-      "strength": 0.903226
+      "strength": 0.875
     },
     {
       "a": "scripts/colab/launch_judges.sh",
       "b": "tests/fixtures/fake_colab.py",
-      "either": 30,
+      "either": 31,
       "shared": 20,
-      "strength": 0.666667
+      "strength": 0.645161
     },
     {
       "a": "scripts/colab/launch_judges.sh",
       "b": "tests/test_colab_judge_launcher.py",
-      "either": 32,
+      "either": 33,
       "shared": 29,
-      "strength": 0.90625
+      "strength": 0.878788
     },
     {
       "a": "scripts/colab/vm_judges.py",
@@ -1290,7 +1283,7 @@
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 46,
+    "appliedChangesetLimit": 46.25,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -1299,16 +1292,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-11-15T07:10:23-05:00",
-    "inScopeFiles": 184,
+    "headDate": "2026-11-15T07:16:18-05:00",
+    "inScopeFiles": 185,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 83,
+    "qualifyingCommits": 84,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-19T12:10:23.000Z",
+    "since": "2026-05-19T12:16:18.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

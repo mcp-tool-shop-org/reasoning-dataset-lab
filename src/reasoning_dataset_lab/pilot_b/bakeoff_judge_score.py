@@ -72,9 +72,8 @@ from typing import Any
 
 from reasoning_dataset_lab.errors import RdlabError, refused_error
 from reasoning_dataset_lab.pilot_b.anchored_two_hop import ANCHORED_ELIGIBLE_DOMAINS
+from reasoning_dataset_lab.pilot_b.three_way_wording import THREE_WAY_PASS_MODES, rows_filename_is_three_way
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
-    THREE_WAY_PASS_MODES,
-    rows_filename_is_three_way,
     BAKEOFF_JUDGE_SPECS,
     GENERATIONS_FILENAME,
     JUDGE_SPECIFIC_NOTES,
