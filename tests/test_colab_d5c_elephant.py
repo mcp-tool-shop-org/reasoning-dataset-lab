@@ -97,6 +97,7 @@ def test_elephant_readout_renormalises_over_the_three_options_and_reports_outsid
     for bad in ({**sys_one, "outside_mass": {}}, {**sys_one, "outside_mass": {"verdict": 1.5}}, {"answers": {}}):
         rb = adapter.parse_response(_resp(bad), pass_mode=CONTRA)
         assert rb.state == "unparseable" and rb.raw_verdict is None, bad
+        assert bakeoff_judge.two_question_row_fields(rb, CONTRA) == {"outside_mass": None}
     assert adapter.parse_response(_resp({}, "length"), pass_mode=CONTRA).state == "length_stop"
 
 
@@ -138,7 +139,7 @@ def _install_record(tmp_path: Path, **over: Any) -> Path:
     return p
 
 
-def _fake_qev(monkeypatch: pytest.MonkeyPatch, *, mass: float = 0.8, raise_limit: bool = False) -> dict[str, Any]:
+def _fake_qev(monkeypatch: pytest.MonkeyPatch, *, mass: float = 0.8, raise_limit: bool = False, raise_other: bool = False) -> dict[str, Any]:
     rec: dict[str, Any] = {"engines": [], "requests": [], "env_at_init": None}
 
     class _Answer:
@@ -158,6 +159,8 @@ def _fake_qev(monkeypatch: pytest.MonkeyPatch, *, mass: float = 0.8, raise_limit
             rec["requests"].append((request, debug))
             if raise_limit:
                 raise ValueError("state plus longest question is 99999 tokens, limit is 32768")
+            if raise_other:
+                raise ValueError("a branch has an empty suffix")
             ans = {"type": "choice", "choice": "supported", "probabilities": {"supported": 0.6, "contradicted": 0.3, "can't tell": 0.1}, "confidence": 0.4}
             resp = types.SimpleNamespace(answers={"verdict": _Answer(ans)})
             return resp, {"prompt_version": "qev-labels-v2", "fork_mode": "sequential", "diagnostics": {"verdict": {"allowed_token_mass": mass}}}
@@ -442,3 +445,26 @@ def test_seven_arm_stub_window_with_elephant_and_scores_outside_mass(tmp_path: P
     el = [s for s in report["three_way_pass"] if s["judge_id"] == ELEPHANT]
     assert len(el) == 1 and set(el[0]["outside_mass_by_split"]) == {"test", "dev", "pooled"}
     assert all("outside_mass_by_split" not in s for s in report["three_way_pass"] if s["judge_id"] != ELEPHANT)
+
+
+def test_elephant_transport_reuses_its_engine_and_raises_other_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _clean_env(monkeypatch)
+    rdir, hf = tmp_path / "rec", tmp_path / "hf"
+    _add_elephant_snapshot(rdir, hf)
+    monkeypatch.setenv(bakeoff_judge.ELEPHANT_INSTALL_RECORD_ENV_VAR, str(_install_record(tmp_path)))
+    rec = _fake_qev(monkeypatch)
+    tr = bakeoff_judge.ElephantDecisionTransport(receipts_dir=rdir, hf_home=hf)
+    tr.verify_ready(ESPEC)
+    for order in ("AB", "BA"):
+        tr.generate(ESPEC, _prompt(ELEPHANT, ITEMS[0], order, CONTRA), seed=1)
+    assert len(rec["engines"]) == 1 and len(rec["requests"]) == 2  # loaded once
+    _fake_qev(monkeypatch, raise_other=True)
+    tr2 = bakeoff_judge.ElephantDecisionTransport(receipts_dir=rdir, hf_home=hf)
+    tr2.verify_ready(ESPEC)
+    with pytest.raises(ValueError, match="empty suffix"):  # only qev's length refusal becomes a length stop
+        tr2.generate(ESPEC, _prompt(ELEPHANT, ITEMS[0], "AB", CONTRA), seed=1)
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    with pytest.raises(RdlabError) as exc:
+        bakeoff_judge.elephant_install_record(bad)
+    assert exc.value.code == "ELEPHANT_RUNTIME_UNVERIFIED"
