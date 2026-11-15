@@ -1865,6 +1865,7 @@ fetch_completed_judge_checkpoints() {
     if "$PYTHON_BIN" -c "$vmj; sys.exit(0 if v.launcher_verify_fetched_pass(Path(sys.argv[2]), sys.argv[3], sys.argv[4], staged=False, want_sha256=sys.argv[5])[0] else 1)" "$REPO_ROOT" "$OUT_DIR" "$jid" "$pmode" "${want_sha:-}" </dev/null >/dev/null 2>&1; then
       continue
     fi
+    rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
     # Both files land as hidden .part downloads; only a pair whose rows match the judge_done sha256 is moved into
     # place, so a judge is never counted completed (judge_done present) with missing or truncated rows.
     if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
@@ -1875,13 +1876,14 @@ fetch_completed_judge_checkpoints() {
     if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
       timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/rows/${row_file}" "$OUT_DIR/rows/.${row_file}.part" </dev/null >/dev/null 2>&1 || true
     fi
-    # Fail closed: on a missing judge_done, a missing rows file or a sha256 mismatch both downloads are deleted and the
-    # named refusal (FETCHED_JUDGE_DONE_INVALID / FETCHED_ROWS_MISSING / FETCHED_ROWS_SHA_MISMATCH) is logged.
+    # Fail closed: on a missing judge_done, a missing rows file or a sha256 mismatch both downloads (and any stale
+    # destination files from an interrupted run) are deleted and the named refusal is logged.
     refusal=""
     if ! refusal="$("$PYTHON_BIN" -c "$vmj; ok, msg = v.launcher_verify_fetched_pass(Path(sys.argv[2]), sys.argv[3], sys.argv[4], staged=True); print(msg); sys.exit(0 if ok else 1)" "$REPO_ROOT" "$OUT_DIR" "$jid" "$pmode" </dev/null 2>/dev/null)"; then
       refusal="${refusal:-FETCHED_JUDGE_DONE_INVALID: judge=${jid} pass_mode=${pmode} detail=verify step failed; not counted as completed}"
       log_msg "$refusal"
       printf '%s\n' "$refusal" >&2
+      rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
     fi
     rm -f "$OUT_DIR/judge_done/.${done_file}.part" "$OUT_DIR/rows/.${row_file}.part"
   done <<<"$done_passes"

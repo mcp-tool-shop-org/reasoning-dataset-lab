@@ -1848,7 +1848,7 @@ def _three_way_sealed_rows(
     for ord_name in ("AB", "BA"):
         r = order_map[ord_name]
         label = r.get("raw_verdict")
-        valid_label = _three_way_valid_verdict(r)
+        valid_label = _three_way_valid_verdict(r, pass_mode=pass_mode)
         out.append(
             {
                 "judge_id": judge_id,
@@ -1896,17 +1896,26 @@ def _linear_quantile(sorted_vals: Sequence[float], q: float) -> float:
     return float(sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (pos - lo))
 
 
-def _three_way_valid_verdict(row: Mapping[str, Any]) -> str | None:
-    """A 3-way call's label when the call parsed to one of the 3 labels (or, in the two-question arm, to
+def _three_way_valid_verdict(
+    row: Mapping[str, Any], *, pass_mode: str | None = None
+) -> str | None:
+    """A 3-way call's label when the call parsed to one of the 3 labels (or, in `three_way_two_question` only, to
     `inconsistent`: a parsed call scored wrong, not an invalid one), else None (invalid: counted wrong)."""
+    effective_mode = pass_mode if pass_mode is not None else row.get("pass_mode")
+    allowed = (
+        (*THREE_WAY_LABELS, INCONSISTENT_VERDICT)
+        if effective_mode in TWO_QUESTION_PASS_MODES
+        else THREE_WAY_LABELS
+    )
     label = row.get("raw_verdict")
-    if row.get("state", "parsed") != "parsed" or label not in (*THREE_WAY_LABELS, INCONSISTENT_VERDICT):
+    if row.get("state", "parsed") != "parsed" or label not in allowed:
         return None
     return str(label)
 
 
 def _three_way_breakdown(
     scored: Sequence[tuple[SealedKeyRecord, Mapping[str, Any], Mapping[str, Any]]],
+    pass_mode: str | None = None,
 ) -> dict[str, Any]:
     """Aggregate-only 3-way breakdown over `(key record, AB row, BA row)` items: per-class strict counts, the
     binary-collapsed strict accuracy, the all-3-of-triad rate, the order-flip and invalid rates, the 3 x 5 strict
@@ -1921,8 +1930,8 @@ def _three_way_breakdown(
     triad_members: dict[str, list[bool]] = defaultdict(list)
     margins: list[float] = []
     for rec, r_ab, r_ba in scored:
-        v_ab = _three_way_valid_verdict(r_ab)
-        v_ba = _three_way_valid_verdict(r_ba)
+        v_ab = _three_way_valid_verdict(r_ab, pass_mode=pass_mode)
+        v_ba = _three_way_valid_verdict(r_ba, pass_mode=pass_mode)
         invalid_calls += int(v_ab is None) + int(v_ba is None)
         for r in (r_ab, r_ba):
             m = _coerce_finite_float(r.get("min_top2_logit_margin"))
@@ -2078,7 +2087,12 @@ def _two_question_report(
         members = [(r_ab, r_ba) for rec, r_ab, r_ba in scored if rec.key == c]
         by_class[c] = {"n": len(members)}
         for ord_i, ord_name in enumerate(("AB", "BA")):
-            cnt = sum(1 for pair in members if _three_way_valid_verdict(pair[ord_i]) == INCONSISTENT_VERDICT)
+            cnt = sum(
+                1
+                for pair in members
+                if _three_way_valid_verdict(pair[ord_i], pass_mode="three_way_two_question")
+                == INCONSISTENT_VERDICT
+            )
             by_class[c][ord_name] = {"count": cnt, "rate": (cnt / len(members)) if members else None}
     t_pairs: list[tuple[float, int]] = []
     f_pairs: list[tuple[float, int]] = []
@@ -2558,8 +2572,8 @@ def score_bakeoff_outputs(
             if rec is None or "AB" not in omap or "BA" not in omap:
                 continue
             # The same rule as `_three_way_breakdown`: a call counts only when it parsed to one of the 3 labels.
-            v_ab = _three_way_valid_verdict(omap["AB"])
-            v_ba = _three_way_valid_verdict(omap["BA"])
+            v_ab = _three_way_valid_verdict(omap["AB"], pass_mode=tw_mode)
+            v_ba = _three_way_valid_verdict(omap["BA"], pass_mode=tw_mode)
             is_both_ok = int(v_ab is not None and v_ab == rec.key and v_ba == rec.key)
             if rec.split in ("dev", "test"):
                 all_sealed_rows.extend(_three_way_sealed_rows(j_id, rec, omap, tw_mode))
@@ -2573,9 +2587,9 @@ def score_bakeoff_outputs(
         if tw_tot_dev + tw_tot_test == 0:
             raise _refuse_zero_scored(twf, judge_id=j_id, keys_n=len(keys_by_id))
         tw_breakdown_by_split = {
-            "test": _three_way_breakdown(tw_scored["test"]),
-            "dev": _three_way_breakdown(tw_scored["dev"]),
-            "pooled": _three_way_breakdown([*tw_scored["dev"], *tw_scored["test"]]),
+            "test": _three_way_breakdown(tw_scored["test"], pass_mode=tw_mode),
+            "dev": _three_way_breakdown(tw_scored["dev"], pass_mode=tw_mode),
+            "pooled": _three_way_breakdown([*tw_scored["dev"], *tw_scored["test"]], pass_mode=tw_mode),
         }
         # A `three_way` summary keeps its 2e6423fd shape; any other arm names itself with `pass_mode` and adds the
         # pre-registered secondary rule (Rule B) per split, and the two-question arm its own report.

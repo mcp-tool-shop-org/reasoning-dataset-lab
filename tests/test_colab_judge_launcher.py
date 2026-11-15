@@ -2804,8 +2804,12 @@ def test_stop_poll_config_octal_and_fuzz_table(
 def test_real_service_assumptions_weights_table_matches_receipts(
     tmp_path: Path,
 ) -> None:
-    """Regenerate the weights table from the five `<owner>__<repo>.sha256.json` receipts and fail on any difference."""
+    """Regenerate the weights table from all `<owner>__<repo>.sha256.json` receipts and fail on any difference."""
     import generate_weights_table
+
+    module_doc = generate_weights_table.__doc__ or ""
+    assert "all `<owner>__<repo>.sha256.json` receipts" in module_doc
+    assert "five" not in module_doc and "5 " not in module_doc
 
     receipts_dir = SCRIPTS_COLAB_DIR / "receipts"
     doc_path = SCRIPTS_COLAB_DIR / "REAL_SERVICE_ASSUMPTIONS.md"
@@ -11177,8 +11181,8 @@ def test_child_progress_4_first_load_selects_nemotron_while_first_judge_selects_
 
     receipt_fl = json.loads((out_fl / "vm_receipt.json").read_text(encoding="utf-8"))
     status_fl = json.loads((out_fl / "status.json").read_text(encoding="utf-8"))
-    assert receipt_fl.get("first_load_judge_id") == "nemotron-3-nano-4b"
-    assert status_fl.get("first_load_judge_id") == "nemotron-3-nano-4b"
+    assert receipt_fl.get("first_load_judge_id") == ["nemotron-3-nano-4b"]
+    assert status_fl.get("first_load_judge_id") == ["nemotron-3-nano-4b"]
     assert receipt_fl.get("first_load_note") == expected_note
     assert status_fl.get("first_load_note") == expected_note
 
@@ -11648,7 +11652,7 @@ def test_first_load_judge_id_default_and_d3_mini_selection(
     rec_d3 = json.loads((out_d3 / "vm_receipt.json").read_text(encoding="utf-8"))
     st_d3 = json.loads((out_d3 / "status.json").read_text(encoding="utf-8"))
     for doc in (rec_d3, st_d3):
-        assert doc["first_load_judge_id"] == "d3-mini"
+        assert doc["first_load_judge_id"] == ["d3-mini"]
         assert doc["first_load_judge_id_source"] == "env"
         assert doc["first_load_note"] == vm_judges.FIRST_LOAD_NOTE
 
@@ -11678,7 +11682,7 @@ def test_first_load_judge_id_default_and_d3_mini_selection(
     rec_def = json.loads((out_def / "vm_receipt.json").read_text(encoding="utf-8"))
     st_def = json.loads((out_def / "status.json").read_text(encoding="utf-8"))
     for doc in (rec_def, st_def):
-        assert doc["first_load_judge_id"] == "nemotron-3-nano-4b"
+        assert doc["first_load_judge_id"] == ["nemotron-3-nano-4b"]
         assert doc["first_load_judge_id_source"] == "default"
         assert doc["first_load_note"] == vm_judges.FIRST_LOAD_NOTE
 
@@ -11811,7 +11815,7 @@ def test_first_load_judge_id_refusals_and_note_per_id(
     rec_flow = json.loads((out_flow / "vm_receipt.json").read_text(encoding="utf-8"))
     st_flow = json.loads((out_flow / "status.json").read_text(encoding="utf-8"))
     for doc in (rec_flow, st_flow):
-        assert doc["first_load_judge_id"] == "flow-judge-v0.1"
+        assert doc["first_load_judge_id"] == ["flow-judge-v0.1"]
         assert doc["first_load_judge_id_source"] == "env"
         assert doc["first_load_note"] == vm_judges.FIRST_LOAD_FLOW_JUDGE_NOTE
         assert "does not prove Flow-Judge's" not in doc["first_load_note"]
@@ -29410,6 +29414,27 @@ def test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_va
     assert future_rec["expected_judge_ids"] == [sub_jid]
     future_readout = json.loads((future_out / "merged_readout.json").read_text(encoding="utf-8"))
     assert list(future_readout["per_judge_row_counts"].keys()) == [sub_jid]
+
+    # Gate (e) error messages name the per-mode judge_done file (`d3-mini.three_way_two_question.json`), not `<jid>.json`.
+    bad_done_path = future_shards[0] / "judge_done" / f"{sub_jid}.three_way_two_question.json"
+    orig_done_text = bad_done_path.read_text(encoding="utf-8")
+    tampered_done = json.loads(orig_done_text)
+    tampered_done["row_sha256s"] = []
+    bad_done_path.write_text(json.dumps(tampered_done), encoding="utf-8")
+    vm_judges.write_outputs_closed(future_shards[0])
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_2q_sha:
+        merge_shards.merge_shards(
+            shard_dirs=future_shards,
+            manifest_path=future_manifest_path,
+            output_dir=future_dir / "merged_2q_bad_sha",
+            expected_judge_ids=[sub_jid],
+            allow_unpinned_stub=True,
+        )
+    assert exc_2q_sha.value.failure_class == "MERGE_ROW_DONE_SHA_MISMATCH"
+    assert f"judge_done/{sub_jid}.three_way_two_question.json" in exc_2q_sha.value.detail
+    assert f"judge_done/{sub_jid}.json" not in exc_2q_sha.value.detail
+    bad_done_path.write_text(orig_done_text, encoding="utf-8")
+    vm_judges.write_outputs_closed(future_shards[0])
 
     # Bad manifest pass_mode refuses MERGE_INVALID_PASS_MODE
     bad_manifest = dict(base_manifest)

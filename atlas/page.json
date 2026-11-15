@@ -33,48 +33,24 @@
   ],
   "changes": {
     "fileCounts": {
-      "added": 6,
-      "changed": 9,
+      "added": 0,
+      "changed": 1,
       "moved": 0,
-      "parts": 4,
+      "parts": 1,
       "removed": 0
     },
     "items": [
       {
-        "kind": "landing",
-        "sentence": "tests/fixtures/elephant1_b3f8a934/NOTICE is now read by tests/test_colab_d5c_elephant.py.",
-        "subjects": [
-          "tests/fixtures/elephant1_b3f8a934/NOTICE",
-          "tests/test_colab_d5c_elephant.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "tests/fixtures/onejev_81ce62f1/LICENSE is now read by tests/test_colab_d5c_elephant.py.",
-        "subjects": [
-          "tests/fixtures/onejev_81ce62f1/LICENSE",
-          "tests/test_colab_d5c_elephant.py"
-        ]
-      },
-      {
-        "kind": "landing",
-        "sentence": "tests/fixtures/onejev_81ce62f1/NOTICE is now read by tests/test_colab_d5c_elephant.py.",
-        "subjects": [
-          "tests/fixtures/onejev_81ce62f1/NOTICE",
-          "tests/test_colab_d5c_elephant.py"
-        ]
-      },
-      {
         "kind": "counts",
-        "sentence": "6 files added and 9 changed content, across 4 parts.",
+        "sentence": "Nothing structural changed since 2026-11-15; 1 file changed content.",
         "subjects": []
       }
     ],
     "since": {
-      "commit": "245c9ca0ac437bf3cacef5d8590295aed1c2073f",
-      "generatedAt": "2026-11-15T17:28:26.117Z"
+      "commit": "bf4ee560e5b69fb6a83c195561749ab8350f957d",
+      "generatedAt": "2026-11-15T21:16:50.177Z"
     },
-    "unchanged": false
+    "unchanged": true
   },
   "changesTogether": [
     {
@@ -93,6 +69,21 @@
       "shared": 8
     },
     {
+      "a": "scripts/colab/vm_judges.py",
+      "b": "tests/test_colab_judge_launcher.py",
+      "either": 37,
+      "partLabels": [
+        "scripts",
+        "tests"
+      ],
+      "parts": [
+        "scripts",
+        "tests"
+      ],
+      "relation": "b-imports-a",
+      "shared": 32
+    },
+    {
       "a": "src/reasoning_dataset_lab/pilot_b/models_and_build.py",
       "b": "tests/test_pilot_b_ollama_adapters.py",
       "either": 12,
@@ -106,21 +97,6 @@
       ],
       "relation": "b-imports-a",
       "shared": 10
-    },
-    {
-      "a": "scripts/colab/vm_judges.py",
-      "b": "tests/test_colab_judge_launcher.py",
-      "either": 43,
-      "partLabels": [
-        "scripts",
-        "tests"
-      ],
-      "parts": [
-        "scripts",
-        "tests"
-      ],
-      "relation": "b-imports-a",
-      "shared": 33
     },
     {
       "a": "src/reasoning_dataset_lab/pilot_b/fact_tables.py",
@@ -138,19 +114,19 @@
       "shared": 5
     },
     {
-      "a": "src/reasoning_dataset_lab/pilot_b/rendering.py",
-      "b": "tests/test_pilot_b_part_b.py",
-      "either": 9,
+      "a": "tests/fixtures/fake_colab.py",
+      "b": "tests/test_colab_judge_launcher.py",
+      "either": 36,
       "partLabels": [
-        "src",
+        "tests",
         "tests"
       ],
       "parts": [
-        "src",
+        "tests",
         "tests"
       ],
-      "relation": "b-imports-a",
-      "shared": 5
+      "relation": "inside",
+      "shared": 22
     }
   ],
   "changesTogetherNote": [
@@ -159,7 +135,7 @@
     "Window: 180 days; a pair counts from 3 shared commits, since 10 source files reach 10 revisions; the floor rises to 10 when 25 do."
   ],
   "changesTogetherWithTests": 1,
-  "commit": "c99d2b3ee1277725fb383d109bc2340deb8e5d53",
+  "commit": "17c533f3fae980efe9e60afc7208fd93738e7409",
   "defaultBranch": "main",
   "derived": "9 parts, mostly Python (87 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.",
   "doors": [
@@ -316,7 +292,7 @@
       ]
     }
   ],
-  "generatedAt": "2026-11-15T18:44:00.039Z",
+  "generatedAt": "2026-11-15T21:24:45.800Z",
   "limits": [
     "8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.",
     "16 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 12 more.",
