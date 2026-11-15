@@ -1884,14 +1884,22 @@ class D3MiniAdapter(BaseJudgeAdapter):
                 q_ans = answers.get("supported", answers)
                 if isinstance(q_ans, Mapping) and isinstance(q_ans.get("probabilities"), Mapping):
                     raw_probs = q_ans["probabilities"]
-                    probs = {
-                        k: float(raw_probs.get(k, 0.0))
-                        for k in ("supported", "unsupported", "cannot_tell")
-                    }
-                    total = sum(probs.values())
-                    if total > 0.0:
+                    three_labels = ("supported", "unsupported", "cannot_tell")
+                    probs = {}
+                    # Guard (the rule `vm_judges._three_way_choice_probabilities_valid` checks on the rows): all 3 label
+                    # keys present, each a real number (not a bool), finite and >= 0, with a finite total > 0, and a
+                    # given choice one of the 3 labels; else unparseable.
+                    if all(k in raw_probs for k in three_labels):
+                        raw_vals = [raw_probs[k] for k in three_labels]
+                        if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in raw_vals):
+                            probs = {k: float(v) for k, v in zip(three_labels, raw_vals)}
+                    raw_choice = q_ans.get("choice")
+                    probs_ok = len(probs) == 3 and all(math.isfinite(v) and v >= 0.0 for v in probs.values())
+                    choice_ok = raw_choice is None or raw_choice == "" or raw_choice in three_labels
+                    total = sum(probs.values()) if probs_ok else 0.0
+                    if probs_ok and choice_ok and math.isfinite(total) and total > 0.0:
                         probs = {k: v / total for k, v in probs.items()}
-                        choice = str(q_ans.get("choice") or max(probs.items(), key=lambda kv: kv[1])[0])
+                        choice = str(raw_choice or max(probs.items(), key=lambda kv: kv[1])[0])
                         return ParsedJudgeReadout(
                             state="parsed",
                             done_reason=response.done_reason,
@@ -5870,7 +5878,9 @@ def run_bakeoff_judge(
             "row_count": calls_so_far,
             "sha256": rows_sha256,
             "row_sha256s": all_row_sha256s,
-            "rows_file": f"{ROWS_DIRNAME}/{spec.judge_id}.jsonl",
+            # The file this pass wrote: `rows/<judge>.jsonl` (binary) or `rows/<judge>.three_way.jsonl` (3-way).
+            "rows_file": f"{ROWS_DIRNAME}/{row_path.name}",
+            "pass_mode": pass_mode,
             "bytes": len(row_bytes),
             "items_count": len(shard_item_ids) if eff_shard_spec is not None else len(items),
             "calls_count": calls_so_far,
@@ -7811,6 +7821,7 @@ def build_window_manifest(
     anchor_items_sha256: str | None = None,
     p0a_items_sha256: str | None = None,
     counted_source_sha256: str | None = None,
+    pass_mode: str | None = None,
 ) -> dict[str, Any]:
     """Write `window.json` in `run_dir` listing every file in `run_dir` with its `sha256` and `bytes`."""
     resolved_dir = Path(run_dir).resolve()
@@ -7818,6 +7829,7 @@ def build_window_manifest(
     prev_anchor_sha: str | None = None
     prev_p0a_sha: str | None = None
     prev_counted_sha: str | None = None
+    prev_pass_mode: str | None = None
     if existing_win_path.is_file():
         try:
             prev_win_doc = json.loads(existing_win_path.read_text(encoding="utf-8"))
@@ -7825,6 +7837,7 @@ def build_window_manifest(
                 prev_anchor_sha = str(prev_win_doc.get("anchor_items_sha256") or "").strip() or None
                 prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
                 prev_counted_sha = str(prev_win_doc.get("counted_source_sha256") or "").strip() or None
+                prev_pass_mode = str(prev_win_doc.get("pass_mode") or "").strip() or None
         except Exception:
             pass
     eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
@@ -7855,6 +7868,10 @@ def build_window_manifest(
         doc["p0a_items_sha256"] = eff_p0a_sha
     if eff_counted_sha is not None:
         doc["counted_source_sha256"] = eff_counted_sha
+    # The window's pass mode (vm_judges records it), kept from an earlier window.json when not given.
+    eff_pass_mode = (str(pass_mode).strip() if pass_mode is not None else None) or prev_pass_mode
+    if eff_pass_mode is not None:
+        doc["pass_mode"] = eff_pass_mode
     body_bytes = json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     doc["window_manifest_sha256"] = hashlib.sha256(body_bytes).hexdigest()
     window_path = resolved_dir / WINDOW_MANIFEST_FILENAME

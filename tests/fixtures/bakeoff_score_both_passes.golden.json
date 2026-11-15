@@ -639,6 +639,92 @@
     "split": "dev",
     "three_way_pass": [
       {
+        "breakdown": {
+          "all_3_of_triad_strict": {
+            "rate": 0.5,
+            "triads_all_strict": 1,
+            "triads_n": 2
+          },
+          "binary_collapsed_strict": {
+            "accuracy": {
+              "high": 1.0,
+              "low": 0.609666,
+              "n": 6,
+              "point": 1.0
+            },
+            "correct": 6
+          },
+          "calls_n": 12,
+          "invalid_calls": {
+            "count": 0,
+            "rate": 0.0
+          },
+          "items_n": 6,
+          "order_flip": {
+            "count": 1,
+            "rate": 0.16666666666666666
+          },
+          "per_class_strict": {
+            "cannot_tell": {
+              "n": 2,
+              "recall": 0.5,
+              "strict_correct": 1
+            },
+            "supported": {
+              "n": 2,
+              "recall": 1.0,
+              "strict_correct": 2
+            },
+            "unsupported": {
+              "n": 2,
+              "recall": 1.0,
+              "strict_correct": 2
+            }
+          },
+          "strict_accuracy": {
+            "high": 0.969947,
+            "low": 0.436497,
+            "n": 6,
+            "point": 0.833333
+          },
+          "strict_correct": 5,
+          "strict_outcome_columns": [
+            "strict_supported",
+            "strict_unsupported",
+            "strict_cannot_tell",
+            "order_flip",
+            "invalid"
+          ],
+          "strict_outcome_counts": {
+            "cannot_tell": {
+              "invalid": 0,
+              "order_flip": 1,
+              "strict_cannot_tell": 1,
+              "strict_supported": 0,
+              "strict_unsupported": 0
+            },
+            "supported": {
+              "invalid": 0,
+              "order_flip": 0,
+              "strict_cannot_tell": 0,
+              "strict_supported": 2,
+              "strict_unsupported": 0
+            },
+            "unsupported": {
+              "invalid": 0,
+              "order_flip": 0,
+              "strict_cannot_tell": 0,
+              "strict_supported": 0,
+              "strict_unsupported": 2
+            }
+          },
+          "top2_margin": {
+            "calls_with_margin": 0,
+            "median": null,
+            "min": null,
+            "p10": null
+          }
+        },
         "judge_id": "mu-judge",
         "three_way_accuracy": {
           "high": 0.969947,
@@ -709,6 +795,266 @@
     "note": "ECE, reliability bins, per-closure accuracy, and 3-way pass metrics are exploratory only.",
     "three_way_pass": [
       {
+        "breakdown_by_split": {
+          "dev": {
+            "all_3_of_triad_strict": {
+              "rate": 0.5,
+              "triads_all_strict": 1,
+              "triads_n": 2
+            },
+            "binary_collapsed_strict": {
+              "accuracy": {
+                "high": 1.0,
+                "low": 0.609666,
+                "n": 6,
+                "point": 1.0
+              },
+              "correct": 6
+            },
+            "calls_n": 12,
+            "invalid_calls": {
+              "count": 0,
+              "rate": 0.0
+            },
+            "items_n": 6,
+            "order_flip": {
+              "count": 1,
+              "rate": 0.16666666666666666
+            },
+            "per_class_strict": {
+              "cannot_tell": {
+                "n": 2,
+                "recall": 0.5,
+                "strict_correct": 1
+              },
+              "supported": {
+                "n": 2,
+                "recall": 1.0,
+                "strict_correct": 2
+              },
+              "unsupported": {
+                "n": 2,
+                "recall": 1.0,
+                "strict_correct": 2
+              }
+            },
+            "strict_accuracy": {
+              "high": 0.969947,
+              "low": 0.436497,
+              "n": 6,
+              "point": 0.833333
+            },
+            "strict_correct": 5,
+            "strict_outcome_columns": [
+              "strict_supported",
+              "strict_unsupported",
+              "strict_cannot_tell",
+              "order_flip",
+              "invalid"
+            ],
+            "strict_outcome_counts": {
+              "cannot_tell": {
+                "invalid": 0,
+                "order_flip": 1,
+                "strict_cannot_tell": 1,
+                "strict_supported": 0,
+                "strict_unsupported": 0
+              },
+              "supported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 0,
+                "strict_supported": 2,
+                "strict_unsupported": 0
+              },
+              "unsupported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 0,
+                "strict_supported": 0,
+                "strict_unsupported": 2
+              }
+            },
+            "top2_margin": {
+              "calls_with_margin": 0,
+              "median": null,
+              "min": null,
+              "p10": null
+            }
+          },
+          "pooled": {
+            "all_3_of_triad_strict": {
+              "rate": 0.5,
+              "triads_all_strict": 2,
+              "triads_n": 4
+            },
+            "binary_collapsed_strict": {
+              "accuracy": {
+                "high": 0.985135,
+                "low": 0.64612,
+                "n": 12,
+                "point": 0.916667
+              },
+              "correct": 11
+            },
+            "calls_n": 24,
+            "invalid_calls": {
+              "count": 0,
+              "rate": 0.0
+            },
+            "items_n": 12,
+            "order_flip": {
+              "count": 1,
+              "rate": 0.08333333333333333
+            },
+            "per_class_strict": {
+              "cannot_tell": {
+                "n": 4,
+                "recall": 0.75,
+                "strict_correct": 3
+              },
+              "supported": {
+                "n": 4,
+                "recall": 0.75,
+                "strict_correct": 3
+              },
+              "unsupported": {
+                "n": 4,
+                "recall": 1.0,
+                "strict_correct": 4
+              }
+            },
+            "strict_accuracy": {
+              "high": 0.953035,
+              "low": 0.551969,
+              "n": 12,
+              "point": 0.833333
+            },
+            "strict_correct": 10,
+            "strict_outcome_columns": [
+              "strict_supported",
+              "strict_unsupported",
+              "strict_cannot_tell",
+              "order_flip",
+              "invalid"
+            ],
+            "strict_outcome_counts": {
+              "cannot_tell": {
+                "invalid": 0,
+                "order_flip": 1,
+                "strict_cannot_tell": 3,
+                "strict_supported": 0,
+                "strict_unsupported": 0
+              },
+              "supported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 1,
+                "strict_supported": 3,
+                "strict_unsupported": 0
+              },
+              "unsupported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 0,
+                "strict_supported": 0,
+                "strict_unsupported": 4
+              }
+            },
+            "top2_margin": {
+              "calls_with_margin": 0,
+              "median": null,
+              "min": null,
+              "p10": null
+            }
+          },
+          "test": {
+            "all_3_of_triad_strict": {
+              "rate": 0.5,
+              "triads_all_strict": 1,
+              "triads_n": 2
+            },
+            "binary_collapsed_strict": {
+              "accuracy": {
+                "high": 0.969947,
+                "low": 0.436497,
+                "n": 6,
+                "point": 0.833333
+              },
+              "correct": 5
+            },
+            "calls_n": 12,
+            "invalid_calls": {
+              "count": 0,
+              "rate": 0.0
+            },
+            "items_n": 6,
+            "order_flip": {
+              "count": 0,
+              "rate": 0.0
+            },
+            "per_class_strict": {
+              "cannot_tell": {
+                "n": 2,
+                "recall": 1.0,
+                "strict_correct": 2
+              },
+              "supported": {
+                "n": 2,
+                "recall": 0.5,
+                "strict_correct": 1
+              },
+              "unsupported": {
+                "n": 2,
+                "recall": 1.0,
+                "strict_correct": 2
+              }
+            },
+            "strict_accuracy": {
+              "high": 0.969947,
+              "low": 0.436497,
+              "n": 6,
+              "point": 0.833333
+            },
+            "strict_correct": 5,
+            "strict_outcome_columns": [
+              "strict_supported",
+              "strict_unsupported",
+              "strict_cannot_tell",
+              "order_flip",
+              "invalid"
+            ],
+            "strict_outcome_counts": {
+              "cannot_tell": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 2,
+                "strict_supported": 0,
+                "strict_unsupported": 0
+              },
+              "supported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 1,
+                "strict_supported": 1,
+                "strict_unsupported": 0
+              },
+              "unsupported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 0,
+                "strict_supported": 0,
+                "strict_unsupported": 2
+              }
+            },
+            "top2_margin": {
+              "calls_with_margin": 0,
+              "median": null,
+              "min": null,
+              "p10": null
+            }
+          }
+        },
         "judge_id": "mu-judge",
         "three_way_accuracy": {
           "high": 0.969947,
@@ -1507,6 +1853,266 @@
     "split": "test",
     "three_way_pass": [
       {
+        "breakdown_by_split": {
+          "dev": {
+            "all_3_of_triad_strict": {
+              "rate": 0.5,
+              "triads_all_strict": 1,
+              "triads_n": 2
+            },
+            "binary_collapsed_strict": {
+              "accuracy": {
+                "high": 1.0,
+                "low": 0.609666,
+                "n": 6,
+                "point": 1.0
+              },
+              "correct": 6
+            },
+            "calls_n": 12,
+            "invalid_calls": {
+              "count": 0,
+              "rate": 0.0
+            },
+            "items_n": 6,
+            "order_flip": {
+              "count": 1,
+              "rate": 0.16666666666666666
+            },
+            "per_class_strict": {
+              "cannot_tell": {
+                "n": 2,
+                "recall": 0.5,
+                "strict_correct": 1
+              },
+              "supported": {
+                "n": 2,
+                "recall": 1.0,
+                "strict_correct": 2
+              },
+              "unsupported": {
+                "n": 2,
+                "recall": 1.0,
+                "strict_correct": 2
+              }
+            },
+            "strict_accuracy": {
+              "high": 0.969947,
+              "low": 0.436497,
+              "n": 6,
+              "point": 0.833333
+            },
+            "strict_correct": 5,
+            "strict_outcome_columns": [
+              "strict_supported",
+              "strict_unsupported",
+              "strict_cannot_tell",
+              "order_flip",
+              "invalid"
+            ],
+            "strict_outcome_counts": {
+              "cannot_tell": {
+                "invalid": 0,
+                "order_flip": 1,
+                "strict_cannot_tell": 1,
+                "strict_supported": 0,
+                "strict_unsupported": 0
+              },
+              "supported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 0,
+                "strict_supported": 2,
+                "strict_unsupported": 0
+              },
+              "unsupported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 0,
+                "strict_supported": 0,
+                "strict_unsupported": 2
+              }
+            },
+            "top2_margin": {
+              "calls_with_margin": 0,
+              "median": null,
+              "min": null,
+              "p10": null
+            }
+          },
+          "pooled": {
+            "all_3_of_triad_strict": {
+              "rate": 0.5,
+              "triads_all_strict": 2,
+              "triads_n": 4
+            },
+            "binary_collapsed_strict": {
+              "accuracy": {
+                "high": 0.985135,
+                "low": 0.64612,
+                "n": 12,
+                "point": 0.916667
+              },
+              "correct": 11
+            },
+            "calls_n": 24,
+            "invalid_calls": {
+              "count": 0,
+              "rate": 0.0
+            },
+            "items_n": 12,
+            "order_flip": {
+              "count": 1,
+              "rate": 0.08333333333333333
+            },
+            "per_class_strict": {
+              "cannot_tell": {
+                "n": 4,
+                "recall": 0.75,
+                "strict_correct": 3
+              },
+              "supported": {
+                "n": 4,
+                "recall": 0.75,
+                "strict_correct": 3
+              },
+              "unsupported": {
+                "n": 4,
+                "recall": 1.0,
+                "strict_correct": 4
+              }
+            },
+            "strict_accuracy": {
+              "high": 0.953035,
+              "low": 0.551969,
+              "n": 12,
+              "point": 0.833333
+            },
+            "strict_correct": 10,
+            "strict_outcome_columns": [
+              "strict_supported",
+              "strict_unsupported",
+              "strict_cannot_tell",
+              "order_flip",
+              "invalid"
+            ],
+            "strict_outcome_counts": {
+              "cannot_tell": {
+                "invalid": 0,
+                "order_flip": 1,
+                "strict_cannot_tell": 3,
+                "strict_supported": 0,
+                "strict_unsupported": 0
+              },
+              "supported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 1,
+                "strict_supported": 3,
+                "strict_unsupported": 0
+              },
+              "unsupported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 0,
+                "strict_supported": 0,
+                "strict_unsupported": 4
+              }
+            },
+            "top2_margin": {
+              "calls_with_margin": 0,
+              "median": null,
+              "min": null,
+              "p10": null
+            }
+          },
+          "test": {
+            "all_3_of_triad_strict": {
+              "rate": 0.5,
+              "triads_all_strict": 1,
+              "triads_n": 2
+            },
+            "binary_collapsed_strict": {
+              "accuracy": {
+                "high": 0.969947,
+                "low": 0.436497,
+                "n": 6,
+                "point": 0.833333
+              },
+              "correct": 5
+            },
+            "calls_n": 12,
+            "invalid_calls": {
+              "count": 0,
+              "rate": 0.0
+            },
+            "items_n": 6,
+            "order_flip": {
+              "count": 0,
+              "rate": 0.0
+            },
+            "per_class_strict": {
+              "cannot_tell": {
+                "n": 2,
+                "recall": 1.0,
+                "strict_correct": 2
+              },
+              "supported": {
+                "n": 2,
+                "recall": 0.5,
+                "strict_correct": 1
+              },
+              "unsupported": {
+                "n": 2,
+                "recall": 1.0,
+                "strict_correct": 2
+              }
+            },
+            "strict_accuracy": {
+              "high": 0.969947,
+              "low": 0.436497,
+              "n": 6,
+              "point": 0.833333
+            },
+            "strict_correct": 5,
+            "strict_outcome_columns": [
+              "strict_supported",
+              "strict_unsupported",
+              "strict_cannot_tell",
+              "order_flip",
+              "invalid"
+            ],
+            "strict_outcome_counts": {
+              "cannot_tell": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 2,
+                "strict_supported": 0,
+                "strict_unsupported": 0
+              },
+              "supported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 1,
+                "strict_supported": 1,
+                "strict_unsupported": 0
+              },
+              "unsupported": {
+                "invalid": 0,
+                "order_flip": 0,
+                "strict_cannot_tell": 0,
+                "strict_supported": 0,
+                "strict_unsupported": 2
+              }
+            },
+            "top2_margin": {
+              "calls_with_margin": 0,
+              "median": null,
+              "min": null,
+              "p10": null
+            }
+          }
+        },
         "judge_id": "mu-judge",
         "three_way_accuracy": {
           "high": 0.969947,
@@ -1519,6 +2125,266 @@
   },
   "three_way_pass": [
     {
+      "breakdown_by_split": {
+        "dev": {
+          "all_3_of_triad_strict": {
+            "rate": 0.5,
+            "triads_all_strict": 1,
+            "triads_n": 2
+          },
+          "binary_collapsed_strict": {
+            "accuracy": {
+              "high": 1.0,
+              "low": 0.609666,
+              "n": 6,
+              "point": 1.0
+            },
+            "correct": 6
+          },
+          "calls_n": 12,
+          "invalid_calls": {
+            "count": 0,
+            "rate": 0.0
+          },
+          "items_n": 6,
+          "order_flip": {
+            "count": 1,
+            "rate": 0.16666666666666666
+          },
+          "per_class_strict": {
+            "cannot_tell": {
+              "n": 2,
+              "recall": 0.5,
+              "strict_correct": 1
+            },
+            "supported": {
+              "n": 2,
+              "recall": 1.0,
+              "strict_correct": 2
+            },
+            "unsupported": {
+              "n": 2,
+              "recall": 1.0,
+              "strict_correct": 2
+            }
+          },
+          "strict_accuracy": {
+            "high": 0.969947,
+            "low": 0.436497,
+            "n": 6,
+            "point": 0.833333
+          },
+          "strict_correct": 5,
+          "strict_outcome_columns": [
+            "strict_supported",
+            "strict_unsupported",
+            "strict_cannot_tell",
+            "order_flip",
+            "invalid"
+          ],
+          "strict_outcome_counts": {
+            "cannot_tell": {
+              "invalid": 0,
+              "order_flip": 1,
+              "strict_cannot_tell": 1,
+              "strict_supported": 0,
+              "strict_unsupported": 0
+            },
+            "supported": {
+              "invalid": 0,
+              "order_flip": 0,
+              "strict_cannot_tell": 0,
+              "strict_supported": 2,
+              "strict_unsupported": 0
+            },
+            "unsupported": {
+              "invalid": 0,
+              "order_flip": 0,
+              "strict_cannot_tell": 0,
+              "strict_supported": 0,
+              "strict_unsupported": 2
+            }
+          },
+          "top2_margin": {
+            "calls_with_margin": 0,
+            "median": null,
+            "min": null,
+            "p10": null
+          }
+        },
+        "pooled": {
+          "all_3_of_triad_strict": {
+            "rate": 0.5,
+            "triads_all_strict": 2,
+            "triads_n": 4
+          },
+          "binary_collapsed_strict": {
+            "accuracy": {
+              "high": 0.985135,
+              "low": 0.64612,
+              "n": 12,
+              "point": 0.916667
+            },
+            "correct": 11
+          },
+          "calls_n": 24,
+          "invalid_calls": {
+            "count": 0,
+            "rate": 0.0
+          },
+          "items_n": 12,
+          "order_flip": {
+            "count": 1,
+            "rate": 0.08333333333333333
+          },
+          "per_class_strict": {
+            "cannot_tell": {
+              "n": 4,
+              "recall": 0.75,
+              "strict_correct": 3
+            },
+            "supported": {
+              "n": 4,
+              "recall": 0.75,
+              "strict_correct": 3
+            },
+            "unsupported": {
+              "n": 4,
+              "recall": 1.0,
+              "strict_correct": 4
+            }
+          },
+          "strict_accuracy": {
+            "high": 0.953035,
+            "low": 0.551969,
+            "n": 12,
+            "point": 0.833333
+          },
+          "strict_correct": 10,
+          "strict_outcome_columns": [
+            "strict_supported",
+            "strict_unsupported",
+            "strict_cannot_tell",
+            "order_flip",
+            "invalid"
+          ],
+          "strict_outcome_counts": {
+            "cannot_tell": {
+              "invalid": 0,
+              "order_flip": 1,
+              "strict_cannot_tell": 3,
+              "strict_supported": 0,
+              "strict_unsupported": 0
+            },
+            "supported": {
+              "invalid": 0,
+              "order_flip": 0,
+              "strict_cannot_tell": 1,
+              "strict_supported": 3,
+              "strict_unsupported": 0
+            },
+            "unsupported": {
+              "invalid": 0,
+              "order_flip": 0,
+              "strict_cannot_tell": 0,
+              "strict_supported": 0,
+              "strict_unsupported": 4
+            }
+          },
+          "top2_margin": {
+            "calls_with_margin": 0,
+            "median": null,
+            "min": null,
+            "p10": null
+          }
+        },
+        "test": {
+          "all_3_of_triad_strict": {
+            "rate": 0.5,
+            "triads_all_strict": 1,
+            "triads_n": 2
+          },
+          "binary_collapsed_strict": {
+            "accuracy": {
+              "high": 0.969947,
+              "low": 0.436497,
+              "n": 6,
+              "point": 0.833333
+            },
+            "correct": 5
+          },
+          "calls_n": 12,
+          "invalid_calls": {
+            "count": 0,
+            "rate": 0.0
+          },
+          "items_n": 6,
+          "order_flip": {
+            "count": 0,
+            "rate": 0.0
+          },
+          "per_class_strict": {
+            "cannot_tell": {
+              "n": 2,
+              "recall": 1.0,
+              "strict_correct": 2
+            },
+            "supported": {
+              "n": 2,
+              "recall": 0.5,
+              "strict_correct": 1
+            },
+            "unsupported": {
+              "n": 2,
+              "recall": 1.0,
+              "strict_correct": 2
+            }
+          },
+          "strict_accuracy": {
+            "high": 0.969947,
+            "low": 0.436497,
+            "n": 6,
+            "point": 0.833333
+          },
+          "strict_correct": 5,
+          "strict_outcome_columns": [
+            "strict_supported",
+            "strict_unsupported",
+            "strict_cannot_tell",
+            "order_flip",
+            "invalid"
+          ],
+          "strict_outcome_counts": {
+            "cannot_tell": {
+              "invalid": 0,
+              "order_flip": 0,
+              "strict_cannot_tell": 2,
+              "strict_supported": 0,
+              "strict_unsupported": 0
+            },
+            "supported": {
+              "invalid": 0,
+              "order_flip": 0,
+              "strict_cannot_tell": 1,
+              "strict_supported": 1,
+              "strict_unsupported": 0
+            },
+            "unsupported": {
+              "invalid": 0,
+              "order_flip": 0,
+              "strict_cannot_tell": 0,
+              "strict_supported": 0,
+              "strict_unsupported": 2
+            }
+          },
+          "top2_margin": {
+            "calls_with_margin": 0,
+            "median": null,
+            "min": null,
+            "p10": null
+          }
+        }
+      },
       "judge_id": "mu-judge",
       "three_way_accuracy": {
         "high": 0.969947,

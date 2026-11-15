@@ -186,6 +186,17 @@ CHILD_PROGRESS_DIRNAME = "child_progress"
 JUDGE_CHILD_PROGRESS_ENV_VAR = "RDLAB_JUDGE_CHILD_PROGRESS_FILE"
 ROWS_DIRNAME = "rows"
 ANCHOR_ROWS_DIRNAME = "anchor_rows"
+# The pass mode a window runs its judges in (RDLAB_PASS_MODE / --pass-mode): binary (the default, the counted run's)
+# or three_way (supported / unsupported / cannot_tell, the D5a diagnostic). A 3-way pass writes
+# `rows/<judge>.three_way.jsonl`; only the stub and time-one windows take one.
+PASS_MODE_ENV_VAR = "RDLAB_PASS_MODE"
+DEFAULT_PASS_MODE = "binary"
+PASS_MODES: tuple[str, ...] = ("binary", "three_way")
+THREE_WAY_PASS_WINDOW_MODES: frozenset[str] = frozenset({"stub", "time-one", "time_one"})
+THREE_WAY_CLASS_LABELS: tuple[str, ...] = ("supported", "unsupported", "cannot_tell")
+THREE_WAY_OPTION_TOKENS: tuple[str, ...] = ("a", "b", "c")
+# D5a design §4.3 condition 1: invalid calls (unparseable or length_stop) at most 0.01 of the calls (<= 2 / 228).
+THREE_WAY_MAX_INVALID_RATE = 0.01
 JUDGE_DONE_DIRNAME = "judge_done"
 DOWNLOAD_DONE_DIRNAME = "download_done"
 SESSION_ENV_FILENAME = "session_env.json"
@@ -2910,11 +2921,100 @@ def _verify_snapshot_files_against_receipt(
     return snapshot_dir, verified_digest
 
 
+def rows_filename_for_pass(judge_id: str, pass_mode: str = DEFAULT_PASS_MODE) -> str:
+    """The rows file a judge child writes under `rows/`: `<judge>.jsonl` for binary, `<judge>.<pass_mode>.jsonl` else."""
+    return f"{judge_id}.jsonl" if pass_mode == "binary" else f"{judge_id}.{pass_mode}.jsonl"
+
+
+def _three_way_choice_probabilities_valid(probs: Any) -> bool:
+    """True when a d3-mini 3-way row's `choice_probabilities` is a mapping over exactly the 3 class labels whose values
+    are finite numbers >= 0 summing to more than 0."""
+    if not isinstance(probs, Mapping) or set(str(k) for k in probs) != set(THREE_WAY_CLASS_LABELS):
+        return False
+    vals: list[float] = []
+    for v in probs.values():
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return False
+        fv = float(v)
+        if not math.isfinite(fv) or fv < 0.0:
+            return False
+        vals.append(fv)
+    return sum(vals) > 0.0
+
+
+def _three_way_mass_report(rf: Path, judge_id: str, threshold: float) -> dict[str, Any]:
+    """The 3-way readout for one rows file: A/B/C option mass (>= threshold) per parsed call for a log-probability
+    judge; for d3-mini, valid `choice_probabilities` (finite, >= 0, sum > 0, the 3 labels) and a valid label."""
+    spec = BAKEOFF_JUDGE_SPECS.get(judge_id)
+    if spec is not None and not spec.has_probability:
+        return {
+            "status": "not_applicable",
+            "passed": True,
+            "reason": "Judge does not expose an option log-probability distribution (Flow-Judge rubric text score).",
+            "threshold": threshold,
+        }
+    lines = [json.loads(ln) for ln in rf.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    all_calls = [r for r in lines if r.get("run_status") != "failed_to_run"]
+    parsed_rows = [r for r in all_calls if r.get("state") == "parsed"]
+    # Calls the parse rejected (unparseable, length_stop) are counted, never dropped: the design's invalid-rate rule
+    # (<= THREE_WAY_MAX_INVALID_RATE of the calls) fails the readout, so 1 parsed call of 20 cannot pass it.
+    invalid_calls = len(all_calls) - len(parsed_rows)
+    invalid_rate = (invalid_calls / len(all_calls)) if all_calls else None
+    rate_ok = invalid_rate is not None and invalid_rate <= THREE_WAY_MAX_INVALID_RATE + 1e-12
+    invalid_fields = {
+        "calls_total": len(all_calls),
+        "invalid_calls_count": invalid_calls,
+        "invalid_rate": round(invalid_rate, 6) if invalid_rate is not None else None,
+        "max_invalid_rate": THREE_WAY_MAX_INVALID_RATE,
+    }
+    if judge_id == D3_MINI_JUDGE_ID:
+        invalid = sum(
+            1
+            for r in parsed_rows
+            if not _three_way_choice_probabilities_valid(r.get("choice_probabilities"))
+            or r.get("raw_verdict") not in THREE_WAY_CLASS_LABELS
+        )
+        passed = bool(parsed_rows and invalid == 0 and rate_ok)
+        return {
+            "status": "PASS" if passed else "WARN",
+            "passed": passed,
+            "check": "choice_probabilities",
+            "calls_checked": len(parsed_rows),
+            "invalid_choice_probabilities_count": invalid,
+            **invalid_fields,
+            "threshold": threshold,
+        }
+    masses: list[float] = []
+    for r in parsed_rows:
+        lp_list = r.get("top_20_logprobs") or r.get("top_logprobs") or []
+        masses.append(
+            sum(
+                math.exp(float(entry.get("logprob", -100.0)))
+                for entry in lp_list
+                if str(entry.get("token") or "").strip().lower() in THREE_WAY_OPTION_TOKENS
+            )
+        )
+    below_count = sum(1 for m in masses if m + 1e-6 < threshold)
+    passed = bool(masses and below_count == 0 and rate_ok)
+    return {
+        "status": "PASS" if passed else "WARN",
+        "passed": passed,
+        "check": "abc_option_mass",
+        **invalid_fields,
+        "calls_checked": len(masses),
+        "below_threshold_count": below_count,
+        "min_option_mass": round(min(masses), 6) if masses else 0.0,
+        "mean_option_mass": round(sum(masses) / len(masses), 6) if masses else 0.0,
+        "threshold": threshold,
+    }
+
+
 def check_bakeoff_logprob_mass(
     judge_output_dir: Path,
     *,
     threshold: float = 0.99,
     verified_pilot_identity: Mapping[str, Any] | None = None,
+    pass_mode: str = DEFAULT_PASS_MODE,
 ) -> dict[str, Any]:
     """Compute the burned pilot's yes/no token log-probability mass harness readout from `rows/*.jsonl`.
 
@@ -2922,7 +3022,16 @@ def check_bakeoff_logprob_mass(
     `read_part_identity` whose `part_id` and `part.json` / `items.jsonl` SHA-256 are the `PILOT_40B_*` pins. There is
     no label route (a `part_id` alone cannot name the pilot: every writer-built part shares it). Refuses
     `BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN` otherwise. The readout records the part's real `part_id` and hashes.
+
+    `pass_mode="three_way"` reads `rows/*.three_way.jsonl` instead: A/B/C option mass for the log-probability judges
+    and valid `choice_probabilities` for d3-mini (see `_three_way_mass_report`). Any other `pass_mode` refuses
+    `PASS_MODE_INVALID`.
     """
+    if pass_mode not in PASS_MODES:
+        raise RefusalError(
+            "PASS_MODE_INVALID",
+            f"Unknown pass mode {pass_mode!r} for the option-mass readout (allowed: {', '.join(PASS_MODES)})",
+        )
     if not is_pinned_pilot_identity(verified_pilot_identity):
         got = dict(verified_pilot_identity) if isinstance(verified_pilot_identity, Mapping) else {}
         raise RefusalError(
@@ -2938,6 +3047,26 @@ def check_bakeoff_logprob_mass(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",
             f"Rows directory '{rows_dir}' not found.",
         )
+    if pass_mode == "three_way":
+        tw_files = sorted(rows_dir.glob("*.three_way.jsonl"))
+        if not tw_files:
+            raise RefusalError(
+                "BAKEOFF_LOGPROB_MASS_NO_ROWS",
+                f"No 3-way judge row files found in '{rows_dir}'.",
+            )
+        tw_judges: dict[str, Any] = {}
+        for rf in tw_files:
+            tw_jid = rf.name[: -len(".three_way.jsonl")]
+            tw_judges[tw_jid] = _three_way_mass_report(rf, tw_jid, threshold)
+        return {
+            "schema_version": "1.0",
+            "part_id": str(verified_pilot_identity.get("part_id") or "").strip(),
+            "pass_mode": "three_way",
+            "threshold": threshold,
+            "judges": tw_judges,
+            "part_json_sha256": verified_pilot_identity.get("part_json_sha256"),
+            "items_jsonl_sha256": verified_pilot_identity.get("items_jsonl_sha256"),
+        }
     row_files = sorted(
         p for p in rows_dir.glob("*.jsonl") if not p.name.endswith(".three_way.jsonl")
     )
@@ -4655,6 +4784,7 @@ def write_window_manifest(
     anchor_items_sha256: str | None = None,
     p0a_items_sha256: str | None = None,
     counted_source_sha256: str | None = None,
+    pass_mode: str | None = None,
 ) -> dict[str, Any]:
     """Build and write `run_dir / window.json` listing `{sha256, bytes}` for every allow-listed artifact in `run_dir`."""
     ensure_not_drive_path(run_dir)
@@ -4674,6 +4804,7 @@ def write_window_manifest(
     prev_anchor_sha: str | None = None
     prev_p0a_sha: str | None = None
     prev_counted_sha: str | None = None
+    prev_pass_mode: str | None = None
     if existing_win_path.is_file():
         try:
             prev_win_doc = json.loads(existing_win_path.read_text(encoding="utf-8"))
@@ -4681,6 +4812,7 @@ def write_window_manifest(
                 prev_anchor_sha = str(prev_win_doc.get("anchor_items_sha256") or "").strip() or None
                 prev_p0a_sha = str(prev_win_doc.get("p0a_items_sha256") or "").strip() or None
                 prev_counted_sha = str(prev_win_doc.get("counted_source_sha256") or "").strip() or None
+                prev_pass_mode = str(prev_win_doc.get("pass_mode") or "").strip() or None
         except Exception:
             pass
     eff_anchor_sha = (str(anchor_items_sha256).strip() if anchor_items_sha256 else None) or prev_anchor_sha
@@ -4711,6 +4843,10 @@ def write_window_manifest(
         doc["p0a_items_sha256"] = eff_p0a_sha
     if eff_counted_sha is not None:
         doc["counted_source_sha256"] = eff_counted_sha
+    # Kept from an earlier window.json when not given, as the item hashes are, so a rebuild hashes the same body.
+    eff_pass_mode = (str(pass_mode).strip() if pass_mode is not None else None) or prev_pass_mode
+    if eff_pass_mode is not None:
+        doc["pass_mode"] = eff_pass_mode
     body_bytes = json.dumps(
         doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8")
@@ -7018,6 +7154,7 @@ def run_judges_pipeline(
     session_fingerprint_sha256: str | None = None,
     replacement_session: bool = False,
     lock_check_phase: str | None = None,
+    pass_mode: str = DEFAULT_PASS_MODE,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Run all 5 judges (or `only_judge_ids`) as separate child subprocesses in their synced venvs and compute readouts."""
     anchor_stage_dir = run_dir.parent / f".{run_dir.name}_anchor_part"
@@ -7056,6 +7193,7 @@ def run_judges_pipeline(
             session_fingerprint_sha256=session_fingerprint_sha256,
             replacement_session=replacement_session,
             lock_check_phase=lock_check_phase,
+            pass_mode=pass_mode,
         )
         return t1_summary, mass_readout
     finally:
@@ -7097,6 +7235,7 @@ def _run_judges_pipeline_body(
     session_fingerprint_sha256: str | None = None,
     replacement_session: bool = False,
     lock_check_phase: str | None = None,
+    pass_mode: str = DEFAULT_PASS_MODE,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     _ensure_repo_imports(repo_root)
     eff_repo_dir = (repo_root or resolve_repo_dir()).resolve()
@@ -7220,6 +7359,13 @@ def _run_judges_pipeline_body(
         )
     selected_specs = _select_judge_specs(
         only_judge_ids if only_judge_ids is not None else judge_order
+    )
+    # The same check as the launcher's, again here: a 3-way pass over a judge without a 3-way prompt is refused before
+    # any child starts.
+    eff_pass_mode = validate_pass_mode(
+        norm_mode,
+        pass_mode,
+        judge_ids=[jid for jid, _ in selected_specs],
     )
     if not dryrun:
         for pre_judge_id, _ in selected_specs:
@@ -7364,6 +7510,9 @@ def _run_judges_pipeline_body(
         )
         if allow_remote_sha is not None:
             child_cmd.extend(["--allow-remote-code-reviewed", allow_remote_sha])
+        if eff_pass_mode != "binary":
+            # Added only for a 3-way pass, so a binary child's command line is unchanged (the child's default is binary).
+            child_cmd.extend(["--pass-mode", eff_pass_mode])
         if (dryrun or norm_mode in STUB_OR_DRYRUN_MODES) and not real_load_on_cpu:
             child_cmd.append("--stub")
         eff_golden_manifest = (
@@ -7750,7 +7899,7 @@ def _run_judges_pipeline_body(
                 )
             continue
 
-        row_file = run_dir / ROWS_DIRNAME / f"{judge_id}.jsonl"
+        row_file = run_dir / ROWS_DIRNAME / rows_filename_for_pass(judge_id, eff_pass_mode)
         done_file = judge_done_dir / f"{judge_id}.json"
         if not row_file.is_file():
             _fail_child_postcheck(f"Judge {judge_id} exited 0 but {row_file} is missing")
@@ -8064,7 +8213,9 @@ def _run_judges_pipeline_body(
         and part_manifest_doc.get("is_pilot_40b") is True
     ):
         # The pilot mass check runs on the burned pilot part, identified by its part.json and items.jsonl hashes.
-        raw_mass_check = check_bakeoff_logprob_mass(run_dir, verified_pilot_identity=part_manifest_doc)
+        raw_mass_check = check_bakeoff_logprob_mass(
+            run_dir, verified_pilot_identity=part_manifest_doc, pass_mode=eff_pass_mode
+        )
     else:
         raw_mass_check = {
             "schema_version": "1.0",
@@ -8093,6 +8244,7 @@ def _run_judges_pipeline_body(
         "judge_order": eff_judge_order,
         "judge_order_source": judge_order_source,
         "only_judges": list(only_judges) if only_judges is not None else None,
+        "pass_mode": eff_pass_mode,
         "loop_order": eff_loop_order,
         "subblock_items": eff_subblock_items,
         "subblock_count": len(subblock_chunks),
@@ -8456,6 +8608,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--window-id",
         default=None,
+    )
+    parser.add_argument(
+        "--pass-mode",
+        default=env_or(PASS_MODE_ENV_VAR, None),
     )
     parser.add_argument(
         "--dryrun",
@@ -9747,6 +9903,53 @@ def validate_only_judges(
             f"RDLAB_ONLY_JUDGES contains duplicate judge_id(s): {parts!r}",
         )
     return tuple(parts)
+
+
+def validate_pass_mode(
+    mode: str,
+    raw_pass_mode: str | None = None,
+    *,
+    judge_ids: Sequence[str] | None = None,
+    session_smoke: bool = False,
+) -> str:
+    """Validate `RDLAB_PASS_MODE` / `--pass-mode` and return it: `binary` (the default, when unset or empty) or
+    `three_way`. Refuses `PASS_MODE_INVALID` for any other value, `PASS_MODE_NOT_FOR_MODE` for a 3-way pass outside
+    the stub and time-one windows (or in a session smoke), and `BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED` when any judge in
+    `judge_ids` has `supports_three_way=False` (granite-guardian-4.1-8b), so it is refused before any download."""
+    if raw_pass_mode is None:
+        raw_val = os.environ.get(PASS_MODE_ENV_VAR)
+    else:
+        raw_val = str(raw_pass_mode)
+    if raw_val is None or raw_val == "":
+        return DEFAULT_PASS_MODE
+    cleaned = raw_val.strip()
+    # Padded values are refused, never stripped (as `validate_only_judges` does), so bash and Python read one value.
+    if cleaned != raw_val or cleaned not in PASS_MODES:
+        raise RefusalError(
+            "PASS_MODE_INVALID",
+            f"Unknown pass mode {raw_val!r} (allowed: {', '.join(PASS_MODES)})",
+        )
+    if cleaned == "binary":
+        return cleaned
+    norm_mode = str(mode or "").strip().lower()
+    if session_smoke or norm_mode not in THREE_WAY_PASS_WINDOW_MODES:
+        raise RefusalError(
+            "PASS_MODE_NOT_FOR_MODE",
+            f"--pass-mode three_way is allowed only with --stub and --time-one (got mode={mode!r}, "
+            f"session_smoke={session_smoke!r}); the counted and lock-check windows are binary.",
+        )
+    unsupported = [
+        str(j)
+        for j in (judge_ids or ())
+        if str(j) in BAKEOFF_JUDGE_SPECS and not BAKEOFF_JUDGE_SPECS[str(j)].supports_three_way
+    ]
+    if unsupported:
+        raise RefusalError(
+            "BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED",
+            f"--pass-mode three_way: judge(s) {unsupported!r} have no 3-way prompt (supports_three_way=False); "
+            "name the window's judges with RDLAB_ONLY_JUDGES (--time-one) and leave them out.",
+        )
+    return cleaned
 
 
 def resolve_first_load_note(judge_id: str) -> str:
@@ -13813,6 +14016,7 @@ def build_vm_receipt_doc(
     anchor_items_sha256: str | None = None,
     p0a_items_sha256: str | None = None,
     counted_source_sha256: str | None = None,
+    pass_mode: str = DEFAULT_PASS_MODE,
 ) -> dict[str, Any]:
     """Build the canonical `vm_receipt.json` document (used by `vm_judges.main` and tests)."""
     if session_env_report is None and session_env is not None:
@@ -13835,6 +14039,7 @@ def build_vm_receipt_doc(
         "status": "ok",
         "mode": mode,
         "lock_check_phase": lock_check_phase,
+        "pass_mode": pass_mode,
         **receipt_hardware_fields(mode, dryrun=dryrun, card_type_check=card_type_check),
         "shard_spec": (
             shard_info_report["shard_spec"]
@@ -14159,6 +14364,13 @@ def main(argv: list[str] | None = None) -> int:
                 getattr(args, "judge_order", None),
                 until=until_step,
             )
+
+        current_step = "validate_pass_mode"
+        main_pass_mode = validate_pass_mode(
+            args.mode,
+            getattr(args, "pass_mode", None),
+            judge_ids=judge_order,
+        )
 
         current_step = "validate_first_load_judge_id"
         first_load_judge_id, first_load_judge_id_source = validate_first_load_judge_id(
@@ -14551,6 +14763,7 @@ def main(argv: list[str] | None = None) -> int:
                         only_judges=only_judges,
                         real_load_on_cpu=True,
                         child_timeout_seconds=resolve_first_load_timeout_seconds(),
+                        pass_mode=main_pass_mode,
                     )
                     _record_step_end(
                         "judge_pass",
@@ -14699,6 +14912,7 @@ def main(argv: list[str] | None = None) -> int:
                         counted_items_or_manifest=raw_counted_items_arg,
                         counted_manifest_file=raw_counted_manifest_arg,
                         lock_check_phase=main_lock_check_phase,
+                        pass_mode=main_pass_mode,
                         loop_order=loop_order_val,
                         subblock_items=subblock_items_val,
                         session_fingerprint_sha256=str(
@@ -14828,6 +15042,7 @@ def main(argv: list[str] | None = None) -> int:
             anchor_items_sha256=anchor_items_sha256,
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,
+            pass_mode=main_pass_mode,
         )
         receipt_serialized = json.dumps(receipt_doc, indent=2) + "\n"
         receipt_path.write_text(
@@ -14848,6 +15063,7 @@ def main(argv: list[str] | None = None) -> int:
             anchor_items_sha256=anchor_items_sha256,
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,
+            pass_mode=main_pass_mode,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         _record_step_end(
@@ -14878,6 +15094,7 @@ def main(argv: list[str] | None = None) -> int:
             anchor_items_sha256=anchor_items_sha256,
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,
+            pass_mode=main_pass_mode,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
 
@@ -14990,6 +15207,7 @@ def main(argv: list[str] | None = None) -> int:
             anchor_items_sha256=anchor_items_sha256,
             p0a_items_sha256=p0a_items_sha256,
             counted_source_sha256=counted_source_sha256,
+            pass_mode=main_pass_mode,
         )
         build_allowlisted_result_tar(args.run_dir, args.result_tar)
         return 0
