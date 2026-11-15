@@ -1273,3 +1273,167 @@ def test_fetch_helpers_skip_only_a_matching_pair_and_fail_closed(tmp_path: Path)
     rows_p.write_bytes(body[:4])
     ok, _ = vm_judges.launcher_verify_fetched_pass(out, "d3-mini", TWO_Q, staged=False)
     assert ok is False and rows_p.exists()  # nothing in place is deleted by the check; the re-fetch replaces it
+
+
+# --- 10. receipts built from HF metadata, and the hash check before any load (Window A follow-up) -------------------
+
+FLASH_REV = "67e03e1bc157961c582ee7c6a35d9b15fada3dec"
+
+
+def _builder() -> Any:
+    colab = Path(__file__).resolve().parents[1] / "scripts" / "colab"
+    if str(colab) not in sys.path:
+        sys.path.insert(0, str(colab))
+    import build_metadata_receipt
+
+    return build_metadata_receipt
+
+
+def _fake_hub(files: dict[str, bytes], lfs: set[str], *, lie_oid: str | None = None) -> Any:
+    """A fake Hub: the tree listing (LFS entries carry oid and size; with `lie_oid` that file's oid is wrong) and the
+    resolve endpoint, which serves only non-LFS files (fetching a weight fails the test)."""
+    b = _builder()
+    rev = "a" * 40
+    listing: list[dict[str, Any]] = [{"type": "directory", "path": "onnx"}]
+    for path, body in files.items():
+        entry: dict[str, Any] = {"type": "file", "path": path, "size": len(body)}
+        if path in lfs:
+            oid = hashlib.sha256(body).hexdigest() if path != lie_oid else "0" * 64
+            entry["lfs"] = {"oid": oid, "size": len(body)}
+        listing.append(entry)
+    fetched: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        fetched.append(url)
+        if url == b.tree_url("org/model", rev):
+            return json.dumps(listing).encode()
+        for path, body in files.items():
+            if url == b.resolve_url("org/model", rev, path):
+                assert path not in lfs, f"an LFS file was fetched: {path}"
+                return body
+        raise AssertionError(url)
+
+    return fetch, fetched, rev
+
+
+def test_metadata_receipt_verifies_a_matching_snapshot_and_refuses_a_tampered_one(tmp_path: Path) -> None:
+    b = _builder()
+    files = {
+        "config.json": b'{"a": 1}',
+        "model.safetensors": b"\x01" * 64,
+        "onnx/model.onnx": b"\x02" * 32,
+        "README.md": b"# card\n",
+    }
+    fetch, fetched, rev = _fake_hub(files, {"model.safetensors", "onnx/model.onnx"})
+    doc = b.build_metadata_receipt("org/model", rev, fetch=fetch)
+    assert doc["source"] == "hf-api-metadata" and doc["seconds"] is None
+    assert doc["total_bytes"] == sum(len(v) for v in files.values())
+    assert set(doc["files"]) == set(files)
+    assert not any("model.safetensors" in u or "model.onnx" in u for u in fetched[1:])  # no weight was fetched
+    rdir = tmp_path / "receipts"
+    rdir.mkdir()
+    assert b.write_receipt(doc, rdir).name == "org__model.sha256.json"
+    spec = vm_judges.JUDGE_SPECS[ENCODER]._replace(repo_id="org/model", revision=rev)
+    snap = tmp_path / "hf" / "hub" / "models--org--model" / "snapshots" / rev
+    for rel, body in files.items():
+        (snap / rel).parent.mkdir(parents=True, exist_ok=True)
+        (snap / rel).write_bytes(body)
+    vm_judges.verify_snapshot_against_receipt(spec, receipts_dir=rdir, hf_home=tmp_path / "hf")
+    weights = snap / "model.safetensors"
+    weights.write_bytes(b"\x01" * 63 + b"\x00")  # same size, one byte flipped
+    with pytest.raises(vm_judges.RefusalError) as exc:
+        vm_judges.verify_snapshot_against_receipt(spec, receipts_dir=rdir, hf_home=tmp_path / "hf")
+    assert exc.value.failure_class == "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH"
+    weights.write_bytes(b"\x01" * 65)
+    with pytest.raises(vm_judges.RefusalError) as exc_size:
+        vm_judges.verify_snapshot_against_receipt(spec, receipts_dir=rdir, hf_home=tmp_path / "hf")
+    assert exc_size.value.failure_class == "WEIGHT_SIZE_MISMATCH"
+    # The Hub's oid is a claim: a wrong one makes a receipt that the real bytes then fail.
+    fetch2, _, _ = _fake_hub(files, {"model.safetensors"}, lie_oid="model.safetensors")
+    b.write_receipt(b.build_metadata_receipt("org/model", rev, fetch=fetch2), rdir)
+    weights.write_bytes(files["model.safetensors"])
+    with pytest.raises(vm_judges.RefusalError) as exc_lie:
+        vm_judges.verify_snapshot_against_receipt(spec, receipts_dir=rdir, hf_home=tmp_path / "hf")
+    assert exc_lie.value.failure_class == "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH"
+
+
+def test_metadata_receipt_builder_refuses_unsound_listings() -> None:
+    b = _builder()
+    with pytest.raises(b.MetadataReceiptError):
+        b.build_metadata_receipt("org/model", "main", fetch=lambda u: b"[]")
+    rev = "b" * 40
+    for listing in (
+        [],
+        [{"type": "directory", "path": "x"}],
+        [{"type": "file", "path": "../x", "size": 1}],
+        [{"type": "file", "path": "w.bin", "size": 4, "lfs": {"oid": "zz", "size": 4}}],
+        [{"type": "file", "path": "w.bin", "size": 4, "lfs": {"oid": "c" * 64, "size": 5}}],
+    ):
+        with pytest.raises(b.MetadataReceiptError):
+            b.build_metadata_receipt("org/model", rev, fetch=lambda u, _l=listing: json.dumps(_l).encode())
+    short = [{"type": "file", "path": "config.json", "size": 10}]
+    with pytest.raises(b.MetadataReceiptError):
+        b.build_metadata_receipt("org/model", rev, fetch=lambda u: json.dumps(short).encode() if "/api/" in u else b"{}")
+
+
+def test_committed_d5c_receipts_match_the_pins_and_pass_the_preflight() -> None:
+    """The two committed metadata receipts: pinned repo and revision, the README sha equal to the spec's card pin,
+    d3-flash's eight remote-code entries equal to d3-mini's reviewed receipt, and the receipts preflight passes."""
+    rdir = Path(__file__).resolve().parents[1] / "scripts" / "colab" / "receipts"
+    mini = json.loads((rdir / "vllm-sr__d3-mini.sha256.json").read_text(encoding="utf-8"))["files"]
+    for jid in (FLASH, ENCODER):
+        spec = JUDGE_SPECS[jid]
+        owner, repo = spec.repo_id.split("/", 1)
+        doc = json.loads((rdir / f"{owner}__{repo}.sha256.json").read_text(encoding="utf-8"))
+        assert (doc["repo"], doc["revision"], doc["source"], doc["seconds"]) == (
+            spec.repo_id, spec.revision, "hf-api-metadata", None,
+        )
+        assert doc["total_bytes"] == sum(int(v["bytes"]) for v in doc["files"].values())
+        assert doc["files"]["README.md"]["sha256"] == spec.card_snapshot_sha256
+        if jid == FLASH:
+            assert all(doc["files"][f] == mini[f] for f in spec.remote_code_files)
+    recs = vm_judges.preflight_judge_receipts([FLASH, ENCODER], receipts_dir=rdir)
+    assert [r["judge_id"] for r in recs] == [FLASH, ENCODER]
+    assert [s.judge_id for s in vm_judges.receipt_tar_specs(f"d3-mini,{FLASH},{ENCODER}")][-2:] == [FLASH, ENCODER]
+
+
+def test_d3_flash_flipped_weight_byte_is_refused_before_the_model_loads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.test_bakeoff_judge_d3_transport import _install_stub_modules, _offline
+
+    _offline(monkeypatch)
+    hf_home, rdir = tmp_path / "hf_home", tmp_path / "receipts"
+    for spec in (JUDGE_SPECS[FLASH], JUDGE_SPECS["d3-mini"]):
+        owner, repo = spec.repo_id.split("/", 1)
+        snap = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
+        snap.mkdir(parents=True)
+        files = {n: f"# stub {n}\n".encode() for n in spec.remote_code_files}
+        files["model-00001-of-00004.safetensors"] = b"\x05" * 64
+        for n, body in files.items():
+            (snap / n).write_bytes(body)
+        _receipt(rdir, spec.repo_id, spec.revision, files)
+    owner, repo = JUDGE_SPECS[FLASH].repo_id.split("/", 1)
+    weights = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / FLASH_REV / "model-00001-of-00004.safetensors"
+    weights.write_bytes(b"\x05" * 63 + b"\x04")
+    recorder = _install_stub_modules(monkeypatch, model=_StubD3TwoQuestion())
+    tr = bakeoff_judge.D3MiniTransport(receipts_dir=rdir, hf_home=hf_home, device="cpu")
+    with pytest.raises(RdlabError) as exc:
+        tr.verify_ready(JUDGE_SPECS[FLASH], allow_remote_code_reviewed=FLASH_REV)
+    assert exc.value.code == "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH"
+    with pytest.raises(RdlabError):  # nothing was verified, so nothing loads
+        tr.generate(JUDGE_SPECS[FLASH], _prompt(FLASH, ITEMS[0], "AB", CONTRA), seed=1)
+    assert recorder["calls"] == []
+
+
+def test_nli_flipped_weight_byte_is_refused_before_the_model_loads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HF_DEACTIVATE_ASYNC_LOAD", "1")
+    hf_home, rdir = _nli_snapshot(tmp_path, {"0": "entailment", "1": "neutral", "2": "contradiction"})
+    spec = JUDGE_SPECS[ENCODER]
+    owner, repo = spec.repo_id.split("/", 1)
+    weights = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision / "model.safetensors"
+    weights.write_bytes(b"\x00" * 7 + b"\x01")
+    rec = _install_nli_stubs(monkeypatch, id2label={0: "entailment", 1: "neutral", 2: "contradiction"}, logits=[0.0, 0.0, 0.0])
+    tr = bakeoff_judge.NliSequenceClassificationTransport(receipts_dir=rdir, hf_home=hf_home, device="cpu")
+    with pytest.raises(RdlabError) as exc:
+        tr.generate(spec, _prompt(ENCODER, ITEMS[0], "AB", NLI), seed=1)
+    assert exc.value.code == "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH"
+    assert rec["model"] == [] and rec["tok"] == []

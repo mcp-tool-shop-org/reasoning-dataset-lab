@@ -225,7 +225,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "cdd0eea47805e9ddc5c024a2d1f08f3d148125b8dcac0f4e7676bf11d03e5abe",
+          "hash": "77c9c8d23fc139447d41ea1f361632542bb6b3c8c2ff43c5f2ecb39468e80b9d",
           "path": "CHANGELOG.md"
         },
         {
@@ -304,16 +304,69 @@
       "externals": 0,
       "files": [
         {
-          "hash": "16d3fa138c489e4047c4c267ce6b9259a2c2e78c48b30817bfb88f83a7686733",
+          "hash": "07450b9619d5f63653b88fa96b29b8e555c13780948813967d04cb105f9b9996",
           "path": "scripts/colab/README.md"
         },
         {
-          "hash": "51a071101e12a2a1f81f339df4f8bdbe5d0102e66fdbbe15611b2bb9f4e4aa43",
+          "hash": "eb7e84a3b4810cda11891d92336c7db4f6d26b9f601f8a033334b5183b193f4d",
           "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
         },
         {
           "hash": "097b5523344111fa06a9e0955c2e178abb84c48e8ddab08ea2fb8f2e501dfbee",
           "path": "scripts/colab/boot_gatekeeper_goldens.json"
+        },
+        {
+          "exports": [
+            "build_metadata_receipt",
+            "main",
+            "receipt_filename",
+            "resolve_url",
+            "tree_url",
+            "write_receipt"
+          ],
+          "failurePaths": [
+            {
+              "in": "build_metadata_receipt",
+              "kind": "raise",
+              "line": 70
+            },
+            {
+              "in": "build_metadata_receipt",
+              "kind": "raise",
+              "line": 73
+            },
+            {
+              "in": "build_metadata_receipt",
+              "kind": "raise",
+              "line": 80
+            },
+            {
+              "in": "build_metadata_receipt",
+              "kind": "raise",
+              "line": 85
+            },
+            {
+              "in": "build_metadata_receipt",
+              "kind": "raise",
+              "line": 90
+            },
+            {
+              "in": "build_metadata_receipt",
+              "kind": "raise",
+              "line": 93
+            },
+            {
+              "in": "main",
+              "kind": "except",
+              "line": 124
+            },
+            {
+              "kind": "raise",
+              "line": 133
+            }
+          ],
+          "hash": "93dd5e5f11454c07d64b2cde9928874a597c9a9e11675d0e2c5ead59475abe3c",
+          "path": "scripts/colab/build_metadata_receipt.py"
         },
         {
           "exports": [
@@ -329,34 +382,39 @@
             {
               "in": "load_and_verify_receipt_rows",
               "kind": "raise",
-              "line": 54
+              "line": 56
             },
             {
               "in": "load_and_verify_receipt_rows",
               "kind": "raise",
-              "line": 59
+              "line": 61
             },
             {
               "in": "load_and_verify_receipt_rows",
               "kind": "raise",
-              "line": 65
+              "line": 67
             },
             {
               "in": "load_and_verify_receipt_rows",
               "kind": "raise",
-              "line": 69
+              "line": 71
+            },
+            {
+              "in": "load_and_verify_receipt_rows",
+              "kind": "raise",
+              "line": 78
             },
             {
               "in": "extract_weights_table_block",
               "kind": "raise",
-              "line": 118
+              "line": 128
             },
             {
               "kind": "raise",
-              "line": 197
+              "line": 207
             }
           ],
-          "hash": "fc787c5e8385b5e20412016bd76aced4e3ac0454c2e297b73980aecc0b1d88a3",
+          "hash": "a15666a5e966495321ca377e552fa715ebf2d3c9627b2e91dc54379f74c1d3d8",
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
           ],
@@ -1241,6 +1299,10 @@
           "path": "scripts/colab/rate_rereads.py"
         },
         {
+          "hash": "4fecf9dc76a606c05ea408ac820cb603b205bd352525542a520781d083094bd4",
+          "path": "scripts/colab/receipts/MoritzLaurer__DeBERTa-v3-large-mnli-fever-anli-ling-wanli.sha256.json"
+        },
+        {
           "hash": "df36a5ff08bb9f36650af618a17455dbaab810ab52d9b5025370a2bfb597947d",
           "path": "scripts/colab/receipts/flowaicom__Flow-Judge-v0.1.sha256.json"
         },
@@ -1255,6 +1317,10 @@
         {
           "hash": "3e44f5531c2df005c65e477aee80d29d9d6eeb4d98b6057a22529a05b5696352",
           "path": "scripts/colab/receipts/qybaihe__mu-judge-nemotron-nano-4b.sha256.json"
+        },
+        {
+          "hash": "5940b594536b02b63199808f5464909c669b1f95c38d5c1c92f97ffe9e863db3",
+          "path": "scripts/colab/receipts/vllm-sr__d3-flash.sha256.json"
         },
         {
           "hash": "d159293a6366783c16a6102005d194fdc663d313a022101a956d17dd71655bf9",
@@ -3772,7 +3838,7 @@
               "line": 16004
             }
           ],
-          "hash": "2fd05c44391acf150333dd250fc4139e4bcdcba79c950fe05947044d6a27ce55",
+          "hash": "47048f8f8f52c0b7cca8d2da17dc7fcab1bb581144cb3e793609b54f7d4fc98d",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -3800,7 +3866,7 @@
           "where": [
             "caller"
           ],
-          "writes": 50
+          "writes": 51
         },
         {
           "reads": 10,
@@ -3811,7 +3877,7 @@
         }
       ],
       "outsideReads": 99,
-      "outsideWrites": 50,
+      "outsideWrites": 51,
       "role": "code",
       "testRunners": [
         "pytest"
@@ -18815,7 +18881,9 @@
             "test_arm6_symmetric_entry_is_the_preregistered_words",
             "test_ban_check_bites_on_the_old_words",
             "test_binary_and_arm1_prompts_stay_byte_identical_to_cd1aaf8",
+            "test_committed_d5c_receipts_match_the_pins_and_pass_the_preflight",
             "test_d3_flash_code_must_match_the_reviewed_receipt",
+            "test_d3_flash_flipped_weight_byte_is_refused_before_the_model_loads",
             "test_d3_flash_gate_takes_its_own_pin_and_refuses_anything_else",
             "test_d3_transport_runs_d3_flash_and_two_questions_with_the_review_recorded",
             "test_every_new_arm_passes_the_whole_prompt_ban",
@@ -18825,6 +18893,9 @@
             "test_item9_truncated_rows_download_is_refused_not_counted_and_not_kept",
             "test_launcher_refuses_bad_d5c_windows_before_colab_new",
             "test_launcher_text_names_every_mode_from_vm_judges",
+            "test_metadata_receipt_builder_refuses_unsound_listings",
+            "test_metadata_receipt_verifies_a_matching_snapshot_and_refuses_a_tampered_one",
+            "test_nli_flipped_weight_byte_is_refused_before_the_model_loads",
             "test_nli_label_order_is_read_from_config_and_never_assumed",
             "test_nli_readout_maps_labels_and_refuses_anything_else",
             "test_nli_transport_reads_labels_from_config_and_returns_the_softmax",
@@ -18842,7 +18913,7 @@
             "test_vm_d3_family_gate_and_remote_code_arg",
             "test_vm_judges_copies_match_the_wording_table_and_the_specs"
           ],
-          "hash": "fca0a2c7cd718d9eaef061425baecbad76572b7d64a3488c8134529a0c7c8e45",
+          "hash": "ebc6aa862d73efc702f3dc32d1a2eb9a9d771f8e7b4ec3bdcd2daa1d6d4bc7ed",
           "importOrder": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -18853,9 +18924,11 @@
             "tests/test_colab_judge_launcher.py",
             "tests/test_colab_three_way_contradicted_pass_mode.py",
             "tests/test_colab_three_way_pass_mode.py",
-            "tests/test_bakeoff_judge_d3_transport.py"
+            "tests/test_bakeoff_judge_d3_transport.py",
+            "scripts/colab/build_metadata_receipt.py"
           ],
           "importsFiles": [
+            "scripts/colab/build_metadata_receipt.py",
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
@@ -19114,7 +19187,7 @@
             "test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local",
             "test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log"
           ],
-          "hash": "0c20f90c5f1552158324fa1af241525339333a293bfc5f456afc734bff702a3f",
+          "hash": "bb05bbf68a6833d1d5b9f71eaa9931f57993226933ceb217ab790260388ca2c8",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -20382,7 +20455,7 @@
             "file": "scripts/colab/vm_judges.py",
             "from": "tests/fixtures/fake_colab.py"
           },
-          "files": 5
+          "files": 6
         },
         {
           "boundary": "src",
@@ -20909,12 +20982,17 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "b0fc1702e5ff8487507a42ae0727564f26d85da0",
-    "tracked": 181
+    "commit": "65ac945b91d6f2d3ebe83ff9256c192da1be2ce3",
+    "tracked": 184
   },
   "landings": [
     {
       "readers": [
+        {
+          "by": "scripts/colab/receipts/MoritzLaurer__DeBERTa-v3-large-mnli-fever-anli-ling-wanli.sha256.json",
+          "call": "literal",
+          "confidence": "text"
+        },
         {
           "by": "scripts/colab/receipts/flowaicom__Flow-Judge-v0.1.sha256.json",
           "call": "literal",
@@ -20936,6 +21014,11 @@
           "confidence": "text"
         },
         {
+          "by": "scripts/colab/receipts/vllm-sr__d3-flash.sha256.json",
+          "call": "literal",
+          "confidence": "text"
+        },
+        {
           "by": "scripts/colab/receipts/vllm-sr__d3-mini.sha256.json",
           "call": "literal",
           "confidence": "text"
@@ -20953,6 +21036,11 @@
         },
         {
           "by": "scripts/colab/receipts/nvidia__NVIDIA-Nemotron-3-Nano-4B-BF16.sha256.json",
+          "call": "literal",
+          "confidence": "text"
+        },
+        {
+          "by": "scripts/colab/receipts/vllm-sr__d3-flash.sha256.json",
           "call": "literal",
           "confidence": "text"
         },
@@ -21069,6 +21157,11 @@
           "confidence": "config"
         },
         {
+          "by": "scripts/colab/receipts/MoritzLaurer__DeBERTa-v3-large-mnli-fever-anli-ling-wanli.sha256.json",
+          "call": "literal",
+          "confidence": "text"
+        },
+        {
           "by": "scripts/colab/receipts/flowaicom__Flow-Judge-v0.1.sha256.json",
           "call": "literal",
           "confidence": "text"
@@ -21089,6 +21182,11 @@
           "confidence": "text"
         },
         {
+          "by": "scripts/colab/receipts/vllm-sr__d3-flash.sha256.json",
+          "call": "literal",
+          "confidence": "text"
+        },
+        {
           "by": "scripts/colab/receipts/vllm-sr__d3-mini.sha256.json",
           "call": "literal",
           "confidence": "text"
@@ -21105,6 +21203,12 @@
           "fromTests": true,
           "ref": "main",
           "repo": "yl4579/StyleTTS2"
+        },
+        {
+          "by": "tests/test_colab_d5c_six_arm.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
         },
         {
           "by": "tests/test_colab_judge_launcher.py",
@@ -21381,6 +21485,11 @@
           "by": "scripts/colab/README.md",
           "call": "--receipts-dir",
           "confidence": "text"
+        },
+        {
+          "by": "scripts/colab/build_metadata_receipt.py",
+          "call": "literal",
+          "confidence": "ast"
         },
         {
           "by": "scripts/colab/generate_weights_table.py",

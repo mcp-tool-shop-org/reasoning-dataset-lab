@@ -241,10 +241,10 @@ EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
     },
 }
 
-# Disk preflight constants for the 5 bake-off judges and 2 CPython 3.15 venvs:
-# - Weights total (sum of `total_bytes` across the 5 `<owner>__<repo>.sha256.json` receipts):
-#   7,644,593,918 + 16,770,923,290 + 7,964,584,688 + 7,964,239,519 + 9,107,255,624 = 49,451,597,039 bytes (46.06 GiB)
-# - Rig download time across the 5 receipts: 123.9 + 264.8 + 130.1 + 128.5 + 150.1 = 797.4 s (797 s)
+# Disk preflight constants for the 5 bake-off judges, the 2 D5c judges (metadata receipts) and 2 CPython 3.15 venvs:
+# - Weights total (sum of `total_bytes` across the 7 `<owner>__<repo>.sha256.json` receipts; the D5c two add 20,951,864,838):
+#   49,451,597,039 (the five) + 16,815,718,986 (d3-flash) + 4,136,145,852 (encoder) = 70,403,461,877 bytes (65.57 GiB)
+# - Rig download time across the 5 downloaded receipts: 123.9 + 264.8 + 130.1 + 128.5 + 150.1 = 797.4 s (797 s)
 # - Venvs compressed wheel/sdist sums:
 #   `judge.lock.txt` (54 packages) = 2,779,391,889 bytes (2.59 GiB)
 #   `d3.lock.txt`    (55 packages) = 2,779,228,374 bytes (2.59 GiB)
@@ -252,8 +252,8 @@ EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
 # - Installed size estimate (2.0x compressed wheels covering unpacked site-packages + wheel cache):
 #   2 * 5,558,620,263 = 11,117,240,526 bytes (10.35 GiB)
 # - Required free disk with 15% safety margin:
-#   ceil((49,451,597,039 + 11,117,240,526) * 1.15) = ceil(60,568,837,565 * 1.15) = 69,654,163,200 bytes (64.87 GiB)
-EXPECTED_WEIGHTS_TOTAL_BYTES = 49_451_597_039
+#   ceil((70,403,461,877 + 11,117,240,526) * 1.15) = ceil(81,520,702,403 * 1.15) = 93,748,807,764 bytes (87.31 GiB)
+EXPECTED_WEIGHTS_TOTAL_BYTES = 70_403_461_877  # all 7 receipts (pinned to them by a test)
 EXPECTED_WEIGHTS_DOWNLOAD_SECONDS = 797.4
 VENV_JUDGE_WHEEL_BYTES = 2_779_391_889
 VENV_D3_WHEEL_BYTES = 2_779_228_374
