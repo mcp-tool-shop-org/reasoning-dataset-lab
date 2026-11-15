@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-15 from commit 2b51172 by Atlas 1.26.0.
+Mapped at 2026-11-15 from commit 24ecbad by Atlas 1.26.0.
 
 ## What this is
 
@@ -8,11 +8,9 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (87 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-15 (bf36ad9)
+## What changed since 2026-11-15 (2b51172)
 
-- .gitattributes is now also read by scripts/colab/receipts/baselabs__elephant-1.sha256.json.
-- README.md is now also read by scripts/colab/receipts/baselabs__elephant-1.sha256.json and tests/test_colab_d5c_elephant.py.
-- 2 files added and 10 changed content, across 4 parts.
+Nothing structural changed since 2026-11-15; 2 files changed content.
 
 ## What comes in
 
@@ -51,7 +49,7 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 10 of 12 commits, and the tests part imports the src part.
 - **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 31 of 41 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/fact_tables.py** and **tests/test_pilot_b_variety.py** changed together in 5 of 7 commits, and the tests part imports the src part.
-- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 21 of 37 commits, inside the tests part.
+- **src/reasoning_dataset_lab/pilot_b/rendering.py** and **tests/test_pilot_b_part_b.py** changed together in 5 of 9 commits, and the tests part imports the src part.
 
 1 file changed together with its own test, as expected.
 

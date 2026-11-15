@@ -19016,6 +19016,7 @@
             "test_elephant_readout_renormalises_over_the_three_options_and_reports_outside_mass",
             "test_elephant_shows_arm1s_d3_style_words_and_passes_the_ban",
             "test_elephant_transport_length_refusal_and_unverified_runtime",
+            "test_elephant_transport_reuses_its_engine_and_raises_other_errors",
             "test_elephant_transport_runs_qev_offline_with_telemetry_off_and_reports_outside_mass",
             "test_outside_mass_report_per_class_and_order",
             "test_seven_arm_stub_window_with_elephant_and_scores_outside_mass",
@@ -19024,7 +19025,7 @@
             "test_venv_elephant_install_is_skipped_outside_real_windows",
             "test_venv_elephant_install_steps_env_timings_and_record"
           ],
-          "hash": "1b243e9c301ee26c6a11f9acd02e2259b557bfde7236d40c1ddd68e0cbf7c087",
+          "hash": "3d42aad95a3c8843d1f4a36a61e6e031dbf7393db5e1bb38dd811975f7d3ec83",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -19358,7 +19359,7 @@
             "test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local",
             "test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log"
           ],
-          "hash": "299da05606983291d7c800fa247797da2e88576e544ec7ae7dbcbc3545b5372f",
+          "hash": "282807672cbe90047a60a8a5a5322b00a3838e231efb3eb108b3881b18f82f60",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -21155,7 +21156,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "2b511723a24bee075651e6b7c490a910fbf5cedf",
+    "commit": "24ecbadcd47f4669ede7b27f56381dd24754c7a5",
     "tracked": 186
   },
   "landings": [
