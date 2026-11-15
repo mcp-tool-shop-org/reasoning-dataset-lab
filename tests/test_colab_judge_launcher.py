@@ -16333,6 +16333,16 @@ def test_stdlib_shard_manifest_records_prompt_shas_matching_the_package_builder(
     assert std["input_token_ids_sha_source"] == pkg["input_token_ids_sha_source"] == "canonical_prompt"
     assert std["prompt_sha256_by_call"] == pkg["prompt_sha256_by_call"]
     assert pkg["prompt_sha256_by_call"] == bakeoff_judge.compute_prompt_sha256_by_call(items_path)
+    # Items passed in memory give the same map; a judge filter and three-way mode narrow it.
+    loaded, _ = bakeoff_judge.load_judge_items(items_path)
+    assert bakeoff_judge.compute_prompt_sha256_by_call(loaded) == pkg["prompt_sha256_by_call"]
+    only_mu = bakeoff_judge.compute_prompt_sha256_by_call(loaded, judge_ids=("mu-judge", "not-a-judge"))
+    assert only_mu and all(k.endswith(":mu-judge") for k in only_mu)
+    three_way = bakeoff_judge.compute_prompt_sha256_by_call(loaded, pass_mode="three_way")
+    three_way_judges = {k.rsplit(":", 1)[1] for k in three_way}
+    assert three_way_judges == {
+        jid for jid, spec in BAKEOFF_JUDGE_SPECS.items() if spec.supports_three_way
+    }
 
 
 def test_item10_parallel_two_shard_stub_windows_and_merge_end_to_end(
