@@ -7892,7 +7892,7 @@ def _run_judges_pipeline_body(
             )
 
         if is_anchor_prefix_pass:
-            anchor_row_file = run_dir / "anchor_rows" / f"{judge_id}.jsonl"
+            anchor_row_file = run_dir / "anchor_rows" / rows_filename_for_pass(judge_id, pass_mode_j)
             if not anchor_row_file.is_file():
                 _fail_child_postcheck(
                     f"Judge {judge_id} anchor prefix pass exited 0 but {anchor_row_file} is missing"
@@ -8129,13 +8129,13 @@ def _run_judges_pipeline_body(
         anchor_rows_dir = run_dir / "anchor_rows"
         anchor_rows_dir.mkdir(parents=True, exist_ok=True)
         for jid, _ in selected_specs:
-            rf = run_dir / ROWS_DIRNAME / f"{jid}.jsonl"
+            rf = run_dir / ROWS_DIRNAME / rows_filename_for_pass(jid, eff_pass_mode)
             j_anchor_lines: list[str] = []
             for ln in (rf.read_text(encoding="utf-8").splitlines() if rf.is_file() else ()):
                 robj = json.loads(ln)
                 if str(robj.get("item_id") or "") in anchor_set:
                     j_anchor_lines.append(json.dumps(robj, sort_keys=True))
-            (anchor_rows_dir / f"{jid}.jsonl").write_text(
+            (anchor_rows_dir / rows_filename_for_pass(jid, eff_pass_mode)).write_text(
                 ("\n".join(j_anchor_lines) + "\n") if j_anchor_lines else "",
                 encoding="utf-8",
                 newline="\n",
@@ -10882,7 +10882,7 @@ def _collect_judge_receipt_digests(
         "added_tokens.json",
     }
     out: dict[str, dict[str, str]] = {}
-    for jid, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+    for jid, spec in _session_env_judge_specs(receipts_dir):  # the five, plus a D5c judge whose receipt is present
         slug = spec.repo_id.replace("/", "__")
         rec_file = receipts_dir / f"{slug}.sha256.json"
         w_entries: list[str] = []
@@ -15718,6 +15718,16 @@ def receipt_tar_specs(raw_only_judges: str | None = None) -> list[JudgeSpec]:
     raw = os.environ.get("RDLAB_ONLY_JUDGES") if raw_only_judges is None else raw_only_judges
     named = [j for j in str(raw or "").split(",") if j in D5C_JUDGE_SPECS]
     return [JUDGE_SPECS[j] for j in (*DEFAULT_JUDGE_ORDER, *sorted(set(named)))]
+
+
+def _session_env_judge_specs(receipts_dir: Path) -> list[tuple[str, JudgeSpec]]:
+    """The judges a session_env records digests for: the five always (unchanged), plus each D5c judge whose receipt is in
+    `receipts_dir` (packed only when a window names it), so a merge of a D5c pass finds its digests."""
+    extra = [
+        (j, s) for j, s in sorted(D5C_JUDGE_SPECS.items())
+        if (Path(receipts_dir) / f"{s.repo_id.replace('/', '__')}.sha256.json").is_file()
+    ]
+    return [*sorted(BAKEOFF_JUDGE_SPECS.items()), *extra]
 
 # --- per-judge pass modes: one window, each judge in its own arm(s) -------------------------------------------------
 

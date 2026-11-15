@@ -1,6 +1,6 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-15 from commit 65ac945 by Atlas 1.26.0.
+Mapped at 2026-11-15 from commit bf36ad9 by Atlas 1.26.0.
 
 ## What this is
 
@@ -8,13 +8,9 @@ reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whos
 
 9 parts, mostly Python (86 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-15 (b0fc170)
+## What changed since 2026-11-15 (65ac945)
 
-- .gitattributes is now also read by scripts/colab/receipts/MoritzLaurer__DeBERTa-v3-large-mnli-fever-anli-ling-wanli.sha256.json and scripts/colab/receipts/vllm-sr__d3-flash.sha256.json.
-- LICENSE is now also read by scripts/colab/receipts/vllm-sr__d3-flash.sha256.json.
-- README.md is now also read by scripts/colab/receipts/MoritzLaurer__DeBERTa-v3-large-mnli-fever-anli-ling-wanli.sha256.json, scripts/colab/receipts/vllm-sr__d3-flash.sha256.json and tests/test_colab_d5c_six_arm.py.
-- And 1 more new writer or reader of a place.
-- 3 files added and 7 changed content, across 3 parts.
+Nothing structural changed since 2026-11-15; 5 files changed content.
 
 ## What comes in
 

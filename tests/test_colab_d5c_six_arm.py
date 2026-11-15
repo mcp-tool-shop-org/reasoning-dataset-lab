@@ -1437,3 +1437,102 @@ def test_nli_flipped_weight_byte_is_refused_before_the_model_loads(tmp_path: Pat
         tr.generate(spec, _prompt(ENCODER, ITEMS[0], "AB", NLI), seed=1)
     assert exc.value.code == "BAKEOFF_JUDGE_SNAPSHOT_SHA_MISMATCH"
     assert rec["model"] == [] and rec["tok"] == []
+
+
+# --- 11. merge_shards after #92: one source of truth for names, and no empty or unknown modes (#92 review B2, B4) --
+
+
+@pytest.mark.parametrize("pass_mode", three_way_wording.PASS_MODE_CHOICES)
+def test_merge_shards_names_rows_and_judge_done_like_the_vm(pass_mode: str) -> None:
+    import merge_shards
+
+    for jid in JUDGE_SPECS:
+        assert merge_shards._rows_filename_for_pass(jid, pass_mode) == vm_judges.rows_filename_for_pass(jid, pass_mode)
+        assert merge_shards._judge_done_filename_for_pass(jid, pass_mode) == vm_judges.judge_done_filename_for_pass(jid, pass_mode)
+    default = merge_shards._default_judge_ids_for_pass_mode(pass_mode)
+    assert set(default) == set(three_way_wording.PASS_MODE_JUDGES[pass_mode]) and len(default) == len(set(default))
+
+
+def test_merge_shards_refuses_unknown_modes_and_an_empty_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    import merge_shards
+
+    for bad in ("three_way_future", "per_judge", "", "../x", "Three_Way"):
+        with pytest.raises(merge_shards.MergeRefusalError) as exc:
+            merge_shards._judge_done_filename_for_pass("d3-mini", bad)
+        assert exc.value.failure_class == "MERGE_INVALID_PASS_MODE", bad
+        with pytest.raises(merge_shards.MergeRefusalError):
+            merge_shards._default_judge_ids_for_pass_mode(bad)
+    assert merge_shards._default_judge_ids_for_pass_mode(NLI) == (ENCODER,)
+    assert FLASH in merge_shards._default_judge_ids_for_pass_mode(CONTRA)
+    assert merge_shards._validate_expected_judge_ids([FLASH], pass_mode=CONTRA) == (FLASH,)
+    monkeypatch.setitem(three_way_wording.PASS_MODE_JUDGES, NLI, frozenset())
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_empty:
+        merge_shards._default_judge_ids_for_pass_mode(NLI)
+    assert exc_empty.value.failure_class == "MERGE_INVALID_JUDGE_ID"
+
+
+@pytest.mark.parametrize(("pass_mode", "judge_id"), [(TWO_Q, "d3-mini"), (SYM, "d3-mini"), (NLI, ENCODER)])
+def test_merge_shards_merges_each_new_mode_by_its_own_judge_done(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pass_mode: str, judge_id: str
+) -> None:
+    """One sharded stub merge per new mode: the shards' rows are `<jid>.<mode>.jsonl` and their judge_done is
+    `<jid>.<mode>.json` (no legacy `<jid>.json` exists); the default judge set is the mode's; removing the per-mode
+    judge_done makes the merge refuse, so merge reads that name."""
+    import merge_shards
+    import os
+
+    from tests.test_colab_judge_launcher import _make_stratified_public_items
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rec")
+    _add_d5c_snapshots(receipts_dir, hf_home)
+    items_path = _make_stratified_public_items(tmp_path / "items", count=6)
+    manifest_doc = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=2, anchor_count=2, stratified_anchor_count=2, canary_anchor_count=0, pass_mode=pass_mode
+    )
+    manifest_path = tmp_path / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+    spec = JUDGE_SPECS[judge_id]
+    shard_dirs: list[Path] = []
+    for k_idx in (1, 2):
+        sdir = tmp_path / f"shard_{k_idx}"
+        sdir.mkdir()
+        spec_str = f"{k_idx}/2"
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir, receipts_dir=receipts_dir, mode="stub", shard_spec=spec_str, phase="start", dryrun=True
+        )
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir, receipts_dir=receipts_dir, mode="stub", shard_spec=spec_str, phase="end", dryrun=True, prior_session_env=s_env
+        )
+        bakeoff_judge.run_bakeoff_judge(
+            part_dir=items_path,
+            output_dir=sdir,
+            judge=judge_id,
+            pass_mode=pass_mode,
+            fake_transport=True,
+            allow_remote_code_reviewed=spec.revision if spec.requires_remote_code else None,
+            shard_spec=spec_str,
+            shard_manifest_path=manifest_path,
+            shard_manifest_sha256=manifest_sha,
+            session_fingerprint_sha256=s_env["session_fingerprint_sha256"],
+        )
+        assert (sdir / "judge_done" / f"{judge_id}.{pass_mode}.json").is_file()
+        assert not (sdir / "judge_done" / f"{judge_id}.json").exists()
+        assert (sdir / "anchor_rows" / f"{judge_id}.{pass_mode}.jsonl").is_file()
+        vm_judges.write_outputs_closed(sdir)
+        shard_dirs.append(sdir)
+    rec = merge_shards.merge_shards(
+        shard_dirs=shard_dirs, manifest_path=manifest_path, output_dir=tmp_path / "merged", items_path=items_path,
+        allow_unpinned_stub=True,
+    )
+    assert rec["status"] == "ok" and rec["pass_mode"] == pass_mode and rec["expected_judge_ids"] == [judge_id]
+    (shard_dirs[0] / "judge_done" / f"{judge_id}.{pass_mode}.json").unlink()
+    vm_judges.write_outputs_closed(shard_dirs[0])
+    with pytest.raises(merge_shards.MergeRefusalError):
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs, manifest_path=manifest_path, output_dir=tmp_path / "merged2", items_path=items_path,
+            allow_unpinned_stub=True,
+        )

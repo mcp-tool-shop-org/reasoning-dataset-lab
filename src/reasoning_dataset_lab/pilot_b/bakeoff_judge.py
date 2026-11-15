@@ -2735,7 +2735,7 @@ def build_shard_manifest(
 
     anchor_item_ids = [*stratified_anchor_ids, *resolved_canary_ids]
 
-    adapters = {jid: build_judge_adapter(spec) for jid, spec in sorted(BAKEOFF_JUDGE_SPECS.items())}
+    adapters = {jid: build_judge_adapter(spec) for jid, spec in sorted(JUDGE_SPECS.items())}  # filtered by mode below
     input_token_ids_sha256_by_call: dict[str, str] = {}
     prompt_sha256_by_call: dict[str, str] = {}
     for entry in schedule.entries:
@@ -8264,8 +8264,8 @@ def compute_prompt_sha256_by_call(
         items, _ = _resolve_items_from_manifest_source(items_or_path)
     else:
         items = tuple(items_or_path)
-    eff_judges = sorted(BAKEOFF_JUDGE_SPECS) if judge_ids is None else [j for j in judge_ids if j in BAKEOFF_JUDGE_SPECS]
-    adapters = {jid: build_judge_adapter(BAKEOFF_JUDGE_SPECS[jid]) for jid in eff_judges}
+    eff_judges = sorted(JUDGE_SPECS) if judge_ids is None else [j for j in judge_ids if j in JUDGE_SPECS]
+    adapters = {jid: build_judge_adapter(JUDGE_SPECS[jid]) for jid in eff_judges}
     out: dict[str, str] = {}
     for it in items:
         for jid, adapter in adapters.items():
