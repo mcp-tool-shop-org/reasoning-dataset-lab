@@ -133,11 +133,12 @@ Options:
                        and outcome.draft.json.
 
 Environment:
-  RDLAB_ONLY_JUDGES    --time-one only: comma-separated subset of the 5 judges to time (no spaces, no duplicates).
-                       The boot gatekeeper's judge (the goldens' judge_id, nemotron-3-nano-4b) is downloaded and
-                       verified as well, once, in every real --time-one / --counted / --lock-check window, and is
-                       recorded as boot_gatekeeper_judge; it is not timed, and only_judges stays as given. --dry
-                       prints the set as a [judges] line. A window whose gatekeeper judge could not be downloaded
+  RDLAB_ONLY_JUDGES    --time-one or --stub (with no --until or --until first_load): comma-separated subset of the 5
+                       judges to run (no spaces, no duplicates; cannot be combined with RDLAB_JUDGE_ORDER or
+                       RDLAB_FIRST_LOAD_JUDGE_ID). In every real --time-one / --counted / --lock-check window, the
+                       boot gatekeeper's judge (the goldens' judge_id, nemotron-3-nano-4b) is downloaded and verified
+                       as well, once, and recorded as boot_gatekeeper_judge; it is not timed, and only_judges stays
+                       as given. --dry prints the set as a [judges] line. A window whose gatekeeper judge could not be downloaded
                        and verified is refused before the session opens (BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED, or
                        BOOT_GATEKEEPER_RECEIPT_MISSING when the receipts directory lacks its receipt). Every judge in
                        the download/verify set has its receipt checked then too (present, valid JSON with a files
@@ -839,10 +840,11 @@ try:
         os.environ.get("RDLAB_HF_DOWNLOAD_MAX_WORKERS"),
         os.environ.get("HF_XET_NUM_CONCURRENT_RANGE_GETS"),
     )
-    vm_judges.validate_only_judges(
+    only_judges_t = vm_judges.validate_only_judges(
         mode,
         os.environ.get("RDLAB_ONLY_JUDGES", None),
         raw_judge_order=os.environ.get("RDLAB_JUDGE_ORDER", None),
+        raw_first_load_judge_id=os.environ.get("RDLAB_FIRST_LOAD_JUDGE_ID", None),
         until=until_step,
         session_smoke=is_smoke,
     )
@@ -852,7 +854,7 @@ try:
         until=until_step,
         session_smoke=is_smoke,
     )
-    vm_judges.validate_first_load_judge_id(
+    first_load_id_t, _ = vm_judges.validate_first_load_judge_id(
         mode,
         until_step,
         os.environ.get("RDLAB_FIRST_LOAD_JUDGE_ID", None),
@@ -877,20 +879,14 @@ try:
     # The boot gatekeeper's judge (the goldens' judge_id) joins the download/verify set of every real window that
     # runs the gatekeeper, whatever RDLAB_ONLY_JUDGES says; refused here, before the session opens, when it could not
     # be downloaded and verified (BOOT_GATEKEEPER_JUDGE_NOT_DOWNLOADED / BOOT_GATEKEEPER_RECEIPT_MISSING).
-    only_judges_t = vm_judges.validate_only_judges(
-        mode,
-        os.environ.get("RDLAB_ONLY_JUDGES", None),
-        raw_judge_order=os.environ.get("RDLAB_JUDGE_ORDER", None),
-        until=until_step,
-        session_smoke=is_smoke,
-    )
-    judge_order_t = (
-        only_judges_t
-        if only_judges_t is not None
-        else vm_judges.validate_judge_order(
+    if only_judges_t is not None:
+        judge_order_t = only_judges_t
+    elif until_step == "first_load":
+        judge_order_t = (first_load_id_t,)
+    else:
+        judge_order_t = vm_judges.validate_judge_order(
             mode, os.environ.get("RDLAB_JUDGE_ORDER", None), until=until_step, session_smoke=is_smoke
         )[0]
-    )
     # The pass mode (binary | three_way), refused before the session opens: an unknown value (PASS_MODE_INVALID), a
     # mode that takes no 3-way pass (PASS_MODE_NOT_FOR_MODE) or a judge without a 3-way prompt in the window's set
     # (BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED), before any download.

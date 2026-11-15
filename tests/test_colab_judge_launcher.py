@@ -13232,9 +13232,11 @@ def test_only_judges_d3_mini_under_time_one_downloads_verifies_and_runs_only_d3_
 def test_only_judges_refused_with_stub_with_judge_order_unknown_id_and_duplicate(
     tmp_path: Path,
 ) -> None:
-    """Card Part 1 Item 3 & Item 4(7):
-    `RDLAB_ONLY_JUDGES` is refused (`ONLY_JUDGES_INVALID`, before `colab new`) with `--stub`,
-    with `RDLAB_JUDGE_ORDER`, on an unknown id, and on a duplicate (plus empty or whitespace).
+    """Card Part 1 Item 3 & Item 4(7) + issue #85:
+    `RDLAB_ONLY_JUDGES` is refused (`ONLY_JUDGES_INVALID`, before `colab new`) outside `--time-one` / `--stub`
+    (`--counted-stub`), with disallowed `--until` (`weights`, `first_judge`), with `RDLAB_JUDGE_ORDER`, with
+    `RDLAB_FIRST_LOAD_JUDGE_ID`, on an unknown id (in `--time-one` or `--stub`), and on a duplicate (plus empty or
+    whitespace).
     """
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(
         tmp_path / "only_ref_data"
@@ -13254,8 +13256,11 @@ def test_only_judges_refused_with_stub_with_judge_order_unknown_id_and_duplicate
     )
     refusal_cases = [
         # (env_prefix, cli_flags)
-        ("RDLAB_ONLY_JUDGES='d3-mini'", "--stub"),
-        ("RDLAB_ONLY_JUDGES='d3-mini'", "--stub --until first_load"),
+        ("RDLAB_ONLY_JUDGES='d3-mini'", "--counted-stub"),
+        ("RDLAB_ONLY_JUDGES='d3-mini'", "--stub --until weights"),
+        ("RDLAB_ONLY_JUDGES='d3-mini'", "--stub --until first_judge"),
+        ("RDLAB_ONLY_JUDGES='d3-mini' RDLAB_FIRST_LOAD_JUDGE_ID='mu-judge'", "--stub --until first_load"),
+        ("RDLAB_ONLY_JUDGES='unknown-judge'", "--stub"),
         (
             f"RDLAB_ONLY_JUDGES='d3-mini' RDLAB_JUDGE_ORDER='{perm_all}'",
             "--time-one --card A100 --shape standard",
