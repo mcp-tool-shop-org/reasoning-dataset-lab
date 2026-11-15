@@ -3644,13 +3644,21 @@ if (out_dir / "judge_done").is_dir():
     for jf in sorted((out_dir / "judge_done").glob("*.json")):
         if jf.is_file():
             paths_to_check.append(jf)
-for p in sorted(extract_dir.rglob("*")):
-    if p.is_file():
-        paths_to_check.append(p)
+generation_output_paths: list[Path] = []
+if (out_dir / "generations.jsonl").is_file():
+    generation_output_paths.append(out_dir / "generations.jsonl")
+for copied_sub in ("rows", "anchor_rows"):
+    copied_dir = out_dir / copied_sub
+    if copied_dir.is_dir():
+        for cf in sorted(copied_dir.glob("*.jsonl")):
+            if cf.is_file():
+                generation_output_paths.append(cf)
 
 try:
-    vm_judges.verify_rig_logs_and_outputs_clean(
-        paths_to_check,
+    vm_judges.verify_rig_fetched_outputs_clean(
+        scan_paths=paths_to_check,
+        extract_dir=extract_dir,
+        private_generation_paths=generation_output_paths,
         claim_ngram_sha256s=claim_hashes,
     )
 except vm_judges.RefusalError as exc:
