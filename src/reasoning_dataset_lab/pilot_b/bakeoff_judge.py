@@ -4217,7 +4217,7 @@ def measure_canary_tolerance(
     per_judge: dict[str, Any] = {}
     overall_max_dev = 0.0
     total_token_mismatches = 0
-    for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+    for judge_id, spec in sorted((j, BAKEOFF_JUDGE_SPECS[j]) for j in ORIGINAL_JUDGE_IDS):  # the five
         adapter = build_judge_adapter(spec)
         transport = DeterministicFakeJudgeTransport()
         transport.verify_ready(
@@ -4542,7 +4542,7 @@ def probe_judge_determinism(
         ]
 
     judges_out: dict[str, Any] = {}
-    for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+    for judge_id, spec in sorted((j, BAKEOFF_JUDGE_SPECS[j]) for j in ORIGINAL_JUDGE_IDS):  # the five
         adapter = build_judge_adapter(spec)
         op_fn = (per_judge_op or {}).get(judge_id)
         judges_out[judge_id] = _run_cpu_transport_probe_for_judge(
@@ -7333,7 +7333,7 @@ def prepare_lock_check_p0a(
         p0a_items_sha256=items_sha256 if limit_items is None else None,
     )
 
-    target_jids = judge_ids if judge_ids is not None else sorted(BAKEOFF_JUDGE_SPECS.keys())
+    target_jids = judge_ids if judge_ids is not None else sorted(ORIGINAL_JUDGE_IDS)  # the five
     active_judges = (
         list(judges)
         if judges is not None
@@ -8283,6 +8283,7 @@ def compute_prompt_sha256_by_call(
 from reasoning_dataset_lab.pilot_b.three_way_wording import (  # noqa: E402
     INCONSISTENT_VERDICT,
     NLI_LABEL_TO_INTERNAL,
+    ORIGINAL_JUDGE_IDS,
     THREE_WAY_INTERNAL_CLASSES,
     two_question_verdict,
     two_question_wording,

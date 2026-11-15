@@ -10690,7 +10690,7 @@ def build_shard_manifest_stdlib(
     for entry in entries:
         it = items_by_id[str(entry["item_id"])]
         ord_s = str(entry["order"])
-        for jid in sorted(BAKEOFF_JUDGE_SPECS.keys()):
+        for jid in DEFAULT_JUDGE_ORDER:  # the five (sorted); the D5c judges are 3-way only
             prompt_text = _stdlib_assemble_prompt_text(
                 jid, it["material"], it["claim"], ord_s
             )
@@ -10742,7 +10742,7 @@ def build_shard_manifest_stdlib(
         ),
         "anchor_count": len(anchor_item_ids),
         "anchor_item_count": len(anchor_item_ids),
-        "anchor_pair_count": len(anchor_item_ids) * len(BAKEOFF_JUDGE_SPECS),
+        "anchor_pair_count": len(anchor_item_ids) * len(DEFAULT_JUDGE_ORDER),
         "anchor_item_ids": anchor_item_ids,
         "input_token_ids_sha256_by_call": dict(
             sorted(input_token_ids_sha256_by_call.items())
@@ -10882,7 +10882,7 @@ def _collect_judge_receipt_digests(
         "added_tokens.json",
     }
     out: dict[str, dict[str, str]] = {}
-    for jid, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+    for jid, spec in [(j, BAKEOFF_JUDGE_SPECS[j]) for j in DEFAULT_JUDGE_ORDER]:  # the five (sorted)
         slug = spec.repo_id.replace("/", "__")
         rec_file = receipts_dir / f"{slug}.sha256.json"
         w_entries: list[str] = []
@@ -15707,6 +15707,14 @@ def check_d3_family_remote_code_gate(
             f"{spec.judge_id} lists remote-code files other than the eight reviewed d3 files.",
         )
 
+
+
+def receipt_tar_specs(raw_only_judges: str | None = None) -> list[JudgeSpec]:
+    """The judges whose receipts the launcher packs for the VM: the five original judges, plus any D5c judge the window
+    names in RDLAB_ONLY_JUDGES (its receipt must then be present, or the pack refuses RECEIPT_MISSING before spend)."""
+    raw = os.environ.get("RDLAB_ONLY_JUDGES") if raw_only_judges is None else raw_only_judges
+    named = [j for j in str(raw or "").split(",") if j in BAKEOFF_JUDGE_SPECS and j not in DEFAULT_JUDGE_ORDER]
+    return [BAKEOFF_JUDGE_SPECS[j] for j in (*DEFAULT_JUDGE_ORDER, *sorted(set(named)))]
 
 # --- per-judge pass modes: one window, each judge in its own arm(s) -------------------------------------------------
 

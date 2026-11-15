@@ -3650,7 +3650,7 @@ if raw_binding_dst and (binding_record["window_part"] is not None or binding_rec
 shutil.copyfile(repo_root / "src" / "reasoning_dataset_lab" / "pilot_b" / "device.py", device_py_dst)
 
 with tarfile.open(receipts_tar, "w:gz") as tf:
-    for _, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
+    for spec in vm_judges.receipt_tar_specs():  # the five, plus D5c judges named in RDLAB_ONLY_JUDGES
         owner, repo = spec.repo_id.split("/", 1)
         rname = f"{owner}__{repo}.sha256.json"
         rpath = receipts_dir / rname
