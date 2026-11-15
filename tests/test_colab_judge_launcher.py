@@ -15852,6 +15852,358 @@ def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
     jdone_p.write_text(orig_jdone_text, encoding="utf-8")
 
 
+def _build_real_gpu_counted_shards_with_hf_input_shas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[list[Path], Path, Path, Path, dict[str, Any]]:
+    """Two counted shards whose rows carry tokenizer-style input shas that differ from the
+    manifest's stand-in, as rows from a real GPU tokenizer do. Returns (shard_dirs,
+    manifest_path, golden_path, items_path, manifest_doc)."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+
+    receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "rg_rec")
+    items_path = _make_stratified_public_items(tmp_path / "rg_merge", count=6)
+    manifest_doc = bakeoff_judge.build_shard_manifest(
+        items_path, num_shards=2, anchor_count=2, stratified_anchor_count=2, canary_anchor_count=0
+    )
+    assert manifest_doc["input_token_ids_sha_source"] == "canonical_prompt"
+    assert manifest_doc["prompt_sha256_by_call"].keys() == manifest_doc["input_token_ids_sha256_by_call"].keys()
+    manifest_path = tmp_path / "rg_merge" / "shard_manifest.json"
+    manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+
+    def _hf_sha(jid: str, item_id: str, order: str) -> str:
+        return hashlib.sha256(f"hf_tok:{jid}:{item_id}:{order}".encode("utf-8")).hexdigest()
+
+    shard_dirs: list[Path] = []
+    for k_idx in (1, 2):
+        sdir = tmp_path / f"rg_shard_{k_idx}"
+        sdir.mkdir(parents=True, exist_ok=True)
+        spec_str = f"{k_idx}/2"
+        shutil.copyfile(manifest_path, sdir / "shard_manifest.json")
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir, receipts_dir=receipts_dir, mode="stub", shard_spec=spec_str, phase="start", dryrun=True
+        )
+        s_env = vm_judges.collect_and_write_session_env(
+            sdir,
+            receipts_dir=receipts_dir,
+            mode="stub",
+            shard_spec=spec_str,
+            phase="end",
+            dryrun=True,
+            prior_session_env=s_env,
+        )
+        s_env["mode"] = "counted"
+        s_env["dryrun"] = False
+        s_env["determinism"]["status"] = "enforced"
+        s_env["determinism"]["warn_only"] = False
+        s_env["determinism"]["NVIDIA_TF32_OVERRIDE"] = "0"
+        s_env["NVIDIA_TF32_OVERRIDE"] = "0"
+        s_env["determinism"]["torch.backends.cudnn.benchmark"] = False
+        s_env["torch.backends.cudnn.benchmark"] = False
+        (sdir / "session_env.json").write_text(
+            json.dumps(s_env, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        (sdir / "boot_gatekeeper.json").write_text(
+            json.dumps({"status": "ok", "synthetic_fake_hash": False}) + "\n", encoding="utf-8"
+        )
+        for jid in BAKEOFF_JUDGE_SPECS:
+            bakeoff_judge.run_bakeoff_judge(
+                part_dir=items_path,
+                output_dir=sdir,
+                judge=jid,
+                fake_transport=True,
+                allow_remote_code_reviewed=(
+                    bakeoff_judge.D3_MINI_REVIEWED_REVISION if jid == "d3-mini" else None
+                ),
+                shard_spec=spec_str,
+                shard_manifest_path=manifest_path,
+                shard_manifest_sha256=manifest_sha,
+                session_fingerprint_sha256=s_env["session_fingerprint_sha256"],
+            )
+            rpath = sdir / "rows" / f"{jid}.jsonl"
+            rows = [json.loads(ln) for ln in rpath.read_text("utf-8").splitlines() if ln.strip()]
+            for r in rows:
+                r["model_digest"] = "sha256:" + hashlib.sha256(jid.encode()).hexdigest()
+                r["input_token_ids_sha256"] = _hf_sha(jid, r["item_id"], r["order"])
+                r["row_sha256"] = bakeoff_judge.compute_row_body_sha256(r)
+            rpath.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+            jdp = sdir / "judge_done" / f"{jid}.json"
+            jdoc = json.loads(jdp.read_text("utf-8"))
+            jdoc["row_sha256s"] = [r["row_sha256"] for r in rows]
+            jdp.write_text(json.dumps(jdoc) + "\n", encoding="utf-8")
+
+            apath = sdir / "anchor_rows" / f"{jid}.jsonl"
+            arows = [json.loads(ln) for ln in apath.read_text("utf-8").splitlines() if ln.strip()]
+            for ar in arows:
+                ar["model_digest"] = "sha256:" + hashlib.sha256(jid.encode()).hexdigest()
+                ar["input_token_ids_sha256"] = _hf_sha(jid, ar["item_id"], ar["order"])
+            apath.write_text("\n".join(json.dumps(ar) for ar in arows) + "\n", encoding="utf-8")
+
+        vm_judges.write_outputs_closed(sdir)
+        shard_dirs.append(sdir)
+
+    import merge_shards
+
+    golden_entries: dict[str, Any] = {}
+    for jid in BAKEOFF_JUDGE_SPECS:
+        for ln in (shard_dirs[0] / "anchor_rows" / f"{jid}.jsonl").read_text("utf-8").splitlines():
+            if ln.strip():
+                r = json.loads(ln)
+                r["judge_id"] = jid
+                golden_entries[f"{r['item_id']}:{r['order']}:{jid}"] = r
+    golden_doc: dict[str, Any] = {
+        "schema_version": "1.0",
+        "anchor_item_ids": manifest_doc["anchor_item_ids"],
+        "entries": golden_entries,
+    }
+    golden_doc["golden_anchor_manifest_sha256"] = merge_shards._canonical_json_sha256(golden_doc)
+    golden_path = tmp_path / "rg_merge" / "golden_anchor_manifest.json"
+    golden_path.write_text(json.dumps(golden_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return shard_dirs, manifest_path, golden_path, items_path, manifest_doc
+
+
+def _rewrite_shard_rows(sdir: Path, jid: str, mutate: Any) -> tuple[str, str]:
+    """Apply `mutate(rows)` to rows/<jid>.jsonl, re-sealing row_sha256 and judge_done like a
+    tamperer would. Returns the original texts so the caller can restore them."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    rpath = sdir / "rows" / f"{jid}.jsonl"
+    jdp = sdir / "judge_done" / f"{jid}.json"
+    orig_rows, orig_jd = rpath.read_text("utf-8"), jdp.read_text("utf-8")
+    rows = [json.loads(ln) for ln in orig_rows.splitlines() if ln.strip()]
+    mutate(rows)
+    for r in rows:
+        r["row_sha256"] = bakeoff_judge.compute_row_body_sha256(r)
+    rpath.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+    jd_mod = json.loads(orig_jd)
+    jd_mod["row_sha256s"] = [r["row_sha256"] for r in rows]
+    jdp.write_text(json.dumps(jd_mod) + "\n", encoding="utf-8")
+    return orig_rows, orig_jd
+
+
+def _restore_shard_rows(sdir: Path, jid: str, orig: tuple[str, str]) -> None:
+    (sdir / "rows" / f"{jid}.jsonl").write_text(orig[0], encoding="utf-8")
+    (sdir / "judge_done" / f"{jid}.json").write_text(orig[1], encoding="utf-8")
+
+
+def test_real_gpu_merge_checks_prompt_sha_in_place_of_stand_in_input_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real rows skip the stand-in input-sha comparison only because the manifest's
+    prompt_sha256_by_call check runs instead; tampered prompt or input shas refuse without --items."""
+    import merge_shards
+
+    shard_dirs, manifest_path, golden_path, _items_path, manifest_doc = (
+        _build_real_gpu_counted_shards_with_hf_input_shas(tmp_path, monkeypatch)
+    )
+
+    def _merge(tag: str) -> dict[str, Any]:
+        return merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=tmp_path / f"merged_{tag}",
+            golden_anchor_manifest_path=golden_path,
+        )
+
+    # 1. The legitimate real-GPU merge passes with no --items.
+    receipt = _merge("ok")
+    assert all(v == "ok" for v in receipt["gates"].values())
+
+    anchor_ids = set(manifest_doc["anchor_item_ids"])
+    jid = "mu-judge"
+
+    def _shard_with(predicate: Any) -> Path:
+        for sdir in shard_dirs:
+            rows = (sdir / "rows" / f"{jid}.jsonl").read_text("utf-8").splitlines()
+            if any(predicate(json.loads(ln)) for ln in rows if ln.strip()):
+                return sdir
+        raise AssertionError("no shard has a matching row")
+
+    # 2. A tampered prompt_sha256 refuses.
+    sdir0 = shard_dirs[0]
+    orig = _rewrite_shard_rows(sdir0, jid, lambda rows: rows[0].__setitem__("prompt_sha256", "0" * 64))
+    with pytest.raises(merge_shards.MergeRefusalError) as p_exc:
+        _merge("bad_prompt")
+    assert p_exc.value.failure_class == "MERGE_PROMPT_SHA_MISMATCH"
+    _restore_shard_rows(sdir0, jid, orig)
+
+    # 3. A tampered input sha on an anchor item's row disagrees with that call's anchor rows.
+    a_dir = _shard_with(lambda r: r["item_id"] in anchor_ids)
+
+    def _tamper_anchor_item(rows: list[dict[str, Any]]) -> None:
+        next(r for r in rows if r["item_id"] in anchor_ids)["input_token_ids_sha256"] = "e" * 64
+
+    orig = _rewrite_shard_rows(a_dir, jid, _tamper_anchor_item)
+    with pytest.raises(merge_shards.MergeRefusalError) as a_exc:
+        _merge("bad_anchor_item_insha")
+    assert a_exc.value.failure_class == "MERGE_INPUT_TOKEN_SHA_MISMATCH"
+    _restore_shard_rows(a_dir, jid, orig)
+
+    # 4. A non-anchor row replaying another call's input sha refuses (one input sha, one prompt).
+    n_dir = _shard_with(lambda r: r["item_id"] not in anchor_ids)
+
+    def _replay(rows: list[dict[str, Any]]) -> None:
+        tgt = next(r for r in rows if r["item_id"] not in anchor_ids and r["order"] == "AB")
+        donor = next(r for r in rows if r["item_id"] != tgt["item_id"])
+        tgt["input_token_ids_sha256"] = donor["input_token_ids_sha256"]
+
+    orig = _rewrite_shard_rows(n_dir, jid, _replay)
+    with pytest.raises(merge_shards.MergeRefusalError) as r_exc:
+        _merge("replayed_insha")
+    assert r_exc.value.failure_class == "MERGE_INPUT_TOKEN_SHA_MISMATCH"
+    _restore_shard_rows(n_dir, jid, orig)
+
+    # 5. Cross-shard anchor input sha divergence refuses.
+    ap1 = shard_dirs[1] / "anchor_rows" / f"{jid}.jsonl"
+    orig_ap1 = ap1.read_text("utf-8")
+    bad_ar = [json.loads(ln) for ln in orig_ap1.splitlines() if ln.strip()]
+    bad_ar[0]["input_token_ids_sha256"] = "f" * 64
+    ap1.write_text("\n".join(json.dumps(r) for r in bad_ar) + "\n", encoding="utf-8")
+    with pytest.raises(merge_shards.MergeRefusalError) as x_exc:
+        _merge("bad_anchor_insha")
+    assert x_exc.value.failure_class == "MERGE_INPUT_TOKEN_SHA_MISMATCH"
+    ap1.write_text(orig_ap1, encoding="utf-8")
+
+    # The restored shards merge green again.
+    assert all(v == "ok" for v in _merge("restored")["gates"].values())
+
+
+def test_real_gpu_merge_refuses_when_no_prompt_sha_check_can_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manifest without prompt_sha256_by_call (built before the field) cannot verify real rows:
+    the merge refuses with MERGE_REAL_INPUT_SHA_UNVERIFIABLE unless --items supplies the prompts."""
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    shard_dirs, manifest_path, golden_path, items_path, manifest_doc = (
+        _build_real_gpu_counted_shards_with_hf_input_shas(tmp_path, monkeypatch)
+    )
+
+    def _install_manifest(doc: dict[str, Any], name: str) -> Path:
+        doc = dict(doc)
+        doc.pop("manifest_sha256", None)
+        doc["manifest_sha256"] = bakeoff_judge._compute_shard_manifest_body_sha256(doc)
+        mpath = tmp_path / name / "shard_manifest.json"
+        bakeoff_judge.write_shard_manifest(doc, mpath)
+        for sdir in shard_dirs:
+            shutil.copyfile(mpath, sdir / "shard_manifest.json")
+        return mpath
+
+    old_doc = {k: v for k, v in manifest_doc.items() if k not in ("prompt_sha256_by_call", "input_token_ids_sha_source")}
+    old_manifest = _install_manifest(old_doc, "old_manifest")
+    with pytest.raises(merge_shards.MergeRefusalError) as u_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=old_manifest,
+            output_dir=tmp_path / "merged_unverifiable",
+            golden_anchor_manifest_path=golden_path,
+        )
+    assert u_exc.value.failure_class == "MERGE_REAL_INPUT_SHA_UNVERIFIABLE"
+
+    # --items recomputes the prompts, so the same shards merge, and a tampered prompt still refuses.
+    receipt = merge_shards.merge_shards(
+        shard_dirs=shard_dirs,
+        manifest_path=old_manifest,
+        output_dir=tmp_path / "merged_items",
+        golden_anchor_manifest_path=golden_path,
+        items_path=items_path,
+    )
+    assert all(v == "ok" for v in receipt["gates"].values())
+    orig = _rewrite_shard_rows(
+        shard_dirs[0], "nemotron-3-nano-4b", lambda rows: rows[1].__setitem__("prompt_sha256", "1" * 64)
+    )
+    with pytest.raises(merge_shards.MergeRefusalError) as pi_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=old_manifest,
+            output_dir=tmp_path / "merged_items_bad",
+            golden_anchor_manifest_path=golden_path,
+            items_path=items_path,
+        )
+    assert pi_exc.value.failure_class == "MERGE_PROMPT_SHA_MISMATCH"
+    _restore_shard_rows(shard_dirs[0], "nemotron-3-nano-4b", orig)
+
+    # An hf_tokenizer manifest is compared directly, so these stand-in shas refuse.
+    hf_manifest = _install_manifest({**manifest_doc, "input_token_ids_sha_source": "hf_tokenizer"}, "hf_manifest")
+    with pytest.raises(merge_shards.MergeRefusalError) as hf_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=hf_manifest,
+            output_dir=tmp_path / "merged_hf",
+            golden_anchor_manifest_path=golden_path,
+        )
+    assert hf_exc.value.failure_class == "MERGE_INPUT_TOKEN_SHA_MISMATCH"
+
+    # An unknown source, or an hf_tokenizer manifest missing a call's input sha, never skips silently.
+    odd_manifest = _install_manifest({**manifest_doc, "input_token_ids_sha_source": "guess"}, "odd_manifest")
+    with pytest.raises(merge_shards.MergeRefusalError) as odd_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=odd_manifest,
+            output_dir=tmp_path / "merged_odd",
+            golden_anchor_manifest_path=golden_path,
+        )
+    assert odd_exc.value.failure_class == "MERGE_REAL_INPUT_SHA_UNVERIFIABLE"
+    hf_empty = _install_manifest(
+        {**manifest_doc, "input_token_ids_sha_source": "hf_tokenizer", "input_token_ids_sha256_by_call": {}},
+        "hf_empty_manifest",
+    )
+    with pytest.raises(merge_shards.MergeRefusalError) as hfe_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=hf_empty,
+            output_dir=tmp_path / "merged_hf_empty",
+            golden_anchor_manifest_path=golden_path,
+        )
+    assert hfe_exc.value.failure_class == "MERGE_REAL_INPUT_SHA_UNVERIFIABLE"
+
+    # A malformed prompt map, or --items that disagree with the manifest, refuse.
+    bad_map = _install_manifest(
+        {**manifest_doc, "prompt_sha256_by_call": {**manifest_doc["prompt_sha256_by_call"], "x:AB:mu-judge": "nope"}},
+        "bad_map_manifest",
+    )
+    with pytest.raises(merge_shards.MergeRefusalError) as bm_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=bad_map,
+            output_dir=tmp_path / "merged_bad_map",
+            golden_anchor_manifest_path=golden_path,
+        )
+    assert bm_exc.value.failure_class == "MERGE_PROMPT_SHA_MISMATCH"
+    first_key = sorted(manifest_doc["prompt_sha256_by_call"])[0]
+    skewed = _install_manifest(
+        {**manifest_doc, "prompt_sha256_by_call": {**manifest_doc["prompt_sha256_by_call"], first_key: "2" * 64}},
+        "skewed_manifest",
+    )
+    with pytest.raises(merge_shards.MergeRefusalError) as sk_exc:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=skewed,
+            output_dir=tmp_path / "merged_skewed",
+            golden_anchor_manifest_path=golden_path,
+            items_path=items_path,
+        )
+    assert sk_exc.value.failure_class == "MERGE_PROMPT_SHA_MISMATCH"
+
+
+def test_stdlib_shard_manifest_records_prompt_shas_matching_the_package_builder(tmp_path: Path) -> None:
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    items_path = _make_stratified_public_items(tmp_path / "pm", count=6)
+    pkg = bakeoff_judge.build_shard_manifest(items_path, num_shards=2)
+    std = vm_judges.build_shard_manifest_stdlib(
+        items_path if not items_path.is_dir() else items_path / "items.jsonl", num_shards=2
+    )
+    assert std["input_token_ids_sha_source"] == pkg["input_token_ids_sha_source"] == "canonical_prompt"
+    assert std["prompt_sha256_by_call"] == pkg["prompt_sha256_by_call"]
+    assert pkg["prompt_sha256_by_call"] == bakeoff_judge.compute_prompt_sha256_by_call(items_path)
+
+
 def test_item10_parallel_two_shard_stub_windows_and_merge_end_to_end(
     tmp_path: Path,
 ) -> None:
