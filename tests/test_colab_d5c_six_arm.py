@@ -23,6 +23,7 @@ from reasoning_dataset_lab.errors import RdlabError  # noqa: E402
 from reasoning_dataset_lab.pilot_b import bakeoff_judge, bakeoff_judge_score, three_way_wording  # noqa: E402
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import (  # noqa: E402
     BAKEOFF_JUDGE_SPECS,
+    JUDGE_SPECS,
     JudgeInputItem,
     JudgeTransportResponse,
     build_judge_adapter,
@@ -105,7 +106,7 @@ def _load_goldens() -> dict[str, str]:
 
 
 def _prompt(judge_id: str, item: JudgeInputItem, order: str, pass_mode: str) -> bakeoff_judge.AssembledPrompt:
-    return build_judge_adapter(BAKEOFF_JUDGE_SPECS[judge_id]).assemble_prompt(item, order=order, pass_mode=pass_mode)
+    return build_judge_adapter(JUDGE_SPECS[judge_id]).assemble_prompt(item, order=order, pass_mode=pass_mode)
 
 
 def _parts(prompt: bakeoff_judge.AssembledPrompt) -> dict[str, str]:
@@ -133,6 +134,31 @@ def _ban_violations(prompt: bakeoff_judge.AssembledPrompt, extra_banned: tuple[s
             stripped = stripped.replace(tok, " ")
         out.extend(f"{where}: {m.group(0)}" for m in UNDERSCORE_TOKEN_RE.finditer(stripped))
     return out
+
+
+def _add_d5c_snapshots(receipts_dir: Path, hf_home: Path) -> None:
+    """Synthetic snapshots and receipts for the D5c judges, in the shape `_make_synthetic_judge_snapshots_and_receipts`
+    writes for the five (d3-flash's remote-code stubs are d3-mini's bytes, so the review check holds)."""
+    for jid in (FLASH, ENCODER):
+        spec = JUDGE_SPECS[jid]
+        owner, repo = spec.repo_id.split("/", 1)
+        snap = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
+        snap.mkdir(parents=True, exist_ok=True)
+        files = {
+            "config.json": json.dumps({"model_type": jid, "revision": spec.revision}).encode("utf-8"),
+            "model.safetensors": f"weights-for-{jid}-{spec.revision}".encode("utf-8"),
+            **{rc: f"# remote code stub {rc}\n".encode("utf-8") for rc in spec.remote_code_files},
+        }
+        for name, body in files.items():
+            (snap / name).write_bytes(body)
+        _receipt(receipts_dir, spec.repo_id, spec.revision, files)
+
+
+def _d5c_launcher_env(tmp_path: Path, tag: str) -> tuple[dict[str, Path], str]:
+    """`_launcher_env` plus the D5c judges' synthetic snapshots and receipts."""
+    env_paths, exports = _launcher_env(tmp_path, tag)
+    _add_d5c_snapshots(tmp_path / f"snap_{tag}" / "receipts", tmp_path / f"snap_{tag}" / "hf_home")
+    return env_paths, exports
 
 
 # --- 1. the shown words are the pre-registration's, word for word ---------------------------------------------------
@@ -464,13 +490,13 @@ def _receipt(dirpath: Path, repo_id: str, revision: str, files: dict[str, bytes]
 
 
 def test_d3_flash_gate_takes_its_own_pin_and_refuses_anything_else() -> None:
-    flash = BAKEOFF_JUDGE_SPECS[FLASH]
+    flash = JUDGE_SPECS[FLASH]
     assert flash.revision == "67e03e1bc157961c582ee7c6a35d9b15fada3dec"
     assert flash.card_registry_id == "d3-flash-card"
-    assert flash.remote_code_files == BAKEOFF_JUDGE_SPECS["d3-mini"].remote_code_files and len(flash.remote_code_files) == 8
+    assert flash.remote_code_files == JUDGE_SPECS["d3-mini"].remote_code_files and len(flash.remote_code_files) == 8
     bakeoff_judge.check_d3_family_remote_code_gate(flash, allow_remote_code_reviewed=flash.revision)
     bakeoff_judge.check_d3_family_remote_code_gate(
-        BAKEOFF_JUDGE_SPECS["d3-mini"], allow_remote_code_reviewed=bakeoff_judge.D3_MINI_REVIEWED_REVISION
+        JUDGE_SPECS["d3-mini"], allow_remote_code_reviewed=bakeoff_judge.D3_MINI_REVIEWED_REVISION
     )
     for bad in (None, "", flash.revision[:12], flash.revision.upper(), bakeoff_judge.D3_MINI_REVIEWED_REVISION, flash.revision + " "):
         with pytest.raises(RdlabError) as exc:
@@ -490,19 +516,19 @@ def test_d3_flash_gate_takes_its_own_pin_and_refuses_anything_else() -> None:
         )
     assert exc_files.value.code == "BAKEOFF_JUDGE_REMOTE_CODE_FILES_MISMATCH"
     with pytest.raises(RdlabError) as exc_other:
-        bakeoff_judge.check_d3_family_remote_code_gate(BAKEOFF_JUDGE_SPECS["mu-judge"], allow_remote_code_reviewed=flash.revision)
+        bakeoff_judge.check_d3_family_remote_code_gate(JUDGE_SPECS["mu-judge"], allow_remote_code_reviewed=flash.revision)
     assert exc_other.value.code == "BAKEOFF_JUDGE_D3_TRANSPORT_WRONG_JUDGE"
     assert bakeoff_judge.d3_remote_code_review_record(flash)["gate_sha"] == flash.revision  # type: ignore[index]
     assert "byte-identical to vllm-sr/d3-mini @ bd0090dd" in bakeoff_judge.d3_remote_code_review_record(flash)["basis"]  # type: ignore[index]
-    assert bakeoff_judge.d3_remote_code_review_record(BAKEOFF_JUDGE_SPECS["d3-mini"]) == {
+    assert bakeoff_judge.d3_remote_code_review_record(JUDGE_SPECS["d3-mini"]) == {
         "gate_sha": bakeoff_judge.D3_MINI_REVIEWED_REVISION,
         "basis": "reviewed revision",
     }
-    assert bakeoff_judge.d3_remote_code_review_record(BAKEOFF_JUDGE_SPECS["mu-judge"]) is None
+    assert bakeoff_judge.d3_remote_code_review_record(JUDGE_SPECS["mu-judge"]) is None
 
 
 def test_d3_flash_code_must_match_the_reviewed_receipt(tmp_path: Path) -> None:
-    flash, mini = BAKEOFF_JUDGE_SPECS[FLASH], BAKEOFF_JUDGE_SPECS["d3-mini"]
+    flash, mini = JUDGE_SPECS[FLASH], JUDGE_SPECS["d3-mini"]
     code = {name: f"# code {name}\n".encode() for name in mini.remote_code_files}
     rdir = tmp_path / "receipts"
     _receipt(rdir, flash.repo_id, flash.revision, {**code, "config.json": b"{}"})
@@ -539,7 +565,7 @@ def test_d3_transport_runs_d3_flash_and_two_questions_with_the_review_recorded(
     from tests.test_bakeoff_judge_d3_transport import _install_stub_modules, _offline
 
     _offline(monkeypatch)
-    flash, mini = BAKEOFF_JUDGE_SPECS[FLASH], BAKEOFF_JUDGE_SPECS["d3-mini"]
+    flash, mini = JUDGE_SPECS[FLASH], JUDGE_SPECS["d3-mini"]
     hf_home, rdir = tmp_path / "hf_home", tmp_path / "receipts"
     for spec in (flash, mini):
         owner, repo = spec.repo_id.split("/", 1)
@@ -664,7 +690,7 @@ def _install_nli_stubs(monkeypatch: pytest.MonkeyPatch, *, id2label: dict[int, s
 
 
 def _nli_snapshot(tmp_path: Path, id2label: dict[str, str]) -> tuple[Path, Path]:
-    spec = BAKEOFF_JUDGE_SPECS[ENCODER]
+    spec = JUDGE_SPECS[ENCODER]
     owner, repo = spec.repo_id.split("/", 1)
     hf_home, rdir = tmp_path / "hf_home", tmp_path / "receipts"
     snap = hf_home / "hub" / f"models--{owner}--{repo}" / "snapshots" / spec.revision
@@ -681,7 +707,7 @@ def test_nli_transport_reads_labels_from_config_and_returns_the_softmax(tmp_path
     labels = {"0": "entailment", "1": "neutral", "2": "contradiction"}
     hf_home, rdir = _nli_snapshot(tmp_path, labels)
     rec = _install_nli_stubs(monkeypatch, id2label={0: "ENTAILMENT", 1: "NEUTRAL", 2: "CONTRADICTION"}, logits=[2.0, 0.5, -1.0])
-    spec = BAKEOFF_JUDGE_SPECS[ENCODER]
+    spec = JUDGE_SPECS[ENCODER]
     tr = bakeoff_judge.NliSequenceClassificationTransport(receipts_dir=rdir, hf_home=hf_home, device="cpu")
     tr.verify_ready(spec)
     prompt = _prompt(ENCODER, ITEMS[0], "BA", NLI)
@@ -717,7 +743,7 @@ def test_nli_transport_refuses_a_head_that_disagrees_with_config(tmp_path: Path,
     _install_nli_stubs(monkeypatch, id2label={0: "contradiction", 1: "neutral", 2: "entailment"}, logits=[0.0, 0.0, 0.0])
     tr = bakeoff_judge.NliSequenceClassificationTransport(receipts_dir=rdir, hf_home=hf_home, device="cpu")
     with pytest.raises(RdlabError) as exc:
-        tr.generate(BAKEOFF_JUDGE_SPECS[ENCODER], _prompt(ENCODER, ITEMS[0], "AB", NLI), seed=1)
+        tr.generate(JUDGE_SPECS[ENCODER], _prompt(ENCODER, ITEMS[0], "AB", NLI), seed=1)
     assert exc.value.code == "BAKEOFF_JUDGE_NLI_LABELS_UNEXPECTED"
 
 
@@ -756,7 +782,7 @@ def test_stub_child_writes_rows_and_per_pass_judge_done(tmp_path: Path, judge_id
         "".join(json.dumps({"id": it.item_id, "material": it.material, "claim": it.claim}) + "\n" for it in ITEMS),
         encoding="utf-8",
     )
-    spec = BAKEOFF_JUDGE_SPECS[judge_id]
+    spec = JUDGE_SPECS[judge_id]
     res = bakeoff_judge.run_bakeoff_judge(
         part_dir=items, output_dir=tmp_path / "out", judge=judge_id, pass_mode=pass_mode, fake_transport=True,
         allow_remote_code_reviewed=spec.revision if spec.requires_remote_code else None,
@@ -792,16 +818,16 @@ def test_vm_judges_copies_match_the_wording_table_and_the_specs() -> None:
     assert vm_judges.INCONSISTENT_VERDICT == three_way_wording.INCONSISTENT_VERDICT
     assert vm_judges.D3_REVIEWED_REVISION_BY_JUDGE == bakeoff_judge.D3_REVIEWED_REVISION_BY_JUDGE
     for jid in (FLASH, ENCODER):
-        assert vm_judges.BAKEOFF_JUDGE_SPECS[jid].to_dict() == BAKEOFF_JUDGE_SPECS[jid].to_dict()
+        assert vm_judges.JUDGE_SPECS[jid].to_dict() == JUDGE_SPECS[jid].to_dict()
     assert vm_judges.DEFAULT_JUDGE_ORDER == three_way_wording.ORIGINAL_JUDGE_IDS
     assert [j for j, _ in vm_judges._select_judge_specs(None)] == list(vm_judges.DEFAULT_JUDGE_ORDER)
     for mode in three_way_wording.PASS_MODE_CHOICES:
-        for jid in BAKEOFF_JUDGE_SPECS:
+        for jid in JUDGE_SPECS:
             assert vm_judges.rows_filename_for_pass(jid, mode) == three_way_wording.rows_filename_for_pass(jid, mode)
             assert vm_judges.judge_done_filename_for_pass(jid, mode) == three_way_wording.judge_done_filename_for_pass(jid, mode)
             if mode != "binary":
                 assert vm_judges._judge_has_pass_mode_prompt(jid, mode) == three_way_wording.judge_supports_pass_mode(
-                    BAKEOFF_JUDGE_SPECS[jid], mode
+                    JUDGE_SPECS[jid], mode
                 ), (jid, mode)
         name = three_way_wording.rows_filename_for_pass("d3-mini", mode)
         assert vm_judges.three_way_mode_of_rows_filename(name) == (None if mode == "binary" else mode)
@@ -933,10 +959,10 @@ def test_parse_and_validate_per_judge_plans(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_vm_d3_family_gate_and_remote_code_arg() -> None:
-    flash = vm_judges.BAKEOFF_JUDGE_SPECS[FLASH]
+    flash = vm_judges.JUDGE_SPECS[FLASH]
     assert vm_judges.resolve_remote_code_arg_for_judge(flash) == flash.revision
-    assert vm_judges.resolve_remote_code_arg_for_judge(vm_judges.BAKEOFF_JUDGE_SPECS["d3-mini"]) == vm_judges.D3_MINI_REVIEWED_REVISION
-    assert vm_judges.resolve_remote_code_arg_for_judge(vm_judges.BAKEOFF_JUDGE_SPECS[ENCODER]) is None
+    assert vm_judges.resolve_remote_code_arg_for_judge(vm_judges.JUDGE_SPECS["d3-mini"]) == vm_judges.D3_MINI_REVIEWED_REVISION
+    assert vm_judges.resolve_remote_code_arg_for_judge(vm_judges.JUDGE_SPECS[ENCODER]) is None
     for bad in (None, vm_judges.D3_MINI_REVIEWED_REVISION, flash.revision[:8]):
         with pytest.raises(vm_judges.RefusalError) as exc:
             vm_judges.check_d3_family_remote_code_gate(flash, allow_remote_code_reviewed=bad)
@@ -979,7 +1005,7 @@ def test_two_question_mass_readout(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 def test_six_arm_window_runs_in_one_window_with_judge_outer_and_scores(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Item 5: arms 1, 2, 3, 5 and 6 in one --time-one window (elephant-1, arm 4, joins once built), each judge in its
     own pass mode(s) with --loop judge_outer; every pass keeps its own rows and judge_done; the scorer reads them all."""
-    env_paths, exports = _launcher_env(tmp_path, "six")
+    env_paths, exports = _d5c_launcher_env(tmp_path, "six")
     exports += f"export RDLAB_ONLY_JUDGES={','.join(SIX_ARM_JUDGES)}; export RDLAB_JUDGE_PASS_MODES={SIX_ARM_PLAN}; "
     out_dir = tmp_path / "out_six"
     proc = _run_launcher(
@@ -1043,7 +1069,7 @@ def test_six_arm_window_runs_in_one_window_with_judge_outer_and_scores(tmp_path:
     ],
 )
 def test_launcher_refuses_bad_d5c_windows_before_colab_new(tmp_path: Path, tag: str, extra: str, args: str, code: str) -> None:
-    env_paths, exports = _launcher_env(tmp_path, tag)
+    env_paths, exports = _d5c_launcher_env(tmp_path, tag)
     out_dir = tmp_path / f"out_{tag}"
     proc = _run_launcher(exports + extra, f"{args} --out-dir '{_to_wsl_path(out_dir)}' --run-id d5c-{tag}")
     assert proc.returncode == 2, f"stdout={proc.stdout}\nstderr={proc.stderr}"
@@ -1068,6 +1094,7 @@ def _trip_window(
     """A --time-one window that trips its cost cap after one pass has finished (#89's setup: fake clock, a run cell
     that sleeps after writing the finished pass, cap 2.5), with an unfinished pass planted on the fake VM."""
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / f"data_{tag}")
+    _add_d5c_snapshots(receipts_dir, hf_home)
     items_file = _make_synthetic_public_items(tmp_path / f"data_{tag}", count=2)
     env_p = fake_colab.setup_fake_colab_environment(tmp_path / f"env_{tag}")
     out_dir = tmp_path / f"out_{tag}"

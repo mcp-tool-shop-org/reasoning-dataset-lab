@@ -2834,7 +2834,7 @@ def preflight_judge_receipts(judge_ids: Sequence[str], *, receipts_dir: Path) ->
     """
     out: list[dict[str, Any]] = []
     for jid in judge_ids:
-        spec = BAKEOFF_JUDGE_SPECS.get(str(jid))
+        spec = JUDGE_SPECS.get(str(jid))  # the five and any named D5c judge
         if spec is None:
             raise RefusalError(
                 "BAKEOFF_JUDGE_RECEIPT_NOT_FOUND",
@@ -3477,15 +3477,15 @@ def _select_judge_specs(
 ) -> list[tuple[str, Any]]:
     """Return ordered `(judge_id, spec)` pairs for all judges or a requested subset."""
     if only_judge_ids is None:
-        return [(jid, BAKEOFF_JUDGE_SPECS[jid]) for jid in DEFAULT_JUDGE_ORDER]  # the five; D5c judges are named
+        return sorted(BAKEOFF_JUDGE_SPECS.items())
     selected: list[tuple[str, Any]] = []
     for jid in only_judge_ids:
-        if jid not in BAKEOFF_JUDGE_SPECS:
+        if jid not in JUDGE_SPECS:  # a named judge may be a D5c one
             raise RefusalError(
                 "UNKNOWN_JUDGE_ID",
                 f"Unknown judge_id {jid!r} (allowed: {sorted(BAKEOFF_JUDGE_SPECS.keys())})",
             )
-        selected.append((jid, BAKEOFF_JUDGE_SPECS[jid]))
+        selected.append((jid, JUDGE_SPECS[jid]))
     return selected
 
 
@@ -9909,7 +9909,7 @@ def validate_only_judges(
             "ONLY_JUDGES_INVALID",
             f"RDLAB_ONLY_JUDGES contains empty item(s): {raw_val!r}",
         )
-    unknown = [p for p in parts if p not in BAKEOFF_JUDGE_SPECS]
+    unknown = [p for p in parts if p not in JUDGE_SPECS]  # the five and the D5c judges
     if unknown:
         raise RefusalError(
             "ONLY_JUDGES_INVALID",
@@ -9959,7 +9959,7 @@ def _validate_single_pass_mode(
     unsupported = [
         str(j)
         for j in (judge_ids or ())
-        if str(j) in BAKEOFF_JUDGE_SPECS and not _judge_has_pass_mode_prompt(str(j), cleaned)
+        if str(j) in JUDGE_SPECS and not _judge_has_pass_mode_prompt(str(j), cleaned)
     ]
     if unsupported:
         raise RefusalError(
@@ -10690,7 +10690,7 @@ def build_shard_manifest_stdlib(
     for entry in entries:
         it = items_by_id[str(entry["item_id"])]
         ord_s = str(entry["order"])
-        for jid in DEFAULT_JUDGE_ORDER:  # the five (sorted); the D5c judges are 3-way only
+        for jid in sorted(BAKEOFF_JUDGE_SPECS.keys()):
             prompt_text = _stdlib_assemble_prompt_text(
                 jid, it["material"], it["claim"], ord_s
             )
@@ -10742,7 +10742,7 @@ def build_shard_manifest_stdlib(
         ),
         "anchor_count": len(anchor_item_ids),
         "anchor_item_count": len(anchor_item_ids),
-        "anchor_pair_count": len(anchor_item_ids) * len(DEFAULT_JUDGE_ORDER),
+        "anchor_pair_count": len(anchor_item_ids) * len(BAKEOFF_JUDGE_SPECS),
         "anchor_item_ids": anchor_item_ids,
         "input_token_ids_sha256_by_call": dict(
             sorted(input_token_ids_sha256_by_call.items())
@@ -10882,7 +10882,7 @@ def _collect_judge_receipt_digests(
         "added_tokens.json",
     }
     out: dict[str, dict[str, str]] = {}
-    for jid, spec in [(j, BAKEOFF_JUDGE_SPECS[j]) for j in DEFAULT_JUDGE_ORDER]:  # the five (sorted)
+    for jid, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
         slug = spec.repo_id.replace("/", "__")
         rec_file = receipts_dir / f"{slug}.sha256.json"
         w_entries: list[str] = []
@@ -15612,7 +15612,7 @@ def pass_key_for(judge_id: str, pass_mode: str) -> str:
 def _judge_has_pass_mode_prompt(judge_id: str, pass_mode: str) -> bool:
     """True when `judge_id` has a prompt in the 3-way `pass_mode`: `supports_three_way` and a place in the mode's judge
     list (three_way_wording.PASS_MODE_JUDGES)."""
-    if not BAKEOFF_JUDGE_SPECS[judge_id].supports_three_way:
+    if not JUDGE_SPECS[judge_id].supports_three_way:
         return False
     return judge_id in PASS_MODE_JUDGES.get(pass_mode, frozenset())
 
@@ -15642,7 +15642,9 @@ D3_REVIEWED_REVISION_BY_JUDGE: dict[str, str] = {
 }
 D3_FAMILY_JUDGE_IDS: frozenset[str] = frozenset(D3_REVIEWED_REVISION_BY_JUDGE)
 
-BAKEOFF_JUDGE_SPECS.update(
+# The D5c judges (mirrors of bakeoff_judge.D5C_JUDGE_SPECS): resolvable by id in JUDGE_SPECS, never in
+# BAKEOFF_JUDGE_SPECS (the five), so every all-judge window and loop is unchanged.
+D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
     {
         D3_FLASH_JUDGE_ID: JudgeSpec(
             judge_id=D3_FLASH_JUDGE_ID,
@@ -15678,6 +15680,7 @@ BAKEOFF_JUDGE_SPECS.update(
         ),
     }
 )
+JUDGE_SPECS: dict[str, JudgeSpec] = {**BAKEOFF_JUDGE_SPECS, **D5C_JUDGE_SPECS}
 
 
 def check_d3_family_remote_code_gate(
@@ -15713,8 +15716,8 @@ def receipt_tar_specs(raw_only_judges: str | None = None) -> list[JudgeSpec]:
     """The judges whose receipts the launcher packs for the VM: the five original judges, plus any D5c judge the window
     names in RDLAB_ONLY_JUDGES (its receipt must then be present, or the pack refuses RECEIPT_MISSING before spend)."""
     raw = os.environ.get("RDLAB_ONLY_JUDGES") if raw_only_judges is None else raw_only_judges
-    named = [j for j in str(raw or "").split(",") if j in BAKEOFF_JUDGE_SPECS and j not in DEFAULT_JUDGE_ORDER]
-    return [BAKEOFF_JUDGE_SPECS[j] for j in (*DEFAULT_JUDGE_ORDER, *sorted(set(named)))]
+    named = [j for j in str(raw or "").split(",") if j in D5C_JUDGE_SPECS]
+    return [JUDGE_SPECS[j] for j in (*DEFAULT_JUDGE_ORDER, *sorted(set(named)))]
 
 # --- per-judge pass modes: one window, each judge in its own arm(s) -------------------------------------------------
 
@@ -15737,9 +15740,9 @@ def parse_judge_pass_modes(raw: str | None = None) -> tuple[tuple[str, str], ...
             raise RefusalError(
                 "JUDGE_PASS_MODES_INVALID", f"{JUDGE_PASS_MODES_ENV_VAR} entry {entry!r} is not judge:mode (got {raw_val!r})"
             )
-        if jid not in BAKEOFF_JUDGE_SPECS:
+        if jid not in JUDGE_SPECS:
             raise RefusalError(
-                "JUDGE_PASS_MODES_INVALID", f"Unknown judge_id {jid!r} in {JUDGE_PASS_MODES_ENV_VAR} (allowed: {sorted(BAKEOFF_JUDGE_SPECS)})"
+                "JUDGE_PASS_MODES_INVALID", f"Unknown judge_id {jid!r} in {JUDGE_PASS_MODES_ENV_VAR} (allowed: {sorted(JUDGE_SPECS)})"
             )
         if mode not in THREE_WAY_PASS_MODES:
             raise RefusalError(
@@ -15817,7 +15820,7 @@ def validate_pass_mode(
         return PER_JUDGE_PASS_MODE
     cleaned = _validate_single_pass_mode(mode, raw_pass_mode, judge_ids=judge_ids, session_smoke=session_smoke)
     if cleaned == "binary":
-        no_binary = [str(j) for j in (judge_ids or ()) if str(j) in BAKEOFF_JUDGE_SPECS and str(j) not in PASS_MODE_JUDGES["binary"]]
+        no_binary = [str(j) for j in (judge_ids or ()) if str(j) in JUDGE_SPECS and str(j) not in PASS_MODE_JUDGES["binary"]]
         if no_binary:
             raise RefusalError(
                 "BAKEOFF_JUDGE_BINARY_UNSUPPORTED",
@@ -15950,7 +15953,7 @@ def launcher_completed_passes(progress_path: Path, window_pass_mode: str) -> lis
             continue
         jid = str(obj.get("judge_id") or obj.get("judge") or "").strip()
         mode = str(obj.get("pass_mode") or "").strip() or (window_pass_mode if window_pass_mode != PER_JUDGE_PASS_MODE else "")
-        if jid not in BAKEOFF_JUDGE_SPECS or mode not in PASS_MODES:
+        if jid not in JUDGE_SPECS or mode not in PASS_MODES:
             continue
         sha = str(obj.get("sha256") or "").strip().lower()
         seen[(jid, mode)] = {

@@ -105,7 +105,7 @@ def test_validate_pass_mode_default_values_and_refusals(monkeypatch: pytest.Monk
     monkeypatch.delenv(vm_judges.PASS_MODE_ENV_VAR, raising=False)
     assert vm_judges.validate_pass_mode("stub") == "binary"
     assert vm_judges.validate_pass_mode("counted", "") == "binary"
-    assert vm_judges.validate_pass_mode("counted", "binary", judge_ids=vm_judges.DEFAULT_JUDGE_ORDER) == "binary"
+    assert vm_judges.validate_pass_mode("counted", "binary", judge_ids=tuple(BAKEOFF_JUDGE_SPECS)) == "binary"
     assert vm_judges.validate_pass_mode("time-one", "three_way", judge_ids=THREE_WAY_JUDGES) == "three_way"
     monkeypatch.setenv(vm_judges.PASS_MODE_ENV_VAR, "three_way")
     assert vm_judges.validate_pass_mode("stub", judge_ids=("mu-judge",)) == "three_way"
@@ -121,7 +121,7 @@ def test_validate_pass_mode_default_values_and_refusals(monkeypatch: pytest.Monk
     with pytest.raises(vm_judges.RefusalError) as exc:
         vm_judges.validate_pass_mode("stub", "three_way", judge_ids=("mu-judge",), session_smoke=True)
     assert exc.value.failure_class == "PASS_MODE_NOT_FOR_MODE"
-    for judges in (vm_judges.DEFAULT_JUDGE_ORDER, ("granite-guardian-4.1-8b",), ("mu-judge", "granite-guardian-4.1-8b")):
+    for judges in (tuple(BAKEOFF_JUDGE_SPECS), ("granite-guardian-4.1-8b",), ("mu-judge", "granite-guardian-4.1-8b")):
         with pytest.raises(vm_judges.RefusalError) as exc:
             vm_judges.validate_pass_mode("time-one", "three_way", judge_ids=judges)
         assert exc.value.failure_class == "BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED"
@@ -185,9 +185,8 @@ def test_binary_default_window_is_unchanged(tmp_path: Path) -> None:
     proc = _run_launcher(exports, f"--stub --out-dir '{_to_wsl_path(out_dir)}' --run-id bin-01")
     assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
     rows = sorted(p.name for p in (out_dir / "rows").glob("*.jsonl"))
-    # The default window is the five original judges; the D5c judges run only when named.
-    assert rows == sorted(f"{j}.jsonl" for j in vm_judges.DEFAULT_JUDGE_ORDER)
-    for jid in vm_judges.DEFAULT_JUDGE_ORDER:
+    assert rows == sorted(f"{j}.jsonl" for j in BAKEOFF_JUDGE_SPECS)
+    for jid in BAKEOFF_JUDGE_SPECS:
         done = json.loads((out_dir / "judge_done" / f"{jid}.json").read_text(encoding="utf-8"))
         assert done["rows_file"] == f"rows/{jid}.jsonl"
         assert done["pass_mode"] == "binary"

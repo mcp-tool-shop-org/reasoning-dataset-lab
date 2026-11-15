@@ -391,9 +391,9 @@ JUDGE_SPECIFIC_NOTES: dict[str, dict[str, Any]] = {
 def resolve_judge_spec(judge: str) -> JudgeSpec:
     """Resolve a judge id or repo alias to its pinned `JudgeSpec`."""
     key = JUDGE_ALIASES.get(judge.strip().lower(), judge.strip())
-    spec = BAKEOFF_JUDGE_SPECS.get(key)
+    spec = JUDGE_SPECS.get(key)  # the five bake-off judges and the D5c ones
     if spec is None:
-        valid = ", ".join(sorted(BAKEOFF_JUDGE_SPECS))
+        valid = ", ".join(sorted(JUDGE_SPECS))
         raise usage_error(
             "BAKEOFF_JUDGE_UNKNOWN",
             f"Unknown judge '{judge}'.",
@@ -4217,7 +4217,7 @@ def measure_canary_tolerance(
     per_judge: dict[str, Any] = {}
     overall_max_dev = 0.0
     total_token_mismatches = 0
-    for judge_id, spec in sorted((j, BAKEOFF_JUDGE_SPECS[j]) for j in ORIGINAL_JUDGE_IDS):  # the five
+    for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
         adapter = build_judge_adapter(spec)
         transport = DeterministicFakeJudgeTransport()
         transport.verify_ready(
@@ -4542,7 +4542,7 @@ def probe_judge_determinism(
         ]
 
     judges_out: dict[str, Any] = {}
-    for judge_id, spec in sorted((j, BAKEOFF_JUDGE_SPECS[j]) for j in ORIGINAL_JUDGE_IDS):  # the five
+    for judge_id, spec in sorted(BAKEOFF_JUDGE_SPECS.items()):
         adapter = build_judge_adapter(spec)
         op_fn = (per_judge_op or {}).get(judge_id)
         judges_out[judge_id] = _run_cpu_transport_probe_for_judge(
@@ -7333,7 +7333,7 @@ def prepare_lock_check_p0a(
         p0a_items_sha256=items_sha256 if limit_items is None else None,
     )
 
-    target_jids = judge_ids if judge_ids is not None else sorted(ORIGINAL_JUDGE_IDS)  # the five
+    target_jids = judge_ids if judge_ids is not None else sorted(BAKEOFF_JUDGE_SPECS.keys())
     active_judges = (
         list(judges)
         if judges is not None
@@ -8283,7 +8283,6 @@ def compute_prompt_sha256_by_call(
 from reasoning_dataset_lab.pilot_b.three_way_wording import (  # noqa: E402
     INCONSISTENT_VERDICT,
     NLI_LABEL_TO_INTERNAL,
-    ORIGINAL_JUDGE_IDS,
     THREE_WAY_INTERNAL_CLASSES,
     two_question_verdict,
     two_question_wording,
@@ -8307,7 +8306,9 @@ D3_REVIEWED_CODE_JUDGE_ID = D3_MINI_JUDGE_ID
 # Arm 5's input limit: an input over 512 tokens is an invalid call (never truncated).
 NLI_MAX_INPUT_TOKENS = 512
 
-BAKEOFF_JUDGE_SPECS.update(
+# The D5c judges: pinned and resolvable by id (`JUDGE_SPECS`), but never in BAKEOFF_JUDGE_SPECS, which stays the
+# bake-off's five, so every all-judge window, receipt and loop is unchanged. They run only when a window names them.
+D5C_JUDGE_SPECS: dict[str, JudgeSpec] = dict(
     {
         D3_FLASH_JUDGE_ID: JudgeSpec(
             judge_id=D3_FLASH_JUDGE_ID,
@@ -8343,6 +8344,8 @@ BAKEOFF_JUDGE_SPECS.update(
         ),
     }
 )
+# Every pinned judge, by id: the bake-off's five and the D5c ones.
+JUDGE_SPECS: dict[str, JudgeSpec] = {**BAKEOFF_JUDGE_SPECS, **D5C_JUDGE_SPECS}
 JUDGE_ALIASES.update(
     {
         "d3-flash": D3_FLASH_JUDGE_ID,
@@ -8531,7 +8534,7 @@ class NliEncoderAdapter(BaseJudgeAdapter):
     The readout maps the model's own label names (from its config.json `id2label`) to the internal classes."""
 
     def __init__(self, spec: JudgeSpec | None = None) -> None:
-        super().__init__(spec if spec is not None else BAKEOFF_JUDGE_SPECS[NLI_JUDGE_ID])
+        super().__init__(spec if spec is not None else JUDGE_SPECS[NLI_JUDGE_ID])
 
     def _build_prompt(
         self,

@@ -27,10 +27,8 @@ def _load_judge_specs() -> dict[str, Any]:
     if str(src_dir) not in sys.path:
         sys.path.insert(0, str(src_dir))
     from reasoning_dataset_lab.pilot_b.bakeoff_judge import BAKEOFF_JUDGE_SPECS
-    from reasoning_dataset_lab.pilot_b.three_way_wording import ORIGINAL_JUDGE_IDS
 
-    # The weights table covers the five original judges (their receipts are in the repo); the D5c judges are 3-way only.
-    return {jid: BAKEOFF_JUDGE_SPECS[jid] for jid in ORIGINAL_JUDGE_IDS}
+    return dict(BAKEOFF_JUDGE_SPECS)
 
 
 def load_and_verify_receipt_rows(

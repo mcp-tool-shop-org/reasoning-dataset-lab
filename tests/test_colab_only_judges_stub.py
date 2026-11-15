@@ -422,9 +422,9 @@ def test_stub_without_only_judges_binary_behaviour_unchanged(tmp_path: Path) -> 
     assert outcome_doc["only_judges"] is None
     assert outcome_doc["pass_mode"] == "binary"
     assert outcome_doc["judges_completed"] == expected_all
-    # The default window is the five original judges; the D5c judges (3-way only) run only when named.
-    assert sorted(p.name for p in (out_dir / "rows").glob("*.jsonl")) == sorted(f"{j}.jsonl" for j in expected_all)
-    assert set(BAKEOFF_JUDGE_SPECS) - set(expected_all) == {"d3-flash", "nli-deberta-v3-large"}
+    assert sorted(p.name for p in (out_dir / "rows").glob("*.jsonl")) == sorted(
+        f"{j}.jsonl" for j in BAKEOFF_JUDGE_SPECS
+    )
 
 
 def test_validate_only_judges_unit_matrix(monkeypatch: pytest.MonkeyPatch) -> None:
