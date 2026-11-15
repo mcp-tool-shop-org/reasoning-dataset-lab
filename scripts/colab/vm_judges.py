@@ -2942,7 +2942,7 @@ def _three_way_choice_probabilities_valid(probs: Any) -> bool:
     return sum(vals) > 0.0
 
 
-def _three_way_mass_report(rf: Path, judge_id: str, threshold: float) -> dict[str, Any]:
+def _three_way_mass_report(rf: Path, judge_id: str, threshold: float, pass_mode: str = "three_way") -> dict[str, Any]:
     """The 3-way readout for one rows file: A/B/C option mass (>= threshold) per parsed call for a log-probability
     judge; for d3-mini, valid `choice_probabilities` (finite, >= 0, sum > 0, the 3 labels) and a valid label."""
     spec = BAKEOFF_JUDGE_SPECS.get(judge_id)
@@ -2953,7 +2953,7 @@ def _three_way_mass_report(rf: Path, judge_id: str, threshold: float) -> dict[st
             "reason": "Judge does not expose an option log-probability distribution (Flow-Judge rubric text score).",
             "threshold": threshold,
         }
-    lines = [json.loads(ln) for ln in rf.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    lines = _three_way_rows_of_pass_mode(rf, pass_mode)  # refuses a row whose pass_mode is not the file's arm
     all_calls = [r for r in lines if r.get("run_status") != "failed_to_run"]
     parsed_rows = [r for r in all_calls if r.get("state") == "parsed"]
     # Calls the parse rejected (unparseable, length_stop) are counted, never dropped: the design's invalid-rate rule
@@ -3057,7 +3057,7 @@ def check_bakeoff_logprob_mass(
         tw_judges: dict[str, Any] = {}
         for rf in tw_files:
             tw_jid = rf.name[: -len(f".{pass_mode}.jsonl")]
-            tw_judges[tw_jid] = _three_way_mass_report(rf, tw_jid, threshold)
+            tw_judges[tw_jid] = _three_way_mass_report(rf, tw_jid, threshold, pass_mode)
         return {
             "schema_version": "1.0",
             "part_id": str(verified_pilot_identity.get("part_id") or "").strip(),
@@ -15553,6 +15553,19 @@ def _judge_has_pass_mode_prompt(judge_id: str, pass_mode: str) -> bool:
         return False
     worded = THREE_WAY_WORDED_JUDGES_BY_MODE.get(pass_mode)
     return worded is None or judge_id in worded
+
+
+def _three_way_rows_of_pass_mode(rf: Path, pass_mode: str) -> list[dict[str, Any]]:
+    """The rows of a 3-way rows file, refusing `THREE_WAY_ROWS_PASS_MODE_MISMATCH` (fail closed) when any row's
+    `pass_mode` is not the arm the readout was asked for (the file name's arm)."""
+    rows = [json.loads(ln) for ln in rf.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    bad = sorted({str(r.get("pass_mode")) for r in rows if r.get("pass_mode") != pass_mode})
+    if bad:
+        raise RefusalError(
+            "THREE_WAY_ROWS_PASS_MODE_MISMATCH",
+            f"Rows file '{rf.name}' is read as pass mode '{pass_mode}' but holds rows with pass_mode {bad}.",
+        )
+    return rows
 
 
 if __name__ == "__main__":

@@ -3645,9 +3645,14 @@
               "in": "run_kernel_or_cli_entry",
               "kind": "raise",
               "line": 15528
+            },
+            {
+              "in": "_three_way_rows_of_pass_mode",
+              "kind": "raise",
+              "line": 15564
             }
           ],
-          "hash": "731865aeb5250f8b68d2131e83e6a9e84a7852541733c1dfcf27f404852d7c4f",
+          "hash": "797555f74eb895f189889833f46bd4d96ea2feee762b3d0d5e608557674c600f",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -6746,7 +6751,7 @@
               "line": 8245
             }
           ],
-          "hash": "be3eb8d500f44fb144387b75e0147ecf35d1058aadd703f9f9b864ea531b56c6",
+          "hash": "f2cc14c4f98177ffbf4ea07bfe0e90bee36c5e75e62ec05cc4d748afc927c3d8",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -8962,6 +8967,13 @@
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
+                  }
+                },
+                {
+                  "line": 4688,
+                  "name": "rows_filename_is_three_way",
+                  "target": {
+                    "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
                   }
                 },
                 {
@@ -11477,10 +11489,15 @@
             {
               "in": "score_bakeoff_outputs",
               "kind": "raise",
-              "line": 2430
+              "line": 2407
+            },
+            {
+              "in": "score_bakeoff_outputs",
+              "kind": "raise",
+              "line": 2438
             }
           ],
-          "hash": "985246f084d801a6edd0d6726ee6f3a725764b33c61aa98e20ad4fdea8a0008e",
+          "hash": "5110fe49a6a2f60d0f454ffc060bb3caea0f902ed830311bbe3c6f985798e4c1",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/anchored_two_hop.py",
@@ -16811,7 +16828,7 @@
             "rows_filename_is_three_way",
             "three_way_wording"
           ],
-          "hash": "b239eb6e80802b8bca92ca617a749fe8150f123510ae8dbf6e6ae02e9e07815f",
+          "hash": "e0054fbb756122709b2bdefa41b7c1fab229a23356404b4cacc7a848d9cc86ef",
           "path": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
         },
         {
@@ -18697,12 +18714,20 @@
             "test_arm_scorer_gives_three_way_numbers_on_the_same_choices",
             "test_arm_window_end_to_end_rows_mass_check_and_score",
             "test_arm_wording_table_is_the_preregistered_words",
+            "test_ban_check_bites_on_a_bad_option_b",
+            "test_ban_check_sees_the_old_arm_and_its_own_strip_lists",
             "test_cli_pass_mode_choices_include_arm",
+            "test_d3_transport_reads_the_answer_under_the_payload_question_id",
+            "test_every_wording_maps_onto_the_internal_classes_in_order",
+            "test_judge_supports_pass_mode_is_false_for_an_unknown_mode",
             "test_launcher_refuses_arm_before_colab_new",
+            "test_mass_readout_refuses_rows_whose_pass_mode_is_not_the_arm",
+            "test_scorer_refuses_rows_whose_pass_mode_is_not_the_file_arm",
             "test_three_way_prompts_match_2e6423fd_byte_for_byte",
-            "test_validate_pass_mode_arm_matches_three_way"
+            "test_validate_pass_mode_arm_matches_three_way",
+            "test_vm_judges_copies_match_three_way_wording"
           ],
-          "hash": "cf6b2ce728b4f52118c99a081df4913f131fbf019513d8d13ac0d170e25cec8a",
+          "hash": "6bd6b48a410e1619d8f1421dfe148640339e234163446a0705a5dfb9dcc3f3dc",
           "importOrder": [
             "src/reasoning_dataset_lab/__init__.py",
             "src/reasoning_dataset_lab/cli.py",
@@ -18746,7 +18771,7 @@
             "test_validate_pass_mode_default_values_and_refusals",
             "test_validate_pass_mode_refuses_padded_values"
           ],
-          "hash": "a904a5fd5620182716994129acf9cecd09de9a48ab381af45d0f7830eaf91e04",
+          "hash": "6904f715b929b032a75dad7b271e89381c09c25db095f380a80463ce555342bb",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
@@ -20411,7 +20436,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "6bafcfdb456ef8e9083a0a107b1bf7357154920e",
+    "commit": "4f2ef5187a1bc1891cb3034f68ffb9a26a5a310d",
     "tracked": 180
   },
   "landings": [

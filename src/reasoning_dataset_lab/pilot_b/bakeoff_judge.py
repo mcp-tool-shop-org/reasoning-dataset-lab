@@ -70,7 +70,7 @@ from reasoning_dataset_lab.pilot_b.device import (
 )
 
 OrderMode = Literal["AB", "BA"]
-from reasoning_dataset_lab.pilot_b.three_way_wording import PassMode, judge_supports_pass_mode, three_way_wording
+from reasoning_dataset_lab.pilot_b.three_way_wording import THREE_WAY_PASS_MODES, PassMode, judge_supports_pass_mode, rows_filename_is_three_way, three_way_wording  # noqa: E501
 DoneReason = Literal["stop", "length", "error"]
 RowState = Literal["parsed", "unparseable", "length_stop"]
 
@@ -1805,9 +1805,9 @@ class D3MiniAdapter(BaseJudgeAdapter):
             }
         else:  # The choice keys are the arm's shown labels; d3-mini answers with probabilities keyed by them.
             questions = {
-                "supported": {
+                (wording := three_way_wording(pass_mode, self.spec.judge_id)).question_id: {
                     "type": "choice",
-                    "instructions": (wording := three_way_wording(pass_mode, self.spec.judge_id)).render_instruction(item.claim),
+                    "instructions": wording.render_instruction(item.claim),
                     "criteria": {o.shown_label: o.description for o in wording.options},
                 }
             }
@@ -1881,7 +1881,7 @@ class D3MiniAdapter(BaseJudgeAdapter):
         if isinstance(sys_one, Mapping):
             answers = sys_one.get("answers", sys_one)
             if isinstance(answers, Mapping):
-                q_ans = answers.get("supported", answers)
+                q_ans = answers.get(three_way_wording(pass_mode, self.spec.judge_id).question_id, answers)
                 if isinstance(q_ans, Mapping) and isinstance(q_ans.get("probabilities"), Mapping):
                     raw_probs = q_ans["probabilities"]
                     three_labels = tuple(shown_map := three_way_wording(pass_mode, self.spec.judge_id).shown_to_internal())
@@ -3038,7 +3038,7 @@ class DeterministicFakeJudgeTransport:
             p_yes_target = round(1.0 - p_yes_target, 4)
         is_yes = p_yes_target >= 0.5
 
-        if prompt.pass_mode in ("three_way", "three_way_contradicted"):
+        if prompt.pass_mode in THREE_WAY_PASS_MODES:
             choices = ("supported", "unsupported", "cannot_tell")
             c_idx = h_bytes[4] % 3
             chosen_cls = choices[c_idx]
@@ -3054,12 +3054,12 @@ class DeterministicFakeJudgeTransport:
                 )
             )
             if spec.judge_id == "d3-mini":
-                # Keyed by the arm's shown labels, as d3-mini answers (the internal names themselves in three_way).
-                shown = {v: k for k, v in three_way_wording(prompt.pass_mode, spec.judge_id).shown_to_internal().items()}
+                tw_words = three_way_wording(prompt.pass_mode, spec.judge_id)  # the arm's question id and shown labels
+                shown = {v: k for k, v in tw_words.shown_to_internal().items()}
                 probs_map = {shown[choices[c_idx]]: 0.78}
                 probs_map[shown[choices[(c_idx + 1) % 3]]] = 0.14
                 probs_map[shown[choices[(c_idx + 2) % 3]]] = 0.08
-                sys_one = {"answers": {"supported": {"choice": shown[chosen_cls], "probabilities": probs_map}}}
+                sys_one = {"answers": {tw_words.question_id: {"choice": shown[chosen_cls], "probabilities": probs_map}}}
                 return _make_resp(
                     raw_text=json.dumps(sys_one, sort_keys=True),
                     tokens=(chosen_cls,),
@@ -4026,7 +4026,7 @@ class D3MiniTransport:
         elapsed = max(0.0001, time.monotonic() - t0)
 
         answers = result.get("answers", {}) if isinstance(result, Mapping) else {}
-        answer = answers.get("supported") if isinstance(answers, Mapping) else None
+        answer = answers.get(next(iter(questions), "supported")) if isinstance(answers, Mapping) else None
         done_reason: DoneReason = "stop"
         tokens: tuple[str, ...] = ()
         entries: tuple[TopLogprobEntry, ...] = ()
@@ -4685,7 +4685,7 @@ def check_bakeoff_logprob_mass(
             f"Rows directory '{rows_dir}' not found.",
             "Pass the bakeoff-judge output directory containing rows/*.jsonl.",
         )
-    row_files = sorted(p for p in rows_dir.glob("*.jsonl") if not p.name.endswith((".three_way.jsonl", ".three_way_contradicted.jsonl")))
+    row_files = sorted(p for p in rows_dir.glob("*.jsonl") if not rows_filename_is_three_way(p.name))
     if not row_files:
         raise refused_error(
             "BAKEOFF_LOGPROB_MASS_NO_ROWS",

@@ -34,10 +34,12 @@ class ThreeWayOption:
 @dataclass(frozen=True)
 class ThreeWayWording:
     """The words one judge family is shown in one 3-way arm: the instruction (`{claim}` is filled in) and the options
-    in letter order. d3-mini's choice keys are the options' shown labels."""
+    in letter order. d3-mini's choice keys are the options' shown labels, and `question_id` is the id of its one
+    question in the payload (not shown to the model by d3's runtime; neutral in the new arms all the same)."""
 
     instruction: str
     options: tuple[ThreeWayOption, ...]
+    question_id: str = "supported"
 
     def render_instruction(self, claim: str) -> str:
         return self.instruction.replace("{claim}", claim)
@@ -77,6 +79,7 @@ THREE_WAY_WORDINGS: dict[str, dict[str, ThreeWayWording]] = {
     "three_way_contradicted": {
         "STATE": ThreeWayWording(
             instruction="Judge the claim against STATE. Which option holds? Claim: {claim}",
+            question_id="verdict",
             options=(
                 ThreeWayOption("A", "supported", "The claim is entailed by STATE.", "supported"),
                 ThreeWayOption("B", "contradicted", "STATE proves the claim false.", "unsupported"),
@@ -85,6 +88,7 @@ THREE_WAY_WORDINGS: dict[str, dict[str, ThreeWayWording]] = {
         ),
         "the_state": ThreeWayWording(
             instruction="Judge the claim against the state. Which option holds? Claim: {claim}",
+            question_id="verdict",
             options=(
                 ThreeWayOption("A", "supported", "The claim is entailed by the state.", "supported"),
                 ThreeWayOption("B", "contradicted", "The state proves the claim false.", "unsupported"),
@@ -120,12 +124,9 @@ def judge_supports_pass_mode(spec: Any, pass_mode: str) -> bool:
         return False
     if pass_mode in WORDED_ONLY_PASS_MODES:
         return spec.judge_id in THREE_WAY_WORDING_FAMILY_BY_JUDGE
-    return True
+    return pass_mode in THREE_WAY_PASS_MODES
 
 
 def rows_filename_is_three_way(name: str) -> bool:
     """True for a 3-way pass's rows file name (`<judge>.<three-way mode>.jsonl`)."""
     return any(name.endswith(f".{m}.jsonl") for m in THREE_WAY_PASS_MODES)
-
-DEFAULT_SCHEDULE_SEED = 20261030
-DEFAULT_VRAM_HALT_MIB = 26_000

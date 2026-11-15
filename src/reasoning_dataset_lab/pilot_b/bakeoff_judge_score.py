@@ -2401,6 +2401,14 @@ def score_bakeoff_outputs(
             raise _refuse_zero_scored(twf, judge_id=None, keys_n=len(keys_by_id))
         j_id = str(tw_rows[0]["judge_id"])
         tw_mode = next(m for m in sorted(THREE_WAY_PASS_MODES) if twf.name.endswith(f".{m}.jsonl"))
+        # The file name names the arm; every row must say the same arm, or the file is refused (fail closed).
+        row_modes = sorted({str(r.get("pass_mode")) for r in tw_rows if r.get("pass_mode") != tw_mode})
+        if row_modes:
+            raise refused_error(
+                "BAKEOFF_SCORE_PASS_MODE_MISMATCH",
+                f"Rows file '{twf.name}' names pass mode '{tw_mode}' but holds rows with pass_mode {row_modes}.",
+                "Score each 3-way pass from the rows file its judge child wrote; never rename a rows file to another arm.",
+            )
         by_item_ord: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
         for r in tw_rows:
             by_item_ord[str(r["item_id"])][str(r["order"])] = r

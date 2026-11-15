@@ -7,6 +7,7 @@ golden pin that keeps `three_way` byte-identical to 2e6423fd. Fake CLI and stub 
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import shutil
@@ -129,27 +130,86 @@ def test_arm_wording_table_is_the_preregistered_words() -> None:
 
 # --- 1. the ban: no "unsupported" and no underscore label anywhere in the arm's prompts ----------------------------
 
+# Chat-template special tokens stripped before the underscore check, and only these: mu-judge's and Nemotron's
+# rendered text wraps each turn in them, and their names (im_start, im_end) are template syntax, not labels.
+CHAT_TEMPLATE_TOKENS: tuple[str, ...] = ("<|im_start|>", "<|im_end|>")
+# Generation settings in mu-judge's and Nemotron's `structured_payload`, stripped from the serialised payload before
+# the underscore check, and only these: they configure decoding (they are passed as generate() options), and no part
+# of them is rendered into the prompt text or the messages. d3-mini's payload IS its model input; nothing is stripped.
+GENERATION_SETTING_KEYS: tuple[str, ...] = ("enable_thinking", "max_new_tokens", "use_cache", "reasoning_mode")
+UNDERSCORE_TOKEN_RE = re.compile(r"[A-Za-z]+_[A-Za-z]+")
+
+
+def _ban_violations(prompt: bakeoff_judge.AssembledPrompt) -> list[str]:
+    """Every breach of the wording rule in one prompt: "unsupported" in any case, or an underscore label token, in the
+    rendered text, any message content, or the serialised JSON payload (keys and values)."""
+    parts = {"prompt_text": prompt.prompt_text}
+    for i, m in enumerate(prompt.messages):
+        parts[f"messages[{i}].content"] = str(m["content"])
+    if prompt.structured_payload is not None:
+        payload = dict(prompt.structured_payload)
+        if prompt.judge_id != "d3-mini":
+            for k in GENERATION_SETTING_KEYS:
+                payload.pop(k, None)
+        parts["structured_payload"] = json.dumps(payload, ensure_ascii=False)
+    out: list[str] = []
+    for where, text in parts.items():
+        if "unsupported" in text.lower():
+            out.append(f"{where}: unsupported")
+        stripped = text
+        for tok in CHAT_TEMPLATE_TOKENS:
+            stripped = stripped.replace(tok, " ")
+        out.extend(f"{where}: {m.group(0)}" for m in UNDERSCORE_TOKEN_RE.finditer(stripped))
+    return out
+
 
 @pytest.mark.parametrize("judge_id", ARM_JUDGES)
 def test_arm_prompts_carry_no_unsupported_and_no_underscore_label(judge_id: str) -> None:
-    label_re = re.compile(r"[a-z]+_[a-z]+")
     for o in three_way_wording.three_way_wording(ARM, judge_id).options:
-        assert not label_re.search(o.shown_label), o.shown_label
+        assert not UNDERSCORE_TOKEN_RE.search(o.shown_label), o.shown_label
     for item in ITEMS:
         for order in ORDERS:
             prompt = _prompt(judge_id, item, order)
             assert prompt.pass_mode == ARM
-            for part in _all_prompt_text(prompt):
-                low = part.lower()
-                assert "unsupported" not in low, (judge_id, item.item_id, order)
-                for banned in ("cannot_tell", "can_t_tell", "_tell"):
-                    assert banned not in low, (judge_id, item.item_id, order, banned)
+            assert _ban_violations(prompt) == [], (judge_id, item.item_id, order)
     if judge_id == "d3-mini":
         payload = _prompt(judge_id, ITEMS[0], "AB").structured_payload
         assert payload is not None
-        keys = list(payload["questions"]["supported"]["criteria"])
+        assert list(payload["questions"]) == ["verdict"]  # a neutral question id, no class name
+        keys = list(payload["questions"]["verdict"]["criteria"])
         assert keys == ["supported", "contradicted", "can't tell"]
-        assert not any(label_re.search(k) for k in keys)
+
+
+def test_ban_check_sees_the_old_arm_and_its_own_strip_lists() -> None:
+    """The check is not vacuous: `three_way` shows "unsupported" and "cannot_tell" and fails it for every judge; the
+    stripped tokens and settings really occur in the arm's prompts (so the strip lists are needed, and no wider)."""
+    for jid in ARM_JUDGES:
+        assert _ban_violations(_prompt(jid, ITEMS[0], "AB", "three_way"))
+    mu = _prompt("mu-judge", ITEMS[0], "AB")
+    assert all(tok in mu.prompt_text for tok in CHAT_TEMPLATE_TOKENS)
+    nemo_payload = _prompt("nemotron-3-nano-4b", ITEMS[0], "AB").structured_payload or {}
+    assert set(GENERATION_SETTING_KEYS) == set(nemo_payload)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"shown_label": "NOT_TRUE"},
+        {"description": "STATE proves the claim not_entailed."},
+        {"shown_label": "Unsupported"},
+        {"description": "STATE leaves it UNSUPPORTED."},
+    ],
+)
+@pytest.mark.parametrize("judge_id", ARM_JUDGES)
+def test_ban_check_bites_on_a_bad_option_b(
+    judge_id: str, change: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    family = three_way_wording.THREE_WAY_WORDING_FAMILY_BY_JUDGE[judge_id]
+    words = three_way_wording.THREE_WAY_WORDINGS[ARM][family]
+    opt_a, opt_b, opt_c = words.options
+    bad = dataclasses.replace(words, options=(opt_a, dataclasses.replace(opt_b, **change), opt_c))
+    monkeypatch.setitem(three_way_wording.THREE_WAY_WORDINGS[ARM], family, bad)
+    assert _ban_violations(_prompt(judge_id, ITEMS[0], "AB"))
 
 
 # --- 2. the new instruction and options are shown; the binary question is gone --------------------------------------
@@ -177,7 +237,7 @@ def test_arm_prompt_shows_new_instruction_and_plain_labels_d3_mini() -> None:
     for item in ITEMS:
         for order in ORDERS:
             prompt = _prompt("d3-mini", item, order)
-            q = prompt.structured_payload["questions"]["supported"]  # type: ignore[index]
+            q = prompt.structured_payload["questions"]["verdict"]  # type: ignore[index]
             assert q["type"] == "choice"
             assert q["instructions"] == f"Judge the claim against the state. Which option holds? Claim: {item.claim}"
             assert q["criteria"] == {
@@ -223,8 +283,8 @@ def _letter_resp(top: list[tuple[str, float]]) -> JudgeTransportResponse:
     )
 
 
-def _d3_resp(answer: dict[str, Any]) -> JudgeTransportResponse:
-    sys_one = {"answers": {"supported": answer}}
+def _d3_resp(answer: dict[str, Any], question_id: str = "verdict") -> JudgeTransportResponse:
+    sys_one = {"answers": {question_id: answer}}
     return JudgeTransportResponse(
         raw_text=json.dumps(sys_one),
         tokens=("x",),
@@ -267,19 +327,44 @@ def test_arm_d3_readout_maps_shown_keys_to_internal_classes() -> None:
     )
     assert r3.state == "parsed" and r3.raw_verdict == "unsupported"
     assert vm_judges._three_way_choice_probabilities_valid(r3.choice_probabilities)
-    # The old arm's keys (and an underscore spelling) are not this arm's choice keys: unparseable, never guessed.
-    for bad in (
-        {"choice": "unsupported", "probabilities": {"supported": 0.1, "unsupported": 0.7, "cannot_tell": 0.2}},
-        {"choice": "cannot_tell", "probabilities": {"supported": 0.1, "contradicted": 0.2, "can't tell": 0.7}},
-        {"probabilities": {"supported": 0.1, "contradicted": 0.2, "cannot_tell": 0.7}},
+    # The old arm's keys, underscore spellings and case variants are not this arm's choice keys: unparseable, never
+    # guessed, whether they come as the choice or as a probability key.
+    good = {"supported": 0.1, "contradicted": 0.2, "can't tell": 0.7}
+    for wrong in ("unsupported", "cannot_tell", "can_t_tell", "SUPPORTED", "Supported", "Can't Tell", "CAN'T TELL", "Contradicted"):
+        rb = adapter.parse_response(_d3_resp({"choice": wrong, "probabilities": good}), pass_mode=ARM)
+        assert rb.state == "unparseable" and rb.raw_verdict is None, wrong
+    for wrong_key, right_key in (
+        ("unsupported", "contradicted"),
+        ("cannot_tell", "can't tell"),
+        ("can_t_tell", "can't tell"),
+        ("Can't Tell", "can't tell"),
+        ("SUPPORTED", "supported"),
+        ("Contradicted", "contradicted"),
     ):
-        rb = adapter.parse_response(_d3_resp(bad), pass_mode=ARM)
-        assert rb.state == "unparseable" and rb.raw_verdict is None
+        probs = {(wrong_key if k == right_key else k): v for k, v in good.items()}
+        rb = adapter.parse_response(_d3_resp({"probabilities": probs}), pass_mode=ARM)
+        assert rb.state == "unparseable" and rb.raw_verdict is None, wrong_key
+    # The answer must sit under the arm's question id; one under the old id is unparseable.
+    old_id = adapter.parse_response(_d3_resp({"probabilities": good}, question_id="supported"), pass_mode=ARM)
+    assert old_id.state == "unparseable"
     # three_way's readout is unchanged.
     r_old = adapter.parse_response(
-        _d3_resp({"probabilities": {"supported": 0.1, "unsupported": 0.7, "cannot_tell": 0.2}}), pass_mode="three_way"
+        _d3_resp({"probabilities": {"supported": 0.1, "unsupported": 0.7, "cannot_tell": 0.2}}, question_id="supported"),
+        pass_mode="three_way",
     )
     assert r_old.raw_verdict == "unsupported"
+
+
+def test_d3_transport_reads_the_answer_under_the_payload_question_id() -> None:
+    """D3MiniTransport reads the answer under the question id it sent: "verdict" in the arm, "supported" in three_way."""
+    import inspect
+
+    src = inspect.getsource(bakeoff_judge.D3MiniTransport.generate)
+    assert 'answers.get(next(iter(questions), "supported"))' in src
+    for mode, qid in ((ARM, "verdict"), ("three_way", "supported"), ("binary", "supported")):
+        payload = _prompt("d3-mini", ITEMS[0], "AB", mode).structured_payload or {}
+        _state, questions = bakeoff_judge.check_d3_text_only_inputs(payload)
+        assert next(iter(questions)) == qid
 
 
 def _strip_arm(doc: Any) -> Any:
@@ -290,13 +375,22 @@ def _strip_arm(doc: Any) -> Any:
     return doc
 
 
+def _relabel_rows(src: Path, dst: Path, pass_mode: str | None) -> None:
+    """Move a rows file to `dst`, writing `pass_mode` into every row (`None` leaves the rows as they were)."""
+    rows = [json.loads(ln) for ln in src.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    if pass_mode is not None:
+        rows = [{**r, "pass_mode": pass_mode} for r in rows]
+    src.unlink()
+    dst.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows), encoding="utf-8", newline="\n")
+
+
 def test_arm_scorer_gives_three_way_numbers_on_the_same_choices(tmp_path: Path) -> None:
     from tests.test_bakeoff_judge_score_splits import _score, build_judge_dir
 
     tw_dir = build_judge_dir(tmp_path / "tw", binary_judges=(), three_way_judges=("mu-judge",))
     arm_dir = tmp_path / "arm"
     shutil.copytree(tw_dir, arm_dir)
-    (arm_dir / "rows" / "mu-judge.three_way.jsonl").rename(arm_dir / "rows" / f"mu-judge.{ARM}.jsonl")
+    _relabel_rows(arm_dir / "rows" / "mu-judge.three_way.jsonl", arm_dir / "rows" / f"mu-judge.{ARM}.jsonl", ARM)
     (arm_dir / "outputs-closed.json").unlink()
     bakeoff_judge.close_bakeoff_outputs(arm_dir)
 
@@ -315,7 +409,92 @@ def test_arm_scorer_gives_three_way_numbers_on_the_same_choices(tmp_path: Path) 
     assert [_strip_arm(r) for r in sealed_arm] == [_strip_arm(r) for r in sealed_tw]
 
 
+@pytest.mark.parametrize("row_mode", ["three_way", None, "binary"])
+def test_scorer_refuses_rows_whose_pass_mode_is_not_the_file_arm(tmp_path: Path, row_mode: str | None) -> None:
+    """A rows file renamed to another arm (rows still saying three_way), or with rows missing or naming another mode,
+    is refused by name before any number is written."""
+    from tests.test_bakeoff_judge_score_splits import _score, build_judge_dir
+
+    judge_dir = build_judge_dir(tmp_path / "j", binary_judges=(), three_way_judges=("mu-judge",))
+    rows_dir = judge_dir / "rows"
+    src, dst = rows_dir / "mu-judge.three_way.jsonl", rows_dir / f"mu-judge.{ARM}.jsonl"
+    if row_mode is None:
+        rows = [json.loads(ln) for ln in src.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        rows[0].pop("pass_mode")
+        src.unlink()
+        dst.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows), encoding="utf-8", newline="\n")
+    else:
+        _relabel_rows(src, dst, row_mode)
+    (judge_dir / "outputs-closed.json").unlink()
+    bakeoff_judge.close_bakeoff_outputs(judge_dir)
+    sealed_out = tmp_path / "s" / "x.sealed.jsonl"
+    with pytest.raises(bakeoff_judge.RdlabError) as exc:
+        _score(tmp_path / "s", judge_dir, sealed_out=sealed_out)
+    assert exc.value.code == "BAKEOFF_SCORE_PASS_MODE_MISMATCH"
+    assert f"mu-judge.{ARM}.jsonl" in exc.value.message
+    assert not sealed_out.exists()
+
+
+def test_mass_readout_refuses_rows_whose_pass_mode_is_not_the_arm(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(vm_judges, "is_pinned_pilot_identity", lambda identity: True)
+    rows_dir = tmp_path / "rows"
+    rows_dir.mkdir()
+    good = {"state": "parsed", "raw_verdict": "supported", "choice_probabilities": {"supported": 0.8, "unsupported": 0.1, "cannot_tell": 0.1}}
+    f = rows_dir / f"d3-mini.{ARM}.jsonl"
+    f.write_text("".join(json.dumps({**good, "pass_mode": ARM}) + "\n" for _ in range(3)), encoding="utf-8")
+    rep = vm_judges.check_bakeoff_logprob_mass(tmp_path, verified_pilot_identity={"part_id": "p"}, pass_mode=ARM)
+    assert rep["judges"]["d3-mini"]["passed"] is True
+    for bad_rows in (
+        [{**good, "pass_mode": ARM}, {**good, "pass_mode": "three_way"}],  # a three_way row under the arm's name
+        [{**good, "pass_mode": ARM}, good],  # a row with no pass_mode
+    ):
+        f.write_text("".join(json.dumps(r) + "\n" for r in bad_rows), encoding="utf-8")
+        with pytest.raises(vm_judges.RefusalError) as exc:
+            vm_judges.check_bakeoff_logprob_mass(tmp_path, verified_pilot_identity={"part_id": "p"}, pass_mode=ARM)
+        assert exc.value.failure_class == "THREE_WAY_ROWS_PASS_MODE_MISMATCH"
+
+
 # --- 5. refusals: accepted wherever three_way is, refused wherever three_way is (and for flow-judge) ----------------
+
+
+def test_judge_supports_pass_mode_is_false_for_an_unknown_mode() -> None:
+    mu = BAKEOFF_JUDGE_SPECS["mu-judge"]
+    assert three_way_wording.judge_supports_pass_mode(mu, "binary") is True
+    assert three_way_wording.judge_supports_pass_mode(mu, "three_way") is True
+    assert three_way_wording.judge_supports_pass_mode(mu, ARM) is True
+    for bogus in ("bogus", "three_way_x", "", "THREE_WAY"):
+        assert three_way_wording.judge_supports_pass_mode(mu, bogus) is False
+    with pytest.raises(bakeoff_judge.RdlabError) as exc:
+        _prompt("mu-judge", ITEMS[0], "AB", "bogus")
+    assert exc.value.code == "BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED"
+
+
+def test_every_wording_maps_onto_the_internal_classes_in_order() -> None:
+    for mode, families in three_way_wording.THREE_WAY_WORDINGS.items():
+        for family, words in families.items():
+            assert tuple(o.internal_class for o in words.options) == three_way_wording.THREE_WAY_INTERNAL_CLASSES, (mode, family)
+            assert tuple(o.letter for o in words.options) == ("A", "B", "C")
+            assert "{claim}" in words.instruction
+    # three_way keeps the 2e6423fd question id; the new arm's is neutral.
+    assert {w.question_id for w in three_way_wording.THREE_WAY_WORDINGS["three_way"].values()} == {"supported"}
+    assert {w.question_id for w in three_way_wording.THREE_WAY_WORDINGS[ARM].values()} == {"verdict"}
+
+
+def test_vm_judges_copies_match_three_way_wording() -> None:
+    """vm_judges.py runs before the package is importable on the VM, so it keeps its own copies; they must agree."""
+    assert vm_judges.PASS_MODES == three_way_wording.PASS_MODE_CHOICES
+    assert vm_judges.THREE_WAY_PASS_MODES == three_way_wording.THREE_WAY_PASS_MODES
+    assert vm_judges.THREE_WAY_CLASS_LABELS == three_way_wording.THREE_WAY_INTERNAL_CLASSES
+    assert vm_judges.THREE_WAY_WORDED_JUDGES_BY_MODE == {
+        m: frozenset(three_way_wording.THREE_WAY_WORDING_FAMILY_BY_JUDGE) for m in three_way_wording.WORDED_ONLY_PASS_MODES
+    }
+    for name in ("mu-judge.jsonl", "mu-judge.three_way.jsonl", f"mu-judge.{ARM}.jsonl", "mu-judge.three_way_x.jsonl"):
+        assert vm_judges.rows_filename_is_three_way(name) == three_way_wording.rows_filename_is_three_way(name), name
+    for jid in BAKEOFF_JUDGE_SPECS:
+        for mode in three_way_wording.THREE_WAY_PASS_MODES:
+            assert vm_judges._judge_has_pass_mode_prompt(jid, mode) == three_way_wording.judge_supports_pass_mode(
+                BAKEOFF_JUDGE_SPECS[jid], mode
+            ), (jid, mode)
 
 
 def test_validate_pass_mode_arm_matches_three_way(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -369,18 +369,18 @@ def test_three_way_mass_check_flags_low_mass_and_bad_choice_probabilities(
     _w(
         "mu-judge.three_way.jsonl",
         [
-            {"state": "parsed", "top_20_logprobs": lp([("A", 0.9), (" b", 0.095)])},
-            {"state": "parsed", "top_20_logprobs": lp([("C", 0.5), ("yes", 0.45)])},
-            {"state": "unparseable", "top_20_logprobs": []},
+            {"pass_mode": "three_way", "state": "parsed", "top_20_logprobs": lp([("A", 0.9), (" b", 0.095)])},
+            {"pass_mode": "three_way", "state": "parsed", "top_20_logprobs": lp([("C", 0.5), ("yes", 0.45)])},
+            {"pass_mode": "three_way", "state": "unparseable", "top_20_logprobs": []},
         ],
     )
     _w(
         "d3-mini.three_way.jsonl",
         [
-            {"state": "parsed", "raw_verdict": "supported", "choice_probabilities": {"supported": 0.7, "unsupported": 0.2, "cannot_tell": 0.1}},
-            {"state": "parsed", "raw_verdict": "maybe", "choice_probabilities": {"supported": 0.7, "unsupported": 0.2, "cannot_tell": 0.1}},
-            {"state": "parsed", "raw_verdict": "supported", "choice_probabilities": {"supported": 0.7, "unsupported": -0.1, "cannot_tell": 0.4}},
-            {"state": "parsed", "raw_verdict": "supported", "choice_probabilities": {"supported": 1.0, "yes": 0.0, "cannot_tell": 0.0}},
+            {"pass_mode": "three_way", "state": "parsed", "raw_verdict": "supported", "choice_probabilities": {"supported": 0.7, "unsupported": 0.2, "cannot_tell": 0.1}},
+            {"pass_mode": "three_way", "state": "parsed", "raw_verdict": "maybe", "choice_probabilities": {"supported": 0.7, "unsupported": 0.2, "cannot_tell": 0.1}},
+            {"pass_mode": "three_way", "state": "parsed", "raw_verdict": "supported", "choice_probabilities": {"supported": 0.7, "unsupported": -0.1, "cannot_tell": 0.4}},
+            {"pass_mode": "three_way", "state": "parsed", "raw_verdict": "supported", "choice_probabilities": {"supported": 1.0, "yes": 0.0, "cannot_tell": 0.0}},
         ],
     )
     _w("flow-judge-v0.1.three_way.jsonl", [{"state": "parsed"}])
@@ -500,8 +500,8 @@ def test_three_way_mass_check_counts_rejected_d3_calls(tmp_path: Path, monkeypat
     monkeypatch.setattr(vm_judges, "is_pinned_pilot_identity", lambda identity: True)
     rows_dir = tmp_path / "rows"
     rows_dir.mkdir()
-    good = {"state": "parsed", "raw_verdict": "supported", "choice_probabilities": {"supported": 0.8, "unsupported": 0.1, "cannot_tell": 0.1}}
-    bad = {"state": "unparseable", "raw_verdict": None, "choice_probabilities": None}
+    good = {"pass_mode": "three_way", "state": "parsed", "raw_verdict": "supported", "choice_probabilities": {"supported": 0.8, "unsupported": 0.1, "cannot_tell": 0.1}}
+    bad = {"pass_mode": "three_way", "state": "unparseable", "raw_verdict": None, "choice_probabilities": None}
     (rows_dir / "d3-mini.three_way.jsonl").write_text(
         "".join(json.dumps(r) + "\n" for r in [good, *([bad] * 19)]), encoding="utf-8"
     )
