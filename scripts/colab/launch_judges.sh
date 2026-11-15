@@ -120,7 +120,7 @@ REREAD_RESERVED_RT=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way|three_way_contradicted]
+Usage: scripts/colab/launch_judges.sh [--session-smoke] [--probe] [--stub] [--time-one] [--lock-check] [--lock-check-stub] [--lock-check-phase anchors|p0a|all] [--counted] [--counted-stub] [--card A100|G4|L4|T4] [--shape standard|high-mem] [--until STEP] [--dry] [--resume] [--run-id ID] [--out-dir DIR] [--items-file FILE] [--part-dir DIR] [--anchor-items FILE] [--p0a-items FILE] [--p0a-part-dir DIR] [--counted-items FILE] [--counted-manifest FILE] [--receipts-dir DIR] [--cap UNITS] [--max-rate UNITS_PER_H] [--pass-mode binary|three_way]
 
 Options:
   --session-smoke      Run the CPU session smoke check only (open, verify row, stop, verify gone)
@@ -189,11 +189,8 @@ Options:
                        window on the 3-way prompt (supported / unsupported / cannot_tell) and writes
                        rows/<judge>.three_way.jsonl; it is allowed only with --stub and --time-one, and refused before
                        `colab new` for a judge without a 3-way prompt (BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED:
-                       granite-guardian-4.1-8b), so a three_way window names its judges with RDLAB_ONLY_JUDGES.
-                       three_way_contradicted is the same pass with the plain-word wording (supported / contradicted
-                       / can't tell, scored as the same 3 classes); it writes rows/<judge>.three_way_contradicted.jsonl
-                       and has a prompt for mu-judge, nemotron-3-nano-4b and d3-mini only (flow-judge-v0.1 is refused
-                       too). Any other value refuses PASS_MODE_INVALID. Recorded as pass_mode in window.json, vm_receipt.json
+                       granite-guardian-4.1-8b), so a three_way window names its judges with RDLAB_ONLY_JUDGES. Any
+                       other value refuses PASS_MODE_INVALID. Recorded as pass_mode in window.json, vm_receipt.json
                        and outcome.draft.json.
 
 Environment:
@@ -313,7 +310,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --pass-mode)
       if [[ $# -lt 2 ]] || [[ -z "${2:-}" ]]; then
-        echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way, three_way_contradicted)" >&2
+        echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way)" >&2
         exit 2
       fi
       PASS_MODE="$2"
@@ -949,7 +946,7 @@ fi
 
 # --- The pass mode: binary (default) or three_way; checked with the judge set in the preflight below ---
 if [[ "$PASS_MODE_FLAG" -eq 1 ]] && [[ -z "$PASS_MODE" ]]; then
-  echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way, three_way_contradicted)" >&2
+  echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way)" >&2
   exit 2
 fi
 if [[ -z "$PASS_MODE" ]]; then

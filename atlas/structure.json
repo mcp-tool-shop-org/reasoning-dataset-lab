@@ -363,7 +363,7 @@
           "path": "scripts/colab/generate_weights_table.py"
         },
         {
-          "hash": "e17975cc77ec03da95ca398a4951969b0f0093d0e388213f6651778efb408162",
+          "hash": "50d960eccca4c64b63c6fa84495f0d0ddffbb4e1f9c621c95fac0d4d0aa13702",
           "path": "scripts/colab/launch_judges.sh"
         },
         {
@@ -3691,7 +3691,7 @@
       "testRunners": [
         "pytest"
       ],
-      "testedBy": 7,
+      "testedBy": 8,
       "unresolvedNamed": [
         {
           "path": "scripts/colab/vm_judges.py",
@@ -17779,7 +17779,7 @@
       "testRunners": [
         "pytest"
       ],
-      "testedBy": 41,
+      "testedBy": 42,
       "unresolvedSites": 0
     },
     {
@@ -18669,6 +18669,46 @@
             "tests/test_colab_judge_launcher.py"
           ],
           "path": "tests/test_colab_only_judges_stub.py",
+          "testFramework": "pytest"
+        },
+        {
+          "exports": [
+            "test_adapters_refuse_arm_for_judges_without_a_wording",
+            "test_arm_d3_readout_maps_shown_keys_to_internal_classes",
+            "test_arm_letter_readout_maps_b_to_unsupported",
+            "test_arm_prompt_shows_new_instruction_and_plain_labels_d3_mini",
+            "test_arm_prompt_shows_new_instruction_and_plain_labels_state_family",
+            "test_arm_prompts_carry_no_unsupported_and_no_underscore_label",
+            "test_arm_scorer_gives_three_way_numbers_on_the_same_choices",
+            "test_arm_window_end_to_end_rows_mass_check_and_score",
+            "test_arm_wording_table_is_the_preregistered_words",
+            "test_cli_pass_mode_choices_include_arm",
+            "test_launcher_refuses_arm_before_colab_new",
+            "test_three_way_prompts_match_2e6423fd_byte_for_byte",
+            "test_validate_pass_mode_arm_matches_three_way"
+          ],
+          "hash": "46f3e104392d5a5fb309b293d64e1c898abe3636ef7cb852a7b520cc5bfb98e1",
+          "importOrder": [
+            "src/reasoning_dataset_lab/__init__.py",
+            "src/reasoning_dataset_lab/cli.py",
+            "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
+            "tests/test_colab_judge_launcher.py",
+            "tests/test_colab_three_way_pass_mode.py",
+            "tests/test_bakeoff_judge_score_splits.py"
+          ],
+          "importsFiles": [
+            "src/reasoning_dataset_lab/__init__.py",
+            "src/reasoning_dataset_lab/cli.py",
+            "src/reasoning_dataset_lab/pilot_b/__init__.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge_score.py",
+            "tests/test_bakeoff_judge_score_splits.py",
+            "tests/test_colab_judge_launcher.py",
+            "tests/test_colab_three_way_pass_mode.py"
+          ],
+          "path": "tests/test_colab_three_way_contradicted_pass_mode.py",
           "testFramework": "pytest"
         },
         {
@@ -19818,7 +19858,7 @@
         {
           "boundary": "tests",
           "depth": 0,
-          "files": 49
+          "files": 50
         },
         {
           "boundary": "scripts",
@@ -19896,7 +19936,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 49,
+          "files": 50,
           "job": "test",
           "runner": "pytest",
           "step": "Run pytest with coverage (floor 90%)"
@@ -19904,7 +19944,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 49,
+          "files": 50,
           "job": "test-py313",
           "runner": "pytest",
           "step": "Run pytest (no coverage on this leg)"
@@ -19912,7 +19952,7 @@
         {
           "config": "pyproject.toml",
           "coverage": true,
-          "files": 49,
+          "files": 50,
           "job": "test-py314",
           "runner": "pytest",
           "step": "Run pytest (no coverage on this leg)"
@@ -20354,8 +20394,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "2e6423fdcd688c069a7af1792cbaeb34cf76b971",
-    "tracked": 178
+    "commit": "5f879d62f331e5367a3b04f6090e551c5d9da357",
+    "tracked": 179
   },
   "landings": [
     {
@@ -21136,6 +21176,6 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 59,
+  "testFiles": 60,
   "unassigned": []
 }
