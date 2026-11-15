@@ -4454,6 +4454,33 @@ def is_private_generation_output_relpath(rel_posix: str) -> bool:
     )
 
 
+def verify_rig_fetched_outputs_clean(
+    *,
+    scan_paths: Iterable[Path],
+    extract_dir: Path,
+    private_generation_paths: Iterable[Path] = (),
+    claim_ngram_sha256s: Iterable[str],
+) -> None:
+    """Run the rig post-fetch log guard over `scan_paths` plus every file under `extract_dir`.
+
+    Every file gets the key-marker and token checks. The claim n-gram check runs on every file
+    except the private generation rows (`generations.jsonl`, `rows/*.jsonl`, `anchor_rows/*.jsonl`
+    at the extract root, plus `private_generation_paths`), whose raw judge output may quote the claim.
+    """
+    claim_paths: list[Path] = list(scan_paths)
+    private_paths: list[Path] = list(private_generation_paths)
+    if extract_dir.is_dir():
+        for p in sorted(extract_dir.rglob("*")):
+            if not p.is_file():
+                continue
+            if is_private_generation_output_relpath(p.relative_to(extract_dir).as_posix()):
+                private_paths.append(p)
+            else:
+                claim_paths.append(p)
+    verify_rig_logs_and_outputs_clean(claim_paths, claim_ngram_sha256s=claim_ngram_sha256s)
+    verify_rig_logs_and_outputs_clean(private_paths, claim_ngram_sha256s=())
+
+
 def verify_rig_logs_and_outputs_clean(
     paths: Iterable[Path],
     *,

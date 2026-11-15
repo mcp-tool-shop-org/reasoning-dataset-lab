@@ -27397,6 +27397,14 @@ def test_log_guard_allows_claim_paraphrase_in_private_generation_rows_only(tmp_p
             "                                if sk in ddoc:",
             "                                    ddoc[sk] = new_sha",
             "                            done_p.write_text(json.dumps(ddoc, sort_keys=True) + nl, encoding='utf-8', newline=nl)",
+            "            gen_p = run_d / 'generations.jsonl'",
+            "            if gen_p.is_file():",
+            "                glines = gen_p.read_text(encoding='utf-8').splitlines()",
+            "                if glines:",
+            "                    g0 = json.loads(glines[0])",
+            f"                    g0['raw_generation'] = {injected_raw_gen!r}",
+            "                    glines[0] = json.dumps(g0, sort_keys=True)",
+            "                    gen_p.write_text(chr(10).join(glines) + chr(10), encoding='utf-8', newline=chr(10))",
         ]
         if also_leak_vm_log:
             lines.append(f"        ns['_append_vm_log_line']({first_claim!r})")
@@ -27438,6 +27446,9 @@ def test_log_guard_allows_claim_paraphrase_in_private_generation_rows_only(tmp_p
     assert proc_ok.returncode == 0, f"stdout={proc_ok.stdout[-2000:]}\nstderr={proc_ok.stderr[-2000:]}"
     gen_row0 = json.loads((out_ok / "rows" / "flow-judge-v0.1.jsonl").read_text(encoding="utf-8").splitlines()[0])
     assert first_claim in gen_row0["raw_generation"]
+    # The claim also reached generations.jsonl at the extract root, and the guard let it through.
+    gen_line0 = json.loads((out_ok / "generations.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert first_claim in gen_line0["raw_generation"]
 
     # Case B: Forbidden key-file marker (keys.sealed) inside raw_generation STILL fails closed!
     env_key = fake_colab.setup_fake_colab_environment(tmp_path / "env_claim_gen_key", uv_python_315_found=True)
@@ -27504,5 +27515,82 @@ def test_log_guard_allows_claim_paraphrase_in_private_generation_rows_only(tmp_p
     assert proc_log.returncode != 0
     rec_log = json.loads((out_log / "vm_receipt.json").read_text(encoding="utf-8"))
     assert rec_log["failure_class"] == "LOG_GUARD_CLAIM_LEAK"
+    # The guard tripped on the VM log, not on a private generation row.
+    assert re.match(r"^vm\.log:\d+ matched item claim n-gram sha256 ", rec_log["detail"]), rec_log["detail"]
     assert first_claim not in json.dumps(rec_log)
     assert not (out_log / "rows").exists()
+    assert not (out_log / "generations.jsonl").exists()
+
+
+def test_rig_fetched_outputs_guard_scopes_the_claim_exemption_to_private_generation_rows(tmp_path: Path) -> None:
+    # Only generations.jsonl, rows/*.jsonl and anchor_rows/*.jsonl at the extract root skip the claim
+    # n-gram check; every other fetched file (receipts, status, nested or other .jsonl) still fails closed.
+    items_file = tmp_path / "items.jsonl"
+    claim = "the cache entry was written before the lock was released"
+    items_file.write_text(
+        json.dumps({"id": "it-1", "material": "STATE: m", "claim": claim}) + "\n", encoding="utf-8"
+    )
+    claim_hashes = vm_judges.collect_claim_ngram_sha256s(items_file)
+    leak_line = json.dumps({"raw_generation": f"<feedback>{claim}</feedback><score>4</score>"})
+
+    def _fresh(name: str) -> tuple[Path, Path]:
+        root = tmp_path / name
+        extract = root / "extract"
+        out = root / "out"
+        for sub in ("rows", "anchor_rows", "logs", "judge_done"):
+            (extract / sub).mkdir(parents=True, exist_ok=True)
+        out.mkdir(parents=True, exist_ok=True)
+        (extract / "logs" / "vm.log").write_text("clean line\n", encoding="utf-8")
+        (extract / "vm_receipt.json").write_text('{"status": "ok"}\n', encoding="utf-8")
+        return extract, out
+
+    def _run(extract: Path, out: Path) -> None:
+        scan = [p for p in (out / "status.json", out / "vm_receipt.json") if p.is_file()]
+        vm_judges.verify_rig_fetched_outputs_clean(
+            scan_paths=scan,
+            extract_dir=extract,
+            private_generation_paths=[p for p in (out / "generations.jsonl",) if p.is_file()],
+            claim_ngram_sha256s=claim_hashes,
+        )
+
+    # Private generation rows at the extract root (and the rig-side generations copy) may quote the claim.
+    extract, out = _fresh("ok")
+    for rel in ("generations.jsonl", "rows/flow-judge-v0.1.jsonl", "anchor_rows/flow-judge-v0.1.jsonl"):
+        (extract / rel).write_text(leak_line + "\n", encoding="utf-8")
+    (out / "generations.jsonl").write_text(leak_line + "\n", encoding="utf-8")
+    _run(extract, out)
+
+    # A key-file marker in the extract-root generations.jsonl still fails closed.
+    extract, out = _fresh("gen_key")
+    (extract / "generations.jsonl").write_text('{"raw_generation": "read keys.sealed"}\n', encoding="utf-8")
+    with pytest.raises(vm_judges.RefusalError) as key_exc:
+        _run(extract, out)
+    assert key_exc.value.failure_class == "LOG_GUARD_KEY_FILENAME_LEAK"
+    assert key_exc.value.detail.startswith("generations.jsonl:1 ")
+
+    # Receipts, status files and every non-exempt .jsonl path still fail with LOG_GUARD_CLAIM_LEAK.
+    planted_cases = (
+        ("extract", "vm_receipt.json", "vm_receipt.json"),
+        ("extract", "judge_done/flow-judge-v0.1.json", "flow-judge-v0.1.json"),
+        ("extract", "status.json", "status.json"),
+        ("out", "status.json", "status.json"),
+        ("out", "vm_receipt.json", "vm_receipt.json"),
+        ("extract", "rows/sub/nested-rows.jsonl", "nested-rows.jsonl"),
+        ("extract", "child_progress/flow-judge-v0.1-progress.jsonl", "flow-judge-v0.1-progress.jsonl"),
+        ("extract", "logs/vm.log", "vm.log"),
+    )
+    for idx, (where, rel, tripped_name) in enumerate(planted_cases):
+        extract, out = _fresh(f"leak_{idx}")
+        (extract / "generations.jsonl").write_text(leak_line + "\n", encoding="utf-8")
+        target = (extract if where == "extract" else out) / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(leak_line + "\n", encoding="utf-8")
+        with pytest.raises(vm_judges.RefusalError) as leak_exc:
+            _run(extract, out)
+        assert leak_exc.value.failure_class == "LOG_GUARD_CLAIM_LEAK", (where, rel)
+        assert leak_exc.value.detail.startswith(f"{tripped_name}:1 matched item claim n-gram sha256 "), (
+            where,
+            rel,
+            leak_exc.value.detail,
+        )
+        assert claim not in leak_exc.value.detail
