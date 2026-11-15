@@ -71,6 +71,10 @@ the window's own live Colab rate. Each paid window is bound to its part's own fi
 before it spends, and the lock-check runs as two windows, each judge in its own environment. Splitting a counted run
 across several cards is built but has not completed a real run yet.
 
+No shell trap can catch `SIGKILL` (`kill -9`): if the launcher itself receives `SIGKILL` after `colab new` assigns a VM
+and before `colab stop` completes, its `EXIT` trap never runs and it leaves an open Colab session that only the
+background session watcher (when it survives) or a manual `colab sessions` check (`colab stop -s <session>`) stops.
+
 ## The map-first principle
 
 1. **Prove first, word second.** Code constructs a formal state and proves the key before a model writes any prose. A
