@@ -15456,6 +15456,7 @@ def test_item6_boot_gatekeeper_passes_on_matching_hashes_and_refuses_on_mismatch
             mode="counted",
             card_type="A100",
             goldens_path=goldens_path,
+            window_id="rdlab-item6-counted-01",
         )
     assert unfilled_exc.value.failure_class == "BOOT_GATEKEEPER_GOLDEN_MISSING"
 
@@ -18790,6 +18791,7 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
             card_type="A100",
             goldens_path=goldens_unfilled,
             dryrun=False,
+            window_id="rdlab-fix4-a4-01",
         )
     assert exc_gk_t1_miss.value.failure_class == "BOOT_GATEKEEPER_GOLDEN_MISSING"
 
@@ -18813,6 +18815,7 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
             dryrun=False,
             work_dir=empty_work,
             receipts_dir=receipts_dir,
+            window_id="rdlab-fix4-a4-01",
         )
     assert exc_gk_no_venv.value.failure_class == "VENV_PYTHON_MISSING"
 
@@ -18830,6 +18833,7 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
             dryrun=False,
             work_dir=work_with_venv,
             receipts_dir=tmp_path / "missing_receipts_dir",
+            window_id="rdlab-fix4-a4-01",
         )
     assert exc_gk_no_rec_wd.value.failure_class == "BOOT_GATEKEEPER_RECEIPT_MISSING"
 
@@ -18851,6 +18855,7 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
                     dryrun=False,
                     work_dir=work_with_venv,
                     receipts_dir=receipts_dir,
+                    window_id="rdlab-fix4-a4-01",
                 )
             assert exc_gk_sub.value.failure_class == "BOOT_GATEKEEPER_SUBPROCESS_FAILED"
 
@@ -18896,6 +18901,7 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
             goldens_path=filled_gk_path,
             dryrun=False,
             receipts_dir=tmp_path / "missing_receipts_dir",
+            window_id="rdlab-fix4-a4-01",
         )
     assert exc_gk_no_rec_inproc.value.failure_class == "BOOT_GATEKEEPER_RECEIPT_MISSING"
 
@@ -18911,6 +18917,7 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
                 goldens_path=filled_gk_path,
                 dryrun=False,
                 receipts_dir=receipts_dir,
+                window_id="rdlab-fix4-a4-01",
             )
         assert exc_gk_no_torch.value.failure_class == "BOOT_GATEKEEPER_TORCH_MISSING"
 
@@ -18939,6 +18946,7 @@ def test_fix4_group_a_real_mode_refusals_venv_lookup_mode_validation_and_boot_ga
                 goldens_path=filled_gk_path,
                 dryrun=False,
                 receipts_dir=receipts_dir,
+                window_id="rdlab-fix4-a4-01",
             )
         assert exc_gk_no_tf.value.failure_class == "BOOT_GATEKEEPER_TRANSFORMERS_MISSING"
 

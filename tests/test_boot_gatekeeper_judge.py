@@ -748,6 +748,7 @@ def test_reproduce_timeone_mu_verify_ready_on_cpu(tmp_path: Path) -> None:
             receipts_dir=receipts_dir,
             hf_home=hf_home,
             device="cpu",
+            window_id="rdlab-timeone-mu-repro-01",
         )
     err = exc_info.value
     assert err.exception_line is not None
