@@ -472,332 +472,347 @@
             {
               "in": "guard_no_test_hooks_in_counted_mode",
               "kind": "raise",
-              "line": 166
+              "line": 173
+            },
+            {
+              "in": "_validate_safe_identifier",
+              "kind": "raise",
+              "line": 194
+            },
+            {
+              "in": "_validate_expected_judge_ids",
+              "kind": "raise",
+              "line": 211
+            },
+            {
+              "in": "_validate_expected_judge_ids",
+              "kind": "raise",
+              "line": 217
+            },
+            {
+              "in": "_validate_expected_judge_ids",
+              "kind": "raise",
+              "line": 225
+            },
+            {
+              "in": "_rows_filename_for_pass",
+              "kind": "raise",
+              "line": 250
             },
             {
               "in": "_verified_manifest_body_sha256",
               "kind": "raise",
-              "line": 206
+              "line": 279
             },
             {
               "in": "_load_json_dict",
               "kind": "raise",
-              "line": 220
+              "line": 293
             },
             {
               "in": "_load_json_dict",
               "kind": "except",
-              "line": 223
+              "line": 296
             },
             {
               "in": "_load_json_dict",
               "kind": "raise",
-              "line": 224
+              "line": 297
             },
             {
               "in": "_load_json_dict",
               "kind": "raise",
-              "line": 228
+              "line": 301
             },
             {
               "in": "_load_jsonl_rows",
               "kind": "raise",
-              "line": 236
+              "line": 309
             },
             {
               "in": "_load_jsonl_rows",
               "kind": "except",
-              "line": 246
+              "line": 319
             },
             {
               "in": "_load_jsonl_rows",
               "kind": "raise",
-              "line": 247
+              "line": 320
             },
             {
               "in": "_load_jsonl_rows",
               "kind": "raise",
-              "line": 252
+              "line": 325
             },
             {
               "in": "clopper_pearson_upper_bound",
               "kind": "raise",
-              "line": 265
+              "line": 338
             },
             {
               "in": "clopper_pearson_upper_bound",
               "kind": "raise",
-              "line": 267
+              "line": 340
             },
             {
               "in": "load_and_verify_merge_config",
               "kind": "raise",
-              "line": 358
+              "line": 431
             },
             {
               "in": "load_and_verify_merge_config",
               "kind": "raise",
-              "line": 376
+              "line": 449
             },
             {
               "in": "load_and_verify_merge_config",
               "kind": "raise",
-              "line": 384
+              "line": 457
             },
             {
               "in": "_compare_anchor_sets",
               "kind": "raise",
-              "line": 475
+              "line": 548
             },
             {
               "in": "_compare_anchor_sets",
               "kind": "raise",
-              "line": 480
+              "line": 553
             },
             {
               "in": "_load_golden_anchor_rows",
               "kind": "raise",
-              "line": 669
+              "line": 742
             },
             {
               "in": "_load_golden_anchor_rows",
               "kind": "raise",
-              "line": 677
+              "line": 750
             },
             {
               "in": "_extract_comparable_env_profile",
               "kind": "raise",
-              "line": 735
+              "line": 808
             },
             {
               "in": "_extract_comparable_env_profile",
               "kind": "raise",
-              "line": 794
+              "line": 867
             },
             {
               "in": "_extract_comparable_env_profile",
               "kind": "raise",
-              "line": 833
+              "line": 906
             },
             {
               "in": "_check_ecc_zero",
               "kind": "raise",
-              "line": 847
+              "line": 920
             },
             {
               "in": "_check_ecc_zero",
               "kind": "raise",
-              "line": 854
+              "line": 927
             },
             {
               "in": "_check_ecc_zero",
               "kind": "raise",
-              "line": 869
+              "line": 942
             },
             {
               "in": "_check_ecc_zero",
               "kind": "raise",
-              "line": 896
+              "line": 969
             },
             {
               "in": "_shard_has_verified_recovery",
-              "kind": "except",
-              "line": 910
-            },
-            {
-              "in": "_shard_has_verified_recovery",
-              "kind": "except",
-              "line": 919
-            },
-            {
-              "in": "_load_shard_anchor_rows",
-              "kind": "raise",
-              "line": 961
-            },
-            {
-              "in": "_is_within_dir",
               "kind": "except",
               "line": 983
             },
             {
+              "in": "_shard_has_verified_recovery",
+              "kind": "except",
+              "line": 992
+            },
+            {
+              "in": "_load_shard_anchor_rows",
+              "kind": "raise",
+              "line": 1036
+            },
+            {
+              "in": "_is_within_dir",
+              "kind": "except",
+              "line": 1058
+            },
+            {
               "in": "_refuse_manifest_inside_shard_dir",
               "kind": "raise",
-              "line": 1002
+              "line": 1077
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1037
+              "line": 1113
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1042
+              "line": 1118
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1061
+              "line": 1136
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1068
+              "line": 1148
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1086
+              "line": 1159
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1097
+              "line": 1171
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1111
+              "line": 1189
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 1200
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 1214
             },
             {
               "in": "_bind_real_input_sha",
               "kind": "raise",
-              "line": 1127
+              "line": 1230
             },
             {
               "in": "_bind_real_input_sha",
               "kind": "raise",
-              "line": 1134
+              "line": 1237
             },
             {
               "in": "_check_real_anchor_row",
               "kind": "raise",
-              "line": 1147
+              "line": 1250
             },
             {
               "in": "_check_real_anchor_row",
               "kind": "raise",
-              "line": 1153
+              "line": 1256
             },
             {
               "in": "_check_real_anchor_row",
               "kind": "raise",
-              "line": 1158
+              "line": 1261
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1165
+              "line": 1268
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1179
+              "line": 1282
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1222
+              "line": 1325
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1227
+              "line": 1330
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1234
+              "line": 1337
             },
             {
               "in": "merge_shards",
               "kind": "except",
-              "line": 1259
+              "line": 1362
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1269
+              "line": 1369
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1299
+              "line": 1376
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1305
+              "line": 1406
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1311
+              "line": 1412
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1317
+              "line": 1418
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1338
+              "line": 1424
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1347
+              "line": 1445
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1356
+              "line": 1454
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1401
+              "line": 1463
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1420
+              "line": 1509
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1425
+              "line": 1528
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1433
+              "line": 1533
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1438
-            },
-            {
-              "in": "merge_shards",
-              "kind": "raise",
-              "line": 1491
-            },
-            {
-              "in": "merge_shards",
-              "kind": "raise",
-              "line": 1498
-            },
-            {
-              "in": "merge_shards",
-              "kind": "raise",
-              "line": 1511
-            },
-            {
-              "in": "merge_shards",
-              "kind": "raise",
-              "line": 1538
+              "line": 1541
             },
             {
               "in": "merge_shards",
@@ -807,72 +822,62 @@
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1555
+              "line": 1600
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1586
+              "line": 1607
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1604
+              "line": 1620
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1610
+              "line": 1640
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1625
+              "line": 1646
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1633
+              "line": 1661
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1643
+              "line": 1669
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1649
+              "line": 1678
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1658
+              "line": 1709
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1666
+              "line": 1728
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1679
+              "line": 1734
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1694
-            },
-            {
-              "in": "merge_shards",
-              "kind": "raise",
-              "line": 1705
-            },
-            {
-              "in": "merge_shards",
-              "kind": "raise",
-              "line": 1717
+              "line": 1749
             },
             {
               "in": "merge_shards",
@@ -882,27 +887,32 @@
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1770
+              "line": 1767
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1785
+              "line": 1773
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1792
+              "line": 1782
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1798
+              "line": 1790
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1811
+              "line": 1803
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 1818
             },
             {
               "in": "merge_shards",
@@ -912,17 +922,17 @@
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1835
+              "line": 1841
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1888
+              "line": 1882
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1891
+              "line": 1895
             },
             {
               "in": "merge_shards",
@@ -932,21 +942,62 @@
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1990
+              "line": 1917
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 1923
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 1936
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 1954
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 1960
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 2013
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 2016
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 2035
+            },
+            {
+              "in": "merge_shards",
+              "kind": "raise",
+              "line": 2115
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 2200
+              "line": 2365
             },
             {
               "kind": "raise",
-              "line": 2207
+              "line": 2372
             }
           ],
-          "hash": "8ddbf2faac650fbd5e7ec31f04575402d00fa4b2da8031e7d86ac348a782d819",
+          "hash": "e4790e11fe48a5fc2bd6d086287ca1f0cc828e345c63a9182565979dd8962fce",
           "importsFiles": [
-            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
+            "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
+            "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
           ],
           "path": "scripts/colab/merge_shards.py"
         },
@@ -18541,6 +18592,8 @@
             "test_gate_refuses_when_items_dir_unavailable_without_fallback",
             "test_hermetic_path_guard_blocks_real_binaries_and_fires_sentinel_when_fake_absent",
             "test_historical_git_fixtures_manifest_and_rederivation",
+            "test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_validates_judge_ids",
+            "test_issue90_rig_side_mode_refuses_relabelled_stub_shards_and_records_receipt_fields",
             "test_item10_parallel_two_shard_stub_windows_and_merge_end_to_end",
             "test_item11_ast_network_guard_catches_rebound_variable_across_scopes",
             "test_item1_shard_manifest_stratified_interleave_and_refusals",
@@ -18659,7 +18712,7 @@
             "test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local",
             "test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log"
           ],
-          "hash": "0c20f90c5f1552158324fa1af241525339333a293bfc5f456afc734bff702a3f",
+          "hash": "c04855d0d7af3e65f36b752d3c78b1a639e2d3713db66f75a0c227abab4681d5",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -18677,7 +18730,8 @@
             "src/reasoning_dataset_lab/pilot_b/schema_check.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_part.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_project.py",
-            "src/reasoning_dataset_lab/cli.py"
+            "src/reasoning_dataset_lab/cli.py",
+            "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
           ],
           "importsFiles": [
             "scripts/colab/generate_weights_table.py",
@@ -18695,6 +18749,7 @@
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/judge_download.py",
             "src/reasoning_dataset_lab/pilot_b/schema_check.py",
+            "src/reasoning_dataset_lab/pilot_b/three_way_wording.py",
             "tests/fixtures/fake_colab.py",
             "tests/fixtures/historical_git_fixtures.py"
           ],
@@ -20454,7 +20509,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "ba0219f4943339ad261df15ceab1d1b8148e48dd",
+    "commit": "cd1aaf8771c8175f982573bb00ccce5a3619dce1",
     "tracked": 180
   },
   "landings": [

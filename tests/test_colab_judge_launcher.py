@@ -15741,8 +15741,15 @@ def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
         shard_dirs=shard_dirs,
         manifest_path=manifest_path,
         output_dir=merged_out,
+        allow_unpinned_stub=True,
     )
     assert receipt["status"] == "ok"
+    assert receipt["pass_mode"] == "binary"
+    assert receipt["merge_mode"] == "stub"
+    assert receipt["real_mode"] is False
+    assert receipt["allow_unpinned_stub"] is True
+    assert receipt["manifest_pin_enforced"] is False
+    assert set(receipt["per_shard_modes"]) == {"1/2", "2/2"}
     assert receipt["anchor_agreement"]["flip_count"] == 0
     assert receipt["anchor_agreement"]["output_sha_mismatch_count"] == 0
     assert receipt["anchor_agreement"]["rule_of_three_95_upper_bound"] > 0
@@ -15766,6 +15773,7 @@ def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
             shard_dirs=shard_dirs,
             manifest_path=manifest_path,
             output_dir=tmp_path / "merged_bij_fail",
+            allow_unpinned_stub=True,
         )
     assert bij_exc.value.failure_class == "MERGE_BIJECTION_FAILED"
     rows_p.write_text(orig_rows_text, encoding="utf-8")
@@ -15786,6 +15794,7 @@ def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
             shard_dirs=shard_dirs,
             manifest_path=manifest_path,
             output_dir=tmp_path / "merged_insha_fail",
+            allow_unpinned_stub=True,
         )
     assert insha_exc.value.failure_class == "MERGE_INPUT_TOKEN_SHA_MISMATCH"
     rows_p.write_text(orig_rows_text, encoding="utf-8")
@@ -15806,6 +15815,7 @@ def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
             shard_dirs=shard_dirs,
             manifest_path=manifest_path,
             output_dir=tmp_path / "merged_coloc_fail",
+            allow_unpinned_stub=True,
         )
     assert coloc_exc.value.failure_class == "MERGE_COLOCATION_FAILED"
     rows_p.write_text(orig_rows_text, encoding="utf-8")
@@ -15822,6 +15832,7 @@ def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
             shard_dirs=shard_dirs,
             manifest_path=manifest_path,
             output_dir=tmp_path / "merged_senv_fail",
+            allow_unpinned_stub=True,
         )
     assert senv_exc.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
 
@@ -15833,6 +15844,7 @@ def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
             shard_dirs=shard_dirs,
             manifest_path=manifest_path,
             output_dir=tmp_path / "merged_ecc_fail",
+            allow_unpinned_stub=True,
         )
     assert ecc_exc.value.failure_class == "MERGE_ECC_UNCORRECTED_NONZERO"
     senv_p.write_text(orig_senv_text, encoding="utf-8")
@@ -15851,6 +15863,7 @@ def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
             shard_dirs=shard_dirs,
             manifest_path=manifest_path,
             output_dir=tmp_path / "merged_drift_fail",
+            allow_unpinned_stub=True,
         )
     assert drift_exc.value.failure_class == "MERGE_ANCHOR_DRIFT_REFUSED"
     ar_p.write_text(orig_ar_text, encoding="utf-8")
@@ -15864,6 +15877,7 @@ def test_item9_merge_shards_all_five_gates_and_sealed_outputs(
             shard_dirs=shard_dirs,
             manifest_path=manifest_path,
             output_dir=tmp_path / "merged_rowsha_fail",
+            allow_unpinned_stub=True,
         )
     assert row_sha_exc.value.failure_class == "MERGE_ROW_DONE_SHA_MISMATCH"
     jdone_p.write_text(orig_jdone_text, encoding="utf-8")
@@ -16521,6 +16535,12 @@ def test_real_merge_requires_rig_manifest_pin_and_refuses_shard_dir_manifest(
     )
     assert ok_receipt["status"] == "ok"
     assert all(v == "ok" for v in ok_receipt["gates"].values())
+    assert ok_receipt["pass_mode"] == "binary"
+    assert ok_receipt["merge_mode"] == "real"
+    assert ok_receipt["real_mode"] is True
+    assert ok_receipt["allow_unpinned_stub"] is False
+    assert ok_receipt["manifest_pin_enforced"] is True
+    assert ok_receipt["per_shard_modes"] == {"1/2": "counted", "2/2": "counted"}
     cli_rc = merge_shards.main(
         [
             "--manifest",
@@ -16810,6 +16830,7 @@ def test_item10_parallel_two_shard_stub_windows_and_merge_end_to_end(
             str(out_s2),
             "--output-dir",
             str(merged_dir),
+            "--allow-unpinned-stub",
         ],
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -17729,6 +17750,7 @@ def test_fix1_part_e_anchors_clopper_pearson_golden_quarantine_and_bowker_readou
             manifest_path=sm_manifest_path,
             output_dir=tmp_path / "small_e" / "merged_fail_no_repl",
             golden_anchor_manifest_path=golden_path,
+            allow_unpinned_stub=True,
         )
     assert exc_deviant.value.failure_class == "MERGE_ANCHOR_DRIFT_REFUSED"
     assert "2/2" in exc_deviant.value.detail
@@ -17742,6 +17764,7 @@ def test_fix1_part_e_anchors_clopper_pearson_golden_quarantine_and_bowker_readou
         output_dir=merged_repl_out,
         golden_anchor_manifest_path=golden_path,
         replacement_shard_dirs=[s2_repl_dir],
+        allow_unpinned_stub=True,
     )
     assert rec_repl["status"] == "ok"
     assert rec_repl["quarantined_shards_replaced"] == 1
@@ -17767,6 +17790,7 @@ def test_fix1_part_e_anchors_clopper_pearson_golden_quarantine_and_bowker_readou
             manifest_path=sm_manifest_path,
             output_dir=tmp_path / "small_e" / "merged_tomb",
             golden_anchor_manifest_path=golden_path,
+            allow_unpinned_stub=True,
         )
     assert exc_tomb.value.failure_class == "MERGE_SHARD_TOMBSTONED"
 
@@ -17793,6 +17817,7 @@ def test_fix1_part_e_anchors_clopper_pearson_golden_quarantine_and_bowker_readou
             output_dir=tmp_path / "small_e" / "merged_dbl_bug",
             golden_anchor_manifest_path=golden_path,
             replacement_shard_dirs=[s2_repl_dir],
+            allow_unpinned_stub=True,
         )
     assert (
         exc_dbl.value.failure_class == "MERGE_ANCHOR_DOUBLE_ORDER_PIPELINE_BUG"
@@ -20152,6 +20177,7 @@ def test_fix4_group_b_merge_gates_ecc_replacement_determinism_gatekeeper_and_tok
         shard_dirs=[s1_dir, s2_dir],
         manifest_path=manifest_path,
         output_dir=out_b5_pair,
+        allow_unpinned_stub=True,
     )
     err_pair = capsys.readouterr().err
     assert "WARNING: output_token_ids_sha256 mismatch on shard 2/2 vs shard 1/2" in err_pair
@@ -20188,6 +20214,7 @@ def test_fix4_group_b_merge_gates_ecc_replacement_determinism_gatekeeper_and_tok
         manifest_path=manifest_path,
         output_dir=out_b5_gold,
         golden_anchor_manifest_path=golden_path,
+        allow_unpinned_stub=True,
     )
     err_gold = capsys.readouterr().err
     assert "WARNING: output_token_ids_sha256 mismatch on shard 2/2 vs golden" in err_gold
@@ -20210,6 +20237,7 @@ def test_fix4_group_b_merge_gates_ecc_replacement_determinism_gatekeeper_and_tok
             manifest_path=manifest_path,
             output_dir=tmp_path / "b_merge" / "out_b5_kpool",
             golden_anchor_manifest_path=golden_path,
+            allow_unpinned_stub=True,
         )
     assert exc_b5_kpool.value.failure_class == "MERGE_ANCHOR_DRIFT_REFUSED"
 
@@ -22038,6 +22066,7 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
             manifest_path=no_gm_manifest,
             output_dir=tmp_path / "merged_no_gm",
             golden_anchor_manifest_path=None,
+            allow_unpinned_stub=True,
         )
     assert exc_mg_no_gm.value.failure_class == "GOLDEN_ANCHOR_MANIFEST_MISSING"
 
@@ -22046,6 +22075,7 @@ def test_lock_check_item5_and_6_end_to_end_cpu_stub_chain_and_negative_refusal(
         manifest_path=lc_run_dir / "shard_manifest.json",
         output_dir=merged_dir,
         golden_anchor_manifest_path=lc_run_dir / "golden_anchor_manifest.json",
+        allow_unpinned_stub=True,
     )
     assert merge_report["status"] == "ok"
     for gate_key in (
@@ -22769,6 +22799,7 @@ def test_fix2_item1_and_3_two_input_lock_check_and_shard_merge_chain(
         manifest_path=lc_run_dir / "shard_manifest.json",
         output_dir=tmp_path / "f2_merged",
         golden_anchor_manifest_path=lc_run_dir / "golden_anchor_manifest.json",
+        allow_unpinned_stub=True,
     )
     assert merge_rep["status"] == "ok"
     assert merge_rep["anchor_agreement"]["anchor_item_count"] == 50
@@ -25695,6 +25726,7 @@ def test_followup_item5_old_shard_manifest_field_refuses_with_its_own_code(
             shard_dirs=shard_dirs,
             manifest_path=old_sm_path,
             output_dir=tmp_path / "fu5_merge" / "out",
+            allow_unpinned_stub=True,
         )
     assert exc_merge.value.failure_class == "SHARD_MANIFEST_GOLDEN_SHA_MISSING"
 
@@ -28986,3 +29018,391 @@ def test_boot_gatekeeper_counted_refuses_empty_or_stub_window_id_before_any_mode
     assert message in str(exc.value), str(exc.value)
     assert loads == []
     assert not (run_dir / "boot_gatekeeper.json").exists()
+
+
+def test_issue90_rig_side_mode_refuses_relabelled_stub_shards_and_records_receipt_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #90: rig merge defaults to real mode (requiring --expected-manifest-sha256 before
+    reading shard files and refusing relabelled stub shards at Gate (c) with
+    MERGE_SESSION_ENV_MISMATCH) while recording pass_mode, merge_mode, real_mode,
+    allow_unpinned_stub, manifest_pin_enforced, per_shard_modes, and expected_judge_ids."""
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    shard_dirs, rig_manifest_path, rig_golden_path, _items_path, manifest_doc = (
+        _build_real_gpu_counted_shards_with_hf_input_shas(tmp_path, monkeypatch)
+    )
+    honest_pin = manifest_doc["manifest_sha256"]
+
+    # 1. Relabel shard 2/2 to stub while shard 1/2 stays counted (real):
+    senv2_path = shard_dirs[1] / "session_env.json"
+    senv2_doc = json.loads(senv2_path.read_text(encoding="utf-8"))
+    senv2_doc["mode"] = "stub"
+    senv2_doc["dryrun"] = True
+    senv2_path.write_text(json.dumps(senv2_doc, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    # Default rig real mode without pin refuses MERGE_MANIFEST_PIN_REQUIRED
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_nopin:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=rig_manifest_path,
+            output_dir=tmp_path / "m_relabelled_nopin",
+            golden_anchor_manifest_path=rig_golden_path,
+        )
+    assert exc_nopin.value.failure_class == "MERGE_MANIFEST_PIN_REQUIRED"
+
+    # Even with honest pin, rig real mode refuses relabelled stub shard 2/2 in Gate (c)
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_relabel:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=rig_manifest_path,
+            output_dir=tmp_path / "m_relabelled_pinned",
+            golden_anchor_manifest_path=rig_golden_path,
+            expected_manifest_sha256=honest_pin,
+        )
+    assert exc_relabel.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
+    assert "2/2" in exc_relabel.value.detail
+
+    # Passing --allow-unpinned-stub when shard 1/2 is real refuses MERGE_SESSION_ENV_MISMATCH
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_stub_real_shard:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=rig_manifest_path,
+            output_dir=tmp_path / "m_stub_flag_real_shard",
+            golden_anchor_manifest_path=rig_golden_path,
+            allow_unpinned_stub=True,
+        )
+    assert exc_stub_real_shard.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
+
+    # 2. Reproduce Opus review B1/P4: relabel BOTH shards to stub, restore canonical input shas,
+    #    re-seal rows/judge_done/outputs-closed, rebuild golden & copy manifest outside shard dirs.
+    canonical_in_shas = manifest_doc["input_token_ids_sha256_by_call"]
+    for sdir in shard_dirs:
+        senv_p = sdir / "session_env.json"
+        senv_d = json.loads(senv_p.read_text(encoding="utf-8"))
+        senv_d["mode"] = "stub"
+        senv_d["dryrun"] = True
+        senv_p.write_text(json.dumps(senv_d, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        for jid in merge_shards.EXPECTED_JUDGE_IDS:
+            rpath = sdir / "rows" / f"{jid}.jsonl"
+            rows = [json.loads(ln) for ln in rpath.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            for r in rows:
+                ck = f"{r['item_id']}:{r['order']}:{jid}"
+                r["input_token_ids_sha256"] = canonical_in_shas[ck]
+                r["row_sha256"] = bakeoff_judge.compute_row_body_sha256(r)
+            rpath.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
+
+            jdp = sdir / "judge_done" / f"{jid}.json"
+            jdoc = json.loads(jdp.read_text(encoding="utf-8"))
+            jdoc["row_sha256s"] = [r["row_sha256"] for r in rows]
+            jdp.write_text(json.dumps(jdoc) + "\n", encoding="utf-8")
+
+            apath = sdir / "anchor_rows" / f"{jid}.jsonl"
+            arows = [json.loads(ln) for ln in apath.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            for ar in arows:
+                ck = f"{ar['item_id']}:{ar['order']}:{jid}"
+                ar["input_token_ids_sha256"] = canonical_in_shas[ck]
+            apath.write_text("\n".join(json.dumps(ar) for ar in arows) + "\n", encoding="utf-8")
+        vm_judges.write_outputs_closed(sdir)
+
+    forged_dir = tmp_path / "forged_outside"
+    forged_dir.mkdir(parents=True, exist_ok=True)
+    forged_manifest_path = forged_dir / "shard_manifest.json"
+    shutil.copyfile(rig_manifest_path, forged_manifest_path)
+
+    # Spy on shard file reads: default rig real mode refuses MERGE_MANIFEST_PIN_REQUIRED BEFORE reading any shard file
+    opened_in_shards: list[str] = []
+    orig_path_open = Path.open
+    shard_roots = tuple(os.path.abspath(str(d)) for d in shard_dirs)
+
+    def _spy_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        abs_self = os.path.abspath(str(self))
+        if any(abs_self == root or abs_self.startswith(root + os.sep) for root in shard_roots):
+            opened_in_shards.append(abs_self)
+        return orig_path_open(self, *args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(Path, "open", _spy_open)
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_both_nopin:
+            merge_shards.merge_shards(
+                shard_dirs=shard_dirs,
+                manifest_path=forged_manifest_path,
+                output_dir=tmp_path / "m_both_stub_nopin",
+                golden_anchor_manifest_path=rig_golden_path,
+            )
+    assert exc_both_nopin.value.failure_class == "MERGE_MANIFEST_PIN_REQUIRED"
+    assert opened_in_shards == []
+
+    # Even with matching pin, rig real mode refuses stub-labelled shards in Gate (c)
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_both_pinned:
+        merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=forged_manifest_path,
+            output_dir=tmp_path / "m_both_stub_pinned",
+            golden_anchor_manifest_path=rig_golden_path,
+            expected_manifest_sha256=honest_pin,
+        )
+    assert exc_both_pinned.value.failure_class == "MERGE_SESSION_ENV_MISMATCH"
+
+    # 3. Opting into stub mode via CLI `--allow-unpinned-stub` succeeds and records receipt + readout fields
+    stub_out = tmp_path / "m_both_stub_cli_ok"
+    rc = merge_shards.main(
+        [
+            "--manifest",
+            str(forged_manifest_path),
+            "--shard-dirs",
+            str(shard_dirs[0]),
+            str(shard_dirs[1]),
+            "--output-dir",
+            str(stub_out),
+            "--golden-anchor-manifest",
+            str(rig_golden_path),
+            "--allow-unpinned-stub",
+        ]
+    )
+    assert rc == 0
+    rec = json.loads((stub_out / "merge_receipt.json").read_text(encoding="utf-8"))
+    readout = json.loads((stub_out / "merged_readout.json").read_text(encoding="utf-8"))
+    for doc in (rec, readout):
+        assert doc["pass_mode"] == "binary"
+        assert doc["merge_mode"] == "stub"
+        assert doc["real_mode"] is False
+        assert doc["allow_unpinned_stub"] is True
+        assert doc["manifest_pin_enforced"] is False
+        assert doc["per_shard_modes"] == {"1/2": "stub", "2/2": "stub"}
+        assert doc["expected_judge_ids"] == list(merge_shards.EXPECTED_JUDGE_IDS)
+
+
+def test_issue90_merge_shards_derives_rows_and_anchor_rows_from_pass_mode_and_validates_judge_ids(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #90: merge_shards validates pass_mode and expected_judge_ids, derives non-binary
+    rows/<jid>.<pass_mode>.jsonl and anchor_rows/<jid>.<pass_mode>.jsonl filenames, defaults
+    expected_judge_ids to judges supporting pass_mode, and supports CLI --only-judges."""
+    import merge_shards
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge, three_way_wording
+
+    for k in list(os.environ):
+        if vm_judges.is_forbidden_counted_test_hook(k):
+            monkeypatch.delenv(k, raising=False)
+    monkeypatch.delenv("VM_DRYRUN", raising=False)
+
+    # 1. Judge ID and pass_mode validation unit checks
+    assert merge_shards._rows_filename_for_pass("d3-mini", "binary") == "d3-mini.jsonl"
+    assert merge_shards._rows_filename_for_pass("noul-9b", "three_way") == "noul-9b.three_way.jsonl"
+    assert (
+        merge_shards._rows_filename_for_pass("flow-judge-v0.1", "three_way_two_question")
+        == "flow-judge-v0.1.three_way_two_question.jsonl"
+    )
+    for bad_jid in ([], ["../escape"], ["unknown-judge"]):
+        with pytest.raises(merge_shards.MergeRefusalError) as exc_jid:
+            merge_shards._validate_expected_judge_ids(bad_jid, pass_mode="binary")
+        assert exc_jid.value.failure_class == "MERGE_INVALID_JUDGE_ID"
+
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_pm:
+        merge_shards._rows_filename_for_pass("d3-mini", "../bad_pass")
+    assert exc_pm.value.failure_class == "MERGE_INVALID_PASS_MODE"
+
+    unsupported_3w = [
+        jid
+        for jid, spec in bakeoff_judge.BAKEOFF_JUDGE_SPECS.items()
+        if not three_way_wording.judge_supports_pass_mode(spec, "three_way")
+    ]
+    assert unsupported_3w, "expected at least one binary-only judge excluded from three_way"
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_unsup:
+        merge_shards._validate_expected_judge_ids([unsupported_3w[0]], pass_mode="three_way")
+    assert exc_unsup.value.failure_class == "MERGE_INVALID_JUDGE_ID"
+
+    # Verify three_way anchor verdicts map cleanly to binary anchor categories
+    assert bakeoff_judge.normalize_anchor_verdict_code({"raw_verdict": "supported"}) == "yes"
+    assert bakeoff_judge.normalize_anchor_verdict_code({"raw_verdict": "unsupported"}) == "no"
+    assert bakeoff_judge.normalize_anchor_verdict_code({"raw_verdict": "cannot_tell"}) == "unparseable"
+
+    # 2. Build three_way and three_way_contradicted shards via build_shard_manifest + run_bakeoff_judge
+    receipts_dir, _ = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "tw_rec")
+    items_path = _make_stratified_public_items(tmp_path / "tw_items", count=6)
+
+    for pass_mode in ("three_way", "three_way_contradicted"):
+        mode_dir = tmp_path / f"mode_{pass_mode}"
+        mode_dir.mkdir(parents=True, exist_ok=True)
+        supported_judges = merge_shards._default_judge_ids_for_pass_mode(pass_mode)
+        assert len(supported_judges) >= 2
+        assert all(j not in supported_judges for j in unsupported_3w)
+
+        manifest_doc = bakeoff_judge.build_shard_manifest(
+            items_path,
+            num_shards=2,
+            anchor_count=2,
+            stratified_anchor_count=2,
+            canary_anchor_count=0,
+            pass_mode=pass_mode,
+        )
+        manifest_path = mode_dir / "shard_manifest.json"
+        manifest_sha = bakeoff_judge.write_shard_manifest(manifest_doc, manifest_path)
+
+        shard_dirs: list[Path] = []
+        for k_idx in (1, 2):
+            sdir = mode_dir / f"shard_{k_idx}"
+            sdir.mkdir(parents=True, exist_ok=True)
+            spec_str = f"{k_idx}/2"
+            s_env = vm_judges.collect_and_write_session_env(
+                sdir,
+                receipts_dir=receipts_dir,
+                mode="stub",
+                shard_spec=spec_str,
+                phase="start",
+                dryrun=True,
+            )
+            s_env = vm_judges.collect_and_write_session_env(
+                sdir,
+                receipts_dir=receipts_dir,
+                mode="stub",
+                shard_spec=spec_str,
+                phase="end",
+                dryrun=True,
+                prior_session_env=s_env,
+            )
+            for jid in supported_judges:
+                bakeoff_judge.run_bakeoff_judge(
+                    part_dir=items_path,
+                    output_dir=sdir,
+                    judge=jid,
+                    pass_mode=pass_mode,
+                    fake_transport=True,
+                    allow_remote_code_reviewed=(
+                        bakeoff_judge.D3_MINI_REVIEWED_REVISION if jid == "d3-mini" else None
+                    ),
+                    shard_spec=spec_str,
+                    shard_manifest_path=manifest_path,
+                    shard_manifest_sha256=manifest_sha,
+                    session_fingerprint_sha256=s_env["session_fingerprint_sha256"],
+                )
+                assert (sdir / "rows" / f"{jid}.{pass_mode}.jsonl").is_file()
+                assert not (sdir / "rows" / f"{jid}.jsonl").exists()
+                assert (sdir / "anchor_rows" / f"{jid}.{pass_mode}.jsonl").is_file()
+            vm_judges.write_outputs_closed(sdir)
+            shard_dirs.append(sdir)
+
+        out_dir = mode_dir / "merged_default"
+        rec = merge_shards.merge_shards(
+            shard_dirs=shard_dirs,
+            manifest_path=manifest_path,
+            output_dir=out_dir,
+            items_path=items_path,
+            allow_unpinned_stub=True,
+        )
+        assert rec["status"] == "ok"
+        assert rec["pass_mode"] == pass_mode
+        assert rec["expected_judge_ids"] == list(supported_judges)
+        assert rec["anchor_agreement"]["flip_count"] == 0
+
+        if pass_mode == "three_way":
+            # CLI --only-judges comma-separated subset works cleanly
+            subset = list(supported_judges[:2])
+            cli_out = mode_dir / "merged_only_judges"
+            cli_rc = merge_shards.main(
+                [
+                    "--manifest",
+                    str(manifest_path),
+                    "--shard-dirs",
+                    str(shard_dirs[0]),
+                    str(shard_dirs[1]),
+                    "--output-dir",
+                    str(cli_out),
+                    "--only-judges",
+                    ",".join(subset),
+                    "--allow-unpinned-stub",
+                ]
+            )
+            assert cli_rc == 0
+            cli_rec = json.loads((cli_out / "merge_receipt.json").read_text(encoding="utf-8"))
+            assert cli_rec["expected_judge_ids"] == subset
+            assert cli_rec["pass_mode"] == "three_way"
+
+            # Anchor drift on <jid>.three_way.jsonl exceeding k_judge (=1) is detected and refused
+            ar2_path = shard_dirs[1] / "anchor_rows" / f"{subset[0]}.three_way.jsonl"
+            orig_ar2 = ar2_path.read_text(encoding="utf-8")
+            ar2_rows = [json.loads(ln) for ln in orig_ar2.splitlines() if ln.strip()]
+            flipped_items: set[str] = set()
+            for r in ar2_rows:
+                if r.get("order") == "AB" and r["item_id"] not in flipped_items:
+                    r["raw_verdict"] = (
+                        "cannot_tell" if r.get("raw_verdict") != "cannot_tell" else "supported"
+                    )
+                    r.pop("verdict_code", None)
+                    flipped_items.add(r["item_id"])
+                    if len(flipped_items) >= 2:
+                        break
+            assert len(flipped_items) == 2
+            ar2_path.write_text("\n".join(json.dumps(r) for r in ar2_rows) + "\n", encoding="utf-8")
+            with pytest.raises(merge_shards.MergeRefusalError) as exc_3w_drift:
+                merge_shards.merge_shards(
+                    shard_dirs=shard_dirs,
+                    manifest_path=manifest_path,
+                    output_dir=mode_dir / "merged_3w_drift",
+                    expected_judge_ids=subset,
+                    allow_unpinned_stub=True,
+                )
+            assert exc_3w_drift.value.failure_class == "MERGE_ANCHOR_DRIFT_REFUSED"
+            ar2_path.write_text(orig_ar2, encoding="utf-8")
+
+    # 3. Future unregistered pass_mode (e.g. three_way_two_question) works with explicit judge subset
+    tw_dir = tmp_path / "mode_three_way"
+    future_dir = tmp_path / "mode_future_2q"
+    future_dir.mkdir(parents=True, exist_ok=True)
+    base_manifest = json.loads((tw_dir / "shard_manifest.json").read_text(encoding="utf-8"))
+    base_manifest["pass_mode"] = "three_way_two_question"
+    base_manifest.pop("manifest_sha256", None)
+    base_manifest["manifest_sha256"] = merge_shards._canonical_json_sha256(base_manifest)
+    future_manifest_path = future_dir / "shard_manifest.json"
+    bakeoff_judge.write_shard_manifest(base_manifest, future_manifest_path)
+
+    sub_jid = merge_shards._default_judge_ids_for_pass_mode("three_way")[0]
+    future_shards: list[Path] = []
+    for k_idx in (1, 2):
+        src_s = tw_dir / f"shard_{k_idx}"
+        dst_s = future_dir / f"shard_{k_idx}"
+        shutil.copytree(src_s, dst_s)
+        shutil.copyfile(future_manifest_path, dst_s / "shard_manifest.json")
+        shutil.copyfile(
+            dst_s / "rows" / f"{sub_jid}.three_way.jsonl",
+            dst_s / "rows" / f"{sub_jid}.three_way_two_question.jsonl",
+        )
+        shutil.copyfile(
+            dst_s / "anchor_rows" / f"{sub_jid}.three_way.jsonl",
+            dst_s / "anchor_rows" / f"{sub_jid}.three_way_two_question.jsonl",
+        )
+        vm_judges.write_outputs_closed(dst_s)
+        future_shards.append(dst_s)
+
+    future_out = future_dir / "merged_2q"
+    future_rec = merge_shards.merge_shards(
+        shard_dirs=future_shards,
+        manifest_path=future_manifest_path,
+        output_dir=future_out,
+        expected_judge_ids=[sub_jid],
+        allow_unpinned_stub=True,
+    )
+    assert future_rec["status"] == "ok"
+    assert future_rec["pass_mode"] == "three_way_two_question"
+    assert future_rec["expected_judge_ids"] == [sub_jid]
+    future_readout = json.loads((future_out / "merged_readout.json").read_text(encoding="utf-8"))
+    assert list(future_readout["per_judge_row_counts"].keys()) == [sub_jid]
+
+    # Bad manifest pass_mode refuses MERGE_INVALID_PASS_MODE
+    bad_manifest = dict(base_manifest)
+    bad_manifest["pass_mode"] = "../evil"
+    bad_manifest.pop("manifest_sha256", None)
+    bad_manifest["manifest_sha256"] = merge_shards._canonical_json_sha256(bad_manifest)
+    bad_manifest_path = future_dir / "bad_manifest.json"
+    bakeoff_judge.write_shard_manifest(bad_manifest, bad_manifest_path)
+    with pytest.raises(merge_shards.MergeRefusalError) as exc_bad_pm:
+        merge_shards.merge_shards(
+            shard_dirs=future_shards,
+            manifest_path=bad_manifest_path,
+            output_dir=future_dir / "merged_bad_pm",
+            allow_unpinned_stub=True,
+        )
+    assert exc_bad_pm.value.failure_class == "MERGE_INVALID_PASS_MODE"
+
