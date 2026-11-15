@@ -975,6 +975,37 @@ def _load_shard_anchor_rows(
     return shard_anchors
 
 
+def _is_within_dir(target: Path, directory: Path) -> bool:
+    """Return True if `target` is equal to or nested inside `directory`."""
+    try:
+        target.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
+def _refuse_manifest_inside_shard_dir(
+    manifest_path: Path, candidate_shard_dirs: Sequence[Path]
+) -> None:
+    """Refuse when `--manifest` (raw or symlink-resolved) sits inside any shard directory."""
+    manifest_abs = Path(os.path.abspath(str(manifest_path)))
+    manifest_res = manifest_path.resolve()
+    for sdir in candidate_shard_dirs:
+        sdir_abs = Path(os.path.abspath(str(sdir)))
+        sdir_res = sdir.resolve()
+        if (
+            _is_within_dir(manifest_abs, sdir_abs)
+            or _is_within_dir(manifest_res, sdir_res)
+            or _is_within_dir(manifest_abs, sdir_res)
+            or _is_within_dir(manifest_res, sdir_abs)
+        ):
+            raise MergeRefusalError(
+                "MERGE_MANIFEST_IN_SHARD_DIR",
+                f"reference --manifest {manifest_path} sits inside shard directory {sdir}; "
+                "pass the pre-registered rig-held shard_manifest.json outside every shard directory",
+            )
+
+
 def merge_shards(
     *,
     shard_dirs: list[Path],
@@ -989,6 +1020,11 @@ def merge_shards(
     expected_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Verify all five cross-shard gates and write sealed-safe merged readout and receipt.
+
+    Always refuses a reference `--manifest` residing inside any shard (or replacement shard)
+    directory (`MERGE_MANIFEST_IN_SHARD_DIR`). In real mode (`any_real` is True), requires a
+    non-empty `--expected-manifest-sha256` pin (`MERGE_MANIFEST_PIN_REQUIRED`) and verifies the
+    reference manifest body SHA-256 against it (`MERGE_MANIFEST_SHA_MISMATCH`).
 
     Real-GPU rows carry the model tokenizer's `input_token_ids_sha256`, which differs from the
     manifest's tokenizer-free stand-in. For those rows the stand-in comparison is replaced by a
@@ -1008,11 +1044,18 @@ def merge_shards(
                 f"shard directory {sdir} has TOMBSTONE.json and is excluded from every merge",
             )
 
+    raw_replacement_dirs: tuple[Path, ...] = (
+        tuple(Path(p) for p in replacement_shard_dirs.values())
+        if isinstance(replacement_shard_dirs, Mapping)
+        else tuple(Path(p) for p in replacement_shard_dirs)
+    )
+    _refuse_manifest_inside_shard_dir(manifest_path, (*shard_dirs, *raw_replacement_dirs))
+
     manifest_doc = _load_json_dict(
         manifest_path, "MERGE_BIJECTION_FAILED", "shard_manifest.json"
     )
     manifest_sha256 = _verified_manifest_body_sha256(manifest_doc, "reference shard_manifest.json")
-    if expected_manifest_sha256 is not None and (
+    if expected_manifest_sha256 is not None and str(expected_manifest_sha256).strip() and (
         manifest_sha256 != str(expected_manifest_sha256).strip().lower()
     ):
         raise MergeRefusalError(
@@ -1219,6 +1262,14 @@ def merge_shards(
             any_real = True
 
     guard_no_test_hooks_in_counted_mode(any_real=any_real)
+    _refuse_manifest_inside_shard_dir(manifest_path, (*shard_dirs, *replacement_by_spec.values()))
+    if any_real and (
+        expected_manifest_sha256 is None or not str(expected_manifest_sha256).strip()
+    ):
+        raise MergeRefusalError(
+            "MERGE_MANIFEST_PIN_REQUIRED",
+            "real-mode merge requires --expected-manifest-sha256 (<64-hex> pre-registered rig manifest body sha256)",
+        )
 
     raw_golden_file_field = manifest_doc.get("golden_anchor_manifest_file_sha256")
     golden_file_binding = (
@@ -2074,7 +2125,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--manifest",
         required=True,
-        help="Path to pre-built shard_manifest.json",
+        help="Path to pre-built rig-held shard_manifest.json (must sit outside every shard directory)",
     )
     p.add_argument(
         "--shard-dirs",
@@ -2120,7 +2171,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--expected-manifest-sha256",
         default=None,
-        help="Optional pinned body sha256 (manifest_sha256) of the reference shard_manifest.json; refuses on mismatch",
+        help=(
+            "Pinned body sha256 (manifest_sha256) of the pre-registered rig-held shard_manifest.json; "
+            "required in real mode and refuses on omission or mismatch"
+        ),
     )
     return p.parse_args(argv)
 

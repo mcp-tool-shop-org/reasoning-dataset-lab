@@ -97,7 +97,7 @@ def test_stub_with_only_judges_downloads_verifies_and_runs_only_named_judges(tmp
     assert sorted(p.name for p in (out_dir / "rows").glob("*.jsonl")) == ["d3-mini.jsonl", "mu-judge.jsonl"]
 
 
-@pytest.mark.parametrize("only_csv", ["d3-mini", "d3-mini,mu-judge"])
+@pytest.mark.parametrize("only_csv", ["d3-mini", "d3-mini,mu-judge", "d3-mini,flow-judge-v0.1"])
 def test_stub_until_first_load_with_only_judges(tmp_path: Path, only_csv: str) -> None:
     expected = only_csv.split(",")
     receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
@@ -140,16 +140,77 @@ def test_stub_until_first_load_with_only_judges(tmp_path: Path, only_csv: str) -
     summary_doc = json.loads((out_dir / "time_one_summary.json").read_text(encoding="utf-8"))
     outcome_doc = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
 
+    expected_bytes = sum(vm_judges.JUDGE_RECEIPT_BYTES_BY_ID[j] for j in expected)
+    expected_note = (
+        vm_judges.FIRST_LOAD_FLOW_JUDGE_NOTE
+        if "flow-judge-v0.1" in expected
+        else vm_judges.FIRST_LOAD_NOTE
+    )
     for doc in (status_doc, receipt_doc):
         assert doc["only_judges"] == expected
         assert doc["judge_order"] == expected
-        assert doc["first_load_judge_id"] == expected[0]
+        assert doc["first_load_judge_id"] == expected
+        assert doc["first_load_judge_ids"] == expected
         assert doc["first_load_judge_id_source"] == "only_judges"
+        assert doc["first_load_receipt_bytes"] == expected_bytes
+        assert doc["first_load_note"] == expected_note
     assert summary_doc["only_judges"] == expected
     assert summary_doc["judge_order"] == expected
     assert outcome_doc["only_judges"] == expected
     assert outcome_doc["judges_completed"] == expected
     assert sorted(p.name for p in (out_dir / "rows").glob("*.jsonl")) == sorted(f"{j}.jsonl" for j in expected)
+
+
+def test_stub_until_first_load_three_way_default_without_only_judges(tmp_path: Path) -> None:
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
+    items_file = _make_synthetic_public_items(tmp_path / "data", count=4)
+    env_p = fake_colab.setup_fake_colab_environment(tmp_path / "env")
+    exports = _base_launcher_exports(
+        env_p,
+        open_lock=tmp_path / "fl_tw_def.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    exports += "unset RDLAB_ONLY_JUDGES; unset RDLAB_FIRST_LOAD_JUDGE_ID; "
+
+    dry = _run_launcher(
+        exports,
+        f"--stub --until first_load --pass-mode three_way --dry --out-dir '{_to_wsl_path(tmp_path / 'out_dry')}' --run-id fl-tw-dry",
+    )
+    assert dry.returncode == 0, dry.stderr
+    assert "RDLAB_PASS_MODE=three_way" in dry.stdout + dry.stderr
+
+    out_dir = tmp_path / "out_fl_tw_def"
+    proc = _run_launcher(
+        exports,
+        f"--stub --until first_load --pass-mode three_way --out-dir '{_to_wsl_path(out_dir)}' --run-id fl-tw-def-01",
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+
+    expected = ["nemotron-3-nano-4b"]
+    assert _lifecycle_events(env_p["state_dir"], "download_child") == expected
+    assert _lifecycle_events(env_p["state_dir"], "parent_verify") == expected
+    assert _lifecycle_events(env_p["state_dir"], "judge_child") == expected
+
+    assert sorted(p.name for p in (out_dir / "rows").glob("*.jsonl")) == ["nemotron-3-nano-4b.three_way.jsonl"]
+    done_doc = json.loads((out_dir / "judge_done" / "nemotron-3-nano-4b.json").read_text(encoding="utf-8"))
+    assert done_doc["pass_mode"] == "three_way"
+    assert done_doc["rows_file"] == "rows/nemotron-3-nano-4b.three_way.jsonl"
+
+    window_doc = json.loads((out_dir / "window.json").read_text(encoding="utf-8"))
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    receipt_doc = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    outcome_doc = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+
+    for doc in (status_doc, receipt_doc):
+        assert doc["only_judges"] is None
+        assert doc["judge_order"] == expected
+        assert doc["first_load_judge_id"] == "nemotron-3-nano-4b"
+        assert doc["first_load_judge_ids"] == expected
+        assert doc["first_load_judge_id_source"] == "default"
+    assert window_doc["pass_mode"] == receipt_doc["pass_mode"] == outcome_doc["pass_mode"] == "three_way"
+    assert outcome_doc["judges_completed"] == expected
 
 
 def test_stub_three_way_with_only_judges_end_to_end(tmp_path: Path) -> None:
@@ -201,6 +262,70 @@ def test_stub_three_way_with_only_judges_end_to_end(tmp_path: Path) -> None:
     assert outcome_doc["only_judges"] == three_way_subset
     assert outcome_doc["pass_mode"] == "three_way"
     assert outcome_doc["judges_completed"] == three_way_subset
+
+
+def test_three_way_tripped_window_without_result_tar_fetches_three_way_rows(tmp_path: Path) -> None:
+    receipts_dir, hf_home = _make_synthetic_judge_snapshots_and_receipts(tmp_path / "data")
+    items_file = _make_synthetic_public_items(tmp_path / "data", count=2)
+    env_p = fake_colab.setup_fake_colab_environment(tmp_path / "env_tw_trip")
+    out_dir = tmp_path / "out_tw_trip"
+    clock_file = tmp_path / "fake_clock_tw_trip.txt"
+    clock_file.write_text("1000000\n", encoding="utf-8", newline="\n")
+
+    exports = _base_launcher_exports(
+        env_p,
+        open_lock=tmp_path / "tw_trip.lock",
+        receipts_dir=receipts_dir,
+        hf_home=hf_home,
+        items_file=items_file,
+    )
+    extra = (
+        f"export RDLAB_FAKE_CLOCK_FILE='{_to_wsl_path(clock_file)}'; "
+        "export RDLAB_FAKE_CLOCK_STEP_SECONDS=689; "
+        "export FAKE_COLAB_USAGE_RATE='13.08'; "
+        "export RDLAB_MAX_RATE=14; "
+        "export FAKE_COLAB_EXEC_SLEEP='15'; "
+        "export FAKE_COLAB_WRITE_PARTIAL_RUN_BEFORE_SLEEP=1; "
+        "export RDLAB_COST_CAP_POLL_SECONDS=1; "
+        "export RDLAB_ONLY_JUDGES=nemotron-3-nano-4b,d3-mini; "
+    )
+
+    proc = _run_launcher(
+        exports + extra,
+        f"--time-one --card A100 --shape standard --cap 2.5 --pass-mode three_way --out-dir '{_to_wsl_path(out_dir)}' --run-id tw-trip-01",
+    )
+    assert proc.returncode == 2, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert not (out_dir / "result.tar.gz").exists()
+
+    assert (out_dir / "progress.jsonl").is_file()
+    assert (out_dir / "logs" / "vm.log").is_file()
+    assert (out_dir / "gate_status.json").is_file()
+    done_p = out_dir / "judge_done" / "nemotron-3-nano-4b.json"
+    row_3way_p = out_dir / "rows" / "nemotron-3-nano-4b.three_way.jsonl"
+    assert done_p.is_file()
+    assert row_3way_p.is_file()
+    assert not (out_dir / "rows" / "nemotron-3-nano-4b.jsonl").exists()
+
+    done_doc = json.loads(done_p.read_text(encoding="utf-8"))
+    assert done_doc["pass_mode"] == "three_way"
+    assert done_doc["rows_file"] == "rows/nemotron-3-nano-4b.three_way.jsonl"
+    row_lines = [json.loads(ln) for ln in row_3way_p.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(row_lines) == 1
+    assert row_lines[0]["pass_mode"] == "three_way"
+    assert row_lines[0]["raw_verdict"] == "supported"
+
+    status_doc = json.loads((out_dir / "status.json").read_text(encoding="utf-8"))
+    assert status_doc["step"] == "run"
+    assert status_doc["rc"] == 2
+    assert status_doc["status"] == "stopped_cost_cap"
+    assert status_doc["failure_class"] == "COST_CAP_REACHED"
+    assert status_doc["cost_cap_reached"] is True
+
+    outcome_doc = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert outcome_doc["outcome"] == "stopped_cost_cap"
+    assert outcome_doc["failure_class"] == "COST_CAP_REACHED"
+    assert outcome_doc["pass_mode"] == "three_way"
+    assert outcome_doc["judges_completed"] == ["nemotron-3-nano-4b"]
 
 
 @pytest.mark.parametrize(

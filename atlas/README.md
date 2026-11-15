@@ -1,16 +1,16 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-15 from commit 4f2ef51 by Atlas 1.26.0.
+Mapped at 2026-11-15 from commit cfb21ed by Atlas 1.26.0.
 
 ## What this is
 
 reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item. (written by a person)
 
-9 parts, mostly Python (84 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
+9 parts, mostly Python (82 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-15 (6bafcfd)
+## What changed since 2026-11-13 (5b44736)
 
-Nothing structural changed since 2026-11-15; 6 files changed content.
+Nothing structural changed since 2026-11-13; 2 files added and 15 changed content.
 
 ## What comes in
 
@@ -22,7 +22,7 @@ Nothing structural changed since 2026-11-15; 6 files changed content.
 ## What happens through ci
 
 1. The workflow runs tests/ in tests.
-2. That reaches scripts (5 files) and src (28 files).
+2. That reaches scripts (5 files) and src (27 files).
 3. It writes to src/reasoning_dataset_lab/pilot_b/canary_config.json.
 4. It uploads coverage to Codecov.
 
@@ -46,10 +46,10 @@ Nothing structural changed since 2026-11-15; 6 files changed content.
 ## What tends to change together
 
 - **src/reasoning_dataset_lab/pilot_b/value_certification.py** and **tests/test_pilot_b_value_certification.py** changed together in 8 of 8 commits, and the tests part imports the src part.
-- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 28 of 34 commits, and the tests part imports the scripts part.
+- **scripts/colab/vm_judges.py** and **tests/test_colab_judge_launcher.py** changed together in 28 of 32 commits, and the tests part imports the scripts part.
 - **src/reasoning_dataset_lab/pilot_b/models_and_build.py** and **tests/test_pilot_b_ollama_adapters.py** changed together in 9 of 11 commits, and the tests part imports the src part.
 - **src/reasoning_dataset_lab/pilot_b/fact_tables.py** and **tests/test_pilot_b_variety.py** changed together in 5 of 7 commits, and the tests part imports the src part.
-- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 20 of 31 commits, inside the tests part.
+- **tests/fixtures/fake_colab.py** and **tests/test_colab_judge_launcher.py** changed together in 20 of 32 commits, inside the tests part.
 
 1 file changed together with its own test, as expected.
 
@@ -88,7 +88,7 @@ Read those in order to follow one run of rdlab end to end. This path follows rdl
 - 8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
 - 16 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 12 more.
 - 13 writes and 29 reads use paths built at run time and are not named here.
-- 80 writes and 190 reads go to a path their caller passes, not to this repository.
+- 80 writes and 188 reads go to a path their caller passes, not to this repository.
 - 11 reads go to the directory the command is run in, not to this repository.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
 

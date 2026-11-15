@@ -9970,11 +9970,50 @@ def validate_pass_mode(
     return cleaned
 
 
-def resolve_first_load_note(judge_id: str) -> str:
-    """Return the `first_load_note` text for `judge_id`."""
-    if judge_id == "flow-judge-v0.1":
+def resolve_first_load_note(judge_id: str | Sequence[str]) -> str:
+    """Return the `first_load_note` text for `judge_id` (single id or sequence of ids)."""
+    if isinstance(judge_id, str):
+        has_flow = judge_id == "flow-judge-v0.1"
+    else:
+        has_flow = "flow-judge-v0.1" in judge_id
+    if has_flow:
         return FIRST_LOAD_FLOW_JUDGE_NOTE
     return FIRST_LOAD_NOTE
+
+
+def _first_load_receipt_fields(
+    first_load_judge_id: str | Sequence[str],
+    first_load_judge_id_source: str,
+    *,
+    include_first_judge_alias: bool = True,
+) -> dict[str, Any]:
+    """Build receipt/status fields for `--until first_load`, recording full `ONLY_JUDGES` when present."""
+    fl_ids = (
+        [first_load_judge_id]
+        if isinstance(first_load_judge_id, str)
+        else list(first_load_judge_id)
+    )
+    primary_id = fl_ids[0] if fl_ids else FIRST_LOAD_JUDGE_ID
+    fl_id_value: str | list[str] = (
+        list(fl_ids) if first_load_judge_id_source == "only_judges" else primary_id
+    )
+    fl_receipt_bytes = sum(
+        JUDGE_RECEIPT_BYTES_BY_ID.get(jid, FIRST_LOAD_RECEIPT_BYTES)
+        for jid in fl_ids
+    )
+    fields: dict[str, Any] = {
+        "first_load_judge_id": fl_id_value,
+        "first_load_judge_ids": list(fl_ids),
+        "first_load_judge_id_source": first_load_judge_id_source,
+        "first_load_receipt_bytes": fl_receipt_bytes,
+        "first_load_note": resolve_first_load_note(fl_ids),
+    }
+    if include_first_judge_alias:
+        fields["first_judge_id"] = primary_id
+        fields["first_judge_receipt_bytes"] = JUDGE_RECEIPT_BYTES_BY_ID.get(
+            primary_id, FIRST_LOAD_RECEIPT_BYTES
+        )
+    return fields
 
 
 def validate_first_load_judge_id(
@@ -14029,7 +14068,7 @@ def build_vm_receipt_doc(
     gatekeeper_record_fields: Mapping[str, Any] | None = None,
     until_step: str | None = None,
     stopped_after: str | None = None,
-    first_load_judge_id: str = FIRST_LOAD_JUDGE_ID,
+    first_load_judge_id: str | Sequence[str] = FIRST_LOAD_JUDGE_ID,
     first_load_judge_id_source: str = "default",
     anchor_items_sha256: str | None = None,
     p0a_items_sha256: str | None = None,
@@ -14179,16 +14218,13 @@ def build_vm_receipt_doc(
             receipt_doc["first_judge_id"] = FIRST_JUDGE_ID
             receipt_doc["first_judge_receipt_bytes"] = FIRST_JUDGE_RECEIPT_BYTES
         elif until_step == "first_load":
-            fl_receipt_bytes = JUDGE_RECEIPT_BYTES_BY_ID.get(
-                first_load_judge_id, FIRST_LOAD_RECEIPT_BYTES
+            receipt_doc.update(
+                _first_load_receipt_fields(
+                    first_load_judge_id,
+                    first_load_judge_id_source,
+                    include_first_judge_alias=True,
+                )
             )
-            fl_note = resolve_first_load_note(first_load_judge_id)
-            receipt_doc["first_load_judge_id"] = first_load_judge_id
-            receipt_doc["first_load_judge_id_source"] = first_load_judge_id_source
-            receipt_doc["first_load_receipt_bytes"] = fl_receipt_bytes
-            receipt_doc["first_load_note"] = fl_note
-            receipt_doc["first_judge_id"] = first_load_judge_id
-            receipt_doc["first_judge_receipt_bytes"] = fl_receipt_bytes
     if anchor_items_sha256 is not None:
         receipt_doc["anchor_items_sha256"] = anchor_items_sha256
     if p0a_items_sha256 is not None:
@@ -14319,7 +14355,7 @@ def main(argv: list[str] | None = None) -> int:
     only_judges: tuple[str, ...] | None = None
     judge_order: tuple[str, ...] = DEFAULT_JUDGE_ORDER
     judge_order_source: str = "default"
-    first_load_judge_id: str = FIRST_LOAD_JUDGE_ID
+    first_load_judge_id: str | Sequence[str] = FIRST_LOAD_JUDGE_ID
     first_load_judge_id_source: str = "default"
     device_check_report: dict[str, Any] | None = None
     gpu_gate_report: dict[str, Any] | None = None
@@ -14392,10 +14428,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         if until_step == "first_load":
             if only_judges is not None:
-                first_load_judge_id = only_judges[0]
+                first_load_judge_id = only_judges
                 first_load_judge_id_source = "only_judges"
             else:
-                judge_order = (first_load_judge_id,)
+                judge_order = (str(first_load_judge_id),)
 
         current_step = "validate_pass_mode"
         main_pass_mode = validate_pass_mode(
@@ -15188,16 +15224,13 @@ def main(argv: list[str] | None = None) -> int:
                 status_extra["first_judge_id"] = FIRST_JUDGE_ID
                 status_extra["first_judge_receipt_bytes"] = FIRST_JUDGE_RECEIPT_BYTES
             elif until_step == "first_load":
-                fl_receipt_bytes = JUDGE_RECEIPT_BYTES_BY_ID.get(
-                    first_load_judge_id, FIRST_LOAD_RECEIPT_BYTES
+                status_extra.update(
+                    _first_load_receipt_fields(
+                        first_load_judge_id,
+                        first_load_judge_id_source,
+                        include_first_judge_alias=True,
+                    )
                 )
-                fl_note = resolve_first_load_note(first_load_judge_id)
-                status_extra["first_load_judge_id"] = first_load_judge_id
-                status_extra["first_load_judge_id_source"] = first_load_judge_id_source
-                status_extra["first_load_receipt_bytes"] = fl_receipt_bytes
-                status_extra["first_load_note"] = fl_note
-                status_extra["first_judge_id"] = first_load_judge_id
-                status_extra["first_judge_receipt_bytes"] = fl_receipt_bytes
 
         write_vm_status_file(
             args.status_file,
@@ -15380,18 +15413,13 @@ def main(argv: list[str] | None = None) -> int:
             status_fail_extra["until"] = until_step
             status_fail_extra["until_step"] = until_step
             if until_step == "first_load":
-                fl_receipt_bytes = JUDGE_RECEIPT_BYTES_BY_ID.get(
-                    first_load_judge_id, FIRST_LOAD_RECEIPT_BYTES
+                fl_fail_fields = _first_load_receipt_fields(
+                    first_load_judge_id,
+                    first_load_judge_id_source,
+                    include_first_judge_alias=False,
                 )
-                fl_note = resolve_first_load_note(first_load_judge_id)
-                fail_receipt["first_load_judge_id"] = first_load_judge_id
-                fail_receipt["first_load_judge_id_source"] = first_load_judge_id_source
-                fail_receipt["first_load_receipt_bytes"] = fl_receipt_bytes
-                fail_receipt["first_load_note"] = fl_note
-                status_fail_extra["first_load_judge_id"] = first_load_judge_id
-                status_fail_extra["first_load_judge_id_source"] = first_load_judge_id_source
-                status_fail_extra["first_load_receipt_bytes"] = fl_receipt_bytes
-                status_fail_extra["first_load_note"] = fl_note
+                fail_receipt.update(fl_fail_fields)
+                status_fail_extra.update(fl_fail_fields)
         if isinstance(err, (JudgeChildProcessError, DownloadChildProcessError)):
             for k in (
                 "judge",
