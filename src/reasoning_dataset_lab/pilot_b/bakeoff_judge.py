@@ -8870,9 +8870,20 @@ class ElephantChoiceReadout(ParsedJudgeReadout):
     outside_mass: float | None = None
 
 
+# qev's choice probabilities are a softmax over the three option letters, so they must already sum to 1.
+ELEPHANT_PROB_SUM_TOLERANCE = 1e-4
+
+
 class ElephantAdapter(D3MiniAdapter):
-    """Arm 4: the same System One payload and choice readout as the d3 family (arm 1's words, the d3-style text), plus
-    the outside mass the transport reports."""
+    """Arm 4: the same System One payload as the d3 family (arm 1's words, the d3-style text). The readout fails
+    closed: exactly the three shown keys, each a finite number in [0, 1], summing to 1 within 1e-4 (qev's softmax over
+    the three letters), a choice (if given) among them, and a valid outside mass; anything else is unparseable."""
+
+    def parse_response(self, response: JudgeTransportResponse, *, pass_mode: PassMode = "binary") -> ParsedJudgeReadout:
+        base = super().parse_response(response, pass_mode=pass_mode)
+        if base.state == "length_stop":  # a length stop still carries the outside-mass field (None)
+            return ElephantChoiceReadout(**{**base.__dict__, "outside_mass": None})
+        return base
 
     def _parse_non_length_response(
         self,
@@ -8880,27 +8891,76 @@ class ElephantAdapter(D3MiniAdapter):
         *,
         pass_mode: PassMode,
     ) -> ParsedJudgeReadout:
-        base = super()._parse_non_length_response(response, pass_mode=pass_mode)
+        words = three_way_wording(pass_mode, self.spec.judge_id)
+        shown_map = words.shown_to_internal()
         sys_one = response.system_one_result if isinstance(response.system_one_result, Mapping) else {}
-        qid = three_way_wording(pass_mode, self.spec.judge_id).question_id
-        raw = (sys_one.get("outside_mass") or {}).get(qid) if isinstance(sys_one.get("outside_mass"), Mapping) else None
-        om = _probability_or_none(raw)
+        top5 = response.verdict_top_logprobs[:5]
+
+        def bad(note: str, om: float | None = None) -> ElephantChoiceReadout:
+            return ElephantChoiceReadout(
+                state="unparseable", done_reason=response.done_reason, raw_verdict=None, p_yes=None,
+                choice_probabilities=None, verdict_top_logprobs=top5, parse_note=note, outside_mass=om,
+            )
+
+        raw_om = sys_one.get("outside_mass")
+        om = _probability_or_none(raw_om.get(words.question_id)) if isinstance(raw_om, Mapping) else None
+        if om is None:
+            reason = (sys_one.get("outside_mass_error") or {}).get(words.question_id) if isinstance(sys_one.get("outside_mass_error"), Mapping) else None
+            return bad(f"invalid outside mass in the qev readout: {reason or 'missing'}")
+        answers = sys_one.get("answers")
+        ans = answers.get(words.question_id) if isinstance(answers, Mapping) else None
+        probs = ans.get("probabilities") if isinstance(ans, Mapping) else None
+        if response.done_reason != "stop" or not isinstance(probs, Mapping):
+            return bad("missing choice probabilities in the qev readout", om)
+        if set(probs) != set(shown_map):
+            return bad(f"qev probabilities name {sorted(map(str, probs))}, not the three shown keys", om)
+        vals = {k: probs[k] for k in shown_map}
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v)) and 0.0 <= float(v) <= 1.0 for v in vals.values()):
+            return bad("a qev probability is not a finite number in [0, 1]", om)
+        total = sum(float(v) for v in vals.values())
+        if abs(total - 1.0) > ELEPHANT_PROB_SUM_TOLERANCE:
+            return bad(f"qev probabilities sum to {total:.6f}, not 1 (tolerance {ELEPHANT_PROB_SUM_TOLERANCE})", om)
+        choice = ans.get("choice")
+        if choice not in (None, "") and choice not in shown_map:
+            return bad(f"qev choice {choice!r} is not one of the three shown keys", om)
+        internal = {shown_map[k]: float(v) / total for k, v in vals.items()}
+        verdict = shown_map[choice] if choice else max(THREE_WAY_INTERNAL_CLASSES, key=lambda c: internal[c])
         return ElephantChoiceReadout(
-            state=base.state if om is not None or base.state != "parsed" else "unparseable",
-            done_reason=base.done_reason,
-            raw_verdict=base.raw_verdict if om is not None else None,
-            p_yes=base.p_yes if om is not None else None,
-            choice_probabilities=base.choice_probabilities if om is not None else None,
-            verdict_top_logprobs=base.verdict_top_logprobs,
-            parse_note=base.parse_note if om is not None else (base.parse_note or "missing outside mass in the qev readout"),
+            state="parsed",
+            done_reason=response.done_reason,
+            raw_verdict=verdict,
+            p_yes=internal["supported"],
+            choice_probabilities={c: internal[c] for c in THREE_WAY_INTERNAL_CLASSES},
+            verdict_top_logprobs=top5,
             outside_mass=om,
         )
 
 
-def elephant_install_record(path: str | Path | None = None) -> dict[str, Any]:
+# Part of the pins: the qev/prompt.py blob each pinned OneJev commit serves, before and after the serve.patch whose
+# sha256 is in elephant-1's receipt. A changed ONEJEV_COMMIT or serve.patch has no entry here, and the pin test fails.
+QEV_PROMPT_BLOB_BY_ONEJEV_COMMIT: dict[str, str] = {
+    "81ce62f1597c91e46767d4d02d6ac2e18534fe94": "8eaadd36b29c0026d27578d761ac934ba35e8b6e",
+}
+SERVED_QEV_PROMPT_BLOB_BY_SERVE_PATCH_SHA256: dict[str, str] = {
+    "f234c125f1d38d82104b9e1f24e75bde51e4401928acfba2fbf5c59ef2fb46b8": "de49ccad45049238ba8a2ff42ccdde69061ea239",
+}
+
+
+def elephant_receipt_serve_patch_sha256(receipts_dir: str | Path) -> str | None:
+    """serve.patch's sha256 in elephant-1's receipt, or None."""
+    owner, repo = JUDGE_SPECS[ELEPHANT_JUDGE_ID].repo_id.split("/", 1)
+    try:
+        doc = json.loads((Path(receipts_dir) / f"{owner}__{repo}.sha256.json").read_text(encoding="utf-8"))
+        return str(doc["files"]["serve.patch"]["sha256"]).lower()
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def elephant_install_record(path: str | Path | None = None, *, receipts_dir: str | Path | None = None) -> dict[str, Any]:
     """The VM's install record for venv-elephant (`elephant_install.json`, path in RDLAB_ELEPHANT_INSTALL_RECORD), or
     refuse ELEPHANT_RUNTIME_UNVERIFIED: it must say the install finished with OneJev at the pinned commit and the
-    snapshot's serve.patch applied, so the transport only runs the reviewed runtime."""
+    snapshot's serve.patch applied, so the transport only runs the reviewed runtime. With `receipts_dir`, the patch it
+    applied must also be the one in elephant-1's receipt (sha256)."""
     raw = path if path is not None else os.environ.get(ELEPHANT_INSTALL_RECORD_ENV_VAR)
     try:
         doc = json.loads(Path(str(raw)).read_text(encoding="utf-8")) if raw else None
@@ -8912,6 +8972,7 @@ def elephant_install_record(path: str | Path | None = None) -> dict[str, Any]:
         or doc.get("onejev_commit") != ONEJEV_COMMIT
         or doc.get("decision_index_commit") != DECISION_INDEX_COMMIT
         or not doc.get("serve_patch_applied")
+        or (receipts_dir is not None and str(doc.get("serve_patch_sha256") or "").lower() != elephant_receipt_serve_patch_sha256(receipts_dir))
     ):
         raise refused_error(
             "ELEPHANT_RUNTIME_UNVERIFIED",
@@ -8959,7 +9020,7 @@ class ElephantDecisionTransport:
         ensure_offline_env(set_if_unset=False)
         # Every file (the 18.8 GB weights included) is sized and hashed against the receipt before anything loads.
         snapshot_dir, digest = verify_snapshot_against_receipt(spec, receipts_dir=self.receipts_dir, hf_home=self.hf_home)
-        self._install = elephant_install_record()
+        self._install = elephant_install_record(receipts_dir=self.receipts_dir)
         self._snapshot_dir, self._verified_digest = snapshot_dir, digest
         return digest
 
@@ -8993,11 +9054,13 @@ class ElephantDecisionTransport:
             resp, meta = self._engine.decide(SystemOneRequest(state=state, questions=questions), debug=True)
             answers = {k: a.model_dump() for k, a in resp.answers.items()}
             diag = meta.get("diagnostics", {}) if isinstance(meta, Mapping) else {}
-            mass = {k: float(v.get("allowed_token_mass")) for k, v in diag.items() if isinstance(v, Mapping)}
+            mass = {k: v.get("allowed_token_mass") for k, v in diag.items() if isinstance(v, Mapping)}
+            outside, errors = elephant_outside_mass(mass, list(questions))
             sys_one = {
                 "answers": answers,
                 "allowed_token_mass": mass,
-                "outside_mass": {k: max(0.0, 1.0 - m) for k, m in mass.items()},
+                "outside_mass": outside,
+                "outside_mass_error": errors,
                 "prompt_version": meta.get("prompt_version"),
                 "fork_mode": meta.get("fork_mode"),
             }
@@ -9039,6 +9102,29 @@ class ElephantDecisionTransport:
             min_top2_logit_margin=compute_min_top2_logit_margin_from_logprobs(entries),
             verdict_token_margin=compute_min_top2_logit_margin_from_logprobs(entries),
         )
+
+
+# qev's allowed-token mass is a probability; only rounding slack above 1 is clamped to an outside mass of 0.
+ELEPHANT_MASS_SLACK = 1e-6
+
+
+def elephant_outside_mass(mass: Mapping[str, Any], qids: Sequence[str]) -> tuple[dict[str, float | None], dict[str, str]]:
+    """Per question, `1 - allowed_token_mass`, failing closed: a missing, non-numeric, non-finite, negative or
+    > 1 + 1e-6 mass gives None and a named reason (the row is then unparseable); a mass in (1, 1 + 1e-6] is rounding
+    slack and gives 0.0."""
+    outside: dict[str, float | None] = {}
+    errors: dict[str, str] = {}
+    for qid in qids:
+        m = mass.get(qid)
+        if isinstance(m, bool) or not isinstance(m, (int, float)):
+            outside[qid], errors[qid] = None, f"allowed_token_mass missing or not a number ({m!r})"
+        elif not math.isfinite(float(m)):
+            outside[qid], errors[qid] = None, f"allowed_token_mass not finite ({m!r})"
+        elif float(m) < 0.0 or float(m) > 1.0 + ELEPHANT_MASS_SLACK:
+            outside[qid], errors[qid] = None, f"allowed_token_mass outside [0, 1] ({m!r})"
+        else:
+            outside[qid] = max(0.0, 1.0 - float(m))
+    return outside, errors
 
 
 def real_transport_class_for(spec: JudgeSpec) -> Any:

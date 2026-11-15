@@ -15,7 +15,13 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
   - no apt (`ELEPHANT_GIT_MISSING`), clones checked at their pinned commits (`ELEPHANT_SOURCE_PIN_MISMATCH`), telemetry off;
   - install and causal-conv1d build times recorded;
   - on any failure, elephant-1 is `failed_to_run` and the other judges go on.
-- **The elephant-1 metadata receipt:** `EXPECTED_WEIGHTS_TOTAL_BYTES` is 89,245,312,730 across eight receipts.
+- **The elephant-1 metadata receipt and the disk gate per window:** `EXPECTED_WEIGHTS_TOTAL_BYTES` stays the seven other receipts' 70,403,461,877 bytes, so a window without elephant-1 (Window A) still requires 93,748,807,764 bytes. A window that names elephant-1 adds its 18,841,850,853 weight bytes and venv-elephant's estimated 6,632,525,602 bytes and requires 123,044,340,687.
+- **#93 fix 1 (Carbon's review of ff3f6d7):**
+  - venv-elephant is built at most once per window: later subblocks reuse an ok install and never retry a failed one; a resumed run starts from a clean venv-elephant and clone directory (`clean_start`).
+  - git, serve.patch and constraints.txt are checked before any install step (`ELEPHANT_SNAPSHOT_INCOMPLETE`); every install call has a timeout bounded by the window wall (`ELEPHANT_INSTALL_TIMEOUT`).
+  - The outside mass fails closed: a missing, non-finite, negative or > 1 + 1e-6 allowed-token mass makes the row unparseable with a named reason; only slack in (1, 1 + 1e-6] clamps to 0.
+  - The readout fails closed: exactly the three shown keys, finite values in [0, 1], summing to 1 within 1e-4.
+  - The fixture blob ids are tied to `ONEJEV_COMMIT` and the receipt's serve.patch sha256, and the install record's serve.patch must be the receipt's. jinja2 is a dev dependency, so the chat-template render (both orders) runs in CI. The fixture NOTICEs carry the MIT and Qwen (Apache-2.0) attribution.
 
 ### The D5c judge window: arms 2, 3, 5 and 6, per-judge windows, and a verified partial fetch
 

@@ -36,6 +36,7 @@ from tests.test_colab_judge_launcher import _hermetic_fake_colab_and_uv_env, _to
 ELEPHANT = "elephant-1"
 ESPEC = JUDGE_SPECS[ELEPHANT]
 INTERNAL = ("supported", "unsupported", "cannot_tell")
+SNAPSHOT_SERVE_PATCH = b"diff --git a/qev/engine.py b/qev/engine.py\n"
 
 
 def _add_elephant_snapshot(receipts_dir: Path, hf_home: Path, *, weights: bytes = b"\x07" * 64) -> Path:
@@ -45,7 +46,7 @@ def _add_elephant_snapshot(receipts_dir: Path, hf_home: Path, *, weights: bytes 
     files = {
         "config.json": json.dumps({"model_type": "qwen3_5"}).encode(),
         "model.safetensors": weights,
-        "serve.patch": b"diff --git a/qev/engine.py b/qev/engine.py\n",
+        "serve.patch": SNAPSHOT_SERVE_PATCH,
         "constraints.txt": b"transformers==5.19.0\n",
     }
     for n, b in files.items():
@@ -81,16 +82,33 @@ def _resp(sys_one: dict[str, Any], done: str = "stop") -> JudgeTransportResponse
     )
 
 
-def test_elephant_readout_renormalises_over_the_three_options_and_reports_outside_mass() -> None:
+def test_elephant_readout_accepts_only_a_softmax_over_the_three_shown_keys() -> None:
+    """#93 fix 1, A3: qev returns a softmax over the three letters, so the readout requires exactly the three shown
+    keys, finite values in [0, 1] and a sum within 1e-4 of 1; weights like {1, 2, 1} are unparseable, not renormalised."""
     adapter = build_judge_adapter(ELEPHANT)
-    sys_one = {
-        "answers": {"verdict": {"choice": "contradicted", "probabilities": {"supported": 1, "contradicted": 2, "can't tell": 1}}},
-        "outside_mass": {"verdict": 0.2},
-    }
+    good = {"supported": 0.25, "contradicted": 0.5, "can't tell": 0.25}
+    sys_one = {"answers": {"verdict": {"choice": "contradicted", "probabilities": good}}, "outside_mass": {"verdict": 0.2}}
     r = adapter.parse_response(_resp(sys_one), pass_mode=CONTRA)
     assert r.state == "parsed" and r.raw_verdict == "unsupported"
     assert r.choice_probabilities == pytest.approx({"supported": 0.25, "unsupported": 0.5, "cannot_tell": 0.25})
     assert bakeoff_judge.two_question_row_fields(r, CONTRA) == {"outside_mass": 0.2}
+    slack = {"supported": 0.25, "contradicted": 0.50005, "can't tell": 0.25}  # within 1e-4 of 1
+    assert adapter.parse_response(_resp({**sys_one, "answers": {"verdict": {"probabilities": slack}}}), pass_mode=CONTRA).state == "parsed"
+    for probs in (
+        {"supported": 1, "contradicted": 2, "can't tell": 1},  # weights, not probabilities
+        {"supported": 0.05, "contradicted": 0.10, "can't tell": 0.05},  # sum 0.2
+        {"supported": float("nan"), "contradicted": 0.5, "can't tell": 0.5},
+        {"supported": 0.2, "contradicted": 0.5, "can't tell": 0.2, "none": 0.1},  # a fourth key
+        {"supported": 0.5, "contradicted": 0.5},  # a missing key
+        {"supported": -0.1, "contradicted": 0.6, "can't tell": 0.5},
+    ):
+        rb = adapter.parse_response(_resp({**sys_one, "answers": {"verdict": {"probabilities": probs}}}), pass_mode=CONTRA)
+        assert rb.state == "unparseable" and rb.raw_verdict is None and rb.choice_probabilities is None, probs
+        assert bakeoff_judge.two_question_row_fields(rb, CONTRA) == {"outside_mass": 0.2}
+    rc = adapter.parse_response(_resp({**sys_one, "answers": {"verdict": {"choice": "unsupported", "probabilities": good}}}), pass_mode=CONTRA)
+    assert rc.state == "unparseable"  # a choice that is not a shown key
+    cut = adapter.parse_response(_resp({}, "length"), pass_mode=CONTRA)
+    assert cut.state == "length_stop" and bakeoff_judge.two_question_row_fields(cut, CONTRA) == {"outside_mass": None}
     # The outside mass is never a class: a big one still leaves the verdict to the three options.
     big = {**sys_one, "outside_mass": {"verdict": 0.9}}
     assert adapter.parse_response(_resp(big), pass_mode=CONTRA).raw_verdict == "unsupported"
@@ -129,7 +147,7 @@ def _install_record(tmp_path: Path, **over: Any) -> Path:
         "onejev_commit": bakeoff_judge.ONEJEV_COMMIT,
         "decision_index_commit": bakeoff_judge.DECISION_INDEX_COMMIT,
         "serve_patch_applied": True,
-        "serve_patch_sha256": "f" * 64,
+        "serve_patch_sha256": hashlib.sha256(SNAPSHOT_SERVE_PATCH).hexdigest(),  # the test snapshot's, as in its receipt
         "install_seconds": 321.0,
         "causal_conv1d_build_seconds": 123.0,
         **over,
@@ -308,6 +326,7 @@ def _ctx(tmp_path: Path) -> dict[str, Path]:
     snap = tmp_path / "snap"
     snap.mkdir(parents=True, exist_ok=True)
     (snap / "serve.patch").write_bytes(b"patch\n")
+    (snap / "constraints.txt").write_bytes(b"transformers==5.19.0\n")
     return {"work_dir": tmp_path / "work", "repo_dir": tmp_path / "repo", "run_dir": tmp_path / "run", "snapshot_dir": snap}
 
 
@@ -567,7 +586,8 @@ def test_elephant_chat_template_is_the_pinned_one_and_opens_an_empty_think_block
     assert "{{- '<|im_start|>' + message.role + '\\n' + content + '<|im_end|>' + '\\n' }}" in text[87]
     assert "{{- '<|im_start|>assistant\\n' }}" in text[147]
     assert "enable_thinking is false" in text[148] and "{{- '<think>\\n\\n</think>\\n\\n' }}" in text[149]
-    jinja2 = pytest.importorskip("jinja2")
+    import jinja2  # a dev dependency (#93 fix 1, B pins): this render never skips in CI
+
     env = jinja2.Environment()
     env.globals["raise_exception"] = lambda m: (_ for _ in ()).throw(ValueError(m))
     out = env.from_string(tpl.decode("utf-8")).render(
@@ -580,3 +600,264 @@ def test_elephant_chat_template_is_the_pinned_one_and_opens_an_empty_think_block
         "<|im_start|>user\n<state>\nS\n</state>\n\nQ<|im_end|>\n"
         "<|im_start|>assistant\n<think>\n\n</think>\n\n"
     )
+
+
+# --- #93 fix 1 (card 2026-11-15-rdlab-pr93-fix1; Carbon's review of ff3f6d7) ---------------------------------------
+
+
+def test_the_qev_messages_of_both_orders_render_through_the_pinned_template() -> None:
+    """B pins: the served qev source's messages for arm 4's real payload, in both orders (AB and BA), rendered by the
+    pinned chat template: the system turn, the user turn with the state and the question, then an empty think block."""
+    import jinja2
+
+    tpl = (FIXTURES / "elephant1_b3f8a934" / "chat_template.jinja").read_text(encoding="utf-8")
+    env = jinja2.Environment()
+    env.globals["raise_exception"] = lambda m: (_ for _ in ()).throw(ValueError(m))
+    mod, schema = _load_qev_prompt("qev_prompt.served.py.txt")
+    states = set()
+    for order in ("AB", "BA"):
+        payload = _prompt(ELEPHANT, ITEMS[0], order, CONTRA).structured_payload
+        assert payload is not None
+        q = payload["questions"]["verdict"]
+        rendered = mod.render_question("verdict", schema.ChoiceQuestion(type="choice", instructions=q["instructions"], criteria=q["criteria"]))
+        messages = mod.build_messages(payload["state"], rendered.suffix)
+        out = env.from_string(tpl).render(messages=messages, add_generation_prompt=True, enable_thinking=False)
+        assert out == (
+            f"<|im_start|>system\n{PREREG_SYSTEM}<|im_end|>\n"
+            f"<|im_start|>user\n{messages[1]['content']}<|im_end|>\n"
+            "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+        ), order
+        assert messages[1]["content"].startswith(f"<state>\n{payload['state']}\n</state>\n\n")
+        states.add(payload["state"])
+    assert len(states) == 2  # the two orders show the two materials in turn
+
+
+def test_fixture_blobs_are_tied_to_the_onejev_pin_and_the_receipts_serve_patch() -> None:
+    """B pins: the fixture blob ids are looked up from ONEJEV_COMMIT and from the serve.patch sha256 in elephant-1's
+    receipt, so a changed pin (commit or patch) has no entry and fails here."""
+    rdir = Path(__file__).resolve().parents[1] / "scripts" / "colab" / "receipts"
+    raw = (FIXTURES / "onejev_81ce62f1" / "qev_prompt.py.txt").read_bytes()
+    served = (FIXTURES / "onejev_81ce62f1" / "qev_prompt.served.py.txt").read_bytes()
+    patch_sha = bakeoff_judge.elephant_receipt_serve_patch_sha256(rdir)
+    assert patch_sha is not None
+    assert bakeoff_judge.QEV_PROMPT_BLOB_BY_ONEJEV_COMMIT[bakeoff_judge.ONEJEV_COMMIT] == _git_blob_sha(raw) == ONEJEV_PROMPT_BLOB
+    assert bakeoff_judge.SERVED_QEV_PROMPT_BLOB_BY_SERVE_PATCH_SHA256[patch_sha] == _git_blob_sha(served) == SERVED_PROMPT_BLOB
+    assert vm_judges.ELEPHANT_ONEJEV_COMMIT == bakeoff_judge.ONEJEV_COMMIT
+    assert bakeoff_judge.elephant_receipt_serve_patch_sha256(rdir / "missing") is None
+
+
+def test_an_install_record_whose_serve_patch_is_not_the_receipts_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """B pins: the transport compares the install record's serve_patch_sha256 with elephant-1's receipt."""
+    _clean_env(monkeypatch)
+    rdir, hf = tmp_path / "rec", tmp_path / "hf"
+    _add_elephant_snapshot(rdir, hf)
+    _fake_qev(monkeypatch)
+    good = _install_record(tmp_path)
+    assert bakeoff_judge.elephant_install_record(good, receipts_dir=rdir)["status"] == "ok"
+    bad = _install_record(tmp_path, serve_patch_sha256="f" * 64)
+    with pytest.raises(RdlabError) as exc:
+        bakeoff_judge.elephant_install_record(bad, receipts_dir=rdir)
+    assert exc.value.code == "ELEPHANT_RUNTIME_UNVERIFIED"
+    monkeypatch.setenv(bakeoff_judge.ELEPHANT_INSTALL_RECORD_ENV_VAR, str(bad))
+    with pytest.raises(RdlabError) as exc_t:
+        bakeoff_judge.ElephantDecisionTransport(receipts_dir=rdir, hf_home=hf).verify_ready(ESPEC)
+    assert exc_t.value.code == "ELEPHANT_RUNTIME_UNVERIFIED"
+
+
+@pytest.mark.parametrize(
+    ("mass", "reason"),
+    [
+        (None, "missing or not a number"),
+        (float("nan"), "not finite"),
+        (float("inf"), "not finite"),
+        (1.5, "outside [0, 1]"),
+        (-0.1, "outside [0, 1]"),
+    ],
+)
+def test_an_outside_allowed_token_mass_makes_the_row_unparseable_with_a_named_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mass: float | None, reason: str
+) -> None:
+    """A2: a missing, non-finite, negative or > 1 + 1e-6 allowed-token mass fails closed: no outside mass, and the
+    row is unparseable with the reason named (never clamped to 0)."""
+    _clean_env(monkeypatch)
+    rdir, hf = tmp_path / "rec", tmp_path / "hf"
+    _add_elephant_snapshot(rdir, hf)
+    monkeypatch.setenv(bakeoff_judge.ELEPHANT_INSTALL_RECORD_ENV_VAR, str(_install_record(tmp_path)))
+    _fake_qev(monkeypatch, mass=mass)  # type: ignore[arg-type]
+    tr = bakeoff_judge.ElephantDecisionTransport(receipts_dir=rdir, hf_home=hf)
+    tr.verify_ready(ESPEC)
+    resp = tr.generate(ESPEC, _prompt(ELEPHANT, ITEMS[0], "AB", CONTRA), seed=1)
+    assert resp.system_one_result["outside_mass"] == {"verdict": None}  # type: ignore[index]
+    r = build_judge_adapter(ELEPHANT).parse_response(resp, pass_mode=CONTRA)
+    assert r.state == "unparseable" and r.raw_verdict is None and r.choice_probabilities is None
+    assert r.parse_note is not None and "invalid outside mass" in r.parse_note and reason in r.parse_note
+    assert bakeoff_judge.two_question_row_fields(r, CONTRA) == {"outside_mass": None}
+    out, errs = bakeoff_judge.elephant_outside_mass({"verdict": mass}, ["verdict"])
+    assert out == {"verdict": None} and reason in errs["verdict"]
+
+
+def test_only_rounding_slack_above_one_clamps_the_outside_mass_to_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A2: a mass in (1, 1 + 1e-6] is rounding slack and gives an outside mass of 0.0; the row parses."""
+    _clean_env(monkeypatch)
+    rdir, hf = tmp_path / "rec", tmp_path / "hf"
+    _add_elephant_snapshot(rdir, hf)
+    monkeypatch.setenv(bakeoff_judge.ELEPHANT_INSTALL_RECORD_ENV_VAR, str(_install_record(tmp_path)))
+    _fake_qev(monkeypatch, mass=1 + 1e-7)
+    tr = bakeoff_judge.ElephantDecisionTransport(receipts_dir=rdir, hf_home=hf)
+    tr.verify_ready(ESPEC)
+    resp = tr.generate(ESPEC, _prompt(ELEPHANT, ITEMS[0], "AB", CONTRA), seed=1)
+    assert resp.system_one_result["outside_mass"] == {"verdict": 0.0}  # type: ignore[index]
+    r = build_judge_adapter(ELEPHANT).parse_response(resp, pass_mode=CONTRA)
+    assert r.state == "parsed" and bakeoff_judge.two_question_row_fields(r, CONTRA) == {"outside_mass": 0.0}
+    assert bakeoff_judge.elephant_outside_mass({"verdict": 1 + 2e-6}, ["verdict"])[0] == {"verdict": None}
+    assert bakeoff_judge.elephant_outside_mass({"verdict": 0.75}, ["verdict"]) == ({"verdict": 0.25}, {})
+    assert bakeoff_judge.elephant_outside_mass({"verdict": True}, ["verdict"])[0] == {"verdict": None}
+
+
+def _install_steps(runner: _Runner) -> list[str]:
+    return [runner.names[tuple(a)] for a, _ in runner.calls if tuple(a) in runner.names]
+
+
+def _window_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **runner_kw: Any) -> tuple[list[list[str]], _Runner, dict[str, Path]]:
+    """The run loop's shape: 51 items in subblocks of DEFAULT_SUBBLOCK_ITEMS (two pipeline passes), `_judge_passes`
+    once per pass, a real window, the install's runner recorded (wrapped in, so no command ever runs)."""
+    ctx = _ctx(tmp_path)
+    hf = tmp_path / "hf"
+    ctx["snapshot_dir"] = _add_elephant_snapshot(tmp_path / "rec", hf)  # the snapshot the loop resolves from hf_home
+    runner = _Runner(ctx, **runner_kw)
+    orig = vm_judges.ensure_elephant_venv
+    monkeypatch.setattr(
+        vm_judges, "ensure_elephant_venv", lambda **kw: orig(**{**kw, "runner": runner, "which": lambda _n: "/usr/bin/git", "clock": _clock()})
+    )
+    item_ids = [f"i{n:02d}" for n in range(51)]
+    step = vm_judges.DEFAULT_SUBBLOCK_ITEMS
+    chunks = [item_ids[i : i + step] for i in range(0, len(item_ids), step)]
+    assert len(chunks) == 2
+    loop_ctx = {**{k: v for k, v in ctx.items() if k != "snapshot_dir"}, "hf_home": hf, "progress_path": tmp_path / "progress.jsonl", "metrics": {}, "real": True}
+    specs = vm_judges._select_judge_specs(("d3-mini", ELEPHANT))
+    return [[j for j, *_ in vm_judges._judge_passes(specs, CONTRA, elephant=loop_ctx)] for _chunk in chunks], runner, ctx
+
+
+def test_venv_elephant_is_built_once_per_window_across_subblocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A1: subblock 2 reuses subblock 1's ok install: every install step runs exactly once in the window."""
+    passes, runner, ctx = _window_loop(tmp_path, monkeypatch)
+    assert passes == [["d3-mini", ELEPHANT], ["d3-mini", ELEPHANT]]
+    steps = _install_steps(runner)
+    assert sorted(steps) == sorted(n for n, _ in vm_judges.elephant_install_commands(ctx["work_dir"], ctx["repo_dir"], ctx["snapshot_dir"]))
+    assert len(steps) == len(set(steps))
+    assert vm_judges._LAST_ELEPHANT_INSTALL is not None and vm_judges._LAST_ELEPHANT_INSTALL["status"] == "ok"
+
+
+def test_a_failed_install_on_subblock_one_is_not_retried(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A1: a failure on subblock 1 is final for the window: subblock 2 runs no install step and elephant-1 stays out."""
+    passes, runner, _ctx_ = _window_loop(tmp_path, monkeypatch, fail_step="build_causal_conv1d")
+    assert passes == [["d3-mini"], ["d3-mini"]]
+    assert _install_steps(runner).count("build_causal_conv1d") == 1
+    lines = [json.loads(ln) for ln in (tmp_path / "progress.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert [(r["kind"], r["failure_class"]) for r in lines] == [("judge_failed", "ELEPHANT_INSTALL_FAILED")]
+
+
+def test_a_resumed_run_starts_venv_elephant_and_its_clones_clean(tmp_path: Path) -> None:
+    """A1: a resumed run in an existing work_dir never reuses an earlier venv-elephant or clone: they are removed
+    before the first install step, and the record says so."""
+    ctx = _ctx(tmp_path)
+    stale = [ctx["work_dir"] / "venv-elephant" / "bin" / "python", ctx["work_dir"] / "elephant-src" / "OneJev" / "x.py"]
+    for p in stale:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("old\n", encoding="utf-8")
+    (ctx["work_dir"] / "elephant-torch-pin.txt").write_text("torch==0\n", encoding="utf-8")
+    rec = vm_judges.ensure_elephant_venv(**ctx, real=True, runner=_Runner(ctx), which=lambda _n: "/usr/bin/git", clock=_clock())
+    assert rec["status"] == "ok" and rec["clean_start"] is True
+    assert not any(p.exists() for p in stale) and not (ctx["work_dir"] / "elephant-torch-pin.txt").exists()
+
+
+@pytest.mark.parametrize("absent", ["serve.patch", "constraints.txt"])
+def test_an_incomplete_snapshot_is_refused_before_any_install_step(tmp_path: Path, absent: str) -> None:
+    """B: git, serve.patch and constraints.txt are checked before any venv, sync or clone step."""
+    ctx = _ctx(tmp_path)
+    (ctx["snapshot_dir"] / absent).unlink()
+    runner = _Runner(ctx)
+    rec = vm_judges.ensure_elephant_venv(**ctx, real=True, runner=runner, which=lambda _n: "/usr/bin/git", clock=_clock())
+    assert rec["status"] == "failed" and rec["failure_class"] == "ELEPHANT_SNAPSHOT_INCOMPLETE" and absent in rec["detail"]
+    assert runner.calls == [] and rec["steps"] == []
+
+
+def test_every_install_call_has_a_timeout_bounded_by_the_window_wall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """B: every runner call of the install (steps and HEAD checks) carries a timeout no longer than the wall left."""
+    monkeypatch.setattr(vm_judges, "_ACTIVE_RUN_WALL_DEADLINE_MONOTONIC", None)
+    monkeypatch.delenv("RDLAB_CHILD_WALL_MARGIN_SECONDS", raising=False)
+    for wall, want in (("900", 840.0), ("30", 30.0)):
+        monkeypatch.setenv("RDLAB_WALL_SECONDS", wall)
+        ctx = _ctx(tmp_path / wall)
+        seen: list[Any] = []
+        inner = _Runner(ctx)
+
+        def runner(argv: list[str], _inner: _Runner = inner, **kw: Any) -> Any:
+            seen.append(kw.get("timeout"))
+            return _inner(argv, **kw)
+
+        rec = vm_judges.ensure_elephant_venv(**ctx, real=True, runner=runner, which=lambda _n: "/usr/bin/git", clock=_clock())
+        assert rec["status"] == "ok" and seen and all(t == want for t in seen), (wall, seen)
+        assert all(t <= float(wall) for t in seen)
+
+
+def test_an_install_step_past_its_timeout_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    monkeypatch.setattr(vm_judges, "_ACTIVE_RUN_WALL_DEADLINE_MONOTONIC", None)
+    monkeypatch.setenv("RDLAB_WALL_SECONDS", "900")
+    ctx = _ctx(tmp_path)
+    inner = _Runner(ctx)
+
+    def runner(argv: list[str], **kw: Any) -> Any:
+        if inner.names.get(tuple(argv)) == "build_causal_conv1d":
+            raise subprocess.TimeoutExpired(argv, kw["timeout"])
+        return inner(argv, **kw)
+
+    rec = vm_judges.ensure_elephant_venv(**ctx, real=True, runner=runner, which=lambda _n: "/usr/bin/git", clock=_clock())
+    assert rec["status"] == "failed" and rec["failure_class"] == "ELEPHANT_INSTALL_TIMEOUT"
+    assert rec["steps"][-1]["step"] == "build_causal_conv1d" and rec["steps"][-1]["timeout_seconds"] == 840.0
+
+
+def test_the_disk_gate_adds_elephant_only_to_a_window_that_selects_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B, disk per window: Window A (d3-mini, d3-flash, the encoder) keeps the pre-#93 figure; a window naming
+    elephant-1 adds its weights (receipt total_bytes) and venv-elephant (an estimate, its source in the constant)."""
+    monkeypatch.delenv(vm_judges.JUDGE_PASS_MODES_ENV_VAR, raising=False)
+    monkeypatch.delenv("RDLAB_ONLY_JUDGES", raising=False)
+    assert vm_judges.compute_required_vm_disk_bytes()["required_bytes"] == 93_748_807_764  # unset: as before #93
+    monkeypatch.setenv("RDLAB_ONLY_JUDGES", "d3-mini,d3-flash,nli-deberta-v3-large")
+    window_a = vm_judges.compute_required_vm_disk_bytes()
+    assert window_a == {
+        "weights_total_bytes": 70_403_461_877,
+        "venvs_estimated_bytes": 11_117_240_526,
+        "subtotal_bytes": 81_520_702_403,
+        "required_bytes": 93_748_807_764,
+    }
+    monkeypatch.setenv("RDLAB_ONLY_JUDGES", f"d3-mini,d3-flash,nli-deberta-v3-large,{ELEPHANT}")
+    window_b = vm_judges.compute_required_vm_disk_bytes()
+    assert window_b == {
+        "weights_total_bytes": 89_245_312_730,
+        "venvs_estimated_bytes": 17_749_766_128,
+        "subtotal_bytes": 106_995_078_858,
+        "required_bytes": 123_044_340_687,
+    }
+    rdir = Path(__file__).resolve().parents[1] / "scripts" / "colab" / "receipts"
+    doc = json.loads((rdir / "baselabs__elephant-1.sha256.json").read_text(encoding="utf-8"))
+    assert vm_judges.ELEPHANT_WEIGHTS_BYTES == doc["total_bytes"]
+    assert vm_judges.VENV_ELEPHANT_ESTIMATED_BYTES == vm_judges.VENV_JUDGE_WHEEL_BYTES * vm_judges.VENV_UNPACK_MULTIPLIER + 1024**3
+    monkeypatch.delenv("RDLAB_ONLY_JUDGES")
+    monkeypatch.setenv(vm_judges.JUDGE_PASS_MODES_ENV_VAR, f"d3-mini:{CONTRA},{ELEPHANT}:{CONTRA}")
+    assert vm_judges.compute_required_vm_disk_bytes() == window_b  # a per-judge plan naming elephant-1
+    assert vm_judges.elephant_window_extra_bytes("d3-mini,d3-flash") == {"weights_bytes": 0, "venv_bytes": 0}
+
+
+def test_the_fixture_notices_carry_the_mit_and_qwen_attribution() -> None:
+    """A4: the elephant-1 fixture carries the MIT permission and warranty text with Base Labs credited, and the Qwen
+    Apache-2.0 pointer and attribution; the OneJev fixture says its served file holds MIT serve.patch hunks."""
+    el = (FIXTURES / "elephant1_b3f8a934" / "NOTICE").read_text(encoding="utf-8")
+    assert "Permission is hereby granted, free of charge" in el and 'THE SOFTWARE IS PROVIDED "AS IS"' in el
+    assert "Base Labs at Baseten" in el and "Copyright 2026 Alibaba Cloud" in el
+    assert "tests/fixtures/onejev_81ce62f1/LICENSE" in el and "https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/LICENSE" in el
+    assert (FIXTURES / "onejev_81ce62f1" / "LICENSE").read_text(encoding="utf-8").lstrip().startswith("Apache License")
+    oj = (FIXTURES / "onejev_81ce62f1" / "NOTICE").read_text(encoding="utf-8")
+    assert "qev_prompt.served.py.txt" in oj and "serve.patch hunks from elephant-1, which is MIT-licensed" in oj

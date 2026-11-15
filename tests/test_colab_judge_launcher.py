@@ -1836,7 +1836,7 @@ def test_items_upload_fails_at_6436a3a6_gate_and_passes_after_fix(
     new_cli_log = (out_new / "colab-cli.log").read_text(encoding="utf-8")
     assert "VM_GATE_OK " in new_cli_log
     assert "items_dir=/content/rdlab_items" in new_cli_log
-    assert "required_bytes=115416936245" in new_cli_log
+    assert "required_bytes=93748807764" in new_cli_log  # no elephant-1 in the window: the pre-#93 figure
     assert (env_new["state_dir"] / "vm_fs" / "rdlab_items").is_dir()
     new_outcome = json.loads(
         (out_new / "outcome.draft.json").read_text(encoding="utf-8")
@@ -1851,36 +1851,37 @@ def test_gate_disk_preflight_reports_free_space_and_refuses_when_insufficient(
     """Verify disk preflight arithmetic, free-space reporting, and `VM_DISK_INSUFFICIENT` refusal."""
     import shutil as _shutil
 
-    # The seven receipts: the five downloaded ones and the D5c judges' metadata receipts (build card v4 follow-up).
-    assert vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES == 89_245_312_730
+    # The seven receipts: the five downloaded ones and the D5c judges' metadata receipts (build card v4 follow-up);
+    # elephant-1's weights and venv-elephant are added only to a window that selects it (#93 fix 1).
+    assert vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES == 70_403_461_877
     assert vm_judges.EXPECTED_WEIGHTS_DOWNLOAD_SECONDS == 797.4
     assert vm_judges.VENV_JUDGE_WHEEL_BYTES == 2_779_391_889
     assert vm_judges.VENV_D3_WHEEL_BYTES == 2_779_228_374
     assert vm_judges.VENVS_ESTIMATED_BYTES == 11_117_240_526
-    assert vm_judges.REQUIRED_VM_DISK_BYTES == 115_416_936_245
+    assert vm_judges.REQUIRED_VM_DISK_BYTES == 93_748_807_764
 
     req_info = vm_judges.compute_required_vm_disk_bytes()
     assert req_info == {
-        "weights_total_bytes": 89_245_312_730,
+        "weights_total_bytes": 70_403_461_877,
         "venvs_estimated_bytes": 11_117_240_526,
-        "subtotal_bytes": 100_362_553_256,
-        "required_bytes": 115_416_936_245,
+        "subtotal_bytes": 81_520_702_403,
+        "required_bytes": 93_748_807_764,
     }
 
     # Direct unit check using monkeypatched shutil.disk_usage at exact boundary
     fake_usage_ok = _shutil._ntuple_diskusage(
-        140_000_000_000, 24_583_063_755, 115_416_936_245
+        120_000_000_000, 26_251_192_236, 93_748_807_764
     )
     monkeypatch.setattr(_shutil, "disk_usage", lambda _p: fake_usage_ok)
     report_ok = vm_judges.check_vm_disk_preflight(
         content_dir=tmp_path, hf_home=tmp_path / "hf_home"
     )
-    assert report_ok["content_free_bytes"] == 115_416_936_245
-    assert report_ok["hf_home_free_bytes"] == 115_416_936_245
-    assert report_ok["required_bytes"] == 115_416_936_245
+    assert report_ok["content_free_bytes"] == 93_748_807_764
+    assert report_ok["hf_home_free_bytes"] == 93_748_807_764
+    assert report_ok["required_bytes"] == 93_748_807_764
 
     fake_usage_low = _shutil._ntuple_diskusage(
-        140_000_000_000, 24_583_063_756, 115_416_936_244
+        120_000_000_000, 26_251_192_237, 93_748_807_763
     )
     monkeypatch.setattr(_shutil, "disk_usage", lambda _p: fake_usage_low)
     with pytest.raises(vm_judges.RefusalError) as exc_low:
@@ -1888,7 +1889,7 @@ def test_gate_disk_preflight_reports_free_space_and_refuses_when_insufficient(
             content_dir=tmp_path, hf_home=tmp_path / "hf_home"
         )
     assert exc_low.value.failure_class == "VM_DISK_INSUFFICIENT"
-    assert "115416936245" in str(exc_low.value)
+    assert "93748807764" in str(exc_low.value)
 
     # End-to-end launcher test with low disk on /content (and FAKE_COLAB_FORCE_EXEC_RC_ZERO=1)
     env_low = fake_colab.setup_fake_colab_environment(
@@ -2813,7 +2814,7 @@ def test_real_service_assumptions_weights_table_matches_receipts(
 
     rows = generate_weights_table.load_weights_rows_from_receipts(receipts_dir)
     assert len(rows) == 8  # the five downloaded receipts and the three D5c metadata receipts
-    assert sum(int(r["total_bytes"]) for r in rows) == vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES
+    assert sum(int(r["total_bytes"]) for r in rows) == vm_judges.EXPECTED_WEIGHTS_TOTAL_BYTES + vm_judges.ELEPHANT_WEIGHTS_BYTES
     assert round(sum(float(r["seconds"]) for r in rows if r["seconds"] is not None), 1) == vm_judges.EXPECTED_WEIGHTS_DOWNLOAD_SECONDS
     assert sorted(r["judge_id"] for r in rows if r["seconds"] is None) == ["d3-flash", "elephant-1", "nli-deberta-v3-large"]
     for r in rows:
@@ -3277,7 +3278,8 @@ def test_real_service_assumptions_doc_table_and_line_citations(
         "2,779,391,889",
         "2,779,228,374",
         "11,117,240,526",
-        "115,416,936,245",
+        "93,748,807,764",
+        "123,044,340,687",
         "VM_DISK_INSUFFICIENT",
         "EXPECTED_WEIGHTS_TOTAL_BYTES",
     ):

@@ -241,9 +241,9 @@ EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
     },
 }
 
-# Disk preflight constants for the 5 bake-off judges, the 3 D5c judges (metadata receipts) and 2 CPython 3.15 venvs:
-# - Weights total (sum of `total_bytes` across the 8 `<owner>__<repo>.sha256.json` receipts; the D5c three add 39,793,715,691):
-#   49,451,597,039 + 16,815,718,986 (d3-flash) + 4,136,145,852 (encoder) + 18,841,850,853 (elephant-1) = 89,245,312,730
+# Disk preflight constants for the 5 bake-off judges, 2 D5c judges (metadata receipts) and 2 CPython 3.15 venvs:
+# - Weights total (sum of `total_bytes` across the 7 receipts other than elephant-1's; elephant-1 adds its own per window):
+#   49,451,597,039 (the five) + 16,815,718,986 (d3-flash) + 4,136,145,852 (encoder) = 70,403,461,877 bytes (65.57 GiB)
 # - Rig download time across the 5 downloaded receipts: 123.9 + 264.8 + 130.1 + 128.5 + 150.1 = 797.4 s (797 s)
 # - Venvs compressed wheel/sdist sums:
 #   `judge.lock.txt` (54 packages) = 2,779,391,889 bytes (2.59 GiB)
@@ -252,8 +252,8 @@ EXPECTED_DOWNLOAD_STACK_VERSIONS: dict[str, dict[str, str]] = {
 # - Installed size estimate (2.0x compressed wheels covering unpacked site-packages + wheel cache):
 #   2 * 5,558,620,263 = 11,117,240,526 bytes (10.35 GiB)
 # - Required free disk with 15% safety margin:
-#   ceil((89,245,312,730 + 11,117,240,526) * 1.15) = ceil(100,362,553,256 * 1.15) = 115,416,936,245 bytes (107.49 GiB)
-EXPECTED_WEIGHTS_TOTAL_BYTES = 89_245_312_730  # all 8 receipts (pinned to them by a test)
+#   ceil((70,403,461,877 + 11,117,240,526) * 1.15) = ceil(81,520,702,403 * 1.15) = 93,748,807,764 bytes (87.31 GiB)
+EXPECTED_WEIGHTS_TOTAL_BYTES = 70_403_461_877  # 7 receipts; elephant-1's and venv-elephant: compute_required_vm_disk_bytes
 EXPECTED_WEIGHTS_DOWNLOAD_SECONDS = 797.4
 VENV_JUDGE_WHEEL_BYTES = 2_779_391_889
 VENV_D3_WHEEL_BYTES = 2_779_228_374
@@ -8651,15 +8651,15 @@ def _query_free_disk_bytes(path: Path) -> int:
 
 def compute_required_vm_disk_bytes() -> dict[str, int]:
     """Compute required free bytes from `EXPECTED_WEIGHTS_TOTAL_BYTES` (matched to receipts), venvs estimate, and 15% margin."""
-    weights_bytes = EXPECTED_WEIGHTS_TOTAL_BYTES
-    subtotal = weights_bytes + VENVS_ESTIMATED_BYTES
+    weights_bytes = EXPECTED_WEIGHTS_TOTAL_BYTES + elephant_window_extra_bytes()["weights_bytes"]
+    subtotal = weights_bytes + VENVS_ESTIMATED_BYTES + elephant_window_extra_bytes()["venv_bytes"]
     required = (
         subtotal * DISK_PREFLIGHT_MARGIN_NUMERATOR
         + (DISK_PREFLIGHT_MARGIN_DENOMINATOR - 1)
     ) // DISK_PREFLIGHT_MARGIN_DENOMINATOR
     return {
         "weights_total_bytes": weights_bytes,
-        "venvs_estimated_bytes": VENVS_ESTIMATED_BYTES,
+        "venvs_estimated_bytes": VENVS_ESTIMATED_BYTES + elephant_window_extra_bytes()["venv_bytes"],
         "subtotal_bytes": subtotal,
         "required_bytes": required,
     }
@@ -16133,6 +16133,31 @@ def elephant_install_commands(work_dir: Path, repo_dir: Path, snapshot_dir: Path
     ]
 
 
+# venv-elephant's size, for the disk gate of a window that selects elephant-1: it is synced from the judge lock
+# (the same wheels as venv-judge, unpacked: VENV_JUDGE_WHEEL_BYTES x VENV_UNPACK_MULTIPLIER), plus 1 GiB for setup.sh's
+# extra packages, the two clones and the causal-conv1d build. Estimate, not measured; measure it on the first install.
+VENV_ELEPHANT_ESTIMATED_BYTES = VENV_JUDGE_WHEEL_BYTES * VENV_UNPACK_MULTIPLIER + 1024**3
+ELEPHANT_WEIGHTS_BYTES = 18_841_850_853  # total_bytes of scripts/colab/receipts/baselabs__elephant-1.sha256.json
+# Upper bound of one install step: the window wall left minus the child margin, at least 60 s, at most the wall left.
+ELEPHANT_STEP_TIMEOUT_FLOOR_SECONDS = 60.0
+
+
+def elephant_window_extra_bytes(raw_only_judges: str | None = None) -> dict[str, int]:
+    """The disk the window adds for elephant-1: its weights and venv-elephant, only when RDLAB_ONLY_JUDGES (or
+    RDLAB_JUDGE_PASS_MODES) names elephant-1; nothing otherwise, so every other window keeps its pre-#93 figure."""
+    raw = os.environ.get("RDLAB_ONLY_JUDGES", "") if raw_only_judges is None else raw_only_judges
+    plan = os.environ.get(JUDGE_PASS_MODES_ENV_VAR, "") if raw_only_judges is None else ""
+    named = ELEPHANT_JUDGE_ID in str(raw).split(",") or any(e.split(":")[0] == ELEPHANT_JUDGE_ID for e in plan.split(",") if e)
+    return {"weights_bytes": ELEPHANT_WEIGHTS_BYTES if named else 0, "venv_bytes": VENV_ELEPHANT_ESTIMATED_BYTES if named else 0}
+
+
+def elephant_step_timeout_seconds() -> float:
+    """The timeout of one install step: the window's remaining wall minus the child margin, at least 60 s, and never
+    more than the remaining wall itself."""
+    remaining = resolve_remaining_wall_seconds()
+    return min(remaining, max(ELEPHANT_STEP_TIMEOUT_FLOOR_SECONDS, remaining - resolve_child_wall_margin_seconds()))
+
+
 def elephant_venv_name() -> str:
     """The venv elephant-1's child runs in: venv-elephant once this window built it, else the judge venv (stub and
     dryrun windows, whose child runs the stub transport and needs no qev)."""
@@ -16141,7 +16166,10 @@ def elephant_venv_name() -> str:
 
 
 def _git_head(path: Path, runner: Callable[..., Any]) -> str:
-    res = runner(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, env=_elephant_env(), stdin=subprocess.DEVNULL)
+    res = runner(
+        ["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, env=_elephant_env(),
+        stdin=subprocess.DEVNULL, timeout=elephant_step_timeout_seconds(),
+    )
     return str(getattr(res, "stdout", "") or "").strip()
 
 
@@ -16175,6 +16203,7 @@ def ensure_elephant_venv(
         "apt": "never run",
         "steps": [],
         "serve_patch_applied": False,
+        "run_dir": str(Path(run_dir)),
     }
     serve_patch = Path(snapshot_dir) / "serve.patch"
     rec["serve_patch_sha256"] = sha256_file(serve_patch) if serve_patch.is_file() else None
@@ -16197,12 +16226,30 @@ def ensure_elephant_venv(
         rec["install_seconds"] = 0.0
         rec["causal_conv1d_build_seconds"] = None
         return finish("skipped_not_real_mode")
+    # The cheap refusals come before any venv, sync or clone step.
     if which("git") is None:
         return finish("failed", "ELEPHANT_GIT_MISSING", "git is not on PATH; the VM image must provide it (apt is never run)")
+    missing = [n for n in ("serve.patch", "constraints.txt") if not (Path(snapshot_dir) / n).is_file()]
+    if missing:
+        return finish("failed", "ELEPHANT_SNAPSHOT_INCOMPLETE", f"the verified elephant-1 snapshot lacks {missing} ({snapshot_dir})")
+    # A resumed run in an existing work_dir starts from a clean directory: the install never reuses an earlier
+    # window's venv-elephant or clones (a reused clone would need its own HEAD and cleanliness proof).
+    for stale in (Path(work_dir) / ELEPHANT_VENV_NAME, Path(work_dir) / "elephant-src", Path(work_dir) / "elephant-torch-pin.txt"):
+        if stale.is_dir():
+            shutil.rmtree(stale)
+        elif stale.exists():
+            stale.unlink()
+    rec["clean_start"] = True
     t_start = clock()
     for name, argv in elephant_install_commands(work_dir, repo_dir, snapshot_dir):
         t0 = clock()
-        res = runner(argv, capture_output=True, text=True, env=_elephant_env(), stdin=subprocess.DEVNULL)
+        step_timeout = elephant_step_timeout_seconds()
+        try:
+            res = runner(argv, capture_output=True, text=True, env=_elephant_env(), stdin=subprocess.DEVNULL, timeout=step_timeout)
+        except subprocess.TimeoutExpired:
+            rec["steps"].append({"step": name, "rc": None, "seconds": round(clock() - t0, 3), "timeout_seconds": step_timeout})
+            rec["install_seconds"] = round(clock() - t_start, 3)
+            return finish("failed", "ELEPHANT_INSTALL_TIMEOUT", f"step {name} exceeded {step_timeout:.0f} s (bounded by the window wall)")
         rc = int(getattr(res, "returncode", 1))
         step = {"step": name, "rc": rc, "seconds": round(clock() - t0, 3)}
         rec["steps"].append(step)
@@ -16229,6 +16276,15 @@ def ensure_elephant_venv(
 def _apply_elephant_install(passes: list[tuple[str, Any, str, str]], ctx: Mapping[str, Any]) -> list[tuple[str, Any, str, str]]:
     """Build venv-elephant for the window's elephant-1 passes; on failure, record each of them as `failed_to_run`
     (a `judge_failed` progress line and a metrics entry naming the failure) and return the other passes only."""
+    # Once per window: the run loop calls this for every pipeline pass (each subblock). An install already made for
+    # this run_dir is reused when ok and never retried when failed, so a later subblock neither re-syncs venv-elephant
+    # (which would wipe qev and causal-conv1d) nor re-clones into an existing directory.
+    prior = _LAST_ELEPHANT_INSTALL
+    if prior is not None and prior.get("run_dir") == str(Path(ctx["run_dir"])):
+        rec = dict(prior)
+        if rec["status"] != "failed":
+            return passes
+        return [p for p in passes if p[0] != ELEPHANT_JUDGE_ID]
     spec = JUDGE_SPECS[ELEPHANT_JUDGE_ID]
     try:
         snapshot_dir = _resolve_snapshot_dir_for_spec(spec, hf_home=Path(ctx["hf_home"]))
@@ -16240,6 +16296,7 @@ def _apply_elephant_install(passes: list[tuple[str, Any, str, str]], ctx: Mappin
         run_dir=Path(ctx["run_dir"]),
         snapshot_dir=snapshot_dir,
         real=bool(ctx.get("real")),
+        **{k: ctx[k] for k in ("runner", "which", "clock") if k in ctx},
     )
     if rec["status"] != "failed":
         return passes

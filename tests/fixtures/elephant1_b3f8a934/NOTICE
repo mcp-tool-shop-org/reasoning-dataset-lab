@@ -1,4 +1,39 @@
 Copied verbatim for a pinning test (tests/test_colab_d5c_elephant.py); not imported by rdlab.
 
 - chat_template.jinja: baselabs/elephant-1 at b3f8a93462fb1051a9de031e94a7ff380e254072; its sha256 is the one in scripts/colab/receipts/baselabs__elephant-1.sha256.json.
-- Licence: MIT, declared in the elephant-1 model card (no LICENSE file in the repo); credit Base Labs at Baseten. The template derives from Qwen3.5's chat template.
+
+elephant-1 (Base Labs at Baseten)
+---------------------------------
+The elephant-1 model card declares the MIT licence; the repository has no LICENSE file and the card names no
+copyright holder, so the notice below names the copyright holder as named in the model card (none is named; credit
+Base Labs at Baseten).
+
+MIT License
+
+Copyright (c) the copyright holder as named in the elephant-1 model card (Base Labs at Baseten)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Qwen3.5 chat template (Alibaba Cloud)
+-------------------------------------
+chat_template.jinja derives from Qwen3.5's chat template. Copyright 2026 Alibaba Cloud. Licensed under the Apache
+License, Version 2.0; the licence text is in tests/fixtures/onejev_81ce62f1/LICENSE. Source of the licence:
+https://huggingface.co/Qwen/Qwen3.5-9B/blob/main/LICENSE (Qwen/Qwen3.5-9B declares apache-2.0).
+Modification: none found. This file is byte-identical to chat_template.jinja of Qwen/Qwen3.5-9B at
+c202236235762e1c871ad0ccb60c8ee5ba337b9a; elephant-1 ships it unchanged, and it is copied here unchanged.
