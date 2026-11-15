@@ -1201,7 +1201,7 @@ def test_item9_truncated_rows_download_is_refused_not_counted_and_not_kept(
     outcome = json.loads((out_dir / "outcome.draft.json").read_text(encoding="utf-8"))
     rows = sorted(p.name for p in (out_dir / "rows").iterdir())
     dones = sorted(p.name for p in (out_dir / "judge_done").iterdir())
-    print(f"OUT [{tag}-trunc] stderr refusal: {refusals[0] if refusals else None}")
+    print(f"OUT [{tag}-trunc] refusal (colab-cli.log): {refusals[0] if refusals else None}")
     print(f"OUT [{tag}-trunc] rows/={rows} judge_done/={dones} judges_completed={outcome['judges_completed']}")
     assert refusals and refusals[0].startswith(f"FETCHED_ROWS_SHA_MISMATCH: judge={jid} pass_mode={mode} rows_file=rows/{rows_name}")
     assert rows == [] and dones == []  # no partial file, no .part leftovers, no judge_done
