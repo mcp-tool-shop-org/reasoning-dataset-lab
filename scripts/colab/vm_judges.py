@@ -7367,6 +7367,14 @@ def _run_judges_pipeline_body(
         pass_mode,
         judge_ids=[jid for jid, _ in selected_specs],
     )
+    stub_exercise_elephant = validate_stub_exercise_elephant_install(
+        norm_mode,
+        judge_ids=[jid for jid, _ in selected_specs],
+        pass_mode=eff_pass_mode,
+        until="first_load" if real_load_on_cpu else None,
+    )
+    if dryrun and stub_exercise_elephant:
+        _ensure_dryrun_venv_python_wrapper(eff_work_dir / "venv-judge" / "bin" / "python")
     if not dryrun:
         for pre_judge_id, _ in selected_specs:
             pre_venv_python = (
@@ -7452,7 +7460,7 @@ def _run_judges_pipeline_body(
         pipeline_passes = []
 
     for is_anchor_prefix_pass, subblock_idx, active_chunk in pipeline_passes:
-      for judge_id, spec, pass_mode_j, pass_key_j in _judge_passes(selected_specs, eff_pass_mode, elephant={"work_dir": eff_work_dir, "repo_dir": eff_repo_dir, "run_dir": run_dir, "hf_home": hf_home, "progress_path": progress_path, "metrics": per_judge_metrics, "real": not dryrun and norm_mode not in STUB_OR_DRYRUN_MODES and not real_load_on_cpu}):  # noqa: E501
+      for judge_id, spec, pass_mode_j, pass_key_j in _judge_passes(selected_specs, eff_pass_mode, elephant={"work_dir": eff_work_dir, "repo_dir": eff_repo_dir, "run_dir": run_dir, "hf_home": hf_home, "progress_path": progress_path, "metrics": per_judge_metrics, "real": not dryrun and norm_mode not in STUB_OR_DRYRUN_MODES and not real_load_on_cpu, "stub_exercise": stub_exercise_elephant}):  # noqa: E501
         is_d3 = judge_id in D3_FAMILY_JUDGE_IDS
         venv_name = "venv-d3" if is_d3 else (elephant_venv_name() if judge_id == ELEPHANT_JUDGE_ID else "venv-judge")
         venv_python = eff_work_dir / venv_name / "bin" / "python"
@@ -8850,6 +8858,47 @@ def validate_force_pinned_uv(
     return True
 
 
+STUB_EXERCISE_ELEPHANT_INSTALL_ENV_VAR = "RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL"
+
+
+def validate_stub_exercise_elephant_install(
+    mode: str,
+    raw_val: str | None = None,
+    *,
+    judge_ids: Sequence[str] | None = None,
+    pass_mode: str | None = None,
+    until: str | None = None,
+    session_smoke: bool = False,
+    check_plan: bool = True,
+) -> bool:
+    """Validate `RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL`: allowed only in `--stub` (no `--until`, no `--session-smoke`), value `'1'`, with `elephant-1` in planned judges."""
+    if raw_val is None:
+        raw_val = os.environ.get(STUB_EXERCISE_ELEPHANT_INSTALL_ENV_VAR)
+    if raw_val is None or raw_val == "":
+        return False
+    norm_mode = str(mode or "").strip().lower()
+    norm_until = str(until or "").strip()
+    if norm_mode != "stub" or session_smoke or bool(norm_until) or raw_val != "1":
+        raise RefusalError(
+            "STUB_EXERCISE_ELEPHANT_INSTALL_INVALID",
+            f"{STUB_EXERCISE_ELEPHANT_INSTALL_ENV_VAR}=1 is allowed only with --stub (no --until, no --session-smoke) "
+            f"(got mode={mode!r}, until={until!r}, {STUB_EXERCISE_ELEPHANT_INSTALL_ENV_VAR}={raw_val!r}, session_smoke={session_smoke!r})",
+        )
+    if check_plan:
+        planned_ids = (
+            plan_judge_ids(parse_judge_pass_modes() or ())
+            if pass_mode == PER_JUDGE_PASS_MODE
+            else tuple(judge_ids or ())
+        )
+        if ELEPHANT_JUDGE_ID not in planned_ids:
+            raise RefusalError(
+                "STUB_EXERCISE_ELEPHANT_INSTALL_INVALID",
+                f"{STUB_EXERCISE_ELEPHANT_INSTALL_ENV_VAR}=1 requires {ELEPHANT_JUDGE_ID!r} in the window's planned judges "
+                f"(got {list(planned_ids)!r})",
+            )
+    return True
+
+
 TEST_HOOK_IN_COUNTED_MODE = "TEST_HOOK_IN_COUNTED_MODE"
 TEST_HOOK_IN_REAL_MODE = TEST_HOOK_IN_COUNTED_MODE
 MALFORMED_TEST_HOOK = "MALFORMED_TEST_HOOK"
@@ -8919,6 +8968,7 @@ FORBIDDEN_COUNTED_TEST_HOOK_NAMES: frozenset[str] = frozenset(
         "RDLAB_DETERMINISM_WARN_ONLY",
         "RDLAB_TEST_PLANT_LOG_LEAK",
         "RDLAB_FORCE_PINNED_UV",
+        "RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL",
         "RDLAB_VM_CONTENT_DIR",
         "RDLAB_CGROUP_DIR",
         "RDLAB_CGROUP_MEMORY_EVENTS_PATH",
@@ -14203,6 +14253,13 @@ def build_vm_receipt_doc(
         # The gatekeeper's judge, downloaded and verified for the gatekeeper only when it is not a timed judge;
         # judge_order, only_judges and the timing outputs above stay as requested.
         receipt_doc["boot_gatekeeper_judge"] = boot_gatekeeper_judge_plan
+    if (
+        isinstance(time_one_summary, Mapping)
+        and isinstance(time_one_summary.get("elephant_install"), Mapping)
+        and time_one_summary["elephant_install"].get("stub_exercise")
+    ):
+        # Surface the stub-mode install hook outcome plainly in vm_receipt.json while leaving non-opt-in receipts untouched.
+        receipt_doc["elephant_install"] = dict(time_one_summary["elephant_install"])
     if gatekeeper_record_fields:
         receipt_doc.update(gatekeeper_record_fields)
     if card_type_check is not None:
@@ -14390,6 +14447,9 @@ def main(argv: list[str] | None = None) -> int:
         current_step = "validate_force_pinned_uv"
         validate_force_pinned_uv(args.mode)
 
+        current_step = "validate_stub_exercise_elephant_install"
+        validate_stub_exercise_elephant_install(args.mode, until=until_step, check_plan=False)
+
         current_step = "guard_no_test_hooks"
         guard_no_test_hooks_in_counted_mode(
             args.mode,
@@ -14435,6 +14495,14 @@ def main(argv: list[str] | None = None) -> int:
             args.mode,
             getattr(args, "pass_mode", None),
             judge_ids=judge_order,
+        )
+
+        current_step = "validate_stub_exercise_elephant_install_plan"
+        validate_stub_exercise_elephant_install(
+            args.mode,
+            judge_ids=judge_order,
+            pass_mode=main_pass_mode,
+            until=until_step,
         )
 
         current_step = "validate_download_config"
@@ -16021,8 +16089,8 @@ def launcher_verify_fetched_pass(
     place (rows first) and (True, "") is returned; otherwise the staged files and any stale in-place destination files
     are deleted and the named refusal line is returned (FETCHED_JUDGE_DONE_INVALID, FETCHED_ROWS_MISSING,
     FETCHED_ROWS_SHA_MISMATCH), so the pass is not counted complete. `staged=False` only checks the files already in
-    place (deleting nothing), and also needs `want_sha256` (the VM's latest record) to match when given: the launcher
-    skips a re-fetch only on True."""
+    place (deleting nothing), and also requires `want_sha256` (the VM's latest authoritative record) to match when
+    given: the launcher skips a re-fetch only on True, and deletes a superseded in-place pair only once re-fetch begins."""
     done_name = judge_done_filename_for_pass(judge_id, pass_mode)
     rows_name = rows_filename_for_pass(judge_id, pass_mode)
     done_dst = Path(out_dir) / JUDGE_DONE_DIRNAME / done_name
@@ -16157,9 +16225,13 @@ def elephant_step_timeout_seconds() -> float:
 
 
 def elephant_venv_name() -> str:
-    """The venv elephant-1's child runs in: venv-elephant once this window built it, else the judge venv (stub and
-    dryrun windows, whose child runs the stub transport and needs no qev)."""
-    ok = _LAST_ELEPHANT_INSTALL is not None and _LAST_ELEPHANT_INSTALL.get("status") == "ok"
+    """The venv elephant-1's child runs in: venv-elephant once this window built it (never in stub-exercise mode), else
+    the judge venv (stub and dryrun windows, whose child runs the stub transport and needs no qev)."""
+    ok = (
+        _LAST_ELEPHANT_INSTALL is not None
+        and _LAST_ELEPHANT_INSTALL.get("status") == "ok"
+        and not _LAST_ELEPHANT_INSTALL.get("stub_exercise")
+    )
     return ELEPHANT_VENV_NAME if ok else "venv-judge"
 
 
@@ -16182,14 +16254,16 @@ def ensure_elephant_venv(
     run_dir: Path,
     snapshot_dir: Path,
     real: bool,
+    stub_exercise: bool = False,
     runner: Callable[..., Any] = subprocess.run,
     which: Callable[[str], str | None] = shutil.which,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Build venv-elephant and return the install record (also written to `<run_dir>/elephant_install.json`, its path
-    exported in RDLAB_ELEPHANT_INSTALL_RECORD for the judge child). Stub and dryrun windows skip the install (the child
-    runs the stub transport in the judge venv's interpreter); a real window runs `elephant_install_commands`. Never
-    raises for an install failure: the record says `failed` with its failure_class and step."""
+    exported in RDLAB_ELEPHANT_INSTALL_RECORD for the judge child). Stub and dryrun windows skip the install unless
+    `stub_exercise=True` (in which case all install steps run cleanly on CPU, recording a failing `build_causal_conv1d`
+    step as `cpu_cannot_build` while continuing through `install_decision_index` and `import_check`, and keeping the
+    judging child on the stub transport in `venv-judge`)."""
     global _LAST_ELEPHANT_INSTALL
     rec: dict[str, Any] = {
         "venv": ELEPHANT_VENV_NAME,
@@ -16203,6 +16277,8 @@ def ensure_elephant_venv(
         "serve_patch_applied": False,
         "run_dir": str(Path(run_dir)),
     }
+    if stub_exercise:
+        rec["stub_exercise"] = True
     serve_patch = Path(snapshot_dir) / "serve.patch"
     rec["serve_patch_sha256"] = sha256_file(serve_patch) if serve_patch.is_file() else None
 
@@ -16220,7 +16296,7 @@ def ensure_elephant_venv(
         _LAST_ELEPHANT_INSTALL = dict(rec)
         return rec
 
-    if not real:
+    if not real and not stub_exercise:
         rec["install_seconds"] = 0.0
         rec["causal_conv1d_build_seconds"] = None
         return finish("skipped_not_real_mode")
@@ -16249,11 +16325,24 @@ def ensure_elephant_venv(
             rec["install_seconds"] = round(clock() - t_start, 3)
             return finish("failed", "ELEPHANT_INSTALL_TIMEOUT", f"step {name} exceeded {step_timeout:.0f} s (bounded by the window wall)")
         rc = int(getattr(res, "returncode", 1))
-        step = {"step": name, "rc": rc, "seconds": round(clock() - t0, 3)}
+        step: dict[str, Any] = {"step": name, "rc": rc, "seconds": round(clock() - t0, 3)}
         rec["steps"].append(step)
         if name == "build_causal_conv1d":
             rec["causal_conv1d_build_seconds"] = step["seconds"]
         if rc != 0:
+            if name == "build_causal_conv1d" and stub_exercise:
+                # On CPU VMs CUDA kernels cannot compile; record cpu_cannot_build and proceed with decision-index and imports.
+                tail = scrub_log_text(str(getattr(res, "stderr", "") or ""))[-2000:]
+                step["outcome"] = "cpu_cannot_build"
+                if tail:
+                    step["stderr_tail"] = tail
+                rec["causal_conv1d_build_outcome"] = "cpu_cannot_build"
+                rec["note"] = (
+                    "causal-conv1d build exited non-zero on CPU under "
+                    f"{STUB_EXERCISE_ELEPHANT_INSTALL_ENV_VAR}=1 (cpu_cannot_build); "
+                    "continued through install_decision_index and import_check"
+                )
+                continue
             rec["install_seconds"] = round(clock() - t_start, 3)
             tail = scrub_log_text(str(getattr(res, "stderr", "") or ""))[-2000:]
             return finish("failed", "ELEPHANT_INSTALL_FAILED", f"step {name} rc={rc}: {tail}")
@@ -16262,26 +16351,48 @@ def ensure_elephant_venv(
         if name in ("checkout_onejev", "checkout_decision_index"):
             path = argv[2]
             want = ELEPHANT_ONEJEV_COMMIT if name == "checkout_onejev" else ELEPHANT_DECISION_INDEX_COMMIT
-            head = _git_head(Path(path), runner)
+            try:
+                head = _git_head(Path(path), runner)
+            except subprocess.TimeoutExpired:
+                head_timeout = elephant_step_timeout_seconds()
+                rec["install_seconds"] = round(clock() - t_start, 3)
+                rec["serve_patch_applied"] = False
+                return finish("failed", "ELEPHANT_INSTALL_TIMEOUT", f"step {name} rev-parse exceeded {head_timeout:.0f} s (bounded by the window wall)")
             if head != want:
                 rec["install_seconds"] = round(clock() - t_start, 3)
                 rec["serve_patch_applied"] = False
                 return finish("failed", "ELEPHANT_SOURCE_PIN_MISMATCH", f"{path} is at {head!r}, not {want}")
     rec["install_seconds"] = round(clock() - t_start, 3)
+    if stub_exercise and rec.get("causal_conv1d_build_outcome") == "cpu_cannot_build":
+        return finish("cpu_cannot_build")
     return finish("ok")
 
 
 def _apply_elephant_install(passes: list[tuple[str, Any, str, str]], ctx: Mapping[str, Any]) -> list[tuple[str, Any, str, str]]:
-    """Build venv-elephant for the window's elephant-1 passes; on failure, record each of them as `failed_to_run`
-    (a `judge_failed` progress line and a metrics entry naming the failure) and return the other passes only."""
+    """Build venv-elephant for the window's elephant-1 passes; on failure in real windows, record each of them as
+    `failed_to_run` (a `judge_failed` progress line and a metrics entry naming the failure) and return the other
+    passes only; under `stub_exercise=True`, raise `RefusalError` so any non-causal-conv1d install failure stops the rung."""
     # Once per window: the run loop calls this for every pipeline pass (each subblock). An install already made for
-    # this run_dir is reused when ok and never retried when failed, so a later subblock neither re-syncs venv-elephant
-    # (which would wipe qev and causal-conv1d) nor re-clones into an existing directory.
+    # this (run_dir, stub_exercise, active_install) is reused when ok/cpu_cannot_build and never retried when failed, so
+    # a later subblock neither re-syncs venv-elephant (which would wipe qev and causal-conv1d) nor re-clones into an
+    # existing directory.
+    stub_exercise = bool(ctx.get("stub_exercise"))
+    active_install = bool(ctx.get("real")) or stub_exercise
     prior = _LAST_ELEPHANT_INSTALL
-    if prior is not None and prior.get("run_dir") == str(Path(ctx["run_dir"])):
+    if (
+        prior is not None
+        and prior.get("run_dir") == str(Path(ctx["run_dir"]))
+        and bool(prior.get("stub_exercise")) == stub_exercise
+        and (prior.get("status") != "skipped_not_real_mode") == active_install
+    ):
         rec = dict(prior)
         if rec["status"] != "failed":
             return passes
+        if stub_exercise:
+            raise RefusalError(
+                str(rec.get("failure_class") or "ELEPHANT_INSTALL_FAILED"),
+                str(rec.get("detail") or "venv-elephant stub exercise failed"),
+            )
         return [p for p in passes if p[0] != ELEPHANT_JUDGE_ID]
     spec = JUDGE_SPECS[ELEPHANT_JUDGE_ID]
     try:
@@ -16294,10 +16405,16 @@ def _apply_elephant_install(passes: list[tuple[str, Any, str, str]], ctx: Mappin
         run_dir=Path(ctx["run_dir"]),
         snapshot_dir=snapshot_dir,
         real=bool(ctx.get("real")),
+        stub_exercise=stub_exercise,
         **{k: ctx[k] for k in ("runner", "which", "clock") if k in ctx},
     )
     if rec["status"] != "failed":
         return passes
+    if stub_exercise:
+        raise RefusalError(
+            str(rec.get("failure_class") or "ELEPHANT_INSTALL_FAILED"),
+            str(rec.get("detail") or "venv-elephant stub exercise failed"),
+        )
     kept: list[tuple[str, Any, str, str]] = []
     for jid, s, mode, key in passes:
         if jid != ELEPHANT_JUDGE_ID:

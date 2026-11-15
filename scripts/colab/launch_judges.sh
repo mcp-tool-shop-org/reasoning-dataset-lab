@@ -1025,10 +1025,18 @@ try:
     # The pass mode (binary | three_way), refused before the session opens: an unknown value (PASS_MODE_INVALID), a
     # mode that takes no 3-way pass (PASS_MODE_NOT_FOR_MODE) or a judge without a 3-way prompt in the window's set
     # (BAKEOFF_JUDGE_THREE_WAY_UNSUPPORTED), before any download.
-    vm_judges.validate_pass_mode(
+    eff_pass_mode_t = vm_judges.validate_pass_mode(
         mode,
         pass_mode_arg,
         judge_ids=judge_order_t,
+        session_smoke=is_smoke,
+    )
+    vm_judges.validate_stub_exercise_elephant_install(
+        mode,
+        os.environ.get("RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL", None),
+        judge_ids=judge_order_t,
+        pass_mode=eff_pass_mode_t,
+        until=until_step,
         session_smoke=is_smoke,
     )
     raw_goldens = (os.environ.get("RDLAB_BOOT_GATEKEEPER_GOLDENS") or "").strip()
@@ -1292,6 +1300,9 @@ build_exec_env_args() {
   fi
   if [[ -n "${RDLAB_FORCE_PINNED_UV+x}" ]] && [[ -n "${RDLAB_FORCE_PINNED_UV}" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_FORCE_PINNED_UV=$RDLAB_FORCE_PINNED_UV")
+  fi
+  if [[ -n "${RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL+x}" ]] && [[ -n "${RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL}" ]]; then
+    EXEC_ENV_ARGS+=(--env "RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL=$RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL")
   fi
   if [[ "$EFFECTIVE_RESUME" -eq 1 ]] && [[ -f "$OUT_DIR/schedule.json" ]]; then
     EXEC_ENV_ARGS+=(--env "RDLAB_RESUME_TAR=/content/resume_state.tar.gz")
@@ -1859,16 +1870,20 @@ fetch_completed_judge_checkpoints() {
   mkdir -p "$OUT_DIR/rows" "$OUT_DIR/judge_done"
   local jid pmode done_file row_file want_sha refusal
   while IFS=$'\t' read -r jid pmode done_file row_file want_sha; do
-    [[ -n "$jid" ]] || continue
+    [[ -n "$jid" && -n "$pmode" && -n "$done_file" && -n "$row_file" ]] || continue
     # Item 9: a pass is skipped only when its rows in place match its judge_done sha256 (and the VM's latest record);
     # a file of that name that does not match is fetched again, never kept.
     if "$PYTHON_BIN" -c "$vmj; sys.exit(0 if v.launcher_verify_fetched_pass(Path(sys.argv[2]), sys.argv[3], sys.argv[4], staged=False, want_sha256=sys.argv[5])[0] else 1)" "$REPO_ROOT" "$OUT_DIR" "$jid" "$pmode" "${want_sha:-}" </dev/null >/dev/null 2>&1; then
       continue
     fi
-    rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
     # Both files land as hidden .part downloads; only a pair whose rows match the judge_done sha256 is moved into
-    # place, so a judge is never counted completed (judge_done present) with missing or truncated rows.
+    # place, so a judge is never counted completed (judge_done present) with missing or truncated rows. Deleting a
+    # superseded in-place pair only after remaining_fetch_timeout succeeds (once re-fetch begins) is fail-closed:
+    # the VM's latest judge_done record is authoritative over any stale in-place pair with a mismatched sha256.
     if rem_dl_timeout="$(remaining_fetch_timeout "$deadline_epoch" "$dl_timeout")"; then
+      if [[ -n "$done_file" && -n "$row_file" ]]; then
+        rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
+      fi
       timeout -k "$COLAB_KILL_GRACE_SECONDS" "$rem_dl_timeout" colab download -s "$S" "/content/rdlab_run/judge_done/${done_file}" "$OUT_DIR/judge_done/.${done_file}.part" </dev/null >/dev/null 2>&1 || true
     else
       break
@@ -1883,9 +1898,13 @@ fetch_completed_judge_checkpoints() {
       refusal="${refusal:-FETCHED_JUDGE_DONE_INVALID: judge=${jid} pass_mode=${pmode} detail=verify step failed; not counted as completed}"
       log_msg "$refusal"
       printf '%s\n' "$refusal" >&2
-      rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
+      if [[ -n "$done_file" && -n "$row_file" ]]; then
+        rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"
+      fi
     fi
-    rm -f "$OUT_DIR/judge_done/.${done_file}.part" "$OUT_DIR/rows/.${row_file}.part"
+    if [[ -n "$done_file" && -n "$row_file" ]]; then
+      rm -f "$OUT_DIR/judge_done/.${done_file}.part" "$OUT_DIR/rows/.${row_file}.part"
+    fi
   done <<<"$done_passes"
 }
 
@@ -4546,6 +4565,15 @@ for rel_name in (
     if src.is_file():
         shutil.copyfile(src, out_dir / rel_name)
 
+src_elephant_install = extract_dir / "elephant_install.json"
+if src_elephant_install.is_file():
+    try:
+        el_doc = json.loads(src_elephant_install.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        el_doc = {}
+    if isinstance(el_doc, dict) and el_doc.get("stub_exercise"):
+        shutil.copyfile(src_elephant_install, out_dir / "elephant_install.json")
+
 src_progress = extract_dir / "progress.jsonl"
 if src_progress.is_file() and not (out_dir / "progress.jsonl").is_file():
     shutil.copyfile(src_progress, out_dir / "progress.jsonl")
@@ -4568,11 +4596,13 @@ for extra_f in (
     out_dir / "session_env.json",
     out_dir / "shard_manifest.json",
     out_dir / "boot_gatekeeper.json",
+    out_dir / "elephant_install.json",
     extract_dir / "progress.jsonl",
     extract_dir / "vm_receipt.json",
     extract_dir / "session_env.json",
     extract_dir / "shard_manifest.json",
     extract_dir / "boot_gatekeeper.json",
+    extract_dir / "elephant_install.json",
 ):
     if extra_f.is_file():
         vm_judges.scrub_log_file_in_place(extra_f)
@@ -4599,6 +4629,7 @@ for top_f in (
     out_dir / "session_env.json",
     out_dir / "shard_manifest.json",
     out_dir / "boot_gatekeeper.json",
+    out_dir / "elephant_install.json",
 ):
     if top_f.is_file():
         paths_to_check.append(top_f)

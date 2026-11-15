@@ -278,7 +278,7 @@
       },
       {
         "commits": 32,
-        "lines": 53578,
+        "lines": 53580,
         "path": "atlas/structure.json"
       },
       {
@@ -1012,8 +1012,8 @@
         "path": "tests/test_colab_only_judges_stub.py"
       },
       {
-        "commits": 3,
-        "lines": 661,
+        "commits": 4,
+        "lines": 676,
         "path": "tests/test_colab_three_way_contradicted_pass_mode.py"
       },
       {
@@ -1152,9 +1152,9 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-11-15T21:51:18.733Z",
+  "generatedAt": "2026-11-15T23:15:53.450Z",
   "generatedFrom": {
-    "commit": "57a36f23fc2587a32e9cea62c6a8326eb1b5b2a1"
+    "commit": "5afaa424432a144fd356bf1e793ecf9333b63ebe"
   },
   "pairs": [
     {
@@ -1364,7 +1364,7 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-11-15T16:28:48-05:00",
+    "headDate": "2026-11-15T17:30:41-05:00",
     "inScopeFiles": 197,
     "pinnedStart": null,
     "priorFloor": "fallen",
@@ -1373,7 +1373,7 @@
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-19T21:28:48.000Z",
+    "since": "2026-05-19T22:30:41.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",

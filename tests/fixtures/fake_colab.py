@@ -1422,6 +1422,9 @@ def run_fake_uv(argv: list[str]) -> int:
     if argv[:2] == ["pip", "install"]:
         venv_python = ""
         req_file = ""
+        constraint_files: list[str] = []
+        editable_dirs: list[str] = []
+        positional_pkgs: list[str] = []
         require_hashes = False
         no_binary_pkgs: set[str] = set()
         only_binary_all = False
@@ -1436,6 +1439,17 @@ def run_fake_uv(argv: list[str]) -> int:
                 req_file = argv[idx + 1]
                 idx += 2
                 continue
+            if tok in ("-c", "--constraint") and idx + 1 < len(argv):
+                constraint_files.append(argv[idx + 1])
+                idx += 2
+                continue
+            if tok in ("-e", "--editable") and idx + 1 < len(argv):
+                editable_dirs.append(argv[idx + 1])
+                idx += 2
+                continue
+            if tok in ("--no-build-isolation", "--no-deps"):
+                idx += 1
+                continue
             if tok == "--require-hashes":
                 require_hashes = True
                 idx += 1
@@ -1449,9 +1463,11 @@ def run_fake_uv(argv: list[str]) -> int:
                 no_binary_pkgs.add(argv[idx + 1].lower())
                 idx += 2
                 continue
+            if not tok.startswith("-"):
+                positional_pkgs.append(tok)
             idx += 1
 
-        if not venv_python or not req_file:
+        if not venv_python or (not req_file and not editable_dirs and not positional_pkgs):
             sys.stderr.write(f"fake uv: unexpected arguments: {argv!r}\n")
             return 98
 
@@ -1461,6 +1477,81 @@ def run_fake_uv(argv: list[str]) -> int:
                 f"error: Failed to inspect Python interpreter from `--python` at `{venv_py_path}`\n"
             )
             return 2
+
+        if not req_file:
+            import shutil
+
+            for c_file in constraint_files:
+                c_path = Path(c_file)
+                if not c_path.is_file():
+                    sys.stderr.write(f"error: Constraint file not found: `{c_path}`\n")
+                    return 2
+            norm_pkgs = [p.split("[", 1)[0].strip().lower() for p in positional_pkgs]
+            fail_pkg = os.environ.get("FAKE_COLAB_FAIL_UV_PKG", "").strip().lower()
+            if fail_pkg and fail_pkg in norm_pkgs:
+                sys.stderr.write(f"error: Simulated failure installing `{fail_pkg}`\n")
+                return 2
+            if "causal-conv1d" in norm_pkgs and os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_SUCCEED") != "1":
+                sys.stderr.write(
+                    "error: Failed to build `causal-conv1d`\n"
+                    "  Building wheel for causal-conv1d (setup.py) failed: nvcc / CUDA toolkit unavailable on CPU\n"
+                )
+                return 2
+            if editable_dirs and os.environ.get("FAKE_COLAB_UV_FAIL_EDITABLE") == "1":
+                sys.stderr.write("error: Failed to build editable package (FAKE_COLAB_UV_FAIL_EDITABLE=1)\n")
+                return 2
+            venv_root = venv_py_path.parent.parent
+            site_pkgs = venv_root / "site-packages"
+            site_pkgs.mkdir(parents=True, exist_ok=True)
+            pkg_db_path = venv_root / ".installed_packages.json"
+            installed_db: dict[str, Any] = {}
+            if pkg_db_path.is_file():
+                try:
+                    installed_db = json.loads(pkg_db_path.read_text(encoding="utf-8"))
+                except Exception:
+                    installed_db = {}
+            for ed in editable_dirs:
+                ed_path = Path(ed)
+                if not ed_path.is_dir():
+                    sys.stderr.write(f"error: Editable path not found: `{ed_path}`\n")
+                    return 2
+                installed_any = False
+                for base in (ed_path, ed_path / "src"):
+                    if not base.is_dir():
+                        continue
+                    for sub in sorted(base.iterdir()):
+                        if sub.is_dir() and (sub / "__init__.py").is_file():
+                            dest_pkg = site_pkgs / sub.name
+                            if dest_pkg.exists():
+                                shutil.rmtree(dest_pkg)
+                            shutil.copytree(sub, dest_pkg)
+                            installed_db[sub.name] = {
+                                "version": "0.0.0+editable",
+                                "editable": str(ed_path),
+                                "source": "editable",
+                                "installed_by": "pip_install",
+                            }
+                            installed_any = True
+                if not installed_any:
+                    installed_db[ed_path.name] = {
+                        "version": "0.0.0+editable",
+                        "editable": str(ed_path),
+                        "source": "editable",
+                        "installed_by": "pip_install",
+                    }
+            for pkg in norm_pkgs:
+                installed_db[pkg] = {
+                    "version": "1.0.0",
+                    "source": "wheel",
+                    "installed_by": "pip_install",
+                }
+            pkg_db_path.write_text(
+                json.dumps(installed_db, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            sys.stderr.write(f"Installed {len(editable_dirs) + len(norm_pkgs)} package(s)\n")
+            return 0
 
         req_path = Path(req_file)
         if not req_path.is_file():
@@ -2726,6 +2817,51 @@ def main(argv: list[str] | None = None) -> int:
                 "            fh.write(json.dumps(rec) + '\\n')\n"
                 "    plant = os.environ.get('FAKE_COLAB_PROBE_PLANT_STDOUT', '')\n"
                 "    plant_sfx = (' ' + plant) if plant else ''\n"
+                "    if cmd_list and cmd_list[0] == 'git':\n"
+                "        _git_repo = ''\n"
+                "        _git_args = cmd_list[1:]\n"
+                "        if len(_git_args) >= 2 and _git_args[0] == '-C':\n"
+                "            _git_repo = _git_args[1]\n"
+                "            _git_args = _git_args[2:]\n"
+                "        _sub = _git_args[0] if _git_args else ''\n"
+                "        if os.environ.get('FAKE_COLAB_FAIL_GIT_SUBCMD', '').strip() == _sub:\n"
+                "            return subprocess.CompletedProcess(cmd_list, 128, stdout='', stderr=f'fatal: simulated git {_sub} failure\\n')\n"
+                "        if _sub == 'clone' and len(_git_args) >= 3:\n"
+                "            _url, _tgt = _git_args[-2], pathlib.Path(_git_args[-1])\n"
+                "            if _tgt.exists() and any(_tgt.iterdir()):\n"
+                "                return subprocess.CompletedProcess(cmd_list, 128, stdout='', stderr=f'fatal: destination path {_tgt} already exists and is not an empty directory\\n')\n"
+                "            (_tgt / '.git').mkdir(parents=True, exist_ok=True)\n"
+                "            (_tgt / '.git' / 'FAKE_HEAD').write_text('HEAD\\n', encoding='utf-8')\n"
+                "            if 'OneJev' in _url or _tgt.name == 'OneJev':\n"
+                "                _qev = _tgt / 'qev'\n"
+                "                _qev.mkdir(parents=True, exist_ok=True)\n"
+                "                for _m in ('__init__', 'schema', 'prompt', 'engine'):\n"
+                "                    (_qev / f'{_m}.py').write_text(f'# fake qev.{_m}\\n', encoding='utf-8')\n"
+                "            else:\n"
+                "                _di = _tgt / 'decision_index'\n"
+                "                _di.mkdir(parents=True, exist_ok=True)\n"
+                "                (_di / '__init__.py').write_text('# fake decision_index\\n', encoding='utf-8')\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='', stderr='')\n"
+                "        if _sub == 'checkout' and _git_repo:\n"
+                "            _head_val = os.environ.get('FAKE_COLAB_ELEPHANT_BAD_HEAD', '').strip() or _git_args[-1]\n"
+                "            _git_meta = pathlib.Path(_git_repo) / '.git'\n"
+                "            _git_meta.mkdir(parents=True, exist_ok=True)\n"
+                "            (_git_meta / 'FAKE_HEAD').write_text(_head_val + '\\n', encoding='utf-8')\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='', stderr='')\n"
+                "        if _sub == 'clean' and _git_repo:\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='', stderr='')\n"
+                "        if _sub == 'apply' and _git_repo and len(_git_args) >= 2:\n"
+                "            _patch_p = pathlib.Path(_git_args[-1])\n"
+                "            if not _patch_p.is_file():\n"
+                "                return subprocess.CompletedProcess(cmd_list, 128, stdout='', stderr=f'error: can not open {_patch_p}\\n')\n"
+                "            _qev_r = pathlib.Path(_git_repo) / 'qev'\n"
+                "            _qev_r.mkdir(parents=True, exist_ok=True)\n"
+                "            (_qev_r / 'readout.py').write_text('# patched qev.readout\\nREADOUT_PATCHED = True\\n', encoding='utf-8')\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='', stderr='')\n"
+                "        if _sub == 'rev-parse' and _git_repo and 'HEAD' in _git_args:\n"
+                "            _fh = pathlib.Path(_git_repo) / '.git' / 'FAKE_HEAD'\n"
+                "            _txt = _fh.read_text(encoding='utf-8').strip() if _fh.is_file() else ('0' * 40)\n"
+                "            return subprocess.CompletedProcess(cmd_list, 0, stdout=_txt + '\\n', stderr='')\n"
                 "    if cmd_list[:2] == ['uv', '--version']:\n"
                 "        if os.environ.get('FAKE_COLAB_UV_ABSENT') == '1' and '/tmp/uv-pinned' not in call_env.get('PATH', '').split(os.pathsep):\n"
                 "            raise FileNotFoundError(2, 'No such file or directory', 'uv')\n"

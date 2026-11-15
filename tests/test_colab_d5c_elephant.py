@@ -861,3 +861,304 @@ def test_the_fixture_notices_carry_the_mit_and_qwen_attribution() -> None:
     assert (FIXTURES / "onejev_81ce62f1" / "LICENSE").read_text(encoding="utf-8").lstrip().startswith("Apache License")
     oj = (FIXTURES / "onejev_81ce62f1" / "NOTICE").read_text(encoding="utf-8")
     assert "qev_prompt.served.py.txt" in oj and "serve.patch hunks from elephant-1, which is MIT-licensed" in oj
+
+
+def test_stub_exercise_elephant_install_unit_cpu_cannot_build_and_step_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With `stub_exercise=True`, a failing `build_causal_conv1d` records `cpu_cannot_build` and continues through
+    `install_decision_index` and `import_check`, keeping `elephant_venv_name()` on `venv-judge`, while any failure in
+    any other step (or `_git_head` timeout) raises `RefusalError`."""
+    ctx = _ctx(tmp_path)
+    runner = _Runner(ctx, fail_step="build_causal_conv1d")
+    rec = vm_judges.ensure_elephant_venv(
+        **ctx, real=False, stub_exercise=True, runner=runner, which=lambda _n: "/usr/bin/git", clock=_clock()
+    )
+    want_steps = [n for n, _ in vm_judges.elephant_install_commands(ctx["work_dir"], ctx["repo_dir"], ctx["snapshot_dir"])]
+    assert [s["step"] for s in rec["steps"]] == want_steps
+    assert rec["status"] == "cpu_cannot_build"
+    assert rec["causal_conv1d_build_outcome"] == "cpu_cannot_build"
+    assert rec["serve_patch_applied"] is True
+    assert rec["stub_exercise"] is True
+    assert "cpu_cannot_build" in rec.get("note", "")
+    build_step = next(s for s in rec["steps"] if s["step"] == "build_causal_conv1d")
+    assert build_step["rc"] == 1 and build_step["outcome"] == "cpu_cannot_build"
+    assert vm_judges.elephant_venv_name() == "venv-judge"
+
+    # Even if causal-conv1d hypothetically succeeded under stub_exercise, elephant_venv_name stays venv-judge.
+    ok_stub = vm_judges.ensure_elephant_venv(
+        **ctx, real=False, stub_exercise=True, runner=_Runner(ctx), which=lambda _n: "/usr/bin/git", clock=_clock()
+    )
+    assert ok_stub["status"] == "ok" and ok_stub["stub_exercise"] is True
+    assert vm_judges.elephant_venv_name() == "venv-judge"
+
+    # Non-stub skipped record in same run_dir is not memo-reused when stub_exercise=True runs next.
+    monkeypatch.setattr(vm_judges, "_LAST_ELEPHANT_INSTALL", None)
+    hf = tmp_path / "hf"
+    hf_snap = _add_elephant_snapshot(tmp_path / "rec", hf)
+    specs = vm_judges._select_judge_specs((ELEPHANT,))
+    base_ctx = {
+        "work_dir": ctx["work_dir"],
+        "repo_dir": ctx["repo_dir"],
+        "run_dir": ctx["run_dir"],
+        "hf_home": hf,
+        "progress_path": tmp_path / "progress.jsonl",
+        "metrics": {},
+        "real": False,
+        "runner": _Runner({**ctx, "snapshot_dir": hf_snap}, fail_step="build_causal_conv1d"),
+        "which": lambda _n: "/usr/bin/git",
+        "clock": _clock(),
+    }
+    vm_judges._judge_passes(specs, CONTRA, elephant={**base_ctx, "stub_exercise": False})
+    assert vm_judges._LAST_ELEPHANT_INSTALL is not None
+    assert vm_judges._LAST_ELEPHANT_INSTALL["status"] == "skipped_not_real_mode"
+    vm_judges._judge_passes(specs, CONTRA, elephant={**base_ctx, "stub_exercise": True})
+    assert vm_judges._LAST_ELEPHANT_INSTALL["status"] == "cpu_cannot_build"
+
+    for bad_step in (
+        "sync_judge_lock",
+        "clone_onejev",
+        "apply_serve_patch",
+        "install_onejev",
+        "install_decision_index",
+        "import_check",
+    ):
+        monkeypatch.setattr(vm_judges, "_LAST_ELEPHANT_INSTALL", None)
+        bad_ctx = _ctx(tmp_path / bad_step)
+        bad_hf = tmp_path / bad_step / "hf"
+        bad_ctx["snapshot_dir"] = _add_elephant_snapshot(tmp_path / bad_step / "rec", bad_hf)
+        with pytest.raises(vm_judges.RefusalError) as exc_info:
+            vm_judges._judge_passes(
+                specs,
+                CONTRA,
+                elephant={
+                    "work_dir": bad_ctx["work_dir"],
+                    "repo_dir": bad_ctx["repo_dir"],
+                    "run_dir": bad_ctx["run_dir"],
+                    "hf_home": bad_hf,
+                    "progress_path": tmp_path / bad_step / "progress.jsonl",
+                    "metrics": {},
+                    "real": False,
+                    "stub_exercise": True,
+                    "runner": _Runner(bad_ctx, fail_step=bad_step),
+                    "which": lambda _n: "/usr/bin/git",
+                    "clock": _clock(),
+                },
+            )
+        assert exc_info.value.code == "ELEPHANT_INSTALL_FAILED"
+
+    import subprocess as _sp
+
+    def _timeout_head(argv: list[str], **kw: Any) -> Any:
+        if argv[-2:] == ["rev-parse", "HEAD"]:
+            raise _sp.TimeoutExpired(argv, 60.0)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(vm_judges, "_LAST_ELEPHANT_INSTALL", None)
+    to_rec = vm_judges.ensure_elephant_venv(
+        **ctx, real=False, stub_exercise=True, runner=_timeout_head, which=lambda _n: "/usr/bin/git", clock=_clock()
+    )
+    assert to_rec["status"] == "failed" and to_rec["failure_class"] == "ELEPHANT_INSTALL_TIMEOUT"
+
+
+def test_stub_exercise_elephant_install_e2e_runs_all_steps_and_keeps_child_stub(tmp_path: Path) -> None:
+    """Opt-in `RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL=1` on `--stub --pass-mode three_way_contradicted` with `elephant-1`
+    runs all 13 `ensure_elephant_venv` commands in exact order into `venv-elephant`, records `cpu_cannot_build` plainly
+    in `vm_receipt.json` & `elephant_install.json`, keeps `--stub` judging child in `venv-judge` with zero weights,
+    and fails the rung if any non-causal-conv1d install step fails."""
+    env_paths, base_exports = _launcher_env(tmp_path, "el_hook")
+    snap_dir = tmp_path / "snap_el_hook"
+    _add_elephant_snapshot(snap_dir / "receipts", snap_dir / "hf_home")
+    exports = (
+        base_exports.replace("export VM_DRYRUN=1;", "export VM_DRYRUN=0;")
+        + "export FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD=1; "
+        f"export RDLAB_ONLY_JUDGES={ELEPHANT}; "
+        f"export RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL=1; "
+    )
+    out_dir = tmp_path / "out_hook"
+    proc = _run_launcher(
+        exports,
+        f"--stub --pass-mode {CONTRA} --out-dir '{_to_wsl_path(out_dir)}' --run-id el-stub-hook-01",
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+
+    el_json = out_dir / "elephant_install.json"
+    assert el_json.is_file()
+    el_doc = json.loads(el_json.read_text(encoding="utf-8"))
+    assert el_doc["status"] == "cpu_cannot_build"
+    assert el_doc["causal_conv1d_build_outcome"] == "cpu_cannot_build"
+    assert el_doc["stub_exercise"] is True
+    assert el_doc["serve_patch_applied"] is True
+    assert "cpu_cannot_build" in el_doc.get("note", "")
+
+    receipt = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert receipt["elephant_install"]["status"] == "cpu_cannot_build"
+    assert receipt["elephant_install"]["causal_conv1d_build_outcome"] == "cpu_cannot_build"
+    assert [s["step"] for s in receipt["elephant_install"]["steps"]] == [
+        n for n, _ in vm_judges.elephant_install_commands(tmp_path / "w", tmp_path / "r", tmp_path / "s")
+    ]
+
+    # Inspect fake VM subprocess log for exact step order and venv isolation.
+    sub_rows = [
+        json.loads(ln)
+        for ln in (env_paths["state_dir"] / "vm_subprocesses.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    run_cmds = [r["cmd"] for r in sub_rows if r.get("step") == "run"]
+
+    def _match_step(cmd: list[str]) -> str | None:
+        if cmd[:2] == ["uv", "venv"] and "venv-elephant" in cmd[-1]:
+            return "venv"
+        if cmd[:3] == ["uv", "pip", "sync"] and any("venv-elephant" in a for a in cmd):
+            return "sync_judge_lock"
+        if cmd[:2] == ["git", "clone"] and cmd[-1].endswith("/OneJev"):
+            return "clone_onejev"
+        if len(cmd) >= 4 and cmd[:2] == ["git", "-C"] and cmd[2].endswith("/OneJev") and cmd[3] == "checkout":
+            return "checkout_onejev"
+        if len(cmd) >= 4 and cmd[:2] == ["git", "-C"] and cmd[2].endswith("/OneJev") and cmd[3] == "clean":
+            return "clean_onejev"
+        if len(cmd) >= 4 and cmd[:2] == ["git", "-C"] and cmd[2].endswith("/OneJev") and cmd[3] == "apply":
+            return "apply_serve_patch"
+        if cmd[:2] == ["git", "clone"] and cmd[-1].endswith("/decision-index"):
+            return "clone_decision_index"
+        if len(cmd) >= 4 and cmd[:2] == ["git", "-C"] and cmd[2].endswith("/decision-index") and cmd[3] == "checkout":
+            return "checkout_decision_index"
+        if cmd[0].endswith("/venv-elephant/bin/python") and len(cmd) >= 3 and cmd[1] == "-c" and "torch.__version__" in cmd[2]:
+            return "torch_pin"
+        if cmd[:3] == ["uv", "pip", "install"] and any("venv-elephant" in a for a in cmd) and "causal-conv1d" in cmd:
+            return "build_causal_conv1d"
+        if cmd[:3] == ["uv", "pip", "install"] and any("venv-elephant" in a for a in cmd) and any(a.endswith("/OneJev") for a in cmd):
+            return "install_onejev"
+        if cmd[:3] == ["uv", "pip", "install"] and any("venv-elephant" in a for a in cmd) and any(a.endswith("/decision-index") for a in cmd):
+            return "install_decision_index"
+        if cmd[0].endswith("/venv-elephant/bin/python") and len(cmd) >= 3 and cmd[1] == "-c" and "import qev.engine, qev.readout, qev.schema" in cmd[2]:
+            return "import_check"
+        return None
+
+    observed_steps = [s for s in (_match_step(c) for c in run_cmds) if s is not None]
+    assert observed_steps == [
+        n for n, _ in vm_judges.elephant_install_commands(tmp_path / "w", tmp_path / "r", tmp_path / "s")
+    ]
+    # venv-judge must never receive any elephant-install uv pip install calls (only venv-elephant is touched).
+    assert not any(
+        c[:3] == ["uv", "pip", "install"]
+        and any("venv-judge" in a for a in c)
+        and ("causal-conv1d" in c or any(a.endswith("/OneJev") or a.endswith("/decision-index") for a in c))
+        for c in run_cmds
+    )
+
+    # Judging child stays on stub transport in venv-judge with --stub and no weight loading.
+    j_sub_rows = [
+        json.loads(ln)
+        for ln in (env_paths["state_dir"] / "judge_subprocesses.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(j_sub_rows) == 1
+    assert j_sub_rows[0]["venv"] == "venv-judge" and "--stub" in j_sub_rows[0]["cmd"]
+    assert (out_dir / "rows" / f"{ELEPHANT}.{CONTRA}.jsonl").is_file()
+
+    # Non-causal-conv1d step failure under the opt-in fails the rung (rc=2).
+    _, base_fail_exports = _launcher_env(tmp_path, "el_hook_fail")
+    snap_fail = tmp_path / "snap_el_hook_fail"
+    _add_elephant_snapshot(snap_fail / "receipts", snap_fail / "hf_home")
+    fail_exports = (
+        base_fail_exports.replace("export VM_DRYRUN=1;", "export VM_DRYRUN=0;")
+        + "export FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD=1; "
+        f"export RDLAB_ONLY_JUDGES={ELEPHANT}; "
+        "export RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL=1; "
+        "export FAKE_COLAB_FAIL_GIT_SUBCMD=apply; "
+    )
+    out_fail = tmp_path / "out_hook_fail"
+    proc_fail = _run_launcher(
+        fail_exports,
+        f"--stub --pass-mode {CONTRA} --out-dir '{_to_wsl_path(out_fail)}' --run-id el-stub-hook-fail",
+    )
+    import tarfile
+
+    assert proc_fail.returncode == 2, f"stdout={proc_fail.stdout}\nstderr={proc_fail.stderr}"
+    assert not (out_fail / "elephant_install.json").exists()
+    fail_status = json.loads((out_fail / "status.json").read_text(encoding="utf-8"))
+    assert fail_status["rc"] == 2 and fail_status["status"] == "refused"
+    assert fail_status["failure_class"] == "ELEPHANT_INSTALL_FAILED"
+    assert "apply_serve_patch" in fail_status["reason"]
+    fail_outcome = json.loads((out_fail / "outcome.draft.json").read_text(encoding="utf-8"))
+    assert fail_outcome["outcome"] == "failed" and "ELEPHANT_INSTALL_FAILED" in fail_outcome["why"]
+    with tarfile.open(out_fail / "result.tar.gz", "r:gz") as tf:
+        member = tf.extractfile("elephant_install.json")
+        assert member is not None
+        fail_el_doc = json.loads(member.read().decode("utf-8"))
+    assert fail_el_doc["status"] == "failed" and fail_el_doc["failure_class"] == "ELEPHANT_INSTALL_FAILED"
+    assert fail_el_doc["stub_exercise"] is True
+
+
+def test_stub_without_opt_in_is_byte_identical(tmp_path: Path) -> None:
+    """Without `RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL`, `--stub` neither forwards the hook nor runs any
+    `venv-elephant` install command, nor adds `elephant_install.json` or `vm_receipt['elephant_install']`."""
+    env_paths, base_exports = _launcher_env(tmp_path, "el_nohook")
+    snap_dir = tmp_path / "snap_el_nohook"
+    _add_elephant_snapshot(snap_dir / "receipts", snap_dir / "hf_home")
+    exports = (
+        base_exports.replace("export VM_DRYRUN=1;", "export VM_DRYRUN=0;")
+        + "export FAKE_COLAB_ENABLE_FAKE_HF_DOWNLOAD=1; "
+        f"export RDLAB_ONLY_JUDGES={ELEPHANT}; "
+    )
+    out_dir = tmp_path / "out_nohook"
+    proc = _run_launcher(
+        exports,
+        f"--stub --pass-mode {CONTRA} --out-dir '{_to_wsl_path(out_dir)}' --run-id el-stub-nohook-01",
+    )
+    assert proc.returncode == 0, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    calls_txt = (env_paths["state_dir"] / "calls.jsonl").read_text(encoding="utf-8")
+    assert "RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL" not in calls_txt
+    sub_txt = (env_paths["state_dir"] / "vm_subprocesses.jsonl").read_text(encoding="utf-8")
+    assert "venv-elephant" not in sub_txt and "causal-conv1d" not in sub_txt and "OneJev" not in sub_txt
+    assert not (out_dir / "elephant_install.json").exists()
+    receipt = json.loads((out_dir / "vm_receipt.json").read_text(encoding="utf-8"))
+    assert "elephant_install" not in receipt
+    summary = json.loads((out_dir / "time_one_summary.json").read_text(encoding="utf-8"))
+    assert summary["elephant_install"]["status"] == "skipped_not_real_mode"
+    assert "stub_exercise" not in summary["elephant_install"]
+
+
+@pytest.mark.parametrize(
+    ("tag", "extra_exports", "cli_args"),
+    [
+        ("time_one", f"export RDLAB_ONLY_JUDGES={ELEPHANT}; export FAKE_COLAB_USAGE_RATE='13.08'; export RDLAB_MAX_RATE=14; ", f"--time-one --card G4 --shape standard --pass-mode {CONTRA}"),
+        ("counted", "export FAKE_COLAB_USAGE_RATE='13.08'; export RDLAB_MAX_RATE=14; ", "--counted --card G4 --shape standard --shard 1/1"),
+        ("lock_check", "export FAKE_COLAB_USAGE_RATE='13.08'; export RDLAB_MAX_RATE=14; ", "--lock-check --card G4 --shape standard --lock-check-phase p0a"),
+        ("session_smoke", "", "--stub --session-smoke"),
+        ("until_first_load", f"export RDLAB_ONLY_JUDGES={ELEPHANT}; ", f"--stub --until first_load --pass-mode {CONTRA}"),
+        ("without_elephant_only", "export RDLAB_ONLY_JUDGES=d3-mini; ", f"--stub --pass-mode {CONTRA}"),
+        ("without_elephant_default", "", "--stub --pass-mode binary"),
+        ("bad_val_zero", f"export RDLAB_ONLY_JUDGES={ELEPHANT}; ", f"--stub --pass-mode {CONTRA}"),
+    ],
+)
+def test_stub_exercise_elephant_install_refused_outside_eligible_stub_plan(
+    tmp_path: Path, tag: str, extra_exports: str, cli_args: str
+) -> None:
+    """`RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL` is forbidden in counted/real hooks and refused before `colab new`
+    everywhere outside eligible `--stub` windows whose planned judges include `elephant-1`."""
+    assert vm_judges.is_forbidden_counted_test_hook("RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL") is True
+    env_paths, base_exports = _launcher_env(tmp_path, f"ref_{tag}")
+    snap_dir = tmp_path / f"snap_ref_{tag}"
+    _add_elephant_snapshot(snap_dir / "receipts", snap_dir / "hf_home")
+    hook_val = "0" if tag == "bad_val_zero" else "1"
+    exports = (
+        base_exports
+        + f"export RDLAB_STUB_EXERCISE_ELEPHANT_INSTALL={hook_val}; "
+        + extra_exports
+    )
+    out_dir = tmp_path / f"out_ref_{tag}"
+    proc = _run_launcher(exports, f"{cli_args} --out-dir '{_to_wsl_path(out_dir)}' --run-id ref-{tag}")
+    assert proc.returncode == 2, f"tag={tag} stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert "STUB_EXERCISE_ELEPHANT_INSTALL_INVALID" in proc.stderr, proc.stderr
+    calls_file = env_paths["state_dir"] / "calls.jsonl"
+    if calls_file.is_file():
+        assert "new" not in [json.loads(ln).get("subcmd") for ln in calls_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+
+    # Direct VM check for per_judge plan omitting elephant-1.
+    with pytest.raises(vm_judges.RefusalError) as exc_info:
+        vm_judges.validate_stub_exercise_elephant_install(
+            "stub", "1", judge_ids=("d3-mini", "d3-flash"), pass_mode="three_way_contradicted"
+        )
+    assert exc_info.value.code == "STUB_EXERCISE_ELEPHANT_INSTALL_INVALID"
