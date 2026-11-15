@@ -225,7 +225,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "cae88e93500e1bd04d62ef054802663307b18d0c213072b270472e0e98a4b6a5",
+          "hash": "efd8ec97ee20ca0adf9b712a4aee876e91767f2640db0f7148725f296704e617",
           "path": "CHANGELOG.md"
         },
         {
@@ -277,11 +277,11 @@
           "path": "SHIP_GATE.md"
         },
         {
-          "hash": "dafc5f05f36133b24644f44ea3830f2edf7345c4f98dc4ea236e4da4fef083a9",
+          "hash": "0d186d26513b2de18e9fbac90aaa6cd789c34ddfff683be35779a9ddc7726a69",
           "path": "pyproject.toml"
         },
         {
-          "hash": "81f4b03cbdafd8453fc2c6adf417392bdd4e5c3c8bed1fbcb8532cd4a468dc5d",
+          "hash": "8f64bd6793940fd3e681b5242213d350acdf31c06992c31b65907169dcd23f85",
           "path": "uv.lock"
         }
       ],
@@ -304,11 +304,11 @@
       "externals": 0,
       "files": [
         {
-          "hash": "88b0ebfe9656fe71147ab32f97cf0942233aa238218176ef3f865d117bb82aa1",
+          "hash": "33ff1d4626634471c0bb1d4276915275d8ce3745ac7582bd16b6319031ee1d45",
           "path": "scripts/colab/README.md"
         },
         {
-          "hash": "993b76c70af96c86efb539e5939a8a051b4406a5454f1f70e661f33b7618a297",
+          "hash": "66c003ff9eb80c6c9e0e8c76613be34c860b111c8683685206e0d6d06ef79332",
           "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
         },
         {
@@ -1429,7 +1429,9 @@
             "download_all_judge_weights",
             "download_and_verify_all_judge_weights",
             "elephant_install_commands",
+            "elephant_step_timeout_seconds",
             "elephant_venv_name",
+            "elephant_window_extra_bytes",
             "ensure_elephant_venv",
             "ensure_not_drive_path",
             "ensure_shard_manifest_for_run",
@@ -3901,12 +3903,17 @@
               "line": 16046
             },
             {
+              "in": "ensure_elephant_venv",
+              "kind": "except",
+              "line": 16249
+            },
+            {
               "in": "_apply_elephant_install",
               "kind": "except",
-              "line": 16235
+              "line": 16291
             }
           ],
-          "hash": "4abd0540cee654454e47f554e0e19f2c6719b30b7f02bb88f5976786eb8e4d86",
+          "hash": "b2a265c4bdf9b2c1c747ca1e458e343a7a8bfe2c7b997f63b36fa425e73ea8f5",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -5858,6 +5865,8 @@
             "disable_bytecode_writing",
             "elephant_fake_response",
             "elephant_install_record",
+            "elephant_outside_mass",
+            "elephant_receipt_serve_patch_sha256",
             "encode_canonical_output_token_ids",
             "encode_canonical_prompt_token_ids",
             "enforce_prompt_stop_rule",
@@ -7079,36 +7088,41 @@
               "line": 8694
             },
             {
+              "in": "elephant_receipt_serve_patch_sha256",
+              "kind": "except",
+              "line": 8955
+            },
+            {
               "in": "elephant_install_record",
               "kind": "except",
-              "line": 8907
+              "line": 8967
             },
             {
               "in": "elephant_install_record",
               "kind": "raise",
-              "line": 8916
+              "line": 8977
             },
             {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 8970
+              "line": 9031
             },
             {
               "in": "generate",
               "kind": "except",
-              "line": 9004
+              "line": 9067
             },
             {
               "in": "generate",
               "kind": "raise",
-              "line": 9006
+              "line": 9069
             },
             {
               "kind": "raise",
-              "line": 9082
+              "line": 9168
             }
           ],
-          "hash": "ab3676220a4389ab13d7695db3eb4034d95a4ef4d579ae4a044fd16809143633",
+          "hash": "fa6554cbc915f061864fb542f80a2bfe4df90d3d51974590ccb6d09831f81bcf",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -11792,7 +11806,7 @@
                   }
                 },
                 {
-                  "line": 9060,
+                  "line": 9146,
                   "name": "three_way_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -11809,7 +11823,7 @@
               "calls": [
                 {
                   "branch": "not isinstance(doc, Mapping) or doc.get(\"status\") != \"ok\" o…",
-                  "line": 8916,
+                  "line": 8977,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11824,7 +11838,7 @@
             {
               "calls": [
                 {
-                  "line": 9060,
+                  "line": 9146,
                   "name": "three_way_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -18396,7 +18410,7 @@
       "origin": "mixed",
       "outsidePlaces": [
         {
-          "reads": 105,
+          "reads": 106,
           "where": [
             "caller"
           ],
@@ -18410,7 +18424,7 @@
           "writes": 0
         }
       ],
-      "outsideReads": 106,
+      "outsideReads": 107,
       "outsideWrites": 32,
       "role": "code",
       "testRunners": [
@@ -18474,6 +18488,14 @@
           "path": "tests/fixtures/colab_help.txt"
         },
         {
+          "hash": "3582c60a5731e1ae67cb7e140000fbee6229b62033862515af4750cf41652000",
+          "path": "tests/fixtures/elephant1_b3f8a934/NOTICE"
+        },
+        {
+          "hash": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715",
+          "path": "tests/fixtures/elephant1_b3f8a934/chat_template.jinja"
+        },
+        {
           "exports": [
             "build_fixture_python_archive",
             "build_fixture_uv_wheel",
@@ -18523,6 +18545,22 @@
         {
           "hash": "95851220bdc04ba823924e8427b662ec31b86567a05cf3561edf402778b31a03",
           "path": "tests/fixtures/launch_judges_6243174e_status_check.sh"
+        },
+        {
+          "hash": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+          "path": "tests/fixtures/onejev_81ce62f1/LICENSE"
+        },
+        {
+          "hash": "ad0e5df09199d4ba4718c7e4dbf3d5af04cf27ee4bc43e62e896ea456079b734",
+          "path": "tests/fixtures/onejev_81ce62f1/NOTICE"
+        },
+        {
+          "hash": "17dfae09e4dff47cb8ce80e172eba116f188b82b70c2777bd14fd9b8a71680de",
+          "path": "tests/fixtures/onejev_81ce62f1/qev_prompt.py.txt"
+        },
+        {
+          "hash": "f0763b5f747039c2919bc2a6d51e4ed88308fe3497e53498e6f298286b6169b2",
+          "path": "tests/fixtures/onejev_81ce62f1/qev_prompt.served.py.txt"
         },
         {
           "hash": "596e7b3c0321849a00e5c31859aed2260475d6f4e25b9c8b20ee5edf5620bfef",
@@ -19011,23 +19049,36 @@
         {
           "exports": [
             "test_a_failed_install_makes_elephant_failed_to_run_and_the_others_go_on",
+            "test_a_failed_install_on_subblock_one_is_not_retried",
+            "test_a_resumed_run_starts_venv_elephant_and_its_clones_clean",
+            "test_an_incomplete_snapshot_is_refused_before_any_install_step",
+            "test_an_install_record_whose_serve_patch_is_not_the_receipts_is_refused",
+            "test_an_install_step_past_its_timeout_fails_closed",
+            "test_an_outside_allowed_token_mass_makes_the_row_unparseable_with_a_named_reason",
             "test_elephant_chat_template_is_the_pinned_one_and_opens_an_empty_think_block",
             "test_elephant_flipped_weight_byte_is_refused_before_the_model_loads",
             "test_elephant_metadata_receipt_and_preflight",
-            "test_elephant_readout_renormalises_over_the_three_options_and_reports_outside_mass",
+            "test_elephant_readout_accepts_only_a_softmax_over_the_three_shown_keys",
             "test_elephant_shows_arm1s_d3_style_words_and_passes_the_ban",
             "test_elephant_transport_length_refusal_and_unverified_runtime",
             "test_elephant_transport_reuses_its_engine_and_raises_other_errors",
             "test_elephant_transport_runs_qev_offline_with_telemetry_off_and_reports_outside_mass",
+            "test_every_install_call_has_a_timeout_bounded_by_the_window_wall",
+            "test_fixture_blobs_are_tied_to_the_onejev_pin_and_the_receipts_serve_patch",
+            "test_only_rounding_slack_above_one_clamps_the_outside_mass_to_zero",
             "test_outside_mass_report_per_class_and_order",
             "test_qev_wrapper_strings_are_the_preregistered_ones",
             "test_seven_arm_stub_window_with_elephant_and_scores_outside_mass",
             "test_stub_child_writes_elephant_rows_with_outside_mass",
+            "test_the_disk_gate_adds_elephant_only_to_a_window_that_selects_it",
+            "test_the_fixture_notices_carry_the_mit_and_qwen_attribution",
+            "test_the_qev_messages_of_both_orders_render_through_the_pinned_template",
             "test_venv_elephant_install_fails_closed_with_a_named_reason",
             "test_venv_elephant_install_is_skipped_outside_real_windows",
-            "test_venv_elephant_install_steps_env_timings_and_record"
+            "test_venv_elephant_install_steps_env_timings_and_record",
+            "test_venv_elephant_is_built_once_per_window_across_subblocks"
           ],
-          "hash": "9105932f875c41ade5eec3b770344c89c05f904d0ed6553e1e2b02f2dd205a79",
+          "hash": "42018e21379d3ecec6774caf10729d9f298e2ca027fea4dea9ee20f83c8a7be3",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -19361,7 +19412,7 @@
             "test_upload_enforces_parent_dir_overwrite_large_file_path_length_and_missing_local",
             "test_vm_subprocess_failure_captures_scrubbed_stdout_and_stderr_tail_in_status_receipt_and_log"
           ],
-          "hash": "282807672cbe90047a60a8a5a5322b00a3838e231efb3eb108b3881b18f82f60",
+          "hash": "47b0abab3d78f67eef3ac42300bafe43f882fe6426a8c5052244dcd157c76638",
           "importOrder": [
             "scripts/colab/vm_judges.py",
             "src/reasoning_dataset_lab/errors.py",
@@ -21158,8 +21209,8 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "245c9ca0ac437bf3cacef5d8590295aed1c2073f",
-    "tracked": 186
+    "commit": "c99d2b3ee1277725fb383d109bc2340deb8e5d53",
+    "tracked": 192
   },
   "landings": [
     {
@@ -21909,7 +21960,25 @@
       "readers": [
         {
           "by": "tests/test_colab_d5c_elephant.py",
+          "call": "read_text",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "tests/fixtures/elephant1_b3f8a934/NOTICE",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_colab_d5c_elephant.py",
           "call": "read_bytes",
+          "confidence": "ast",
+          "fromTests": true
+        },
+        {
+          "by": "tests/test_colab_d5c_elephant.py",
+          "call": "read_text",
           "confidence": "ast",
           "fromTests": true
         }
@@ -21939,6 +22008,36 @@
         }
       ],
       "target": "tests/fixtures/historical_git_fixtures_manifest.json",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_colab_d5c_elephant.py",
+          "call": "literal",
+          "confidence": "ast",
+          "fromTests": true
+        },
+        {
+          "by": "tests/test_colab_d5c_elephant.py",
+          "call": "read_text",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "tests/fixtures/onejev_81ce62f1/LICENSE",
+      "writers": []
+    },
+    {
+      "readers": [
+        {
+          "by": "tests/test_colab_d5c_elephant.py",
+          "call": "read_text",
+          "confidence": "ast",
+          "fromTests": true
+        }
+      ],
+      "target": "tests/fixtures/onejev_81ce62f1/NOTICE",
       "writers": []
     },
     {
@@ -22040,6 +22139,6 @@
   "overlaps": [],
   "submodules": [],
   "symlinks": [],
-  "testFiles": 62,
+  "testFiles": 68,
   "unassigned": []
 }
