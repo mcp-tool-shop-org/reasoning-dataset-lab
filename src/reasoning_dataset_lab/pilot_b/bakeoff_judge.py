@@ -1885,16 +1885,19 @@ class D3MiniAdapter(BaseJudgeAdapter):
                 if isinstance(q_ans, Mapping) and isinstance(q_ans.get("probabilities"), Mapping):
                     raw_probs = q_ans["probabilities"]
                     three_labels = ("supported", "unsupported", "cannot_tell")
-                    try:
-                        probs = {k: float(raw_probs.get(k, 0.0)) for k in three_labels}
-                    except (TypeError, ValueError):
-                        probs = {}
+                    probs = {}
+                    # Guard (the rule `vm_judges._three_way_choice_probabilities_valid` checks on the rows): all 3 label
+                    # keys present, each a real number (not a bool), finite and >= 0, with a finite total > 0, and a
+                    # given choice one of the 3 labels; else unparseable.
+                    if all(k in raw_probs for k in three_labels):
+                        raw_vals = [raw_probs[k] for k in three_labels]
+                        if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in raw_vals):
+                            probs = {k: float(v) for k, v in zip(three_labels, raw_vals)}
                     raw_choice = q_ans.get("choice")
-                    # Guard: every probability finite and >= 0, and a given choice one of the 3 labels; else unparseable.
                     probs_ok = len(probs) == 3 and all(math.isfinite(v) and v >= 0.0 for v in probs.values())
                     choice_ok = raw_choice is None or raw_choice == "" or raw_choice in three_labels
                     total = sum(probs.values()) if probs_ok else 0.0
-                    if probs_ok and choice_ok and total > 0.0:
+                    if probs_ok and choice_ok and math.isfinite(total) and total > 0.0:
                         probs = {k: v / total for k, v in probs.items()}
                         choice = str(raw_choice or max(probs.items(), key=lambda kv: kv[1])[0])
                         return ParsedJudgeReadout(

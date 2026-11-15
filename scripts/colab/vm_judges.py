@@ -195,6 +195,8 @@ PASS_MODES: tuple[str, ...] = ("binary", "three_way")
 THREE_WAY_PASS_WINDOW_MODES: frozenset[str] = frozenset({"stub", "time-one", "time_one"})
 THREE_WAY_CLASS_LABELS: tuple[str, ...] = ("supported", "unsupported", "cannot_tell")
 THREE_WAY_OPTION_TOKENS: tuple[str, ...] = ("a", "b", "c")
+# D5a design §4.3 condition 1: invalid calls (unparseable or length_stop) at most 0.01 of the calls (<= 2 / 228).
+THREE_WAY_MAX_INVALID_RATE = 0.01
 JUDGE_DONE_DIRNAME = "judge_done"
 DOWNLOAD_DONE_DIRNAME = "download_done"
 SESSION_ENV_FILENAME = "session_env.json"
@@ -2952,7 +2954,19 @@ def _three_way_mass_report(rf: Path, judge_id: str, threshold: float) -> dict[st
             "threshold": threshold,
         }
     lines = [json.loads(ln) for ln in rf.read_text(encoding="utf-8").splitlines() if ln.strip()]
-    parsed_rows = [r for r in lines if r.get("state") == "parsed" and r.get("run_status") != "failed_to_run"]
+    all_calls = [r for r in lines if r.get("run_status") != "failed_to_run"]
+    parsed_rows = [r for r in all_calls if r.get("state") == "parsed"]
+    # Calls the parse rejected (unparseable, length_stop) are counted, never dropped: the design's invalid-rate rule
+    # (<= THREE_WAY_MAX_INVALID_RATE of the calls) fails the readout, so 1 parsed call of 20 cannot pass it.
+    invalid_calls = len(all_calls) - len(parsed_rows)
+    invalid_rate = (invalid_calls / len(all_calls)) if all_calls else None
+    rate_ok = invalid_rate is not None and invalid_rate <= THREE_WAY_MAX_INVALID_RATE + 1e-12
+    invalid_fields = {
+        "calls_total": len(all_calls),
+        "invalid_calls_count": invalid_calls,
+        "invalid_rate": round(invalid_rate, 6) if invalid_rate is not None else None,
+        "max_invalid_rate": THREE_WAY_MAX_INVALID_RATE,
+    }
     if judge_id == D3_MINI_JUDGE_ID:
         invalid = sum(
             1
@@ -2960,13 +2974,14 @@ def _three_way_mass_report(rf: Path, judge_id: str, threshold: float) -> dict[st
             if not _three_way_choice_probabilities_valid(r.get("choice_probabilities"))
             or r.get("raw_verdict") not in THREE_WAY_CLASS_LABELS
         )
-        passed = bool(parsed_rows and invalid == 0)
+        passed = bool(parsed_rows and invalid == 0 and rate_ok)
         return {
             "status": "PASS" if passed else "WARN",
             "passed": passed,
             "check": "choice_probabilities",
             "calls_checked": len(parsed_rows),
             "invalid_choice_probabilities_count": invalid,
+            **invalid_fields,
             "threshold": threshold,
         }
     masses: list[float] = []
@@ -2980,11 +2995,12 @@ def _three_way_mass_report(rf: Path, judge_id: str, threshold: float) -> dict[st
             )
         )
     below_count = sum(1 for m in masses if m + 1e-6 < threshold)
-    passed = bool(masses and below_count == 0)
+    passed = bool(masses and below_count == 0 and rate_ok)
     return {
         "status": "PASS" if passed else "WARN",
         "passed": passed,
         "check": "abc_option_mass",
+        **invalid_fields,
         "calls_checked": len(masses),
         "below_threshold_count": below_count,
         "min_option_mass": round(min(masses), 6) if masses else 0.0,
@@ -3008,8 +3024,14 @@ def check_bakeoff_logprob_mass(
     `BAKEOFF_LOGPROB_MASS_PART_FORBIDDEN` otherwise. The readout records the part's real `part_id` and hashes.
 
     `pass_mode="three_way"` reads `rows/*.three_way.jsonl` instead: A/B/C option mass for the log-probability judges
-    and valid `choice_probabilities` for d3-mini (see `_three_way_mass_report`).
+    and valid `choice_probabilities` for d3-mini (see `_three_way_mass_report`). Any other `pass_mode` refuses
+    `PASS_MODE_INVALID`.
     """
+    if pass_mode not in PASS_MODES:
+        raise RefusalError(
+            "PASS_MODE_INVALID",
+            f"Unknown pass mode {pass_mode!r} for the option-mass readout (allowed: {', '.join(PASS_MODES)})",
+        )
     if not is_pinned_pilot_identity(verified_pilot_identity):
         got = dict(verified_pilot_identity) if isinstance(verified_pilot_identity, Mapping) else {}
         raise RefusalError(
@@ -9901,7 +9923,8 @@ def validate_pass_mode(
     if raw_val is None or raw_val == "":
         return DEFAULT_PASS_MODE
     cleaned = raw_val.strip()
-    if cleaned not in PASS_MODES:
+    # Padded values are refused, never stripped (as `validate_only_judges` does), so bash and Python read one value.
+    if cleaned != raw_val or cleaned not in PASS_MODES:
         raise RefusalError(
             "PASS_MODE_INVALID",
             f"Unknown pass mode {raw_val!r} (allowed: {', '.join(PASS_MODES)})",

@@ -1835,6 +1835,7 @@ def _three_way_sealed_rows(judge_id: str, rec: SealedKeyRecord, order_map: Mappi
     for ord_name in ("AB", "BA"):
         r = order_map[ord_name]
         label = r.get("raw_verdict")
+        valid_label = _three_way_valid_verdict(r)
         out.append(
             {
                 "judge_id": judge_id,
@@ -1844,7 +1845,7 @@ def _three_way_sealed_rows(judge_id: str, rec: SealedKeyRecord, order_map: Mappi
                 "key": rec.key,
                 "key_source": rec.key_source,
                 "verdict": label,
-                "correct": label == rec.key,
+                "correct": valid_label is not None and valid_label == rec.key,
                 "confidence": r.get("confidence"),
                 "seconds": r.get("seconds"),
                 "vram_peak_mib": r.get("vram_peak_mib"),
@@ -2405,9 +2406,10 @@ def score_bakeoff_outputs(
             rec = keys_by_id.get(iid)
             if rec is None or "AB" not in omap or "BA" not in omap:
                 continue
-            v_ab = omap["AB"].get("raw_verdict")
-            v_ba = omap["BA"].get("raw_verdict")
-            is_both_ok = int(v_ab == rec.key and v_ba == rec.key)
+            # The same rule as `_three_way_breakdown`: a call counts only when it parsed to one of the 3 labels.
+            v_ab = _three_way_valid_verdict(omap["AB"])
+            v_ba = _three_way_valid_verdict(omap["BA"])
+            is_both_ok = int(v_ab is not None and v_ab == rec.key and v_ba == rec.key)
             if rec.split in ("dev", "test"):
                 all_sealed_rows.extend(_three_way_sealed_rows(j_id, rec, omap))
                 tw_scored[rec.split].append((rec, omap["AB"], omap["BA"]))

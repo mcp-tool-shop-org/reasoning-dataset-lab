@@ -466,3 +466,90 @@ def test_d3_mini_three_way_parse_guard_keeps_valid_readouts() -> None:
     )
     assert r2.state == "parsed" and r2.raw_verdict == "unsupported"
     assert bakeoff_judge.D3MiniAdapter is D3MiniAdapter
+
+
+# --- review follow-ups (Carbon review of #83) ------------------------------------------------------------------------
+
+
+def test_unparseable_row_with_matching_raw_verdict_scores_wrong_everywhere(tmp_path: Path) -> None:
+    """An unparseable call that still carries the key as raw_verdict is wrong in three_way_accuracy, in the breakdown
+    and in the sealed rows: one validity rule for every 3-way count."""
+    from tests.test_bakeoff_judge_score_splits import _score, build_judge_dir
+
+    judge_dir = build_judge_dir(tmp_path / "judge", binary_judges=(), three_way_judges=("mu-judge",))
+    rows_file = judge_dir / "rows" / "mu-judge.three_way.jsonl"
+    rows = [json.loads(ln) for ln in rows_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    rows = [{**r, "state": "unparseable"} for r in rows]  # raw_verdict kept, matching the key for most items
+    rows_file.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows), encoding="utf-8", newline="\n")
+    (judge_dir / "outputs-closed.json").unlink()
+    bakeoff_judge.close_bakeoff_outputs(judge_dir)
+    sealed_out = tmp_path / "sealed" / "scored.sealed.jsonl"
+    rep, _ = _score(tmp_path, judge_dir, sealed_out=sealed_out)
+    (tw_test,) = rep["test_only"]["three_way_pass"]
+    (tw_dev,) = rep["dev_fit"]["three_way_pass"]
+    assert tw_test["three_way_accuracy"]["n"] == 6 and tw_test["three_way_accuracy"]["point"] == 0.0
+    assert tw_dev["three_way_accuracy"]["n"] == 6 and tw_dev["three_way_accuracy"]["point"] == 0.0
+    pooled = tw_test["breakdown_by_split"]["pooled"]
+    assert pooled["strict_correct"] == 0 and pooled["invalid_calls"]["count"] == 24
+    sealed = [json.loads(ln) for ln in sealed_out.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert sealed and not any(r["correct"] for r in sealed)
+
+
+def test_three_way_mass_check_counts_rejected_d3_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """19 of 20 d3-mini calls rejected by the 3-way guard: the readout counts them and fails the invalid-rate rule."""
+    monkeypatch.setattr(vm_judges, "is_pinned_pilot_identity", lambda identity: True)
+    rows_dir = tmp_path / "rows"
+    rows_dir.mkdir()
+    good = {"state": "parsed", "raw_verdict": "supported", "choice_probabilities": {"supported": 0.8, "unsupported": 0.1, "cannot_tell": 0.1}}
+    bad = {"state": "unparseable", "raw_verdict": None, "choice_probabilities": None}
+    (rows_dir / "d3-mini.three_way.jsonl").write_text(
+        "".join(json.dumps(r) + "\n" for r in [good, *([bad] * 19)]), encoding="utf-8"
+    )
+    rep = vm_judges.check_bakeoff_logprob_mass(tmp_path, verified_pilot_identity={"part_id": "p"}, pass_mode="three_way")
+    d3 = rep["judges"]["d3-mini"]
+    assert d3["passed"] is False and d3["status"] == "WARN"
+    assert d3["calls_checked"] == 1 and d3["invalid_choice_probabilities_count"] == 0
+    assert d3["calls_total"] == 20 and d3["invalid_calls_count"] == 19
+    assert d3["invalid_rate"] == pytest.approx(0.95)
+    # At the design's bar (<= 0.01) a single invalid call in 228 still passes; 3 in 228 does not.
+    for n_bad, ok in ((2, True), (3, False)):
+        (rows_dir / "d3-mini.three_way.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in [*([good] * (228 - n_bad)), *([bad] * n_bad)]), encoding="utf-8"
+        )
+        r2 = vm_judges.check_bakeoff_logprob_mass(tmp_path, verified_pilot_identity={"part_id": "p"}, pass_mode="three_way")
+        assert r2["judges"]["d3-mini"]["passed"] is ok
+    with pytest.raises(vm_judges.RefusalError) as exc:
+        vm_judges.check_bakeoff_logprob_mass(tmp_path, verified_pilot_identity={"part_id": "p"}, pass_mode="ternary")
+    assert exc.value.failure_class == "PASS_MODE_INVALID"
+
+
+@pytest.mark.parametrize("padded", ["three_way ", " three_way", "binary\t", "\nbinary"])
+def test_validate_pass_mode_refuses_padded_values(padded: str) -> None:
+    with pytest.raises(vm_judges.RefusalError) as exc:
+        vm_judges.validate_pass_mode("time-one", padded, judge_ids=("mu-judge",))
+    assert exc.value.failure_class == "PASS_MODE_INVALID"
+
+
+def test_launcher_bare_trailing_pass_mode_is_pass_mode_invalid(tmp_path: Path) -> None:
+    env_paths, exports = _launcher_env(tmp_path, "bare")
+    out_dir = tmp_path / "out_bare"
+    proc = _run_launcher(exports, f"--stub --out-dir '{_to_wsl_path(out_dir)}' --run-id pm-bare --pass-mode")
+    assert proc.returncode == 2, proc.stderr
+    assert "PASS_MODE_INVALID" in proc.stderr
+    assert "new" not in _colab_subcommands(env_paths["state_dir"])
+
+
+@pytest.mark.parametrize(
+    "probabilities",
+    [
+        {"supported": 1e308, "unsupported": 1e308, "cannot_tell": 1e308},  # each finite, the total overflows
+        {"supported": True},
+        {"supported": True, "unsupported": False, "cannot_tell": False},
+        {"supported": 0.9, "unsupported": 0.1},  # a label key missing
+    ],
+)
+def test_d3_mini_three_way_guard_review_cases(probabilities: dict[str, Any]) -> None:
+    readout = D3MiniAdapter().parse_response(
+        _d3_resp({"choice": "supported", "probabilities": probabilities}), pass_mode="three_way"
+    )
+    assert readout.state == "unparseable" and readout.raw_verdict is None

@@ -247,7 +247,11 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --pass-mode)
-      PASS_MODE="${2:-}"
+      if [[ $# -lt 2 ]] || [[ -z "${2:-}" ]]; then
+        echo "PASS_MODE_INVALID: --pass-mode requires a value (allowed: binary, three_way)" >&2
+        exit 2
+      fi
+      PASS_MODE="$2"
       PASS_MODE_FLAG=1
       shift 2
       ;;
