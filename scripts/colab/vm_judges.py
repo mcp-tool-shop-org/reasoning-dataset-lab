@@ -16218,6 +16218,23 @@ def launcher_verify_fetched_pass(
     return True, ""
 
 
+def write_launcher_halted_pass_verdicts(out_dir: Path, halted_tsv: str, verdicts_path: Path) -> None:
+    """Check all remaining post-halt passes (`staged=False`) in one process and flush one `OK`/`BAD` tab-separated
+    verdict line per pass to `verdicts_path` so a single `timeout` bounds the entire post-halt check."""
+    with Path(verdicts_path).open("a", encoding="utf-8", newline="\n") as fh:
+        for raw in str(halted_tsv or "").splitlines():
+            parts = raw.split("\t")
+            if len(parts) < 4:
+                continue
+            jid, pmode, done_file, row_file = parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3].strip()
+            want_sha = parts[4].strip() if len(parts) > 4 else ""
+            if not (jid and pmode and done_file and row_file):
+                continue
+            ok, _ = launcher_verify_fetched_pass(out_dir, jid, pmode, staged=False, want_sha256=want_sha)
+            fh.write(f"{'OK' if ok else 'BAD'}\t{jid}\t{pmode}\t{done_file}\n")
+            fh.flush()
+
+
 # --- arm 4: venv-elephant, built on the VM only (never on the rig), before elephant-1's first pass ----------------
 # setup.sh (elephant-1's, pinned in its receipt) installs OneJev @81ce62f + serve.patch and the decision-index kit into
 # the active interpreter and may apt-install git. Here, by R&D's ruling of 2026-11-15:
@@ -16260,7 +16277,9 @@ ELEPHANT_INSTALL_HOSTS: tuple[str, ...] = (
 _LAST_ELEPHANT_INSTALL: dict[str, Any] | None = None
 
 
-def elephant_install_commands(work_dir: Path, repo_dir: Path, snapshot_dir: Path) -> list[tuple[str, list[str]]]:
+def elephant_install_commands(
+    work_dir: Path, repo_dir: Path, snapshot_dir: Path, *, real: bool = True
+) -> list[tuple[str, list[str]]]:
     """The install steps in order, as (name, argv). Nothing here runs apt or setup.sh."""
     venv = Path(work_dir) / ELEPHANT_VENV_NAME
     py = str(venv / "bin" / "python")
@@ -16272,7 +16291,7 @@ def elephant_install_commands(work_dir: Path, repo_dir: Path, snapshot_dir: Path
     base = build_vm_venv_commands(work_dir, repo_dir, python_interpreter=str(Path(work_dir) / "venv-judge" / "bin" / "python"))
     sync_flags = base["venv_judge"]["sync_cmd"][5:-1]
     cons = ["-c", str(constraints), "-c", str(pins)]
-    return [
+    cmds: list[tuple[str, list[str]]] = [
         ("venv", ["uv", "venv", "--python", str(Path(work_dir) / "venv-judge" / "bin" / "python"), str(venv)]),
         ("sync_judge_lock", ["uv", "pip", "sync", "--python", py, *sync_flags, str(judge_lock)]),
         ("clone_onejev", ["git", "clone", "-q", ELEPHANT_ONEJEV_URL, str(onejev)]),
@@ -16285,9 +16304,16 @@ def elephant_install_commands(work_dir: Path, repo_dir: Path, snapshot_dir: Path
         ("install_onejev", ["uv", "pip", "install", "--python", py, *cons, "-e", str(onejev), *ELEPHANT_SETUP_EXTRA_PACKAGES]),
         ("resolve_causal_conv1d", ["uv", "pip", "install", "--dry-run", "--python", py, "--no-build-isolation", *cons, "causal-conv1d"]),
         ("build_causal_conv1d", ["uv", "pip", "install", "--python", py, "--no-build-isolation", *cons, "causal-conv1d"]),
-        ("install_decision_index", ["uv", "pip", "install", "--python", py, "--no-deps", "-e", str(kit)]),
-        ("import_check", [py, "-c", "import qev.engine, qev.readout, qev.schema"]),
     ]
+    if real:
+        cmds.append(("verify_causal_conv1d_cuda", [py, "-c", "import torch, causal_conv1d_cuda"]))
+    cmds.extend(
+        [
+            ("install_decision_index", ["uv", "pip", "install", "--python", py, "--no-deps", "-e", str(kit)]),
+            ("import_check", [py, "-c", "import qev.engine, qev.readout, qev.schema"]),
+        ]
+    )
+    return cmds
 
 
 # venv-elephant's size, for the disk gate of a window that selects elephant-1: it is synced from the judge lock
@@ -16335,22 +16361,22 @@ def _git_head(path: Path, runner: Callable[..., Any]) -> str:
 
 
 def _elephant_env() -> dict[str, str]:
-    return {**os.environ, **ELEPHANT_INSTALL_ENV}
+    env = {**os.environ, **ELEPHANT_INSTALL_ENV}
+    env.pop("CAUSAL_CONV1D_SKIP_CUDA_BUILD", None)
+    return env
 
 
-_CPU_CUDA_BUILD_MARKERS: tuple[str, ...] = (
-    "nvcc was not found",
-    "nvcc not found",
-    "nvcc / cuda toolkit unavailable",
-    "no such file or directory: 'nvcc'",
-    "/bin/nvcc",
-    "cuda_home environment variable is not set",
-    "cuda_home is none",
-    "bare_metal_version",
-    "no cuda runtime is found",
-    "cuda_runtime.h: no such file",
-    "cuda is not available",
-    "torch not compiled with cuda",
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+_TRAILING_ADVISORY_PREFIXES: tuple[str, ...] = ("hint:", "help:", "warning:")
+_CPU_CUDA_FINAL_ERROR_RE = re.compile(
+    r"^(?:error:\s*)?(?:"
+    r"nameerror:\s*name\s+['\"]?bare_metal_version['\"]?\s+is\s+not\s+defined\.?\s*$"
+    r"|(?:oserror|runtimeerror|valueerror):\s*(?:"
+    r"cuda_home\s+(?:environment\s+variable\s+is\s+not\s+set|is\s+none)\b.*"
+    r"|cuda\s+was\s+not\s+found\s+on\s+the\s+system,\s*please\s+set\s+the\s+cuda_home\b.*"
+    r")"
+    r")",
+    re.IGNORECASE,
 )
 _NON_CUDA_RESOLUTION_OR_FETCH_MARKERS: tuple[str, ...] = (
     "no solution found",
@@ -16362,15 +16388,31 @@ _NON_CUDA_RESOLUTION_OR_FETCH_MARKERS: tuple[str, ...] = (
     "name or service not known",
     "temporary failure in name resolution",
     "certificate verify failed",
+    "error sending request",
+    "timed out",
+    "no space left",
+    "killed",
+    "permission denied",
+    "no module named",
+    "/bin/nvcc",
 )
 
 
 def _is_cpu_cuda_build_failure(output: str) -> bool:
-    """Return True only when build output reflects missing CUDA/nvcc rather than resolution, fetch, or general C++ errors."""
-    low = str(output or "").lower()
-    if not low or any(bad in low for bad in _NON_CUDA_RESOLUTION_OR_FETCH_MARKERS):
+    """Return True only when the final build error is the known CPU signature (`bare_metal_version` NameError or
+    `CUDA_HOME` unset/None) with no deny-listed resolution, network, timeout, disk, OOM, permission, or import error."""
+    raw = _ANSI_ESCAPE_RE.sub("", str(output or ""))
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if not lines:
         return False
-    return any(marker in low for marker in _CPU_CUDA_BUILD_MARKERS)
+    low = "\n".join(ln.lower() for ln in lines)
+    if any(bad in low for bad in _NON_CUDA_RESOLUTION_OR_FETCH_MARKERS):
+        return False
+    while lines and lines[-1].lower().startswith(_TRAILING_ADVISORY_PREFIXES):
+        lines.pop()
+    if not lines:
+        return False
+    return bool(_CPU_CUDA_FINAL_ERROR_RE.match(lines[-1]))
 
 
 def ensure_elephant_venv(
@@ -16442,14 +16484,14 @@ def ensure_elephant_venv(
     rec["clean_start"] = True
     resolved_causal_conv1d = False
     t_start = clock()
-    for name, argv in elephant_install_commands(work_dir, repo_dir, snapshot_dir):
+    for name, argv in elephant_install_commands(work_dir, repo_dir, snapshot_dir, real=real):
         t0 = clock()
         step_timeout = elephant_step_timeout_seconds()
-        step_env = (
-            {**_elephant_env(), "CAUSAL_CONV1D_SKIP_CUDA_BUILD": "TRUE"}
-            if name == "resolve_causal_conv1d"
-            else _elephant_env()
-        )
+        step_env = _elephant_env()
+        if name == "resolve_causal_conv1d":
+            step_env["CAUSAL_CONV1D_SKIP_CUDA_BUILD"] = "TRUE"
+        else:
+            step_env.pop("CAUSAL_CONV1D_SKIP_CUDA_BUILD", None)
         try:
             res = runner(argv, capture_output=True, text=True, env=step_env, stdin=subprocess.DEVNULL, timeout=step_timeout)
         except subprocess.TimeoutExpired:
@@ -16462,7 +16504,7 @@ def ensure_elephant_venv(
         if name == "build_causal_conv1d":
             rec["causal_conv1d_build_seconds"] = step["seconds"]
         if rc != 0:
-            combined_out = f"{getattr(res, 'stderr', '') or ''}\n{getattr(res, 'stdout', '') or ''}"
+            combined_out = f"{getattr(res, 'stdout', '') or ''}\n{getattr(res, 'stderr', '') or ''}"
             if (
                 name == "build_causal_conv1d"
                 and stub_exercise
