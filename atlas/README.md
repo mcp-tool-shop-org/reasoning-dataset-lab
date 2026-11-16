@@ -1,16 +1,16 @@
 # reasoning-dataset-lab: how it works
 
-Mapped at 2026-11-16 from commit 13f6277 by Atlas 1.26.0.
+Mapped at 2026-11-16 from commit b89ce2f by Atlas 1.26.0.
 
 ## What this is
 
 reasoning-dataset-lab plans a dataset as a pre-registered map, builds items whose answer keys are constructed and proved by code, asks a local model only for the wording, and records the provenance of every item. (written by a person)
 
-9 parts, mostly Python (88 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
+9 parts, mostly Python (89 files), shell (3), CSS (2), TypeScript (2), Astro (1) and JavaScript (1). Work enters through 4 doors; the busiest is ci, which reaches 3 parts. It publishes to PyPI. It deploys a site to GitHub Pages. People run rdlab.
 
-## What changed since 2026-11-16 (2fd7add)
+## What changed since 2026-11-16 (13f6277)
 
-Nothing structural changed since 2026-11-16; 2 files changed content.
+Nothing structural changed since 2026-11-16; 1 file added and 10 changed content.
 
 ## What comes in
 
@@ -22,7 +22,7 @@ Nothing structural changed since 2026-11-16; 2 files changed content.
 ## What happens through ci
 
 1. The workflow runs tests/ in tests.
-2. That reaches scripts (6 files) and src (28 files).
+2. That reaches scripts (6 files) and src (29 files).
 3. It writes to src/reasoning_dataset_lab/pilot_b/canary_config.json.
 4. It uploads coverage to Codecov.
 
@@ -87,8 +87,8 @@ Read those in order to follow one run of rdlab end to end. This path follows rdl
 
 - 8 import sites name a declared dependency that shares its name with a local module (role_set); they are read as the dependency, which is not in this repository.
 - 16 imports could not be resolved: `scripts/colab/vm_judges.py` imports `device`, which is no module on its import path and no declared dependency, twice; `tests/test_bakeoff_judge_d3_transport.py` imports a path built at run time; `tests/test_counted_pin_and_no_capacity.py` imports `promote_goldens`, which is no module on its import path and no declared dependency; and 12 more.
-- 13 writes and 30 reads use paths built at run time and are not named here.
-- 84 writes and 198 reads go to a path their caller passes, not to this repository.
+- 13 writes and 31 reads use paths built at run time and are not named here.
+- 87 writes and 203 reads go to a path their caller passes, not to this repository.
 - 11 reads go to the directory the command is run in, not to this repository.
 - Statistics confidence is low: fewer than 25 source files reach 10 revisions in the window.
 

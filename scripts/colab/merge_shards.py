@@ -38,13 +38,17 @@ from reasoning_dataset_lab.pilot_b.bakeoff_judge import (
     normalize_anchor_verdict_code,
 )
 from reasoning_dataset_lab.pilot_b.bakeoff_judge import JUDGE_SPECS
+from reasoning_dataset_lab.pilot_b.run_records import (
+    OUTCOME_DRAFT_FILENAME,
+    REVERIFY_HINT_TEMPLATE,
+    UNVERIFIED_JUDGE_DONE_FILENAME,
+    collect_run_unverified_passes,
+)
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     PASS_MODE_CHOICES,
     THREE_WAY_PASS_MODES,
-    UNVERIFIED_JUDGE_DONE_FILENAME,
     judge_done_filename_for_pass,
     judge_supports_pass_mode,
-    read_unverified_passes,
     rows_filename_for_pass,
 )
 
@@ -1118,14 +1122,15 @@ def _check_shard_unverified_passes(
     manifest_pass_mode: str,
     allow_unverified: bool,
 ) -> list[dict[str, str]]:
-    """Refuse (`MERGE_UNVERIFIED_PASS`) if any pass in `sdir` is listed in `.unverified_judge_done` unless
-    `allow_unverified=True` (stub-only)."""
+    """Refuse (`MERGE_UNVERIFIED_PASS`) if any pass in `sdir` is unverified in `.unverified_judge_done` or
+    `outcome.draft.json` (including passes outside `expected_judge_ids`) unless `allow_unverified=True` (stub-only)."""
     try:
-        entries = read_unverified_passes(sdir, default_pass_mode=manifest_pass_mode)
-    except ValueError as exc:
+        entries = collect_run_unverified_passes(sdir, default_pass_mode=manifest_pass_mode)
+    except (OSError, ValueError) as exc:
         raise MergeRefusalError(
             "MERGE_UNVERIFIED_PASS",
-            f"shard {expected_spec} has malformed {UNVERIFIED_JUDGE_DONE_FILENAME}: {exc}",
+            f"shard {expected_spec} has malformed {UNVERIFIED_JUDGE_DONE_FILENAME} or {OUTCOME_DRAFT_FILENAME}: "
+            f"{exc}. {REVERIFY_HINT_TEMPLATE}",
         ) from exc
     if not entries:
         return []
@@ -1138,8 +1143,9 @@ def _check_shard_unverified_passes(
             raise MergeRefusalError(
                 "MERGE_UNVERIFIED_PASS",
                 f"shard {expected_spec} pass judge={u_jid} pass_mode={u_mode} "
-                f"(judge_done/{u_done}) is listed in {UNVERIFIED_JUDGE_DONE_FILENAME} "
-                "(verify timed out; pass is unverified)",
+                f"(judge_done/{u_done}) is unverified in {UNVERIFIED_JUDGE_DONE_FILENAME} or "
+                f"{OUTCOME_DRAFT_FILENAME} (every unverified pass in a shard blocks merge, including passes "
+                f"outside --only-judges / expected_judge_ids). {REVERIFY_HINT_TEMPLATE}",
             )
         matched.append(
             {
@@ -1546,17 +1552,23 @@ def merge_shards(
     active_shard_dirs = list(shard_dirs)
     quarantined_shards: list[dict[str, Any]] = []
 
-    # Pre-check unverified passes on shards that have no explicit replacement before anchor checks (so partial-fetch
-    # shards lacking anchor_rows/ still refuse fail-closed with MERGE_UNVERIFIED_PASS instead of anchor drift).
+    # Pre-check unverified passes on every original shard and every replacement shard BEFORE anchor loading or
+    # tombstone writes, so neither partial-fetch anchor drift nor a tombstone write occurs before MERGE_UNVERIFIED_PASS.
     for shard_idx, sdir in enumerate(active_shard_dirs, start=1):
         spec = f"{shard_idx}/{num_shards}"
-        if spec not in replacement_by_spec:
-            _check_shard_unverified_passes(
-                sdir,
-                expected_spec=spec,
-                manifest_pass_mode=manifest_pass_mode,
-                allow_unverified=bool(allow_unverified),
-            )
+        _check_shard_unverified_passes(
+            sdir,
+            expected_spec=spec,
+            manifest_pass_mode=manifest_pass_mode,
+            allow_unverified=bool(allow_unverified),
+        )
+    for repl_spec, repl_dir in sorted(replacement_by_spec.items()):
+        _check_shard_unverified_passes(
+            repl_dir,
+            expected_spec=f"replacement {repl_spec}",
+            manifest_pass_mode=manifest_pass_mode,
+            allow_unverified=bool(allow_unverified),
+        )
 
     if anchor_item_ids and (golden_anchor_rows is not None or replacement_by_spec):
         prelim_anchors: dict[str, dict[tuple[str, str, str], dict[str, Any]]] = {}

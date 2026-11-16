@@ -1403,6 +1403,26 @@ def test_stub_exercise_elephant_install_refused_outside_eligible_stub_plan(
             "\x1b[1m\x1b[31merror\x1b[0m: NameError: name 'bare_metal_version' is not defined\n\x1b[?25h",
             True,
         ),
+        # C7: real uv 0.13.5 output (last 15 lines of build_causal_conv1d stderr_tail from d5c-sixarm-elephant-stub-01).
+        (
+            "real uv 0.13.5 output",
+            "             ...<3 lines>...\n"
+            "                 self._arbitrary_args(config_settings),\n"
+            "                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n"
+            "             )\n"
+            "             ^\n"
+            '           File "/content/rdlab_work/venv-elephant/lib/python3.15/site-packages/setuptools/build_meta.py", line 410, in _build_with_temp_dir\n'
+            "             self.run_setup()\n"
+            "             ~~~~~~~~~~~~~~^^\n"
+            '           File "/content/rdlab_work/venv-elephant/lib/python3.15/site-packages/setuptools/build_meta.py", line 317, in run_setup\n'
+            "             exec(code, locals())  # noqa: S102 # exec is intentional here\n"
+            "             ~~~~^^^^^^^^^^^^^^^^\n"
+            '           File "<string>", line 185, in <module>\n'
+            "         NameError: name 'bare_metal_version' is not defined\n"
+            "\n"
+            "hint: Build failures usually indicate a problem with the package or the build environment\n",
+            True,
+        ),
     ],
 )
 def test_b1_prime_cpu_cuda_build_failure_classifier_table(case_name: str, output: str, want: bool) -> None:

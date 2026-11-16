@@ -2211,7 +2211,7 @@ write_outcome_draft() {
   RDLAB_RATE_REREAD_STATE_FILE="$RATE_REREAD_STATE" \
   RDLAB_RATE_REREADS_FILE="$RATE_REREADS_FILE" \
   RDLAB_RATE_REREAD_INTERVAL="$RATE_REREAD_SECONDS" \
-  "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "${OPENED_CARD_TYPE:-$CARD}" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" "$CARD" "$SHAPE" "$EXPECTED_SESSION_SHAPE" "$OPENED_SHAPE_OBS" "$stop_path_rec" "$CAP_MARGIN_UNITS" "$CLEANUP_STOP_ATTEMPTED_BY_SECONDS" "$CLEANUP_BOUND_SECONDS" <<'PY'
+  "$PYTHON_BIN" - "$OUTCOME_FILE" "$RUN_ID" "${OPENED_CARD_TYPE:-$CARD}" "$CAP_UNITS" "$RATE_UNITS_PER_HOUR" "$WALL_SECONDS" "$EXPLICIT_CAP" "$runtime_s" "$RUN_OUTCOME" "$RUN_WHY" "$CARD" "$SHAPE" "$EXPECTED_SESSION_SHAPE" "$OPENED_SHAPE_OBS" "$stop_path_rec" "$CAP_MARGIN_UNITS" "$CLEANUP_STOP_ATTEMPTED_BY_SECONDS" "$CLEANUP_BOUND_SECONDS" "${REPO_ROOT:-}" <<'PY'
 import datetime
 import json
 import os
@@ -2458,76 +2458,49 @@ only_judges_list: list[str] | None = (
 payload["only_judges"] = only_judges_list
 payload["pass_mode"] = os.environ.get("RDLAB_OUTCOME_PASS_MODE", "").strip() or "binary"; payload.update({"judge_pass_modes": [p for p in os.environ.get("RDLAB_JUDGE_PASS_MODES", "").split(",") if p]} if payload["pass_mode"] == "per_judge" else {})  # noqa: E501
 jdone_dir = out_path.parent / "judge_done"
-unverified_file = out_path.parent / ".unverified_judge_done"
+repo_root_arg = sys.argv[19].strip() if len(sys.argv) > 19 else ""
+repo_src = (Path(repo_root_arg) if repo_root_arg else Path.cwd()) / "src"
+if str(repo_src) not in sys.path:
+    sys.path.insert(0, str(repo_src))
+from reasoning_dataset_lab.pilot_b.run_records import read_unverified_passes  # noqa: E402
+
+default_pmode = str(payload["pass_mode"]) if payload["pass_mode"] != "per_judge" else "binary"
+unverified_malformed = False
 unverified_names: set[str] = set()
 unverified_passes: list[str] = []
-if unverified_file.is_file():
-    for raw_u in unverified_file.read_text(encoding="utf-8", errors="replace").splitlines():
-        line_u = raw_u.strip()
-        if not line_u:
-            continue
-        if "\t" in line_u:
-            parts_u = [p.strip() for p in line_u.split("\t")]
-            if len(parts_u) == 3 and parts_u[0] and parts_u[1] and parts_u[2]:
-                u_jid, u_mode, u_done = parts_u
-                unverified_names.add(u_done)
-                u_label = f"{u_jid}:{u_mode}"
-                if u_label not in unverified_passes:
-                    unverified_passes.append(u_label)
-        elif ":" in line_u:
-            u_jid, u_mode = [p.strip() for p in line_u.split(":", 1)]
-            if u_jid and u_mode:
-                unverified_names.add(
-                    f"{u_jid}.json" if u_mode in ("binary", "three_way", "three_way_contradicted") else f"{u_jid}.{u_mode}.json"
-                )
-                u_label = f"{u_jid}:{u_mode}"
-                if u_label not in unverified_passes:
-                    unverified_passes.append(u_label)
-        else:
-            unverified_names.add(line_u)
-            u_done_p = jdone_dir / line_u
-            u_mode = ""
-            if u_done_p.is_file():
-                try:
-                    u_doc = json.loads(u_done_p.read_text(encoding="utf-8"))
-                    if isinstance(u_doc, dict) and str(u_doc.get("pass_mode") or "").strip():
-                        u_mode = str(u_doc["pass_mode"]).strip()
-                except Exception:
-                    pass
-            u_jid = line_u[:-5] if line_u.endswith(".json") else line_u
-            if not u_mode:
-                for known_m in ("three_way_two_question", "three_way_symmetric", "three_way_nli"):
-                    if line_u.endswith(f".{known_m}.json"):
-                        u_mode = known_m
-                        u_jid = line_u[: -len(f".{known_m}.json")]
-                        break
-            if not u_mode:
-                u_mode = payload["pass_mode"] if payload["pass_mode"] != "per_judge" else "unknown"
-            u_label = f"{u_jid}:{u_mode}"
-            if u_label not in unverified_passes:
-                unverified_passes.append(u_label)
-done_ids: set[str] = set()
-if jdone_dir.is_dir():
-    for jf in sorted(jdone_dir.glob("*.json")):
-        if jf.is_file() and jf.name not in unverified_names:
-            done_ids.add(jf.stem)
-ordered_candidates: list[str] = []
-receipt_file = out_path.parent / "vm_receipt.json"
-if receipt_file.is_file():
-    try:
-        rdoc = json.loads(receipt_file.read_text(encoding="utf-8"))
-        if isinstance(rdoc.get("judge_order"), list):
-            ordered_candidates = [str(x) for x in rdoc["judge_order"]]
-    except Exception:
-        pass
-if not ordered_candidates and only_judges_list:
-    ordered_candidates = list(only_judges_list)
-completed_judges: list[str] = [jid for jid in ordered_candidates if jid in done_ids]
-for jid in sorted(done_ids):
-    if jid not in completed_judges:
-        completed_judges.append(jid)
-payload["judges_completed"] = completed_judges
-payload["unverified_passes"] = unverified_passes
+try:
+    for entry_u in read_unverified_passes(out_path.parent, default_pass_mode=default_pmode):
+        unverified_names.add(entry_u["done_file"])
+        unverified_passes.append(f"{entry_u['judge_id']}:{entry_u['pass_mode']}")
+except (OSError, ValueError):
+    unverified_malformed = True
+if unverified_malformed:
+    payload["judges_completed"] = []
+    payload["unverified_passes"] = []
+    payload["unverified_passes_malformed"] = True
+else:
+    done_ids: set[str] = set()
+    if jdone_dir.is_dir():
+        for jf in sorted(jdone_dir.glob("*.json")):
+            if jf.is_file() and jf.name not in unverified_names:
+                done_ids.add(jf.stem)
+    ordered_candidates: list[str] = []
+    receipt_file = out_path.parent / "vm_receipt.json"
+    if receipt_file.is_file():
+        try:
+            rdoc = json.loads(receipt_file.read_text(encoding="utf-8"))
+            if isinstance(rdoc.get("judge_order"), list):
+                ordered_candidates = [str(x) for x in rdoc["judge_order"]]
+        except Exception:
+            pass
+    if not ordered_candidates and only_judges_list:
+        ordered_candidates = list(only_judges_list)
+    completed_judges: list[str] = [jid for jid in ordered_candidates if jid in done_ids]
+    for jid in sorted(done_ids):
+        if jid not in completed_judges:
+            completed_judges.append(jid)
+    payload["judges_completed"] = completed_judges
+    payload["unverified_passes"] = unverified_passes
 # The launcher's own part binding (what it checked row by row, against which hashes), labelled checked_by "launcher";
 # the VM's re-check is in vm_receipt.json's part_identity (checked_by "vm").
 binding_file = out_path.parent / "launcher_part_binding.json"

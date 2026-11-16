@@ -135,7 +135,7 @@
       "confidence": "full",
       "highWater": null,
       "name": "src",
-      "qualifyingSourceCommits": 66,
+      "qualifyingSourceCommits": 67,
       "rebaseline": null
     },
     {
@@ -149,12 +149,12 @@
         "importsAndCoChanges": [],
         "importsOnly": []
       },
-      "cohesion": 0.156456,
+      "cohesion": 0.150742,
       "cohesionDropped": false,
       "confidence": "full",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 94,
+      "qualifyingSourceCommits": 95,
       "rebaseline": null
     }
   ],
@@ -257,8 +257,8 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 41,
-        "lines": 789,
+        "commits": 42,
+        "lines": 801,
         "path": "atlas/README.md"
       },
       {
@@ -267,18 +267,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 41,
-        "lines": 2664,
+        "commits": 42,
+        "lines": 2696,
         "path": "atlas/page.json"
       },
       {
-        "commits": 41,
-        "lines": 7001,
+        "commits": 42,
+        "lines": 7143,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 41,
-        "lines": 61960,
+        "commits": 42,
+        "lines": 61979,
         "path": "atlas/structure.json"
       },
       {
@@ -777,8 +777,8 @@
         "path": "src/reasoning_dataset_lab/pilot_b/shortcut_probe.py"
       },
       {
-        "commits": 6,
-        "lines": 436,
+        "commits": 7,
+        "lines": 440,
         "path": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
       },
       {
@@ -1007,8 +1007,8 @@
         "path": "tests/test_colab_d5c_elephant.py"
       },
       {
-        "commits": 13,
-        "lines": 2931,
+        "commits": 14,
+        "lines": 3216,
         "path": "tests/test_colab_d5c_six_arm.py"
       },
       {
@@ -1162,51 +1162,51 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-11-16T05:26:33.401Z",
+  "generatedAt": "2026-11-16T06:32:03.774Z",
   "generatedFrom": {
-    "commit": "13f6277fba21352b12d1005e46bbfefc713ccd59"
+    "commit": "b89ce2f54d3df4055c1b4518c391dd45983de3f1"
   },
   "pairs": [
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 39,
-      "shared": 39,
+      "either": 40,
+      "shared": 40,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 39,
-      "shared": 39,
+      "either": 40,
+      "shared": 40,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 39,
-      "shared": 39,
+      "either": 40,
+      "shared": 40,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 39,
-      "shared": 39,
+      "either": 40,
+      "shared": 40,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 39,
-      "shared": 39,
+      "either": 40,
+      "shared": 40,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 39,
-      "shared": 39,
+      "either": 40,
+      "shared": 40,
       "strength": 1
     },
     {
@@ -1359,13 +1359,13 @@
     {
       "a": "tests/test_colab_d5c_elephant.py",
       "b": "tests/test_colab_d5c_six_arm.py",
-      "either": 11,
+      "either": 12,
       "shared": 6,
-      "strength": 0.545455
+      "strength": 0.5
     }
   ],
   "parameters": {
-    "appliedChangesetLimit": 49.75,
+    "appliedChangesetLimit": 50,
     "changeset": 50,
     "changesetFraction": 0.25,
     "cohesionDrop": 0.2,
@@ -1374,16 +1374,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-11-15T23:48:55-05:00",
-    "inScopeFiles": 199,
+    "headDate": "2026-11-16T00:26:58-05:00",
+    "inScopeFiles": 200,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 103,
+    "qualifyingCommits": 104,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-20T04:48:55.000Z",
+    "since": "2026-05-20T05:26:58.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
