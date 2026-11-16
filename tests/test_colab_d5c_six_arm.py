@@ -1615,3 +1615,176 @@ def test_merge_shards_merges_each_new_mode_by_its_own_judge_done(
             shard_dirs=shard_dirs, manifest_path=manifest_path, output_dir=tmp_path / "merged2", items_path=items_path,
             allow_unpinned_stub=True,
         )
+
+
+def test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_guards(tmp_path: Path) -> None:
+    """PR #95 review B2, C1, C4: exercise `launch_judges.sh`'s actual `fetch_completed_judge_checkpoints` function on
+    (B2) staged-verify Python crash before `_refuse` still unlinks stale destination pair via the bash fallback `rm -f`,
+    (C1) empty `done_file`/`row_file` lines skipped with zero `rm`/`colab` calls, and
+    (C4) expired fetch deadline stops before deleting any superseded in-place pair, whereas an active re-fetch removes it."""
+    import subprocess
+
+    from tests.test_colab_judge_launcher import LAUNCH_JUDGES_SH
+
+    sh_text = LAUNCH_JUDGES_SH.read_text(encoding="utf-8")
+
+    def _extract_bash_fn(fn_name: str) -> str:
+        start = sh_text.index(f"{fn_name}() {{")
+        depth = 0
+        end = start
+        for idx in range(start, len(sh_text)):
+            ch = sh_text[idx]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = idx + 1
+                    break
+        return sh_text[start:end]
+
+    helpers_src = _extract_bash_fn("remaining_fetch_timeout") + "\n\n" + _extract_bash_fn("fetch_completed_judge_checkpoints")
+
+    def _run_fetch_harness(
+        sub: Path,
+        *,
+        py_mode: str,
+        deadline_epoch: int,
+        seed_stale: bool = True,
+        cleanup_skip_fetch: int = 0,
+        helpers_override: str | None = None,
+    ) -> tuple[subprocess.CompletedProcess[str], list[str], Path]:
+        sub.mkdir(parents=True, exist_ok=True)
+        out_dir = sub / "out"
+        (out_dir / "judge_done").mkdir(parents=True, exist_ok=True)
+        (out_dir / "rows").mkdir(parents=True, exist_ok=True)
+        bin_dir = sub / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        jid = "d3-mini"
+        done_name = f"{jid}.json"
+        rows_name = f"{jid}.jsonl"
+        if seed_stale:
+            (out_dir / "judge_done" / done_name).write_text('{"judge_id":"d3-mini","sha256":"0000"}\n', encoding="utf-8")
+            (out_dir / "rows" / rows_name).write_text('{"stale":1}\n', encoding="utf-8")
+
+        colab_log = sub / "colab_downloads.log"
+        cli_log = out_dir / "colab-cli.log"
+        cli_log.write_text("", encoding="utf-8")
+        (out_dir / "progress.jsonl").write_text("", encoding="utf-8")
+
+        fake_colab_bin = bin_dir / "colab"
+        fake_colab_bin.write_text(
+            "#!/usr/bin/env bash\n"
+            'if [[ "$1" == "download" ]]; then\n'
+            '  shift; while [[ "${1:-}" == -* ]]; do [[ "$1" == "-s" ]] && shift 2 || shift; done\n'
+            '  src="$1"; dst="$2"\n'
+            f'  printf "%s -> %s\\n" "$src" "$dst" >> "{_to_wsl_path(colab_log)}"\n'
+            '  mkdir -p "$(dirname "$dst")"\n'
+            '  printf "corrupt-part\\n" > "$dst"\n'
+            "  exit 0\n"
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        fake_colab_bin.chmod(0o755)
+
+        fake_py = sub / "fake_py.sh"
+        fake_py.write_text(
+            "#!/usr/bin/env bash\n"
+            f'REAL_PY="{sys.executable}"\n'
+            'code="$2"\n'
+            'if [[ "$code" == *"print_launcher_completed_passes"* ]]; then\n'
+            f'  if [[ "{py_mode}" == "empty_fields" ]]; then\n'
+            '    printf "d3-mini\\tbinary\\td3-mini.json\\n"\n'
+            '    printf "d3-mini\\tbinary\\n"\n'
+            "  else\n"
+            '    printf "d3-mini\\tbinary\\td3-mini.json\\td3-mini.jsonl\\tffffffff\\n"\n'
+            "  fi\n"
+            "  exit 0\n"
+            "fi\n"
+            'if [[ "$code" == *"staged=False"* ]]; then\n'
+            "  exit 1\n"
+            "fi\n"
+            'if [[ "$code" == *"staged=True"* ]]; then\n'
+            f'  if [[ "{py_mode}" == "crash_staged" ]]; then\n'
+            '    cp "$4/judge_done/.d3-mini.json.part" "$4/judge_done/d3-mini.json"\n'
+            '    cp "$4/rows/.d3-mini.jsonl.part" "$4/rows/d3-mini.jsonl"\n'
+            "    exit 42\n"
+            "  fi\n"
+            '  "$REAL_PY" "$@"\n'
+            "  exit $?\n"
+            "fi\n"
+            '"$REAL_PY" "$@"\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        fake_py.chmod(0o755)
+
+        driver = sub / "run_fetch.sh"
+        driver.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -uo pipefail\n"
+            f'export PATH="{_to_wsl_path(bin_dir)}:$PATH"\n'
+            f'OUT_DIR="{_to_wsl_path(out_dir)}"\n'
+            f'REPO_ROOT="{_to_wsl_path(LAUNCH_JUDGES_SH.parents[2])}"\n'
+            f'PYTHON_BIN="{_to_wsl_path(fake_py)}"\n'
+            'S="fake-session"\n'
+            'PASS_MODE="binary"\n'
+            f"CLEANUP_SKIP_FETCH={cleanup_skip_fetch}\n"
+            "DOWNLOAD_TIMEOUT_SECONDS=30\n"
+            "COLAB_KILL_GRACE_SECONDS=5\n"
+            'log_msg() { printf "%s\\n" "$*" >> "$OUT_DIR/colab-cli.log"; }\n'
+            + (helpers_override if helpers_override is not None else helpers_src)
+            + f"\nfetch_completed_judge_checkpoints 30 {deadline_epoch}\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        driver.chmod(0o755)
+        proc = subprocess.run(["bash", _to_wsl_path(driver)], capture_output=True, text=True, timeout=30, check=False)
+        dl_calls = colab_log.read_text(encoding="utf-8").splitlines() if colab_log.is_file() else []
+        return proc, dl_calls, out_dir
+
+    # B2: staged=True moves .part into destination before crashing -> only the fallback rm in bash cleans up.
+    proc_b2, dl_b2, out_b2 = _run_fetch_harness(tmp_path / "b2", py_mode="crash_staged", deadline_epoch=0, seed_stale=True)
+    assert proc_b2.returncode == 0, proc_b2.stderr
+    assert len(dl_b2) == 2
+    assert list((out_b2 / "judge_done").iterdir()) == []
+    assert list((out_b2 / "rows").iterdir()) == []
+    assert "FETCHED_JUDGE_DONE_INVALID" in proc_b2.stderr
+    assert "FETCHED_JUDGE_DONE_INVALID" in (out_b2 / "colab-cli.log").read_text(encoding="utf-8")
+
+    # Prove B2 pins the crash-path fallback rm: replacing the second rm_line with ':' leaves moved destination files behind.
+    rm_line = 'rm -f "$OUT_DIR/judge_done/${done_file}" "$OUT_DIR/rows/${row_file}"'
+    assert helpers_src.count(rm_line) == 2
+    head_part, sep, tail_part = helpers_src.rpartition(rm_line)
+    assert sep == rm_line
+    mutated_helpers = f"{head_part}:{tail_part}"
+    proc_b2_mut, _, out_b2_mut = _run_fetch_harness(
+        tmp_path / "b2_mut", py_mode="crash_staged", deadline_epoch=0, seed_stale=True, helpers_override=mutated_helpers
+    )
+    assert proc_b2_mut.returncode == 0
+    assert (out_b2_mut / "judge_done" / "d3-mini.json").is_file()
+    assert (out_b2_mut / "rows" / "d3-mini.jsonl").is_file()
+
+    # C1: empty done_file / row_file entries are skipped safely without rm or colab calls.
+    proc_c1, dl_c1, out_c1 = _run_fetch_harness(tmp_path / "c1", py_mode="empty_fields", deadline_epoch=0, seed_stale=True)
+    assert proc_c1.returncode == 0, proc_c1.stderr
+    assert dl_c1 == []
+    assert (out_c1 / "judge_done" / "d3-mini.json").is_file()
+    assert (out_c1 / "rows" / "d3-mini.jsonl").is_file()
+
+    # A1 (C4 fail-closed delete): both deadline break and CLEANUP_SKIP_FETCH=1 delete failed in-place pairs before breaking.
+    proc_c4, dl_c4, out_c4 = _run_fetch_harness(tmp_path / "c4_expired", py_mode="normal", deadline_epoch=1, seed_stale=True)
+    assert proc_c4.returncode == 0, proc_c4.stderr
+    assert dl_c4 == []
+    assert not (out_c4 / "judge_done" / "d3-mini.json").exists()
+    assert not (out_c4 / "rows" / "d3-mini.jsonl").exists()
+
+    proc_skip, dl_skip, out_skip = _run_fetch_harness(
+        tmp_path / "c4_skip", py_mode="normal", deadline_epoch=0, seed_stale=True, cleanup_skip_fetch=1
+    )
+    assert proc_skip.returncode == 0, proc_skip.stderr
+    assert dl_skip == []
+    assert not (out_skip / "judge_done" / "d3-mini.json").exists()
+    assert not (out_skip / "rows" / "d3-mini.jsonl").exists()

@@ -225,7 +225,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "efd8ec97ee20ca0adf9b712a4aee876e91767f2640db0f7148725f296704e617",
+          "hash": "f4b10b1aff839e0561b9bb15d1442a8d0c6caeb0d46801fad5ff97f9b3dd5a61",
           "path": "CHANGELOG.md"
         },
         {
@@ -304,11 +304,11 @@
       "externals": 0,
       "files": [
         {
-          "hash": "33ff1d4626634471c0bb1d4276915275d8ce3745ac7582bd16b6319031ee1d45",
+          "hash": "2ddadee48ce535472c4ce9f62d89c04279f3b29dbf778da7087c246fcb19f986",
           "path": "scripts/colab/README.md"
         },
         {
-          "hash": "66c003ff9eb80c6c9e0e8c76613be34c860b111c8683685206e0d6d06ef79332",
+          "hash": "4ba12bdc6b63d66c81ab1fe209ed174af8824fbcf549a8208b67bea58a618eb2",
           "path": "scripts/colab/REAL_SERVICE_ASSUMPTIONS.md"
         },
         {
@@ -421,7 +421,7 @@
           "path": "scripts/colab/generate_weights_table.py"
         },
         {
-          "hash": "98164a6a743cdd3297c15dfe26bed6fce63f20fbb101026db91a628908b68244",
+          "hash": "3e04b94fa1088eb98a4cd6e14215045114145213fdc70d016899a7a9cd7aea3c",
           "path": "scripts/colab/launch_judges.sh"
         },
         {
@@ -530,534 +530,534 @@
             {
               "in": "guard_no_test_hooks_in_counted_mode",
               "kind": "raise",
-              "line": 177
+              "line": 178
             },
             {
               "in": "_validate_safe_identifier",
               "kind": "raise",
-              "line": 198
+              "line": 199
             },
             {
               "in": "_validate_expected_judge_ids",
               "kind": "raise",
-              "line": 215
+              "line": 216
             },
             {
               "in": "_validate_expected_judge_ids",
               "kind": "raise",
-              "line": 222
+              "line": 223
             },
             {
               "in": "_validate_expected_judge_ids",
               "kind": "raise",
-              "line": 230
+              "line": 231
             },
             {
               "in": "_validate_pass_mode",
               "kind": "raise",
-              "line": 242
+              "line": 243
             },
             {
               "in": "_default_judge_ids_for_pass_mode",
               "kind": "raise",
-              "line": 256
+              "line": 257
             },
             {
               "in": "_verified_manifest_body_sha256",
               "kind": "raise",
-              "line": 302
+              "line": 303
             },
             {
               "in": "_load_json_dict",
               "kind": "raise",
-              "line": 316
+              "line": 317
             },
             {
               "in": "_load_json_dict",
               "kind": "except",
-              "line": 319
-            },
-            {
-              "in": "_load_json_dict",
-              "kind": "raise",
               "line": 320
             },
             {
               "in": "_load_json_dict",
               "kind": "raise",
-              "line": 324
+              "line": 321
+            },
+            {
+              "in": "_load_json_dict",
+              "kind": "raise",
+              "line": 325
             },
             {
               "in": "_load_jsonl_rows",
               "kind": "raise",
-              "line": 332
+              "line": 333
             },
             {
               "in": "_load_jsonl_rows",
               "kind": "except",
-              "line": 342
-            },
-            {
-              "in": "_load_jsonl_rows",
-              "kind": "raise",
               "line": 343
             },
             {
               "in": "_load_jsonl_rows",
               "kind": "raise",
-              "line": 348
+              "line": 344
+            },
+            {
+              "in": "_load_jsonl_rows",
+              "kind": "raise",
+              "line": 349
             },
             {
               "in": "clopper_pearson_upper_bound",
               "kind": "raise",
-              "line": 361
+              "line": 362
             },
             {
               "in": "clopper_pearson_upper_bound",
               "kind": "raise",
-              "line": 363
+              "line": 364
             },
             {
               "in": "load_and_verify_merge_config",
               "kind": "raise",
-              "line": 454
+              "line": 455
             },
             {
               "in": "load_and_verify_merge_config",
               "kind": "raise",
-              "line": 472
+              "line": 473
             },
             {
               "in": "load_and_verify_merge_config",
               "kind": "raise",
-              "line": 480
+              "line": 481
             },
             {
               "in": "_compare_anchor_sets",
               "kind": "raise",
-              "line": 571
+              "line": 572
             },
             {
               "in": "_compare_anchor_sets",
               "kind": "raise",
-              "line": 576
+              "line": 577
             },
             {
               "in": "_load_golden_anchor_rows",
               "kind": "raise",
-              "line": 765
+              "line": 766
             },
             {
               "in": "_load_golden_anchor_rows",
               "kind": "raise",
-              "line": 773
+              "line": 774
             },
             {
               "in": "_extract_comparable_env_profile",
               "kind": "raise",
-              "line": 831
+              "line": 832
             },
             {
               "in": "_extract_comparable_env_profile",
               "kind": "raise",
-              "line": 890
+              "line": 891
             },
             {
               "in": "_extract_comparable_env_profile",
               "kind": "raise",
-              "line": 929
+              "line": 930
             },
             {
               "in": "_check_ecc_zero",
               "kind": "raise",
-              "line": 943
+              "line": 944
             },
             {
               "in": "_check_ecc_zero",
               "kind": "raise",
-              "line": 950
+              "line": 951
             },
             {
               "in": "_check_ecc_zero",
               "kind": "raise",
-              "line": 965
+              "line": 966
             },
             {
               "in": "_check_ecc_zero",
               "kind": "raise",
-              "line": 992
+              "line": 993
             },
             {
               "in": "_shard_has_verified_recovery",
               "kind": "except",
-              "line": 1006
+              "line": 1007
             },
             {
               "in": "_shard_has_verified_recovery",
               "kind": "except",
-              "line": 1015
+              "line": 1016
             },
             {
               "in": "_load_shard_anchor_rows",
               "kind": "raise",
-              "line": 1059
+              "line": 1060
             },
             {
               "in": "_is_within_dir",
               "kind": "except",
-              "line": 1081
+              "line": 1082
             },
             {
               "in": "_refuse_manifest_inside_shard_dir",
               "kind": "raise",
-              "line": 1100
+              "line": 1101
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1136
+              "line": 1137
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1141
+              "line": 1142
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1159
+              "line": 1160
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1171
+              "line": 1172
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1182
+              "line": 1183
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1194
+              "line": 1195
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1212
+              "line": 1213
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1223
+              "line": 1224
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1237
+              "line": 1238
             },
             {
               "in": "_bind_real_input_sha",
               "kind": "raise",
-              "line": 1253
+              "line": 1254
             },
             {
               "in": "_bind_real_input_sha",
               "kind": "raise",
-              "line": 1260
+              "line": 1261
             },
             {
               "in": "_check_real_anchor_row",
               "kind": "raise",
-              "line": 1273
+              "line": 1274
             },
             {
               "in": "_check_real_anchor_row",
               "kind": "raise",
-              "line": 1279
+              "line": 1280
             },
             {
               "in": "_check_real_anchor_row",
               "kind": "raise",
-              "line": 1284
+              "line": 1285
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1291
+              "line": 1292
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1305
+              "line": 1306
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1348
+              "line": 1349
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1353
+              "line": 1354
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1360
+              "line": 1361
             },
             {
               "in": "merge_shards",
               "kind": "except",
-              "line": 1385
+              "line": 1386
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1392
+              "line": 1393
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1399
+              "line": 1400
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1429
+              "line": 1430
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1435
+              "line": 1436
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1441
+              "line": 1442
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1447
+              "line": 1448
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1468
+              "line": 1469
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1477
+              "line": 1478
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1486
+              "line": 1487
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1532
+              "line": 1533
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1551
+              "line": 1552
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1556
+              "line": 1557
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1564
+              "line": 1565
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1569
+              "line": 1570
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1623
+              "line": 1624
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1630
+              "line": 1631
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1643
+              "line": 1644
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1663
+              "line": 1664
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1669
+              "line": 1670
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1684
+              "line": 1685
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1692
+              "line": 1693
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1701
+              "line": 1702
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1732
+              "line": 1733
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1752
+              "line": 1753
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1758
+              "line": 1759
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1773
+              "line": 1774
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1781
+              "line": 1782
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1791
+              "line": 1792
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1797
+              "line": 1798
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1806
+              "line": 1807
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1814
+              "line": 1815
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1827
+              "line": 1828
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1842
+              "line": 1843
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1853
+              "line": 1854
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1865
+              "line": 1866
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1906
+              "line": 1907
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1919
+              "line": 1920
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1934
+              "line": 1935
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1941
+              "line": 1942
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1947
+              "line": 1948
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1960
+              "line": 1961
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1978
+              "line": 1979
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 1984
+              "line": 1985
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 2037
+              "line": 2038
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 2040
+              "line": 2041
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 2059
+              "line": 2060
             },
             {
               "in": "merge_shards",
               "kind": "raise",
-              "line": 2139
+              "line": 2140
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 2389
+              "line": 2390
             },
             {
               "kind": "raise",
-              "line": 2396
+              "line": 2397
             }
           ],
-          "hash": "1fe9c1d32903fc1702367ecd7e72e48647c5a2f9c830bde06382c7efa6dfe7a6",
+          "hash": "d493dc8a6a01a9f3582242fe18b9b21e2e717a7469a267bd952d7b0ca8cffffd",
           "importsFiles": [
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py",
             "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -1537,6 +1537,7 @@
             "validate_loop_order",
             "validate_only_judges",
             "validate_pass_mode",
+            "validate_stub_exercise_elephant_install",
             "validate_tar_file",
             "validate_until_option",
             "verify_all_judge_snapshots",
@@ -2655,77 +2656,67 @@
             {
               "in": "_run_judges_pipeline_body",
               "kind": "raise",
-              "line": 7379
+              "line": 7387
             },
             {
               "in": "_run_judges_pipeline_body",
               "kind": "raise",
-              "line": 7466
+              "line": 7474
             },
             {
               "in": "_run_judges_pipeline_body",
               "kind": "except",
-              "line": 7606
+              "line": 7614
             },
             {
               "in": "_run_judges_pipeline_body",
               "kind": "except",
-              "line": 7641
+              "line": 7649
             },
             {
               "in": "_run_judges_pipeline_body",
               "kind": "except",
-              "line": 7707
+              "line": 7715
             },
             {
               "in": "_run_judges_pipeline_body",
               "kind": "raise",
-              "line": 7753
+              "line": 7761
             },
             {
               "in": "_fail_child_postcheck",
               "kind": "raise",
-              "line": 7808
+              "line": 7816
             },
             {
               "in": "_run_judges_pipeline_body",
               "kind": "raise",
-              "line": 7873
+              "line": 7881
             },
             {
               "in": "_run_judges_pipeline_body",
               "kind": "raise",
-              "line": 7920
+              "line": 7928
             },
             {
               "in": "_run_judges_pipeline_body",
               "kind": "except",
-              "line": 7922
-            },
-            {
-              "in": "_run_judges_pipeline_body",
-              "kind": "raise",
               "line": 7930
             },
             {
               "in": "_run_judges_pipeline_body",
-              "kind": "except",
-              "line": 7933
-            },
-            {
-              "in": "_run_judges_pipeline_body",
               "kind": "raise",
-              "line": 8083
-            },
-            {
-              "in": "_run_judges_pipeline_body",
-              "kind": "raise",
-              "line": 8115
+              "line": 7938
             },
             {
               "in": "_run_judges_pipeline_body",
               "kind": "except",
-              "line": 8122
+              "line": 7941
+            },
+            {
+              "in": "_run_judges_pipeline_body",
+              "kind": "raise",
+              "line": 8091
             },
             {
               "in": "_run_judges_pipeline_body",
@@ -2734,1186 +2725,1221 @@
             },
             {
               "in": "_run_judges_pipeline_body",
-              "kind": "raise",
-              "line": 8151
-            },
-            {
-              "in": "_run_judges_pipeline_body",
               "kind": "except",
-              "line": 8189
+              "line": 8130
             },
             {
               "in": "_run_judges_pipeline_body",
               "kind": "raise",
-              "line": 8190
+              "line": 8131
+            },
+            {
+              "in": "_run_judges_pipeline_body",
+              "kind": "raise",
+              "line": 8159
+            },
+            {
+              "in": "_run_judges_pipeline_body",
+              "kind": "except",
+              "line": 8197
+            },
+            {
+              "in": "_run_judges_pipeline_body",
+              "kind": "raise",
+              "line": 8198
             },
             {
               "in": "unpack_uploaded_archives",
               "kind": "raise",
-              "line": 8304
-            },
-            {
-              "in": "unpack_uploaded_archives",
-              "kind": "except",
               "line": 8312
+            },
+            {
+              "in": "unpack_uploaded_archives",
+              "kind": "except",
+              "line": 8320
             },
             {
               "in": "check_vm_disk_preflight",
               "kind": "raise",
-              "line": 8684
+              "line": 8692
             },
             {
               "in": "verify_run_status_file",
               "kind": "except",
-              "line": 8719
+              "line": 8727
             },
             {
               "in": "_dir_size_bytes",
               "kind": "except",
-              "line": 8748
+              "line": 8756
             },
             {
               "in": "_verify_python_interpreter_build",
               "kind": "raise",
-              "line": 8779
+              "line": 8787
             },
             {
               "in": "_verify_python_interpreter_build",
               "kind": "except",
-              "line": 8800
+              "line": 8808
             },
             {
               "in": "_verify_python_interpreter_build",
               "kind": "raise",
-              "line": 8806
+              "line": 8814
             },
             {
               "in": "_verify_python_interpreter_build",
               "kind": "raise",
-              "line": 8822
+              "line": 8830
             },
             {
               "in": "validate_force_pinned_uv",
               "kind": "raise",
-              "line": 8845
+              "line": 8853
+            },
+            {
+              "in": "validate_stub_exercise_elephant_install",
+              "kind": "raise",
+              "line": 8882
+            },
+            {
+              "in": "validate_stub_exercise_elephant_install",
+              "kind": "raise",
+              "line": 8894
             },
             {
               "in": "_pos_float",
               "kind": "except",
-              "line": 8985
+              "line": 9035
             },
             {
               "in": "guard_no_test_hooks_in_counted_mode",
               "kind": "raise",
-              "line": 9031
+              "line": 9081
             },
             {
               "in": "guard_no_test_hooks_in_counted_mode",
               "kind": "raise",
-              "line": 9037
+              "line": 9087
             },
             {
               "in": "_parse_nonneg_int_hook",
               "kind": "raise",
-              "line": 9055
+              "line": 9105
             },
             {
               "in": "_parse_nonneg_int_hook",
               "kind": "raise",
-              "line": 9061
+              "line": 9111
             },
             {
               "in": "open_pinned_uv_wheel_stream",
               "kind": "except",
-              "line": 9129
+              "line": 9179
             },
             {
               "in": "open_pinned_uv_wheel_stream",
               "kind": "raise",
-              "line": 9136
+              "line": 9186
             },
             {
               "in": "open_pinned_uv_wheel_stream",
               "kind": "raise",
-              "line": 9139
+              "line": 9189
             },
             {
               "in": "open_pinned_uv_wheel_stream",
               "kind": "except",
-              "line": 9147
+              "line": 9197
             },
             {
               "in": "open_pinned_uv_wheel_stream",
               "kind": "raise",
-              "line": 9155
+              "line": 9205
             },
             {
               "in": "install_pinned_uv_wheel",
               "kind": "raise",
-              "line": 9207
+              "line": 9257
             },
             {
               "in": "install_pinned_uv_wheel",
               "kind": "raise",
-              "line": 9217
+              "line": 9267
             },
             {
               "in": "install_pinned_uv_wheel",
               "kind": "raise",
-              "line": 9230
+              "line": 9280
             },
             {
               "in": "install_pinned_uv_wheel",
               "kind": "except",
-              "line": 9234
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "raise",
-              "line": 9235
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "except",
-              "line": 9236
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "raise",
-              "line": 9237
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "except",
-              "line": 9241
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "raise",
-              "line": 9242
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "raise",
-              "line": 9248
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "raise",
-              "line": 9254
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "raise",
-              "line": 9264
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "except",
-              "line": 9273
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "raise",
-              "line": 9274
-            },
-            {
-              "in": "install_pinned_uv_wheel",
-              "kind": "raise",
               "line": 9284
             },
             {
               "in": "install_pinned_uv_wheel",
               "kind": "raise",
-              "line": 9289
+              "line": 9285
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "except",
+              "line": 9286
             },
             {
               "in": "install_pinned_uv_wheel",
               "kind": "raise",
-              "line": 9297
+              "line": 9287
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "except",
+              "line": 9291
             },
             {
               "in": "install_pinned_uv_wheel",
               "kind": "raise",
-              "line": 9333
+              "line": 9292
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 9298
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 9304
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 9314
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "except",
+              "line": 9323
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 9324
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 9334
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 9339
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 9347
+            },
+            {
+              "in": "install_pinned_uv_wheel",
+              "kind": "raise",
+              "line": 9383
             },
             {
               "in": "ensure_vm_uv",
               "kind": "except",
-              "line": 9381
+              "line": 9431
             },
             {
               "in": "ensure_vm_uv",
               "kind": "except",
-              "line": 9418
+              "line": 9468
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9510
+              "line": 9560
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9575
+              "line": 9625
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9610
+              "line": 9660
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9621
+              "line": 9671
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9628
+              "line": 9678
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9635
+              "line": 9685
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9644
+              "line": 9694
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9652
+              "line": 9702
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9691
+              "line": 9741
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9700
+              "line": 9750
             },
             {
               "in": "find_or_install_vm_python_315",
               "kind": "raise",
-              "line": 9715
+              "line": 9765
             },
             {
               "in": "validate_until_option",
               "kind": "raise",
-              "line": 9759
+              "line": 9809
             },
             {
               "in": "validate_until_option",
               "kind": "raise",
-              "line": 9764
+              "line": 9814
             },
             {
               "in": "validate_until_option",
               "kind": "raise",
-              "line": 9770
+              "line": 9820
             },
             {
               "in": "validate_judge_order",
               "kind": "raise",
-              "line": 9800
+              "line": 9850
             },
             {
               "in": "validate_judge_order",
               "kind": "raise",
-              "line": 9810
+              "line": 9860
             },
             {
               "in": "validate_judge_order",
               "kind": "raise",
-              "line": 9817
+              "line": 9867
             },
             {
               "in": "validate_judge_order",
               "kind": "raise",
-              "line": 9823
+              "line": 9873
             },
             {
               "in": "validate_judge_order",
               "kind": "raise",
-              "line": 9828
+              "line": 9878
             },
             {
               "in": "validate_judge_order",
               "kind": "raise",
-              "line": 9833
+              "line": 9883
             },
             {
               "in": "validate_only_judges",
               "kind": "raise",
-              "line": 9871
+              "line": 9921
             },
             {
               "in": "validate_only_judges",
               "kind": "raise",
-              "line": 9881
+              "line": 9931
             },
             {
               "in": "validate_only_judges",
               "kind": "raise",
-              "line": 9891
+              "line": 9941
             },
             {
               "in": "validate_only_judges",
               "kind": "raise",
-              "line": 9901
+              "line": 9951
             },
             {
               "in": "validate_only_judges",
               "kind": "raise",
-              "line": 9908
+              "line": 9958
             },
             {
               "in": "validate_only_judges",
               "kind": "raise",
-              "line": 9914
+              "line": 9964
             },
             {
               "in": "validate_only_judges",
               "kind": "raise",
-              "line": 9919
+              "line": 9969
             },
             {
               "in": "_validate_single_pass_mode",
               "kind": "raise",
-              "line": 9946
+              "line": 9996
             },
             {
               "in": "_validate_single_pass_mode",
               "kind": "raise",
-              "line": 9954
+              "line": 10004
             },
             {
               "in": "_validate_single_pass_mode",
               "kind": "raise",
-              "line": 9965
+              "line": 10015
             },
             {
               "in": "validate_first_load_judge_id",
-              "kind": "raise",
-              "line": 10037
-            },
-            {
-              "in": "validate_first_load_judge_id",
-              "kind": "raise",
-              "line": 10047
-            },
-            {
-              "in": "parse_shard_spec",
-              "kind": "raise",
-              "line": 10058
-            },
-            {
-              "in": "parse_shard_spec",
-              "kind": "raise",
-              "line": 10064
-            },
-            {
-              "in": "parse_shard_spec",
-              "kind": "raise",
-              "line": 10070
-            },
-            {
-              "in": "parse_shard_spec",
-              "kind": "raise",
-              "line": 10076
-            },
-            {
-              "in": "parse_shard_spec",
-              "kind": "raise",
-              "line": 10081
-            },
-            {
-              "in": "parse_shard_spec",
               "kind": "raise",
               "line": 10087
             },
             {
-              "in": "validate_loop_order",
+              "in": "validate_first_load_judge_id",
               "kind": "raise",
-              "line": 10106
+              "line": 10097
+            },
+            {
+              "in": "parse_shard_spec",
+              "kind": "raise",
+              "line": 10108
+            },
+            {
+              "in": "parse_shard_spec",
+              "kind": "raise",
+              "line": 10114
+            },
+            {
+              "in": "parse_shard_spec",
+              "kind": "raise",
+              "line": 10120
+            },
+            {
+              "in": "parse_shard_spec",
+              "kind": "raise",
+              "line": 10126
+            },
+            {
+              "in": "parse_shard_spec",
+              "kind": "raise",
+              "line": 10131
+            },
+            {
+              "in": "parse_shard_spec",
+              "kind": "raise",
+              "line": 10137
             },
             {
               "in": "validate_loop_order",
               "kind": "raise",
-              "line": 10117
+              "line": 10156
             },
             {
               "in": "validate_loop_order",
               "kind": "raise",
-              "line": 10123
+              "line": 10167
+            },
+            {
+              "in": "validate_loop_order",
+              "kind": "raise",
+              "line": 10173
             },
             {
               "in": "verify_shard_manifest_file",
               "kind": "raise",
-              "line": 10147
+              "line": 10197
             },
             {
               "in": "resolve_low_margin_or_canary_field",
               "kind": "raise",
-              "line": 10182
+              "line": 10232
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "except",
-              "line": 10221
+              "line": 10271
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10222
+              "line": 10272
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10227
+              "line": 10277
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10255
+              "line": 10305
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10262
+              "line": 10312
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10270
+              "line": 10320
             },
             {
               "in": "_verify_shard_manifest_bytes",
               "kind": "raise",
-              "line": 10278
+              "line": 10328
             },
             {
               "in": "build_shard_manifest_stdlib",
               "kind": "raise",
-              "line": 10530
+              "line": 10580
             },
             {
               "in": "build_shard_manifest_stdlib",
               "kind": "raise",
-              "line": 10539
+              "line": 10589
             },
             {
               "in": "build_shard_manifest_stdlib",
               "kind": "raise",
-              "line": 10548
+              "line": 10598
             },
             {
               "in": "build_shard_manifest_stdlib",
               "kind": "raise",
-              "line": 10557
+              "line": 10607
             },
             {
               "in": "ensure_shard_manifest_for_run",
               "kind": "raise",
-              "line": 10825
+              "line": 10875
             },
             {
               "in": "_collect_judge_receipt_digests",
               "kind": "except",
-              "line": 10911
+              "line": 10961
             },
             {
               "in": "_query_gpu_and_ecc_snapshot",
               "kind": "except",
-              "line": 11004
+              "line": 11054
             },
             {
               "in": "_read_host_cpu_model",
               "kind": "except",
-              "line": 11035
+              "line": 11085
             },
             {
               "in": "_load_merge_config_for_session_env",
               "kind": "except",
-              "line": 11082
+              "line": 11132
             },
             {
               "in": "_load_merge_config_for_session_env",
               "kind": "raise",
-              "line": 11083
+              "line": 11133
             },
             {
               "in": "_load_merge_config_for_session_env",
               "kind": "except",
-              "line": 11084
+              "line": 11134
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11244
+              "line": 11294
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11288
+              "line": 11338
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11299
+              "line": 11349
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11316
+              "line": 11366
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11318
+              "line": 11368
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11333
+              "line": 11383
             },
             {
               "in": "_query_judge_venv_runtime",
               "kind": "except",
-              "line": 11348
-            },
-            {
-              "in": "_query_judge_venv_runtime",
-              "kind": "except",
-              "line": 11351
-            },
-            {
-              "in": "_query_judge_venv_runtime",
-              "kind": "except",
-              "line": 11353
-            },
-            {
-              "in": "_query_judge_venv_runtime",
-              "kind": "except",
-              "line": 11355
-            },
-            {
-              "in": "collect_and_write_session_env",
-              "kind": "raise",
-              "line": 11391
-            },
-            {
-              "in": "collect_and_write_session_env",
-              "kind": "raise",
               "line": 11398
             },
             {
-              "in": "collect_and_write_session_env",
-              "kind": "raise",
-              "line": 11605
+              "in": "_query_judge_venv_runtime",
+              "kind": "except",
+              "line": 11401
+            },
+            {
+              "in": "_query_judge_venv_runtime",
+              "kind": "except",
+              "line": 11403
+            },
+            {
+              "in": "_query_judge_venv_runtime",
+              "kind": "except",
+              "line": 11405
             },
             {
               "in": "collect_and_write_session_env",
               "kind": "raise",
-              "line": 11610
+              "line": 11441
             },
             {
               "in": "collect_and_write_session_env",
               "kind": "raise",
-              "line": 11615
+              "line": 11448
+            },
+            {
+              "in": "collect_and_write_session_env",
+              "kind": "raise",
+              "line": 11655
+            },
+            {
+              "in": "collect_and_write_session_env",
+              "kind": "raise",
+              "line": 11660
+            },
+            {
+              "in": "collect_and_write_session_env",
+              "kind": "raise",
+              "line": 11665
             },
             {
               "in": "resolve_boot_gatekeeper_judge_id",
               "kind": "raise",
-              "line": 11764
+              "line": 11814
             },
             {
               "in": "resolve_boot_gatekeeper_judge_id",
               "kind": "except",
-              "line": 11770
-            },
-            {
-              "in": "resolve_boot_gatekeeper_judge_id",
-              "kind": "raise",
-              "line": 11771
-            },
-            {
-              "in": "resolve_boot_gatekeeper_judge_id",
-              "kind": "raise",
-              "line": 11776
-            },
-            {
-              "in": "preflight_boot_gatekeeper_judge",
-              "kind": "raise",
-              "line": 11805
-            },
-            {
-              "in": "preflight_boot_gatekeeper_judge",
-              "kind": "raise",
-              "line": 11811
-            },
-            {
-              "in": "preflight_boot_gatekeeper_judge",
-              "kind": "raise",
               "line": 11820
+            },
+            {
+              "in": "resolve_boot_gatekeeper_judge_id",
+              "kind": "raise",
+              "line": 11821
+            },
+            {
+              "in": "resolve_boot_gatekeeper_judge_id",
+              "kind": "raise",
+              "line": 11826
+            },
+            {
+              "in": "preflight_boot_gatekeeper_judge",
+              "kind": "raise",
+              "line": 11855
+            },
+            {
+              "in": "preflight_boot_gatekeeper_judge",
+              "kind": "raise",
+              "line": 11861
+            },
+            {
+              "in": "preflight_boot_gatekeeper_judge",
+              "kind": "raise",
+              "line": 11870
             },
             {
               "in": "check_boot_gatekeeper_token_counts",
               "kind": "raise",
-              "line": 12030
+              "line": 12080
             },
             {
               "in": "resolve_requested_card_type",
               "kind": "raise",
-              "line": 12114
+              "line": 12164
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12188
+              "line": 12238
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12195
+              "line": 12245
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12200
+              "line": 12250
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12209
+              "line": 12259
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12214
+              "line": 12264
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12223
+              "line": 12273
             },
             {
               "in": "verify_vm_card_type",
               "kind": "raise",
-              "line": 12227
+              "line": 12277
             },
             {
               "in": "resolve_boot_gatekeeper_card_type",
               "kind": "raise",
-              "line": 12343
+              "line": 12393
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12417
+              "line": 12467
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12424
+              "line": 12474
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12430
+              "line": 12480
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12435
+              "line": 12485
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12441
+              "line": 12491
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12446
+              "line": 12496
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12452
+              "line": 12502
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12458
+              "line": 12508
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12464
+              "line": 12514
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12469
+              "line": 12519
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12475
+              "line": 12525
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12481
+              "line": 12531
             },
             {
               "in": "verify_goldens_self_hash_and_provenance",
               "kind": "raise",
-              "line": 12486
+              "line": 12536
             },
             {
               "in": "preflight_boot_gatekeeper_goldens",
               "kind": "raise",
-              "line": 12550
+              "line": 12600
             },
             {
               "in": "preflight_boot_gatekeeper_goldens",
               "kind": "raise",
-              "line": 12557
+              "line": 12607
             },
             {
               "in": "preflight_boot_gatekeeper_goldens",
               "kind": "raise",
-              "line": 12577
+              "line": 12627
             },
             {
               "in": "preflight_boot_gatekeeper_goldens",
               "kind": "raise",
-              "line": 12582
+              "line": 12632
             },
             {
               "in": "preflight_boot_gatekeeper_goldens",
               "kind": "raise",
-              "line": 12589
+              "line": 12639
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "except",
-              "line": 12660
+              "line": 12710
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "raise",
-              "line": 12668
+              "line": 12718
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "raise",
-              "line": 12675
+              "line": 12725
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "except",
-              "line": 12691
+              "line": 12741
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "raise",
-              "line": 12692
+              "line": 12742
             },
             {
               "in": "run_boot_gatekeeper_subprocess",
               "kind": "raise",
-              "line": 12697
+              "line": 12747
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "raise",
-              "line": 12794
+              "line": 12844
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "raise",
-              "line": 12799
+              "line": 12849
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "raise",
-              "line": 12818
-            },
-            {
-              "in": "_run_real_boot_gatekeeper_prompts",
-              "kind": "except",
-              "line": 12827
-            },
-            {
-              "in": "_run_real_boot_gatekeeper_prompts",
-              "kind": "raise",
-              "line": 12828
-            },
-            {
-              "in": "_run_real_boot_gatekeeper_prompts",
-              "kind": "raise",
-              "line": 12833
+              "line": 12868
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "except",
-              "line": 12842
+              "line": 12877
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "raise",
-              "line": 12843
+              "line": 12878
             },
             {
               "in": "_run_real_boot_gatekeeper_prompts",
               "kind": "raise",
-              "line": 12848
+              "line": 12883
+            },
+            {
+              "in": "_run_real_boot_gatekeeper_prompts",
+              "kind": "except",
+              "line": 12892
+            },
+            {
+              "in": "_run_real_boot_gatekeeper_prompts",
+              "kind": "raise",
+              "line": 12893
+            },
+            {
+              "in": "_run_real_boot_gatekeeper_prompts",
+              "kind": "raise",
+              "line": 12898
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 12991
+              "line": 13041
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "except",
-              "line": 12997
+              "line": 13047
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 12998
+              "line": 13048
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "except",
-              "line": 13013
+              "line": 13063
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13014
+              "line": 13064
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13019
+              "line": 13069
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13030
+              "line": 13080
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13060
+              "line": 13110
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13066
+              "line": 13116
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13073
+              "line": 13123
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13087
+              "line": 13137
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13175
+              "line": 13225
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "except",
-              "line": 13188
+              "line": 13238
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13193
+              "line": 13243
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13210
+              "line": 13260
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13218
+              "line": 13268
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13361
+              "line": 13411
             },
             {
               "in": "run_boot_gatekeeper",
               "kind": "raise",
-              "line": 13385
+              "line": 13435
             },
             {
               "in": "run_gate",
               "kind": "raise",
-              "line": 13468
+              "line": 13518
             },
             {
               "in": "run_gate",
               "kind": "except",
-              "line": 13476
+              "line": 13526
             },
             {
               "in": "run_gate",
               "kind": "raise",
-              "line": 13477
+              "line": 13527
             },
             {
               "in": "run_gate",
               "kind": "except",
-              "line": 13488
+              "line": 13538
             },
             {
               "in": "run_gate",
               "kind": "except",
-              "line": 13495
+              "line": 13545
             },
             {
               "in": "run_gate",
               "kind": "except",
-              "line": 13503
+              "line": 13553
             },
             {
               "in": "run_gate",
               "kind": "except",
-              "line": 13552
+              "line": 13602
             },
             {
               "in": "run_probe",
               "kind": "except",
-              "line": 13763
+              "line": 13813
             },
             {
               "in": "run_probe",
               "kind": "except",
-              "line": 13821
+              "line": 13871
             },
             {
               "in": "finalize_filled_goldens_with_session_env",
               "kind": "except",
-              "line": 14003
+              "line": 14053
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 14239
+              "line": 14296
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 14294
+              "line": 14351
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 14307
+              "line": 14364
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 14459
+              "line": 14527
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 14464
+              "line": 14532
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 14548
+              "line": 14616
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 14875
+              "line": 14943
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 14906
+              "line": 14974
             },
             {
               "in": "main",
               "kind": "raise",
-              "line": 14913
+              "line": 14981
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15268
+              "line": 15336
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15304
+              "line": 15372
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15452
+              "line": 15520
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15478
+              "line": 15546
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15483
+              "line": 15551
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15504
+              "line": 15572
             },
             {
               "in": "main",
               "kind": "except",
-              "line": 15537
+              "line": 15605
             },
             {
               "in": "run_kernel_or_cli_entry",
               "kind": "raise",
-              "line": 15553
+              "line": 15621
             },
             {
               "in": "_three_way_rows_of_pass_mode",
               "kind": "raise",
-              "line": 15623
+              "line": 15691
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 15712
+              "line": 15780
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 15717
+              "line": 15785
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 15722
+              "line": 15790
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15758
+              "line": 15826
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15764
+              "line": 15832
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15768
+              "line": 15836
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15772
+              "line": 15840
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15777
+              "line": 15845
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15779
+              "line": 15847
             },
             {
               "in": "parse_judge_pass_modes",
               "kind": "raise",
-              "line": 15782
+              "line": 15850
             },
             {
               "in": "validate_pass_mode",
               "kind": "raise",
-              "line": 15819
+              "line": 15887
             },
             {
               "in": "validate_pass_mode",
               "kind": "raise",
-              "line": 15825
+              "line": 15893
             },
             {
               "in": "validate_pass_mode",
               "kind": "raise",
-              "line": 15830
+              "line": 15898
             },
             {
               "in": "validate_pass_mode",
               "kind": "raise",
-              "line": 15839
+              "line": 15907
             },
             {
               "in": "validate_pass_mode",
               "kind": "raise",
-              "line": 15849
+              "line": 15917
             },
             {
               "in": "_planned_judge_passes",
               "kind": "raise",
-              "line": 15875
+              "line": 15943
             },
             {
               "in": "_planned_judge_passes",
               "kind": "raise",
-              "line": 15879
+              "line": 15947
             },
             {
               "in": "launcher_completed_passes",
               "kind": "except",
-              "line": 15989
+              "line": 16057
             },
             {
               "in": "launcher_verify_fetched_pass",
               "kind": "except",
-              "line": 16044
+              "line": 16112
             },
             {
               "in": "ensure_elephant_venv",
               "kind": "except",
-              "line": 16247
+              "line": 16365
+            },
+            {
+              "in": "ensure_elephant_venv",
+              "kind": "except",
+              "line": 16407
+            },
+            {
+              "in": "_apply_elephant_install",
+              "kind": "raise",
+              "line": 16443
             },
             {
               "in": "_apply_elephant_install",
               "kind": "except",
-              "line": 16289
+              "line": 16451
+            },
+            {
+              "in": "_apply_elephant_install",
+              "kind": "raise",
+              "line": 16465
             }
           ],
-          "hash": "b7e695d22b28151c1d04eb5da2177d70fbbeda6ba53a75e3c938c3d0821aee5c",
+          "hash": "2ab889ee79bf202d039233e0263a46da9bec174caeeedc0dc0ca4f1c243ec92a",
           "importOrder": [
             "src/reasoning_dataset_lab/pilot_b/device.py",
             "src/reasoning_dataset_lab/pilot_b/bakeoff_judge.py"
@@ -7005,124 +7031,124 @@
             {
               "in": "guard_no_test_hooks_in_counted_mode",
               "kind": "raise",
-              "line": 7977
+              "line": 7978
             },
             {
               "in": "main_judge_runner",
               "kind": "except",
-              "line": 8165
-            },
-            {
-              "in": "main_judge_runner",
-              "kind": "raise",
               "line": 8166
             },
             {
               "in": "main_judge_runner",
               "kind": "raise",
-              "line": 8179
+              "line": 8167
+            },
+            {
+              "in": "main_judge_runner",
+              "kind": "raise",
+              "line": 8180
             },
             {
               "in": "main_judge_runner",
               "kind": "except",
-              "line": 8239
+              "line": 8240
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 8389
+              "line": 8390
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 8396
+              "line": 8397
             },
             {
               "in": "check_d3_family_remote_code_gate",
               "kind": "raise",
-              "line": 8403
+              "line": 8404
             },
             {
               "in": "_load_receipt_files",
               "kind": "except",
-              "line": 8416
+              "line": 8417
             },
             {
               "in": "check_d3_remote_code_matches_review",
               "kind": "raise",
-              "line": 8444
+              "line": 8445
             },
             {
               "in": "read_nli_id2label",
               "kind": "except",
-              "line": 8625
-            },
-            {
-              "in": "read_nli_id2label",
-              "kind": "raise",
               "line": 8626
             },
             {
               "in": "read_nli_id2label",
               "kind": "raise",
-              "line": 8633
+              "line": 8627
+            },
+            {
+              "in": "read_nli_id2label",
+              "kind": "raise",
+              "line": 8634
             },
             {
               "in": "_ensure_loaded",
               "kind": "except",
-              "line": 8662
-            },
-            {
-              "in": "_ensure_loaded",
-              "kind": "raise",
               "line": 8663
             },
             {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 8680
-            },
-            {
-              "in": "_encode",
-              "kind": "raise",
-              "line": 8694
-            },
-            {
-              "in": "elephant_receipt_serve_patch_sha256",
-              "kind": "except",
-              "line": 8955
-            },
-            {
-              "in": "elephant_install_record",
-              "kind": "except",
-              "line": 8967
-            },
-            {
-              "in": "elephant_install_record",
-              "kind": "raise",
-              "line": 8977
+              "line": 8664
             },
             {
               "in": "_ensure_loaded",
               "kind": "raise",
-              "line": 9031
+              "line": 8681
+            },
+            {
+              "in": "_encode",
+              "kind": "raise",
+              "line": 8695
+            },
+            {
+              "in": "elephant_receipt_serve_patch_sha256",
+              "kind": "except",
+              "line": 8956
+            },
+            {
+              "in": "elephant_install_record",
+              "kind": "except",
+              "line": 8968
+            },
+            {
+              "in": "elephant_install_record",
+              "kind": "raise",
+              "line": 8978
+            },
+            {
+              "in": "_ensure_loaded",
+              "kind": "raise",
+              "line": 9032
             },
             {
               "in": "generate",
               "kind": "except",
-              "line": 9067
+              "line": 9068
             },
             {
               "in": "generate",
               "kind": "raise",
-              "line": 9069
+              "line": 9070
             },
             {
               "kind": "raise",
-              "line": 9168
+              "line": 9169
             }
           ],
-          "hash": "a35bfadbcdfc54f989365d3f5f90897b9a9692b42c47888e2741582f560fd846",
+          "hash": "c3a6b9c5b217cf7ae649c75d0b8db31b3aa67a8646ac8ef43033194af2884197",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -9424,7 +9450,7 @@
                 },
                 {
                   "branch": "active_hooks",
-                  "line": 7977,
+                  "line": 7978,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11343,7 +11369,7 @@
               "calls": [
                 {
                   "branch": "active_hooks",
-                  "line": 7977,
+                  "line": 7978,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11358,7 +11384,7 @@
             {
               "calls": [
                 {
-                  "line": 8042,
+                  "line": 8043,
                   "name": "PASS_MODE_CHOICES",
                   "passed": true,
                   "target": {
@@ -11366,14 +11392,14 @@
                   }
                 },
                 {
-                  "line": 8164,
+                  "line": 8165,
                   "name": "normalize_judge_device",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/device.py"
                   }
                 },
                 {
-                  "line": 8166,
+                  "line": 8167,
                   "name": "RdlabError",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11381,7 +11407,7 @@
                 },
                 {
                   "branch": "args.p0a_out is None",
-                  "line": 8179,
+                  "line": 8180,
                   "name": "usage_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11389,7 +11415,7 @@
                 },
                 {
                   "branch": "args.p0a_stage is not None",
-                  "line": 8188,
+                  "line": 8189,
                   "name": "run_p0a_child_stage",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/__init__.py"
@@ -11445,7 +11471,7 @@
                 },
                 {
                   "branch": "active_hooks",
-                  "line": 7977,
+                  "line": 7978,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11634,7 +11660,7 @@
                   "via": "_build_original_judge_adapter"
                 },
                 {
-                  "line": 8272,
+                  "line": 8273,
                   "name": "judge_supports_pass_mode",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -11659,7 +11685,7 @@
                 },
                 {
                   "branch": "not isinstance(allow_remote_code_reviewed, str) or allow_re…",
-                  "line": 8389,
+                  "line": 8390,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11667,7 +11693,7 @@
                 },
                 {
                   "branch": "spec.revision != pinned",
-                  "line": 8396,
+                  "line": 8397,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11675,7 +11701,7 @@
                 },
                 {
                   "branch": "tuple(sorted(spec.remote_code_files)) != tuple(sorted(revie…",
-                  "line": 8403,
+                  "line": 8404,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11691,7 +11717,7 @@
               "calls": [
                 {
                   "branch": "reviewed is None or differing",
-                  "line": 8444,
+                  "line": 8445,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11706,7 +11732,7 @@
             {
               "calls": [
                 {
-                  "line": 8481,
+                  "line": 8482,
                   "name": "two_question_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -11721,14 +11747,14 @@
             {
               "calls": [
                 {
-                  "line": 8497,
+                  "line": 8498,
                   "name": "two_question_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
                   }
                 },
                 {
-                  "line": 8520,
+                  "line": 8521,
                   "name": "two_question_verdict",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -11743,14 +11769,14 @@
             {
               "calls": [
                 {
-                  "line": 8626,
+                  "line": 8627,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
                   }
                 },
                 {
-                  "line": 8631,
+                  "line": 8632,
                   "name": "values",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -11758,7 +11784,7 @@
                 },
                 {
                   "branch": "sorted(id2label) != list(range(len(id2label))) or any(set(i…",
-                  "line": 8633,
+                  "line": 8634,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11799,14 +11825,14 @@
               "calls": [
                 {
                   "branch": "prompt.pass_mode in TWO_QUESTION_PASS_MODES and spec.judge_…",
-                  "line": 8812,
+                  "line": 8813,
                   "name": "two_question_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
                   }
                 },
                 {
-                  "line": 9146,
+                  "line": 9147,
                   "name": "three_way_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -11823,7 +11849,7 @@
               "calls": [
                 {
                   "branch": "not isinstance(doc, Mapping) or doc.get(\"status\") != \"ok\" o…",
-                  "line": 8977,
+                  "line": 8978,
                   "name": "refused_error",
                   "target": {
                     "file": "src/reasoning_dataset_lab/errors.py"
@@ -11838,7 +11864,7 @@
             {
               "calls": [
                 {
-                  "line": 9146,
+                  "line": 9147,
                   "name": "three_way_wording",
                   "target": {
                     "file": "src/reasoning_dataset_lab/pilot_b/three_way_wording.py"
@@ -18500,6 +18526,7 @@
             "build_fixture_python_archive",
             "build_fixture_uv_wheel",
             "build_hermetic_path",
+            "handle_fake_vm_vcs",
             "load_and_verify_contract",
             "main",
             "mask_session_line_shape",
@@ -18512,7 +18539,7 @@
             "set_fake_uv_python_315_state",
             "setup_fake_colab_environment"
           ],
-          "hash": "88ce823aa8a091001f6359c5f4939657cb6a88cee86aec1fd66f89cb1f17d360",
+          "hash": "9d337865e920b72cbdd668e75c7da4a63380db0fe4891a91e8c655e5fbc42116",
           "importsFiles": [
             "scripts/colab/vm_judges.py"
           ],
@@ -19070,6 +19097,10 @@
             "test_qev_wrapper_strings_are_the_preregistered_ones",
             "test_seven_arm_stub_window_with_elephant_and_scores_outside_mass",
             "test_stub_child_writes_elephant_rows_with_outside_mass",
+            "test_stub_exercise_elephant_install_e2e_runs_all_steps_and_keeps_child_stub",
+            "test_stub_exercise_elephant_install_refused_outside_eligible_stub_plan",
+            "test_stub_exercise_elephant_install_unit_cpu_cannot_build_and_step_failures",
+            "test_stub_without_opt_in_is_byte_identical",
             "test_the_disk_gate_adds_elephant_only_to_a_window_that_selects_it",
             "test_the_fixture_notices_carry_the_mit_and_qwen_attribution",
             "test_the_qev_messages_of_both_orders_render_through_the_pinned_template",
@@ -19078,7 +19109,7 @@
             "test_venv_elephant_install_steps_env_timings_and_record",
             "test_venv_elephant_is_built_once_per_window_across_subblocks"
           ],
-          "hash": "42018e21379d3ecec6774caf10729d9f298e2ca027fea4dea9ee20f83c8a7be3",
+          "hash": "5e82132da4823e61c1b3fc07de2d7f78e6371adbb69ecfd57afdb7f54a9687eb",
           "importsFiles": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -19098,6 +19129,7 @@
             "test_arm5_nli_input_is_premise_and_claim_verbatim_with_no_words",
             "test_arm6_symmetric_entry_is_the_preregistered_words",
             "test_ban_check_bites_on_the_old_words",
+            "test_bash_fetch_completed_judge_checkpoints_crash_empty_name_and_deadline_guards",
             "test_binary_and_arm1_prompts_stay_byte_identical_to_cd1aaf8",
             "test_committed_d5c_receipts_match_the_pins_and_pass_the_preflight",
             "test_d3_flash_code_must_match_the_reviewed_receipt",
@@ -19135,7 +19167,7 @@
             "test_vm_d3_family_gate_and_remote_code_arg",
             "test_vm_judges_copies_match_the_wording_table_and_the_specs"
           ],
-          "hash": "dcea54002ad9b3dfa94452dc31e17955c76e367473fce270434be151f0311320",
+          "hash": "55da080592359166cda74b7cf97b9c6a98ca6fdfc93409d93b860bdfb94bb413",
           "importOrder": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -21211,7 +21243,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "57a36f23fc2587a32e9cea62c6a8326eb1b5b2a1",
+    "commit": "fa0f86e4ceb0eb3a9b69830d1472a2890b64a339",
     "tracked": 192
   },
   "landings": [

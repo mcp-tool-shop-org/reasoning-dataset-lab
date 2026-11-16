@@ -1422,7 +1422,11 @@ def run_fake_uv(argv: list[str]) -> int:
     if argv[:2] == ["pip", "install"]:
         venv_python = ""
         req_file = ""
+        constraint_files: list[str] = []
+        editable_dirs: list[str] = []
+        positional_pkgs: list[str] = []
         require_hashes = False
+        dry_run = False
         no_binary_pkgs: set[str] = set()
         only_binary_all = False
         idx = 2
@@ -1435,6 +1439,21 @@ def run_fake_uv(argv: list[str]) -> int:
             if tok in ("-r", "--requirement") and idx + 1 < len(argv):
                 req_file = argv[idx + 1]
                 idx += 2
+                continue
+            if tok in ("-c", "--constraint") and idx + 1 < len(argv):
+                constraint_files.append(argv[idx + 1])
+                idx += 2
+                continue
+            if tok in ("-e", "--editable") and idx + 1 < len(argv):
+                editable_dirs.append(argv[idx + 1])
+                idx += 2
+                continue
+            if tok == "--dry-run":
+                dry_run = True
+                idx += 1
+                continue
+            if tok in ("--no-build-isolation", "--no-deps"):
+                idx += 1
                 continue
             if tok == "--require-hashes":
                 require_hashes = True
@@ -1449,9 +1468,11 @@ def run_fake_uv(argv: list[str]) -> int:
                 no_binary_pkgs.add(argv[idx + 1].lower())
                 idx += 2
                 continue
+            if not tok.startswith("-"):
+                positional_pkgs.append(tok)
             idx += 1
 
-        if not venv_python or not req_file:
+        if not venv_python or (not req_file and not editable_dirs and not positional_pkgs):
             sys.stderr.write(f"fake uv: unexpected arguments: {argv!r}\n")
             return 98
 
@@ -1461,6 +1482,99 @@ def run_fake_uv(argv: list[str]) -> int:
                 f"error: Failed to inspect Python interpreter from `--python` at `{venv_py_path}`\n"
             )
             return 2
+
+        if not req_file:
+            import shutil
+
+            for c_file in constraint_files:
+                c_path = Path(c_file)
+                if not c_path.is_file():
+                    sys.stderr.write(f"error: Constraint file not found: `{c_path}`\n")
+                    return 2
+            norm_pkgs = [p.split("[", 1)[0].strip().lower() for p in positional_pkgs]
+            fail_pkg = os.environ.get("FAKE_COLAB_FAIL_UV_PKG", "").strip().lower()
+            if fail_pkg and fail_pkg in norm_pkgs:
+                sys.stderr.write(f"error: No solution found when resolving dependencies for `{fail_pkg}`\n")
+                return 2
+            if dry_run:
+                if (
+                    "causal-conv1d" in norm_pkgs
+                    and os.environ.get("CAUSAL_CONV1D_SKIP_CUDA_BUILD") != "TRUE"
+                    and os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_SUCCEED") != "1"
+                ):
+                    sys.stderr.write(
+                        "error: setup.py metadata failed without CAUSAL_CONV1D_SKIP_CUDA_BUILD: "
+                        "NameError: name 'bare_metal_version' is not defined\n"
+                    )
+                    return 2
+                sys.stderr.write(f"Resolved {len(editable_dirs) + len(norm_pkgs)} package(s) (dry-run)\n")
+                return 0
+            if "causal-conv1d" in norm_pkgs:
+                if os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_NON_CUDA_FAIL") == "1":
+                    sys.stderr.write(
+                        "error: Failed to build `causal-conv1d`\n"
+                        "  csrc/causal_conv1d.cpp:42:2: error: non-CUDA C++ compilation error\n"
+                    )
+                    return 2
+                if os.environ.get("FAKE_COLAB_CAUSAL_CONV1D_SUCCEED") != "1":
+                    sys.stderr.write(
+                        "error: Failed to build `causal-conv1d`\n"
+                        "  UserWarning: causal_conv1d was requested, but nvcc was not found.\n"
+                        "  NameError: name 'bare_metal_version' is not defined\n"
+                    )
+                    return 2
+            venv_root = venv_py_path.parent.parent
+            site_pkgs = venv_root / "site-packages"
+            site_pkgs.mkdir(parents=True, exist_ok=True)
+            pkg_db_path = venv_root / ".installed_packages.json"
+            installed_db: dict[str, Any] = {}
+            if pkg_db_path.is_file():
+                try:
+                    installed_db = json.loads(pkg_db_path.read_text(encoding="utf-8"))
+                except Exception:
+                    installed_db = {}
+            for ed in editable_dirs:
+                ed_path = Path(ed)
+                if not ed_path.is_dir():
+                    sys.stderr.write(f"error: Editable path not found: `{ed_path}`\n")
+                    return 2
+                installed_any = False
+                for base in (ed_path, ed_path / "src"):
+                    if not base.is_dir():
+                        continue
+                    for sub in sorted(base.iterdir()):
+                        if sub.is_dir() and (sub / "__init__.py").is_file():
+                            dest_pkg = site_pkgs / sub.name
+                            if dest_pkg.exists():
+                                shutil.rmtree(dest_pkg)
+                            shutil.copytree(sub, dest_pkg)
+                            installed_db[sub.name] = {
+                                "version": "0.0.0+editable",
+                                "editable": str(ed_path),
+                                "source": "editable",
+                                "installed_by": "pip_install",
+                            }
+                            installed_any = True
+                if not installed_any:
+                    installed_db[ed_path.name] = {
+                        "version": "0.0.0+editable",
+                        "editable": str(ed_path),
+                        "source": "editable",
+                        "installed_by": "pip_install",
+                    }
+            for pkg in norm_pkgs:
+                installed_db[pkg] = {
+                    "version": "1.0.0",
+                    "source": "wheel",
+                    "installed_by": "pip_install",
+                }
+            pkg_db_path.write_text(
+                json.dumps(installed_db, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            sys.stderr.write(f"Installed {len(editable_dirs) + len(norm_pkgs)} package(s)\n")
+            return 0
 
         req_path = Path(req_file)
         if not req_path.is_file():
@@ -2708,6 +2822,12 @@ def main(argv: list[str] | None = None) -> int:
                 "        return '/usr/local/bin/uv'\n"
                 "    return _real_which(cmd, *a, **kw)\n"
                 "shutil.which = _fake_which\n"
+                "import importlib.util as _ilu\n"
+                f"_fc_spec = _ilu.spec_from_file_location('_rdlab_fake_colab_mod', {str(Path(__file__).resolve())!r})\n"
+                "_fc_mod = _ilu.module_from_spec(_fc_spec)\n"
+                "_fc_spec.loader.exec_module(_fc_mod)\n"
+                "_handle_vm_vcs = _fc_mod.handle_fake_vm_vcs\n"
+                "del _ilu, _fc_spec, _fc_mod\n"
                 "_real_subproc_run = subprocess.run\n"
                 "def _fake_subproc_run(cmd, *a, **kw):\n"
                 "    cmd_list = [str(x) for x in cmd] if isinstance(cmd, (list, tuple)) else [str(cmd)]\n"
@@ -2726,6 +2846,9 @@ def main(argv: list[str] | None = None) -> int:
                 "            fh.write(json.dumps(rec) + '\\n')\n"
                 "    plant = os.environ.get('FAKE_COLAB_PROBE_PLANT_STDOUT', '')\n"
                 "    plant_sfx = (' ' + plant) if plant else ''\n"
+                "    _vcs_res = _handle_vm_vcs(cmd_list)\n"
+                "    if _vcs_res is not None:\n"
+                "        return _vcs_res\n"
                 "    if cmd_list[:2] == ['uv', '--version']:\n"
                 "        if os.environ.get('FAKE_COLAB_UV_ABSENT') == '1' and '/tmp/uv-pinned' not in call_env.get('PATH', '').split(os.pathsep):\n"
                 "            raise FileNotFoundError(2, 'No such file or directory', 'uv')\n"
@@ -3098,6 +3221,71 @@ def _plant_unfinished_pass(vmj: Any, run_dir: Path, spec: str) -> None:
     (run_dir / "judge_done" / vmj.judge_done_filename_for_pass(jid, mode)).write_text(
         json.dumps({"judge_id": jid, "pass_mode": mode, "sha256": "0" * 64, "row_count": 1}) + "\n", encoding="utf-8"
     )
+
+
+def handle_fake_vm_vcs(cmd_list: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Hermetic fake VM handler for git commands inside `colab exec` cells."""
+    if not cmd_list or cmd_list[0] != "git":
+        return None
+    vcs_repo = ""
+    vcs_args = cmd_list[1:]
+    if len(vcs_args) >= 2 and vcs_args[0] == "-C":
+        vcs_repo = vcs_args[1]
+        vcs_args = vcs_args[2:]
+    vcs_sub = vcs_args[0] if vcs_args else ""
+    if os.environ.get("FAKE_COLAB_FAIL_GIT_SUBCMD", "").strip() == vcs_sub:
+        return subprocess.CompletedProcess(
+            cmd_list, 128, stdout="", stderr=f"fatal: simulated git {vcs_sub} failure\n"
+        )
+    if vcs_sub == "clone" and len(vcs_args) >= 3:
+        vcs_url, vcs_tgt = vcs_args[-2], Path(vcs_args[-1])
+        if vcs_tgt.exists() and any(vcs_tgt.iterdir()):
+            return subprocess.CompletedProcess(
+                cmd_list,
+                128,
+                stdout="",
+                stderr=f"fatal: destination path {vcs_tgt} already exists and is not an empty directory\n",
+            )
+        (vcs_tgt / ".git").mkdir(parents=True, exist_ok=True)
+        (vcs_tgt / ".git" / "FAKE_HEAD").write_text("HEAD\n", encoding="utf-8")
+        if "OneJev" in vcs_url or vcs_tgt.name == "OneJev":
+            vcs_qev = vcs_tgt / "qev"
+            vcs_qev.mkdir(parents=True, exist_ok=True)
+            for mod_name in ("__init__", "schema", "prompt", "engine"):
+                (vcs_qev / f"{mod_name}.py").write_text(
+                    f"# fake qev.{mod_name}\n", encoding="utf-8"
+                )
+        else:
+            vcs_di = vcs_tgt / "decision_index"
+            vcs_di.mkdir(parents=True, exist_ok=True)
+            (vcs_di / "__init__.py").write_text("# fake decision_index\n", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+    if vcs_sub == "checkout" and vcs_repo:
+        vcs_head = os.environ.get("FAKE_COLAB_ELEPHANT_BAD_HEAD", "").strip() or vcs_args[-1]
+        vcs_meta = Path(vcs_repo) / ".git"
+        vcs_meta.mkdir(parents=True, exist_ok=True)
+        (vcs_meta / "FAKE_HEAD").write_text(vcs_head + "\n", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+    if vcs_sub == "clean" and vcs_repo:
+        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+    if vcs_sub == "apply" and vcs_repo and len(vcs_args) >= 2:
+        vcs_patch = Path(vcs_args[-1])
+        if not vcs_patch.is_file():
+            return subprocess.CompletedProcess(
+                cmd_list, 128, stdout="", stderr=f"error: can not open {vcs_patch}\n"
+            )
+        vcs_qev_r = Path(vcs_repo) / "qev"
+        vcs_qev_r.mkdir(parents=True, exist_ok=True)
+        (vcs_qev_r / "readout.py").write_text(
+            "# patched qev.readout\nREADOUT_PATCHED = True\n", encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+    if vcs_sub == "rev-parse" and vcs_repo and "HEAD" in vcs_args:
+        vcs_fh = Path(vcs_repo) / ".git" / "FAKE_HEAD"
+        vcs_txt = vcs_fh.read_text(encoding="utf-8").strip() if vcs_fh.is_file() else ("0" * 40)
+        return subprocess.CompletedProcess(cmd_list, 0, stdout=vcs_txt + "\n", stderr="")
+    return None
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
