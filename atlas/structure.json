@@ -225,7 +225,7 @@
           "path": ".python-version"
         },
         {
-          "hash": "6e4c36929910f957bf3e799b6320f3d42e750a7280b2138d1b137e2f9b92863a",
+          "hash": "901849da21abca24991e3e764e61c3e18f3472a5c4dac58ff1dde420397527b2",
           "path": "CHANGELOG.md"
         },
         {
@@ -19812,6 +19812,7 @@
             "test_nli_transport_refuses_a_head_that_disagrees_with_config",
             "test_parse_and_validate_per_judge_plans",
             "test_read_unverified_passes_edge_cases_and_malformed_lines",
+            "test_reverify_and_exclude_incomplete_never_rewrite_time_one_summary_or_progress_jsonl",
             "test_rule_b_matches_the_hand_worked_fixture",
             "test_run_bakeoff_judge_picks_the_nli_transport_and_writes_its_rows",
             "test_six_arm_window_runs_in_one_window_with_judge_outer_and_scores",
@@ -19825,7 +19826,7 @@
             "test_vm_judges_copies_match_the_wording_table_and_the_specs",
             "test_vm_judges_reverify_unverified_cli_verifies_and_prunes_offline"
           ],
-          "hash": "c7c7fbb7457a650d5b717b69b7a612ea48a066afec66670df168fffd59b7d6ec",
+          "hash": "4abc8ca4dee2f5cef8c558d54d9dd8a342e23d009fc126a1526601b9fdbbd5c4",
           "importOrder": [
             "src/reasoning_dataset_lab/errors.py",
             "src/reasoning_dataset_lab/pilot_b/__init__.py",
@@ -21906,7 +21907,7 @@
   ],
   "engine": "1.26.0",
   "generatedFrom": {
-    "commit": "9066f05e2d5b68dedbec87b11a41279452995c95",
+    "commit": "09f7354756315f13edbef474916a858f4e6250c3",
     "tracked": 195
   },
   "landings": [

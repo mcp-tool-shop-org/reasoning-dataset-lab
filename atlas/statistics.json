@@ -149,12 +149,12 @@
         "importsAndCoChanges": [],
         "importsOnly": []
       },
-      "cohesion": 0.157339,
+      "cohesion": 0.153088,
       "cohesionDropped": false,
       "confidence": "full",
       "highWater": null,
       "name": "tests",
-      "qualifyingSourceCommits": 98,
+      "qualifyingSourceCommits": 99,
       "rebaseline": null
     }
   ],
@@ -192,8 +192,8 @@
         "path": ".python-version"
       },
       {
-        "commits": 48,
-        "lines": 519,
+        "commits": 49,
+        "lines": 521,
         "path": "CHANGELOG.md"
       },
       {
@@ -257,8 +257,8 @@
         "path": "SHIP_GATE.md"
       },
       {
-        "commits": 46,
-        "lines": 859,
+        "commits": 47,
+        "lines": 871,
         "path": "atlas/README.md"
       },
       {
@@ -267,18 +267,18 @@
         "path": "atlas/boundaries.yaml"
       },
       {
-        "commits": 46,
-        "lines": 2866,
+        "commits": 47,
+        "lines": 2896,
         "path": "atlas/page.json"
       },
       {
-        "commits": 46,
-        "lines": 7673,
+        "commits": 47,
+        "lines": 7793,
         "path": "atlas/statistics.json"
       },
       {
-        "commits": 46,
-        "lines": 67860,
+        "commits": 47,
+        "lines": 68542,
         "path": "atlas/structure.json"
       },
       {
@@ -1012,8 +1012,8 @@
         "path": "tests/test_colab_d5c_elephant.py"
       },
       {
-        "commits": 18,
-        "lines": 5599,
+        "commits": 19,
+        "lines": 5699,
         "path": "tests/test_colab_d5c_six_arm.py"
       },
       {
@@ -1167,51 +1167,51 @@
     "level": "low",
     "reason": "fewer than 25 source files reach 10 revisions in the window"
   },
-  "generatedAt": "2026-11-16T13:19:22.637Z",
+  "generatedAt": "2026-11-16T13:48:31.843Z",
   "generatedFrom": {
-    "commit": "9066f05e2d5b68dedbec87b11a41279452995c95"
+    "commit": "09f7354756315f13edbef474916a858f4e6250c3"
   },
   "pairs": [
     {
       "a": "atlas/README.md",
       "b": "atlas/page.json",
-      "either": 43,
-      "shared": 43,
+      "either": 44,
+      "shared": 44,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/statistics.json",
-      "either": 43,
-      "shared": 43,
+      "either": 44,
+      "shared": 44,
       "strength": 1
     },
     {
       "a": "atlas/README.md",
       "b": "atlas/structure.json",
-      "either": 43,
-      "shared": 43,
+      "either": 44,
+      "shared": 44,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/statistics.json",
-      "either": 43,
-      "shared": 43,
+      "either": 44,
+      "shared": 44,
       "strength": 1
     },
     {
       "a": "atlas/page.json",
       "b": "atlas/structure.json",
-      "either": 43,
-      "shared": 43,
+      "either": 44,
+      "shared": 44,
       "strength": 1
     },
     {
       "a": "atlas/statistics.json",
       "b": "atlas/structure.json",
-      "either": 43,
-      "shared": 43,
+      "either": 44,
+      "shared": 44,
       "strength": 1
     },
     {
@@ -1364,9 +1364,9 @@
     {
       "a": "tests/test_colab_d5c_elephant.py",
       "b": "tests/test_colab_d5c_six_arm.py",
-      "either": 15,
+      "either": 16,
       "shared": 8,
-      "strength": 0.533333
+      "strength": 0.5
     }
   ],
   "parameters": {
@@ -1379,16 +1379,16 @@
     "floor": "fallen",
     "floorHeld": false,
     "floorTrigger": "revision-depth",
-    "headDate": "2026-11-16T08:18:04-05:00",
+    "headDate": "2026-11-16T08:47:18-05:00",
     "inScopeFiles": 200,
     "pinnedStart": null,
     "priorFloor": "fallen",
-    "qualifyingCommits": 109,
+    "qualifyingCommits": 111,
     "qualifyingMinimum": 30,
     "revisions": 5,
     "shared": 10,
     "sharedFloorUsed": 3,
-    "since": "2026-05-20T13:18:04.000Z",
+    "since": "2026-05-20T13:47:18.000Z",
     "sourceExtensions": [
       ".js",
       ".mjs",
