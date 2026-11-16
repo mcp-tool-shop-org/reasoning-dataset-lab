@@ -1425,11 +1425,50 @@ def test_stub_exercise_elephant_install_refused_outside_eligible_stub_plan(
         ),
     ],
 )
-def test_b1_prime_cpu_cuda_build_failure_classifier_table(case_name: str, output: str, want: bool) -> None:
-    """B1'/B5/B9/C13: `_is_cpu_cuda_build_failure` strips ANSI/CSI/OSC sequences and trailing `hint:`/`help:`/`warning:`
+def test_b1_prime_cpu_cuda_build_failure_classifier_table(
+    case_name: str, output: str, want: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B1'/B5/B9/C13/C7/C-e: `_is_cpu_cuda_build_failure` strips ANSI/CSI/OSC sequences and trailing `hint:`/`help:`/`warning:`
     lines (scanning all lines including advisory lines against the deny-list), matches only the known final CPU error
-    (`bare_metal_version` NameError or `CUDA_HOME` unset/None), drops `/bin/nvcc`, and refuses non-CUDA failures."""
+    (`bare_metal_version` NameError or `CUDA_HOME` unset/None), drops `/bin/nvcc`, and refuses non-CUDA failures; on the
+    real `uv 0.13.5` tail (`C-e`), `ensure_elephant_venv` records the full `cpu_cannot_build` step and install outcome."""
     assert vm_judges._is_cpu_cuda_build_failure(output) is want, case_name
+    if case_name == "real uv 0.13.5 output":
+        _clean_env(monkeypatch)
+        snap = tmp_path / "snap"
+        snap.mkdir()
+        (snap / "serve.patch").write_text("diff\n", encoding="utf-8")
+        (snap / "constraints.txt").write_text("x==1\n", encoding="utf-8")
+
+        def _fake_runner(argv: list[str], **_kw: Any) -> Any:
+            if argv[:3] == ["git", "-C", str(tmp_path / "work" / "elephant-src" / "OneJev")] and argv[3] == "rev-parse":
+                return types.SimpleNamespace(returncode=0, stdout=vm_judges.ELEPHANT_ONEJEV_COMMIT + "\n", stderr="")
+            if argv[:3] == ["git", "-C", str(tmp_path / "work" / "elephant-src" / "decision-index")] and argv[3] == "rev-parse":
+                return types.SimpleNamespace(returncode=0, stdout=vm_judges.ELEPHANT_DECISION_INDEX_COMMIT + "\n", stderr="")
+            if argv[:3] == ["uv", "pip", "install"] and "--dry-run" not in argv and "causal-conv1d" in argv:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr=output)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        rec = vm_judges.ensure_elephant_venv(
+            work_dir=tmp_path / "work",
+            repo_dir=Path(__file__).resolve().parents[1],
+            run_dir=tmp_path / "run",
+            snapshot_dir=snap,
+            real=False,
+            stub_exercise=True,
+            runner=_fake_runner,
+            which=lambda _cmd: "/usr/bin/git",
+        )
+        assert rec["status"] == "cpu_cannot_build"
+        assert rec["causal_conv1d_build_outcome"] == "cpu_cannot_build"
+        build_step = next(s for s in rec["steps"] if s["step"] == "build_causal_conv1d")
+        assert build_step["rc"] == 1
+        assert build_step["outcome"] == "cpu_cannot_build"
+        assert build_step["stderr_tail"] == output
+        assert [(s["step"], s["rc"]) for s in rec["steps"][-2:]] == [
+            ("install_decision_index", 0),
+            ("import_check", 0),
+        ]
 
 
 def test_b3_build_env_strips_ambient_skip_and_real_window_verifies_cuda_kernels_on_fake(

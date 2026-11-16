@@ -43,6 +43,8 @@ from reasoning_dataset_lab.pilot_b.run_records import (
     REVERIFY_HINT_TEMPLATE,
     UNVERIFIED_JUDGE_DONE_FILENAME,
     collect_run_unverified_passes,
+    format_unverified_or_incomplete_refusal,
+    read_excluded_incomplete_passes,
 )
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     PASS_MODE_CHOICES,
@@ -1126,6 +1128,7 @@ def _check_shard_unverified_passes(
     `outcome.draft.json` (including passes outside `expected_judge_ids`) unless `allow_unverified=True` (stub-only)."""
     try:
         entries = collect_run_unverified_passes(sdir, default_pass_mode=manifest_pass_mode)
+        read_excluded_incomplete_passes(sdir)
     except (OSError, ValueError) as exc:
         raise MergeRefusalError(
             "MERGE_UNVERIFIED_PASS",
@@ -1134,28 +1137,22 @@ def _check_shard_unverified_passes(
         ) from exc
     if not entries:
         return []
-    matched: list[dict[str, str]] = []
-    for entry in entries:
-        u_jid = entry["judge_id"]
-        u_mode = entry["pass_mode"]
-        u_done = entry["done_file"]
-        if not allow_unverified:
-            raise MergeRefusalError(
-                "MERGE_UNVERIFIED_PASS",
-                f"shard {expected_spec} pass judge={u_jid} pass_mode={u_mode} "
-                f"(judge_done/{u_done}) is unverified in {UNVERIFIED_JUDGE_DONE_FILENAME} or "
-                f"{OUTCOME_DRAFT_FILENAME} (every unverified pass in a shard blocks merge, including passes "
-                f"outside --only-judges / expected_judge_ids). {REVERIFY_HINT_TEMPLATE}",
-            )
-        matched.append(
-            {
-                "shard": expected_spec,
-                "judge_id": u_jid,
-                "pass_mode": u_mode,
-                "done_file": u_done,
-            }
+    if not allow_unverified:
+        msg, hint = format_unverified_or_incomplete_refusal(
+            entries,
+            subject=f"shard {expected_spec}",
+            extra_note="every unverified or incomplete pass in a shard blocks merge, including passes outside --only-judges / expected_judge_ids",
         )
-    return matched
+        raise MergeRefusalError("MERGE_UNVERIFIED_PASS", f"{msg} {hint}")
+    return [
+        {
+            "shard": expected_spec,
+            "judge_id": entry["judge_id"],
+            "pass_mode": entry["pass_mode"],
+            "done_file": entry["done_file"],
+        }
+        for entry in entries
+    ]
 
 
 def merge_shards(
@@ -1659,6 +1656,7 @@ def merge_shards(
     per_shard_verified_recovery: dict[str, bool] = {}
     per_shard_modes: dict[str, str] = {}
     unverified_passes: list[dict[str, str]] = []
+    excluded_incomplete_passes: list[dict[str, Any]] = []
 
     # Gate (a), (b), (e) accumulators
     seen_triples: dict[tuple[str, str, str], str] = {}
@@ -1818,6 +1816,9 @@ def merge_shards(
                 manifest_pass_mode=manifest_pass_mode,
                 allow_unverified=bool(allow_unverified),
             )
+        )
+        excluded_incomplete_passes.extend(
+            {"shard": expected_spec, **entry} for entry in read_excluded_incomplete_passes(sdir)
         )
 
         # Gate (e) & row collection across all expected judges
@@ -2358,6 +2359,8 @@ def merge_shards(
     if allow_unverified or unverified_passes:
         merge_receipt["allow_unverified"] = bool(allow_unverified)
         merge_receipt["unverified_passes"] = unverified_passes
+    if excluded_incomplete_passes:
+        merge_receipt["excluded_incomplete_passes"] = excluded_incomplete_passes
 
     (output_dir / "merged_readout.json").write_text(
         json.dumps(merged_readout, indent=2, sort_keys=True) + "\n",

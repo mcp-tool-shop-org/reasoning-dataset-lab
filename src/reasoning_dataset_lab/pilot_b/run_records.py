@@ -1,4 +1,4 @@
-"""Run-directory verification and outcome record helpers for Colab judge windows (`Refs #94`).
+"""Run-directory verification and outcome record helpers for Colab judge windows (`Refs #94`, `Refs #98`).
 
 Stdlib + `three_way_wording` naming constants only (never imports `bakeoff_judge_score` or `waves_and_sealing`).
 
@@ -6,9 +6,8 @@ Marker semantics (`.unverified_judge_done`):
 - Absent file: 0 unverified marker entries (subject to `outcome.draft.json` cross-checks in `collect_run_unverified_passes`).
 - Empty or whitespace-only regular file (for example left by `touch` or full pruning): 0 unverified marker entries,
   treated identically to an absent marker file.
-- Non-regular file (such as a directory, FIFO, or broken symlink), unreadable file (`OSError` / `chmod 0`), invalid
-  UTF-8 bytes, or any malformed non-empty line: raises `ValueError` so every consumer refuses fail-closed with its
-  named refusal code.
+- Symlink (live or dangling), directory, FIFO, unreadable file (`OSError` / `chmod 0`), invalid UTF-8 bytes, or any
+  malformed non-empty line: raises `ValueError` so every consumer refuses fail-closed with its named refusal code.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+from typing import Any
 
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     LEGACY_DONE_NAME_PASS_MODES,
@@ -27,9 +27,14 @@ from reasoning_dataset_lab.pilot_b.three_way_wording import (
 
 UNVERIFIED_JUDGE_DONE_FILENAME = ".unverified_judge_done"
 OUTCOME_DRAFT_FILENAME = "outcome.draft.json"
+ROWS_INCOMPLETE_DIRNAME = "rows.incomplete"
 REVERIFY_HINT_TEMPLATE = (
     "Run 'python scripts/colab/vm_judges.py reverify-unverified <out_dir>' offline to re-verify timed-out passes "
     "against progress.jsonl and prune verified entries without opening a Colab session."
+)
+EXCLUDE_INCOMPLETE_HINT_TEMPLATE = (
+    "Run 'python scripts/colab/vm_judges.py exclude-incomplete <out_dir> --judge <id> --pass-mode <m>' to move "
+    "those rows and any pair to rows.incomplete/ and record the exclusion in outcome.draft.json."
 )
 _SAFE_UNVERIFIED_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -56,9 +61,9 @@ def read_unverified_passes(
     """Read `.unverified_judge_done` in `run_dir` (failing closed with `ValueError` on any invalid state).
 
     Supports tab-separated `judge_id\\tpass_mode\\tdone_file`, `judge_id:pass_mode`, and plain `judge_done`
-    filenames (`<judge>.json` or `<judge>.<mode>.json`). Whitespace-only files return `[]` (meaning no active
-    unverified marker entries). Non-regular files (e.g. directories), unreadable files (`OSError`), invalid UTF-8,
-    and malformed or inconsistent lines raise `ValueError`.
+    filenames (`<judge>.json` or `<judge>.<mode>.json`). Whitespace-only regular files return `[]` (meaning no active
+    unverified marker entries). Non-regular files (including live or dangling symlinks and directories), unreadable
+    files (`OSError`), invalid UTF-8, and malformed or inconsistent lines raise `ValueError`.
     """
     eff_default = str(default_pass_mode or "binary").strip()
     if eff_default not in PASS_MODE_CHOICES:
@@ -70,7 +75,7 @@ def read_unverified_passes(
         exists_or_link = marker_path.exists() or marker_path.is_symlink()
         if not exists_or_link:
             return []
-        if not marker_path.is_file():
+        if marker_path.is_symlink() or not marker_path.is_file():
             raise ValueError(f"{UNVERIFIED_JUDGE_DONE_FILENAME} at '{marker_path}' is not a regular file")
         raw_bytes = marker_path.read_bytes()
     except OSError as exc:
@@ -161,22 +166,14 @@ def read_unverified_passes(
     return entries
 
 
-def read_outcome_unverified_passes(run_dir: Path) -> list[dict[str, str]]:
-    """Cross-check `outcome.draft.json` in `run_dir` so dotfile-dropping copies (`cp -r out/* dst/`) cannot bypass.
-
-    Refuses with `ValueError` if `outcome.draft.json` is non-regular, unreadable, invalid JSON, non-dict, sets
-    `unverified_passes_malformed=true`, has a malformed `unverified_passes` or `judges_completed` field, or contains
-    malformed `rows/*.jsonl` names. Returns deduplicated entries for:
-    1. any pass listed in `outcome.draft.json["unverified_passes"]`, and
-    2. any `rows/*.jsonl` file present on disk whose `judge_done` stem is absent from `outcome.draft.json["judges_completed"]`.
-    """
+def _read_outcome_draft_dict(run_dir: Path) -> tuple[Path, dict[str, Any] | None]:
     resolved_dir = Path(run_dir)
     outcome_path = resolved_dir / OUTCOME_DRAFT_FILENAME
     try:
         exists_or_link = outcome_path.exists() or outcome_path.is_symlink()
         if not exists_or_link:
-            return []
-        if not outcome_path.is_file():
+            return outcome_path, None
+        if outcome_path.is_symlink() or not outcome_path.is_file():
             raise ValueError(f"{OUTCOME_DRAFT_FILENAME} at '{outcome_path}' is not a regular file")
         raw_text = outcome_path.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
@@ -188,6 +185,35 @@ def read_outcome_unverified_passes(run_dir: Path) -> list[dict[str, str]]:
         raise ValueError(f"invalid JSON in {OUTCOME_DRAFT_FILENAME} at '{outcome_path}': {exc}") from exc
     if not isinstance(doc, dict):
         raise ValueError(f"{OUTCOME_DRAFT_FILENAME} at '{outcome_path}' must be a JSON object")
+    return outcome_path, doc
+
+
+def read_excluded_incomplete_passes(run_dir: Path) -> list[dict[str, Any]]:
+    """Return validated `excluded_incomplete_passes` entries from `outcome.draft.json` (or `[]` when absent)."""
+    _, doc = _read_outcome_draft_dict(run_dir)
+    if doc is None or doc.get("excluded_incomplete_passes") is None:
+        return []
+    raw_excl = doc["excluded_incomplete_passes"]
+    if not isinstance(raw_excl, list) or not all(isinstance(x, dict) for x in raw_excl):
+        raise ValueError(f"{OUTCOME_DRAFT_FILENAME} excluded_incomplete_passes must be a list of objects")
+    return [dict(x) for x in raw_excl]
+
+
+def read_outcome_unverified_passes(run_dir: Path) -> list[dict[str, str]]:
+    """Cross-check `outcome.draft.json` in `run_dir` so dotfile-dropping copies (`cp -r out/* dst/`) cannot bypass.
+
+    Refuses with `ValueError` if `outcome.draft.json` is non-regular (including live or dangling symlinks and
+    directories), unreadable, invalid JSON, non-dict, sets `unverified_passes_malformed=true`, has a malformed
+    `unverified_passes` or `judges_completed` field, or contains malformed `rows/*.jsonl` names. Returns deduplicated
+    entries tagged with `reason`:
+    1. `"unverified_pass"` for any pass listed in `outcome.draft.json["unverified_passes"]`, and
+    2. `"incomplete_rows"` for any `rows/*.jsonl` file present on disk whose `judge_done` stem is absent from
+       `outcome.draft.json["judges_completed"]` and not listed in `unverified_passes`.
+    """
+    resolved_dir = Path(run_dir)
+    outcome_path, doc = _read_outcome_draft_dict(resolved_dir)
+    if doc is None:
+        return []
 
     if doc.get("unverified_passes_malformed"):
         raise ValueError(f"{OUTCOME_DRAFT_FILENAME} at '{outcome_path}' records unverified_passes_malformed=true")
@@ -207,7 +233,7 @@ def read_outcome_unverified_passes(run_dir: Path) -> list[dict[str, str]]:
             key = (parts[0], parts[1])
             if key not in seen:
                 seen.add(key)
-                entries.append(_entry_dict(parts[0], parts[1]))
+                entries.append({**_entry_dict(parts[0], parts[1]), "reason": "unverified_pass"})
 
     if "judges_completed" in doc:
         raw_completed = doc["judges_completed"]
@@ -220,7 +246,7 @@ def read_outcome_unverified_passes(run_dir: Path) -> list[dict[str, str]]:
                 pmode = three_way_mode_of_rows_filename(rf.name) or "binary"
                 suffix = f".{pmode}.jsonl" if pmode != "binary" else ".jsonl"
                 jid = rf.name[: -len(suffix)]
-                if not rf.is_file() or not _is_safe_unverified_token(jid):
+                if rf.is_symlink() or not rf.is_file() or not _is_safe_unverified_token(jid):
                     raise ValueError(f"invalid rows entry {rf.name!r} in '{rows_dir}'")
                 done_file = judge_done_filename_for_pass(jid, pmode)
                 done_stem = done_file[: -len(".json")]
@@ -228,7 +254,7 @@ def read_outcome_unverified_passes(run_dir: Path) -> list[dict[str, str]]:
                     key = (jid, pmode)
                     if key not in seen:
                         seen.add(key)
-                        entries.append(_entry_dict(jid, pmode, done_file))
+                        entries.append({**_entry_dict(jid, pmode, done_file), "reason": "incomplete_rows"})
 
     return entries
 
@@ -239,7 +265,10 @@ def collect_run_unverified_passes(
     default_pass_mode: str = "binary",
 ) -> list[dict[str, str]]:
     """Combine `.unverified_judge_done` (`read_unverified_passes`) and `outcome.draft.json` (`read_outcome_unverified_passes`)."""
-    marker_entries = read_unverified_passes(run_dir, default_pass_mode=default_pass_mode)
+    marker_entries = [
+        {**entry, "reason": "unverified_pass"}
+        for entry in read_unverified_passes(run_dir, default_pass_mode=default_pass_mode)
+    ]
     outcome_entries = read_outcome_unverified_passes(run_dir)
     seen: set[tuple[str, str]] = set()
     combined: list[dict[str, str]] = []
@@ -249,3 +278,53 @@ def collect_run_unverified_passes(
             seen.add(key)
             combined.append(entry)
     return combined
+
+
+def format_unverified_or_incomplete_refusal(
+    entries: list[dict[str, str]],
+    *,
+    subject: str,
+    extra_note: str = "",
+) -> tuple[str, str]:
+    """Build `(message, hint)` reporting unverified passes and incomplete-rows passes each with their own wording/hint."""
+    unv_entries = [u for u in entries if u.get("reason") != "incomplete_rows"]
+    inc_entries = [u for u in entries if u.get("reason") == "incomplete_rows"]
+    note_suffix = f" ({extra_note})" if extra_note else ""
+
+    msg_parts: list[str] = []
+    if unv_entries:
+        first_unv = unv_entries[0]
+        unv_listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in unv_entries)
+        msg_parts.append(
+            f"lists unverified pass(es) [{unv_listed}] in {UNVERIFIED_JUDGE_DONE_FILENAME} or "
+            f"{OUTCOME_DRAFT_FILENAME} (first: judge={first_unv['judge_id']} pass_mode={first_unv['pass_mode']} "
+            f"judge_done/{first_unv['done_file']})"
+        )
+    if inc_entries:
+        first_inc = inc_entries[0]
+        inc_listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in inc_entries)
+        msg_parts.append(
+            f"has rows present for a pass the outcome does not list as completed: [{inc_listed}] "
+            f"(first: judge={first_inc['judge_id']} pass_mode={first_inc['pass_mode']} rows/{first_inc['rows_file']})"
+        )
+
+    if unv_entries and not inc_entries:
+        msg = f"{subject} {msg_parts[0]}{note_suffix}; refusing to count rows from an unverified timed-out pass."
+        return msg, REVERIFY_HINT_TEMPLATE
+    first_inc = inc_entries[0]
+    excl_hint = (
+        f"Run 'python scripts/colab/vm_judges.py exclude-incomplete <out_dir> "
+        f"--judge {first_inc['judge_id']} --pass-mode {first_inc['pass_mode']}' to move those rows and any pair to "
+        f"{ROWS_INCOMPLETE_DIRNAME}/ and record the exclusion in {OUTCOME_DRAFT_FILENAME}."
+    )
+    if not unv_entries:
+        msg = f"{subject} {msg_parts[0]}{note_suffix}."
+        return msg, excl_hint
+    unv_listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in unv_entries)
+    inc_listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in inc_entries)
+    msg = (
+        f"{subject} {msg_parts[0]} (refusing to count rows from an unverified timed-out pass) "
+        f"and {msg_parts[1]}{note_suffix}."
+    )
+    hint = f"For unverified pass(es) [{unv_listed}]: {REVERIFY_HINT_TEMPLATE} For incomplete rows [{inc_listed}]: {excl_hint}"
+    return msg, hint

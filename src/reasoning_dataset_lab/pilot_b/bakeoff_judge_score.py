@@ -77,6 +77,8 @@ from reasoning_dataset_lab.pilot_b.run_records import (
     REVERIFY_HINT_TEMPLATE,
     UNVERIFIED_JUDGE_DONE_FILENAME,
     collect_run_unverified_passes,
+    format_unverified_or_incomplete_refusal,
+    read_excluded_incomplete_passes,
 )
 from reasoning_dataset_lab.pilot_b.three_way_wording import (
     INCONSISTENT_VERDICT,
@@ -2217,6 +2219,11 @@ def format_bakeoff_score_markdown(report: Mapping[str, Any]) -> str:
         f"- **Schedule SHA-256:** `{report['schedule_sha256']}`",
         f"- **Realized split counts (items):** dev={report['split_item_counts']['dev']}, test={report['split_item_counts']['test']}, total={report['split_item_counts']['total']}",
         f"- **Counted set (excluding canary buffer):** triads={counted.get('counted_triads_n', 0)}, items={counted.get('counted_items_n', 0)}, canary_triads_excluded={counted.get('canary_triads_excluded_n', 0)}",
+    ]
+    if report.get("excluded_incomplete_passes"):
+        excl_str = ", ".join(str(e["pass"]) for e in report["excluded_incomplete_passes"])
+        lines.append(f"- **Excluded incomplete passes:** `{excl_str}`")
+    lines.extend([
         "",
         "## Pre-Registered Definitions",
         "",
@@ -2232,7 +2239,7 @@ def format_bakeoff_score_markdown(report: Mapping[str, Any]) -> str:
         "",
         "| Judge | Rule | Class-Balanced Strict | 95% CI | Plain Strict | All-3-of-Triad | 1 - Flip Rate | Flip Rate | AUROC | Net Bias | Yes-Precision (AND, LCB) | Yes-Recall (AND, LCB) | Sup Acc | Unsup Acc | Cannot-Tell Acc | Length Stops | Unparseable |",
         "|---|---|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|",
-    ]
+    ])
     for j_sum in report.get("judges", []):
         cb = j_sum["class_balanced_strict_accuracy"]
         acc = j_sum["accuracy"]
@@ -2324,6 +2331,7 @@ def score_bakeoff_outputs(
     # Refuse before touching sealed keys or outputs if .unverified_judge_done or outcome.draft.json marks an unverified pass.
     try:
         unverified_entries = collect_run_unverified_passes(resolved_judge_dir)
+        excluded_incomplete_passes = read_excluded_incomplete_passes(resolved_judge_dir)
     except (OSError, ValueError) as exc:
         raise refused_error(
             "BAKEOFF_SCORE_UNVERIFIED_PASS",
@@ -2331,16 +2339,11 @@ def score_bakeoff_outputs(
             REVERIFY_HINT_TEMPLATE,
         ) from exc
     if unverified_entries:
-        first_u = unverified_entries[0]
-        listed = ", ".join(f"{u['judge_id']}:{u['pass_mode']}" for u in unverified_entries)
-        raise refused_error(
-            "BAKEOFF_SCORE_UNVERIFIED_PASS",
-            f"Run directory '{resolved_judge_dir}' lists unverified pass(es) [{listed}] in "
-            f"{UNVERIFIED_JUDGE_DONE_FILENAME} or {OUTCOME_DRAFT_FILENAME} (first: judge={first_u['judge_id']} "
-            f"pass_mode={first_u['pass_mode']} judge_done/{first_u['done_file']}); "
-            "scoring refuses to count rows from an unverified timed-out pass.",
-            REVERIFY_HINT_TEMPLATE,
+        msg, hint = format_unverified_or_incomplete_refusal(
+            unverified_entries,
+            subject=f"Run directory '{resolved_judge_dir}'",
         )
+        raise refused_error("BAKEOFF_SCORE_UNVERIFIED_PASS", msg, hint)
     # After the tamper check (so a modified dir is reported as such) and before any key is read or any byte is written.
     check_sealed_out_targets_free(sealed_jsonl_path, sealed_csv_path, overwrite=overwrite)
     keys_by_id = load_sealed_keys(keys_path)
@@ -2867,6 +2870,8 @@ def score_bakeoff_outputs(
     }
     if not count_all_non_canary:
         public_report["mu_judge_three_readings"] = mu_judge_readings
+    if excluded_incomplete_passes:
+        public_report["excluded_incomplete_passes"] = excluded_incomplete_passes
     _assert_public_summary_clean(public_report)
 
     public_out_path.parent.mkdir(parents=True, exist_ok=True)
