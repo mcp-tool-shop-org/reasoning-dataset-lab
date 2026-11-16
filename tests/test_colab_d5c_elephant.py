@@ -25,13 +25,22 @@ from tests.test_colab_d5c_six_arm import (  # noqa: E402
     ITEMS,
     _add_d5c_snapshots,
     _ban_violations,
-    _launcher_env,
     _prompt,
     _receipt,
     _run_launcher,
     _three_way_keys,
 )
 from tests.test_colab_judge_launcher import _hermetic_fake_colab_and_uv_env, _to_wsl_path, vm_judges  # noqa: E402,F401
+from tests.test_colab_three_way_pass_mode import _launcher_env as _base_launcher_env  # noqa: E402
+
+# Since the gate step sees the window's judge selection (#94), a window naming elephant-1 needs 123,044,340,687 bytes
+# free there; the fake VM gives these windows 130 GB (its default, 120 GB, is room for every window without it).
+ELEPHANT_WINDOW_DISK_FREE_BYTES = 130_000_000_000
+
+
+def _launcher_env(tmp_path: Path, tag: str) -> tuple[dict[str, Path], str]:
+    env_paths, exports = _base_launcher_env(tmp_path, tag)
+    return env_paths, exports + f"export FAKE_COLAB_DISK_FREE_BYTES={ELEPHANT_WINDOW_DISK_FREE_BYTES}; "
 
 ELEPHANT = "elephant-1"
 ESPEC = JUDGE_SPECS[ELEPHANT]
