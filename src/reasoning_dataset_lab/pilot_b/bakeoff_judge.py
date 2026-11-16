@@ -682,14 +682,14 @@ def check_vram_guard(
 
 
 def resolve_judge_vram_halt_mib(spec: JudgeSpec, window_vram_halt_mib: int) -> int:
-    """The VRAM ceiling one judge runs under: the window's, unless the judge's spec carries a higher ceiling of its
-    own (vllm-sr/d3), which then applies to that judge only. 0 (no ceiling: the CPU modes) stays 0. A judge at the
-    default ceiling always gets the window's value unchanged, so every other judge behaves exactly as before."""
+    """The VRAM ceiling one judge runs under: the window's, unless the window is at the default ceiling and the judge's
+    spec carries a higher one (vllm-sr/d3), which then applies to that judge only. 0 (the CPU modes) stays 0, and any
+    other window value (the RDLAB_VRAM_HALT_MIB test hook) applies as given, to every judge, d3 included."""
     window = int(window_vram_halt_mib)
     own = int(spec.vram_halt_mib)
-    if window <= 0 or own <= DEFAULT_VRAM_HALT_MIB:
+    if window != DEFAULT_VRAM_HALT_MIB or own <= DEFAULT_VRAM_HALT_MIB:
         return window
-    return max(window, own)
+    return own
 
 
 def check_remote_code_gate(
