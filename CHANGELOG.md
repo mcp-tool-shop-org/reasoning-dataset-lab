@@ -6,6 +6,13 @@ All notable changes to `reasoning-dataset-lab` are documented here. The format i
 
 ## Unreleased
 
+### Follow-ups from the #100 merge-gate review
+
+- **Merge default changed (#100):** `merge_shards`' default judge set for `three_way_two_question` is now `(d3-mini, d3)`, because d3 has a prompt in that mode. A merge of d3-mini-only two-question shards (standalone Arm 2) must name its judge (`expected_judge_ids=["d3-mini"]`, or `--only-judges d3-mini` on the CLI); without it the merge refuses offline (`MergeRefusalError`). CAL and HOLD windows run both judges and match the default.
+- **B1:** `RDLAB_FIRST_LOAD_JUDGE_ID` refuses d3 and elephant-1 by name (`FIRST_LOAD_JUDGE_ID_INVALID`), because `--step gate` sizes the disk only from `RDLAB_ONLY_JUDGES` / `RDLAB_JUDGE_PASS_MODES`. They were already refused (neither is in `BAKEOFF_JUDGE_SPECS`); the refusal no longer rests on that.
+- **B2:** the launcher's gate-selection value check runs under `LC_ALL=C`, so a UTF-8 locale cannot let a non-ASCII letter through `[a-z]`. New tests run the real launcher and check the call refuses before `colab new`.
+- **C:** `d3_window_extra_bytes` checks an explicit list the way the gate does; a `RDLAB_VRAM_HALT_MIB` test-hook value other than the default now applies to d3 as given (real windows, at 26,000 or 0, are unchanged).
+
 ### The fitted two-question and 27B d3 kit (card 2026-11-15 v2)
 
 - **#96 B1:** a d3-family answer the transport marks `done_reason == "error"` (an answer missing, not a mapping, or carrying `error`) is now unparseable in every pass mode, with a named parse note, even when it also carries a `noul` or probabilities.
