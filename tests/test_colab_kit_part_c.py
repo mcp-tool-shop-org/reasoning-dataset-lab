@@ -724,3 +724,17 @@ def test_pack_size_and_time_on_a_stub_window_are_recorded(
     elapsed = time.perf_counter() - t0
     with capsys.disabled():
         print(f"\nKIT_PART_C_PACK bytes={run['result_tar'].stat().st_size} seconds={elapsed:.4f}")
+
+
+def test_bakeoff_judge_rebuild_of_window_json_keeps_the_kit_identity(tmp_path: Path) -> None:
+    """`bakeoff_judge.build_window_manifest` rebuilds a VM window.json to the same `window_manifest_sha256`: it keeps
+    the four kit fields of the earlier window.json, as it keeps the item hashes."""
+    from reasoning_dataset_lab.pilot_b import bakeoff_judge
+
+    assert bakeoff_judge.WINDOW_KIT_IDENTITY_FIELDS == vm_judges.KIT_IDENTITY_FIELDS == KIT_FIELDS
+    run_dir = _small_run_dir(tmp_path)
+    ident = {"kit_head_sha": "c" * 40, "kit_tree_clean": False, "kit_vm_judges_py_sha256": "d" * 64, "kit_launch_judges_sh_sha256": None}
+    vm_doc = vm_judges.write_window_manifest(run_dir, window_id="w-kit", mode="stub", kit_identity=ident)
+    rebuilt = bakeoff_judge.build_window_manifest(run_dir, window_id="w-kit", mode="stub")
+    assert {f: rebuilt[f] for f in KIT_FIELDS} == ident
+    assert rebuilt["window_manifest_sha256"] == vm_doc["window_manifest_sha256"]
