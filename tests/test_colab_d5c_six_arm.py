@@ -3693,3 +3693,103 @@ def test_exclude_incomplete_cli_on_lockcheck_1a_run8_shape_unblocks_merge_and_sc
     s2_outcome = json.loads((pair_dir / run_records.OUTCOME_DRAFT_FILENAME).read_text(encoding="utf-8"))
     assert s2_outcome["unverified_passes"] == []
     assert run_records.collect_run_unverified_passes(pair_dir) == []
+
+
+def test_reverify_and_exclude_incomplete_never_rewrite_time_one_summary_or_progress_jsonl(
+    tmp_path: Path,
+) -> None:
+    """PR #103 fix 1 item 9: `exclude-incomplete` and `reverify-unverified` never write, touch, or re-serialise
+    `time_one_summary.json` or `progress.jsonl` (nor `result.tar.gz`), keeping on-disk bytes identical to before and
+    identical to the `result.tar.gz` copies."""
+    import subprocess
+    import tarfile
+
+    vm_py = Path(__file__).resolve().parents[1] / "scripts" / "colab" / "vm_judges.py"
+    items_p = _make_synthetic_public_items(tmp_path / "item9_items", count=4)
+    out_dir = tmp_path / "item9_run"
+    d3_spec = JUDGE_SPECS["d3-mini"]
+    bakeoff_judge.run_bakeoff_judge(
+        part_dir=items_p,
+        output_dir=out_dir,
+        judge="d3-mini",
+        pass_mode=CONTRA,
+        fake_transport=True,
+        allow_remote_code_reviewed=d3_spec.revision,
+    )
+    (out_dir / "rows" / "flow-judge-v0.1.jsonl").write_text('{"judge_id":"flow-judge-v0.1","partial":true}\n', encoding="utf-8")
+    bakeoff_judge.close_bakeoff_outputs(out_dir)
+
+    d3_done = json.loads((out_dir / "judge_done" / "d3-mini.json").read_text(encoding="utf-8"))
+    d3_sha = str(d3_done["sha256"])
+
+    # Intentionally non-canonical spacing so even a re-serialisation of identical JSON values would fail byte equality.
+    summary_p = out_dir / "time_one_summary.json"
+    progress_p = out_dir / "progress.jsonl"
+    summary_bytes = b'{  "mode" : "time-one",  "pass_mode": "three_way_contradicted", "judges": [ "d3-mini" ] }\n'
+    progress_bytes = (
+        b'{"kind":  "step_start", "step": "run"}\n'
+        + (
+            json.dumps({"kind": "judge_pass_done", "judge": "d3-mini", "pass_mode": CONTRA, "sha256": d3_sha})
+            + "\n"
+        ).encode("utf-8")
+    )
+    summary_p.write_bytes(summary_bytes)
+    progress_p.write_bytes(progress_bytes)
+
+    tar_p = out_dir / "result.tar.gz"
+    with tarfile.open(tar_p, "w:gz") as tf:
+        tf.add(summary_p, arcname="time_one_summary.json")
+        tf.add(progress_p, arcname="progress.jsonl")
+        tf.add(out_dir / "rows" / f"d3-mini.{CONTRA}.jsonl", arcname=f"rows/d3-mini.{CONTRA}.jsonl")
+        tf.add(out_dir / "judge_done" / "d3-mini.json", arcname="judge_done/d3-mini.json")
+    tar_bytes = tar_p.read_bytes()
+    summary_mtime_ns = summary_p.stat().st_mtime_ns
+    progress_mtime_ns = progress_p.stat().st_mtime_ns
+
+    (out_dir / run_records.UNVERIFIED_JUDGE_DONE_FILENAME).write_text(
+        f"d3-mini\t{CONTRA}\td3-mini.json\n", encoding="utf-8", newline="\n"
+    )
+    (out_dir / run_records.OUTCOME_DRAFT_FILENAME).write_text(
+        json.dumps(
+            {
+                "pass_mode": CONTRA,
+                "judges_completed": [],
+                "unverified_passes": [f"d3-mini:{CONTRA}"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def _assert_untouched_and_equal_to_tar() -> None:
+        assert summary_p.read_bytes() == summary_bytes
+        assert progress_p.read_bytes() == progress_bytes
+        assert tar_p.read_bytes() == tar_bytes
+        assert summary_p.stat().st_mtime_ns == summary_mtime_ns
+        assert progress_p.stat().st_mtime_ns == progress_mtime_ns
+        with tarfile.open(tar_p, "r:gz") as tf_check:
+            tar_sum = tf_check.extractfile("time_one_summary.json")
+            tar_prog = tf_check.extractfile("progress.jsonl")
+            assert tar_sum is not None and tar_sum.read() == summary_p.read_bytes()
+            assert tar_prog is not None and tar_prog.read() == progress_p.read_bytes()
+
+    # 1. Run `exclude-incomplete` on `flow-judge-v0.1:binary`.
+    excl_res = subprocess.run(
+        [sys.executable, str(vm_py), "exclude-incomplete", str(out_dir), "--judge", "flow-judge-v0.1", "--pass-mode", "binary"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert excl_res.returncode == 0, excl_res.stderr
+    _assert_untouched_and_equal_to_tar()
+
+    # 2. Run `reverify-unverified` on `out_dir` (`d3-mini` verifies -> `rc=0`).
+    rev_res = subprocess.run(
+        [sys.executable, str(vm_py), "reverify-unverified", str(out_dir)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert rev_res.returncode == 0, rev_res.stderr
+    _assert_untouched_and_equal_to_tar()
+    assert run_records.collect_run_unverified_passes(out_dir) == []
