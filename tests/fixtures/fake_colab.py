@@ -2822,6 +2822,12 @@ def main(argv: list[str] | None = None) -> int:
                 "        return '/usr/local/bin/uv'\n"
                 "    return _real_which(cmd, *a, **kw)\n"
                 "shutil.which = _fake_which\n"
+                "import importlib.util as _ilu\n"
+                f"_fc_spec = _ilu.spec_from_file_location('_rdlab_fake_colab_mod', {str(Path(__file__).resolve())!r})\n"
+                "_fc_mod = _ilu.module_from_spec(_fc_spec)\n"
+                "_fc_spec.loader.exec_module(_fc_mod)\n"
+                "_handle_vm_vcs = _fc_mod.handle_fake_vm_vcs\n"
+                "del _ilu, _fc_spec, _fc_mod\n"
                 "_real_subproc_run = subprocess.run\n"
                 "def _fake_subproc_run(cmd, *a, **kw):\n"
                 "    cmd_list = [str(x) for x in cmd] if isinstance(cmd, (list, tuple)) else [str(cmd)]\n"
@@ -2840,51 +2846,9 @@ def main(argv: list[str] | None = None) -> int:
                 "            fh.write(json.dumps(rec) + '\\n')\n"
                 "    plant = os.environ.get('FAKE_COLAB_PROBE_PLANT_STDOUT', '')\n"
                 "    plant_sfx = (' ' + plant) if plant else ''\n"
-                "    if cmd_list and cmd_list[0] == 'git':\n"
-                "        _git_repo = ''\n"
-                "        _git_args = cmd_list[1:]\n"
-                "        if len(_git_args) >= 2 and _git_args[0] == '-C':\n"
-                "            _git_repo = _git_args[1]\n"
-                "            _git_args = _git_args[2:]\n"
-                "        _sub = _git_args[0] if _git_args else ''\n"
-                "        if os.environ.get('FAKE_COLAB_FAIL_GIT_SUBCMD', '').strip() == _sub:\n"
-                "            return subprocess.CompletedProcess(cmd_list, 128, stdout='', stderr=f'fatal: simulated git {_sub} failure\\n')\n"
-                "        if _sub == 'clone' and len(_git_args) >= 3:\n"
-                "            _url, _tgt = _git_args[-2], pathlib.Path(_git_args[-1])\n"
-                "            if _tgt.exists() and any(_tgt.iterdir()):\n"
-                "                return subprocess.CompletedProcess(cmd_list, 128, stdout='', stderr=f'fatal: destination path {_tgt} already exists and is not an empty directory\\n')\n"
-                "            (_tgt / '.git').mkdir(parents=True, exist_ok=True)\n"
-                "            (_tgt / '.git' / 'FAKE_HEAD').write_text('HEAD\\n', encoding='utf-8')\n"
-                "            if 'OneJev' in _url or _tgt.name == 'OneJev':\n"
-                "                _qev = _tgt / 'qev'\n"
-                "                _qev.mkdir(parents=True, exist_ok=True)\n"
-                "                for _m in ('__init__', 'schema', 'prompt', 'engine'):\n"
-                "                    (_qev / f'{_m}.py').write_text(f'# fake qev.{_m}\\n', encoding='utf-8')\n"
-                "            else:\n"
-                "                _di = _tgt / 'decision_index'\n"
-                "                _di.mkdir(parents=True, exist_ok=True)\n"
-                "                (_di / '__init__.py').write_text('# fake decision_index\\n', encoding='utf-8')\n"
-                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='', stderr='')\n"
-                "        if _sub == 'checkout' and _git_repo:\n"
-                "            _head_val = os.environ.get('FAKE_COLAB_ELEPHANT_BAD_HEAD', '').strip() or _git_args[-1]\n"
-                "            _git_meta = pathlib.Path(_git_repo) / '.git'\n"
-                "            _git_meta.mkdir(parents=True, exist_ok=True)\n"
-                "            (_git_meta / 'FAKE_HEAD').write_text(_head_val + '\\n', encoding='utf-8')\n"
-                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='', stderr='')\n"
-                "        if _sub == 'clean' and _git_repo:\n"
-                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='', stderr='')\n"
-                "        if _sub == 'apply' and _git_repo and len(_git_args) >= 2:\n"
-                "            _patch_p = pathlib.Path(_git_args[-1])\n"
-                "            if not _patch_p.is_file():\n"
-                "                return subprocess.CompletedProcess(cmd_list, 128, stdout='', stderr=f'error: can not open {_patch_p}\\n')\n"
-                "            _qev_r = pathlib.Path(_git_repo) / 'qev'\n"
-                "            _qev_r.mkdir(parents=True, exist_ok=True)\n"
-                "            (_qev_r / 'readout.py').write_text('# patched qev.readout\\nREADOUT_PATCHED = True\\n', encoding='utf-8')\n"
-                "            return subprocess.CompletedProcess(cmd_list, 0, stdout='', stderr='')\n"
-                "        if _sub == 'rev-parse' and _git_repo and 'HEAD' in _git_args:\n"
-                "            _fh = pathlib.Path(_git_repo) / '.git' / 'FAKE_HEAD'\n"
-                "            _txt = _fh.read_text(encoding='utf-8').strip() if _fh.is_file() else ('0' * 40)\n"
-                "            return subprocess.CompletedProcess(cmd_list, 0, stdout=_txt + '\\n', stderr='')\n"
+                "    _vcs_res = _handle_vm_vcs(cmd_list)\n"
+                "    if _vcs_res is not None:\n"
+                "        return _vcs_res\n"
                 "    if cmd_list[:2] == ['uv', '--version']:\n"
                 "        if os.environ.get('FAKE_COLAB_UV_ABSENT') == '1' and '/tmp/uv-pinned' not in call_env.get('PATH', '').split(os.pathsep):\n"
                 "            raise FileNotFoundError(2, 'No such file or directory', 'uv')\n"
@@ -3257,6 +3221,71 @@ def _plant_unfinished_pass(vmj: Any, run_dir: Path, spec: str) -> None:
     (run_dir / "judge_done" / vmj.judge_done_filename_for_pass(jid, mode)).write_text(
         json.dumps({"judge_id": jid, "pass_mode": mode, "sha256": "0" * 64, "row_count": 1}) + "\n", encoding="utf-8"
     )
+
+
+def handle_fake_vm_vcs(cmd_list: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Hermetic fake VM handler for git commands inside `colab exec` cells."""
+    if not cmd_list or cmd_list[0] != "git":
+        return None
+    vcs_repo = ""
+    vcs_args = cmd_list[1:]
+    if len(vcs_args) >= 2 and vcs_args[0] == "-C":
+        vcs_repo = vcs_args[1]
+        vcs_args = vcs_args[2:]
+    vcs_sub = vcs_args[0] if vcs_args else ""
+    if os.environ.get("FAKE_COLAB_FAIL_GIT_SUBCMD", "").strip() == vcs_sub:
+        return subprocess.CompletedProcess(
+            cmd_list, 128, stdout="", stderr=f"fatal: simulated git {vcs_sub} failure\n"
+        )
+    if vcs_sub == "clone" and len(vcs_args) >= 3:
+        vcs_url, vcs_tgt = vcs_args[-2], Path(vcs_args[-1])
+        if vcs_tgt.exists() and any(vcs_tgt.iterdir()):
+            return subprocess.CompletedProcess(
+                cmd_list,
+                128,
+                stdout="",
+                stderr=f"fatal: destination path {vcs_tgt} already exists and is not an empty directory\n",
+            )
+        (vcs_tgt / ".git").mkdir(parents=True, exist_ok=True)
+        (vcs_tgt / ".git" / "FAKE_HEAD").write_text("HEAD\n", encoding="utf-8")
+        if "OneJev" in vcs_url or vcs_tgt.name == "OneJev":
+            vcs_qev = vcs_tgt / "qev"
+            vcs_qev.mkdir(parents=True, exist_ok=True)
+            for mod_name in ("__init__", "schema", "prompt", "engine"):
+                (vcs_qev / f"{mod_name}.py").write_text(
+                    f"# fake qev.{mod_name}\n", encoding="utf-8"
+                )
+        else:
+            vcs_di = vcs_tgt / "decision_index"
+            vcs_di.mkdir(parents=True, exist_ok=True)
+            (vcs_di / "__init__.py").write_text("# fake decision_index\n", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+    if vcs_sub == "checkout" and vcs_repo:
+        vcs_head = os.environ.get("FAKE_COLAB_ELEPHANT_BAD_HEAD", "").strip() or vcs_args[-1]
+        vcs_meta = Path(vcs_repo) / ".git"
+        vcs_meta.mkdir(parents=True, exist_ok=True)
+        (vcs_meta / "FAKE_HEAD").write_text(vcs_head + "\n", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+    if vcs_sub == "clean" and vcs_repo:
+        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+    if vcs_sub == "apply" and vcs_repo and len(vcs_args) >= 2:
+        vcs_patch = Path(vcs_args[-1])
+        if not vcs_patch.is_file():
+            return subprocess.CompletedProcess(
+                cmd_list, 128, stdout="", stderr=f"error: can not open {vcs_patch}\n"
+            )
+        vcs_qev_r = Path(vcs_repo) / "qev"
+        vcs_qev_r.mkdir(parents=True, exist_ok=True)
+        (vcs_qev_r / "readout.py").write_text(
+            "# patched qev.readout\nREADOUT_PATCHED = True\n", encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(cmd_list, 0, stdout="", stderr="")
+    if vcs_sub == "rev-parse" and vcs_repo and "HEAD" in vcs_args:
+        vcs_fh = Path(vcs_repo) / ".git" / "FAKE_HEAD"
+        vcs_txt = vcs_fh.read_text(encoding="utf-8").strip() if vcs_fh.is_file() else ("0" * 40)
+        return subprocess.CompletedProcess(cmd_list, 0, stdout=vcs_txt + "\n", stderr="")
+    return None
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
