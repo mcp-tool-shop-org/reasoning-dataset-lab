@@ -15529,10 +15529,6 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
             newline="\n",
         )
-        try:
-            build_allowlisted_result_tar(args.run_dir, args.result_tar)
-        except Exception:
-            pass
         write_vm_status_file(
             args.status_file,
             step=current_step,
@@ -15559,6 +15555,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception:
             pass
+        _pack_failure_result_tar(args.run_dir, args.result_tar)  # last write into run_dir (#94)
         sys.stderr.write(f"{failure_class}: {scrub_log_text(str(detail))}\n")
         return 2
 
@@ -15618,6 +15615,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         except Exception:
             pass
+        _pack_failure_result_tar(args.run_dir, args.result_tar)  # last write into run_dir (#94)
         sys.stderr.write(
             f"UNEXPECTED_ERROR: step={current_step} {exc_type}: {scrub_log_text(str(exc))}\n"
         )
@@ -15634,6 +15632,19 @@ def run_kernel_or_cli_entry(argv: list[str] | None = None) -> int:
     if not is_kernel_env(argv):
         raise SystemExit(rc)
     return rc
+
+
+def _pack_failure_result_tar(run_dir: Path, tar_path: Path) -> None:
+    """A failure path's last write: pack `run_dir` (after its `run_end` line and status file) into `tar_path`, so the
+    tar's progress.jsonl is the final one (#94). If the pack fails, remove any tar at `tar_path`: a tar left by an earlier
+    pack lacks the last lines, and the rig's scorers refuse a run whose disk and tar copies differ. Never raises."""
+    try:
+        build_allowlisted_result_tar(run_dir, tar_path)
+    except Exception:
+        try:
+            tar_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 
