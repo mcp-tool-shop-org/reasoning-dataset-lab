@@ -9,6 +9,7 @@ import hashlib
 import json
 import math
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -79,8 +80,14 @@ def test_b1_error_answer_is_unparseable_in_every_d3_pass_mode(judge_id: str) -> 
         (TWO_Q, {"answers": {"q1": {"error": "backend_failure", "noul": 0.82}, "q2": {"noul": 0.11}}}),
         (CONTRA, {"answers": {"verdict": {"error": "backend_failure", "choice": "contradicted", "probabilities": CHOICE_PROBS}}}),
     ]
-    if judge_id == MINI:  # d3-mini's own arms: binary and the symmetric choice arm
+    if judge_id == MINI:  # d3-mini's own arms: binary, the old 3-way arm and the symmetric choice arm
         cases.append(("binary", {"answers": {"supported": {"error": "backend_failure", "noul": 0.9}}}))
+        cases.append(
+            (
+                "three_way",
+                {"answers": {"supported": {"error": "x", "choice": "supported", "probabilities": {"supported": 0.8, "unsupported": 0.12, "cannot_tell": 0.08}}}},
+            )
+        )
         cases.append(
             (SYM, {"answers": {"verdict": {"error": "x", "probabilities": {"proved true": 0.7, "proved false": 0.2, "undetermined": 0.1}}}})
         )
@@ -404,6 +411,11 @@ def test_cal_and_hold_plans_run_a_judge_in_two_modes_in_one_window(plan: str, mo
     monkeypatch.setenv(vm_judges.JUDGE_PASS_MODES_ENV_VAR, plan)
     for mode in ("stub", "time-one"):
         assert vm_judges.validate_pass_mode(mode, None, judge_ids=(MINI, D3)) == "per_judge"
+    # The counted (and lock-check) windows are binary: neither plan runs there.
+    for mode in ("counted", "lock-check"):
+        with pytest.raises(vm_judges.RefusalError) as exc_mode:
+            vm_judges.validate_pass_mode(mode, None, judge_ids=(MINI, D3))
+        assert exc_mode.value.failure_class == "PASS_MODE_NOT_FOR_MODE", mode
     passes = vm_judges._judge_passes(vm_judges._select_judge_specs((MINI, D3)), "per_judge")
     keys = [k for *_x, k in passes]
     assert len(set(keys)) == len(keys) == len(plan.split(","))
@@ -430,9 +442,11 @@ def test_vram_ceiling_is_per_judge_and_only_d3_has_its_own() -> None:
     for jid, spec in JUDGE_SPECS.items():
         if jid != D3:
             assert spec.vram_halt_mib == default, jid
-        for window in (0, 20_000, default, 30_000, 90_000):
+        for window in (0, 10_000, 20_000, default, 30_000, 90_000):
             got = bakeoff_judge.resolve_judge_vram_halt_mib(spec, window)
-            want = window if (jid != D3 or window == 0) else max(window, 68_000)
+            # d3's own ceiling replaces only the default window value (the real GPU windows); 0 (stub) stays off, and
+            # any other value (the RDLAB_VRAM_HALT_MIB test hook) applies as given, to d3 too (the #100 review's C nit).
+            want = 68_000 if (jid == D3 and window == default) else window
             assert got == want, (jid, window)
 
 
@@ -631,3 +645,136 @@ def test_d3_window_gate_needs_room_for_d3_and_the_hold_window_runs(tmp_path: Pat
     for j, m in plan:
         rows = [json.loads(ln) for ln in (out_big / "rows" / three_way_wording.rows_filename_for_pass(j, m)).read_text(encoding="utf-8").splitlines()]
         assert rows and {r["judge_id"] for r in rows} == {j} and {r["pass_mode"] for r in rows} == {m}
+
+
+# --- The #100 review's follow-ups (B1, B2, C) --------------------------------------------------------------------------
+
+
+def test_d3_window_extra_bytes_checks_an_explicit_list_like_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C nit: an explicit list goes through `gate_selected_judge_ids` too, so a value the gate would refuse is refused,
+    never sized as zero; and the explicit list is the whole selection (the environment's plan is not read)."""
+    monkeypatch.setenv(vm_judges.JUDGE_PASS_MODES_ENV_VAR, CAL_PLAN)
+    monkeypatch.delenv("RDLAB_ONLY_JUDGES", raising=False)
+    assert vm_judges.d3_window_extra_bytes(MINI) == {"weights_bytes": 0, "venv_bytes": 0}
+    assert vm_judges.d3_window_extra_bytes(f"{MINI},{D3}")["weights_bytes"] == vm_judges.D3_WEIGHTS_BYTES
+    for bad in ("", "d3 ", "D3", "d3,d3", "d3,,d3-mini", "nope"):
+        with pytest.raises(vm_judges.RefusalError) as exc:
+            vm_judges.d3_window_extra_bytes(bad)
+        assert exc.value.failure_class == "GATE_JUDGE_SELECTION_INVALID", bad
+
+
+@pytest.mark.parametrize("judge_id", [D3, "elephant-1"])
+def test_b1_first_load_refuses_a_judge_the_base_gate_does_not_size(judge_id: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#100 review B1: `--step gate` sizes the disk only from RDLAB_ONLY_JUDGES / RDLAB_JUDGE_PASS_MODES, never from
+    RDLAB_FIRST_LOAD_JUDGE_ID, so a first-load judge whose window adds disk is refused by name, and that refusal does
+    not rest on the judge being absent from BAKEOFF_JUDGE_SPECS (the patch below adds it there)."""
+    monkeypatch.delenv("RDLAB_FIRST_LOAD_JUDGE_ID", raising=False)
+    monkeypatch.setitem(vm_judges.BAKEOFF_JUDGE_SPECS, judge_id, vm_judges.JUDGE_SPECS[judge_id])
+    with pytest.raises(vm_judges.RefusalError) as exc:
+        vm_judges.validate_first_load_judge_id("stub", "first_load", judge_id)
+    assert exc.value.failure_class == "FIRST_LOAD_JUDGE_ID_INVALID"
+    assert "--step gate sizes the window only from RDLAB_ONLY_JUDGES" in str(exc.value)
+    # The base gate's judges are still accepted.
+    assert vm_judges.validate_first_load_judge_id("stub", "first_load", "nemotron-3-nano-4b") == ("nemotron-3-nano-4b", "env")
+
+
+@pytest.mark.parametrize("judge_id", [D3, "elephant-1"])
+def test_b1_launcher_refuses_first_load_d3_or_elephant_before_open(tmp_path: Path, judge_id: str) -> None:
+    """#100 review B1, end to end: the real launcher refuses `--stub --until first_load` with either judge as the
+    first-load judge, exit 2, before `colab new`."""
+    env_paths, exports = _d3_env(tmp_path, "fl", disk_free=None)
+    sel = f"export RDLAB_FIRST_LOAD_JUDGE_ID={judge_id}; "
+    proc = _run_launcher(
+        exports + sel,
+        f"--stub --until first_load --pass-mode {TWO_Q if judge_id == D3 else CONTRA} "
+        f"--out-dir '{_to_wsl_path(tmp_path / 'out_fl')}' --run-id fl-{judge_id}",
+    )
+    assert proc.returncode == 2, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert "FIRST_LOAD_JUDGE_ID_INVALID" in proc.stderr
+    assert "new" not in _colab_subcommands(env_paths["state_dir"])
+
+
+def _blind_python(tmp_path: Path) -> Path:
+    """An RDLAB_PYTHON that runs python3 without the two selection variables, so every Python preflight passes and only
+    the launcher's own `check_gate_selection_env` can refuse them: the test then exercises the call site itself."""
+    wrapper = tmp_path / "blind_python.sh"
+    wrapper.write_text(
+        '#!/bin/bash\nexec /usr/bin/env -u RDLAB_ONLY_JUDGES -u RDLAB_JUDGE_PASS_MODES python3 "$@"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def _gate_check_run(
+    tmp_path: Path, tag: str, extra: str, *, dry: bool, more_args: str = ""
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    env_paths, exports = _d3_env(tmp_path, tag, disk_free=None)
+    exports += f"export RDLAB_PYTHON='{_to_wsl_path(_blind_python(tmp_path / f'env_{tag}'))}'; " + extra
+    work = tmp_path / f"cwd_{tag}"
+    work.mkdir()
+    args = ("--dry " if dry else "") + more_args + f"--stub --out-dir '{_to_wsl_path(tmp_path / f'out_{tag}')}' --run-id gate-{tag}"
+    proc = _run_launcher(f"cd '{_to_wsl_path(work)}'; " + exports, args)
+    assert "touched" not in {p.name for p in work.iterdir()}
+    return proc, env_paths["state_dir"]
+
+
+def test_b2_launcher_runs_the_gate_selection_check_before_colab_new(tmp_path: Path) -> None:
+    """#100 review B2 (a): the real launcher, not a sliced copy of the function. With the Python preflights blinded to
+    the selection, a bad value reaches only `check_gate_selection_env`: it must refuse (exit 2, GATE_ENV_VALUE_INVALID)
+    with no `colab new` called. If the call were deleted or moved after the session opens, `new` would be called."""
+    ok, _ = _gate_check_run(tmp_path, "ok", f"export RDLAB_ONLY_JUDGES={MINI}; ", dry=True)
+    assert ok.returncode == 0, f"stdout={ok.stdout}\nstderr={ok.stderr}"
+    # A plan makes the window per_judge; `--pass-mode binary` keeps the blinded preflight's window binary, so the plan's
+    # value is seen by the bash check alone.
+    for i, (name, val, more) in enumerate(
+        (
+            ("RDLAB_ONLY_JUDGES", "d3-mini,$(touch touched)", ""),
+            ("RDLAB_ONLY_JUDGES", f"{MINI}:{TWO_Q}", ""),
+            ("RDLAB_JUDGE_PASS_MODES", f"{MINI}:{TWO_Q};ls", "--pass-mode binary "),
+        )
+    ):
+        proc, state_dir = _gate_check_run(
+            tmp_path, f"bad{i}", f"export {name}={shlex.quote(val)}; ", dry=False, more_args=more
+        )
+        assert proc.returncode == 2, f"{name}={val!r}\nstdout={proc.stdout}\nstderr={proc.stderr}"
+        assert "GATE_ENV_VALUE_INVALID" in proc.stderr, proc.stderr
+        assert "new" not in _colab_subcommands(state_dir), name
+
+
+def _utf8_collating_locale(tmp_path: Path) -> str:
+    """Exports for a UTF-8 locale with real collation (en_US.UTF-8): the system's if it has one, else compiled into
+    `tmp_path` with localedef. Skips when neither works. The locale is checked to be in effect (`${#x}` of a two-byte
+    letter is 1), so the test can never pass by silently falling back to C."""
+    probe = 'x="\u00e9"; printf %s "${#x}"'
+    loc_dir = tmp_path / "locale"
+    for exports in (
+        "export LC_ALL=en_US.UTF-8; ",
+        f"export LOCPATH='{_to_wsl_path(loc_dir)}'; export LC_ALL=en_US.UTF-8; ",
+    ):
+        if "LOCPATH" in exports and not (loc_dir / "en_US.UTF-8").is_dir():
+            loc_dir.mkdir(exist_ok=True)
+            subprocess.run(
+                ["bash", "-c", f"localedef -i en_US -f UTF-8 '{_to_wsl_path(loc_dir / 'en_US.UTF-8')}'"],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=120, check=False,
+            )
+        got = subprocess.run(
+            ["bash", "-c", exports + f"bash -c {shlex.quote(probe)}"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False, encoding="utf-8",
+        )
+        if got.stdout.strip() == "1":
+            return exports
+    pytest.skip("no en_US.UTF-8 locale on this machine and localedef could not build one")
+
+
+@pytest.mark.parametrize("val", ["D3", f"{MINI},D3", "d\u00e9", f"{MINI},d\u00e9"])
+def test_b2_gate_selection_check_is_locale_proof_under_utf8(tmp_path: Path, val: str) -> None:
+    """#100 review B2 (b): under a UTF-8 locale, an upper-case or accented judge id is refused by the launcher's own
+    check (LC_ALL=C inside it), before `colab new`. (glibc 2.43 already keeps `D` out of `[a-z]` under en_US.UTF-8,
+    but lets an accented lower-case letter in.)"""
+    loc = _utf8_collating_locale(tmp_path)
+    proc, state_dir = _gate_check_run(tmp_path, "loc", loc + f"export RDLAB_ONLY_JUDGES={shlex.quote(val)}; ", dry=False)
+    assert proc.returncode == 2, f"stdout={proc.stdout}\nstderr={proc.stderr}"
+    assert "GATE_ENV_VALUE_INVALID" in proc.stderr, proc.stderr
+    assert "new" not in _colab_subcommands(state_dir)

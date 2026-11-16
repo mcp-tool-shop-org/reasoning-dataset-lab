@@ -10074,7 +10074,10 @@ def validate_first_load_judge_id(
     *,
     session_smoke: bool = False,
 ) -> tuple[str, str]:
-    """Validate `RDLAB_FIRST_LOAD_JUDGE_ID`: allowed only with `--stub --until first_load` and must be one of the 5 `BAKEOFF_JUDGE_SPECS` keys."""
+    """Validate `RDLAB_FIRST_LOAD_JUDGE_ID`: allowed only with `--stub --until first_load` and must be one of the 5 `BAKEOFF_JUDGE_SPECS` keys.
+    A judge whose window needs disk beyond the base gate (d3, elephant-1) is refused by name as well, whatever that set
+    holds: `--step gate` sizes the disk only from RDLAB_ONLY_JUDGES / RDLAB_JUDGE_PASS_MODES, never from this variable
+    (the #100 review's B1), so such a judge is named with RDLAB_ONLY_JUDGES instead."""
     if raw_judge_id is None:
         if "RDLAB_FIRST_LOAD_JUDGE_ID" in os.environ:
             raw_val: str | None = os.environ["RDLAB_FIRST_LOAD_JUDGE_ID"]
@@ -10091,6 +10094,12 @@ def validate_first_load_judge_id(
         raise RefusalError(
             "FIRST_LOAD_JUDGE_ID_INVALID",
             f"RDLAB_FIRST_LOAD_JUDGE_ID is allowed only with --stub --until first_load (got mode={mode!r}, until={until!r}, session_smoke={session_smoke!r})",
+        )
+    if raw_val in (D3_JUDGE_ID, ELEPHANT_JUDGE_ID):
+        raise RefusalError(
+            "FIRST_LOAD_JUDGE_ID_INVALID",
+            f"RDLAB_FIRST_LOAD_JUDGE_ID={raw_val!r} needs disk beyond the base gate, and --step gate sizes the window "
+            "only from RDLAB_ONLY_JUDGES / RDLAB_JUDGE_PASS_MODES; name it with RDLAB_ONLY_JUDGES instead",
         )
     if (
         not isinstance(raw_val, str)
@@ -15867,10 +15876,12 @@ def gate_selected_judge_ids(
 def d3_window_extra_bytes(raw_only_judges: str | None = None) -> dict[str, int]:
     """The disk the window adds for vllm-sr/d3: its weights, only when RDLAB_ONLY_JUDGES (or RDLAB_JUDGE_PASS_MODES)
     names d3; nothing otherwise, so every other window keeps its figure."""
+    # An explicit list is checked like the environment's (the #100 review's C nit): never sized from a value the gate
+    # would refuse.
     if raw_only_judges is None:
         named = D3_JUDGE_ID in gate_selected_judge_ids()
     else:
-        named = D3_JUDGE_ID in str(raw_only_judges).split(",")
+        named = D3_JUDGE_ID in gate_selected_judge_ids(raw_only_judges, "", from_env=False)
     return {"weights_bytes": D3_WEIGHTS_BYTES if named else 0, "venv_bytes": 0}
 
 def receipt_tar_specs(raw_only_judges: str | None = None) -> list[JudgeSpec]:

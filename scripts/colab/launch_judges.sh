@@ -1082,9 +1082,12 @@ fi
 
 # The judge selection the gate step is given (build_gate_env_args), checked again by name and value before any session
 # opens: only these two names are forwarded, and only values made of judge ids, mode names, `:` and `,`. The preflight
-# above has already checked them against vm_judges; anything else is refused here, never forwarded (#94).
+# above has already checked them against vm_judges; anything else is refused here, never forwarded (#94). The match
+# runs under LC_ALL=C, so `[a-z]` means the 26 ASCII letters in every locale (a UTF-8 locale's collation would let
+# letters such as `é` through; the #100 review's B2).
 GATE_SELECTION_VALUE_RE='^[a-z0-9._-]+(:[a-z_]+)?(,[a-z0-9._-]+(:[a-z_]+)?)*$'
 check_gate_selection_env() {
+  local LC_ALL=C
   local name val
   for name in RDLAB_ONLY_JUDGES RDLAB_JUDGE_PASS_MODES; do
     val="${!name:-}"
